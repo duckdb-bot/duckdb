@@ -73,6 +73,8 @@ struct UnionColumn {
 		plain_array.release = ReleaseArray;
 		array_children[0] = &dict_array;
 		array_children[1] = &plain_array;
+		// a third child, only used to test an array with more children than its schema
+		array_children[2] = &plain_array;
 		buffers[0] = type_ids.data();
 		array.length = int64_t(slots) - offset;
 		array.offset = offset;
@@ -92,7 +94,7 @@ struct UnionColumn {
 	const void *plain_buffers[2];
 	const void *buffers[1];
 	ArrowSchema *schema_children[2];
-	ArrowArray *array_children[2];
+	ArrowArray *array_children[3];
 	ArrowSchema dict_value_schema {};
 	ArrowSchema dict_schema {};
 	ArrowSchema plain_schema {};
@@ -184,12 +186,12 @@ TEST_CASE("Arrow scan of a sparse union with custom type ids", "[arrow]") {
 	// custom type ids across several chunks
 	std::vector<int8_t> many_ids;
 	for (idx_t j = 0; j < 5000; j++) {
-		many_ids.push_back(j % 2 == 0 ? 7 : 5);
+		many_ids.push_back(j % 3 == 0 ? 7 : 5);
 	}
 	arrow_union_offset_test::UnionColumn many(many_ids, 0, "+us:5,7");
 	REQUIRE(arrow_union_offset_test::ScanMatches(
 	    many.schema, many.array,
-	    "SELECT CASE WHEN j % 2 = 0 THEN union_value(i := (100 + j)::INT)::UNION(d INT, i INT) ELSE union_value(d := "
+	    "SELECT CASE WHEN j % 3 = 0 THEN union_value(i := (100 + j)::INT)::UNION(d INT, i INT) ELSE union_value(d := "
 	    "[10, 20, 30][j % 3 + 1])::UNION(d INT, i INT) END FROM range(5000) t(j)"));
 
 	// the largest type id, and type ids with leading zeros
@@ -213,17 +215,20 @@ TEST_CASE("Arrow scan of a sparse union with invalid type ids", "[arrow]") {
 	REQUIRE(StringUtil::Contains(arrow_union_offset_test::ScanError(negative_id.schema, negative_id.array),
 	                             "type id -1 does not belong to a union member"));
 
-	// an array with fewer children than its schema has members
-	arrow_union_offset_test::UnionColumn missing_child({1, 0}, 0);
-	missing_child.array.n_children = 1;
+	// arrays with fewer or more children than their schema has members
+	arrow_union_offset_test::UnionColumn child_count({1, 0}, 0);
+	child_count.array.n_children = 1;
 	DuckDB db(nullptr);
 	Connection con(db);
-	auto result = arrow_union_offset_test::ScanColumn(con, missing_child.schema, missing_child.array);
+	auto result = arrow_union_offset_test::ScanColumn(con, child_count.schema, child_count.array);
 	REQUIRE(StringUtil::Contains(result->GetError(), "Arrow union array has 1 children, but its schema has 2 members"));
 	REQUIRE_NO_FAIL(con.Query("SELECT 42"));
-	missing_child.array.n_children = 0;
-	result = arrow_union_offset_test::ScanColumn(con, missing_child.schema, missing_child.array);
+	child_count.array.n_children = 0;
+	result = arrow_union_offset_test::ScanColumn(con, child_count.schema, child_count.array);
 	REQUIRE(StringUtil::Contains(result->GetError(), "Arrow union array has 0 children, but its schema has 2 members"));
+	child_count.array.n_children = 3;
+	result = arrow_union_offset_test::ScanColumn(con, child_count.schema, child_count.array);
+	REQUIRE(StringUtil::Contains(result->GetError(), "Arrow union array has 3 children, but its schema has 2 members"));
 
 	const char *invalid_formats[] = {"+us:5",     "+us:5,7,9", "+us:5,5",  "+us:05,005", "+us:-1,0", "+us:5,x",
 	                                 "+us:5,128", "+us:5, 7",  "+us:5,7,", "+us:5,,7",   "+us:"};

@@ -179,6 +179,11 @@ public:
 
 	//! Fetches an append lock
 	void AppendLock(DuckTransaction &transaction, TableAppendState &state);
+	//! Throws if rows were appended since the next row id was row_end, which an index built from the rows below
+	//! row_end misses
+	void VerifyNoAppendsSince(idx_t row_end);
+	//! Fetches the append lock to add such an index, after VerifyNoAppendsSince
+	unique_lock<mutex> IndexAppendLock(idx_t row_end);
 	//! Begin appending structs to this table, obtaining necessary locks, etc
 	void InitializeAppend(DuckTransaction &transaction, TableAppendState &state);
 	//! Append a chunk to the table using the AppendState obtained from InitializeAppend

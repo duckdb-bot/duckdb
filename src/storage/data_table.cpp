@@ -1052,6 +1052,20 @@ void DataTable::LocalAppend(DuckTableEntry &table, ClientContext &context, Colum
 	storage.FinalizeLocalAppend(append_state);
 }
 
+void DataTable::VerifyNoAppendsSince(idx_t row_end) {
+	if (GetNextRowId() != row_end) {
+		throw TransactionException("Transaction conflict: cannot create an index on table \"%s\" because a different "
+		                           "transaction appended to it while the index was built",
+		                           GetTableName());
+	}
+}
+
+unique_lock<mutex> DataTable::IndexAppendLock(idx_t row_end) {
+	unique_lock<mutex> lock(append_lock);
+	VerifyNoAppendsSince(row_end);
+	return lock;
+}
+
 void DataTable::AppendLock(DuckTransaction &transaction, TableAppendState &state) {
 	state.append_lock = unique_lock<mutex>(append_lock);
 	if (!IsMainTable()) {

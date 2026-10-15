@@ -59,3 +59,37 @@ statement error
 CREATE TABLE ck (x INTEGER, CHECK (list_transform([x], lambda x: struct_pack(a := x)) IS NOT NULL));
 ----
 Lambda functions are currently not supported in CHECK constraints
+
+# the argument has the name of the lambda parameter, the value is the column
+statement error
+CREATE TABLE ck_column (y INTEGER, CHECK (list_transform([1], lambda x: struct_pack(x := y)) = [{'x': 5}]));
+----
+Lambda functions are currently not supported in CHECK constraints
+
+# a column captured by a lambda is not supported either
+statement error
+CREATE TABLE ck_capture (y INTEGER, CHECK (list_transform([7], lambda x: y) = [7]));
+----
+Lambda functions are currently not supported in CHECK constraints
+
+statement error
+CREATE TABLE ck_qualified (z INTEGER, y INTEGER, CHECK (list_transform([7], lambda x: ck_qualified.y) = [5]));
+----
+Lambda functions are currently not supported in CHECK constraints
+
+# a lambda that references neither stays supported
+statement ok
+CREATE TABLE ck_constant (y INTEGER, CHECK (list_transform([y], lambda x: 7) = [7]), CHECK (y > 0));
+
+statement ok
+INSERT INTO ck_constant VALUES (5);
+
+statement error
+INSERT INTO ck_constant VALUES (0);
+----
+CHECK constraint failed
+
+query I
+SELECT y FROM ck_constant
+----
+5

@@ -10,7 +10,6 @@
 #include "duckdb/planner/operator/logical_projection.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
-#include "duckdb/planner/expression/bound_subquery_expression.hpp"
 #include "duckdb/planner/expression_binder/insert_binder.hpp"
 #include "duckdb/parser/tableref/joinref.hpp"
 #include "duckdb/parser/expression/default_expression.hpp"
@@ -18,6 +17,7 @@
 #include "duckdb/planner/operator/logical_update.hpp"
 #include "duckdb/planner/expression_binder/projection_binder.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
+#include "duckdb/optimizer/column_binding_replacer.hpp"
 #include "duckdb/storage/data_table.hpp"
 #include <algorithm>
 
@@ -174,36 +174,6 @@ Binder::BindMergeAction(LogicalMergeInto &merge_into, TableCatalogEntry &table, 
 	return result;
 }
 
-static void RewriteMergeBinding(ColumnBinding &binding, const vector<ColumnBinding> &source_bindings,
-                                TableIndex new_table_index) {
-	for (idx_t i = 0; i < source_bindings.size(); i++) {
-		if (binding == source_bindings[i]) {
-			binding.table_index = new_table_index;
-			binding.column_index = ProjectionIndex(i);
-			return;
-		}
-	}
-}
-
-static void RewriteMergeBindingsInPlan(LogicalOperator &op, const vector<ColumnBinding> &source_bindings,
-                                       TableIndex new_table_index);
-
-void RewriteMergeBindings(unique_ptr<Expression> &expr, const vector<ColumnBinding> &source_bindings,
-                          TableIndex new_table_index) {
-	ExpressionIterator::VisitExpressionMutable<BoundColumnRefExpression>(
-	    expr, [&](BoundColumnRefExpression &bound_colref, unique_ptr<Expression> &expr) {
-		    RewriteMergeBinding(bound_colref.BindingMutable(), source_bindings, new_table_index);
-	    });
-	// a subquery that is not planned yet refers to the source through its correlated columns
-	ExpressionIterator::VisitExpressionMutable<BoundSubqueryExpression>(
-	    expr, [&](BoundSubqueryExpression &subquery, unique_ptr<Expression> &expr) {
-		    for (auto &correlated : subquery.GetBinderMutable()->correlated_columns) {
-			    RewriteMergeBinding(correlated.binding, source_bindings, new_table_index);
-		    }
-		    RewriteMergeBindingsInPlan(*subquery.SubqueryMutable().plan, source_bindings, new_table_index);
-	    });
-}
-
 static bool ContainsOperator(LogicalOperator &op, LogicalOperator &target) {
 	if (RefersToSameObject(op, target)) {
 		return true;
@@ -235,20 +205,6 @@ static optional_ptr<LogicalOperator> FindMergeJoin(LogicalOperator &op, LogicalO
 		}
 	}
 	return nullptr;
-}
-
-void RewriteMergeBindings(LogicalOperator &op, const vector<ColumnBinding> &source_bindings,
-                          TableIndex new_table_index) {
-	LogicalOperatorVisitor::EnumerateExpressions(
-	    op, [&](unique_ptr<Expression> *child) { RewriteMergeBindings(*child, source_bindings, new_table_index); });
-}
-
-static void RewriteMergeBindingsInPlan(LogicalOperator &op, const vector<ColumnBinding> &source_bindings,
-                                       TableIndex new_table_index) {
-	RewriteMergeBindings(op, source_bindings, new_table_index);
-	for (auto &child : op.children) {
-		RewriteMergeBindingsInPlan(*child, source_bindings, new_table_index);
-	}
 }
 
 void CheckMergeAction(MergeActionCondition condition, MergeActionType action_type) {
@@ -431,13 +387,20 @@ BoundStatement Binder::BindNode(MergeQueryNode &node) {
 		source_marker = ColumnBinding(new_proj_index, source_marker_idx);
 		source = std::move(proj);
 
-		// rewrite "column_bindings" in the join to refer to the new projection we have just pushed
-		for (auto &expr : projection_expressions) {
-			RewriteMergeBindings(expr, source_bindings, new_proj_index);
+		// rewrite the references to the source above the projection we have just pushed, including the correlated
+		// columns of subqueries in the join condition
+		vector<ColumnBinding> projected_bindings;
+		for (idx_t i = 0; i < source_bindings.size(); i++) {
+			projected_bindings.emplace_back(new_proj_index, ProjectionIndex(i));
 		}
-		RewriteMergeBindings(*root, source_bindings, new_proj_index);
-		RewriteMergeBindings(join_ref, source_bindings, new_proj_index);
-		RewriteMergeBindings(*merge_into, source_bindings, new_proj_index);
+		CorrelatedColumnBindingReplacer replacer;
+		replacer.AddReplacements(source_bindings, projected_bindings);
+		replacer.stop_operator = *source;
+		replacer.VisitOperator(*root);
+		replacer.VisitOperator(*merge_into);
+		for (auto &expr : projection_expressions) {
+			replacer.VisitExpression(&expr);
+		}
 
 		// push a reference
 		merge_into->source_marker = projection_expressions.size();

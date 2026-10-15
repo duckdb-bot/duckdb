@@ -48,12 +48,18 @@ EXPLAIN SELECT 1 * col0 * 2 + 1 + col1 + 2 FROM test
 ----
 logical_opt	<REGEX>:(?s).*\(\(\(col0 \* 2\) \+ 1\) \+ CAST\(col1 AS INTEGER\)\) \+ 2.*
 
-# constants of mixed signs or that do not fold into the type stay in place as well
+# with one other operand, constants that fold into the type move together
 query II
 EXPLAIN SELECT col0 + 1 + -2 FROM test
 ----
-logical_opt	<REGEX>:(?s).*\(col0 \+ 1\) \+ -2.*
+logical_opt	<REGEX>:(?s).*Expressions: -1 \+ col0 .*
 
+query II
+EXPLAIN SELECT col0 * 2 * 3 FROM test
+----
+logical_opt	<REGEX>:(?s).*Expressions: col0 \* 6 .*
+
+# constants that do not fold into the type stay in place
 query II
 EXPLAIN SELECT col0 + 2147483647 + 1 FROM test
 ----
@@ -90,3 +96,16 @@ SELECT a + 2 + -3 FROM limits ORDER BY ALL;
 ----
 -2147483648
 2147483644
+
+# boundary values of other integer types
+statement ok
+CREATE TABLE wide (a BIGINT, b BIGINT, u UBIGINT, h HUGEINT, uh UHUGEINT);
+
+statement ok
+INSERT INTO wide VALUES (-9223372036854775807, 1537228672809129301, 18446744073709551612, -170141183460469231731687303715884105727, 170141183460469231731687303715884105728), (NULL, NULL, NULL, NULL, NULL);
+
+query IIIIII
+SELECT a + 1 + -2, b * 2 * 3, u + 1::UBIGINT + 2::UBIGINT, h + -1::HUGEINT + 1::HUGEINT + -1::HUGEINT, uh + 1::UHUGEINT + 2::UHUGEINT, (uh - uh) + 170141183460469231731687303715884105728::UHUGEINT + 1::UHUGEINT FROM wide ORDER BY ALL;
+----
+-9223372036854775808	9223372036854775806	18446744073709551615	-170141183460469231731687303715884105728	170141183460469231731687303715884105731	170141183460469231731687303715884105729
+NULL	NULL	NULL	NULL	NULL	NULL

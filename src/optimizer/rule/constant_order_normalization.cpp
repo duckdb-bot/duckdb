@@ -14,19 +14,15 @@ static bool MultiplicationConstantBelongsAtEnd(const BoundFunctionExpression &ex
 }
 
 //! Whether moving the constants of an integer chain together cannot make it overflow where the written order does not.
-//! With a single other operand x, the chain evaluates C * x or C + x, where C folds the constants one by one. Its
-//! result is the result of the written order, so only folding C can overflow. An addition that mixes signs is the
-//! exception, as its written order can stay in range where the folded constants do not.
+//! With one nonconstant operand, only the constant prefixes can introduce overflow.
 static bool ReorderCannotOverflow(ClientContext &context, const BoundFunctionExpression &root,
                                   const vector<reference<Expression>> &constants, idx_t other_count) {
 	if (other_count != 1) {
 		return false;
 	}
-	const bool multiplication = root.Function().GetName() == "*";
+	const bool multiplication = MultiplicationConstantBelongsAtEnd(root);
 	auto &type = root.GetReturnType();
 	hugeint_t folded = multiplication ? hugeint_t(1) : hugeint_t(0);
-	bool has_positive = false;
-	bool has_negative = false;
 	for (auto &constant : constants) {
 		Value value;
 		if (!ExpressionExecutor::TryEvaluateScalar(context, constant.get(), value) || value.IsNull()) {
@@ -37,16 +33,14 @@ static bool ReorderCannotOverflow(ClientContext &context, const BoundFunctionExp
 			return false;
 		}
 		auto number = as_hugeint->GetValue<hugeint_t>();
-		has_positive |= number > hugeint_t(0);
-		has_negative |= number < hugeint_t(0);
 		bool folds = multiplication ? TryMultiplyOperator::Operation(folded, number, folded)
 		                            : TryAddOperator::Operation(folded, number, folded);
-		// every partial fold is computed in the type of the chain
+		// each prefix must fit the chain's type
 		if (!folds || !Value::HUGEINT(folded).DefaultTryCastAs(type)) {
 			return false;
 		}
 	}
-	return multiplication || !(has_positive && has_negative);
+	return true;
 }
 
 class RecursiveFunctionExpressionMatcher : public ExpressionMatcher {

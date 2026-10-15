@@ -142,7 +142,11 @@ structs:
   query_progress_type:
     lifecycle:
       - ["stable", "v0.10.0", "2024-02-13"]
-    description: "A type holding information about the query execution progress."
+    description: |
+      A type holding information about the query execution progress. `rows_processed` and `total_rows_to_process` add
+      up the progress of every pipeline of the query, scaled to the estimated cardinality of its source. They are row
+      counts only when these estimates are exact: a CSV scan, for example, estimates its rows from the file size and
+      measures its progress in bytes read.
     fields:
       - name: percentage
         type: f64

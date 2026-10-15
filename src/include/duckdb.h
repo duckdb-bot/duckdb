@@ -745,7 +745,10 @@ struct duckdb_decimal {
 };
 
 /*!
- * A type holding information about the query execution progress.
+ * A type holding information about the query execution progress. `rows_processed` and `total_rows_to_process` add up
+ * the progress of every pipeline of the query, scaled to the estimated cardinality of its source. They are row counts
+ * only when these estimates are exact: a CSV scan, for example, estimates its rows from the file size and measures its
+ * progress in bytes read.
  *
  * history:
  * - stable: v0.10.0

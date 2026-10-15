@@ -25,7 +25,7 @@ static bool ScopeCovers(const string &prefix, const string &path) {
 	if (next != ':') {
 		return next == '/' || next == '?' || next == '#';
 	}
-	// a port, which may be empty, and not the password of a user of another host
+	// allow an empty or numeric port, not the password of a user of another host
 	auto port_end = path.find_first_of("/?#", prefix.size() + 1);
 	if (port_end == string::npos) {
 		port_end = path.size();

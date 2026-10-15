@@ -159,6 +159,42 @@ TEST_CASE("LRU Cache Eviction", "[lru_cache]") {
 	}
 }
 
+TEST_CASE("LRU Cache Resize Payload", "[lru_cache]") {
+	DuckDB db;
+	Connection con(db);
+	auto &context = *con.context;
+	auto &buffer_pool = DatabaseInstance::GetDatabase(context).GetBufferPool();
+	const idx_t initial_memory = buffer_pool.GetUsedMemory();
+
+	SharedLruCache<string, TestValue, BufferPoolPayload> cache(500);
+	auto val1 = make_shared_ptr<TestValue>(1, 200);
+	auto val2 = make_shared_ptr<TestValue>(2, 200);
+	cache.Put("key1", val1, make_uniq<TempBufferPoolReservation>(MemoryTag::OBJECT_CACHE, buffer_pool, 200));
+	cache.Put("key2", val2, make_uniq<TempBufferPoolReservation>(MemoryTag::OBJECT_CACHE, buffer_pool, 200));
+
+	// shrinking keeps both entries
+	REQUIRE(cache.ResizePayload("key2", *val2, 100));
+	REQUIRE(cache.CurrentTotalWeight() == 300);
+	REQUIRE(buffer_pool.GetUsedMemory() == initial_memory + 300);
+
+	// growing past the maximum weight evicts the other entry
+	REQUIRE(cache.ResizePayload("key2", *val2, 400));
+	REQUIRE(cache.Size() == 1);
+	REQUIRE(cache.Get("key1") == nullptr);
+	REQUIRE(cache.CurrentTotalWeight() == 400);
+	REQUIRE(buffer_pool.GetUsedMemory() == initial_memory + 400);
+
+	// an entry larger than the maximum weight stays
+	REQUIRE(cache.ResizePayload("key2", *val2, 600));
+	REQUIRE(cache.Size() == 1);
+	REQUIRE(cache.CurrentTotalWeight() == 600);
+
+	// another value under the key is not resized
+	REQUIRE_FALSE(cache.ResizePayload("key2", *val1, 100));
+	REQUIRE_FALSE(cache.ResizePayload("key1", *val1, 100));
+	REQUIRE(cache.CurrentTotalWeight() == 600);
+}
+
 TEST_CASE("LRU Cache Move-Only Key", "[lru_cache]") {
 	SharedLruCache<MoveOnlyKey, TestValue, DefaultPayload, MoveOnlyKeyHash, MoveOnlyKeyEqual> cache(2);
 

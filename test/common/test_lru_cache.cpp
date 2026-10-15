@@ -195,6 +195,29 @@ TEST_CASE("LRU Cache Resize Payload", "[lru_cache]") {
 	REQUIRE(cache.CurrentTotalWeight() == 600);
 }
 
+TEST_CASE("LRU Cache Resize Payload Of The Oldest Entry", "[lru_cache]") {
+	DuckDB db;
+	Connection con(db);
+	auto &context = *con.context;
+	auto &buffer_pool = DatabaseInstance::GetDatabase(context).GetBufferPool();
+
+	SharedLruCache<string, TestValue, BufferPoolPayload> cache(600);
+	duckdb::vector<duckdb::shared_ptr<TestValue>> values;
+	for (int i = 0; i < 4; i++) {
+		values.push_back(make_shared_ptr<TestValue>(i, 100));
+		cache.Put("key" + to_string(i), values.back(),
+		          make_uniq<TempBufferPoolReservation>(MemoryTag::OBJECT_CACHE, buffer_pool, 100));
+	}
+
+	// the resized entry becomes the most recently used, so the two oldest of the others go
+	REQUIRE(cache.ResizePayload("key0", *values[0], 450));
+	REQUIRE(cache.Get("key1") == nullptr);
+	REQUIRE(cache.Get("key2") == nullptr);
+	REQUIRE(cache.Get("key0") != nullptr);
+	REQUIRE(cache.Get("key3") != nullptr);
+	REQUIRE(cache.CurrentTotalWeight() == 550);
+}
+
 TEST_CASE("LRU Cache Move-Only Key", "[lru_cache]") {
 	SharedLruCache<MoveOnlyKey, TestValue, DefaultPayload, MoveOnlyKeyHash, MoveOnlyKeyEqual> cache(2);
 

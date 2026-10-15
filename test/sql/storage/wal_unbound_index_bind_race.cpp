@@ -18,9 +18,14 @@ void SlowBindExec(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<int32_t, int32_t>(args.data[0], result, args.size(), [](int32_t v) { return v; });
 }
 
-// keeps the index bind going while the writer commits
+// keeps the index bind going while the writer commits, then reads the database from another connection
 unique_ptr<FunctionData> SlowBindBind(BindScalarFunctionInput &input) {
 	std::this_thread::sleep_for(std::chrono::milliseconds(50));
+	Connection con(*input.GetClientContext().db);
+	auto result = con.Query("SELECT count(*) FROM other");
+	if (result->HasError()) {
+		result->ThrowError();
+	}
 	return nullptr;
 }
 

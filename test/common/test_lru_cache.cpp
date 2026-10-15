@@ -211,12 +211,14 @@ TEST_CASE("LRU Cache Resize Payload Of The Oldest Entry", "[lru_cache]") {
 		          make_uniq<TempBufferPoolReservation>(MemoryTag::OBJECT_CACHE, buffer_pool, 100));
 	}
 
-	// the resized entry becomes the most recently used, so the two oldest of the others go, and then the next one
+	// growing key0 evicts the two oldest of the others
 	REQUIRE(cache.ResizePayload("key0", *values[0], 450));
 	REQUIRE(cache.CurrentTotalWeight() == 550);
-	cache.Put("key4", values[4], make_uniq<TempBufferPoolReservation>(MemoryTag::OBJECT_CACHE, buffer_pool, 100));
 	REQUIRE(cache.Get("key1") == nullptr);
 	REQUIRE(cache.Get("key2") == nullptr);
+
+	// resizing key0 made it the most recently used, so inserting key4 evicts key3
+	cache.Put("key4", values[4], make_uniq<TempBufferPoolReservation>(MemoryTag::OBJECT_CACHE, buffer_pool, 100));
 	REQUIRE(cache.Get("key3") == nullptr);
 	REQUIRE(cache.Get("key0") != nullptr);
 	REQUIRE(cache.Get("key4") != nullptr);

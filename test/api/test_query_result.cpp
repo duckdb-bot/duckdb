@@ -923,9 +923,6 @@ public:
 TEST_CASE("A query whose begin failed does not hold the connection", "[api][query_result]") {
 	DuckDB db(nullptr);
 	Connection con(db);
-	// The debug build's state checks that every query end follows its own begin, which a begin hook that throws
-	// breaks whichever hook runs first
-	con.context->registered_state->Remove("debug_client_context_state");
 	con.context->registered_state->Insert("failing_query_begin", make_shared_ptr<FailingQueryBegin>());
 
 	auto failed = con.Query("SELECT 42");
@@ -937,33 +934,112 @@ TEST_CASE("A query whose begin failed does not hold the connection", "[api][quer
 	REQUIRE(CHECK_COLUMN(next, 0, {42}));
 }
 
+//! Counts the queries it begins and ends, and fails the begin or the end of a query when asked
+class CountingQueryState : public ClientContextState {
+public:
+	void QueryBegin(ClientContext &context) override {
+		if (fail_begin) {
+			fail_begin = false;
+			if (fatal) {
+				throw FatalException("query begin failed");
+			}
+			throw IOException("query begin failed");
+		}
+		begins++;
+	}
+	void QueryEnd(ClientContext &context, optional_ptr<ErrorData> error) override {
+		ends++;
+		if (fail_end) {
+			fail_end = false;
+			throw IOException("query end failed");
+		}
+	}
+
+	bool fail_begin = false;
+	bool fatal = false;
+	bool fail_end = false;
+	idx_t begins = 0;
+	idx_t ends = 0;
+};
+
 TEST_CASE("A query whose begin failed ends its transaction", "[api][query_result]") {
 	DuckDB db(nullptr);
 	Connection con(db);
-	auto failing = make_shared_ptr<FailingQueryBegin>();
-	failing->fail = false;
-	con.context->registered_state->Insert("failing_query_begin", failing);
-
-	// an autocommit query does not keep its transaction
-	failing->fail = true;
-	auto failed = con.Query("SELECT 42");
-	REQUIRE(failed->HasError());
-	REQUIRE(StringUtil::Contains(failed->GetError(), "query begin failed"));
-	REQUIRE(!con.context->transaction.HasActiveTransaction());
-	REQUIRE(con.ExtractStatements("SELECT 1").size() == 1);
-	REQUIRE(!con.context->transaction.HasActiveTransaction());
-
-	// a user's transaction stays open, as after any other failed statement
-	REQUIRE_NO_FAIL(con.Query("BEGIN TRANSACTION"));
+	vector<shared_ptr<CountingQueryState>> states;
+	for (idx_t i = 0; i < 4; i++) {
+		states.push_back(make_shared_ptr<CountingQueryState>());
+		con.context->registered_state->Insert("counting_query_state_" + to_string(i), states.back());
+	}
+	auto require_paired = [&]() {
+		for (auto &state : states) {
+			REQUIRE(state->begins == state->ends);
+		}
+	};
 	REQUIRE_NO_FAIL(con.Query("CREATE TABLE t(i INTEGER)"));
-	failing->fail = true;
-	REQUIRE_FAIL(con.Query("INSERT INTO t VALUES (1)"));
+	require_paired();
+
+	// whichever state fails, the query ends on the states it began on, and not on the others
+	for (idx_t failing = 0; failing < states.size(); failing++) {
+		states[failing]->fail_begin = true;
+		auto failed = con.Query("INSERT INTO t VALUES (1)");
+		REQUIRE(failed->HasError());
+		REQUIRE(StringUtil::Contains(failed->GetError(), "query begin failed"));
+		require_paired();
+		// an autocommit query does not keep its transaction
+		REQUIRE(!con.context->transaction.HasActiveTransaction());
+	}
+
+	// a state whose end fails does not keep the others from ending, and the error of the begin is reported
+	for (idx_t failing = 0; failing < states.size(); failing++) {
+		for (auto &state : states) {
+			state->fail_end = true;
+		}
+		states[failing]->fail_begin = true;
+		auto failed = con.Query("INSERT INTO t VALUES (1)");
+		REQUIRE(failed->HasError());
+		REQUIRE(StringUtil::Contains(failed->GetError(), "query begin failed"));
+		require_paired();
+		REQUIRE(!con.context->transaction.HasActiveTransaction());
+	}
+	for (auto &state : states) {
+		state->fail_end = false;
+	}
+
+	// a user's transaction stays open after the failed statement, and is invalidated by it
+	REQUIRE_NO_FAIL(con.Query("BEGIN TRANSACTION"));
+	REQUIRE_NO_FAIL(con.Query("INSERT INTO t VALUES (2)"));
+	states[1]->fail_begin = true;
+	REQUIRE_FAIL(con.Query("INSERT INTO t VALUES (3)"));
+	require_paired();
 	REQUIRE(con.context->transaction.HasActiveTransaction());
+	auto aborted = con.Query("SELECT 42");
+	REQUIRE(aborted->HasError());
+	REQUIRE(StringUtil::Contains(aborted->GetError(), "transaction is aborted"));
 	REQUIRE_NO_FAIL(con.Query("ROLLBACK"));
+
+	// unless the transaction rolls back automatically
+	REQUIRE_NO_FAIL(con.Query("BEGIN TRANSACTION"));
+	con.context->transaction.SetAutoRollback(true);
+	REQUIRE_NO_FAIL(con.Query("INSERT INTO t VALUES (4)"));
+	states[2]->fail_begin = true;
+	REQUIRE_FAIL(con.Query("INSERT INTO t VALUES (5)"));
+	require_paired();
 	REQUIRE(!con.context->transaction.HasActiveTransaction());
 
-	auto next = con.Query("SELECT 42");
-	REQUIRE(CHECK_COLUMN(next, 0, {42}));
+	auto count = con.Query("SELECT COUNT(*) FROM t");
+	REQUIRE(CHECK_COLUMN(count, 0, {0}));
+	require_paired();
+
+	// a fatal error invalidates the database
+	REQUIRE_NO_FAIL(con.Query("BEGIN TRANSACTION"));
+	REQUIRE_NO_FAIL(con.Query("INSERT INTO t VALUES (6)"));
+	states[3]->fail_begin = true;
+	states[3]->fatal = true;
+	REQUIRE_FAIL(con.Query("INSERT INTO t VALUES (7)"));
+	require_paired();
+	auto invalidated = con.Query("SELECT 42");
+	REQUIRE(invalidated->HasError());
+	REQUIRE(StringUtil::Contains(invalidated->GetError(), "database has been invalidated"));
 }
 
 TEST_CASE("An appender is refused while a result is open", "[api][query_result]") {

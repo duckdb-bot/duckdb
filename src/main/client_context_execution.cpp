@@ -102,8 +102,8 @@ ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success,
 	active_query->progress_bar.reset();
 	D_ASSERT(active_query.get());
 	// a query that failed to begin ends only on the states it began on
-	auto end_states =
-	    active_query->began_on_all_states ? registered_state->States() : std::move(active_query->begun_states);
+	const bool began_on_all_states = active_query->began_on_all_states;
+	auto begun_states = std::move(active_query->begun_states);
 	active_query.reset();
 	query_deadline.SetInvalid();
 	query_progress.Initialize();
@@ -144,13 +144,24 @@ ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success,
 	context.connection_id = connection_id;
 	logger = db->GetLogManager().CreateLogger(context, true);
 
-	// Notify any registered state of query end
+	// Notify any registered state of query end - all of them, also when one of them fails
+	auto end_states = began_on_all_states ? registered_state->States() : std::move(begun_states);
+	ErrorData end_error;
 	for (auto const &s : end_states) {
-		if (error.HasError()) {
-			s->QueryEnd(*this, &error);
-		} else {
-			s->QueryEnd(*this, previous_error);
+		try {
+			if (error.HasError()) {
+				s->QueryEnd(*this, &error);
+			} else {
+				s->QueryEnd(*this, previous_error);
+			}
+		} catch (std::exception &ex) {
+			if (!end_error.HasError()) {
+				end_error = ErrorData(ex);
+			}
 		}
+	}
+	if (end_error.HasError()) {
+		end_error.Throw();
 	}
 	return error;
 }

@@ -792,7 +792,11 @@ unique_ptr<QueryResult> ClientContext::SubmitStatement(ClientContextLock &lock, 
 		}
 		// the query ends here, so it does not keep the transaction it started
 		if (active_query) {
-			EndQueryInternal(lock, false, ErrorInvalidatesQueryTransaction(error.Type()), error);
+			try {
+				EndQueryInternal(lock, false, ErrorInvalidatesQueryTransaction(error.Type()), error);
+			} catch (std::exception &) {
+				// the error of the begin is the one reported
+			}
 		}
 		return ErrorResult<QueryResult>(std::move(error), query);
 	}

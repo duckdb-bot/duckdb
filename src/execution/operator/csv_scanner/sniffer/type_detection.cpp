@@ -106,7 +106,7 @@ bool CSVSniffer::EmptyOrOnlyHeader() const {
 	return (single_row_file && best_candidate->state_machine->dialect_options.header.GetValue()) || lines_sniffed == 0;
 }
 
-bool CSVSniffer::CanYouCastBignum(const char *value_ptr, idx_t value_size) {
+bool CSVSniffer::IsBignumValue(const char *&value_ptr, idx_t &value_size) {
 	while (value_size > 0 && StringUtil::CharacterIsSpace(*value_ptr)) {
 		value_ptr++;
 		value_size--;
@@ -137,8 +137,16 @@ bool CSVSniffer::CanYouCastBignum(const char *value_ptr, idx_t value_size) {
 			return false;
 		}
 	}
+	value_size = trimmed_size;
+	return true;
+}
+
+bool CSVSniffer::CanYouCastBignum(const char *value_ptr, idx_t value_size) {
+	if (!IsBignumValue(value_ptr, value_size)) {
+		return false;
+	}
 	try {
-		Bignum::VarcharToBignum(string_t(value_ptr, NumericCast<uint32_t>(trimmed_size)));
+		Bignum::VarcharToBignum(string_t(value_ptr, NumericCast<uint32_t>(value_size)));
 		return true;
 	} catch (const ConversionException &) {
 		return false;
@@ -167,7 +175,7 @@ bool CSVSniffer::CanYouCastIt(ClientContext &context, const string_t value, cons
 	}
 	case LogicalTypeId::TINYINT: {
 		int8_t dummy_value;
-		return TrySimpleIntegerCast(value_ptr, value_size, dummy_value, false);
+		return TrySimpleIntegerCast(value_ptr, value_size, dummy_value, true);
 	}
 	case LogicalTypeId::SMALLINT: {
 		int16_t dummy_value;

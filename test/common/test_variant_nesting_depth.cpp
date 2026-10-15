@@ -17,6 +17,18 @@ TEST_CASE("A VARIANT nested deeper than the limit does not convert to a Value", 
 	REQUIRE(VariantValue::GetValue(shallow).type().id() == LogicalTypeId::LIST);
 	REQUIRE_THROWS_WITH(VariantValue::GetValue(deep), Catch::Contains("nested deeper than 128 levels"));
 
+	// containers of the deep value do not cast to VARCHAR either
+	child_list_t<Value> struct_children;
+	struct_children.emplace_back("a", deep);
+	for (auto &container : {Value::LIST(LogicalType::VARIANT(), {deep}), Value::STRUCT(std::move(struct_children))}) {
+		REQUIRE_THROWS_WITH(container.DefaultCastAs(LogicalType::VARCHAR),
+		                    Catch::Contains("nested deeper than 128 levels"));
+		string error;
+		REQUIRE(!container.DefaultTryCastAs(LogicalType::VARCHAR, &error));
+	}
+	REQUIRE(Value::LIST(LogicalType::VARIANT(), {shallow}).DefaultCastAs(LogicalType::VARCHAR).ToString().size() ==
+	        259);
+
 	// the SQL of the shallow value reads back, the SQL of the deep one fails when it is executed
 	auto shallow_sql = con.Query("SELECT " + shallow.ToSQLString() + " = " + shallow.ToSQLString());
 	REQUIRE(CHECK_COLUMN(shallow_sql, 0, {true}));

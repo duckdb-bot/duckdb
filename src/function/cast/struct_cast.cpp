@@ -137,7 +137,7 @@ static bool StructToVarcharCast(Vector &source, Vector &result, idx_t count, Cas
 	auto &cast_data = parameters.cast_data->Cast<StructBoundCastData>();
 	Vector varchar_struct(cast_data.target, count);
 	FlatVector::SetSize(varchar_struct, count);
-	StructBoundCastData::StructToStructCast(source, varchar_struct, count, parameters);
+	bool all_converted = StructBoundCastData::StructToStructCast(source, varchar_struct, count, parameters);
 	auto &base_children = StructVector::GetEntries(source);
 
 	// now construct the actual varchar vector
@@ -219,7 +219,7 @@ static bool StructToVarcharCast(Vector &source, Vector &result, idx_t count, Cas
 		dataptr[offset++] = '}';
 		result_str.Finalize();
 	}
-	return true;
+	return all_converted;
 }
 
 unique_ptr<BoundCastData> StructToMapBoundCastData::BindStructToMapCast(BindCastInput &input, const LogicalType &source,

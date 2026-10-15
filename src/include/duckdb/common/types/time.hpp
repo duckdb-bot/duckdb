@@ -14,6 +14,25 @@
 
 namespace duckdb {
 
+//! The digits of a parsed fraction past the precision it was truncated to
+struct TruncatedFraction {
+	//! The first discarded digit
+	uint8_t first_digit = 0;
+	//! Whether a later discarded digit is not zero
+	bool rest_inexact = false;
+	//! Whether the time is 24:00:00, which cannot be rounded up
+	bool at_end_of_day = false;
+
+	//! Whether any discarded digit is not zero
+	bool Inexact() const {
+		return first_digit != 0 || rest_inexact;
+	}
+	//! Whether the discarded digits round the fraction up, a tie only when ties_up is set
+	bool RoundsUp(bool ties_up) const {
+		return first_digit > 5 || (first_digit == 5 && (rest_inexact || ties_up));
+	}
+};
+
 //! The Time class is a static class that holds helper functions for the Time
 //! type.
 class Time {
@@ -27,10 +46,12 @@ public:
 	DUCKDB_API static bool TryConvertTimeTZ(const char *buf, idx_t len, idx_t &pos, dtime_tz_t &result,
 	                                        bool &has_offset, bool strict = false,
 	                                        optional_ptr<int32_t> nanos = nullptr);
-	// No hour limit
+	// No hour limit. When truncated is given, the result is truncated and truncated describes the digits past its
+	// precision, otherwise the result is rounded
 	DUCKDB_API static bool TryConvertInterval(const char *buf, idx_t len, idx_t &pos, dtime_t &result,
 	                                          bool strict = false, optional_ptr<int32_t> nanos = nullptr,
-	                                          bool negative = false);
+	                                          bool negative = false,
+	                                          optional_ptr<TruncatedFraction> truncated = nullptr);
 
 	//! Convert a time object to a string in the format "hh:mm:ss"
 	DUCKDB_API static string ToString(dtime_t time);
@@ -57,7 +78,8 @@ public:
 
 private:
 	static bool TryConvertInternal(const char *buf, idx_t len, idx_t &pos, dtime_t &result, bool strict,
-	                               optional_ptr<int32_t> nanos = nullptr, bool negative = false);
+	                               optional_ptr<int32_t> nanos = nullptr, bool negative = false,
+	                               optional_ptr<TruncatedFraction> truncated = nullptr);
 };
 
 } // namespace duckdb

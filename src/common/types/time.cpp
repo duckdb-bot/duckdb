@@ -21,7 +21,7 @@ static_assert(sizeof(dtime_t) == sizeof(int64_t), "dtime_t was padded");
 // ISO 8601
 
 bool Time::TryConvertInternal(const char *buf, idx_t len, idx_t &pos, dtime_t &result, bool strict,
-                              optional_ptr<int32_t> nanos, bool negative) {
+                              optional_ptr<int32_t> nanos, bool negative, optional_ptr<TruncatedFraction> truncated) {
 	int64_t hour = -1;
 	int32_t min = -1, sec = -1, micros = -1;
 	pos = 0;
@@ -105,6 +105,7 @@ bool Time::TryConvertInternal(const char *buf, idx_t len, idx_t &pos, dtime_t &r
 	}
 
 	micros = 0;
+	TruncatedFraction fraction;
 	if (pos < len && buf[pos] == '.') {
 		pos++;
 		// we expect some microseconds
@@ -113,10 +114,22 @@ bool Time::TryConvertInternal(const char *buf, idx_t len, idx_t &pos, dtime_t &r
 			// do we expect nanoseconds?
 			mult *= Interval::NANOS_PER_MICRO;
 		}
+		bool past_precision = false;
 		for (; pos < len && StringUtil::CharacterIsDigit(buf[pos]); pos++, mult /= 10) {
 			if (mult > 0) {
 				micros += (buf[pos] - '0') * mult;
+				continue;
 			}
+			if (!past_precision) {
+				fraction.first_digit = UnsafeNumericCast<uint8_t>(buf[pos] - '0');
+				past_precision = true;
+			} else {
+				fraction.rest_inexact = fraction.rest_inexact || buf[pos] != '0';
+			}
+		}
+		// a time or an interval rounds a tie away from zero
+		if (!truncated && fraction.RoundsUp(true)) {
+			micros++;
 		}
 		if (nanos) {
 			*nanos = UnsafeNumericCast<int32_t>(micros % Interval::NANOS_PER_MICRO);
@@ -149,12 +162,42 @@ bool Time::TryConvertInternal(const char *buf, idx_t len, idx_t &pos, dtime_t &r
 		return false;
 	}
 	result = dtime_t(time_micros);
+	if (truncated) {
+		*truncated = fraction;
+	}
 	return true;
 }
 
+//! Extract the time of a timestamp, rounding ties away from zero
+static bool TryConvertTimestampTime(const char *buf, idx_t len, bool use_offset, optional_ptr<int32_t> nanos,
+                                    dtime_t &result) {
+	timestamp_t timestamp;
+	TruncatedFraction truncated;
+	if (Timestamp::TryConvertTimestamp(buf, len, timestamp, use_offset, nanos, false, &truncated) !=
+	        TimestampCastResult::SUCCESS ||
+	    !timestamp.IsFinite()) {
+		return false;
+	}
+	result = Timestamp::GetTime(timestamp);
+	if (!truncated.RoundsUp(true)) {
+		return true;
+	}
+	if (truncated.at_end_of_day) {
+		return false;
+	}
+	if (nanos) {
+		if (++(*nanos) < Interval::NANOS_PER_MICRO) {
+			return true;
+		}
+		*nanos = 0;
+	}
+	result.value++;
+	return result.value <= Interval::MICROS_PER_DAY;
+}
+
 bool Time::TryConvertInterval(const char *buf, idx_t len, idx_t &pos, dtime_t &result, bool strict,
-                              optional_ptr<int32_t> nanos, bool negative) {
-	return Time::TryConvertInternal(buf, len, pos, result, strict, nanos, negative);
+                              optional_ptr<int32_t> nanos, bool negative, optional_ptr<TruncatedFraction> truncated) {
+	return Time::TryConvertInternal(buf, len, pos, result, strict, nanos, negative, truncated);
 }
 
 bool Time::TryConvertTime(const char *buf, idx_t len, idx_t &pos, dtime_t &result, bool strict,
@@ -162,14 +205,7 @@ bool Time::TryConvertTime(const char *buf, idx_t len, idx_t &pos, dtime_t &resul
 	if (!Time::TryConvertInternal(buf, len, pos, result, strict, nanos)) {
 		if (!strict) {
 			// last chance, check if we can parse as timestamp
-			timestamp_t timestamp;
-			if (Timestamp::TryConvertTimestamp(buf, len, timestamp, false, nanos) == TimestampCastResult::SUCCESS) {
-				if (!timestamp.IsFinite()) {
-					return false;
-				}
-				result = Timestamp::GetTime(timestamp);
-				return true;
-			}
+			return TryConvertTimestampTime(buf, len, false, nanos, result);
 		}
 		return false;
 	}
@@ -183,12 +219,9 @@ bool Time::TryConvertTimeTZ(const char *buf, idx_t len, idx_t &pos, dtime_tz_t &
 	if (!Time::TryConvertInternal(buf, len, pos, time_part, false, nanos)) {
 		if (!strict) {
 			// last chance, check if we can parse as timestamp
-			timestamp_t timestamp;
-			if (Timestamp::TryConvertTimestamp(buf, len, timestamp, true, nanos) == TimestampCastResult::SUCCESS) {
-				if (!timestamp.IsFinite()) {
-					return false;
-				}
-				result = dtime_tz_t(Timestamp::GetTime(timestamp), 0);
+			dtime_t time;
+			if (TryConvertTimestampTime(buf, len, true, nanos, time)) {
+				result = dtime_tz_t(time, 0);
 				return true;
 			}
 		}

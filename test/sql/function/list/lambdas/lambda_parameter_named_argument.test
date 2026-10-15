@@ -1,0 +1,61 @@
+# name: test/sql/function/list/lambdas/lambda_parameter_named_argument.test
+# description: A lambda parameter passed as a named argument is the lambda parameter, not a column of the same name
+# group: [lambdas]
+
+statement ok
+CREATE TABLE tt (x INTEGER);
+
+statement ok
+INSERT INTO tt VALUES (10), (20);
+
+query I
+SELECT list_transform([1, 2], lambda x: struct_pack(a := x)) FROM tt
+----
+[{'a': 1}, {'a': 2}]
+[{'a': 1}, {'a': 2}]
+
+statement ok
+CREATE MACRO m(x) AS list_transform([1, 2], lambda x: struct_pack(a := x));
+
+query I
+SELECT m(10)
+----
+[{'a': 1}, {'a': 2}]
+
+# the aggregate belongs to the subquery, not to the query with the column of the same name
+query I
+SELECT (SELECT max(list_transform([1, 2], lambda x: struct_pack(a := x))[2].a) FROM range(3)) FROM tt
+----
+2
+2
+
+query I
+SELECT (SELECT count(*) + max(list_transform([1, 2], lambda x: struct_pack(a := x))[2].a) FROM range(3)) FROM tt
+----
+5
+5
+
+query I
+SELECT r FROM tt, LATERAL (SELECT max(list_transform([1, 2], lambda x: struct_pack(a := x))[2].a) AS r FROM range(3))
+----
+2
+2
+
+statement ok
+CREATE TABLE up (k INTEGER PRIMARY KEY, x INTEGER, l STRUCT(a INTEGER)[]);
+
+statement ok
+INSERT INTO up VALUES (1, 10, NULL);
+
+statement ok
+INSERT INTO up VALUES (1, 20, NULL) ON CONFLICT DO UPDATE SET l = list_transform([1, 2], lambda x: struct_pack(a := x));
+
+query II
+SELECT x, l FROM up
+----
+10	[{'a': 1}, {'a': 2}]
+
+statement error
+CREATE TABLE ck (x INTEGER, CHECK (list_transform([x], lambda x: struct_pack(a := x)) IS NOT NULL));
+----
+Lambda functions are currently not supported in CHECK constraints

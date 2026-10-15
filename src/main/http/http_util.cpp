@@ -304,7 +304,7 @@ void HTTPUtil::LogRequest(BaseRequest &request, optional_ptr<HTTPResponse> respo
 
 void HTTPUtil::ParseHTTPProxyHost(string &proxy_value, string &hostname_out, idx_t &port_out, idx_t default_port) {
 	auto sanitized_proxy_value = proxy_value;
-	if (StringUtil::StartsWith(StringUtil::Lower(proxy_value), "https://")) {
+	if (StringUtil::CIStartsWith(proxy_value, "https://")) {
 		throw InvalidInputException("http_proxy '%s' uses https, which is not supported: DuckDB connects to the proxy "
 		                            "over plain HTTP, so give it as 'http://host:port' or 'host:port'",
 		                            proxy_value);

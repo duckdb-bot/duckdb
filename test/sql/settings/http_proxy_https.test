@@ -11,7 +11,7 @@ SET http_proxy = 'https://proxy.example.com:3128';
 statement error
 INSTALL some_extension;
 ----
-http_proxy 'https://proxy.example.com:3128' uses https, which is not supported
+http_proxy 'https://proxy.example.com:3128' uses https, which is not supported: DuckDB connects to the proxy over plain HTTP, so give it as 'http://host:port' or 'host:port'
 
 statement ok
 SET http_proxy = 'HTTPS://proxy.example.com';

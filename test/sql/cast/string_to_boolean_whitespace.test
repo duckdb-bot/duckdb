@@ -26,3 +26,10 @@ SELECT b FROM read_csv('{TEST_DIR}/boolean_whitespace.csv', columns = {'b': 'BOO
 ----
 false
 true
+
+# the sniffer detects the padded values as BOOLEAN too
+query II
+SELECT typeof(column0), column0 FROM read_csv('{TEST_DIR}/boolean_whitespace.csv', header = false) ORDER BY column0;
+----
+BOOLEAN	false
+BOOLEAN	true

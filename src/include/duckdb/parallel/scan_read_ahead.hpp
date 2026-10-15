@@ -137,7 +137,8 @@ public:
 
 	//! Create the read-ahead driver from the read_ahead_depth setting, returns null when read-ahead is disabled.
 	//! -1 means automatic mode, unlimited depth with the backlog bounded by a temp-memory reservation.
-	static unique_ptr<ScanReadAhead> Create(ClientContext &context);
+	//! With jobs_hold_files, every queued job keeps a file open, so the open window bounds the queued jobs too.
+	static unique_ptr<ScanReadAhead> Create(ClientContext &context, bool jobs_hold_files = false);
 
 public:
 	//! Claims the next job and schedules its I/O, filling io_tasks when the I/O was detached to the pool.
@@ -236,6 +237,8 @@ private:
 	unique_ptr<ManagedAsyncMemoryGovernor> memory_governor;
 	//! Maximum files being opened, open, or held by queued jobs ahead of decoding
 	const idx_t open_window;
+	//! Maximum jobs queued ahead of decoding, besides the depth and the budget
+	idx_t max_queued_jobs = NumericLimits<idx_t>::Maximum();
 	//! Backlog budget granted by the reservation, refreshed whenever a job is pushed
 	atomic<idx_t> backlog_budget {0};
 

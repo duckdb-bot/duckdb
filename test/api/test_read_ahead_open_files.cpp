@@ -41,9 +41,10 @@ TEST_CASE("Read-ahead keeps a scan of many files within the file descriptor limi
 		SKIP_TEST("the file descriptor limit is too low");
 		return;
 	}
-	// a window of 512 files without the limit, and more scan threads
+	// a window of 512 files without the limit, more scan threads, and a deep queue of jobs
 	const vector<vector<string>> settings {{"SET threads = 8", "SET async_threads = 256"},
-	                                       {"SET threads = 16", "SET async_threads = 32"}};
+	                                       {"SET threads = 64", "SET async_threads = 32"},
+	                                       {"SET threads = 4", "SET async_threads = 32", "SET read_ahead_depth = 256"}};
 	for (auto &statements : settings) {
 		for (auto &statement : statements) {
 			REQUIRE_NO_FAIL(con.Query(statement));
@@ -221,19 +222,18 @@ TEST_CASE("Read-ahead keeps the files open ahead of a scan within its window", "
 	auto &counting_fs = *fs;
 	FileSystem::GetFileSystem(*con.context).RegisterSubSystem(std::move(fs));
 
-	const idx_t threads = 4;
-	const idx_t async_threads = 32;
-	const idx_t read_ahead_depth = 8;
+	// many scan threads produce jobs for a small window
+	const idx_t threads = 32;
+	const idx_t async_threads = 4;
 	REQUIRE_NO_FAIL(con.Query("SET threads = " + to_string(threads)));
 	REQUIRE_NO_FAIL(con.Query("SET async_threads = " + to_string(async_threads)));
-	REQUIRE_NO_FAIL(con.Query("SET read_ahead_depth = " + to_string(read_ahead_depth)));
 	auto result = con.Query("SELECT count(*), sum(i) FROM read_parquet([" + file_list + "])");
 	REQUIRE_NO_FAIL(*result);
 	REQUIRE(CHECK_COLUMN(result, 0, {1000}));
 	REQUIRE(CHECK_COLUMN(result, 1, {499500}));
-	// the window of files opened ahead and files of queued jobs, a few files for each thread, and the file the bind
-	// opened
-	const idx_t open_window = MaxValue<idx_t>(2 * async_threads, read_ahead_depth);
-	REQUIRE(counting_fs.MaxOpenFiles() <= open_window + 3 * threads + 1);
+	// the window of files opened ahead and files of queued jobs, the file of the job each thread decodes and of the
+	// next one it claims, and the file the bind opened
+	const idx_t open_window = 2 * async_threads;
+	REQUIRE(counting_fs.MaxOpenFiles() <= open_window + 2 * threads + 1);
 #endif
 }

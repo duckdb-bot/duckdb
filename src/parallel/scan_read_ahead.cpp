@@ -152,7 +152,7 @@ void ScanReadAhead::CancelAndDrain() {
 	executor->CancelAndDrain();
 }
 
-unique_ptr<ScanReadAhead> ScanReadAhead::Create(ClientContext &context) {
+unique_ptr<ScanReadAhead> ScanReadAhead::Create(ClientContext &context, bool jobs_hold_files) {
 	if (TaskScheduler::GetScheduler(context).NumberOfAsyncThreads() == 0) {
 		// read-ahead schedules its I/O on the async pool, without async threads there is nothing to gain
 		return nullptr;
@@ -161,12 +161,18 @@ unique_ptr<ScanReadAhead> ScanReadAhead::Create(ClientContext &context) {
 	if (configured_depth == 0) {
 		return nullptr;
 	}
+	unique_ptr<ScanReadAhead> result;
 	if (configured_depth < 0) {
 		// automatic mode, unlimited depth, the backlog is bounded by a temp-memory reservation instead
-		return make_uniq<ScanReadAhead>(context, NumericLimits<idx_t>::Maximum(),
-		                                make_uniq<ManagedAsyncMemoryGovernor>(context));
+		result = make_uniq<ScanReadAhead>(context, NumericLimits<idx_t>::Maximum(),
+		                                  make_uniq<ManagedAsyncMemoryGovernor>(context));
+	} else {
+		result = make_uniq<ScanReadAhead>(context, NumericCast<idx_t>(configured_depth), nullptr);
 	}
-	return make_uniq<ScanReadAhead>(context, NumericCast<idx_t>(configured_depth), nullptr);
+	if (jobs_hold_files) {
+		result->max_queued_jobs = result->open_window;
+	}
+	return result;
 }
 
 bool ScanReadAhead::TryProduceJob(const ProduceJobCallback &claim_and_schedule) {
@@ -283,13 +289,13 @@ void ScanReadAhead::SetDone() {
 
 idx_t ScanReadAhead::ReservationDepth() const {
 	// over budget one job stays queued, claimed jobs hold the budget until their task resumes
-	return pending_io_bytes.load() >= backlog_budget.load() ? 1 : read_ahead_depth;
+	return pending_io_bytes.load() >= backlog_budget.load() ? 1 : MinValue(read_ahead_depth, max_queued_jobs);
 }
 
 bool ScanReadAhead::TryReserveSlot() {
 	// take the minimum job charge up front so concurrent producers cannot all pass the budget check together
 	const bool over_budget = pending_io_bytes.fetch_add(MINIMUM_JOB_IO_CHARGE) >= backlog_budget.load();
-	const idx_t depth = over_budget ? 1 : read_ahead_depth;
+	const idx_t depth = over_budget ? 1 : MinValue(read_ahead_depth, max_queued_jobs);
 	if (active_jobs.fetch_add(1) >= depth) {
 		--active_jobs;
 		pending_io_bytes -= MINIMUM_JOB_IO_CHARGE;

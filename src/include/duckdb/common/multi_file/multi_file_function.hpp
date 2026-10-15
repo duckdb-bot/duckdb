@@ -788,7 +788,7 @@ public:
 		if (!bind_data.interface->SupportsReadAhead(bind_data)) {
 			return;
 		}
-		gstate.read_ahead = ScanReadAhead::Create(context);
+		gstate.read_ahead = ScanReadAhead::Create(context, true);
 	}
 
 	static unique_ptr<GlobalTableFunctionState> MultiFileInitGlobal(ClientContext &context,

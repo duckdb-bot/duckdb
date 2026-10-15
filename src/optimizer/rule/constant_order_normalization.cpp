@@ -3,11 +3,50 @@
 #include "duckdb/optimizer/expression_rewriter.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/function/function_binder.hpp"
+#include "duckdb/common/operator/add.hpp"
+#include "duckdb/common/operator/multiply.hpp"
+#include "duckdb/execution/expression_executor.hpp"
 
 namespace duckdb {
 
 static bool MultiplicationConstantBelongsAtEnd(const BoundFunctionExpression &expr) {
 	return expr.Function().GetName() == "*";
+}
+
+//! Whether moving the constants of an integer chain together cannot make it overflow where the written order does not.
+//! Nonzero constants only grow the absolute value of every partial product, and with a single other operand, constants
+//! of one sign keep every partial sum between that operand and the result.
+static bool ReorderCannotOverflow(ClientContext &context, const BoundFunctionExpression &root,
+                                  const vector<reference<Expression>> &constants, idx_t other_count) {
+	const bool multiplication = root.Function().GetName() == "*";
+	if (!multiplication && other_count != 1) {
+		return false;
+	}
+	hugeint_t folded = multiplication ? hugeint_t(1) : hugeint_t(0);
+	bool has_positive = false;
+	bool has_negative = false;
+	for (auto &constant : constants) {
+		Value value;
+		if (!ExpressionExecutor::TryEvaluateScalar(context, constant.get(), value) || value.IsNull()) {
+			return false;
+		}
+		auto as_hugeint = value.DefaultTryCastAs(LogicalType::HUGEINT);
+		if (!as_hugeint) {
+			return false;
+		}
+		auto number = as_hugeint->GetValue<hugeint_t>();
+		has_positive |= number > hugeint_t(0);
+		has_negative |= number < hugeint_t(0);
+		if (multiplication ? number == hugeint_t(0) || !TryMultiplyOperator::Operation(folded, number, folded)
+		                   : !TryAddOperator::Operation(folded, number, folded)) {
+			return false;
+		}
+	}
+	if (!multiplication && has_positive && has_negative) {
+		return false;
+	}
+	// the folded constant has to fit the type of the chain
+	return Value::HUGEINT(folded).DefaultTryCastAs(root.GetReturnType()).has_value();
 }
 
 class RecursiveFunctionExpressionMatcher : public ExpressionMatcher {
@@ -99,7 +138,8 @@ unique_ptr<Expression> ConstantOrderNormalizationRule::Apply(LogicalOperator &op
 		}
 	}
 
-	if (ordered_bindings.empty()) {
+	if (ordered_bindings.empty() ||
+	    !ReorderCannotOverflow(rewriter.context, root, ordered_bindings, remain_bindings.size())) {
 		return nullptr;
 	}
 

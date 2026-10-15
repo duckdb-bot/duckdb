@@ -42,19 +42,46 @@ query I nosort mult_test
 EXPLAIN SELECT 2 * col0  FROM test
 ----
 
-# addition mixed multiplication
-query I nosort add_mult
-EXPLAIN SELECT col0 * 1 * 2 + col1 + 1 + 2 FROM test
-----
-
-query I nosort add_mult
+# with two other operands, the constants of an addition stay in place: moving them can overflow
+query II
 EXPLAIN SELECT 1 * col0 * 2 + 1 + col1 + 2 FROM test
 ----
+logical_opt	<REGEX>:(?s).*\(\(\(col0 \* 2\) \+ 1\) \+ CAST\(col1 AS INTEGER\)\) \+ 2.*
 
-query I nosort add_mult
-EXPLAIN SELECT 1 * 2 * col0 + 1 + 2 + col1 FROM test
+# constants of mixed signs or that do not fold into the type stay in place as well
+query II
+EXPLAIN SELECT col0 + 1 + -2 FROM test
+----
+logical_opt	<REGEX>:(?s).*\(col0 \+ 1\) \+ -2.*
+
+query II
+EXPLAIN SELECT col0 + 2147483647 + 1 FROM test
+----
+logical_opt	<REGEX>:(?s).*\(col0 \+ 2147483647\) \+ 1.*
+
+query II
+EXPLAIN SELECT col0 * 0 * 2 FROM test
+----
+logical_opt	<!REGEX>:(?s).*col0 \* 0\).*
+
+statement ok
+CREATE TABLE limits (a INTEGER, b INTEGER);
+
+statement ok
+INSERT INTO limits VALUES (2147483645, -2), (-2147483647, 1);
+
+query I
+SELECT (a + 1) + (b + 2) FROM limits ORDER BY ALL;
+----
+-2147483643
+2147483646
+
+query I
+SELECT (a * 1) * (b * 4) FROM limits WHERE a = -2147483647 AND b = 0;
 ----
 
-query I nosort add_mult
-EXPLAIN SELECT 3 + 2 * col0 + col1 FROM test
+query I
+SELECT a + 2 + -3 FROM limits ORDER BY ALL;
 ----
+-2147483648
+2147483644

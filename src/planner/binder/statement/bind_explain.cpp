@@ -2,6 +2,7 @@
 #include "duckdb/parser/statement/explain_statement.hpp"
 #include "duckdb/planner/operator/logical_explain.hpp"
 #include "duckdb/common/tree_renderer.hpp"
+#include "duckdb/main/settings.hpp"
 
 namespace duckdb {
 
@@ -23,10 +24,12 @@ BoundStatement Binder::Bind(ExplainStatement &stmt) {
 
 	// bind the underlying statement
 	auto plan = Bind(*stmt.stmt);
-	// render the unoptimized logical plan, but only when it will be shown: a plain EXPLAIN in a multi-plan format.
+	// render the unoptimized logical plan, but only when it will be shown: a plain EXPLAIN with explain_output = 'all'
+	// in a multi-plan format.
 	// (it is unused for EXPLAIN ANALYZE, and single-plan formats like FORMAT WEB render only the final plan)
 	string logical_plan_unopt;
-	if (stmt.explain_type == ExplainType::EXPLAIN_STANDARD) {
+	if (stmt.explain_type == ExplainType::EXPLAIN_STANDARD &&
+	    Settings::Get<ExplainOutputSetting>(context) == ExplainOutputType::ALL) {
 		auto renderer = TreeRenderer::CreateRenderer(context, stmt.format);
 		if (!renderer || !renderer->RendersSinglePlan()) {
 			logical_plan_unopt = plan.plan->ToString(context, stmt.format);

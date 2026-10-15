@@ -43,14 +43,13 @@ static bool SameChildren(const vector<Value> &left, const vector<Value> &right) 
 	return true;
 }
 
-//! Two constants are the same expression if their values have the same representation. Some values compare equal
-//! but behave differently, as INTERVAL '1 month' and INTERVAL '30 days' added to a date, -0.0 and 0.0 in atan2, or
-//! 1::TINYINT and 1::INTEGER as VARIANT in variant_typeof. Vectors compare a VARIANT as the STRUCT it is stored as.
+//! Two constants are the same expression only if their values have the same representation, not just compare equal
 static bool SameRepresentation(const Value &left, const Value &right) {
 	if (left.IsNull() || right.IsNull()) {
 		return left.IsNull() && right.IsNull();
 	}
 	if (left.type().id() == LogicalTypeId::VARIANT) {
+		// values compare a VARIANT by meaning, vectors compare the STRUCT it is stored as
 		Vector left_vector(left, count_t(1));
 		Vector right_vector(right, count_t(1));
 		return VectorOperations::NotDistinctFrom(left_vector, right_vector, nullptr, 1, nullptr, nullptr) == 1;

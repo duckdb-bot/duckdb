@@ -36,6 +36,27 @@ SELECT d + (l || [INTERVAL '1 month'])[1], d + (l || [INTERVAL '30 days'])[1] FR
 ----
 2025-02-28 00:00:00	2025-03-02 00:00:00
 
+# constants nested in an array, a struct, a list with NULL and a list of VARIANT
+query II
+SELECT d + (CASE WHEN x = 0 THEN [INTERVAL '1 month']::INTERVAL[1] END)[1], d + (CASE WHEN x = 0 THEN [INTERVAL '30 days']::INTERVAL[1] END)[1] FROM d;
+----
+2025-02-28 00:00:00	2025-03-02 00:00:00
+
+query II
+SELECT d + (CASE WHEN x = 0 THEN {'i': INTERVAL '1 month'} END).i, d + (CASE WHEN x = 0 THEN {'i': INTERVAL '30 days'} END).i FROM d;
+----
+2025-02-28 00:00:00	2025-03-02 00:00:00
+
+query II
+SELECT d + (CASE WHEN x = 0 THEN [NULL, INTERVAL '1 month'] END)[2], d + (CASE WHEN x = 0 THEN [NULL, INTERVAL '30 days'] END)[2] FROM d;
+----
+2025-02-28 00:00:00	2025-03-02 00:00:00
+
+query II
+SELECT d + (CASE WHEN x = 0 THEN [INTERVAL '1 month'::VARIANT] END)[1]::INTERVAL, d + (CASE WHEN x = 0 THEN [INTERVAL '30 days'::VARIANT] END)[1]::INTERVAL FROM d;
+----
+2025-02-28 00:00:00	2025-03-02 00:00:00
+
 # -0.0 and 0.0
 query II
 SELECT atan2(x, -0.0::DOUBLE), atan2(x, 0.0::DOUBLE) FROM d;

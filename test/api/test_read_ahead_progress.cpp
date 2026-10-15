@@ -152,4 +152,45 @@ TEST_CASE("Automatic read-ahead grows its backlog within the memory budget", "[a
 	REQUIRE_FALSE(job);
 	REQUIRE(produced == job_count);
 }
+
+TEST_CASE("Read-ahead of a file scan keeps its queued jobs within the open window", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("SET threads=1"));
+	REQUIRE_NO_FAIL(con.Query("SET async_threads=1"));
+	REQUIRE_NO_FAIL(con.Query("SET read_ahead_depth=-1"));
+	REQUIRE_NO_FAIL(con.Query("SET memory_limit='4GB'"));
+	// twice the async threads
+	const idx_t open_window = 2;
+
+	for (bool jobs_hold_files : {false, true}) {
+		auto read_ahead = ScanReadAhead::Create(*con.context, jobs_hold_files);
+		REQUIRE(read_ahead);
+		struct JobState {};
+		const idx_t job_count = 32;
+		idx_t produced = 0;
+		auto produce = [&](duckdb::vector<duckdb::unique_ptr<AsyncTask>> &) -> duckdb::unique_ptr<ScanReadAheadJob> {
+			if (produced == job_count) {
+				return nullptr;
+			}
+			auto job = make_uniq<ScanReadAheadJobWrapper<JobState>>();
+			job->batch_index = produced++;
+			return std::move(job);
+		};
+		TableFunctionInput input(nullptr, nullptr, nullptr);
+		for (idx_t consumed = 0; consumed < job_count; consumed++) {
+			duckdb::unique_ptr<ScanReadAheadJob> job;
+			REQUIRE(read_ahead->AcquireJob(*con.context, input, produce, job) == ScanReadAheadAcquire::ACQUIRED);
+			REQUIRE(job->batch_index == consumed);
+			if (consumed == 0) {
+				// without the window, the memory budget allows more jobs
+				if (jobs_hold_files) {
+					REQUIRE(produced <= open_window);
+				} else {
+					REQUIRE(produced > open_window);
+				}
+			}
+		}
+	}
+}
 #endif

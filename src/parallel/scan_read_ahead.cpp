@@ -129,9 +129,10 @@ static idx_t GetOpenWindow(ClientContext &context, idx_t read_ahead_depth, bool 
 	// files opened ahead hold file descriptors, so keep to the share of the limit the HTTP client pool takes
 	auto file_descriptor_limit = ProcessUtil::GetFileDescriptorLimit();
 	if (file_descriptor_limit.IsValid()) {
-		window = MinValue<idx_t>(window, MaxValue<idx_t>(file_descriptor_limit.GetIndex() / 8, 1));
+		window = MinValue<idx_t>(window, file_descriptor_limit.GetIndex() / 8);
 	}
-	return window;
+	// the async pool can shrink to no threads after the scan checked it
+	return MaxValue<idx_t>(window, 1);
 }
 
 ScanReadAhead::ScanReadAhead(ClientContext &context, idx_t read_ahead_depth_p,

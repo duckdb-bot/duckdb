@@ -1087,6 +1087,23 @@ TEST_CASE("Every state ends a query when the end of one fails", "[api][query_res
 	REQUIRE(CHECK_COLUMN(next, 0, {42}));
 	require_paired();
 
+	// a profile that cannot be written does not keep the states from ending
+	auto profile_path = TestCreatePath("missing_directory/profile.json");
+	REQUIRE_NO_FAIL(con.Query("PRAGMA enable_profiling = 'json'"));
+	REQUIRE_NO_FAIL(con.Query("PRAGMA profiling_output = '" + profile_path + "'"));
+	REQUIRE_NO_FAIL(con.Query("BEGIN TRANSACTION"));
+	string profile_error;
+	try {
+		con.Query("SELECT 42");
+	} catch (std::exception &ex) {
+		profile_error = ex.what();
+	}
+	REQUIRE(StringUtil::Contains(profile_error, "profile.json"));
+	require_paired();
+	REQUIRE_NO_FAIL(con.Query("PRAGMA disable_profiling"));
+	REQUIRE_NO_FAIL(con.Query("ROLLBACK"));
+	require_paired();
+
 	// a fatal error of an end invalidates the database, while the error of the begin is reported
 	for (auto &state : states) {
 		state->fail_end = true;

@@ -203,6 +203,15 @@ TEST_CASE("Arrow scan of a sparse union with invalid type ids", "[arrow]") {
 	REQUIRE(StringUtil::Contains(arrow_union_offset_test::ScanError(negative_id.schema, negative_id.array),
 	                             "type id -1 does not belong to a union member"));
 
+	// an array with fewer children than its schema has members
+	arrow_union_offset_test::UnionColumn missing_child({1, 0}, 0);
+	missing_child.array.n_children = 1;
+	DuckDB db(nullptr);
+	Connection con(db);
+	auto result = arrow_union_offset_test::ScanColumn(con, missing_child.schema, missing_child.array);
+	REQUIRE(StringUtil::Contains(result->GetError(), "Arrow union array has 1 children, but its schema has 2 members"));
+	REQUIRE_NO_FAIL(con.Query("SELECT 42"));
+
 	const char *invalid_formats[] = {"+us:5",   "+us:5,7,9", "+us:5,5",  "+us:-1,0",
 	                                 "+us:5,x", "+us:5,128", "+us:5, 7", "+us:"};
 	for (auto format : invalid_formats) {

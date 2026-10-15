@@ -113,9 +113,14 @@ bool Time::TryConvertInternal(const char *buf, idx_t len, idx_t &pos, dtime_t &r
 			// do we expect nanoseconds?
 			mult *= Interval::NANOS_PER_MICRO;
 		}
+		bool rounded = false;
 		for (; pos < len && StringUtil::CharacterIsDigit(buf[pos]); pos++, mult /= 10) {
 			if (mult > 0) {
 				micros += (buf[pos] - '0') * mult;
+			} else if (!rounded) {
+				// the first digit past the precision rounds half away from zero, a carry goes into the seconds
+				micros += buf[pos] >= '5';
+				rounded = true;
 			}
 		}
 		if (nanos) {

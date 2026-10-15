@@ -1,14 +1,14 @@
 #include "catch.hpp"
 #include "test_helpers.hpp"
 
-#if defined(__linux__)
+#if defined(__linux__) && !defined(DUCKDB_NO_THREADS)
 #include <dirent.h>
 #include <sys/resource.h>
 #endif
 
 using namespace duckdb;
 
-#if defined(__linux__)
+#if defined(__linux__) && !defined(DUCKDB_NO_THREADS)
 static idx_t CountOpenFileDescriptors() {
 	idx_t count = 0;
 	auto dir = opendir("/proc/self/fd");
@@ -24,7 +24,7 @@ static idx_t CountOpenFileDescriptors() {
 #endif
 
 TEST_CASE("Read-ahead keeps the files it opened ahead of a scan within its window", "[api][.]") {
-#if defined(__linux__)
+#if defined(__linux__) && !defined(DUCKDB_NO_THREADS)
 	DuckDB db(nullptr);
 	Connection con(db);
 	auto dir = TestCreatePath("read_ahead_open_files");

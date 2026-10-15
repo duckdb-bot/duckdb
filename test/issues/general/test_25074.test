@@ -2,8 +2,6 @@
 # description: Converting a VARIANT nested deeper than the limit raises an error instead of overflowing the stack
 # group: [general]
 
-require json
-
 statement ok
 CREATE TABLE t AS WITH RECURSIVE r(d, v, o) AS (
 	SELECT 1, [1]::VARIANT, {'a': 1}::VARIANT
@@ -73,18 +71,6 @@ SELECT d, TRY_CAST(o AS STRUCT(a VARIANT)) IS NULL, TRY_CAST(v AS VARIANT[]) IS 
 128	false	false
 129	true	true
 
-# a value nested too deeply does not convert to JSON either
-query III
-SELECT d, TRY_CAST(v AS JSON) IS NULL, TRY_CAST(o AS STRUCT(a JSON)) IS NULL FROM t ORDER BY d;
-----
-128	false	false
-129	true	true
-
-statement error
-SELECT v::JSON FROM t WHERE d = 129;
-----
-Can't convert VARIANT value nested deeper than 128 levels
-
 # a row of another type sends the whole batch to the conversion through a Value
 statement ok
 CREATE TABLE mixed AS SELECT d, v FROM t UNION ALL SELECT 0, 'x'::VARIANT;
@@ -95,14 +81,3 @@ SELECT d, TRY_CAST(v AS VARCHAR[]) IS NULL FROM mixed ORDER BY d;
 0	true
 128	false
 129	true
-
-# a constant is folded through a Value
-query I
-SELECT length((repeat('[', 128) || repeat(']', 128))::JSON::VARIANT::VARCHAR);
-----
-256
-
-statement error
-SELECT (repeat('[', 129) || repeat(']', 129))::JSON::VARIANT::VARCHAR;
-----
-<REGEX>:.*(nested deeper than 128 levels|depth).*

@@ -535,13 +535,8 @@ static bool CastVariantToJSON(FromVariantConversionData &conversion_data, Vector
 
 	auto &variant = conversion_data.variant;
 	//! The writer resets the validity, so take the rows that are already set to invalid first
-	auto &result_validity = FlatVector::Validity(result);
 	ValidityMask validity(count);
-	for (idx_t i = 0; i < count; i++) {
-		if (!result_validity.RowIsValid(offset + i)) {
-			validity.SetInvalid(i);
-		}
-	}
+	validity.SliceInPlace(FlatVector::Validity(result), 0, offset, count);
 	auto result_data = FlatVector::Writer<string_t>(result, count, offset);
 	for (idx_t i = 0; i < count; i++) {
 		const auto row_index = row.IsValid() ? row.GetIndex() : i;

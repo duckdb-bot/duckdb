@@ -626,6 +626,18 @@ BoundStatement Binder::BindNode(InsertQueryNode &node) {
 	}
 
 	if (node.on_conflict_info) {
+		if (node.column_order == InsertColumnOrder::INSERT_BY_NAME && node.select_statement && node.columns.empty() &&
+		    !node.GetValuesList()) {
+			// the names of the SELECT are the column list, whose omitted columns the MERGE INTO source fills
+			auto select_binder = Binder::CreateBinder(context, this);
+			auto select_copy = node.select_statement->Copy();
+			auto names = select_binder->Bind(select_copy->Cast<SelectStatement>()).names;
+			for (auto &name : names) {
+				table.GetColumnIndex(name);
+			}
+			node.columns = std::move(names);
+			node.column_order = InsertColumnOrder::INSERT_BY_POSITION;
+		}
 		// generate a MERGE INTO statement and bind it instead
 		auto merge_into = GenerateMergeInto(node, table);
 		return Bind(*merge_into);

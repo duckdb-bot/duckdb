@@ -324,14 +324,13 @@ AggregateFunction GetSumAggregateNoOverflowDecimal() {
 	return aggr;
 }
 
-//! Binding sum_no_overflow by name (e.g. when re-binding an exported aggregate state) delegates to the regular sum,
-//! with the no-overflow implementation swapped in as statistics propagation does
+//! Binding sum_no_overflow by name delegates to the regular sum, except to read the states it exported
 unique_ptr<FunctionData> SumNoOverflowBind(BindAggregateFunctionInput &input) {
 	auto &function = input.GetBoundFunction();
 	auto &arguments = input.GetArguments();
 	const auto parameter_type = function.GetArguments()[0];
 	auto logical = BindLogicalSum(input.GetClientContext(), arguments);
-	if (parameter_type.id() != LogicalTypeId::DECIMAL) {
+	if (input.BindsExportedState() && parameter_type.id() != LogicalTypeId::DECIMAL) {
 		logical.first.ReplaceImplementation(GetSumAggregateNoOverflow(parameter_type.InternalType()));
 	}
 	function = std::move(logical.first);

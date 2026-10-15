@@ -1,0 +1,19 @@
+# name: benchmark/micro/parquet/many_small_files.benchmark
+# description: Scan many small Parquet files, with the files opened ahead of the scan bounded by the read-ahead window
+# group: [parquet]
+
+name ManySmallParquetFiles
+group micro
+subgroup parquet
+
+require parquet
+
+load
+SET partitioned_write_max_open_files = 100;
+COPY (SELECT range AS i, range % 3000 AS p FROM range(300000)) TO '${BENCHMARK_DIR}/many_small_files' (FORMAT parquet, PARTITION_BY p, OVERWRITE);
+
+run
+SELECT count(*), sum(i) FROM read_parquet('${BENCHMARK_DIR}/many_small_files/*/*.parquet');
+
+result II
+300000	44999850000

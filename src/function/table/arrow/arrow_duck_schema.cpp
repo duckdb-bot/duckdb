@@ -49,7 +49,7 @@ void ArrowType::SetRunEndEncoded() {
 	auto &struct_info = type_info->Cast<ArrowStructInfo>();
 	D_ASSERT(struct_info.ChildCount() == 2);
 
-	auto actual_type = struct_info.GetChild(1).GetDuckType();
+	auto actual_type = struct_info.GetChild(1).GetDuckType(true);
 	// Override the duckdb type to the actual type
 	type = actual_type;
 	run_end_encoded = true;

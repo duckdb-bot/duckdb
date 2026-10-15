@@ -1,0 +1,38 @@
+# name: test/sql/catalog/function/test_macro_overload_decimal.test
+# description: Macro overloads that differ in the width or scale of a DECIMAL parameter take the exact match
+# group: [function]
+
+statement ok
+CREATE MACRO test_decimal(d DECIMAL(4, 0)) AS 'four', (d DECIMAL(9, 0)) AS 'nine';
+
+query II
+SELECT test_decimal(1::DECIMAL(4, 0)), test_decimal(1::DECIMAL(9, 0));
+----
+four	nine
+
+query I
+SELECT test_decimal(d := 1::DECIMAL(9, 0));
+----
+nine
+
+# without an exact match the overloads still tie
+statement error
+SELECT test_decimal(1::DECIMAL(5, 0));
+----
+has multiple overloads that match the supplied arguments
+
+statement ok
+CREATE MACRO test_scale(a INTEGER, d DECIMAL(10, 2)) AS 'two', (a INTEGER, d DECIMAL(10, 4)) AS 'four';
+
+query II
+SELECT test_scale(1, 1::DECIMAL(10, 2)), test_scale(1, 1::DECIMAL(10, 4));
+----
+two	four
+
+statement ok
+CREATE MACRO test_int(d SMALLINT) AS 's', (d INTEGER) AS 'i';
+
+query II
+SELECT test_int(1::SMALLINT), test_int(1::INTEGER);
+----
+s	i

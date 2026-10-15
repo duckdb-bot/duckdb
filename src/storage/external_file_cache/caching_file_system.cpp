@@ -328,6 +328,7 @@ shared_ptr<FileHandle> CachingFileHandle::GetFileHandle() {
 	// Snapshot the metadata with a single Stats call, avoiding repeated metadata lookups (e.g., fstat)
 	validation_info = GetValidationInfo(file_system, *file_handle);
 
+	bool file_size_changed = false;
 	{
 		annotated_lock_guard<annotated_mutex> meta_guard(cached_file->meta_lock);
 		const bool first_access = (cached_file->validation_info.file_size == 0);
@@ -342,6 +343,7 @@ shared_ptr<FileHandle> CachingFileHandle::GetFileHandle() {
 			// A successful validator check refreshes freshness. Without validators, preserve the original deadline.
 			const bool revalidated = cache_is_valid && ExternalFileCache::HasValidationMetadata(validation_info);
 			const auto preserved_valid_until = cached_file->validation_info.cache_valid_until;
+			file_size_changed = cached_file->validation_info.file_size != validation_info.file_size;
 			cached_file->validation_info = validation_info;
 			if (cache_is_valid && !revalidated) {
 				cached_file->validation_info.cache_valid_until = preserved_valid_until;
@@ -349,6 +351,9 @@ shared_ptr<FileHandle> CachingFileHandle::GetFileHandle() {
 			cached_file->can_seek = file_handle->CanSeek();
 			cached_file->on_disk_file = file_handle->OnDiskFile();
 		}
+	}
+	if (file_size_changed) {
+		external_file_cache.UpdateCachedFileMemory(*cached_file, true);
 	}
 	return file_handle;
 }
@@ -405,6 +410,7 @@ FileBufferHandleGroup CachingFileHandle::Read(const idx_t nr_bytes, const idx_t 
 	fetch_end = MinValue(fetch_end, file_size);
 	auto blocks = external_file_cache.AcquireBlocks(*current_cached_file, fetch_location, fetch_end - fetch_location,
 	                                                max_block_size);
+	external_file_cache.UpdateCachedFileMemory(*current_cached_file, false);
 	const idx_t num_blocks = blocks.size();
 
 	// Schedule block fetch tasks for all blocks.

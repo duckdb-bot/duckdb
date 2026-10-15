@@ -1,0 +1,25 @@
+# name: test/sql/storage/external_file_cache/external_file_cache_metadata_memory.test
+# description: The metadata of the blocks a file caches is reserved, so that it can be evicted (issue #26377)
+# group: [external_file_cache]
+
+require parquet
+
+statement ok
+SET cache_local_files = true;
+
+statement ok
+CREATE TABLE src AS SELECT i AS id, md5(i::VARCHAR) AS c0, md5((i + 1)::VARCHAR) AS c1 FROM range(5000) r(i);
+
+statement ok
+COPY src TO '{TEMP_DIR}/metadata_memory.parquet' (FORMAT PARQUET, ROW_GROUP_SIZE 2048);
+
+query I
+SELECT sum(length(c0) + length(c1)) FROM read_parquet('{TEMP_DIR}/metadata_memory.parquet')
+----
+320000
+
+# every cached block costs more than a hundred bytes of metadata
+query I
+SELECT (SELECT sum(memory_usage_bytes) FROM duckdb_memory() WHERE tag = 'OBJECT_CACHE') > 100 * count(*) AND count(*) > 0 FROM duckdb_external_file_cache()
+----
+true

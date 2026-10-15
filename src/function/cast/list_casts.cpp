@@ -125,7 +125,7 @@ static bool ListToVarcharCast(Vector &source, Vector &result, idx_t count, CastP
 	// first cast the child vector to varchar[]
 	Vector varchar_list(LogicalType::LIST(LogicalType::VARCHAR), count);
 	FlatVector::SetSize(varchar_list, count);
-	ListCast::ListToListCast(source, varchar_list, count, parameters);
+	bool all_converted = ListCast::ListToListCast(source, varchar_list, count, parameters);
 
 	// now construct the actual varchar vector
 	auto &child_vec = ListVector::GetChild(source);
@@ -190,7 +190,7 @@ static bool ListToVarcharCast(Vector &source, Vector &result, idx_t count, CastP
 		dataptr[offset] = ']';
 		result_str.Finalize();
 	}
-	return true;
+	return all_converted;
 }
 
 static bool ListToArrayCast(Vector &source, Vector &result, idx_t count, CastParameters &parameters) {

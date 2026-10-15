@@ -2,6 +2,7 @@
 #include "duckdb/planner/expression/bound_default_expression.hpp"
 #include "duckdb/planner/expression/bound_parameter_expression.hpp"
 #include "duckdb/function/cast/cast_function_set.hpp"
+#include "duckdb/common/type_visitor.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/planner/expression_binder.hpp"
 
@@ -346,6 +347,10 @@ bool BoundCastExpression::CastCanThrow(const LogicalType &source_type, const Log
 	if (try_cast) {
 		// try_cast turns conversion errors into NULL values instead of throwing
 		return false;
+	}
+	// Converting a VARIANT nested too deeply fails, also to VARCHAR
+	if (TypeVisitor::Contains(source_type, LogicalTypeId::VARIANT)) {
+		return true;
 	}
 	// Every value has a string representation, so casting to VARCHAR never throws. VARCHAR is not the maximum
 	// of the coercion lattice (you do not implicitly widen to it), so the max-type check below would miss this.

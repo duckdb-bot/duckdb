@@ -368,7 +368,7 @@ static bool UnionToVarcharCast(Vector &source, Vector &result, idx_t count, Cast
 	auto &cast_data = parameters.cast_data->Cast<UnionMemberBoundCastData>();
 	Vector varchar_union(cast_data.type, count);
 
-	ToUnionCast(source, varchar_union, count, parameters);
+	bool all_converted = ToUnionCast(source, varchar_union, count, parameters);
 
 	// now construct the actual varchar vector
 	// varchar_union.Flatten(count);
@@ -394,7 +394,7 @@ static bool UnionToVarcharCast(Vector &source, Vector &result, idx_t count, Cast
 		}
 	}
 	result.Verify();
-	return true;
+	return all_converted;
 }
 
 BoundCastInfo DefaultCasts::UnionCastSwitch(BindCastInput &input, const LogicalType &source,

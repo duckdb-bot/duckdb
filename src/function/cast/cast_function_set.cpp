@@ -3,6 +3,7 @@
 
 #include "duckdb/main/settings.hpp"
 
+#include "duckdb/common/extension_type_info.hpp"
 #include "duckdb/common/pair.hpp"
 #include "duckdb/common/types/type_map.hpp"
 #include "duckdb/function/cast_rules.hpp"
@@ -80,6 +81,13 @@ BoundCastInfo CastFunctionSet::GetCastFunction(const LogicalType &source, const 
 		if (result.HasFunction()) {
 			return result;
 		}
+	}
+
+	// an aggregate state is its layout type with an alias and the aggregate in its extension info
+	if (source.IsAggregateState() && source.WithAlias(string()).WithExtensionInfo(nullptr) == target) {
+		BoundCastInfo result(DefaultCasts::ReinterpretCast);
+		result.SetStatisticsCallback(CastStatistics::Propagate);
+		return result;
 	}
 
 	// Built-in casts inherit generic propagation unless they provide a more specific callback.

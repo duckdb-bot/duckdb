@@ -204,7 +204,7 @@ MacroBindResult MacroFunction::BindMacroFunction(
 	}
 
 	if (result_indices.size() > 1) {
-		// prefer a unique exact type match among equal-cost overloads, as DECIMAL(4,0) and DECIMAL(9,0)
+		// prefer a unique exact match among overloads with equal cast costs
 		vector<idx_t> exact_indices;
 		for (idx_t i = 0; i < result_indices.size(); i++) {
 			if (result_exact_matches[i]) {

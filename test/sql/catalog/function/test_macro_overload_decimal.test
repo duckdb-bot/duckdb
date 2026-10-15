@@ -68,3 +68,21 @@ statement error
 SELECT with_default(1::DECIMAL(4, 0));
 ----
 has multiple overloads that match the supplied arguments
+
+# a cheaper overload found after the tied ones replaces them
+statement ok
+CREATE MACRO three(d) AS 'untyped', (d DECIMAL(4, 0)) AS 'four', (d DECIMAL(9, 0)) AS 'nine';
+
+query II
+SELECT three(1::DECIMAL(4, 0)), three(1::DECIMAL(9, 0));
+----
+four	nine
+
+# table macros resolve their overloads the same way
+statement ok
+CREATE MACRO table_decimal(d DECIMAL(4, 0)) AS TABLE (SELECT 'four' AS r), (d DECIMAL(9, 0)) AS TABLE (SELECT 'nine' AS r);
+
+query II
+SELECT (SELECT r FROM table_decimal(1::DECIMAL(4, 0))), (SELECT r FROM table_decimal(1::DECIMAL(9, 0)));
+----
+four	nine

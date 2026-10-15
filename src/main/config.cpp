@@ -2,6 +2,7 @@
 
 #include "duckdb/common/cgroups.hpp"
 #include "duckdb/common/file_system.hpp"
+#include "duckdb/common/virtual_file_system.hpp"
 #include "duckdb/main/http/http_transport_manager.hpp"
 #include "duckdb/main/extension/external_extension_provider.hpp"
 #include "duckdb/common/operator/cast_operators.hpp"
@@ -925,14 +926,23 @@ const ExtensionCallbackManager &DBConfig::GetCallbackManager() const {
 	return *callback_manager;
 }
 
-string DBConfig::SanitizeAllowedPath(const string &path_p, optional_ptr<FileOpener> opener) const {
-	auto result = file_system->CanonicalizePath(FileSystem::ExpandPath(path_p, opener));
+static string SanitizeAllowedPath(FileSystem &file_system, const string &path_p, optional_ptr<FileOpener> opener) {
+	auto result = file_system.CanonicalizePath(FileSystem::ExpandPath(path_p, opener));
 	// allowed_directories/allowed_path always uses forward slashes regardless of the OS
-	auto path_sep = file_system->PathSeparator(path_p);
+	auto path_sep = file_system.PathSeparator(path_p);
 	if (path_sep != "/") {
 		result = StringUtil::Replace(result, path_sep, "/");
 	}
 	return result;
+}
+
+string DBConfig::SanitizeAllowedPath(const string &path_p, optional_ptr<FileOpener> opener) const {
+	if (!file_system) {
+		// a caller-owned config sanitizes as the default file system of a database does
+		VirtualFileSystem default_file_system;
+		return duckdb::SanitizeAllowedPath(default_file_system, path_p, opener);
+	}
+	return duckdb::SanitizeAllowedPath(*file_system, path_p, opener);
 }
 
 void DBConfig::AddAllowedConfig(const Identifier &config_name) {

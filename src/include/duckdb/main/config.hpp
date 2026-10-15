@@ -384,6 +384,10 @@ public:
 	DUCKDB_API ExternalExtensionProvider &GetExternalExtensionProvider() const;
 	DUCKDB_API HTTPTransportManager &GetHTTPTransportManager();
 	DUCKDB_API const HTTPTransportManager &GetHTTPTransportManager() const;
+	//! True for a caller-owned configuration
+	bool IsUserConfig() const {
+		return is_user_config;
+	}
 
 private:
 	mutable mutex config_lock;

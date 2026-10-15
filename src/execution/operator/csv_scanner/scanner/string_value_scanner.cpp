@@ -862,10 +862,16 @@ bool StringValueResult::AddRowInternal() {
 	idx_t current_line_size = current_line_start - current_line_position.end;
 	current_line_position.begin = current_line_position.end;
 	current_line_position.end = current_line_start;
-	if (current_line_size > state_machine.options.maximum_line_size.GetValue()) {
+	const bool over_maximum_line_size = current_line_size > state_machine.options.maximum_line_size.GetValue();
+	// the values of a line over more than two buffers are cut at the buffer ends, so only its size is checked
+	const bool check_values = !over_maximum_line_size || !current_line_position.SpansMoreThanTwoBuffers();
+	if (over_maximum_line_size) {
+		if (!check_values) {
+			current_errors.Reset();
+		}
 		current_errors.Insert(MAXIMUM_LINE_SIZE, 1, chunk_col_id, last_position, current_line_size);
 	}
-	if (!state_machine.options.null_padding) {
+	if (!state_machine.options.null_padding && check_values) {
 		for (idx_t col_idx = cur_col_id; col_idx < number_of_columns; col_idx++) {
 			current_errors.Insert(TOO_FEW_COLUMNS, col_idx - 1, chunk_col_id, last_position);
 		}
@@ -1529,7 +1535,7 @@ void StringValueScanner::ProcessOverBufferValue() {
 	}
 	bool skip_value = false;
 	if (result.projecting_columns) {
-		if (!result.projected_columns[result.cur_col_id] && result.cur_col_id != result.number_of_columns) {
+		if (result.cur_col_id < result.number_of_columns && !result.projected_columns[result.cur_col_id]) {
 			result.cur_col_id++;
 			skip_value = true;
 		}
@@ -2010,10 +2016,23 @@ void StringValueScanner::FinalizeChunkProcess() {
 
 void StringValueScanner::FinishBoundaryScan(const bool moved) {
 	if (cur_buffer_handle) {
-		if (moved && result.cur_col_id > 0) {
+		if (!moved || result.cur_col_id > 0) {
+			const auto lines_before = lines_read;
 			ProcessExtraRow();
-		} else if (!moved) {
-			ProcessExtraRow();
+			// a row longer than a buffer goes on in the buffers after it
+			while (lines_read == lines_before && !result.IsStateCurrent(CSVState::INVALID) &&
+			       iterator.pos.buffer_pos >= cur_buffer_handle->actual_size && !cur_buffer_handle->is_last_buffer) {
+				const auto move_result = TryMoveToNextBuffer();
+				if (move_result == MoveBufferResult::NOT_IN_MEMORY) {
+					suspended = true;
+					return;
+				}
+				if (move_result != MoveBufferResult::MOVED || lines_read != lines_before) {
+					// moving to the next buffer can end the row
+					break;
+				}
+				ProcessExtraRow();
+			}
 		}
 		if (cur_buffer_handle->is_last_buffer && iterator.pos.buffer_pos >= cur_buffer_handle->actual_size) {
 			// the last buffer has no next buffer to wait for

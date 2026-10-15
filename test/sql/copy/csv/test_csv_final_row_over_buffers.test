@@ -1,0 +1,130 @@
+# name: test/sql/copy/csv/test_csv_final_row_over_buffers.test
+# description: A row over the maximum line size is reported, however many buffers it spans
+# group: [csv]
+
+require skip_reload
+
+statement ok
+SET threads = 4;
+
+# the last row has 21 bytes, and buffer_size also sets max_line_size
+statement ok
+COPY (SELECT * FROM (VALUES (1, '2'), (3, '4'), (5, '666666666666666666')) t(a, b)) TO '{TEST_DIR}/final_row.csv' (HEADER);
+
+statement error
+SELECT count(*) FROM read_csv('{TEST_DIR}/final_row.csv', header = true, buffer_size = 12)
+----
+Maximum line size of 12 bytes exceeded
+
+statement error
+SELECT count(*) FROM read_csv('{TEST_DIR}/final_row.csv', header = true, buffer_size = 12, auto_detect = false, columns = {'a': 'BIGINT', 'b': 'VARCHAR'})
+----
+Maximum line size of 12 bytes exceeded
+
+statement error
+SELECT count(*) FROM read_csv('{TEST_DIR}/final_row.csv', header = true, buffer_size = 12, auto_detect = false, columns = {'a': 'BIGINT', 'b': 'VARCHAR'}, parallel = false)
+----
+Maximum line size of 12 bytes exceeded
+
+statement error
+SELECT count(*) FROM read_csv('{TEST_DIR}/final_row.csv', header = true, buffer_size = 13)
+----
+Maximum line size of 13 bytes exceeded
+
+statement error
+SELECT count(*) FROM read_csv('{TEST_DIR}/final_row.csv', header = true, buffer_size = 13, auto_detect = false, columns = {'a': 'BIGINT', 'b': 'VARCHAR'})
+----
+Maximum line size of 13 bytes exceeded
+
+statement error
+SELECT count(*) FROM read_csv('{TEST_DIR}/final_row.csv', header = true, buffer_size = 13, auto_detect = false, columns = {'a': 'BIGINT', 'b': 'VARCHAR'}, parallel = false)
+----
+Maximum line size of 13 bytes exceeded
+
+statement error
+SELECT count(*) FROM read_csv('{TEST_DIR}/final_row.csv', header = true, buffer_size = 16)
+----
+Maximum line size of 16 bytes exceeded
+
+statement error
+SELECT count(*) FROM read_csv('{TEST_DIR}/final_row.csv', header = true, buffer_size = 16, auto_detect = false, columns = {'a': 'BIGINT', 'b': 'VARCHAR'})
+----
+Maximum line size of 16 bytes exceeded
+
+statement error
+SELECT count(*) FROM read_csv('{TEST_DIR}/final_row.csv', header = true, buffer_size = 16, auto_detect = false, columns = {'a': 'BIGINT', 'b': 'VARCHAR'}, parallel = false)
+----
+Maximum line size of 16 bytes exceeded
+
+foreach buffer_size 12 13 16
+
+query II
+SELECT * FROM read_csv('{TEST_DIR}/final_row.csv', header = true, buffer_size = {buffer_size}, auto_detect = false, columns = {'a': 'BIGINT', 'b': 'VARCHAR'}, ignore_errors = true) ORDER BY a
+----
+1	2
+3	4
+
+endloop
+
+# the rejected row is the same as with a buffer that holds all of it
+foreach buffer_size 11 25 1000
+
+statement ok
+SELECT * FROM read_csv('{TEST_DIR}/final_row.csv', header = true, buffer_size = {buffer_size}, max_line_size = 10, auto_detect = false, columns = {'a': 'BIGINT', 'b': 'VARCHAR'}, store_rejects = true)
+
+query IIII
+SELECT line, byte_position, csv_line, error_message FROM reject_errors
+----
+4	13	5,666666666666666666	Maximum line size of 10 bytes exceeded. Actual Size:20 bytes.
+
+statement ok
+DROP TABLE reject_errors;
+
+statement ok
+DROP TABLE reject_scans;
+
+endloop
+
+# three columns
+statement ok
+COPY (SELECT l FROM (VALUES (1, 'a,b,c'), (2, '0,0,0'), (3, '1,1,1'), (4, '1,' || repeat('x', 17) || ',' || repeat('y', 17))) t(i, l) ORDER BY i) TO '{TEST_DIR}/final_row_three.csv' (HEADER false, QUOTE '', DELIMITER '|');
+
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/final_row_three.csv', header = true, buffer_size = 20, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR', 'c': 'VARCHAR'})
+----
+Maximum line size of 20 bytes exceeded
+
+query III
+SELECT * FROM read_csv('{TEST_DIR}/final_row_three.csv', header = true, buffer_size = 20, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR', 'c': 'VARCHAR'}, ignore_errors = true) ORDER BY ALL
+----
+0	0	0
+1	1	1
+
+# carriage return and line feed line endings
+statement ok
+COPY (SELECT l || chr(13) FROM (VALUES (1, 'a,b'), (2, '0,0'), (3, '1,1'), (4, '9,' || repeat('x', 20))) t(i, l) ORDER BY i) TO '{TEST_DIR}/final_row_crlf.csv' (HEADER false, QUOTE '', DELIMITER '|');
+
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/final_row_crlf.csv', header = true, buffer_size = 15, auto_detect = false, columns = {'a': 'BIGINT', 'b': 'VARCHAR'}, new_line = '\r\n')
+----
+Maximum line size of 15 bytes exceeded
+
+query II
+SELECT * FROM read_csv('{TEST_DIR}/final_row_crlf.csv', header = true, buffer_size = 15, auto_detect = false, columns = {'a': 'BIGINT', 'b': 'VARCHAR'}, new_line = '\r\n', ignore_errors = true) ORDER BY a
+----
+0	0
+1	1
+
+# a long row after the rows the sniffer reads
+statement ok
+COPY (SELECT CASE WHEN i < 3000 THEN (i % 10)::VARCHAR ELSE repeat('x', 2500) END AS c FROM range(3001) t(i)) TO '{TEST_DIR}/final_row_after_sample.csv' (HEADER);
+
+statement error
+SELECT count(*) FROM read_csv('{TEST_DIR}/final_row_after_sample.csv', buffer_size = 1000, sample_size = 1)
+----
+Maximum line size of 1000 bytes exceeded
+
+query II
+SELECT count(*), max(c) FROM read_csv('{TEST_DIR}/final_row_after_sample.csv', buffer_size = 1000, sample_size = 1, ignore_errors = true)
+----
+3000	9

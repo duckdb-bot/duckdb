@@ -11,6 +11,21 @@
 
 namespace duckdb {
 
+//! Whether a scope that is a prefix of the path covers it. A scope that ends in the host or bucket of a URL covers
+//! that host or bucket only, not another one whose name starts the same.
+static bool ScopeCovers(const string &prefix, const string &path) {
+	if (!StringUtil::StartsWith(path, prefix)) {
+		return false;
+	}
+	auto scheme_end = prefix.find("://");
+	if (path.size() == prefix.size() || scheme_end == string::npos ||
+	    prefix.find('/', scheme_end + 3) != string::npos) {
+		return true;
+	}
+	auto next = path[prefix.size()];
+	return next == '/' || next == ':' || next == '?' || next == '#';
+}
+
 int64_t BaseSecret::MatchScore(const string &path) const {
 	int64_t longest_match = NumericLimits<int64_t>::Minimum();
 
@@ -24,7 +39,7 @@ int64_t BaseSecret::MatchScore(const string &path) const {
 			longest_match = 0;
 			continue;
 		}
-		if (StringUtil::StartsWith(path, prefix)) {
+		if (ScopeCovers(prefix, path)) {
 			longest_match = MaxValue<int64_t>(NumericCast<int64_t>(prefix.length()), longest_match);
 		}
 	}

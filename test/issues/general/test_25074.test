@@ -37,3 +37,20 @@ SELECT TRY_CAST(v AS VARCHAR) IS NULL, TRY_CAST(o AS VARCHAR) IS NULL FROM t ORD
 false	false
 true	true
 
+
+# the limit applies to the whole value, whatever the target type and the other rows
+query II
+SELECT d, TRY_CAST(v AS VARCHAR[]) IS NULL FROM t ORDER BY d;
+----
+128	false
+129	true
+
+statement error
+SELECT [v]::VARCHAR FROM t WHERE d = 129;
+----
+Can't convert VARIANT value nested deeper than 128 levels
+
+statement error
+SELECT {'a': v}::VARCHAR FROM t WHERE d = 129;
+----
+Can't convert VARIANT value nested deeper than 128 levels

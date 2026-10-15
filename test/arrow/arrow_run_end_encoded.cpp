@@ -87,11 +87,12 @@ struct RunEndColumn {
 
 const int32_t STRING_DICT_OFFSETS[3] = {0, 1, 2};
 const char STRING_DICT_DATA[] = "xy";
+const int32_t DICT_RUN_ENDS[2] = {1, 2};
 
 // Run-end encoded column of int8 indices into the string dictionary ["x", "y"], NULL for the given runs.
 struct RunEndDictionaryColumn {
 	RunEndDictionaryColumn(const std::vector<int32_t> &run_ends_p, const std::vector<int8_t> &indices_p,
-	                       const std::vector<idx_t> &null_runs)
+	                       const std::vector<idx_t> &null_runs, bool run_end_dictionary = false)
 	    : run_ends(run_ends_p), indices(indices_p), validity((indices_p.size() + 7) / 8 + 2, 0xFF) {
 		for (auto run : null_runs) {
 			validity[run / 8] &= uint8_t(~(1u << (run % 8)));
@@ -130,6 +131,32 @@ struct RunEndDictionaryColumn {
 		dict_array.n_buffers = 3;
 		dict_array.buffers = dict_buffers;
 		dict_array.release = ReleaseArray;
+		if (run_end_dictionary) {
+			// the same dictionary as two runs of one value each
+			dict_values_schema = dict_schema;
+			dict_values_schema.name = "values";
+			dict_run_ends_schema.format = "i";
+			dict_run_ends_schema.name = "run_ends";
+			dict_run_ends_schema.release = ReleaseSchema;
+			dict_schema_children[0] = &dict_run_ends_schema;
+			dict_schema_children[1] = &dict_values_schema;
+			dict_schema.format = "+r";
+			dict_schema.n_children = 2;
+			dict_schema.children = dict_schema_children;
+			dict_values_array = dict_array;
+			dict_run_ends_buffers[0] = nullptr;
+			dict_run_ends_buffers[1] = DICT_RUN_ENDS;
+			dict_run_ends_array.length = 2;
+			dict_run_ends_array.n_buffers = 2;
+			dict_run_ends_array.buffers = dict_run_ends_buffers;
+			dict_run_ends_array.release = ReleaseArray;
+			dict_array_children[0] = &dict_run_ends_array;
+			dict_array_children[1] = &dict_values_array;
+			dict_array.n_buffers = 1;
+			dict_array.buffers = dict_ree_buffers;
+			dict_array.n_children = 2;
+			dict_array.children = dict_array_children;
+		}
 		values_buffers[0] = validity.data();
 		values_buffers[1] = indices.data();
 		values_array.length = run_count;
@@ -154,6 +181,14 @@ struct RunEndDictionaryColumn {
 	std::vector<uint8_t> validity;
 	const void *run_ends_buffers[2];
 	const void *dict_buffers[3];
+	const void *dict_run_ends_buffers[2];
+	const void *dict_ree_buffers[1] = {nullptr};
+	ArrowSchema *dict_schema_children[2];
+	ArrowArray *dict_array_children[2];
+	ArrowSchema dict_run_ends_schema {};
+	ArrowSchema dict_values_schema {};
+	ArrowArray dict_run_ends_array {};
+	ArrowArray dict_values_array {};
 	const void *values_buffers[2];
 	const void *buffers[1] = {nullptr};
 	ArrowSchema *schema_children[2];
@@ -270,4 +305,10 @@ TEST_CASE("Arrow scan of a run-end encoded dictionary column with NULL runs acro
 	REQUIRE(arrow_run_end_encoded_test::ScanMatches(
 	    col.schema, col.array,
 	    "SELECT CASE WHEN r < 1000 THEN 'y' WHEN r < 3000 THEN NULL ELSE 'x' END FROM range(5000) t(r)"));
+}
+
+TEST_CASE("Arrow scan of a run-end encoded dictionary column whose dictionary is run-end encoded", "[arrow]") {
+	arrow_run_end_encoded_test::RunEndDictionaryColumn col({2, 4, 6}, {0, 1, 0}, {}, true);
+	REQUIRE(arrow_run_end_encoded_test::ScanMatches(col.schema, col.array,
+	                                                "SELECT * FROM (VALUES ('x'), ('x'), ('y'), ('y'), ('x'), ('x'))"));
 }

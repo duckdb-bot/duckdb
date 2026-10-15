@@ -781,9 +781,9 @@ void ArrowToDuckDBConversion::ColumnArrowToDuckDBRunEndEncoded(Vector &vector, c
 		                                             compressed_size, run_ends_type);
 		auto &values = *run_end_encoding.values;
 		if (values_type.HasDictionary()) {
-			ArrowToDuckDBConversion::ColumnArrowToDuckDBDictionary(values, values_array, 0, array_state,
+			// the dictionary is scanned with its own state, as it can be run-end encoded itself
+			ArrowToDuckDBConversion::ColumnArrowToDuckDBDictionary(values, values_array, 0, array_state.GetChild(1),
 			                                                       compressed_size, values_type);
-			values.Flatten();
 		} else {
 			ArrowToDuckDBConversion::SetValidityMask(values, values_array, 0, compressed_size, 0, -1);
 			ArrowToDuckDBConversion::ColumnArrowToDuckDB(values, values_array, 0, array_state, compressed_size,

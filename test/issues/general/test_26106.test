@@ -2,6 +2,8 @@
 # description: An automatic checkpoint after WAL replay keeps the index entries that the replay buffered
 # group: [general]
 
+require skip_reload
+
 load {TEST_DIR}/test_26106.db
 
 statement ok

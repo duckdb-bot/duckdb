@@ -17,18 +17,24 @@ namespace duckdb {
 namespace {
 
 struct CurrentSequenceValueOperator {
+	static constexpr bool WRITES = false;
+
 	static int64_t Operation(DuckTransaction &, SequenceCatalogEntry &seq, const int64_t, const bool) {
 		return seq.CurrentValue();
 	}
 };
 
 struct NextSequenceValueOperator {
+	static constexpr bool WRITES = true;
+
 	static int64_t Operation(DuckTransaction &transaction, SequenceCatalogEntry &seq, const int64_t, const bool) {
 		return seq.NextValue(transaction);
 	}
 };
 
 struct SetValValueOperator {
+	static constexpr bool WRITES = true;
+
 	static int64_t Operation(DuckTransaction &transaction, SequenceCatalogEntry &seq, const int64_t value,
 	                         const bool is_called) {
 		return seq.SetValue(transaction, value, is_called);
@@ -62,7 +68,20 @@ struct NextValLocalState : public FunctionLocalState {
 
 	DuckTransaction &transaction;
 	SequenceCatalogEntry &sequence;
+	//! Whether this state registered the write to the sequence
+	bool modified = false;
 };
+
+//! Mark the database modified before the sequence changes, also when the function runs while binding
+void ModifySequenceDatabase(ClientContext &context, SequenceCatalogEntry &sequence) {
+	auto &db = sequence.ParentCatalog().GetAttached();
+	if (db.IsReadOnly()) {
+		throw InvalidInputException(
+		    "Cannot change sequence \"%s\" of database \"%s\", which is attached in read-only mode", sequence.name,
+		    db.GetName());
+	}
+	MetaTransaction::Get(context).ModifyDatabase(db, DatabaseModificationType::SEQUENCE);
+}
 
 template <class T>
 bool RowIsValid(const unique_ptr<VectorIterator<T>> &entries, idx_t i) {
@@ -113,6 +132,10 @@ void NextValFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 			continue;
 		}
 
+		if (OP::WRITES && !lstate.modified) {
+			ModifySequenceDatabase(state.GetContext(), lstate.sequence);
+			lstate.modified = true;
+		}
 		int64_t value = new_val_entries ? (*new_val_entries)[i].GetValue() : 0;
 		bool is_called = is_called_entries ? (*is_called_entries)[i].GetValue() : true;
 		// get the next value from the sequence

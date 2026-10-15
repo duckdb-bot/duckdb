@@ -1205,6 +1205,7 @@ TEST_CASE("Every state ends a query when an end error is internal or the log fai
 		}
 		// the fatal error is thrown, else the internal one
 		auto expected_type = test_case == 2 ? ExceptionType::INTERNAL : ExceptionType::FATAL;
+		REQUIRE(end_error.HasError());
 		REQUIRE(end_error.Type() == expected_type);
 		REQUIRE(StringUtil::Contains(end_error.RawMessage(),
 		                             test_case == 2 ? "internal query end failure" : "fatal query end failure"));

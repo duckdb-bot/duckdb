@@ -433,6 +433,15 @@ size_t Utf8Proc::RenderWidth(const char *s, size_t len, size_t pos) {
 
 size_t Utf8Proc::RenderWidth(const std::string &str) {
 	size_t render_width = 0;
+	// ASCII text needs no grapheme clusters: a printable character is one column wide, any other none
+	size_t pos = 0;
+	for (; pos < str.size() && !(str[pos] & 0x80); pos++) {
+		render_width += str[pos] >= 0x20 && str[pos] < 0x7F;
+	}
+	if (pos == str.size()) {
+		return render_width;
+	}
+	render_width = 0;
 	for (auto cluster : Utf8Proc::GraphemeClusters(str.c_str(), str.size())) {
 		// use the width of the first codepoint in the grapheme cluster
 		// combining marks, ZWJ, variation selectors, etc. have charwidth 0

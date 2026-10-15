@@ -21,7 +21,7 @@ static_assert(sizeof(dtime_t) == sizeof(int64_t), "dtime_t was padded");
 // ISO 8601
 
 bool Time::TryConvertInternal(const char *buf, idx_t len, idx_t &pos, dtime_t &result, bool strict,
-                              optional_ptr<int32_t> nanos, bool negative) {
+                              optional_ptr<int32_t> nanos, bool negative, optional_ptr<bool> round_up) {
 	int64_t hour = -1;
 	int32_t min = -1, sec = -1, micros = -1;
 	pos = 0;
@@ -105,6 +105,8 @@ bool Time::TryConvertInternal(const char *buf, idx_t len, idx_t &pos, dtime_t &r
 	}
 
 	micros = 0;
+	// whether the first digit past the precision rounds the value up, half away from zero
+	bool round = false;
 	if (pos < len && buf[pos] == '.') {
 		pos++;
 		// we expect some microseconds
@@ -113,15 +115,18 @@ bool Time::TryConvertInternal(const char *buf, idx_t len, idx_t &pos, dtime_t &r
 			// do we expect nanoseconds?
 			mult *= Interval::NANOS_PER_MICRO;
 		}
-		bool rounded = false;
+		bool past_precision = false;
 		for (; pos < len && StringUtil::CharacterIsDigit(buf[pos]); pos++, mult /= 10) {
 			if (mult > 0) {
 				micros += (buf[pos] - '0') * mult;
-			} else if (!rounded) {
-				// the first digit past the precision rounds half away from zero, a carry goes into the seconds
-				micros += buf[pos] >= '5';
-				rounded = true;
+			} else if (!past_precision) {
+				round = buf[pos] >= '5';
+				past_precision = true;
 			}
+		}
+		if (round && !round_up) {
+			// a carry goes into the seconds
+			micros++;
 		}
 		if (nanos) {
 			*nanos = UnsafeNumericCast<int32_t>(micros % Interval::NANOS_PER_MICRO);
@@ -154,12 +159,15 @@ bool Time::TryConvertInternal(const char *buf, idx_t len, idx_t &pos, dtime_t &r
 		return false;
 	}
 	result = dtime_t(time_micros);
+	if (round_up) {
+		*round_up = round;
+	}
 	return true;
 }
 
 bool Time::TryConvertInterval(const char *buf, idx_t len, idx_t &pos, dtime_t &result, bool strict,
-                              optional_ptr<int32_t> nanos, bool negative) {
-	return Time::TryConvertInternal(buf, len, pos, result, strict, nanos, negative);
+                              optional_ptr<int32_t> nanos, bool negative, optional_ptr<bool> round_up) {
+	return Time::TryConvertInternal(buf, len, pos, result, strict, nanos, negative, round_up);
 }
 
 bool Time::TryConvertTime(const char *buf, idx_t len, idx_t &pos, dtime_t &result, bool strict,

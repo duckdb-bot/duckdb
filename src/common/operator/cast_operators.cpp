@@ -1568,8 +1568,11 @@ dtime_t Cast::Operation(timestamp_sec_t input) {
 //===--------------------------------------------------------------------===//
 template <>
 bool TryCast::Operation(string_t input, timestamp_ms_t &result, bool strict) {
+	// the cast below rounds the truncated microseconds once
 	timestamp_t us;
-	if (!TryCast::Operation<string_t, timestamp_t>(input, us, strict)) {
+	bool round_up;
+	if (Timestamp::TryConvertTimestamp(input.GetData(), input.GetSize(), us, false, nullptr, false, &round_up) !=
+	    TimestampCastResult::SUCCESS) {
 		return false;
 	}
 	return TryCastTimestampBase<timestamp_t, timestamp_ms_t>(us, result, strict);
@@ -1577,8 +1580,11 @@ bool TryCast::Operation(string_t input, timestamp_ms_t &result, bool strict) {
 
 template <>
 bool TryCast::Operation(string_t input, timestamp_sec_t &result, bool strict) {
+	// the cast below rounds the truncated microseconds once
 	timestamp_t us;
-	if (!TryCast::Operation<string_t, timestamp_t>(input, us, strict)) {
+	bool round_up;
+	if (Timestamp::TryConvertTimestamp(input.GetData(), input.GetSize(), us, false, nullptr, false, &round_up) !=
+	    TimestampCastResult::SUCCESS) {
 		return false;
 	}
 	return TryCastTimestampBase<timestamp_t, timestamp_sec_t>(us, result, strict);

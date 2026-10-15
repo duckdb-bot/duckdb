@@ -39,8 +39,23 @@ static idx_t TimestampTimeLength(const char *str, idx_t len) {
 // Z is optional
 // ISO 8601
 
+bool Timestamp::TryRoundUpFraction(timestamp_t &result, optional_ptr<int32_t> nanos) {
+	if (nanos) {
+		if (++(*nanos) < Interval::NANOS_PER_MICRO) {
+			return true;
+		}
+		*nanos = 0;
+	}
+	return TryAddOperator::Operation(result.value, int64_t(1), result.value) && result.IsFinite();
+}
+
 TimestampCastResult Timestamp::TryConvertTimestampTZ(const char *str, idx_t len, timestamp_t &result, bool use_offset,
-                                                     bool &has_offset, string_t &tz, optional_ptr<int32_t> nanos) {
+                                                     bool &has_offset, string_t &tz, optional_ptr<int32_t> nanos,
+                                                     optional_ptr<bool> round_up) {
+	if (round_up) {
+		*round_up = false;
+	}
+	bool round = false;
 	idx_t pos;
 	date_t date;
 	dtime_t time;
@@ -73,7 +88,8 @@ TimestampCastResult Timestamp::TryConvertTimestampTZ(const char *str, idx_t len,
 	// TryConvertTime may recursively call us, so we use TryConvertInterval.
 	// Note that we can't pass strict== true here because we want to process any suffix.
 	auto time_len = TimestampTimeLength(str + pos, len - pos);
-	if (!Time::TryConvertInterval(str + pos, time_len, time_pos, time, false, nanos) || time_pos != time_len) {
+	if (!Time::TryConvertInterval(str + pos, time_len, time_pos, time, false, nanos, false, &round) ||
+	    time_pos != time_len) {
 		return TimestampCastResult::ERROR_INCORRECT_FORMAT;
 	}
 	//	We parsed an interval, so make sure it is in range.
@@ -121,14 +137,20 @@ TimestampCastResult Timestamp::TryConvertTimestampTZ(const char *str, idx_t len,
 			return TimestampCastResult::ERROR_INCORRECT_FORMAT;
 		}
 	}
+	if (round_up) {
+		*round_up = round;
+	} else if (round && !TryRoundUpFraction(result, nanos)) {
+		return TimestampCastResult::ERROR_RANGE;
+	}
 	return TimestampCastResult::SUCCESS;
 }
 
 TimestampCastResult Timestamp::TryConvertTimestamp(const char *str, idx_t len, timestamp_t &result, bool use_offset,
-                                                   optional_ptr<int32_t> nanos, bool strict) {
+                                                   optional_ptr<int32_t> nanos, bool strict,
+                                                   optional_ptr<bool> round_up) {
 	string_t tz(nullptr, 0);
 	bool has_offset = false;
-	auto success = TryConvertTimestampTZ(str, len, result, use_offset, has_offset, tz, nanos);
+	auto success = TryConvertTimestampTZ(str, len, result, use_offset, has_offset, tz, nanos, round_up);
 	if (success != TimestampCastResult::SUCCESS) {
 		return success;
 	}

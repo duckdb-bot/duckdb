@@ -16,6 +16,8 @@
 #include "test_helpers.hpp"
 #if (!defined(_WIN32) && !defined(WIN32))
 #define TEST_HAVE_SYMLINK
+#include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #else
 #include "duckdb/common/windows.hpp"
@@ -271,6 +273,61 @@ TEST_CASE("RemoveDirectoryExtended never removes directory contents in single mo
 	REQUIRE(!fs.DirectoryExists(directory));
 	REQUIRE(!fs.RemoveDirectoryExtended(directory, {RemoveDirectoryMode::SINGLE}));
 }
+
+#ifndef _WIN32
+//! Sets the umask while it lives
+struct ScopedUmask {
+	explicit ScopedUmask(mode_t mask) : previous(umask(mask)) {
+	}
+	~ScopedUmask() {
+		umask(previous);
+	}
+	mode_t previous;
+};
+
+static mode_t GetPermissions(const string &path) {
+	struct stat st;
+	REQUIRE(stat(path.c_str(), &st) == 0);
+	return st.st_mode & 07777;
+}
+
+TEST_CASE("Directories get the permissions the umask leaves like files", "[file_system]") {
+	LocalFileSystem fs;
+	auto directory = TestCreatePath("umask_directory");
+	fs.CreateDirectory(directory);
+	auto nested = fs.JoinPath(fs.JoinPath(directory, "a"), "b");
+	auto file = fs.JoinPath(directory, "file");
+	auto private_directory = fs.JoinPath(fs.JoinPath(directory, "c"), "private");
+	auto secret_directory = fs.JoinPath(fs.JoinPath(directory, "d"), "secrets");
+	// compare with native creation under the same umask and inherited ACLs
+	auto reference_directory = fs.JoinPath(directory, "reference_directory");
+	auto reference_private = fs.JoinPath(directory, "reference_private");
+	auto reference_file = fs.JoinPath(directory, "reference_file");
+	DuckDB db(nullptr);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("SET secret_directory = '" + secret_directory + "'"));
+	{
+		ScopedUmask scoped_umask(002);
+		REQUIRE(mkdir(reference_directory.c_str(), 0777) == 0);
+		REQUIRE(mkdir(reference_private.c_str(), 0700) == 0);
+		auto fd = open(reference_file.c_str(), O_WRONLY | O_CREAT, 0666);
+		REQUIRE(fd >= 0);
+		close(fd);
+
+		fs.CreateDirectoriesRecursive(nested);
+		fs.OpenFile(file, FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE).reset();
+		fs.CreateDirectoryExtended(private_directory, {CreateDirectoryMode::RECURSIVE, true});
+		REQUIRE_NO_FAIL(con.Query("CREATE PERSISTENT SECRET s (TYPE http, BEARER_TOKEN 'x')"));
+	}
+	REQUIRE(GetPermissions(fs.JoinPath(directory, "a")) == GetPermissions(reference_directory));
+	REQUIRE(GetPermissions(nested) == GetPermissions(reference_directory));
+	REQUIRE(GetPermissions(file) == GetPermissions(reference_file));
+	REQUIRE(GetPermissions(fs.JoinPath(directory, "c")) == GetPermissions(reference_private));
+	REQUIRE(GetPermissions(private_directory) == GetPermissions(reference_private));
+	REQUIRE(GetPermissions(fs.JoinPath(directory, "d")) == GetPermissions(reference_private));
+	REQUIRE(GetPermissions(secret_directory) == GetPermissions(reference_private));
+}
+#endif
 
 TEST_CASE("Extended directory operations report target ownership", "[file_system]") {
 	ExistingDirectoryFileSystem existing_directory_fs;

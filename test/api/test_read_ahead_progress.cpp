@@ -99,6 +99,16 @@ TEST_CASE("Read-ahead settles a file open that never runs", "[api]") {
 	REQUIRE(!opened);
 }
 
+TEST_CASE("Read-ahead keeps room for one file open without async threads", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("SET async_threads=0"));
+	ScanReadAhead read_ahead(*con.context, NumericLimits<idx_t>::Maximum(),
+	                         make_uniq<ManagedAsyncMemoryGovernor>(*con.context));
+	REQUIRE(read_ahead.CanScheduleOpen(0));
+	REQUIRE_FALSE(read_ahead.CanScheduleOpen(1));
+}
+
 #ifndef DUCKDB_NO_THREADS
 TEST_CASE("Automatic read-ahead grows its backlog within the memory budget", "[api]") {
 	DuckDB db(nullptr);
@@ -182,15 +192,21 @@ TEST_CASE("Read-ahead of a file scan keeps its queued jobs within the open windo
 			duckdb::unique_ptr<ScanReadAheadJob> job;
 			REQUIRE(read_ahead->AcquireJob(*con.context, input, produce, job) == ScanReadAheadAcquire::ACQUIRED);
 			REQUIRE(job->batch_index == consumed);
+			if (jobs_hold_files) {
+				REQUIRE(produced - consumed <= open_window);
+			}
 			if (consumed == 0) {
 				// without the window, the memory budget allows more jobs
 				if (jobs_hold_files) {
-					REQUIRE(produced <= open_window);
+					REQUIRE(produced == open_window);
 				} else {
 					REQUIRE(produced > open_window);
 				}
 			}
 		}
+		duckdb::unique_ptr<ScanReadAheadJob> job;
+		REQUIRE(read_ahead->AcquireJob(*con.context, input, produce, job) == ScanReadAheadAcquire::EXHAUSTED);
+		REQUIRE(produced == job_count);
 	}
 }
 #endif

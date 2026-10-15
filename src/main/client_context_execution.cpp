@@ -140,12 +140,23 @@ ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success,
 
 	// the query ends on every state also when ending the profiler, the logger or one of the states fails
 	ErrorData end_error;
+	idx_t end_error_severity = 0;
 	auto add_end_error = [&](std::exception &ex) {
 		ErrorData step_error(ex);
-		if (Exception::InvalidatesDatabase(step_error.Type()) || step_error.Type() == ExceptionType::INTERNAL) {
+		idx_t severity = 1;
+		if (Exception::InvalidatesDatabase(step_error.Type())) {
+			severity = 3;
+		} else if (step_error.Type() == ExceptionType::INTERNAL) {
+			severity = 2;
+		}
+		if (severity > 1) {
 			ValidChecker::Invalidate(DatabaseInstance::GetDatabase(*this), step_error.RawMessage());
 		}
-		end_error.Merge(step_error);
+		// the most severe error is thrown, the first of them
+		if (severity > end_error_severity) {
+			end_error = std::move(step_error);
+			end_error_severity = severity;
+		}
 	};
 	try {
 		client_data->profiler->EndQuery();

@@ -945,6 +945,9 @@ public:
 			if (fatal) {
 				throw FatalException("query begin failed");
 			}
+			if (permission) {
+				throw PermissionException("query begin not permitted");
+			}
 			throw IOException("query begin failed");
 		}
 		begins++;
@@ -954,10 +957,10 @@ public:
 		if (fail_end) {
 			fail_end = false;
 			if (fatal) {
-				throw FatalException("query end failed");
+				throw FatalException("fatal query end failure");
 			}
 			if (internal) {
-				throw InternalException("query end failed");
+				throw InternalException("internal query end failure");
 			}
 			throw IOException("query end failed");
 		}
@@ -966,6 +969,7 @@ public:
 	bool fail_begin = false;
 	bool fatal = false;
 	bool internal = false;
+	bool permission = false;
 	bool fail_end = false;
 	idx_t begins = 0;
 	idx_t ends = 0;
@@ -1025,6 +1029,20 @@ TEST_CASE("A query whose begin failed ends its transaction", "[api][query_result
 	REQUIRE(aborted->HasError());
 	REQUIRE(StringUtil::Contains(aborted->GetError(), "transaction is aborted"));
 	REQUIRE_NO_FAIL(con.Query("ROLLBACK"));
+
+	// with errors that do not invalidate the transaction, it stays usable
+	REQUIRE_NO_FAIL(con.Query("SET default_transaction_invalidation_policy = 'SYNTACTIC_ERRORS_DO_NOT_INVALIDATE'"));
+	REQUIRE_NO_FAIL(con.Query("BEGIN TRANSACTION"));
+	states[0]->fail_begin = true;
+	states[0]->permission = true;
+	auto not_permitted = con.Query("INSERT INTO t VALUES (8)");
+	states[0]->permission = false;
+	REQUIRE(not_permitted->HasError());
+	REQUIRE(StringUtil::Contains(not_permitted->GetError(), "query begin not permitted"));
+	require_paired();
+	REQUIRE_NO_FAIL(con.Query("INSERT INTO t VALUES (9)"));
+	REQUIRE_NO_FAIL(con.Query("ROLLBACK"));
+	REQUIRE_NO_FAIL(con.Query("RESET default_transaction_invalidation_policy"));
 
 	// unless the transaction rolls back automatically
 	REQUIRE_NO_FAIL(con.Query("BEGIN TRANSACTION"));
@@ -1179,7 +1197,15 @@ TEST_CASE("Every state ends a query when an end error is internal or the log fai
 		second->fail_end = true;
 		second->fatal = test_case == 1;
 		second->internal = test_case != 1;
-		REQUIRE_THROWS(con.Query("SELECT 42"));
+		string end_error;
+		try {
+			con.Query("SELECT 42");
+		} catch (std::exception &ex) {
+			end_error = ex.what();
+		}
+		// the fatal error is thrown, else the first one
+		REQUIRE(
+		    StringUtil::Contains(end_error, test_case == 2 ? "internal query end failure" : "fatal query end failure"));
 		REQUIRE(a->begins == a->ends);
 		REQUIRE(b->begins == b->ends);
 		auto invalidated = con.Query("SELECT 42");

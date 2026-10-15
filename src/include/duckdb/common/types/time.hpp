@@ -16,8 +16,9 @@ namespace duckdb {
 
 //! The digits of a parsed fraction past the precision it was truncated to
 struct TruncatedFraction {
-	//! The first of them, and whether any digit after it is not zero
+	//! The first discarded digit
 	uint8_t first_digit = 0;
+	//! Whether a later discarded digit is not zero
 	bool rest_inexact = false;
 	//! Whether the time is 24:00:00, which cannot be rounded up
 	bool at_end_of_day = false;

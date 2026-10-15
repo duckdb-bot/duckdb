@@ -99,8 +99,8 @@ TimestampCastResult Timestamp::TryConvertTimestampTZ(const char *str, idx_t len,
 	    time_pos != time_len) {
 		return TimestampCastResult::ERROR_INCORRECT_FORMAT;
 	}
-	//	We parsed an interval, so make sure it is in range.
-	if (time.value > Interval::MICROS_PER_DAY) {
+	//	We parsed an interval, so make sure it is in range, nanoseconds included.
+	if (time.value > Interval::MICROS_PER_DAY || (time.value == Interval::MICROS_PER_DAY && nanos && *nanos > 0)) {
 		return TimestampCastResult::ERROR_RANGE;
 	}
 	fraction.at_end_of_day = time.value == Interval::MICROS_PER_DAY;

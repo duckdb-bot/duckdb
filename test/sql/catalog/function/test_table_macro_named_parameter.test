@@ -1,0 +1,124 @@
+# name: test/sql/catalog/function/test_table_macro_named_parameter.test
+# description: A macro parameter named like a table function parameter can pass it with name = value
+# group: [function]
+
+statement ok
+COPY (SELECT * FROM (VALUES (1, 'x'), (2, 'y'), (3, 'z')) t(a, b)) TO '{TEST_DIR}/named_parameter.csv' (HEADER true);
+
+statement ok
+CREATE MACRO r(header) AS TABLE SELECT count(*) AS n FROM read_csv('{TEST_DIR}/named_parameter.csv', header = header);
+
+query I
+SELECT n FROM r(true);
+----
+3
+
+query I
+SELECT n FROM r(false);
+----
+4
+
+# the value can use other parameters, also in a subquery
+statement ok
+CREATE MACRO with_value(header, other) AS TABLE
+SELECT * FROM (SELECT count(*) AS n FROM read_csv('{TEST_DIR}/named_parameter.csv', header = (header AND other))) WHERE n > 0;
+
+query I
+SELECT n FROM with_value(true, true);
+----
+3
+
+query I
+SELECT n FROM with_value(true, false);
+----
+4
+
+# a scalar macro with a table function in a subquery
+statement ok
+CREATE MACRO s(header) AS (SELECT count(*) FROM read_csv('{TEST_DIR}/named_parameter.csv', header = header));
+
+query II
+SELECT s(true), s(false);
+----
+3	4
+
+# outside of the arguments of a table function, name = value still compares the parameter
+statement ok
+CREATE MACRO compared(header) AS TABLE
+SELECT header = header AS same, count(*) AS n FROM read_csv('{TEST_DIR}/named_parameter.csv', header = header) WHERE header = true;
+
+query II
+SELECT * FROM compared(true);
+----
+true	3
+
+query II
+SELECT * FROM compared(false);
+----
+true	0
+
+# a table macro reads name = value as a comparison
+statement ok
+CREATE MACRO inner_macro(x) AS TABLE SELECT x AS result FROM (SELECT false AS header);
+
+statement ok
+CREATE MACRO outer_macro(header) AS TABLE SELECT * FROM inner_macro(header = header);
+
+query I
+SELECT * FROM outer_macro(true);
+----
+true
+
+# a lambda parameter in the arguments of a table macro is not a macro parameter
+statement ok
+CREATE MACRO apply_macro(dummy, f) AS TABLE SELECT dummy, list_transform([1, 2], f) AS result;
+
+statement ok
+CREATE MACRO outer_lambda(x) AS TABLE SELECT * FROM apply_macro(x, lambda x: x + 1);
+
+query II
+SELECT * FROM outer_lambda(100);
+----
+100	[2, 3]
+
+# a function without a file
+statement ok
+CREATE MACRO repeated(num_rows) AS TABLE SELECT * FROM repeat_row(1, num_rows = num_rows);
+
+query I
+SELECT count(*) FROM repeated(2);
+----
+2
+
+# a table function that is not called is not looked up
+statement ok
+SET autoinstall_known_extensions = false;
+
+statement ok
+CREATE MACRO unused_scan(x) AS TABLE WITH unused AS (SELECT * FROM sqlite_scan('unused.db', 't')) SELECT x;
+
+query I
+SELECT * FROM unused_scan(42);
+----
+42
+
+# looking up a table macro in a CTE that is not used records no dependency on it
+statement ok
+SET enable_macro_dependencies = true;
+
+statement ok
+CREATE MACRO dep(x) AS TABLE SELECT x;
+
+statement ok
+CREATE MACRO unused_dep(y) AS TABLE WITH unused AS (SELECT * FROM dep(y = y)) SELECT y;
+
+statement ok
+CREATE MACRO caller(z) AS TABLE SELECT * FROM unused_dep(z);
+
+statement ok
+DROP MACRO TABLE dep;
+
+query I
+SELECT * FROM caller(7);
+----
+7

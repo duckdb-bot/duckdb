@@ -21,6 +21,16 @@ unique_ptr<Expression> NotComparisonSimplificationRule::Apply(LogicalOperator &o
 
 	auto &child = not_expr.GetChildrenMutable()[0];
 
+	// a NULL check is never NULL, so its negation is the other NULL check
+	if (child->GetExpressionType() == ExpressionType::OPERATOR_IS_NULL ||
+	    child->GetExpressionType() == ExpressionType::OPERATOR_IS_NOT_NULL) {
+		child->SetExpressionTypeUnsafe(child->GetExpressionType() == ExpressionType::OPERATOR_IS_NULL
+		                                   ? ExpressionType::OPERATOR_IS_NOT_NULL
+		                                   : ExpressionType::OPERATOR_IS_NULL);
+		changes_made = true;
+		return std::move(child);
+	}
+
 	if (!BoundComparisonExpression::IsComparison(*child)) {
 		return nullptr;
 	}

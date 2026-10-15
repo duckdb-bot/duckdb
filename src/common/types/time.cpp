@@ -168,7 +168,7 @@ bool Time::TryConvertInternal(const char *buf, idx_t len, idx_t &pos, dtime_t &r
 	return true;
 }
 
-//! The time of a timestamp, with its fraction rounded like the fraction of a time, whatever the date
+//! The time of a timestamp, with a tie rounded away from zero like a time, whatever the date
 static bool TryConvertTimestampTime(const char *buf, idx_t len, bool use_offset, optional_ptr<int32_t> nanos,
                                     dtime_t &result) {
 	timestamp_t timestamp;

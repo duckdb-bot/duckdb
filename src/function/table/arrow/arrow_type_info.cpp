@@ -21,6 +21,19 @@ ArrowStructInfo::ArrowStructInfo(vector<shared_ptr<ArrowType>> children)
     : ArrowTypeInfo(ArrowTypeInfoType::STRUCT), children(std::move(children)) {
 }
 
+ArrowStructInfo::ArrowStructInfo(vector<shared_ptr<ArrowType>> children_p, const vector<int8_t> &union_type_ids)
+    : ArrowStructInfo(std::move(children_p)) {
+	D_ASSERT(union_type_ids.size() == children.size());
+	union_members.resize(NumericLimits<int8_t>::Maximum() + 1, DConstants::INVALID_INDEX);
+	for (idx_t member_idx = 0; member_idx < union_type_ids.size(); member_idx++) {
+		auto type_id = union_type_ids[member_idx];
+		if (type_id < 0 || union_members[NumericCast<idx_t>(type_id)] != DConstants::INVALID_INDEX) {
+			throw InvalidInputException("Arrow union type id %d is negative or used by more than one member", type_id);
+		}
+		union_members[NumericCast<idx_t>(type_id)] = member_idx;
+	}
+}
+
 idx_t ArrowStructInfo::ChildCount() const {
 	return children.size();
 }
@@ -35,6 +48,14 @@ const ArrowType &ArrowStructInfo::GetChild(idx_t index) const {
 
 const vector<shared_ptr<ArrowType>> &ArrowStructInfo::GetChildren() const {
 	return children;
+}
+
+idx_t ArrowStructInfo::GetUnionMember(int8_t type_id) const {
+	if (type_id < 0 || NumericCast<idx_t>(type_id) >= union_members.size() ||
+	    union_members[NumericCast<idx_t>(type_id)] == DConstants::INVALID_INDEX) {
+		throw InvalidInputException("Arrow union type id %d does not belong to a union member", type_id);
+	}
+	return union_members[NumericCast<idx_t>(type_id)];
 }
 
 //===--------------------------------------------------------------------===//

@@ -862,16 +862,10 @@ bool StringValueResult::AddRowInternal() {
 	idx_t current_line_size = current_line_start - current_line_position.end;
 	current_line_position.begin = current_line_position.end;
 	current_line_position.end = current_line_start;
-	const bool over_maximum_line_size = current_line_size > state_machine.options.maximum_line_size.GetValue();
-	// the values of a line over more than two buffers are cut at the buffer ends, so only its size is checked
-	const bool check_values = !over_maximum_line_size || !current_line_position.SpansMoreThanTwoBuffers();
-	if (over_maximum_line_size) {
-		if (!check_values) {
-			current_errors.Reset();
-		}
+	if (current_line_size > state_machine.options.maximum_line_size.GetValue()) {
 		current_errors.Insert(MAXIMUM_LINE_SIZE, 1, chunk_col_id, last_position, current_line_size);
 	}
-	if (!state_machine.options.null_padding && check_values) {
+	if (!state_machine.options.null_padding) {
 		for (idx_t col_idx = cur_col_id; col_idx < number_of_columns; col_idx++) {
 			current_errors.Insert(TOO_FEW_COLUMNS, col_idx - 1, chunk_col_id, last_position);
 		}
@@ -1427,16 +1421,22 @@ string_t StringValueScanner::RemoveEscape(const char *str_ptr, idx_t end, char e
 }
 
 void StringValueScanner::ProcessOverBufferValue() {
+	// a value that goes on from the buffers before keeps its state, and the previous buffer was read whole
+	const bool value_goes_on = !over_buffer_value.empty();
 	// Process first string
-	if (result.last_position.buffer_pos != previous_buffer_handle->actual_size) {
+	if (!value_goes_on && result.last_position.buffer_pos != previous_buffer_handle->actual_size) {
 		states.Initialize();
 	}
 
-	string over_buffer_string;
+	string over_buffer_string = std::move(over_buffer_value);
+	over_buffer_value.clear();
 	auto previous_buffer = previous_buffer_handle->Ptr();
-	idx_t j = 0;
-	result.quoted = false;
-	for (idx_t i = result.last_position.buffer_pos; i < previous_buffer_handle->actual_size; i++) {
+	idx_t j = value_goes_on ? over_buffer_value_position : 0;
+	if (!value_goes_on) {
+		result.quoted = false;
+	}
+	const idx_t start = value_goes_on ? previous_buffer_handle->actual_size : result.last_position.buffer_pos;
+	for (idx_t i = start; i < previous_buffer_handle->actual_size; i++) {
 		state_machine->Transition(states, previous_buffer[i]);
 		if (states.EmptyLine() || states.IsCurrentNewRow()) {
 			continue;
@@ -1540,6 +1540,13 @@ void StringValueScanner::ProcessOverBufferValue() {
 			result.InvalidState(result);
 		}
 		j++;
+	}
+	if (iterator.pos.buffer_pos >= cur_buffer_handle->actual_size && !cur_buffer_handle->is_last_buffer &&
+	    !over_buffer_string.empty()) {
+		// the value goes on in the next buffer
+		over_buffer_value = std::move(over_buffer_string);
+		over_buffer_value_position = j;
+		return;
 	}
 	bool skip_value = false;
 	if (result.projecting_columns) {
@@ -1676,8 +1683,8 @@ StringValueScanner::MoveBufferResult StringValueScanner::TryMoveToNextBuffer() {
 	if (iterator.pos.buffer_pos < cur_buffer_handle->actual_size) {
 		return MoveBufferResult::NOT_MOVED;
 	}
-	// a value spans at most two buffers, so the buffer before the previous one is never needed again:
-	// release it before pinning the next one, keeping the peak at two pinned buffers per scanner
+	// the part of a value in earlier buffers is kept in over_buffer_value, so the buffer before the previous one is
+	// never needed again. Release it before pinning the next one, keeping the peak at two pinned buffers per scanner
 	previous_buffer_handle.reset();
 	const idx_t next_buffer_idx = iterator.pos.buffer_idx + 1;
 	shared_ptr<CSVBufferHandle> next_buffer;
@@ -1698,8 +1705,14 @@ StringValueScanner::MoveBufferResult StringValueScanner::TryMoveToNextBuffer() {
 	// We do not care if it's a quoted new line on the last row of our file.
 	result.quoted_new_line = false;
 	// This means we reached the end of the file, we must add a last line if there is any to be added
-	if (states.EmptyLine() || states.NewRow() || result.added_last_line || states.IsCurrentNewRow() ||
-	    states.IsNotSet()) {
+	if (result.added_last_line && result.cur_col_id > 0 && !states.IsCurrentNewRow() && !states.IsNotSet() &&
+	    !result.IsStateCurrent(CSVState::INVALID)) {
+		// the last value of a row without a final newline was read over the end of a buffer
+		iterator.pos.buffer_pos = previous_buffer_handle->actual_size;
+		result.AddRowInternal();
+		lines_read++;
+	} else if (states.EmptyLine() || states.NewRow() || result.added_last_line || states.IsCurrentNewRow() ||
+	           states.IsNotSet()) {
 		if (result.cur_col_id == result.number_of_columns && !result.IsStateCurrent(CSVState::INVALID)) {
 			result.number_of_rows++;
 		}
@@ -2024,7 +2037,7 @@ void StringValueScanner::FinalizeChunkProcess() {
 
 void StringValueScanner::FinishBoundaryScan(const bool moved) {
 	if (cur_buffer_handle) {
-		if (!moved || result.cur_col_id > 0) {
+		if (!moved || result.cur_col_id > 0 || !over_buffer_value.empty()) {
 			const auto lines_before = lines_read;
 			ProcessExtraRow();
 			// a row longer than a buffer goes on in the buffers after it

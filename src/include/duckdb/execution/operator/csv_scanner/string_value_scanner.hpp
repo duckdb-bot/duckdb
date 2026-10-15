@@ -34,11 +34,6 @@ public:
 	LinePosition begin;
 	LinePosition end;
 	static void SanitizeError(string &value);
-	//! Whether the line goes on over more than two buffers
-	bool SpansMoreThanTwoBuffers() const {
-		const idx_t first_buffer_idx = begin.buffer_pos == begin.buffer_size ? begin.buffer_idx + 1 : begin.buffer_idx;
-		return end.buffer_idx > first_buffer_idx + 1;
-	}
 	//! Reconstructs the current line to be used in error messages
 	template <class T>
 	string ReconstructCurrentLine(bool &first_char_nl, T &buffer_handles, bool reconstruct_line) const {
@@ -413,6 +408,10 @@ private:
 	idx_t start_pos;
 	//! Pointer to the previous buffer handle, necessary for over-buffer values
 	shared_ptr<CSVBufferHandle> previous_buffer_handle;
+	//! The part read so far of a value that goes on past the end of the current buffer
+	string over_buffer_value;
+	//! The number of characters of that value the state machine went over
+	idx_t over_buffer_value_position = 0;
 	//! Strict state machine is basically a state machine with rfc 4180 set to true, used to figure out a new line.
 	shared_ptr<CSVStateMachine> state_machine_strict;
 	//! Whether this scanner is allowed to pause for I/O. sniffing/line-finding/skipping can't pause.

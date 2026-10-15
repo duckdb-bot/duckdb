@@ -57,6 +57,23 @@ SELECT * FROM '{TEST_DIR}/null_array_nested.parquet' ORDER BY i;
 2	[NULL, [2, NULL]]
 3	[[3, 3], [3, NULL]]
 
+# NULL arrays inside a fixed-size array
+statement ok
+COPY (SELECT i, CASE WHEN i % 4 = 0 THEN NULL ELSE [CASE WHEN i % 2 = 0 THEN NULL ELSE [i, i]::INT[2] END, [i, NULL]::INT[2]]::INT[2][2] END AS c0 FROM range(4) t(i)) TO '{TEST_DIR}/null_array_array.parquet' (FORMAT PARQUET);
+
+query I
+SELECT num_values FROM parquet_metadata('{TEST_DIR}/null_array_array.parquet') WHERE path_in_schema LIKE 'c0%';
+----
+12
+
+query II
+SELECT * FROM '{TEST_DIR}/null_array_array.parquet' ORDER BY i;
+----
+0	NULL
+1	[[1, 1], [1, NULL]]
+2	[NULL, [2, NULL]]
+3	[[3, 3], [3, NULL]]
+
 # strings in arrays across several vectors
 statement ok
 COPY (SELECT i, CASE WHEN i % 5 = 0 THEN NULL ELSE [CASE WHEN i % 2 = 0 THEN NULL ELSE 'x' || i END, 'y']::VARCHAR[2] END AS c0 FROM range(5000) t(i)) TO '{TEST_DIR}/null_array_large.parquet' (FORMAT PARQUET);
@@ -70,3 +87,8 @@ query III
 SELECT count(*), count(c0), count(c0[1]) FROM '{TEST_DIR}/null_array_large.parquet';
 ----
 5000	4000	2000
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/null_array_large.parquet' WHERE c0 IS DISTINCT FROM CASE WHEN i % 5 = 0 THEN NULL ELSE [CASE WHEN i % 2 = 0 THEN NULL ELSE 'x' || i END, 'y']::VARCHAR[2] END;
+----
+0

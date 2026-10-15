@@ -55,7 +55,6 @@ public:
 			throw InternalException("CSV reader: buffer pos out of range for buffer");
 		}
 		string result;
-		// a line can span any number of buffers
 		for (idx_t buffer_idx = first_buffer_idx; buffer_idx <= end.buffer_idx; buffer_idx++) {
 			auto entry = buffer_handles.find(buffer_idx);
 			if (entry == buffer_handles.end()) {

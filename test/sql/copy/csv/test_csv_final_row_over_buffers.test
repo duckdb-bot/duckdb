@@ -128,3 +128,35 @@ query II
 SELECT count(*), max(c) FROM read_csv('{TEST_DIR}/final_row_after_sample.csv', buffer_size = 1000, sample_size = 1, ignore_errors = true)
 ----
 3000	9
+
+# blank lines are not part of the size of the next row
+statement ok
+COPY (SELECT CASE WHEN i = 0 THEN 'a' WHEN i = 1 THEN '1' WHEN i = 32 THEN '2' END FROM range(33) t(i)) TO '{TEST_DIR}/blank_lines.csv' (HEADER false);
+
+query II
+SELECT count(*), sum(a) FROM read_csv('{TEST_DIR}/blank_lines.csv', header = true, auto_detect = false, columns = {'a': 'BIGINT'}, buffer_size = 16, parallel = false)
+----
+32	3
+
+query II
+SELECT count(*), sum(a) FROM read_csv('{TEST_DIR}/blank_lines.csv', header = true, auto_detect = false, columns = {'a': 'BIGINT'}, buffer_size = 16, parallel = false, ignore_errors = true)
+----
+32	3
+
+query II
+SELECT count(*), sum(a) FROM read_csv('{TEST_DIR}/blank_lines.csv', header = true, max_line_size = 16)
+----
+32	3
+
+statement ok
+COPY (SELECT CASE WHEN i = 0 THEN 'a,b' WHEN i = 1 THEN '1,1' WHEN i = 32 THEN '2,2' END FROM range(33) t(i)) TO '{TEST_DIR}/blank_lines_two.csv' (HEADER false, QUOTE '');
+
+query II
+SELECT count(*), sum(a) FROM read_csv('{TEST_DIR}/blank_lines_two.csv', header = true, buffer_size = 20, parallel = false)
+----
+2	3
+
+query II
+SELECT count(*), sum(a) FROM read_csv('{TEST_DIR}/blank_lines_two.csv', header = true, auto_detect = false, columns = {'a': 'BIGINT', 'b': 'BIGINT'}, buffer_size = 20, parallel = false)
+----
+2	3

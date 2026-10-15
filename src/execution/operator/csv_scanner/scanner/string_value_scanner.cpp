@@ -1005,6 +1005,9 @@ void StringValueResult::InvalidState(StringValueResult &result) {
 bool StringValueResult::EmptyLine(StringValueResult &result, const idx_t buffer_pos) {
 	// We care about empty lines if this is a single column csv file
 	result.last_position = {result.iterator.pos.buffer_idx, result.iterator.pos.buffer_pos + 1, result.buffer_size};
+	result.current_line_position.begin = result.current_line_position.end;
+	result.current_line_position.end = {result.iterator.pos.buffer_idx, result.iterator.pos.buffer_pos,
+	                                    result.buffer_size};
 	if (result.states.IsCarriageReturn() &&
 	    result.state_machine.dialect_options.state_machine_options.new_line == NewLineIdentifier::CARRY_ON) {
 		result.last_position.buffer_pos++;
@@ -1511,6 +1514,11 @@ void StringValueScanner::ProcessOverBufferValue() {
 		if (states.EmptyLine()) {
 			if (state_machine->dialect_options.num_cols == 1) {
 				break;
+			}
+			if (result.cur_col_id == 0) {
+				// a blank line, not the end of a row
+				result.current_line_position.end = {iterator.pos.buffer_idx, iterator.pos.buffer_pos,
+				                                    cur_buffer_handle->actual_size};
 			}
 			continue;
 		}

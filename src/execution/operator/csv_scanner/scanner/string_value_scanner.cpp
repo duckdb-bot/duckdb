@@ -862,10 +862,16 @@ bool StringValueResult::AddRowInternal() {
 	idx_t current_line_size = current_line_start - current_line_position.end;
 	current_line_position.begin = current_line_position.end;
 	current_line_position.end = current_line_start;
-	if (current_line_size > state_machine.options.maximum_line_size.GetValue()) {
+	const bool over_maximum_line_size = current_line_size > state_machine.options.maximum_line_size.GetValue();
+	// the comments and quotes of a line over more than two buffers are not read reliably, so only its size is checked
+	const bool check_values = !over_maximum_line_size || !current_line_position.SpansMoreThanTwoBuffers();
+	if (over_maximum_line_size) {
+		if (!check_values) {
+			current_errors.Reset();
+		}
 		current_errors.Insert(MAXIMUM_LINE_SIZE, 1, chunk_col_id, last_position, current_line_size);
 	}
-	if (!state_machine.options.null_padding) {
+	if (!state_machine.options.null_padding && check_values) {
 		for (idx_t col_idx = cur_col_id; col_idx < number_of_columns; col_idx++) {
 			current_errors.Insert(TOO_FEW_COLUMNS, col_idx - 1, chunk_col_id, last_position);
 		}
@@ -1483,6 +1489,7 @@ void StringValueScanner::ProcessOverBufferValue() {
 						} else {
 							result.AddRow(result, previous_buffer_handle->actual_size);
 						}
+						lines_read++;
 						state_machine->Transition(states, buffer_handle_ptr[iterator.pos.buffer_pos++]);
 						while (iterator.pos.buffer_pos < cur_buffer_handle->actual_size &&
 						       (buffer_handle_ptr[iterator.pos.buffer_pos] == '\r' ||
@@ -1555,10 +1562,6 @@ void StringValueScanner::ProcessOverBufferValue() {
 			skip_value = true;
 		}
 	}
-	// a value before a comment that is taken here leaves only the row to add, unless it is blank
-	bool took_value_before_comment = skip_value && result.comment;
-	const bool blank_before_comment =
-	    result.comment && !over_buffer_string.empty() && over_buffer_string.find_first_not_of(' ') == string::npos;
 	if (!skip_value) {
 		string_t value;
 		const auto &delimiter = result.state_machine.dialect_options.state_machine_options.delimiter.GetValue();
@@ -1653,7 +1656,6 @@ void StringValueScanner::ProcessOverBufferValue() {
 				value_size -= extra_delimiter_bytes;
 			}
 			result.AddValueToVector(value.GetData(), value_size, true);
-			took_value_before_comment = result.comment;
 		}
 	} else {
 		if (states.EmptyLine() && state_machine->dialect_options.num_cols == 1) {
@@ -1662,15 +1664,7 @@ void StringValueScanner::ProcessOverBufferValue() {
 	}
 
 	if (states.NewRow() && !states.IsNotSet()) {
-		if (took_value_before_comment && !blank_before_comment) {
-			result.comment = false;
-			result.AddRowInternal();
-		} else if (took_value_before_comment) {
-			// only spaces before the comment, so the line is a comment
-			result.cur_col_id = 0;
-			result.position_before_comment = result.last_position.buffer_pos;
-			result.UnsetComment(result, iterator.pos.buffer_pos);
-		} else if (result.IsCommentSet(result)) {
+		if (result.IsCommentSet(result)) {
 			result.UnsetComment(result, iterator.pos.buffer_pos);
 		} else {
 			result.AddRowInternal();
@@ -1697,7 +1691,7 @@ StringValueScanner::MoveBufferResult StringValueScanner::TryMoveToNextBuffer() {
 		return MoveBufferResult::NOT_MOVED;
 	}
 	// the part of a value in earlier buffers is kept in over_buffer_value, so the buffer before the previous one is
-	// never needed again. Release it before pinning the next one, keeping the peak at two pinned buffers per scanner
+	// never needed again. Release it before pinning the next one
 	previous_buffer_handle.reset();
 	const idx_t next_buffer_idx = iterator.pos.buffer_idx + 1;
 	shared_ptr<CSVBufferHandle> next_buffer;
@@ -1719,7 +1713,7 @@ StringValueScanner::MoveBufferResult StringValueScanner::TryMoveToNextBuffer() {
 	result.quoted_new_line = false;
 	// This means we reached the end of the file, we must add a last line if there is any to be added
 	if (result.added_last_line && result.cur_col_id > 0 && !states.IsCurrentNewRow() && !states.IsNotSet() &&
-	    !result.IsStateCurrent(CSVState::INVALID)) {
+	    !result.IsCommentSet(result) && !result.IsStateCurrent(CSVState::INVALID)) {
 		// the last value of a row without a final newline was read over the end of a buffer
 		iterator.pos.buffer_pos = previous_buffer_handle->actual_size;
 		if (states.IsQuotedCurrent() && state_machine->dialect_options.state_machine_options.strict_mode.GetValue()) {

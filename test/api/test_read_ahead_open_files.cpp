@@ -37,8 +37,13 @@ TEST_CASE("Read-ahead keeps the files it opened ahead of a scan within its windo
 	// leave room for the read-ahead window of 64 files, each with a few handles, but not for every file
 	struct rlimit original;
 	REQUIRE(getrlimit(RLIMIT_NOFILE, &original) == 0);
+	const rlim_t limit = CountOpenFileDescriptors() + 240;
+	if (original.rlim_cur < limit) {
+		// the process cannot open the files the window allows
+		return;
+	}
 	struct rlimit limited = original;
-	limited.rlim_cur = MinValue<rlim_t>(original.rlim_cur, CountOpenFileDescriptors() + 240);
+	limited.rlim_cur = limit;
 	REQUIRE(setrlimit(RLIMIT_NOFILE, &limited) == 0);
 	auto result = con.Query("SELECT count(*) FROM read_parquet('" + dir + "/*/*.parquet')");
 	REQUIRE(setrlimit(RLIMIT_NOFILE, &original) == 0);

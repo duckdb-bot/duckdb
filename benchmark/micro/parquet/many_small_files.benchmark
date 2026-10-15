@@ -1,5 +1,5 @@
 # name: benchmark/micro/parquet/many_small_files.benchmark
-# description: Scan many small Parquet files, with the files opened ahead of the scan bounded by the read-ahead window
+# description: Scan many small Parquet files
 # group: [parquet]
 
 name ManySmallParquetFiles

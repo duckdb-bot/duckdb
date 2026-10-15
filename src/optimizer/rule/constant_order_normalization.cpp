@@ -14,14 +14,16 @@ static bool MultiplicationConstantBelongsAtEnd(const BoundFunctionExpression &ex
 }
 
 //! Whether moving the constants of an integer chain together cannot make it overflow where the written order does not.
-//! Nonzero constants only grow the absolute value of every partial product, and with a single other operand, constants
-//! of one sign keep every partial sum between that operand and the result.
+//! With a single other operand x, the chain evaluates C * x or C + x, where C folds the constants one by one. Its
+//! result is the result of the written order, so only folding C can overflow. An addition that mixes signs is the
+//! exception, as its written order can stay in range where the folded constants do not.
 static bool ReorderCannotOverflow(ClientContext &context, const BoundFunctionExpression &root,
                                   const vector<reference<Expression>> &constants, idx_t other_count) {
-	const bool multiplication = root.Function().GetName() == "*";
-	if (!multiplication && other_count != 1) {
+	if (other_count != 1) {
 		return false;
 	}
+	const bool multiplication = root.Function().GetName() == "*";
+	auto &type = root.GetReturnType();
 	hugeint_t folded = multiplication ? hugeint_t(1) : hugeint_t(0);
 	bool has_positive = false;
 	bool has_negative = false;
@@ -37,16 +39,14 @@ static bool ReorderCannotOverflow(ClientContext &context, const BoundFunctionExp
 		auto number = as_hugeint->GetValue<hugeint_t>();
 		has_positive |= number > hugeint_t(0);
 		has_negative |= number < hugeint_t(0);
-		if (multiplication ? number == hugeint_t(0) || !TryMultiplyOperator::Operation(folded, number, folded)
-		                   : !TryAddOperator::Operation(folded, number, folded)) {
+		bool folds = multiplication ? TryMultiplyOperator::Operation(folded, number, folded)
+		                            : TryAddOperator::Operation(folded, number, folded);
+		// every partial fold is computed in the type of the chain
+		if (!folds || !Value::HUGEINT(folded).DefaultTryCastAs(type)) {
 			return false;
 		}
 	}
-	if (!multiplication && has_positive && has_negative) {
-		return false;
-	}
-	// the folded constant has to fit the type of the chain
-	return Value::HUGEINT(folded).DefaultTryCastAs(root.GetReturnType()).has_value();
+	return multiplication || !(has_positive && has_negative);
 }
 
 class RecursiveFunctionExpressionMatcher : public ExpressionMatcher {

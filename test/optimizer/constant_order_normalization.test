@@ -76,9 +76,14 @@ SELECT (a + 1) + (b + 2) FROM limits ORDER BY ALL;
 -2147483643
 2147483646
 
-query I
-SELECT (a * 1) * (b * 4) FROM limits WHERE a = -2147483647 AND b = 0;
+# multiplications with several other operands keep their order
+statement ok
+CREATE TABLE factors AS SELECT 2147483647 AS a, 2 AS b, 0 AS c, -2147483648 AS m, -1 AS n, 0::TINYINT AS z;
+
+query IIII
+SELECT 2 * (a * (b * c)), (-1 * n) * m, ((64::TINYINT * z) * 2::TINYINT) * (-1)::TINYINT, (a * 1) * (c * 4) FROM factors;
 ----
+0	-2147483648	0	0
 
 query I
 SELECT a + 2 + -3 FROM limits ORDER BY ALL;

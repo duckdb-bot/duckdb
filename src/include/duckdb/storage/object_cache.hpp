@@ -140,6 +140,22 @@ public:
 		lru_cache.Put(std::move(key), std::move(value), std::move(reservation));
 	}
 
+	//! Reserve the memory of an entry again with its current estimate, if the key still holds that entry
+	void UpdateReservation(const string &key, const ObjectCacheEntry &entry) {
+		const lock_guard<mutex> lock(lock_mutex);
+		auto existing = lru_cache.Get(key);
+		if (existing.get() != &entry) {
+			return;
+		}
+		const auto estimated_memory = existing->GetEstimatedCacheMemory();
+		if (!estimated_memory.IsValid()) {
+			return;
+		}
+		auto reservation =
+		    make_uniq<TempBufferPoolReservation>(MemoryTag::OBJECT_CACHE, buffer_pool, estimated_memory.GetIndex());
+		lru_cache.Put(key, std::move(existing), std::move(reservation));
+	}
+
 	void Delete(const string &key) {
 		const lock_guard<mutex> lock(lock_mutex);
 		auto iter = non_evictable_entries.find(key);
@@ -167,6 +183,11 @@ public:
 	void PutWithTypePrefix(const string &key,
 	                       shared_ptr<ObjectCacheEntry> value) { // NOLINT(performance-unnecessary-value-param)
 		Put(MakeCacheKey<T>(key), std::move(value));
+	}
+
+	template <class T>
+	void UpdateReservationWithTypePrefix(const string &key, const ObjectCacheEntry &entry) {
+		UpdateReservation(MakeCacheKey<T>(key), entry);
 	}
 
 	template <class T>

@@ -10,7 +10,6 @@
 #include "duckdb/common/operator/subtract.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
 #include "duckdb/storage/buffer/block_handle.hpp"
-#include "duckdb/storage/buffer/block_handle.hpp"
 #include "duckdb/storage/object_cache.hpp"
 
 namespace duckdb {
@@ -76,15 +75,13 @@ public:
 			file_size = cached_file->validation_info.file_size;
 		}
 		const idx_t block_size = cache.GetCacheMaxBlockSize(cached_file->path);
-		idx_t num_blocks = (file_size + block_size - 1) / block_size;
-		{
-			// reads smaller than the maximum block size leave more blocks
-			const annotated_lock_guard<annotated_mutex> map_guard(cached_file->map_lock);
-			num_blocks = MaxValue<idx_t>(num_blocks, cached_file->blocks.size());
-		}
-		// Estimated memory consumption for each block metadata: the block, the handle of its buffer, which outlives
-		// the eviction of the buffer, and its node in the map.
-		static constexpr idx_t BLOCK_METADATA_SIZE = sizeof(CacheBlock) + sizeof(BlockHandle) + 64;
+		// reads smaller than the maximum block size leave more blocks
+		const idx_t num_blocks =
+		    MaxValue<idx_t>((file_size + block_size - 1) / block_size, cached_file->reserved_blocks.load());
+		// Estimated memory consumption for each block metadata: the block, the handle and memory of its buffer,
+		// which outlive the eviction of the buffer, and its node in the map.
+		static constexpr idx_t BLOCK_METADATA_SIZE =
+		    sizeof(CacheBlock) + sizeof(BlockHandle) + sizeof(BlockMemory) + 64;
 		// Filepath is stored at two places: in the object cache key and in the cached file object.
 		// We do over-estimation on memory consumption, which assumes the whole file is cached.
 		return cached_file->path.size() * 2 + num_blocks * BLOCK_METADATA_SIZE;
@@ -382,19 +379,22 @@ shared_ptr<ExternalFileCache::CachedFile> ExternalFileCache::GetOrCreateCachedFi
 }
 
 void ExternalFileCache::UpdateCachedFileMemory(CachedFile &cached_file, bool file_size_changed) {
+	if (!ShouldCacheFile(cached_file.path)) {
+		return;
+	}
 	{
 		const annotated_lock_guard<annotated_mutex> map_guard(cached_file.map_lock);
 		// reserving again once the number of blocks doubled keeps the estimate within a factor of two of it
-		if (!file_size_changed && cached_file.blocks.size() <= 2 * cached_file.reserved_blocks) {
+		const idx_t num_blocks = cached_file.blocks.size();
+		if (!file_size_changed && num_blocks <= 2 * cached_file.reserved_blocks.load()) {
 			return;
 		}
-		cached_file.reserved_blocks = cached_file.blocks.size();
+		cached_file.reserved_blocks = num_blocks;
 	}
 	auto &object_cache = buffer_manager.GetDatabase().GetObjectCache();
 	auto entry = object_cache.GetWithTypePrefix<ExternalFileCacheObjectCacheEntry>(cached_file.path);
 	if (entry && entry->GetCachedFile().get() == &cached_file) {
-		// putting the entry again reserves the memory of its current estimate
-		object_cache.PutWithTypePrefix<ExternalFileCacheObjectCacheEntry>(cached_file.path, std::move(entry));
+		object_cache.UpdateReservationWithTypePrefix<ExternalFileCacheObjectCacheEntry>(cached_file.path, *entry);
 	}
 }
 

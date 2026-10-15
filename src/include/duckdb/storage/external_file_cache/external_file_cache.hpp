@@ -76,8 +76,8 @@ public:
 		map<idx_t, shared_ptr<CacheBlock>> blocks DUCKDB_GUARDED_BY(map_lock);
 		//! Incremented whenever the blocks of the file are dropped.
 		idx_t content_generation DUCKDB_GUARDED_BY(map_lock) = 0;
-		//! The number of blocks the memory reserved for this file was last estimated with.
-		idx_t reserved_blocks DUCKDB_GUARDED_BY(map_lock) = 0;
+		//! The number of blocks the memory reserved for this file is estimated with, read without the map lock.
+		atomic<idx_t> reserved_blocks {0};
 
 		mutable annotated_mutex meta_lock;
 		//! Metadata for validating the cached blocks against the current file.

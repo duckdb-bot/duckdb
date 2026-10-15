@@ -463,7 +463,8 @@ public:
 		auto &read_ahead = *gstate.read_ahead;
 		idx_t file_index = gstate.file_index;
 		bool progress_guaranteed = false;
-		while (!progress_guaranteed || read_ahead.CanScheduleOpen()) {
+		idx_t files_open_ahead = 0;
+		while (!progress_guaranteed || read_ahead.CanScheduleOpen(files_open_ahead)) {
 			const bool has_file_to_read = file_index < gstate.readers.size();
 			if (!has_file_to_read && !TryGetNextFile(gstate, parallel_lock)) {
 				return;
@@ -489,11 +490,13 @@ public:
 					    });
 				}
 				progress_guaranteed = true;
+				files_open_ahead++;
 				break;
 			case MultiFileFileState::OPENING:
 			case MultiFileFileState::OPEN:
 				// the front file is already being/been opened - forward progress is guaranteed
 				progress_guaranteed = true;
+				files_open_ahead++;
 				break;
 			default:
 				break; // SKIPPED / CLOSED - keep scanning ahead
@@ -785,7 +788,7 @@ public:
 		if (!bind_data.interface->SupportsReadAhead(bind_data)) {
 			return;
 		}
-		gstate.read_ahead = ScanReadAhead::Create(context);
+		gstate.read_ahead = ScanReadAhead::Create(context, true);
 	}
 
 	static unique_ptr<GlobalTableFunctionState> MultiFileInitGlobal(ClientContext &context,

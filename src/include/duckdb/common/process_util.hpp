@@ -9,6 +9,7 @@
 #pragma once
 
 #include "duckdb/common/constants.hpp"
+#include "duckdb/common/optional_idx.hpp"
 
 namespace duckdb {
 class FileSystem;
@@ -24,6 +25,8 @@ struct ProcessUtil {
 	//! Best-effort description of a process - its name, and its owner where we can get it - for
 	//! error messages. Empty when the platform cannot say.
 	DUCKDB_API static string GetProcessDescription(FileSystem &fs, int64_t pid);
+	//! The soft limit on the open file descriptors of this process, invalid when there is none
+	DUCKDB_API static optional_idx GetFileDescriptorLimit();
 };
 
 } // namespace duckdb

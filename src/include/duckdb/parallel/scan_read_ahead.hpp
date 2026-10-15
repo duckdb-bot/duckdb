@@ -137,7 +137,8 @@ public:
 
 	//! Create the read-ahead driver from the read_ahead_depth setting, returns null when read-ahead is disabled.
 	//! -1 means automatic mode, unlimited depth with the backlog bounded by a temp-memory reservation.
-	static unique_ptr<ScanReadAhead> Create(ClientContext &context);
+	//! With jobs_hold_files, every queued job keeps a file open, so the open window bounds the queued jobs too.
+	static unique_ptr<ScanReadAhead> Create(ClientContext &context, bool jobs_hold_files = false);
 
 public:
 	//! Claims the next job and schedules its I/O, filling io_tasks when the I/O was detached to the pool.
@@ -158,8 +159,8 @@ public:
 	//! Schedule a file-open closure on the async pool, opening files ahead of decoding
 	//! cancel_fn runs instead when the open is retired without running, and must settle whatever a scan waits on
 	void ScheduleFileOpen(std::function<void()> open_fn, std::function<void()> cancel_fn);
-	//! Whether another file-open may be scheduled without exceeding the open-ahead window
-	bool CanScheduleOpen() const;
+	//! Whether another file-open fits the window, given the files not yet assigned to jobs that are opening or open
+	bool CanScheduleOpen(idx_t files_open_ahead) const;
 	//! Run one queued async task inline, returns false when none is queued
 	bool TryRunPendingTask();
 	//! Throw the first error recorded on the async executor, if there is one
@@ -234,8 +235,10 @@ private:
 	const idx_t read_ahead_depth;
 	//! Async memory governor
 	unique_ptr<ManagedAsyncMemoryGovernor> memory_governor;
-	//! Maximum file-opens scheduled ahead of decoding on the async pool
+	//! Maximum files being opened, open, or held by queued jobs ahead of decoding
 	const idx_t open_window;
+	//! Maximum jobs queued ahead of decoding, besides the depth and the budget
+	idx_t max_queued_jobs = NumericLimits<idx_t>::Maximum();
 	//! Backlog budget granted by the reservation, refreshed whenever a job is pushed
 	atomic<idx_t> backlog_budget {0};
 

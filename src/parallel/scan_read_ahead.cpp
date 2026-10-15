@@ -1,6 +1,7 @@
 
 #include "duckdb/parallel/scan_read_ahead.hpp"
 
+#include "duckdb/common/process_util.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/logging/log_type.hpp"
 #include "duckdb/logging/logger.hpp"
@@ -122,11 +123,22 @@ private:
 
 ScanReadAheadJob::~ScanReadAheadJob() = default;
 
+static idx_t GetOpenWindow(ClientContext &context, idx_t read_ahead_depth, bool has_memory_governor) {
+	auto window = MaxValue<idx_t>(TaskScheduler::GetScheduler(context).NumberOfAsyncThreads() * 2,
+	                              has_memory_governor ? 0 : read_ahead_depth);
+	// files opened ahead hold file descriptors, so keep to the share of the limit the HTTP client pool takes
+	auto file_descriptor_limit = ProcessUtil::GetFileDescriptorLimit();
+	if (file_descriptor_limit.IsValid()) {
+		window = MinValue<idx_t>(window, file_descriptor_limit.GetIndex() / 8);
+	}
+	// the async pool can shrink to no threads after the scan checked it
+	return MaxValue<idx_t>(window, 1);
+}
+
 ScanReadAhead::ScanReadAhead(ClientContext &context, idx_t read_ahead_depth_p,
                              unique_ptr<ManagedAsyncMemoryGovernor> memory_governor_p)
     : context(context), read_ahead_depth(read_ahead_depth_p), memory_governor(std::move(memory_governor_p)),
-      open_window(MaxValue<idx_t>(TaskScheduler::GetScheduler(context).NumberOfAsyncThreads() * 2,
-                                  memory_governor ? 0 : read_ahead_depth)) {
+      open_window(GetOpenWindow(context, read_ahead_depth, memory_governor != nullptr)) {
 	D_ASSERT(read_ahead_depth_p > 0);
 	backlog_budget = memory_governor ? memory_governor->BackpressureBudget() : NumericLimits<idx_t>::Maximum();
 	pending_opens = make_shared_ptr<atomic<idx_t>>(0);
@@ -141,7 +153,7 @@ void ScanReadAhead::CancelAndDrain() {
 	executor->CancelAndDrain();
 }
 
-unique_ptr<ScanReadAhead> ScanReadAhead::Create(ClientContext &context) {
+unique_ptr<ScanReadAhead> ScanReadAhead::Create(ClientContext &context, bool jobs_hold_files) {
 	if (TaskScheduler::GetScheduler(context).NumberOfAsyncThreads() == 0) {
 		// read-ahead schedules its I/O on the async pool, without async threads there is nothing to gain
 		return nullptr;
@@ -150,12 +162,18 @@ unique_ptr<ScanReadAhead> ScanReadAhead::Create(ClientContext &context) {
 	if (configured_depth == 0) {
 		return nullptr;
 	}
+	unique_ptr<ScanReadAhead> result;
 	if (configured_depth < 0) {
 		// automatic mode, unlimited depth, the backlog is bounded by a temp-memory reservation instead
-		return make_uniq<ScanReadAhead>(context, NumericLimits<idx_t>::Maximum(),
-		                                make_uniq<ManagedAsyncMemoryGovernor>(context));
+		result = make_uniq<ScanReadAhead>(context, NumericLimits<idx_t>::Maximum(),
+		                                  make_uniq<ManagedAsyncMemoryGovernor>(context));
+	} else {
+		result = make_uniq<ScanReadAhead>(context, NumericCast<idx_t>(configured_depth), nullptr);
 	}
-	return make_uniq<ScanReadAhead>(context, NumericCast<idx_t>(configured_depth), nullptr);
+	if (jobs_hold_files) {
+		result->max_queued_jobs = result->open_window;
+	}
+	return result;
 }
 
 bool ScanReadAhead::TryProduceJob(const ProduceJobCallback &claim_and_schedule) {
@@ -272,13 +290,13 @@ void ScanReadAhead::SetDone() {
 
 idx_t ScanReadAhead::ReservationDepth() const {
 	// over budget one job stays queued, claimed jobs hold the budget until their task resumes
-	return pending_io_bytes.load() >= backlog_budget.load() ? 1 : read_ahead_depth;
+	return pending_io_bytes.load() >= backlog_budget.load() ? 1 : MinValue(read_ahead_depth, max_queued_jobs);
 }
 
 bool ScanReadAhead::TryReserveSlot() {
 	// take the minimum job charge up front so concurrent producers cannot all pass the budget check together
 	const bool over_budget = pending_io_bytes.fetch_add(MINIMUM_JOB_IO_CHARGE) >= backlog_budget.load();
-	const idx_t depth = over_budget ? 1 : read_ahead_depth;
+	const idx_t depth = over_budget ? 1 : MinValue(read_ahead_depth, max_queued_jobs);
 	if (active_jobs.fetch_add(1) >= depth) {
 		--active_jobs;
 		pending_io_bytes -= MINIMUM_JOB_IO_CHARGE;
@@ -340,8 +358,9 @@ void ScanReadAhead::ScheduleFileOpen(std::function<void()> open_fn, std::functio
 	executor->ScheduleTask(make_uniq<FileOpenTask>(*executor, pending_opens, std::move(open_fn), std::move(cancel_fn)));
 }
 
-bool ScanReadAhead::CanScheduleOpen() const {
-	return pending_opens->load() < open_window;
+bool ScanReadAhead::CanScheduleOpen(idx_t files_open_ahead) const {
+	// open files and the files of queued jobs keep their handles until the scan finishes them
+	return pending_opens->load() < open_window && files_open_ahead + active_jobs.load() < open_window;
 }
 
 bool ScanReadAhead::TryRunPendingTask() {

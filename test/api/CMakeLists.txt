@@ -12,6 +12,7 @@ add_subdirectory(cpp)
 set(TEST_API_OBJECTS
     test_api.cpp
     test_multi_file_column_mapper.cpp
+    test_read_ahead_open_files.cpp
     test_process_util.cpp
     test_remove_directory_extended.cpp
     test_temporary_file_owner.cpp

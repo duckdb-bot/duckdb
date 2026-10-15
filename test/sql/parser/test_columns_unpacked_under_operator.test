@@ -25,6 +25,13 @@ SELECT (list_value(*COLUMNS(*)))[1] FROM t ORDER BY ALL;
 1
 NULL
 
+# an operator next to the unpacked columns
+query I
+SELECT COALESCE(*COLUMNS(*), CASE WHEN a IS NULL THEN 42 END) FROM t ORDER BY ALL;
+----
+1
+42
+
 # the operator itself still cannot take the unpacked columns
 statement error
 SELECT NOT (*COLUMNS(*)) FROM t;

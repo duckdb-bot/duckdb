@@ -79,7 +79,7 @@ static void ReplaceInOperator(unique_ptr<ParsedExpression> &expr, expression_lis
 		has_unpacked_child |= StarExpression::IsColumnsUnpacked(*child);
 	}
 	if (!has_unpacked_child) {
-		// *COLUMNS() is deeper, in a child that unpacks it
+		// only an operator with a direct unpacked child is checked
 		return;
 	}
 

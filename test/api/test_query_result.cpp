@@ -1197,15 +1197,17 @@ TEST_CASE("Every state ends a query when an end error is internal or the log fai
 		second->fail_end = true;
 		second->fatal = test_case == 1;
 		second->internal = test_case != 1;
-		string end_error;
+		ErrorData end_error;
 		try {
 			con.Query("SELECT 42");
 		} catch (std::exception &ex) {
-			end_error = ex.what();
+			end_error = ErrorData(ex);
 		}
-		// the fatal error is thrown, else the first one
-		REQUIRE(
-		    StringUtil::Contains(end_error, test_case == 2 ? "internal query end failure" : "fatal query end failure"));
+		// the fatal error is thrown, else the internal one
+		auto expected_type = test_case == 2 ? ExceptionType::INTERNAL : ExceptionType::FATAL;
+		REQUIRE(end_error.Type() == expected_type);
+		REQUIRE(StringUtil::Contains(end_error.RawMessage(),
+		                             test_case == 2 ? "internal query end failure" : "fatal query end failure"));
 		REQUIRE(a->begins == a->ends);
 		REQUIRE(b->begins == b->ends);
 		auto invalidated = con.Query("SELECT 42");

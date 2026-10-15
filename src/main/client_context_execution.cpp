@@ -152,7 +152,7 @@ ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success,
 		if (severity > 1) {
 			ValidChecker::Invalidate(DatabaseInstance::GetDatabase(*this), step_error.RawMessage());
 		}
-		// the most severe error is thrown, the first of them
+		// keep the first error at the highest severity
 		if (severity > end_error_severity) {
 			end_error = std::move(step_error);
 			end_error_severity = severity;

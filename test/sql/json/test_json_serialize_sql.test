@@ -247,3 +247,9 @@ query I
 SELECT json_serialize_sql($$PIVOT (VALUES ('a', 1), ('b', 2)) t(k, v) ON k IN ('a', 'b') USING sum(v)$$)->>'error';
 ----
 false
+
+# another statement that expands into several keeps the general error
+query I
+SELECT json_serialize_sql($$ALTER TABLE t ADD COLUMN x DOUBLE DEFAULT random()$$)->>'error_message';
+----
+Only SELECT statements can be serialized to json!

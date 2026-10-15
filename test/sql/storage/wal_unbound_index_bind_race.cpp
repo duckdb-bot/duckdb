@@ -15,13 +15,13 @@ using namespace duckdb;
 
 namespace {
 
-//! Holds an armed bind of slow_bind until the writer has committed while it binds
+//! Holds an armed bind of slow_bind until the writer has committed while a second lookup waits for the bind
 struct BindGate {
 	mutex lock;
 	std::condition_variable cv;
 	bool armed = false;
 	bool bind_started = false;
-	bool binding = false;
+	bool counting = false;
 	idx_t commits_while_binding = 0;
 	string wal_size_while_binding;
 };
@@ -40,9 +40,10 @@ unique_ptr<FunctionData> SlowBindBind(BindScalarFunctionInput &input) {
 		}
 		gate.armed = false;
 		gate.bind_started = true;
-		gate.binding = true;
 		gate.cv.notify_all();
-		gate.cv.wait_for(guard, std::chrono::seconds(10), [&]() { return gate.commits_while_binding >= 2; });
+		gate.cv.wait_for(guard, std::chrono::seconds(10),
+		                 [&]() { return gate.counting && gate.commits_while_binding >= 2; });
+		gate.counting = false;
 	}
 	// the bind holds the index entry while it reads the database from another connection
 	Connection con(*input.GetClientContext().db);
@@ -52,7 +53,6 @@ unique_ptr<FunctionData> SlowBindBind(BindScalarFunctionInput &input) {
 	}
 	lock_guard<mutex> guard(gate.lock);
 	gate.wal_size_while_binding = result->Collection().GetValue(0, 0).ToString();
-	gate.binding = false;
 	return nullptr;
 }
 
@@ -113,6 +113,7 @@ TEST_CASE("A commit that may checkpoint does not wait on a concurrent index bind
 			lock_guard<mutex> guard(gate.lock);
 			gate.armed = true;
 			gate.bind_started = false;
+			gate.counting = false;
 			gate.commits_while_binding = 0;
 			gate.wal_size_while_binding = string();
 		}
@@ -128,7 +129,7 @@ TEST_CASE("A commit that may checkpoint does not wait on a concurrent index bind
 					return;
 				}
 				lock_guard<mutex> guard(gate.lock);
-				if (gate.binding) {
+				if (gate.counting) {
 					gate.commits_while_binding++;
 					gate.cv.notify_all();
 				}
@@ -141,9 +142,14 @@ TEST_CASE("A commit that may checkpoint does not wait on a concurrent index bind
 			unique_lock<mutex> guard(gate.lock);
 			gate.cv.wait_for(guard, std::chrono::seconds(10), [&]() { return gate.bind_started; });
 		}
-		// the second lookup waits for the first one to bind the indexes
+		// the second lookup waits for the first one to bind the indexes, holding the index list while it waits
 		duckdb::unique_ptr<QueryResult> second_result;
 		std::thread second_thread([&]() { second_result = second.Query(KeyQuery(lookup_key)); });
+		std::this_thread::sleep_for(std::chrono::milliseconds(100));
+		{
+			lock_guard<mutex> guard(gate.lock);
+			gate.counting = true;
+		}
 		first_thread.join();
 		second_thread.join();
 		lookups_done = true;

@@ -334,21 +334,16 @@ string IndexEntry::GetIndexType() const {
 }
 
 bool IndexEntry::HasBufferedReplays() const {
-	switch (GetBindState()) {
-	case IndexBindState::BOUND:
-	case IndexBindState::RETIRED:
+	auto state = GetBindState();
+	if (state == IndexBindState::BOUND || state == IndexBindState::RETIRED) {
 		return false;
-	case IndexBindState::BINDING:
-		// the replays are applied to the bound index before it replaces the unbound one
-		return true;
-	default:
-		break;
 	}
 	// a busy entry counts as having replays, so that a commit holding the transaction lock does not wait on it
 	auto entry_lock = lock.TryGetExclusiveLock();
 	if (!entry_lock) {
 		return true;
 	}
+	// the unbound index keeps its replays until the bound index replaces it, also when the bind failed
 	if (!owned_index || owned_index->IsBound()) {
 		return false;
 	}

@@ -62,6 +62,8 @@ enum class RemoveDirectoryMode : uint8_t {
 
 struct CreateDirectoryOptions {
 	CreateDirectoryMode mode = CreateDirectoryMode::SINGLE;
+	//! Only the owner can use the directory, as FILE_FLAGS_PRIVATE for files (the target of a recursive creation)
+	bool private_directory = false;
 };
 
 struct RemoveDirectoryOptions {

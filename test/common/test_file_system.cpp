@@ -16,6 +16,7 @@
 #include "test_helpers.hpp"
 #if (!defined(_WIN32) && !defined(WIN32))
 #define TEST_HAVE_SYMLINK
+#include <sys/stat.h>
 #include <unistd.h>
 #else
 #include "duckdb/common/windows.hpp"
@@ -271,6 +272,43 @@ TEST_CASE("RemoveDirectoryExtended never removes directory contents in single mo
 	REQUIRE(!fs.DirectoryExists(directory));
 	REQUIRE(!fs.RemoveDirectoryExtended(directory, {RemoveDirectoryMode::SINGLE}));
 }
+
+#ifndef _WIN32
+TEST_CASE("Directories get the permissions the umask leaves like files", "[file_system]") {
+	LocalFileSystem fs;
+	auto directory = TestCreatePath("umask_directory");
+	auto nested = fs.JoinPath(fs.JoinPath(directory, "a"), "b");
+	auto file = fs.JoinPath(directory, "file");
+	auto previous_umask = umask(002);
+	fs.CreateDirectory(directory);
+	fs.CreateDirectoriesRecursive(nested);
+	fs.OpenFile(file, FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE).reset();
+	umask(previous_umask);
+	auto permissions = [](const string &path) {
+		struct stat st;
+		REQUIRE(stat(path.c_str(), &st) == 0);
+		return st.st_mode & 0777;
+	};
+	REQUIRE(permissions(directory) == 0775);
+	REQUIRE(permissions(nested) == 0775);
+	REQUIRE(permissions(file) == 0664);
+
+	// a private directory is for its owner only, also the directory of persistent secrets
+	auto private_directory = fs.JoinPath(fs.JoinPath(directory, "c"), "private");
+	auto secret_directory = fs.JoinPath(directory, "secrets");
+	DuckDB db(nullptr);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("SET secret_directory = '" + secret_directory + "'"));
+	previous_umask = umask(002);
+	fs.CreateDirectoryExtended(private_directory, {CreateDirectoryMode::RECURSIVE, true});
+	auto created_secret = con.Query("CREATE PERSISTENT SECRET s (TYPE http, BEARER_TOKEN 'x')");
+	umask(previous_umask);
+	REQUIRE_NO_FAIL(*created_secret);
+	REQUIRE(permissions(fs.JoinPath(directory, "c")) == 0775);
+	REQUIRE(permissions(private_directory) == 0700);
+	REQUIRE(permissions(secret_directory) == 0700);
+}
+#endif
 
 TEST_CASE("Extended directory operations report target ownership", "[file_system]") {
 	ExistingDirectoryFileSystem existing_directory_fs;

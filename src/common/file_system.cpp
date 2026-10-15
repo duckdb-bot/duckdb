@@ -555,7 +555,9 @@ bool FileSystem::CreateDirectoryExtended(const string &directory, const CreateDi
 
 		bool target_created = false;
 		for (auto riter = directories.rbegin(); riter != directories.rend(); ++riter) {
-			auto created = CreateDirectoryExtended(*riter, {CreateDirectoryMode::SINGLE}, opener);
+			CreateDirectoryOptions single_options;
+			single_options.private_directory = options.private_directory && *riter == directories.front();
+			auto created = CreateDirectoryExtended(*riter, single_options, opener);
 			if (*riter == directories.front()) {
 				target_created = created;
 			}

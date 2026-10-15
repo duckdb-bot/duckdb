@@ -22,3 +22,12 @@ query I
 SELECT date_part(['week', 'isoyear', 'yearweek'], DATE '5877642-06-25 (BC)');
 ----
 {'week': 26, 'isoyear': -5877641, 'yearweek': -587764126}
+
+# the first days of the next year belong to the last ISO week of the first year
+query IIIII
+SELECT d, isoyear(d), weekofyear(d), yearweek(d), strftime(d, '%U %W')
+FROM (VALUES (DATE '5877641-01-01 (BC)'), (DATE '5877641-01-03 (BC)'), (DATE '5877641-01-04 (BC)')) t(d) ORDER BY d;
+----
+5877641-01-01 (BC)	-5877641	53	-587764153	00 00
+5877641-01-03 (BC)	-5877641	53	-587764153	01 00
+5877641-01-04 (BC)	-5877640	1	-587764001	01 01

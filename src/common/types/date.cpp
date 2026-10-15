@@ -495,30 +495,14 @@ int64_t Date::ExtractJulianDay(date_t date) {
 	return date.days - JULIAN_EPOCH;
 }
 
+//! 1 for a Monday to 7 for a Sunday, also for a day number outside of the DATE range
+static int32_t GetISODayOfTheWeek(int64_t days) {
+	// day 0 is 1970-01-01, a Thursday
+	return int32_t(((days % 7) + 10) % 7) + 1;
+}
+
 int32_t Date::ExtractISODayOfTheWeek(date_t date) {
-	// date of 0 is 1970-01-01, which was a Thursday (4)
-	// -7 = 4
-	// -6 = 5
-	// -5 = 6
-	// -4 = 7
-	// -3 = 1
-	// -2 = 2
-	// -1 = 3
-	// 0  = 4
-	// 1  = 5
-	// 2  = 6
-	// 3  = 7
-	// 4  = 1
-	// 5  = 2
-	// 6  = 3
-	// 7  = 4
-	if (date.days < 0) {
-		// negative date: start off at 4 and cycle downwards
-		return UnsafeNumericCast<int32_t>((7 - ((-int64_t(date.days) + 3) % 7)));
-	} else {
-		// positive date: start off at 4 and cycle upwards
-		return UnsafeNumericCast<int32_t>(((int64_t(date.days) + 3) % 7) + 1);
-	}
+	return GetISODayOfTheWeek(date.days);
 }
 
 template <typename T>
@@ -542,12 +526,6 @@ static int64_t GetJanuaryFirst(int32_t year) {
 	}
 	// the calendar repeats every 400 years
 	return int64_t(Date::FromDate(year + Date::YEAR_INTERVAL, 1, 1).days) - Date::DAYS_PER_YEAR_INTERVAL;
-}
-
-//! 1 for a Monday to 7 for a Sunday, as Date::ExtractISODayOfTheWeek
-static int32_t GetISODayOfTheWeek(int64_t days) {
-	// day 0 is 1970-01-01, a Thursday
-	return int32_t(((days % 7) + 10) % 7) + 1;
 }
 
 static int64_t GetISOWeekOne(int32_t year) {

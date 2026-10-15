@@ -12,6 +12,8 @@
 #include "duckdb/main/appender.hpp"
 #include "duckdb/main/prepared_statement_data.hpp"
 #include "duckdb/main/query_result_stream.hpp"
+#include "duckdb/logging/log_manager.hpp"
+#include "duckdb/logging/log_storage.hpp"
 #include "result_wait_helpers.hpp"
 #include "test_result_format.hpp"
 
@@ -965,6 +967,19 @@ public:
 	idx_t ends = 0;
 };
 
+//! Fails the end of a query with an internal error when asked
+class InternalQueryEnd : public ClientContextState {
+public:
+	void QueryEnd(ClientContext &context, optional_ptr<ErrorData> error) override {
+		if (fail) {
+			fail = false;
+			throw InternalException("query end failed");
+		}
+	}
+
+	bool fail = false;
+};
+
 TEST_CASE("A query whose begin failed ends its transaction", "[api][query_result]") {
 	DuckDB db(nullptr);
 	Connection con(db);
@@ -1118,6 +1133,77 @@ TEST_CASE("Every state ends a query when the end of one fails", "[api][query_res
 	auto invalidated = con.Query("SELECT 42");
 	REQUIRE(invalidated->HasError());
 	REQUIRE(StringUtil::Contains(invalidated->GetError(), "database has been invalidated"));
+}
+
+//! A log storage whose flush fails when asked
+class FailingLogStorage : public LogStorage {
+public:
+	void WriteLogEntry(timestamp_t timestamp, LogLevel level, const string &log_type, const string &log_message,
+	                   const RegisteredLoggingContext &context) override {
+	}
+	void WriteLogEntries(DataChunk &chunk, const RegisteredLoggingContext &context) override {
+	}
+	void Flush(LoggingTargetTable table) override {
+		FailIfAsked();
+	}
+	void FlushAll() override {
+		FailIfAsked();
+	}
+	bool IsEnabled(LoggingTargetTable table) override {
+		return table == LoggingTargetTable::ALL_LOGS;
+	}
+	const string GetStorageName() override {
+		return "FailingLogStorage";
+	}
+
+	bool fail = false;
+
+private:
+	void FailIfAsked() {
+		if (fail) {
+			fail = false;
+			throw IOException("log flush failed");
+		}
+	}
+};
+
+TEST_CASE("Every state ends a query when an end error is internal or the log fails", "[api][query_result]") {
+	for (idx_t internal_first = 0; internal_first < 2; internal_first++) {
+		DuckDB db(nullptr);
+		Connection con(db);
+		auto fatal_state = make_shared_ptr<CountingQueryState>();
+		auto internal_state = make_shared_ptr<InternalQueryEnd>();
+		// swapping the names of the two states tries both orders of their ends
+		con.context->registered_state->Insert(internal_first ? "a_state" : "b_state", fatal_state);
+		con.context->registered_state->Insert(internal_first ? "b_state" : "a_state", internal_state);
+		fatal_state->fail_end = true;
+		fatal_state->fatal = true;
+		internal_state->fail = true;
+		REQUIRE_THROWS(con.Query("SELECT 42"));
+		REQUIRE(fatal_state->begins == fatal_state->ends);
+		auto invalidated = con.Query("SELECT 42");
+		REQUIRE(invalidated->HasError());
+		REQUIRE(StringUtil::Contains(invalidated->GetError(), "database has been invalidated"));
+	}
+
+	DuckDB db(nullptr);
+	Connection con(db);
+	auto state = make_shared_ptr<CountingQueryState>();
+	con.context->registered_state->Insert("counting_query_state", state);
+	auto log_storage = make_shared_ptr<FailingLogStorage>();
+	duckdb::shared_ptr<LogStorage> base_storage = log_storage;
+	db.instance->GetLogManager().RegisterLogStorage("failing_log_storage", base_storage);
+	REQUIRE_NO_FAIL(con.Query("SET enable_logging = true"));
+	REQUIRE_NO_FAIL(con.Query("SET logging_storage = 'failing_log_storage'"));
+	log_storage->fail = true;
+	try {
+		con.Query("SELECT 42");
+	} catch (std::exception &) {
+	}
+	REQUIRE(!log_storage->fail);
+	REQUIRE(state->begins == state->ends);
+	auto next = con.Query("SELECT 42");
+	REQUIRE(CHECK_COLUMN(next, 0, {42}));
 }
 
 TEST_CASE("An appender is refused while a result is open", "[api][query_result]") {

@@ -50,7 +50,7 @@ public:
 	bool inside_submission = false;
 	//! Whether QueryBegin completed successfully on every registered state
 	bool began_on_all_states = false;
-	//! The states QueryBegin completed successfully on, while it has not on all of them
+	//! States whose QueryBegin completed, cleared after all of them completed
 	vector<shared_ptr<ClientContextState>> begun_states;
 
 public:

@@ -138,20 +138,32 @@ ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success,
 		error = ErrorData("Unhandled exception!");
 	} // LCOV_EXCL_STOP
 
+	// the query ends on every state also when ending the profiler, the logger or one of the states fails
 	ErrorData end_error;
+	auto add_end_error = [&](std::exception &ex) {
+		ErrorData step_error(ex);
+		if (Exception::InvalidatesDatabase(step_error.Type()) || step_error.Type() == ExceptionType::INTERNAL) {
+			ValidChecker::Invalidate(DatabaseInstance::GetDatabase(*this), step_error.RawMessage());
+		}
+		end_error.Merge(step_error);
+	};
 	try {
 		client_data->profiler->EndQuery();
 	} catch (std::exception &ex) {
-		end_error = ErrorData(ex);
+		add_end_error(ex);
 	}
 
 	// Refresh the logger
-	logger->Flush();
+	try {
+		logger->Flush();
+	} catch (std::exception &ex) {
+		add_end_error(ex);
+	}
 	LoggingContext context(LogContextScope::CONNECTION);
 	context.connection_id = connection_id;
 	logger = db->GetLogManager().CreateLogger(context, true);
 
-	// Notify any registered state of query end - all of them, also when one of them fails
+	// Notify any registered state of query end
 	auto end_states = began_on_all_states ? registered_state->States() : std::move(begun_states);
 	for (auto const &s : end_states) {
 		try {
@@ -161,7 +173,7 @@ ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success,
 				s->QueryEnd(*this, previous_error);
 			}
 		} catch (std::exception &ex) {
-			end_error.Merge(ErrorData(ex));
+			add_end_error(ex);
 		}
 	}
 	if (end_error.HasError()) {

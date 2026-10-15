@@ -103,8 +103,8 @@ struct UnionColumn {
 	ArrowArray array {};
 };
 
-// Scans the column and returns the error, or compares the scan with the query if there is none
-string ScanColumn(ArrowSchema &col_schema, ArrowArray &col_array, const string &query) {
+// Scans the column, the result holds the error when the scan fails
+unique_ptr<QueryResult> ScanColumn(Connection &con, ArrowSchema &col_schema, ArrowArray &col_array) {
 	ArrowSchema *schema_children[1] = {&col_schema};
 	ArrowSchema record_schema {};
 	record_schema.format = "+s";
@@ -124,29 +124,36 @@ string ScanColumn(ArrowSchema &col_schema, ArrowArray &col_array, const string &
 
 	ArrowArrayStream stream {};
 	AdbcError err {};
-	if (duckdb_adbc::BatchToArrayStream(&record_array, &record_schema, &stream, &err) != ADBC_STATUS_OK) {
-		return "failed to create the stream";
-	}
-	DuckDB db(nullptr);
-	Connection con(db);
-	if (query.empty()) {
-		try {
-			auto result =
-			    con.TableFunction("arrow_scan", {}, {}, ArrowTestHelper::ConstructArrowScan(stream))->Execute();
-			return result->HasError() ? result->GetError() : string();
-		} catch (std::exception &ex) {
-			return ErrorData(ex).Message();
-		}
-	}
-	return ArrowTestHelper::RunArrowComparison(con, query, stream) ? string() : "the scan does not match the query";
+	REQUIRE(duckdb_adbc::BatchToArrayStream(&record_array, &record_schema, &stream, &err) == ADBC_STATUS_OK);
+	return con.TableFunction("arrow_scan", {}, {}, ArrowTestHelper::ConstructArrowScan(stream))->Execute();
 }
 
+// Compares the rows of the scan with those of the query, in order
 bool ScanMatches(ArrowSchema &col_schema, ArrowArray &col_array, const string &query) {
-	return ScanColumn(col_schema, col_array, query).empty();
+	DuckDB db(nullptr);
+	Connection con(db);
+	auto result = ScanColumn(con, col_schema, col_array);
+	auto expected = con.Query(query);
+	return !result->HasError() && result->Equals(*expected, false);
 }
 
 string ScanError(ArrowSchema &col_schema, ArrowArray &col_array) {
-	return ScanColumn(col_schema, col_array, string());
+	DuckDB db(nullptr);
+	Connection con(db);
+	auto result = ScanColumn(con, col_schema, col_array);
+	return result->HasError() ? result->GetError() : string();
+}
+
+// The error of converting the schema to a DuckDB type, which a scan raises before it takes the stream
+string SchemaError(ArrowSchema &col_schema) {
+	DuckDB db(nullptr);
+	Connection con(db);
+	try {
+		ArrowType::GetArrowLogicalType(*con.context, col_schema);
+	} catch (std::exception &ex) {
+		return ErrorData(ex).Message();
+	}
+	return string();
 }
 
 } // namespace arrow_union_offset_test
@@ -174,18 +181,34 @@ TEST_CASE("Arrow scan of a sparse union with custom type ids", "[arrow]") {
 	    swapped.schema, swapped.array,
 	    "SELECT u FROM (VALUES (union_value(i := 101)::UNION(d INT, i INT)), (union_value(i := 102)::UNION(d INT, i "
 	    "INT)), (union_value(d := 10)::UNION(d INT, i INT))) t(u)"));
+
+	// the largest type id, and type ids with leading zeros
+	arrow_union_offset_test::UnionColumn largest({0, 127}, 0, "+us:127,0");
+	REQUIRE(arrow_union_offset_test::ScanMatches(
+	    largest.schema, largest.array,
+	    "SELECT u FROM (VALUES (union_value(i := 100)::UNION(d INT, i INT)), (union_value(d := 20)::UNION(d INT, i "
+	    "INT))) t(u)"));
+	arrow_union_offset_test::UnionColumn padded({1, 0}, 0, "+us:00,01");
+	REQUIRE(arrow_union_offset_test::ScanMatches(
+	    padded.schema, padded.array,
+	    "SELECT u FROM (VALUES (union_value(i := 100)::UNION(d INT, i INT)), (union_value(d := 20)::UNION(d INT, i "
+	    "INT))) t(u)"));
 }
 
 TEST_CASE("Arrow scan of a sparse union with invalid type ids", "[arrow]") {
 	arrow_union_offset_test::UnionColumn unknown_id({5, 6}, 0, "+us:5,7");
 	REQUIRE(StringUtil::Contains(arrow_union_offset_test::ScanError(unknown_id.schema, unknown_id.array),
 	                             "type id 6 does not belong to a union member"));
+	arrow_union_offset_test::UnionColumn negative_id({5, -1}, 0, "+us:5,7");
+	REQUIRE(StringUtil::Contains(arrow_union_offset_test::ScanError(negative_id.schema, negative_id.array),
+	                             "type id -1 does not belong to a union member"));
 
-	const char *invalid_formats[] = {"+us:5", "+us:5,7,9", "+us:5,5", "+us:-1,0", "+us:5,x", "+us:5,128", "+us:"};
+	const char *invalid_formats[] = {"+us:5",   "+us:5,7,9", "+us:5,5",  "+us:-1,0",
+	                                 "+us:5,x", "+us:5,128", "+us:5, 7", "+us:"};
 	for (auto format : invalid_formats) {
 		INFO(format);
 		arrow_union_offset_test::UnionColumn col({5, 5}, 0, format);
-		REQUIRE(StringUtil::Contains(arrow_union_offset_test::ScanError(col.schema, col.array),
-		                             "Invalid Input Error: Arrow union"));
+		REQUIRE(
+		    StringUtil::Contains(arrow_union_offset_test::SchemaError(col.schema), "Invalid Input Error: Arrow union"));
 	}
 }

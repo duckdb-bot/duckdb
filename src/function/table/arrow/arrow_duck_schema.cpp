@@ -1,7 +1,6 @@
 #include "duckdb/function/table/arrow/arrow_duck_schema.hpp"
 #include "duckdb/common/arrow/arrow.hpp"
 #include "duckdb/common/exception.hpp"
-#include "duckdb/common/operator/cast_operators.hpp"
 
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/arrow/schema_metadata.hpp"
@@ -218,6 +217,25 @@ unique_ptr<ArrowType> ArrowType::GetTypeFromFormat(string &format) {
 	return nullptr;
 }
 
+// Arrow union type ids are decimal numbers from 0 to 127
+static bool TryParseUnionTypeId(const string &type_id_string, int8_t &result) {
+	if (type_id_string.empty()) {
+		return false;
+	}
+	idx_t type_id = 0;
+	for (auto c : type_id_string) {
+		if (!StringUtil::CharacterIsDigit(c)) {
+			return false;
+		}
+		type_id = type_id * 10 + NumericCast<idx_t>(c - '0');
+		if (type_id > NumericCast<idx_t>(NumericLimits<int8_t>::Maximum())) {
+			return false;
+		}
+	}
+	result = NumericCast<int8_t>(type_id);
+	return true;
+}
+
 unique_ptr<ArrowType> ArrowType::GetTypeFromFormat(ClientContext &context, ArrowSchema &schema, string &format) {
 	auto type = GetTypeFromFormat(format);
 
@@ -276,7 +294,7 @@ unique_ptr<ArrowType> ArrowType::GetTypeFromFormat(ClientContext &context, Arrow
 		vector<int8_t> type_ids;
 		for (auto &type_id_string : type_id_strings) {
 			int8_t type_id;
-			if (!TryCast::Operation(string_t(type_id_string), type_id, true)) {
+			if (!TryParseUnionTypeId(type_id_string, type_id)) {
 				throw InvalidInputException("Arrow union format \"%s\" has an invalid type id", format);
 			}
 			type_ids.push_back(type_id);

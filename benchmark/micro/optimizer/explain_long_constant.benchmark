@@ -7,7 +7,7 @@ group micro
 subgroup optimizer
 
 load
-CREATE TABLE t AS SELECT range::VARCHAR AS s FROM range(10);
+CREATE TABLE t AS SELECT * FROM (VALUES ('a'), ('b')) v(s);
 
 run
 EXPLAIN SELECT s FROM t WHERE s = repeat('a', 10000000);

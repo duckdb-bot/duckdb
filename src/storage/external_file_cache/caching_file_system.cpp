@@ -353,7 +353,7 @@ shared_ptr<FileHandle> CachingFileHandle::GetFileHandle() {
 		}
 	}
 	if (file_size_changed) {
-		external_file_cache.UpdateCachedFileMemory(*cached_file, true);
+		external_file_cache.UpdateCachedFileMemory(*cached_file, validation_info.file_size);
 	}
 	return file_handle;
 }
@@ -410,7 +410,7 @@ FileBufferHandleGroup CachingFileHandle::Read(const idx_t nr_bytes, const idx_t 
 	fetch_end = MinValue(fetch_end, file_size);
 	auto blocks = external_file_cache.AcquireBlocks(*current_cached_file, fetch_location, fetch_end - fetch_location,
 	                                                max_block_size);
-	external_file_cache.UpdateCachedFileMemory(*current_cached_file, false);
+	external_file_cache.UpdateCachedFileMemory(*current_cached_file, file_size);
 	const idx_t num_blocks = blocks.size();
 
 	// Schedule block fetch tasks for all blocks.

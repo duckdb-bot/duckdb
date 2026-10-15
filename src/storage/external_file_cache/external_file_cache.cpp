@@ -69,15 +69,8 @@ public:
 	}
 
 	optional_idx GetEstimatedCacheMemory() const override {
-		idx_t file_size = 0;
-		{
-			const annotated_lock_guard<annotated_mutex> meta_guard(cached_file->meta_lock);
-			file_size = cached_file->validation_info.file_size;
-		}
-		const idx_t block_size = cache.GetCacheMaxBlockSize(cached_file->path);
-		// reads smaller than the maximum block size leave more blocks
-		const idx_t num_blocks =
-		    MaxValue<idx_t>((file_size + block_size - 1) / block_size, cached_file->reserved_blocks.load());
+		// read without the locks of the file, since the object cache lock is held
+		const idx_t num_blocks = cached_file->reserved_blocks.load();
 		// Estimated memory consumption for each block metadata: the block, the handle and memory of its buffer,
 		// which outlive the eviction of the buffer, and its node in the map.
 		static constexpr idx_t BLOCK_METADATA_SIZE =
@@ -378,15 +371,18 @@ shared_ptr<ExternalFileCache::CachedFile> ExternalFileCache::GetOrCreateCachedFi
 	}
 }
 
-void ExternalFileCache::UpdateCachedFileMemory(CachedFile &cached_file, bool file_size_changed) {
+void ExternalFileCache::UpdateCachedFileMemory(CachedFile &cached_file, idx_t file_size) {
 	if (!ShouldCacheFile(cached_file.path)) {
 		return;
 	}
+	const idx_t block_size = GetCacheMaxBlockSize(cached_file.path);
 	{
 		const annotated_lock_guard<annotated_mutex> map_guard(cached_file.map_lock);
-		// reserving again once the number of blocks doubled keeps the estimate within a factor of two of it
-		const idx_t num_blocks = cached_file.blocks.size();
-		if (!file_size_changed && num_blocks <= 2 * cached_file.reserved_blocks.load()) {
+		// reads smaller than the maximum block size leave more blocks than the file size needs
+		const idx_t num_blocks = MaxValue<idx_t>((file_size + block_size - 1) / block_size, cached_file.blocks.size());
+		// reserving again only when the number of blocks doubled or halved keeps the estimate within a factor of two
+		const idx_t reserved_blocks = cached_file.reserved_blocks.load();
+		if (num_blocks <= 2 * reserved_blocks && 2 * num_blocks >= reserved_blocks) {
 			return;
 		}
 		cached_file.reserved_blocks = num_blocks;

@@ -1,0 +1,22 @@
+# name: test/sql/settings/http_proxy_https.test
+# description: A proxy with an https URL is refused with an error that names the scheme
+# group: [settings]
+
+statement ok
+SET extension_directory = '{TEST_DIR}/http_proxy_https';
+
+statement ok
+SET http_proxy = 'https://proxy.example.com:3128';
+
+statement error
+INSTALL some_extension;
+----
+http_proxy 'https://proxy.example.com:3128' uses https, which is not supported
+
+statement ok
+SET http_proxy = 'HTTPS://proxy.example.com';
+
+statement error
+INSTALL some_extension;
+----
+uses https, which is not supported

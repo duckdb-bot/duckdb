@@ -1,0 +1,50 @@
+# name: test/sql/copy/csv/test_union_by_name_generated_names.test
+# description: Generated column names match across files of different widths when reading with union_by_name
+# group: [csv]
+
+statement ok
+COPY (SELECT 1, 2, 3, 4, 5, 6, 7, 8, 9, 10) TO '{TEST_DIR}/generated_names_a.csv' (HEADER false, DELIMITER ';');
+
+statement ok
+COPY (SELECT 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12) TO '{TEST_DIR}/generated_names_b.csv' (HEADER false, DELIMITER ';');
+
+query I
+SELECT list(column_name) FROM (DESCRIBE SELECT * FROM read_csv(['{TEST_DIR}/generated_names_a.csv', '{TEST_DIR}/generated_names_b.csv'], header = false, delim = ';', union_by_name = true));
+----
+[column0, column1, column2, column3, column4, column5, column6, column7, column8, column9, column10, column11]
+
+query IIIIIIIIIIII
+SELECT * FROM read_csv(['{TEST_DIR}/generated_names_a.csv', '{TEST_DIR}/generated_names_b.csv'], header = false, delim = ';', union_by_name = true) ORDER BY ALL;
+----
+1	2	3	4	5	6	7	8	9	10	11	12
+1	2	3	4	5	6	7	8	9	10	NULL	NULL
+
+# names generated after the user given names
+query I
+SELECT list(column_name) FROM (DESCRIBE SELECT * FROM read_csv(['{TEST_DIR}/generated_names_a.csv', '{TEST_DIR}/generated_names_b.csv'], header = false, delim = ';', union_by_name = true, names = ['a', 'b']));
+----
+[a, b, column2, column3, column4, column5, column6, column7, column8, column9, column10, column11]
+
+query IIII
+SELECT a, column9, column10, column11 FROM read_csv(['{TEST_DIR}/generated_names_a.csv', '{TEST_DIR}/generated_names_b.csv'], header = false, delim = ';', union_by_name = true, names = ['a', 'b']) ORDER BY ALL;
+----
+1	10	11	12
+1	10	NULL	NULL
+
+# names generated for empty header fields
+statement ok
+COPY (SELECT 'x' AS a, '' AS b, 'z' AS c, '' AS d, '' AS e, '' AS f, '' AS g, '' AS h, '' AS i, '' AS j UNION ALL SELECT '1', '2', '3', '4', '5', '6', '7', '8', '9', '10') TO '{TEST_DIR}/generated_names_c.csv' (HEADER false, DELIMITER ';');
+
+statement ok
+COPY (SELECT 'x' AS a, '' AS b, 'z' AS c, '' AS d, '' AS e, '' AS f, '' AS g, '' AS h, '' AS i, '' AS j, '' AS k, 'y' AS l UNION ALL SELECT '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12') TO '{TEST_DIR}/generated_names_d.csv' (HEADER false, DELIMITER ';');
+
+query I
+SELECT list(column_name) FROM (DESCRIBE SELECT * FROM read_csv(['{TEST_DIR}/generated_names_c.csv', '{TEST_DIR}/generated_names_d.csv'], header = true, delim = ';', union_by_name = true));
+----
+[x, column1, z, column3, column4, column5, column6, column7, column8, column9, column10, y]
+
+# a single file read without union_by_name keeps the padded names
+query I
+SELECT list(column_name) FROM (DESCRIBE SELECT * FROM read_csv('{TEST_DIR}/generated_names_b.csv', header = false, delim = ';'));
+----
+[column00, column01, column02, column03, column04, column05, column06, column07, column08, column09, column10, column11]

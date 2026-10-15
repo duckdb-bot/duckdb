@@ -23,11 +23,11 @@ struct TruncatedFraction {
 	//! Whether the time is 24:00:00, which cannot be rounded up
 	bool at_end_of_day = false;
 
-	//! Whether any of them is not zero
+	//! Whether any discarded digit is not zero
 	bool Inexact() const {
 		return first_digit != 0 || rest_inexact;
 	}
-	//! Whether they round the fraction up to the nearest value, a tie only when ties_up is set
+	//! Whether the discarded digits round the fraction up, a tie only when ties_up is set
 	bool RoundsUp(bool ties_up) const {
 		return first_digit > 5 || (first_digit == 5 && (rest_inexact || ties_up));
 	}

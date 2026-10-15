@@ -168,7 +168,7 @@ bool Time::TryConvertInternal(const char *buf, idx_t len, idx_t &pos, dtime_t &r
 	return true;
 }
 
-//! The time of a timestamp, with a tie rounded away from zero like a time, whatever the date
+//! Extract the time of a timestamp, rounding ties away from zero
 static bool TryConvertTimestampTime(const char *buf, idx_t len, bool use_offset, optional_ptr<int32_t> nanos,
                                     dtime_t &result) {
 	timestamp_t timestamp;

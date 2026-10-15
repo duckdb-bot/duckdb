@@ -60,15 +60,21 @@ public:
 
 public:
 	explicit ArrowStructInfo(vector<shared_ptr<ArrowType>> children);
+	//! A union, with the Arrow type id of each member
+	ArrowStructInfo(vector<shared_ptr<ArrowType>> children, const vector<int8_t> &union_type_ids);
 	~ArrowStructInfo() override;
 
 public:
 	idx_t ChildCount() const;
 	const ArrowType &GetChild(idx_t index) const;
 	const vector<shared_ptr<ArrowType>> &GetChildren() const;
+	//! The union member with the given Arrow type id
+	idx_t GetUnionMember(int8_t type_id) const;
 
 private:
 	vector<shared_ptr<ArrowType>> children;
+	//! The union member of each Arrow type id, or INVALID_INDEX
+	vector<idx_t> union_members;
 };
 
 struct ArrowDateTimeInfo : public ArrowTypeInfo {

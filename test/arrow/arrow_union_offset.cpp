@@ -1,4 +1,4 @@
-// Arrow scans of sparse unions with a nonzero offset, including dictionary-encoded members.
+// Arrow scans of sparse unions with a nonzero offset or custom type ids, including dictionary-encoded members.
 
 #include "catch.hpp"
 
@@ -21,10 +21,11 @@ void ReleaseArray(ArrowArray *a) {
 
 const int32_t DICT_VALUES[3] = {10, 20, 30};
 
-// Sparse UNION(d dict-encoded int32, i int32) with the given offset - slot j holds member type_ids[j],
+// Sparse UNION(d dict-encoded int32, i int32) with the given offset and format - slot j holds type id type_ids[j],
 // the dictionary member holds DICT_VALUES[j % 3] and the plain member holds 100 + j
 struct UnionColumn {
-	UnionColumn(const std::vector<int8_t> &type_ids_p, int64_t offset) : type_ids(type_ids_p) {
+	UnionColumn(const std::vector<int8_t> &type_ids_p, int64_t offset, const char *format = "+us:0,1")
+	    : type_ids(type_ids_p) {
 		auto slots = type_ids.size();
 		indices.resize(slots);
 		plain_values.resize(slots);
@@ -45,7 +46,7 @@ struct UnionColumn {
 		plain_schema.release = ReleaseSchema;
 		schema_children[0] = &dict_schema;
 		schema_children[1] = &plain_schema;
-		schema.format = "+us:0,1";
+		schema.format = format;
 		schema.name = "u";
 		schema.n_children = 2;
 		schema.children = schema_children;
@@ -72,6 +73,8 @@ struct UnionColumn {
 		plain_array.release = ReleaseArray;
 		array_children[0] = &dict_array;
 		array_children[1] = &plain_array;
+		// a third child, only used to test an array with more children than its schema
+		array_children[2] = &plain_array;
 		buffers[0] = type_ids.data();
 		array.length = int64_t(slots) - offset;
 		array.offset = offset;
@@ -91,7 +94,7 @@ struct UnionColumn {
 	const void *plain_buffers[2];
 	const void *buffers[1];
 	ArrowSchema *schema_children[2];
-	ArrowArray *array_children[2];
+	ArrowArray *array_children[3];
 	ArrowSchema dict_value_schema {};
 	ArrowSchema dict_schema {};
 	ArrowSchema plain_schema {};
@@ -102,7 +105,7 @@ struct UnionColumn {
 	ArrowArray array {};
 };
 
-bool ScanMatches(ArrowSchema &col_schema, ArrowArray &col_array, const string &query) {
+unique_ptr<QueryResult> ScanColumn(Connection &con, ArrowSchema &col_schema, ArrowArray &col_array) {
 	ArrowSchema *schema_children[1] = {&col_schema};
 	ArrowSchema record_schema {};
 	record_schema.format = "+s";
@@ -122,12 +125,36 @@ bool ScanMatches(ArrowSchema &col_schema, ArrowArray &col_array, const string &q
 
 	ArrowArrayStream stream {};
 	AdbcError err {};
-	if (duckdb_adbc::BatchToArrayStream(&record_array, &record_schema, &stream, &err) != ADBC_STATUS_OK) {
-		return false;
-	}
+	REQUIRE(duckdb_adbc::BatchToArrayStream(&record_array, &record_schema, &stream, &err) == ADBC_STATUS_OK);
+	return con.TableFunction("arrow_scan", {}, {}, ArrowTestHelper::ConstructArrowScan(stream))->Execute();
+}
+
+// Compares the rows of the scan with those of the query, in order
+bool ScanMatches(ArrowSchema &col_schema, ArrowArray &col_array, const string &query) {
 	DuckDB db(nullptr);
 	Connection con(db);
-	return ArrowTestHelper::RunArrowComparison(con, query, stream);
+	auto result = ScanColumn(con, col_schema, col_array);
+	auto expected = con.Query(query);
+	return !result->HasError() && result->Equals(*expected, false);
+}
+
+string ScanError(ArrowSchema &col_schema, ArrowArray &col_array) {
+	DuckDB db(nullptr);
+	Connection con(db);
+	auto result = ScanColumn(con, col_schema, col_array);
+	return result->HasError() ? result->GetError() : string();
+}
+
+// The error of converting the schema to a DuckDB type, which a scan raises before it takes the stream
+string SchemaError(ArrowSchema &col_schema) {
+	DuckDB db(nullptr);
+	Connection con(db);
+	try {
+		ArrowType::GetArrowLogicalType(*con.context, col_schema);
+	} catch (std::exception &ex) {
+		return ErrorData(ex).Message();
+	}
+	return string();
 }
 
 } // namespace arrow_union_offset_test
@@ -139,4 +166,76 @@ TEST_CASE("Arrow scan of a sparse union with a nonzero offset", "[arrow]") {
 	    col.schema, col.array,
 	    "SELECT u FROM (VALUES (union_value(d := 30)::UNION(d INT, i INT)), (union_value(i := 103)::UNION(d INT, i "
 	    "INT)), (union_value(d := 20)::UNION(d INT, i INT)), (union_value(d := 30)::UNION(d INT, i INT))) t(u)"));
+}
+
+TEST_CASE("Arrow scan of a sparse union with custom type ids", "[arrow]") {
+	// d has type id 5 and i has type id 7
+	arrow_union_offset_test::UnionColumn col({7, 5, 7, 5}, 0, "+us:5,7");
+	REQUIRE(arrow_union_offset_test::ScanMatches(
+	    col.schema, col.array,
+	    "SELECT u FROM (VALUES (union_value(i := 100)::UNION(d INT, i INT)), (union_value(d := 20)::UNION(d INT, i "
+	    "INT)), (union_value(i := 102)::UNION(d INT, i INT)), (union_value(d := 10)::UNION(d INT, i INT))) t(u)"));
+
+	// type ids that are member indexes in another order, with an offset
+	arrow_union_offset_test::UnionColumn swapped({1, 0, 0, 1}, 1, "+us:1,0");
+	REQUIRE(arrow_union_offset_test::ScanMatches(
+	    swapped.schema, swapped.array,
+	    "SELECT u FROM (VALUES (union_value(i := 101)::UNION(d INT, i INT)), (union_value(i := 102)::UNION(d INT, i "
+	    "INT)), (union_value(d := 10)::UNION(d INT, i INT))) t(u)"));
+
+	// custom type ids across several chunks
+	std::vector<int8_t> many_ids;
+	for (idx_t j = 0; j < 5000; j++) {
+		many_ids.push_back(j % 3 == 0 ? 7 : 5);
+	}
+	arrow_union_offset_test::UnionColumn many(many_ids, 0, "+us:5,7");
+	REQUIRE(arrow_union_offset_test::ScanMatches(
+	    many.schema, many.array,
+	    "SELECT CASE WHEN j % 3 = 0 THEN union_value(i := (100 + j)::INT)::UNION(d INT, i INT) ELSE union_value(d := "
+	    "[10, 20, 30][j % 3 + 1])::UNION(d INT, i INT) END FROM range(5000) t(j)"));
+
+	// the largest type id, and type ids with leading zeros
+	arrow_union_offset_test::UnionColumn largest({0, 127}, 0, "+us:127,0");
+	REQUIRE(arrow_union_offset_test::ScanMatches(
+	    largest.schema, largest.array,
+	    "SELECT u FROM (VALUES (union_value(i := 100)::UNION(d INT, i INT)), (union_value(d := 20)::UNION(d INT, i "
+	    "INT))) t(u)"));
+	arrow_union_offset_test::UnionColumn padded({1, 0}, 0, "+us:00,01");
+	REQUIRE(arrow_union_offset_test::ScanMatches(
+	    padded.schema, padded.array,
+	    "SELECT u FROM (VALUES (union_value(i := 100)::UNION(d INT, i INT)), (union_value(d := 20)::UNION(d INT, i "
+	    "INT))) t(u)"));
+}
+
+TEST_CASE("Arrow scan of a sparse union with invalid type ids", "[arrow]") {
+	arrow_union_offset_test::UnionColumn unknown_id({5, 6}, 0, "+us:5,7");
+	REQUIRE(StringUtil::Contains(arrow_union_offset_test::ScanError(unknown_id.schema, unknown_id.array),
+	                             "type id 6 does not belong to a union member"));
+	arrow_union_offset_test::UnionColumn negative_id({5, -1}, 0, "+us:5,7");
+	REQUIRE(StringUtil::Contains(arrow_union_offset_test::ScanError(negative_id.schema, negative_id.array),
+	                             "type id -1 does not belong to a union member"));
+
+	// arrays with fewer or more children than their schema has members
+	arrow_union_offset_test::UnionColumn child_count({1, 0}, 0);
+	child_count.array.n_children = 1;
+	DuckDB db(nullptr);
+	Connection con(db);
+	auto result = arrow_union_offset_test::ScanColumn(con, child_count.schema, child_count.array);
+	REQUIRE(StringUtil::Contains(result->GetError(), "Arrow union array has 1 children, but its schema has 2 members"));
+	REQUIRE_NO_FAIL(con.Query("SELECT 42"));
+	child_count.array.n_children = 0;
+	result = arrow_union_offset_test::ScanColumn(con, child_count.schema, child_count.array);
+	REQUIRE(StringUtil::Contains(result->GetError(), "Arrow union array has 0 children, but its schema has 2 members"));
+	child_count.array.n_children = 3;
+	result = arrow_union_offset_test::ScanColumn(con, child_count.schema, child_count.array);
+	REQUIRE(StringUtil::Contains(result->GetError(), "Arrow union array has 3 children, but its schema has 2 members"));
+
+	const char *invalid_formats[] = {"+us:5",     "+us:5,7,9", "+us:5,5",  "+us:05,005", "+us:-1,0", "+us:5,x",
+	                                 "+us:5,128", "+us:5, 7",  "+us:5,7,", "+us:5,,7",   "+us:"};
+	for (auto format : invalid_formats) {
+		INFO(format);
+		arrow_union_offset_test::UnionColumn col({5, 5}, 0, format);
+		REQUIRE(
+		    StringUtil::Contains(arrow_union_offset_test::SchemaError(col.schema), "Invalid Input Error: Arrow union"));
+	}
 }

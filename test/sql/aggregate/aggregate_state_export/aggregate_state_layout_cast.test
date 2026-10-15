@@ -79,7 +79,7 @@ statement ok
 CREATE TABLE list_states AS SELECT g, list(i) FILTER (WHERE i % 2 = 0) EXPORT_STATE AS s FROM (SELECT i % 3 AS g, i FROM range(9) r(i)) GROUP BY g;
 
 query II
-SELECT g, s::BIGINT[] FROM list_states ORDER BY g;
+SELECT g, list_sort(s::BIGINT[]) FROM list_states ORDER BY g;
 ----
 0	[0, 6]
 1	[4]

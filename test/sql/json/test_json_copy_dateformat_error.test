@@ -1,10 +1,10 @@
 # name: test/sql/json/test_json_copy_dateformat_error.test
-# description: Errors while formatting dates in COPY TO json are regular errors
+# description: Dates in COPY TO json with a DATEFORMAT, also the first date
 # group: [json]
 
 require json
 
-# the ISO year of the first date, whose January 1 comes before it, used to be an error
+# the ISO year of the first finite date
 statement ok
 COPY (SELECT '5877642-06-25 (BC)'::DATE d) TO '{TEMP_DIR}/json_dateformat_error.json' (DATEFORMAT '%G');
 

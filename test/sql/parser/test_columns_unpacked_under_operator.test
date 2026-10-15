@@ -1,0 +1,37 @@
+# name: test/sql/parser/test_columns_unpacked_under_operator.test
+# description: An operator may wrap a function that unpacks *COLUMNS(), but not take *COLUMNS() itself
+# group: [parser]
+
+statement ok
+CREATE TABLE t (a INTEGER, b INTEGER, c INTEGER);
+
+statement ok
+INSERT INTO t VALUES (1, NULL, 3), (NULL, NULL, NULL);
+
+query IIII
+SELECT COALESCE(*COLUMNS(*)) IS NOT NULL AS x, COALESCE(*COLUMNS(*)) IS NULL AS y, NOT (greatest(*COLUMNS(*)) > 2) AS z, COALESCE(a, b, c) IS NOT NULL AS expanded FROM t ORDER BY ALL;
+----
+false	true	NULL	false
+true	false	false	true
+
+query I
+SELECT count(*) FROM t WHERE NOT (COALESCE(*COLUMNS(['a', 'b'])) IS NULL);
+----
+1
+
+query I
+SELECT (list_value(*COLUMNS(*)))[1] FROM t ORDER BY ALL;
+----
+1
+NULL
+
+# the operator itself still cannot take the unpacked columns
+statement error
+SELECT NOT (*COLUMNS(*)) FROM t;
+----
+*COLUMNS() can not be used together with the 'OPERATOR_NOT' operator
+
+statement error
+SELECT NOT (*COLUMNS(*) IS NULL) FROM t;
+----
+*COLUMNS() can not be used together with the 'OPERATOR_IS_NULL' operator

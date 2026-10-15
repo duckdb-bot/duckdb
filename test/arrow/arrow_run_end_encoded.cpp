@@ -233,7 +233,8 @@ struct ListColumn {
 	ArrowArray array {};
 };
 
-bool ScanMatches(ArrowSchema &col_schema, ArrowArray &col_array, const string &query) {
+// Compares the scan of the column with the query, in order and with the types when ordered is set.
+bool ScanMatches(ArrowSchema &col_schema, ArrowArray &col_array, const string &query, bool ordered = false) {
 	ArrowSchema *schema_children[1] = {&col_schema};
 	ArrowSchema record_schema {};
 	record_schema.format = "+s";
@@ -258,7 +259,13 @@ bool ScanMatches(ArrowSchema &col_schema, ArrowArray &col_array, const string &q
 	}
 	DuckDB db(nullptr);
 	Connection con(db);
-	return ArrowTestHelper::RunArrowComparison(con, query, stream);
+	if (!ordered) {
+		return ArrowTestHelper::RunArrowComparison(con, query, stream);
+	}
+	auto result = con.TableFunction("arrow_scan", {}, {}, ArrowTestHelper::ConstructArrowScan(stream))->Execute();
+	stream.release = nullptr;
+	auto expected = con.Query(query);
+	return result->Equals(*expected, false);
 }
 
 } // namespace arrow_run_end_encoded_test
@@ -304,11 +311,11 @@ TEST_CASE("Arrow scan of a run-end encoded dictionary column with NULL runs acro
 	arrow_run_end_encoded_test::RunEndDictionaryColumn col({1000, 3000, 5000}, {1, 0, 0}, {1});
 	REQUIRE(arrow_run_end_encoded_test::ScanMatches(
 	    col.schema, col.array,
-	    "SELECT CASE WHEN r < 1000 THEN 'y' WHEN r < 3000 THEN NULL ELSE 'x' END FROM range(5000) t(r)"));
+	    "SELECT CASE WHEN r < 1000 THEN 'y' WHEN r < 3000 THEN NULL ELSE 'x' END FROM range(5000) t(r)", true));
 }
 
 TEST_CASE("Arrow scan of a run-end encoded dictionary column whose dictionary is run-end encoded", "[arrow]") {
 	arrow_run_end_encoded_test::RunEndDictionaryColumn col({2, 4, 6}, {0, 1, 0}, {}, true);
-	REQUIRE(arrow_run_end_encoded_test::ScanMatches(col.schema, col.array,
-	                                                "SELECT * FROM (VALUES ('x'), ('x'), ('y'), ('y'), ('x'), ('x'))"));
+	REQUIRE(arrow_run_end_encoded_test::ScanMatches(
+	    col.schema, col.array, "SELECT * FROM (VALUES ('x'), ('x'), ('y'), ('y'), ('x'), ('x'))", true));
 }

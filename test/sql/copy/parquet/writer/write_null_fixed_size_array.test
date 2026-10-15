@@ -92,3 +92,17 @@ query I
 SELECT count(*) FROM '{TEST_DIR}/null_array_large.parquet' WHERE c0 IS DISTINCT FROM CASE WHEN i % 5 = 0 THEN NULL ELSE [CASE WHEN i % 2 = 0 THEN NULL ELSE 'x' || i END, 'y']::VARCHAR[2] END;
 ----
 0
+
+# long strings, format version 2 and small row groups
+statement ok
+COPY (SELECT i, CASE WHEN i % 5 = 0 THEN NULL ELSE [CASE WHEN i % 2 = 0 THEN NULL ELSE repeat('x', 100) || i END, 'y']::VARCHAR[2] END AS c0 FROM range(5000) t(i)) TO '{TEST_DIR}/null_array_v2.parquet' (FORMAT PARQUET, PARQUET_VERSION v2, ROW_GROUP_SIZE 1000);
+
+query I
+SELECT sum(num_values) FROM parquet_metadata('{TEST_DIR}/null_array_v2.parquet') WHERE path_in_schema LIKE 'c0%';
+----
+9000
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/null_array_v2.parquet' WHERE c0 IS DISTINCT FROM CASE WHEN i % 5 = 0 THEN NULL ELSE [CASE WHEN i % 2 = 0 THEN NULL ELSE repeat('x', 100) || i END, 'y']::VARCHAR[2] END;
+----
+0

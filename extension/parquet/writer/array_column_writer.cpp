@@ -16,7 +16,7 @@
 namespace duckdb {
 
 static idx_t GetValidArrayChildren(Vector &array, Vector &result, idx_t count) {
-	// returns the child entries of the arrays that are not NULL, a NULL array has no child entries in Parquet
+	// NULL arrays have no child entries in Parquet
 	auto array_size = ArrayType::GetSize(array.GetType());
 	auto &validity = FlatVector::Validity(array);
 	if (validity.CannotHaveNull()) {
@@ -32,8 +32,7 @@ static idx_t GetValidArrayChildren(Vector &array, Vector &result, idx_t count) {
 			sel.set_index(child_count++, row * array_size + k);
 		}
 	}
-	result.Slice(sel, child_count);
-	result.Flatten();
+	result.Flatten(sel, child_count);
 	return child_count;
 }
 
@@ -68,8 +67,7 @@ void ArrayColumnWriter::Prepare(ColumnWriterState &state_p, ColumnWriterState *p
 	auto &validity = FlatVector::ValidityMutable(vector);
 
 	// write definition levels and repeats
-	// the main difference between this and ListColumnWriter::Prepare is that an array that is not NULL always has
-	// array_size child elements
+	// unlike a list, an array that is not NULL always has array_size child elements
 	idx_t vcount = parent ? parent->definition_levels.size() - state.parent_index : count;
 	idx_t vector_index = 0;
 	for (idx_t i = 0; i < vcount; i++) {

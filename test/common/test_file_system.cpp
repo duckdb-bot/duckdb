@@ -16,6 +16,7 @@
 #include "test_helpers.hpp"
 #if (!defined(_WIN32) && !defined(WIN32))
 #define TEST_HAVE_SYMLINK
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #else
@@ -274,39 +275,58 @@ TEST_CASE("RemoveDirectoryExtended never removes directory contents in single mo
 }
 
 #ifndef _WIN32
+//! Sets the umask while it lives
+struct ScopedUmask {
+	explicit ScopedUmask(mode_t mask) : previous(umask(mask)) {
+	}
+	~ScopedUmask() {
+		umask(previous);
+	}
+	mode_t previous;
+};
+
+static mode_t GetPermissions(const string &path) {
+	struct stat st;
+	REQUIRE(stat(path.c_str(), &st) == 0);
+	return st.st_mode & 07777;
+}
+
 TEST_CASE("Directories get the permissions the umask leaves like files", "[file_system]") {
 	LocalFileSystem fs;
 	auto directory = TestCreatePath("umask_directory");
+	fs.CreateDirectory(directory);
 	auto nested = fs.JoinPath(fs.JoinPath(directory, "a"), "b");
 	auto file = fs.JoinPath(directory, "file");
-	auto previous_umask = umask(002);
-	fs.CreateDirectory(directory);
-	fs.CreateDirectoriesRecursive(nested);
-	fs.OpenFile(file, FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE).reset();
-	umask(previous_umask);
-	auto permissions = [](const string &path) {
-		struct stat st;
-		REQUIRE(stat(path.c_str(), &st) == 0);
-		return st.st_mode & 0777;
-	};
-	REQUIRE(permissions(directory) == 0775);
-	REQUIRE(permissions(nested) == 0775);
-	REQUIRE(permissions(file) == 0664);
-
-	// a private directory is for its owner only, also the directory of persistent secrets
 	auto private_directory = fs.JoinPath(fs.JoinPath(directory, "c"), "private");
-	auto secret_directory = fs.JoinPath(directory, "secrets");
+	auto secret_directory = fs.JoinPath(fs.JoinPath(directory, "d"), "secrets");
+	// what mkdir and open make of the modes for any file, under the umask and a default ACL of the test directory
+	auto reference_directory = fs.JoinPath(directory, "reference_directory");
+	auto reference_private = fs.JoinPath(directory, "reference_private");
+	auto reference_file = fs.JoinPath(directory, "reference_file");
 	DuckDB db(nullptr);
 	Connection con(db);
 	REQUIRE_NO_FAIL(con.Query("SET secret_directory = '" + secret_directory + "'"));
-	previous_umask = umask(002);
-	fs.CreateDirectoryExtended(private_directory, {CreateDirectoryMode::RECURSIVE, true});
-	auto created_secret = con.Query("CREATE PERSISTENT SECRET s (TYPE http, BEARER_TOKEN 'x')");
-	umask(previous_umask);
-	REQUIRE_NO_FAIL(*created_secret);
-	REQUIRE(permissions(fs.JoinPath(directory, "c")) == 0775);
-	REQUIRE(permissions(private_directory) == 0700);
-	REQUIRE(permissions(secret_directory) == 0700);
+	{
+		ScopedUmask scoped_umask(002);
+		REQUIRE(mkdir(reference_directory.c_str(), 0777) == 0);
+		REQUIRE(mkdir(reference_private.c_str(), 0700) == 0);
+		auto fd = open(reference_file.c_str(), O_WRONLY | O_CREAT, 0666);
+		REQUIRE(fd >= 0);
+		close(fd);
+
+		fs.CreateDirectoriesRecursive(nested);
+		fs.OpenFile(file, FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE).reset();
+		fs.CreateDirectoryExtended(private_directory, {CreateDirectoryMode::RECURSIVE, true});
+		REQUIRE_NO_FAIL(con.Query("CREATE PERSISTENT SECRET s (TYPE http, BEARER_TOKEN 'x')"));
+	}
+	REQUIRE(GetPermissions(fs.JoinPath(directory, "a")) == GetPermissions(reference_directory));
+	REQUIRE(GetPermissions(nested) == GetPermissions(reference_directory));
+	REQUIRE(GetPermissions(file) == GetPermissions(reference_file));
+	// a private directory is for its owner only, with the directories created for it, as the persistent secrets
+	REQUIRE(GetPermissions(fs.JoinPath(directory, "c")) == GetPermissions(reference_private));
+	REQUIRE(GetPermissions(private_directory) == GetPermissions(reference_private));
+	REQUIRE(GetPermissions(fs.JoinPath(directory, "d")) == GetPermissions(reference_private));
+	REQUIRE(GetPermissions(secret_directory) == GetPermissions(reference_private));
 }
 #endif
 

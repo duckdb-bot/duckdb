@@ -43,6 +43,30 @@ SELECT list(column_name) FROM (DESCRIBE SELECT * FROM read_csv(['{TEST_DIR}/gene
 ----
 [x, column1, z, column3, column4, column5, column6, column7, column8, column9, column10, y]
 
+query IIII
+SELECT x, column9, column10, y FROM read_csv(['{TEST_DIR}/generated_names_c.csv', '{TEST_DIR}/generated_names_d.csv'], header = true, delim = ';', union_by_name = true) ORDER BY ALL;
+----
+1	10	11	12
+1	10	NULL	NULL
+
+# names generated for the columns after a short header
+statement ok
+COPY (SELECT 'x' AS a UNION ALL SELECT '1;2;3;4;5;6;7;8;9;10') TO '{TEST_DIR}/generated_names_e.csv' (HEADER false, QUOTE '');
+
+statement ok
+COPY (SELECT 'x' AS a UNION ALL SELECT '1;2;3;4;5;6;7;8;9;10;11;12') TO '{TEST_DIR}/generated_names_f.csv' (HEADER false, QUOTE '');
+
+query I
+SELECT list(column_name) FROM (DESCRIBE SELECT * FROM read_csv(['{TEST_DIR}/generated_names_e.csv', '{TEST_DIR}/generated_names_f.csv'], header = true, delim = ';', null_padding = true, union_by_name = true));
+----
+[x, column1, column2, column3, column4, column5, column6, column7, column8, column9, column10, column11]
+
+query IIII
+SELECT x, column9, column10, column11 FROM read_csv(['{TEST_DIR}/generated_names_e.csv', '{TEST_DIR}/generated_names_f.csv'], header = true, delim = ';', null_padding = true, union_by_name = true) ORDER BY ALL;
+----
+1	10	11	12
+1	10	NULL	NULL
+
 # a single file read without union_by_name keeps the padded names
 query I
 SELECT list(column_name) FROM (DESCRIBE SELECT * FROM read_csv('{TEST_DIR}/generated_names_b.csv', header = false, delim = ';'));

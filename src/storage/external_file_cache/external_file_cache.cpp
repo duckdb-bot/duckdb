@@ -71,7 +71,7 @@ public:
 	optional_idx GetEstimatedCacheMemory() const override {
 		// read without the locks of the file, since the object cache lock is held
 		const idx_t num_blocks = cached_file->reserved_blocks.load();
-		// a block keeps its handle and buffer memory after eviction, and takes about 64 bytes in the map
+		// a block keeps its handle and buffer metadata after eviction, and takes about 64 bytes in the map
 		static constexpr idx_t BLOCK_METADATA_SIZE =
 		    sizeof(CacheBlock) + sizeof(BlockHandle) + sizeof(BlockMemory) + 64;
 		// Filepath is stored at two places: in the object cache key and in the cached file object.
@@ -370,9 +370,6 @@ shared_ptr<ExternalFileCache::CachedFile> ExternalFileCache::GetOrCreateCachedFi
 }
 
 void ExternalFileCache::UpdateCachedFileMemory(CachedFile &cached_file) {
-	if (!ShouldCacheFile(cached_file.path)) {
-		return;
-	}
 	{
 		const annotated_lock_guard<annotated_mutex> map_guard(cached_file.map_lock);
 		const idx_t num_blocks = cached_file.blocks.size();

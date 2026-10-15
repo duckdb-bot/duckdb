@@ -29,6 +29,9 @@ struct BufferPoolPayload {
 	idx_t GetWeight() const {
 		return reservation->size;
 	}
+	void Resize(idx_t new_size) {
+		reservation->Resize(new_size);
+	}
 	unique_ptr<BufferPoolReservation> reservation;
 };
 
@@ -140,20 +143,14 @@ public:
 		lru_cache.Put(std::move(key), std::move(value), std::move(reservation));
 	}
 
-	//! Reserve the memory of an entry again with its current estimate, if the key still holds that entry
+	//! Resize the reservation of an entry to its current estimate, if the key still holds that entry
 	void UpdateReservation(const string &key, const ObjectCacheEntry &entry) {
 		const lock_guard<mutex> lock(lock_mutex);
-		auto existing = lru_cache.Get(key);
-		if (existing.get() != &entry) {
-			return;
-		}
-		const auto estimated_memory = existing->GetEstimatedCacheMemory();
+		const auto estimated_memory = entry.GetEstimatedCacheMemory();
 		if (!estimated_memory.IsValid()) {
 			return;
 		}
-		auto reservation =
-		    make_uniq<TempBufferPoolReservation>(MemoryTag::OBJECT_CACHE, buffer_pool, estimated_memory.GetIndex());
-		lru_cache.Put(key, std::move(existing), std::move(reservation));
+		lru_cache.ResizePayload(key, entry, estimated_memory.GetIndex());
 	}
 
 	void Delete(const string &key) {

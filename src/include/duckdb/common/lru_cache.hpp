@@ -87,6 +87,20 @@ public:
 		return true;
 	}
 
+	// Resize the payload of the entry with key `key` in place, if that entry holds `value`.
+	// Return whether it was resized.
+	bool ResizePayload(const Key &key, const Val &value, idx_t new_weight) {
+		auto it = entry_map.find(key);
+		if (it == entry_map.end() || it->second.value.get() != &value) {
+			return false;
+		}
+		auto &entry = it->second;
+		entry.payload->Resize(new_weight);
+		current_total_weight = current_total_weight - entry.payload_weight + new_weight;
+		entry.payload_weight = new_weight;
+		return true;
+	}
+
 	// Look up the entry with key `key`. Return nullptr if not found.
 	shared_ptr<Val> Get(const Key &key) {
 		auto entry_map_iter = entry_map.find(key);

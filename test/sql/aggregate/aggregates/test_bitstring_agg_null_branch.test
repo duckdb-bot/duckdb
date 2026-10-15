@@ -27,3 +27,24 @@ query I
 SELECT count(*) FROM (SELECT NULL::INTEGER AS x) WHERE x IS NULL;
 ----
 1
+
+query I
+SELECT bitstring_agg(arg)::VARCHAR FROM (SELECT NULL AS arg UNION ALL SELECT 2 UNION ALL SELECT 4);
+----
+101
+
+# only NULLs give NULL, as a column of only NULLs does
+query I
+SELECT bitstring_agg(arg) FROM (SELECT NULL::INTEGER AS arg UNION ALL SELECT NULL);
+----
+NULL
+
+query II
+SELECT min(x), max(x) FROM (SELECT NULL::DOUBLE AS x UNION ALL SELECT 2.5 UNION ALL SELECT -1.5);
+----
+-1.5	2.5
+
+query I
+SELECT count(*) FROM (SELECT NULL::DOUBLE AS x UNION ALL SELECT 2.5) WHERE x > 2;
+----
+1

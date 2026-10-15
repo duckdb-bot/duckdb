@@ -23,9 +23,29 @@
 
 namespace duckdb {
 
-void ExpressionBinder::ReplaceMacroParametersInLambda(FunctionExpression &function,
-                                                      vector<identifier_set_t> &lambda_params) {
+//! The comparison of a name = value argument, which a table function can read as a named parameter
+static optional_ptr<ComparisonExpression> GetNamedParameter(ParsedExpression &argument) {
+	if (argument.GetExpressionType() != ExpressionType::COMPARE_EQUAL) {
+		return nullptr;
+	}
+	auto &comparison = argument.Cast<ComparisonExpression>();
+	if (comparison.Left().GetExpressionType() != ExpressionType::COLUMN_REF ||
+	    comparison.Left().Cast<ColumnRefExpression>().IsQualified()) {
+		return nullptr;
+	}
+	return comparison;
+}
+
+void ExpressionBinder::ReplaceMacroParametersInArguments(FunctionExpression &function,
+                                                         vector<identifier_set_t> &lambda_params,
+                                                         bool named_parameters) {
 	for (auto &child : function.GetArgumentsMutable()) {
+		auto named_parameter = named_parameters ? GetNamedParameter(*child.GetExpressionMutable()) : nullptr;
+		if (named_parameter) {
+			// the name is not a macro parameter
+			ReplaceMacroParameters(named_parameter->RightMutable(), lambda_params);
+			continue;
+		}
 		if (child.GetExpression().GetExpressionClass() != ExpressionClass::LAMBDA) {
 			ReplaceMacroParameters(child.GetExpressionMutable(), lambda_params);
 			continue;
@@ -82,7 +102,8 @@ static bool TakesNamedParameters(Binder &binder, FunctionExpression &function) {
 }
 
 void ExpressionBinder::ReplaceMacroParameters(QueryNode &node, vector<identifier_set_t> &lambda_params) {
-	// the table functions that read name = value as a named parameter, whose name is not a macro parameter
+	// the table functions with a name = value argument whose name is also a macro parameter, and that read it as a
+	// named parameter
 	reference_set_t<const ParsedExpression> named_parameter_functions;
 	ParsedExpressionIterator::EnumerateQueryNodeChildren(
 	    node, [](unique_ptr<ParsedExpression> &child) {},
@@ -90,11 +111,20 @@ void ExpressionBinder::ReplaceMacroParameters(QueryNode &node, vector<identifier
 		    if (ref.type != TableReferenceType::TABLE_FUNCTION) {
 			    return;
 		    }
-		    auto &function = ref.Cast<TableFunctionRef>().function;
-		    if (function->GetExpressionClass() == ExpressionClass::FUNCTION &&
-		        !function->Cast<FunctionExpression>().IsLambdaFunction() &&
-		        TakesNamedParameters(binder, function->Cast<FunctionExpression>())) {
-			    named_parameter_functions.insert(*function);
+		    auto &function_expr = ref.Cast<TableFunctionRef>().function;
+		    if (function_expr->GetExpressionClass() != ExpressionClass::FUNCTION) {
+			    return;
+		    }
+		    auto &function = function_expr->Cast<FunctionExpression>();
+		    for (auto &argument : function.GetArgumentsMutable()) {
+			    auto named_parameter = GetNamedParameter(*argument.GetExpressionMutable());
+			    if (named_parameter && macro_binding->HasMatchingBinding(
+			                               named_parameter->Left().Cast<ColumnRefExpression>().GetColumnName())) {
+				    if (TakesNamedParameters(binder, function)) {
+					    named_parameter_functions.insert(function);
+				    }
+				    return;
+			    }
 		    }
 	    });
 	ParsedExpressionIterator::EnumerateQueryNodeChildren(node, [&](unique_ptr<ParsedExpression> &child) {
@@ -102,18 +132,7 @@ void ExpressionBinder::ReplaceMacroParameters(QueryNode &node, vector<identifier
 			ReplaceMacroParameters(child, lambda_params);
 			return;
 		}
-		for (auto &argument : child->Cast<FunctionExpression>().GetArgumentsMutable()) {
-			auto &argument_expr = argument.GetExpressionMutable();
-			if (argument_expr->GetExpressionType() == ExpressionType::COMPARE_EQUAL) {
-				auto &comparison = argument_expr->Cast<ComparisonExpression>();
-				if (comparison.Left().GetExpressionType() == ExpressionType::COLUMN_REF &&
-				    !comparison.Left().Cast<ColumnRefExpression>().IsQualified()) {
-					ReplaceMacroParameters(comparison.RightMutable(), lambda_params);
-					continue;
-				}
-			}
-			ReplaceMacroParameters(argument_expr, lambda_params);
-		}
+		ReplaceMacroParametersInArguments(child->Cast<FunctionExpression>(), lambda_params, true);
 	});
 }
 
@@ -148,7 +167,7 @@ void ExpressionBinder::ReplaceMacroParameters(unique_ptr<ParsedExpression> &expr
 		// Special-handling for lambdas, which are inside function expressions.
 		auto &function = expr->Cast<FunctionExpression>();
 		if (function.IsLambdaFunction()) {
-			return ReplaceMacroParametersInLambda(function, lambda_params);
+			return ReplaceMacroParametersInArguments(function, lambda_params, false);
 		}
 		break;
 	}

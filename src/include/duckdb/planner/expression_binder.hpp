@@ -227,8 +227,9 @@ public:
 	//! Replaces macro parameters in the expressions of a query node.
 	void ReplaceMacroParameters(QueryNode &node, vector<identifier_set_t> &lambda_params);
 	//! Enables special-handling of lambda parameters during macro replacement by tracking them in the lambda_params
-	//! vector.
-	void ReplaceMacroParametersInLambda(FunctionExpression &function, vector<identifier_set_t> &lambda_params);
+	//! vector. With named_parameters, the name of a name = value argument is not replaced.
+	void ReplaceMacroParametersInArguments(FunctionExpression &function, vector<identifier_set_t> &lambda_params,
+	                                       bool named_parameters);
 
 	static LogicalType GetExpressionReturnType(const Expression &expr);
 

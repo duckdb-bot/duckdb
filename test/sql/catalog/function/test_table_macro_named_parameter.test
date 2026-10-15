@@ -80,3 +80,24 @@ query II
 SELECT * FROM outer_lambda(100);
 ----
 100	[2, 3]
+
+# a function without a file
+statement ok
+CREATE MACRO repeated(num_rows) AS TABLE SELECT * FROM repeat_row(1, num_rows = num_rows);
+
+query I
+SELECT count(*) FROM repeated(2);
+----
+2
+
+# a table function that is not called is not looked up
+statement ok
+SET autoinstall_known_extensions = false;
+
+statement ok
+CREATE MACRO unused_scan(x) AS TABLE WITH unused AS (SELECT * FROM sqlite_scan('unused.db', 't')) SELECT x;
+
+query I
+SELECT * FROM unused_scan(42);
+----
+42

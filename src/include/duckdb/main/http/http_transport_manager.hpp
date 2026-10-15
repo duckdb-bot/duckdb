@@ -61,8 +61,6 @@ public:
 	DUCKDB_API void SetCapacity(idx_t capacity) DUCKDB_EXCLUDES(lock);
 	DUCKDB_API idx_t GetCapacity() const DUCKDB_EXCLUDES(lock);
 	DUCKDB_API static idx_t AutomaticCapacity(const DBConfig &config);
-	//! The soft limit on open file descriptors of the process, invalid when there is none
-	DUCKDB_API static optional_idx GetFileDescriptorLimit();
 
 private:
 	explicit HTTPTransportManager(const shared_ptr<HTTPUtil> &initial_http_util);

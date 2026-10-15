@@ -1,11 +1,11 @@
 
 #include "duckdb/parallel/scan_read_ahead.hpp"
 
+#include "duckdb/common/process_util.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/logging/log_type.hpp"
 #include "duckdb/logging/logger.hpp"
 #include "duckdb/main/client_context.hpp"
-#include "duckdb/main/http/http_transport_manager.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/parallel/task_scheduler.hpp"
 
@@ -127,7 +127,7 @@ static idx_t GetOpenWindow(ClientContext &context, idx_t read_ahead_depth, bool 
 	auto window = MaxValue<idx_t>(TaskScheduler::GetScheduler(context).NumberOfAsyncThreads() * 2,
 	                              has_memory_governor ? 0 : read_ahead_depth);
 	// files opened ahead hold file descriptors, so keep to the share of the limit the HTTP client pool takes
-	auto file_descriptor_limit = HTTPTransportManager::GetFileDescriptorLimit();
+	auto file_descriptor_limit = ProcessUtil::GetFileDescriptorLimit();
 	if (file_descriptor_limit.IsValid()) {
 		window = MinValue<idx_t>(window, MaxValue<idx_t>(file_descriptor_limit.GetIndex() / 8, 1));
 	}
@@ -352,8 +352,8 @@ void ScanReadAhead::ScheduleFileOpen(std::function<void()> open_fn, std::functio
 }
 
 bool ScanReadAhead::CanScheduleOpen(idx_t files_open_ahead) const {
-	// an open file keeps its handle until the scan finishes it, so the window bounds those too
-	return pending_opens->load() < open_window && files_open_ahead < open_window;
+	// open files and the files of queued jobs keep their handles until the scan finishes them
+	return pending_opens->load() < open_window && files_open_ahead + active_jobs.load() < open_window;
 }
 
 bool ScanReadAhead::TryRunPendingTask() {

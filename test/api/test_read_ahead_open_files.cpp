@@ -34,10 +34,6 @@ TEST_CASE("Read-ahead keeps a scan of many files within the file descriptor limi
 	REQUIRE_NO_FAIL(con.Query("SET partitioned_write_max_open_files = 100"));
 	REQUIRE_NO_FAIL(con.Query("COPY (SELECT range AS i, range AS p FROM range(3000)) TO '" + dir +
 	                          "' (FORMAT parquet, PARTITION_BY p)"));
-	REQUIRE_NO_FAIL(con.Query("SET threads = 8"));
-	// a window of 512 files without the limit
-	REQUIRE_NO_FAIL(con.Query("SET async_threads = 256"));
-
 	struct rlimit original;
 	REQUIRE(getrlimit(RLIMIT_NOFILE, &original) == 0);
 	const rlim_t limit = CountOpenFileDescriptors() + 240;
@@ -45,13 +41,21 @@ TEST_CASE("Read-ahead keeps a scan of many files within the file descriptor limi
 		SKIP_TEST("the file descriptor limit is too low");
 		return;
 	}
-	struct rlimit limited = original;
-	limited.rlim_cur = limit;
-	REQUIRE(setrlimit(RLIMIT_NOFILE, &limited) == 0);
-	auto result = con.Query("SELECT count(*) FROM read_parquet('" + dir + "/*/*.parquet')");
-	REQUIRE(setrlimit(RLIMIT_NOFILE, &original) == 0);
-	REQUIRE_NO_FAIL(*result);
-	REQUIRE(CHECK_COLUMN(result, 0, {3000}));
+	// a window of 512 files without the limit, and more scan threads
+	const vector<vector<string>> settings {{"SET threads = 8", "SET async_threads = 256"},
+	                                       {"SET threads = 16", "SET async_threads = 32"}};
+	for (auto &statements : settings) {
+		for (auto &statement : statements) {
+			REQUIRE_NO_FAIL(con.Query(statement));
+		}
+		struct rlimit limited = original;
+		limited.rlim_cur = limit;
+		REQUIRE(setrlimit(RLIMIT_NOFILE, &limited) == 0);
+		auto result = con.Query("SELECT count(*) FROM read_parquet('" + dir + "/*/*.parquet')");
+		REQUIRE(setrlimit(RLIMIT_NOFILE, &original) == 0);
+		REQUIRE_NO_FAIL(*result);
+		REQUIRE(CHECK_COLUMN(result, 0, {3000}));
+	}
 #else
 	SKIP_TEST("needs Linux and threads");
 #endif
@@ -227,9 +231,9 @@ TEST_CASE("Read-ahead keeps the files open ahead of a scan within its window", "
 	REQUIRE_NO_FAIL(*result);
 	REQUIRE(CHECK_COLUMN(result, 0, {1000}));
 	REQUIRE(CHECK_COLUMN(result, 1, {499500}));
-	// the window of files opened ahead, the files of queued jobs, the file each thread scans and the next it claims,
-	// and the file the bind opened
-	const idx_t open_window = 2 * async_threads;
-	REQUIRE(counting_fs.MaxOpenFiles() <= open_window + read_ahead_depth + 2 * threads + 1);
+	// the window of files opened ahead and files of queued jobs, a few files for each thread, and the file the bind
+	// opened
+	const idx_t open_window = MaxValue<idx_t>(2 * async_threads, read_ahead_depth);
+	REQUIRE(counting_fs.MaxOpenFiles() <= open_window + 3 * threads + 1);
 #endif
 }

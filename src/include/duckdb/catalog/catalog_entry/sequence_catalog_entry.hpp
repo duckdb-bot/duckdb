@@ -70,6 +70,9 @@ public:
 	string ToSQL() const override;
 
 private:
+	//! An exhaustion counter outside of the range, if the range and the storage format permit one
+	optional<int64_t> GetExhaustedCounter() const;
+
 	//! Lock for getting a value on the sequence
 	mutable mutex lock;
 	//! Sequence data

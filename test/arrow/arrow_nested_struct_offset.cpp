@@ -28,9 +28,10 @@ struct Node {
 	vector<ArrowArray *> array_children;
 	vector<int32_t> values;
 	vector<int8_t> type_ids;
+	vector<uint8_t> validity;
 };
 
-// Builds Arrow arrays without NULLs, each node keeps its buffers
+// Builds Arrow arrays, each node keeps its buffers
 struct Builder {
 	std::deque<Node> nodes;
 
@@ -53,10 +54,16 @@ struct Builder {
 		node.array.release = ReleaseArray;
 		return node;
 	}
-	Node &Int32(const char *name, vector<int32_t> values) {
+	Node &Int32(const char *name, vector<int32_t> values, const vector<idx_t> &null_slots = {}) {
 		auto &node = NewNode("i", name, int64_t(values.size()), 0, {});
+		// padded, as the validity of an unaligned offset is read one byte further
+		node.validity.resize(values.size() / 8 + 2, 0xFF);
+		for (auto slot : null_slots) {
+			node.validity[slot / 8] &= uint8_t(~(1u << (slot % 8)));
+		}
 		node.values = std::move(values);
-		node.buffers = {nullptr, node.values.data()};
+		node.buffers = {null_slots.empty() ? nullptr : node.validity.data(), node.values.data()};
+		node.array.null_count = int64_t(null_slots.size());
 		node.array.n_buffers = 2;
 		node.array.buffers = node.buffers.data();
 		return node;
@@ -96,15 +103,13 @@ bool ScanMatches(Node &column, const string &query) {
 	DuckDB db(nullptr);
 	Connection con(db);
 	auto result = con.TableFunction("arrow_scan", {}, {}, ArrowTestHelper::ConstructArrowScan(stream))->Execute();
-	auto expected = con.Query(query);
 	if (result->HasError()) {
-		INFO(result->GetError());
-		return false;
+		FAIL(result->GetError());
 	}
+	auto expected = con.Query(query);
 	return result->Equals(*expected, false);
 }
 
-// A value of the union of the int32 members i and j
 string Member(const string &name, int32_t value) {
 	return "union_value(" + name + " := " + to_string(value) + ")::UNION(i INT, j INT)";
 }
@@ -130,8 +135,8 @@ TEST_CASE("Arrow scan of a sliced sparse union in a list", "[arrow]") {
 	auto &u = b.Union("item", {0, 1, 0, 1, 0, 1},
 	                  {&b.Int32("i", {1, 2, 3, 4, 5, 6}), &b.Int32("j", {10, 20, 30, 40, 50, 60})}, 2);
 	auto &l = b.List("c", {0, 2, 4}, u);
-	REQUIRE(ScanMatches(l, "SELECT [" + Member("i", 3) + ", " + Member("j", 40) + "] UNION ALL SELECT [" +
-	                           Member("i", 5) + ", " + Member("j", 60) + "]"));
+	REQUIRE(ScanMatches(l, "SELECT * FROM (VALUES ([" + Member("i", 3) + ", " + Member("j", 40) + "]), ([" +
+	                           Member("i", 5) + ", " + Member("j", 60) + "])) t(c)"));
 }
 
 TEST_CASE("Arrow scan of a struct in a sliced struct", "[arrow]") {
@@ -149,7 +154,31 @@ TEST_CASE("Arrow scan of a list and a union in a sliced struct in a list", "[arr
 	    b.Union("u", {1, 0, 1, 0, 1, 0}, {&b.Int32("i", {1, 2, 3, 4, 5, 6}), &b.Int32("j", {10, 20, 30, 40, 50, 60})});
 	auto &s = b.Struct("item", {&inner_list, &u}, 2);
 	auto &l = b.List("c", {0, 2, 4}, s);
-	REQUIRE(ScanMatches(l, "SELECT [{'l': [3], 'u': " + Member("j", 30) + "}, {'l': [4], 'u': " + Member("i", 4) +
-	                           "}] UNION ALL SELECT [{'l': [5], 'u': " + Member("j", 50) +
-	                           "}, {'l': [6], 'u': " + Member("i", 6) + "}]"));
+	REQUIRE(ScanMatches(l, "SELECT * FROM (VALUES ([{'l': [3], 'u': " + Member("j", 30) +
+	                           "}, {'l': [4], 'u': " + Member("i", 4) + "}]), ([{'l': [5], 'u': " + Member("j", 50) +
+	                           "}, {'l': [6], 'u': " + Member("i", 6) + "}])) t(c)"));
+}
+
+TEST_CASE("Arrow scan of a sliced struct with NULL fields in a list with a nonzero start", "[arrow]") {
+	Builder b;
+	// i holds 1 to 8 with NULL at slots 4 and 6, the struct starts at slot 2 and the lists at its slot 1
+	auto &s = b.Struct("item", {&b.Int32("i", {1, 2, 3, 4, 5, 6, 7, 8}, {4, 6})}, 2);
+	auto &l = b.List("c", {1, 3, 5}, s);
+	REQUIRE(ScanMatches(l, "SELECT * FROM (VALUES ([{'i': 4}, {'i': NULL}]), ([{'i': 6}, {'i': NULL}])) t(c)"));
+}
+
+TEST_CASE("Arrow scan of a struct in a sliced struct across chunks", "[arrow]") {
+	Builder b;
+	vector<int32_t> values;
+	vector<idx_t> null_slots;
+	for (idx_t i = 0; i < 6000; i++) {
+		values.push_back(int32_t(i));
+		if (i % 7 == 0) {
+			null_slots.push_back(i);
+		}
+	}
+	auto &inner = b.Struct("x", {&b.Int32("i", values, null_slots)});
+	auto &outer = b.Struct("c", {&inner}, 3);
+	REQUIRE(ScanMatches(outer,
+	                    "SELECT {'x': {'i': CASE WHEN i % 7 = 0 THEN NULL ELSE i END::INT}} FROM range(3, 6000) t(i)"));
 }

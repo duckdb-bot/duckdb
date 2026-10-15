@@ -96,7 +96,7 @@ public:
 // VARIANT -> ANY
 //===--------------------------------------------------------------------===//
 
-//! CastFromVARIANT rejects the rows nested too deeply, so the values of the others are converted without checking
+//! Rows are depth-checked by CastFromVARIANT
 static Value ConvertCheckedVariantToValue(FromVariantConversionData &conversion_data, idx_t row, uint32_t values_idx) {
 	D_ASSERT(!conversion_data.IsTooDeep(row));
 	return VariantVisitor<ValueConverter>::Visit(conversion_data.variant, row, values_idx);
@@ -534,9 +534,21 @@ static bool CastVariantToJSON(FromVariantConversionData &conversion_data, Vector
 	ConvertedJSONHolder holder(Allocator::DefaultAllocator());
 
 	auto &variant = conversion_data.variant;
+	//! The writer resets the validity, so take the rows that are already set to invalid first
+	auto &result_validity = FlatVector::Validity(result);
+	ValidityMask validity(count);
+	for (idx_t i = 0; i < count; i++) {
+		if (!result_validity.RowIsValid(offset + i)) {
+			validity.SetInvalid(i);
+		}
+	}
 	auto result_data = FlatVector::Writer<string_t>(result, count, offset);
 	for (idx_t i = 0; i < count; i++) {
 		const auto row_index = row.IsValid() ? row.GetIndex() : i;
+		if (!validity.RowIsValid(i)) {
+			result_data.WriteNull();
+			continue;
+		}
 		if (!variant.RowIsValid(row_index)) {
 			// a SQL NULL row stays a SQL NULL - rendering it as the JSON token `null` would make it
 			// indistinguishable from a JSON null actually stored in the variant
@@ -686,6 +698,7 @@ static bool CastVariant(FromVariantConversionData &conversion_data, Vector &resu
 			auto row_index = row.IsValid() ? row.GetIndex() : i;
 
 			if (conversion_data.IsTooDeep(row_index)) {
+				error = VariantUtils::NestingDepthError();
 				FlatVector::SetNull(result, offset + i, true);
 				all_valid = false;
 				continue;

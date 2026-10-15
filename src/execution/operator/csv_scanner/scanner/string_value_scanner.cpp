@@ -1555,6 +1555,8 @@ void StringValueScanner::ProcessOverBufferValue() {
 			skip_value = true;
 		}
 	}
+	// a value before a comment that is taken here leaves only the row to add
+	bool took_value_before_comment = skip_value && result.comment;
 	if (!skip_value) {
 		string_t value;
 		const auto &delimiter = result.state_machine.dialect_options.state_machine_options.delimiter.GetValue();
@@ -1649,6 +1651,7 @@ void StringValueScanner::ProcessOverBufferValue() {
 				value_size -= extra_delimiter_bytes;
 			}
 			result.AddValueToVector(value.GetData(), value_size, true);
+			took_value_before_comment = result.comment;
 		}
 	} else {
 		if (states.EmptyLine() && state_machine->dialect_options.num_cols == 1) {
@@ -1657,7 +1660,10 @@ void StringValueScanner::ProcessOverBufferValue() {
 	}
 
 	if (states.NewRow() && !states.IsNotSet()) {
-		if (result.IsCommentSet(result)) {
+		if (took_value_before_comment) {
+			result.comment = false;
+			result.AddRowInternal();
+		} else if (result.IsCommentSet(result)) {
 			result.UnsetComment(result, iterator.pos.buffer_pos);
 		} else {
 			result.AddRowInternal();
@@ -1706,7 +1712,7 @@ StringValueScanner::MoveBufferResult StringValueScanner::TryMoveToNextBuffer() {
 	result.quoted_new_line = false;
 	// This means we reached the end of the file, we must add a last line if there is any to be added
 	if (result.added_last_line && result.cur_col_id > 0 && !states.IsCurrentNewRow() && !states.IsNotSet() &&
-	    !result.IsStateCurrent(CSVState::INVALID)) {
+	    !states.IsQuotedCurrent() && !result.IsStateCurrent(CSVState::INVALID)) {
 		// the last value of a row without a final newline was read over the end of a buffer
 		iterator.pos.buffer_pos = previous_buffer_handle->actual_size;
 		result.AddRowInternal();

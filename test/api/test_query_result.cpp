@@ -12,6 +12,8 @@
 #include "duckdb/main/appender.hpp"
 #include "duckdb/main/prepared_statement_data.hpp"
 #include "duckdb/main/query_result_stream.hpp"
+#include "duckdb/logging/log_manager.hpp"
+#include "duckdb/logging/log_storage.hpp"
 #include "result_wait_helpers.hpp"
 #include "test_result_format.hpp"
 
@@ -923,9 +925,6 @@ public:
 TEST_CASE("A query whose begin failed does not hold the connection", "[api][query_result]") {
 	DuckDB db(nullptr);
 	Connection con(db);
-	// The debug build's state checks that every query end follows its own begin, which a begin hook that throws
-	// breaks whichever hook runs first
-	con.context->registered_state->Remove("debug_client_context_state");
 	con.context->registered_state->Insert("failing_query_begin", make_shared_ptr<FailingQueryBegin>());
 
 	auto failed = con.Query("SELECT 42");
@@ -933,6 +932,310 @@ TEST_CASE("A query whose begin failed does not hold the connection", "[api][quer
 	REQUIRE(StringUtil::Contains(failed->GetError(), "query begin failed"));
 	con.context->registered_state->Remove("failing_query_begin");
 
+	auto next = con.Query("SELECT 42");
+	REQUIRE(CHECK_COLUMN(next, 0, {42}));
+}
+
+//! Counts the queries it begins and ends, and fails the begin or the end of a query when asked
+class CountingQueryState : public ClientContextState {
+public:
+	void QueryBegin(ClientContext &context) override {
+		if (fail_begin) {
+			fail_begin = false;
+			if (fatal) {
+				throw FatalException("query begin failed");
+			}
+			if (permission) {
+				throw PermissionException("query begin not permitted");
+			}
+			throw IOException("query begin failed");
+		}
+		begins++;
+	}
+	void QueryEnd(ClientContext &context, optional_ptr<ErrorData> error) override {
+		ends++;
+		if (fail_end) {
+			fail_end = false;
+			if (fatal) {
+				throw FatalException("fatal query end failure");
+			}
+			if (internal) {
+				throw InternalException("internal query end failure");
+			}
+			throw IOException("query end failed");
+		}
+	}
+
+	bool fail_begin = false;
+	bool fatal = false;
+	bool internal = false;
+	bool permission = false;
+	bool fail_end = false;
+	idx_t begins = 0;
+	idx_t ends = 0;
+};
+
+TEST_CASE("A query whose begin failed ends its transaction", "[api][query_result]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	vector<shared_ptr<CountingQueryState>> states;
+	for (idx_t i = 0; i < 4; i++) {
+		states.push_back(make_shared_ptr<CountingQueryState>());
+		con.context->registered_state->Insert("counting_query_state_" + to_string(i), states.back());
+	}
+	auto require_paired = [&]() {
+		for (auto &state : states) {
+			REQUIRE(state->begins == state->ends);
+		}
+	};
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE t(i INTEGER)"));
+	require_paired();
+
+	// whichever state fails, the query ends on the states it began on, and not on the others
+	for (idx_t failing = 0; failing < states.size(); failing++) {
+		states[failing]->fail_begin = true;
+		auto failed = con.Query("INSERT INTO t VALUES (1)");
+		REQUIRE(failed->HasError());
+		REQUIRE(StringUtil::Contains(failed->GetError(), "query begin failed"));
+		require_paired();
+		// an autocommit query does not keep its transaction
+		REQUIRE(!con.context->transaction.HasActiveTransaction());
+	}
+
+	// a state whose end fails does not keep the others from ending, and the error of the begin is reported
+	for (idx_t failing = 0; failing < states.size(); failing++) {
+		for (auto &state : states) {
+			state->fail_end = true;
+		}
+		states[failing]->fail_begin = true;
+		auto failed = con.Query("INSERT INTO t VALUES (1)");
+		REQUIRE(failed->HasError());
+		REQUIRE(StringUtil::Contains(failed->GetError(), "query begin failed"));
+		require_paired();
+		REQUIRE(!con.context->transaction.HasActiveTransaction());
+	}
+	for (auto &state : states) {
+		state->fail_end = false;
+	}
+
+	// a user's transaction stays open after the failed statement, and is invalidated by it
+	REQUIRE_NO_FAIL(con.Query("BEGIN TRANSACTION"));
+	REQUIRE_NO_FAIL(con.Query("INSERT INTO t VALUES (2)"));
+	states[1]->fail_begin = true;
+	REQUIRE_FAIL(con.Query("INSERT INTO t VALUES (3)"));
+	require_paired();
+	REQUIRE(con.context->transaction.HasActiveTransaction());
+	auto aborted = con.Query("SELECT 42");
+	REQUIRE(aborted->HasError());
+	REQUIRE(StringUtil::Contains(aborted->GetError(), "transaction is aborted"));
+	REQUIRE_NO_FAIL(con.Query("ROLLBACK"));
+
+	// with errors that do not invalidate the transaction, it stays usable
+	REQUIRE_NO_FAIL(con.Query("SET default_transaction_invalidation_policy = 'SYNTACTIC_ERRORS_DO_NOT_INVALIDATE'"));
+	REQUIRE_NO_FAIL(con.Query("BEGIN TRANSACTION"));
+	states[0]->fail_begin = true;
+	states[0]->permission = true;
+	auto not_permitted = con.Query("INSERT INTO t VALUES (8)");
+	states[0]->permission = false;
+	REQUIRE(not_permitted->HasError());
+	REQUIRE(StringUtil::Contains(not_permitted->GetError(), "query begin not permitted"));
+	require_paired();
+	REQUIRE_NO_FAIL(con.Query("INSERT INTO t VALUES (9)"));
+	REQUIRE_NO_FAIL(con.Query("ROLLBACK"));
+	REQUIRE_NO_FAIL(con.Query("RESET default_transaction_invalidation_policy"));
+
+	// unless the transaction rolls back automatically
+	REQUIRE_NO_FAIL(con.Query("BEGIN TRANSACTION"));
+	con.context->transaction.SetAutoRollback(true);
+	REQUIRE_NO_FAIL(con.Query("INSERT INTO t VALUES (4)"));
+	states[2]->fail_begin = true;
+	REQUIRE_FAIL(con.Query("INSERT INTO t VALUES (5)"));
+	require_paired();
+	REQUIRE(!con.context->transaction.HasActiveTransaction());
+
+	auto count = con.Query("SELECT COUNT(*) FROM t");
+	REQUIRE(CHECK_COLUMN(count, 0, {0}));
+	require_paired();
+
+	// a fatal error invalidates the database
+	REQUIRE_NO_FAIL(con.Query("BEGIN TRANSACTION"));
+	REQUIRE_NO_FAIL(con.Query("INSERT INTO t VALUES (6)"));
+	states[3]->fail_begin = true;
+	states[3]->fatal = true;
+	REQUIRE_FAIL(con.Query("INSERT INTO t VALUES (7)"));
+	require_paired();
+	auto invalidated = con.Query("SELECT 42");
+	REQUIRE(invalidated->HasError());
+	REQUIRE(StringUtil::Contains(invalidated->GetError(), "database has been invalidated"));
+}
+
+TEST_CASE("Every state ends a query when the end of one fails", "[api][query_result]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	vector<shared_ptr<CountingQueryState>> states;
+	for (idx_t i = 0; i < 4; i++) {
+		states.push_back(make_shared_ptr<CountingQueryState>());
+		con.context->registered_state->Insert("counting_query_state_" + to_string(i), states.back());
+	}
+	// the counting state whose QueryBegin runs last, after all others completed
+	shared_ptr<CountingQueryState> last;
+	for (auto &state : con.context->registered_state->States()) {
+		for (auto &counting : states) {
+			if (state.get() == counting.get()) {
+				last = counting;
+			}
+		}
+	}
+	REQUIRE(last);
+	auto require_paired = [&]() {
+		for (auto &state : states) {
+			REQUIRE(state->begins == state->ends);
+		}
+	};
+
+	// a query that began on every state
+	states[0]->fail_end = true;
+	states[2]->fail_end = true;
+	string end_error;
+	try {
+		con.Query("SELECT 42");
+	} catch (std::exception &ex) {
+		end_error = ex.what();
+	}
+	REQUIRE(StringUtil::Contains(end_error, "query end failed"));
+	require_paired();
+	for (auto &state : states) {
+		REQUIRE(!state->fail_end);
+	}
+	auto next = con.Query("SELECT 42");
+	REQUIRE(CHECK_COLUMN(next, 0, {42}));
+	require_paired();
+
+	// a profile that cannot be written does not keep the states from ending
+	auto profile_path = TestCreatePath("missing_directory/profile.json");
+	REQUIRE_NO_FAIL(con.Query("PRAGMA enable_profiling = 'json'"));
+	REQUIRE_NO_FAIL(con.Query("PRAGMA profiling_output = '" + profile_path + "'"));
+	REQUIRE_NO_FAIL(con.Query("BEGIN TRANSACTION"));
+	string profile_error;
+	try {
+		con.Query("SELECT 42");
+	} catch (std::exception &ex) {
+		profile_error = ex.what();
+	}
+	REQUIRE(StringUtil::Contains(profile_error, "profile.json"));
+	require_paired();
+	REQUIRE_NO_FAIL(con.Query("PRAGMA disable_profiling"));
+	REQUIRE_NO_FAIL(con.Query("ROLLBACK"));
+	require_paired();
+
+	// a fatal error of an end invalidates the database, while the error of the begin is reported
+	for (auto &state : states) {
+		state->fail_end = true;
+		state->fatal = true;
+	}
+	last->fail_begin = true;
+	last->fatal = false;
+	auto failed = con.Query("SELECT 42");
+	REQUIRE(failed->HasError());
+	REQUIRE(StringUtil::Contains(failed->GetError(), "query begin failed"));
+	require_paired();
+	auto invalidated = con.Query("SELECT 42");
+	REQUIRE(invalidated->HasError());
+	REQUIRE(StringUtil::Contains(invalidated->GetError(), "database has been invalidated"));
+}
+
+//! A log storage whose flush fails once, at the flush it is asked to fail
+class FailingLogStorage : public LogStorage {
+public:
+	void WriteLogEntry(timestamp_t timestamp, LogLevel level, const string &log_type, const string &log_message,
+	                   const RegisteredLoggingContext &context) override {
+	}
+	void WriteLogEntries(DataChunk &chunk, const RegisteredLoggingContext &context) override {
+	}
+	void Flush(LoggingTargetTable table) override {
+	}
+	void FlushAll() override {
+		flushes++;
+		if (flushes == fail_at_flush) {
+			throw IOException("log flush failed");
+		}
+	}
+	bool IsEnabled(LoggingTargetTable table) override {
+		return table == LoggingTargetTable::ALL_LOGS;
+	}
+	const string GetStorageName() override {
+		return "FailingLogStorage";
+	}
+
+	idx_t flushes = 0;
+	idx_t fail_at_flush = 0;
+};
+
+TEST_CASE("Every state ends a query when an end error is internal or the log fails", "[api][query_result]") {
+	// a fatal and an internal end error in both orders, and an internal one alone
+	for (idx_t test_case = 0; test_case < 3; test_case++) {
+		DuckDB db(nullptr);
+		Connection con(db);
+		auto a = make_shared_ptr<CountingQueryState>();
+		auto b = make_shared_ptr<CountingQueryState>();
+		con.context->registered_state->Insert("a", a);
+		con.context->registered_state->Insert("b", b);
+		auto first = a;
+		auto second = b;
+		for (auto &state : con.context->registered_state->States()) {
+			if (state.get() == b.get()) {
+				std::swap(first, second);
+				break;
+			}
+			if (state.get() == a.get()) {
+				break;
+			}
+		}
+		first->fail_end = test_case != 2;
+		first->fatal = test_case == 0;
+		first->internal = test_case == 1;
+		second->fail_end = true;
+		second->fatal = test_case == 1;
+		second->internal = test_case != 1;
+		ErrorData end_error;
+		try {
+			con.Query("SELECT 42");
+		} catch (std::exception &ex) {
+			end_error = ErrorData(ex);
+		}
+		// the fatal error is thrown, else the internal one
+		auto expected_type = test_case == 2 ? ExceptionType::INTERNAL : ExceptionType::FATAL;
+		REQUIRE(end_error.HasError());
+		REQUIRE(end_error.Type() == expected_type);
+		REQUIRE(StringUtil::Contains(end_error.RawMessage(),
+		                             test_case == 2 ? "internal query end failure" : "fatal query end failure"));
+		REQUIRE(a->begins == a->ends);
+		REQUIRE(b->begins == b->ends);
+		auto invalidated = con.Query("SELECT 42");
+		REQUIRE(invalidated->HasError());
+		REQUIRE(StringUtil::Contains(invalidated->GetError(), "database has been invalidated"));
+	}
+
+	DuckDB db(nullptr);
+	Connection con(db);
+	auto state = make_shared_ptr<CountingQueryState>();
+	con.context->registered_state->Insert("counting_query_state", state);
+	auto log_storage = make_shared_ptr<FailingLogStorage>();
+	duckdb::shared_ptr<LogStorage> base_storage = log_storage;
+	db.instance->GetLogManager().RegisterLogStorage("failing_log_storage", base_storage);
+	REQUIRE_NO_FAIL(con.Query("SET enable_logging = true"));
+	REQUIRE_NO_FAIL(con.Query("SET logging_storage = 'failing_log_storage'"));
+	// a query flushes the log when it begins and when it ends, and the second flush fails
+	log_storage->fail_at_flush = log_storage->flushes + 2;
+	string flush_error;
+	try {
+		con.Query("SELECT 42");
+	} catch (std::exception &ex) {
+		flush_error = ex.what();
+	}
+	REQUIRE(log_storage->flushes == log_storage->fail_at_flush);
+	REQUIRE(StringUtil::Contains(flush_error, "log flush failed"));
+	REQUIRE(state->begins == state->ends);
 	auto next = con.Query("SELECT 42");
 	REQUIRE(CHECK_COLUMN(next, 0, {42}));
 }

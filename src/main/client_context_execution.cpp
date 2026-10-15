@@ -66,9 +66,14 @@ void ClientContext::BeginQueryInternal(ClientContextLock &lock, PreprocessedStat
 		query_deadline.SetInvalid();
 	}
 	// Notify any registered state of query begin
-	for (auto &state : registered_state->States()) {
+	auto states = registered_state->States();
+	active_query->begun_states.reserve(states.size());
+	for (auto &state : states) {
 		state->QueryBegin(*this);
+		active_query->begun_states.push_back(state);
 	}
+	active_query->began_on_all_states = true;
+	active_query->begun_states.clear();
 	RefreshLoggerInternal();
 }
 
@@ -98,6 +103,9 @@ ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success,
 	}
 	active_query->progress_bar.reset();
 	D_ASSERT(active_query.get());
+	// a query that failed to begin ends only on the states it began on
+	const bool began_on_all_states = active_query->began_on_all_states;
+	auto begun_states = std::move(active_query->begun_states);
 	active_query.reset();
 	query_deadline.SetInvalid();
 	query_progress.Initialize();
@@ -130,21 +138,57 @@ ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success,
 		error = ErrorData("Unhandled exception!");
 	} // LCOV_EXCL_STOP
 
-	client_data->profiler->EndQuery();
+	// the query ends on every state also when ending the profiler, the logger or one of the states fails
+	ErrorData end_error;
+	idx_t end_error_severity = 0;
+	auto add_end_error = [&](std::exception &ex) {
+		ErrorData step_error(ex);
+		idx_t severity = 1;
+		if (Exception::InvalidatesDatabase(step_error.Type())) {
+			severity = 3;
+		} else if (step_error.Type() == ExceptionType::INTERNAL) {
+			severity = 2;
+		}
+		if (severity > 1) {
+			ValidChecker::Invalidate(DatabaseInstance::GetDatabase(*this), step_error.RawMessage());
+		}
+		// keep the first error at the highest severity
+		if (severity > end_error_severity) {
+			end_error = std::move(step_error);
+			end_error_severity = severity;
+		}
+	};
+	try {
+		client_data->profiler->EndQuery();
+	} catch (std::exception &ex) {
+		add_end_error(ex);
+	}
 
 	// Refresh the logger
-	logger->Flush();
+	try {
+		logger->Flush();
+	} catch (std::exception &ex) {
+		add_end_error(ex);
+	}
 	LoggingContext context(LogContextScope::CONNECTION);
 	context.connection_id = connection_id;
 	logger = db->GetLogManager().CreateLogger(context, true);
 
 	// Notify any registered state of query end
-	for (auto const &s : registered_state->States()) {
-		if (error.HasError()) {
-			s->QueryEnd(*this, &error);
-		} else {
-			s->QueryEnd(*this, previous_error);
+	auto end_states = began_on_all_states ? registered_state->States() : std::move(begun_states);
+	for (auto const &s : end_states) {
+		try {
+			if (error.HasError()) {
+				s->QueryEnd(*this, &error);
+			} else {
+				s->QueryEnd(*this, previous_error);
+			}
+		} catch (std::exception &ex) {
+			add_end_error(ex);
 		}
+	}
+	if (end_error.HasError()) {
+		end_error.Throw();
 	}
 	return error;
 }

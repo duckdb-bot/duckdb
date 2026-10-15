@@ -256,8 +256,7 @@ unique_ptr<T> ClientContext::ErrorResult(ErrorData error, const string &query) {
 }
 
 bool ClientContext::OpenResultHoldsConnection(ClientContextLock &) {
-	// A query no result holds (one whose begin failed), or whose result a collector built so that nothing can end
-	// it, is abandoned instead
+	// A query no result holds, or whose result a collector built so that nothing can end it, is abandoned instead
 	return active_query && active_query->HasOpenResult() && !active_query->collector_built_result;
 }
 
@@ -789,6 +788,14 @@ unique_ptr<QueryResult> ClientContext::SubmitStatement(ClientContextLock &lock, 
 			// fatal exceptions invalidate the entire database
 			auto &db_instance = DatabaseInstance::GetDatabase(*this);
 			ValidChecker::Invalidate(db_instance, error.RawMessage());
+		}
+		// the query ends here, so it does not keep the transaction it started
+		if (active_query) {
+			try {
+				EndQueryInternal(lock, false, ErrorInvalidatesQueryTransaction(error.Type()), error);
+			} catch (std::exception &) {
+				// the error of the begin is the one reported
+			}
 		}
 		return ErrorResult<QueryResult>(std::move(error), query);
 	}

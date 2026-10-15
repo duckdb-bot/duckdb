@@ -5,6 +5,7 @@
 #include "duckdb/parser/tableref/table_function_ref.hpp"
 #include "duckdb/catalog/catalog_entry/table_function_catalog_entry.hpp"
 #include "duckdb/common/reference_map.hpp"
+#include "duckdb/catalog/catalog_entry_retriever.hpp"
 #include "duckdb/catalog/entry_lookup_info.hpp"
 #include "duckdb/common/enums/expression_type.hpp"
 #include "duckdb/common/enums/on_entry_not_found.hpp"
@@ -81,9 +82,13 @@ void ExpressionBinder::ReplaceMacroParametersInArguments(FunctionExpression &fun
 //! Whether the binder reads name = value among the arguments of a table function as a named parameter. A table macro
 //! and a table in-out function read it as a comparison, unless the function takes a table.
 static bool TakesNamedParameters(Binder &binder, FunctionExpression &function) {
+	// the function may never be bound, so the lookup records no dependency
+	CatalogEntryRetriever retriever(binder.context);
+	retriever.Inherit(binder.EntryRetriever());
+	retriever.SetCallback(nullptr);
 	EntryLookupInfo lookup(CatalogType::TABLE_FUNCTION_ENTRY, QualifiedName(function.FunctionName()));
-	auto entry = binder.GetCatalogEntry(EntryLookupInfo(lookup, binder.BindTableName(function.GetQualifiedName())),
-	                                    OnEntryNotFound::RETURN_NULL);
+	auto entry = retriever.GetEntry(EntryLookupInfo(lookup, binder.BindTableName(function.GetQualifiedName())),
+	                                OnEntryNotFound::RETURN_NULL);
 	if (!entry || entry->type != CatalogType::TABLE_FUNCTION_ENTRY) {
 		return false;
 	}
@@ -102,8 +107,6 @@ static bool TakesNamedParameters(Binder &binder, FunctionExpression &function) {
 }
 
 void ExpressionBinder::ReplaceMacroParameters(QueryNode &node, vector<identifier_set_t> &lambda_params) {
-	// the table functions with a name = value argument whose name is also a macro parameter, and that read it as a
-	// named parameter
 	reference_set_t<const ParsedExpression> named_parameter_functions;
 	ParsedExpressionIterator::EnumerateQueryNodeChildren(
 	    node, [](unique_ptr<ParsedExpression> &child) {},

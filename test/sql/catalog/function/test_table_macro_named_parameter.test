@@ -101,3 +101,24 @@ query I
 SELECT * FROM unused_scan(42);
 ----
 42
+
+# looking up a table macro in a CTE that is not used records no dependency on it
+statement ok
+SET enable_macro_dependencies = true;
+
+statement ok
+CREATE MACRO dep(x) AS TABLE SELECT x;
+
+statement ok
+CREATE MACRO unused_dep(y) AS TABLE WITH unused AS (SELECT * FROM dep(y = y)) SELECT y;
+
+statement ok
+CREATE MACRO caller(z) AS TABLE SELECT * FROM unused_dep(z);
+
+statement ok
+DROP MACRO TABLE dep;
+
+query I
+SELECT * FROM caller(7);
+----
+7

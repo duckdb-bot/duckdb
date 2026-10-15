@@ -61,6 +61,8 @@ public:
 	DUCKDB_API void SetCapacity(idx_t capacity) DUCKDB_EXCLUDES(lock);
 	DUCKDB_API idx_t GetCapacity() const DUCKDB_EXCLUDES(lock);
 	DUCKDB_API static idx_t AutomaticCapacity(const DBConfig &config);
+	//! The soft limit on open file descriptors of the process, invalid when there is none
+	DUCKDB_API static optional_idx GetFileDescriptorLimit();
 
 private:
 	explicit HTTPTransportManager(const shared_ptr<HTTPUtil> &initial_http_util);
@@ -129,7 +131,6 @@ private:
 	void Close() noexcept DUCKDB_EXCLUDES(lock);
 	static idx_t CalculateCapacity(idx_t system_concurrency, optional_idx file_descriptor_limit,
 	                               idx_t io_concurrency = 0);
-	static optional_idx GetFileDescriptorLimit();
 	static bool AdvanceConnectionEpoch(uint64_t &connection_epoch, bool &reuse_poisoned) noexcept;
 	void SetHTTPUtil(const shared_ptr<HTTPUtil> &new_http_util) DUCKDB_EXCLUDES(lock);
 	HTTPUtil &GetHTTPUtil() const DUCKDB_EXCLUDES(lock);

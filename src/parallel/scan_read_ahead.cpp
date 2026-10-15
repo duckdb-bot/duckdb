@@ -5,6 +5,7 @@
 #include "duckdb/logging/log_type.hpp"
 #include "duckdb/logging/logger.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/main/http/http_transport_manager.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/parallel/task_scheduler.hpp"
 
@@ -122,11 +123,21 @@ private:
 
 ScanReadAheadJob::~ScanReadAheadJob() = default;
 
+static idx_t GetOpenWindow(ClientContext &context, idx_t read_ahead_depth, bool has_memory_governor) {
+	auto window = MaxValue<idx_t>(TaskScheduler::GetScheduler(context).NumberOfAsyncThreads() * 2,
+	                              has_memory_governor ? 0 : read_ahead_depth);
+	// files opened ahead hold file descriptors, so keep to the share of the limit the HTTP client pool takes
+	auto file_descriptor_limit = HTTPTransportManager::GetFileDescriptorLimit();
+	if (file_descriptor_limit.IsValid()) {
+		window = MinValue<idx_t>(window, MaxValue<idx_t>(file_descriptor_limit.GetIndex() / 8, 1));
+	}
+	return window;
+}
+
 ScanReadAhead::ScanReadAhead(ClientContext &context, idx_t read_ahead_depth_p,
                              unique_ptr<ManagedAsyncMemoryGovernor> memory_governor_p)
     : context(context), read_ahead_depth(read_ahead_depth_p), memory_governor(std::move(memory_governor_p)),
-      open_window(MaxValue<idx_t>(TaskScheduler::GetScheduler(context).NumberOfAsyncThreads() * 2,
-                                  memory_governor ? 0 : read_ahead_depth)) {
+      open_window(GetOpenWindow(context, read_ahead_depth, memory_governor != nullptr)) {
 	D_ASSERT(read_ahead_depth_p > 0);
 	backlog_budget = memory_governor ? memory_governor->BackpressureBudget() : NumericLimits<idx_t>::Maximum();
 	pending_opens = make_shared_ptr<atomic<idx_t>>(0);

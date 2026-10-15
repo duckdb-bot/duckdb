@@ -19,7 +19,7 @@ static idx_t GetValidArrayChildren(Vector &array, Vector &result, idx_t count) {
 	// NULL arrays have no child entries in Parquet
 	auto array_size = ArrayType::GetSize(array.GetType());
 	auto &validity = FlatVector::Validity(array);
-	if (validity.CannotHaveNull()) {
+	if (validity.CheckAllValid(count)) {
 		return count * array_size;
 	}
 	SelectionVector sel(count * array_size);

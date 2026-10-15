@@ -340,8 +340,9 @@ void ScanReadAhead::ScheduleFileOpen(std::function<void()> open_fn, std::functio
 	executor->ScheduleTask(make_uniq<FileOpenTask>(*executor, pending_opens, std::move(open_fn), std::move(cancel_fn)));
 }
 
-bool ScanReadAhead::CanScheduleOpen() const {
-	return pending_opens->load() < open_window;
+bool ScanReadAhead::CanScheduleOpen(idx_t files_open_ahead) const {
+	// an open file keeps its handle until the scan finishes it, so the window bounds those too
+	return pending_opens->load() < open_window && files_open_ahead < open_window;
 }
 
 bool ScanReadAhead::TryRunPendingTask() {

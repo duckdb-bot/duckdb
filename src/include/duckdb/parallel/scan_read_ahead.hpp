@@ -158,8 +158,9 @@ public:
 	//! Schedule a file-open closure on the async pool, opening files ahead of decoding
 	//! cancel_fn runs instead when the open is retired without running, and must settle whatever a scan waits on
 	void ScheduleFileOpen(std::function<void()> open_fn, std::function<void()> cancel_fn);
-	//! Whether another file-open may be scheduled without exceeding the open-ahead window
-	bool CanScheduleOpen() const;
+	//! Whether another file-open may be scheduled without exceeding the open-ahead window, given how many files ahead
+	//! of the scan are being opened or are open
+	bool CanScheduleOpen(idx_t files_open_ahead) const;
 	//! Run one queued async task inline, returns false when none is queued
 	bool TryRunPendingTask();
 	//! Throw the first error recorded on the async executor, if there is one

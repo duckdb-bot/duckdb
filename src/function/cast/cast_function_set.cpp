@@ -3,6 +3,7 @@
 
 #include "duckdb/main/settings.hpp"
 
+#include "duckdb/common/extension_type_info.hpp"
 #include "duckdb/common/pair.hpp"
 #include "duckdb/common/types/type_map.hpp"
 #include "duckdb/function/cast_rules.hpp"
@@ -57,7 +58,9 @@ CollationBinding &CollationBinding::Get(DatabaseInstance &db) {
 
 BoundCastInfo CastFunctionSet::GetCastFunction(const LogicalType &source, const LogicalType &target,
                                                GetCastFunctionInput &get_input) {
-	if (source == target) {
+	// an aggregate state is its layout type with an alias and the aggregate in its extension info
+	if (source == target ||
+	    (source.IsAggregateState() && source.WithAlias(string()).WithExtensionInfo(nullptr) == target)) {
 		BoundCastInfo result(DefaultCasts::NopCast);
 		result.SetStatisticsCallback(CastStatistics::Propagate);
 		return result;

@@ -1,0 +1,55 @@
+# name: test/sql/aggregate/aggregate_state_export/aggregate_state_layout_cast.test
+# description: An aggregate state casts to its layout type, also when the layout is not a numeric or VARCHAR type
+# group: [aggregate_state_export]
+
+foreach type DATE TIME TIME_NS TIMESTAMP TIMESTAMP_NS TIMESTAMP_S TIMESTAMP_MS TIMESTAMPTZ INTERVAL UUID BLOB
+
+statement ok
+CREATE OR REPLACE TABLE vals AS SELECT v::{type} AS v FROM (VALUES ('2000-01-01'), ('2000-01-10')) t(v)
+WHERE '{type}' NOT IN ('TIME', 'TIME_NS', 'INTERVAL', 'UUID', 'BLOB')
+UNION ALL SELECT v::{type} FROM (VALUES ('01:00:00'), ('10:00:00')) t(v) WHERE '{type}' IN ('TIME', 'TIME_NS')
+UNION ALL SELECT v::{type} FROM (VALUES ('1 day'), ('10 days')) t(v) WHERE '{type}' = 'INTERVAL'
+UNION ALL SELECT v::{type} FROM (VALUES ('00000000-0000-0000-0000-000000000001'), ('00000000-0000-0000-0000-00000000000a')) t(v) WHERE '{type}' = 'UUID'
+UNION ALL SELECT v::{type} FROM (VALUES ('a'), ('j')) t(v) WHERE '{type}' = 'BLOB';
+
+query I
+SELECT finalize(combine_aggr(to_aggregate_state(s, 'max', [make_type('{type}')]))) = (SELECT max(v) FROM vals)
+FROM (SELECT max(v) EXPORT_STATE AS s FROM vals);
+----
+true
+
+query I
+SELECT finalize(combine_aggr(to_aggregate_state(s, 'min', [make_type('{type}')]))) = (SELECT min(v) FROM vals)
+FROM (SELECT min(v) EXPORT_STATE AS s FROM vals);
+----
+true
+
+query II
+SELECT s::{type} = (SELECT max(v) FROM vals), typeof(s::{type}) = typeof(NULL::{type}) FROM (SELECT max(v) EXPORT_STATE AS s FROM vals);
+----
+true	true
+
+statement ok
+CREATE OR REPLACE TABLE layout (x {type});
+
+statement ok
+INSERT INTO layout SELECT max(v) EXPORT_STATE FROM vals;
+
+query I
+SELECT x = (SELECT max(v) FROM vals) FROM layout;
+----
+true
+
+endloop
+
+query I
+SELECT finalize(combine_aggr(to_aggregate_state(s, 'max', [make_type('DATE')])))
+FROM (SELECT max(DATE '2000-01-01' + i::INTEGER) EXPORT_STATE AS s FROM range(10) r(i));
+----
+2000-01-10
+
+# a state still casts to other types through the usual casts
+query I
+SELECT s::VARCHAR FROM (SELECT max(DATE '2000-01-01' + i::INTEGER) EXPORT_STATE AS s FROM range(10) r(i));
+----
+2000-01-10

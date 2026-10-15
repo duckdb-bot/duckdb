@@ -217,22 +217,29 @@ unique_ptr<ArrowType> ArrowType::GetTypeFromFormat(string &format) {
 	return nullptr;
 }
 
-// Arrow union type ids are decimal numbers from 0 to 127
-static bool TryParseUnionTypeId(const string &type_id_string, int8_t &result) {
-	if (type_id_string.empty()) {
-		return false;
-	}
+// Parses the comma separated type ids of an Arrow union, decimal numbers from 0 to 127
+static bool TryParseUnionTypeIds(const string &type_id_list, vector<int8_t> &result) {
 	idx_t type_id = 0;
-	for (auto c : type_id_string) {
-		if (!StringUtil::CharacterIsDigit(c)) {
+	bool has_digits = false;
+	for (idx_t i = 0; i <= type_id_list.size(); i++) {
+		if (i == type_id_list.size() || type_id_list[i] == ',') {
+			if (!has_digits) {
+				return false;
+			}
+			result.push_back(NumericCast<int8_t>(type_id));
+			type_id = 0;
+			has_digits = false;
+			continue;
+		}
+		if (!StringUtil::CharacterIsDigit(type_id_list[i])) {
 			return false;
 		}
-		type_id = type_id * 10 + NumericCast<idx_t>(c - '0');
+		type_id = type_id * 10 + NumericCast<idx_t>(type_id_list[i] - '0');
+		has_digits = true;
 		if (type_id > NumericCast<idx_t>(NumericLimits<int8_t>::Maximum())) {
 			return false;
 		}
 	}
-	result = NumericCast<int8_t>(type_id);
 	return true;
 }
 
@@ -279,25 +286,20 @@ unique_ptr<ArrowType> ArrowType::GetTypeFromFormat(ClientContext &context, Arrow
 		D_ASSERT(format[3] == ':');
 
 		std::string prefix = "+us:";
-		auto type_id_strings = StringUtil::Split(format.substr(prefix.size()), ',');
 
 		child_list_t<LogicalType> members;
 		vector<shared_ptr<ArrowType>> children;
 		if (schema.n_children == 0) {
 			throw InvalidInputException("Attempted to convert a UNION with no fields to DuckDB which is not supported");
 		}
-		if (type_id_strings.size() != static_cast<idx_t>(schema.n_children)) {
+		vector<int8_t> type_ids;
+		if (!TryParseUnionTypeIds(format.substr(prefix.size()), type_ids)) {
+			throw InvalidInputException("Arrow union format \"%s\" has an invalid type id", format);
+		}
+		if (type_ids.size() != static_cast<idx_t>(schema.n_children)) {
 			throw InvalidInputException(
 			    "Arrow union format \"%s\" does not have one type id for each of its %d members", format,
 			    schema.n_children);
-		}
-		vector<int8_t> type_ids;
-		for (auto &type_id_string : type_id_strings) {
-			int8_t type_id;
-			if (!TryParseUnionTypeId(type_id_string, type_id)) {
-				throw InvalidInputException("Arrow union format \"%s\" has an invalid type id", format);
-			}
-			type_ids.push_back(type_id);
 		}
 		for (idx_t type_idx = 0; type_idx < static_cast<idx_t>(schema.n_children); type_idx++) {
 			auto type = schema.children[type_idx];

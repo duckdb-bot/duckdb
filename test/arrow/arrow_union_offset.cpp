@@ -103,7 +103,6 @@ struct UnionColumn {
 	ArrowArray array {};
 };
 
-// Scans the column, the result holds the error when the scan fails
 unique_ptr<QueryResult> ScanColumn(Connection &con, ArrowSchema &col_schema, ArrowArray &col_array) {
 	ArrowSchema *schema_children[1] = {&col_schema};
 	ArrowSchema record_schema {};
@@ -182,6 +181,17 @@ TEST_CASE("Arrow scan of a sparse union with custom type ids", "[arrow]") {
 	    "SELECT u FROM (VALUES (union_value(i := 101)::UNION(d INT, i INT)), (union_value(i := 102)::UNION(d INT, i "
 	    "INT)), (union_value(d := 10)::UNION(d INT, i INT))) t(u)"));
 
+	// custom type ids across several chunks
+	std::vector<int8_t> many_ids;
+	for (idx_t j = 0; j < 5000; j++) {
+		many_ids.push_back(j % 2 == 0 ? 7 : 5);
+	}
+	arrow_union_offset_test::UnionColumn many(many_ids, 0, "+us:5,7");
+	REQUIRE(arrow_union_offset_test::ScanMatches(
+	    many.schema, many.array,
+	    "SELECT CASE WHEN j % 2 = 0 THEN union_value(i := (100 + j)::INT)::UNION(d INT, i INT) ELSE union_value(d := "
+	    "[10, 20, 30][j % 3 + 1])::UNION(d INT, i INT) END FROM range(5000) t(j)"));
+
 	// the largest type id, and type ids with leading zeros
 	arrow_union_offset_test::UnionColumn largest({0, 127}, 0, "+us:127,0");
 	REQUIRE(arrow_union_offset_test::ScanMatches(
@@ -211,9 +221,12 @@ TEST_CASE("Arrow scan of a sparse union with invalid type ids", "[arrow]") {
 	auto result = arrow_union_offset_test::ScanColumn(con, missing_child.schema, missing_child.array);
 	REQUIRE(StringUtil::Contains(result->GetError(), "Arrow union array has 1 children, but its schema has 2 members"));
 	REQUIRE_NO_FAIL(con.Query("SELECT 42"));
+	missing_child.array.n_children = 0;
+	result = arrow_union_offset_test::ScanColumn(con, missing_child.schema, missing_child.array);
+	REQUIRE(StringUtil::Contains(result->GetError(), "Arrow union array has 0 children, but its schema has 2 members"));
 
-	const char *invalid_formats[] = {"+us:5",   "+us:5,7,9", "+us:5,5",  "+us:-1,0",
-	                                 "+us:5,x", "+us:5,128", "+us:5, 7", "+us:"};
+	const char *invalid_formats[] = {"+us:5",     "+us:5,7,9", "+us:5,5",  "+us:05,005", "+us:-1,0", "+us:5,x",
+	                                 "+us:5,128", "+us:5, 7",  "+us:5,7,", "+us:5,,7",   "+us:"};
 	for (auto format : invalid_formats) {
 		INFO(format);
 		arrow_union_offset_test::UnionColumn col({5, 5}, 0, format);

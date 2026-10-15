@@ -325,7 +325,6 @@ void AllowedDirectoriesSetting::SetGlobal(DatabaseInstance *db, DBConfig &config
 	if (input.IsNull()) {
 		throw InvalidInputException("%s setting cannot be NULL", AllowedDirectoriesSetting::Name);
 	}
-	// a config that no database uses yet is not locked down
 	if (!config.IsUserConfig() && !Settings::Get<EnableExternalAccessSetting>(config)) {
 		throw InvalidInputException("Cannot change allowed_directories when enable_external_access is disabled");
 	}
@@ -337,7 +336,7 @@ void AllowedDirectoriesSetting::SetGlobal(DatabaseInstance *db, DBConfig &config
 }
 
 void AllowedDirectoriesSetting::ResetGlobal(DatabaseInstance *db, DBConfig &config) {
-	if (!Settings::Get<EnableExternalAccessSetting>(config)) {
+	if (!config.IsUserConfig() && !Settings::Get<EnableExternalAccessSetting>(config)) {
 		throw InvalidInputException("Cannot change allowed_directories when enable_external_access is disabled");
 	}
 	config.options.allowed_directories = DBConfigOptions().allowed_directories;
@@ -359,7 +358,6 @@ void AllowedPathsSetting::SetGlobal(DatabaseInstance *db, DBConfig &config, cons
 	if (input.IsNull()) {
 		throw InvalidInputException("%s setting cannot be NULL", AllowedPathsSetting::Name);
 	}
-	// a config that no database uses yet is not locked down
 	if (!config.IsUserConfig() && !Settings::Get<EnableExternalAccessSetting>(config)) {
 		throw InvalidInputException("Cannot change allowed_paths when enable_external_access is disabled");
 	}
@@ -372,7 +370,7 @@ void AllowedPathsSetting::SetGlobal(DatabaseInstance *db, DBConfig &config, cons
 }
 
 void AllowedPathsSetting::ResetGlobal(DatabaseInstance *db, DBConfig &config) {
-	if (!Settings::Get<EnableExternalAccessSetting>(config)) {
+	if (!config.IsUserConfig() && !Settings::Get<EnableExternalAccessSetting>(config)) {
 		throw InvalidInputException("Cannot change allowed_paths when enable_external_access is disabled");
 	}
 	config.options.allowed_paths = DBConfigOptions().allowed_paths;

@@ -120,32 +120,52 @@ TEST_CASE("Allowed directories and paths set before the database starts", "[api]
 		}
 	}
 
-	// enable_external_access is disabled with them, in whichever order the options are set
-	identifier_map_t<Value> config_dict;
-	config_dict.emplace("enable_external_access", Value::BOOLEAN(false));
-	config_dict.emplace("allowed_directories", Value::LIST({Value(allowed_directory)}));
-	config_dict.emplace("allowed_paths", Value::LIST({Value(allowed_file)}));
-	DBConfig config(config_dict, false);
-	DuckDB db(nullptr, &config);
-	Connection con(db);
-	auto result = con.Query("SELECT * FROM read_csv('" + directory_file + "')");
-	REQUIRE(CHECK_COLUMN(result, 0, {42}));
-	result = con.Query("SELECT * FROM read_csv('" + allowed_file + "')");
-	REQUIRE(CHECK_COLUMN(result, 0, {42}));
-	REQUIRE_FAIL(con.Query("SELECT * FROM read_csv('" + other_file + "')"));
-	// they cannot be widened once the database runs
-	REQUIRE_FAIL(con.Query("SET allowed_paths = ['" + other_file + "']"));
+	// with enable_external_access disabled before and after them, and with a file system given to the config
+	for (idx_t test_case = 0; test_case < 3; test_case++) {
+		DBConfig config;
+		if (test_case == 2) {
+			config.file_system = make_uniq<VirtualFileSystem>();
+		}
+		if (test_case != 1) {
+			config.SetOptionByName("enable_external_access", Value::BOOLEAN(false));
+		}
+		config.SetOptionByName("allowed_directories", Value::LIST({Value(allowed_directory)}));
+		config.SetOptionByName("allowed_paths", Value::LIST({Value(allowed_file)}));
+		if (test_case == 1) {
+			config.SetOptionByName("enable_external_access", Value::BOOLEAN(false));
+		}
+		// they are sanitized when they are set
+		auto directories = config.GetAllowedDirectories();
+		REQUIRE(directories.size() == 1);
+		REQUIRE(StringUtil::EndsWith(directories[0], "/"));
+		REQUIRE_THROWS(config.SetOptionByName("allowed_paths", Value::LIST({Value("file://otherhost/tmp/x.csv")})));
+		config.SetOptionByName("allowed_paths", Value::LIST({Value(allowed_file)}));
+		REQUIRE(config.GetAllowedPaths().size() == 1);
 
-	// also with a file system given to the config, after enable_external_access is disabled
-	DBConfig file_system_config;
-	file_system_config.file_system = make_uniq<VirtualFileSystem>(FileSystem::CreateLocal());
-	file_system_config.SetOptionByName("enable_external_access", Value::BOOLEAN(false));
-	file_system_config.SetOptionByName("allowed_paths", Value::LIST({Value(allowed_file)}));
-	DuckDB file_system_db(nullptr, &file_system_config);
-	Connection file_system_con(file_system_db);
-	result = file_system_con.Query("SELECT * FROM read_csv('" + allowed_file + "')");
-	REQUIRE(CHECK_COLUMN(result, 0, {42}));
-	REQUIRE_FAIL(file_system_con.Query("SELECT * FROM read_csv('" + other_file + "')"));
+		DuckDB db(nullptr, &config);
+		Connection con(db);
+		auto result = con.Query("SELECT * FROM read_csv('" + directory_file + "')");
+		REQUIRE(CHECK_COLUMN(result, 0, {42}));
+		result = con.Query("SELECT * FROM read_csv('" + allowed_file + "')");
+		REQUIRE(CHECK_COLUMN(result, 0, {42}));
+		REQUIRE_FAIL(con.Query("SELECT * FROM read_csv('" + other_file + "')"));
+		// they cannot be widened or reset once the database runs, also not through its config
+		REQUIRE_FAIL(con.Query("SET allowed_paths = ['" + other_file + "']"));
+		REQUIRE_FAIL(con.Query("RESET allowed_directories"));
+		auto &db_config = DBConfig::GetConfig(*db.instance);
+		REQUIRE_THROWS(db_config.SetOptionByName("allowed_paths", Value::LIST({Value(other_file)})));
+		REQUIRE_THROWS(db_config.SetOptionByName("allowed_directories", Value::LIST({Value(other_file)})));
+		REQUIRE_FAIL(con.Query("SELECT * FROM read_csv('" + other_file + "')"));
+	}
+
+	// a caller-owned config can also reset them
+	DBConfig config;
+	config.SetOptionByName("enable_external_access", Value::BOOLEAN(false));
+	config.SetOptionByName("allowed_paths", Value::LIST({Value(allowed_file)}));
+	auto paths_option = DBConfig::GetOptionByName("allowed_paths");
+	REQUIRE(paths_option);
+	REQUIRE_NOTHROW(config.ResetOption(nullptr, *paths_option));
+	REQUIRE(config.GetAllowedPaths().empty());
 }
 
 TEST_CASE("Test user_agent", "[api]") {

@@ -938,8 +938,8 @@ static string SanitizeAllowedPath(FileSystem &file_system, const string &path_p,
 
 string DBConfig::SanitizeAllowedPath(const string &path_p, optional_ptr<FileOpener> opener) const {
 	if (!file_system) {
-		// a config that no database uses yet has the file system a database starts with
-		VirtualFileSystem default_file_system(FileSystem::CreateLocal());
+		// a caller-owned config sanitizes as the default file system of a database does
+		VirtualFileSystem default_file_system;
 		return duckdb::SanitizeAllowedPath(default_file_system, path_p, opener);
 	}
 	return duckdb::SanitizeAllowedPath(*file_system, path_p, opener);

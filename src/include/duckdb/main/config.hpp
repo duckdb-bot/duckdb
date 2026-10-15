@@ -384,7 +384,7 @@ public:
 	DUCKDB_API ExternalExtensionProvider &GetExternalExtensionProvider() const;
 	DUCKDB_API HTTPTransportManager &GetHTTPTransportManager();
 	DUCKDB_API const HTTPTransportManager &GetHTTPTransportManager() const;
-	//! Whether this is a config that a database is opened with, rather than the config of a database
+	//! True for a caller-owned configuration
 	bool IsUserConfig() const {
 		return is_user_config;
 	}

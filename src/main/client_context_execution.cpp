@@ -66,7 +66,9 @@ void ClientContext::BeginQueryInternal(ClientContextLock &lock, PreprocessedStat
 		query_deadline.SetInvalid();
 	}
 	// Notify any registered state of query begin
-	for (auto &state : registered_state->States()) {
+	auto states = registered_state->States();
+	active_query->begun_states.reserve(states.size());
+	for (auto &state : states) {
 		state->QueryBegin(*this);
 		active_query->begun_states.push_back(state);
 	}
@@ -136,7 +138,12 @@ ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success,
 		error = ErrorData("Unhandled exception!");
 	} // LCOV_EXCL_STOP
 
-	client_data->profiler->EndQuery();
+	ErrorData end_error;
+	try {
+		client_data->profiler->EndQuery();
+	} catch (std::exception &ex) {
+		end_error = ErrorData(ex);
+	}
 
 	// Refresh the logger
 	logger->Flush();
@@ -146,7 +153,6 @@ ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success,
 
 	// Notify any registered state of query end - all of them, also when one of them fails
 	auto end_states = began_on_all_states ? registered_state->States() : std::move(begun_states);
-	ErrorData end_error;
 	for (auto const &s : end_states) {
 		try {
 			if (error.HasError()) {
@@ -155,9 +161,7 @@ ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success,
 				s->QueryEnd(*this, previous_error);
 			}
 		} catch (std::exception &ex) {
-			if (!end_error.HasError()) {
-				end_error = ErrorData(ex);
-			}
+			end_error.Merge(ErrorData(ex));
 		}
 	}
 	if (end_error.HasError()) {

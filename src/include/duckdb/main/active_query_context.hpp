@@ -48,9 +48,9 @@ public:
 	optional_ptr<QueryResult> handle;
 	//! Whether the statements run inside the submission, where a result collector may build its own result object
 	bool inside_submission = false;
-	//! Whether QueryBegin ran on every registered state
+	//! Whether QueryBegin completed successfully on every registered state
 	bool began_on_all_states = false;
-	//! The states QueryBegin ran on, while it has not run on all of them
+	//! The states QueryBegin completed successfully on, while it has not on all of them
 	vector<shared_ptr<ClientContextState>> begun_states;
 
 public:

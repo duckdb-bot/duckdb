@@ -951,6 +951,9 @@ public:
 		ends++;
 		if (fail_end) {
 			fail_end = false;
+			if (fatal) {
+				throw FatalException("query end failed");
+			}
 			throw IOException("query end failed");
 		}
 	}
@@ -1036,6 +1039,64 @@ TEST_CASE("A query whose begin failed ends its transaction", "[api][query_result
 	states[3]->fail_begin = true;
 	states[3]->fatal = true;
 	REQUIRE_FAIL(con.Query("INSERT INTO t VALUES (7)"));
+	require_paired();
+	auto invalidated = con.Query("SELECT 42");
+	REQUIRE(invalidated->HasError());
+	REQUIRE(StringUtil::Contains(invalidated->GetError(), "database has been invalidated"));
+}
+
+TEST_CASE("Every state ends a query when the end of one fails", "[api][query_result]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	vector<shared_ptr<CountingQueryState>> states;
+	for (idx_t i = 0; i < 4; i++) {
+		states.push_back(make_shared_ptr<CountingQueryState>());
+		con.context->registered_state->Insert("counting_query_state_" + to_string(i), states.back());
+	}
+	// the counting state whose QueryBegin runs last, after all others completed
+	shared_ptr<CountingQueryState> last;
+	for (auto &state : con.context->registered_state->States()) {
+		for (auto &counting : states) {
+			if (state.get() == counting.get()) {
+				last = counting;
+			}
+		}
+	}
+	REQUIRE(last);
+	auto require_paired = [&]() {
+		for (auto &state : states) {
+			REQUIRE(state->begins == state->ends);
+		}
+	};
+
+	// a query that began on every state
+	states[0]->fail_end = true;
+	states[2]->fail_end = true;
+	string end_error;
+	try {
+		con.Query("SELECT 42");
+	} catch (std::exception &ex) {
+		end_error = ex.what();
+	}
+	REQUIRE(StringUtil::Contains(end_error, "query end failed"));
+	require_paired();
+	for (auto &state : states) {
+		REQUIRE(!state->fail_end);
+	}
+	auto next = con.Query("SELECT 42");
+	REQUIRE(CHECK_COLUMN(next, 0, {42}));
+	require_paired();
+
+	// a fatal error of an end invalidates the database, while the error of the begin is reported
+	for (auto &state : states) {
+		state->fail_end = true;
+		state->fatal = true;
+	}
+	last->fail_begin = true;
+	last->fatal = false;
+	auto failed = con.Query("SELECT 42");
+	REQUIRE(failed->HasError());
+	REQUIRE(StringUtil::Contains(failed->GetError(), "query begin failed"));
 	require_paired();
 	auto invalidated = con.Query("SELECT 42");
 	REQUIRE(invalidated->HasError());

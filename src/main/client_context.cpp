@@ -794,8 +794,12 @@ unique_ptr<QueryResult> ClientContext::SubmitStatement(ClientContextLock &lock, 
 		if (active_query) {
 			try {
 				EndQueryInternal(lock, false, ErrorInvalidatesQueryTransaction(error.Type()), error);
-			} catch (std::exception &) {
-				// the error of the begin is the one reported
+			} catch (std::exception &ex) {
+				// the error of the begin is the one reported, while a fatal error of the end still invalidates
+				ErrorData end_error(ex);
+				if (Exception::InvalidatesDatabase(end_error.Type())) {
+					ValidChecker::Invalidate(DatabaseInstance::GetDatabase(*this), end_error.RawMessage());
+				}
 			}
 		}
 		return ErrorResult<QueryResult>(std::move(error), query);

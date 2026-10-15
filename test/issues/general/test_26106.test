@@ -34,7 +34,7 @@ SET wal_autocheckpoint = '1KB';
 statement ok
 CREATE TABLE other AS SELECT * FROM range(20000) r(x);
 
-# the automatic checkpoint waits, so the WAL keeps the inserts
+# the automatic checkpoint is skipped, so the WAL keeps the inserts
 query I
 SELECT wal_size <> '0 bytes' FROM pragma_database_size() WHERE database_name = current_database();
 ----

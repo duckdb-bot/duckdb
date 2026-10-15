@@ -387,14 +387,10 @@ BoundStatement Binder::BindNode(MergeQueryNode &node) {
 		source_marker = ColumnBinding(new_proj_index, source_marker_idx);
 		source = std::move(proj);
 
-		// rewrite the references to the source above the projection we have just pushed, including the correlated
-		// columns of subqueries in the join condition
-		vector<ColumnBinding> projected_bindings;
-		for (idx_t i = 0; i < source_bindings.size(); i++) {
-			projected_bindings.emplace_back(new_proj_index, ProjectionIndex(i));
-		}
+		// remap the source references above the marker projection, including those of correlated subqueries
 		CorrelatedColumnBindingReplacer replacer;
-		replacer.AddReplacements(source_bindings, projected_bindings);
+		replacer.AddReplacements(source_bindings,
+		                         LogicalOperator::GenerateColumnBindings(new_proj_index, source_bindings.size()));
 		replacer.stop_operator = *source;
 		replacer.VisitOperator(*root);
 		replacer.VisitOperator(*merge_into);

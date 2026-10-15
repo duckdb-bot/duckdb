@@ -92,6 +92,17 @@ SELECT * FROM t ORDER BY id;
 ----
 3	2
 
+# a correlated subquery in the condition of an action
+statement ok
+MERGE INTO t USING s ON t.id = s.id
+WHEN MATCHED AND EXISTS (SELECT 1 FROM s s2 WHERE s2.id = s.id AND s2.v > 20) THEN UPDATE SET v = -1
+WHEN NOT MATCHED BY SOURCE THEN DELETE;
+
+query II
+SELECT * FROM t ORDER BY id;
+----
+3	-1
+
 statement ok
 DELETE FROM s WHERE id > 1;
 

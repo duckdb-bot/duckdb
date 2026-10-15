@@ -112,7 +112,7 @@ public:
 	//! When caching is disabled, returns a transient CachedFile that is not tracked in the cached file map.
 	shared_ptr<CachedFile> GetOrCreateCachedFile(const string &path);
 	//! Reserve the memory of a cached file again, when its number of blocks doubled or halved
-	void UpdateCachedFileMemory(CachedFile &cached_file, idx_t file_size);
+	void UpdateCachedFileMemory(CachedFile &cached_file);
 
 	//! Allocate a buffer holding a cache block of the given file. Blocks of remote files spill to the
 	//! temporary directory when they are evicted, instead of being dropped and re-fetched from the

@@ -71,12 +71,10 @@ public:
 	optional_idx GetEstimatedCacheMemory() const override {
 		// read without the locks of the file, since the object cache lock is held
 		const idx_t num_blocks = cached_file->reserved_blocks.load();
-		// Estimated memory consumption for each block metadata: the block, the handle and memory of its buffer,
-		// which outlive the eviction of the buffer, and its node in the map.
+		// a block keeps its handle and buffer memory after eviction, and takes about 64 bytes in the map
 		static constexpr idx_t BLOCK_METADATA_SIZE =
 		    sizeof(CacheBlock) + sizeof(BlockHandle) + sizeof(BlockMemory) + 64;
 		// Filepath is stored at two places: in the object cache key and in the cached file object.
-		// We do over-estimation on memory consumption, which assumes the whole file is cached.
 		return cached_file->path.size() * 2 + num_blocks * BLOCK_METADATA_SIZE;
 	}
 
@@ -371,15 +369,13 @@ shared_ptr<ExternalFileCache::CachedFile> ExternalFileCache::GetOrCreateCachedFi
 	}
 }
 
-void ExternalFileCache::UpdateCachedFileMemory(CachedFile &cached_file, idx_t file_size) {
+void ExternalFileCache::UpdateCachedFileMemory(CachedFile &cached_file) {
 	if (!ShouldCacheFile(cached_file.path)) {
 		return;
 	}
-	const idx_t block_size = GetCacheMaxBlockSize(cached_file.path);
 	{
 		const annotated_lock_guard<annotated_mutex> map_guard(cached_file.map_lock);
-		// reads smaller than the maximum block size leave more blocks than the file size needs
-		const idx_t num_blocks = MaxValue<idx_t>((file_size + block_size - 1) / block_size, cached_file.blocks.size());
+		const idx_t num_blocks = cached_file.blocks.size();
 		// reserving again only when the number of blocks doubled or halved keeps the estimate within a factor of two
 		const idx_t reserved_blocks = cached_file.reserved_blocks.load();
 		if (num_blocks <= 2 * reserved_blocks && 2 * num_blocks >= reserved_blocks) {

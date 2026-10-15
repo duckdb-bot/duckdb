@@ -447,11 +447,13 @@ TEST_CASE("Test object cache: an entry reserves its memory again only while its 
 	cache.Put("obj", obj);
 	REQUIRE(buffer_pool.GetUsedMemory() == initial_memory + obj_size);
 
-	// the entry grew
 	obj->size = 3 * obj_size;
 	cache.UpdateReservation("obj", *obj);
 	REQUIRE(buffer_pool.GetUsedMemory() == initial_memory + 3 * obj_size);
 	REQUIRE(cache.GetEntryCount() == 1);
+	obj->size = obj_size;
+	cache.UpdateReservation("obj", *obj);
+	REQUIRE(buffer_pool.GetUsedMemory() == initial_memory + obj_size);
 
 	// a deleted entry is not put back
 	cache.Delete("obj");

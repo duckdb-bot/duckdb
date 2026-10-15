@@ -143,6 +143,9 @@ TEST_CASE("duckdb_set_config sets allowed_directories and allowed_paths before t
 	REQUIRE(duckdb_set_config(config, "allowed_directories", directories.c_str()) == DuckDBSuccess);
 	REQUIRE(duckdb_set_config(config, "allowed_paths", paths.c_str()) == DuckDBSuccess);
 	REQUIRE(duckdb_set_config(config, "enable_external_access", "false") == DuckDBSuccess);
+	// a path that cannot be sanitized is refused when it is set
+	REQUIRE(duckdb_set_config(config, "allowed_directories", "['file://otherhost/tmp/example']") == DuckDBError);
+	REQUIRE(duckdb_set_config(config, "allowed_directories", directories.c_str()) == DuckDBSuccess);
 	duckdb_database db;
 	char *error = nullptr;
 	REQUIRE(duckdb_open_ext(nullptr, &db, config, &error) == DuckDBSuccess);

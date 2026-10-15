@@ -191,7 +191,7 @@ public:
 	}
 
 	template <class... ARGS>
-	void emplace_back(ARGS &&...args) { // NOLINT
+	void emplace_back(ARGS &&... args) { // NOLINT
 		auto scan = make_shared_ptr<ReplacementScan>(std::forward<ARGS>(args)...);
 		lock_guard<mutex> guard(lock);
 		scans.push_back(std::move(scan));
@@ -384,6 +384,10 @@ public:
 	DUCKDB_API ExternalExtensionProvider &GetExternalExtensionProvider() const;
 	DUCKDB_API HTTPTransportManager &GetHTTPTransportManager();
 	DUCKDB_API const HTTPTransportManager &GetHTTPTransportManager() const;
+	//! Whether this is a config that a database is opened with, rather than the config of a database
+	bool IsUserConfig() const {
+		return is_user_config;
+	}
 
 private:
 	mutable mutex config_lock;

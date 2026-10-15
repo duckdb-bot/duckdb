@@ -2,6 +2,7 @@
 #include "test_helpers.hpp"
 #include "duckdb/main/http/http_util.hpp"
 #include "duckdb/common/local_file_system.hpp"
+#include "duckdb/common/virtual_file_system.hpp"
 
 #include <set>
 #include <map>
@@ -134,6 +135,17 @@ TEST_CASE("Allowed directories and paths set before the database starts", "[api]
 	REQUIRE_FAIL(con.Query("SELECT * FROM read_csv('" + other_file + "')"));
 	// they cannot be widened once the database runs
 	REQUIRE_FAIL(con.Query("SET allowed_paths = ['" + other_file + "']"));
+
+	// also with a file system given to the config, after enable_external_access is disabled
+	DBConfig file_system_config;
+	file_system_config.file_system = make_uniq<VirtualFileSystem>(FileSystem::CreateLocal());
+	file_system_config.SetOptionByName("enable_external_access", Value::BOOLEAN(false));
+	file_system_config.SetOptionByName("allowed_paths", Value::LIST({Value(allowed_file)}));
+	DuckDB file_system_db(nullptr, &file_system_config);
+	Connection file_system_con(file_system_db);
+	result = file_system_con.Query("SELECT * FROM read_csv('" + allowed_file + "')");
+	REQUIRE(CHECK_COLUMN(result, 0, {42}));
+	REQUIRE_FAIL(file_system_con.Query("SELECT * FROM read_csv('" + other_file + "')"));
 }
 
 TEST_CASE("Test user_agent", "[api]") {

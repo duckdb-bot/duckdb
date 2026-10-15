@@ -554,17 +554,6 @@ void DatabaseInstance::Configure(DBConfig &new_config, const char *database_path
 		config.file_system = make_uniq<VirtualFileSystem>(FileSystem::CreateLocal());
 	}
 	config.http_transport_manager->Initialize(config);
-	// the allowed directories and paths set before there was a file system are added with it
-	auto allowed_directories = std::move(config.options.allowed_directories);
-	auto allowed_paths = std::move(config.options.allowed_paths);
-	config.options.allowed_directories.clear();
-	config.options.allowed_paths.clear();
-	for (auto &directory : allowed_directories) {
-		config.AddAllowedDirectory(directory);
-	}
-	for (auto &path : allowed_paths) {
-		config.AddAllowedPath(path);
-	}
 	if (database_path && !Settings::Get<EnableExternalAccessSetting>(*this)) {
 		config.AddAllowedDatabasePath(database_path);
 		if (!config.options.temporary_directory.empty()) {

@@ -299,3 +299,49 @@ statement error
 SELECT * FROM read_csv('{DATA_DIR}/csv/final_row_unterminated_quote.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR'}, buffer_size = 10)
 ----
 CSV Error on Line: 4
+
+statement error
+SELECT * FROM read_csv('{DATA_DIR}/csv/final_row_unterminated_quote.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR'}, buffer_size = 10)
+----
+Original Line: "xxxxxxxx
+
+# without strict mode, an open quote in the last row is read as a value
+foreach parallel true false
+
+query II
+SELECT count(*), count(b) FROM read_csv('{DATA_DIR}/csv/final_row_open_quote.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, strict_mode = false, null_padding = true, buffer_size = 40, parallel = {parallel})
+----
+3	2
+
+statement error
+SELECT count(*) FROM read_csv('{DATA_DIR}/csv/final_row_open_quote.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, strict_mode = false, null_padding = true, buffer_size = 16, parallel = {parallel})
+----
+Maximum line size of 16 bytes exceeded
+
+endloop
+
+# with strict mode, the open quote is not read as a value
+statement error
+SELECT a, b FROM read_csv('{DATA_DIR}/csv/final_row_open_quote.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, strict_mode = true, null_padding = true, buffer_size = 40)
+----
+unterminated quote
+
+query I
+SELECT count(*) FILTER (WHERE a LIKE '%x%') FROM read_csv('{DATA_DIR}/csv/final_row_open_quote.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, strict_mode = true, null_padding = true, buffer_size = 40, parallel = false)
+----
+0
+
+# a line of spaces and a comment over a buffer end is a comment
+statement ok
+COPY (SELECT l FROM (VALUES (0, 'a'), (1, '0'), (2, '1'), (3, repeat(' ', 10) || '#zz'), (4, '3')) t(i, l) ORDER BY i) TO '{TEST_DIR}/blank_comment.csv' (HEADER false, QUOTE '');
+
+foreach parallel true false
+
+query I
+SELECT a FROM read_csv('{TEST_DIR}/blank_comment.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR'}, comment = '#', buffer_size = 16, parallel = {parallel})
+----
+0
+1
+3
+
+endloop

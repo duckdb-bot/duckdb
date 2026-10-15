@@ -1555,8 +1555,10 @@ void StringValueScanner::ProcessOverBufferValue() {
 			skip_value = true;
 		}
 	}
-	// a value before a comment that is taken here leaves only the row to add
+	// a value before a comment that is taken here leaves only the row to add, unless it is blank
 	bool took_value_before_comment = skip_value && result.comment;
+	const bool blank_before_comment =
+	    result.comment && !over_buffer_string.empty() && over_buffer_string.find_first_not_of(' ') == string::npos;
 	if (!skip_value) {
 		string_t value;
 		const auto &delimiter = result.state_machine.dialect_options.state_machine_options.delimiter.GetValue();
@@ -1660,9 +1662,14 @@ void StringValueScanner::ProcessOverBufferValue() {
 	}
 
 	if (states.NewRow() && !states.IsNotSet()) {
-		if (took_value_before_comment) {
+		if (took_value_before_comment && !blank_before_comment) {
 			result.comment = false;
 			result.AddRowInternal();
+		} else if (took_value_before_comment) {
+			// only spaces before the comment, so the line is a comment
+			result.cur_col_id = 0;
+			result.position_before_comment = result.last_position.buffer_pos;
+			result.UnsetComment(result, iterator.pos.buffer_pos);
 		} else if (result.IsCommentSet(result)) {
 			result.UnsetComment(result, iterator.pos.buffer_pos);
 		} else {
@@ -1712,11 +1719,21 @@ StringValueScanner::MoveBufferResult StringValueScanner::TryMoveToNextBuffer() {
 	result.quoted_new_line = false;
 	// This means we reached the end of the file, we must add a last line if there is any to be added
 	if (result.added_last_line && result.cur_col_id > 0 && !states.IsCurrentNewRow() && !states.IsNotSet() &&
-	    !states.IsQuotedCurrent() && !result.IsStateCurrent(CSVState::INVALID)) {
+	    !result.IsStateCurrent(CSVState::INVALID)) {
 		// the last value of a row without a final newline was read over the end of a buffer
 		iterator.pos.buffer_pos = previous_buffer_handle->actual_size;
-		result.AddRowInternal();
-		lines_read++;
+		if (states.IsQuotedCurrent() && state_machine->dialect_options.state_machine_options.strict_mode.GetValue()) {
+			// the boundary scan reports the unterminated quote of this line, a sequential scan leaves the line out
+			result.current_line_position.begin = result.current_line_position.end;
+			result.current_line_position.end = {iterator.pos.buffer_idx, iterator.pos.buffer_pos, result.buffer_size};
+			if (!iterator.IsBoundarySet()) {
+				result.cur_col_id = 0;
+				result.chunk_col_id = 0;
+			}
+		} else {
+			result.AddRowInternal();
+			lines_read++;
+		}
 	} else if (states.EmptyLine() || states.NewRow() || result.added_last_line || states.IsCurrentNewRow() ||
 	           states.IsNotSet()) {
 		if (result.cur_col_id == result.number_of_columns && !result.IsStateCurrent(CSVState::INVALID)) {

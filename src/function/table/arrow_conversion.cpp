@@ -760,7 +760,7 @@ void ArrowToDuckDBConversion::ColumnArrowToDuckDBRunEndEncoded(Vector &vector, c
 	auto &struct_info = arrow_type.GetTypeInfo<ArrowStructInfo>();
 	auto &run_ends_type = struct_info.GetChild(0);
 	auto &values_type = struct_info.GetChild(1);
-	D_ASSERT(vector.GetType() == values_type.GetDuckType());
+	D_ASSERT(vector.GetType() == values_type.GetDuckType(true));
 
 	if (vector.GetBufferRef()) {
 		vector.BufferMutable().AddAuxiliaryData(make_uniq<ArrowAuxiliaryData>(array_state.owned_data));
@@ -774,15 +774,21 @@ void ArrowToDuckDBConversion::ColumnArrowToDuckDBRunEndEncoded(Vector &vector, c
 		// The run ends and values have not been scanned yet for this array
 		D_ASSERT(!run_end_encoding.values);
 		run_end_encoding.run_ends = make_uniq<Vector>(run_ends_type.GetDuckType(), compressed_size);
-		run_end_encoding.values = make_uniq<Vector>(values_type.GetDuckType(), compressed_size);
+		run_end_encoding.values = make_uniq<Vector>(values_type.GetDuckType(true), compressed_size);
 
 		// the run ends and values are scanned in full - the offsets of the scan apply to the logical (decoded) rows
 		ArrowToDuckDBConversion::ColumnArrowToDuckDB(*run_end_encoding.run_ends, run_ends_array, 0, array_state,
 		                                             compressed_size, run_ends_type);
 		auto &values = *run_end_encoding.values;
-		ArrowToDuckDBConversion::SetValidityMask(values, values_array, 0, compressed_size, 0, -1);
-		ArrowToDuckDBConversion::ColumnArrowToDuckDB(values, values_array, 0, array_state, compressed_size,
-		                                             values_type);
+		if (values_type.HasDictionary()) {
+			// the dictionary is scanned with its own state, as it can be run-end encoded itself
+			ArrowToDuckDBConversion::ColumnArrowToDuckDBDictionary(values, values_array, 0, array_state.GetChild(1),
+			                                                       compressed_size, values_type);
+		} else {
+			ArrowToDuckDBConversion::SetValidityMask(values, values_array, 0, compressed_size, 0, -1);
+			ArrowToDuckDBConversion::ColumnArrowToDuckDB(values, values_array, 0, array_state, compressed_size,
+			                                             values_type);
+		}
 	}
 
 	idx_t scan_offset = GetEffectiveOffset(array, NumericCast<int64_t>(parent_offset), chunk_offset, nested_offset);

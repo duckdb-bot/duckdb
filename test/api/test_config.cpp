@@ -162,10 +162,15 @@ TEST_CASE("Allowed directories and paths set before the database starts", "[api]
 	DBConfig config;
 	config.SetOptionByName("enable_external_access", Value::BOOLEAN(false));
 	config.SetOptionByName("allowed_paths", Value::LIST({Value(allowed_file)}));
+	config.SetOptionByName("allowed_directories", Value::LIST({Value(allowed_directory)}));
 	auto paths_option = DBConfig::GetOptionByName("allowed_paths");
+	auto directories_option = DBConfig::GetOptionByName("allowed_directories");
 	REQUIRE(paths_option);
+	REQUIRE(directories_option);
 	REQUIRE_NOTHROW(config.ResetOption(nullptr, *paths_option));
+	REQUIRE_NOTHROW(config.ResetOption(nullptr, *directories_option));
 	REQUIRE(config.GetAllowedPaths().empty());
+	REQUIRE(config.GetAllowedDirectories().empty());
 }
 
 TEST_CASE("Test user_agent", "[api]") {

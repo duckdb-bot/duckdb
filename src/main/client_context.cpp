@@ -256,8 +256,7 @@ unique_ptr<T> ClientContext::ErrorResult(ErrorData error, const string &query) {
 }
 
 bool ClientContext::OpenResultHoldsConnection(ClientContextLock &) {
-	// A query no result holds (one whose begin failed), or whose result a collector built so that nothing can end
-	// it, is abandoned instead
+	// A query no result holds, or whose result a collector built so that nothing can end it, is abandoned instead
 	return active_query && active_query->HasOpenResult() && !active_query->collector_built_result;
 }
 

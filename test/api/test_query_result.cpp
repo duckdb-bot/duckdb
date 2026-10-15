@@ -956,28 +956,19 @@ public:
 			if (fatal) {
 				throw FatalException("query end failed");
 			}
+			if (internal) {
+				throw InternalException("query end failed");
+			}
 			throw IOException("query end failed");
 		}
 	}
 
 	bool fail_begin = false;
 	bool fatal = false;
+	bool internal = false;
 	bool fail_end = false;
 	idx_t begins = 0;
 	idx_t ends = 0;
-};
-
-//! Fails the end of a query with an internal error when asked
-class InternalQueryEnd : public ClientContextState {
-public:
-	void QueryEnd(ClientContext &context, optional_ptr<ErrorData> error) override {
-		if (fail) {
-			fail = false;
-			throw InternalException("query end failed");
-		}
-	}
-
-	bool fail = false;
 };
 
 TEST_CASE("A query whose begin failed ends its transaction", "[api][query_result]") {
@@ -1135,7 +1126,7 @@ TEST_CASE("Every state ends a query when the end of one fails", "[api][query_res
 	REQUIRE(StringUtil::Contains(invalidated->GetError(), "database has been invalidated"));
 }
 
-//! A log storage whose flush fails when asked
+//! A log storage whose flush fails once, at the flush it is asked to fail
 class FailingLogStorage : public LogStorage {
 public:
 	void WriteLogEntry(timestamp_t timestamp, LogLevel level, const string &log_type, const string &log_message,
@@ -1144,10 +1135,12 @@ public:
 	void WriteLogEntries(DataChunk &chunk, const RegisteredLoggingContext &context) override {
 	}
 	void Flush(LoggingTargetTable table) override {
-		FailIfAsked();
 	}
 	void FlushAll() override {
-		FailIfAsked();
+		flushes++;
+		if (flushes == fail_at_flush) {
+			throw IOException("log flush failed");
+		}
 	}
 	bool IsEnabled(LoggingTargetTable table) override {
 		return table == LoggingTargetTable::ALL_LOGS;
@@ -1156,31 +1149,39 @@ public:
 		return "FailingLogStorage";
 	}
 
-	bool fail = false;
-
-private:
-	void FailIfAsked() {
-		if (fail) {
-			fail = false;
-			throw IOException("log flush failed");
-		}
-	}
+	idx_t flushes = 0;
+	idx_t fail_at_flush = 0;
 };
 
 TEST_CASE("Every state ends a query when an end error is internal or the log fails", "[api][query_result]") {
-	for (idx_t internal_first = 0; internal_first < 2; internal_first++) {
+	// a fatal and an internal end error in both orders, and an internal one alone
+	for (idx_t test_case = 0; test_case < 3; test_case++) {
 		DuckDB db(nullptr);
 		Connection con(db);
-		auto fatal_state = make_shared_ptr<CountingQueryState>();
-		auto internal_state = make_shared_ptr<InternalQueryEnd>();
-		// swapping the names of the two states tries both orders of their ends
-		con.context->registered_state->Insert(internal_first ? "a_state" : "b_state", fatal_state);
-		con.context->registered_state->Insert(internal_first ? "b_state" : "a_state", internal_state);
-		fatal_state->fail_end = true;
-		fatal_state->fatal = true;
-		internal_state->fail = true;
+		auto a = make_shared_ptr<CountingQueryState>();
+		auto b = make_shared_ptr<CountingQueryState>();
+		con.context->registered_state->Insert("a", a);
+		con.context->registered_state->Insert("b", b);
+		auto first = a;
+		auto second = b;
+		for (auto &state : con.context->registered_state->States()) {
+			if (state.get() == b.get()) {
+				std::swap(first, second);
+				break;
+			}
+			if (state.get() == a.get()) {
+				break;
+			}
+		}
+		first->fail_end = test_case != 2;
+		first->fatal = test_case == 0;
+		first->internal = test_case == 1;
+		second->fail_end = true;
+		second->fatal = test_case == 1;
+		second->internal = test_case != 1;
 		REQUIRE_THROWS(con.Query("SELECT 42"));
-		REQUIRE(fatal_state->begins == fatal_state->ends);
+		REQUIRE(a->begins == a->ends);
+		REQUIRE(b->begins == b->ends);
 		auto invalidated = con.Query("SELECT 42");
 		REQUIRE(invalidated->HasError());
 		REQUIRE(StringUtil::Contains(invalidated->GetError(), "database has been invalidated"));
@@ -1195,12 +1196,16 @@ TEST_CASE("Every state ends a query when an end error is internal or the log fai
 	db.instance->GetLogManager().RegisterLogStorage("failing_log_storage", base_storage);
 	REQUIRE_NO_FAIL(con.Query("SET enable_logging = true"));
 	REQUIRE_NO_FAIL(con.Query("SET logging_storage = 'failing_log_storage'"));
-	log_storage->fail = true;
+	// a query flushes the log when it begins and when it ends, and the second flush fails
+	log_storage->fail_at_flush = log_storage->flushes + 2;
+	string flush_error;
 	try {
 		con.Query("SELECT 42");
-	} catch (std::exception &) {
+	} catch (std::exception &ex) {
+		flush_error = ex.what();
 	}
-	REQUIRE(!log_storage->fail);
+	REQUIRE(log_storage->flushes == log_storage->fail_at_flush);
+	REQUIRE(StringUtil::Contains(flush_error, "log flush failed"));
 	REQUIRE(state->begins == state->ends);
 	auto next = con.Query("SELECT 42");
 	REQUIRE(CHECK_COLUMN(next, 0, {42}));

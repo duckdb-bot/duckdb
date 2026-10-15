@@ -70,6 +70,21 @@ SELECT typeof(s::INTEGER[]), s::INTEGER[] FROM (SELECT list(42) EXPORT_STATE AS 
 ----
 INTEGER[]	[42]
 
+query I
+SELECT s::INTEGER[] FROM (SELECT list(i) EXPORT_STATE AS s FROM range(0) r(i));
+----
+NULL
+
+statement ok
+CREATE TABLE list_states AS SELECT g, list(i) FILTER (WHERE i % 2 = 0) EXPORT_STATE AS s FROM (SELECT i % 3 AS g, i FROM range(9) r(i)) GROUP BY g;
+
+query II
+SELECT g, s::BIGINT[] FROM list_states ORDER BY g;
+----
+0	[0, 6]
+1	[4]
+2	[2, 8]
+
 # a state still casts to other types through the usual casts
 query I
 SELECT s::VARCHAR FROM (SELECT max(DATE '2000-01-01' + i::INTEGER) EXPORT_STATE AS s FROM range(10) r(i));

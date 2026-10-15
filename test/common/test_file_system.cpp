@@ -299,7 +299,7 @@ TEST_CASE("Directories get the permissions the umask leaves like files", "[file_
 	auto file = fs.JoinPath(directory, "file");
 	auto private_directory = fs.JoinPath(fs.JoinPath(directory, "c"), "private");
 	auto secret_directory = fs.JoinPath(fs.JoinPath(directory, "d"), "secrets");
-	// what mkdir and open make of the modes for any file, under the umask and a default ACL of the test directory
+	// compare with native creation under the same umask and inherited ACLs
 	auto reference_directory = fs.JoinPath(directory, "reference_directory");
 	auto reference_private = fs.JoinPath(directory, "reference_private");
 	auto reference_file = fs.JoinPath(directory, "reference_file");
@@ -322,7 +322,6 @@ TEST_CASE("Directories get the permissions the umask leaves like files", "[file_
 	REQUIRE(GetPermissions(fs.JoinPath(directory, "a")) == GetPermissions(reference_directory));
 	REQUIRE(GetPermissions(nested) == GetPermissions(reference_directory));
 	REQUIRE(GetPermissions(file) == GetPermissions(reference_file));
-	// a private directory is for its owner only, with the directories created for it, as the persistent secrets
 	REQUIRE(GetPermissions(fs.JoinPath(directory, "c")) == GetPermissions(reference_private));
 	REQUIRE(GetPermissions(private_directory) == GetPermissions(reference_private));
 	REQUIRE(GetPermissions(fs.JoinPath(directory, "d")) == GetPermissions(reference_private));

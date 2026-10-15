@@ -56,14 +56,14 @@ struct Builder {
 	}
 	Node &Int32(const char *name, vector<int32_t> values, const vector<idx_t> &null_slots = {}) {
 		auto &node = NewNode("i", name, int64_t(values.size()), 0, {});
-		// padded, as the validity of an unaligned offset is read one byte further
-		node.validity.resize(values.size() / 8 + 2, 0xFF);
+		node.validity.resize((values.size() + 7) / 8, 0xFF);
 		for (auto slot : null_slots) {
 			node.validity[slot / 8] &= uint8_t(~(1u << (slot % 8)));
 		}
 		node.values = std::move(values);
 		node.buffers = {null_slots.empty() ? nullptr : node.validity.data(), node.values.data()};
 		node.array.null_count = int64_t(null_slots.size());
+		node.schema.flags = ARROW_FLAG_NULLABLE;
 		node.array.n_buffers = 2;
 		node.array.buffers = node.buffers.data();
 		return node;
@@ -103,10 +103,9 @@ bool ScanMatches(Node &column, const string &query) {
 	DuckDB db(nullptr);
 	Connection con(db);
 	auto result = con.TableFunction("arrow_scan", {}, {}, ArrowTestHelper::ConstructArrowScan(stream))->Execute();
-	if (result->HasError()) {
-		FAIL(result->GetError());
-	}
+	REQUIRE_NO_FAIL(*result);
 	auto expected = con.Query(query);
+	REQUIRE_NO_FAIL(*expected);
 	return result->Equals(*expected, false);
 }
 
@@ -181,4 +180,13 @@ TEST_CASE("Arrow scan of a struct in a sliced struct across chunks", "[arrow]") 
 	auto &outer = b.Struct("c", {&inner}, 3);
 	REQUIRE(ScanMatches(outer,
 	                    "SELECT {'x': {'i': CASE WHEN i % 7 = 0 THEN NULL ELSE i END::INT}} FROM range(3, 6000) t(i)"));
+}
+
+TEST_CASE("Arrow scan of a sliced sparse union with NULL members in a list", "[arrow]") {
+	Builder b;
+	auto &u = b.Union("item", {0, 1, 0, 1, 0, 1},
+	                  {&b.Int32("i", {1, 2, 3, 4, 5, 6}, {2}), &b.Int32("j", {10, 20, 30, 40, 50, 60}, {5})}, 2);
+	auto &l = b.List("c", {0, 2, 4}, u);
+	REQUIRE(ScanMatches(l, "SELECT * FROM (VALUES ([NULL::UNION(i INT, j INT), " + Member("j", 40) + "]), ([" +
+	                           Member("i", 5) + ", NULL::UNION(i INT, j INT)])) t(c)"));
 }

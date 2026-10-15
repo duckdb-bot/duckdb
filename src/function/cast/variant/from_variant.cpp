@@ -937,7 +937,13 @@ static bool CastFromVARIANT(Vector &variant_vec, Vector &result, idx_t count, Ca
 		}
 	}
 	auto success = CastVariant(conversion_data, result, sel, 0, count, optional_idx());
-	success = success && conversion_data.too_deep_rows.empty();
+	if (!conversion_data.too_deep_rows.empty()) {
+		if (success) {
+			// the rows that did convert may have left the error of a conversion they retried another way
+			conversion_data.error = VariantUtils::NestingDepthError();
+		}
+		success = false;
+	}
 	if (variant_vec.GetVectorType() == VectorType::CONSTANT_VECTOR) {
 		result.SetVectorType(VectorType::CONSTANT_VECTOR);
 	}

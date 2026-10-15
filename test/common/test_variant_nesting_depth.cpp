@@ -20,7 +20,15 @@ TEST_CASE("A VARIANT nested deeper than the limit does not convert to a Value", 
 	// containers of the deep value do not cast to VARCHAR either
 	child_list_t<Value> struct_children;
 	struct_children.emplace_back("a", deep);
-	for (auto &container : {Value::LIST(LogicalType::VARIANT(), {deep}), Value::STRUCT(std::move(struct_children))}) {
+	child_list_t<LogicalType> union_members;
+	union_members.emplace_back("a", LogicalType::VARIANT());
+	duckdb::vector<Value> containers {Value::LIST(LogicalType::VARIANT(), {deep}),
+	                                  Value::ARRAY(LogicalType::VARIANT(), {deep}),
+	                                  Value::MAP(LogicalType::VARCHAR, LogicalType::VARIANT(), {Value("a")}, {deep}),
+	                                  Value::STRUCT(std::move(struct_children)),
+	                                  Value::TUPLE({deep}),
+	                                  Value::UNION(std::move(union_members), 0, deep)};
+	for (auto &container : containers) {
 		REQUIRE_THROWS_WITH(container.DefaultCastAs(LogicalType::VARCHAR),
 		                    Catch::Contains("nested deeper than 128 levels"));
 		string error;

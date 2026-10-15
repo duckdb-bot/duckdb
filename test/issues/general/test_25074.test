@@ -81,3 +81,16 @@ SELECT d, TRY_CAST(v AS VARCHAR[]) IS NULL FROM mixed ORDER BY d;
 0	true
 128	false
 129	true
+
+# TRY_CAST of a container sets the elements that do not convert to NULL, as for other types
+query II
+SELECT TRY_CAST([v, 1::VARIANT] AS VARCHAR), TRY_CAST({'a': v, 'b': 1::VARIANT} AS VARCHAR) FROM t WHERE d = 129;
+----
+[NULL, 1]	{'a': NULL, 'b': 1}
+
+# the error names the nesting, also when another row of the batch converted another way
+statement error
+SELECT CAST(CASE WHEN i = 0 THEN (SELECT v FROM t WHERE d = 129) ELSE 1.234::DECIMAL(10,3)::VARIANT END AS DECIMAL(9,2))
+FROM range(2) t(i);
+----
+Can't convert VARIANT value nested deeper than 128 levels

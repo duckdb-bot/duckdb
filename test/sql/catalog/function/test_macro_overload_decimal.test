@@ -36,3 +36,35 @@ query II
 SELECT test_int(1::SMALLINT), test_int(1::INTEGER);
 ----
 s	i
+
+# an untyped parameter is not an exact match
+statement ok
+CREATE MACRO untyped(x, d DECIMAL(4, 0)) AS 4, (x DECIMAL(9, 0), d) AS 9;
+
+statement error
+SELECT untyped(1::DECIMAL(9, 0), 1::DECIMAL(9, 0));
+----
+has multiple overloads that match the supplied arguments
+
+statement error
+SELECT untyped(x := 1::DECIMAL(9, 0), d := 1::DECIMAL(9, 0));
+----
+has multiple overloads that match the supplied arguments
+
+# an implicit cast of another argument keeps the tie
+statement ok
+CREATE MACRO other_cast(a BIGINT, d DECIMAL(4, 0)) AS 4, (a BIGINT, d DECIMAL(9, 0)) AS 9;
+
+statement error
+SELECT other_cast(1::INTEGER, 1::DECIMAL(9, 0));
+----
+has multiple overloads that match the supplied arguments
+
+# two exact matches through a default keep the tie
+statement ok
+CREATE MACRO with_default(d DECIMAL(4, 0), e := 1) AS 'first', (d DECIMAL(4, 0), f INTEGER := 2) AS 'second';
+
+statement error
+SELECT with_default(1::DECIMAL(4, 0));
+----
+has multiple overloads that match the supplied arguments

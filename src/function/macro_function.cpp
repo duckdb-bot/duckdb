@@ -147,6 +147,7 @@ MacroBindResult MacroFunction::BindMacroFunction(
 			const auto &param_type = parameter_types[param_idx];
 			if (param_type == LogicalType::UNKNOWN) {
 				macro_cost += 1000000;
+				exact_match = false;
 			} else {
 				const auto cast_cost =
 				    CastFunctionSet::ImplicitCastCost(binder.context, positional_arg_types[param_idx], param_type);
@@ -178,6 +179,7 @@ MacroBindResult MacroFunction::BindMacroFunction(
 			const auto &param_type = parameter_types[param_idx];
 			if (param_type == LogicalType::UNKNOWN) {
 				macro_cost += 1000000;
+				exact_match = false;
 			} else {
 				const auto cast_cost =
 				    CastFunctionSet::ImplicitCastCost(binder.context, named_arg_types[param_name], param_type);
@@ -202,8 +204,7 @@ MacroBindResult MacroFunction::BindMacroFunction(
 	}
 
 	if (result_indices.size() > 1) {
-		// overloads whose types differ in their type info only, as DECIMAL(4,0) and DECIMAL(9,0), cast at the same
-		// cost: prefer the one the arguments match exactly
+		// prefer a unique exact type match among equal-cost overloads, as DECIMAL(4,0) and DECIMAL(9,0)
 		vector<idx_t> exact_indices;
 		for (idx_t i = 0; i < result_indices.size(); i++) {
 			if (result_exact_matches[i]) {

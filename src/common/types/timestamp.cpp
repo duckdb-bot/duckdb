@@ -51,11 +51,11 @@ bool Timestamp::TryRoundUpFraction(timestamp_t &result, optional_ptr<int32_t> na
 
 TimestampCastResult Timestamp::TryConvertTimestampTZ(const char *str, idx_t len, timestamp_t &result, bool use_offset,
                                                      bool &has_offset, string_t &tz, optional_ptr<int32_t> nanos,
-                                                     optional_ptr<bool> round_up) {
-	if (round_up) {
-		*round_up = false;
+                                                     optional_ptr<TruncatedFraction> truncated) {
+	if (truncated) {
+		*truncated = TruncatedFraction();
 	}
-	bool round = false;
+	TruncatedFraction fraction;
 	idx_t pos;
 	date_t date;
 	dtime_t time;
@@ -88,12 +88,12 @@ TimestampCastResult Timestamp::TryConvertTimestampTZ(const char *str, idx_t len,
 	// TryConvertTime may recursively call us, so we use TryConvertInterval.
 	// Note that we can't pass strict== true here because we want to process any suffix.
 	auto time_len = TimestampTimeLength(str + pos, len - pos);
-	if (!Time::TryConvertInterval(str + pos, time_len, time_pos, time, false, nanos, false, &round) ||
+	if (!Time::TryConvertInterval(str + pos, time_len, time_pos, time, false, nanos, false, &fraction) ||
 	    time_pos != time_len) {
 		return TimestampCastResult::ERROR_INCORRECT_FORMAT;
 	}
-	//	We parsed an interval, so make sure it is in range.
-	if (time.value > Interval::MICROS_PER_DAY) {
+	//	We parsed an interval, so make sure it is in range, also once it is rounded.
+	if (time.value > Interval::MICROS_PER_DAY || (time.value == Interval::MICROS_PER_DAY && fraction.round_up)) {
 		return TimestampCastResult::ERROR_RANGE;
 	}
 	pos += time_pos;
@@ -137,9 +137,9 @@ TimestampCastResult Timestamp::TryConvertTimestampTZ(const char *str, idx_t len,
 			return TimestampCastResult::ERROR_INCORRECT_FORMAT;
 		}
 	}
-	if (round_up) {
-		*round_up = round;
-	} else if (round && !TryRoundUpFraction(result, nanos)) {
+	if (truncated) {
+		*truncated = fraction;
+	} else if (fraction.round_up && !TryRoundUpFraction(result, nanos)) {
 		return TimestampCastResult::ERROR_RANGE;
 	}
 	return TimestampCastResult::SUCCESS;
@@ -147,10 +147,10 @@ TimestampCastResult Timestamp::TryConvertTimestampTZ(const char *str, idx_t len,
 
 TimestampCastResult Timestamp::TryConvertTimestamp(const char *str, idx_t len, timestamp_t &result, bool use_offset,
                                                    optional_ptr<int32_t> nanos, bool strict,
-                                                   optional_ptr<bool> round_up) {
+                                                   optional_ptr<TruncatedFraction> truncated) {
 	string_t tz(nullptr, 0);
 	bool has_offset = false;
-	auto success = TryConvertTimestampTZ(str, len, result, use_offset, has_offset, tz, nanos, round_up);
+	auto success = TryConvertTimestampTZ(str, len, result, use_offset, has_offset, tz, nanos, truncated);
 	if (success != TimestampCastResult::SUCCESS) {
 		return success;
 	}

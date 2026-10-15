@@ -17,6 +17,7 @@
 namespace duckdb {
 
 struct date_t; // NOLINT
+struct TruncatedFraction;
 
 enum class TimestampCastResult : uint8_t {
 	SUCCESS,
@@ -52,18 +53,18 @@ public:
 	//! Convert a string where the offset can also be a time zone string: / [A_Za-z0-9/_]+/
 	//! If has_offset is true, then the result is an instant that was offset from UTC
 	//! If the tz is not empty, the result is still an instant, but the parts can be extracted and applied to the TZ
-	//! When round_up is given, the fraction is truncated and round_up tells whether TryRoundUpFraction must be applied
-	//! to the instant, after resolving the TZ. Otherwise the fraction is rounded
+	//! When truncated is given, the fraction is truncated, and TryRoundUpFraction must be applied to the instant after
+	//! resolving the TZ when truncated says it rounds up. Otherwise the fraction is rounded
 	DUCKDB_API static TimestampCastResult TryConvertTimestampTZ(const char *str, idx_t len, timestamp_t &result,
 	                                                            const bool use_offset, bool &has_offset, string_t &tz,
 	                                                            optional_ptr<int32_t> nanos = nullptr,
-	                                                            optional_ptr<bool> round_up = nullptr);
+	                                                            optional_ptr<TruncatedFraction> truncated = nullptr);
 	//! Strict Timestamp does not accept offsets.
 	DUCKDB_API static TimestampCastResult TryConvertTimestamp(const char *str, idx_t len, timestamp_t &result,
 	                                                          const bool use_offset,
 	                                                          optional_ptr<int32_t> nanos = nullptr,
 	                                                          bool strict = false,
-	                                                          optional_ptr<bool> round_up = nullptr);
+	                                                          optional_ptr<TruncatedFraction> truncated = nullptr);
 	//! Add the unit of the parsed precision (a microsecond, or a nanosecond when nanos is given) to round a fraction up
 	DUCKDB_API static bool TryRoundUpFraction(timestamp_t &result, optional_ptr<int32_t> nanos);
 	DUCKDB_API static TimestampCastResult TryConvertTimestamp(const char *str, idx_t len, timestamp_ns_t &result,

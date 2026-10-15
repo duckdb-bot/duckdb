@@ -1566,28 +1566,32 @@ dtime_t Cast::Operation(timestamp_sec_t input) {
 //===--------------------------------------------------------------------===//
 // Cast To Timestamp
 //===--------------------------------------------------------------------===//
-template <>
-bool TryCast::Operation(string_t input, timestamp_ms_t &result, bool strict) {
-	// the cast below rounds the truncated microseconds once
+//! Casts a string to a timestamp coarser than microseconds, rounding the fraction once
+template <class T>
+static bool TryCastStringToCoarseTimestamp(string_t input, T &result, bool strict) {
 	timestamp_t us;
-	bool round_up;
-	if (Timestamp::TryConvertTimestamp(input.GetData(), input.GetSize(), us, false, nullptr, false, &round_up) !=
-	    TimestampCastResult::SUCCESS) {
+	TruncatedFraction truncated;
+	if (Timestamp::TryConvertTimestamp(input.GetData(), input.GetSize(), us, false, nullptr, false, &truncated) !=
+	        TimestampCastResult::SUCCESS ||
+	    !TryCastTimestampBase<timestamp_t, T>(us, result, strict)) {
 		return false;
 	}
-	return TryCastTimestampBase<timestamp_t, timestamp_ms_t>(us, result, strict);
+	// before the epoch the cast rounds a tie down, but digits past the microseconds put the value above the tie
+	const int64_t unit = timestamp_t::PRECISION / T::PRECISION;
+	if (truncated.inexact && us.IsFinite() && us.value < 0 && ((us.value % unit) + unit) % unit == unit / 2) {
+		result.value++;
+	}
+	return true;
+}
+
+template <>
+bool TryCast::Operation(string_t input, timestamp_ms_t &result, bool strict) {
+	return TryCastStringToCoarseTimestamp(input, result, strict);
 }
 
 template <>
 bool TryCast::Operation(string_t input, timestamp_sec_t &result, bool strict) {
-	// the cast below rounds the truncated microseconds once
-	timestamp_t us;
-	bool round_up;
-	if (Timestamp::TryConvertTimestamp(input.GetData(), input.GetSize(), us, false, nullptr, false, &round_up) !=
-	    TimestampCastResult::SUCCESS) {
-		return false;
-	}
-	return TryCastTimestampBase<timestamp_t, timestamp_sec_t>(us, result, strict);
+	return TryCastStringToCoarseTimestamp(input, result, strict);
 }
 
 template <>

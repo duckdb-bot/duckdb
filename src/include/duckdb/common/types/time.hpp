@@ -14,6 +14,14 @@
 
 namespace duckdb {
 
+//! The digits of a parsed fraction past the precision it was truncated to
+struct TruncatedFraction {
+	//! Whether they round the fraction up, half away from zero
+	bool round_up = false;
+	//! Whether any of them is not zero
+	bool inexact = false;
+};
+
 //! The Time class is a static class that holds helper functions for the Time
 //! type.
 class Time {
@@ -27,11 +35,12 @@ public:
 	DUCKDB_API static bool TryConvertTimeTZ(const char *buf, idx_t len, idx_t &pos, dtime_tz_t &result,
 	                                        bool &has_offset, bool strict = false,
 	                                        optional_ptr<int32_t> nanos = nullptr);
-	// No hour limit. When round_up is given, the result is truncated and round_up tells whether the next digit rounds
-	// it up, otherwise the result is rounded
+	// No hour limit. When truncated is given, the result is truncated and truncated describes the digits past its
+	// precision, otherwise the result is rounded
 	DUCKDB_API static bool TryConvertInterval(const char *buf, idx_t len, idx_t &pos, dtime_t &result,
 	                                          bool strict = false, optional_ptr<int32_t> nanos = nullptr,
-	                                          bool negative = false, optional_ptr<bool> round_up = nullptr);
+	                                          bool negative = false,
+	                                          optional_ptr<TruncatedFraction> truncated = nullptr);
 
 	//! Convert a time object to a string in the format "hh:mm:ss"
 	DUCKDB_API static string ToString(dtime_t time);
@@ -59,7 +68,7 @@ public:
 private:
 	static bool TryConvertInternal(const char *buf, idx_t len, idx_t &pos, dtime_t &result, bool strict,
 	                               optional_ptr<int32_t> nanos = nullptr, bool negative = false,
-	                               optional_ptr<bool> round_up = nullptr);
+	                               optional_ptr<TruncatedFraction> truncated = nullptr);
 };
 
 } // namespace duckdb

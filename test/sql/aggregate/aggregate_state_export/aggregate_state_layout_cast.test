@@ -64,6 +64,12 @@ SELECT g, finalize(combine_aggr(to_aggregate_state(s, 'max', [make_type('DATE')]
 0	2000-01-28
 2	2000-01-30
 
+# a LIST layout
+query II
+SELECT typeof(s::INTEGER[]), s::INTEGER[] FROM (SELECT list(42) EXPORT_STATE AS s);
+----
+INTEGER[]	[42]
+
 # a state still casts to other types through the usual casts
 query I
 SELECT s::VARCHAR FROM (SELECT max(DATE '2000-01-01' + i::INTEGER) EXPORT_STATE AS s FROM range(10) r(i));

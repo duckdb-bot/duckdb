@@ -390,21 +390,6 @@ static bool RewriteFilterThroughProjections(unique_ptr<Expression> &expr,
 	return true;
 }
 
-//! Whether the join keeps or drops each row of its left input on its own, so a filter on those rows can run first
-static bool JoinFiltersLeftRowsIndependently(JoinType join_type) {
-	switch (join_type) {
-	case JoinType::INNER:
-	case JoinType::LEFT:
-	case JoinType::SINGLE:
-	case JoinType::MARK:
-	case JoinType::SEMI:
-	case JoinType::ANTI:
-		return true;
-	default:
-		return false;
-	}
-}
-
 static bool PushEligibleFilterExpressionsIntoDelimJoinInputs(unique_ptr<LogicalOperator> &plan) {
 	auto &filter = plan->Cast<LogicalFilter>();
 	if (filter.HasProjectionMap()) {
@@ -423,7 +408,7 @@ static bool PushEligibleFilterExpressionsIntoDelimJoinInputs(unique_ptr<LogicalO
 
 	bool changed = false;
 	auto &delim_join = input.get().Cast<LogicalComparisonJoin>();
-	if (!projections.empty() && !JoinFiltersLeftRowsIndependently(delim_join.join_type)) {
+	if (!projections.empty() && PropagatesBuildSide(delim_join.join_type)) {
 		return false;
 	}
 	for (auto &projection : projections) {

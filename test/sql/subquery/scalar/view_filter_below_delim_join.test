@@ -44,7 +44,7 @@ PRAGMA disable_profiling;
 foreach kind single mark
 
 query I
-SELECT sum((value->>'intermediate_rows')::BIGINT) FROM read_text('{TEMP_DIR}/view_filter_{kind}.json'), json_tree(content) WHERE value->>'type' = 'INOUT_FUNCTION'
+SELECT sum((value->>'intermediate_rows')::BIGINT) FROM read_text('{TEMP_DIR}/view_filter_{kind}.json'), json_tree(content) WHERE value->>'type' IN ('INOUT_FUNCTION', 'UNNEST')
 ----
 2
 
@@ -61,3 +61,38 @@ SELECT id, has8 FROM v_mark WHERE customer_id = 7 AND id >= 9900 ORDER BY id LIM
 ----
 9907	true
 9932	false
+
+# NULL elements, empty and NULL lists, and filters on the subquery results
+statement ok
+CREATE TABLE edge AS SELECT * FROM (VALUES (1, 7, [8, NULL]), (2, 7, [1, NULL]), (3, 7, []), (4, 7, NULL), (5, 8, [8])) t(id, customer_id, dim_ids);
+
+statement ok
+CREATE VIEW v_edge AS SELECT e.id, e.customer_id, 8 IN (SELECT u.dim_id FROM UNNEST(e.dim_ids) AS u(dim_id)) AS in8, 8 NOT IN (SELECT u.dim_id FROM UNNEST(e.dim_ids) AS u(dim_id)) AS not_in8, (SELECT max(u.dim_id) FROM UNNEST(e.dim_ids) AS u(dim_id)) AS max_dim FROM edge e;
+
+query IIII
+SELECT id, in8, not_in8, max_dim FROM v_edge WHERE customer_id = 7 ORDER BY id;
+----
+1	true	false	8
+2	NULL	NULL	1
+3	false	true	NULL
+4	false	true	NULL
+
+query I
+SELECT id FROM v_edge WHERE customer_id = 7 AND (in8 OR max_dim = 1) ORDER BY id;
+----
+1
+2
+
+query I
+SELECT id FROM v_edge WHERE customer_id = 7 AND in8 IS NULL;
+----
+2
+
+query I
+SELECT id FROM v_edge WHERE id + coalesce(max_dim, 0) = 9 AND customer_id = 7;
+----
+1
+
+query I
+SELECT id FROM v_edge WHERE customer_id = 8 AND not_in8;
+----

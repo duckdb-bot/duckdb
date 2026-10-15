@@ -59,15 +59,6 @@ TEST_CASE("Test allowed options", "[api]") {
 	identifier_map_t<Value> config_dict;
 	string option;
 
-	SECTION("allowed_directories") {
-		config_dict.emplace("allowed_directories", Value::LIST({Value("test")}));
-		option = "allowed_directories";
-	}
-	SECTION("allowed_paths") {
-		config_dict.emplace("allowed_paths", Value::LIST({Value("test")}));
-		option = "allowed_paths";
-	}
-
 	SECTION("enable_logging") {
 		config_dict.emplace("enable_logging", Value::BOOLEAN(false));
 		option = "enable_logging";
@@ -111,6 +102,38 @@ TEST_CASE("Test allowed options", "[api]") {
 		REQUIRE(error_data.RawMessage() ==
 		        StringUtil::Format("Cannot change/set %s before the database is started", option));
 	}
+}
+
+TEST_CASE("Allowed directories and paths set before the database starts", "[api]") {
+	LocalFileSystem fs;
+	auto allowed_directory = TestCreatePath("allowed_before_start");
+	fs.CreateDirectory(allowed_directory);
+	auto directory_file = fs.JoinPath(allowed_directory, "in_directory.csv");
+	auto allowed_file = TestCreatePath("allowed_before_start.csv");
+	auto other_file = TestCreatePath("not_allowed_before_start.csv");
+	{
+		DuckDB db(nullptr);
+		Connection con(db);
+		for (auto &file : {directory_file, allowed_file, other_file}) {
+			REQUIRE_NO_FAIL(con.Query("COPY (SELECT 42 AS i) TO '" + file + "'"));
+		}
+	}
+
+	// enable_external_access is disabled with them, in whichever order the options are set
+	identifier_map_t<Value> config_dict;
+	config_dict.emplace("enable_external_access", Value::BOOLEAN(false));
+	config_dict.emplace("allowed_directories", Value::LIST({Value(allowed_directory)}));
+	config_dict.emplace("allowed_paths", Value::LIST({Value(allowed_file)}));
+	DBConfig config(config_dict, false);
+	DuckDB db(nullptr, &config);
+	Connection con(db);
+	auto result = con.Query("SELECT * FROM read_csv('" + directory_file + "')");
+	REQUIRE(CHECK_COLUMN(result, 0, {42}));
+	result = con.Query("SELECT * FROM read_csv('" + allowed_file + "')");
+	REQUIRE(CHECK_COLUMN(result, 0, {42}));
+	REQUIRE_FAIL(con.Query("SELECT * FROM read_csv('" + other_file + "')"));
+	// they cannot be widened once the database runs
+	REQUIRE_FAIL(con.Query("SET allowed_paths = ['" + other_file + "']"));
 }
 
 TEST_CASE("Test user_agent", "[api]") {

@@ -224,6 +224,8 @@ public:
 	//! FIXME: Generalise this for extensibility.
 	//! Recursively replaces macro parameters with the provided input parameters.
 	void ReplaceMacroParameters(unique_ptr<ParsedExpression> &expr, vector<identifier_set_t> &lambda_params);
+	//! Replaces macro parameters in the expressions of a query node.
+	void ReplaceMacroParameters(QueryNode &node, vector<identifier_set_t> &lambda_params);
 	//! Enables special-handling of lambda parameters during macro replacement by tracking them in the lambda_params
 	//! vector.
 	void ReplaceMacroParametersInLambda(FunctionExpression &function, vector<identifier_set_t> &lambda_params);

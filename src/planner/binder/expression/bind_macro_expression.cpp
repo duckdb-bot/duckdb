@@ -1,6 +1,8 @@
 #include "duckdb/catalog/catalog_entry/scalar_macro_catalog_entry.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/parser/expression/columnref_expression.hpp"
+#include "duckdb/parser/expression/comparison_expression.hpp"
+#include "duckdb/parser/tableref/table_function_ref.hpp"
 #include "duckdb/catalog/entry_lookup_info.hpp"
 #include "duckdb/common/enums/expression_type.hpp"
 #include "duckdb/common/enums/on_entry_not_found.hpp"
@@ -54,6 +56,37 @@ void ExpressionBinder::ReplaceMacroParametersInLambda(FunctionExpression &functi
 	}
 }
 
+void ExpressionBinder::ReplaceMacroParameters(QueryNode &node, vector<identifier_set_t> &lambda_params) {
+	// the arguments of table functions, where name = value passes a named parameter instead of comparing
+	unordered_set<const ParsedExpression *> table_functions;
+	ParsedExpressionIterator::EnumerateQueryNodeChildren(
+	    node, [](unique_ptr<ParsedExpression> &child) {},
+	    [&](TableRef &ref) {
+		    if (ref.type == TableReferenceType::TABLE_FUNCTION) {
+			    table_functions.insert(ref.Cast<TableFunctionRef>().function.get());
+		    }
+	    });
+	ParsedExpressionIterator::EnumerateQueryNodeChildren(node, [&](unique_ptr<ParsedExpression> &child) {
+		if (!table_functions.count(child.get()) || child->GetExpressionClass() != ExpressionClass::FUNCTION) {
+			ReplaceMacroParameters(child, lambda_params);
+			return;
+		}
+		for (auto &argument : child->Cast<FunctionExpression>().GetArgumentsMutable()) {
+			auto &argument_expr = argument.GetExpressionMutable();
+			if (argument_expr->GetExpressionType() == ExpressionType::COMPARE_EQUAL) {
+				auto &comparison = argument_expr->Cast<ComparisonExpression>();
+				if (comparison.Left().GetExpressionType() == ExpressionType::COLUMN_REF &&
+				    !comparison.Left().Cast<ColumnRefExpression>().IsQualified()) {
+					// the name is not a macro parameter
+					ReplaceMacroParameters(comparison.RightMutable(), lambda_params);
+					continue;
+				}
+			}
+			ReplaceMacroParameters(argument_expr, lambda_params);
+		}
+	});
+}
+
 void ExpressionBinder::ReplaceMacroParameters(unique_ptr<ParsedExpression> &expr,
                                               vector<identifier_set_t> &lambda_params) {
 	switch (expr->GetExpressionClass()) {
@@ -91,8 +124,7 @@ void ExpressionBinder::ReplaceMacroParameters(unique_ptr<ParsedExpression> &expr
 	}
 	case ExpressionClass::SUBQUERY: {
 		auto &sq = (expr->Cast<SubqueryExpression>()).Subquery();
-		ParsedExpressionIterator::EnumerateQueryNodeChildren(
-		    *sq->node, [&](unique_ptr<ParsedExpression> &child) { ReplaceMacroParameters(child, lambda_params); });
+		ReplaceMacroParameters(*sq->node, lambda_params);
 		break;
 	}
 	default:

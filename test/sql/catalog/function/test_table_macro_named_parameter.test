@@ -1,0 +1,58 @@
+# name: test/sql/catalog/function/test_table_macro_named_parameter.test
+# description: A macro parameter named like a table function parameter can pass it with name = value
+# group: [function]
+
+statement ok
+COPY (SELECT * FROM (VALUES (1, 'x'), (2, 'y'), (3, 'z')) t(a, b)) TO '{TEST_DIR}/named_parameter.csv' (HEADER true);
+
+statement ok
+CREATE MACRO r(header) AS TABLE SELECT count(*) AS n FROM read_csv('{TEST_DIR}/named_parameter.csv', header = header);
+
+query I
+SELECT n FROM r(true);
+----
+3
+
+query I
+SELECT n FROM r(false);
+----
+4
+
+# the value can use other parameters, also in a subquery
+statement ok
+CREATE MACRO with_value(header, other) AS TABLE
+SELECT * FROM (SELECT count(*) AS n FROM read_csv('{TEST_DIR}/named_parameter.csv', header = (header AND other))) WHERE n > 0;
+
+query I
+SELECT n FROM with_value(true, true);
+----
+3
+
+query I
+SELECT n FROM with_value(true, false);
+----
+4
+
+# a scalar macro with a table function in a subquery
+statement ok
+CREATE MACRO s(header) AS (SELECT count(*) FROM read_csv('{TEST_DIR}/named_parameter.csv', header = header));
+
+query II
+SELECT s(true), s(false);
+----
+3	4
+
+# outside of the arguments of a table function, name = value still compares the parameter
+statement ok
+CREATE MACRO compared(header) AS TABLE
+SELECT header = header AS same, count(*) AS n FROM read_csv('{TEST_DIR}/named_parameter.csv', header = header) WHERE header = true;
+
+query II
+SELECT * FROM compared(true);
+----
+true	3
+
+query II
+SELECT * FROM compared(false);
+----
+true	0

@@ -213,7 +213,7 @@ static catalog_entry_vector_t GetCatalogEntries(vector<reference<DuckSchemaEntry
 	return entries;
 }
 
-static bool HasBufferedIndexReplays(AttachedDatabase &db) {
+bool SingleFileCheckpointWriter::HasBufferedIndexReplays(AttachedDatabase &db) {
 	bool has_buffered_replays = false;
 	auto &catalog = Catalog::GetCatalog(db).Cast<DuckCatalog>();
 	catalog.ScanSchemas(VisibilityBound::AllCommitted(), [&](DuckSchemaEntry &schema) {

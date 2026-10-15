@@ -1,5 +1,7 @@
 #include "duckdb/main/secret/secret.hpp"
 
+#include <algorithm>
+
 #include "duckdb/common/case_insensitive_map.hpp"
 #include "duckdb/common/file_opener.hpp"
 #include "duckdb/common/pair.hpp"
@@ -18,11 +20,17 @@ static bool ScopeCovers(const string &prefix, const string &path) {
 	}
 	auto scheme_end = prefix.find("://");
 	if (path.size() == prefix.size() || scheme_end == string::npos || prefix.size() == scheme_end + 3 ||
-	    prefix.find('/', scheme_end + 3) != string::npos) {
+	    prefix.find_first_of("/?#", scheme_end + 3) != string::npos) {
 		return true;
 	}
 	auto next = path[prefix.size()];
-	return next == '/' || next == ':' || next == '?' || next == '#';
+	if (next != ':') {
+		return next == '/' || next == '?' || next == '#';
+	}
+	// a port, and not the password of a user of another host
+	auto port_end = path.find_first_of("/?#", prefix.size() + 1);
+	auto port = path.substr(prefix.size() + 1, port_end == string::npos ? string::npos : port_end - prefix.size() - 1);
+	return !port.empty() && std::all_of(port.begin(), port.end(), [](char c) { return c >= '0' && c <= '9'; });
 }
 
 int64_t BaseSecret::MatchScore(const string &path) const {

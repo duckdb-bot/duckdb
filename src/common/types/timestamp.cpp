@@ -39,7 +39,14 @@ static idx_t TimestampTimeLength(const char *str, idx_t len) {
 // Z is optional
 // ISO 8601
 
-bool Timestamp::TryRoundUpFraction(timestamp_t &result, optional_ptr<int32_t> nanos) {
+bool Timestamp::TryRoundFraction(timestamp_t &result, optional_ptr<int32_t> nanos, const TruncatedFraction &fraction) {
+	// a tie rounds away from the epoch, like the casts to a lower precision
+	if (!fraction.RoundsUp(result.value >= 0)) {
+		return true;
+	}
+	if (fraction.at_end_of_day) {
+		return false;
+	}
 	if (nanos) {
 		if (++(*nanos) < Interval::NANOS_PER_MICRO) {
 			return true;
@@ -92,10 +99,11 @@ TimestampCastResult Timestamp::TryConvertTimestampTZ(const char *str, idx_t len,
 	    time_pos != time_len) {
 		return TimestampCastResult::ERROR_INCORRECT_FORMAT;
 	}
-	//	We parsed an interval, so make sure it is in range, also once it is rounded.
-	if (time.value > Interval::MICROS_PER_DAY || (time.value == Interval::MICROS_PER_DAY && fraction.round_up)) {
+	//	We parsed an interval, so make sure it is in range.
+	if (time.value > Interval::MICROS_PER_DAY) {
 		return TimestampCastResult::ERROR_RANGE;
 	}
+	fraction.at_end_of_day = time.value == Interval::MICROS_PER_DAY;
 	pos += time_pos;
 	if (!Timestamp::TryFromDatetime(date, time, result)) {
 		return TimestampCastResult::ERROR_RANGE;
@@ -139,7 +147,7 @@ TimestampCastResult Timestamp::TryConvertTimestampTZ(const char *str, idx_t len,
 	}
 	if (truncated) {
 		*truncated = fraction;
-	} else if (fraction.round_up && !TryRoundUpFraction(result, nanos)) {
+	} else if (!TryRoundFraction(result, nanos, fraction)) {
 		return TimestampCastResult::ERROR_RANGE;
 	}
 	return TimestampCastResult::SUCCESS;

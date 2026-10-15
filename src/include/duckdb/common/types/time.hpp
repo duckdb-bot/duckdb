@@ -16,10 +16,20 @@ namespace duckdb {
 
 //! The digits of a parsed fraction past the precision it was truncated to
 struct TruncatedFraction {
-	//! Whether they round the fraction up, half away from zero
-	bool round_up = false;
+	//! The first of them, and whether any digit after it is not zero
+	uint8_t first_digit = 0;
+	bool rest_inexact = false;
+	//! Whether the time is 24:00:00, which cannot be rounded up
+	bool at_end_of_day = false;
+
 	//! Whether any of them is not zero
-	bool inexact = false;
+	bool Inexact() const {
+		return first_digit != 0 || rest_inexact;
+	}
+	//! Whether they round the fraction up to the nearest value, a tie only when ties_up is set
+	bool RoundsUp(bool ties_up) const {
+		return first_digit > 5 || (first_digit == 5 && (rest_inexact || ties_up));
+	}
 };
 
 //! The Time class is a static class that holds helper functions for the Time

@@ -421,7 +421,7 @@ struct ICUStrptime : public ICUDateFunc {
 			us = timestamp_t(result.value);
 		}
 		// the fraction is rounded after the time zone resolved the local time, which can be ambiguous
-		if (truncated.round_up && !Timestamp::TryRoundUpFraction(us, nanos)) {
+		if (!Timestamp::TryRoundFraction(us, nanos, truncated)) {
 			HandleCastError::AssignError(Timestamp::RangeError(string(str, len)), parameters);
 			return nullopt;
 		}

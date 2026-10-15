@@ -121,13 +121,14 @@ bool Time::TryConvertInternal(const char *buf, idx_t len, idx_t &pos, dtime_t &r
 				continue;
 			}
 			if (!past_precision) {
-				fraction.round_up = buf[pos] >= '5';
+				fraction.first_digit = UnsafeNumericCast<uint8_t>(buf[pos] - '0');
 				past_precision = true;
+			} else {
+				fraction.rest_inexact = fraction.rest_inexact || buf[pos] != '0';
 			}
-			fraction.inexact = fraction.inexact || buf[pos] != '0';
 		}
-		if (fraction.round_up && !truncated) {
-			// a carry goes into the seconds
+		// a time or an interval rounds a tie away from zero
+		if (!truncated && fraction.RoundsUp(true)) {
 			micros++;
 		}
 		if (nanos) {

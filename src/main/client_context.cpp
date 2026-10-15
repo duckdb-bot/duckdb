@@ -790,6 +790,10 @@ unique_ptr<QueryResult> ClientContext::SubmitStatement(ClientContextLock &lock, 
 			auto &db_instance = DatabaseInstance::GetDatabase(*this);
 			ValidChecker::Invalidate(db_instance, error.RawMessage());
 		}
+		// the query ends here, so it does not keep the transaction it started
+		if (active_query) {
+			EndQueryInternal(lock, false, ErrorInvalidatesQueryTransaction(error.Type()), error);
+		}
 		return ErrorResult<QueryResult>(std::move(error), query);
 	}
 

@@ -68,7 +68,10 @@ void ClientContext::BeginQueryInternal(ClientContextLock &lock, PreprocessedStat
 	// Notify any registered state of query begin
 	for (auto &state : registered_state->States()) {
 		state->QueryBegin(*this);
+		active_query->begun_states.push_back(state);
 	}
+	active_query->began_on_all_states = true;
+	active_query->begun_states.clear();
 	RefreshLoggerInternal();
 }
 
@@ -98,6 +101,9 @@ ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success,
 	}
 	active_query->progress_bar.reset();
 	D_ASSERT(active_query.get());
+	// a query that failed to begin ends only on the states it began on
+	auto end_states =
+	    active_query->began_on_all_states ? registered_state->States() : std::move(active_query->begun_states);
 	active_query.reset();
 	query_deadline.SetInvalid();
 	query_progress.Initialize();
@@ -139,7 +145,7 @@ ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success,
 	logger = db->GetLogManager().CreateLogger(context, true);
 
 	// Notify any registered state of query end
-	for (auto const &s : registered_state->States()) {
+	for (auto const &s : end_states) {
 		if (error.HasError()) {
 			s->QueryEnd(*this, &error);
 		} else {

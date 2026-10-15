@@ -18,6 +18,7 @@
 
 namespace duckdb {
 class BaseQueryResult;
+class ClientContextState;
 class QueryResult;
 
 //! The user statement a connection runs, from its submission until a call ends it. A statement that expands into
@@ -47,6 +48,10 @@ public:
 	optional_ptr<QueryResult> handle;
 	//! Whether the statements run inside the submission, where a result collector may build its own result object
 	bool inside_submission = false;
+	//! Whether QueryBegin ran on every registered state
+	bool began_on_all_states = false;
+	//! The states QueryBegin ran on, while it has not run on all of them
+	vector<shared_ptr<ClientContextState>> begun_states;
 
 public:
 	void SetOpenResult(BaseQueryResult &result) {

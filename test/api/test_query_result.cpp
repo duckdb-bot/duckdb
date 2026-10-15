@@ -937,6 +937,35 @@ TEST_CASE("A query whose begin failed does not hold the connection", "[api][quer
 	REQUIRE(CHECK_COLUMN(next, 0, {42}));
 }
 
+TEST_CASE("A query whose begin failed ends its transaction", "[api][query_result]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	auto failing = make_shared_ptr<FailingQueryBegin>();
+	failing->fail = false;
+	con.context->registered_state->Insert("failing_query_begin", failing);
+
+	// an autocommit query does not keep its transaction
+	failing->fail = true;
+	auto failed = con.Query("SELECT 42");
+	REQUIRE(failed->HasError());
+	REQUIRE(StringUtil::Contains(failed->GetError(), "query begin failed"));
+	REQUIRE(!con.context->transaction.HasActiveTransaction());
+	REQUIRE(con.ExtractStatements("SELECT 1").size() == 1);
+	REQUIRE(!con.context->transaction.HasActiveTransaction());
+
+	// a user's transaction stays open, as after any other failed statement
+	REQUIRE_NO_FAIL(con.Query("BEGIN TRANSACTION"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE t(i INTEGER)"));
+	failing->fail = true;
+	REQUIRE_FAIL(con.Query("INSERT INTO t VALUES (1)"));
+	REQUIRE(con.context->transaction.HasActiveTransaction());
+	REQUIRE_NO_FAIL(con.Query("ROLLBACK"));
+	REQUIRE(!con.context->transaction.HasActiveTransaction());
+
+	auto next = con.Query("SELECT 42");
+	REQUIRE(CHECK_COLUMN(next, 0, {42}));
+}
+
 TEST_CASE("An appender is refused while a result is open", "[api][query_result]") {
 	DuckDB db(nullptr);
 	Connection con(db);

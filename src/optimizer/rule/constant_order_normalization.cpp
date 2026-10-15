@@ -13,7 +13,6 @@ static bool MultiplicationConstantBelongsAtEnd(const BoundFunctionExpression &ex
 	return expr.Function().GetName() == "*";
 }
 
-//! Whether moving the constants of an integer chain together cannot make it overflow where the written order does not.
 //! With one nonconstant operand, only the constant prefixes can introduce overflow.
 static bool ReorderCannotOverflow(ClientContext &context, const BoundFunctionExpression &root,
                                   const vector<reference<Expression>> &constants, idx_t other_count) {
@@ -132,8 +131,7 @@ unique_ptr<Expression> ConstantOrderNormalizationRule::Apply(LogicalOperator &op
 		}
 	}
 
-	if (ordered_bindings.empty() ||
-	    !ReorderCannotOverflow(rewriter.context, root, ordered_bindings, remain_bindings.size())) {
+	if (ordered_bindings.empty()) {
 		return nullptr;
 	}
 
@@ -141,13 +139,15 @@ unique_ptr<Expression> ConstantOrderNormalizationRule::Apply(LogicalOperator &op
 		// Multiplication trees can lose their folded constant subtree in the bottom-up rewriter
 		// (e.g. 1 * 2 * x -> 2 * x). Normalize that remaining binary form to x * 2 so it
 		// matches the shape produced by the other multiplication variants.
-		if (!MultiplicationConstantBelongsAtEnd(root) || last_constant_position == expression_count - 1) {
+		if (!MultiplicationConstantBelongsAtEnd(root) || last_constant_position == expression_count - 1 ||
+		    !ReorderCannotOverflow(rewriter.context, root, ordered_bindings, remain_bindings.size())) {
 			return nullptr;
 		}
 		remain_bindings.push_back(ordered_bindings[0]);
 		ordered_bindings = std::move(remain_bindings);
 	} else {
-		if (last_constant_position == ordered_bindings.size() - 1) {
+		if (last_constant_position == ordered_bindings.size() - 1 ||
+		    !ReorderCannotOverflow(rewriter.context, root, ordered_bindings, remain_bindings.size())) {
 			return nullptr;
 		}
 		ordered_bindings.insert(ordered_bindings.end(), remain_bindings.begin(), remain_bindings.end());

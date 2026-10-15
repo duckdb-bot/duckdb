@@ -91,6 +91,12 @@ SELECT 2 * (a * (b * c)), (-1 * n) * m, ((64::TINYINT * z) * 2::TINYINT) * (-1):
 ----
 0	-2147483648	0	0
 
+# a constant prefix that overflows, while the whole sum fits
+query I
+SELECT a + 2147483647 + 1 + -1 FROM (VALUES (-1)) t(a);
+----
+2147483646
+
 query I
 SELECT a + 2 + -3 FROM limits ORDER BY ALL;
 ----

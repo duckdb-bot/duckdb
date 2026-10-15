@@ -58,9 +58,7 @@ CollationBinding &CollationBinding::Get(DatabaseInstance &db) {
 
 BoundCastInfo CastFunctionSet::GetCastFunction(const LogicalType &source, const LogicalType &target,
                                                GetCastFunctionInput &get_input) {
-	// an aggregate state is its layout type with an alias and the aggregate in its extension info
-	if (source == target ||
-	    (source.IsAggregateState() && source.WithAlias(string()).WithExtensionInfo(nullptr) == target)) {
+	if (source == target) {
 		BoundCastInfo result(DefaultCasts::NopCast);
 		result.SetStatisticsCallback(CastStatistics::Propagate);
 		return result;
@@ -83,6 +81,13 @@ BoundCastInfo CastFunctionSet::GetCastFunction(const LogicalType &source, const 
 		if (result.HasFunction()) {
 			return result;
 		}
+	}
+
+	// an aggregate state is its layout type with an alias and the aggregate in its extension info
+	if (source.IsAggregateState() && source.WithAlias(string()).WithExtensionInfo(nullptr) == target) {
+		BoundCastInfo result(DefaultCasts::ReinterpretCast);
+		result.SetStatisticsCallback(CastStatistics::Propagate);
+		return result;
 	}
 
 	// Built-in casts inherit generic propagation unless they provide a more specific callback.

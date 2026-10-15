@@ -48,6 +48,22 @@ FROM (SELECT max(DATE '2000-01-01' + i::INTEGER) EXPORT_STATE AS s FROM range(10
 ----
 2000-01-10
 
+# grouped states stored in a table, read through a filter
+statement ok
+CREATE TABLE states AS SELECT i % 3 AS g, max(DATE '2000-01-01' + i::INTEGER) EXPORT_STATE AS s FROM range(30) r(i) GROUP BY g;
+
+query II
+SELECT g, s::DATE FROM states WHERE g > 0 ORDER BY g;
+----
+1	2000-01-29
+2	2000-01-30
+
+query II
+SELECT g, finalize(combine_aggr(to_aggregate_state(s, 'max', [make_type('DATE')]))) FROM states WHERE g <> 1 GROUP BY g ORDER BY g;
+----
+0	2000-01-28
+2	2000-01-30
+
 # a state still casts to other types through the usual casts
 query I
 SELECT s::VARCHAR FROM (SELECT max(DATE '2000-01-01' + i::INTEGER) EXPORT_STATE AS s FROM range(10) r(i));

@@ -96,3 +96,9 @@ SELECT id FROM v_edge WHERE id + coalesce(max_dim, 0) = 9 AND customer_id = 7;
 query I
 SELECT id FROM v_edge WHERE customer_id = 8 AND not_in8;
 ----
+
+query I
+SELECT id FROM v_edge WHERE customer_id = 7 AND not_in8 ORDER BY id;
+----
+3
+4

@@ -10,6 +10,7 @@
 #include "duckdb/planner/operator/logical_projection.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
+#include "duckdb/planner/expression/bound_subquery_expression.hpp"
 #include "duckdb/planner/expression_binder/insert_binder.hpp"
 #include "duckdb/parser/tableref/joinref.hpp"
 #include "duckdb/parser/expression/default_expression.hpp"
@@ -173,16 +174,33 @@ Binder::BindMergeAction(LogicalMergeInto &merge_into, TableCatalogEntry &table, 
 	return result;
 }
 
+static void RewriteMergeBinding(ColumnBinding &binding, const vector<ColumnBinding> &source_bindings,
+                                TableIndex new_table_index) {
+	for (idx_t i = 0; i < source_bindings.size(); i++) {
+		if (binding == source_bindings[i]) {
+			binding.table_index = new_table_index;
+			binding.column_index = ProjectionIndex(i);
+			return;
+		}
+	}
+}
+
+static void RewriteMergeBindingsInPlan(LogicalOperator &op, const vector<ColumnBinding> &source_bindings,
+                                       TableIndex new_table_index);
+
 void RewriteMergeBindings(unique_ptr<Expression> &expr, const vector<ColumnBinding> &source_bindings,
                           TableIndex new_table_index) {
 	ExpressionIterator::VisitExpressionMutable<BoundColumnRefExpression>(
 	    expr, [&](BoundColumnRefExpression &bound_colref, unique_ptr<Expression> &expr) {
-		    for (idx_t i = 0; i < source_bindings.size(); i++) {
-			    if (bound_colref.Binding() == source_bindings[i]) {
-				    bound_colref.BindingMutable().table_index = new_table_index;
-				    bound_colref.BindingMutable().column_index = ProjectionIndex(i);
-			    }
+		    RewriteMergeBinding(bound_colref.BindingMutable(), source_bindings, new_table_index);
+	    });
+	// a subquery that is not planned yet refers to the source through its correlated columns
+	ExpressionIterator::VisitExpressionMutable<BoundSubqueryExpression>(
+	    expr, [&](BoundSubqueryExpression &subquery, unique_ptr<Expression> &expr) {
+		    for (auto &correlated : subquery.GetBinderMutable()->correlated_columns) {
+			    RewriteMergeBinding(correlated.binding, source_bindings, new_table_index);
 		    }
+		    RewriteMergeBindingsInPlan(*subquery.SubqueryMutable().plan, source_bindings, new_table_index);
 	    });
 }
 
@@ -223,6 +241,14 @@ void RewriteMergeBindings(LogicalOperator &op, const vector<ColumnBinding> &sour
                           TableIndex new_table_index) {
 	LogicalOperatorVisitor::EnumerateExpressions(
 	    op, [&](unique_ptr<Expression> *child) { RewriteMergeBindings(*child, source_bindings, new_table_index); });
+}
+
+static void RewriteMergeBindingsInPlan(LogicalOperator &op, const vector<ColumnBinding> &source_bindings,
+                                       TableIndex new_table_index) {
+	RewriteMergeBindings(op, source_bindings, new_table_index);
+	for (auto &child : op.children) {
+		RewriteMergeBindingsInPlan(*child, source_bindings, new_table_index);
+	}
 }
 
 void CheckMergeAction(MergeActionCondition condition, MergeActionType action_type) {

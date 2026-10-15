@@ -236,3 +236,14 @@ statement error
 PRAGMA json_execute_serialized_sql(NULL);
 ----
 Binder Error: json_execute_serialized_sql cannot execute NULL plan
+
+# a PIVOT without an IN list takes its values from the data
+query I
+SELECT json_serialize_sql($$PIVOT (VALUES ('a', 1), ('b', 2)) t(k, v) ON k USING sum(v)$$)->>'error_message';
+----
+A PIVOT without an IN list cannot be serialized to json, as its pivot values come from the data: list them with IN (...)
+
+query I
+SELECT json_serialize_sql($$PIVOT (VALUES ('a', 1), ('b', 2)) t(k, v) ON k IN ('a', 'b') USING sum(v)$$)->>'error';
+----
+false

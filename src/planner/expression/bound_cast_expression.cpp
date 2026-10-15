@@ -347,6 +347,10 @@ bool BoundCastExpression::CastCanThrow(const LogicalType &source_type, const Log
 		// try_cast turns conversion errors into NULL values instead of throwing
 		return false;
 	}
+	// A VARIANT nested too deeply does not convert to any type, not even VARCHAR
+	if (source_type.id() == LogicalTypeId::VARIANT) {
+		return true;
+	}
 	// Every value has a string representation, so casting to VARCHAR never throws. VARCHAR is not the maximum
 	// of the coercion lattice (you do not implicitly widen to it), so the max-type check below would miss this.
 	if (target_type.id() == LogicalTypeId::VARCHAR) {

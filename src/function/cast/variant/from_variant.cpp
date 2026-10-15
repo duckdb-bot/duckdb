@@ -207,6 +207,12 @@ static bool CastVariantToPrimitive(FromVariantConversionData &conversion_data, V
 			}
 		}
 		if (!converted) {
+			if (VariantUtils::ExceedsNestingDepth(conversion_data.variant, row_index, sel[i])) {
+				conversion_data.error = VariantUtils::NestingDepthError();
+				result_validity.SetInvalid(offset + i);
+				all_valid = false;
+				continue;
+			}
 			auto value = VariantUtils::ConvertVariantToValue(conversion_data.variant, row_index, sel[i]);
 			auto cast_value = conversion_data.TryCastAs(value, target_type);
 			if (!cast_value) {
@@ -674,6 +680,14 @@ static bool CastVariant(FromVariantConversionData &conversion_data, Vector &resu
 
 			//! Get the index into 'values'
 			uint32_t value_index = sel[i];
+			if (VariantUtils::ExceedsNestingDepth(conversion_data.variant, row_index, value_index)) {
+				if (error.empty()) {
+					error = VariantUtils::NestingDepthError();
+				}
+				FlatVector::SetNull(result, offset + i, true);
+				all_valid = false;
+				continue;
+			}
 			auto value = VariantUtils::ConvertVariantToValue(conversion_data.variant, row_index, value_index);
 			try {
 				auto cast_value = target_type.id() == LogicalTypeId::MAP

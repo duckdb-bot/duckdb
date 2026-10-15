@@ -1,0 +1,47 @@
+# name: test/issues/general/test_25074.test
+# description: Converting a VARIANT nested deeper than the limit raises an error instead of overflowing the stack
+# group: [general]
+
+require json
+
+statement ok
+CREATE TABLE t AS WITH RECURSIVE r(d, v, o) AS (
+	SELECT 1, [1]::VARIANT, {'a': 1}::VARIANT
+	UNION ALL
+	SELECT d + 1, [v]::VARIANT, {'a': o}::VARIANT FROM r WHERE d < 129
+)
+SELECT d, v, o FROM r WHERE d IN (128, 129);
+
+# 128 nested arrays or objects still convert
+query II
+SELECT length(v::VARCHAR), length(o::VARCHAR) FROM t WHERE d = 128;
+----
+257	897
+
+statement error
+SELECT v::VARCHAR FROM t WHERE d = 129;
+----
+Can't convert VARIANT value nested deeper than 128 levels
+
+statement error
+SELECT o::VARCHAR FROM t WHERE d = 129;
+----
+Can't convert VARIANT value nested deeper than 128 levels
+
+statement error
+SELECT [v]::VARIANT::VARCHAR FROM t WHERE d = 128;
+----
+Can't convert VARIANT value nested deeper than 128 levels
+
+# deep enough to overflow the stack without the limit
+statement error
+SELECT (repeat('[', 20000) || repeat(']', 20000))::JSON::VARIANT::VARCHAR;
+----
+<REGEX>:.*(nested deeper than 128 levels|depth).*
+
+query II
+SELECT TRY_CAST(v AS VARCHAR) IS NULL, TRY_CAST(o AS VARCHAR) IS NULL FROM t ORDER BY d;
+----
+false	false
+true	true
+

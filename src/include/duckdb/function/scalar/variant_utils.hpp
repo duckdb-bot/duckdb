@@ -114,6 +114,9 @@ struct VariantPathSelection {
 };
 
 struct VariantUtils {
+	//! The deepest nesting of arrays and objects that converts to a Value
+	static constexpr idx_t MAX_NESTING_DEPTH = 128;
+
 	DUCKDB_API static bool IsNestedType(const UnifiedVariantVectorData &variant, idx_t row, uint32_t value_index);
 	DUCKDB_API static VariantDecimalData DecodeDecimalData(const UnifiedVariantVectorData &variant, idx_t row,
 	                                                       uint32_t value_index);
@@ -139,6 +142,10 @@ struct VariantUtils {
 	                                    VariantPathSelection &path_selection);
 	DUCKDB_API static vector<uint32_t> ValueIsNull(const UnifiedVariantVectorData &variant, const SelectionVector &sel,
 	                                               idx_t count, optional_idx row);
+	//! Whether the value nests arrays and objects deeper than MAX_NESTING_DEPTH
+	DUCKDB_API static bool ExceedsNestingDepth(const UnifiedVariantVectorData &variant, idx_t row, uint32_t values_idx);
+	DUCKDB_API static string NestingDepthError();
+	//! Throws if the value exceeds MAX_NESTING_DEPTH
 	DUCKDB_API static Value ConvertVariantToValue(const UnifiedVariantVectorData &variant, idx_t row,
 	                                              uint32_t values_idx);
 	DUCKDB_API static bool Verify(const Vector &variant, const SelectionVector &sel_p, idx_t count);

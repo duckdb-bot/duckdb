@@ -3,6 +3,8 @@
 #include "duckdb/parser/expression/columnref_expression.hpp"
 #include "duckdb/parser/expression/comparison_expression.hpp"
 #include "duckdb/parser/tableref/table_function_ref.hpp"
+#include "duckdb/catalog/catalog_entry/table_function_catalog_entry.hpp"
+#include "duckdb/common/reference_map.hpp"
 #include "duckdb/catalog/entry_lookup_info.hpp"
 #include "duckdb/common/enums/expression_type.hpp"
 #include "duckdb/common/enums/on_entry_not_found.hpp"
@@ -56,18 +58,47 @@ void ExpressionBinder::ReplaceMacroParametersInLambda(FunctionExpression &functi
 	}
 }
 
+//! Whether the binder reads name = value among the arguments of a table function as a named parameter. A table macro
+//! and a table in-out function read it as a comparison, unless the function takes a table.
+static bool TakesNamedParameters(Binder &binder, FunctionExpression &function) {
+	EntryLookupInfo lookup(CatalogType::TABLE_FUNCTION_ENTRY, QualifiedName(function.FunctionName()));
+	auto entry = binder.GetCatalogEntry(EntryLookupInfo(lookup, binder.BindTableName(function.GetQualifiedName())),
+	                                    OnEntryNotFound::RETURN_NULL);
+	if (!entry || entry->type != CatalogType::TABLE_FUNCTION_ENTRY) {
+		return false;
+	}
+	auto &functions = entry->Cast<TableFunctionCatalogEntry>().functions;
+	bool in_out = false;
+	for (idx_t i = 0; i < functions.Size(); i++) {
+		auto &table_function = *functions.GetFunctionByOffset(i);
+		for (auto &parameter : table_function.GetSignature().GetParameters()) {
+			if (parameter.GetType().id() == LogicalTypeId::TABLE) {
+				return true;
+			}
+		}
+		in_out |= table_function.in_out_function != nullptr;
+	}
+	return !in_out;
+}
+
 void ExpressionBinder::ReplaceMacroParameters(QueryNode &node, vector<identifier_set_t> &lambda_params) {
-	// the arguments of table functions, where name = value passes a named parameter instead of comparing
-	unordered_set<const ParsedExpression *> table_functions;
+	// the table functions that read name = value as a named parameter, whose name is not a macro parameter
+	reference_set_t<const ParsedExpression> named_parameter_functions;
 	ParsedExpressionIterator::EnumerateQueryNodeChildren(
 	    node, [](unique_ptr<ParsedExpression> &child) {},
 	    [&](TableRef &ref) {
-		    if (ref.type == TableReferenceType::TABLE_FUNCTION) {
-			    table_functions.insert(ref.Cast<TableFunctionRef>().function.get());
+		    if (ref.type != TableReferenceType::TABLE_FUNCTION) {
+			    return;
+		    }
+		    auto &function = ref.Cast<TableFunctionRef>().function;
+		    if (function->GetExpressionClass() == ExpressionClass::FUNCTION &&
+		        !function->Cast<FunctionExpression>().IsLambdaFunction() &&
+		        TakesNamedParameters(binder, function->Cast<FunctionExpression>())) {
+			    named_parameter_functions.insert(*function);
 		    }
 	    });
 	ParsedExpressionIterator::EnumerateQueryNodeChildren(node, [&](unique_ptr<ParsedExpression> &child) {
-		if (!table_functions.count(child.get()) || child->GetExpressionClass() != ExpressionClass::FUNCTION) {
+		if (named_parameter_functions.find(*child) == named_parameter_functions.end()) {
 			ReplaceMacroParameters(child, lambda_params);
 			return;
 		}
@@ -77,7 +108,6 @@ void ExpressionBinder::ReplaceMacroParameters(QueryNode &node, vector<identifier
 				auto &comparison = argument_expr->Cast<ComparisonExpression>();
 				if (comparison.Left().GetExpressionType() == ExpressionType::COLUMN_REF &&
 				    !comparison.Left().Cast<ColumnRefExpression>().IsQualified()) {
-					// the name is not a macro parameter
 					ReplaceMacroParameters(comparison.RightMutable(), lambda_params);
 					continue;
 				}

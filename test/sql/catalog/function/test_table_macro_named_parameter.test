@@ -56,3 +56,27 @@ query II
 SELECT * FROM compared(false);
 ----
 true	0
+
+# a table macro reads name = value as a comparison
+statement ok
+CREATE MACRO inner_macro(x) AS TABLE SELECT x AS result FROM (SELECT false AS header);
+
+statement ok
+CREATE MACRO outer_macro(header) AS TABLE SELECT * FROM inner_macro(header = header);
+
+query I
+SELECT * FROM outer_macro(true);
+----
+true
+
+# a lambda parameter in the arguments of a table macro is not a macro parameter
+statement ok
+CREATE MACRO apply_macro(dummy, f) AS TABLE SELECT dummy, list_transform([1, 2], f) AS result;
+
+statement ok
+CREATE MACRO outer_lambda(x) AS TABLE SELECT * FROM apply_macro(x, lambda x: x + 1);
+
+query II
+SELECT * FROM outer_lambda(100);
+----
+100	[2, 3]

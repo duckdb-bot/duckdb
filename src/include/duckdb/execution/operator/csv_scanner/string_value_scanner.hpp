@@ -36,7 +36,9 @@ public:
 	static void SanitizeError(string &value);
 	//! Whether the line goes on over more than two buffers
 	bool SpansMoreThanTwoBuffers() const {
-		const idx_t first_buffer_idx = begin.buffer_pos == begin.buffer_size ? begin.buffer_idx + 1 : begin.buffer_idx;
+		// begin is the newline that ends the line before
+		const idx_t first_buffer_idx =
+		    begin.buffer_pos + 1 >= begin.buffer_size ? begin.buffer_idx + 1 : begin.buffer_idx;
 		return end.buffer_idx > first_buffer_idx + 1;
 	}
 	//! Reconstructs the current line to be used in error messages

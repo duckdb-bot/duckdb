@@ -725,15 +725,16 @@ BoundStatement Binder::BindSelectNode(SelectNode &statement, BoundStatement from
 		}
 		bind_state.AddRegularColumn();
 
-		if (can_group_by_all && is_window) {
-			throw BinderException("Cannot group on a window clause");
-		}
 		if (can_group_by_all && result.unnests.SelectList().size() > unnest_count) {
 			throw BinderException("Cannot group on an UNNEST or UNLIST clause");
 		}
 		if (can_group_by_all && select_binder.HasBoundColumns()) {
 			if (select_binder.BoundAggregates()) {
 				throw BinderException("Cannot mix aggregates with non-aggregated columns!");
+			}
+			// a window over columns cannot be a group, while one over aggregates only is none
+			if (is_window) {
+				throw BinderException("Cannot group on a window clause");
 			}
 			// we are forcing aggregates, and the node has columns bound
 			// this entry becomes a group

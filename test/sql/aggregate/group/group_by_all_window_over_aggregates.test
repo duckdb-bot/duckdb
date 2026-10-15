@@ -1,0 +1,24 @@
+# name: test/sql/aggregate/group/group_by_all_window_over_aggregates.test
+# description: GROUP BY ALL with a window over aggregates, which is no group
+# group: [group]
+
+statement ok
+CREATE TABLE sample_data AS SELECT * FROM (VALUES (1, 'A', 100), (2, 'B', 200), (3, 'A', 300), (4, 'B', 400)) AS t(id, category, value);
+
+query III
+SELECT category, sum(value) AS s, rank() OVER (ORDER BY sum(value)) AS r FROM sample_data GROUP BY ALL ORDER BY ALL;
+----
+A	400	1
+B	600	2
+
+query III
+SELECT category, max(value), dense_rank() OVER (ORDER BY count(*)) FROM sample_data GROUP BY ALL ORDER BY ALL;
+----
+A	300	1
+B	400	1
+
+# a window over columns still cannot be grouped
+statement error
+SELECT category, value, row_number() OVER (PARTITION BY category ORDER BY value) FROM sample_data GROUP BY ALL;
+----
+Cannot group on a window clause

@@ -42,3 +42,23 @@ statement error
 SELECT NOT (*COLUMNS(*) IS NULL) FROM t;
 ----
 *COLUMNS() can not be used together with the 'OPERATOR_IS_NULL' operator
+
+# operators in the body of a lambda that gets the unpacked columns
+statement ok
+CREATE TABLE houses AS SELECT 'a' AS id, 'x.png' AS APICTURE, NULL::VARCHAR AS BPICTURE, 'EMPTY' AS CPICTURE;
+
+query II
+SELECT id, list_filter([*COLUMNS('^[A-Z]*PICTURE$')], lambda x: lower(x) != 'empty' AND x IS NOT NULL) FROM houses;
+----
+a	[x.png]
+
+query II
+SELECT id, list_filter([*COLUMNS('^[A-Z]*PICTURE$')], lambda x: NOT (x IS NULL)) FROM houses;
+----
+a	[x.png, EMPTY]
+
+# an operator above the list that holds the unpacked columns
+query I
+SELECT [*COLUMNS('^[A-Z]*PICTURE$')] IS NOT NULL FROM houses;
+----
+true

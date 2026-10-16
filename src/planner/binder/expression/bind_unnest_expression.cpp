@@ -259,8 +259,17 @@ BindResult UnnestBinder::Bind(FunctionExpression &function, idx_t depth, bool ro
 		return BindResult(BinderException(
 		    function, "UNNEST() on a struct column can only be applied as the root element of a SELECT expression"));
 	}
+	if (struct_unnests > 0 && list_unnests == 0 && unnest_expr->HasSubquery()) {
+		// each field of the struct is extracted from a copy, and a subquery cannot be copied: unnest the struct as
+		// the only element of a list, so that the fields are extracted from its column
+		vector<unique_ptr<Expression>> children;
+		children.push_back(std::move(unnest_expr));
+		FunctionBinder function_binder(binder);
+		unnest_expr = function_binder.BindScalarFunction(DEFAULT_SCHEMA, "list_value", std::move(children));
+		list_unnests = 1;
+	}
 	// perform all LIST unnests
-	auto return_type = child_type;
+	auto return_type = unnest_expr->GetReturnType();
 	for (idx_t current_depth = 0; current_depth < list_unnests; current_depth++) {
 		if (return_type.id() == LogicalTypeId::LIST) {
 			return_type = ListType::GetChildType(return_type);

@@ -1,0 +1,37 @@
+# name: test/sql/function/list/unnest_struct_subquery.test
+# description: UNNEST of a struct that a scalar subquery returns
+# group: [list]
+
+query I
+SELECT unnest((SELECT row(1)));
+----
+1
+
+query II
+SELECT unnest((SELECT {'a': 1, 'b': 'x'}));
+----
+1	x
+
+query II
+SELECT unnest((SELECT {'a': 1, 'b': 'x'})) FROM range(2);
+----
+1	x
+1	x
+
+# a NULL struct gives NULL fields, as without the subquery
+query II
+SELECT unnest((SELECT NULL::STRUCT(a INTEGER, b VARCHAR)));
+----
+NULL	NULL
+
+# also with a list around the struct, and recursively
+query II
+SELECT unnest((SELECT [{'a': 1, 'b': 'x'}, {'a': 2, 'b': 'y'}]), recursive := true);
+----
+1	x
+2	y
+
+query II
+SELECT unnest((SELECT {'a': {'c': 1}, 'b': 'x'}), recursive := true);
+----
+1	x

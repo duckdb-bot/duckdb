@@ -65,6 +65,8 @@ private:
 	FilterResult AddFilter(Expression &expr);
 	FilterResult AddBoundComparisonFilter(Expression &expr);
 	FilterResult AddTransitiveFilters(BoundFunctionExpression &comparison, bool is_root = true);
+	//! Add the equalities to a constant that IS NOT DISTINCT FROM filters imply for columns without constants
+	void AddNotDistinctFromConstants();
 	unique_ptr<Expression> FindTransitiveFilter(const Expression &expr);
 	Expression &GetNode(Expression &expr);
 	idx_t GetEquivalenceSet(Expression &expr);

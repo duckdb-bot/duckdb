@@ -156,7 +156,112 @@ void FilterCombiner::GenerateEquivalentFilters(const Expression &filter,
 	}
 }
 
+//! Whether the expression reads no column other than the given one, and does read it
+static bool ReadsOnlyColumn(const Expression &expr, const Expression &column) {
+	if (expr.Equals(column)) {
+		return true;
+	}
+	if (expr.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF || expr.IsFoldable()) {
+		return false;
+	}
+	bool reads_column = false;
+	bool reads_other = false;
+	ExpressionIterator::EnumerateChildren(expr, [&](const Expression &child) {
+		if (child.IsFoldable()) {
+			return;
+		}
+		if (ReadsOnlyColumn(child, column)) {
+			reads_column = true;
+		} else {
+			reads_other = true;
+		}
+	});
+	return reads_column && !reads_other;
+}
+
+//! A copy of the expression with the column replaced by another one
+static unique_ptr<Expression> ReplaceColumn(const Expression &expr, const Expression &column,
+                                            const Expression &replacement) {
+	if (expr.Equals(column)) {
+		return replacement.Copy();
+	}
+	auto result = expr.Copy();
+	ExpressionIterator::EnumerateChildren(
+	    *result, [&](unique_ptr<Expression> &child) { child = ReplaceColumn(*child, column, replacement); });
+	return result;
+}
+
+void FilterCombiner::AddNotDistinctFromConstants() {
+	// when a IS NOT DISTINCT FROM b, an expression of b that equals a constant that is not NULL gives the same
+	// constant for a, so the filter can also be pushed to the side of a
+	bool added = true;
+	while (added) {
+		added = false;
+		vector<pair<unique_ptr<Expression>, Value>> derived;
+		for (auto &filter : remaining_filters) {
+			if (filter->GetExpressionType() != ExpressionType::COMPARE_NOT_DISTINCT_FROM ||
+			    !BoundComparisonExpression::IsComparison(*filter)) {
+				continue;
+			}
+			auto &comparison = filter->Cast<BoundFunctionExpression>();
+			auto &left = BoundComparisonExpression::Left(comparison);
+			auto &right = BoundComparisonExpression::Right(comparison);
+			if (left.GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF ||
+			    right.GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF ||
+			    left.GetReturnType() != right.GetReturnType()) {
+				continue;
+			}
+			for (auto &entry : equivalence_map) {
+				auto &constants = constant_values[entry.first];
+				optional_ptr<const Value> constant;
+				for (auto &info : constants) {
+					if (info.comparison_type == ExpressionType::COMPARE_EQUAL && !info.constant.IsNull()) {
+						constant = &info.constant;
+						break;
+					}
+				}
+				if (!constant) {
+					continue;
+				}
+				for (auto &expression : entry.second) {
+					auto &expr = expression.get();
+					if (expr.IsVolatile() || expr.CanThrow()) {
+						continue;
+					}
+					for (idx_t side = 0; side < 2; side++) {
+						auto &source = side == 0 ? left : right;
+						auto &target = side == 0 ? right : left;
+						if (!ReadsOnlyColumn(expr, source)) {
+							continue;
+						}
+						auto target_expr = ReplaceColumn(expr, source, target);
+						auto target_entry = equivalence_set_map.find(*target_expr);
+						if (target_entry != equivalence_set_map.end() &&
+						    !constant_values[target_entry->second].empty()) {
+							continue;
+						}
+						derived.emplace_back(std::move(target_expr), *constant);
+					}
+				}
+			}
+		}
+		// the constant goes straight to the set of the expression, which has none, so it cannot conflict with others
+		for (auto &entry : derived) {
+			auto &node = GetNode(*entry.first);
+			auto &constants = constant_values[GetEquivalenceSet(node)];
+			if (constants.empty()) {
+				ExpressionValueInformation info;
+				info.comparison_type = ExpressionType::COMPARE_EQUAL;
+				info.constant = std::move(entry.second);
+				constants.push_back(std::move(info));
+				added = true;
+			}
+		}
+	}
+}
+
 void FilterCombiner::GenerateFilters(const std::function<void(unique_ptr<Expression> filter)> &callback) {
+	AddNotDistinctFromConstants();
 	// first loop over the remaining filters
 	for (auto &filter : remaining_filters) {
 		callback(std::move(filter));

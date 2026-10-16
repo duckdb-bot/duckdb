@@ -72,15 +72,18 @@ TEST_CASE("Rows appended while an index is built are not missing from it", "[sto
 		}
 
 		// a row that an index lookup has to find
-		CreateTable(con);
-		string index_error, insert_error;
-		RunConcurrently(db, "CREATE INDEX idx ON t (id)", "INSERT INTO t VALUES (2000000)", delay_ms, index_error,
-		                insert_error);
-		REQUIRE(IsExpectedError(index_error));
-		REQUIRE(IsExpectedError(insert_error));
-		if (index_error.empty() && insert_error.empty()) {
-			auto result = con.Query("SELECT count(*) FROM t WHERE id = 2000000");
-			REQUIRE(CHECK_COLUMN(result, 0, {1}));
+		for (auto &insert_sql : {"INSERT INTO t VALUES (3000000)"}) {
+			CreateTable(con);
+			string index_error, insert_error;
+			RunConcurrently(db, "CREATE INDEX idx ON t (id)", insert_sql, delay_ms, index_error, insert_error);
+			INFO(insert_sql << " | delay " << delay_ms << " | index error: " << index_error
+			                << " | insert error: " << insert_error);
+			REQUIRE(IsExpectedError(index_error));
+			REQUIRE(IsExpectedError(insert_error));
+			if (index_error.empty() && insert_error.empty()) {
+				auto result = con.Query("SELECT count(*) FROM t WHERE id = 3000000");
+				REQUIRE(CHECK_COLUMN(result, 0, {1}));
+			}
 		}
 	}
 }

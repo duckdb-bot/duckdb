@@ -1066,16 +1066,18 @@ unique_lock<mutex> DataTable::IndexAppendLock(bool replaced_by_this_transaction)
 	return lock;
 }
 
-void DataTable::ScanForIndexCreation(DuckTransaction &transaction, idx_t row_start, idx_t row_end,
+void DataTable::ScanForIndexCreation(DuckTransaction &transaction, const vector<column_t> &indexed_columns,
+                                     idx_t row_start, idx_t row_end,
                                      const std::function<void(DataChunk &chunk, Vector &row_ids)> &function) {
 	if (row_start >= row_end) {
 		return;
 	}
+	// like the build, only the indexed columns, which also keeps updates of other columns from failing the scan
 	vector<StorageIndex> column_ids;
 	vector<LogicalType> types;
-	for (idx_t i = 0; i < column_definitions.size(); i++) {
-		column_ids.emplace_back(i);
-		types.push_back(column_definitions[i].Type());
+	for (auto column_id : indexed_columns) {
+		column_ids.emplace_back(column_id);
+		types.push_back(column_definitions[column_id].Type());
 	}
 	column_ids.emplace_back(COLUMN_IDENTIFIER_ROW_ID);
 	types.push_back(LogicalType::ROW_TYPE);
@@ -1105,8 +1107,9 @@ void DataTable::ScanForIndexCreation(DuckTransaction &transaction, idx_t row_sta
 		if (count == 0) {
 			continue;
 		}
-		for (idx_t i = 0; i < table_chunk.ColumnCount(); i++) {
-			table_chunk.data[i].Reference(scan_chunk.data[i]);
+		// the index expressions refer to all columns of the table
+		for (idx_t i = 0; i < indexed_columns.size(); i++) {
+			table_chunk.data[indexed_columns[i]].Reference(scan_chunk.data[i]);
 		}
 		table_chunk.SetCardinality(scan_chunk.size());
 		if (count < scan_chunk.size()) {

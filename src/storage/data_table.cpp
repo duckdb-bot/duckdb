@@ -987,6 +987,7 @@ OptimisticDataWriter &DataTable::GetOptimisticWriter(ClientContext &context) {
 }
 
 void DataTable::LocalMerge(ClientContext &context, DuckTableEntry &table_entry, OptimisticWriteCollection &collection) {
+	info->GetIndexes().ThrowIfStorageMissing(*info);
 	auto &local_storage = LocalStorage::Get(context, db);
 	local_storage.LocalMerge(*this, table_entry, collection);
 }

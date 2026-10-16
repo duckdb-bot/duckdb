@@ -19,7 +19,6 @@
 #include "duckdb/transaction/local_storage.hpp"
 #include "duckdb/function/table/table_scan.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
-#include "duckdb/common/vector/flat_vector.hpp"
 #include "duckdb/execution/index/index_type.hpp"
 
 namespace duckdb {
@@ -139,9 +138,7 @@ void PhysicalCreateIndex::AppendRowsAfterScan(ClientContext &context, DataTable 
 	}
 	auto is_primary_key = alter_table_info && info->constraint_type == IndexConstraintType::PRIMARY;
 	auto &transaction = DuckTransaction::Get(context, storage.db);
-	Vector row_ids(LogicalType::ROW_TYPE);
-	auto current_row = row_start;
-	storage.ScanTableSegment(transaction, row_start, row_end - row_start, [&](DataChunk &chunk) {
+	storage.ScanForIndexCreation(transaction, row_start, row_end, [&](DataChunk &chunk, Vector &row_ids) {
 		if (is_primary_key) {
 			for (auto column_id : storage_ids) {
 				if (VectorOperations::HasNull(chunk.data[column_id])) {
@@ -149,15 +146,10 @@ void PhysicalCreateIndex::AppendRowsAfterScan(ClientContext &context, DataTable 
 				}
 			}
 		}
-		auto row_id_writer = FlatVector::Writer<row_t>(row_ids, chunk.size());
-		for (idx_t i = 0; i < chunk.size(); i++) {
-			row_id_writer.WriteValue(NumericCast<row_t>(current_row + i));
-		}
 		auto error = index.Append(chunk, row_ids);
 		if (error.HasError()) {
 			error.Throw();
 		}
-		current_row += chunk.size();
 	});
 }
 
@@ -228,11 +220,8 @@ SinkFinalizeType PhysicalCreateIndex::Finalize(Pipeline &pipeline, Event &event,
 	}
 
 	// Rows appended after the scan started are added here, rows appended after the index is added append to it.
-	// The replaced table of an ALTER takes no more appends.
-	unique_lock<mutex> append_lock;
-	if (!alter_table_info) {
-		append_lock = storage.IndexAppendLock();
-	}
+	// The lock also holds back reverts. The table an ALTER replaced takes no more appends.
+	auto append_lock = storage.IndexAppendLock(alter_table_info != nullptr);
 	AppendRowsAfterScan(context, storage, *bound_index);
 
 	// Add the index to the storage.

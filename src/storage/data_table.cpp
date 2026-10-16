@@ -1056,14 +1056,65 @@ idx_t DataTable::GetRevertCount() const {
 	return row_groups->GetRevertCount();
 }
 
-unique_lock<mutex> DataTable::IndexAppendLock() {
+unique_lock<mutex> DataTable::IndexAppendLock(bool replaced_by_this_transaction) {
 	unique_lock<mutex> lock(append_lock);
-	if (!IsMainTable()) {
+	if (!replaced_by_this_transaction && !IsMainTable()) {
 		// a replacement can have rows of its own
 		throw TransactionException(
 		    "Transaction conflict: cannot add an index to a table that has been altered or dropped");
 	}
 	return lock;
+}
+
+void DataTable::ScanForIndexCreation(DuckTransaction &transaction, idx_t row_start, idx_t row_end,
+                                     const std::function<void(DataChunk &chunk, Vector &row_ids)> &function) {
+	if (row_start >= row_end) {
+		return;
+	}
+	vector<StorageIndex> column_ids;
+	vector<LogicalType> types;
+	for (idx_t i = 0; i < column_definitions.size(); i++) {
+		column_ids.emplace_back(i);
+		types.push_back(column_definitions[i].Type());
+	}
+	column_ids.emplace_back(COLUMN_IDENTIFIER_ROW_ID);
+	types.push_back(LogicalType::ROW_TYPE);
+	DataChunk scan_chunk;
+	scan_chunk.Initialize(Allocator::Get(db), types);
+	DataChunk table_chunk;
+	table_chunk.InitializeEmpty(GetTypes());
+
+	CreateIndexScanState state;
+	InitializeScanWithOffset(transaction, state, column_ids, row_start, row_end);
+	SelectionVector sel(STANDARD_VECTOR_SIZE);
+	while (true) {
+		scan_chunk.Reset();
+		state.table_state.Scan(scan_chunk, TableScanType::TABLE_SCAN_OMIT_PERMANENTLY_DELETED);
+		if (scan_chunk.size() == 0) {
+			break;
+		}
+		// the scan starts at a vector boundary, the rows before row_start were read already
+		auto &row_ids = scan_chunk.data.back();
+		idx_t count = 0;
+		for (auto entry : row_ids.Values<row_t>()) {
+			auto row_id = NumericCast<idx_t>(entry.GetValue());
+			if (row_id >= row_start && row_id < row_end) {
+				sel.set_index(count++, entry.GetIndex());
+			}
+		}
+		if (count == 0) {
+			continue;
+		}
+		for (idx_t i = 0; i < table_chunk.ColumnCount(); i++) {
+			table_chunk.data[i].Reference(scan_chunk.data[i]);
+		}
+		table_chunk.SetCardinality(scan_chunk.size());
+		if (count < scan_chunk.size()) {
+			table_chunk.Slice(sel, count);
+			row_ids.Slice(sel, count);
+		}
+		function(table_chunk, row_ids);
+	}
 }
 
 void DataTable::AppendLock(DuckTransaction &transaction, TableAppendState &state) {

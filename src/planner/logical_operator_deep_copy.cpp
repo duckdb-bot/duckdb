@@ -15,7 +15,9 @@ static void CopyBindData(LogicalOperator &op, LogicalOperator &copy) {
 	if (op.type == LogicalOperatorType::LOGICAL_GET) {
 		auto &get = op.Cast<LogicalGet>();
 		if (get.has_pushed_complex_filter && !get.function.HasSerializationCallbacks()) {
-			copy.Cast<LogicalGet>().bind_data = get.bind_data->Copy();
+			auto &copy_get = copy.Cast<LogicalGet>();
+			copy_get.bind_data = get.bind_data->Copy();
+			copy_get.has_pushed_complex_filter = true;
 		}
 	}
 	D_ASSERT(op.children.size() == copy.children.size());

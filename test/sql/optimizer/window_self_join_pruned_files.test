@@ -52,9 +52,20 @@ SELECT i, count(*) OVER () AS c FROM read_parquet('{TEST_DIR}/window_self_join_h
 
 # the references of an inlined CTE each get their own filters
 query II
-WITH c AS (SELECT * FROM read_parquet('{TEST_DIR}/window_self_join_hive/**/*.parquet', hive_partitioning = true)) SELECT (SELECT count(*) FROM c WHERE p = 0), (SELECT sum(i) FROM c WHERE p = 1)
+EXPLAIN WITH c AS NOT MATERIALIZED (SELECT * FROM read_parquet('{TEST_DIR}/window_self_join_hive/**/*.parquet', hive_partitioning = true)) SELECT (SELECT count(*) FROM c WHERE p = 0), (SELECT sum(i) FROM c WHERE p = 1)
+----
+physical_plan	<!REGEX>:.*CTE_SCAN.*
+
+query II
+WITH c AS NOT MATERIALIZED (SELECT * FROM read_parquet('{TEST_DIR}/window_self_join_hive/**/*.parquet', hive_partitioning = true)) SELECT (SELECT count(*) FROM c WHERE p = 0), (SELECT sum(i) FROM c WHERE p = 1)
 ----
 5	25
+
+# a copy of a copy keeps the pruned files, here a CTE inlined after filter pushdown and then a window self join
+query I
+WITH c AS (SELECT i FROM read_parquet('{TEST_DIR}/window_self_join_hive/**/*.parquet', hive_partitioning = true) WHERE p = 0 EXCEPT ALL SELECT a.range AS i FROM range(1) a, range(1) b, range(1) d, range(1) e, range(1) f WHERE a.range < 0 AND a.range > 0) SELECT DISTINCT n FROM (SELECT count(*) OVER () AS n FROM c UNION ALL SELECT count(*) OVER () AS n FROM c)
+----
+5
 
 # the bind data of a scan without complex filter pushdown is not copied
 query I

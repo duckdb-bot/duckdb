@@ -117,14 +117,22 @@ void TaskScheduler::ExecuteForever(atomic<bool> *marker) {
 	ExecuteForever(marker, TaskSchedulerType::REGULAR);
 }
 
+//! An exception that leaves a worker thread ends the process, so a worker that cannot read the setting, as when the
+//! memory to refresh its settings cache is gone, processes tasks in the default mode
+static TaskExecutionMode GetProcessMode(const DBConfig &config) {
+	try {
+		if (Settings::Get<SchedulerProcessPartialSetting>(config)) {
+			return TaskExecutionMode::PROCESS_PARTIAL;
+		}
+	} catch (std::exception &) {
+	}
+	return TaskExecutionMode::PROCESS_ALL;
+}
+
 bool TaskScheduler::TryDequeueAndProcessTask(const DBConfig &config, TaskSchedulerQueue &queue, ConsumerToken &consumer,
                                              shared_ptr<Task> &task) {
 	if (queue.Dequeue(consumer, task)) {
-		auto process_mode = TaskExecutionMode::PROCESS_ALL;
-		if (Settings::Get<SchedulerProcessPartialSetting>(config)) {
-			process_mode = TaskExecutionMode::PROCESS_PARTIAL;
-		}
-		auto execute_result = task->Execute(process_mode);
+		auto execute_result = task->Execute(GetProcessMode(config));
 
 		switch (execute_result) {
 		case TaskExecutionResult::TASK_FINISHED:
@@ -160,7 +168,45 @@ void TaskScheduler::ExecuteForever(atomic<bool> *marker, const TaskSchedulerType
 	const auto &block_allocator = BlockAllocator::Get(db);
 	const auto &config = DBConfig::GetConfig(db);
 	auto &pool = GetPool(pool_type);
-	ConsumerToken consumer(queues);
+
+	// An exception that leaves this thread ends the process. Flushing only gives memory back, so it is skipped when
+	// the memory to read its settings is gone
+	auto try_thread_flush = [&](bool use_threshold) {
+		try {
+			auto background_threads = Settings::Get<AllocatorBackgroundThreadsSetting>(db);
+			idx_t threshold = 0;
+			if (use_threshold) {
+				threshold = StringUtil::ParseFormattedBytes(Settings::Get<AllocatorFlushThresholdSetting>(db));
+			}
+			block_allocator.ThreadFlush(background_threads, threshold,
+			                            GetPool(TaskSchedulerType::REGULAR).NumberOfThreads());
+			return true;
+		} catch (std::exception &) {
+			return false;
+		}
+	};
+	auto try_thread_idle = []() {
+		try {
+			Allocator::ThreadIdle();
+		} catch (std::exception &) {
+		}
+	};
+
+	// Only a thread that ran a task since its last flush has allocations to flush. Reading the settings would be the
+	// first use of their thread_local cache in a thread that never ran one, and glibc ends the process when it cannot
+	// allocate the registration of a thread_local destructor
+	bool flush_pending = false;
+	bool ran_task = false;
+
+	// a thread that starts while memory is gone waits until it can allocate its token
+	unique_ptr<ConsumerToken> consumer;
+	while (!consumer && *marker) {
+		try {
+			consumer = make_uniq<ConsumerToken>(queues);
+		} catch (std::bad_alloc &) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+	}
 
 	shared_ptr<Task> task;
 	// loop until the marker is set to false
@@ -170,10 +216,9 @@ void TaskScheduler::ExecuteForever(atomic<bool> *marker, const TaskSchedulerType
 			pool.Wait();
 		} else if (!pool.Wait(INITIAL_FLUSH_WAIT)) {
 			// allocator can flush, we flush this threads outstanding allocations after it was idle for 0.5s
-			block_allocator.ThreadFlush(
-			    Settings::Get<AllocatorBackgroundThreadsSetting>(db),
-			    StringUtil::ParseFormattedBytes(Settings::Get<AllocatorFlushThresholdSetting>(db)),
-			    GetPool(TaskSchedulerType::REGULAR).NumberOfThreads());
+			if (flush_pending && try_thread_flush(true)) {
+				flush_pending = false;
+			}
 			auto decay_delay = Allocator::DecayDelay();
 			if (!decay_delay.IsValid()) {
 				// no decay delay specified - just wait
@@ -182,7 +227,7 @@ void TaskScheduler::ExecuteForever(atomic<bool> *marker, const TaskSchedulerType
 				if (!pool.Wait(UnsafeNumericCast<int64_t>(decay_delay.GetIndex()) * 1000000 - INITIAL_FLUSH_WAIT)) {
 					// in total, the thread was idle for the entire decay delay (note: seconds converted to mus)
 					// mark it as idle and start an untimed wait
-					Allocator::ThreadIdle();
+					try_thread_idle();
 					pool.Wait();
 				}
 			}
@@ -191,19 +236,21 @@ void TaskScheduler::ExecuteForever(atomic<bool> *marker, const TaskSchedulerType
 		if (pool_type == TaskSchedulerType::REGULAR) {
 			// Regular thread pool picks up tasks from all pools
 			for (auto &queue : queues) {
-				if (TryDequeueAndProcessTask(config, *queue, consumer, task)) {
+				if (TryDequeueAndProcessTask(config, *queue, *consumer, task)) {
+					flush_pending = ran_task = true;
 					break;
 				}
 			}
-		} else {
-			TryDequeueAndProcessTask(config, GetQueue(pool_type), consumer, task);
+		} else if (TryDequeueAndProcessTask(config, GetQueue(pool_type), *consumer, task)) {
+			flush_pending = ran_task = true;
 		}
 	}
-	// this thread will exit, flush all of its outstanding allocations
+	// this thread will exit, flush all of its outstanding allocations, without the threshold of the idle flushes
 	if (block_allocator.SupportsFlush()) {
-		block_allocator.ThreadFlush(Settings::Get<AllocatorBackgroundThreadsSetting>(db), 0,
-		                            GetPool(TaskSchedulerType::REGULAR).NumberOfThreads());
-		Allocator::ThreadIdle();
+		if (ran_task) {
+			try_thread_flush(false);
+		}
+		try_thread_idle();
 	}
 #else
 	throw NotImplementedException("DuckDB was compiled without threads! Background thread loop is not allowed.");

@@ -107,3 +107,29 @@ TEST_CASE("Arrow filter pushdown - nested view types disable pushdown", "[arrow]
 		REQUIRE(!FilterInScan(explain_str));
 	}
 }
+
+TEST_CASE("Arrow filter pushdown - filters kept above the scan next to an IN list", "[arrow]") {
+	DuckDB db;
+	Connection con(db);
+	REQUIRE(!con.Query("CREATE TABLE src AS SELECT (['TOYOTA', 'HONDA', 'VPG', 'ISUZU', 'SMART', 'LUCID'])[i % 6 + 1] "
+	                   "AS name, (i % 10 = 0)::TINYINT AS flag FROM range(6000) t(i)")
+	             ->HasError());
+	// with a string view column the filters stay above the scan, which also returns the columns they read
+	duckdb::vector<string> queries {
+	    "SELECT name, count(*) FROM %s WHERE flag < 1 AND name IN ('VPG', 'ISUZU', 'SMART', 'LUCID', 'LOTUS') "
+	    "GROUP BY 1 ORDER BY 1",
+	    "SELECT name, flag, count(*) FROM %s WHERE flag < 1 AND name IN ('VPG', 'ISUZU', 'SMART', 'LUCID', 'LOTUS') "
+	    "GROUP BY ALL ORDER BY ALL",
+	    "SELECT * FROM %s WHERE flag < 1 AND name IN ('VPG', 'ISUZU', 'SMART', 'LUCID', 'LOTUS') ORDER BY ALL LIMIT 3"};
+	for (auto &query : queries) {
+		INFO(query);
+		auto factory = MakeArrowFactory(con, "SELECT * FROM src", true);
+		con.TableFunction("arrow_scan", {}, {}, ArrowTestHelper::ConstructArrowScan(*factory))
+		    ->CreateView("data", true, true);
+		auto result = con.Query(StringUtil::Format(query, "data"));
+		REQUIRE(!result->HasError());
+		auto expected = con.Query(StringUtil::Format(query, "src"));
+		REQUIRE(!expected->HasError());
+		REQUIRE(result->ToString() == expected->ToString());
+	}
+}

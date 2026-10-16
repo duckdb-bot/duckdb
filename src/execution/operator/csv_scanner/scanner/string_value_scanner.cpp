@@ -185,6 +185,19 @@ bool StringValueResult::HandleTooManyColumnsError(const char *value_ptr, const i
 	return false;
 }
 
+//! A line with only spaces before its comment and no values before them has no row
+static bool IsCommentOnlyLine(idx_t cur_col_id, const char *value, idx_t size) {
+	if (cur_col_id != 0) {
+		return false;
+	}
+	for (idx_t i = 0; i < size; i++) {
+		if (value[i] != ' ') {
+			return false;
+		}
+	}
+	return true;
+}
+
 void StringValueResult::SetComment(StringValueResult &result, idx_t buffer_pos) {
 	if (!result.comment) {
 		result.position_before_comment = buffer_pos;
@@ -194,21 +207,11 @@ void StringValueResult::SetComment(StringValueResult &result, idx_t buffer_pos) 
 
 bool StringValueResult::UnsetComment(StringValueResult &result, idx_t buffer_pos) {
 	bool done = false;
-	if (result.last_position.buffer_pos < result.position_before_comment) {
-		bool all_empty = true;
-		for (idx_t i = result.last_position.buffer_pos; i < result.position_before_comment; i++) {
-			if (result.buffer_ptr[i] != ' ') {
-				all_empty = false;
-				break;
-			}
-		}
-		if (!all_empty) {
-			done = AddRow(result, result.position_before_comment);
-		}
-	} else {
-		if (result.cur_col_id != 0) {
-			done = AddRow(result, result.position_before_comment);
-		}
+	const idx_t value_size = result.last_position.buffer_pos < result.position_before_comment
+	                             ? result.position_before_comment - result.last_position.buffer_pos
+	                             : 0;
+	if (!IsCommentOnlyLine(result.cur_col_id, result.buffer_ptr + result.last_position.buffer_pos, value_size)) {
+		done = AddRow(result, result.position_before_comment);
 	}
 	if (result.number_of_rows == 0) {
 		result.first_line_is_comment = true;
@@ -1531,9 +1534,8 @@ void StringValueScanner::ProcessOverBufferValue() {
 		}
 		j++;
 	}
-	// a line that only holds a comment has no values, as in UnsetComment
 	const bool comment_only_line =
-	    comment_started && result.cur_col_id == 0 && over_buffer_string.find_first_not_of(' ') == string::npos;
+	    comment_started && IsCommentOnlyLine(result.cur_col_id, over_buffer_string.c_str(), over_buffer_string.size());
 	bool skip_value = comment_only_line;
 	if (result.projecting_columns && !skip_value) {
 		if (!result.projected_columns[result.cur_col_id] && result.cur_col_id != result.number_of_columns) {

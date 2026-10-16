@@ -3,24 +3,43 @@
 # group: [csv]
 
 statement ok
-COPY (SELECT l FROM (VALUES (1, 'a,b'), (2, '0,'), (3, '2,xxxxxxxxxx#zz'), (4, '3,3')) t(i, l) ORDER BY i) TO '{TEST_DIR}/inline_comment.csv' (HEADER false, QUOTE '');
+COPY (SELECT l FROM (VALUES (1, 'a,b'), (2, '0,'), (3, '2,xxxxxxxxxx#zz'), (4, '4,   #zz'), (5, '3,3')) t(i, l) ORDER BY i) TO '{TEST_DIR}/inline_comment.csv' (HEADER false, QUOTE '');
 
 statement ok
 COPY (SELECT l FROM (VALUES (1, 'a'), (2, '0'), (3, '1#x'), (4, '#line'), (5, '"xxxxxxxxxx"#zz'), (6, '2'), (7, '  #s'), (8, '3')) t(i, l) ORDER BY i) TO '{TEST_DIR}/single_column_comment.csv' (HEADER false, QUOTE '');
 
 statement ok
-COPY (SELECT l FROM (VALUES (1, 'a,b'), (2, '0,0'), (3, '#comment line'), (4, '1,#cc'), (5, '   #indented'), (6, '2,"q,q"#c'), (7, '#'), (8, '3,3')) t(i, l) ORDER BY i) TO '{TEST_DIR}/comment_lines_crlf.csv' (HEADER false, QUOTE '', NEW_LINE '\r\n');
+COPY (SELECT l FROM (VALUES (1, 'a,b'), (2, '0,0'), (3, '#comment line'), (4, '1,#cc'), (5, '   #indented'), (6, '2,"q,q"#c'), (7, '#'), (8, '5,"a""b"#c'), (9, '3,3')) t(i, l) ORDER BY i) TO '{TEST_DIR}/comment_lines_crlf.csv' (HEADER false, QUOTE '', NEW_LINE '\r\n');
 
-foreach parallel false true
-
-loop buffer_size 17 29
-
+# within one buffer
 query II
-SELECT a, b FROM read_csv('{TEST_DIR}/inline_comment.csv', header = true, auto_detect = false, columns = {'a': 'INTEGER', 'b': 'VARCHAR'}, comment = '#', buffer_size = {buffer_size}, parallel = {parallel});
+SELECT a, replace(b, ' ', '_') FROM read_csv('{TEST_DIR}/inline_comment.csv', header = true, auto_detect = false, columns = {'a': 'INTEGER', 'b': 'VARCHAR'}, comment = '#');
 ----
 0	NULL
 2	xxxxxxxxxx
+4	___
 3	3
+
+foreach parallel false true
+
+loop buffer_size 17 34
+
+# spaces before a comment are the value of a row that has columns already
+query II
+SELECT a, replace(b, ' ', '_') FROM read_csv('{TEST_DIR}/inline_comment.csv', header = true, auto_detect = false, columns = {'a': 'INTEGER', 'b': 'VARCHAR'}, comment = '#', buffer_size = {buffer_size}, parallel = {parallel});
+----
+0	NULL
+2	xxxxxxxxxx
+4	___
+3	3
+
+query I
+SELECT replace(b, ' ', '_') FROM read_csv('{TEST_DIR}/inline_comment.csv', header = true, auto_detect = false, columns = {'a': 'INTEGER', 'b': 'VARCHAR'}, comment = '#', buffer_size = {buffer_size}, parallel = {parallel});
+----
+NULL
+xxxxxxxxxx
+___
+3
 
 query I
 SELECT a FROM read_csv('{TEST_DIR}/single_column_comment.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR'}, comment = '#', buffer_size = {buffer_size}, parallel = {parallel});
@@ -37,7 +56,17 @@ SELECT a, b FROM read_csv('{TEST_DIR}/comment_lines_crlf.csv', header = true, au
 0	0
 1	NULL
 2	q,q
+5	a"b
 3	3
+
+query I
+SELECT a FROM read_csv('{TEST_DIR}/comment_lines_crlf.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, comment = '#', new_line = '\r\n', buffer_size = {buffer_size}, parallel = {parallel});
+----
+0
+1
+2
+5
+3
 
 endloop
 

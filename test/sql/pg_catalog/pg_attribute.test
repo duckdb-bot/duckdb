@@ -16,12 +16,22 @@ select relname, attname, attnum from pg_attribute join pg_class on (pg_attribute
 ----
 integers	i	1
 
-# a generated column is virtual
+# a generated column is virtual, a column with a default is not generated
 statement ok
-CREATE TABLE generated(id INTEGER, id2 INTEGER GENERATED ALWAYS AS (id + 1));
+CREATE TABLE generated(id INTEGER DEFAULT 1, id2 INTEGER GENERATED ALWAYS AS (id + 1), id3 AS (id * 2) VIRTUAL);
+
+query III
+SELECT attname, attgenerated, atthasdef FROM pg_attribute JOIN pg_class ON (pg_attribute.attrelid = pg_class.oid) WHERE relname = 'generated' ORDER BY attnum;
+----
+id	(empty)	true
+id2	v	true
+id3	v	true
+
+# a view of a generated column is not generated
+statement ok
+CREATE VIEW generated_view AS SELECT id2 FROM generated;
 
 query II
-SELECT attname, attgenerated FROM pg_attribute JOIN pg_class ON (pg_attribute.attrelid = pg_class.oid) WHERE relname = 'generated' ORDER BY attnum;
+SELECT attname, attgenerated FROM pg_attribute JOIN pg_class ON (pg_attribute.attrelid = pg_class.oid) WHERE relname = 'generated_view';
 ----
-id	(empty)
-id2	v
+id2	(empty)

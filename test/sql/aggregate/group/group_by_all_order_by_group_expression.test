@@ -67,3 +67,16 @@ statement error
 SELECT name, sum(x) FROM df GROUP BY ALL ORDER BY x;
 ----
 must appear in the GROUP BY clause
+
+# with a collated group, ORDER BY over it still binds to the group
+statement ok
+CREATE TABLE collated (name VARCHAR COLLATE NOCASE, x INTEGER);
+
+statement ok
+INSERT INTO collated VALUES ('B', 3), ('a', 1), ('a', 2);
+
+query II
+SELECT name, sum(x) FROM collated GROUP BY ALL ORDER BY lower(name);
+----
+a	3
+B	3

@@ -497,11 +497,11 @@ unique_ptr<ColumnWriter> ColumnWriter::CreateWriterRecursive(ClientContext &cont
 		return make_uniq<StandardColumnWriter<dtime_tz_t, int64_t, ParquetTimeTZOperator>>(writer, std::move(schema),
 		                                                                                   path_in_schema);
 	case LogicalTypeId::HUGEINT:
-		return make_uniq<StandardColumnWriter<hugeint_t, double, ParquetHugeintOperator>>(writer, std::move(schema),
-		                                                                                  path_in_schema);
+		return make_uniq<StandardColumnWriter<hugeint_t, ParquetHugeintTargetType, ParquetHugeintOperator>>(
+		    writer, std::move(schema), path_in_schema);
 	case LogicalTypeId::UHUGEINT:
-		return make_uniq<StandardColumnWriter<uhugeint_t, double, ParquetUhugeintOperator>>(writer, std::move(schema),
-		                                                                                    path_in_schema);
+		return make_uniq<StandardColumnWriter<uhugeint_t, ParquetHugeintTargetType, ParquetHugeintOperator>>(
+		    writer, std::move(schema), path_in_schema);
 	case LogicalTypeId::TIMESTAMP_NS:
 	case LogicalTypeId::TIMESTAMP_TZ_NS:
 		if (parquet_write_timestamp_as_int96) {

@@ -24,5 +24,77 @@ NULL
 query I
 SELECT typeof(h) FROM '{TEST_DIR}/hugeints.parquet' LIMIT 1
 ----
-DOUBLE
+DECIMAL(38,0)
 
+
+# 128-bit integers are written as DECIMAL(38,0), so every value of up to 38 digits comes back unchanged
+statement ok
+COPY (SELECT * FROM (VALUES (1, 9007199254740993::HUGEINT), (2, 999999999999999999999999999999), (3, 99999999999999999999999999999999999999), (4, -99999999999999999999999999999999999999)) t(i, h)) TO '{TEST_DIR}/hugeints_exact.parquet' (FORMAT parquet);
+
+query II
+SELECT i, h::HUGEINT FROM '{TEST_DIR}/hugeints_exact.parquet' ORDER BY i
+----
+1	9007199254740993
+2	999999999999999999999999999999
+3	99999999999999999999999999999999999999
+4	-99999999999999999999999999999999999999
+
+query II
+SELECT min(h), max(h) FROM '{TEST_DIR}/hugeints_exact.parquet' WHERE h > 9007199254740992
+----
+9007199254740993	99999999999999999999999999999999999999
+
+statement error
+COPY (SELECT 100000000000000000000000000000000000000::HUGEINT AS h) TO '{TEST_DIR}/hugeints_over.parquet' (FORMAT parquet);
+----
+Could not write HUGEINT value 100000000000000000000000000000000000000 to Parquet
+
+statement error
+COPY (SELECT '-170141183460469231731687303715884105728'::HUGEINT AS h) TO '{TEST_DIR}/hugeints_over.parquet' (FORMAT parquet);
+----
+Could not write HUGEINT value -170141183460469231731687303715884105728 to Parquet
+
+statement error
+COPY (SELECT '-100000000000000000000000000000000000000'::HUGEINT AS h) TO '{TEST_DIR}/hugeints_over.parquet' (FORMAT parquet);
+----
+Could not write HUGEINT value -100000000000000000000000000000000000000 to Parquet
+
+# large negative values with a dictionary, statistics and a bloom filter in each row group
+statement ok
+COPY (SELECT (2 * (i % 256) - 10000000000000000000000000000000000000)::HUGEINT AS h FROM range(8192) t(i)) TO '{TEST_DIR}/hugeints_bloom.parquet' (FORMAT parquet, ROW_GROUP_SIZE 2048, BLOOM_FILTER_FALSE_POSITIVE_RATIO 0.0001);
+
+query III
+SELECT count(*), bool_and(encodings LIKE '%DICTIONARY%'), bool_and(bloom_filter_length > 1) FROM parquet_metadata('{TEST_DIR}/hugeints_bloom.parquet')
+----
+4	true	true
+
+query II
+SELECT DISTINCT stats_min_value::HUGEINT, stats_max_value::HUGEINT FROM parquet_metadata('{TEST_DIR}/hugeints_bloom.parquet')
+----
+-10000000000000000000000000000000000000	-9999999999999999999999999999999999490
+
+query I
+SELECT bool_and(NOT bloom_filter_excludes) FROM parquet_bloom_probe('{TEST_DIR}/hugeints_bloom.parquet', 'h', (-10000000000000000000000000000000000000)::DECIMAL(38,0))
+----
+true
+
+query I
+SELECT bool_and(bloom_filter_excludes) FROM parquet_bloom_probe('{TEST_DIR}/hugeints_bloom.parquet', 'h', (-9999999999999999999999999999999999999)::DECIMAL(38,0))
+----
+true
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/hugeints_bloom.parquet' WHERE h = -10000000000000000000000000000000000000
+----
+32
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/hugeints_bloom.parquet' WHERE h = -9999999999999999999999999999999999999
+----
+0
+
+# the statistics of the file combine those of its row groups
+query IIIIIII
+COPY (SELECT CASE WHEN i < 2048 THEN 9007199254740993 + i ELSE -99999999999999999999999999999999999999 + i END::HUGEINT AS h FROM range(4096) t(i)) TO '{TEST_DIR}/hugeints_stats.parquet' (FORMAT PARQUET, ROW_GROUP_SIZE 2048, RETURN_STATS);
+----
+<REGEX>:.*hugeints_stats.parquet	4096	<REGEX>:\d+	<REGEX>:\d+	<REGEX>:{'"h"'={column_size_bytes=\d+, max=9007199254743040, max_is_exact=true, min=-99999999999999999999999999999999997951, min_is_exact=true, null_count=0, num_values=4096}}	NULL	{row_group_count=2}

@@ -33,6 +33,10 @@
 #include "duckdb/parser/tableref/basetableref.hpp"
 #include "duckdb/parser/tableref/emptytableref.hpp"
 #include "duckdb/parser/tableref/subqueryref.hpp"
+#include "duckdb/parser/constraints/not_null_constraint.hpp"
+#include "duckdb/parser/expression/window_expression.hpp"
+#include "duckdb/parser/expression/case_expression.hpp"
+#include "duckdb/parser/expression/operator_expression.hpp"
 #include "duckdb/parser/expression/lambda_expression.hpp"
 
 namespace duckdb {
@@ -342,6 +346,17 @@ static identifier_set_t GetConflictColumnNames(const TableStorageInfo &storage_i
 	return conflict_column_names;
 }
 
+static bool IsNotNull(TableCatalogEntry &table, const Identifier &column_name) {
+	auto column_index = table.GetColumns().GetColumn(column_name).Logical();
+	for (auto &constraint : table.GetConstraints()) {
+		if (constraint->type == ConstraintType::NOT_NULL &&
+		    constraint->Cast<NotNullConstraint>().index == column_index) {
+			return true;
+		}
+	}
+	return false;
+}
+
 unique_ptr<MergeIntoStatement> Binder::GenerateMergeInto(InsertQueryNode &node, TableCatalogEntry &table) {
 	D_ASSERT(node.on_conflict_info);
 
@@ -540,8 +555,26 @@ unique_ptr<MergeIntoStatement> Binder::GenerateMergeInto(InsertQueryNode &node, 
 		auto distinct_stmt = make_uniq<SelectStatement>();
 		auto select_node = make_uniq<SelectNode>();
 		auto distinct = make_uniq<DistinctModifier>();
+		vector<unique_ptr<ParsedExpression>> null_checks;
 		for (auto &col : distinct_on_columns) {
 			distinct->distinct_on_targets.push_back(make_uniq<ColumnRefExpression>(col));
+			if (!IsNotNull(table, col)) {
+				null_checks.push_back(make_uniq<OperatorExpression>(ExpressionType::OPERATOR_IS_NULL,
+				                                                    make_uniq<ColumnRefExpression>(col)));
+			}
+		}
+		if (!null_checks.empty()) {
+			// a key with a NULL conflicts with no other row, so each such row gets a group of its own
+			auto any_null = std::move(null_checks[0]);
+			for (idx_t i = 1; i < null_checks.size(); i++) {
+				any_null = make_uniq<ConjunctionExpression>(ExpressionType::CONJUNCTION_OR, std::move(any_null),
+				                                            std::move(null_checks[i]));
+			}
+			auto own_group = make_uniq<CaseExpression>();
+			own_group->CaseChecksMutable().push_back(
+			    {std::move(any_null), make_uniq<WindowExpression>("", "", "row_number")});
+			own_group->ElseMutable() = ConstantExpression::Null();
+			distinct->distinct_on_targets.push_back(std::move(own_group));
 		}
 		select_node->modifiers.push_back(std::move(distinct));
 		select_node->select_list.push_back(make_uniq<StarExpression>());

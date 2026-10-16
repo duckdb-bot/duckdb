@@ -388,7 +388,7 @@ static bool CastVarcharToJSONList(Vector &source, Vector &result, idx_t count, C
 			    idx_t len;
 			    auto data = JSONCommon::WriteVal<yyjson_val>(val, alc, len);
 			    if (len > string_t::MAX_STRING_SIZE) {
-				    // an error of the cast, so that TRY_CAST gives NULL
+				    // report a cast error so that TRY_CAST gives NULL
 				    if (success) {
 					    HandleCastError::AssignError(
 					        StringUtil::Format("Cannot create a string of size: '%d', the maximum "

@@ -19,7 +19,12 @@ SELECT length(json_array(repeat('a', 2200000000), repeat('b', 2200000000))) AS l
 ----
 Cannot create a string of size: '4400000007'
 
-# a cast of a list to JSON[] reports the error as a cast error, so TRY_CAST gives NULL
+# a string cast to JSON[] reports the error as a cast error, so CAST raises it and TRY_CAST gives NULL
+statement error
+SELECT CAST('[[' || repeat('1e20,', 180000000) || '1e20]]' AS JSON[]);
+----
+Cannot create a string of size
+
 query I
 SELECT TRY_CAST('[[' || repeat('1e20,', 180000000) || '1e20]]' AS JSON[]) IS NULL;
 ----

@@ -752,23 +752,6 @@ static bool IsIncompleteCastTarget(const LogicalType &type) {
 	});
 }
 
-unique_ptr<Expression> FunctionBinder::CastArgument(unique_ptr<Expression> argument, const LogicalType &target_type) {
-	if (argument->GetExpressionClass() == ExpressionClass::BOUND_CONSTANT && !target_type.IsNested() &&
-	    target_type.IsComplete()) {
-		// cast a constant right away, so that a function of many constants does not hold a cast for each of them
-		auto &constant = argument->Cast<BoundConstantExpression>();
-		auto value = constant.GetValue().TryCastAs(context, target_type);
-		if (value) {
-			auto result = make_uniq<BoundConstantExpression>(std::move(*value));
-			result->SetAlias(constant.GetAlias());
-			result->SetQueryLocation(constant.GetQueryLocation());
-			return std::move(result);
-		}
-	}
-	// a constant that does not cast keeps its cast, so the error surfaces where it is evaluated
-	return BoundCastExpression::AddCastToType(context, std::move(argument), target_type);
-}
-
 void FunctionBinder::CastToFunctionArguments(BoundSimpleFunction &function, vector<unique_ptr<Expression>> &children) {
 	for (auto &arg : function.GetArguments()) {
 		PrepareTypeForCast(arg);
@@ -814,7 +797,7 @@ void FunctionBinder::CastToFunctionArguments(BoundSimpleFunction &function, vect
 				                        "be resolved in the resolve_types callback",
 				                        function.GetName(), target_type);
 			}
-			children[i] = CastArgument(std::move(children[i]), target_type);
+			children[i] = BoundCastExpression::AddCastToType(context, std::move(children[i]), target_type);
 		}
 	}
 }

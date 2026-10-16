@@ -1,0 +1,104 @@
+# name: test/issues/general/test_24648.test
+# description: Renaming a table with foreign keys renames it in the foreign key constraints too
+# group: [general]
+
+load {TEST_DIR}/rename_table_foreign_keys.db
+
+statement ok
+CREATE TABLE p (i INTEGER PRIMARY KEY);
+
+statement ok
+INSERT INTO p VALUES (1), (2);
+
+statement ok
+CREATE TABLE c (j INTEGER REFERENCES p (i));
+
+statement ok
+INSERT INTO c VALUES (1);
+
+statement ok
+ALTER TABLE c RENAME TO c2;
+
+# nothing references 2, but 1 is referenced by c2
+statement ok
+DELETE FROM p WHERE i = 2;
+
+statement error
+DELETE FROM p WHERE i = 1;
+----
+Violates foreign key constraint
+
+statement error
+INSERT INTO c2 VALUES (3);
+----
+Violates foreign key constraint
+
+# a self-referencing table
+statement ok
+CREATE TABLE s (i INTEGER PRIMARY KEY, parent INTEGER REFERENCES s (i));
+
+statement ok
+ALTER TABLE s RENAME TO s2;
+
+statement ok
+INSERT INTO s2 VALUES (1, NULL);
+
+statement ok
+INSERT INTO s2 VALUES (2, 1);
+
+statement error
+INSERT INTO s2 VALUES (3, 4);
+----
+Violates foreign key constraint
+
+statement ok
+UPDATE s2 SET parent = NULL WHERE i = 2;
+
+statement ok
+DELETE FROM s2 WHERE i = 2;
+
+# the names survive a restart, replayed from the WAL and read from a checkpoint
+restart
+
+statement ok
+DELETE FROM p WHERE i = 3;
+
+statement error
+DELETE FROM p WHERE i = 1;
+----
+Violates foreign key constraint
+
+statement ok
+INSERT INTO s2 VALUES (2, 1);
+
+statement ok
+CHECKPOINT;
+
+restart
+
+statement ok
+ALTER TABLE c2 RENAME TO c;
+
+statement error
+DELETE FROM p WHERE i = 1;
+----
+Violates foreign key constraint
+
+statement error
+DROP TABLE p;
+----
+main key table of the table "c"
+
+statement ok
+DROP TABLE c;
+
+statement ok
+DROP TABLE p;
+
+statement error
+INSERT INTO s2 VALUES (5, 4);
+----
+Violates foreign key constraint
+
+statement ok
+DROP TABLE s2;

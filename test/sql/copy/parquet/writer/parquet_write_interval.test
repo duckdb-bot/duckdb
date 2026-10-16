@@ -62,7 +62,7 @@ COPY (
 		(5, INTERVAL '1200 hours'),
 		(6, INTERVAL '1 month 36 hours')
 	) t(id, i)
-) TO '{TEST_DIR}/interval_time_part.parquet'
+) TO '{TEST_DIR}/interval_time_part.parquet' (DICTIONARY_SIZE_LIMIT 1000)
 
 query II
 SELECT id, i FROM '{TEST_DIR}/interval_time_part.parquet' ORDER BY id
@@ -98,8 +98,19 @@ SELECT id FROM '{TEST_DIR}/interval_time_part.parquet' WHERE i = INTERVAL '1 day
 ----
 1
 
+# the dictionary file has a bloom filter, which holds the normalized interval
+query II
+SELECT bool_or(bloom_filter_excludes), count(*) FROM parquet_bloom_probe('{TEST_DIR}/interval_time_part.parquet', 'i', INTERVAL '1 day')
+----
+false	1
+
 query I
-SELECT bool_or(bloom_filter_excludes) FROM parquet_bloom_probe('{TEST_DIR}/interval_time_part.parquet', 'i', INTERVAL '1 day')
+SELECT bool_and(bloom_filter_excludes) FROM parquet_bloom_probe('{TEST_DIR}/interval_time_part.parquet', 'i', INTERVAL '3 days')
+----
+true
+
+query I
+SELECT bool_or(bloom_filter_excludes) FROM parquet_bloom_probe('{TEST_DIR}/interval_time_part.parquet', 'i', INTERVAL '24 hours')
 ----
 false
 

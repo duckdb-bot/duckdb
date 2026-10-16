@@ -4,10 +4,17 @@
 #include "duckdb/common/local_file_system.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/mutex.hpp"
+#include "duckdb/function/scalar/string_common.hpp"
 
 using namespace duckdb;
 
 namespace {
+
+string Lowercase(const string &name) {
+	string result(LowerLength(name.c_str(), name.size()), '\0');
+	LowerCase(name.c_str(), name.size(), &result[0]);
+	return result;
+}
 
 enum class CaseMode { PRESERVE, LOWERCASE, UNLISTABLE, UNLISTABLE_THROWS, LISTING_THROWS_AFTER_ENTRIES };
 
@@ -66,7 +73,14 @@ public:
 			throw IOException("Cannot list \"%s\"", path);
 		}
 		if (mode == CaseMode::LISTING_THROWS_AFTER_ENTRIES) {
-			local->ListFiles(Resolve(path), callback, opener);
+			// one entry, then the listing fails
+			duckdb::vector<std::pair<string, bool>> entries;
+			local->ListFiles(Resolve(path), [&](const string &entry, bool is_directory) {
+				entries.emplace_back(entry, is_directory);
+			});
+			if (!entries.empty()) {
+				callback(entries[0].first, entries[0].second);
+			}
 			throw NotImplementedException("Cannot finish listing \"%s\"", path);
 		}
 		return local->ListFiles(Resolve(path), callback, opener);
@@ -91,10 +105,10 @@ private:
 	string Resolve(const string &path) {
 		auto result = root;
 		for (auto &component : StringUtil::Split(path.substr(string(PREFIX).size()), "/")) {
-			auto name = mode == CaseMode::LOWERCASE ? StringUtil::Lower(component) : component;
+			auto name = mode == CaseMode::LOWERCASE ? Lowercase(component) : component;
 			if (mode == CaseMode::PRESERVE || mode == CaseMode::LOWERCASE) {
 				local->ListFiles(result, [&](const string &entry, bool) {
-					if (StringUtil::CIEquals(entry, component)) {
+					if (Lowercase(entry) == Lowercase(component)) {
 						name = entry;
 					}
 				});
@@ -142,6 +156,15 @@ TEST_CASE("COPY with PARTITION_BY refuses partitions that a file system ignoring
 		}
 
 #ifndef DUCKDB_NO_THREADS
+		// letters beyond ASCII in a PARTITION_PATH
+		auto unicode_result =
+		    con.Query("COPY (SELECT * FROM (VALUES ('\xC3\xA4', 1), ('\xC3\x84', 2)) v(k, x)) TO 'casetest://out' "
+		              "(FORMAT parquet, PARTITION_BY (k), PARTITION_PATH k)");
+		REQUIRE(unicode_result->HasError());
+		REQUIRE(StringUtil::Contains(unicode_result->GetError(), "differ only in case"));
+		TestDeleteDirectory(root);
+		TestCreateDirectory(root);
+
 		// partition directories created by several threads
 		REQUIRE_NO_FAIL(con.Query("SET threads = 8"));
 		auto parallel_result =

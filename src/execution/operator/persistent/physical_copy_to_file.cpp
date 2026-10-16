@@ -5,7 +5,7 @@
 #include "duckdb/common/path.hpp"
 #include "duckdb/common/optional.hpp"
 #include "duckdb/common/string_util.hpp"
-#include "duckdb/common/case_insensitive_map.hpp"
+#include "duckdb/function/scalar/string_common.hpp"
 #include "duckdb/common/sorting/sort_strategy.hpp"
 #include "duckdb/common/types/column/column_data_collection_segment.hpp"
 #include "duckdb/common/value_operations/value_operations.hpp"
@@ -140,7 +140,8 @@ private:
 	mutex lock;
 	std::condition_variable condition;
 	unordered_map<string, DirectoryEntry> directories;
-	case_insensitive_map_t<vector<string>> directories_ignoring_case;
+	//! The directories under each lowercase path
+	unordered_map<string, vector<string>> directories_ignoring_case;
 };
 
 class CopyOutputFileRegistry {
@@ -1742,6 +1743,13 @@ void CopyFileLifecycleExecutor::ThrowError() {
 //===--------------------------------------------------------------------===//
 // Copy File State Helpers
 //===--------------------------------------------------------------------===//
+//! Lowercases letters beyond ASCII as well, as a PARTITION_PATH can contain them
+static string LowercasePath(const string &path) {
+	string result(LowerLength(path.c_str(), path.size()), '\0');
+	LowerCase(path.c_str(), path.size(), &result[0]);
+	return result;
+}
+
 bool CopyDirectoryManager::EnsureDirectory(FileSystem &fs, const string &dir_path) {
 #ifdef D_ASSERT_IS_ENABLED
 	bool created_entry = false;
@@ -1752,7 +1760,7 @@ bool CopyDirectoryManager::EnsureDirectory(FileSystem &fs, const string &dir_pat
 			auto entry = directories.find(dir_path);
 			if (entry == directories.end()) {
 				// registered first, so that a failure leaves no pending entry that nobody completes
-				directories_ignoring_case[dir_path].push_back(dir_path);
+				directories_ignoring_case[LowercasePath(dir_path)].push_back(dir_path);
 				directories.emplace(dir_path, DirectoryEntry());
 #ifdef D_ASSERT_IS_ENABLED
 				created_entry = true;
@@ -1810,7 +1818,7 @@ void CopyDirectoryManager::CheckCaseCollision(FileSystem &fs, const string &dir_
 	string other_path;
 	{
 		lock_guard<mutex> guard(lock);
-		for (auto &path : directories_ignoring_case[dir_path]) {
+		for (auto &path : directories_ignoring_case[LowercasePath(dir_path)]) {
 			if (path != dir_path && Path::FromString(path).Parent().ToString() == parent) {
 				other_path = path;
 				break;

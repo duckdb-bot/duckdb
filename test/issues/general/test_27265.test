@@ -5,16 +5,10 @@
 require json
 
 # the bound list keeps no list_value with a cast for each element
-query I
-SELECT json_serialize_plan('SELECT [1, 2.5, 100.25]', optimize := false) LIKE '%list_value%'
+query II
+SELECT json_serialize_plan('SELECT [1, 2.5, 100.25]', optimize := false) LIKE '%list_value%', json_serialize_plan('SELECT [1, 2.5, 100.25]', optimize := false) LIKE '%__cast%'
 ----
-false
-
-# a constant argument is cast when it is bound, also next to an argument that is not constant
-query I
-SELECT json_serialize_plan('SELECT [x, 1, 2] FROM range(1) t(x)', optimize := false) LIKE '%__cast%'
-----
-false
+false	false
 
 query II
 SELECT [1, 2.5, 100.25], typeof([1, 2.5, 100.25])

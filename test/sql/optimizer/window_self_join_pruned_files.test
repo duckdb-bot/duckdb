@@ -50,6 +50,12 @@ SELECT i, count(*) OVER () AS c FROM read_parquet('{TEST_DIR}/window_self_join_h
 6	5
 8	5
 
+# the references of an inlined CTE each get their own filters
+query II
+WITH c AS (SELECT * FROM read_parquet('{TEST_DIR}/window_self_join_hive/**/*.parquet', hive_partitioning = true)) SELECT (SELECT count(*) FROM c WHERE p = 0), (SELECT sum(i) FROM c WHERE p = 1)
+----
+5	25
+
 # the bind data of a scan without complex filter pushdown is not copied
 query I
 SELECT count(*) FROM (WITH c AS (SELECT * FROM range(3)) SELECT * FROM c UNION ALL SELECT * FROM c LIMIT 4)

@@ -14,7 +14,7 @@ LogicalOperatorDeepCopy::LogicalOperatorDeepCopy(Binder &binder, optional_ptr<bo
 static void CopyBindData(LogicalOperator &op, LogicalOperator &copy) {
 	if (op.type == LogicalOperatorType::LOGICAL_GET) {
 		auto &get = op.Cast<LogicalGet>();
-		if (get.bind_data && get.function.pushdown_complex_filter && !get.function.HasSerializationCallbacks()) {
+		if (get.has_pushed_complex_filter && !get.function.HasSerializationCallbacks()) {
 			copy.Cast<LogicalGet>().bind_data = get.bind_data->Copy();
 		}
 	}

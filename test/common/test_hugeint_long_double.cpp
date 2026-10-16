@@ -30,16 +30,20 @@ TEST_CASE("Convert a long double to HUGEINT and UHUGEINT without losing digits",
 		REQUIRE(ConvertToUhugeint(184467440737095551616.0L) == "184467440737095551616");
 		REQUIRE(ConvertToHugeint(std::ldexp(1.0L, 127) - std::ldexp(1.0L, 64)) ==
 		        "170141183460469231713240559642174554112");
+		REQUIRE(ConvertToUhugeint(std::ldexp(1.0L, 128) - std::ldexp(1.0L, 64)) ==
+		        "340282366920938463444927863358058659840");
 	}
-	// exact in every floating point type
+	// powers of two are exact in every floating point type
 	REQUIRE(ConvertToHugeint(std::ldexp(1.0L, 64)) == "18446744073709551616");
 	REQUIRE(ConvertToUhugeint(std::ldexp(1.0L, 100)) == "1267650600228229401496703205376");
-	REQUIRE(ConvertToHugeint(1.9L) == "1");
-	REQUIRE(ConvertToHugeint(-1.9L) == "-1");
 	REQUIRE(ConvertToHugeint(std::ldexp(1.0, 127) - std::ldexp(1.0, 74)) == "170141183460469212842221372237303250944");
 	REQUIRE(ConvertToHugeint(std::ldexp(-1.0, 127) + std::ldexp(1.0, 74)) ==
 	        "-170141183460469212842221372237303250944");
 	REQUIRE(ConvertToUhugeint(std::ldexp(1.0, 128) - std::ldexp(1.0, 75)) == "340282366920938425684442744474606501888");
+	// fractions are truncated
+	REQUIRE(ConvertToHugeint(1.9L) == "1");
+	REQUIRE(ConvertToHugeint(-1.9L) == "-1");
+	REQUIRE(ConvertToUhugeint(1.9L) == "1");
 	REQUIRE(ConvertToHugeint(1.9) == "1");
 	REQUIRE(ConvertToHugeint(1.9f) == "1");
 	// out of range or not finite

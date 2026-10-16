@@ -471,19 +471,28 @@ unique_ptr<MergeIntoStatement> Binder::GenerateMergeInto(InsertQueryNode &node, 
 		merge_into->node->using_columns = on_conflict_info.indexed_columns;
 	}
 
-	// expand any default values
+	// the MERGE INTO only uses the column list as aliases of its source, so check it like a plain INSERT
+	vector<LogicalIndex> named_column_map;
 	auto values_list = node.GetValuesList();
+	if (node.column_order == InsertColumnOrder::INSERT_BY_POSITION) {
+		vector<LogicalType> expected_types;
+		physical_index_vector_t<idx_t> column_index_map;
+		BindInsertColumnList(table, node.columns, node.default_values, named_column_map, expected_types,
+		                     column_index_map);
+		if (node.select_statement && !values_list) {
+			auto select_copy = node.select_statement->Copy();
+			auto select_binder = Binder::CreateBinder(context, this);
+			auto bound_select = select_binder->Bind(select_copy->Cast<SelectStatement>());
+			auto expected_columns = node.columns.empty() ? columns.PhysicalColumnCount() : node.columns.size();
+			CheckInsertColumnCountMismatch(expected_columns, bound_select.types.size(), !node.columns.empty(),
+			                               table.name);
+		}
+	}
+	// expand any default values
 	if (values_list) {
-		vector<LogicalIndex> named_column_map;
-		if (node.columns.empty()) {
-			for (auto &col : table.GetColumns().Physical()) {
+		if (named_column_map.empty()) {
+			for (auto &col : columns.Physical()) {
 				named_column_map.push_back(col.Logical());
-			}
-		} else {
-			// Ensure that the columns are valid.
-			for (auto &col_name : node.columns) {
-				auto col_idx = table.GetColumnIndex(col_name);
-				named_column_map.push_back(col_idx);
 			}
 		}
 		ExpandDefaultInValuesList(node, table, values_list, named_column_map);

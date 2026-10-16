@@ -6,6 +6,7 @@
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/common/types/variant.hpp"
 #include "duckdb/common/enum_util.hpp"
+#include "duckdb/common/optional.hpp"
 #include "duckdb/common/vector/flat_vector.hpp"
 #include "duckdb/common/types/variant_iterator.hpp"
 #include "duckdb/common/types/variant_comparison.hpp"
@@ -118,48 +119,24 @@ void VariantEncodeString(SINK &sink, const string_t &str, bool is_varchar) {
 	sink.Write(STRING_DELIMITER);
 }
 
-//! A pending step of the encoding. An ARRAY step continues the array on top of the array stack
-struct VariantEncodeStep {
-	enum class Kind : uint8_t { VALUE, KEY, DELIMITER, ARRAY };
-
-	static VariantEncodeStep Value(const VariantNode &node) {
-		VariantEncodeStep step;
-		step.kind = Kind::VALUE;
-		step.node = node;
-		return step;
+//! An ARRAY or OBJECT being encoded, and the position of its next child. The open containers are kept on an explicit
+//! stack, so that deeply nested values cannot overflow the call stack
+struct VariantEncodeFrame {
+	explicit VariantEncodeFrame(const VariantNode &array) {
+		elements.emplace(array.GetArrayChildren());
 	}
-	static VariantEncodeStep Key(const string_t &key) {
-		VariantEncodeStep step;
-		step.kind = Kind::KEY;
-		step.key = key;
-		return step;
-	}
-	static VariantEncodeStep Marker(Kind kind) {
-		VariantEncodeStep step;
-		step.kind = kind;
-		return step;
+	VariantEncodeFrame(const VariantNode &object, VariantIterationOrder order) {
+		entries.emplace(object, order);
 	}
 
-	Kind kind;
-	VariantNode node;
-	string_t key;
+	optional<VariantArrayIterator> elements;
+	optional<VariantObjectIterator> entries;
+	idx_t next_child = 0;
 };
 
-//! An array being encoded, and the index of its next element
-struct VariantEncodeArray {
-	VariantArrayIterator elements;
-	idx_t next_element;
-};
-
-//! The pending work of the encoding, kept on explicit stacks so that deep values cannot overflow the call stack
-struct VariantEncodeStack {
-	vector<VariantEncodeStep> steps;
-	vector<VariantEncodeArray> arrays;
-};
-
-//! Encodes a single value, and pushes the children of an ARRAY or OBJECT onto the stack
+//! Encodes a single value, or opens the frame of an ARRAY or OBJECT
 template <class SINK>
-void EncodeVariantNode(const VariantNode &it, SINK &sink, VariantEncodeStack &stack) {
+void EncodeVariantNode(const VariantNode &it, SINK &sink, vector<VariantEncodeFrame> &frames) {
 	const auto type_id = it.GetTypeId();
 	const auto comparison_type = GetVariantComparisonType(type_id);
 	// write the type rank - this guarantees values are ordered by type first
@@ -223,25 +200,14 @@ void EncodeVariantNode(const VariantNode &it, SINK &sink, VariantEncodeStack &st
 		sink.Write(STRING_DELIMITER);
 		break;
 	}
-	case VariantComparisonType::ARRAY: {
-		// the elements are taken one at a time, so that a wide array does not fill the stack
-		stack.arrays.push_back(VariantEncodeArray {it.GetArrayChildren(), 0});
-		stack.steps.push_back(VariantEncodeStep::Marker(VariantEncodeStep::Kind::ARRAY));
+	case VariantComparisonType::ARRAY:
+		frames.emplace_back(it);
 		break;
-	}
-	case VariantComparisonType::OBJECT: {
+	case VariantComparisonType::OBJECT:
 		// process the children in string-sorted key order so that objects that only differ in key order
-		// compare equal. They are pushed in reverse, so that they are taken in order
-		auto &steps = stack.steps;
-		steps.push_back(VariantEncodeStep::Marker(VariantEncodeStep::Kind::DELIMITER));
-		auto first_child = steps.size();
-		for (auto &entry : it.GetObjectChildren(VariantIterationOrder::LEXICOGRAPHIC)) {
-			steps.push_back(VariantEncodeStep::Key(entry.key));
-			steps.push_back(VariantEncodeStep::Value(entry.value));
-		}
-		std::reverse(steps.begin() + NumericCast<int64_t>(first_child), steps.end());
+		// compare equal
+		frames.emplace_back(it, VariantIterationOrder::LEXICOGRAPHIC);
 		break;
-	}
 	default:
 		throw NotImplementedException("Variant type %s is not supported in variant_comparator",
 		                              EnumUtil::ToString(type_id));
@@ -249,43 +215,30 @@ void EncodeVariantNode(const VariantNode &it, SINK &sink, VariantEncodeStack &st
 }
 
 template <class SINK>
-void EncodeVariantValue(const VariantNode &root, SINK &sink, VariantEncodeStack &stack) {
-	auto &steps = stack.steps;
-	steps.clear();
-	stack.arrays.clear();
-	EncodeVariantNode(root, sink, stack);
-	while (!steps.empty()) {
-		auto &step = steps.back();
-		switch (step.kind) {
-		case VariantEncodeStep::Kind::VALUE: {
-			auto node = step.node;
-			steps.pop_back();
-			EncodeVariantNode(node, sink, stack);
-			break;
-		}
-		case VariantEncodeStep::Kind::KEY: {
-			auto key = step.key;
-			steps.pop_back();
-			VariantEncodeString(sink, key, true);
-			break;
-		}
-		case VariantEncodeStep::Kind::DELIMITER:
-			steps.pop_back();
-			sink.Write(LIST_DELIMITER);
-			break;
-		case VariantEncodeStep::Kind::ARRAY: {
-			auto &array = stack.arrays.back();
-			if (array.next_element == array.elements.size()) {
-				stack.arrays.pop_back();
-				steps.pop_back();
+void EncodeVariantValue(const VariantNode &root, SINK &sink, vector<VariantEncodeFrame> &frames) {
+	frames.clear();
+	EncodeVariantNode(root, sink, frames);
+	while (!frames.empty()) {
+		auto &frame = frames.back();
+		if (frame.elements) {
+			if (frame.next_child == frame.elements->size()) {
+				frames.pop_back();
 				sink.Write(LIST_DELIMITER);
-				break;
+				continue;
 			}
-			auto element = array.elements[array.next_element++];
-			EncodeVariantNode(element, sink, stack);
-			break;
+			auto element = (*frame.elements)[frame.next_child++];
+			EncodeVariantNode(element, sink, frames);
+			continue;
 		}
+		auto &entries = frame.entries->GetOrderedEntries();
+		if (frame.next_child == entries.size()) {
+			frames.pop_back();
+			sink.Write(LIST_DELIMITER);
+			continue;
 		}
+		auto entry = entries[frame.next_child++];
+		VariantEncodeString(sink, entry.key, true);
+		EncodeVariantNode(entry.value, sink, frames);
 	}
 }
 
@@ -302,7 +255,7 @@ void CreateVariantComparator(const Vector &input, idx_t count, Vector &result) {
 
 	//! reused growable buffer - the key is encoded once and then copied into the result vector
 	string buffer;
-	VariantEncodeStack stack;
+	vector<VariantEncodeFrame> frames;
 	for (idx_t r = 0; r < count; r++) {
 		auto root = variant[r];
 		// a VARIANT is only NULL at the root via a genuine SQL NULL (never a VARIANT_NULL value)
@@ -315,7 +268,7 @@ void CreateVariantComparator(const Vector &input, idx_t count, Vector &result) {
 		// NULLs are handled via validity above, so no NULL/validity prefix byte is needed in the key.
 		buffer.clear();
 		VariantComparatorBufferSink sink(buffer);
-		EncodeVariantValue(root, sink, stack);
+		EncodeVariantValue(root, sink, frames);
 		writer.WriteValue(string_t(buffer.data(), NumericCast<uint32_t>(buffer.size())));
 	}
 }

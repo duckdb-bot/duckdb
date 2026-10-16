@@ -684,17 +684,62 @@ BoundStatement Binder::BindSelectNode(SelectNode &statement, BoundStatement from
 	// if we expand select-list expressions, e.g., via UNNEST, then we need to possibly
 	// adjust the column index of the already bound ORDER BY modifiers, and not only set their types
 	vector<idx_t> group_by_all_indexes;
+	bool group_by_all_pushed = false;
 	vector<Identifier> new_names;
 	vector<LogicalType> internal_sql_types;
+
+	// push the GROUP BY ALL expressions into the group set, and map them to their groups for the ORDER BY and
+	// DISTINCT ON entries bound after them
+	auto push_group_by_all = [&]() {
+		group_by_all_pushed = true;
+		for (auto &group_by_all_index : group_by_all_indexes) {
+			auto &expr = result.select_list[group_by_all_index];
+			auto return_type = expr->GetReturnType();
+			// group by the collated expression, and select the uncollated value through a first(x) aggregate
+			unique_ptr<Expression> uncollated_expr = expr->HasSubquery() ? nullptr : expr->Copy();
+			bool requires_collation = ExpressionBinder::PushCollation(context, expr, return_type);
+			auto group_proj_idx = ColumnBinding::PushExpression(result.groups.group_expressions, std::move(expr));
+			bind_state.group_map[*bind_state.original_expressions[group_by_all_index]] = group_proj_idx;
+			if (uncollated_expr && requires_collation) {
+				auto first_fun =
+				    GetBuiltinAggregateFunction(context, FirstFun::Name, {uncollated_expr->GetReturnType()});
+				vector<unique_ptr<Expression>> first_children;
+				first_children.push_back(std::move(uncollated_expr));
+				FunctionBinder function_binder(*this);
+				auto function = function_binder.BindAggregateFunction(std::move(first_fun), std::move(first_children));
+				function->SetAlias("__collated_group");
+				auto aggregate_idx = ColumnBinding::PushExpression(result.aggregates, std::move(function));
+				expr = make_uniq<BoundColumnRefExpression>(return_type,
+				                                           ColumnBinding(result.aggregate_index, aggregate_idx));
+				continue;
+			}
+			auto group_ref =
+			    make_uniq<BoundColumnRefExpression>(return_type, ColumnBinding(result.group_index, group_proj_idx));
+			expr = std::move(group_ref);
+		}
+		set<ProjectionIndex> group_by_all_indexes_set;
+		if (!group_by_all_indexes.empty()) {
+			idx_t num_set_indexes = result.groups.group_expressions.size();
+			for (idx_t i = 0; i < num_set_indexes; i++) {
+				group_by_all_indexes_set.emplace(i);
+			}
+			D_ASSERT(result.groups.grouping_sets.empty());
+			result.groups.grouping_sets.push_back(group_by_all_indexes_set);
+		}
+	};
 
 	for (idx_t i = 0; i < statement.select_list.size(); i++) {
 		bool is_window = statement.select_list[i]->IsWindow();
 		idx_t unnest_count = result.unnests.SelectList().size();
-		LogicalType result_type;
-		auto expr = select_binder.Bind(statement.select_list[i], &result_type, true);
 		bool is_original_column = i < result.column_count;
 		bool can_group_by_all =
 		    statement.aggregate_handling == AggregateHandling::FORCE_AGGREGATES && is_original_column;
+		if (statement.aggregate_handling == AggregateHandling::FORCE_AGGREGATES && !is_original_column &&
+		    !group_by_all_pushed) {
+			push_group_by_all();
+		}
+		LogicalType result_type;
+		auto expr = select_binder.Bind(statement.select_list[i], &result_type, true);
 		result.bound_column_count++;
 
 		if (expr->GetExpressionType() == ExpressionType::BOUND_EXPANDED) {
@@ -756,38 +801,8 @@ BoundStatement Binder::BindSelectNode(SelectNode &statement, BoundStatement from
 		}
 	}
 
-	// push the GROUP BY ALL expressions into the group set
-	for (auto &group_by_all_index : group_by_all_indexes) {
-		auto &expr = result.select_list[group_by_all_index];
-		auto return_type = expr->GetReturnType();
-		// group by the collated expression, and select the uncollated value through a first(x) aggregate
-		unique_ptr<Expression> uncollated_expr = expr->HasSubquery() ? nullptr : expr->Copy();
-		bool requires_collation = ExpressionBinder::PushCollation(context, expr, return_type);
-		auto group_proj_idx = ColumnBinding::PushExpression(result.groups.group_expressions, std::move(expr));
-		if (uncollated_expr && requires_collation) {
-			auto first_fun = GetBuiltinAggregateFunction(context, FirstFun::Name, {uncollated_expr->GetReturnType()});
-			vector<unique_ptr<Expression>> first_children;
-			first_children.push_back(std::move(uncollated_expr));
-			FunctionBinder function_binder(*this);
-			auto function = function_binder.BindAggregateFunction(std::move(first_fun), std::move(first_children));
-			function->SetAlias("__collated_group");
-			auto aggregate_idx = ColumnBinding::PushExpression(result.aggregates, std::move(function));
-			expr =
-			    make_uniq<BoundColumnRefExpression>(return_type, ColumnBinding(result.aggregate_index, aggregate_idx));
-			continue;
-		}
-		auto group_ref =
-		    make_uniq<BoundColumnRefExpression>(return_type, ColumnBinding(result.group_index, group_proj_idx));
-		expr = std::move(group_ref);
-	}
-	set<ProjectionIndex> group_by_all_indexes_set;
-	if (!group_by_all_indexes.empty()) {
-		idx_t num_set_indexes = result.groups.group_expressions.size();
-		for (idx_t i = 0; i < num_set_indexes; i++) {
-			group_by_all_indexes_set.emplace(i);
-		}
-		D_ASSERT(result.groups.grouping_sets.empty());
-		result.groups.grouping_sets.push_back(group_by_all_indexes_set);
+	if (statement.aggregate_handling == AggregateHandling::FORCE_AGGREGATES && !group_by_all_pushed) {
+		push_group_by_all();
 	}
 	result.column_count = new_names.size();
 	result.names = std::move(new_names);

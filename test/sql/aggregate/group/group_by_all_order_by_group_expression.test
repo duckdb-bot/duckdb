@@ -1,0 +1,82 @@
+# name: test/sql/aggregate/group/group_by_all_order_by_group_expression.test
+# description: With GROUP BY ALL, ORDER BY and DISTINCT ON expressions can use the groups of the SELECT list
+# group: [group]
+
+statement ok
+CREATE TABLE df AS SELECT ['aBc', 'Abd', 'abe'][x % 3 + 1] AS name, x FROM range(0, 6) r(x);
+
+query II
+SELECT name, sum(x) FROM df GROUP BY ALL ORDER BY lower(name) DESC;
+----
+abe	7
+Abd	5
+aBc	3
+
+# qualified, and through the alias of the group
+query II
+SELECT df.name AS n, sum(x) FROM df GROUP BY ALL ORDER BY lower(df.name);
+----
+aBc	3
+Abd	5
+abe	7
+
+query II
+SELECT name AS n, sum(x) FROM df GROUP BY ALL ORDER BY lower(n) DESC;
+----
+abe	7
+Abd	5
+aBc	3
+
+# the group is an expression of the SELECT list
+query II
+SELECT upper(name) AS u, count(*) FROM df GROUP BY ALL ORDER BY right(upper(name), 1) DESC;
+----
+ABE	2
+ABD	2
+ABC	2
+
+# multiple ORDER BY expressions
+query II
+SELECT name, sum(x) FROM df GROUP BY ALL ORDER BY name[1], lower(name) DESC;
+----
+Abd	5
+abe	7
+aBc	3
+
+query II
+SELECT DISTINCT ON (name[1]) name, sum(x) FROM df GROUP BY ALL ORDER BY name[1], name;
+----
+Abd	5
+aBc	3
+
+# the expression can also mix groups and aggregates
+query II
+SELECT name, sum(x) FROM df GROUP BY ALL ORDER BY ascii(name[2]) + sum(x);
+----
+aBc	3
+Abd	5
+abe	7
+
+# a column that is not a group is still an error
+statement error
+SELECT upper(name), sum(x) FROM df GROUP BY ALL ORDER BY lower(name);
+----
+must appear in the GROUP BY clause
+
+statement error
+SELECT name, sum(x) FROM df GROUP BY ALL ORDER BY x;
+----
+must appear in the GROUP BY clause
+
+# with a collated group, ORDER BY over it still binds to the group
+statement ok
+CREATE TABLE collated (name VARCHAR COLLATE NOCASE, x INTEGER);
+
+statement ok
+INSERT INTO collated VALUES ('B', 3), ('a', 1), ('a', 2);
+
+query II
+SELECT name, sum(x) FROM collated GROUP BY ALL ORDER BY lower(name);
+----
+a	3
+B	3

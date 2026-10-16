@@ -628,3 +628,43 @@ TEST_CASE("Test prepared statements with extension that can request a rebind", "
 	// SetVariableStatement
 	REQUIRE_NO_FAIL(con.Prepare("SET VARIABLE test_var = ?")->Execute(42));
 }
+
+TEST_CASE("Prepared CREATE VIEW stores the values of its parameters", "[api]") {
+	auto path = TestCreatePath("prepared_view_parameters.db");
+	{
+		DuckDB db(path);
+		Connection con(db);
+		auto prepared = con.Prepare("CREATE OR REPLACE VIEW v AS SELECT ?::INTEGER AS a, (SELECT ?) AS b FROM "
+		                            "read_csv(?, header = false) WHERE column0 > ? LIMIT 1");
+		REQUIRE(!prepared->HasError());
+		REQUIRE_NO_FAIL(prepared->Execute(42, "x", "data/csv/test/test.csv", 1));
+		auto result = con.Query("SELECT * FROM v");
+		REQUIRE(CHECK_COLUMN(result, 0, {42}));
+		REQUIRE(CHECK_COLUMN(result, 1, {"x"}));
+		result = con.Query("SELECT sql FROM duckdb_views() WHERE view_name = 'v'");
+		REQUIRE(CHECK_COLUMN(result, 0,
+		                     {"CREATE VIEW v AS SELECT CAST(42 AS INTEGER) AS a, (SELECT 'x') AS b FROM "
+		                      "read_csv('data/csv/test/test.csv', (\"header\" = false)) WHERE (column0 > 1) "
+		                      "LIMIT 1;"}));
+		// executing it again stores the new values
+		REQUIRE_NO_FAIL(prepared->Execute(43, "y", "data/csv/test/test.csv", 1));
+		result = con.Query("SELECT * FROM v");
+		REQUIRE(CHECK_COLUMN(result, 0, {43}));
+		REQUIRE(CHECK_COLUMN(result, 1, {"y"}));
+
+		// a named parameter without a value still reads the variable when the view is queried
+		REQUIRE_NO_FAIL(con.Query("SET VARIABLE x = 5"));
+		REQUIRE_NO_FAIL(con.Query("CREATE VIEW w AS SELECT $x AS c"));
+		REQUIRE_NO_FAIL(con.Query("SET VARIABLE x = 6"));
+		result = con.Query("SELECT * FROM w");
+		REQUIRE(CHECK_COLUMN(result, 0, {6}));
+
+		// a positional parameter needs a value
+		REQUIRE_FAIL(con.Query("CREATE VIEW u AS SELECT ? AS c"));
+	}
+	DuckDB db(path);
+	Connection con(db);
+	auto result = con.Query("SELECT * FROM v");
+	REQUIRE(CHECK_COLUMN(result, 0, {43}));
+	REQUIRE(CHECK_COLUMN(result, 1, {"y"}));
+}

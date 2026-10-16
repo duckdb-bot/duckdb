@@ -21,6 +21,8 @@
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/parser/expression/function_expression.hpp"
 #include "duckdb/parser/expression/subquery_expression.hpp"
+#include "duckdb/main/prepared_statement.hpp"
+#include "duckdb/parser/expression/parameter_expression.hpp"
 #include "duckdb/parser/parsed_data/create_index_info.hpp"
 #include "duckdb/parser/parsed_data/create_macro_info.hpp"
 #include "duckdb/parser/parsed_data/create_trigger_info.hpp"
@@ -365,6 +367,36 @@ void Binder::BindView(ClientContext &context, const SelectStatement &stmt, const
 	result_names = query_node.names;
 }
 
+static void ReplaceParameters(QueryNode &node, const identifier_map_t<BoundParameterData> &values, bool &replaced);
+
+static void ReplaceParameters(unique_ptr<ParsedExpression> &expr, const identifier_map_t<BoundParameterData> &values,
+                              bool &replaced) {
+	if (expr->GetExpressionClass() == ExpressionClass::PARAMETER) {
+		auto &identifier = expr->Cast<ParameterExpression>().Identifier();
+		auto entry = values.find(identifier);
+		if (entry != values.end()) {
+			auto constant = ConstantExpression::FromValue(entry->second.GetValue());
+			constant->SetAlias(expr->GetAlias());
+			expr = std::move(constant);
+			replaced = true;
+		} else if (!PreparedStatement::AllowsUserVariableFallback(identifier)) {
+			// the value is only known when the statement is executed
+			throw ParameterNotResolvedException();
+		}
+		return;
+	}
+	if (expr->GetExpressionClass() == ExpressionClass::SUBQUERY) {
+		ReplaceParameters(*expr->Cast<SubqueryExpression>().SubqueryMutable()->node, values, replaced);
+	}
+	ParsedExpressionIterator::EnumerateChildren(
+	    *expr, [&](unique_ptr<ParsedExpression> &child) { ReplaceParameters(child, values, replaced); });
+}
+
+static void ReplaceParameters(QueryNode &node, const identifier_map_t<BoundParameterData> &values, bool &replaced) {
+	ParsedExpressionIterator::EnumerateQueryNodeChildren(
+	    node, [&](unique_ptr<ParsedExpression> &child) { ReplaceParameters(child, values, replaced); });
+}
+
 void Binder::BindCreateViewInfo(CreateViewInfo &base) {
 	// references to the view's own catalog are resolved through the view's search path anyway - drop the qualifier so
 	// the view keeps working when the database is attached under a different alias
@@ -389,6 +421,15 @@ void Binder::BindCreateViewInfo(CreateViewInfo &base) {
 		}
 		if (t == QueryNodeType::COPY_QUERY_NODE) {
 			throw BinderException("COPY statements are not allowed as CTE bodies inside a VIEW");
+		}
+	}
+	auto parameters = GetParameters();
+	if (parameters) {
+		// the view stores the values of the parameters of a prepared statement
+		bool replaced = false;
+		ReplaceParameters(*base.query->node, parameters->GetParameterData(), replaced);
+		if (replaced) {
+			base.sql = base.ToString();
 		}
 	}
 	optional_ptr<LogicalDependencyList> dependencies;

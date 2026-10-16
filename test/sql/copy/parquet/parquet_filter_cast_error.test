@@ -32,3 +32,24 @@ query I
 SELECT DISTINCT y FROM read_parquet(['{TEST_DIR}/filter_cast_error_a.parquet', '{TEST_DIR}/filter_cast_error_b.parquet'], union_by_name = true) WHERE x = '1';
 ----
 1
+
+# several rows, with another filter that leaves some of them, and an overflow
+statement ok
+COPY (SELECT range::BIGINT AS x, range AS y FROM range(10)) TO '{TEST_DIR}/filter_cast_error_c.parquet';
+
+statement ok
+COPY (SELECT (range * 1000)::BIGINT AS x, range AS y FROM range(10)) TO '{TEST_DIR}/filter_cast_error_d.parquet';
+
+statement ok
+COPY (SELECT range::TINYINT AS x, range AS y FROM range(10)) TO '{TEST_DIR}/filter_cast_error_e.parquet';
+
+statement error
+SELECT y FROM read_parquet(['{TEST_DIR}/filter_cast_error_e.parquet', '{TEST_DIR}/filter_cast_error_d.parquet']) WHERE y > 3 AND x = 1;
+----
+<REGEX>:Conversion Error: Error while reading file ".*filter_cast_error_d.parquet": failed to cast column "x" from type BIGINT to TINYINT.*out of range.*union_by_name.*
+
+query I
+SELECT y FROM read_parquet(['{TEST_DIR}/filter_cast_error_e.parquet', '{TEST_DIR}/filter_cast_error_c.parquet']) WHERE y > 3 AND x = 5 ORDER BY ALL;
+----
+5
+5

@@ -121,15 +121,19 @@ TEST_CASE("Arrow filter pushdown - filters kept above the scan next to an IN lis
 	    "SELECT name, flag, count(*) FROM %s WHERE flag < 1 AND name IN ('VPG', 'ISUZU', 'SMART', 'LUCID', 'LOTUS') "
 	    "GROUP BY ALL ORDER BY ALL",
 	    "SELECT * FROM %s WHERE flag < 1 AND name IN ('VPG', 'ISUZU', 'SMART', 'LUCID', 'LOTUS') ORDER BY ALL LIMIT 3"};
-	for (auto &query : queries) {
-		INFO(query);
-		auto factory = MakeArrowFactory(con, "SELECT * FROM src", true);
-		con.TableFunction("arrow_scan", {}, {}, ArrowTestHelper::ConstructArrowScan(*factory))
-		    ->CreateView("data", true, true);
-		auto result = con.Query(StringUtil::Format(query, "data"));
-		REQUIRE(!result->HasError());
-		auto expected = con.Query(StringUtil::Format(query, "src"));
-		REQUIRE(!expected->HasError());
-		REQUIRE(result->ToString() == expected->ToString());
+	// without unused_columns, a scan of every column has an empty projection list
+	for (auto disabled_optimizers : {"", "unused_columns"}) {
+		REQUIRE(!con.Query(StringUtil::Format("SET disabled_optimizers = '%s'", disabled_optimizers))->HasError());
+		for (auto &query : queries) {
+			INFO(query << " without " << disabled_optimizers);
+			auto factory = MakeArrowFactory(con, "SELECT * FROM src", true);
+			con.TableFunction("arrow_scan", {}, {}, ArrowTestHelper::ConstructArrowScan(*factory))
+			    ->CreateView("data", true, true);
+			auto result = con.Query(StringUtil::Format(query, "data"));
+			REQUIRE(!result->HasError());
+			auto expected = con.Query(StringUtil::Format(query, "src"));
+			REQUIRE(!expected->HasError());
+			REQUIRE(result->Equals(*expected));
+		}
 	}
 }

@@ -1,0 +1,102 @@
+# name: test/sql/upsert/upsert_by_name_omitted_columns.test
+# description: INSERT BY NAME with conflict handling fills the columns the SELECT omits, as without it
+# group: [upsert]
+
+statement ok
+CREATE TABLE d1 (k INTEGER PRIMARY KEY, a INTEGER, b INTEGER);
+
+statement ok
+INSERT INTO d1 VALUES (1, 1, 1);
+
+statement ok
+INSERT INTO d1 BY NAME (SELECT 1 AS k, 2 AS a) ON CONFLICT DO UPDATE SET b = EXCLUDED.b;
+
+query III
+SELECT * FROM d1;
+----
+1	1	NULL
+
+statement ok
+INSERT INTO d1 BY NAME (SELECT 3 AS a, 2 AS k) ON CONFLICT DO UPDATE SET a = EXCLUDED.a;
+
+query III
+SELECT * FROM d1 ORDER BY k;
+----
+1	1	NULL
+2	3	NULL
+
+statement ok
+CREATE SEQUENCE sq;
+
+statement ok
+CREATE TABLE t2 (k INTEGER PRIMARY KEY DEFAULT nextval('sq'), a INTEGER, b INTEGER DEFAULT 9);
+
+statement ok
+INSERT INTO t2 BY NAME (SELECT 5 AS a);
+
+statement ok
+INSERT INTO t2 BY NAME (SELECT 6 AS a) ON CONFLICT DO NOTHING;
+
+statement ok
+INSERT INTO t2 BY NAME (SELECT 6 AS a) ON CONFLICT (k) DO NOTHING;
+
+statement ok
+INSERT OR IGNORE INTO t2 BY NAME (SELECT 7 AS a);
+
+query III
+SELECT * FROM t2 ORDER BY k;
+----
+1	5	9
+2	6	9
+3	6	9
+4	7	9
+
+# a replace changes the columns the SELECT names, and keeps the others
+statement ok
+UPDATE t2 SET b = 10 WHERE k = 1;
+
+statement ok
+INSERT OR REPLACE INTO t2 BY NAME (SELECT 1 AS k, 50 AS a);
+
+query III
+SELECT * FROM t2 WHERE k = 1;
+----
+1	50	10
+
+# a name twice, or a generated column, is an error as in a column list
+statement error
+INSERT INTO d1 BY NAME (SELECT 1 AS k, 2 AS a, 3 AS a) ON CONFLICT DO NOTHING;
+----
+Duplicate column name
+
+statement ok
+CREATE TABLE g (k INTEGER PRIMARY KEY, a INTEGER, c INTEGER AS (a + 1));
+
+statement error
+INSERT INTO g BY NAME (SELECT 1 AS k, 2 AS a, 5 AS c) ON CONFLICT DO NOTHING;
+----
+generated column
+
+# a name that is not a column of the table is still an error
+statement error
+INSERT INTO d1 BY NAME (SELECT 1 AS k, 2 AS zz) ON CONFLICT DO NOTHING;
+----
+does not have a column with name "zz"
+
+# also in a prepared statement, where the omitted column gets its default
+statement ok
+CREATE TABLE d3 (k INTEGER PRIMARY KEY, a INTEGER, b INTEGER DEFAULT 7);
+
+statement ok
+PREPARE upsert AS INSERT INTO d3 BY NAME (SELECT $1::INTEGER AS k, $2::INTEGER AS a) ON CONFLICT DO UPDATE SET a = EXCLUDED.a, b = EXCLUDED.b;
+
+statement ok
+EXECUTE upsert(1, 2);
+
+statement ok
+EXECUTE upsert(1, 3);
+
+query III
+SELECT * FROM d3;
+----
+1	3	7

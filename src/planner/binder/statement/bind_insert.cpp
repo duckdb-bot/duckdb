@@ -10,6 +10,7 @@
 #include "duckdb/parser/query_node/select_node.hpp"
 #include "duckdb/parser/tableref/expressionlistref.hpp"
 #include "duckdb/planner/binder.hpp"
+#include "duckdb/parser/tableref/bound_ref_wrapper.hpp"
 #include "duckdb/planner/expression_binder/insert_binder.hpp"
 #include "duckdb/planner/operator/logical_insert.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
@@ -626,6 +627,27 @@ BoundStatement Binder::BindNode(InsertQueryNode &node) {
 	}
 
 	if (node.on_conflict_info) {
+		if (node.column_order == InsertColumnOrder::INSERT_BY_NAME && node.select_statement && node.columns.empty() &&
+		    !node.GetValuesList()) {
+			// the names of the SELECT are the column list, whose omitted columns the MERGE INTO source fills. The
+			// SELECT is bound once, as reading its input can consume it
+			auto select_binder = Binder::CreateBinder(context, this);
+			SubqueryRef select_ref(std::move(node.select_statement), "excluded");
+			auto bound_select = select_binder->Bind(select_ref);
+			node.columns = bound_select.names;
+			node.column_order = InsertColumnOrder::INSERT_BY_POSITION;
+			vector<LogicalIndex> named_column_map;
+			vector<LogicalType> expected_types;
+			physical_index_vector_t<idx_t> column_index_map;
+			BindInsertColumnList(table, node.columns, node.default_values, named_column_map, expected_types,
+			                     column_index_map);
+			MoveCorrelatedExpressions(*select_binder);
+			auto select_node = make_uniq<SelectNode>();
+			select_node->select_list.push_back(make_uniq<StarExpression>());
+			select_node->from_table = make_uniq<BoundRefWrapper>(std::move(bound_select), std::move(select_binder));
+			node.select_statement = make_uniq<SelectStatement>();
+			node.select_statement->node = std::move(select_node);
+		}
 		// generate a MERGE INTO statement and bind it instead
 		auto merge_into = GenerateMergeInto(node, table);
 		return Bind(*merge_into);

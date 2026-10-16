@@ -344,6 +344,8 @@ public:
 public:
 	ParallelTableScanState state;
 	unique_ptr<ScanReadAhead> read_ahead;
+	//! Keeps in-place updates from changing the rows of an index build after they are read
+	unique_ptr<IndexBuildRegistration> index_build;
 
 private:
 	const TableScanBindData &bind_data;
@@ -660,6 +662,15 @@ static unique_ptr<LocalTableFunctionState> TableScanInitLocal(ExecutionContext &
 unique_ptr<GlobalTableFunctionState> DuckTableScanInitGlobal(ClientContext &context, TableFunctionInitInput &input,
                                                              DataTable &storage, const TableScanBindData &bind_data) {
 	auto g_state = make_uniq<DuckTableScanState>(context, input.bind_data.get());
+	if (bind_data.is_create_index) {
+		vector<column_t> columns;
+		for (auto &column_index : input.column_indexes) {
+			if (!column_index.IsVirtualColumn()) {
+				columns.push_back(bind_data.table.GetStorageIndex(column_index).GetPrimaryIndex());
+			}
+		}
+		g_state->index_build = make_uniq<IndexBuildRegistration>(storage.GetDataTableInfo(), std::move(columns));
+	}
 	if (bind_data.order_options) {
 		auto transaction = TransactionData(DuckTransaction::Get(context, storage.GetAttached()));
 		g_state->state.scan_state.reorderer = make_uniq<RowGroupReorderer>(*bind_data.order_options, transaction);
@@ -961,8 +972,8 @@ unique_ptr<GlobalTableFunctionState> TableScanInitGlobal(ClientContext &context,
 	auto &duck_table = bind_data.table.Cast<DuckTableEntry>();
 	auto &storage = duck_table.GetStorage();
 
-	// Can't index scan without filters.
-	if (!input.filters) {
+	// Can't index scan without filters, and an index build reads every row.
+	if (!input.filters || bind_data.is_create_index) {
 		return DuckTableScanInitGlobal(context, input, storage, bind_data);
 	}
 

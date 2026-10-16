@@ -198,3 +198,39 @@ TEST_CASE("Test a zero-row streaming pending query stepped to ready has complete
 	REQUIRE_NO_FAIL(tester.Query("SELECT 42"));
 	REQUIRE_NO_FAIL(tester.Query("COMMIT"));
 }
+
+TEST_CASE("Test a pending update planned before an index on its column was created", "[capi]") {
+	CAPITester tester;
+	CAPIPrepared prepared;
+	CAPIPending pending;
+
+	REQUIRE(tester.OpenDatabase(nullptr));
+	// Without worker threads the update only runs when it is executed
+	REQUIRE_NO_FAIL(tester.Query("SET threads=1"));
+	REQUIRE_NO_FAIL(tester.Query("CREATE TABLE t (pad VARCHAR, id INTEGER)"));
+	REQUIRE_NO_FAIL(tester.Query("INSERT INTO t SELECT 'x', i FROM range(1, 10001) t(i)"));
+	// Planned while the column has no index, so the update writes in place
+	REQUIRE(prepared.Prepare(tester, "UPDATE t SET id = 30000000 WHERE id = 5"));
+	REQUIRE(pending.Pending(prepared));
+
+	duckdb_connection index_connection;
+	REQUIRE(duckdb_connect(tester.database, &index_connection) == DuckDBSuccess);
+	CAPIResult index_result;
+	index_result.Query(index_connection, "CREATE INDEX idx ON t (id)");
+	REQUIRE(!index_result.HasError());
+	duckdb_disconnect(&index_connection);
+
+	auto result = pending.Execute();
+	REQUIRE(result);
+	REQUIRE(result->HasError());
+	REQUIRE(string(result->ErrorMessage()).find("Transaction conflict") != string::npos);
+
+	// The index finds the rows that a scan finds
+	for (string key : {"5", "30000000"}) {
+		auto lookup = tester.Query("SELECT count(*) FROM t WHERE id = " + key);
+		auto scan = tester.Query("SELECT count(*) FROM t WHERE id::VARCHAR = '" + key + "'");
+		REQUIRE_NO_FAIL(*lookup);
+		REQUIRE_NO_FAIL(*scan);
+		REQUIRE(lookup->Fetch<int64_t>(0, 0) == scan->Fetch<int64_t>(0, 0));
+	}
+}

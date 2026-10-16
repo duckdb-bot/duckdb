@@ -560,8 +560,10 @@ bool ConvertFloatingToBigint(REAL_T value, hugeint_t &result) {
 	if (negative) {
 		value = -value;
 	}
-	result.lower = (uint64_t)fmod(value, REAL_T(NumericLimits<uint64_t>::Maximum()));
-	result.upper = (int64_t)(value / REAL_T(NumericLimits<uint64_t>::Maximum()));
+	// 2^64, which REAL_T holds exactly, unlike 2^64 - 1
+	const auto limb = std::ldexp(REAL_T(1), 64);
+	result.lower = (uint64_t)std::fmod(value, limb);
+	result.upper = (int64_t)(value / limb);
 	if (negative) {
 		Hugeint::NegateInPlace(result);
 	}

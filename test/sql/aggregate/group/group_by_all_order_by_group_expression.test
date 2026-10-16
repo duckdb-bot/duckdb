@@ -35,7 +35,7 @@ ABE	2
 ABD	2
 ABC	2
 
-# an ORDER BY entry that is the SELECT entry itself, next to one that uses it
+# multiple ORDER BY expressions
 query II
 SELECT name, sum(x) FROM df GROUP BY ALL ORDER BY name[1], lower(name) DESC;
 ----

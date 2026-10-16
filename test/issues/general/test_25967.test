@@ -1,0 +1,80 @@
+# name: test/issues/general/test_25967.test
+# description: JSON nested too deeply to convert to VARIANT raises an error, and a deep VARIANT renders as SQL in one pass
+# group: [general]
+
+require json
+
+# deep enough to overflow the stack in a recursive conversion
+statement error
+SELECT variant_typeof((repeat('[', 40000) || repeat(']', 40000))::JSON::VARIANT);
+----
+Conversion Error: Can't convert JSON nested deeper than 128 levels to VARIANT
+
+query I
+SELECT TRY_CAST((repeat('[', 40000) || repeat(']', 40000))::JSON AS VARIANT) IS NULL;
+----
+true
+
+# the JSON itself is unaffected
+query I
+SELECT json_valid(repeat('[', 40000) || repeat(']', 40000));
+----
+true
+
+statement ok
+CREATE TABLE docs AS SELECT i, (repeat('[', i) || repeat(']', i))::JSON AS arr,
+    (repeat('{"a": ', i) || '1' || repeat('}', i))::JSON AS obj FROM range(126, 132) t(i);
+
+query III
+SELECT i, TRY_CAST(arr AS VARIANT) IS NULL, TRY_CAST(obj AS VARIANT) IS NULL FROM docs ORDER BY i;
+----
+126	false	false
+127	false	false
+128	false	false
+129	true	true
+130	true	true
+131	true	true
+
+query II
+SELECT variant_typeof(arr::VARIANT), variant_typeof(obj::VARIANT) FROM docs WHERE i = 128;
+----
+ARRAY(1)	OBJECT(a)
+
+statement error
+SELECT obj::VARIANT FROM docs WHERE i = 129;
+----
+Conversion Error: Can't convert JSON nested deeper than 128 levels to VARIANT
+
+# inside a STRUCT or a LIST, TRY_CAST makes only the deep document NULL
+query II
+SELECT TRY_CAST({'a': arr, 'b': 1} AS VARIANT), TRY_CAST([arr, '[1]'::JSON] AS VARIANT) FROM docs WHERE i = 129;
+----
+{'a': NULL, 'b': 1}	[NULL, [1]]
+
+statement error
+SELECT [arr]::VARIANT FROM docs WHERE i = 130;
+----
+Conversion Error: Can't convert JSON nested deeper than 128 levels to VARIANT
+
+# an UPDATE folds the cast into a constant, whose name renders the whole VARIANT as SQL
+statement ok
+CREATE TABLE t (id INTEGER, doc VARIANT);
+
+statement ok
+INSERT INTO t VALUES (1, NULL), (2, (repeat('[' || array_to_string(range(50), ', ') || ', {"k": "it''s", "n": null}, ', 100) || '[]' ||
+    repeat(']', 100))::JSON);
+
+statement ok
+UPDATE t SET doc = (repeat('[' || array_to_string(range(50), ', ') || ', {"k": "it''s", "n": null}, ', 100) || '[]' ||
+    repeat(']', 100))::JSON WHERE id = 1;
+
+query III
+SELECT variant_typeof(a.doc), length(a.doc::JSON::VARCHAR), a.doc::JSON::VARCHAR = b.doc::JSON::VARCHAR
+FROM t a, t b WHERE a.id = 1 AND b.id = 2;
+----
+ARRAY(52)	16402	true
+
+statement error
+UPDATE t SET doc = (repeat('[', 129) || repeat(']', 129))::JSON WHERE id = 1;
+----
+Conversion Error: Can't convert JSON nested deeper than 128 levels to VARIANT

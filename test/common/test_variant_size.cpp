@@ -26,7 +26,7 @@ data_ptr_t ReallocateSmallVariantBuffer(PrivateAllocatorData *data, data_ptr_t p
 struct VariantSizeData {
 	VariantSizeData()
 	    : output(LogicalType::VARIANT(), 1), dictionary(Allocator::DefaultAllocator()), variant_data(output),
-	      result(variant_data, offsets, dictionary, keys_selvec, Allocator::DefaultAllocator()) {
+	      result(variant_data, offsets, dictionary, keys_selvec, Allocator::DefaultAllocator(), parameters) {
 		offsets.Initialize(Allocator::DefaultAllocator(),
 		                   {LogicalType::UINTEGER, LogicalType::UINTEGER, LogicalType::UINTEGER, LogicalType::UINTEGER},
 		                   1);
@@ -49,6 +49,7 @@ struct VariantSizeData {
 	SelectionVector keys_selvec;
 	OrderedOwningStringMap<uint32_t> dictionary;
 	VariantVectorData variant_data;
+	CastParameters parameters;
 	duckdb::variant::ToVariantGlobalResultData result;
 };
 

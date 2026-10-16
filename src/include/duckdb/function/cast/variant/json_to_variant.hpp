@@ -244,6 +244,43 @@ static bool ConvertJSON(yyjson_val *val, ToVariantGlobalResultData &result, idx_
 	}
 }
 
+//! Whether arrays and objects nest deeper than MAX_NESTING_DEPTH, found without recursion
+static bool JSONExceedsNestingDepth(yyjson_val *root) {
+	// the containers to visit, with the number of containers they are nested in
+	vector<pair<yyjson_val *, idx_t>> pending;
+	if (unsafe_yyjson_is_ctn(root)) {
+		pending.emplace_back(root, 1);
+	}
+	while (!pending.empty()) {
+		auto entry = pending.back();
+		pending.pop_back();
+		if (entry.second > VariantUtils::MAX_NESTING_DEPTH) {
+			return true;
+		}
+		auto val = entry.first;
+		if (unsafe_yyjson_is_arr(val)) {
+			yyjson_arr_iter iter;
+			yyjson_arr_iter_init(val, &iter);
+			while (yyjson_arr_iter_has_next(&iter)) {
+				auto child = yyjson_arr_iter_next(&iter);
+				if (unsafe_yyjson_is_ctn(child)) {
+					pending.emplace_back(child, entry.second + 1);
+				}
+			}
+		} else {
+			yyjson_obj_iter iter;
+			yyjson_obj_iter_init(val, &iter);
+			while (yyjson_obj_iter_has_next(&iter)) {
+				auto child = yyjson_obj_iter_get_val(yyjson_obj_iter_next(&iter));
+				if (unsafe_yyjson_is_ctn(child)) {
+					pending.emplace_back(child, entry.second + 1);
+				}
+			}
+		}
+	}
+	return false;
+}
+
 template <bool WRITE_DATA, bool IGNORE_NULLS>
 bool ConvertJSONToVariant(ToVariantSourceData &source, ToVariantGlobalResultData &result, idx_t count,
                           optional_ptr<const SelectionVector> selvec,
@@ -289,6 +326,21 @@ bool ConvertJSONToVariant(ToVariantSourceData &source, ToVariantGlobalResultData
 			continue;
 		}
 		auto *root = yyjson_doc_get_root(doc);
+		// a level takes two brackets, so a document of up to twice MAX_NESTING_DEPTH bytes is never too deep
+		if (val.GetSize() > 2 * VariantUtils::MAX_NESTING_DEPTH && JSONExceedsNestingDepth(root)) {
+			json_allocator.Reset();
+			// the conversion recurses once per level, so a deeper document could overflow the stack
+			HandleCastError::AssignError(
+			    StringUtil::Format("Can't convert JSON nested deeper than %d levels to VARIANT",
+			                       VariantUtils::MAX_NESTING_DEPTH),
+			    result.parameters);
+			result.all_converted = false;
+			if (!IGNORE_NULLS) {
+				HandleVariantNull<WRITE_DATA>(result, result_index, values_offset_data, blob_offset_data[result_index],
+				                              values_index_selvec, i, is_root);
+			}
+			continue;
+		}
 
 		if (!ConvertJSON<WRITE_DATA, IGNORE_NULLS>(root, result, result_index, is_root)) {
 			return false;

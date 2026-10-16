@@ -1,0 +1,20 @@
+# name: benchmark/micro/variant/variant_update_nested_constant.benchmark
+# description: UPDATE a VARIANT column to a nested JSON constant, which the optimizer names by rendering it as SQL
+# group: [variant]
+
+name variant_update_nested_constant
+group variant
+
+require json
+
+load
+CREATE TABLE t (id INTEGER, doc VARIANT);
+INSERT INTO t VALUES (1, NULL);
+
+run
+UPDATE t SET doc = (repeat('[' || array_to_string(range(200), ', ') || ', ', 32) || '[]' || repeat(']', 32))::JSON WHERE id = 1;
+
+result_query I
+SELECT variant_typeof(doc) FROM t
+----
+ARRAY(201)

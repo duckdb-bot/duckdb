@@ -43,6 +43,11 @@ static void GetJSONKeysFunctionsInternal(ScalarFunctionSet &set, const LogicalTy
 	                         JSONFunctionLocalState::Init);
 	unary_fun.GetSignature().AddParameter("json", input_type);
 	set.AddFunction(unary_fun);
+	ScalarFunction index_fun({}, LogicalType::LIST(LogicalType::VARCHAR), BinaryJSONKeysFunction,
+	                         JSONReadFunctionData::Bind, nullptr, JSONFunctionLocalState::Init);
+	index_fun.GetSignature().AddParameter("json", input_type).AddParameter("index", LogicalType::BIGINT);
+	index_fun.SetResolveTypesCallback(JSONReadFunctionData::ResolveTypes);
+	set.AddFunction(index_fun);
 	ScalarFunction path_fun({}, LogicalType::LIST(LogicalType::VARCHAR), BinaryJSONKeysFunction,
 	                        JSONReadFunctionData::Bind, nullptr, JSONFunctionLocalState::Init);
 	path_fun.GetSignature().AddParameter("json", input_type).AddParameter("path", LogicalType::VARCHAR);

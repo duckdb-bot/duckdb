@@ -1,0 +1,32 @@
+# name: test/sql/json/scalar/test_json_path_index.test
+# description: JSON functions with a path also take an array index, as json_extract does
+# group: [scalar]
+
+require json
+
+query IIII
+SELECT json_type('[10,20,30]'::JSON, 0), json_exists('[1,2,3]'::JSON, 0), json_array_length('[[1,2],3]'::JSON, 0), json_keys('[{"a":1,"b":2}]'::JSON, 0);
+----
+UBIGINT	true	2	[a, b]
+
+# the same as the JSONPath, also from the end and out of range
+query IIII
+SELECT json_type(j, 1) = json_type(j, '$[1]'), json_type(j, -1), json_exists(j, 5), json_exists(j, -1)
+FROM (SELECT '[10,"x",[1]]'::JSON AS j);
+----
+true	ARRAY	false	true
+
+query IIII
+SELECT json_type(j, i), json_exists(j, i)::VARCHAR, json_array_length(j, i), json_keys(j, i)
+FROM (VALUES ('[[1,2],{"k":1}]', 0), ('[[1,2],{"k":1}]', 1), ('[1]', 3), (NULL, 0), ('[1]', NULL)) t(j, i) ORDER BY ALL;
+----
+ARRAY	true	2	[]
+OBJECT	true	0	[k]
+NULL	false	NULL	NULL
+NULL	NULL	NULL	NULL
+NULL	NULL	NULL	NULL
+
+query I
+SELECT json_type('{"a":1}', 0);
+----
+NULL

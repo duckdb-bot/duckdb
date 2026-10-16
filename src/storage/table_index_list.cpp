@@ -345,6 +345,12 @@ shared_ptr<IndexEntry> TableIndexList::FindEntry(const Identifier &name) const {
 		if (entry->GetName() != name) {
 			continue;
 		}
+		if (entry->IsStorageMissing()) {
+			throw InvalidInputException("Cannot use index %s, because the database file holds no data for it (as "
+			                            "written by COPY FROM DATABASE in DuckDB 1.1). Drop the index and create it "
+			                            "again.",
+			                            name);
+		}
 		if (entry->GetBindState() != IndexBindState::BOUND) {
 			throw InternalException("TableIndexList::FindEntry cannot return an unbound index");
 		}

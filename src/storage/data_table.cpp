@@ -898,6 +898,12 @@ string DataTable::TableModification() const {
 
 void DataTable::InitializeLocalAppend(LocalAppendState &state, DuckTableEntry &table, ClientContext &context,
                                       const vector<unique_ptr<BoundConstraint>> &bound_constraints) {
+	info->GetIndexes().ThrowIfStorageMissing(*info);
+	InitializeLocalAppendInternal(state, table, context, bound_constraints);
+}
+
+void DataTable::InitializeLocalAppendInternal(LocalAppendState &state, DuckTableEntry &table, ClientContext &context,
+                                              const vector<unique_ptr<BoundConstraint>> &bound_constraints) {
 	if (!IsMainTable()) {
 		throw TransactionException("Transaction conflict: attempting to insert into table \"%s\" but it has been %s by "
 		                           "a different transaction",
@@ -989,7 +995,8 @@ void DataTable::LocalWALAppend(DuckTableEntry &table, ClientContext &context, Da
                                const vector<unique_ptr<BoundConstraint>> &bound_constraints) {
 	LocalAppendState append_state;
 	auto &storage = table.GetStorage();
-	storage.InitializeLocalAppend(append_state, table, context, bound_constraints);
+	// the replayed rows were checked when they were first written, also against an index without stored data
+	storage.InitializeLocalAppendInternal(append_state, table, context, bound_constraints);
 
 	storage.LocalAppend(append_state, table, context, chunk, true);
 	append_state.storage->index_append_mode = IndexAppendMode::INSERT_DUPLICATES;

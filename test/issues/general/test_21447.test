@@ -33,6 +33,11 @@ DELETE FROM db113.test;
 ----
 Cannot modify table "test"
 
+statement error
+SELECT index_key({'catalog': 'db113', 'table': 'test'}, 'idx_id_date', 'id1', DATE '2020-01-02');
+----
+Cannot use index "idx_id_date", because the database file holds no data for it
+
 # a checkpoint keeps the index without data
 statement ok
 CREATE TABLE db113.other AS SELECT 1 AS x;

@@ -294,6 +294,9 @@ public:
 	vector<PartitionStatistics> GetPartitionStats(ClientContext &context);
 
 private:
+	//! Initializes an append to the transaction-local storage, without refusing a table whose index has no data
+	void InitializeLocalAppendInternal(LocalAppendState &state, DuckTableEntry &table, ClientContext &context,
+	                                   const vector<unique_ptr<BoundConstraint>> &bound_constraints);
 	//! Verify the new added constraints against current persistent&local data
 	void VerifyNewConstraint(LocalStorage &local_storage, DataTable &parent, const BoundConstraint &constraint);
 

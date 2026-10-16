@@ -75,6 +75,10 @@ unique_ptr<BoundIndex> UnboundIndex::Bind(IndexBinder &binder, const vector<Logi
 
 void UnboundIndex::BufferChunk(DataChunk &table_chunk, Vector &row_ids, const BufferedIndexReplay replay_type) {
 	D_ASSERT(!column_ids.empty());
+	if (storage_missing) {
+		// the index is never bound, so its replays would never be applied
+		return;
+	}
 
 	// table_chunk is in physical table layout: data[j] holds the data of physical column j.
 	// Reference this index's own columns directly by their physical offset.

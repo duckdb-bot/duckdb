@@ -1,0 +1,98 @@
+# name: test/sql/types/variant/variant_list_in_lambda_and_unnest.test
+# description: A VARIANT that holds a list can be the list of a lambda function and of UNNEST
+# group: [variant]
+
+require json
+
+statement ok
+CREATE TABLE t (data VARIANT);
+
+statement ok
+INSERT INTO t VALUES ('{"items": [{"category": "electronics", "label": "A1"}, {"category": "furniture", "label": "B2"}]}'::JSON::VARIANT);
+
+query I
+SELECT list_transform(data.items, lambda x: x.label::VARCHAR) FROM t;
+----
+[A1, B2]
+
+query I
+SELECT len(list_filter(data.items, lambda x: x.category::VARCHAR = 'electronics')) FROM t;
+----
+1
+
+query I
+SELECT [x.label::VARCHAR FOR x IN data.items] FROM t;
+----
+[A1, B2]
+
+query I
+SELECT list_reduce(list_transform(data.items, lambda x: x.label::VARCHAR), lambda a, b: a || b) FROM t;
+----
+A1B2
+
+query I
+SELECT unnest(data.items).category::VARCHAR FROM t ORDER BY ALL;
+----
+electronics
+furniture
+
+query I
+SELECT u.category::VARCHAR FROM t, UNNEST(data.items) AS u ORDER BY ALL;
+----
+electronics
+furniture
+
+# a bare VARIANT column in a LATERAL UNNEST, with NULL and empty lists, in both forms of the unnest rewriter
+foreach delim_join_as_cte true false
+
+statement ok
+SET delim_join_as_cte = ${delim_join_as_cte};
+
+query I
+SELECT x FROM (VALUES ([1, 2]::VARIANT), (NULL), ([]::INTEGER[]::VARIANT)) t(v), LATERAL UNNEST(v) u(x) ORDER BY ALL;
+----
+1
+2
+
+statement error
+SELECT x FROM (VALUES (42::VARIANT)) t(v), LATERAL UNNEST(v) u(x);
+----
+can't convert to 'VARIANT[]'
+
+endloop
+
+statement ok
+RESET delim_join_as_cte;
+
+query II
+SELECT list_transform(v, lambda x, i: x::INTEGER * i), [x::INTEGER FOR x IN v IF x::INTEGER > 1] FROM (VALUES ([1, 2, 3]::VARIANT)) t(v);
+----
+[1, 4, 9]	[2, 3]
+
+query I
+SELECT list_reduce(v, lambda a, b: a::INTEGER + b::INTEGER, 10) FROM (VALUES ([1, 2, 3]::VARIANT), ([]::INTEGER[]::VARIANT)) t(v) ORDER BY ALL;
+----
+10
+16
+
+query I
+SELECT list_transform(v, lambda x: x) FROM (VALUES (NULL::VARIANT), ([]::INTEGER[]::VARIANT)) t(v) ORDER BY ALL;
+----
+[]
+NULL
+
+# a VARIANT that holds no list is an error at run time
+statement error
+SELECT unnest(data) FROM t;
+----
+can't convert to 'VARIANT[]'
+
+statement error
+SELECT list_transform(data, lambda x: x) FROM t;
+----
+can't convert to 'VARIANT[]'
+
+statement error
+SELECT x FROM (VALUES (42::VARIANT)) t(v), LATERAL UNNEST(v) u(x);
+----
+can't convert to 'VARIANT[]'

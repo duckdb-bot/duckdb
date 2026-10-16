@@ -452,6 +452,12 @@ BindResult ExpressionBinder::BindLambdaFunction(FunctionExpression &function, Sc
 	}
 
 	if (lambda_expr_idx == 1) {
+		if (bound_children[0]->GetReturnType().id() == LogicalTypeId::VARIANT) {
+			// the type of a VARIANT is only known at run time, so read it as a list of VARIANT
+			bound_children[0] = BoundCastExpression::AddCastToType(context, std::move(bound_children[0]),
+			                                                       LogicalType::LIST(LogicalType::VARIANT()));
+			function_child_types[0] = bound_children[0]->GetReturnType();
+		}
 		// get the logical type of the children of the list
 		auto &list_child = *bound_children[0];
 		if (list_child.GetReturnType().id() != LogicalTypeId::LIST &&

@@ -494,13 +494,13 @@ unique_ptr<MergeIntoStatement> Binder::GenerateMergeInto(InsertQueryNode &node, 
 	// set up the data source
 	unique_ptr<TableRef> source;
 	if (node.select_statement && node.column_order == InsertColumnOrder::INSERT_BY_POSITION && !values_list) {
-		// bind the SELECT once, so that its count of columns is checked and its bind time effects happen once
+		// bind the SELECT once, to check its columns and keep its bind time effects single
 		auto select_binder = Binder::CreateBinder(context, this);
 		SubqueryRef select_ref(std::move(node.select_statement), "excluded");
 		auto bound_select = select_binder->Bind(select_ref);
 		auto expected_columns = node.columns.empty() ? columns.PhysicalColumnCount() : node.columns.size();
 		CheckInsertColumnCountMismatch(expected_columns, bound_select.types.size(), !node.columns.empty(), table.name);
-		// the aliases below are set on a parsed subquery around it
+		// a parsed subquery around it takes the column aliases
 		auto select_stmt = make_uniq<SelectStatement>();
 		auto select_node = make_uniq<SelectNode>();
 		select_node->select_list.push_back(make_uniq<StarExpression>());

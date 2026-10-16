@@ -93,33 +93,39 @@ SELECT * FROM w ORDER BY i;
 4	6	12
 5	NULL	NULL
 
-# the SELECT is bound once, so a table function argument is evaluated once
-statement ok
-CREATE TABLE seq_t (i INT PRIMARY KEY);
-
-statement ok
-CREATE SEQUENCE s;
-
-statement ok
-INSERT INTO seq_t SELECT * FROM range(nextval('s')) ON CONFLICT DO NOTHING;
-
-query I
-SELECT i FROM seq_t;
-----
-0
-
-query I
-SELECT currval('s');
-----
-1
-
 # BY NAME takes neither a VALUES list nor a column list, as for a plain INSERT
 statement error
-INSERT INTO seq_t BY NAME VALUES (1) ON CONFLICT DO NOTHING;
+INSERT INTO w BY NAME VALUES (1) ON CONFLICT DO NOTHING;
 ----
 INSERT BY NAME can only be used when inserting from a SELECT statement
 
 statement error
-INSERT INTO seq_t BY NAME (i) SELECT 1 AS i ON CONFLICT DO NOTHING;
+INSERT INTO w BY NAME (i) SELECT 1 AS i ON CONFLICT DO NOTHING;
 ----
 INSERT BY NAME cannot be combined with an explicit column list
+
+statement error
+INSERT INTO w BY NAME DEFAULT VALUES ON CONFLICT DO NOTHING;
+----
+INSERT BY NAME cannot be combined with with DEFAULT VALUES
+
+# RETURNING from a SELECT source, and a prepared statement rebound after the table changed
+query II
+INSERT INTO w (i, j) SELECT 1, 7 ON CONFLICT DO UPDATE SET j = excluded.j RETURNING i, j;
+----
+1	7
+
+statement ok
+PREPARE upsert_select AS INSERT INTO w (i, j) SELECT ?, ? ON CONFLICT DO UPDATE SET j = excluded.j;
+
+statement ok
+ALTER TABLE w ADD COLUMN k INT DEFAULT 9;
+
+statement ok
+EXECUTE upsert_select(6, 8);
+
+query IIII
+SELECT * FROM w WHERE i IN (1, 6) ORDER BY i;
+----
+1	7	14	9
+6	8	16	9

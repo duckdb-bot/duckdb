@@ -15,3 +15,13 @@ query III
 select relname, attname, attnum from pg_attribute join pg_class on (pg_attribute.attrelid=pg_class.oid) where relname='integers' and attnum>=0;
 ----
 integers	i	1
+
+# a generated column is virtual
+statement ok
+CREATE TABLE generated(id INTEGER, id2 INTEGER GENERATED ALWAYS AS (id + 1));
+
+query II
+SELECT attname, attgenerated FROM pg_attribute JOIN pg_class ON (pg_attribute.attrelid = pg_class.oid) WHERE relname = 'generated' ORDER BY attnum;
+----
+id	(empty)
+id2	v

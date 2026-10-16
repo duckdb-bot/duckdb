@@ -821,3 +821,67 @@ TEST_CASE("Test C-API Arrow string views retain data after aligned scratch is re
 		}
 	}
 }
+
+//! Returns the value of a key in Arrow schema metadata, which holds an int32 count and then length prefixed keys and
+//! values
+static string GetArrowMetadataValue(const char *metadata, const string &key) {
+	if (!metadata) {
+		return string();
+	}
+	int32_t count;
+	memcpy(&count, metadata, sizeof(int32_t));
+	auto pos = metadata + sizeof(int32_t);
+	for (int32_t i = 0; i < count; i++) {
+		int32_t length;
+		memcpy(&length, pos, sizeof(int32_t));
+		string entry_key(pos + sizeof(int32_t), length);
+		pos += sizeof(int32_t) + length;
+		memcpy(&length, pos, sizeof(int32_t));
+		string entry_value(pos + sizeof(int32_t), length);
+		pos += sizeof(int32_t) + length;
+		if (entry_key == key) {
+			return entry_value;
+		}
+	}
+	return string();
+}
+
+//! Runs the query and exports the Arrow schema of its single column, returning the extension metadata of the column
+static string GetGeometryExtensionMetadata(duckdb_connection connection, const char *query) {
+	duckdb_result result;
+	REQUIRE(duckdb_query(connection, query, &result) == DuckDBSuccess);
+	auto options = duckdb_result_get_arrow_options(&result);
+	auto type = duckdb_column_logical_type(&result, 0);
+	const char *names[] = {"g"};
+	ArrowSchemaWrapper schema;
+	auto error = duckdb_to_arrow_schema(options, &type, names, 1, &schema.arrow_schema);
+	string metadata;
+	if (error) {
+		metadata = string("error ") + duckdb_error_data_message(error);
+		duckdb_destroy_error_data(&error);
+	} else {
+		REQUIRE(schema.arrow_schema.n_children == 1);
+		auto &child = *schema.arrow_schema.children[0];
+		REQUIRE(GetArrowMetadataValue(child.metadata, "ARROW:extension:name") == "geoarrow.wkb");
+		metadata = GetArrowMetadataValue(child.metadata, "ARROW:extension:metadata");
+	}
+	duckdb_destroy_logical_type(&type);
+	duckdb_destroy_arrow_options(&options);
+	duckdb_destroy_result(&result);
+	return metadata;
+}
+
+TEST_CASE("Test C-API Arrow schema export of a GEOMETRY whose CRS is an authority code", "[capi][arrow]") {
+	CAPITester tester;
+	REQUIRE(tester.OpenDatabase(nullptr));
+	auto query = "SELECT ST_SetCRS('POINT(1 2)'::GEOMETRY, 'OGC:CRS84') AS g";
+
+	// the schema is exported after the query and its transaction ended
+	auto outside_transaction = GetGeometryExtensionMetadata(tester.connection, query);
+	REQUIRE_NO_FAIL(tester.Query("BEGIN TRANSACTION"));
+	auto inside_transaction = GetGeometryExtensionMetadata(tester.connection, query);
+	REQUIRE_NO_FAIL(tester.Query("COMMIT"));
+
+	REQUIRE(StringUtil::Contains(inside_transaction, "\"crs\""));
+	REQUIRE(outside_transaction == inside_transaction);
+}

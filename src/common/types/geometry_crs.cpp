@@ -7,6 +7,8 @@
 #include "duckdb/common/array.hpp"
 #include "duckdb/common/helper.hpp"
 #include "duckdb/catalog/catalog.hpp"
+#include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
+#include "duckdb/main/client_context.hpp"
 
 #include "duckdb/common/json_document.hpp"
 #include "duckdb/catalog/catalog_entry/coordinate_system_catalog_entry.hpp"
@@ -665,8 +667,18 @@ unique_ptr<CoordinateReferenceSystem> CoordinateReferenceSystem::TryConvert(Clie
 	}
 
 	auto &catalog = Catalog::GetSystemCatalog(context);
-	auto entry = catalog.GetEntry(context, CatalogType::COORDINATE_SYSTEM_ENTRY, Identifier::DefaultSchema(),
-	                              Identifier(source_crs.GetIdentifier()), OnEntryNotFound::RETURN_NULL);
+	optional_ptr<CatalogEntry> entry;
+	if (context.transaction.HasActiveTransaction()) {
+		entry = catalog.GetEntry(context, CatalogType::COORDINATE_SYSTEM_ENTRY, Identifier::DefaultSchema(),
+		                         Identifier(source_crs.GetIdentifier()), OnEntryNotFound::RETURN_NULL);
+	} else {
+		// an Arrow schema can be exported after the query and its transaction ended, the coordinate systems are in
+		// the system catalog, which a system transaction reads
+		auto transaction = CatalogTransaction::GetSystemTransaction(*context.db);
+		auto &schema = catalog.GetSchema(transaction, Identifier::DefaultSchema());
+		entry =
+		    schema.GetEntry(transaction, CatalogType::COORDINATE_SYSTEM_ENTRY, Identifier(source_crs.GetIdentifier()));
+	}
 	if (!entry) {
 		return nullptr;
 	}

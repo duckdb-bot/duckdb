@@ -316,14 +316,20 @@ TEST_CASE("Test the instance cache hands out a database that is still open after
 
 		auto reopened = instance_cache.GetOrCreateInstance(path, config, true);
 		REQUIRE(reopened->instance == instance.lock());
-		Connection other(*reopened);
-		auto result = other.Query("SELECT i FROM t");
+		auto result = Connection(*reopened).Query("SELECT i FROM t");
 		REQUIRE(CHECK_COLUMN(result, 0, {42}));
+		result.reset();
 
-		// the same instance until everything that holds it is closed
-		reopened.reset();
+		// a different configuration is still refused, and the same one is still served
+		DBConfig read_only_config;
+		read_only_config.options.access_mode = AccessMode::READ_ONLY;
+		REQUIRE_THROWS(instance_cache.GetOrCreateInstance(path, read_only_config, true));
 		REQUIRE(instance_cache.GetOrCreateInstance(path, config, true)->instance == instance.lock());
+
+		// the instance closes once nothing holds it anymore
+		reopened.reset();
 		con.reset();
+		REQUIRE(instance.expired());
 	}
 	SECTION("An unfinished result keeps the database open") {
 		auto db = instance_cache.GetOrCreateInstance(path, config, true);
@@ -344,10 +350,28 @@ TEST_CASE("Test the instance cache hands out a database that is still open after
 	}
 	SECTION("A closed database is opened again") {
 		auto db = instance_cache.GetOrCreateInstance(path, config, true);
+		REQUIRE_NO_FAIL(Connection(*db).Query("CREATE TABLE t AS SELECT 42 AS i"));
 		weak_ptr<DatabaseInstance> instance = db->instance;
 		db.reset();
 		REQUIRE(instance.expired());
-		REQUIRE(instance_cache.GetOrCreateInstance(path, config, true));
+		auto reopened = instance_cache.GetOrCreateInstance(path, config, true);
+		auto result = Connection(*reopened).Query("SELECT i FROM t");
+		REQUIRE(CHECK_COLUMN(result, 0, {42}));
+	}
+	SECTION("A reopen races with closing the last connection") {
+		for (idx_t i = 0; i < 50; i++) {
+			auto db = instance_cache.GetOrCreateInstance(path, config, true);
+			auto con = make_uniq<Connection>(*db);
+			db.reset();
+			shared_ptr<DuckDB> reopened;
+			std::thread reopener([&]() {
+				DBConfig reopen_config;
+				reopened = instance_cache.GetOrCreateInstance(path, reopen_config, true);
+			});
+			con.reset();
+			reopener.join();
+			REQUIRE_NO_FAIL(Connection(*reopened).Query("SELECT 42"));
+		}
 	}
 	TestDeleteFile(path);
 }

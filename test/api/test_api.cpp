@@ -202,6 +202,7 @@ TEST_CASE("Test the default temp_directory of databases with an extension prefix
 	    {"ducklake:r2://bucket/catalog.ducklake", ".tmp"},
 	    {"ducklake:postgres:dbname=lake", ".tmp"},
 	    {"s3://bucket/file.duckdb", ".tmp"},
+	    {"duckdb:s3://bucket/file.duckdb", ".tmp"},
 	    {"duckdb::memory:", ".tmp"}};
 	for (auto &entry : paths) {
 		config.options.database_path = entry.first;

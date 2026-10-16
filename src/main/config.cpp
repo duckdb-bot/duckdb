@@ -657,7 +657,7 @@ void DBConfig::SetDefaultTempDirectory() {
 		options.temporary_directory = string();
 		return;
 	}
-	// the path and type after opening the database removes the extension prefix
+	// match the prefix handling of opening the database
 	auto path = options.database_path;
 	auto database_type = options.database_type;
 	if (database_type.empty()) {

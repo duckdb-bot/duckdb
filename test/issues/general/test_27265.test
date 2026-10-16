@@ -4,11 +4,12 @@
 
 require json
 
-# the bound list keeps no list_value with a cast for each element
-query II
-SELECT json_serialize_plan('SELECT [1, 2.5, 100.25]', optimize := false) LIKE '%list_value%', json_serialize_plan('SELECT [1, 2.5, 100.25]', optimize := false) LIKE '%__cast%'
+# the bound list is one constant, without a list_value with a cast for each element
+query IIII
+SELECT plan->>'error', plan::VARCHAR LIKE '%list_value%', plan::VARCHAR LIKE '%__cast%', plan::VARCHAR LIKE '%"expression_class":"BOUND_CONSTANT"%'
+FROM (SELECT json_serialize_plan('SELECT [1, 2.5, 100.25]', optimize := false)::JSON AS plan)
 ----
-false	false
+false	false	false	true
 
 query II
 SELECT [1, 2.5, 100.25], typeof([1, 2.5, 100.25])

@@ -413,7 +413,7 @@ struct TransformStackFrame {
 	arena_ptr<TransformResultValue> child_result;
 	//! How much this frame adds to the expression depth while it is on the stack
 	idx_t expression_depth_weight = 0;
-	//! Where the process arena stood when the frame was pushed, it goes back there when the frame is popped
+	//! Position of the process arena to restore when this frame is popped
 	ArenaAllocator::Position process_position;
 };
 

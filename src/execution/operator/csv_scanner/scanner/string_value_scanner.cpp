@@ -589,7 +589,11 @@ void StringValueResult::AddQuotedValue(StringValueResult &result, const idx_t bu
 		result.quoted = false;
 		return;
 	}
-	length--;
+	if (result.buffer_ptr[result.quoted_position + length] ==
+	    result.state_machine.dialect_options.state_machine_options.quote.GetValue()) {
+		// remove the closing quote, which text can follow without strict mode
+		length--;
+	}
 	AddPossiblyEscapedValue(result, buffer_pos, result.buffer_ptr + result.quoted_position + 1, length,
 	                        buffer_pos < result.last_position.buffer_pos + 2);
 	result.quoted = false;
@@ -1540,11 +1544,7 @@ void StringValueScanner::ProcessOverBufferValue() {
 		const idx_t extra_delimiter_bytes = states.IsDelimiter() && !delimiter.empty() ? delimiter.size() - 1 : 0;
 		bool removed_extra_delimiter_bytes = false;
 		if (result.quoted && !result.comment) {
-			idx_t length = over_buffer_string.size() - 1 - result.quoted_position;
-			while (length > 0 && result.ignore_empty_values &&
-			       over_buffer_string.c_str()[result.quoted_position + length] == ' ') {
-				length--;
-			}
+			idx_t length = over_buffer_string.size() - result.quoted_position;
 			// remove the extra delimiter bytes before removing escapes, which can change the length of the value
 			if (extra_delimiter_bytes > length) {
 				throw InternalException(
@@ -1552,6 +1552,15 @@ void StringValueScanner::ProcessOverBufferValue() {
 			}
 			length -= extra_delimiter_bytes;
 			removed_extra_delimiter_bytes = true;
+			while (length > 0 && result.ignore_empty_values &&
+			       over_buffer_string.c_str()[result.quoted_position + length - 1] == ' ') {
+				length--;
+			}
+			if (length > 0 && over_buffer_string[result.quoted_position + length - 1] ==
+			                      state_machine->dialect_options.state_machine_options.quote.GetValue()) {
+				// remove the closing quote, which text can follow without strict mode
+				length--;
+			}
 			value = string_t(over_buffer_string.c_str() + result.quoted_position, UnsafeNumericCast<uint32_t>(length));
 			if (result.escaped) {
 				if (result.cur_col_id >= result.number_of_columns &&

@@ -139,7 +139,10 @@ static unique_ptr<FunctionData> BindEnableLogging(ClientContext &context, TableF
 				    "e.g. CALL enable_logging(storage='file', storage_path='mylog.csv');");
 			}
 			auto normalize_entry = result->storage_config.find("normalize");
-			if (normalize_entry != result->storage_config.end() && !normalize_entry->second.IsNull()) {
+			if (normalize_entry != result->storage_config.end()) {
+				if (normalize_entry->second.IsNull()) {
+					throw InvalidConfigurationException("The normalize option of 'file' log storage can not be NULL");
+				}
 				FileLogStorage::VerifyPath(path_entry->second.ToString(), normalize_entry->second.GetValue<bool>());
 			}
 		}

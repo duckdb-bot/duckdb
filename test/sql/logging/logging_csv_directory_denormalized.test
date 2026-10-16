@@ -57,6 +57,11 @@ CALL enable_logging(['QueryLog'], storage = 'file', storage_config = {'path': '{
 ----
 Can not set path to
 
+statement error
+CALL enable_logging(['QueryLog'], storage = 'file', storage_config = {'path': '{TEMP_DIR}/logging_csv_refused.csv', 'normalize': NULL});
+----
+can not be NULL
+
 statement ok
 SELECT 45 AS answer;
 

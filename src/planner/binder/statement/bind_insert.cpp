@@ -33,6 +33,8 @@
 #include "duckdb/parser/tableref/basetableref.hpp"
 #include "duckdb/parser/tableref/emptytableref.hpp"
 #include "duckdb/parser/tableref/subqueryref.hpp"
+#include "duckdb/parser/tableref/bound_ref_wrapper.hpp"
+#include "duckdb/parser/expression/star_expression.hpp"
 #include "duckdb/parser/expression/lambda_expression.hpp"
 
 namespace duckdb {
@@ -479,14 +481,6 @@ unique_ptr<MergeIntoStatement> Binder::GenerateMergeInto(InsertQueryNode &node, 
 		physical_index_vector_t<idx_t> column_index_map;
 		BindInsertColumnList(table, node.columns, node.default_values, named_column_map, expected_types,
 		                     column_index_map);
-		if (node.select_statement && !values_list) {
-			auto select_copy = node.select_statement->Copy();
-			auto select_binder = Binder::CreateBinder(context, this);
-			auto bound_select = select_binder->Bind(select_copy->Cast<SelectStatement>());
-			auto expected_columns = node.columns.empty() ? columns.PhysicalColumnCount() : node.columns.size();
-			CheckInsertColumnCountMismatch(expected_columns, bound_select.types.size(), !node.columns.empty(),
-			                               table.name);
-		}
 	}
 	// expand any default values
 	if (values_list) {
@@ -499,7 +493,21 @@ unique_ptr<MergeIntoStatement> Binder::GenerateMergeInto(InsertQueryNode &node, 
 	}
 	// set up the data source
 	unique_ptr<TableRef> source;
-	if (node.select_statement) {
+	if (node.select_statement && node.column_order == InsertColumnOrder::INSERT_BY_POSITION && !values_list) {
+		// bind the SELECT once, so that its count of columns is checked and its bind time effects happen once
+		auto select_binder = Binder::CreateBinder(context, this);
+		SubqueryRef select_ref(std::move(node.select_statement), "excluded");
+		auto bound_select = select_binder->Bind(select_ref);
+		auto expected_columns = node.columns.empty() ? columns.PhysicalColumnCount() : node.columns.size();
+		CheckInsertColumnCountMismatch(expected_columns, bound_select.types.size(), !node.columns.empty(), table.name);
+		// the aliases below are set on a parsed subquery around it
+		auto select_stmt = make_uniq<SelectStatement>();
+		auto select_node = make_uniq<SelectNode>();
+		select_node->select_list.push_back(make_uniq<StarExpression>());
+		select_node->from_table = make_uniq<BoundRefWrapper>(std::move(bound_select), std::move(select_binder));
+		select_stmt->node = std::move(select_node);
+		source = make_uniq<SubqueryRef>(std::move(select_stmt), "excluded");
+	} else if (node.select_statement) {
 		source = make_uniq<SubqueryRef>(std::move(node.select_statement), "excluded");
 	} else {
 		source = make_uniq<EmptyTableRef>();
@@ -634,6 +642,17 @@ BoundStatement Binder::BindNode(InsertQueryNode &node) {
 		return std::move(*expanded);
 	}
 
+	if (node.column_order == InsertColumnOrder::INSERT_BY_NAME) {
+		if (node.GetValuesList()) {
+			throw BinderException("INSERT BY NAME can only be used when inserting from a SELECT statement");
+		}
+		if (node.default_values) {
+			throw BinderException("INSERT BY NAME cannot be combined with with DEFAULT VALUES");
+		}
+		if (!node.columns.empty()) {
+			throw BinderException("INSERT BY NAME cannot be combined with an explicit column list");
+		}
+	}
 	if (node.on_conflict_info) {
 		// generate a MERGE INTO statement and bind it instead
 		auto merge_into = GenerateMergeInto(node, table);
@@ -648,15 +667,6 @@ BoundStatement Binder::BindNode(InsertQueryNode &node) {
 	// bind the root select node (if any)
 	BoundStatement root_select;
 	if (node.column_order == InsertColumnOrder::INSERT_BY_NAME) {
-		if (values_list) {
-			throw BinderException("INSERT BY NAME can only be used when inserting from a SELECT statement");
-		}
-		if (node.default_values) {
-			throw BinderException("INSERT BY NAME cannot be combined with with DEFAULT VALUES");
-		}
-		if (!node.columns.empty()) {
-			throw BinderException("INSERT BY NAME cannot be combined with an explicit column list");
-		}
 		D_ASSERT(node.select_statement);
 		// INSERT BY NAME - generate the columns from the names of the SELECT statement
 		auto select_binder = Binder::CreateBinder(context, this);

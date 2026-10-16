@@ -92,3 +92,34 @@ SELECT * FROM w ORDER BY i;
 3	NULL	NULL
 4	6	12
 5	NULL	NULL
+
+# the SELECT is bound once, so a table function argument is evaluated once
+statement ok
+CREATE TABLE seq_t (i INT PRIMARY KEY);
+
+statement ok
+CREATE SEQUENCE s;
+
+statement ok
+INSERT INTO seq_t SELECT * FROM range(nextval('s')) ON CONFLICT DO NOTHING;
+
+query I
+SELECT i FROM seq_t;
+----
+0
+
+query I
+SELECT currval('s');
+----
+1
+
+# BY NAME takes neither a VALUES list nor a column list, as for a plain INSERT
+statement error
+INSERT INTO seq_t BY NAME VALUES (1) ON CONFLICT DO NOTHING;
+----
+INSERT BY NAME can only be used when inserting from a SELECT statement
+
+statement error
+INSERT INTO seq_t BY NAME (i) SELECT 1 AS i ON CONFLICT DO NOTHING;
+----
+INSERT BY NAME cannot be combined with an explicit column list

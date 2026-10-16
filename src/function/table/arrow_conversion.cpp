@@ -1475,32 +1475,46 @@ void ArrowToDuckDBConversion::ColumnArrowToDuckDBDictionary(Vector &vector, Arro
 		//! so the buffer must be large enough and that entry must be marked invalid.
 		auto dict_length = NumericCast<idx_t>(array.dictionary->length);
 		auto base_vector = make_uniq<Vector>(vector.GetType(), dict_length + 1);
-		ArrowToDuckDBConversion::SetValidityMask(*base_vector, *array.dictionary, 0, dict_length, 0, 0, has_nulls);
-		FlatVector::ValidityMutable(*base_vector).SetInvalid(dict_length);
+		// the children of struct and array values can hold Arrow buffers or dictionaries that cannot grow by the
+		// sentinel, so these values are converted on their own and copied
+		const auto internal_type = vector.GetType().InternalType();
+		const bool copy_values = internal_type == PhysicalType::STRUCT || internal_type == PhysicalType::ARRAY;
+		unique_ptr<Vector> values;
+		if (copy_values) {
+			values = make_uniq<Vector>(vector.GetType(), dict_length);
+			ArrowToDuckDBConversion::SetValidityMask(*values, *array.dictionary, 0, dict_length, 0, 0);
+		} else {
+			ArrowToDuckDBConversion::SetValidityMask(*base_vector, *array.dictionary, 0, dict_length, 0, 0, has_nulls);
+			FlatVector::ValidityMutable(*base_vector).SetInvalid(dict_length);
+		}
+		auto &dictionary_values = copy_values ? *values : *base_vector;
 		auto &dictionary_type = arrow_type.GetDictionary();
 		auto arrow_physical_type = dictionary_type.GetPhysicalType();
-		;
 		switch (arrow_physical_type) {
 		case ArrowArrayPhysicalType::DICTIONARY_ENCODED:
-			ColumnArrowToDuckDBDictionary(*base_vector, *array.dictionary, 0, array_state,
-			                              NumericCast<idx_t>(array.dictionary->length), dictionary_type);
+			ColumnArrowToDuckDBDictionary(dictionary_values, *array.dictionary, 0, array_state, dict_length,
+			                              dictionary_type);
 			break;
 		case ArrowArrayPhysicalType::RUN_END_ENCODED:
-			ColumnArrowToDuckDBRunEndEncoded(*base_vector, *array.dictionary, 0, array_state,
-			                                 NumericCast<idx_t>(array.dictionary->length), dictionary_type);
+			ColumnArrowToDuckDBRunEndEncoded(dictionary_values, *array.dictionary, 0, array_state, dict_length,
+			                                 dictionary_type);
 			break;
 		case ArrowArrayPhysicalType::DEFAULT:
-			ColumnArrowToDuckDB(*base_vector, *array.dictionary, 0, array_state,
-			                    NumericCast<idx_t>(array.dictionary->length), dictionary_type);
+			ColumnArrowToDuckDB(dictionary_values, *array.dictionary, 0, array_state, dict_length, dictionary_type);
 			break;
 		default:
 			throw NotImplementedException("ArrowArrayPhysicalType not recognized");
 		};
-		// the dictionary buffer holds dict_length entries plus one trailing NULL sentinel slot.
-		// the inner ColumnArrowToDuckDB call may have replaced the buffer via FlatVector::SetData
-		// (e.g. DirectConversion's zero-copy path), shrinking capacity from dict_length+1 to
-		// dict_length. Re-extend before sizing so the sentinel slot stays in bounds.
-		base_vector->Reserve(dict_length + 1);
+		if (copy_values) {
+			VectorOperations::Copy(*values, *base_vector, dict_length, 0, 0);
+			FlatVector::SetNull(*base_vector, dict_length, true);
+		} else {
+			// the dictionary buffer holds dict_length entries plus one trailing NULL sentinel slot.
+			// the inner ColumnArrowToDuckDB call may have replaced the buffer via FlatVector::SetData
+			// (e.g. DirectConversion's zero-copy path), shrinking capacity from dict_length+1 to
+			// dict_length. Re-extend before sizing so the sentinel slot stays in bounds.
+			base_vector->Reserve(dict_length + 1);
+		}
 		FlatVector::SetSize(*base_vector, count_t(dict_length + 1));
 		array_state.AddDictionary(std::move(base_vector), array.dictionary);
 	}

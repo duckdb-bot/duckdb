@@ -114,7 +114,8 @@ TEST_CASE("Arrow filter pushdown - filters kept above the scan next to an IN lis
 	REQUIRE(!con.Query("CREATE TABLE src AS SELECT (['TOYOTA', 'HONDA', 'VPG', 'ISUZU', 'SMART', 'LUCID'])[i % 6 + 1] "
 	                   "AS name, (i % 10 = 0)::TINYINT AS flag FROM range(6000) t(i)")
 	             ->HasError());
-	// with a string view column the filters stay above the scan, which also returns the columns they read
+	// with a string view column the filters stay above the scan, which also returns the columns they read. The test
+	// factory returns every column and ignores pushed down filters, so each query reads both columns.
 	duckdb::vector<string> queries {
 	    "SELECT name, count(*) FROM %s WHERE flag < 1 AND name IN ('VPG', 'ISUZU', 'SMART', 'LUCID', 'LOTUS') "
 	    "GROUP BY 1 ORDER BY 1",

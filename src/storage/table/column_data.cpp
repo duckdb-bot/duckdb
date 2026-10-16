@@ -731,32 +731,28 @@ void ColumnData::RevertAppend(row_t new_count_p) {
 	if (!last_segment_node) {
 		return;
 	}
-	auto &last_segment = last_segment_node->GetNode();
-	if (new_count >= last_segment_node->GetRowStart() + last_segment.count) {
+	if (new_count >= last_segment_node->GetRowEnd()) {
 		// the start row is equal to the final portion of the column data: nothing was ever appended here
-		D_ASSERT(new_count == last_segment_node->GetRowStart() + last_segment.count);
+		D_ASSERT(new_count == last_segment_node->GetRowEnd());
 		return;
 	}
-	// find the segment index that the current row belongs to
-	idx_t segment_index = data.GetSegmentIndex(l, new_count);
-	auto segment = data.GetSegmentByIndex(l, UnsafeNumericCast<int64_t>(segment_index));
-	if (segment->GetRowStart() == new_count) {
-		// we are truncating exactly this segment - erase it entirely
-		data.EraseSegments(l, segment_index);
-		if (segment_index > 0) {
-			// if we have a previous segment, we need to update the next pointer
-			auto previous_segment = data.GetSegmentByIndex(l, UnsafeNumericCast<int64_t>(segment_index - 1));
-			previous_segment->SetNext(nullptr);
-		}
-	} else {
-		// we need to truncate within the segment
-		// remove any segments AFTER this segment: they should be deleted entirely
-		data.EraseSegments(l, segment_index + 1);
-
-		auto &transient = segment->GetNode();
-		D_ASSERT(transient.GetSegmentType() == ColumnSegmentType::TRANSIENT);
+	// erase the segments that start at or after the row, which the append created. A segment can start past the
+	// row, after a gap in the row ids, so they are found from the back instead of by looking up the row
+	auto kept_segments = data.GetSegmentCount(l);
+	while (kept_segments > 0 &&
+	       data.GetSegmentByIndex(l, UnsafeNumericCast<int64_t>(kept_segments - 1))->GetRowStart() >= new_count) {
+		kept_segments--;
+	}
+	data.EraseSegments(l, kept_segments);
+	if (kept_segments > 0) {
+		auto segment = data.GetSegmentByIndex(l, UnsafeNumericCast<int64_t>(kept_segments - 1));
 		segment->SetNext(nullptr);
-		transient.RevertAppend(new_count - segment->GetRowStart());
+		if (new_count < segment->GetRowEnd()) {
+			// we need to truncate within the segment
+			auto &transient = segment->GetNode();
+			D_ASSERT(transient.GetSegmentType() == ColumnSegmentType::TRANSIENT);
+			transient.RevertAppend(new_count - segment->GetRowStart());
+		}
 	}
 
 	this->count = new_count;

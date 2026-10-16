@@ -53,11 +53,17 @@ FROM foo WHERE a IN (SELECT foo.a FROM bar);
 ----
 1
 
-# an outer scope that has the column wins over an inner one that lacks it
+# an outer scope that has the column wins over an inner one whose table lacks it
 query I
-FROM foo WHERE a IN (SELECT foo.a FROM bar AS foo2);
+FROM foo WHERE a IN (SELECT foo.a FROM bar AS foo);
 ----
 1
+
+# a values list
+statement error
+SELECT (SELECT v.c FROM (VALUES (1)) v(b));
+----
+Values list "v" does not have a column named "c"
 
 statement ok
 SET errors_as_json = true;
@@ -66,3 +72,8 @@ statement error
 FROM foo WHERE a IN (SELECT baz.c FROM bar);
 ----
 <REGEX>:.*"error_subtype":"TABLE_NOT_FOUND".*
+
+statement error
+SELECT (SELECT v.c FROM (VALUES (1)) v(b));
+----
+<REGEX>:.*"error_subtype":"TABLE_COLUMN_NOT_FOUND".*

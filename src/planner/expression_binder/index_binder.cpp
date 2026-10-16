@@ -33,6 +33,7 @@ unique_ptr<BoundIndex> IndexBinder::BindIndex(const UnboundIndex &unbound_index)
 		                                unbound_index.GetTableName(), index_type_name, unbound_index.GetTableName());
 	}
 
+	D_ASSERT(!unbound_index.IsStorageMissing());
 	auto &create_info = unbound_index.GetCreateInfo();
 	auto &storage_info = unbound_index.GetStorageInfo();
 	auto &parsed_expressions = unbound_index.GetParsedExpressions();

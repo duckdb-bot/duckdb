@@ -681,21 +681,26 @@ void CheckpointReader::ReadIndex(CatalogTransaction transaction, Deserializer &d
 	auto &table_info = data_table.GetDataTableInfo();
 
 	IndexStorageInfo index_storage_info;
+	bool storage_missing = false;
 	if (root_block_pointer.IsValid()) {
 		// Read older duckdb files.
 		index_storage_info.name = index.name;
 		index_storage_info.root_block_ptr = root_block_pointer;
-	} else {
+	} else if (table_info->HasIndexStorageInfo(index.name)) {
 		// Extract the matching index storage info (moves it out of the stored collection).
 		index_storage_info = table_info->ExtractIndexStorageInfo(index.name);
+		D_ASSERT(index_storage_info.IsValid());
+	} else {
+		// COPY FROM DATABASE in DuckDB 1.1 wrote index entries without their data. The index is never bound, the
+		// table stays readable, and modifying it raises an error that asks to create the index again.
+		index_storage_info.name = index.name;
+		storage_missing = true;
 	}
-
-	D_ASSERT(index_storage_info.IsValid());
 	D_ASSERT(!index_storage_info.name.empty());
 
 	// Create an unbound index and add it to the table.
 	auto unbound_index = make_uniq<UnboundIndex>(std::move(create_info), std::move(index_storage_info),
-	                                             TableIOManager::Get(data_table), data_table.db);
+	                                             TableIOManager::Get(data_table), data_table.db, storage_missing);
 	table_info->GetIndexes().AddIndex(std::move(unbound_index), index.oid, ConstraintCheckMode::DEFAULT);
 }
 

@@ -345,6 +345,12 @@ shared_ptr<IndexEntry> TableIndexList::FindEntry(const Identifier &name) const {
 		if (entry->GetName() != name) {
 			continue;
 		}
+		if (entry->IsStorageMissing()) {
+			throw InvalidInputException("Cannot use index %s, because the database file holds no data for it (as "
+			                            "written by COPY FROM DATABASE in DuckDB 1.1). Drop the index and create it "
+			                            "again.",
+			                            name);
+		}
 		if (entry->GetBindState() != IndexBindState::BOUND) {
 			throw InternalException("TableIndexList::FindEntry cannot return an unbound index");
 		}
@@ -396,7 +402,7 @@ void TableIndexList::Bind(ClientContext &context, DataTableInfo &table_info, con
 	while (true) {
 		shared_ptr<IndexEntry> index_entry;
 		for (auto &entry : index_entries) {
-			if (entry->GetBindState() != IndexBindState::BOUND &&
+			if (entry->GetBindState() != IndexBindState::BOUND && !entry->IsStorageMissing() &&
 			    (!index_type || entry->GetIndexType() == *index_type)) {
 				index_entry = entry;
 				break;
@@ -451,6 +457,18 @@ void TableIndexList::Bind(ClientContext &context, DataTableInfo &table_info, con
 		}
 		index_entry->CommitBind(std::move(bound_idx));
 		unbound_count--;
+	}
+}
+
+void TableIndexList::ThrowIfStorageMissing(DataTableInfo &table_info) const {
+	annotated_lock_guard lock(index_entries_lock);
+	for (auto &entry : index_entries) {
+		if (entry->IsStorageMissing()) {
+			throw InvalidInputException("Cannot modify table %s, because the database file holds no data for its "
+			                            "index %s (as written by COPY FROM DATABASE in DuckDB 1.1). Drop the index "
+			                            "and create it again before the table can be modified.",
+			                            table_info.GetTableName(), entry->GetName());
+		}
 	}
 }
 
@@ -510,7 +528,9 @@ vector<shared_ptr<const IndexStorageInfo>> TableIndexList::Checkpoint(TableIndex
 	for (const auto &entry : index_entries) {
 		auto checkpoint = entry->Checkpoint(writer);
 		shadows.push_back(std::move(checkpoint.shadow_index));
-		infos.push_back(std::move(checkpoint.storage_info));
+		if (checkpoint.storage_info) {
+			infos.push_back(std::move(checkpoint.storage_info));
+		}
 	}
 
 	writer.Flush();

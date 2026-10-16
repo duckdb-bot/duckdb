@@ -67,6 +67,8 @@ public:
 	shared_ptr<IndexEntry> FindEntry(const IndexEntry &index) const;
 	//! Binds unbound indexes possibly present after loading an extension.
 	void Bind(ClientContext &context, DataTableInfo &table_info, const optional<string> &index_type = {});
+	//! Throws if the database file holds no data for one of the indexes, which then cannot be kept up to date.
+	void ThrowIfStorageMissing(DataTableInfo &table_info) const;
 	//! Returns true, if there are no index entries.
 	bool Empty() const {
 		return Count() == 0;

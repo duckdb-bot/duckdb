@@ -1,0 +1,88 @@
+# name: test/issues/general/test_21447.test
+# description: A database file with an index entry but no index data opens, reads, and refuses changes until the index is created again
+# group: [general]
+
+# written by DuckDB 1.1.3, whose COPY FROM DATABASE wrote the entry of the unique index idx_id_date but not its data
+unzip data/storage/index_without_data_v1_1_3.db.gz {TEST_DIR}/index_without_data_v1_1_3.db
+
+statement ok
+ATTACH '{TEST_DIR}/index_without_data_v1_1_3.db' AS db113;
+
+query II
+SELECT count(*), sum(value) FROM db113.test;
+----
+10	45
+
+query I
+SELECT value FROM db113.test WHERE id = 'id3' AND date = DATE '2020-01-04';
+----
+3
+
+statement error
+INSERT INTO db113.test VALUES ('id1', DATE '2020-01-02', 1);
+----
+Cannot modify table "test", because the database file holds no data for its index "idx_id_date"
+
+statement error
+UPDATE db113.test SET value = 0;
+----
+Cannot modify table "test"
+
+statement error
+DELETE FROM db113.test;
+----
+Cannot modify table "test"
+
+statement error
+SELECT index_key({'catalog': 'db113', 'table': 'test'}, 'idx_id_date', 'id1', DATE '2020-01-02');
+----
+Cannot use index "idx_id_date", because the database file holds no data for it
+
+# a checkpoint keeps the index without data
+statement ok
+CREATE TABLE db113.other AS SELECT 1 AS x;
+
+statement ok
+CHECKPOINT db113;
+
+statement ok
+DETACH db113;
+
+statement ok
+ATTACH '{TEST_DIR}/index_without_data_v1_1_3.db' AS db113;
+
+statement error
+INSERT INTO db113.test VALUES ('id1', DATE '2020-01-02', 1);
+----
+Cannot modify table "test"
+
+# creating the index again builds it from the table
+statement ok
+DROP INDEX db113.idx_id_date;
+
+statement ok
+CREATE UNIQUE INDEX idx_id_date ON db113.test (id, date);
+
+statement error
+INSERT INTO db113.test VALUES ('id1', DATE '2020-01-02', 1);
+----
+Duplicate key
+
+statement ok
+INSERT INTO db113.test VALUES ('id10', DATE '2020-01-11', 10);
+
+statement ok
+DETACH db113;
+
+statement ok
+ATTACH '{TEST_DIR}/index_without_data_v1_1_3.db' AS db113;
+
+query I
+SELECT count(*) FROM db113.test;
+----
+11
+
+statement error
+INSERT INTO db113.test VALUES ('id10', DATE '2020-01-11', 10);
+----
+Duplicate key

@@ -2,7 +2,7 @@
 # description: An AUTH:CODE CRS equals a PROJJSON or WKT2 CRS whose id is that code
 # group: [geo]
 
-load __TEST_DIR__/geometry_crs_code_and_projjson.db
+load {TEST_DIR}/geometry_crs_code_and_projjson.db
 
 statement ok
 SET VARIABLE projjson = '{"type":"GeographicCRS","name":"WGS 84","id":{"authority":"EPSG","code":4326}}';
@@ -73,5 +73,44 @@ Cannot cast GEOMETRY with CRS
 
 statement error
 SELECT [ST_SetCRS('POINT(1 2)'::GEOMETRY, 'EPSG:4326'), ST_SetCRS('POINT(3 4)'::GEOMETRY, 'GEOGCRS["EPSG:4326",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],CS[ellipsoidal,2],AXIS["latitude",north],AXIS["longitude",east]]')];
+----
+Cannot cast GEOMETRY with CRS
+
+# a CRS only named like the code also differs from a definition with that id, in any order
+statement error
+SELECT [ST_SetCRS('POINT(3 4)'::GEOMETRY, getvariable('projjson')), ST_SetCRS('POINT(1 2)'::GEOMETRY, 'EPSG:4326'), ST_SetCRS('POINT(5 6)'::GEOMETRY, '{"type":"GeographicCRS","name":"EPSG:4326"}')];
+----
+Cannot cast GEOMETRY with CRS
+
+statement error
+SELECT [ST_SetCRS('POINT(1 2)'::GEOMETRY, 'EPSG:4326'), ST_SetCRS('POINT(3 4)'::GEOMETRY, getvariable('projjson')), ST_SetCRS('POINT(5 6)'::GEOMETRY, '{"type":"GeographicCRS","name":"EPSG:4326"}')];
+----
+Cannot cast GEOMETRY with CRS
+
+statement error
+SELECT ST_SetCRS('POINT(3 4)'::GEOMETRY, getvariable('projjson')) UNION ALL SELECT ST_SetCRS('POINT(5 6)'::GEOMETRY, '{"type":"GeographicCRS","name":"EPSG:4326"}');
+----
+Cannot cast GEOMETRY with CRS
+
+# two definitions only named alike still match
+query I
+SELECT len([ST_SetCRS('POINT(1 2)'::GEOMETRY, '{"type":"GeographicCRS","name":"Local"}'), ST_SetCRS('POINT(3 4)'::GEOMETRY, '{"type":"GeographicCRS","name":"Local","area":"here"}')]);
+----
+2
+
+# an id without a code is no id
+
+statement error
+SELECT [ST_SetCRS('POINT(1 2)'::GEOMETRY, 'EPSG:4326'), ST_SetCRS('POINT(3 4)'::GEOMETRY, '{"type":"GeographicCRS","name":"Other CRS","id":{"authority":"EPSG:4326"}}')];
+----
+Cannot cast GEOMETRY with CRS
+
+statement error
+SELECT [ST_SetCRS('POINT(1 2)'::GEOMETRY, 'EPSG:4326'), ST_SetCRS('POINT(3 4)'::GEOMETRY, '{"type":"GeographicCRS","name":"Other CRS","id":{"authority":"EPSG:4326","code":null}}')];
+----
+Cannot cast GEOMETRY with CRS
+
+statement error
+SELECT [ST_SetCRS('POINT(1 2)'::GEOMETRY, 'EPSG:4326'), ST_SetCRS('POINT(3 4)'::GEOMETRY, '{"type":"GeographicCRS","name":"Other CRS","id":{"authority":"EPSG:4326","code":true}}')];
 ----
 Cannot cast GEOMETRY with CRS

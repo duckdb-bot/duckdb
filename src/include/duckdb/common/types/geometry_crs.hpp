@@ -76,11 +76,8 @@ public:
 	//! - Their type and full text definitions match, character-for-character
 	bool Equals(const CoordinateReferenceSystem &other) const {
 		// Whatever the definitions are, if the identifiers match we consider them equal
-		// An AUTH:CODE only matches an id, not a CRS with that name
-		auto by_code =
-		    type == CoordinateReferenceSystemType::AUTH_CODE || other.type == CoordinateReferenceSystemType::AUTH_CODE;
-		if (!identifier.empty() && identifier == other.identifier &&
-		    (!by_code || (identifier_is_id && other.identifier_is_id))) {
+		// An id never matches a name, so that a CRS only named like a code differs from the CRS of that code
+		if (!identifier.empty() && identifier == other.identifier && identifier_is_id == other.identifier_is_id) {
 			return true;
 		}
 

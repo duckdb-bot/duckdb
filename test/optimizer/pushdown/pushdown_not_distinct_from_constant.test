@@ -1,0 +1,246 @@
+# name: test/optimizer/pushdown/pushdown_not_distinct_from_constant.test
+# description: A constant that one side of an IS NOT DISTINCT FROM condition equals is pushed to the other side
+# group: [pushdown]
+
+require json
+
+statement ok
+CREATE TABLE t1 AS SELECT * FROM (VALUES (1, {'a': 1}), (3, {'a': 3}), (NULL, NULL), (3, {'a': 4})) v(a, s);
+
+statement ok
+CREATE TABLE t2 AS SELECT * FROM (VALUES (3, {'a': 3}), (NULL, NULL), (5, {'a': 5})) v(b, s);
+
+query II
+EXPLAIN SELECT t1.a, t2.b FROM t1 JOIN t2 ON t1.a IS NOT DISTINCT FROM t2.b WHERE t2.b = 3
+----
+physical_plan	<REGEX>:.*Filters: a = 3.*Filters: b = 3.*
+
+query II
+SELECT t1.a, t2.b FROM t1 JOIN t2 ON t1.a IS NOT DISTINCT FROM t2.b WHERE t2.b = 3 ORDER BY ALL
+----
+3	3
+3	3
+
+# preserve NULL matches
+query II
+SELECT t1.a, t2.b FROM t1 JOIN t2 ON t1.a IS NOT DISTINCT FROM t2.b WHERE t2.b IS NULL
+----
+NULL	NULL
+
+query II
+SELECT t1.a, t2.b FROM t1 JOIN t2 ON t1.a IS NOT DISTINCT FROM t2.b WHERE coalesce(t2.b, 3) = 3 ORDER BY ALL
+----
+3	3
+3	3
+NULL	NULL
+
+query II
+SELECT t1.a, t2.b FROM t1 JOIN t2 ON t1.a IS NOT DISTINCT FROM t2.b WHERE t2.b = 3 OR t2.b IS NULL ORDER BY ALL
+----
+3	3
+3	3
+NULL	NULL
+
+query II
+SELECT t1.a, t2.b FROM t1 JOIN t2 ON t1.a IS NOT DISTINCT FROM t2.b OR t1.a = 1 WHERE t2.b = 3 ORDER BY ALL
+----
+1	3
+3	3
+3	3
+
+# 0.0 and -0.0 are equal but cast to different strings, so a cast of the column is not carried over
+statement ok
+CREATE TABLE l(a DOUBLE);
+
+statement ok
+CREATE TABLE r(b DOUBLE);
+
+statement ok
+INSERT INTO l VALUES ('0.0'), (1);
+
+statement ok
+INSERT INTO r VALUES ('-0.0'), (2);
+
+query I
+SELECT count(*) FROM l JOIN r ON a IS NOT DISTINCT FROM b WHERE b::VARCHAR = '-0.0'
+----
+1
+
+# the constant does not add a filter on a sequence call that the column equals
+statement ok
+CREATE SEQUENCE seq START 3 MAXVALUE 3;
+
+statement ok
+CREATE TABLE t(a BIGINT, b BIGINT);
+
+statement ok
+INSERT INTO t VALUES (3, 3), (4, 4);
+
+query I
+SELECT a FROM t WHERE a IS NOT DISTINCT FROM b AND b = 3 AND a = nextval('seq')
+----
+3
+
+statement ok
+CREATE SEQUENCE seq2 START 3 MAXVALUE 3;
+
+statement ok
+CREATE TABLE t_one AS SELECT 3::BIGINT AS a, 3::BIGINT AS b;
+
+query I
+SELECT a FROM t_one WHERE a IS NOT DISTINCT FROM b AND length(b::VARCHAR) = 1 AND a = nextval('seq2')
+----
+3
+
+# an expression of the column, here a field of a struct
+query II
+EXPLAIN SELECT t1.s, t2.s FROM t1 JOIN t2 ON t1.s IS NOT DISTINCT FROM t2.s WHERE t2.s.a = 3
+----
+physical_plan	<REGEX>:.*Filters: struct_extract\(s, 'a'\) = 3.*Filters: struct_extract\(s, 'a'\) = 3.*
+
+query II
+SELECT t1.s, t2.s FROM t1 JOIN t2 ON t1.s IS NOT DISTINCT FROM t2.s WHERE t2.s.a = 3
+----
+{'a': 3}	{'a': 3}
+
+# the constant is not carried onto expressions whose filters would substitute a sequence call or an equal double
+statement ok
+CREATE SEQUENCE seq3 START 3 MAXVALUE 3;
+
+statement ok
+CREATE TABLE v(a BIGINT, b BIGINT, c BIGINT);
+
+statement ok
+INSERT INTO v VALUES (1, 1, 3);
+
+query I
+SELECT c FROM v WHERE a IS NOT DISTINCT FROM b AND b = 1 AND a = length(c::VARCHAR) AND c = nextval('seq3')
+----
+3
+
+statement ok
+CREATE TABLE z(a BIGINT, b BIGINT, x DOUBLE, y DOUBLE);
+
+statement ok
+INSERT INTO z VALUES (4, 4, '-0.0', '0.0'), (5, 5, 1, 1);
+
+query I
+SELECT count(*) FROM z WHERE a IS NOT DISTINCT FROM b AND b = 4 AND a = length(x::VARCHAR) AND x = y
+----
+1
+
+# the same when the equalities are in a subquery
+query I
+SELECT count(*) FROM (SELECT * FROM z WHERE a = length(x::VARCHAR) AND x = y) v WHERE a IS NOT DISTINCT FROM b AND b = 4
+----
+1
+
+statement ok
+CREATE SEQUENCE seq4 START 3 MAXVALUE 3;
+
+query I
+SELECT a FROM (SELECT * FROM t_one WHERE a = nextval('seq4')) v WHERE a IS NOT DISTINCT FROM b AND b = 3
+----
+3
+
+# a filter on a double is not copied to an equal double, nor a constant to a sequence call
+query I
+SELECT count(*) FROM z WHERE a = length(x::VARCHAR) AND x = y AND a = 4
+----
+1
+
+statement ok
+CREATE SEQUENCE seq5 START 3 MAXVALUE 3;
+
+query I
+SELECT a FROM t_one WHERE a = nextval('seq5') AND a = 3
+----
+3
+
+# nested doubles and casts that can throw
+statement ok
+CREATE TABLE sd(s STRUCT(d DOUBLE), t STRUCT(d DOUBLE));
+
+statement ok
+INSERT INTO sd VALUES ({'d': '-0.0'}, {'d': '0.0'});
+
+query I
+SELECT count(*) FROM sd WHERE s IS NOT DISTINCT FROM t AND s.d::VARCHAR = '-0.0'
+----
+1
+
+statement ok
+CREATE TABLE th(a BIGINT, b BIGINT);
+
+statement ok
+INSERT INTO th VALUES (3, 3), (300, 300);
+
+query I
+SELECT a FROM th WHERE a IS NOT DISTINCT FROM b AND b = 3 AND a::TINYINT = 3
+----
+3
+
+# filters that contradict the constant
+statement ok
+CREATE TABLE c1 AS SELECT * FROM (VALUES (3), (7)) v(a);
+
+statement ok
+CREATE TABLE c2 AS SELECT * FROM (VALUES (3), (7)) v(b);
+
+query II
+SELECT a, b FROM c1 JOIN c2 ON a IS NOT DISTINCT FROM b WHERE b = 3 AND a > 5
+----
+
+query II
+SELECT a, b FROM c1 JOIN c2 ON a IS NOT DISTINCT FROM b WHERE b = 3 AND a = 7
+----
+
+query II
+SELECT a, b FROM c1 JOIN c2 ON a IS NOT DISTINCT FROM b WHERE a = 7 AND b = 7
+----
+7	7
+
+# a chain of conditions carries the constant to its end
+statement ok
+CREATE TABLE w AS SELECT * FROM (VALUES (3, 3, 3, 3), (5, 5, 5, 5)) v(a0, a1, a2, a3);
+
+query II
+EXPLAIN SELECT * FROM w WHERE a0 = 3 AND a0 IS NOT DISTINCT FROM a1 AND a1 IS NOT DISTINCT FROM a2 AND a2 IS NOT DISTINCT FROM a3
+----
+physical_plan	<REGEX>:.*a3 = 3.*
+
+# a chain of conditions, and a left join that keeps its unmatched rows
+query III
+SELECT t1.a, t2.b, c2.b FROM t1 JOIN t2 ON t1.a IS NOT DISTINCT FROM t2.b JOIN c2 ON t2.b IS NOT DISTINCT FROM c2.b WHERE c2.b = 3
+----
+3	3	3
+3	3	3
+
+query II
+SELECT c1.a, t2.b FROM c1 LEFT JOIN t2 ON c1.a IS NOT DISTINCT FROM t2.b AND t2.b = 3 ORDER BY ALL
+----
+3	3
+7	NULL
+
+# a selective outer filter reaches the recursive CTE of a nested correlated LATERAL (issue #27072)
+statement ok
+CREATE TABLE person AS SELECT i AS id FROM range(1000) t(i);
+
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEMP_DIR}/lateral_recursive.json';
+
+query I
+SELECT max(q.x) FROM person o, LATERAL (SELECT r.x FROM person i, LATERAL (WITH RECURSIVE walk(x) AS (SELECT i.id UNION ALL SELECT x + 1 FROM walk WHERE x < i.id + 2) SELECT x FROM walk) r WHERE i.id = o.id) q WHERE o.id = 3
+----
+5
+
+statement ok
+PRAGMA disable_profiling;
+
+query I
+SELECT sum((value->>'intermediate_rows')::BIGINT) FROM read_text('{TEMP_DIR}/lateral_recursive.json'), json_tree(content) WHERE value->>'type' = 'RECURSIVE_CTE'
+----
+3

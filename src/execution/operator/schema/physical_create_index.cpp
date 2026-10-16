@@ -15,7 +15,11 @@
 #include "duckdb/storage/table/append_state.hpp"
 #include "duckdb/storage/table/data_table_info.hpp"
 #include "duckdb/storage/storage_manager.hpp"
+#include "duckdb/transaction/duck_transaction.hpp"
 #include "duckdb/transaction/local_storage.hpp"
+#include "duckdb/function/table/table_scan.hpp"
+#include "duckdb/common/vector_operations/vector_operations.hpp"
+#include "duckdb/common/vector/flat_vector.hpp"
 #include "duckdb/execution/index/index_type.hpp"
 
 namespace duckdb {
@@ -121,6 +125,42 @@ SinkCombineResultType PhysicalCreateIndex::Combine(ExecutionContext &context, Op
 	return SinkCombineResultType::FINISHED;
 }
 
+void PhysicalCreateIndex::AppendRowsAfterScan(ClientContext &context, DataTable &storage, BoundIndex &index) const {
+	D_ASSERT(scan_boundary && scan_boundary->row_end.IsValid());
+	if (storage.GetRevertCount() != scan_boundary->revert_count) {
+		throw TransactionException("Transaction conflict: cannot create an index on table \"%s\" because a different "
+		                           "transaction reverted an append to it while the index was built",
+		                           storage.GetTableName());
+	}
+	auto row_start = scan_boundary->row_end.GetIndex();
+	auto row_end = storage.GetNextRowId();
+	if (row_start >= row_end) {
+		return;
+	}
+	auto is_primary_key = alter_table_info && info->constraint_type == IndexConstraintType::PRIMARY;
+	auto &transaction = DuckTransaction::Get(context, storage.db);
+	Vector row_ids(LogicalType::ROW_TYPE);
+	auto current_row = row_start;
+	storage.ScanTableSegment(transaction, row_start, row_end - row_start, [&](DataChunk &chunk) {
+		if (is_primary_key) {
+			for (auto column_id : storage_ids) {
+				if (VectorOperations::HasNull(chunk.data[column_id])) {
+					throw ConstraintException("NOT NULL constraint failed: %s", info->GetIndexName());
+				}
+			}
+		}
+		auto row_id_writer = FlatVector::Writer<row_t>(row_ids, chunk.size());
+		for (idx_t i = 0; i < chunk.size(); i++) {
+			row_id_writer.WriteValue(NumericCast<row_t>(current_row + i));
+		}
+		auto error = index.Append(chunk, row_ids);
+		if (error.HasError()) {
+			error.Throw();
+		}
+		current_row += chunk.size();
+	});
+}
+
 SinkFinalizeType PhysicalCreateIndex::Finalize(Pipeline &pipeline, Event &event, ClientContext &context,
                                                OperatorSinkFinalizeInput &input) const {
 	auto &gstate = input.global_state.Cast<CreateIndexGlobalSinkState>();
@@ -138,8 +178,6 @@ SinkFinalizeType PhysicalCreateIndex::Finalize(Pipeline &pipeline, Event &event,
 
 	bound_index->VerifyAllocations();
 
-	D_ASSERT(scan_append_generation && scan_append_generation->IsValid());
-	auto append_generation = scan_append_generation->GetIndex();
 	auto &storage = table.GetStorage();
 	if (!storage.IsMainTable()) {
 		throw TransactionException(
@@ -187,15 +225,15 @@ SinkFinalizeType PhysicalCreateIndex::Finalize(Pipeline &pipeline, Event &event,
 
 		auto &catalog = Catalog::GetCatalog(context, info->GetQualifiedName().Catalog());
 		catalog.Alter(context, *alter_table_info);
-		// the replaced table takes no more appends, so the rows appended during the build are all there
-		storage.VerifyNoAppendsSince(append_generation);
 	}
 
-	// rows appended during the build are not in the index, rows appended after it was added are
+	// Rows appended after the scan started are added here, rows appended after the index is added append to it.
+	// The replaced table of an ALTER takes no more appends.
 	unique_lock<mutex> append_lock;
 	if (!alter_table_info) {
-		append_lock = storage.IndexAppendLock(append_generation);
+		append_lock = storage.IndexAppendLock();
 	}
+	AppendRowsAfterScan(context, storage, *bound_index);
 
 	// Add the index to the storage.
 	auto index_entry = storage.GetDataTableInfo()->GetIndexes().AddIndex(std::move(bound_index), index_oid, check_mode);

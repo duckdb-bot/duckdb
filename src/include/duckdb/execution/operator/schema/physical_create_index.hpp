@@ -14,6 +14,7 @@
 #include "duckdb/execution/index/index_type.hpp"
 
 namespace duckdb {
+struct CreateIndexScanBoundary;
 class TableCatalogEntry;
 struct AlterTableInfo;
 
@@ -47,8 +48,8 @@ public:
 	unique_ptr<IndexBuildBindData> bind_data;
 	//! Alter table information for adding indexes.
 	unique_ptr<AlterTableInfo> alter_table_info;
-	//! The append generation of the table when the scan that builds the index starts
-	shared_ptr<optional_idx> scan_append_generation;
+	//! The rows that the scan building the index reads
+	shared_ptr<CreateIndexScanBoundary> scan_boundary;
 
 	//! Types of the indexed columns.
 	vector<LogicalType> indexed_column_types;
@@ -73,6 +74,12 @@ public:
 	unique_ptr<GlobalSinkState> GetGlobalSinkState(ClientContext &context) const override;
 	SinkResultType Sink(ExecutionContext &context, DataChunk &chunk, OperatorSinkInput &input) const override;
 	SinkCombineResultType Combine(ExecutionContext &context, OperatorSinkCombineInput &input) const override;
+
+private:
+	//! Adds the rows appended to the table after the scan started to the index
+	void AppendRowsAfterScan(ClientContext &context, DataTable &storage, BoundIndex &index) const;
+
+public:
 	SinkFinalizeType Finalize(Pipeline &pipeline, Event &event, ClientContext &context,
 	                          OperatorSinkFinalizeInput &input) const override;
 

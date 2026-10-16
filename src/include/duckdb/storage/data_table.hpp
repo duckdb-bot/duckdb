@@ -179,13 +179,10 @@ public:
 
 	//! Fetches an append lock
 	void AppendLock(DuckTransaction &transaction, TableAppendState &state);
-	//! Counts the completed appends to the rows of the table and their reverts
-	idx_t GetAppendGeneration() const;
-	//! Throws if rows were appended or reverted since the append generation was append_generation, the caller
-	//! prevents further appends
-	void VerifyNoAppendsSince(idx_t append_generation);
-	//! Fetches the append lock, after VerifyNoAppendsSince
-	unique_lock<mutex> IndexAppendLock(idx_t append_generation);
+	//! Counts the reverted appends to the rows of the table
+	idx_t GetRevertCount() const;
+	//! Fetches the append lock to add an index, and throws if the table was replaced
+	unique_lock<mutex> IndexAppendLock();
 	//! Begin appending structs to this table, obtaining necessary locks, etc
 	void InitializeAppend(DuckTransaction &transaction, TableAppendState &state);
 	//! Append a chunk to the table using the AppendState obtained from InitializeAppend

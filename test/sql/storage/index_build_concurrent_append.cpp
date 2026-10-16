@@ -33,7 +33,8 @@ bool IsExpectedError(const string &error) {
 	return error.empty() || StringUtil::Contains(error, "Transaction conflict") ||
 	       StringUtil::Contains(error, "another transaction has altered this table") ||
 	       StringUtil::Contains(error, "NOT NULL constraint failed") ||
-	       StringUtil::Contains(error, "Data contains duplicates") || StringUtil::Contains(error, "Duplicate key");
+	       StringUtil::Contains(error, "Data contains duplicates") || StringUtil::Contains(error, "Duplicate key") ||
+	       StringUtil::Contains(error, "constraint violation: duplicate key");
 }
 
 void CreateTable(Connection &con) {
@@ -53,7 +54,9 @@ TEST_CASE("Rows appended while an index is built are not missing from it", "[sto
 	vector<Scenario> scenarios {{"ALTER TABLE t ADD PRIMARY KEY (id)", "INSERT INTO t VALUES (NULL)"},
 	                            {"ALTER TABLE t ADD PRIMARY KEY (id)", "INSERT INTO t VALUES (1)"},
 	                            {"ALTER TABLE t ADD UNIQUE (id)", "INSERT INTO t VALUES (1)"},
-	                            {"CREATE UNIQUE INDEX idx ON t (id)", "INSERT INTO t VALUES (1)"}};
+	                            {"CREATE UNIQUE INDEX idx ON t (id)", "INSERT INTO t VALUES (1)"},
+	                            {"CREATE UNIQUE INDEX idx ON t (id)",
+	                             "BEGIN; ALTER TABLE t ADD COLUMN c INTEGER; INSERT INTO t VALUES (1, 1); COMMIT"}};
 	for (idx_t attempt = 0; attempt < 10; attempt++) {
 		auto delay_ms = attempt * 5;
 		for (auto &scenario : scenarios) {

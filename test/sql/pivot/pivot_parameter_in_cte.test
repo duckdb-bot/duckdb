@@ -1,0 +1,204 @@
+# name: test/sql/pivot/pivot_parameter_in_cte.test
+# description: A PIVOT that reads the pivot values from a CTE with a parameter gives the same error as with a subquery
+# group: [pivot]
+
+statement error
+PREPARE s1 AS WITH q1 AS (SELECT $1 AS a) PIVOT q1 ON a;
+----
+cannot have parameters in their source
+
+# also through a subquery, another CTE, or in the expression of a CTE
+statement error
+PREPARE s2 AS WITH q1 AS (SELECT $1 AS a) PIVOT (SELECT * FROM q1) ON a;
+----
+cannot have parameters in their source
+
+statement error
+PREPARE s3 AS WITH q1 AS (SELECT $1 AS a), q2 AS (FROM q1) PIVOT q2 ON a;
+----
+cannot have parameters in their source
+
+statement error
+PREPARE s4 AS WITH q1 AS (SELECT (SELECT $1) AS a) PIVOT q1 ON a;
+----
+cannot have parameters in their source
+
+# a CTE with a parameter that the source does not read, and listed values, still work
+statement ok
+PREPARE s5 AS WITH q1 AS (SELECT $1 AS a), q2 AS (SELECT 1 AS b) PIVOT q2 ON b;
+
+query I
+EXECUTE s5(5);
+----
+1
+
+statement ok
+PREPARE s6 AS WITH q1 AS (SELECT $1 AS a) PIVOT q1 ON a IN (123);
+
+query I
+EXECUTE s6(123);
+----
+1
+
+# a nested CTE of the same name shadows the one with the parameter, and an unused nested CTE is not read
+statement ok
+PREPARE s7 AS WITH q AS (SELECT $1 AS a), src AS (WITH q AS (SELECT 1 AS a) SELECT * FROM q) PIVOT src ON a;
+
+query I
+EXECUTE s7(5);
+----
+1
+
+statement ok
+PREPARE s8 AS WITH q AS (WITH unused AS (SELECT $1 AS a) SELECT 1 AS a) PIVOT q ON a;
+
+query I
+EXECUTE s8(5);
+----
+1
+
+# a parameter in the UNPIVOT of a CTE
+statement error
+PREPARE s9 AS WITH q AS (UNPIVOT (SELECT 1 AS a) ON a + $1) PIVOT q ON value;
+----
+cannot have parameters in their source
+
+# a recursive CTE with a parameter in its step
+statement error
+PREPARE s10 AS WITH RECURSIVE q AS (SELECT 1 AS a UNION ALL SELECT a + $1 FROM q WHERE a < 3) PIVOT q ON a;
+----
+cannot have parameters in their source
+
+# a CTE body reads the CTEs declared before it, and an outer CTE of its own name
+statement error
+PREPARE s11 AS WITH q AS (SELECT $1 AS a), src AS (WITH q AS (FROM q) FROM q) PIVOT src ON a;
+----
+cannot have parameters in their source
+
+statement ok
+CREATE TABLE b AS SELECT 1 AS x;
+
+statement ok
+PREPARE s12 AS WITH a AS (FROM b), b AS (SELECT $1 AS x) PIVOT a ON x;
+
+query I
+EXECUTE s12(5);
+----
+1
+
+# a CTE is read in the scope where it is defined, also when a CTE of the same name shadows it where it is read
+statement error
+PREPARE s13 AS WITH dep AS (SELECT $1 AS a), q AS (FROM dep) PIVOT (WITH dep AS (SELECT 1 AS a) FROM q) ON a;
+----
+cannot have parameters in their source
+
+statement ok
+PREPARE s14 AS WITH dep AS (SELECT 1 AS a), q AS (FROM dep), src AS (WITH dep AS (SELECT $1 AS a) FROM q) PIVOT src ON a;
+
+query I
+EXECUTE s14(5);
+----
+1
+
+# a parameter in a CTE read through SUMMARIZE, MATCH_RECOGNIZE or the RETURNING of an INSERT
+statement error
+PREPARE s15 AS WITH q AS (SUMMARIZE SELECT $1::INT AS a) PIVOT q ON column_name;
+----
+cannot have parameters in their source
+
+statement error
+PREPARE s16 AS WITH q AS (FROM range(3) t(i) MATCH_RECOGNIZE (ORDER BY i MEASURES count(*) AS n PATTERN (A+) DEFINE A AS i < $1)) PIVOT q ON n;
+----
+cannot have parameters in their source
+
+statement ok
+CREATE TABLE t (a INTEGER);
+
+statement error
+PREPARE s17 AS WITH q AS (INSERT INTO t VALUES ($1) RETURNING *) PIVOT q ON a;
+----
+cannot have parameters in their source
+
+# UNPIVOT does not read values from the data, so a parameter in its CTE works
+statement ok
+PREPARE s18 AS WITH q AS (SELECT $1::INT AS a) UNPIVOT q ON a;
+
+query TI
+EXECUTE s18(5);
+----
+a	5
+
+# the queries and table references in the body of an INSERT are walked like those of a SELECT
+statement ok
+PREPARE s19 AS WITH q AS (INSERT INTO t WITH unused AS (SELECT $1 AS a) SELECT 1 AS a RETURNING *) PIVOT q ON a;
+
+statement ok
+PREPARE s20 AS WITH dep AS (SELECT $1 AS a), q AS (INSERT INTO t WITH dep AS (SELECT 1 AS a) FROM dep RETURNING *) PIVOT q ON a;
+
+statement ok
+CREATE TABLE u (name VARCHAR, value INTEGER);
+
+statement error
+PREPARE s21 AS WITH q AS (INSERT INTO u UNPIVOT (SELECT 1 AS a) ON a + $1 RETURNING *) PIVOT q ON value;
+----
+cannot have parameters in their source
+
+statement error
+PREPARE s22 AS WITH q AS (INSERT INTO t SELECT n FROM range($1) r(i) MATCH_RECOGNIZE (ORDER BY i MEASURES count(*) AS n PATTERN (A+) DEFINE A AS i < 3) RETURNING *) PIVOT q ON a;
+----
+cannot have parameters in their source
+
+# the first part of a recursive CTE reads an outer CTE of the same name, the recursive part reads the CTE itself
+statement error
+PREPARE s23 AS WITH q AS (SELECT $1 AS a), src AS (WITH RECURSIVE q AS (SELECT a FROM q UNION ALL SELECT a + 1 FROM q WHERE a < 3) FROM q) PIVOT src ON a;
+----
+cannot have parameters in their source
+
+statement ok
+PREPARE s24 AS WITH q AS (SELECT $1 AS a), src AS (WITH RECURSIVE q AS (SELECT 1 AS a UNION ALL SELECT a + 1 FROM q WHERE a < 3) FROM q) PIVOT src ON a;
+
+query III
+EXECUTE s24(5);
+----
+1	1	1
+
+# a CTE of the recursive CTE reads the outer CTE of the same name, not the recursive CTE
+statement error
+PREPARE s25 AS WITH q AS (SELECT $1 AS a), src AS (WITH RECURSIVE q AS (WITH dep AS (FROM q) SELECT 1 AS a UNION ALL FROM dep) FROM q) PIVOT src ON a;
+----
+cannot have parameters in their source
+
+# UPDATE, DELETE and COPY bodies, where COPY of a table name reads that table
+statement error
+PREPARE s26 AS WITH q AS (UPDATE t SET a = $1 RETURNING *) PIVOT q ON a;
+----
+cannot have parameters in their source
+
+statement error
+PREPARE s27 AS WITH q AS (DELETE FROM t WHERE a = $1 RETURNING *) PIVOT q ON a;
+----
+cannot have parameters in their source
+
+statement error
+PREPARE s28 AS WITH dep AS (SELECT $1::INT AS a), q AS (COPY dep TO '{TEST_DIR}/pivot_parameter_in_cte.csv' (FORMAT CSV)) PIVOT q ON Count;
+----
+cannot have parameters in their source
+
+statement error
+PREPARE s29 AS WITH dep AS (SELECT $1::INT AS a), q AS (COPY (FROM dep) TO '{TEST_DIR}/pivot_parameter_in_cte.csv' (FORMAT CSV)) PIVOT q ON Count;
+----
+cannot have parameters in their source
+
+# the target of an INSERT is a table, not a CTE of the same name
+statement ok
+PREPARE s30 AS WITH t AS (SELECT $1 AS a), q AS (INSERT INTO t SELECT 1 AS a RETURNING *) PIVOT q ON a;
+
+# a recursive CTE after another CTE of its WITH clause, and COPY of a qualified table name
+statement ok
+PREPARE s31 AS WITH q AS (SELECT $1 AS a), src AS (WITH RECURSIVE first AS (SELECT 1 AS a), q AS (SELECT a FROM first UNION ALL SELECT a + 1 FROM q WHERE a < 3) FROM q) PIVOT src ON a;
+
+statement ok
+CREATE TABLE dep AS SELECT 1 AS a;
+
+statement ok
+PREPARE s32 AS WITH dep AS (SELECT $1::INT AS a), q AS (COPY main.dep TO '{TEST_DIR}/pivot_parameter_in_cte_main.csv' (FORMAT CSV)) PIVOT q ON Count;

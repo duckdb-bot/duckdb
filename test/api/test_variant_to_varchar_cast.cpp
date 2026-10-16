@@ -39,4 +39,14 @@ TEST_CASE("VARIANT values cast to VARCHAR with a registered cast of their primit
 	                          "[{'a': 4::BIGINT}::VARIANT, {'A': 5::BIGINT}::VARIANT]::VARIANT)) t(i, v)"));
 	result = con.Query("SELECT v::VARCHAR FROM nulls ORDER BY i");
 	REQUIRE(CHECK_COLUMN(result, 0, {"[n1, NULL]", "{'k': NULL}", Value(), "a", "[{'a': n4}, {'A': n5}]"}));
+
+	// more values than fit in one vector
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE many AS SELECT i, [i, i % 3, i + 1]::VARIANT AS v FROM range(3000) t(i)"));
+	REQUIRE_NO_FAIL(con.Query("CREATE MACRO expected(x) AS CASE WHEN x = 2 THEN NULL ELSE printf('n%d', x) END"));
+	result = con.Query("SELECT count(*) FROM many WHERE v::VARCHAR[] IS NOT DISTINCT FROM [expected(i), "
+	                   "expected(i % 3), expected(i + 1)]");
+	REQUIRE(CHECK_COLUMN(result, 0, {3000}));
+	result = con.Query("SELECT count(*) FROM many WHERE v::VARCHAR = printf('[%s, %s, %s]', coalesce(expected(i), "
+	                   "'NULL'), coalesce(expected(i % 3), 'NULL'), coalesce(expected(i + 1), 'NULL'))");
+	REQUIRE(CHECK_COLUMN(result, 0, {3000}));
 }

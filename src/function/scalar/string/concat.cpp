@@ -236,7 +236,7 @@ void ResolveListConcatTypes(ResolveScalarFunctionTypesInput &input, bool is_oper
 			next_type = ArrayType::GetChildType(return_type);
 			break;
 		case LogicalTypeId::VARIANT:
-			// a VARIANT is concatenated as the list of VARIANT values it holds
+			// a VARIANT argument is read as VARIANT[]
 			next_type = return_type;
 			break;
 		default: {

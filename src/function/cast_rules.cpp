@@ -34,6 +34,9 @@ static int64_t TargetTypeCost(const LogicalType &type) {
 		return 124;
 	case LogicalTypeId::VARCHAR:
 		return 149;
+	case LogicalTypeId::VARIANT:
+		// an untyped NULL prefers VARCHAR to VARIANT
+		return 150;
 	case LogicalTypeId::STRUCT:
 	case LogicalTypeId::TUPLE:
 	case LogicalTypeId::MAP:

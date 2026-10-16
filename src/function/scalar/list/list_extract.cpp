@@ -152,6 +152,25 @@ static unique_ptr<FunctionData> StringExtractBind(BindScalarFunctionInput &input
 	return nullptr;
 }
 
+//! A VARIANT is read as TRY_CAST(v AS VARIANT[]), which is NULL for a VARIANT that does not convert
+static unique_ptr<FunctionData> VariantListExtractBind(BindScalarFunctionInput &input) {
+	auto &context = input.GetClientContext();
+	auto &arguments = input.GetArguments();
+	auto list_type = LogicalType::LIST(LogicalType::VARIANT());
+	arguments[0] = BoundCastExpression::AddCastToType(context, std::move(arguments[0]), list_type, true);
+	input.GetBoundFunction().GetArguments()[0] = list_type;
+	return nullptr;
+}
+
+static ScalarFunction GetVariantExtractFunction() {
+	ScalarFunction vfun({LogicalType::VARIANT(), LogicalType::BIGINT}, LogicalType::VARIANT(), ListExtractFunction,
+	                    VariantListExtractBind);
+	vfun.GetSignature().GetParameter(0).SetName("list");
+	vfun.GetSignature().GetParameter(1).SetName("index");
+	vfun.SetFallible();
+	return vfun;
+}
+
 static unique_ptr<BaseStatistics> ListExtractStats(ClientContext &context, FunctionStatisticsInput &input) {
 	auto &child_stats = input.child_stats;
 	auto &list_child_stats = ListStats::GetChildStats(child_stats[0]);
@@ -182,6 +201,7 @@ ScalarFunctionSet ListExtractFun::GetFunctions() {
 	lfun.SetFallible();
 	list_extract_set.AddFunction(lfun);
 	list_extract_set.AddFunction(sfun);
+	list_extract_set.AddFunction(GetVariantExtractFunction());
 	return list_extract_set;
 }
 
@@ -200,6 +220,7 @@ ScalarFunctionSet ArrayExtractFun::GetFunctions() {
 
 	array_extract_set.AddFunction(lfun);
 	array_extract_set.AddFunction(sfun);
+	array_extract_set.AddFunction(GetVariantExtractFunction());
 	array_extract_set.AddFunction(GetKeyExtractFunction());
 	array_extract_set.AddFunction(GetIndexExtractFunction());
 	return array_extract_set;

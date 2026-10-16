@@ -4,6 +4,9 @@
 #include "duckdb/common/progress_bar/display/terminal_progress_bar_display.hpp"
 #include "duckdb/common/progress_bar/progress_bar.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/catalog/catalog.hpp"
+#include "duckdb/function/scalar_function.hpp"
+#include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
 #include "test_helpers.hpp"
 
 #include <duckdb/execution/executor.hpp>
@@ -98,6 +101,52 @@ public:
 		}
 	}
 };
+
+// A display that records the time it shows once the query finished, instead of printing it
+class FinishedTimeDisplay : public TerminalProgressBarDisplay {
+public:
+	explicit FinishedTimeDisplay(std::atomic<double> &finished_seconds_p) : finished_seconds(finished_seconds_p) {
+	}
+
+protected:
+	void PrintProgressInternal(int32_t percentage, double seconds, bool is_finished) override {
+		if (is_finished) {
+			finished_seconds = seconds;
+		}
+	}
+
+private:
+	std::atomic<double> &finished_seconds;
+};
+
+static unique_ptr<FunctionData> SlowBind(BindScalarFunctionInput &input) {
+	std::this_thread::sleep_for(std::chrono::milliseconds(500));
+	return nullptr;
+}
+
+static void SlowBindExecute(DataChunk &args, ExpressionState &state, Vector &result) {
+	result.Reference(args.data[0]);
+}
+
+TEST_CASE("The finished progress bar shows the time since the query started including its binding", "[progress-bar]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	ScalarFunction slow_bind("slow_bind", {LogicalType::BIGINT}, LogicalType::BIGINT, SlowBindExecute, SlowBind);
+	CreateScalarFunctionInfo info(slow_bind);
+	con.context->RunFunctionInTransaction(
+	    [&]() { Catalog::GetSystemCatalog(*con.context).CreateFunction(*con.context, info); });
+
+	std::atomic<double> finished_seconds(-1);
+	con.context->config.display_create_func = [&]() -> unique_ptr<ProgressBarDisplay> {
+		return make_uniq<FinishedTimeDisplay>(finished_seconds);
+	};
+	REQUIRE_NO_FAIL(con.Query("PRAGMA enable_progress_bar"));
+	REQUIRE_NO_FAIL(con.Query("PRAGMA enable_print_progress_bar"));
+	REQUIRE_NO_FAIL(con.Query("PRAGMA progress_bar_time=0"));
+	REQUIRE_NO_FAIL(con.Query("SELECT count(slow_bind(range)) FROM range(100000000)"));
+	REQUIRE(finished_seconds >= 0.5);
+	con.context->config.display_create_func = nullptr;
+}
 
 TEST_CASE("Test Progress Bar Fast", "[progress-bar]") {
 	DuckDB db(nullptr);

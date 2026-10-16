@@ -61,6 +61,9 @@ public:
 public:
 	void Update(double percentage) override;
 	void Finish() override;
+	void SetQueryStart(std::chrono::steady_clock::time_point query_start_p) override {
+		query_start = query_start_p;
+	}
 	static string FormatETA(double seconds, bool elapsed = false);
 	static string FormatProgressBar(const ProgressBarDisplayInfo &display_info, int32_t percentage);
 	static double EstimateRemainingSeconds(double percentage, double elapsed_seconds,
@@ -81,6 +84,11 @@ protected:
 		auto now = std::chrono::steady_clock::now();
 		return std::chrono::duration<double>(now - start_time).count();
 	}
+	//! The time since the query started, which the finished bar shows, while the estimate uses the bar's own time
+	double GetQueryDuration() {
+		auto now = std::chrono::steady_clock::now();
+		return std::chrono::duration<double>(now - (query_start < start_time ? query_start : start_time)).count();
+	}
 	void StopPeriodicUpdates();
 
 private:
@@ -88,6 +96,7 @@ private:
 
 private:
 	std::chrono::steady_clock::time_point start_time;
+	std::chrono::steady_clock::time_point query_start = std::chrono::steady_clock::time_point::max();
 	bool has_eta_sample = false;
 	double last_eta_percentage = 0.0;
 	double last_eta_sample_time = 0.0;

@@ -7,7 +7,8 @@ namespace duckdb {
 DatabaseCacheEntry::DatabaseCacheEntry() {
 }
 
-DatabaseCacheEntry::DatabaseCacheEntry(const shared_ptr<DuckDB> &database_p) : database(database_p) {
+DatabaseCacheEntry::DatabaseCacheEntry(const shared_ptr<DuckDB> &database_p)
+    : database(database_p), instance(database_p ? database_p->instance : nullptr) {
 }
 
 DatabaseCacheEntry::~DatabaseCacheEntry() {
@@ -75,10 +76,18 @@ shared_ptr<DuckDB> DBInstanceCache::GetInstanceInternal(const string &database, 
 		db_instances_lock.unlock();
 		std::lock_guard<mutex> create_db_lock(cache_entry->update_database_mutex);
 		db_instance = cache_entry->database.lock();
+		if (!db_instance) {
+			// a connection or a result can keep the instance open after its last handle is gone
+			auto instance = cache_entry->instance.lock();
+			if (instance) {
+				db_instance = make_shared_ptr<DuckDB>(*instance);
+				cache_entry->database = db_instance;
+			}
+		}
 	}
 	// cache entry exists - check if the actual database still exists
 	if (!db_instance) {
-		// if the database does not exist, but the cache entry still exists, the database is being shut down
+		// if the instance does not exist, but the cache entry still exists, the instance is being shut down
 		// we need to wait until the database is fully shut down to safely proceed
 		// we do this here using a busy spin
 		cache_entry.reset();
@@ -134,6 +143,7 @@ shared_ptr<DuckDB> DBInstanceCache::CreateInstanceInternal(const string &databas
 		db_instances_lock.unlock();
 		db_instance = make_shared_ptr<DuckDB>(instance_path, &config);
 		cache_entry->database = db_instance;
+		cache_entry->instance = db_instance->instance;
 	} else {
 		db_instances_lock.unlock();
 		db_instance = make_shared_ptr<DuckDB>(instance_path, &config);

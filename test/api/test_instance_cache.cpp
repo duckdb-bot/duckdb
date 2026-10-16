@@ -301,3 +301,77 @@ TEST_CASE("Test automatic DB instance caching", "[api][.]") {
 		REQUIRE_NO_FAIL(con2.Query("SELECT * FROM t"));
 	}
 }
+
+TEST_CASE("Test the instance cache hands out a database that is still open after its last handle", "[api]") {
+	DBInstanceCache instance_cache;
+	DBConfig config;
+	auto path = TestCreatePath("instance_cache_in_use.db");
+
+	SECTION("A connection keeps the database open") {
+		auto db = instance_cache.GetOrCreateInstance(path, config, true);
+		auto con = make_uniq<Connection>(*db);
+		REQUIRE_NO_FAIL(con->Query("CREATE TABLE t AS SELECT 42 AS i"));
+		weak_ptr<DatabaseInstance> instance = db->instance;
+		db.reset();
+
+		auto reopened = instance_cache.GetOrCreateInstance(path, config, true);
+		REQUIRE(reopened->instance == instance.lock());
+		auto result = Connection(*reopened).Query("SELECT i FROM t");
+		REQUIRE(CHECK_COLUMN(result, 0, {42}));
+		result.reset();
+
+		// a different configuration is still refused, and the same one is still served
+		DBConfig read_only_config;
+		read_only_config.options.access_mode = AccessMode::READ_ONLY;
+		REQUIRE_THROWS(instance_cache.GetOrCreateInstance(path, read_only_config, true));
+		REQUIRE(instance_cache.GetOrCreateInstance(path, config, true)->instance == instance.lock());
+
+		// the instance closes once nothing holds it anymore
+		reopened.reset();
+		con.reset();
+		REQUIRE(instance.expired());
+	}
+	SECTION("An unfinished result keeps the database open") {
+		auto db = instance_cache.GetOrCreateInstance(path, config, true);
+		auto con = make_uniq<Connection>(*db);
+		auto result = con->Submit("SELECT * FROM range(100000)");
+		REQUIRE_NO_FAIL(*result);
+		weak_ptr<DatabaseInstance> instance = db->instance;
+		con.reset();
+		db.reset();
+		REQUIRE(!instance.expired());
+
+		auto reopened = instance_cache.GetOrCreateInstance(path, config, true);
+		REQUIRE(reopened->instance == instance.lock());
+		auto chunk = result->FetchRaw();
+		REQUIRE(chunk);
+		REQUIRE(chunk->size() > 0);
+		result.reset();
+	}
+	SECTION("A closed database is opened again") {
+		auto db = instance_cache.GetOrCreateInstance(path, config, true);
+		REQUIRE_NO_FAIL(Connection(*db).Query("CREATE TABLE t AS SELECT 42 AS i"));
+		weak_ptr<DatabaseInstance> instance = db->instance;
+		db.reset();
+		REQUIRE(instance.expired());
+		auto reopened = instance_cache.GetOrCreateInstance(path, config, true);
+		auto result = Connection(*reopened).Query("SELECT i FROM t");
+		REQUIRE(CHECK_COLUMN(result, 0, {42}));
+	}
+	SECTION("A reopen races with closing the last connection") {
+		for (idx_t i = 0; i < 50; i++) {
+			auto db = instance_cache.GetOrCreateInstance(path, config, true);
+			auto con = make_uniq<Connection>(*db);
+			db.reset();
+			shared_ptr<DuckDB> reopened;
+			std::thread reopener([&]() {
+				DBConfig reopen_config;
+				reopened = instance_cache.GetOrCreateInstance(path, reopen_config, true);
+			});
+			con.reset();
+			reopener.join();
+			REQUIRE_NO_FAIL(Connection(*reopened).Query("SELECT 42"));
+		}
+	}
+	TestDeleteFile(path);
+}

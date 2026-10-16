@@ -4,7 +4,9 @@
 #include "duckdb/catalog/standard_entry.hpp"
 #include "duckdb/common/pair.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/parser/expression/case_expression.hpp"
 #include "duckdb/parser/expression/columnref_expression.hpp"
+#include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/parser/expression/operator_expression.hpp"
 #include "duckdb/parser/expression/positional_reference_expression.hpp"
 #include "duckdb/parser/expression/star_expression.hpp"
@@ -15,6 +17,7 @@
 #include "duckdb/catalog/catalog_entry/view_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/planner/expression_binder/constant_binder.hpp"
+#include "duckdb/planner/expression_nullability.hpp"
 #include "duckdb/planner/binder.hpp"
 
 #include <algorithm>
@@ -197,9 +200,40 @@ vector<reference<Binding>> BindContext::GetMatchingBindings(const Identifier &co
 	return result;
 }
 
+//! Whether the generated column is NULL when all columns of its row are NULL
+static bool GeneratedColumnBecomesNull(Binder &binder, TableCatalogEntry &table, const ColumnDefinition &column) {
+	vector<Identifier> names;
+	vector<LogicalType> types;
+	for (auto &col : table.GetColumns().Logical()) {
+		names.push_back(col.Name());
+		types.push_back(col.Type());
+	}
+	auto column_binder = Binder::CreateBinder(binder.context);
+	column_binder->bind_context.AddGenericBinding(column_binder->GenerateTableIndex(), table.name, names, types);
+	ExpressionBinder expression_binder(*column_binder, binder.context);
+	auto expression = column.GeneratedExpression().Copy();
+	auto bound_expression = expression_binder.Bind(expression);
+	return ExpressionBecomesNull(*bound_expression, [](const BoundColumnRefExpression &) { return true; });
+}
+
 unique_ptr<ParsedExpression> BindContext::ExpandGeneratedColumn(TableBinding &table_binding,
                                                                 const Identifier &column_name) {
 	auto result = table_binding.ExpandGeneratedColumn(column_name);
+	if (table_binding.IsNullExtended()) {
+		// an expression that is not NULL for a row the join NULL-extends only runs for rows with a row id
+		auto &table = table_binding.GetStandardEntry()->Cast<TableCatalogEntry>();
+		auto &column = table.GetColumn(LogicalIndex(table_binding.GetBindingIndex(column_name)));
+		auto row_id = table_binding.GetRowIdColumn();
+		if (row_id && !GeneratedColumnBecomesNull(binder, table, column)) {
+			auto guard = make_uniq<CaseExpression>();
+			CaseCheck check;
+			check.when_expr = make_uniq<OperatorExpression>(ExpressionType::OPERATOR_IS_NOT_NULL, std::move(row_id));
+			check.then_expr = std::move(result);
+			guard->CaseChecksMutable().push_back(std::move(check));
+			guard->ElseMutable() = ConstantExpression::FromValue(Value());
+			result = std::move(guard);
+		}
+	}
 	result->SetAlias(column_name);
 	return result;
 }

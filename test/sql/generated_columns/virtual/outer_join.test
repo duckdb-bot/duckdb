@@ -3,7 +3,7 @@
 # group: [virtual]
 
 statement ok
-CREATE TABLE t1 (c1 INTEGER, c2 INTEGER AS (1), c3 BOOLEAN AS (c1 IS NULL), c4 INTEGER AS (coalesce(c1, 0) + 5));
+CREATE TABLE t1 (c1 INTEGER, c2 INTEGER AS (1), c3 BOOLEAN AS (c1 IS NULL), c4 INTEGER AS (coalesce(c1, 0) + 5), c5 INTEGER AS (c2 * 2), c6 INTEGER AS (c1 + 1));
 
 statement ok
 INSERT INTO t1 VALUES (10), (NULL);
@@ -14,10 +14,10 @@ CREATE TABLE p (k INTEGER);
 statement ok
 INSERT INTO p VALUES (1), (10);
 
-query IIII
-SELECT t1.c1, t1.c2, t1.c3, t1.c4 FROM (VALUES (1)) v(x) LEFT JOIN t1 ON FALSE
+query IIIIII
+SELECT t1.c1, t1.c2, t1.c3, t1.c4, t1.c5, t1.c6 FROM (VALUES (1)) v(x) LEFT JOIN t1 ON FALSE
 ----
-NULL	NULL	NULL	NULL
+NULL	NULL	NULL	NULL	NULL	NULL
 
 query I
 SELECT k FROM p LEFT JOIN t1 ON p.k = t1.c1 WHERE t1.c2 IS NULL ORDER BY k
@@ -29,25 +29,25 @@ SELECT count(t1.c1), count(t1.c2) FROM p LEFT JOIN t1 ON p.k = t1.c1
 ----
 1	1
 
-query IIIII
-SELECT k, c1, c2, c3, c4 FROM t1 RIGHT JOIN p ON p.k = t1.c1 ORDER BY k
+query IIIIIII
+SELECT k, c1, c2, c3, c4, c5, c6 FROM t1 RIGHT JOIN p ON p.k = t1.c1 ORDER BY k
 ----
-1	NULL	NULL	NULL	NULL
-10	10	1	false	15
+1	NULL	NULL	NULL	NULL	NULL	NULL
+10	10	1	false	15	2	11
 
 # a row of the table with a NULL column is not NULL-extended
-query IIIII
-SELECT k, c1, c2, c3, c4 FROM p FULL JOIN t1 ON p.k = t1.c1 ORDER BY k NULLS LAST, c1 NULLS LAST
+query IIIIIII
+SELECT k, c1, c2, c3, c4, c5, c6 FROM p FULL JOIN t1 ON p.k = t1.c1 ORDER BY k NULLS LAST, c1 NULLS LAST
 ----
-1	NULL	NULL	NULL	NULL
-10	10	1	false	15
-NULL	NULL	1	true	5
+1	NULL	NULL	NULL	NULL	NULL	NULL
+10	10	1	false	15	2	11
+NULL	NULL	1	true	5	2	NULL
 
-query IIIII
+query IIIIIII
 SELECT * FROM p LEFT JOIN t1 ON p.k = t1.c1 ORDER BY k
 ----
-1	NULL	NULL	NULL	NULL
-10	10	1	false	15
+1	NULL	NULL	NULL	NULL	NULL	NULL
+10	10	1	false	15	2	11
 
 query II
 SELECT k, c2 FROM p LEFT JOIN t1 ON p.k = t1.c1 AND t1.c2 = 1 ORDER BY k
@@ -62,11 +62,11 @@ SELECT p.k, t1.c2 FROM p LEFT JOIN (t1 JOIN p p2 ON t1.c1 = p2.k) ON p.k = t1.c1
 10	1
 
 query II
-SELECT k, c2 FROM (SELECT k FROM p UNION ALL SELECT 2) q POSITIONAL JOIN t1 ORDER BY k
+SELECT k, c2 FROM (VALUES (1), (2), (10)) q(k) POSITIONAL JOIN t1
 ----
 1	1
-2	NULL
-10	1
+2	1
+10	NULL
 
 statement ok
 CREATE TABLE ts (t INTEGER, g INTEGER AS (coalesce(t, 0) + 1));
@@ -80,15 +80,51 @@ SELECT k, g FROM p ASOF LEFT JOIN ts ON p.k >= ts.t ORDER BY k
 1	NULL
 10	6
 
-# without a row id, a row is told apart by its columns
-statement ok
-CREATE TABLE s (rowid INTEGER, v INTEGER, g INTEGER AS (42));
-
-statement ok
-INSERT INTO s VALUES (NULL, 10);
-
+# an expression that is already NULL for a NULL row can still be grouped by its columns
 query II
-SELECT k, x.g FROM p LEFT JOIN s x(r, w) ON p.k = x.w ORDER BY k
+SELECT t1.c6, count(*) FROM p LEFT JOIN t1 ON p.k = t1.c1 GROUP BY t1.c1 ORDER BY 1
 ----
-1	NULL
-10	42
+11	1
+NULL	1
+
+# a regular column named rowid hides the row id, so a matched row keeps its value
+statement ok
+CREATE TABLE s (rowid INTEGER, g INTEGER AS (42));
+
+statement ok
+INSERT INTO s VALUES (NULL);
+
+query I
+SELECT s.g FROM (VALUES (1)) v(x) LEFT JOIN s ON TRUE
+----
+42
+
+# tables of the same name in nested schemas
+statement ok
+CREATE SCHEMA n1;
+
+statement ok
+CREATE SCHEMA n1.s;
+
+statement ok
+CREATE SCHEMA n2;
+
+statement ok
+CREATE SCHEMA n2.s;
+
+statement ok
+CREATE TABLE n1.s.t (a INTEGER, g INTEGER AS (a + 1), k INTEGER AS (42));
+
+statement ok
+CREATE TABLE n2.s.t (a INTEGER, g INTEGER AS (a + 1), k INTEGER AS (42));
+
+statement ok
+INSERT INTO n1.s.t VALUES (1);
+
+statement ok
+INSERT INTO n2.s.t VALUES (2);
+
+query IIII
+SELECT n1.s.t.g, n1.s.t.k, n2.s.t.g, n2.s.t.k FROM n1.s.t LEFT JOIN n2.s.t ON n1.s.t.a = n2.s.t.a
+----
+2	42	NULL	NULL

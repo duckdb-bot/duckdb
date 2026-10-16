@@ -3,6 +3,7 @@
 #include "duckdb/transaction/commit_state.hpp"
 
 #include "duckdb/common/enum_util.hpp"
+#include "duckdb/common/error_data.hpp"
 #include "duckdb/common/exception/transaction_exception.hpp"
 #include "duckdb/common/index_map.hpp"
 #include "duckdb/common/type_visitor.hpp"
@@ -1217,11 +1218,34 @@ unique_ptr<CatalogEntry> DuckTableEntry::ChangeColumnType(ClientContext &context
 	create_info->tags = tags;
 
 	// Bind the USING expression.
-	auto binder = Binder::CreateBinder(context);
 	vector<LogicalIndex> bound_columns;
-	AlterBinder expr_binder(*binder, context, *this, bound_columns, info.target_type);
-	auto expression = info.expression->Copy();
-	auto bound_expression = expr_binder.Bind(expression);
+	auto bind_using = [&](Binder &using_binder) {
+		bound_columns.clear();
+		AlterBinder expr_binder(using_binder, context, *this, bound_columns, info.target_type);
+		auto expression = info.expression->Copy();
+		return expr_binder.Bind(expression);
+	};
+	auto binder = Binder::CreateBinder(context);
+	unique_ptr<Expression> bound_expression;
+	try {
+		bound_expression = bind_using(*binder);
+	} catch (std::exception &ex) {
+		ErrorData error(ex);
+		if (info.bind_mode != AlterBindMode::SKIP_BINDING || error.Type() != ExceptionType::CATALOG) {
+			throw;
+		}
+		// A WAL replay does not know the search path of the session that wrote it. Names the session of the replay
+		// does not find are looked up in the replayed database, in its default schema first
+		vector<CatalogSearchEntry> replay_path;
+		auto default_schema = catalog.GetDefaultSchema();
+		if (default_schema) {
+			replay_path.emplace_back(catalog.GetName(), *default_schema);
+		}
+		replay_path.emplace_back(catalog.GetName(), INVALID_SCHEMA);
+		binder = Binder::CreateBinder(context);
+		binder->EntryRetriever().SetSearchPath(std::move(replay_path));
+		bound_expression = bind_using(*binder);
+	}
 
 	// Infer the target_type from the USING expression, if not set explicitly.
 	if (info.target_type == LogicalType::UNKNOWN) {

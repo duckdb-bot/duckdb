@@ -1,0 +1,141 @@
+# name: test/issues/general/test_20543.test
+# description: ALTER TABLE ... SET TYPE ... USING with a cast to a user type replays from the WAL
+# group: [general]
+
+load {TEST_DIR}/alter_type_using_replay.db
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown;
+
+statement ok
+SET wal_autocheckpoint = '1GB';
+
+statement ok
+CREATE TYPE e AS ENUM ('a', 'b');
+
+statement ok
+CREATE SCHEMA s;
+
+statement ok
+CREATE TYPE s.e2 AS ENUM ('x', 'y');
+
+statement ok
+CREATE TABLE t (p VARCHAR, q VARCHAR);
+
+statement ok
+INSERT INTO t VALUES ('a', 'x');
+
+statement ok
+ALTER TABLE t ALTER p SET TYPE USING p::e;
+
+statement ok
+ALTER TABLE t ALTER q SET TYPE USING q::s.e2;
+
+# a function of the default schema keeps precedence over one of the table's schema
+statement ok
+CREATE MACRO f(x) AS x + 1;
+
+statement ok
+CREATE MACRO s.f(x) AS x + 100;
+
+statement ok
+CREATE TABLE s.t2 (q INTEGER);
+
+statement ok
+INSERT INTO s.t2 VALUES (1);
+
+statement ok
+ALTER TABLE s.t2 ALTER q SET TYPE INTEGER USING f(q);
+
+# and so does a builtin function
+statement ok
+CREATE MACRO s.nullif(x, y) AS x + 100;
+
+statement ok
+CREATE TABLE s.t3 (q INTEGER);
+
+statement ok
+INSERT INTO s.t3 VALUES (1);
+
+statement ok
+ALTER TABLE s.t3 ALTER q SET TYPE INTEGER USING nullif(q, 0);
+
+# a type of the main schema used for a table of another schema
+statement ok
+CREATE TABLE s.w (p VARCHAR);
+
+statement ok
+INSERT INTO s.w VALUES ('b');
+
+statement ok
+ALTER TABLE s.w ALTER p SET TYPE USING p::e;
+
+restart
+
+query IIII
+SELECT p, typeof(p), q, typeof(q) FROM t;
+----
+a	ENUM('a', 'b')	x	ENUM('x', 'y')
+
+query II
+SELECT p, typeof(p) FROM s.w;
+----
+b	ENUM('a', 'b')
+
+query II
+SELECT (SELECT q FROM s.t2), (SELECT q FROM s.t3);
+----
+2	1
+
+# attaching a file replays its WAL in a session with another default database
+statement ok
+ATTACH '{TEST_DIR}/alter_type_using_attach.db' AS d2;
+
+statement ok
+USE d2;
+
+statement ok
+CREATE TYPE e3 AS ENUM ('m', 'n');
+
+statement ok
+CREATE MACRO f3(x) AS x + 10;
+
+statement ok
+CREATE MACRO f(x) AS x + 1000;
+
+statement ok
+CREATE TABLE v (p VARCHAR, q INTEGER);
+
+statement ok
+INSERT INTO v VALUES ('n', 1);
+
+# names that only the attached database has
+statement ok
+ALTER TABLE v ALTER p SET TYPE USING p::e3;
+
+statement ok
+ALTER TABLE v ALTER q SET TYPE INTEGER USING f3(q);
+
+statement ok
+USE alter_type_using_replay;
+
+# a name that the default database has as well resolves there, as when the WAL was written
+statement ok
+CREATE TABLE d2.v2 (q INTEGER);
+
+statement ok
+INSERT INTO d2.v2 VALUES (1);
+
+statement ok
+ALTER TABLE d2.v2 ALTER q SET TYPE INTEGER USING f(q);
+
+statement ok
+DETACH d2;
+
+statement ok
+ATTACH '{TEST_DIR}/alter_type_using_attach.db' AS d3;
+
+query IIII
+SELECT p, typeof(p), q, (SELECT q FROM d3.v2) FROM d3.v;
+----
+n	ENUM('m', 'n')	11	2

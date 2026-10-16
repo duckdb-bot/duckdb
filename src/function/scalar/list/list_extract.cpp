@@ -152,7 +152,7 @@ static unique_ptr<FunctionData> StringExtractBind(BindScalarFunctionInput &input
 	return nullptr;
 }
 
-//! A VARIANT is read as a list of VARIANT values, and as NULL when it holds no list, as its subscript reads it
+//! A VARIANT is read as TRY_CAST(v AS VARIANT[]), which is NULL for a VARIANT that does not convert
 static unique_ptr<FunctionData> VariantListExtractBind(BindScalarFunctionInput &input) {
 	auto &context = input.GetClientContext();
 	auto &arguments = input.GetArguments();

@@ -1,5 +1,5 @@
 # name: test/sql/types/variant/variant_list_functions.test
-# description: List extraction and concatenation read a VARIANT as the list it holds, as its subscript does
+# description: List extraction and concatenation read a VARIANT as a list of VARIANT values
 # group: [variant]
 
 statement ok
@@ -25,11 +25,27 @@ SELECT list_extract(v, i) FROM t, range(1, 4) r(i) ORDER BY i
 20
 30
 
-# a VARIANT that holds no list gives NULL, as its subscript does
+# a VARIANT that does not convert to a list gives NULL
 query III
-SELECT list_extract(v, 1), array_extract(v, 1), v[1] FROM s
+SELECT list_extract(v, 1), array_extract(v, 1), list_element(v, 1) FROM s
 ----
 NULL	NULL	NULL
+
+# nested, empty and NULL elements, and rows with and without a list
+query II
+SELECT i, list_extract(v, 2) FROM (VALUES (1, [[1, 2], [3]]::VARIANT), (2, []::INTEGER[]::VARIANT), (3, [NULL, 5]::VARIANT), (4, 42::VARIANT), (5, NULL::VARIANT)) t(i, v) ORDER BY i
+----
+1	[3]
+2	NULL
+3	5
+4	NULL
+5	NULL
+
+# a string that reads as a list converts, as with an explicit cast
+query II
+SELECT list_extract('[1, 2]'::VARIANT, 1), list_extract(TRY_CAST('[1, 2]'::VARIANT AS VARIANT[]), 1)
+----
+1	1
 
 query I
 SELECT list_extract(NULL::VARIANT, 1)
@@ -56,6 +72,11 @@ query III
 SELECT concat(v, v), v || v, v || 'x' FROM s
 ----
 hellohello	hellohello	hellox
+
+query II
+SELECT concat(v, v), v || v FROM t
+----
+[10, 20, 30][10, 20, 30]	[10, 20, 30][10, 20, 30]
 
 query I
 SELECT list_extract('hello', 1)

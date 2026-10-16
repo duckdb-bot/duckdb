@@ -1,0 +1,37 @@
+# name: test/sql/subquery/missing_column_in_subquery_error.test
+# description: A missing column of a table in a subquery is reported as such, not as a table the outer query lacks
+# group: [subquery]
+
+statement ok
+CREATE TABLE foo(a INTEGER);
+
+statement ok
+CREATE TABLE bar(b INTEGER);
+
+statement error
+FROM foo WHERE a NOT IN (FROM bar WHERE bar.c >= 42);
+----
+Table "bar" does not have a column named "c"
+
+statement error
+FROM foo WHERE a IN (SELECT bar.c FROM bar);
+----
+Table "bar" does not have a column named "c"
+
+# a table that neither query knows is still reported as such
+statement error
+FROM foo WHERE a IN (SELECT baz.c FROM bar);
+----
+Referenced table "baz" not found
+
+# a column of the outer query still resolves
+statement ok
+INSERT INTO foo VALUES (1);
+
+statement ok
+INSERT INTO bar VALUES (1);
+
+query I
+FROM foo WHERE a IN (SELECT foo.a FROM bar);
+----
+1

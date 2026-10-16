@@ -124,19 +124,27 @@ static bool CombineMissingColumns(ErrorData &current, ErrorData new_error) {
 	return true;
 }
 
+static bool IsTableNotFound(const ErrorData &error) {
+	auto entry = error.ExtraInfo().find("error_subtype");
+	return entry != error.ExtraInfo().end() && entry->second == "TABLE_NOT_FOUND";
+}
+
 void ExpressionBinder::CombineErrors(ErrorData &current, ErrorData new_error) {
 	// try to combine missing column exceptions in order to pick the most relevant one
 	if (CombineMissingColumns(current, new_error)) {
 		// keep the old info
 		return;
 	}
+	// an enclosing scope that does not know the table of the reference says less than an inner one that does
+	if (IsTableNotFound(new_error) && current.HasError() && !IsTableNotFound(current)) {
+		return;
+	}
 
 	// override the error with the new one
-	// FIXME: the outermost scope searched always wins here, which can bury a more specific error from
-	// the scope the reference was actually written in - e.g. HAVING's "must appear in the GROUP BY
-	// clause" is replaced by an enclosing scope's "table not found". Preserving the innermost error
-	// unless the outer one is strictly more specific would read better, but it changes many existing
-	// error messages, so it is left as is here.
+	// FIXME: otherwise the outermost scope searched always wins here, which can bury a more specific error
+	// from the scope the reference was actually written in. Preserving the innermost error unless the outer
+	// one is strictly more specific would read better, but it changes many existing error messages, so it is
+	// left as is here.
 	current = std::move(new_error);
 }
 

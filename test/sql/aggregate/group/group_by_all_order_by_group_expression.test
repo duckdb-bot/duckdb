@@ -12,19 +12,50 @@ abe	7
 Abd	5
 aBc	3
 
+# qualified, and through the alias of the group
+query II
+SELECT df.name AS n, sum(x) FROM df GROUP BY ALL ORDER BY lower(df.name);
+----
+aBc	3
+Abd	5
+abe	7
+
+query II
+SELECT name AS n, sum(x) FROM df GROUP BY ALL ORDER BY lower(n) DESC;
+----
+abe	7
+Abd	5
+aBc	3
+
 # the group is an expression of the SELECT list
 query II
-SELECT upper(name) AS u, count(*) FROM df GROUP BY ALL ORDER BY reverse(upper(name));
+SELECT upper(name) AS u, count(*) FROM df GROUP BY ALL ORDER BY right(upper(name), 1) DESC;
 ----
-ABC	2
-ABD	2
 ABE	2
+ABD	2
+ABC	2
+
+# an ORDER BY entry that is the SELECT entry itself, next to one that uses it
+query II
+SELECT name, sum(x) FROM df GROUP BY ALL ORDER BY name[1], lower(name) DESC;
+----
+Abd	5
+abe	7
+aBc	3
 
 query II
 SELECT DISTINCT ON (name[1]) name, sum(x) FROM df GROUP BY ALL ORDER BY name[1], name;
 ----
 Abd	5
 aBc	3
+
+# the expression can also mix groups and aggregates
+query II
+SELECT name, sum(x) FROM df GROUP BY ALL ORDER BY ascii(name[2]) + sum(x);
+----
+aBc	3
+Abd	5
+abe	7
 
 # a column that is not a group is still an error
 statement error
@@ -36,11 +67,3 @@ statement error
 SELECT name, sum(x) FROM df GROUP BY ALL ORDER BY x;
 ----
 must appear in the GROUP BY clause
-
-# the expression can also mix groups and aggregates
-query II
-SELECT name, sum(x) FROM df GROUP BY ALL ORDER BY length(name) * 0 + sum(x) DESC;
-----
-abe	7
-Abd	5
-aBc	3

@@ -680,12 +680,12 @@ BoundStatement Binder::BindSelectNode(SelectNode &statement, BoundStatement from
 	// if we expand select-list expressions, e.g., via UNNEST, then we need to possibly
 	// adjust the column index of the already bound ORDER BY modifiers, and not only set their types
 	vector<idx_t> group_by_all_indexes;
-	vector<unique_ptr<ParsedExpression>> group_by_all_expressions;
 	bool group_by_all_pushed = false;
 	vector<Identifier> new_names;
 	vector<LogicalType> internal_sql_types;
 
-	// push the GROUP BY ALL expressions into the group set, and map them to their groups for the entries bound later
+	// push the GROUP BY ALL expressions into the group set, and map them to their groups for the ORDER BY and
+	// DISTINCT ON entries bound after them
 	auto push_group_by_all = [&]() {
 		group_by_all_pushed = true;
 		for (auto &group_by_all_index : group_by_all_indexes) {
@@ -695,10 +695,7 @@ BoundStatement Binder::BindSelectNode(SelectNode &statement, BoundStatement from
 			auto group_ref =
 			    make_uniq<BoundColumnRefExpression>(return_type, ColumnBinding(result.group_index, group_proj_idx));
 			expr = std::move(group_ref);
-
-			auto &group_expr = group_by_all_expressions[group_by_all_index];
-			bind_state.group_map[*group_expr] = group_proj_idx;
-			bind_state.unbound_groups.push_back(std::move(group_expr));
+			bind_state.group_map[*bind_state.original_expressions[group_by_all_index]] = group_proj_idx;
 		}
 		set<ProjectionIndex> group_by_all_indexes_set;
 		if (!group_by_all_indexes.empty()) {
@@ -717,10 +714,8 @@ BoundStatement Binder::BindSelectNode(SelectNode &statement, BoundStatement from
 		bool is_original_column = i < result.column_count;
 		bool can_group_by_all =
 		    statement.aggregate_handling == AggregateHandling::FORCE_AGGREGATES && is_original_column;
-		if (can_group_by_all) {
-			group_by_all_expressions.push_back(statement.select_list[i]->Copy());
-		} else if (statement.aggregate_handling == AggregateHandling::FORCE_AGGREGATES && !group_by_all_pushed) {
-			// an ORDER BY or DISTINCT ON expression can refer to the groups of the SELECT list
+		if (statement.aggregate_handling == AggregateHandling::FORCE_AGGREGATES && !is_original_column &&
+		    !group_by_all_pushed) {
 			push_group_by_all();
 		}
 		LogicalType result_type;

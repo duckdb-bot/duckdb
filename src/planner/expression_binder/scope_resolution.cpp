@@ -124,9 +124,9 @@ static bool CombineMissingColumns(ErrorData &current, ErrorData new_error) {
 	return true;
 }
 
-static bool IsTableNotFound(const ErrorData &error) {
+static bool HasErrorSubtype(const ErrorData &error, const char *subtype) {
 	auto entry = error.ExtraInfo().find("error_subtype");
-	return entry != error.ExtraInfo().end() && entry->second == "TABLE_NOT_FOUND";
+	return entry != error.ExtraInfo().end() && entry->second == subtype;
 }
 
 void ExpressionBinder::CombineErrors(ErrorData &current, ErrorData new_error) {
@@ -135,16 +135,13 @@ void ExpressionBinder::CombineErrors(ErrorData &current, ErrorData new_error) {
 		// keep the old info
 		return;
 	}
-	// an enclosing scope that does not know the table of the reference says less than an inner one that does
-	if (IsTableNotFound(new_error) && current.HasError() && !IsTableNotFound(current)) {
+	// keep the missing column of a table over an outer scope that lacks the table
+	if (HasErrorSubtype(current, "TABLE_COLUMN_NOT_FOUND") && HasErrorSubtype(new_error, "TABLE_NOT_FOUND")) {
 		return;
 	}
 
 	// override the error with the new one
-	// FIXME: otherwise the outermost scope searched always wins here, which can bury a more specific error
-	// from the scope the reference was actually written in. Preserving the innermost error unless the outer
-	// one is strictly more specific would read better, but it changes many existing error messages, so it is
-	// left as is here.
+	// FIXME: other errors still prefer the outermost scope
 	current = std::move(new_error);
 }
 

@@ -1,5 +1,5 @@
 # name: test/sql/subquery/missing_column_in_subquery_error.test
-# description: A missing column of a table in a subquery is reported as such, not as a table the outer query lacks
+# description: Report missing columns in subqueries
 # group: [subquery]
 
 statement ok
@@ -24,6 +24,23 @@ FROM foo WHERE a IN (SELECT baz.c FROM bar);
 ----
 Referenced table "baz" not found
 
+# a table that HAVING does not know is still reported as such
+statement error
+SELECT (SELECT 1 HAVING missing.c > 0);
+----
+Referenced table "missing" not found
+
+# in a derived table and a lateral join
+statement error
+FROM foo, (SELECT bar.c FROM bar) t;
+----
+Table "bar" does not have a column named "c"
+
+statement error
+FROM foo, LATERAL (SELECT bar.c FROM bar WHERE bar.b = foo.a) t;
+----
+Table "bar" does not have a column named "c"
+
 # a column of the outer query still resolves
 statement ok
 INSERT INTO foo VALUES (1);
@@ -35,3 +52,17 @@ query I
 FROM foo WHERE a IN (SELECT foo.a FROM bar);
 ----
 1
+
+# an outer scope that has the column wins over an inner one that lacks it
+query I
+FROM foo WHERE a IN (SELECT foo.a FROM bar AS foo2);
+----
+1
+
+statement ok
+SET errors_as_json = true;
+
+statement error
+FROM foo WHERE a IN (SELECT baz.c FROM bar);
+----
+<REGEX>:.*"error_subtype":"TABLE_NOT_FOUND".*

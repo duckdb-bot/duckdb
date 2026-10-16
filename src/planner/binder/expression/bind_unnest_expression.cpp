@@ -203,6 +203,11 @@ BindResult UnnestBinder::Bind(FunctionExpression &function, idx_t depth, bool ro
 		return BindResult(std::move(error));
 	}
 	child = BoundCastExpression::AddArrayCastToList(context, std::move(child));
+	if (child->GetReturnType().id() == LogicalTypeId::VARIANT) {
+		// the type of a VARIANT is only known at run time, so unnest it as a list of VARIANT
+		child =
+		    BoundCastExpression::AddCastToType(context, std::move(child), LogicalType::LIST(LogicalType::VARIANT()));
+	}
 	auto &child_type = child->GetReturnType();
 
 	if (outer_unnest_level > 0) {

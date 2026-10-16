@@ -1,0 +1,54 @@
+# name: test/sql/types/variant/variant_list_in_lambda_and_unnest.test
+# description: A VARIANT that holds a list can be the list of a lambda function and of UNNEST
+# group: [variant]
+
+require json
+
+statement ok
+CREATE TABLE t (data VARIANT);
+
+statement ok
+INSERT INTO t VALUES ('{"items": [{"category": "electronics", "label": "A1"}, {"category": "furniture", "label": "B2"}]}'::JSON::VARIANT);
+
+query I
+SELECT list_transform(data.items, lambda x: x.label::VARCHAR) FROM t;
+----
+[A1, B2]
+
+query I
+SELECT len(list_filter(data.items, lambda x: x.category::VARCHAR = 'electronics')) FROM t;
+----
+1
+
+query I
+SELECT [x.label::VARCHAR FOR x IN data.items] FROM t;
+----
+[A1, B2]
+
+query I
+SELECT list_reduce(list_transform(data.items, lambda x: x.label::VARCHAR), lambda a, b: a || b) FROM t;
+----
+A1B2
+
+query I
+SELECT unnest(data.items).category::VARCHAR FROM t ORDER BY ALL;
+----
+electronics
+furniture
+
+query I
+SELECT u.category::VARCHAR FROM t, UNNEST(data.items) AS u ORDER BY ALL;
+----
+electronics
+furniture
+
+# a VARIANT that holds no list is an error at run time
+statement error
+SELECT unnest(data) FROM t;
+----
+can't convert to 'VARIANT[]'
+
+statement error
+SELECT list_transform(data, lambda x: x) FROM t;
+----
+can't convert to 'VARIANT[]'

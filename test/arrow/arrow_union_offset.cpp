@@ -1,4 +1,4 @@
-// Arrow scans of sparse unions with a nonzero offset, including dictionary-encoded members.
+// Arrow scans of sparse unions with a nonzero offset, including dictionary-encoded members, also as dictionary values.
 
 #include "catch.hpp"
 
@@ -139,4 +139,30 @@ TEST_CASE("Arrow scan of a sparse union with a nonzero offset", "[arrow]") {
 	    col.schema, col.array,
 	    "SELECT u FROM (VALUES (union_value(d := 30)::UNION(d INT, i INT)), (union_value(i := 103)::UNION(d INT, i "
 	    "INT)), (union_value(d := 20)::UNION(d INT, i INT)), (union_value(d := 30)::UNION(d INT, i INT))) t(u)"));
+}
+
+TEST_CASE("Arrow scan of a dictionary whose values are a sparse union with a dictionary member", "[arrow]") {
+	// the union holds d := 10, i := 101, d := 30 and i := 103, with int32 indices for its int64 member d
+	arrow_union_offset_test::UnionColumn values({0, 1, 0, 1}, 0);
+	const int64_t member_values[3] = {10, 20, 30};
+	values.dict_value_schema.format = "l";
+	values.dict_value_buffers[1] = member_values;
+	const int8_t indices[5] = {1, 0, 3, 2, 1};
+	const void *buffers[2] = {nullptr, indices};
+	ArrowSchema schema {};
+	schema.format = "c";
+	schema.name = "u";
+	schema.dictionary = &values.schema;
+	schema.release = arrow_union_offset_test::ReleaseSchema;
+	ArrowArray array {};
+	array.length = 5;
+	array.n_buffers = 2;
+	array.buffers = buffers;
+	array.dictionary = &values.array;
+	array.release = arrow_union_offset_test::ReleaseArray;
+	REQUIRE(arrow_union_offset_test::ScanMatches(
+	    schema, array,
+	    "SELECT u FROM (VALUES (union_value(i := 101)::UNION(d BIGINT, i INT)), (union_value(d := 10)::UNION(d BIGINT, "
+	    "i INT)), (union_value(i := 103)::UNION(d BIGINT, i INT)), (union_value(d := 30)::UNION(d BIGINT, i INT)), "
+	    "(union_value(i := 101)::UNION(d BIGINT, i INT))) t(u)"));
 }

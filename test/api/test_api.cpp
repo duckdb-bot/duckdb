@@ -1,4 +1,5 @@
 #include "catch.hpp"
+#include "duckdb/main/database_path_and_type.hpp"
 #include "test_helpers.hpp"
 #include "duckdb/common/checksum.hpp"
 #include "duckdb/parser/parser.hpp"
@@ -186,6 +187,29 @@ TEST_CASE("Test temp_directory defaults", "[api][.]") {
 
 		REQUIRE(db->instance->config.options.temporary_directory == ".tmp");
 	}
+}
+
+TEST_CASE("Test the default temp_directory of databases with an extension prefix or a remote path", "[api]") {
+	DBConfig config;
+	vector<std::pair<string, string>> paths {
+	    {"file.duckdb", "file.duckdb.tmp"},        {"ducklake:catalog.ducklake", "catalog.ducklake.tmp"},
+	    {"sqlite:file.db", "file.db.tmp"},         {"ducklake:r2://bucket/catalog.ducklake", ".tmp"},
+	    {"ducklake:postgres:dbname=lake", ".tmp"}, {"s3://bucket/file.duckdb", ".tmp"}};
+	for (auto &entry : paths) {
+		config.options.database_path = entry.first;
+		config.options.database_type = string();
+		config.SetDefaultTempDirectory();
+		REQUIRE(config.options.temporary_directory == entry.second);
+		// opening the database removes the prefix and sets the type, which RESET temp_directory then sees
+		DBPathAndType::ExtractExtensionPrefix(config.options.database_path, config.options.database_type);
+		config.SetDefaultTempDirectory();
+		REQUIRE(config.options.temporary_directory == entry.second);
+	}
+	// a path of a DuckDB file keeps its colon
+	config.options.database_path = "file:/data/file.duckdb";
+	config.options.database_type = "duckdb";
+	config.SetDefaultTempDirectory();
+	REQUIRE(config.options.temporary_directory == "file:/data/file.duckdb.tmp");
 }
 
 TEST_CASE("Test parallel usage of single client", "[api][.]") {

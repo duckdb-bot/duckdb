@@ -8,6 +8,7 @@
 #include "duckdb/common/operator/multiply.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/main/database.hpp"
+#include "duckdb/main/database_path_and_type.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/main/extension_helper.hpp"
 #include "duckdb/storage/storage_extension.hpp"
@@ -654,10 +655,26 @@ void DBConfig::SetDefaultMaxMemory() {
 void DBConfig::SetDefaultTempDirectory() {
 	if (!options.use_temporary_directory) {
 		options.temporary_directory = string();
-	} else if (DBConfig::IsInMemoryDatabase(options.database_path.c_str())) {
+		return;
+	}
+	if (DBConfig::IsInMemoryDatabase(options.database_path.c_str())) {
+		options.temporary_directory = ".tmp";
+		return;
+	}
+	// the path without its extension prefix, as opening the database leaves it: "catalog.ducklake" for
+	// "ducklake:catalog.ducklake"
+	auto path = options.database_path;
+	if (options.database_type.empty()) {
+		string database_type;
+		DBPathAndType::ExtractExtensionPrefix(path, database_type);
+	}
+	bool duckdb_file = StringUtil::CIEquals(options.database_type, "duckdb");
+	if (FileSystem::IsRemoteFile(path) ||
+	    (!duckdb_file && !ExtensionHelper::ExtractExtensionPrefixFromPath(path).empty())) {
+		// a remote path, or one of another extension such as "postgres:dbname=lake", is no local file to be next to
 		options.temporary_directory = ".tmp";
 	} else {
-		options.temporary_directory = Path::AddSuffixToPath(options.database_path, ".tmp");
+		options.temporary_directory = Path::AddSuffixToPath(path, ".tmp");
 	}
 }
 

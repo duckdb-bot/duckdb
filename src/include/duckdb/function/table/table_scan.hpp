@@ -35,6 +35,8 @@ struct TableScanBindData : public TableFunctionData {
 	unique_ptr<RowGroupOrderOptions> order_options;
 	//! Subset of partition indices to scan, if null, scan all
 	unique_ptr<unordered_set<idx_t>> partitions_to_scan;
+	//! For the scan of an index creation, receives the append generation of the table when the scan starts
+	shared_ptr<optional_idx> create_index_append_generation;
 
 public:
 	bool Equals(const FunctionData &other_p) const override {
@@ -49,6 +51,7 @@ public:
 		bind_data->order_options = order_options ? make_uniq<RowGroupOrderOptions>(*order_options) : nullptr;
 		bind_data->partitions_to_scan =
 		    partitions_to_scan ? make_uniq<unordered_set<idx_t>>(*partitions_to_scan) : nullptr;
+		bind_data->create_index_append_generation = create_index_append_generation;
 		return std::move(bind_data);
 	}
 };

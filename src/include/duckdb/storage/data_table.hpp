@@ -179,11 +179,15 @@ public:
 
 	//! Fetches an append lock
 	void AppendLock(DuckTransaction &transaction, TableAppendState &state);
-	//! Throws if rows were appended since the next row id was row_end, which an index built from the rows below
-	//! row_end misses
-	void VerifyNoAppendsSince(idx_t row_end);
-	//! Fetches the append lock to add such an index, after VerifyNoAppendsSince
-	unique_lock<mutex> IndexAppendLock(idx_t row_end);
+	//! Counts the appends to the table and their reverts
+	idx_t GetAppendGeneration() const {
+		return append_generation;
+	}
+	//! Throws if rows were appended or reverted since the append generation was append_generation, the caller
+	//! prevents further appends
+	void VerifyNoAppendsSince(idx_t append_generation);
+	//! Fetches the append lock, after VerifyNoAppendsSince
+	unique_lock<mutex> IndexAppendLock(idx_t append_generation);
 	//! Begin appending structs to this table, obtaining necessary locks, etc
 	void InitializeAppend(DuckTransaction &transaction, TableAppendState &state);
 	//! Append a chunk to the table using the AppendState obtained from InitializeAppend
@@ -332,6 +336,8 @@ private:
 	vector<ColumnDefinition> column_definitions;
 	//! Lock for appending entries to the table
 	mutex append_lock;
+	//! Incremented under the append lock when an append or a revert of one is complete
+	atomic<idx_t> append_generation {0};
 	//! The row groups of the table
 	shared_ptr<RowGroupCollection> row_groups;
 	//! The version of the data table

@@ -47,6 +47,8 @@ public:
 	unique_ptr<IndexBuildBindData> bind_data;
 	//! Alter table information for adding indexes.
 	unique_ptr<AlterTableInfo> alter_table_info;
+	//! The append generation of the table when the scan that builds the index starts
+	shared_ptr<optional_idx> scan_append_generation;
 
 	//! Types of the indexed columns.
 	vector<LogicalType> indexed_column_types;

@@ -676,6 +676,10 @@ unique_ptr<GlobalTableFunctionState> DuckTableScanInitGlobal(ClientContext &cont
 			break;
 		}
 	}
+	if (bind_data.create_index_append_generation) {
+		// rows appended after this are not scanned, the index creation checks that there are none
+		*bind_data.create_index_append_generation = storage.GetAppendGeneration();
+	}
 	storage.InitializeParallelScan(context, g_state->state, input.column_indexes);
 	g_state->InitializeScanInfo(input);
 	const bool repeatable_percentage_sample =

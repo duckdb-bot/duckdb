@@ -52,13 +52,10 @@ PhysicalCreateIndex::PhysicalCreateIndex(PhysicalPlan &physical_plan, LogicalOpe
 class CreateIndexGlobalSinkState : public GlobalSinkState {
 public:
 	unique_ptr<IndexBuildGlobalState> gstate;
-	//! The next row id of the table before the scan that builds the index starts
-	idx_t row_end;
 };
 
 unique_ptr<GlobalSinkState> PhysicalCreateIndex::GetGlobalSinkState(ClientContext &context) const {
 	auto gstate = make_uniq<CreateIndexGlobalSinkState>();
-	gstate->row_end = table.GetStorage().GetNextRowId();
 
 	IndexBuildInitGlobalStateInput global_state_input {bind_data.get(),     context,    table, *info,
 	                                                   unbound_expressions, storage_ids};
@@ -141,6 +138,8 @@ SinkFinalizeType PhysicalCreateIndex::Finalize(Pipeline &pipeline, Event &event,
 
 	bound_index->VerifyAllocations();
 
+	D_ASSERT(scan_append_generation && scan_append_generation->IsValid());
+	auto append_generation = scan_append_generation->GetIndex();
 	auto &storage = table.GetStorage();
 	if (!storage.IsMainTable()) {
 		throw TransactionException(
@@ -189,13 +188,13 @@ SinkFinalizeType PhysicalCreateIndex::Finalize(Pipeline &pipeline, Event &event,
 		auto &catalog = Catalog::GetCatalog(context, info->GetQualifiedName().Catalog());
 		catalog.Alter(context, *alter_table_info);
 		// the replaced table takes no more appends, so the rows appended during the build are all there
-		storage.VerifyNoAppendsSince(gstate.row_end);
+		storage.VerifyNoAppendsSince(append_generation);
 	}
 
 	// rows appended during the build are not in the index, rows appended after it was added are
 	unique_lock<mutex> append_lock;
 	if (!alter_table_info) {
-		append_lock = storage.IndexAppendLock(gstate.row_end);
+		append_lock = storage.IndexAppendLock(append_generation);
 	}
 
 	// Add the index to the storage.

@@ -596,11 +596,7 @@ arena_choose_hard(tsd_t *tsd, bool internal) {
 				arena = arena_init_locked(tsd_tsdn(tsd),
 				    choose[j], &arena_config_default);
 				if (arena == NULL) {
-					/*
-					 * DuckDB: without memory for a new arena,
-					 * share arena 0, as the callers of
-					 * arena_choose() use the arena it returns.
-					 */
+					/* DuckDB shares arena 0 without memory for a new one. */
 					choose[j] = 0;
 					arena = arena_get(tsd_tsdn(tsd), 0,
 					    false);

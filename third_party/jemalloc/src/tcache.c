@@ -1124,10 +1124,7 @@ tsd_tcache_data_init(tsd_t *tsd, arena_t *arena,
     const cache_bin_info_t tcache_bin_info[TCACHE_NBINS_MAX]) {
 	assert(tcache_bin_info != NULL);
 	if (tsd_tcache_data_init_impl(tsd, arena, tcache_bin_info)) {
-		/*
-		 * DuckDB: without memory for its bins, the thread goes on
-		 * without a tcache, which is otherwise used uninitialized.
-		 */
+		/* DuckDB goes on without a tcache without memory for its bins. */
 		tsd_tcache_enabled_set(tsd, false);
 		tsd_slow_update(tsd);
 		return true;

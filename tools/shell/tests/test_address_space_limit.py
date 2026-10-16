@@ -23,7 +23,7 @@ def run_with_address_space_limit(shell, limit_mb, sql):
     )
 
 
-# threads that started without memory for their allocator state used to crash with a segmentation fault
+# a thread that starts without memory for its allocator state fails with an error, not a segmentation fault
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="RLIMIT_AS limits the address space on Linux")
 @pytest.mark.parametrize(
     "limit_mb, sql",

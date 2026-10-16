@@ -94,9 +94,12 @@ optional_idx Allocator::GetMappedMemory() const {
 
 //! A thread runs without a tcache when jemalloc had no memory for one, and flushing it then fails
 static void FlushThreadCache() {
-	if (GetJemallocCTL<bool>("thread.tcache.enabled")) {
-		SetJemallocCTL("thread.tcache.flush");
+	bool enabled = false;
+	size_t enabled_size = sizeof(enabled);
+	if (duckdb_je_mallctl("thread.tcache.enabled", &enabled, &enabled_size, nullptr, 0) != 0 || !enabled) {
+		return;
 	}
+	SetJemallocCTL("thread.tcache.flush");
 }
 
 bool Allocator::SupportsFlush() {

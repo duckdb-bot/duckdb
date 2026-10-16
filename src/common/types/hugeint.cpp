@@ -550,7 +550,7 @@ bool Hugeint::TryConvert(float value, hugeint_t &result) {
 
 template <class REAL_T>
 bool ConvertFloatingToBigint(REAL_T value, hugeint_t &result) {
-	if (!Value::IsFinite<REAL_T>(value)) {
+	if (!std::isfinite(value)) {
 		return false;
 	}
 	if (value <= -170141183460469231731687303715884105728.0 || value >= 170141183460469231731687303715884105727.0) {
@@ -560,8 +560,10 @@ bool ConvertFloatingToBigint(REAL_T value, hugeint_t &result) {
 	if (negative) {
 		value = -value;
 	}
-	result.lower = (uint64_t)fmod(value, REAL_T(NumericLimits<uint64_t>::Maximum()));
-	result.upper = (int64_t)(value / REAL_T(NumericLimits<uint64_t>::Maximum()));
+	// split at the 64-bit limb boundary
+	const auto limb = std::ldexp(REAL_T(1), 64);
+	result.lower = (uint64_t)std::fmod(value, limb);
+	result.upper = (int64_t)(value / limb);
 	if (negative) {
 		Hugeint::NegateInPlace(result);
 	}

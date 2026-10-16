@@ -213,23 +213,23 @@ static catalog_entry_vector_t GetCatalogEntries(vector<reference<DuckSchemaEntry
 	return entries;
 }
 
-static bool HasBufferedIndexReplays(AttachedDatabase &db) {
-	bool has_buffered_replays = false;
+bool SingleFileCheckpointWriter::HasBufferedIndexReplays(AttachedDatabase &db) {
+	vector<shared_ptr<DataTableInfo>> tables;
 	auto &catalog = Catalog::GetCatalog(db).Cast<DuckCatalog>();
 	catalog.ScanSchemas(VisibilityBound::AllCommitted(), [&](DuckSchemaEntry &schema) {
-		if (has_buffered_replays) {
-			return;
-		}
 		schema.Scan(CatalogType::TABLE_ENTRY, VisibilityBound::AllCommitted(), [&](CatalogEntry &entry) {
-			if (has_buffered_replays || entry.type != CatalogType::TABLE_ENTRY) {
-				return;
+			if (entry.type == CatalogType::TABLE_ENTRY) {
+				tables.push_back(entry.Cast<DuckTableEntry>().GetStorage().GetDataTableInfo());
 			}
-			auto &table = entry.Cast<DuckTableEntry>();
-			auto &indexes = table.GetStorage().GetDataTableInfo()->GetIndexes();
-			has_buffered_replays = indexes.HasBufferedReplays();
 		});
 	});
-	return has_buffered_replays;
+	// binding an index looks up catalog entries, so the indexes are checked after the catalog scan
+	for (auto &table : tables) {
+		if (table->GetIndexes().HasBufferedReplays()) {
+			return true;
+		}
+	}
+	return false;
 }
 
 void SingleFileCheckpointWriter::CreateCheckpoint() {

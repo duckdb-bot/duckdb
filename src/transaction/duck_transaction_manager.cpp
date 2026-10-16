@@ -20,6 +20,7 @@
 #include "duckdb/transaction/meta_transaction.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/storage/checkpoint/checkpoint_options.hpp"
+#include "duckdb/storage/checkpoint_manager.hpp"
 #include "duckdb/storage/write_ahead_log.hpp"
 #include "duckdb/common/string_util.hpp"
 
@@ -157,6 +158,10 @@ DuckTransactionManager::CanCheckpoint(DuckTransaction &transaction, unique_ptr<S
 	}
 	if (Settings::Get<DebugSkipCheckpointOnCommitSetting>(db.GetDatabase())) {
 		return CheckpointDecision("checkpointing on commit disabled through configuration");
+	}
+	if (SingleFileCheckpointWriter::HasBufferedIndexReplays(db)) {
+		// a checkpoint at commit does not bind the indexes, so it would lose the operations they buffered
+		return CheckpointDecision("unbound indexes hold operations buffered by the WAL replay");
 	}
 	// try to lock the checkpoint lock
 	lock = transaction.TryGetCheckpointLock();

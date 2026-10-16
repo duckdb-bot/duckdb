@@ -315,8 +315,7 @@ bool ConvertJSONToVariant(ToVariantSourceData &source, ToVariantGlobalResultData
 			json_allocator.Reset();
 			// the conversion recurses once per level, so a deeper document could overflow the stack
 			HandleCastError::AssignError(
-			    StringUtil::Format("Can't convert JSON nested deeper than %d levels to VARIANT",
-			                       VariantUtils::MAX_NESTING_DEPTH),
+			    StringUtil::Format("JSON exceeds maximum recursion depth of %d", VariantUtils::MAX_NESTING_DEPTH),
 			    result.parameters);
 			result.all_converted = false;
 			// written even when NULLs are ignored, since the source value is not NULL

@@ -8,7 +8,7 @@ require json
 statement error
 SELECT variant_typeof((repeat('[', 40000) || repeat(']', 40000))::JSON::VARIANT);
 ----
-Conversion Error: Can't convert JSON nested deeper than 128 levels to VARIANT
+Conversion Error: JSON exceeds maximum recursion depth of 128
 
 query I
 SELECT TRY_CAST((repeat('[', 40000) || repeat(']', 40000))::JSON AS VARIANT) IS NULL;
@@ -51,7 +51,7 @@ ARRAY(1)	OBJECT(a)
 statement error
 SELECT obj::VARIANT FROM docs WHERE i = 129;
 ----
-Conversion Error: Can't convert JSON nested deeper than 128 levels to VARIANT
+Conversion Error: JSON exceeds maximum recursion depth of 128
 
 # inside a STRUCT or a LIST, TRY_CAST makes only the deep document NULL
 query II
@@ -69,7 +69,7 @@ SELECT TRY_CAST([union_value(j := arr), union_value(j := '42'::JSON)] AS VARIANT
 statement error
 SELECT [arr]::VARIANT FROM docs WHERE i = 130;
 ----
-Conversion Error: Can't convert JSON nested deeper than 128 levels to VARIANT
+Conversion Error: JSON exceeds maximum recursion depth of 128
 
 # an UPDATE folds the cast into a constant, whose name renders the whole VARIANT as SQL
 statement ok
@@ -92,4 +92,4 @@ ARRAY(52)	16402	true
 statement error
 UPDATE t SET doc = (repeat('[', 129) || repeat(']', 129))::JSON WHERE id = 1;
 ----
-Conversion Error: Can't convert JSON nested deeper than 128 levels to VARIANT
+Conversion Error: JSON exceeds maximum recursion depth of 128

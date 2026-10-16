@@ -1779,7 +1779,8 @@ struct VariantSQLStringConverter : public ValueConverter {
 		}
 		if (has_empty_key) {
 			// a struct literal cannot have an empty key
-			return Result("(SELECT variant_group_object(k, v ORDER BY i) FROM (VALUES " + result + ") t(i, k, v))");
+			return Result("(SELECT system.main.variant_group_object(k, v ORDER BY i) FROM (VALUES " + result +
+			              ") t(i, k, v))");
 		}
 		return Result("CAST({" + result + "} AS VARIANT)");
 	}

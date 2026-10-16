@@ -185,6 +185,19 @@ bool StringValueResult::HandleTooManyColumnsError(const char *value_ptr, const i
 	return false;
 }
 
+//! A line with only spaces before its comment and no values before them has no row
+static bool IsCommentOnlyLine(idx_t cur_col_id, const char *value, idx_t size) {
+	if (cur_col_id != 0) {
+		return false;
+	}
+	for (idx_t i = 0; i < size; i++) {
+		if (value[i] != ' ') {
+			return false;
+		}
+	}
+	return true;
+}
+
 void StringValueResult::SetComment(StringValueResult &result, idx_t buffer_pos) {
 	if (!result.comment) {
 		result.position_before_comment = buffer_pos;
@@ -194,21 +207,11 @@ void StringValueResult::SetComment(StringValueResult &result, idx_t buffer_pos) 
 
 bool StringValueResult::UnsetComment(StringValueResult &result, idx_t buffer_pos) {
 	bool done = false;
-	if (result.last_position.buffer_pos < result.position_before_comment) {
-		bool all_empty = true;
-		for (idx_t i = result.last_position.buffer_pos; i < result.position_before_comment; i++) {
-			if (result.buffer_ptr[i] != ' ') {
-				all_empty = false;
-				break;
-			}
-		}
-		if (!all_empty) {
-			done = AddRow(result, result.position_before_comment);
-		}
-	} else {
-		if (result.cur_col_id != 0) {
-			done = AddRow(result, result.position_before_comment);
-		}
+	const idx_t value_size = result.last_position.buffer_pos < result.position_before_comment
+	                             ? result.position_before_comment - result.last_position.buffer_pos
+	                             : 0;
+	if (!IsCommentOnlyLine(result.cur_col_id, result.buffer_ptr + result.last_position.buffer_pos, value_size)) {
+		done = AddRow(result, result.position_before_comment);
 	}
 	if (result.number_of_rows == 0) {
 		result.first_line_is_comment = true;
@@ -1427,14 +1430,17 @@ void StringValueScanner::ProcessOverBufferValue() {
 	auto previous_buffer = previous_buffer_handle->Ptr();
 	idx_t j = 0;
 	result.quoted = false;
+	// the value ends where a comment starts, also when the comment started before this buffer
+	bool comment_started = false;
 	for (idx_t i = result.last_position.buffer_pos; i < previous_buffer_handle->actual_size; i++) {
 		state_machine->Transition(states, previous_buffer[i]);
 		if (states.EmptyLine() || states.IsCurrentNewRow()) {
 			continue;
 		}
+		comment_started = comment_started || states.IsComment();
 		if (states.NewRow() || states.NewValue()) {
 			break;
-		} else if (!result.comment) {
+		} else if (!comment_started) {
 			over_buffer_string += previous_buffer[i];
 		}
 		if (states.IsQuoted()) {
@@ -1454,7 +1460,7 @@ void StringValueScanner::ProcessOverBufferValue() {
 		}
 		j++;
 	}
-	if (over_buffer_string.empty() &&
+	if (over_buffer_string.empty() && !comment_started &&
 	    state_machine->dialect_options.state_machine_options.new_line == NewLineIdentifier::CARRY_ON) {
 		if (!iterator.IsBoundarySet()) {
 			if (buffer_handle_ptr[iterator.pos.buffer_pos] == '\n') {
@@ -1508,9 +1514,10 @@ void StringValueScanner::ProcessOverBufferValue() {
 			}
 			continue;
 		}
+		comment_started = comment_started || states.IsComment();
 		if (states.NewRow() || states.NewValue()) {
 			break;
-		} else if (!result.comment && !states.IsComment()) {
+		} else if (!comment_started) {
 			over_buffer_string += buffer_handle_ptr[iterator.pos.buffer_pos];
 		}
 		if (states.IsQuoted()) {
@@ -1527,8 +1534,10 @@ void StringValueScanner::ProcessOverBufferValue() {
 		}
 		j++;
 	}
-	bool skip_value = false;
-	if (result.projecting_columns) {
+	const bool comment_only_line =
+	    comment_started && IsCommentOnlyLine(result.cur_col_id, over_buffer_string.c_str(), over_buffer_string.size());
+	bool skip_value = comment_only_line;
+	if (result.projecting_columns && !skip_value) {
 		if (!result.projected_columns[result.cur_col_id] && result.cur_col_id != result.number_of_columns) {
 			result.cur_col_id++;
 			skip_value = true;
@@ -1539,7 +1548,7 @@ void StringValueScanner::ProcessOverBufferValue() {
 		const auto &delimiter = result.state_machine.dialect_options.state_machine_options.delimiter.GetValue();
 		const idx_t extra_delimiter_bytes = states.IsDelimiter() && !delimiter.empty() ? delimiter.size() - 1 : 0;
 		bool removed_extra_delimiter_bytes = false;
-		if (result.quoted && !result.comment) {
+		if (result.quoted) {
 			idx_t length = over_buffer_string.size() - 1 - result.quoted_position;
 			while (length > 0 && result.ignore_empty_values &&
 			       over_buffer_string.c_str()[result.quoted_position + length] == ' ') {
@@ -1618,7 +1627,7 @@ void StringValueScanner::ProcessOverBufferValue() {
 		}
 		if (states.EmptyLine() && state_machine->dialect_options.num_cols == 1) {
 			result.EmptyLine(result, iterator.pos.buffer_pos);
-		} else if (!states.IsNotSet() && (!result.comment || !value.Empty())) {
+		} else if (!states.IsNotSet()) {
 			idx_t value_size = value.GetSize();
 			if (!removed_extra_delimiter_bytes) {
 				if (extra_delimiter_bytes > value_size) {
@@ -1636,10 +1645,18 @@ void StringValueScanner::ProcessOverBufferValue() {
 	}
 
 	if (states.NewRow() && !states.IsNotSet()) {
-		if (result.IsCommentSet(result)) {
-			result.UnsetComment(result, iterator.pos.buffer_pos);
+		if (comment_only_line) {
+			LinePosition current_line_start = {iterator.pos.buffer_idx, iterator.pos.buffer_pos, result.buffer_size};
+			result.current_line_position.begin = result.current_line_position.end;
+			result.current_line_position.end = current_line_start;
 		} else {
 			result.AddRowInternal();
+		}
+		if (comment_started) {
+			if (result.number_of_rows == 0) {
+				result.first_line_is_comment = true;
+			}
+			result.comment = false;
 		}
 		lines_read++;
 	}

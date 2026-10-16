@@ -300,7 +300,7 @@ public:
 		return entries.size();
 	}
 
-	//! Returns false if a value could not be cast, or was cast to NULL
+	//! Returns false if a value could not be cast
 	bool Cast() {
 		auto client = conversion_data.client;
 		unique_ptr<CastFunctionSet> default_set;
@@ -325,20 +325,22 @@ public:
 					return false;
 				}
 				strings.Flatten();
-				if (!FlatVector::Validity(strings).CheckAllValid(count)) {
-					return false;
-				}
 			}
 		}
 		return true;
 	}
 
-	//! The text of the value added at 'index', after Cast
-	string_t GetString(idx_t index) const {
+	//! The text of the value added at 'index' after Cast, returns false if the cast returned NULL
+	bool TryGetString(idx_t index, string_t &result) const {
 		auto &entry = entries[index];
 		auto &group = groups[entry.first];
 		auto &strings = group.strings[entry.second / STANDARD_VECTOR_SIZE];
-		return FlatVector::GetData<string_t>(strings)[entry.second % STANDARD_VECTOR_SIZE];
+		auto string_idx = entry.second % STANDARD_VECTOR_SIZE;
+		if (FlatVector::IsNull(strings, string_idx)) {
+			return false;
+		}
+		result = FlatVector::GetData<string_t>(strings)[string_idx];
+		return true;
 	}
 
 private:
@@ -545,10 +547,21 @@ public:
 			text += '}';
 			break;
 		}
-		default:
-			AppendVariantString(text, primitives.GetString(position.primitive_idx++), quote);
+		default: {
+			string_t str;
+			if (TryGetPrimitive(position, str)) {
+				AppendVariantString(text, str, quote);
+			} else {
+				text += "NULL";
+			}
 			break;
 		}
+		}
+	}
+
+	//! The text of the next primitive value, returns false if its cast returned NULL
+	bool TryGetPrimitive(Position &position, string_t &result) const {
+		return primitives.TryGetString(position.primitive_idx++, result);
 	}
 
 private:
@@ -616,6 +629,15 @@ static bool CastVariantToVarchar(FromVariantConversionData &conversion_data, Vec
 		}
 		if (type_id == VariantLogicalType::VARCHAR) {
 			writer.WriteValue(VariantUtils::DecodeStringData(variant, row_index, sel[i]));
+			continue;
+		}
+		if (type_id != VariantLogicalType::ARRAY && type_id != VariantLogicalType::OBJECT) {
+			string_t str;
+			if (text_writer.TryGetPrimitive(positions[i], str)) {
+				writer.WriteValue(str);
+			} else {
+				writer.WriteNull();
+			}
 			continue;
 		}
 		text.clear();

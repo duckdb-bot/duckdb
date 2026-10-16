@@ -35,7 +35,8 @@ TEST_CASE("VARIANT values cast to VARCHAR with a registered cast of their primit
 
 	// the registered cast returns NULL
 	REQUIRE_NO_FAIL(con.Query("CREATE TABLE nulls AS SELECT * FROM (VALUES (1, [1::BIGINT, 2]::VARIANT), (2, "
-	                          "{'k': 2::BIGINT}::VARIANT), (3, 2::BIGINT::VARIANT), (4, 'a'::VARIANT)) t(i, v)"));
+	                          "{'k': 2::BIGINT}::VARIANT), (3, 2::BIGINT::VARIANT), (4, 'a'::VARIANT), (5, "
+	                          "[{'a': 4::BIGINT}::VARIANT, {'A': 5::BIGINT}::VARIANT]::VARIANT)) t(i, v)"));
 	result = con.Query("SELECT v::VARCHAR FROM nulls ORDER BY i");
-	REQUIRE(CHECK_COLUMN(result, 0, {"[n1, NULL]", "{'k': NULL}", Value(), "a"}));
+	REQUIRE(CHECK_COLUMN(result, 0, {"[n1, NULL]", "{'k': NULL}", Value(), "a", "[{'a': n4}, {'A': n5}]"}));
 }

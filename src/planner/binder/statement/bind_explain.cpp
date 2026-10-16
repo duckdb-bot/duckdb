@@ -24,8 +24,7 @@ BoundStatement Binder::Bind(ExplainStatement &stmt) {
 
 	// bind the underlying statement
 	auto plan = Bind(*stmt.stmt);
-	// render the unoptimized logical plan only when it will be shown, for a plain EXPLAIN with explain_output = 'all'
-	// in a multi-plan format
+	// render the unoptimized logical plan only when EXPLAIN returns it
 	// (it is unused for EXPLAIN ANALYZE, and single-plan formats like FORMAT WEB render only the final plan)
 	string logical_plan_unopt;
 	if (stmt.explain_type == ExplainType::EXPLAIN_STANDARD &&

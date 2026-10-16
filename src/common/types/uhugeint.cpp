@@ -506,13 +506,13 @@ bool Uhugeint::TryConvert(float value, uhugeint_t &result) {
 
 template <class REAL_T>
 bool ConvertFloatingToUhugeint(REAL_T value, uhugeint_t &result) {
-	if (!Value::IsFinite<REAL_T>(value)) {
+	if (!std::isfinite(value)) {
 		return false;
 	}
 	if (value < 0 || value >= 340282366920938463463374607431768211456.0) {
 		return false;
 	}
-	// 2^64, which REAL_T holds exactly, unlike 2^64 - 1
+	// split at the 64-bit limb boundary
 	const auto limb = std::ldexp(REAL_T(1), 64);
 	result.lower = (uint64_t)std::fmod(value, limb);
 	result.upper = (uint64_t)(value / limb);

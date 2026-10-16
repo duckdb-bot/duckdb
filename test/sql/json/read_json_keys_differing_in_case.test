@@ -5,25 +5,48 @@
 require json
 
 statement ok
-COPY (SELECT MAP {'name': 'foo', 'Name': 'bar'} AS m) TO '__TEST_DIR__/keys_differing_in_case.json';
+COPY (SELECT MAP {'name': 'foo', 'Name': 'bar'} AS m) TO '{TEST_DIR}/keys_differing_in_case.json';
 
 statement error
-FROM read_json('__TEST_DIR__/keys_differing_in_case.json');
+FROM read_json('{TEST_DIR}/keys_differing_in_case.json');
 ----
-Not implemented Error: Duplicate name "Name" in struct auto-detected in JSON: the keys "name" and "Name" differ only in case
+Not implemented Error: Duplicate names "name" and "Name" in struct auto-detected in JSON: field names are case-insensitive
 
 # the ways the error suggests
-query I
-SELECT m['Name'] FROM read_json('__TEST_DIR__/keys_differing_in_case.json', columns = {'m': 'MAP(VARCHAR, VARCHAR)'});
+query II
+SELECT m['name'], m['Name'] FROM read_json('{TEST_DIR}/keys_differing_in_case.json', columns = {'m': 'MAP(VARCHAR, VARCHAR)'});
 ----
-bar
+foo	bar
 
 query I
-SELECT m FROM read_json('__TEST_DIR__/keys_differing_in_case.json', columns = {'m': 'JSON'});
+SELECT m FROM read_json('{TEST_DIR}/keys_differing_in_case.json', columns = {'m': 'JSON'});
 ----
 {"name":"foo","Name":"bar"}
 
 query I
-SELECT m FROM read_json('__TEST_DIR__/keys_differing_in_case.json', ignore_errors = true);
+SELECT m FROM read_json('{TEST_DIR}/keys_differing_in_case.json', ignore_errors = true);
 ----
 {'name': foo}
+
+# in a list, the schema has the MAP inside the list
+statement ok
+COPY (SELECT [MAP {'name': 'foo', 'Name': 'bar'}] AS l) TO '{TEST_DIR}/keys_differing_in_case_list.json';
+
+statement error
+FROM read_json('{TEST_DIR}/keys_differing_in_case_list.json');
+----
+Duplicate names "name" and "Name"
+
+query I
+SELECT l[1]['Name'] FROM read_json('{TEST_DIR}/keys_differing_in_case_list.json', columns = {'l': 'MAP(VARCHAR, VARCHAR)[]'});
+----
+bar
+
+# a key with a quote is escaped
+statement ok
+COPY (SELECT MAP {'a"b': 1, 'A"b': 2} AS m) TO '{TEST_DIR}/keys_differing_in_case_quote.json';
+
+statement error
+FROM read_json('{TEST_DIR}/keys_differing_in_case_quote.json');
+----
+Duplicate names "a""b" and "A""b"

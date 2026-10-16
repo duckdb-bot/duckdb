@@ -10,7 +10,7 @@ COPY (SELECT MAP {'name': 'foo', 'Name': 'bar'} AS m) TO '{TEST_DIR}/keys_differ
 statement error
 FROM read_json('{TEST_DIR}/keys_differing_in_case.json');
 ----
-Not implemented Error: Duplicate names "name" and "Name" in struct auto-detected in JSON: field names are case-insensitive
+Not implemented Error: Duplicate names "name" and "Name" in struct auto-detected in JSON: field names are case-insensitive. Specify JSON for the column or a schema containing MAP(VARCHAR, ...) in columns, or set ignore_errors=true to discard other spellings
 
 # the ways the error suggests
 query II

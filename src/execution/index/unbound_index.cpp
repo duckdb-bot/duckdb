@@ -13,9 +13,10 @@
 namespace duckdb {
 
 UnboundIndex::UnboundIndex(unique_ptr<CreateInfo> create_info, IndexStorageInfo storage_info_p,
-                           TableIOManager &table_io_manager, AttachedDatabase &db)
+                           TableIOManager &table_io_manager, AttachedDatabase &db, bool storage_missing)
     : Index(create_info->Cast<CreateIndexInfo>().column_ids, table_io_manager, db), create_info(std::move(create_info)),
-      storage_info(make_shared_ptr<const IndexStorageInfo>(std::move(storage_info_p))) {
+      storage_info(make_shared_ptr<const IndexStorageInfo>(std::move(storage_info_p))),
+      storage_missing(storage_missing) {
 	// Memory safety check.
 	for (idx_t info_idx = 0; info_idx < storage_info->allocator_infos.size(); info_idx++) {
 		auto &info = storage_info->allocator_infos[info_idx];
@@ -56,6 +57,10 @@ void UnboundIndex::ResetStorage() {
 }
 
 IndexCheckpointResult UnboundIndex::Checkpoint(PartialBlockManager &, StorageVersion) {
+	if (storage_missing) {
+		// write no data, so that the next load also finds the index without it
+		return {nullptr, nullptr};
+	}
 	return {storage_info, nullptr};
 }
 

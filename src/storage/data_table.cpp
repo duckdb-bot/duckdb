@@ -53,8 +53,22 @@ void DataTableInfo::BindIndexes(ClientContext &context, const optional<string> &
 	indexes.Bind(context, *this, index_type);
 }
 
+void DataTableInfo::BindIndexesToModify(ClientContext &context) {
+	BindIndexes(context);
+	indexes.ThrowIfStorageMissing(*this);
+}
+
 bool DataTableInfo::IsTemporary() const {
 	return db.IsTemporary();
+}
+
+bool DataTableInfo::HasIndexStorageInfo(const Identifier &name) const {
+	for (auto &index_storage_info : index_storage_infos) {
+		if (index_storage_info.name == name) {
+			return true;
+		}
+	}
+	return false;
 }
 
 IndexStorageInfo DataTableInfo::ExtractIndexStorageInfo(const Identifier &name) {
@@ -124,7 +138,7 @@ DataTable::DataTable(ClientContext &context, DataTable &parent, idx_t removed_co
 	}
 
 	// Bind all indexes.
-	info->BindIndexes(context);
+	info->BindIndexesToModify(context);
 
 	// first check if there are any indexes that exist that point to the removed column
 	for (const auto column_id : info->indexes.GetIndexedColumns()) {
@@ -164,7 +178,7 @@ DataTable::DataTable(ClientContext &context, DataTable &parent, BoundConstraint 
 	// ALTER COLUMN to add a new constraint.
 
 	// Bind all indexes.
-	info->BindIndexes(context);
+	info->BindIndexesToModify(context);
 
 	auto &local_storage = LocalStorage::Get(context, db);
 	lock_guard<mutex> parent_lock(parent.append_lock);
@@ -192,7 +206,7 @@ DataTable::DataTable(ClientContext &context, DataTable &parent, idx_t changed_id
 	}
 
 	// Bind all indexes.
-	info->BindIndexes(context);
+	info->BindIndexesToModify(context);
 
 	// first check if there are any indexes that exist that point to the changed column
 	for (const auto column_id : info->indexes.GetIndexedColumns()) {
@@ -355,7 +369,7 @@ shared_ptr<DataTableInfo> &DataTable::GetDataTableInfo() {
 }
 
 void DataTable::BindIndexes(ClientContext &context) {
-	info->BindIndexes(context);
+	info->BindIndexesToModify(context);
 }
 
 bool DataTable::HasIndexes() const {
@@ -903,7 +917,7 @@ void DataTable::InitializeLocalStorage(LocalAppendState &state, DuckTableEntry &
 	}
 
 	// The transaction-local indexes are created with the local storage, and only for indexes that are bound
-	info->BindIndexes(context);
+	info->BindIndexesToModify(context);
 	auto &local_storage = LocalStorage::Get(context, db);
 	local_storage.InitializeStorage(state, *this, table);
 	state.constraint_state = InitializeConstraintState(table, bound_constraints);
@@ -1311,7 +1325,7 @@ void DataTable::VerifyDeleteConstraints(optional_ptr<LocalTableStorage> storage,
 unique_ptr<TableDeleteState> DataTable::InitializeDelete(TableCatalogEntry &table, ClientContext &context,
                                                          const vector<unique_ptr<BoundConstraint>> &bound_constraints) {
 	// Bind all indexes.
-	info->BindIndexes(context);
+	info->BindIndexesToModify(context);
 
 	auto binder = Binder::CreateBinder(context);
 	vector<LogicalType> types;
@@ -1469,7 +1483,7 @@ void DataTable::VerifyUpdateConstraints(ConstraintState &state, ClientContext &c
 unique_ptr<TableUpdateState> DataTable::InitializeUpdate(TableCatalogEntry &table, ClientContext &context,
                                                          const vector<unique_ptr<BoundConstraint>> &bound_constraints) {
 	// Bind all indexes.
-	info->BindIndexes(context);
+	info->BindIndexesToModify(context);
 	auto result = make_uniq<TableUpdateState>();
 	result->constraint_state = InitializeConstraintState(table, bound_constraints);
 	return result;

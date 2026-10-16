@@ -433,7 +433,7 @@ size_t Utf8Proc::RenderWidth(const char *s, size_t len, size_t pos) {
 
 size_t Utf8Proc::RenderWidth(const std::string &str) {
 	size_t render_width = 0;
-	// ASCII text needs no grapheme clusters: a printable character is one column wide, any other none
+	// ASCII text needs no grapheme clusters, as a printable character is one column wide and any other none
 	size_t pos = 0;
 	for (; pos < str.size() && !(str[pos] & 0x80); pos++) {
 		render_width += str[pos] >= 0x20 && str[pos] < 0x7F;

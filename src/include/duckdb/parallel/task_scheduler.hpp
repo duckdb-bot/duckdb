@@ -84,6 +84,7 @@ public:
 	static idx_t GetEstimatedCPUId();
 
 private:
+	void ExecuteForeverInternal(atomic<bool> *marker, TaskSchedulerType pool_type);
 	TaskSchedulerPool &GetPool(TaskSchedulerType pool_type);
 	TaskSchedulerQueue &GetQueue(TaskSchedulerType pool_type) const;
 

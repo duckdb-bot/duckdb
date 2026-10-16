@@ -35,6 +35,14 @@ SELECT i, TRY_CAST(arr AS VARIANT) IS NULL, TRY_CAST(obj AS VARIANT) IS NULL FRO
 130	true	true
 131	true	true
 
+# sibling containers, where only the second one goes deeper than the limit
+query II
+SELECT TRY_CAST(('[' || repeat('[', 127) || repeat(']', 127) || ', {"a": ' || repeat('[', 126) || repeat(']', 126) ||
+    '}]')::JSON AS VARIANT) IS NULL, TRY_CAST(('[' || repeat('[', 127) || repeat(']', 127) || ', {"a": ' ||
+    repeat('[', 127) || repeat(']', 127) || '}]')::JSON AS VARIANT) IS NULL;
+----
+false	true
+
 query II
 SELECT variant_typeof(arr::VARIANT), variant_typeof(obj::VARIANT) FROM docs WHERE i = 128;
 ----

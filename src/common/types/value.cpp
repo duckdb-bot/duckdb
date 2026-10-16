@@ -1741,36 +1741,41 @@ static bool VariantIsMapObject(const UnifiedVariantVectorData &variant, idx_t ro
 	       variant.GetKey(row, variant.GetKeysIndex(row, nested_data.children_idx)).GetSize() == 0;
 }
 
-static string VariantToSQLString(const UnifiedVariantVectorData &variant, idx_t row, uint32_t values_idx);
+static void VariantToSQLString(const UnifiedVariantVectorData &variant, idx_t row, uint32_t values_idx, string &result);
 
-static string VariantChildToSQLString(const UnifiedVariantVectorData &variant, idx_t row, uint32_t values_idx) {
+static void VariantChildToSQLString(const UnifiedVariantVectorData &variant, idx_t row, uint32_t values_idx,
+                                    string &result) {
 	if (variant.GetTypeId(row, values_idx) == VariantLogicalType::VARIANT_NULL) {
-		return "NULL::VARIANT";
+		result += "NULL::VARIANT";
+		return;
 	}
-	return VariantToSQLString(variant, row, values_idx);
+	VariantToSQLString(variant, row, values_idx, result);
 }
 
 //! Renders each array element and object field as a VARIANT of its own, reading each value once
-static string VariantToSQLString(const UnifiedVariantVectorData &variant, idx_t row, uint32_t values_idx) {
+static void VariantToSQLString(const UnifiedVariantVectorData &variant, idx_t row, uint32_t values_idx,
+                               string &result) {
 	auto type_id = variant.GetTypeId(row, values_idx);
 	if (type_id == VariantLogicalType::ARRAY) {
 		auto nested_data = VariantUtils::DecodeNestedData(variant, row, values_idx);
-		string result = "CAST([";
+		result += "CAST([";
 		for (idx_t i = 0; i < nested_data.child_count; i++) {
 			if (i > 0) {
 				result += ", ";
 			}
 			auto child_idx = variant.GetValuesIndex(row, nested_data.children_idx + i);
-			result += VariantChildToSQLString(variant, row, child_idx);
+			VariantChildToSQLString(variant, row, child_idx, result);
 		}
-		return result + "] AS VARIANT)";
+		result += "] AS VARIANT)";
+		return;
 	}
 	if (VariantIsMapObject(variant, row, values_idx)) {
 		// as a VARIANT the MAP becomes a list of its key and value pairs
 		auto nested_data = VariantUtils::DecodeNestedData(variant, row, values_idx);
-		auto child_idx = variant.GetValuesIndex(row, nested_data.children_idx);
-		return "CAST([CAST({'key': CAST(CAST('' AS VARCHAR) AS VARIANT), 'value': " +
-		       VariantChildToSQLString(variant, row, child_idx) + "} AS VARIANT)] AS VARIANT)";
+		result += "CAST([CAST({'key': CAST(CAST('' AS VARCHAR) AS VARIANT), 'value': ";
+		VariantChildToSQLString(variant, row, variant.GetValuesIndex(row, nested_data.children_idx), result);
+		result += "} AS VARIANT)] AS VARIANT)";
+		return;
 	}
 	if (type_id == VariantLogicalType::OBJECT) {
 		auto nested_data = VariantUtils::DecodeNestedData(variant, row, values_idx);
@@ -1783,19 +1788,20 @@ static string VariantToSQLString(const UnifiedVariantVectorData &variant, idx_t 
 		std::stable_sort(
 		    fields.begin(), fields.end(),
 		    [](const pair<string, uint32_t> &lhs, const pair<string, uint32_t> &rhs) { return lhs.first < rhs.first; });
-		string result = "CAST({";
+		result += "CAST({";
 		for (idx_t i = 0; i < fields.size(); i++) {
 			if (i > 0) {
 				result += ", ";
 			}
-			result += "'" + StringUtil::Replace(fields[i].first, "'", "''") +
-			          "': " + VariantChildToSQLString(variant, row, fields[i].second);
+			result += "'" + StringUtil::Replace(fields[i].first, "'", "''") + "': ";
+			VariantChildToSQLString(variant, row, fields[i].second, result);
 		}
-		return result + "} AS VARIANT)";
+		result += "} AS VARIANT)";
+		return;
 	}
 	// Preserve the payload's type as well as its value (e.g. SMALLINT versus INTEGER).
 	auto val = VariantUtils::ConvertVariantToValue(variant, row, values_idx);
-	return "CAST(CAST(" + val.ToSQLString() + " AS " + val.type().ToString() + ") AS VARIANT)";
+	result += "CAST(CAST(" + val.ToSQLString() + " AS " + val.type().ToString() + ") AS VARIANT)";
 }
 
 string Value::ToSQLString() const {
@@ -1836,7 +1842,9 @@ string Value::ToSQLString() const {
 		RecursiveUnifiedVectorFormat format;
 		Vector::RecursiveToUnifiedFormat(tmp, format);
 		UnifiedVariantVectorData vector_data(format);
-		return VariantToSQLString(vector_data, 0, 0);
+		string result;
+		VariantToSQLString(vector_data, 0, 0, result);
+		return result;
 	}
 	case LogicalTypeId::TUPLE:
 	case LogicalTypeId::STRUCT:

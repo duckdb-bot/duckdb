@@ -161,7 +161,7 @@ TEST_CASE("Value::ToSQLString renders nested VARIANT values once", "[api][value_
 	REQUIRE(EvalScalar(con, "{'b': 'x', 'a': [2]}::VARIANT").ToSQLString() ==
 	        "CAST({'a': CAST([CAST(CAST(2 AS INTEGER) AS VARIANT)] AS VARIANT), 'b': CAST(CAST('x' AS VARCHAR) AS "
 	        "VARIANT)} AS VARIANT)");
-	// each level of a heterogeneous array used to convert everything below it again
+	// deeply nested heterogeneous arrays
 	string deep = "1::VARIANT";
 	for (idx_t depth = 0; depth < 200; depth++) {
 		deep = "['x'::VARIANT, (" + deep + ")]::VARIANT";
@@ -184,6 +184,30 @@ TEST_CASE("Value::ToSQLString round-trips JSON-derived supported VARIANT objects
 		for (auto function : {"variant_typeof", "variant_keys"}) {
 			REQUIRE(EvalScalar(con, string(function) + "(" + original + ")") ==
 			        EvalScalar(con, string(function) + "(" + rendered + ")"));
+		}
+	}
+}
+
+TEST_CASE("Value::ToSQLString renders VARIANT objects whose only key is empty", "[api][value_sql]") {
+	DuckDB db;
+	Connection con(db);
+	if (!db.instance->ExtensionIsLoaded("json")) {
+		WARN("JSON extension required for empty VARIANT key coverage");
+		return;
+	}
+	// at the root, as a field next to another one, and inside an array
+	duckdb::vector<std::pair<string, bool>> wrappers {
+	    {"%s", false}, {"{\"a\":%s,\"b\":[1,null]}", true}, {"[%s,{\"c\":%s}]", false}};
+	for (auto json : {"{\"\":1}", "{\"\":null}", "{\"\":[1,\"x\"]}", "{\"\":{\"\":{\"b\":2}}}"}) {
+		for (auto &wrapper : wrappers) {
+			auto original = "'" + StringUtil::Replace(wrapper.first, "%s", json) + "'::JSON::VARIANT";
+			INFO(original);
+			auto rendered = EvalScalar(con, original).ToSQLString();
+			REQUIRE(!EvalScalar(con, "variant_typeof(" + rendered + ")").IsNull());
+			if (wrapper.second) {
+				REQUIRE(EvalScalar(con, "(" + original + ").b IS NOT DISTINCT FROM (" + rendered + ").b") ==
+				        Value::BOOLEAN(true));
+			}
 		}
 	}
 }

@@ -1,0 +1,41 @@
+# name: test/sql/pivot/pivot_parameter_in_cte.test
+# description: A PIVOT that reads the pivot values from a CTE with a parameter gives the same error as with a subquery
+# group: [pivot]
+
+statement error
+PREPARE s1 AS WITH q1 AS (SELECT $1 AS a) PIVOT q1 ON a;
+----
+cannot have parameters in their source
+
+# also through a subquery, another CTE, or in the expression of a CTE
+statement error
+PREPARE s2 AS WITH q1 AS (SELECT $1 AS a) PIVOT (SELECT * FROM q1) ON a;
+----
+cannot have parameters in their source
+
+statement error
+PREPARE s3 AS WITH q1 AS (SELECT $1 AS a), q2 AS (FROM q1) PIVOT q2 ON a;
+----
+cannot have parameters in their source
+
+statement error
+PREPARE s4 AS WITH q1 AS (SELECT (SELECT $1) AS a) PIVOT q1 ON a;
+----
+cannot have parameters in their source
+
+# a CTE with a parameter that the source does not read, and listed values, still work
+statement ok
+PREPARE s5 AS WITH q1 AS (SELECT $1 AS a), q2 AS (SELECT 1 AS b) PIVOT q2 ON b;
+
+query I
+EXECUTE s5(5);
+----
+1
+
+statement ok
+PREPARE s6 AS WITH q1 AS (SELECT $1 AS a) PIVOT q1 ON a IN (123);
+
+query I
+EXECUTE s6(123);
+----
+1

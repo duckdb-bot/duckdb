@@ -5,8 +5,64 @@
 #include "duckdb/parser/statement/select_statement.hpp"
 #include "duckdb/common/types/uuid.hpp"
 #include "duckdb/parser/expression/operator_expression.hpp"
+#include "duckdb/parser/tableref/basetableref.hpp"
+#include "duckdb/parser/expression/subquery_expression.hpp"
+#include "duckdb/parser/parsed_expression_iterator.hpp"
 
 namespace duckdb {
+
+//! Finds a parameter in a PIVOT source, also in the CTEs it reads, which the query of the pivot values copies
+struct PivotSourceParameterFinder {
+	explicit PivotSourceParameterFinder(PEGTransformer &transformer) {
+		transformer.ExtractCTEsRecursive(ctes);
+	}
+
+	CommonTableExpressionMap ctes;
+	identifier_set_t visited_ctes;
+	bool found = false;
+
+	void Visit(unique_ptr<ParsedExpression> &expr) {
+		if (expr->GetExpressionClass() == ExpressionClass::PARAMETER) {
+			found = true;
+			return;
+		}
+		if (expr->GetExpressionClass() == ExpressionClass::SUBQUERY) {
+			Visit(*expr->Cast<SubqueryExpression>().SubqueryMutable()->node);
+		}
+		ParsedExpressionIterator::EnumerateChildren(*expr, [&](unique_ptr<ParsedExpression> &child) { Visit(child); });
+	}
+
+	void Visit(QueryNode &node) {
+		ParsedExpressionIterator::EnumerateQueryNodeChildren(
+		    node, [&](unique_ptr<ParsedExpression> &child) { Visit(child); }, [&](TableRef &ref) { VisitCTE(ref); });
+	}
+
+	void Visit(TableRef &ref) {
+		ParsedExpressionIterator::EnumerateTableRefChildren(
+		    ref, [&](unique_ptr<ParsedExpression> &child) { Visit(child); }, [&](TableRef &child) { VisitCTE(child); });
+	}
+
+	void VisitCTE(TableRef &ref) {
+		if (ref.type != TableReferenceType::BASE_TABLE) {
+			return;
+		}
+		auto &name = ref.Cast<BaseTableRef>().GetQualifiedName();
+		if (!name.Catalog().empty() || !name.Schema().empty()) {
+			return;
+		}
+		auto entry = ctes.map.find(name.Name());
+		if (entry == ctes.map.end() || !visited_ctes.insert(name.Name()).second || !entry->second->query_node) {
+			return;
+		}
+		Visit(*entry->second->query_node);
+	}
+};
+
+static bool SourceHasParameter(PEGTransformer &transformer, TableRef &source) {
+	PivotSourceParameterFinder finder(transformer);
+	finder.Visit(source);
+	return finder.found;
+}
 
 void PEGTransformerFactory::AddPivotEntry(PEGTransformer &transformer, string enum_name, unique_ptr<SelectNode> base,
                                           unique_ptr<ParsedExpression> column, unique_ptr<QueryNode> subquery,
@@ -112,7 +168,8 @@ PEGTransformerFactory::FinalizePivotStatementTrampoline(PEGTransformer &transfor
 		}
 	}
 	auto source = process.TakeResult<unique_ptr<TableRef>>(0);
-	auto has_parameters = process.TakeResult<bool>(4);
+	// a parameter in a CTE that the source reads is not counted while the source is transformed
+	auto has_parameters = process.TakeResult<bool>(4) || SourceHasParameter(transformer, *source);
 	auto select_node = make_uniq<SelectNode>();
 	if (!pivot_columns.HasResult()) {
 		select_node->from_table = std::move(source);
@@ -237,7 +294,7 @@ PEGTransformerFactory::FinalizeUnpivotStatementTrampoline(PEGTransformer &transf
 		return nullptr;
 	}
 	auto source = process.TakeResult<unique_ptr<TableRef>>(0);
-	auto has_parameters = process.TakeResult<bool>(3);
+	auto has_parameters = process.TakeResult<bool>(3) || SourceHasParameter(transformer, *source);
 	auto target_list = process.TakeResult<vector<unique_ptr<ParsedExpression>>>(1);
 	auto &unpivot_names_opt = list_pr.Child<OptionalParseResult>(4);
 	vector<PivotColumn> columns;

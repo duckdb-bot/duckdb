@@ -3,7 +3,11 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/table_function_catalog_entry.hpp"
+#include "duckdb/parser/expression/case_expression.hpp"
 #include "duckdb/parser/expression/columnref_expression.hpp"
+#include "duckdb/parser/expression/conjunction_expression.hpp"
+#include "duckdb/parser/expression/constant_expression.hpp"
+#include "duckdb/parser/expression/operator_expression.hpp"
 #include "duckdb/parser/tableref/subqueryref.hpp"
 #include "duckdb/planner/bind_context.hpp"
 #include "duckdb/planner/bound_query_node.hpp"
@@ -245,7 +249,45 @@ unique_ptr<ParsedExpression> TableBinding::ExpandGeneratedColumn(const Identifie
 	}
 	ReplaceAliases(*expression, table_entry.GetColumns(), alias_map);
 	BakeTableName(*expression, alias);
-	return (expression);
+	if (!IsNullExtended()) {
+		return (expression);
+	}
+	// a row that an outer join NULL-extends gets NULL, found by its row id, or else by all its columns being NULL
+	unique_ptr<ParsedExpression> row_exists;
+	auto row_id = GetRowIdColumn();
+	if (row_id) {
+		row_exists = make_uniq<OperatorExpression>(ExpressionType::OPERATOR_IS_NOT_NULL, std::move(row_id));
+	} else {
+		vector<unique_ptr<ParsedExpression>> checks;
+		for (auto &column : table_entry.GetColumns().Physical()) {
+			auto column_ref = make_uniq<ColumnRefExpression>(alias_map[column.Logical().index], alias);
+			checks.push_back(
+			    make_uniq<OperatorExpression>(ExpressionType::OPERATOR_IS_NOT_NULL, std::move(column_ref)));
+		}
+		row_exists = checks.size() == 1
+		                 ? std::move(checks[0])
+		                 : make_uniq<ConjunctionExpression>(ExpressionType::CONJUNCTION_OR, std::move(checks));
+	}
+	auto result = make_uniq<CaseExpression>();
+	CaseCheck check;
+	check.when_expr = std::move(row_exists);
+	check.then_expr = std::move(expression);
+	result->CaseChecksMutable().push_back(std::move(check));
+	result->ElseMutable() = ConstantExpression::FromValue(Value());
+	return std::move(result);
+}
+
+unique_ptr<ParsedExpression> TableBinding::GetRowIdColumn() {
+	auto entry = virtual_columns.find(COLUMN_IDENTIFIER_ROW_ID);
+	if (entry == virtual_columns.end()) {
+		return nullptr;
+	}
+	column_t column_index;
+	if (!TryGetBindingIndex(entry->second.name, column_index) || column_index != COLUMN_IDENTIFIER_ROW_ID) {
+		// the row id is shadowed by a regular column
+		return nullptr;
+	}
+	return make_uniq<ColumnRefExpression>(entry->second.name, GetBindingAlias());
 }
 
 const vector<ColumnIndex> &TableBinding::GetBoundColumnIds() const {

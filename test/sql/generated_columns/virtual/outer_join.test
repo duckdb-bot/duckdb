@@ -1,0 +1,94 @@
+# name: test/sql/generated_columns/virtual/outer_join.test
+# description: A generated column is NULL in the rows that an outer join NULL-extends
+# group: [virtual]
+
+statement ok
+CREATE TABLE t1 (c1 INTEGER, c2 INTEGER AS (1), c3 BOOLEAN AS (c1 IS NULL), c4 INTEGER AS (coalesce(c1, 0) + 5));
+
+statement ok
+INSERT INTO t1 VALUES (10), (NULL);
+
+statement ok
+CREATE TABLE p (k INTEGER);
+
+statement ok
+INSERT INTO p VALUES (1), (10);
+
+query IIII
+SELECT t1.c1, t1.c2, t1.c3, t1.c4 FROM (VALUES (1)) v(x) LEFT JOIN t1 ON FALSE
+----
+NULL	NULL	NULL	NULL
+
+query I
+SELECT k FROM p LEFT JOIN t1 ON p.k = t1.c1 WHERE t1.c2 IS NULL ORDER BY k
+----
+1
+
+query II
+SELECT count(t1.c1), count(t1.c2) FROM p LEFT JOIN t1 ON p.k = t1.c1
+----
+1	1
+
+query IIIII
+SELECT k, c1, c2, c3, c4 FROM t1 RIGHT JOIN p ON p.k = t1.c1 ORDER BY k
+----
+1	NULL	NULL	NULL	NULL
+10	10	1	false	15
+
+# a row of the table with a NULL column is not NULL-extended
+query IIIII
+SELECT k, c1, c2, c3, c4 FROM p FULL JOIN t1 ON p.k = t1.c1 ORDER BY k NULLS LAST, c1 NULLS LAST
+----
+1	NULL	NULL	NULL	NULL
+10	10	1	false	15
+NULL	NULL	1	true	5
+
+query IIIII
+SELECT * FROM p LEFT JOIN t1 ON p.k = t1.c1 ORDER BY k
+----
+1	NULL	NULL	NULL	NULL
+10	10	1	false	15
+
+query II
+SELECT k, c2 FROM p LEFT JOIN t1 ON p.k = t1.c1 AND t1.c2 = 1 ORDER BY k
+----
+1	NULL
+10	1
+
+query II
+SELECT p.k, t1.c2 FROM p LEFT JOIN (t1 JOIN p p2 ON t1.c1 = p2.k) ON p.k = t1.c1 ORDER BY 1
+----
+1	NULL
+10	1
+
+query II
+SELECT k, c2 FROM (SELECT k FROM p UNION ALL SELECT 2) q POSITIONAL JOIN t1 ORDER BY k
+----
+1	1
+2	NULL
+10	1
+
+statement ok
+CREATE TABLE ts (t INTEGER, g INTEGER AS (coalesce(t, 0) + 1));
+
+statement ok
+INSERT INTO ts VALUES (5);
+
+query II
+SELECT k, g FROM p ASOF LEFT JOIN ts ON p.k >= ts.t ORDER BY k
+----
+1	NULL
+10	6
+
+# without a row id, a row is told apart by its columns
+statement ok
+CREATE TABLE s (rowid INTEGER, v INTEGER, g INTEGER AS (42));
+
+statement ok
+INSERT INTO s VALUES (NULL, 10);
+
+query II
+SELECT k, x.g FROM p LEFT JOIN s x(r, w) ON p.k = x.w ORDER BY k
+----
+1	NULL
+10	42

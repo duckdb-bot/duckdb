@@ -346,17 +346,7 @@ static unique_ptr<ParsedExpression> GetRowIdColumn(Binding &binding) {
 	if (binding.GetBindingType() != BindingType::TABLE) {
 		return nullptr;
 	}
-	auto &virtual_columns = binding.Cast<TableBinding>().virtual_columns;
-	auto entry = virtual_columns.find(COLUMN_IDENTIFIER_ROW_ID);
-	if (entry == virtual_columns.end()) {
-		return nullptr;
-	}
-	column_t column_index;
-	if (!binding.TryGetBindingIndex(entry->second.name, column_index) || column_index != COLUMN_IDENTIFIER_ROW_ID) {
-		// the row id is shadowed by a regular column
-		return nullptr;
-	}
-	return make_uniq<ColumnRefExpression>(entry->second.name, binding.GetBindingAlias());
+	return binding.Cast<TableBinding>().GetRowIdColumn();
 }
 
 //! Returns the argument that COUNT(tbl.*) counts, or nullptr if every row of tbl is counted

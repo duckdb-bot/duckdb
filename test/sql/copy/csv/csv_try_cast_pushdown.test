@@ -38,15 +38,25 @@ NULL
 NULL
 
 # several files
-query II
-SELECT parse_filename(filename), TRY_CAST(x AS INTEGER) AS v FROM read_csv('{TEST_DIR}/try_cast_*.csv', columns = {'x': 'VARCHAR'}, header = false, filename = true) ORDER BY ALL
+query I
+SELECT TRY_CAST(x AS INTEGER) AS v FROM read_csv('{TEST_DIR}/try_cast_*.csv', columns = {'x': 'VARCHAR'}, header = false) ORDER BY ALL
 ----
-try_cast_1.csv	1
-try_cast_1.csv	2
-try_cast_1.csv	NULL
-try_cast_2.csv	3
-try_cast_2.csv	NULL
-try_cast_2.csv	NULL
+1
+2
+3
+NULL
+NULL
+NULL
+
+query I
+SELECT TRY_CAST(x AS INTEGER) AS v FROM read_csv('{TEST_DIR}/try_cast_*.csv', columns = {'x': 'VARCHAR'}, header = false, ignore_errors = true) ORDER BY ALL
+----
+1
+2
+3
+NULL
+NULL
+NULL
 
 statement ok
 CREATE TABLE t AS SELECT TRY_CAST(x AS INTEGER) AS v FROM read_csv('{TEST_DIR}/try_cast_1.csv', columns = {'x': 'VARCHAR'}, header = false)

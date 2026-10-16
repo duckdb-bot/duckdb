@@ -103,6 +103,32 @@ SELECT t1.s, t2.s FROM t1 JOIN t2 ON t1.s IS NOT DISTINCT FROM t2.s WHERE t2.s.a
 ----
 {'a': 3}	{'a': 3}
 
+# the constant is not carried onto expressions whose filters would substitute a sequence call or an equal double
+statement ok
+CREATE SEQUENCE seq3 START 3 MAXVALUE 3;
+
+statement ok
+CREATE TABLE v(a BIGINT, b BIGINT, c BIGINT);
+
+statement ok
+INSERT INTO v VALUES (1, 1, 3);
+
+query I
+SELECT c FROM v WHERE a IS NOT DISTINCT FROM b AND b = 1 AND a = length(c::VARCHAR) AND c = nextval('seq3')
+----
+3
+
+statement ok
+CREATE TABLE z(a BIGINT, b BIGINT, x DOUBLE, y DOUBLE);
+
+statement ok
+INSERT INTO z VALUES (4, 4, '-0.0', '0.0'), (5, 5, 1, 1);
+
+query I
+SELECT count(*) FROM z WHERE a IS NOT DISTINCT FROM b AND b = 4 AND a = length(x::VARCHAR) AND x = y
+----
+1
+
 # filters that contradict the constant
 statement ok
 CREATE TABLE c1 AS SELECT * FROM (VALUES (3), (7)) v(a);
@@ -122,6 +148,19 @@ query II
 SELECT a, b FROM c1 JOIN c2 ON a IS NOT DISTINCT FROM b WHERE a = 7 AND b = 7
 ----
 7	7
+
+# a chain of conditions, and a left join that keeps its unmatched rows
+query III
+SELECT t1.a, t2.b, c2.b FROM t1 JOIN t2 ON t1.a IS NOT DISTINCT FROM t2.b JOIN c2 ON t2.b IS NOT DISTINCT FROM c2.b WHERE c2.b = 3
+----
+3	3	3
+3	3	3
+
+query II
+SELECT c1.a, t2.b FROM c1 LEFT JOIN t2 ON c1.a IS NOT DISTINCT FROM t2.b AND t2.b = 3 ORDER BY ALL
+----
+3	3
+7	NULL
 
 # a selective outer filter reaches the recursive CTE of a nested correlated LATERAL (issue #27072)
 statement ok

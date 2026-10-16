@@ -18,8 +18,7 @@ class LogicalAggregate;
 class LogicalProjection;
 class Optimizer;
 
-//! Whether values of the type that compare equal are also identical, so an expression of one gives the same result
-//! for the other
+//! Whether values of the type that compare equal are also identical
 bool BaseTypeAllowsCollapse(const LogicalType &type);
 
 //! Removes same-binding duplicate groups (e.g. from Deliminator / RemoveUnusedColumns) and

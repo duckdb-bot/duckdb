@@ -179,15 +179,25 @@ static bool ReadsOnlyColumn(const Expression &expr, const Expression &column) {
 	return reads_column && !reads_other;
 }
 
-//! Whether every expression of the set of the expression is free of volatile and throwing calls, since generating
-//! filters replaces an expression by the others of its set
-bool FilterCombiner::OnlyStableMembers(const Expression &expr) {
+// generating the filters of a set with a constant substitutes the other expressions of the set and of the sets of
+// their columns, so a derived constant only goes where those substitutions are harmless
+
+//! Whether the expression is in no equivalence set, or alone in one
+bool FilterCombiner::HasNoEquivalents(const Expression &expr) {
 	auto entry = equivalence_set_map.find(expr);
+	return entry == equivalence_set_map.end() || equivalence_map[entry->second].size() == 1;
+}
+
+//! Whether every expression in the set of the column is a column of a type whose equal values are identical
+bool FilterCombiner::HasOnlyIdenticalColumnEquivalents(const Expression &column) {
+	auto entry = equivalence_set_map.find(column);
 	if (entry == equivalence_set_map.end()) {
 		return true;
 	}
 	for (auto &member : equivalence_map[entry->second]) {
-		if (member.get().IsVolatile() || member.get().CanThrow()) {
+		auto &expr = member.get();
+		if (expr.GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF ||
+		    !BaseTypeAllowsCollapse(expr.GetReturnType())) {
 			return false;
 		}
 	}
@@ -234,8 +244,8 @@ void FilterCombiner::AddNotDistinctFromConstants() {
 					for (idx_t side = 0; side < 2; side++) {
 						auto &source = side == 0 ? left : right;
 						auto &target = side == 0 ? right : left;
-						if (!expr.Equals(source) &&
-						    (!identical_values || !ReadsOnlyColumn(expr, source) || !OnlyStableMembers(target))) {
+						if (!expr.Equals(source) && (!identical_values || !ReadsOnlyColumn(expr, source) ||
+						                             !HasOnlyIdenticalColumnEquivalents(target))) {
 							continue;
 						}
 						derived.emplace_back(ExpressionIterator::ReplaceExpression(expr, source, target), *constant);
@@ -244,10 +254,9 @@ void FilterCombiner::AddNotDistinctFromConstants() {
 			}
 		}
 		for (auto &entry : derived) {
-			// the constant applies to every expression of the set, so each of them is filtered on it
 			auto existing = equivalence_set_map.find(*entry.first);
 			if (existing != equivalence_set_map.end() &&
-			    (!constant_values[existing->second].empty() || !OnlyStableMembers(*entry.first))) {
+			    (!constant_values[existing->second].empty() || !HasNoEquivalents(*entry.first))) {
 				continue;
 			}
 			auto &node = GetNode(*entry.first);

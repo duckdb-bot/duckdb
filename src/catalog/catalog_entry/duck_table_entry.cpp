@@ -337,10 +337,18 @@ unique_ptr<CatalogEntry> DuckTableEntry::AlterEntry(ClientContext &context, Alte
 	}
 	case AlterTableType::RENAME_TABLE: {
 		auto &rename_info = table_info.Cast<RenameTableInfo>();
-		auto copied_table = Copy(context);
-		copied_table->name = rename_info.new_table_name;
-		// CHECK constraints can qualify columns with the table name
-		for (auto &constraint : copied_table->Cast<DuckTableEntry>().constraints) {
+		auto create_info = GetInfo();
+		auto &table_create_info = create_info->Cast<CreateTableInfo>();
+		table_create_info.SetTableName(rename_info.new_table_name);
+		// CHECK constraints can qualify columns with the table name, and a foreign key can reference the table itself
+		for (auto &constraint : table_create_info.constraints) {
+			if (constraint->type == ConstraintType::FOREIGN_KEY) {
+				auto &fk = constraint->Cast<ForeignKeyConstraint>();
+				if (fk.info.type == ForeignKeyType::FK_TYPE_SELF_REFERENCE_TABLE) {
+					fk.info.table = rename_info.new_table_name;
+				}
+				continue;
+			}
 			if (constraint->type != ConstraintType::CHECK) {
 				continue;
 			}
@@ -352,7 +360,9 @@ unique_ptr<CatalogEntry> DuckTableEntry::AlterEntry(ClientContext &context, Alte
 				    }
 			    });
 		}
-		return copied_table;
+		auto binder = Binder::CreateBinder(context);
+		auto bound_create_info = binder->BindCreateTableCheckpoint(std::move(create_info), schema);
+		return make_uniq<DuckTableEntry>(catalog, schema, *bound_create_info, storage, triggers);
 	}
 	case AlterTableType::ADD_COLUMN: {
 		auto &add_info = table_info.Cast<AddColumnInfo>();
@@ -1347,7 +1357,14 @@ unique_ptr<CatalogEntry> DuckTableEntry::AddForeignKeyConstraint(AlterForeignKey
 	create_info->tags = tags;
 
 	create_info->columns = columns.Copy();
+	bool exists = false;
 	for (idx_t i = 0; i < constraints.size(); i++) {
+		if (constraints[i]->type == ConstraintType::FOREIGN_KEY) {
+			auto &fk = constraints[i]->Cast<ForeignKeyConstraint>();
+			// replaying the WAL adds the constraints of a CREATE TABLE or a rename, and then their logged alters again
+			exists |= fk.info.type == ForeignKeyType::FK_TYPE_PRIMARY_KEY_TABLE && fk.info.table == info.fk_table &&
+			          fk.info.pk_keys == info.pk_keys && fk.info.fk_keys == info.fk_keys;
+		}
 		create_info->constraints.push_back(constraints[i]->Copy());
 	}
 	ForeignKeyInfo fk_info;
@@ -1356,8 +1373,10 @@ unique_ptr<CatalogEntry> DuckTableEntry::AddForeignKeyConstraint(AlterForeignKey
 	fk_info.table = info.fk_table;
 	fk_info.pk_keys = info.pk_keys;
 	fk_info.fk_keys = info.fk_keys;
-	create_info->constraints.push_back(
-	    make_uniq<ForeignKeyConstraint>(info.pk_columns, info.fk_columns, std::move(fk_info)));
+	if (!exists) {
+		create_info->constraints.push_back(
+		    make_uniq<ForeignKeyConstraint>(info.pk_columns, info.fk_columns, std::move(fk_info)));
+	}
 
 	unique_ptr<BoundCreateTableInfo> bound_create_info;
 	bound_create_info = Binder::BindCreateTableCheckpoint(std::move(create_info), schema);
@@ -1383,9 +1402,9 @@ unique_ptr<CatalogEntry> DuckTableEntry::DropForeignKeyConstraint(ClientContext 
 		create_info->constraints.push_back(std::move(constraint));
 	}
 
+	// the dependencies of the table stay as they are, the bound foreign keys it has itself are not resolved again
 	auto binder = Binder::CreateBinder(context);
 	auto bound_create_info = binder->BindCreateTableInfo(std::move(create_info), schema, info.bind_mode);
-	SetAlterDependencies(*bound_create_info, info);
 	return make_uniq<DuckTableEntry>(catalog, schema, *bound_create_info, storage, triggers);
 }
 

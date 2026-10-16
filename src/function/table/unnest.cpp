@@ -76,11 +76,7 @@ static unique_ptr<GlobalTableFunctionState> UnnestInit(ClientContext &context, T
 	auto result = make_uniq<UnnestGlobalState>();
 
 	unique_ptr<Expression> child = make_uniq<BoundReferenceExpression>(bind_data.input_type, 0U);
-	if (child->GetReturnType().id() == LogicalTypeId::ARRAY) {
-		child = BoundCastExpression::AddArrayCastToList(context, std::move(child));
-	} else if (child->GetReturnType().id() == LogicalTypeId::VARIANT) {
-		child = BoundCastExpression::AddCastToType(context, std::move(child), LogicalType::LIST(bind_data.input_type));
-	}
+	child = BoundCastExpression::AddListCastForUnnest(context, std::move(child));
 
 	auto bound_unnest = make_uniq<BoundUnnestExpression>(ListType::GetChildType(child->GetReturnType()));
 	bound_unnest->ChildMutable() = std::move(child);

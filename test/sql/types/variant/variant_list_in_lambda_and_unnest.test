@@ -42,6 +42,29 @@ SELECT u.category::VARCHAR FROM t, UNNEST(data.items) AS u ORDER BY ALL;
 electronics
 furniture
 
+# a bare VARIANT column in a LATERAL UNNEST, with NULL and empty lists
+query I
+SELECT x FROM (VALUES ([1, 2]::VARIANT), (NULL), ([]::INTEGER[]::VARIANT)) t(v), LATERAL UNNEST(v) u(x) ORDER BY ALL;
+----
+1
+2
+
+query II
+SELECT list_transform(v, lambda x, i: x::INTEGER * i), [x::INTEGER FOR x IN v IF x::INTEGER > 1] FROM (VALUES ([1, 2, 3]::VARIANT)) t(v);
+----
+[1, 4, 9]	[2, 3]
+
+query I
+SELECT list_reduce(v, lambda a, b: a::INTEGER + b::INTEGER, 10) FROM (VALUES ([1, 2, NULL]::VARIANT)) t(v);
+----
+NULL
+
+query I
+SELECT list_transform(v, lambda x: x) FROM (VALUES (NULL::VARIANT), ([]::INTEGER[]::VARIANT)) t(v) ORDER BY ALL;
+----
+[]
+NULL
+
 # a VARIANT that holds no list is an error at run time
 statement error
 SELECT unnest(data) FROM t;
@@ -50,5 +73,10 @@ can't convert to 'VARIANT[]'
 
 statement error
 SELECT list_transform(data, lambda x: x) FROM t;
+----
+can't convert to 'VARIANT[]'
+
+statement error
+SELECT x FROM (VALUES (42::VARIANT)) t(v), LATERAL UNNEST(v) u(x);
 ----
 can't convert to 'VARIANT[]'

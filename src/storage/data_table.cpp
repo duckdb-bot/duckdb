@@ -1052,17 +1052,21 @@ void DataTable::LocalAppend(DuckTableEntry &table, ClientContext &context, Colum
 	storage.FinalizeLocalAppend(append_state);
 }
 
-void DataTable::VerifyNoAppendsSince(idx_t append_generation_p) {
-	if (append_generation != append_generation_p) {
+idx_t DataTable::GetAppendGeneration() const {
+	return row_groups->GetAppendGeneration();
+}
+
+void DataTable::VerifyNoAppendsSince(idx_t append_generation) {
+	if (GetAppendGeneration() != append_generation) {
 		throw TransactionException("Transaction conflict: cannot create an index on table \"%s\" because a different "
 		                           "transaction appended to it while the index was built",
 		                           GetTableName());
 	}
 }
 
-unique_lock<mutex> DataTable::IndexAppendLock(idx_t append_generation_p) {
+unique_lock<mutex> DataTable::IndexAppendLock(idx_t append_generation) {
 	unique_lock<mutex> lock(append_lock);
-	VerifyNoAppendsSince(append_generation_p);
+	VerifyNoAppendsSince(append_generation);
 	return lock;
 }
 
@@ -1127,7 +1131,7 @@ void DataTable::Append(DataChunk &chunk, TableAppendState &state) {
 void DataTable::FinalizeAppend(DuckTransaction &transaction, TableAppendState &state) {
 	row_groups->FinalizeAppend(transaction, state);
 	// a scan that sees the new generation sees the appended rows
-	append_generation++;
+	row_groups->IncrementAppendGeneration();
 }
 
 void DataTable::ScanTableSegment(DuckTransaction &transaction, idx_t row_start, idx_t count,
@@ -1189,7 +1193,7 @@ void DataTable::ScanTableSegment(DuckTransaction &transaction, idx_t row_start, 
 void DataTable::MergeStorage(RowGroupCollection &data, optional_ptr<StorageCommitState> commit_state) {
 	row_groups->MergeStorage(data, this, commit_state);
 	row_groups->Verify();
-	append_generation++;
+	row_groups->IncrementAppendGeneration();
 }
 
 void DataTable::WriteToLog(DuckTransaction &transaction, WriteAheadLog &log, idx_t row_start, idx_t count,
@@ -1235,7 +1239,7 @@ void DataTable::RevertAppendInternal(idx_t start_row) {
 	D_ASSERT(IsMainTable());
 	// revert appends made to row_groups
 	row_groups->RevertAppendInternal(start_row);
-	append_generation++;
+	row_groups->IncrementAppendGeneration();
 }
 
 void DataTable::RevertAppend(DuckTransaction &transaction, idx_t start_row, idx_t count) {

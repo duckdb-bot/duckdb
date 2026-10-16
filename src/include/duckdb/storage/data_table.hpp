@@ -179,10 +179,8 @@ public:
 
 	//! Fetches an append lock
 	void AppendLock(DuckTransaction &transaction, TableAppendState &state);
-	//! Counts the appends to the table and their reverts
-	idx_t GetAppendGeneration() const {
-		return append_generation;
-	}
+	//! Counts the completed appends to the rows of the table and their reverts
+	idx_t GetAppendGeneration() const;
 	//! Throws if rows were appended or reverted since the append generation was append_generation, the caller
 	//! prevents further appends
 	void VerifyNoAppendsSince(idx_t append_generation);
@@ -336,8 +334,6 @@ private:
 	vector<ColumnDefinition> column_definitions;
 	//! Lock for appending entries to the table
 	mutex append_lock;
-	//! Incremented under the append lock when an append or a revert of one is complete
-	atomic<idx_t> append_generation {0};
 	//! The row groups of the table
 	shared_ptr<RowGroupCollection> row_groups;
 	//! The version of the data table

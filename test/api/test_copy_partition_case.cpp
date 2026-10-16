@@ -2,9 +2,10 @@
 #include "test_helpers.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/local_file_system.hpp"
-#include "duckdb/common/string_util.hpp"
 #include "duckdb/common/mutex.hpp"
+#include "duckdb/common/string_util.hpp"
 #include "duckdb/function/scalar/string_common.hpp"
+#include "utf8proc.hpp"
 
 using namespace duckdb;
 
@@ -16,10 +17,25 @@ string Lowercase(const string &name) {
 	return result;
 }
 
-enum class CaseMode { PRESERVE, LOWERCASE, UNLISTABLE, UNLISTABLE_THROWS, LISTING_THROWS_AFTER_ENTRIES };
+//! Names that are equal in uppercase, such as 'σ', 'ς' and 'Σ', are one name
+string Uppercase(const string &name) {
+	string result;
+	auto data = const_data_ptr_cast(name.c_str());
+	auto size = NumericCast<utf8proc_ssize_t>(name.size());
+	for (utf8proc_ssize_t position = 0; position < size;) {
+		utf8proc_int32_t codepoint;
+		position += utf8proc_iterate(data + position, size - position, &codepoint);
+		utf8proc_uint8_t encoded[4];
+		auto length = utf8proc_encode_char(utf8proc_toupper(codepoint), encoded);
+		result.append(char_ptr_cast(encoded), NumericCast<idx_t>(length));
+	}
+	return result;
+}
+
+enum class CaseMode { PRESERVE, LOWERCASE, NO_IDENTITY, STATS_THROW };
 
 //! A file system under "casetest://" that ignores case and keeps or lowercases names, or that tells case apart but
-//! cannot list directories. Its operations run one at a time.
+//! reports no directory identities. Its operations run one at a time.
 class CaseTestFileSystem : public FileSystem {
 public:
 	CaseTestFileSystem(string root_p, CaseMode mode_p)
@@ -66,24 +82,19 @@ public:
 	bool ListFiles(const string &path, const std::function<void(const string &, bool)> &callback,
 	               FileOpener *opener) override {
 		lock_guard<mutex> guard(lock);
-		if (mode == CaseMode::UNLISTABLE) {
-			return false;
-		}
-		if (mode == CaseMode::UNLISTABLE_THROWS) {
-			throw IOException("Cannot list \"%s\"", path);
-		}
-		if (mode == CaseMode::LISTING_THROWS_AFTER_ENTRIES) {
-			// one entry, then the listing fails
-			duckdb::vector<std::pair<string, bool>> entries;
-			local->ListFiles(Resolve(path), [&](const string &entry, bool is_directory) {
-				entries.emplace_back(entry, is_directory);
-			});
-			if (!entries.empty()) {
-				callback(entries[0].first, entries[0].second);
-			}
-			throw NotImplementedException("Cannot finish listing \"%s\"", path);
-		}
 		return local->ListFiles(Resolve(path), callback, opener);
+	}
+	optional<FileMetadata> GetStatsIfExists(const OpenFileInfo &file, optional_ptr<FileOpener> opener) override {
+		lock_guard<mutex> guard(lock);
+		if (mode == CaseMode::STATS_THROW) {
+			throw IOException("Cannot get the stats of \"%s\"", file.path);
+		}
+		auto metadata = local->GetStatsIfExists(OpenFileInfo(Resolve(file.path)), opener);
+		if (metadata && mode == CaseMode::NO_IDENTITY) {
+			metadata->device_id = optional_idx();
+			metadata->file_id = optional_idx();
+		}
+		return metadata;
 	}
 	void MoveFile(const string &source, const string &target, optional_ptr<FileOpener> opener) override {
 		lock_guard<mutex> guard(lock);
@@ -108,7 +119,7 @@ private:
 			auto name = mode == CaseMode::LOWERCASE ? Lowercase(component) : component;
 			if (mode == CaseMode::PRESERVE || mode == CaseMode::LOWERCASE) {
 				local->ListFiles(result, [&](const string &entry, bool) {
-					if (Lowercase(entry) == Lowercase(component)) {
+					if (Uppercase(entry) == Uppercase(component)) {
 						name = entry;
 					}
 				});
@@ -129,6 +140,13 @@ void RegisterCaseTestFileSystem(Connection &con, const string &root, CaseMode mo
 	FileSystem::GetFileSystem(*con.context).RegisterSubSystem(make_uniq<CaseTestFileSystem>(root, mode));
 }
 
+void RequireCaseCollision(Connection &con, const string &query) {
+	INFO(query);
+	auto result = con.Query(query);
+	REQUIRE(result->HasError());
+	REQUIRE(StringUtil::Contains(result->GetError(), "differ only in case"));
+}
+
 } // namespace
 
 TEST_CASE("COPY with PARTITION_BY refuses partitions that a file system ignoring case puts in one directory",
@@ -145,33 +163,25 @@ TEST_CASE("COPY with PARTITION_BY refuses partitions that a file system ignoring
 		                          "('B', 4, 3)) v(k, x, j)"));
 
 		// the partitions 'a' and 'A' would write the same file
-		for (auto &options : {"FORMAT parquet, PARTITION_BY (k)", "FORMAT csv, PARTITION_BY (k)",
-		                      "FORMAT parquet, PARTITION_BY (j, k)"}) {
-			INFO(options);
-			auto result = con.Query(string("COPY t TO 'casetest://out' (") + options + ")");
-			REQUIRE(result->HasError());
-			REQUIRE(StringUtil::Contains(result->GetError(), "differ only in case"));
+		duckdb::vector<string> collisions {
+		    "COPY t TO 'casetest://out' (FORMAT parquet, PARTITION_BY (k))",
+		    "COPY t TO 'casetest://out' (FORMAT csv, PARTITION_BY (k))",
+		    "COPY t TO 'casetest://out' (FORMAT parquet, PARTITION_BY (j, k))",
+		    // letters beyond ASCII in a PARTITION_PATH
+		    "COPY (SELECT * FROM (VALUES ('\xC3\xA4', 1), ('\xC3\x84', 2)) v(k, x)) TO 'casetest://out' (FORMAT "
+		    "parquet, PARTITION_BY (k), PARTITION_PATH k)",
+		    "COPY (SELECT * FROM (VALUES ('\xCF\x83', 1), ('\xCF\x82', 2)) v(k, x)) TO 'casetest://out' (FORMAT "
+		    "parquet, PARTITION_BY (k), PARTITION_PATH k)"};
+		for (auto &query : collisions) {
+			RequireCaseCollision(con, query);
 			TestDeleteDirectory(root);
 			TestCreateDirectory(root);
 		}
-
 #ifndef DUCKDB_NO_THREADS
-		// letters beyond ASCII in a PARTITION_PATH
-		auto unicode_result =
-		    con.Query("COPY (SELECT * FROM (VALUES ('\xC3\xA4', 1), ('\xC3\x84', 2)) v(k, x)) TO 'casetest://out' "
-		              "(FORMAT parquet, PARTITION_BY (k), PARTITION_PATH k)");
-		REQUIRE(unicode_result->HasError());
-		REQUIRE(StringUtil::Contains(unicode_result->GetError(), "differ only in case"));
-		TestDeleteDirectory(root);
-		TestCreateDirectory(root);
-
 		// partition directories created by several threads
 		REQUIRE_NO_FAIL(con.Query("SET threads = 8"));
-		auto parallel_result =
-		    con.Query("COPY (SELECT CASE WHEN i % 2 = 0 THEN 'a' ELSE 'A' END AS k, i FROM range(200000) t(i)) "
-		              "TO 'casetest://out' (FORMAT parquet, PARTITION_BY (k))");
-		REQUIRE(parallel_result->HasError());
-		REQUIRE(StringUtil::Contains(parallel_result->GetError(), "differ only in case"));
+		RequireCaseCollision(con, "COPY (SELECT CASE WHEN i % 2 = 0 THEN 'a' ELSE 'A' END AS k, i FROM range(200000) "
+		                          "t(i)) TO 'casetest://out' (FORMAT parquet, PARTITION_BY (k))");
 		TestDeleteDirectory(root);
 		TestCreateDirectory(root);
 #endif
@@ -206,14 +216,13 @@ TEST_CASE("COPY with PARTITION_BY on the local file system writes partitions tha
 	DuckDB db(nullptr);
 	Connection con(db);
 	auto out = fs->JoinPath(root, "out");
-	auto result = con.Query("COPY (SELECT * FROM (VALUES ('a', 1), ('A', 2)) v(k, x)) TO '" + out +
-	                        "' (FORMAT parquet, PARTITION_BY (k))");
+	auto copy =
+	    "COPY (SELECT * FROM (VALUES ('a', 1), ('A', 2)) v(k, x)) TO '" + out + "' (FORMAT parquet, PARTITION_BY (k))";
 	if (ignores_case) {
-		REQUIRE(result->HasError());
-		REQUIRE(StringUtil::Contains(result->GetError(), "differ only in case"));
+		RequireCaseCollision(con, copy);
 	} else {
-		REQUIRE_NO_FAIL(*result);
-		result =
+		REQUIRE_NO_FAIL(con.Query(copy));
+		auto result =
 		    con.Query("SELECT k, x FROM read_parquet('" + out + "/**/*.parquet', hive_partitioning = true) ORDER BY x");
 		REQUIRE(CHECK_COLUMN(result, 0, {"a", "A"}));
 		REQUIRE(CHECK_COLUMN(result, 1, {1, 2}));
@@ -228,9 +237,9 @@ TEST_CASE("COPY with PARTITION_BY on the local file system writes partitions tha
 	TestDeleteDirectory(root);
 }
 
-TEST_CASE("COPY with PARTITION_BY writes partitions that differ only in case where directories cannot be listed",
+TEST_CASE("COPY with PARTITION_BY writes partitions that differ only in case where directories have no identity",
           "[copy][api]") {
-	auto root = TestCreatePath("copy_partition_case_unlistable");
+	auto root = TestCreatePath("copy_partition_case_no_identity");
 	TestDeleteDirectory(root);
 	TestCreateDirectory(root);
 	TestCreateDirectory(root + "/out");
@@ -238,8 +247,8 @@ TEST_CASE("COPY with PARTITION_BY writes partitions that differ only in case whe
 	TestCreateDirectory(root + "/out/k=A");
 	auto fs = FileSystem::CreateLocal();
 	if (!fs->DirectoryExists(root + "/out/K=A")) {
-		for (auto mode : {CaseMode::UNLISTABLE, CaseMode::UNLISTABLE_THROWS, CaseMode::LISTING_THROWS_AFTER_ENTRIES}) {
-			INFO("mode " << static_cast<int>(mode));
+		for (auto mode : {CaseMode::NO_IDENTITY, CaseMode::STATS_THROW}) {
+			INFO("stats throw " << (mode == CaseMode::STATS_THROW));
 			DuckDB db(nullptr);
 			Connection con(db);
 			RegisterCaseTestFileSystem(con, root, mode);

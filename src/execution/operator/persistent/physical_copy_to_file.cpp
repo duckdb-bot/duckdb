@@ -5,7 +5,7 @@
 #include "duckdb/common/path.hpp"
 #include "duckdb/common/optional.hpp"
 #include "duckdb/common/string_util.hpp"
-#include "duckdb/function/scalar/string_common.hpp"
+#include "utf8proc.hpp"
 #include "duckdb/common/sorting/sort_strategy.hpp"
 #include "duckdb/common/types/column/column_data_collection_segment.hpp"
 #include "duckdb/common/value_operations/value_operations.hpp"
@@ -133,14 +133,14 @@ private:
 	};
 
 private:
-	//! Throws if the existing directory is the directory of another path that differs from it only in case
+	//! Throws if the existing directory is the directory of another path of this COPY that differs only in case
 	void CheckCaseCollision(FileSystem &fs, const string &dir_path);
 
 private:
 	mutex lock;
 	std::condition_variable condition;
 	unordered_map<string, DirectoryEntry> directories;
-	//! The directories under each lowercase path
+	//! The directories under each case folded path
 	unordered_map<string, vector<string>> directories_ignoring_case;
 };
 
@@ -1743,10 +1743,16 @@ void CopyFileLifecycleExecutor::ThrowError() {
 //===--------------------------------------------------------------------===//
 // Copy File State Helpers
 //===--------------------------------------------------------------------===//
-//! Lowercases letters beyond ASCII as well, as a PARTITION_PATH can contain them
-static string LowercasePath(const string &path) {
-	string result(LowerLength(path.c_str(), path.size()), '\0');
-	LowerCase(path.c_str(), path.size(), &result[0]);
+//! One key for the paths that a file system ignoring case treats as one, as a PARTITION_PATH can hold any letter
+static string CaseFoldedPath(const string &path) {
+	utf8proc_uint8_t *folded = nullptr;
+	auto length = utf8proc_map(const_data_ptr_cast(path.c_str()), NumericCast<utf8proc_ssize_t>(path.size()), &folded,
+	                           utf8proc_option_t(UTF8PROC_STABLE | UTF8PROC_COMPOSE | UTF8PROC_CASEFOLD));
+	if (length < 0) {
+		return path;
+	}
+	string result(char_ptr_cast(folded), NumericCast<idx_t>(length));
+	free(folded);
 	return result;
 }
 
@@ -1760,7 +1766,7 @@ bool CopyDirectoryManager::EnsureDirectory(FileSystem &fs, const string &dir_pat
 			auto entry = directories.find(dir_path);
 			if (entry == directories.end()) {
 				// registered first, so that a failure leaves no pending entry that nobody completes
-				directories_ignoring_case[LowercasePath(dir_path)].push_back(dir_path);
+				directories_ignoring_case[CaseFoldedPath(dir_path)].push_back(dir_path);
 				directories.emplace(dir_path, DirectoryEntry());
 #ifdef D_ASSERT_IS_ENABLED
 				created_entry = true;
@@ -1808,54 +1814,51 @@ bool CopyDirectoryManager::EnsureDirectory(FileSystem &fs, const string &dir_pat
 	return created;
 }
 
+//! The device and file id of a directory, if the file system reports them
+static optional<pair<idx_t, idx_t>> DirectoryIdentity(FileSystem &fs, const string &path) {
+	optional<FileMetadata> metadata;
+	try {
+		metadata = fs.GetStatsIfExists(OpenFileInfo(path));
+	} catch (NotImplementedException &) {
+	} catch (IOException &) {
+	}
+	if (!metadata || !metadata->device_id.IsValid() || !metadata->file_id.IsValid()) {
+		return nullopt;
+	}
+	return make_pair(metadata->device_id.GetIndex(), metadata->file_id.GetIndex());
+}
+
 void CopyDirectoryManager::CheckCaseCollision(FileSystem &fs, const string &dir_path) {
 	if (FileSystem::IsRemoteFile(dir_path)) {
 		// an object store has no directories to compare
 		return;
 	}
-	// a variant under a parent that differs in case is checked when that parent is created
-	auto parent = Path::FromString(dir_path).Parent().ToString();
-	string other_path;
+	vector<string> variants;
 	{
 		lock_guard<mutex> guard(lock);
-		for (auto &path : directories_ignoring_case[LowercasePath(dir_path)]) {
-			if (path != dir_path && Path::FromString(path).Parent().ToString() == parent) {
-				other_path = path;
-				break;
+		for (auto &path : directories_ignoring_case[CaseFoldedPath(dir_path)]) {
+			if (path != dir_path) {
+				variants.push_back(path);
 			}
 		}
 	}
-	if (other_path.empty()) {
+	if (variants.empty()) {
 		return;
 	}
-	auto name = fs.ExtractName(dir_path);
-	auto other_name = fs.ExtractName(other_path);
-	bool other_exists = false;
-	bool listed = false;
-	bool other_listed = false;
-	bool listed_parent = false;
-	try {
-		// checked before listing, so that the listing shows the other directory if it is created in between
-		other_exists = fs.DirectoryExists(other_path);
-		listed_parent = fs.ListFiles(parent, [&](const string &entry, bool) {
-			listed = listed || entry == name;
-			other_listed = other_listed || entry == other_name;
-		});
-	} catch (NotImplementedException &) {
-	} catch (IOException &) {
-	}
-	if (!listed_parent) {
-		// without a listing the two directories cannot be told apart
+	auto identity = DirectoryIdentity(fs, dir_path);
+	if (!identity) {
 		return;
 	}
-	// a file system that ignores case finds a directory under a name that it does not list
-	if (listed && (!other_exists || other_listed)) {
-		return;
+	for (auto &variant : variants) {
+		// a file system that ignores case finds the same directory under both names, created or not
+		auto variant_identity = DirectoryIdentity(fs, variant);
+		if (variant_identity && *variant_identity == *identity) {
+			throw InvalidInputException(
+			    "Partition directories \"%s\" and \"%s\" differ only in case, and this file system treats them as "
+			    "one directory, so the files of one partition would replace those of the other",
+			    variant, dir_path);
+		}
 	}
-	throw InvalidInputException(
-	    "Partition directories \"%s\" and \"%s\" differ only in case, and this file system treats them as one "
-	    "directory, so the files of one partition would replace those of the other",
-	    other_path, dir_path);
 }
 
 PendingFileState CopyOutputFileRegistry::ReserveFile(string output_path,

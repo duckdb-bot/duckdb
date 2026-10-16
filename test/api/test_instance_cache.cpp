@@ -301,3 +301,53 @@ TEST_CASE("Test automatic DB instance caching", "[api][.]") {
 		REQUIRE_NO_FAIL(con2.Query("SELECT * FROM t"));
 	}
 }
+
+TEST_CASE("Test the instance cache hands out a database that is still open after its last handle", "[api]") {
+	DBInstanceCache instance_cache;
+	DBConfig config;
+	auto path = TestCreatePath("instance_cache_in_use.db");
+
+	SECTION("A connection keeps the database open") {
+		auto db = instance_cache.GetOrCreateInstance(path, config, true);
+		auto con = make_uniq<Connection>(*db);
+		REQUIRE_NO_FAIL(con->Query("CREATE TABLE t AS SELECT 42 AS i"));
+		weak_ptr<DatabaseInstance> instance = db->instance;
+		db.reset();
+
+		auto reopened = instance_cache.GetOrCreateInstance(path, config, true);
+		REQUIRE(reopened->instance == instance.lock());
+		Connection other(*reopened);
+		auto result = other.Query("SELECT i FROM t");
+		REQUIRE(CHECK_COLUMN(result, 0, {42}));
+
+		// the same instance until everything that holds it is closed
+		reopened.reset();
+		REQUIRE(instance_cache.GetOrCreateInstance(path, config, true)->instance == instance.lock());
+		con.reset();
+	}
+	SECTION("An unfinished result keeps the database open") {
+		auto db = instance_cache.GetOrCreateInstance(path, config, true);
+		auto con = make_uniq<Connection>(*db);
+		auto result = con->Submit("SELECT * FROM range(100000)");
+		REQUIRE_NO_FAIL(*result);
+		weak_ptr<DatabaseInstance> instance = db->instance;
+		con.reset();
+		db.reset();
+		REQUIRE(!instance.expired());
+
+		auto reopened = instance_cache.GetOrCreateInstance(path, config, true);
+		REQUIRE(reopened->instance == instance.lock());
+		auto chunk = result->FetchRaw();
+		REQUIRE(chunk);
+		REQUIRE(chunk->size() > 0);
+		result.reset();
+	}
+	SECTION("A closed database is opened again") {
+		auto db = instance_cache.GetOrCreateInstance(path, config, true);
+		weak_ptr<DatabaseInstance> instance = db->instance;
+		db.reset();
+		REQUIRE(instance.expired());
+		REQUIRE(instance_cache.GetOrCreateInstance(path, config, true));
+	}
+	TestDeleteFile(path);
+}

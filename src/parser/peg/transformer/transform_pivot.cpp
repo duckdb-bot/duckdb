@@ -26,11 +26,12 @@ namespace duckdb {
 //! Finds a parameter in a PIVOT source, also in the CTEs it reads, which the query of the pivot values copies
 struct PivotSourceParameterFinder {
 	struct CTEScope {
-		CTEScope(CommonTableExpressionMap &ctes, idx_t visible) : ctes(ctes), visible(visible) {
+		CTEScope(CommonTableExpressionMap &ctes, idx_t begin, idx_t end) : ctes(ctes), begin(begin), end(end) {
 		}
 		reference<CommonTableExpressionMap> ctes;
-		//! a CTE only sees the CTEs declared before it in its own WITH clause
-		idx_t visible;
+		//! the CTEs from begin to end are visible, as a CTE only sees those declared before it in its WITH clause
+		idx_t begin;
+		idx_t end;
 	};
 	//! the CTEs in scope, the innermost last
 	vector<CTEScope> scopes;
@@ -63,7 +64,7 @@ struct PivotSourceParameterFinder {
 
 	//! the bodies of the CTEs of a node are only visited when they are read
 	void Visit(QueryNode &node) {
-		scopes.emplace_back(node.cte_map, node.cte_map.map.size());
+		scopes.emplace_back(node.cte_map, 0, node.cte_map.map.size());
 		switch (node.type) {
 		case QueryNodeType::SELECT_NODE: {
 			auto &select = node.Cast<SelectNode>();
@@ -87,12 +88,13 @@ struct PivotSourceParameterFinder {
 		case QueryNodeType::RECURSIVE_CTE_NODE: {
 			auto &recursive = node.Cast<RecursiveCTENode>();
 			Visit(*recursive.left);
-			// the recursive part also sees the CTE itself, which is the next one in the scope it is defined in
+			// the recursive part also sees the CTE itself, which ends the scope it is defined in, but the CTEs it
+			// reads do not
 			D_ASSERT(scopes.size() >= 2);
-			auto defining_scope = scopes.size() - 2;
-			scopes[defining_scope].visible++;
+			auto defining_scope = scopes[scopes.size() - 2];
+			scopes.emplace_back(defining_scope.ctes, defining_scope.end, defining_scope.end + 1);
 			Visit(*recursive.right);
-			scopes[defining_scope].visible--;
+			scopes.pop_back();
 			break;
 		}
 		// a DML statement with RETURNING can be read as a CTE, its target table is not read
@@ -160,6 +162,8 @@ struct PivotSourceParameterFinder {
 			auto &info = *node.Cast<CopyQueryNode>().info;
 			if (info.select_statement) {
 				Visit(*info.select_statement);
+			} else if (!info.is_from) {
+				VisitCTE(info.GetQualifiedName());
 			}
 			if (info.file_path_expression) {
 				Visit(info.file_path_expression);
@@ -182,7 +186,7 @@ struct PivotSourceParameterFinder {
 	void Visit(TableRef &ref) {
 		switch (ref.type) {
 		case TableReferenceType::BASE_TABLE:
-			VisitCTE(ref.Cast<BaseTableRef>());
+			VisitCTE(ref.Cast<BaseTableRef>().GetQualifiedName());
 			break;
 		case TableReferenceType::JOIN: {
 			auto &join = ref.Cast<JoinRef>();
@@ -231,8 +235,7 @@ struct PivotSourceParameterFinder {
 	}
 
 	//! visits the CTE a table name reads, with the CTEs in scope where it is defined
-	void VisitCTE(BaseTableRef &ref) {
-		auto &name = ref.GetQualifiedName();
+	void VisitCTE(const QualifiedName &name) {
 		if (!name.Catalog().empty() || !name.Schema().empty()) {
 			return;
 		}
@@ -244,7 +247,7 @@ struct PivotSourceParameterFinder {
 				continue;
 			}
 			auto index = NumericCast<idx_t>(entry - ctes.map.begin());
-			if (index >= scope.visible) {
+			if (index < scope.begin || index >= scope.end) {
 				continue;
 			}
 			auto &cte = *entry->second;
@@ -253,7 +256,7 @@ struct PivotSourceParameterFinder {
 			}
 			auto outer_scopes = scopes;
 			scopes.erase(scopes.begin() + NumericCast<int64_t>(i - 1), scopes.end());
-			scopes.emplace_back(ctes, index);
+			scopes.emplace_back(ctes, 0, index);
 			Visit(*cte.query_node);
 			scopes = std::move(outer_scopes);
 			return;
@@ -264,7 +267,7 @@ struct PivotSourceParameterFinder {
 static bool SourceHasParameter(PEGTransformer &transformer, TableRef &source) {
 	PivotSourceParameterFinder finder;
 	for (auto &ctes : transformer.stored_cte_map) {
-		finder.scopes.emplace_back(ctes.get(), ctes.get().map.size());
+		finder.scopes.emplace_back(ctes.get(), 0, ctes.get().map.size());
 	}
 	finder.Visit(source);
 	return finder.found;

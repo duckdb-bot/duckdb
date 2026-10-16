@@ -161,3 +161,34 @@ query III
 EXECUTE s24(5);
 ----
 1	1	1
+
+# a CTE of the recursive CTE reads the outer CTE of the same name, not the recursive CTE
+statement error
+PREPARE s25 AS WITH q AS (SELECT $1 AS a), src AS (WITH RECURSIVE q AS (WITH dep AS (FROM q) SELECT 1 AS a UNION ALL FROM dep) FROM q) PIVOT src ON a;
+----
+cannot have parameters in their source
+
+# UPDATE, DELETE and COPY bodies, where COPY of a table name reads that table
+statement error
+PREPARE s26 AS WITH q AS (UPDATE t SET a = $1 RETURNING *) PIVOT q ON a;
+----
+cannot have parameters in their source
+
+statement error
+PREPARE s27 AS WITH q AS (DELETE FROM t WHERE a = $1 RETURNING *) PIVOT q ON a;
+----
+cannot have parameters in their source
+
+statement error
+PREPARE s28 AS WITH dep AS (SELECT $1::INT AS a), q AS (COPY dep TO '{TEST_DIR}/pivot_parameter_in_cte.csv' (FORMAT CSV)) PIVOT q ON Count;
+----
+cannot have parameters in their source
+
+statement error
+PREPARE s29 AS WITH dep AS (SELECT $1::INT AS a), q AS (COPY (FROM dep) TO '{TEST_DIR}/pivot_parameter_in_cte.csv' (FORMAT CSV)) PIVOT q ON Count;
+----
+cannot have parameters in their source
+
+# the target of an INSERT is a table, not a CTE of the same name
+statement ok
+PREPARE s30 AS WITH t AS (SELECT $1 AS a), q AS (INSERT INTO t SELECT 1 AS a RETURNING *) PIVOT q ON a;

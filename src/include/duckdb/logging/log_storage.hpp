@@ -290,7 +290,8 @@ private:
 	void Initialize(LoggingTargetTable table);
 	//! Internal helper function to handle the BindReplace generation
 	unique_ptr<TableRef> BindReplaceInternal(ClientContext &context, TableFunctionBindInput &input, const string &path,
-	                                         const string &select_clause, const string &csv_columns);
+	                                         const string &select_clause, const string &csv_columns,
+	                                         const string &query_suffix);
 
 	//! DB reference to get the DB filesystem
 	DatabaseInstance &db;

@@ -1,0 +1,67 @@
+# name: test/sql/logging/logging_file_single_csv_functions.test
+# description: duckdb_logs() and duckdb_log_contexts() read the entries and contexts of logs in a single CSV file
+# group: [logging]
+
+require noforcestorage
+
+# the log file is locked against readers on windows
+require notwindows
+
+statement ok
+CALL enable_logging(['QueryLog'], storage_path='{TEST_DIR}/logging_single_csv_functions.csv', storage_buffer_size=0);
+
+statement ok
+SELECT 1 AS a
+
+statement ok
+SELECT 2 AS b
+
+statement ok
+CALL disable_logging();
+
+query II
+SELECT type, message FROM duckdb_logs() WHERE starts_with(message, 'SELECT ') ORDER BY timestamp
+----
+QueryLog	SELECT 1 AS a
+QueryLog	SELECT 2 AS b
+
+# each context once, with the id its entries refer to
+query I
+SELECT count(*) = count(DISTINCT context_id) FROM duckdb_log_contexts();
+----
+true
+
+query II
+SELECT c.scope, l.message FROM duckdb_logs() l JOIN duckdb_log_contexts() c USING (context_id) WHERE starts_with(l.message, 'SELECT ') ORDER BY l.timestamp
+----
+CONNECTION	SELECT 1 AS a
+CONNECTION	SELECT 2 AS b
+
+query IIIIII nosort describe_duckdb_logs
+DESCRIBE FROM duckdb_logs();
+----
+
+query IIIIII nosort describe_duckdb_log_contexts
+DESCRIBE FROM duckdb_log_contexts();
+----
+
+statement ok
+CALL truncate_duckdb_logs();
+
+# the columns are those of the in-memory storage
+statement ok
+CALL enable_logging(['QueryLog'], storage='memory');
+
+statement ok
+SELECT 1 AS c
+
+statement ok
+CALL disable_logging();
+
+query IIIIII nosort describe_duckdb_logs
+DESCRIBE FROM duckdb_logs();
+----
+
+query IIIIII nosort describe_duckdb_log_contexts
+DESCRIBE FROM duckdb_log_contexts();
+----

@@ -87,4 +87,63 @@ void DatabaseFilePathManager::DetachDatabase(DatabaseManager &manager, const str
 	}
 }
 
+shared_ptr<DatabaseFileRegistry> DatabaseFileRegistry::Get() {
+	static auto registry = make_shared_ptr<DatabaseFileRegistry>();
+	return registry;
+}
+
+bool DatabaseFileRegistry::TryRegister(DatabaseManager &manager, const string &path, const Identifier &name,
+                                       AccessMode access_mode) {
+	bool writes = access_mode != AccessMode::READ_ONLY;
+	lock_guard<mutex> guard(files_lock);
+	auto &file = files[path];
+	bool opened_elsewhere = false;
+	for (auto &open : file.opens) {
+		if (&open.first.get() != &manager) {
+			opened_elsewhere = true;
+			break;
+		}
+	}
+	if (opened_elsewhere && (writes || file.writer_count > 0)) {
+		if (!file.is_database_file) {
+			return false;
+		}
+		throw ResourceInUseException("Unique file handle conflict: Cannot attach %s - the database file \"%s\" is "
+		                             "already open in another database instance of this process",
+		                             name, path);
+	}
+	file.opens[manager]++;
+	if (writes) {
+		file.writer_count++;
+	}
+	return true;
+}
+
+void DatabaseFileRegistry::Confirm(const string &path) {
+	lock_guard<mutex> guard(files_lock);
+	auto entry = files.find(path);
+	if (entry != files.end()) {
+		entry->second.is_database_file = true;
+	}
+}
+
+void DatabaseFileRegistry::Unregister(DatabaseManager &manager, const string &path, AccessMode access_mode) {
+	lock_guard<mutex> guard(files_lock);
+	auto entry = files.find(path);
+	if (entry == files.end()) {
+		return;
+	}
+	if (access_mode != AccessMode::READ_ONLY) {
+		entry->second.writer_count--;
+	}
+	auto &opens = entry->second.opens;
+	auto open = opens.find(manager);
+	if (open != opens.end() && --open->second == 0) {
+		opens.erase(open);
+	}
+	if (opens.empty()) {
+		files.erase(entry);
+	}
+}
+
 } // namespace duckdb

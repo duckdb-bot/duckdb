@@ -378,6 +378,8 @@ public:
 
 	//! Whether this is a LocalFileSystem instance.
 	DUCKDB_API virtual bool IsLocalFileSystem() const;
+	//! Whether the file at the path is opened through a LocalFileSystem.
+	DUCKDB_API virtual bool IsLocalFile(const string &path);
 
 	//! Return the name of the filesystem. Used for forming diagnosis messages.
 	DUCKDB_API virtual std::string GetName() const = 0;

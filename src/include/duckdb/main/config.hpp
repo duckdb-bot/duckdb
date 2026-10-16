@@ -66,6 +66,7 @@ class EncryptionUtil;
 class HTTPTransportManager;
 class HTTPUtil;
 class DatabaseFilePathManager;
+class DatabaseFileRegistry;
 class ExtensionCallbackManager;
 class TypeManager;
 
@@ -249,6 +250,8 @@ public:
 	shared_ptr<DatabaseCacheEntry> db_cache_entry;
 	//! Reference to the database file path manager
 	shared_ptr<DatabaseFilePathManager> path_manager;
+	//! The database files open in the instances of this process, if the instance uses the local file system
+	shared_ptr<DatabaseFileRegistry> file_registry;
 	//! Database configuration variables as controlled by SET
 	GlobalUserSettings user_settings;
 

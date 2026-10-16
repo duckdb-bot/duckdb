@@ -548,6 +548,7 @@ void DatabaseInstance::Configure(DBConfig &new_config, const char *database_path
 	if (config.options.access_mode == AccessMode::UNDEFINED) {
 		config.options.access_mode = AccessMode::READ_WRITE;
 	}
+	bool custom_file_system = new_config.file_system != nullptr;
 	if (new_config.file_system) {
 		config.file_system = std::move(new_config.file_system);
 	} else {
@@ -607,6 +608,10 @@ void DatabaseInstance::Configure(DBConfig &new_config, const char *database_path
 	}
 	config.db_cache_entry = std::move(new_config.db_cache_entry);
 	config.path_manager = std::move(new_config.path_manager);
+	if (!custom_file_system) {
+		// the paths of a custom file system may name other files than the same paths in another instance
+		config.file_registry = DatabaseFileRegistry::Get();
+	}
 }
 
 DBConfig &DBConfig::GetConfig(ClientContext &context) {

@@ -189,11 +189,22 @@ shared_ptr<AttachedDatabase> DatabaseManager::AttachDatabase(ClientContext &cont
 		timer.EndTimer();
 	}
 	auto &config = DBConfig::GetConfig(context);
+	if (options.stored_database_path && config.file_registry && config.file_system->IsLocalFile(info.path)) {
+		// the other database instances of the process must not open the file either
+		while (!config.file_registry->TryRegister(*this, info.path, info.name, options.access_mode)) {
+			context.InterruptCheck();
+		}
+		options.stored_database_path->file_registry = config.file_registry;
+		options.stored_database_path->registered_access_mode = options.access_mode;
+	}
 	GetDatabaseType(context, info, config, options);
 	if (!options.db_type.empty()) {
 		// we only need to prevent duplicate opening of DuckDB files
 		// if this is not a DuckDB file but e.g. a CSV or Parquet file, we don't need to do this duplicate protection
 		options.stored_database_path.reset();
+	} else if (options.stored_database_path && options.stored_database_path->file_registry) {
+		// other instances that open the file now fail instead of waiting for its type
+		options.stored_database_path->file_registry->Confirm(info.path);
 	}
 	if (AttachedDatabase::NameIsReserved(info.name)) {
 		throw BinderException("Attached database name %s cannot be used because it is a reserved name", info.name);

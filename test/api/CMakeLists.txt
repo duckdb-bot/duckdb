@@ -27,6 +27,7 @@ set(TEST_API_OBJECTS
     test_extension_repositories.cpp
     test_external_extension_provider.cpp
     test_extension_setting_autoload.cpp
+    test_database_file_one_instance.cpp
     test_instance_cache.cpp
     test_metadata_pin_race.cpp
     test_storage_extension_alias.cpp

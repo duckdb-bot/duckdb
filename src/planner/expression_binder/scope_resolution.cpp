@@ -141,7 +141,7 @@ void ExpressionBinder::CombineErrors(ErrorData &current, ErrorData new_error) {
 	}
 
 	// override the error with the new one
-	// FIXME: other errors still prefer the outermost scope
+	// FIXME other errors still prefer the outermost scope
 	current = std::move(new_error);
 }
 

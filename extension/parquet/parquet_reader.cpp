@@ -2044,6 +2044,7 @@ void ParquetReader::InitializeScan(ClientContext &context, ParquetReaderScanStat
 			    child_readers[0]->Schema(), expression->GetReturnType(), ParquetColumnSchemaType::EXPRESSION));
 			auto expr_reader = make_uniq<ExpressionColumnReader>(context, std::move(child_readers), expression->Copy(),
 			                                                     std::move(expr_schema));
+			expr_reader->casts_to_global_type = true;
 			state.column_readers[i] = std::move(expr_reader);
 		} else {
 			auto &index = column_indexes[i];

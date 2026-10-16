@@ -3,13 +3,15 @@
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/local_file_system.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/common/mutex.hpp"
 
 using namespace duckdb;
 
 namespace {
 
 //! A file system under "caseless://" that ignores case, either keeping the case a name was created in, as APFS and
-//! NTFS do, or storing every name in lowercase
+//! NTFS do, or storing every name in lowercase. Its operations run one at a time, so that resolving a name and creating
+//! it cannot interleave with another one
 class CaselessFileSystem : public FileSystem {
 public:
 	CaselessFileSystem(string root_p, bool preserve_case_p)
@@ -29,36 +31,45 @@ public:
 		return "/";
 	}
 	unique_ptr<FileHandle> OpenFile(const string &path, FileOpenFlags flags, optional_ptr<FileOpener> opener) override {
+		lock_guard<mutex> guard(lock);
 		return local->OpenFile(Resolve(path), flags, opener);
 	}
 	bool FileExists(const string &path, optional_ptr<FileOpener> opener) override {
+		lock_guard<mutex> guard(lock);
 		return local->FileExists(Resolve(path), opener);
 	}
 	bool IsPipe(const string &, optional_ptr<FileOpener>) override {
 		return false;
 	}
 	bool DirectoryExists(const string &path, optional_ptr<FileOpener> opener) override {
+		lock_guard<mutex> guard(lock);
 		return local->DirectoryExists(Resolve(path), opener);
 	}
 	bool CreateDirectoryExtended(const string &path, const CreateDirectoryOptions &options,
 	                             optional_ptr<FileOpener> opener) override {
+		lock_guard<mutex> guard(lock);
 		return local->CreateDirectoryExtended(Resolve(path), options, opener);
 	}
 	bool RemoveDirectoryExtended(const string &path, const RemoveDirectoryOptions &options,
 	                             optional_ptr<FileOpener> opener) override {
+		lock_guard<mutex> guard(lock);
 		return local->RemoveDirectoryExtended(Resolve(path), options, opener);
 	}
 	bool ListFiles(const string &path, const std::function<void(const string &, bool)> &callback,
 	               FileOpener *opener) override {
+		lock_guard<mutex> guard(lock);
 		return local->ListFiles(Resolve(path), callback, opener);
 	}
 	void MoveFile(const string &source, const string &target, optional_ptr<FileOpener> opener) override {
+		lock_guard<mutex> guard(lock);
 		local->MoveFile(Resolve(source), Resolve(target), opener);
 	}
 	void RemoveFile(const string &path, optional_ptr<FileOpener> opener) override {
+		lock_guard<mutex> guard(lock);
 		local->RemoveFile(Resolve(path), opener);
 	}
 	bool TryRemoveFile(const string &path, optional_ptr<FileOpener> opener) override {
+		lock_guard<mutex> guard(lock);
 		return local->TryRemoveFile(Resolve(path), opener);
 	}
 
@@ -81,6 +92,7 @@ private:
 	}
 
 private:
+	mutex lock;
 	string root;
 	bool preserve_case;
 	unique_ptr<FileSystem> local;
@@ -115,6 +127,16 @@ TEST_CASE("COPY with PARTITION_BY refuses partitions that a file system ignoring
 			TestDeleteDirectory(root);
 			TestCreateDirectory(root);
 		}
+
+		// partitions that threads create at the same time
+		REQUIRE_NO_FAIL(con.Query("SET threads = 8"));
+		auto result =
+		    con.Query("COPY (SELECT CASE WHEN i % 2 = 0 THEN 'a' ELSE 'A' END AS k, i FROM range(200000) t(i)) "
+		              "TO 'caseless://out' (FORMAT parquet, PARTITION_BY (k))");
+		REQUIRE(result->HasError());
+		REQUIRE(StringUtil::Contains(result->GetError(), "differ only in case"));
+		TestDeleteDirectory(root);
+		TestCreateDirectory(root);
 
 		// 'b' and 'B' under different parents, and partitions that differ in more than case
 		duckdb::vector<std::pair<string, int64_t>> copies {
@@ -157,6 +179,13 @@ TEST_CASE("COPY with PARTITION_BY on the local file system writes partitions tha
 		    con.Query("SELECT k, x FROM read_parquet('" + out + "/**/*.parquet', hive_partitioning = true) ORDER BY x");
 		REQUIRE(CHECK_COLUMN(result, 0, {"a", "A"}));
 		REQUIRE(CHECK_COLUMN(result, 1, {1, 2}));
+		// both directories exist already
+		REQUIRE_NO_FAIL(con.Query("COPY (SELECT * FROM (VALUES ('a', 3), ('A', 4)) v(k, x)) TO '" + out +
+		                          "' (FORMAT parquet, PARTITION_BY (k), OVERWRITE_OR_IGNORE)"));
+		result =
+		    con.Query("SELECT k, x FROM read_parquet('" + out + "/**/*.parquet', hive_partitioning = true) ORDER BY x");
+		REQUIRE(CHECK_COLUMN(result, 0, {"a", "A"}));
+		REQUIRE(CHECK_COLUMN(result, 1, {3, 4}));
 	}
 	TestDeleteDirectory(root);
 }

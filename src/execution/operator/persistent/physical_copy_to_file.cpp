@@ -5,6 +5,7 @@
 #include "duckdb/common/path.hpp"
 #include "duckdb/common/optional.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/common/case_insensitive_map.hpp"
 #include "duckdb/common/sorting/sort_strategy.hpp"
 #include "duckdb/common/types/column/column_data_collection_segment.hpp"
 #include "duckdb/common/value_operations/value_operations.hpp"
@@ -139,8 +140,7 @@ private:
 	mutex lock;
 	std::condition_variable condition;
 	unordered_map<string, DirectoryEntry> directories;
-	//! The directories with each lowercase path
-	unordered_map<string, vector<string>> lowercase_directories;
+	case_insensitive_map_t<vector<string>> directories_ignoring_case;
 };
 
 class CopyOutputFileRegistry {
@@ -1752,7 +1752,7 @@ bool CopyDirectoryManager::EnsureDirectory(FileSystem &fs, const string &dir_pat
 			auto entry = directories.find(dir_path);
 			if (entry == directories.end()) {
 				directories.emplace(dir_path, DirectoryEntry());
-				lowercase_directories[StringUtil::Lower(dir_path)].push_back(dir_path);
+				directories_ignoring_case[dir_path].push_back(dir_path);
 #ifdef D_ASSERT_IS_ENABLED
 				created_entry = true;
 #endif
@@ -1809,7 +1809,7 @@ void CopyDirectoryManager::CheckCaseCollision(FileSystem &fs, const string &dir_
 	string other_path;
 	{
 		lock_guard<mutex> guard(lock);
-		for (auto &path : lowercase_directories[StringUtil::Lower(dir_path)]) {
+		for (auto &path : directories_ignoring_case[dir_path]) {
 			if (path != dir_path && Path::FromString(path).Parent().ToString() == parent) {
 				other_path = path;
 				break;
@@ -1819,6 +1819,8 @@ void CopyDirectoryManager::CheckCaseCollision(FileSystem &fs, const string &dir_
 	if (other_path.empty()) {
 		return;
 	}
+	// checked before listing, so that the listing shows the other directory if it is created in between
+	auto other_exists = fs.DirectoryExists(other_path);
 	auto name = fs.ExtractName(dir_path);
 	auto other_name = fs.ExtractName(other_path);
 	bool listed = false;
@@ -1828,7 +1830,7 @@ void CopyDirectoryManager::CheckCaseCollision(FileSystem &fs, const string &dir_
 		other_listed = other_listed || entry == other_name;
 	});
 	// a file system that ignores case finds a directory under a name that it does not list
-	if (listed && (other_listed || !fs.DirectoryExists(other_path))) {
+	if (listed && (!other_exists || other_listed)) {
 		return;
 	}
 	throw InvalidInputException(

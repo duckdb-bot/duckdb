@@ -1,5 +1,6 @@
 #include "duckdb/common/exception/parser_exception.hpp"
 #include "duckdb/catalog/catalog.hpp"
+#include "duckdb/common/error_data.hpp"
 
 #include "duckdb/catalog/catalog_search_path.hpp"
 #include "duckdb/catalog/catalog_entry/list.hpp"
@@ -651,13 +652,29 @@ bool Catalog::CheckAmbiguousCatalogOrSchema(ClientContext &context, const Identi
 //===--------------------------------------------------------------------===//
 // Lookup
 //===--------------------------------------------------------------------===//
+//! Whether an error of a database that is only read for suggestions can be left out, so that the error stays about
+//! the missing entry
+static bool IsSuggestionErrorIgnorable(const std::exception &ex) {
+	ErrorData error(ex);
+	return error.Type() != ExceptionType::INTERRUPT && error.Type() != ExceptionType::INTERNAL &&
+	       !Exception::InvalidatesDatabase(error.Type());
+}
+
 vector<SimilarCatalogEntry> Catalog::SimilarEntriesInSchemas(ClientContext &context, const EntryLookupInfo &lookup_info,
                                                              const reference_set_t<SchemaCatalogEntry> &schemas) {
 	vector<SimilarCatalogEntry> results;
 	for (auto schema_ref : schemas) {
 		auto &schema = schema_ref.get();
-		auto transaction = schema.catalog.GetCatalogTransaction(context);
-		auto entry = schema.GetSimilarEntry(transaction, lookup_info);
+		SimilarCatalogEntry entry;
+		try {
+			auto transaction = schema.catalog.GetCatalogTransaction(context);
+			entry = schema.GetSimilarEntry(transaction, lookup_info);
+		} catch (std::exception &ex) {
+			if (!IsSuggestionErrorIgnorable(ex)) {
+				throw;
+			}
+			continue;
+		}
 		if (!entry.Found()) {
 			// no similar entry found
 			continue;
@@ -899,7 +916,16 @@ CatalogException Catalog::CreateMissingEntryException(CatalogEntryRetriever &ret
 			break;
 		}
 		auto &catalog = database->GetCatalog();
-		auto current_schemas = catalog.GetSchemas(context);
+		vector<reference<SchemaCatalogEntry>> current_schemas;
+		try {
+			current_schemas = catalog.GetSchemas(context);
+		} catch (std::exception &ex) {
+			// a database that cannot be read, for example because its files are gone, gives no suggestions
+			if (!IsSuggestionErrorIgnorable(ex)) {
+				throw;
+			}
+			continue;
+		}
 		for (auto &current_schema : current_schemas) {
 			if (unseen_schemas.size() >= max_schema_count) {
 				break;

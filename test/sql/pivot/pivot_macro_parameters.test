@@ -25,6 +25,33 @@ FROM unp_lambda('j');
 ----
 1	42	j	84
 
+# also inside an expression, and in a scalar macro
+statement ok
+CREATE MACRO unp_cast(vars) AS TABLE UNPIVOT t1 ON COLUMNS(vars)::VARCHAR;
+
+query III
+FROM unp_cast(['i', 'j']) ORDER BY name;
+----
+1	i	42
+1	j	84
+
+statement ok
+CREATE MACRO unp_times(vars) AS TABLE UNPIVOT t1 ON COLUMNS(vars) * 2;
+
+query III
+FROM unp_times(['i', 'j']) ORDER BY name;
+----
+1	i	84
+1	j	168
+
+statement ok
+CREATE MACRO unp_sum(vars) AS (SELECT sum(value::INTEGER) FROM (UNPIVOT t1 ON COLUMNS(vars)::VARCHAR));
+
+query I
+SELECT unp_sum(['i', 'j']);
+----
+126
+
 statement ok
 CREATE MACRO piv(sfx) AS TABLE PIVOT t2 ON (k || sfx) IN ('a_x', 'b_x') USING sum(i);
 
@@ -61,3 +88,15 @@ query I
 FROM in_list_table('ignored');
 ----
 42
+
+# UNPIVOT on a column name in a string, also when constants become parameters in the verification
+statement ok
+SET debug_verify_statement = 'prepared_statement';
+
+query II
+UNPIVOT (SELECT 42 AS i) ON 'i';
+----
+i	42
+
+statement ok
+RESET debug_verify_statement;

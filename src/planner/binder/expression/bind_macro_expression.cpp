@@ -103,12 +103,21 @@ void ExpressionBinder::ReplaceMacroParameters(unique_ptr<ParsedExpression> &expr
 	    *expr, [&](unique_ptr<ParsedExpression> &child) { ReplaceMacroParameters(child, lambda_params); });
 }
 
+void ExpressionBinder::ReplaceMacroParametersInColumns(unique_ptr<ParsedExpression> &expr,
+                                                       vector<identifier_set_t> &lambda_params) {
+	if (expr->GetExpressionClass() == ExpressionClass::STAR) {
+		ReplaceMacroParameters(expr, lambda_params);
+		return;
+	}
+	ParsedExpressionIterator::EnumerateChildren(
+	    *expr, [&](unique_ptr<ParsedExpression> &child) { ReplaceMacroParametersInColumns(child, lambda_params); });
+}
+
 void ExpressionBinder::ReplaceMacroParametersInQuery(QueryNode &node, vector<identifier_set_t> &lambda_params) {
 	ParsedExpressionIterator::EnumerateQueryNodeChildren(
 	    node, [&](unique_ptr<ParsedExpression> &child) { ReplaceMacroParameters(child, lambda_params); },
 	    [&](TableRef &ref) {
-		    // the iterator does not enumerate the ON clause of a PIVOT, as the values in a PIVOT IN list are no
-		    // expressions to bind, while the expressions it pivots on and the COLUMNS it unpivots are
+		    // the iterator skips the ON clause, as the values of a PIVOT IN list are literals
 		    if (ref.type != TableReferenceType::PIVOT) {
 			    return;
 		    }
@@ -121,8 +130,8 @@ void ExpressionBinder::ReplaceMacroParametersInQuery(QueryNode &node, vector<ide
 				    continue;
 			    }
 			    for (auto &entry : column.entries) {
-				    if (entry.expr && entry.expr->GetExpressionClass() == ExpressionClass::STAR) {
-					    ReplaceMacroParameters(entry.expr, lambda_params);
+				    if (entry.expr) {
+					    ReplaceMacroParametersInColumns(entry.expr, lambda_params);
 				    }
 			    }
 		    }

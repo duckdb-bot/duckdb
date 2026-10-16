@@ -229,6 +229,8 @@ public:
 	void ReplaceMacroParametersInLambda(FunctionExpression &function, vector<identifier_set_t> &lambda_params);
 	//! Replaces macro parameters in a query, also in the ON clause of its PIVOT and UNPIVOT references
 	void ReplaceMacroParametersInQuery(QueryNode &node, vector<identifier_set_t> &lambda_params);
+	//! Replaces macro parameters in the COLUMNS expressions of an UNPIVOT entry, and leaves its column names
+	void ReplaceMacroParametersInColumns(unique_ptr<ParsedExpression> &expr, vector<identifier_set_t> &lambda_params);
 
 	static LogicalType GetExpressionReturnType(const Expression &expr);
 

@@ -51,6 +51,13 @@ SELECT TRY_CAST({'a': arr, 'b': 1} AS VARIANT), TRY_CAST([arr, '[1]'::JSON] AS V
 ----
 {'a': NULL, 'b': 1}	[NULL, [1]]
 
+# a UNION member is written even though NULL members are skipped
+query II
+SELECT TRY_CAST([union_value(j := arr), union_value(j := '42'::JSON)] AS VARIANT),
+    TRY_CAST(union_value(j := arr) AS VARIANT) IS NULL FROM docs WHERE i = 129;
+----
+[NULL, 42]	true
+
 statement error
 SELECT [arr]::VARIANT FROM docs WHERE i = 130;
 ----

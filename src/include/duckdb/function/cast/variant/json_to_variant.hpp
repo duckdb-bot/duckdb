@@ -245,37 +245,21 @@ static bool ConvertJSON(yyjson_val *val, ToVariantGlobalResultData &result, idx_
 }
 
 //! Whether arrays and objects nest deeper than MAX_NESTING_DEPTH, found without recursion
-static bool JSONExceedsNestingDepth(yyjson_val *root) {
-	// the containers to visit, with the number of containers they are nested in
-	vector<pair<yyjson_val *, idx_t>> pending;
-	if (unsafe_yyjson_is_ctn(root)) {
-		pending.emplace_back(root, 1);
-	}
-	while (!pending.empty()) {
-		auto entry = pending.back();
-		pending.pop_back();
-		if (entry.second > VariantUtils::MAX_NESTING_DEPTH) {
-			return true;
+static bool JSONExceedsNestingDepth(yyjson_doc *doc) {
+	// a document stores its values in document order, each container followed by the values inside it
+	yyjson_val *container_ends[VariantUtils::MAX_NESTING_DEPTH];
+	idx_t depth = 0;
+	auto val = yyjson_doc_get_root(doc);
+	auto end = val + yyjson_doc_get_val_count(doc);
+	for (; val < end; val++) {
+		while (depth > 0 && val == container_ends[depth - 1]) {
+			depth--;
 		}
-		auto val = entry.first;
-		if (unsafe_yyjson_is_arr(val)) {
-			yyjson_arr_iter iter;
-			yyjson_arr_iter_init(val, &iter);
-			while (yyjson_arr_iter_has_next(&iter)) {
-				auto child = yyjson_arr_iter_next(&iter);
-				if (unsafe_yyjson_is_ctn(child)) {
-					pending.emplace_back(child, entry.second + 1);
-				}
+		if (unsafe_yyjson_is_ctn(val)) {
+			if (depth == VariantUtils::MAX_NESTING_DEPTH) {
+				return true;
 			}
-		} else {
-			yyjson_obj_iter iter;
-			yyjson_obj_iter_init(val, &iter);
-			while (yyjson_obj_iter_has_next(&iter)) {
-				auto child = yyjson_obj_iter_get_val(yyjson_obj_iter_next(&iter));
-				if (unsafe_yyjson_is_ctn(child)) {
-					pending.emplace_back(child, entry.second + 1);
-				}
-			}
+			container_ends[depth++] = unsafe_yyjson_get_next(val);
 		}
 	}
 	return false;
@@ -327,7 +311,7 @@ bool ConvertJSONToVariant(ToVariantSourceData &source, ToVariantGlobalResultData
 		}
 		auto *root = yyjson_doc_get_root(doc);
 		// a level takes two brackets, so a document of up to twice MAX_NESTING_DEPTH bytes is never too deep
-		if (val.GetSize() > 2 * VariantUtils::MAX_NESTING_DEPTH && JSONExceedsNestingDepth(root)) {
+		if (val.GetSize() > 2 * VariantUtils::MAX_NESTING_DEPTH && JSONExceedsNestingDepth(doc)) {
 			json_allocator.Reset();
 			// the conversion recurses once per level, so a deeper document could overflow the stack
 			HandleCastError::AssignError(
@@ -335,10 +319,9 @@ bool ConvertJSONToVariant(ToVariantSourceData &source, ToVariantGlobalResultData
 			                       VariantUtils::MAX_NESTING_DEPTH),
 			    result.parameters);
 			result.all_converted = false;
-			if (!IGNORE_NULLS) {
-				HandleVariantNull<WRITE_DATA>(result, result_index, values_offset_data, blob_offset_data[result_index],
-				                              values_index_selvec, i, is_root);
-			}
+			// written even when NULLs are ignored, since the source value is not NULL
+			HandleVariantNull<WRITE_DATA>(result, result_index, values_offset_data, blob_offset_data[result_index],
+			                              values_index_selvec, i, is_root);
 			continue;
 		}
 

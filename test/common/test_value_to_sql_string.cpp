@@ -153,6 +153,23 @@ TEST_CASE("Value::ToSQLString round-trips typed VARIANT payloads", "[api][value_
 	}
 }
 
+TEST_CASE("Value::ToSQLString renders nested VARIANT values once", "[api][value_sql]") {
+	DuckDB db;
+	Connection con(db);
+	REQUIRE(EvalScalar(con, "[1::SMALLINT, NULL]::VARIANT").ToSQLString() ==
+	        "CAST([CAST(CAST(1 AS SMALLINT) AS VARIANT), NULL::VARIANT] AS VARIANT)");
+	REQUIRE(EvalScalar(con, "{'b': 'x', 'a': [2]}::VARIANT").ToSQLString() ==
+	        "CAST({'a': CAST([CAST(CAST(2 AS INTEGER) AS VARIANT)] AS VARIANT), 'b': CAST(CAST('x' AS VARCHAR) AS "
+	        "VARIANT)} AS VARIANT)");
+	// each level of a heterogeneous array used to convert everything below it again
+	string deep = "1::VARIANT";
+	for (idx_t depth = 0; depth < 200; depth++) {
+		deep = "['x'::VARIANT, (" + deep + ")]::VARIANT";
+	}
+	auto rendered = EvalScalar(con, deep).ToSQLString();
+	REQUIRE(EvalScalar(con, "(" + deep + ") IS NOT DISTINCT FROM (" + rendered + ")") == Value::BOOLEAN(true));
+}
+
 TEST_CASE("Value::ToSQLString round-trips JSON-derived supported VARIANT objects", "[api][value_sql]") {
 	DuckDB db;
 	Connection con(db);

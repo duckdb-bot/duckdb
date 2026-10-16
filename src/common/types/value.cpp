@@ -1747,11 +1747,6 @@ static string VariantChildToSQLString(const UnifiedVariantVectorData &variant, i
 	if (variant.GetTypeId(row, values_idx) == VariantLogicalType::VARIANT_NULL) {
 		return "NULL::VARIANT";
 	}
-	if (VariantIsMapObject(variant, row, values_idx)) {
-		// the MAP becomes a VARIANT list of its entries
-		auto map = VariantUtils::ConvertVariantToValue(variant, row, values_idx);
-		return map.DefaultCastAs(LogicalType::VARIANT()).ToSQLString();
-	}
 	return VariantToSQLString(variant, row, values_idx);
 }
 
@@ -1770,7 +1765,14 @@ static string VariantToSQLString(const UnifiedVariantVectorData &variant, idx_t 
 		}
 		return result + "] AS VARIANT)";
 	}
-	if (type_id == VariantLogicalType::OBJECT && !VariantIsMapObject(variant, row, values_idx)) {
+	if (VariantIsMapObject(variant, row, values_idx)) {
+		// as a VARIANT the MAP becomes a list of its key and value pairs
+		auto nested_data = VariantUtils::DecodeNestedData(variant, row, values_idx);
+		auto child_idx = variant.GetValuesIndex(row, nested_data.children_idx);
+		return "CAST([CAST({'key': CAST(CAST('' AS VARCHAR) AS VARIANT), 'value': " +
+		       VariantChildToSQLString(variant, row, child_idx) + "} AS VARIANT)] AS VARIANT)";
+	}
+	if (type_id == VariantLogicalType::OBJECT) {
 		auto nested_data = VariantUtils::DecodeNestedData(variant, row, values_idx);
 		vector<pair<string, uint32_t>> fields;
 		for (idx_t i = 0; i < nested_data.child_count; i++) {

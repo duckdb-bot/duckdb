@@ -2,6 +2,7 @@
 #include "duckdb/common/vector/struct_vector.hpp"
 #include "core_functions/scalar/list_functions.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
+#include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/data_chunk.hpp"
@@ -303,6 +304,22 @@ void ListValueResolveTypes(ResolveScalarFunctionTypesInput &input) {
 	}
 }
 
+//! A list of constants is a constant, so it does not keep an expression for each of its elements
+static unique_ptr<Expression> ListValueBindExpression(FunctionBindExpressionInput &input) {
+	auto &child_type = ListType::GetChildType(input.bound_function.GetReturnType());
+	for (auto &child : input.children) {
+		if (child->GetExpressionClass() != ExpressionClass::BOUND_CONSTANT || child->GetReturnType() != child_type) {
+			return nullptr;
+		}
+	}
+	vector<Value> values;
+	values.reserve(input.children.size());
+	for (auto &child : input.children) {
+		values.push_back(child->Cast<BoundConstantExpression>().GetValue());
+	}
+	return make_uniq<BoundConstantExpression>(Value::LIST(child_type, std::move(values)));
+}
+
 ScalarFunctionSet ListValueFun::GetFunctions() {
 	ScalarFunctionSet set("list_value");
 
@@ -318,6 +335,7 @@ ScalarFunctionSet ListValueFun::GetFunctions() {
 	value_fun.GetSignature().GetParameter(0).SetName("value");
 	value_fun.GetSignature().AddArgs("args", element_type);
 	value_fun.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
+	value_fun.SetBindExpressionCallback(ListValueBindExpression);
 	set.AddFunction(value_fun);
 
 	return set;

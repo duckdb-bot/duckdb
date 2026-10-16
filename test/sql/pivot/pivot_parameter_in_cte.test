@@ -127,3 +127,37 @@ query TI
 EXECUTE s18(5);
 ----
 a	5
+
+# the queries and table references in the body of an INSERT are walked like those of a SELECT
+statement ok
+PREPARE s19 AS WITH q AS (INSERT INTO t WITH unused AS (SELECT $1 AS a) SELECT 1 AS a RETURNING *) PIVOT q ON a;
+
+statement ok
+PREPARE s20 AS WITH dep AS (SELECT $1 AS a), q AS (INSERT INTO t WITH dep AS (SELECT 1 AS a) FROM dep RETURNING *) PIVOT q ON a;
+
+statement ok
+CREATE TABLE u (name VARCHAR, value INTEGER);
+
+statement error
+PREPARE s21 AS WITH q AS (INSERT INTO u UNPIVOT (SELECT 1 AS a) ON a + $1 RETURNING *) PIVOT q ON value;
+----
+cannot have parameters in their source
+
+statement error
+PREPARE s22 AS WITH q AS (INSERT INTO t SELECT n FROM range($1) r(i) MATCH_RECOGNIZE (ORDER BY i MEASURES count(*) AS n PATTERN (A+) DEFINE A AS i < 3) RETURNING *) PIVOT q ON a;
+----
+cannot have parameters in their source
+
+# the first part of a recursive CTE reads an outer CTE of the same name, the recursive part reads the CTE itself
+statement error
+PREPARE s23 AS WITH q AS (SELECT $1 AS a), src AS (WITH RECURSIVE q AS (SELECT a FROM q UNION ALL SELECT a + 1 FROM q WHERE a < 3) FROM q) PIVOT src ON a;
+----
+cannot have parameters in their source
+
+statement ok
+PREPARE s24 AS WITH q AS (SELECT $1 AS a), src AS (WITH RECURSIVE q AS (SELECT 1 AS a UNION ALL SELECT a + 1 FROM q WHERE a < 3) FROM q) PIVOT src ON a;
+
+query III
+EXECUTE s24(5);
+----
+1	1	1

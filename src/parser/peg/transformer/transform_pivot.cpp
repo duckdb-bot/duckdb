@@ -8,6 +8,11 @@
 #include "duckdb/parser/tableref/basetableref.hpp"
 #include "duckdb/parser/query_node/recursive_cte_node.hpp"
 #include "duckdb/parser/query_node/set_operation_node.hpp"
+#include "duckdb/parser/query_node/insert_query_node.hpp"
+#include "duckdb/parser/query_node/update_query_node.hpp"
+#include "duckdb/parser/query_node/delete_query_node.hpp"
+#include "duckdb/parser/query_node/merge_query_node.hpp"
+#include "duckdb/parser/query_node/copy_query_node.hpp"
 #include "duckdb/parser/tableref/pivotref.hpp"
 #include "duckdb/parser/tableref/subqueryref.hpp"
 #include "duckdb/parser/tableref/showref.hpp"
@@ -49,6 +54,13 @@ struct PivotSourceParameterFinder {
 		}
 	}
 
+	void Visit(UpdateSetInfo &info) {
+		Visit(info.expressions);
+		if (info.condition) {
+			Visit(info.condition);
+		}
+	}
+
 	//! the bodies of the CTEs of a node are only visited when they are read
 	void Visit(QueryNode &node) {
 		scopes.emplace_back(node.cte_map, node.cte_map.map.size());
@@ -72,25 +84,93 @@ struct PivotSourceParameterFinder {
 				Visit(*child);
 			}
 			break;
-		case QueryNodeType::RECURSIVE_CTE_NODE:
-			Visit(*node.Cast<RecursiveCTENode>().left);
-			Visit(*node.Cast<RecursiveCTENode>().right);
+		case QueryNodeType::RECURSIVE_CTE_NODE: {
+			auto &recursive = node.Cast<RecursiveCTENode>();
+			Visit(*recursive.left);
+			// the recursive part also sees the CTE itself, which is the next one in the scope it is defined in
+			D_ASSERT(scopes.size() >= 2);
+			auto defining_scope = scopes.size() - 2;
+			scopes[defining_scope].visible++;
+			Visit(*recursive.right);
+			scopes[defining_scope].visible--;
 			break;
-		case QueryNodeType::INSERT_QUERY_NODE:
-		case QueryNodeType::UPDATE_QUERY_NODE:
-		case QueryNodeType::DELETE_QUERY_NODE:
-		case QueryNodeType::MERGE_QUERY_NODE:
-		case QueryNodeType::COPY_QUERY_NODE:
-			// a CTE with RETURNING can be read, its nested queries are walked in the scope of the statement
-			ParsedExpressionIterator::EnumerateQueryNodeChildren(
-			    node, [&](unique_ptr<ParsedExpression> &child) { Visit(child); },
-			    [&](TableRef &ref) {
-				    if (ref.type == TableReferenceType::BASE_TABLE) {
-					    VisitCTE(ref.Cast<BaseTableRef>());
-				    }
-			    });
-			scopes.pop_back();
-			return;
+		}
+		// a DML statement with RETURNING can be read as a CTE, its target table is not read
+		case QueryNodeType::INSERT_QUERY_NODE: {
+			auto &insert = node.Cast<InsertQueryNode>();
+			if (insert.select_statement) {
+				Visit(*insert.select_statement->node);
+			}
+			if (insert.on_conflict_info) {
+				if (insert.on_conflict_info->set_info) {
+					Visit(*insert.on_conflict_info->set_info);
+				}
+				if (insert.on_conflict_info->condition) {
+					Visit(insert.on_conflict_info->condition);
+				}
+			}
+			Visit(insert.returning_list);
+			break;
+		}
+		case QueryNodeType::UPDATE_QUERY_NODE: {
+			auto &update = node.Cast<UpdateQueryNode>();
+			if (update.from_table) {
+				Visit(*update.from_table);
+			}
+			if (update.set_info) {
+				Visit(*update.set_info);
+			}
+			Visit(update.returning_list);
+			break;
+		}
+		case QueryNodeType::DELETE_QUERY_NODE: {
+			auto &del = node.Cast<DeleteQueryNode>();
+			for (auto &ref : del.using_clauses) {
+				Visit(*ref);
+			}
+			if (del.condition) {
+				Visit(del.condition);
+			}
+			Visit(del.returning_list);
+			break;
+		}
+		case QueryNodeType::MERGE_QUERY_NODE: {
+			auto &merge = node.Cast<MergeQueryNode>();
+			if (merge.source) {
+				Visit(*merge.source);
+			}
+			if (merge.join_condition) {
+				Visit(merge.join_condition);
+			}
+			for (auto &entry : merge.actions) {
+				for (auto &action : entry.second) {
+					if (action->condition) {
+						Visit(action->condition);
+					}
+					if (action->update_info) {
+						Visit(*action->update_info);
+					}
+					Visit(action->expressions);
+				}
+			}
+			Visit(merge.returning_list);
+			break;
+		}
+		case QueryNodeType::COPY_QUERY_NODE: {
+			auto &info = *node.Cast<CopyQueryNode>().info;
+			if (info.select_statement) {
+				Visit(*info.select_statement);
+			}
+			if (info.file_path_expression) {
+				Visit(info.file_path_expression);
+			}
+			for (auto &option : info.parsed_options) {
+				if (option.second) {
+					Visit(option.second);
+				}
+			}
+			break;
+		}
 		default:
 			break;
 		}
@@ -171,11 +251,9 @@ struct PivotSourceParameterFinder {
 			if (!visited_ctes.insert(cte).second || !cte.query_node) {
 				return;
 			}
-			// a recursive CTE also sees itself
-			auto recursive = cte.query_node->type == QueryNodeType::RECURSIVE_CTE_NODE;
 			auto outer_scopes = scopes;
 			scopes.erase(scopes.begin() + NumericCast<int64_t>(i - 1), scopes.end());
-			scopes.emplace_back(ctes, recursive ? index + 1 : index);
+			scopes.emplace_back(ctes, index);
 			Visit(*cte.query_node);
 			scopes = std::move(outer_scopes);
 			return;

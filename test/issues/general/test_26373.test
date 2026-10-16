@@ -72,3 +72,10 @@ query I
 SELECT octet_length(variant_comparator(v)) FROM t WHERE id = 1;
 ----
 300001
+
+# wide arrays and their elements in order
+query II
+SELECT count(DISTINCT v), list(n ORDER BY v, n) FROM (VALUES (1, range(100000)), (2, range(100000)), (3, range(99999)),
+	(4, range(1, 100000))) t(n, l), LATERAL (SELECT l::VARIANT AS v);
+----
+3	[3, 1, 2, 4]

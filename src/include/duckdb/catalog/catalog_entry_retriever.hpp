@@ -71,6 +71,8 @@ public:
 
 	const CatalogSearchPath &GetSearchPath() const;
 	void SetSearchPath(vector<CatalogSearchEntry> entries);
+	//! Whether a search path was set, rather than falling back to the one of the client
+	bool HasSearchPath() const;
 
 	void SetCallback(catalog_entry_callback_t callback);
 	catalog_entry_callback_t GetCallback();

@@ -98,6 +98,10 @@ const CatalogSearchPath &CatalogEntryRetriever::GetSearchPath() const {
 	return *ClientData::Get(context).catalog_search_path;
 }
 
+bool CatalogEntryRetriever::HasSearchPath() const {
+	return search_path != nullptr;
+}
+
 void CatalogEntryRetriever::SetSearchPath(vector<CatalogSearchEntry> entries) {
 	vector<CatalogSearchEntry> new_path;
 	for (auto &entry : entries) {

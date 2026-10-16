@@ -584,6 +584,8 @@ bool CoordinateReferenceSystem::TryParseAuthCode(const string &text, CoordinateR
 				// Valid AUTH:CODE
 				result.type = CoordinateReferenceSystemType::AUTH_CODE;
 				result.definition = string(beg, UnsafeNumericCast<size_t>(end - beg));
+				// the code is the identifier, so it equals a PROJJSON or WKT2 definition with the same id
+				result.identifier = result.definition;
 				return true;
 			}
 			break;

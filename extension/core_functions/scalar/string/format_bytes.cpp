@@ -10,11 +10,12 @@ static string FormatUnsignedBytes(uhugeint_t bytes) {
 	if (bytes <= uhugeint_t(NumericLimits<idx_t>::Maximum())) {
 		return StringUtil::BytesToHumanReadableString(bytes.lower, MULTIPLIER);
 	}
-	// the largest unit is a PiB, as for smaller values
+	// Keep the largest unit at PiB or PB.
 	uhugeint_t multiplier(MULTIPLIER);
 	auto tera = bytes / multiplier / multiplier / multiplier / multiplier;
-	auto peta = tera / multiplier;
-	auto fractional_part = (tera % multiplier) * uhugeint_t(10) / multiplier;
+	uhugeint_t remainder;
+	auto peta = Uhugeint::DivMod(tera, multiplier, remainder);
+	auto fractional_part = remainder * uhugeint_t(10) / multiplier;
 	return peta.ToString() + "." + fractional_part.ToString() + (MULTIPLIER == 1000 ? " PB" : " PiB");
 }
 

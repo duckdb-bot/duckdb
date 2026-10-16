@@ -12,14 +12,17 @@
 #include "duckdb/execution/operator/projection/physical_projection.hpp"
 #include "duckdb/execution/operator/schema/physical_create_index.hpp"
 #include "duckdb/catalog/catalog_entry/duck_table_entry.hpp"
+#include "duckdb/function/table/table_scan.hpp"
 
 namespace duckdb {
 
 static PhysicalOperator &AddCreateIndex(PhysicalPlanGenerator &plan, LogicalCreateIndex &op, PhysicalOperator &prev,
-                                        const IndexType &index_type, unique_ptr<IndexBuildBindData> bind_data) {
+                                        const IndexType &index_type, unique_ptr<IndexBuildBindData> bind_data,
+                                        shared_ptr<CreateIndexScanBoundary> scan_boundary) {
 	auto &cindex = plan.Make<PhysicalCreateIndex>(op, op.table, op.info->column_ids, std::move(op.info),
 	                                              std::move(op.unbound_expressions), op.estimated_cardinality,
 	                                              index_type, std::move(bind_data), std::move(op.alter_table_info));
+	cindex.Cast<PhysicalCreateIndex>().scan_boundary = std::move(scan_boundary);
 
 	cindex.children.push_back(prev);
 	return cindex;
@@ -133,6 +136,15 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalCreateIndex &op) {
 	D_ASSERT(op.info->scan_types.size() - 1 <= op.info->column_ids.size());
 
 	D_ASSERT(op.children.size() == 1);
+	// the scan reports which rows it reads, the index creation adds the others
+	auto scan_boundary = make_shared_ptr<CreateIndexScanBoundary>();
+	reference<LogicalOperator> scan_op = *op.children[0];
+	while (scan_op.get().type != LogicalOperatorType::LOGICAL_GET) {
+		D_ASSERT(scan_op.get().children.size() == 1);
+		scan_op = *scan_op.get().children[0];
+	}
+	auto &get = scan_op.get().Cast<LogicalGet>();
+	get.bind_data->Cast<TableScanBindData>().create_index_boundary = scan_boundary;
 	auto &scan = CreatePlan(*op.children[0]);
 
 	// Index has a plan replacement function
@@ -169,7 +181,7 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalCreateIndex &op) {
 	if (need_sort) {
 		plan = &AddSort(*this, op, *plan);
 	}
-	plan = &AddCreateIndex(*this, op, *plan, *index_type, std::move(bind_data));
+	plan = &AddCreateIndex(*this, op, *plan, *index_type, std::move(bind_data), std::move(scan_boundary));
 
 	return *plan;
 }

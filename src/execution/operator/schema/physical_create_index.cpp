@@ -15,7 +15,10 @@
 #include "duckdb/storage/table/append_state.hpp"
 #include "duckdb/storage/table/data_table_info.hpp"
 #include "duckdb/storage/storage_manager.hpp"
+#include "duckdb/transaction/duck_transaction.hpp"
 #include "duckdb/transaction/local_storage.hpp"
+#include "duckdb/function/table/table_scan.hpp"
+#include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/execution/index/index_type.hpp"
 
 namespace duckdb {
@@ -121,6 +124,37 @@ SinkCombineResultType PhysicalCreateIndex::Combine(ExecutionContext &context, Op
 	return SinkCombineResultType::FINISHED;
 }
 
+void PhysicalCreateIndex::AppendRowsAfterScan(ClientContext &context, DataTable &storage, BoundIndex &index) const {
+	D_ASSERT(scan_boundary && scan_boundary->row_end.IsValid());
+	if (storage.GetRevertCount() != scan_boundary->revert_count) {
+		throw TransactionException("Transaction conflict: cannot create an index on table \"%s\" because a different "
+		                           "transaction reverted an append to it while the index was built",
+		                           storage.GetTableName());
+	}
+	auto row_start = scan_boundary->row_end.GetIndex();
+	auto row_end = storage.GetNextRowId();
+	if (row_start >= row_end) {
+		return;
+	}
+	auto is_primary_key = alter_table_info && info->constraint_type == IndexConstraintType::PRIMARY;
+	auto &transaction = DuckTransaction::Get(context, storage.db);
+	storage.ScanForIndexCreation(transaction, storage_ids, row_start, row_end, [&](DataChunk &chunk, Vector &row_ids) {
+		// the append lock is held, so an interrupted creation releases it early
+		context.InterruptCheck();
+		if (is_primary_key) {
+			for (auto column_id : storage_ids) {
+				if (VectorOperations::HasNull(chunk.data[column_id])) {
+					throw ConstraintException("NOT NULL constraint failed: %s", info->GetIndexName());
+				}
+			}
+		}
+		auto error = index.Append(chunk, row_ids);
+		if (error.HasError()) {
+			error.Throw();
+		}
+	});
+}
+
 SinkFinalizeType PhysicalCreateIndex::Finalize(Pipeline &pipeline, Event &event, ClientContext &context,
                                                OperatorSinkFinalizeInput &input) const {
 	auto &gstate = input.global_state.Cast<CreateIndexGlobalSinkState>();
@@ -186,6 +220,11 @@ SinkFinalizeType PhysicalCreateIndex::Finalize(Pipeline &pipeline, Event &event,
 		auto &catalog = Catalog::GetCatalog(context, info->GetQualifiedName().Catalog());
 		catalog.Alter(context, *alter_table_info);
 	}
+
+	// Rows appended after the scan started are added here, rows appended after the index is added append to it.
+	// The lock also holds back reverts. The table an ALTER replaced takes no more appends.
+	auto append_lock = storage.IndexAppendLock(alter_table_info != nullptr);
+	AppendRowsAfterScan(context, storage, *bound_index);
 
 	// Add the index to the storage.
 	auto index_entry = storage.GetDataTableInfo()->GetIndexes().AddIndex(std::move(bound_index), index_oid, check_mode);

@@ -827,6 +827,8 @@ void RowGroupCollection::RevertAppendInternal(idx_t new_end_idx) {
 	total_rows = new_total_rows;
 	next_row_id = new_end_idx - row_groups->GetBaseRowId();
 	D_ASSERT(next_row_id.load() >= total_rows.load());
+	// a scan that sees the new count does not see the reverted rows
+	revert_count++;
 }
 
 void RowGroupCollection::CleanupAppend(VisibilityBound lowest_visibility_bound, idx_t start, idx_t count) {

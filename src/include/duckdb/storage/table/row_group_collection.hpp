@@ -97,6 +97,10 @@ public:
 public:
 	idx_t GetTotalRows() const;
 	idx_t GetNextRowId() const;
+	//! Counts the reverted appends to the collection
+	idx_t GetRevertCount() const {
+		return revert_count;
+	}
 	idx_t GetRowGroupCount() const;
 	Allocator &GetAllocator() const;
 
@@ -257,6 +261,8 @@ private:
 	const idx_t row_group_size;
 	//! The number of rows in the table
 	atomic<idx_t> total_rows;
+	//! Shared by the tables that share the collection, unlike their append locks
+	atomic<idx_t> revert_count {0};
 	//! Next rowid offset relative to the row group tree base rowid.
 	//! For main table storage the base is 0, so this is also the absolute next rowid.
 	atomic<idx_t> next_row_id;

@@ -29,7 +29,7 @@ struct PivotSourceParameterFinder {
 		CTEScope(CommonTableExpressionMap &ctes, idx_t begin, idx_t end) : ctes(ctes), begin(begin), end(end) {
 		}
 		reference<CommonTableExpressionMap> ctes;
-		//! the CTEs from begin to end are visible, as a CTE only sees those declared before it in its WITH clause
+		//! the visible CTEs, as a CTE only sees those declared before it in its WITH clause
 		idx_t begin;
 		idx_t end;
 	};

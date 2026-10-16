@@ -192,3 +192,13 @@ cannot have parameters in their source
 # the target of an INSERT is a table, not a CTE of the same name
 statement ok
 PREPARE s30 AS WITH t AS (SELECT $1 AS a), q AS (INSERT INTO t SELECT 1 AS a RETURNING *) PIVOT q ON a;
+
+# a recursive CTE after another CTE of its WITH clause, and COPY of a qualified table name
+statement ok
+PREPARE s31 AS WITH q AS (SELECT $1 AS a), src AS (WITH RECURSIVE first AS (SELECT 1 AS a), q AS (SELECT a FROM first UNION ALL SELECT a + 1 FROM q WHERE a < 3) FROM q) PIVOT src ON a;
+
+statement ok
+CREATE TABLE dep AS SELECT 1 AS a;
+
+statement ok
+PREPARE s32 AS WITH dep AS (SELECT $1::INT AS a), q AS (COPY main.dep TO '{TEST_DIR}/pivot_parameter_in_cte_main.csv' (FORMAT CSV)) PIVOT q ON Count;

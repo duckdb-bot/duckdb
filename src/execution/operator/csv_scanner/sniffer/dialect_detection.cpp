@@ -220,6 +220,8 @@ void CSVSniffer::AnalyzeDialectCandidate(unique_ptr<ColumnCountScanner> scanner,
 	idx_t dirty_notes = 0;
 	idx_t dirty_notes_minus_comments = 0;
 	idx_t empty_lines = 0;
+	bool dirty_notes_hold_delimiter = false;
+	idx_t max_row_columns = 0;
 	if (sniffed_column_counts.error) {
 		if (!scanner->error_handler->HasError(MAXIMUM_LINE_SIZE)) {
 			all_fail_max_line_size = false;
@@ -280,6 +282,7 @@ void CSVSniffer::AnalyzeDialectCandidate(unique_ptr<ColumnCountScanner> scanner,
 				sniffed_column_counts.state_machine.dialect_options.rows_until_header = row;
 			}
 			padding_count = 0;
+			dirty_notes_hold_delimiter = max_row_columns > 1;
 			// we use the maximum number of num_cols that we find
 			num_cols = sniffed_column_counts[row].number_of_columns;
 			dirty_notes = row + sniffed_column_counts[row].empty_lines;
@@ -303,6 +306,9 @@ void CSVSniffer::AnalyzeDialectCandidate(unique_ptr<ColumnCountScanner> scanner,
 		} else if (num_cols >= sniffed_column_counts[row].number_of_columns) {
 			// we are missing some columns, we can parse this as long as we add padding
 			padding_count++;
+		}
+		if (!sniffed_column_counts[row].is_comment) {
+			max_row_columns = MaxValue(max_row_columns, sniffed_column_counts[row].number_of_columns);
 		}
 	}
 
@@ -337,6 +343,14 @@ void CSVSniffer::AnalyzeDialectCandidate(unique_ptr<ColumnCountScanner> scanner,
 	// If there are more than one consistent row.
 	const bool more_than_one_row = consistent_rows > 1;
 
+	// If a single column reading is the alternative, rows are only skipped for a delimiter that shows in more than one
+	// row of the file.
+	const bool single_column_alternative = max_columns_found < 2 && !successful_candidates.empty() &&
+	                                       !options.null_padding && set_columns.Size() < 2 &&
+	                                       options.name_list.size() < 2 && options.sql_type_list.size() < 2;
+	const bool skipped_rows_are_notes = !single_column_alternative || dirty_notes_minus_comments == empty_lines ||
+	                                    dirty_notes_hold_delimiter || more_than_one_row || !scanner->FinishedFile();
+
 	// If there are more than one column.
 	const bool more_than_one_column = num_cols > 1;
 
@@ -367,7 +381,7 @@ void CSVSniffer::AnalyzeDialectCandidate(unique_ptr<ColumnCountScanner> scanner,
 	// - There's a single column before.
 	// - There are more values, and no additional padding is required.
 	// - There's more than one column and less padding is required.
-	if (columns_match_set && (rows_consistent || (set_columns.IsSet() && ignore_errors)) &&
+	if (columns_match_set && skipped_rows_are_notes && (rows_consistent || (set_columns.IsSet() && ignore_errors)) &&
 	    (single_column_before || ((more_values || more_columns) && !require_more_padding) ||
 	     (more_than_one_column && require_less_padding) || (quoted && comment_rows == 0)) &&
 	    !invalid_padding && comments_are_acceptable) {

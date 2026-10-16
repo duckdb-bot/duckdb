@@ -11,6 +11,7 @@
 #include "duckdb/main/client_config.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/logging/logger.hpp"
 
 namespace duckdb {
 
@@ -339,6 +340,83 @@ bool ExpressionBinder::IsPotentialAlias(const ColumnRefExpression &colref) {
 		return colref.ColumnNames()[0] == "alias";
 	}
 	return false;
+}
+
+static optional_ptr<const LogicalType> GetListOrArrayChildType(const LogicalType &type) {
+	switch (type.id()) {
+	case LogicalTypeId::LIST:
+		return ListType::GetChildType(type);
+	case LogicalTypeId::ARRAY:
+		return ArrayType::GetChildType(type);
+	default:
+		return nullptr;
+	}
+}
+
+static bool IsDecimalScaleReduced(const LogicalType &source_type, const LogicalType &target_type, uint8_t &source_scale,
+                                  uint8_t &target_scale) {
+	if (source_type == target_type) {
+		return false;
+	}
+	if (source_type.id() == LogicalTypeId::DECIMAL && target_type.id() == LogicalTypeId::DECIMAL) {
+		source_scale = DecimalType::GetScale(source_type);
+		target_scale = DecimalType::GetScale(target_type);
+		return source_scale > target_scale;
+	}
+	auto source_child = GetListOrArrayChildType(source_type);
+	auto target_child = GetListOrArrayChildType(target_type);
+	if (source_child && target_child) {
+		return IsDecimalScaleReduced(*source_child, *target_child, source_scale, target_scale);
+	}
+	if (source_type.id() == LogicalTypeId::MAP && target_type.id() == LogicalTypeId::MAP) {
+		return IsDecimalScaleReduced(MapType::KeyType(source_type), MapType::KeyType(target_type), source_scale,
+		                             target_scale) ||
+		       IsDecimalScaleReduced(MapType::ValueType(source_type), MapType::ValueType(target_type), source_scale,
+		                             target_scale);
+	}
+	if (!StructType::IsStruct(source_type) || !StructType::IsStruct(target_type)) {
+		return false;
+	}
+	auto &source_children = StructType::GetChildTypes(source_type);
+	auto &target_children = StructType::GetChildTypes(target_type);
+	// the common type of two named structs matches their fields by name, otherwise by position
+	if (StructType::IsUnnamed(source_type) || StructType::IsUnnamed(target_type)) {
+		for (idx_t i = 0; i < MinValue(source_children.size(), target_children.size()); i++) {
+			if (IsDecimalScaleReduced(source_children[i].second, target_children[i].second, source_scale,
+			                          target_scale)) {
+				return true;
+			}
+		}
+		return false;
+	}
+	identifier_map_t<idx_t> target_indexes;
+	for (idx_t i = 0; i < target_children.size(); i++) {
+		target_indexes.emplace(target_children[i].first, i);
+	}
+	for (auto &source_child : source_children) {
+		auto entry = target_indexes.find(source_child.first);
+		if (entry != target_indexes.end() &&
+		    IsDecimalScaleReduced(source_child.second, target_children[entry->second].second, source_scale,
+		                          target_scale)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+bool ExpressionBinder::WarnIfDecimalScaleIsReduced(ClientContext &context, const LogicalType &source_type,
+                                                   const LogicalType &target_type, const string &resolving) {
+	uint8_t source_scale;
+	uint8_t target_scale;
+	if (!IsDecimalScaleReduced(source_type, target_type, source_scale, target_scale)) {
+		return false;
+	}
+	DUCKDB_LOG_WARNING(context,
+	                   "Potential loss of decimal precision while resolving %s: type %s is being cast to %s, reducing "
+	                   "the scale from %d to %d. This may cause values to be rounded. Explicitly cast all values to a "
+	                   "compatible DECIMAL type to avoid this warning.",
+	                   resolving, source_type.ToString(), target_type.ToString(), source_scale, target_scale);
+	return true;
 }
 
 } // namespace duckdb

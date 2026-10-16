@@ -229,6 +229,10 @@ public:
 	void ReplaceMacroParametersInLambda(FunctionExpression &function, vector<identifier_set_t> &lambda_params);
 
 	static LogicalType GetExpressionReturnType(const Expression &expr);
+	//! Returns whether casting source_type to target_type reduces the scale of a DECIMAL, also one nested in a LIST,
+	//! ARRAY, MAP or STRUCT, and logs a warning when it does
+	static bool WarnIfDecimalScaleIsReduced(ClientContext &context, const LogicalType &source_type,
+	                                        const LogicalType &target_type, const string &resolving);
 
 	virtual unique_ptr<ParsedExpression> QualifyColumnName(ColumnRefExpression &col_ref, ErrorData &error);
 

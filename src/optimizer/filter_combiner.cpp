@@ -130,8 +130,7 @@ FilterResult FilterCombiner::AddConjuncts(unique_ptr<Expression> expr) {
 
 void FilterCombiner::GenerateEquivalentFilters(const Expression &filter,
                                                const std::function<void(unique_ptr<Expression> filter)> &callback) {
-	// a copy that can throw could be evaluated on rows the original never sees
-	if (filter.IsVolatile() || filter.CanThrow()) {
+	if (filter.IsVolatile()) {
 		return;
 	}
 	// collect every column reference that belongs to an equivalence set

@@ -1,0 +1,35 @@
+# name: test/sql/cast/string_to_boolean_whitespace.test
+# description: A string cast to BOOLEAN skips surrounding whitespace, as the casts to numbers do
+# group: [cast]
+
+query IIIIIII
+SELECT TRY_CAST('true' AS BOOLEAN), TRY_CAST('  true  ' AS BOOLEAN), TRY_CAST(' true' AS BOOLEAN), TRY_CAST(E'true\n' AS BOOLEAN), TRY_CAST(E'\tf\r' AS BOOLEAN), TRY_CAST('  1  ' AS INTEGER), CAST(' No ' AS BOOLEAN);
+----
+true	true	true	true	false	1	false
+
+# whitespace alone, or inside the value, is not a boolean
+query III
+SELECT TRY_CAST('   ' AS BOOLEAN), TRY_CAST('tr ue' AS BOOLEAN), TRY_CAST('' AS BOOLEAN);
+----
+NULL	NULL	NULL
+
+statement error
+SELECT CAST(' maybe ' AS BOOLEAN);
+----
+Could not convert string ' maybe ' to BOOL
+
+statement ok
+COPY (SELECT ' true' AS b UNION ALL SELECT 'false ') TO '{TEST_DIR}/boolean_whitespace.csv' (HEADER false);
+
+query I
+SELECT b FROM read_csv('{TEST_DIR}/boolean_whitespace.csv', columns = {'b': 'BOOLEAN'}) ORDER BY b;
+----
+false
+true
+
+# the sniffer detects the padded values as BOOLEAN too
+query II
+SELECT typeof(column0), column0 FROM read_csv('{TEST_DIR}/boolean_whitespace.csv', header = false) ORDER BY column0;
+----
+BOOLEAN	false
+BOOLEAN	true

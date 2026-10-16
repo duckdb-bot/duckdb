@@ -346,7 +346,7 @@ static identifier_set_t GetConflictColumnNames(const TableStorageInfo &storage_i
 	return conflict_column_names;
 }
 
-static bool IsNotNull(TableCatalogEntry &table, const Identifier &column_name) {
+static bool IsNotNull(const TableCatalogEntry &table, const Identifier &column_name) {
 	auto column_index = table.GetColumns().GetColumn(column_name).Logical();
 	for (auto &constraint : table.GetConstraints()) {
 		if (constraint->type == ConstraintType::NOT_NULL &&

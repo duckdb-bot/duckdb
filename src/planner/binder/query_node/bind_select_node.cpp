@@ -680,17 +680,51 @@ BoundStatement Binder::BindSelectNode(SelectNode &statement, BoundStatement from
 	// if we expand select-list expressions, e.g., via UNNEST, then we need to possibly
 	// adjust the column index of the already bound ORDER BY modifiers, and not only set their types
 	vector<idx_t> group_by_all_indexes;
+	vector<unique_ptr<ParsedExpression>> group_by_all_expressions;
+	bool group_by_all_pushed = false;
 	vector<Identifier> new_names;
 	vector<LogicalType> internal_sql_types;
+
+	// push the GROUP BY ALL expressions into the group set, and map them to their groups for the entries bound later
+	auto push_group_by_all = [&]() {
+		group_by_all_pushed = true;
+		for (auto &group_by_all_index : group_by_all_indexes) {
+			auto &expr = result.select_list[group_by_all_index];
+			auto &return_type = expr->GetReturnType();
+			auto group_proj_idx = ColumnBinding::PushExpression(result.groups.group_expressions, std::move(expr));
+			auto group_ref =
+			    make_uniq<BoundColumnRefExpression>(return_type, ColumnBinding(result.group_index, group_proj_idx));
+			expr = std::move(group_ref);
+
+			auto &group_expr = group_by_all_expressions[group_by_all_index];
+			bind_state.group_map[*group_expr] = group_proj_idx;
+			bind_state.unbound_groups.push_back(std::move(group_expr));
+		}
+		set<ProjectionIndex> group_by_all_indexes_set;
+		if (!group_by_all_indexes.empty()) {
+			idx_t num_set_indexes = result.groups.group_expressions.size();
+			for (idx_t i = 0; i < num_set_indexes; i++) {
+				group_by_all_indexes_set.emplace(i);
+			}
+			D_ASSERT(result.groups.grouping_sets.empty());
+			result.groups.grouping_sets.push_back(group_by_all_indexes_set);
+		}
+	};
 
 	for (idx_t i = 0; i < statement.select_list.size(); i++) {
 		bool is_window = statement.select_list[i]->IsWindow();
 		idx_t unnest_count = result.unnests.SelectList().size();
-		LogicalType result_type;
-		auto expr = select_binder.Bind(statement.select_list[i], &result_type, true);
 		bool is_original_column = i < result.column_count;
 		bool can_group_by_all =
 		    statement.aggregate_handling == AggregateHandling::FORCE_AGGREGATES && is_original_column;
+		if (can_group_by_all) {
+			group_by_all_expressions.push_back(statement.select_list[i]->Copy());
+		} else if (statement.aggregate_handling == AggregateHandling::FORCE_AGGREGATES && !group_by_all_pushed) {
+			// an ORDER BY or DISTINCT ON expression can refer to the groups of the SELECT list
+			push_group_by_all();
+		}
+		LogicalType result_type;
+		auto expr = select_binder.Bind(statement.select_list[i], &result_type, true);
 		result.bound_column_count++;
 
 		if (expr->GetExpressionType() == ExpressionType::BOUND_EXPANDED) {
@@ -752,23 +786,8 @@ BoundStatement Binder::BindSelectNode(SelectNode &statement, BoundStatement from
 		}
 	}
 
-	// push the GROUP BY ALL expressions into the group set
-	for (auto &group_by_all_index : group_by_all_indexes) {
-		auto &expr = result.select_list[group_by_all_index];
-		auto &return_type = expr->GetReturnType();
-		auto group_proj_idx = ColumnBinding::PushExpression(result.groups.group_expressions, std::move(expr));
-		auto group_ref =
-		    make_uniq<BoundColumnRefExpression>(return_type, ColumnBinding(result.group_index, group_proj_idx));
-		expr = std::move(group_ref);
-	}
-	set<ProjectionIndex> group_by_all_indexes_set;
-	if (!group_by_all_indexes.empty()) {
-		idx_t num_set_indexes = result.groups.group_expressions.size();
-		for (idx_t i = 0; i < num_set_indexes; i++) {
-			group_by_all_indexes_set.emplace(i);
-		}
-		D_ASSERT(result.groups.grouping_sets.empty());
-		result.groups.grouping_sets.push_back(group_by_all_indexes_set);
+	if (statement.aggregate_handling == AggregateHandling::FORCE_AGGREGATES && !group_by_all_pushed) {
+		push_group_by_all();
 	}
 	result.column_count = new_names.size();
 	result.names = std::move(new_names);

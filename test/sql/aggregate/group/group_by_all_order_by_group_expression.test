@@ -1,0 +1,46 @@
+# name: test/sql/aggregate/group/group_by_all_order_by_group_expression.test
+# description: With GROUP BY ALL, ORDER BY and DISTINCT ON expressions can use the groups of the SELECT list
+# group: [group]
+
+statement ok
+CREATE TABLE df AS SELECT ['aBc', 'Abd', 'abe'][x % 3 + 1] AS name, x FROM range(0, 6) r(x);
+
+query II
+SELECT name, sum(x) FROM df GROUP BY ALL ORDER BY lower(name) DESC;
+----
+abe	7
+Abd	5
+aBc	3
+
+# the group is an expression of the SELECT list
+query II
+SELECT upper(name) AS u, count(*) FROM df GROUP BY ALL ORDER BY reverse(upper(name));
+----
+ABC	2
+ABD	2
+ABE	2
+
+query II
+SELECT DISTINCT ON (name[1]) name, sum(x) FROM df GROUP BY ALL ORDER BY name[1], name;
+----
+Abd	5
+aBc	3
+
+# a column that is not a group is still an error
+statement error
+SELECT upper(name), sum(x) FROM df GROUP BY ALL ORDER BY lower(name);
+----
+must appear in the GROUP BY clause
+
+statement error
+SELECT name, sum(x) FROM df GROUP BY ALL ORDER BY x;
+----
+must appear in the GROUP BY clause
+
+# the expression can also mix groups and aggregates
+query II
+SELECT name, sum(x) FROM df GROUP BY ALL ORDER BY length(name) * 0 + sum(x) DESC;
+----
+abe	7
+Abd	5
+aBc	3

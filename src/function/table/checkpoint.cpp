@@ -8,48 +8,54 @@
 namespace duckdb {
 
 struct CheckpointBindData : public FunctionData {
-	explicit CheckpointBindData(optional_ptr<AttachedDatabase> db) : db(db) {
+	explicit CheckpointBindData(Identifier db_name) : db_name(std::move(db_name)) {
 	}
 
-	mutable optional_ptr<AttachedDatabase> db;
+	//! The database is looked up again when executing, as a prepared statement can outlive it
+	Identifier db_name;
 
 public:
 	unique_ptr<FunctionData> Copy() const override {
-		return make_uniq<CheckpointBindData>(db);
+		return make_uniq<CheckpointBindData>(db_name);
 	}
 
 	bool Equals(const FunctionData &other_p) const override {
 		auto &other = other_p.Cast<CheckpointBindData>();
-		return db == other.db;
+		return db_name == other.db_name;
 	}
 };
+
+static optional_ptr<AttachedDatabase> GetCheckpointDatabase(ClientContext &context, const Identifier &db_name) {
+	auto db = DatabaseManager::Get(context).GetDatabase(context, db_name);
+	if (!db) {
+		throw BinderException("Database \"%s\" not found", db_name.GetIdentifierName());
+	}
+	return db;
+}
 
 static unique_ptr<FunctionData> CheckpointBind(ClientContext &context, TableFunctionBindInput &input,
                                                vector<LogicalType> &return_types, vector<Identifier> &names) {
 	return_types.emplace_back(LogicalType::BOOLEAN);
 	names.emplace_back("Success");
 
-	optional_ptr<AttachedDatabase> db;
-	auto &db_manager = DatabaseManager::Get(context);
+	Identifier db_name;
 	if (!input.inputs.empty()) {
 		if (input.inputs[0].IsNull()) {
 			throw BinderException("Database cannot be NULL");
 		}
-		auto &db_name = StringValue::Get(input.inputs[0]);
-		db = db_manager.GetDatabase(context, Identifier(db_name));
-		if (!db) {
-			throw BinderException("Database \"%s\" not found", db_name);
-		}
+		db_name = Identifier(StringValue::Get(input.inputs[0]));
 	} else {
-		db = db_manager.GetDatabase(context, DatabaseManager::GetDefaultDatabase(context));
+		db_name = DatabaseManager::GetDefaultDatabase(context);
 	}
-	return make_uniq<CheckpointBindData>(db);
+	GetCheckpointDatabase(context, db_name);
+	return make_uniq<CheckpointBindData>(std::move(db_name));
 }
 
 template <bool FORCE>
 static void TemplatedCheckpointFunction(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
 	auto &bind_data = data_p.bind_data->Cast<CheckpointBindData>();
-	auto &transaction_manager = TransactionManager::Get(*bind_data.db);
+	auto db = GetCheckpointDatabase(context, bind_data.db_name);
+	auto &transaction_manager = TransactionManager::Get(*db);
 	transaction_manager.Checkpoint(context, FORCE);
 }
 

@@ -52,3 +52,35 @@ query I
 SELECT column_name FROM (DESCRIBE SELECT unnest(s := {'a': (SELECT 1)}, keep_parent_names := true));
 ----
 s.a
+
+# the struct is evaluated once per row, next to a recursive list unnest
+statement ok
+CREATE SEQUENCE seq;
+
+query III
+SELECT unnest((SELECT {'a': nextval('seq'), 'b': nextval('seq')})), unnest([[1], [2]], recursive := true);
+----
+1	2	1
+1	2	2
+
+query I
+SELECT unnest((SELECT {'a': {'b': 1}}), max_depth := 2);
+----
+1
+
+# a subquery without rows gives NULL fields, also in a correlated LEFT LATERAL join
+query II
+SELECT unnest((SELECT {'a': 1, 'b': 2} WHERE false));
+----
+NULL	NULL
+
+query III
+SELECT t.i, u.* FROM range(2) t(i) LEFT JOIN LATERAL (SELECT unnest((SELECT {'a': t.i, 'b': t.i * 10}))) u ON true ORDER BY ALL;
+----
+0	0	0
+1	1	10
+
+statement error
+SELECT unnest((SELECT {'a': i} FROM range(2) t(i)));
+----
+More than one row returned by a subquery

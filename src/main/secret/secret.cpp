@@ -11,6 +11,33 @@
 
 namespace duckdb {
 
+//! A scope that ends in the host or bucket of a URL covers that one only, not another whose name starts the same
+static bool ScopeCovers(const string &prefix, const string &path) {
+	if (!StringUtil::StartsWith(path, prefix)) {
+		return false;
+	}
+	auto scheme_end = prefix.find("://");
+	if (path.size() == prefix.size() || scheme_end == string::npos || prefix.size() == scheme_end + 3 ||
+	    prefix.find_first_of("/?#", scheme_end + 3) != string::npos) {
+		return true;
+	}
+	auto next = path[prefix.size()];
+	if (next != ':') {
+		return next == '/' || next == '?' || next == '#';
+	}
+	// allow an empty or numeric port, not the password of a user of another host
+	auto port_end = path.find_first_of("/?#", prefix.size() + 1);
+	if (port_end == string::npos) {
+		port_end = path.size();
+	}
+	for (auto i = prefix.size() + 1; i < port_end; i++) {
+		if (!StringUtil::CharacterIsDigit(path[i])) {
+			return false;
+		}
+	}
+	return true;
+}
+
 int64_t BaseSecret::MatchScore(const string &path) const {
 	int64_t longest_match = NumericLimits<int64_t>::Minimum();
 
@@ -24,7 +51,7 @@ int64_t BaseSecret::MatchScore(const string &path) const {
 			longest_match = 0;
 			continue;
 		}
-		if (StringUtil::StartsWith(path, prefix)) {
+		if (ScopeCovers(prefix, path)) {
 			longest_match = MaxValue<int64_t>(NumericCast<int64_t>(prefix.length()), longest_match);
 		}
 	}

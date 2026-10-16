@@ -234,78 +234,7 @@ static bool CastVariantToPrimitive(FromVariantConversionData &conversion_data, V
 	return all_valid;
 }
 
-//! The type of the Value a primitive VARIANT value converts to
-static LogicalType GetVariantPrimitiveType(VariantLogicalType type_id, uint32_t width, uint32_t scale) {
-	switch (type_id) {
-	case VariantLogicalType::BOOL_TRUE:
-	case VariantLogicalType::BOOL_FALSE:
-		return LogicalType::BOOLEAN;
-	case VariantLogicalType::INT8:
-		return LogicalType::TINYINT;
-	case VariantLogicalType::INT16:
-		return LogicalType::SMALLINT;
-	case VariantLogicalType::INT32:
-		return LogicalType::INTEGER;
-	case VariantLogicalType::INT64:
-		return LogicalType::BIGINT;
-	case VariantLogicalType::INT128:
-		return LogicalType::HUGEINT;
-	case VariantLogicalType::UINT8:
-		return LogicalType::UTINYINT;
-	case VariantLogicalType::UINT16:
-		return LogicalType::USMALLINT;
-	case VariantLogicalType::UINT32:
-		return LogicalType::UINTEGER;
-	case VariantLogicalType::UINT64:
-		return LogicalType::UBIGINT;
-	case VariantLogicalType::UINT128:
-		return LogicalType::UHUGEINT;
-	case VariantLogicalType::FLOAT:
-		return LogicalType::FLOAT;
-	case VariantLogicalType::DOUBLE:
-		return LogicalType::DOUBLE;
-	case VariantLogicalType::DECIMAL:
-		return LogicalType::DECIMAL(NumericCast<uint8_t>(width), NumericCast<uint8_t>(scale));
-	case VariantLogicalType::VARCHAR:
-		return LogicalType::VARCHAR;
-	case VariantLogicalType::BLOB:
-		return LogicalType::BLOB;
-	case VariantLogicalType::UUID:
-		return LogicalType::UUID;
-	case VariantLogicalType::DATE:
-		return LogicalType::DATE;
-	case VariantLogicalType::TIME_MICROS:
-		return LogicalType::TIME;
-	case VariantLogicalType::TIME_NANOS:
-		return LogicalType::TIME_NS;
-	case VariantLogicalType::TIME_MICROS_TZ:
-		return LogicalType::TIME_TZ;
-	case VariantLogicalType::TIMESTAMP_SEC:
-		return LogicalType::TIMESTAMP_S;
-	case VariantLogicalType::TIMESTAMP_MILIS:
-		return LogicalType::TIMESTAMP_MS;
-	case VariantLogicalType::TIMESTAMP_MICROS:
-		return LogicalType::TIMESTAMP;
-	case VariantLogicalType::TIMESTAMP_NANOS:
-		return LogicalType::TIMESTAMP_NS;
-	case VariantLogicalType::TIMESTAMP_MICROS_TZ:
-		return LogicalType::TIMESTAMP_TZ;
-	case VariantLogicalType::TIMESTAMP_NANOS_TZ:
-		return LogicalType::TIMESTAMP_TZ_NS;
-	case VariantLogicalType::INTERVAL:
-		return LogicalType::INTERVAL;
-	case VariantLogicalType::BIGNUM:
-		return LogicalType::BIGNUM;
-	case VariantLogicalType::BITSTRING:
-		return LogicalType::BIT;
-	case VariantLogicalType::GEOMETRY:
-		return LogicalType::GEOMETRY();
-	default:
-		throw InternalException("VariantLogicalType(%s) is not a primitive type", EnumUtil::ToString(type_id));
-	}
-}
-
-//! Writes a primitive VARIANT value into a vector of the type returned by GetVariantPrimitiveType
+//! Writes a primitive VARIANT value into a vector of the type of its Value
 static void WriteVariantPrimitive(const UnifiedVariantVectorData &variant, idx_t row, uint32_t value_index,
                                   Vector &result, idx_t result_index) {
 	auto type_id = variant.GetTypeId(row, value_index);
@@ -358,7 +287,8 @@ public:
 			group_idx++;
 		}
 		if (group_idx == groups.size()) {
-			groups.emplace_back(type_id, width, scale);
+			auto type = VariantUtils::ConvertVariantToValue(variant, row, value_index).type();
+			groups.emplace_back(type_id, width, scale, std::move(type));
 		}
 		auto &group = groups[group_idx];
 		entries.emplace_back(group_idx, group.rows.size());
@@ -381,10 +311,9 @@ public:
 		GetCastFunctionInput get_input(client);
 		string error;
 		for (auto &group : groups) {
-			auto type = GetVariantPrimitiveType(group.type_id, group.width, group.scale);
 			for (idx_t start = 0; start < group.rows.size(); start += STANDARD_VECTOR_SIZE) {
 				auto count = MinValue<idx_t>(group.rows.size() - start, STANDARD_VECTOR_SIZE);
-				Vector values(type, count);
+				Vector values(group.type, count);
 				for (idx_t i = 0; i < count; i++) {
 					WriteVariantPrimitive(conversion_data.variant, group.rows[start + i],
 					                      group.value_indexes[start + i], values, i);
@@ -414,8 +343,8 @@ public:
 
 private:
 	struct PrimitiveGroup {
-		PrimitiveGroup(VariantLogicalType type_id, uint32_t width, uint32_t scale)
-		    : type_id(type_id), width(width), scale(scale) {
+		PrimitiveGroup(VariantLogicalType type_id, uint32_t width, uint32_t scale, LogicalType type)
+		    : type_id(type_id), width(width), scale(scale), type(std::move(type)) {
 		}
 
 		bool Matches(VariantLogicalType other_type_id, uint32_t other_width, uint32_t other_scale) const {
@@ -425,6 +354,7 @@ private:
 		VariantLogicalType type_id;
 		uint32_t width;
 		uint32_t scale;
+		LogicalType type;
 		vector<idx_t> rows;
 		vector<uint32_t> value_indexes;
 		//! The cast values, one vector per STANDARD_VECTOR_SIZE values
@@ -458,8 +388,8 @@ static bool HaveSameValueType(const UnifiedVariantVectorData &variant, idx_t row
 	return left_decimal.width == right_decimal.width && left_decimal.scale == right_decimal.scale;
 }
 
-//! Whether the elements of an ARRAY are primitive values of one type. Such an ARRAY converts to a LIST of that type,
-//! whose elements are quoted when needed. Other ARRAYs convert to a LIST(VARIANT), whose elements are not quoted.
+//! Whether the elements of an ARRAY are primitive values of one type, which the cast of their LIST quotes when needed.
+//! The elements of an ARRAY of values of different types convert to a LIST(VARIANT), whose elements are not quoted.
 static bool HasPrimitiveElementType(const UnifiedVariantVectorData &variant, idx_t row,
                                     const VariantNestedData &nested_data) {
 	if (nested_data.child_count == 0) {
@@ -690,7 +620,9 @@ static bool CastVariantToVarchar(FromVariantConversionData &conversion_data, Vec
 		}
 		text.clear();
 		text_writer.Write(row_index, sel[i], positions[i], false, text);
-		writer.WriteValue(string_t(text.data(), UnsafeNumericCast<uint32_t>(text.size())));
+		auto &str = writer.WriteEmptyString(text.size());
+		memcpy(str.GetDataWriteable(), text.data(), text.size());
+		str.Finalize();
 	}
 	return all_valid;
 }

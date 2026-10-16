@@ -68,3 +68,62 @@ statement error
 PREPARE s10 AS WITH RECURSIVE q AS (SELECT 1 AS a UNION ALL SELECT a + $1 FROM q WHERE a < 3) PIVOT q ON a;
 ----
 cannot have parameters in their source
+
+# a CTE body reads the CTEs declared before it, and an outer CTE of its own name
+statement error
+PREPARE s11 AS WITH q AS (SELECT $1 AS a), src AS (WITH q AS (FROM q) FROM q) PIVOT src ON a;
+----
+cannot have parameters in their source
+
+statement ok
+CREATE TABLE b AS SELECT 1 AS x;
+
+statement ok
+PREPARE s12 AS WITH a AS (FROM b), b AS (SELECT $1 AS x) PIVOT a ON x;
+
+query I
+EXECUTE s12(5);
+----
+1
+
+# a CTE is read in the scope where it is defined, also when a CTE of the same name shadows it where it is read
+statement error
+PREPARE s13 AS WITH dep AS (SELECT $1 AS a), q AS (FROM dep) PIVOT (WITH dep AS (SELECT 1 AS a) FROM q) ON a;
+----
+cannot have parameters in their source
+
+statement ok
+PREPARE s14 AS WITH dep AS (SELECT 1 AS a), q AS (FROM dep), src AS (WITH dep AS (SELECT $1 AS a) FROM q) PIVOT src ON a;
+
+query I
+EXECUTE s14(5);
+----
+1
+
+# a parameter in a CTE read through SUMMARIZE, MATCH_RECOGNIZE or the RETURNING of an INSERT
+statement error
+PREPARE s15 AS WITH q AS (SUMMARIZE SELECT $1::INT AS a) PIVOT q ON column_name;
+----
+cannot have parameters in their source
+
+statement error
+PREPARE s16 AS WITH q AS (FROM range(3) t(i) MATCH_RECOGNIZE (ORDER BY i MEASURES count(*) AS n PATTERN (A+) DEFINE A AS i < $1)) PIVOT q ON n;
+----
+cannot have parameters in their source
+
+statement ok
+CREATE TABLE t (a INTEGER);
+
+statement error
+PREPARE s17 AS WITH q AS (INSERT INTO t VALUES ($1) RETURNING *) PIVOT q ON a;
+----
+cannot have parameters in their source
+
+# UNPIVOT does not read values from the data, so a parameter in its CTE works
+statement ok
+PREPARE s18 AS WITH q AS (SELECT $1::INT AS a) UNPIVOT q ON a;
+
+query TI
+EXECUTE s18(5);
+----
+a	5

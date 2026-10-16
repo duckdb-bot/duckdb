@@ -8,10 +8,10 @@
 #include "duckdb/parser/tableref/basetableref.hpp"
 #include "duckdb/parser/query_node/recursive_cte_node.hpp"
 #include "duckdb/parser/query_node/set_operation_node.hpp"
-#include "duckdb/parser/tableref/expressionlistref.hpp"
-#include "duckdb/parser/tableref/table_function_ref.hpp"
 #include "duckdb/parser/tableref/pivotref.hpp"
 #include "duckdb/parser/tableref/subqueryref.hpp"
+#include "duckdb/parser/tableref/showref.hpp"
+#include "duckdb/common/reference_map.hpp"
 #include "duckdb/parser/tableref/joinref.hpp"
 #include "duckdb/parser/expression/subquery_expression.hpp"
 #include "duckdb/parser/parsed_expression_iterator.hpp"
@@ -20,9 +20,16 @@ namespace duckdb {
 
 //! Finds a parameter in a PIVOT source, also in the CTEs it reads, which the query of the pivot values copies
 struct PivotSourceParameterFinder {
+	struct CTEScope {
+		CTEScope(CommonTableExpressionMap &ctes, idx_t visible) : ctes(ctes), visible(visible) {
+		}
+		reference<CommonTableExpressionMap> ctes;
+		//! a CTE only sees the CTEs declared before it in its own WITH clause
+		idx_t visible;
+	};
 	//! the CTEs in scope, the innermost last
-	vector<reference<CommonTableExpressionMap>> scopes;
-	unordered_set<const CommonTableExpressionInfo *> visited_ctes;
+	vector<CTEScope> scopes;
+	reference_set_t<CommonTableExpressionInfo> visited_ctes;
 	bool found = false;
 
 	void Visit(unique_ptr<ParsedExpression> &expr) {
@@ -44,7 +51,7 @@ struct PivotSourceParameterFinder {
 
 	//! the bodies of the CTEs of a node are only visited when they are read
 	void Visit(QueryNode &node) {
-		scopes.push_back(node.cte_map);
+		scopes.emplace_back(node.cte_map, node.cte_map.map.size());
 		switch (node.type) {
 		case QueryNodeType::SELECT_NODE: {
 			auto &select = node.Cast<SelectNode>();
@@ -69,8 +76,22 @@ struct PivotSourceParameterFinder {
 			Visit(*node.Cast<RecursiveCTENode>().left);
 			Visit(*node.Cast<RecursiveCTENode>().right);
 			break;
+		case QueryNodeType::INSERT_QUERY_NODE:
+		case QueryNodeType::UPDATE_QUERY_NODE:
+		case QueryNodeType::DELETE_QUERY_NODE:
+		case QueryNodeType::MERGE_QUERY_NODE:
+		case QueryNodeType::COPY_QUERY_NODE:
+			// a CTE with RETURNING can be read, its nested queries are walked in the scope of the statement
+			ParsedExpressionIterator::EnumerateQueryNodeChildren(
+			    node, [&](unique_ptr<ParsedExpression> &child) { Visit(child); },
+			    [&](TableRef &ref) {
+				    if (ref.type == TableReferenceType::BASE_TABLE) {
+					    VisitCTE(ref.Cast<BaseTableRef>());
+				    }
+			    });
+			scopes.pop_back();
+			return;
 		default:
-			// other nodes cannot be the source of a PIVOT
 			break;
 		}
 		ParsedExpressionIterator::EnumerateQueryNodeModifiers(
@@ -109,15 +130,22 @@ struct PivotSourceParameterFinder {
 			}
 			break;
 		}
-		case TableReferenceType::TABLE_FUNCTION:
-			Visit(ref.Cast<TableFunctionRef>().function);
-			break;
-		case TableReferenceType::EXPRESSION_LIST:
-			for (auto &row : ref.Cast<ExpressionListRef>().values) {
-				Visit(row);
+		case TableReferenceType::SHOW_REF: {
+			auto &show = ref.Cast<ShowRef>();
+			if (show.query) {
+				Visit(*show.query);
 			}
 			break;
+		}
 		default:
+			// the other references hold expressions, and MATCH_RECOGNIZE also an input table
+			ParsedExpressionIterator::EnumerateTableRefChildren(
+			    ref, [&](unique_ptr<ParsedExpression> &child) { Visit(child); },
+			    [&](TableRef &child) {
+				    if (&child != &ref) {
+					    Visit(child);
+				    }
+			    });
 			break;
 		}
 	}
@@ -129,17 +157,25 @@ struct PivotSourceParameterFinder {
 			return;
 		}
 		for (idx_t i = scopes.size(); i > 0; i--) {
-			auto &ctes = scopes[i - 1].get();
+			auto &scope = scopes[i - 1];
+			auto &ctes = scope.ctes.get();
 			auto entry = ctes.map.find(name.Name());
 			if (entry == ctes.map.end()) {
 				continue;
 			}
+			auto index = NumericCast<idx_t>(entry - ctes.map.begin());
+			if (index >= scope.visible) {
+				continue;
+			}
 			auto &cte = *entry->second;
-			if (!visited_ctes.insert(&cte).second || !cte.query_node) {
+			if (!visited_ctes.insert(cte).second || !cte.query_node) {
 				return;
 			}
+			// a recursive CTE also sees itself
+			auto recursive = cte.query_node->type == QueryNodeType::RECURSIVE_CTE_NODE;
 			auto outer_scopes = scopes;
-			scopes.erase(scopes.begin() + NumericCast<int64_t>(i), scopes.end());
+			scopes.erase(scopes.begin() + NumericCast<int64_t>(i - 1), scopes.end());
+			scopes.emplace_back(ctes, recursive ? index + 1 : index);
 			Visit(*cte.query_node);
 			scopes = std::move(outer_scopes);
 			return;
@@ -148,10 +184,10 @@ struct PivotSourceParameterFinder {
 };
 
 static bool SourceHasParameter(PEGTransformer &transformer, TableRef &source) {
-	CommonTableExpressionMap ctes;
-	transformer.ExtractCTEsRecursive(ctes);
 	PivotSourceParameterFinder finder;
-	finder.scopes.push_back(ctes);
+	for (auto &ctes : transformer.stored_cte_map) {
+		finder.scopes.emplace_back(ctes.get(), ctes.get().map.size());
+	}
 	finder.Visit(source);
 	return finder.found;
 }

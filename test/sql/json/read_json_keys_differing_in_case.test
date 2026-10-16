@@ -1,0 +1,29 @@
+# name: test/sql/json/read_json_keys_differing_in_case.test
+# description: The error for JSON keys that differ only in case names both and says how to read them
+# group: [json]
+
+require json
+
+statement ok
+COPY (SELECT MAP {'name': 'foo', 'Name': 'bar'} AS m) TO '__TEST_DIR__/keys_differing_in_case.json';
+
+statement error
+FROM read_json('__TEST_DIR__/keys_differing_in_case.json');
+----
+Not implemented Error: Duplicate name "Name" in struct auto-detected in JSON: the keys "name" and "Name" differ only in case
+
+# the ways the error suggests
+query I
+SELECT m['Name'] FROM read_json('__TEST_DIR__/keys_differing_in_case.json', columns = {'m': 'MAP(VARCHAR, VARCHAR)'});
+----
+bar
+
+query I
+SELECT m FROM read_json('__TEST_DIR__/keys_differing_in_case.json', columns = {'m': 'JSON'});
+----
+{"name":"foo","Name":"bar"}
+
+query I
+SELECT m FROM read_json('__TEST_DIR__/keys_differing_in_case.json', ignore_errors = true);
+----
+{'name': foo}

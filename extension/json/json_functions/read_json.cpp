@@ -12,16 +12,21 @@ namespace duckdb {
 static inline LogicalType RemoveDuplicateStructKeys(const LogicalType &type, const bool ignore_errors) {
 	switch (type.id()) {
 	case LogicalTypeId::STRUCT: {
-		case_insensitive_set_t child_names;
+		case_insensitive_map_t<string> child_names;
 		child_list_t<LogicalType> child_types;
 		for (auto &child_type : StructType::GetChildTypes(type)) {
-			auto insert_success = child_names.insert(child_type.first.GetIdentifierName()).second;
-			if (!insert_success) {
+			auto &name = child_type.first.GetIdentifierName();
+			auto entry = child_names.emplace(name, name);
+			if (!entry.second) {
 				if (ignore_errors) {
 					continue;
 				}
 				throw NotImplementedException(
-				    "Duplicate name \"%s\" in struct auto-detected in JSON, try ignore_errors=true", child_type.first);
+				    "Duplicate name \"%s\" in struct auto-detected in JSON: the keys \"%s\" and "
+				    "\"%s\" differ only in case, and struct field names are case-insensitive. "
+				    "Give the column the type JSON or MAP in the columns parameter, or keep only "
+				    "the first key with ignore_errors=true",
+				    name, entry.first->second, name);
 			} else {
 				child_types.emplace_back(child_type.first, RemoveDuplicateStructKeys(child_type.second, ignore_errors));
 			}

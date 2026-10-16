@@ -39,6 +39,46 @@ WHERE right(t1.f, 1) = '2'
 ----
 physical_plan	<REGEX>:.*right.*right.*
 
+# a cast that can fail is not copied, as the copy sees values of the other side that the join drops
+query II
+explain SELECT *
+FROM t AS t1
+JOIN t AS t2 on t1.f = t2.f
+WHERE t1.f::INTEGER = 42
+----
+physical_plan	<!REGEX>:.*CAST.*CAST.*
+
+# a TRY_CAST cannot fail, so it is copied
+query II
+explain SELECT *
+FROM t AS t1
+JOIN t AS t2 on t1.f = t2.f
+WHERE TRY_CAST(t1.f AS INTEGER) = 42
+----
+physical_plan	<REGEX>:.*TRY_CAST.*TRY_CAST.*
+
+statement ok
+CREATE TABLE l (x BIGINT);
+
+statement ok
+CREATE TABLE r (y BIGINT);
+
+statement ok
+INSERT INTO l VALUES (1), (2);
+
+statement ok
+INSERT INTO r VALUES (1), (2), (300);
+
+query I
+SELECT count(*) FROM (SELECT CAST(x + y AS TINYINT) AS a FROM l JOIN r ON x = y) s WHERE a = 2;
+----
+1
+
+query I
+SELECT count(*) FROM (SELECT CAST(x AS TINYINT) AS a FROM l JOIN r ON x = y) s WHERE a = 2;
+----
+1
+
 
 # volatile expressions must NOT be propagated across the join
 statement ok

@@ -127,9 +127,25 @@ FilterResult FilterCombiner::AddConjuncts(unique_ptr<Expression> expr) {
 	return FilterResult::SUCCESS;
 }
 
+//! Whether an expression has a cast that can fail, which happens for ordinary values outside the range of its target
+static bool HasCastThatCanThrow(const Expression &expr) {
+	if (BoundCastExpression::IsCast(expr) &&
+	    expr.Cast<BoundFunctionExpression>().Function().GetErrorMode() == FunctionErrors::CAN_THROW_RUNTIME_ERROR) {
+		return true;
+	}
+	bool result = false;
+	ExpressionIterator::EnumerateChildren(expr, [&](const Expression &child) { result |= HasCastThatCanThrow(child); });
+	return result;
+}
+
 void FilterCombiner::GenerateEquivalentFilters(const Expression &filter,
                                                const std::function<void(unique_ptr<Expression> filter)> &callback) {
 	if (filter.IsVolatile()) {
+		return;
+	}
+	// a copy for another column is pushed below the join, where it also sees the values that the join drops, so a
+	// filter with a cast that can fail on them is not copied
+	if (HasCastThatCanThrow(filter)) {
 		return;
 	}
 	// collect every column reference that belongs to an equivalence set

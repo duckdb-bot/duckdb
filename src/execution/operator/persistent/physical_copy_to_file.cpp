@@ -1760,7 +1760,9 @@ static string MapUtf8Path(const string &path, utf8proc_option_t options) {
 
 //! Groups paths for identity checks on file systems that fold or uppercase names
 static string CaseCandidateKey(const string &path) {
-	auto folded = MapUtf8Path(path, utf8proc_option_t(UTF8PROC_STABLE | UTF8PROC_COMPOSE | UTF8PROC_CASEFOLD));
+	// composed first, as folding can change a combining mark before it is put in order
+	auto composed = MapUtf8Path(path, utf8proc_option_t(UTF8PROC_STABLE | UTF8PROC_COMPOSE));
+	auto folded = MapUtf8Path(composed, utf8proc_option_t(UTF8PROC_STABLE | UTF8PROC_COMPOSE | UTF8PROC_CASEFOLD));
 	string uppercase;
 	auto data = const_data_ptr_cast(folded.c_str());
 	auto size = NumericCast<utf8proc_ssize_t>(folded.size());

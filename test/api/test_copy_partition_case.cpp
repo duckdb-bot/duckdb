@@ -32,17 +32,22 @@ string Uppercase(const string &name) {
 	return result;
 }
 
-//! Names that are equal after full case folding, such as 'Straße' and 'STRASSE', are one name
-string Fold(const string &name) {
-	utf8proc_uint8_t *folded = nullptr;
-	auto length = utf8proc_map(const_data_ptr_cast(name.c_str()), NumericCast<utf8proc_ssize_t>(name.size()), &folded,
-	                           utf8proc_option_t(UTF8PROC_STABLE | UTF8PROC_COMPOSE | UTF8PROC_CASEFOLD));
+string Map(const string &name, utf8proc_option_t options) {
+	utf8proc_uint8_t *mapped = nullptr;
+	auto length =
+	    utf8proc_map(const_data_ptr_cast(name.c_str()), NumericCast<utf8proc_ssize_t>(name.size()), &mapped, options);
 	if (length < 0) {
-		throw InternalException("Failed to fold \"%s\"", name);
+		throw InternalException("Failed to map \"%s\"", name);
 	}
-	string result(char_ptr_cast(folded), NumericCast<idx_t>(length));
-	free(folded);
+	string result(char_ptr_cast(mapped), NumericCast<idx_t>(length));
+	free(mapped);
 	return result;
+}
+
+//! Names that are equal once normalized and folded, such as 'Straße' and 'STRASSE', are one name
+string Fold(const string &name) {
+	auto normalized = Map(name, utf8proc_option_t(UTF8PROC_STABLE | UTF8PROC_COMPOSE));
+	return Map(normalized, UTF8PROC_CASEFOLD);
 }
 
 enum class CaseMode { PRESERVE, LOWERCASE, FOLD, NO_IDENTITY, STATS_THROW, NO_UPPERCASE_IDENTITY };
@@ -200,6 +205,8 @@ TEST_CASE("COPY with PARTITION_BY refuses partitions that a file system ignoring
 			// equal when folded, but not when uppercased letter by letter
 			collisions.push_back(partition_path_copy("('Stra\xC3\x9F"
 			                                         "e', 1), ('STRASSE', 2)"));
+			// equal once normalized, with a mark that folding changes before the marks are put in order
+			collisions.push_back(partition_path_copy("('\xCE\xB1\xCD\x85\xCC\x93', 1), ('\xE1\xBE\x80', 2)"));
 		} else {
 			// equal when uppercased, but not when folded
 			collisions.push_back(partition_path_copy("('\xC4\xB1', 1), ('I', 2)"));
@@ -207,9 +214,19 @@ TEST_CASE("COPY with PARTITION_BY refuses partitions that a file system ignoring
 		}
 		for (auto &query : collisions) {
 			RequireCaseCollision(con, query);
+			// the failed COPY leaves no files behind
+			auto result = con.Query("SELECT count(*) FROM glob('" + root + "/**')");
+			REQUIRE(CHECK_COLUMN(result, 0, {0}));
 			TestDeleteDirectory(root);
 			TestCreateDirectory(root);
 		}
+
+		// a directory of one of the partitions exists already
+		TestCreateDirectory(root + "/out");
+		TestCreateDirectory(root + "/out/k=a");
+		RequireCaseCollision(con, "COPY t TO 'casetest://out' (FORMAT parquet, PARTITION_BY (k), OVERWRITE_OR_IGNORE)");
+		TestDeleteDirectory(root);
+		TestCreateDirectory(root);
 #ifndef DUCKDB_NO_THREADS
 		// partition directories created by several threads
 		REQUIRE_NO_FAIL(con.Query("SET threads = 8"));

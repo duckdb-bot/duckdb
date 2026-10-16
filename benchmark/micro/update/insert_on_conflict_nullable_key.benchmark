@@ -1,0 +1,24 @@
+# name: benchmark/micro/update/insert_on_conflict_nullable_key.benchmark
+# description: INSERT ON CONFLICT DO UPDATE on a nullable UNIQUE key
+# group: [update]
+
+name Insert On Conflict Nullable Key
+group update
+
+load
+CREATE TABLE source AS SELECT range * 2 AS k, range AS v FROM range(2000000);
+CREATE TABLE target (k BIGINT UNIQUE, v BIGINT);
+INSERT INTO target SELECT range, 0 FROM range(2000000);
+
+run
+INSERT INTO target SELECT k, v FROM source ON CONFLICT (k) DO UPDATE SET v = excluded.v;
+
+cleanup
+DROP TABLE target;
+CREATE TABLE target (k BIGINT UNIQUE, v BIGINT);
+INSERT INTO target SELECT range, 0 FROM range(2000000);
+
+result_query III
+SELECT count(*), count(k), sum(v) FROM target
+----
+3000000	3000000	1999999000000

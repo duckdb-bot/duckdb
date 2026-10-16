@@ -33,6 +33,42 @@ SELECT count(*), count(val) FROM t;
 ----
 9	1
 
+statement ok
+EXPLAIN INSERT INTO t VALUES (12, NULL) ON CONFLICT DO NOTHING;
+
+# the source runs once
+statement ok
+CREATE SEQUENCE seq START 12;
+
+statement ok
+INSERT INTO t SELECT nextval('seq'), NULL FROM range(2) ON CONFLICT DO NOTHING;
+
+query I
+SELECT currval('seq');
+----
+13
+
+# a table named like the generated source
+statement ok
+CREATE TABLE __duckdb_on_conflict_source_0 AS SELECT 14 AS id, NULL::INTEGER AS val;
+
+statement ok
+INSERT INTO t SELECT * FROM __duckdb_on_conflict_source_0 ON CONFLICT DO NOTHING;
+
+query II rowsort
+INSERT INTO t BY NAME SELECT NULL AS val, 15 AS id UNION ALL SELECT NULL, 16 ON CONFLICT DO NOTHING RETURNING *;
+----
+15	NULL
+16	NULL
+
+statement ok
+INSERT INTO t (id) VALUES (17), (18) ON CONFLICT DO NOTHING;
+
+query II
+SELECT count(*), count(val) FROM t;
+----
+16	1
+
 # a composite key with a NULL part, next to duplicates without NULLs, and a key on two constraints
 statement ok
 CREATE TABLE c (a INTEGER, b INTEGER, d INTEGER UNIQUE, UNIQUE (a, b));

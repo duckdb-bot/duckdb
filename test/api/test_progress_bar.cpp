@@ -102,21 +102,21 @@ public:
 	}
 };
 
-// A display that records the time it shows once the query finished, instead of printing it
-class FinishedTimeDisplay : public TerminalProgressBarDisplay {
+// A display that records the times it shows, and its own elapsed time when the query finished, instead of printing
+class RecordingDisplay : public TerminalProgressBarDisplay {
 public:
-	explicit FinishedTimeDisplay(std::atomic<double> &finished_seconds_p) : finished_seconds(finished_seconds_p) {
-	}
-
-protected:
 	void PrintProgressInternal(int32_t percentage, double seconds, bool is_finished) override {
 		if (is_finished) {
 			finished_seconds = seconds;
+			bar_seconds = GetElapsedDuration();
+		} else {
+			remaining_seconds = seconds;
 		}
 	}
 
-private:
-	std::atomic<double> &finished_seconds;
+	std::atomic<double> finished_seconds {-1};
+	std::atomic<double> bar_seconds {-1};
+	std::atomic<double> remaining_seconds {-1};
 };
 
 static unique_ptr<FunctionData> SlowBind(BindScalarFunctionInput &input) {
@@ -129,23 +129,53 @@ static void SlowBindExecute(DataChunk &args, ExpressionState &state, Vector &res
 }
 
 TEST_CASE("The finished progress bar shows the time since the query started including its binding", "[progress-bar]") {
-	DuckDB db(nullptr);
-	Connection con(db);
-	ScalarFunction slow_bind("slow_bind", {LogicalType::BIGINT}, LogicalType::BIGINT, SlowBindExecute, SlowBind);
-	CreateScalarFunctionInfo info(slow_bind);
-	con.context->RunFunctionInTransaction(
-	    [&]() { Catalog::GetSystemCatalog(*con.context).CreateFunction(*con.context, info); });
+	SECTION("the display shows the query start once finished, and estimates with its own time") {
+		RecordingDisplay display;
+		display.SetQueryStart(std::chrono::steady_clock::now() - std::chrono::seconds(10));
+		display.Update(50);
+		REQUIRE(display.remaining_seconds < 5);
+		display.Finish();
+		REQUIRE(display.finished_seconds >= 10);
+	}
+	SECTION("without a query start, the display shows its own time") {
+		RecordingDisplay display;
+		display.Finish();
+		REQUIRE(display.finished_seconds >= 0);
+		REQUIRE(display.finished_seconds < 5);
+	}
+	SECTION("a query passes its start to the display") {
+		DuckDB db(nullptr);
+		Connection con(db);
+		ScalarFunction slow_bind("slow_bind", {LogicalType::BIGINT}, LogicalType::BIGINT, SlowBindExecute, SlowBind);
+		CreateScalarFunctionInfo info(slow_bind);
+		con.context->RunFunctionInTransaction(
+		    [&]() { Catalog::GetSystemCatalog(*con.context).CreateFunction(*con.context, info); });
 
-	std::atomic<double> finished_seconds(-1);
-	con.context->config.display_create_func = [&]() -> unique_ptr<ProgressBarDisplay> {
-		return make_uniq<FinishedTimeDisplay>(finished_seconds);
-	};
-	REQUIRE_NO_FAIL(con.Query("PRAGMA enable_progress_bar"));
-	REQUIRE_NO_FAIL(con.Query("PRAGMA enable_print_progress_bar"));
-	REQUIRE_NO_FAIL(con.Query("PRAGMA progress_bar_time=0"));
-	REQUIRE_NO_FAIL(con.Query("SELECT count(slow_bind(range)) FROM range(100000000)"));
-	REQUIRE(finished_seconds >= 0.5);
-	con.context->config.display_create_func = nullptr;
+		REQUIRE_NO_FAIL(con.Query("PRAGMA enable_progress_bar"));
+		REQUIRE_NO_FAIL(con.Query("PRAGMA enable_print_progress_bar"));
+		REQUIRE_NO_FAIL(con.Query("PRAGMA progress_bar_time=0"));
+		// the display is destroyed with the query, so it copies its times out
+		double finished_seconds = -1;
+		double bar_seconds = -1;
+		con.context->config.display_create_func = [&]() -> unique_ptr<ProgressBarDisplay> {
+			class CopyingDisplay : public RecordingDisplay {
+			public:
+				CopyingDisplay(double &finished_p, double &bar_p) : finished(finished_p), bar(bar_p) {
+				}
+				~CopyingDisplay() override {
+					finished = finished_seconds;
+					bar = bar_seconds;
+				}
+				double &finished;
+				double &bar;
+			};
+			return make_uniq<CopyingDisplay>(finished_seconds, bar_seconds);
+		};
+		REQUIRE_NO_FAIL(con.Query("SELECT count(slow_bind(range)) FROM range(10000000)"));
+		REQUIRE(bar_seconds >= 0);
+		REQUIRE(finished_seconds - bar_seconds >= 0.5);
+		con.context->config.display_create_func = nullptr;
+	}
 }
 
 TEST_CASE("Test Progress Bar Fast", "[progress-bar]") {

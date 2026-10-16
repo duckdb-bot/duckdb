@@ -29,6 +29,22 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownSetOperation(unique_ptr<Logi
 	         op->type == LogicalOperatorType::LOGICAL_INTERSECT);
 	auto &setop = op->Cast<LogicalSetOperation>();
 
+	if (op->type != LogicalOperatorType::LOGICAL_UNION) {
+		// a volatile filter runs once per result row, so it stays above INTERSECT and EXCEPT
+		vector<unique_ptr<Expression>> volatile_filters;
+		for (idx_t i = 0; i < filters.size(); i++) {
+			if (!filters[i]->filter->IsVolatile()) {
+				continue;
+			}
+			volatile_filters.push_back(std::move(filters[i]->filter));
+			filters.erase_at(i);
+			i--;
+		}
+		if (!volatile_filters.empty()) {
+			return AddLogicalFilter(PushdownSetOperation(std::move(op)), std::move(volatile_filters));
+		}
+	}
+
 	for (auto &child : op->children) {
 		auto child_bindings = child->GetColumnBindings();
 

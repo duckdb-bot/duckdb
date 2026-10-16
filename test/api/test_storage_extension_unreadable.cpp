@@ -123,13 +123,16 @@ TEST_CASE("A missing entry error leaves out the suggestions of a database that f
 }
 
 TEST_CASE("A fatal error of a database read for suggestions invalidates the database", "[api]") {
-	auto db = OpenWithUnreadableDatabase();
-	Connection con(*db);
-
-	unreadable_error = ExceptionType::FATAL;
-	auto result = con.Query("SELECT * FROM nonexistent");
-	unreadable_error = ExceptionType::INVALID;
-	REQUIRE(result->HasError());
-	REQUIRE(result->GetErrorType() == ExceptionType::FATAL);
-	REQUIRE(con.Query("SELECT 1")->HasError());
+	for (bool lists_schemas : {false, true}) {
+		auto db = OpenWithUnreadableDatabase();
+		Connection con(*db);
+		unreadable_lists_schemas = lists_schemas;
+		unreadable_error = ExceptionType::FATAL;
+		auto result = con.Query("SELECT * FROM nonexistent");
+		unreadable_error = ExceptionType::INVALID;
+		REQUIRE(result->HasError());
+		REQUIRE(result->GetErrorType() == ExceptionType::FATAL);
+		REQUIRE(con.Query("SELECT 1")->HasError());
+	}
+	unreadable_lists_schemas = false;
 }

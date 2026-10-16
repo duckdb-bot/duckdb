@@ -1743,28 +1743,40 @@ void CopyFileLifecycleExecutor::ThrowError() {
 //===--------------------------------------------------------------------===//
 // Copy File State Helpers
 //===--------------------------------------------------------------------===//
-//! A candidate key, shared by the paths that file systems ignoring case may treat as one, which either fold or
-//! uppercase names. A PARTITION_PATH can hold any letter.
-static string CaseCandidateKey(const string &path) {
-	utf8proc_uint8_t *folded_data = nullptr;
+//! Maps a path with utf8proc, throwing if it runs out of memory, and keeping a path that is not valid UTF-8
+static string MapUtf8Path(const string &path, utf8proc_option_t options) {
+	utf8proc_uint8_t *mapped_data = nullptr;
 	auto length = utf8proc_map(const_data_ptr_cast(path.c_str()), NumericCast<utf8proc_ssize_t>(path.size()),
-	                           &folded_data, utf8proc_option_t(UTF8PROC_STABLE | UTF8PROC_COMPOSE | UTF8PROC_CASEFOLD));
+	                           &mapped_data, options);
 	if (length == UTF8PROC_ERROR_NOMEM) {
-		throw OutOfMemoryException("Failed to fold the case of \"%s\"", path);
+		throw OutOfMemoryException("Failed to map the path \"%s\"", path);
 	}
 	if (length < 0) {
 		return path;
 	}
-	unique_ptr<utf8proc_uint8_t, decltype(&free)> folded(folded_data, &free);
-	string result;
-	for (utf8proc_ssize_t position = 0; position < length;) {
+	unique_ptr<utf8proc_uint8_t, decltype(&free)> mapped(mapped_data, &free);
+	return string(char_ptr_cast(mapped.get()), NumericCast<idx_t>(length));
+}
+
+//! Groups paths for identity checks on file systems that fold or uppercase names
+static string CaseCandidateKey(const string &path) {
+	auto folded = MapUtf8Path(path, utf8proc_option_t(UTF8PROC_STABLE | UTF8PROC_COMPOSE | UTF8PROC_CASEFOLD));
+	string uppercase;
+	auto data = const_data_ptr_cast(folded.c_str());
+	auto size = NumericCast<utf8proc_ssize_t>(folded.size());
+	for (utf8proc_ssize_t position = 0; position < size;) {
 		utf8proc_int32_t codepoint;
-		position += utf8proc_iterate(folded.get() + position, length - position, &codepoint);
+		auto codepoint_length = utf8proc_iterate(data + position, size - position, &codepoint);
+		if (codepoint_length <= 0) {
+			return folded;
+		}
+		position += codepoint_length;
 		utf8proc_uint8_t encoded[4];
 		auto encoded_length = utf8proc_encode_char(utf8proc_toupper(codepoint), encoded);
-		result.append(char_ptr_cast(encoded), NumericCast<idx_t>(encoded_length));
+		uppercase.append(char_ptr_cast(encoded), NumericCast<idx_t>(encoded_length));
 	}
-	return result;
+	// uppercasing can leave a letter and an accent that compose
+	return MapUtf8Path(uppercase, utf8proc_option_t(UTF8PROC_STABLE | UTF8PROC_COMPOSE));
 }
 
 bool CopyDirectoryManager::EnsureDirectory(FileSystem &fs, const string &dir_path) {

@@ -32,10 +32,23 @@ string Uppercase(const string &name) {
 	return result;
 }
 
-enum class CaseMode { PRESERVE, LOWERCASE, NO_IDENTITY, STATS_THROW, NO_UPPERCASE_IDENTITY };
+//! Names that are equal after full case folding, such as 'Straße' and 'STRASSE', are one name
+string Fold(const string &name) {
+	utf8proc_uint8_t *folded = nullptr;
+	auto length = utf8proc_map(const_data_ptr_cast(name.c_str()), NumericCast<utf8proc_ssize_t>(name.size()), &folded,
+	                           utf8proc_option_t(UTF8PROC_STABLE | UTF8PROC_COMPOSE | UTF8PROC_CASEFOLD));
+	if (length < 0) {
+		throw InternalException("Failed to fold \"%s\"", name);
+	}
+	string result(char_ptr_cast(folded), NumericCast<idx_t>(length));
+	free(folded);
+	return result;
+}
 
-//! A file system under "casetest://" that ignores case and keeps or lowercases names, or that tells case apart but
-//! reports no directory identities. Its operations run one at a time.
+enum class CaseMode { PRESERVE, LOWERCASE, FOLD, NO_IDENTITY, STATS_THROW, NO_UPPERCASE_IDENTITY };
+
+//! A file system under "casetest://" that ignores case, by uppercasing names (and keeping or lowercasing them) or by
+//! folding them, or that tells case apart but reports no directory identities. Its operations run one at a time.
 class CaseTestFileSystem : public FileSystem {
 public:
 	CaseTestFileSystem(string root_p, CaseMode mode_p)
@@ -124,6 +137,12 @@ private:
 						name = entry;
 					}
 				});
+			} else if (mode == CaseMode::FOLD) {
+				local->ListFiles(result, [&](const string &entry, bool) {
+					if (Fold(entry) == Fold(component)) {
+						name = entry;
+					}
+				});
 			}
 			result = local->JoinPath(result, name);
 		}
@@ -152,8 +171,8 @@ void RequireCaseCollision(Connection &con, const string &query) {
 
 TEST_CASE("COPY with PARTITION_BY refuses partitions that a file system ignoring case puts in one directory",
           "[copy][api]") {
-	for (auto mode : {CaseMode::PRESERVE, CaseMode::LOWERCASE}) {
-		INFO("lowercase " << (mode == CaseMode::LOWERCASE));
+	for (auto mode : {CaseMode::PRESERVE, CaseMode::LOWERCASE, CaseMode::FOLD}) {
+		INFO("mode " << static_cast<int>(mode));
 		auto root = TestCreatePath("copy_partition_case");
 		TestDeleteDirectory(root);
 		TestCreateDirectory(root);
@@ -172,9 +191,20 @@ TEST_CASE("COPY with PARTITION_BY refuses partitions that a file system ignoring
 		    "COPY (SELECT * FROM (VALUES ('\xC3\xA4', 1), ('\xC3\x84', 2)) v(k, x)) TO 'casetest://out' (FORMAT "
 		    "parquet, PARTITION_BY (k), PARTITION_PATH k)",
 		    "COPY (SELECT * FROM (VALUES ('\xCF\x83', 1), ('\xCF\x82', 2)) v(k, x)) TO 'casetest://out' (FORMAT "
-		    "parquet, PARTITION_BY (k), PARTITION_PATH k)",
-		    "COPY (SELECT * FROM (VALUES ('\xC4\xB1', 1), ('I', 2)) v(k, x)) TO 'casetest://out' (FORMAT parquet, "
-		    "PARTITION_BY (k), PARTITION_PATH k)"};
+		    "parquet, PARTITION_BY (k), PARTITION_PATH k)"};
+		auto partition_path_copy = [](const string &values) {
+			return "COPY (SELECT * FROM (VALUES " + values +
+			       ") v(k, x)) TO 'casetest://out' (FORMAT parquet, PARTITION_BY (k), PARTITION_PATH k)";
+		};
+		if (mode == CaseMode::FOLD) {
+			// equal when folded, but not when uppercased letter by letter
+			collisions.push_back(partition_path_copy("('Stra\xC3\x9F"
+			                                         "e', 1), ('STRASSE', 2)"));
+		} else {
+			// equal when uppercased, but not when folded
+			collisions.push_back(partition_path_copy("('\xC4\xB1', 1), ('I', 2)"));
+			collisions.push_back(partition_path_copy("('\xC4\xB1\xCC\x81', 1), ('I\xCC\x81', 2)"));
+		}
 		for (auto &query : collisions) {
 			RequireCaseCollision(con, query);
 			TestDeleteDirectory(root);

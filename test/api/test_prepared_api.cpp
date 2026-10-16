@@ -652,12 +652,29 @@ TEST_CASE("Prepared CREATE VIEW stores the values of its parameters", "[api]") {
 		REQUIRE(CHECK_COLUMN(result, 0, {43}));
 		REQUIRE(CHECK_COLUMN(result, 1, {"y"}));
 
+		// LIMIT, a CTE and a lambda, with the values passed directly
+		REQUIRE_NO_FAIL(con.Query("CREATE VIEW l AS WITH c AS (SELECT list_transform([1, 2], lambda x: x + ?) AS l) "
+		                          "SELECT unnest(l) AS v FROM c LIMIT ?",
+		                          10, 1));
+		result = con.Query("SELECT * FROM l");
+		REQUIRE(CHECK_COLUMN(result, 0, {11}));
+		// a view whose binding is deferred
+		REQUIRE_NO_FAIL(con.Query("CREATE VIEW d WITH (DEFER_BINDING) AS SELECT ? AS c", 7));
+		result = con.Query("SELECT * FROM d");
+		REQUIRE(CHECK_COLUMN(result, 0, {7}));
+		// a bare parameter in ORDER BY is an error, as in a SELECT
+		REQUIRE_FAIL(con.Query("CREATE VIEW o AS SELECT a FROM (VALUES (2), (1)) t(a) ORDER BY ?", 1));
+
 		// a named parameter without a value still reads the variable when the view is queried
 		REQUIRE_NO_FAIL(con.Query("SET VARIABLE x = 5"));
-		REQUIRE_NO_FAIL(con.Query("CREATE VIEW w AS SELECT $x AS c"));
+		auto named = con.Prepare("CREATE OR REPLACE VIEW w AS SELECT $x AS c");
+		REQUIRE(!named->HasError());
+		REQUIRE_NO_FAIL(named->Execute());
 		REQUIRE_NO_FAIL(con.Query("SET VARIABLE x = 6"));
+		REQUIRE_NO_FAIL(named->Execute());
+		REQUIRE_NO_FAIL(con.Query("SET VARIABLE x = 7"));
 		result = con.Query("SELECT * FROM w");
-		REQUIRE(CHECK_COLUMN(result, 0, {6}));
+		REQUIRE(CHECK_COLUMN(result, 0, {7}));
 
 		// a positional parameter needs a value
 		REQUIRE_FAIL(con.Query("CREATE VIEW u AS SELECT ? AS c"));

@@ -340,9 +340,12 @@ void Binder::SetCatalogLookupCallback(catalog_entry_callback_t callback) {
 void Binder::BindView(ClientContext &context, const SelectStatement &stmt, const Identifier &catalog_name,
                       const Identifier &schema_name, optional_ptr<LogicalDependencyList> dependencies,
                       const vector<Identifier> &aliases, vector<LogicalType> &result_types,
-                      vector<Identifier> &result_names) {
+                      vector<Identifier> &result_names, optional_ptr<BoundParameterMap> parameters) {
 	auto view_binder = Binder::CreateBinder(context);
 	auto &catalog = Catalog::GetCatalog(context, catalog_name);
+	if (parameters) {
+		view_binder->SetParameters(*parameters);
+	}
 
 	if (dependencies) {
 		view_binder->SetCatalogLookupCallback([&dependencies, &catalog](CatalogEntry &entry) {
@@ -367,35 +370,43 @@ void Binder::BindView(ClientContext &context, const SelectStatement &stmt, const
 	result_names = query_node.names;
 }
 
-static void ReplaceParameters(QueryNode &node, const identifier_map_t<BoundParameterData> &values, bool &replaced);
+//! Replaces the positional parameters of a query with their values, or only finds them when replace is false
+struct ViewParameterReplacer {
+	const identifier_map_t<BoundParameterData> &values;
+	bool replace;
+	bool found = false;
 
-static void ReplaceParameters(unique_ptr<ParsedExpression> &expr, const identifier_map_t<BoundParameterData> &values,
-                              bool &replaced) {
-	if (expr->GetExpressionClass() == ExpressionClass::PARAMETER) {
-		auto &identifier = expr->Cast<ParameterExpression>().Identifier();
-		auto entry = values.find(identifier);
-		if (entry != values.end()) {
-			auto constant = ConstantExpression::FromValue(entry->second.GetValue());
-			constant->SetAlias(expr->GetAlias());
-			expr = std::move(constant);
-			replaced = true;
-		} else if (!PreparedStatement::AllowsUserVariableFallback(identifier)) {
-			// the value is only known when the statement is executed
-			throw ParameterNotResolvedException();
+	void Visit(unique_ptr<ParsedExpression> &expr) {
+		if (expr->GetExpressionClass() == ExpressionClass::PARAMETER) {
+			// a named parameter stays, as it can read a variable when the view is queried
+			auto &identifier = expr->Cast<ParameterExpression>().Identifier();
+			if (PreparedStatement::AllowsUserVariableFallback(identifier)) {
+				return;
+			}
+			auto entry = values.find(identifier);
+			if (entry == values.end()) {
+				// the value is only known when the statement is executed
+				throw ParameterNotResolvedException();
+			}
+			found = true;
+			if (replace) {
+				auto constant = ConstantExpression::FromValue(entry->second.GetValue());
+				constant->SetAlias(expr->GetAlias());
+				expr = std::move(constant);
+			}
+			return;
 		}
-		return;
+		if (expr->GetExpressionClass() == ExpressionClass::SUBQUERY) {
+			Visit(*expr->Cast<SubqueryExpression>().SubqueryMutable()->node);
+		}
+		ParsedExpressionIterator::EnumerateChildren(*expr, [&](unique_ptr<ParsedExpression> &child) { Visit(child); });
 	}
-	if (expr->GetExpressionClass() == ExpressionClass::SUBQUERY) {
-		ReplaceParameters(*expr->Cast<SubqueryExpression>().SubqueryMutable()->node, values, replaced);
-	}
-	ParsedExpressionIterator::EnumerateChildren(
-	    *expr, [&](unique_ptr<ParsedExpression> &child) { ReplaceParameters(child, values, replaced); });
-}
 
-static void ReplaceParameters(QueryNode &node, const identifier_map_t<BoundParameterData> &values, bool &replaced) {
-	ParsedExpressionIterator::EnumerateQueryNodeChildren(
-	    node, [&](unique_ptr<ParsedExpression> &child) { ReplaceParameters(child, values, replaced); });
-}
+	void Visit(QueryNode &node) {
+		ParsedExpressionIterator::EnumerateQueryNodeChildren(
+		    node, [&](unique_ptr<ParsedExpression> &child) { Visit(child); });
+	}
+};
 
 void Binder::BindCreateViewInfo(CreateViewInfo &base) {
 	// references to the view's own catalog are resolved through the view's search path anyway - drop the qualifier so
@@ -403,6 +414,24 @@ void Binder::BindCreateViewInfo(CreateViewInfo &base) {
 	auto &view_catalog = base.GetQualifiedName().Catalog();
 	if (base.query && !view_catalog.empty()) {
 		RemotePushdownOptimizer::StripCatalogName(*base.query, view_catalog);
+	}
+	auto parameters = GetParameters();
+	if (parameters) {
+		// the view stores the values of the positional parameters of a prepared statement
+		ViewParameterReplacer finder {parameters->GetParameterData(), false};
+		finder.Visit(*base.query->node);
+		if (finder.found) {
+			if (base.binding_mode != CreateViewBindingMode::SKIP_BINDING) {
+				// check the parameters as in a SELECT, where a bare one in ORDER BY is not an ordinal
+				vector<LogicalType> types;
+				vector<Identifier> names;
+				BindView(context, *base.query, base.GetQualifiedName().Catalog(), base.GetQualifiedName().Schema(),
+				         nullptr, base.aliases, types, names, parameters);
+			}
+			ViewParameterReplacer replacer {parameters->GetParameterData(), true};
+			replacer.Visit(*base.query->node);
+			base.sql = base.ToString();
+		}
 	}
 	if (base.binding_mode == CreateViewBindingMode::SKIP_BINDING) {
 		return;
@@ -421,15 +450,6 @@ void Binder::BindCreateViewInfo(CreateViewInfo &base) {
 		}
 		if (t == QueryNodeType::COPY_QUERY_NODE) {
 			throw BinderException("COPY statements are not allowed as CTE bodies inside a VIEW");
-		}
-	}
-	auto parameters = GetParameters();
-	if (parameters) {
-		// the view stores the values of the parameters of a prepared statement
-		bool replaced = false;
-		ReplaceParameters(*base.query->node, parameters->GetParameterData(), replaced);
-		if (replaced) {
-			base.sql = base.ToString();
 		}
 	}
 	optional_ptr<LogicalDependencyList> dependencies;

@@ -287,7 +287,7 @@ public:
 	static void BindView(ClientContext &context, const SelectStatement &stmt, const Identifier &catalog_name,
 	                     const Identifier &schema_name, optional_ptr<LogicalDependencyList> dependencies,
 	                     const vector<Identifier> &aliases, vector<LogicalType> &result_types,
-	                     vector<Identifier> &result_names);
+	                     vector<Identifier> &result_names, optional_ptr<BoundParameterMap> parameters = nullptr);
 
 	void SearchSchema(CreateInfo &info);
 	//! Resolve the leading component of a (possibly qualified) name into a catalog: if it names an attached database it

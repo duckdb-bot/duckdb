@@ -5,7 +5,16 @@
 require parquet
 
 statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+statement ok
 COPY (SELECT i, i % 2 AS p FROM range(10) t(i)) TO '{TEST_DIR}/window_self_join_hive' (FORMAT parquet, PARTITION_BY (p));
+
+# the window self join applies
+query II
+EXPLAIN SELECT i, count(*) OVER () AS c FROM read_parquet('{TEST_DIR}/window_self_join_hive/**/*.parquet', hive_partitioning = true) WHERE p = 0
+----
+physical_plan	<!REGEX>:.*WINDOW.*
 
 query II
 SELECT i, count(*) OVER () AS c FROM read_parquet('{TEST_DIR}/window_self_join_hive/**/*.parquet', hive_partitioning = true) WHERE p = 0 ORDER BY i
@@ -40,3 +49,9 @@ SELECT i, count(*) OVER () AS c FROM read_parquet('{TEST_DIR}/window_self_join_h
 4	5
 6	5
 8	5
+
+# the bind data of a scan without complex filter pushdown is not copied
+query I
+SELECT count(*) FROM (WITH c AS (SELECT * FROM range(3)) SELECT * FROM c UNION ALL SELECT * FROM c LIMIT 4)
+----
+4

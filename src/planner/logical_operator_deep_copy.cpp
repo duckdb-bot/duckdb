@@ -10,12 +10,11 @@ LogicalOperatorDeepCopy::LogicalOperatorDeepCopy(Binder &binder, optional_ptr<bo
     : binder(binder), parameter_data(parameter_data) {
 }
 
-//! A table function without serialization callbacks is bound again from its parameters when the copy is deserialized,
-//! which loses what was pushed into its bind data, such as the files that filters pruned
+//! Deserialization binds a function without serialization callbacks again, losing the filters pushed into it
 static void CopyBindData(LogicalOperator &op, LogicalOperator &copy) {
 	if (op.type == LogicalOperatorType::LOGICAL_GET) {
 		auto &get = op.Cast<LogicalGet>();
-		if (get.bind_data && !get.function.HasSerializationCallbacks()) {
+		if (get.bind_data && get.function.pushdown_complex_filter && !get.function.HasSerializationCallbacks()) {
 			copy.Cast<LogicalGet>().bind_data = get.bind_data->Copy();
 		}
 	}

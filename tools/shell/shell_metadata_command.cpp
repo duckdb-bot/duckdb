@@ -376,10 +376,11 @@ MetadataResult SetMaxRows(ShellState &state, const vector<string> &args) {
 		state.PrintF("current max rows: %zu\n", state.max_rows);
 		return MetadataResult::SUCCESS;
 	}
-	state.max_rows = (size_t)ShellState::StringToInt(args[1]);
+	auto max_rows = (size_t)ShellState::StringToInt(args[1]);
 	if (args.size() > 2) {
 		state.max_analyze_rows = (size_t)ShellState::StringToInt(args[2]);
 	}
+	state.max_rows = max_rows;
 	return MetadataResult::SUCCESS;
 }
 
@@ -592,10 +593,11 @@ MetadataResult ShowVersion(ShellState &state, const vector<string> &args) {
 }
 
 MetadataResult SetWidths(ShellState &state, const vector<string> &args) {
-	state.colWidth.clear();
+	vector<int> widths;
 	for (idx_t j = 1; j < args.size(); j++) {
-		state.colWidth.push_back((int)ShellState::StringToInt(args[j]));
+		widths.push_back((int)ShellState::StringToInt(args[j]));
 	}
+	state.colWidth = std::move(widths);
 	return MetadataResult::SUCCESS;
 }
 

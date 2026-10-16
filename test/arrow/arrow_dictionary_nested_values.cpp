@@ -53,19 +53,38 @@ struct Builder {
 		node.array.release = ReleaseArray;
 		return node;
 	}
-	Node &Int32(const char *name, vector<int32_t> values) {
+	void SetNulls(Node &node, const vector<idx_t> &null_slots) {
+		node.validity.resize((idx_t(node.array.length) + 7) / 8, 0xFF);
+		for (auto slot : null_slots) {
+			node.validity[slot / 8] &= uint8_t(~(1u << (slot % 8)));
+		}
+		node.array.null_count = int64_t(null_slots.size());
+		node.buffers[0] = null_slots.empty() ? nullptr : node.validity.data();
+		node.schema.flags = ARROW_FLAG_NULLABLE;
+	}
+	Node &Int32(const char *name, vector<int32_t> values, const vector<idx_t> &null_slots = {}) {
 		auto &node = NewNode("i", name, int64_t(values.size()), {});
 		node.values = std::move(values);
 		node.buffers = {nullptr, node.values.data()};
 		node.array.n_buffers = 2;
 		node.array.buffers = node.buffers.data();
+		SetNulls(node, null_slots);
 		return node;
 	}
-	Node &Struct(const char *name, vector<Node *> children) {
+	Node &Int8(const char *name, vector<int8_t> values) {
+		auto &node = NewNode("c", name, int64_t(values.size()), {});
+		node.indices = std::move(values);
+		node.buffers = {nullptr, node.indices.data()};
+		node.array.n_buffers = 2;
+		node.array.buffers = node.buffers.data();
+		return node;
+	}
+	Node &Struct(const char *name, vector<Node *> children, const vector<idx_t> &null_slots = {}) {
 		auto &node = NewNode("+s", name, children[0]->array.length, children);
 		node.buffers = {nullptr};
 		node.array.n_buffers = 1;
 		node.array.buffers = node.buffers.data();
+		SetNulls(node, null_slots);
 		return node;
 	}
 	Node &FixedSizeList(const char *format, const char *name, int64_t length, Node &child) {
@@ -160,4 +179,23 @@ TEST_CASE("Arrow scan of a dictionary of structs across several chunks", "[arrow
 	auto &column = b.Dictionary("s", indices, values);
 	REQUIRE(ScanMatches(column, "SELECT CASE WHEN i % 7 = 0 THEN NULL ELSE {'d': ([30, 20, 10])[i % 3 + 1]} "
 	                            "END::STRUCT(d INT) FROM range(5000) t(i)"));
+}
+
+TEST_CASE("Arrow scan of a dictionary of structs with NULL entries and fields", "[arrow]") {
+	Builder b;
+	// entry 1 is a NULL struct, and the field of entry 2 is NULL
+	auto &values = b.Struct("", {&b.Int32("d", {30, 20, 10}, {2})}, {1});
+	auto &column = b.Dictionary("s", {0, 1, 2, -1, 0}, values);
+	REQUIRE(ScanMatches(column, "SELECT s::STRUCT(d INT) FROM (VALUES ({'d': 30}), (NULL), ({'d': NULL}), (NULL), "
+	                            "({'d': 30})) t(s)"));
+}
+
+TEST_CASE("Arrow scan of a dictionary of structs with a dictionary field", "[arrow]") {
+	Builder b;
+	// the field has int8 values, the type of its indices
+	auto &field = b.Dictionary("f", {2, 0, 1}, b.Int8("", {7, 8, 9}));
+	auto &values = b.Struct("", {&field});
+	auto &column = b.Dictionary("s", {1, -1, 0, 2}, values);
+	REQUIRE(ScanMatches(column, "SELECT s::STRUCT(f TINYINT) FROM (VALUES ({'f': 7}), (NULL), ({'f': 9}), ({'f': 8})) "
+	                            "t(s)"));
 }

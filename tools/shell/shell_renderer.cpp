@@ -271,13 +271,18 @@ SuccessState ShellState::RenderPreparedResult(ShellRenderer &renderer, Rendering
 }
 
 SuccessState ShellRenderer::RenderQueryResult(PrintStream &out, ShellState &state, RenderingQueryResult &result) {
+	// the first rows are fetched before the header, so a query that fails before its first row prints nothing
+	auto row = result.begin();
+	if (!(row != result.end()) && result.HasError()) {
+		return SuccessState::FAILURE;
+	}
 	RenderHeader(out, result.metadata);
-	for (auto &row_data : result) {
+	for (; row != result.end(); ++row) {
 		if (state.seenInterrupt) {
 			state.PrintF("Interrupt\n");
 			return SuccessState::FAILURE;
 		}
-		RenderRow(out, result.metadata, row_data);
+		RenderRow(out, result.metadata, *row);
 	}
 	if (result.HasError()) {
 		// the query failed while streaming - the caller reports it, no footer

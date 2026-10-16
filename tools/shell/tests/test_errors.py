@@ -97,3 +97,17 @@ def test_unterminated_quote(shell):
     )
     result = test.run()
     result.check_stderr('I\'m an error')
+
+
+@pytest.mark.parametrize("mode", ["-csv", "-list", "-json", "-jsonlines"])
+def test_statement_failing_before_its_first_row_prints_nothing(shell, mode):
+    test = ShellTest(shell, [mode]).statement("SELECT printf('%d') AS x;")
+    result = test.run()
+    result.check_stdout(None)
+    result.check_stderr('Argument index "0" out of range')
+
+
+def test_empty_result_still_prints_its_header(shell):
+    test = ShellTest(shell, ["-csv"]).statement("SELECT 42 AS x WHERE false;")
+    result = test.run()
+    result.check_stdout("x")

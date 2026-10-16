@@ -697,8 +697,36 @@ TEST_CASE("Prepared CREATE VIEW stores the values of its parameters", "[api]") {
 		double_values[Identifier("1")] = BoundParameterData(Value::INTEGER(42), LogicalType::DOUBLE);
 		auto bound_double = con.Prepare("CREATE VIEW dbl AS SELECT ? AS c");
 		REQUIRE_NO_FAIL(bound_double->Execute(double_values));
-		result = con.Query("SELECT typeof(c) FROM dbl");
+		result = con.Query("SELECT typeof(c), c FROM dbl");
 		REQUIRE(CHECK_COLUMN(result, 0, {"DOUBLE"}));
+		REQUIRE(CHECK_COLUMN(result, 1, {42.0}));
+		REQUIRE_NO_FAIL(con.Query("CREATE VIEW lst AS SELECT ? AS c",
+		                          Value::LIST(LogicalType::SMALLINT, {Value::SMALLINT(1), Value::SMALLINT(2)})));
+		result = con.Query("SELECT typeof(c), c::VARCHAR FROM lst");
+		REQUIRE(CHECK_COLUMN(result, 0, {"SMALLINT[]"}));
+		REQUIRE(CHECK_COLUMN(result, 1, {"[1, 2]"}));
+		// a collation stays outside the cast, so the stored SQL parses
+		identifier_map_t<BoundParameterData> collated_values;
+		collated_values[Identifier("1")] = BoundParameterData(Value("a"), LogicalType::VARCHAR_COLLATION("nocase"));
+		auto collated = con.Prepare("CREATE VIEW col AS SELECT ? = 'A' AS c");
+		REQUIRE_NO_FAIL(collated->Execute(collated_values));
+		result = con.Query("SELECT * FROM col");
+		REQUIRE(CHECK_COLUMN(result, 0, {true}));
+		// the stored SQL creates the same views when it is parsed again
+		result =
+		    con.Query("SELECT sql FROM duckdb_views() WHERE view_name IN ('dbl', 'lst', 'col') ORDER BY view_name");
+		REQUIRE(!result->HasError());
+		DuckDB reparsed_db(nullptr);
+		Connection reparsed(reparsed_db);
+		auto &views = result->Collection();
+		REQUIRE(views.Count() == 3);
+		for (idx_t i = 0; i < views.Count(); i++) {
+			REQUIRE_NO_FAIL(reparsed.Query(views.GetValue(0, i).ToString()));
+		}
+		auto reparsed_result = reparsed.Query("SELECT typeof(c), c::VARCHAR FROM dbl UNION ALL SELECT typeof(c), "
+		                                      "c::VARCHAR FROM lst UNION ALL SELECT typeof(c), c::VARCHAR FROM col");
+		REQUIRE(CHECK_COLUMN(reparsed_result, 0, {"DOUBLE", "SMALLINT[]", "BOOLEAN"}));
+		REQUIRE(CHECK_COLUMN(reparsed_result, 1, {"42.0", "[1, 2]", "true"}));
 		REQUIRE_NO_FAIL(con.Query("CREATE VIEW dist AS SELECT DISTINCT ON (?) a FROM (VALUES (2), (1)) t(a)", true));
 		result = con.Query("SELECT count(*) FROM dist");
 		REQUIRE(CHECK_COLUMN(result, 0, {1}));

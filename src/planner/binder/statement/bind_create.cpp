@@ -20,6 +20,7 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/parser/expression/cast_expression.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
+#include "duckdb/parser/expression/collate_expression.hpp"
 #include "duckdb/parser/expression/function_expression.hpp"
 #include "duckdb/parser/expression/subquery_expression.hpp"
 #include "duckdb/main/prepared_statement.hpp"
@@ -392,9 +393,8 @@ struct ViewParameterReplacer {
 			}
 			found = true;
 			if (replace) {
-				// a string stays a literal, so it keeps the coercions of a bound string parameter; any other value is
-				// cast to the type it is bound as, so that it is no column index or literal in ORDER BY, GROUP BY or
-				// DISTINCT ON
+				// a string stays a literal like a bound string, any other value is cast to its bound type so that it
+				// is never a column index in ORDER BY, GROUP BY or DISTINCT ON
 				auto &data = entry->second;
 				auto constant = ConstantExpression::FromValue(data.GetValue());
 				auto type = data.return_type;
@@ -402,7 +402,16 @@ struct ViewParameterReplacer {
 					type = IntegerLiteral::GetType(type);
 				}
 				if (type.id() != LogicalTypeId::STRING_LITERAL && type.id() != LogicalTypeId::SQLNULL) {
-					constant = make_uniq<CastExpression>(type, std::move(constant));
+					// a collation is applied by COLLATE, as the type of a cast cannot name it
+					string collation;
+					if (type.id() == LogicalTypeId::VARCHAR && !type.HasAlias()) {
+						collation = StringType::GetCollation(type);
+					}
+					constant =
+					    make_uniq<CastExpression>(collation.empty() ? type : LogicalType::VARCHAR, std::move(constant));
+					if (!collation.empty()) {
+						constant = make_uniq<CollateExpression>(std::move(collation), std::move(constant));
+					}
 				}
 				constant->SetAlias(expr->GetAlias());
 				expr = std::move(constant);

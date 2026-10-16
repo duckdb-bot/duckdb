@@ -91,3 +91,18 @@ query II
 EXPLAIN SELECT * FROM tbl n1 JOIN tbl n2 ON n1.x = n2.x WHERE n1.x + (random() * 0)::INTEGER = 1;
 ----
 physical_plan	<!REGEX>:.*random.*random.*
+
+# also in the body of a lambda
+query I
+SELECT count(*) FROM l JOIN r ON x = y WHERE list_transform([x + y], lambda v: CAST(v AS TINYINT)) = [2];
+----
+1
+
+# a cast that cannot fail is copied
+query II
+explain SELECT *
+FROM t AS t1
+JOIN t AS t2 on t1.f = t2.f
+WHERE right(CAST(length(t1.f) AS VARCHAR), 1) = '2'
+----
+physical_plan	<REGEX>:.*right.*right.*

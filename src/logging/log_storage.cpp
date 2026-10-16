@@ -397,10 +397,11 @@ void FileLogStorage::SetPaths(const string &base_path) {
 		tables[LoggingTargetTable::LOG_CONTEXTS].path = fs.JoinPath(base_path, "duckdb_log_contexts.csv");
 		tables[LoggingTargetTable::LOG_ENTRIES].path = fs.JoinPath(base_path, "duckdb_log_entries.csv");
 	} else {
+		// the denormalized log is a single file, given directly or placed in the given directory
 		if (StringUtil::EndsWith(base_path, ".csv")) {
 			tables[LoggingTargetTable::ALL_LOGS].path = base_path;
 		} else {
-			tables[LoggingTargetTable::LOG_ENTRIES].path = fs.JoinPath(base_path, "duckdb_log_entries.csv");
+			tables[LoggingTargetTable::ALL_LOGS].path = fs.JoinPath(base_path, "duckdb_log_entries.csv");
 		}
 	}
 }

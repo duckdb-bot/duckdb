@@ -320,6 +320,11 @@ SELECT '{"a": 1, "A": [2, "x:y"], "b": {"c": 1, "C": 2}}'::JSON::VARIANT::VARCHA
 ----
 {'A': [2, x:y], 'a': 1, 'b': {'C': 2, 'c': 1}}
 
+query I
+SELECT '[{"a": 1}, {"A": 2}, [{"b": 3}, {"B": 4}]]'::JSON::VARIANT::VARCHAR
+----
+[{'a': 1}, {'A': 2}, [{'b': 3}, {'B': 4}]]
+
 # implicit cast to VARCHAR
 query I
 SELECT {'a': [1, 2]}::VARIANT || 'x'

@@ -68,6 +68,7 @@ set(TEST_API_OBJECTS
     test_passthrough_token_matcher.cpp
     test_progress_bar.cpp
     test_uuid.cpp
+    test_variant_to_varchar_cast.cpp
     test_insertion_order_preserving_map.cpp
     test_bignum.cpp
     test_threads.cpp

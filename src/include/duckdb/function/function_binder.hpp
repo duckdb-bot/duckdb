@@ -350,6 +350,8 @@ private:
 	                           vector<pair<Identifier, unique_ptr<Expression>>> &keyword_args);
 	//! Cast a set of expressions to the arguments of this function
 	void CastToFunctionArguments(BoundSimpleFunction &function, vector<unique_ptr<Expression>> &children);
+	//! Cast an argument to the type of its parameter
+	unique_ptr<Expression> CastArgument(unique_ptr<Expression> argument, const LogicalType &target_type);
 
 	void ResolveTemplateTypes(BoundSimpleFunction &bound_function, const vector<unique_ptr<Expression>> &children);
 	void CheckTemplateTypesResolved(const BoundSimpleFunction &bound_function);

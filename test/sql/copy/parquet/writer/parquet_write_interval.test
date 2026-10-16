@@ -49,3 +49,79 @@ SELECT i = INTERVAL '580063 hours 44 minutes 54 seconds',
 FROM '{TEST_DIR}/large_interval.parquet'
 ----
 true	0	24169	7	44	54
+
+
+# The time part is kept while its milliseconds fit in their 32 bits
+statement ok
+COPY (
+	SELECT * FROM (VALUES
+		(1, INTERVAL '24 hours'),
+		(2, INTERVAL '1 day 25 hours'),
+		(3, INTERVAL '1193 hours 2 minutes 47.295 seconds'),
+		(4, INTERVAL '1193 hours 2 minutes 47.296 seconds'),
+		(5, INTERVAL '1200 hours'),
+		(6, INTERVAL '1 month 36 hours')
+	) t(id, i)
+) TO '{TEST_DIR}/interval_time_part.parquet' (DICTIONARY_SIZE_LIMIT 1000)
+
+query II
+SELECT id, i FROM '{TEST_DIR}/interval_time_part.parquet' ORDER BY id
+----
+1	24:00:00
+2	1 day 25:00:00
+3	1193:02:47.295
+4	49 days 17:02:47.296
+5	50 days
+6	1 month 36:00:00
+
+# also without a dictionary, and nested in lists and structs
+statement ok
+COPY (
+	SELECT id, i, [i] AS l, {'i': i} AS s FROM '{TEST_DIR}/interval_time_part.parquet'
+) TO '{TEST_DIR}/interval_time_part_plain.parquet' (DICTIONARY_SIZE_LIMIT 1)
+
+query IIII
+SELECT id, i, l, s FROM '{TEST_DIR}/interval_time_part_plain.parquet' WHERE id IN (1, 2) ORDER BY id
+----
+1	24:00:00	['24:00:00']	{'i': '24:00:00'}
+2	1 day 25:00:00	['1 day 25:00:00']	{'i': '1 day 25:00:00'}
+
+# filters with an equal interval written another way still find the rows
+query II
+SELECT count(*) FILTER (WHERE i = INTERVAL '1 day'), count(*) FILTER (WHERE i = INTERVAL '2 days 1 hour')
+FROM '{TEST_DIR}/interval_time_part.parquet'
+----
+1	1
+
+query I
+SELECT id FROM '{TEST_DIR}/interval_time_part.parquet' WHERE i = INTERVAL '1 day'
+----
+1
+
+# the dictionary file has a bloom filter, which holds the normalized interval
+query II
+SELECT bool_or(bloom_filter_excludes), count(*) FROM parquet_bloom_probe('{TEST_DIR}/interval_time_part.parquet', 'i', INTERVAL '1 day')
+----
+false	1
+
+query I
+SELECT bool_and(bloom_filter_excludes) FROM parquet_bloom_probe('{TEST_DIR}/interval_time_part.parquet', 'i', INTERVAL '3 days')
+----
+true
+
+query I
+SELECT bool_or(bloom_filter_excludes) FROM parquet_bloom_probe('{TEST_DIR}/interval_time_part.parquet', 'i', INTERVAL '24 hours')
+----
+false
+
+require icu
+
+statement ok
+SET TimeZone = 'America/New_York';
+
+# adding the interval read back crosses the DST change as the one written
+query II
+SELECT TIMESTAMPTZ '2024-03-09 12:00:00' + i, TIMESTAMPTZ '2024-03-09 12:00:00' + INTERVAL '24 hours'
+FROM '{TEST_DIR}/interval_time_part.parquet' WHERE id = 1
+----
+2024-03-10 13:00:00-04	2024-03-10 13:00:00-04

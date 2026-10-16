@@ -19,7 +19,30 @@
 #include <utility>
 
 namespace duckdb {
+//! Whether the result of the operator changes when its input rows are duplicated
+static bool DependsOnDuplicates(LogicalOperator &op) {
+	switch (op.type) {
+	case LogicalOperatorType::LOGICAL_LIMIT:
+	case LogicalOperatorType::LOGICAL_SAMPLE:
+	case LogicalOperatorType::LOGICAL_WINDOW:
+		return true;
+	default:
+		break;
+	}
+	bool has_volatile = false;
+	LogicalOperatorVisitor::EnumerateExpressions(op, [&](unique_ptr<Expression> *expr) {
+		if ((*expr)->IsVolatile()) {
+			has_volatile = true;
+		}
+	});
+	return has_volatile;
+}
+
 void JoinElimination::OptimizeChildren(LogicalOperator &op, optional_ptr<LogicalOperator> parent, idx_t idx) {
+	if (DependsOnDuplicates(op)) {
+		// a distinct group above this operator does not hold below it
+		pipe_info.distinct_groups.clear();
+	}
 	if (op.type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN) {
 		if (!parent) {
 			return;
@@ -135,6 +158,15 @@ void JoinElimination::OptimizeChildren(LogicalOperator &op, optional_ptr<Logical
 		}
 		OptimizeChildren(*op.children[0], op, idx);
 		if (invalidates_distinct) {
+			// keep the groups from above that still hold below the UNNEST
+			for (auto it = distinct_groups_above.begin(); it != distinct_groups_above.end();) {
+				auto entry = pipe_info.distinct_groups.find(it->first);
+				if (entry == pipe_info.distinct_groups.end() || entry->second != it->second) {
+					it = distinct_groups_above.erase(it);
+				} else {
+					it++;
+				}
+			}
 			pipe_info.distinct_groups = std::move(distinct_groups_above);
 		}
 	} else {

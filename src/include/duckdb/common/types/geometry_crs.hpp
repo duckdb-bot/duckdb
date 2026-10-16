@@ -71,12 +71,10 @@ public:
 
 	//! Attempt to determine if this CRS is equivalent to another CRS
 	//! This is currently not very precise, and may yield false negatives
-	//! We consider two CRSs equal if one of the following is true:
-	//! - Their identifiers match
-	//! - Their type and full text definitions match, character-for-character
+	//! We consider two CRSs equal if their identifiers match and both are ids or both are names, or if their type and
+	//! full text definitions match, character for character
 	bool Equals(const CoordinateReferenceSystem &other) const {
-		// Whatever the definitions are, if the identifiers match we consider them equal
-		if (!identifier.empty() && identifier == other.identifier) {
+		if (!identifier.empty() && identifier == other.identifier && identifier_is_id == other.identifier_is_id) {
 			return true;
 		}
 
@@ -131,6 +129,9 @@ private:
 	//! The identifier code of the coordinate reference system
 	//! This can usually be derived from the text definition, but is cached here for convenience
 	string identifier;
+
+	//! Whether the identifier is an AUTH:CODE id, and not the name of the coordinate reference system
+	bool identifier_is_id = false;
 };
 
 } // namespace duckdb

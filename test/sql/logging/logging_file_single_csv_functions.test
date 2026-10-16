@@ -1,0 +1,92 @@
+# name: test/sql/logging/logging_file_single_csv_functions.test
+# description: duckdb_logs() and duckdb_log_contexts() read the entries and contexts of logs in a single CSV file
+# group: [logging]
+
+require noforcestorage
+
+# the log file is locked against readers on windows
+require notwindows
+
+statement ok
+CALL enable_logging(['QueryLog'], storage_path='{TEST_DIR}/logging_single_csv_functions.csv', storage_buffer_size=0);
+
+statement ok
+SELECT 1 AS a
+
+statement ok
+SELECT 2 AS b
+
+statement ok
+SELECT write_log('shared ' || i, log_type := 'QueryLog') FROM range(3) t(i)
+
+statement ok
+CALL disable_logging();
+
+query II
+SELECT type, message FROM duckdb_logs() WHERE starts_with(message, 'SELECT 1') OR starts_with(message, 'SELECT 2') ORDER BY timestamp
+----
+QueryLog	SELECT 1 AS a
+QueryLog	SELECT 2 AS b
+
+# each context once, with the id its entries refer to
+query I
+SELECT count(*) = count(DISTINCT context_id) FROM duckdb_log_contexts();
+----
+true
+
+query II
+SELECT c.scope, l.message FROM duckdb_logs() l JOIN duckdb_log_contexts() c USING (context_id) WHERE starts_with(l.message, 'SELECT 1') OR starts_with(l.message, 'SELECT 2') ORDER BY l.timestamp
+----
+CONNECTION	SELECT 1 AS a
+CONNECTION	SELECT 2 AS b
+
+# the entries of one query share its context
+query III
+SELECT count(*), count(DISTINCT l.context_id), count(DISTINCT c.context_id) FROM duckdb_logs() l JOIN duckdb_log_contexts() c USING (context_id) WHERE starts_with(l.message, 'shared ')
+----
+3	1	1
+
+query IIIIII nosort describe_duckdb_logs
+DESCRIBE FROM duckdb_logs();
+----
+
+query IIIIII nosort describe_duckdb_log_contexts
+DESCRIBE FROM duckdb_log_contexts();
+----
+
+statement ok
+CALL truncate_duckdb_logs();
+
+# the columns are those of the in-memory storage
+statement ok
+CALL enable_logging(['QueryLog'], storage='memory');
+
+statement ok
+SELECT 1 AS c
+
+statement ok
+CALL disable_logging();
+
+query IIIIII nosort describe_duckdb_logs
+DESCRIBE FROM duckdb_logs();
+----
+
+query IIIIII nosort describe_duckdb_log_contexts
+DESCRIBE FROM duckdb_log_contexts();
+----
+
+# a file that several sessions appended to can have one context id for different contexts, and keeps each of them
+statement ok
+COPY (SELECT 1::UBIGINT AS context_id, 'CONNECTION' AS scope, 7::UBIGINT AS connection_id, 8::UBIGINT AS transaction_id, 9::UBIGINT AS query_id, NULL::UBIGINT AS thread_id, TIMESTAMPTZ '2026-01-01 00:00:00+00' AS timestamp, 'QueryLog' AS type, 'INFO' AS log_level, 'SELECT 1' AS message UNION ALL SELECT 1, 'CONNECTION', 8, 9, 10, NULL, TIMESTAMPTZ '2026-01-01 00:00:01+00', 'QueryLog', 'INFO', 'SELECT 2') TO '{TEST_DIR}/logging_single_csv_reused_ids.csv'
+
+statement ok
+CALL enable_logging(['QueryLog'], storage_path='{TEST_DIR}/logging_single_csv_reused_ids.csv', storage_buffer_size=0);
+
+statement ok
+CALL disable_logging();
+
+query IIII
+SELECT context_id, connection_id, transaction_id, query_id FROM duckdb_log_contexts() WHERE context_id = 1 ORDER BY ALL
+----
+1	7	8	9
+1	8	9	10

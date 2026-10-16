@@ -14,6 +14,7 @@
 #include "duckdb/common/identifier.hpp"
 #include "duckdb/common/vector.hpp"
 #include "duckdb/common/reference_map.hpp"
+#include "duckdb/common/unordered_map.hpp"
 #include "duckdb/common/enums/identifier_case_mode.hpp"
 #include "duckdb/parser/parser_extension.hpp"
 #include "duckdb/parser/peg/keyword_helper.hpp"
@@ -187,6 +188,8 @@ struct MatchState {
 
 	template <class RESULT, class... ARGS>
 	MatcherResult AllocateParseResult(ARGS &&... args);
+	//! The result of an optional that matched nothing
+	inline MatcherResult EmptyOptionalResult();
 
 	template <class PROCESS, class... ARGS>
 	arena_ptr<MatchProcess> Make(ARGS &&... args);
@@ -443,6 +446,9 @@ public:
 		return optional_ptr<ParseResult>(result);
 	}
 
+	//! The result of an optional of the rule that matched nothing. These are all alike, so the rule shares one.
+	optional_ptr<ParseResult> EmptyOptional(optional_ptr<const CompiledGrammarRule> rule);
+
 	//! Copy a collected set of children into the arena, where it lives as long as the results it belongs to
 	unsafe_array_ptr<reference<ParseResult>> MakeChildren(const arena_vector<reference<ParseResult>> &children) {
 		auto count = children.size();
@@ -464,6 +470,8 @@ private:
 	//! freeing it, which is all these are here for. Only the node types that `ParseResultNeedsDestructor` selects end
 	//! up in the list, and nothing ever reads it.
 	arena_vector<arena_ptr<ParseResult>> pending_destructors;
+	//! The result EmptyOptional hands out for each rule
+	unordered_map<const CompiledGrammarRule *, optional_ptr<ParseResult>> empty_optionals;
 };
 
 template <class PROCESS, class... ARGS>
@@ -478,6 +486,13 @@ void ParseResult::SetNameFrom(const CompiledGrammarRule &rule_p) {
 
 void ParseResult::SetNameFrom(const Matcher &matcher_p) {
 	name = &matcher_p.GetName();
+}
+
+MatcherResult MatchState::EmptyOptionalResult() {
+	if (!BuildParseResult()) {
+		return MatcherResult::Success();
+	}
+	return MatcherResult::Success(context.allocator.EmptyOptional(rule));
 }
 
 template <class RESULT, class... ARGS>

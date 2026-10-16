@@ -52,6 +52,12 @@ SELECT list_extract(NULL::VARIANT, 1)
 ----
 NULL
 
+# an untyped NULL keeps the string overload
+query IIII
+SELECT typeof(list_extract(NULL, 1)), typeof(array_extract(NULL, 1)), typeof(list_element(NULL, 1)), typeof(list_extract(NULL::VARIANT, 1))
+----
+VARCHAR	VARCHAR	VARCHAR	VARIANT
+
 query IIII
 SELECT list_concat(v, v), array_concat(v, v), list_cat(v, [40::VARIANT]), list_concat(v, NULL) FROM t
 ----
@@ -61,6 +67,11 @@ query I
 SELECT [1] || v FROM t
 ----
 [1, 10, 20, 30]
+
+query II
+SELECT typeof(list_concat([1, 2], v)), list_concat([1, 2], v) FROM t
+----
+VARIANT[]	[1, 2, 10, 20, 30]
 
 statement error
 SELECT list_concat(v, v) FROM s

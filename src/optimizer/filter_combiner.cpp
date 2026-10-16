@@ -150,8 +150,15 @@ void FilterCombiner::GenerateEquivalentFilters(const Expression &filter,
 	// for each such column, generate an equivalent filter with the columns swapped
 	for (auto &col_ref : candidate_columns) {
 		auto &col = col_ref.get();
+		// a filter on values that are equal but not identical, such as 0.0 and -0.0, can differ between them
+		if (!BaseTypeAllowsCollapse(col.GetReturnType())) {
+			continue;
+		}
 		auto set_id = equivalence_set_map.find(col)->second;
 		for (auto &item : equivalence_map[set_id]) {
+			if (item.get().IsVolatile() || item.get().CanThrow()) {
+				continue;
+			}
 			callback(ExpressionIterator::ReplaceExpression(filter, col, item.get()));
 		}
 	}
@@ -179,16 +186,22 @@ static bool ReadsOnlyColumn(const Expression &expr, const Expression &column) {
 	return reads_column && !reads_other;
 }
 
-// generating the filters of a set with a constant substitutes the other expressions of the set and of the sets of
-// their columns, so a derived constant only goes where those substitutions are harmless
+//! The one column the expression reads, or nothing when it reads none or several
+static optional_ptr<const Expression> ReadColumn(const Expression &expr) {
+	optional_ptr<const Expression> column;
+	ExpressionIterator::VisitExpression<BoundColumnRefExpression>(
+	    expr, [&](const BoundColumnRefExpression &col) { column = col; });
+	if (!column || !ReadsOnlyColumn(expr, *column)) {
+		return nullptr;
+	}
+	return column;
+}
 
-//! Whether the expression is in no equivalence set, or alone in one
 bool FilterCombiner::HasNoEquivalents(const Expression &expr) {
 	auto entry = equivalence_set_map.find(expr);
 	return entry == equivalence_set_map.end() || equivalence_map[entry->second].size() == 1;
 }
 
-//! Whether every expression in the set of the column is a column of a type whose equal values are identical
 bool FilterCombiner::HasOnlyIdenticalColumnEquivalents(const Expression &column) {
 	auto entry = equivalence_set_map.find(column);
 	if (entry == equivalence_set_map.end()) {
@@ -206,66 +219,83 @@ bool FilterCombiner::HasOnlyIdenticalColumnEquivalents(const Expression &column)
 
 void FilterCombiner::AddNotDistinctFromConstants() {
 	// a IS NOT DISTINCT FROM b and E(b) = c, for a constant c that is not NULL, give E(a) = c
-	bool added = true;
-	while (added) {
-		added = false;
-		vector<pair<unique_ptr<Expression>, Value>> derived;
-		for (auto &filter : remaining_filters) {
-			if (filter->GetExpressionType() != ExpressionType::COMPARE_NOT_DISTINCT_FROM ||
-			    !BoundComparisonExpression::IsComparison(*filter)) {
-				continue;
-			}
-			auto &comparison = filter->Cast<BoundFunctionExpression>();
-			auto &left = BoundComparisonExpression::Left(comparison);
-			auto &right = BoundComparisonExpression::Right(comparison);
-			if (left.GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF ||
-			    right.GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF ||
-			    left.GetReturnType() != right.GetReturnType()) {
-				continue;
-			}
-			// values that are equal but not identical, such as 0.0 and -0.0, can give different results for E
-			const bool identical_values = BaseTypeAllowsCollapse(left.GetReturnType());
-			for (auto &entry : equivalence_map) {
-				optional_ptr<const Value> constant;
-				for (auto &info : constant_values[entry.first]) {
-					if (info.comparison_type == ExpressionType::COMPARE_EQUAL && !info.constant.IsNull()) {
-						constant = &info.constant;
-						break;
-					}
-				}
-				if (!constant) {
-					continue;
-				}
-				for (auto &expression : entry.second) {
-					auto &expr = expression.get();
-					if (expr.IsVolatile() || expr.CanThrow()) {
-						continue;
-					}
-					for (idx_t side = 0; side < 2; side++) {
-						auto &source = side == 0 ? left : right;
-						auto &target = side == 0 ? right : left;
-						if (!expr.Equals(source) && (!identical_values || !ReadsOnlyColumn(expr, source) ||
-						                             !HasOnlyIdenticalColumnEquivalents(target))) {
-							continue;
-						}
-						derived.emplace_back(ExpressionIterator::ReplaceExpression(expr, source, target), *constant);
-					}
-				}
+	expression_map_t<vector<reference<const Expression>>> partners;
+	for (auto &filter : remaining_filters) {
+		if (filter->GetExpressionType() != ExpressionType::COMPARE_NOT_DISTINCT_FROM ||
+		    !BoundComparisonExpression::IsComparison(*filter)) {
+			continue;
+		}
+		auto &comparison = filter->Cast<BoundFunctionExpression>();
+		auto &left = BoundComparisonExpression::Left(comparison);
+		auto &right = BoundComparisonExpression::Right(comparison);
+		if (left.GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF ||
+		    right.GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF ||
+		    left.GetReturnType() != right.GetReturnType() || left.Equals(right)) {
+			continue;
+		}
+		partners[left].push_back(right);
+		partners[right].push_back(left);
+	}
+	if (partners.empty()) {
+		return;
+	}
+	// sets whose constant has not been carried over yet, each is visited once
+	vector<idx_t> pending;
+	for (auto &entry : equivalence_map) {
+		pending.push_back(entry.first);
+	}
+	while (!pending.empty()) {
+		auto set_id = pending.back();
+		pending.pop_back();
+		optional<Value> constant;
+		for (auto &info : constant_values[set_id]) {
+			if (info.comparison_type == ExpressionType::COMPARE_EQUAL && !info.constant.IsNull()) {
+				constant = info.constant;
+				break;
 			}
 		}
-		for (auto &entry : derived) {
-			auto existing = equivalence_set_map.find(*entry.first);
-			if (existing != equivalence_set_map.end() &&
-			    (!constant_values[existing->second].empty() || !HasNoEquivalents(*entry.first))) {
+		if (!constant) {
+			continue;
+		}
+		vector<unique_ptr<Expression>> targets;
+		for (auto &member : equivalence_map[set_id]) {
+			auto &expr = member.get();
+			if (expr.IsVolatile() || expr.CanThrow()) {
 				continue;
 			}
-			auto &node = GetNode(*entry.first);
-			auto &constants = constant_values[GetEquivalenceSet(node)];
+			auto source = ReadColumn(expr);
+			if (!source) {
+				continue;
+			}
+			auto entry = partners.find(*source);
+			if (entry == partners.end()) {
+				continue;
+			}
+			const bool identity = expr.Equals(*source);
+			// values that are equal but not identical, such as 0.0 and -0.0, can give different results for E
+			if (!identity && !BaseTypeAllowsCollapse(source->GetReturnType())) {
+				continue;
+			}
+			for (auto &target : entry->second) {
+				if (!identity && !HasOnlyIdenticalColumnEquivalents(target.get())) {
+					continue;
+				}
+				targets.push_back(ExpressionIterator::ReplaceExpression(expr, *source, target.get()));
+			}
+		}
+		// the constant applies to every expression of the set it joins, so it only joins a set of its own
+		for (auto &target : targets) {
+			auto existing = equivalence_set_map.find(*target);
+			if (existing != equivalence_set_map.end() &&
+			    (!constant_values[existing->second].empty() || !HasNoEquivalents(*target))) {
+				continue;
+			}
+			auto target_set = GetEquivalenceSet(GetNode(*target));
 			ExpressionValueInformation info;
 			info.comparison_type = ExpressionType::COMPARE_EQUAL;
-			info.constant = std::move(entry.second);
-			constants.push_back(std::move(info));
-			added = true;
+			info.constant = *constant;
+			constant_values[target_set].push_back(std::move(info));
+			pending.push_back(target_set);
 		}
 	}
 }
@@ -1266,6 +1296,10 @@ FilterResult FilterCombiner::AddBoundComparisonFilter(Expression &expr) {
 	} else {
 		// comparison between two non-scalars
 		if (expr.GetExpressionType() != ExpressionType::COMPARE_EQUAL) {
+			return FilterResult::UNSUPPORTED;
+		}
+		// the filters of a set compare each of its expressions, which would evaluate a volatile one again
+		if (left->IsVolatile() || right->IsVolatile()) {
 			return FilterResult::UNSUPPORTED;
 		}
 		// get the LHS and RHS nodes

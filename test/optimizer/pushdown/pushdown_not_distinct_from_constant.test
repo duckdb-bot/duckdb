@@ -129,6 +129,57 @@ SELECT count(*) FROM z WHERE a IS NOT DISTINCT FROM b AND b = 4 AND a = length(x
 ----
 1
 
+# the same when the equalities are in a subquery
+query I
+SELECT count(*) FROM (SELECT * FROM z WHERE a = length(x::VARCHAR) AND x = y) v WHERE a IS NOT DISTINCT FROM b AND b = 4
+----
+1
+
+statement ok
+CREATE SEQUENCE seq4 START 3 MAXVALUE 3;
+
+query I
+SELECT a FROM (SELECT * FROM t_one WHERE a = nextval('seq4')) v WHERE a IS NOT DISTINCT FROM b AND b = 3
+----
+3
+
+# a filter on a double is not copied to an equal double, nor a constant to a sequence call
+query I
+SELECT count(*) FROM z WHERE a = length(x::VARCHAR) AND x = y AND a = 4
+----
+1
+
+statement ok
+CREATE SEQUENCE seq5 START 3 MAXVALUE 3;
+
+query I
+SELECT a FROM t_one WHERE a = nextval('seq5') AND a = 3
+----
+3
+
+# nested doubles and casts that can throw
+statement ok
+CREATE TABLE sd(s STRUCT(d DOUBLE), t STRUCT(d DOUBLE));
+
+statement ok
+INSERT INTO sd VALUES ({'d': '-0.0'}, {'d': '0.0'});
+
+query I
+SELECT count(*) FROM sd WHERE s IS NOT DISTINCT FROM t AND s.d::VARCHAR = '-0.0'
+----
+1
+
+statement ok
+CREATE TABLE th(a BIGINT, b BIGINT);
+
+statement ok
+INSERT INTO th VALUES (3, 3), (300, 300);
+
+query I
+SELECT a FROM th WHERE a IS NOT DISTINCT FROM b AND b = 3 AND a::TINYINT = 3
+----
+3
+
 # filters that contradict the constant
 statement ok
 CREATE TABLE c1 AS SELECT * FROM (VALUES (3), (7)) v(a);
@@ -148,6 +199,15 @@ query II
 SELECT a, b FROM c1 JOIN c2 ON a IS NOT DISTINCT FROM b WHERE a = 7 AND b = 7
 ----
 7	7
+
+# a chain of conditions carries the constant to its end
+statement ok
+CREATE TABLE w AS SELECT * FROM (VALUES (3, 3, 3, 3), (5, 5, 5, 5)) v(a0, a1, a2, a3);
+
+query II
+EXPLAIN SELECT * FROM w WHERE a0 = 3 AND a0 IS NOT DISTINCT FROM a1 AND a1 IS NOT DISTINCT FROM a2 AND a2 IS NOT DISTINCT FROM a3
+----
+physical_plan	<REGEX>:.*a3 = 3.*
 
 # a chain of conditions, and a left join that keeps its unmatched rows
 query III

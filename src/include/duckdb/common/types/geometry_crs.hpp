@@ -74,7 +74,6 @@ public:
 	//! We consider two CRSs equal if their identifiers match and both are ids or both are names, or if their type and
 	//! full text definitions match, character for character
 	bool Equals(const CoordinateReferenceSystem &other) const {
-		// Whatever the definitions are, if the identifiers match we consider them equal
 		if (!identifier.empty() && identifier == other.identifier && identifier_is_id == other.identifier_is_id) {
 			return true;
 		}

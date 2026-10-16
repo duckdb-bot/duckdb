@@ -211,6 +211,7 @@ unique_ptr<LogicalOperator> Binder::CreatePlan(BoundSelectNode &statement) {
 		root = std::move(qualify);
 	}
 
+	plan_unnests(statement.unnests.StructSources());
 	plan_unnests(statement.unnests.SelectList());
 
 	for (auto &expr : statement.select_list) {

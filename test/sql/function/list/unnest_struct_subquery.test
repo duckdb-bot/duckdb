@@ -35,3 +35,20 @@ query II
 SELECT unnest((SELECT {'a': {'c': 1}, 'b': 'x'}), recursive := true);
 ----
 1	x
+
+# next to a list unnest, the struct is repeated for every element, and an empty list gives no rows
+query II
+SELECT unnest((SELECT row(1))), unnest([10, 20]);
+----
+1	10
+1	20
+
+query II
+SELECT unnest((SELECT row(1))), unnest([]::INTEGER[]);
+----
+
+# keep_parent_names takes the name of the struct
+query I
+SELECT column_name FROM (DESCRIBE SELECT unnest(s := {'a': (SELECT 1)}, keep_parent_names := true));
+----
+s.a

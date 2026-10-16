@@ -103,7 +103,37 @@ NULL	NULL	1
 statement error
 SELECT gr.c FROM p LEFT JOIN gr ON p.k = gr.a GROUP BY gr.a
 ----
-must appear in the GROUP BY clause
+column "rowid" must appear in the GROUP BY clause
+
+# an expression that fails on a row of NULLs only runs for the rows of the table
+statement ok
+CREATE TABLE ev (a INTEGER, g INTEGER AS (CAST(coalesce(a::VARCHAR, 'bad') AS INTEGER)));
+
+statement ok
+INSERT INTO ev VALUES (10);
+
+query II
+SELECT k, ev.g FROM p LEFT JOIN ev ON p.k = ev.a ORDER BY k
+----
+1	NULL
+10	10
+
+# a volatile expression is not run for a row that the join NULL-extends
+statement ok
+CREATE SEQUENCE seq;
+
+statement ok
+CREATE TABLE nv (a INTEGER, g BIGINT AS (nextval('seq')));
+
+query I
+SELECT nv.g FROM (VALUES (1)) v(x) LEFT JOIN nv ON TRUE
+----
+NULL
+
+query I
+SELECT nextval('seq')
+----
+1
 
 # a regular column named rowid hides the row id, so a matched row keeps its value
 statement ok

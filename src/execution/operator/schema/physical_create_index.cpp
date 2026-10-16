@@ -139,6 +139,8 @@ void PhysicalCreateIndex::AppendRowsAfterScan(ClientContext &context, DataTable 
 	auto is_primary_key = alter_table_info && info->constraint_type == IndexConstraintType::PRIMARY;
 	auto &transaction = DuckTransaction::Get(context, storage.db);
 	storage.ScanForIndexCreation(transaction, storage_ids, row_start, row_end, [&](DataChunk &chunk, Vector &row_ids) {
+		// the append lock is held, so an interrupted creation releases it early
+		context.InterruptCheck();
 		if (is_primary_key) {
 			for (auto column_id : storage_ids) {
 				if (VectorOperations::HasNull(chunk.data[column_id])) {

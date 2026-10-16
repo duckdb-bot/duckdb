@@ -1107,7 +1107,7 @@ void DataTable::ScanForIndexCreation(DuckTransaction &transaction, const vector<
 		if (count == 0) {
 			continue;
 		}
-		// the index expressions refer to all columns of the table
+		// index expressions use the physical positions of the table columns
 		for (idx_t i = 0; i < indexed_columns.size(); i++) {
 			table_chunk.data[indexed_columns[i]].Reference(scan_chunk.data[i]);
 		}

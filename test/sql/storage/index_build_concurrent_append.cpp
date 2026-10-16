@@ -38,8 +38,9 @@ bool IsExpectedError(const string &error) {
 }
 
 void CreateTable(Connection &con) {
-	REQUIRE_NO_FAIL(con.Query("CREATE OR REPLACE TABLE t (id INTEGER)"));
-	REQUIRE_NO_FAIL(con.Query("INSERT INTO t SELECT i FROM range(1, 1000001) tbl(i)"));
+	// the key is not the first column, so the appended rows are mapped to the column positions of the index
+	REQUIRE_NO_FAIL(con.Query("CREATE OR REPLACE TABLE t (pad VARCHAR, id INTEGER)"));
+	REQUIRE_NO_FAIL(con.Query("INSERT INTO t SELECT 'x', i FROM range(1, 1000001) tbl(i)"));
 }
 
 } // namespace
@@ -51,12 +52,13 @@ TEST_CASE("Rows appended while an index is built are not missing from it", "[sto
 		string index_sql;
 		string insert_sql;
 	};
-	vector<Scenario> scenarios {{"ALTER TABLE t ADD PRIMARY KEY (id)", "INSERT INTO t VALUES (NULL)"},
-	                            {"ALTER TABLE t ADD PRIMARY KEY (id)", "INSERT INTO t VALUES (1)"},
-	                            {"ALTER TABLE t ADD UNIQUE (id)", "INSERT INTO t VALUES (1)"},
-	                            {"CREATE UNIQUE INDEX idx ON t (id)", "INSERT INTO t VALUES (1)"},
-	                            {"CREATE UNIQUE INDEX idx ON t (id)",
-	                             "BEGIN; ALTER TABLE t ADD COLUMN c INTEGER; INSERT INTO t VALUES (1, 1); COMMIT"}};
+	vector<Scenario> scenarios {
+	    {"ALTER TABLE t ADD PRIMARY KEY (id)", "INSERT INTO t VALUES ('x', NULL)"},
+	    {"ALTER TABLE t ADD PRIMARY KEY (id)", "INSERT INTO t VALUES ('x', 1)"},
+	    {"ALTER TABLE t ADD UNIQUE (id)", "INSERT INTO t VALUES ('x', 1)"},
+	    {"CREATE UNIQUE INDEX idx ON t (id)", "INSERT INTO t VALUES ('x', 1)"},
+	    {"CREATE UNIQUE INDEX idx ON t (id)",
+	     "BEGIN; ALTER TABLE t ADD COLUMN c INTEGER; INSERT INTO t VALUES ('x', 1, 1); COMMIT"}};
 	for (idx_t attempt = 0; attempt < 10; attempt++) {
 		auto delay_ms = attempt * 5;
 		for (auto &scenario : scenarios) {
@@ -72,7 +74,7 @@ TEST_CASE("Rows appended while an index is built are not missing from it", "[sto
 		}
 
 		// a row that an index lookup has to find
-		for (auto &insert_sql : {"INSERT INTO t VALUES (3000000)"}) {
+		for (auto &insert_sql : {"INSERT INTO t VALUES ('x', 3000000)"}) {
 			CreateTable(con);
 			string index_error, insert_error;
 			RunConcurrently(db, "CREATE INDEX idx ON t (id)", insert_sql, delay_ms, index_error, insert_error);

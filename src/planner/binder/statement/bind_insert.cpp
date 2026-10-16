@@ -33,6 +33,8 @@
 #include "duckdb/parser/tableref/basetableref.hpp"
 #include "duckdb/parser/tableref/emptytableref.hpp"
 #include "duckdb/parser/tableref/subqueryref.hpp"
+#include "duckdb/parser/tableref/bound_ref_wrapper.hpp"
+#include "duckdb/parser/expression/star_expression.hpp"
 #include "duckdb/parser/expression/lambda_expression.hpp"
 
 namespace duckdb {
@@ -471,26 +473,41 @@ unique_ptr<MergeIntoStatement> Binder::GenerateMergeInto(InsertQueryNode &node, 
 		merge_into->node->using_columns = on_conflict_info.indexed_columns;
 	}
 
-	// expand any default values
+	// the MERGE INTO only uses the column list as aliases of its source, so check it like a plain INSERT
+	vector<LogicalIndex> named_column_map;
 	auto values_list = node.GetValuesList();
+	if (node.column_order == InsertColumnOrder::INSERT_BY_POSITION) {
+		vector<LogicalType> expected_types;
+		physical_index_vector_t<idx_t> column_index_map;
+		BindInsertColumnList(table, node.columns, node.default_values, named_column_map, expected_types,
+		                     column_index_map);
+	}
+	// expand any default values
 	if (values_list) {
-		vector<LogicalIndex> named_column_map;
-		if (node.columns.empty()) {
-			for (auto &col : table.GetColumns().Physical()) {
+		if (named_column_map.empty()) {
+			for (auto &col : columns.Physical()) {
 				named_column_map.push_back(col.Logical());
-			}
-		} else {
-			// Ensure that the columns are valid.
-			for (auto &col_name : node.columns) {
-				auto col_idx = table.GetColumnIndex(col_name);
-				named_column_map.push_back(col_idx);
 			}
 		}
 		ExpandDefaultInValuesList(node, table, values_list, named_column_map);
 	}
 	// set up the data source
 	unique_ptr<TableRef> source;
-	if (node.select_statement) {
+	if (node.select_statement && node.column_order == InsertColumnOrder::INSERT_BY_POSITION && !values_list) {
+		// bind the SELECT once, to check its columns and keep its bind time effects single
+		auto select_binder = Binder::CreateBinder(context, this);
+		SubqueryRef select_ref(std::move(node.select_statement), "excluded");
+		auto bound_select = select_binder->Bind(select_ref);
+		auto expected_columns = node.columns.empty() ? columns.PhysicalColumnCount() : node.columns.size();
+		CheckInsertColumnCountMismatch(expected_columns, bound_select.types.size(), !node.columns.empty(), table.name);
+		// a parsed subquery around it takes the column aliases
+		auto select_stmt = make_uniq<SelectStatement>();
+		auto select_node = make_uniq<SelectNode>();
+		select_node->select_list.push_back(make_uniq<StarExpression>());
+		select_node->from_table = make_uniq<BoundRefWrapper>(std::move(bound_select), std::move(select_binder));
+		select_stmt->node = std::move(select_node);
+		source = make_uniq<SubqueryRef>(std::move(select_stmt), "excluded");
+	} else if (node.select_statement) {
 		source = make_uniq<SubqueryRef>(std::move(node.select_statement), "excluded");
 	} else {
 		source = make_uniq<EmptyTableRef>();
@@ -625,6 +642,17 @@ BoundStatement Binder::BindNode(InsertQueryNode &node) {
 		return std::move(*expanded);
 	}
 
+	if (node.column_order == InsertColumnOrder::INSERT_BY_NAME) {
+		if (node.GetValuesList()) {
+			throw BinderException("INSERT BY NAME can only be used when inserting from a SELECT statement");
+		}
+		if (node.default_values) {
+			throw BinderException("INSERT BY NAME cannot be combined with with DEFAULT VALUES");
+		}
+		if (!node.columns.empty()) {
+			throw BinderException("INSERT BY NAME cannot be combined with an explicit column list");
+		}
+	}
 	if (node.on_conflict_info) {
 		// generate a MERGE INTO statement and bind it instead
 		auto merge_into = GenerateMergeInto(node, table);
@@ -639,15 +667,6 @@ BoundStatement Binder::BindNode(InsertQueryNode &node) {
 	// bind the root select node (if any)
 	BoundStatement root_select;
 	if (node.column_order == InsertColumnOrder::INSERT_BY_NAME) {
-		if (values_list) {
-			throw BinderException("INSERT BY NAME can only be used when inserting from a SELECT statement");
-		}
-		if (node.default_values) {
-			throw BinderException("INSERT BY NAME cannot be combined with with DEFAULT VALUES");
-		}
-		if (!node.columns.empty()) {
-			throw BinderException("INSERT BY NAME cannot be combined with an explicit column list");
-		}
 		D_ASSERT(node.select_statement);
 		// INSERT BY NAME - generate the columns from the names of the SELECT statement
 		auto select_binder = Binder::CreateBinder(context, this);

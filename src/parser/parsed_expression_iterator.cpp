@@ -102,6 +102,19 @@ void ParsedExpressionIterator::EnumerateTableRefChildren(
 		for (auto &aggr : p_ref.aggregates) {
 			expr_callback(aggr);
 		}
+		for (auto &pivot : p_ref.pivots) {
+			for (auto &expr : pivot.pivot_expressions) {
+				expr_callback(expr);
+			}
+			for (auto &entry : pivot.entries) {
+				if (entry.expr) {
+					expr_callback(entry.expr);
+				}
+			}
+			if (pivot.subquery) {
+				EnumerateQueryNodeChildren(*pivot.subquery, expr_callback, ref_callback);
+			}
+		}
 		break;
 	}
 	case TableReferenceType::SUBQUERY: {

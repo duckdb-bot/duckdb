@@ -1,0 +1,57 @@
+# name: test/sql/pivot/pivot_macro_parameters.test
+# description: Macro parameters in the ON clause of a PIVOT or UNPIVOT are replaced by their arguments
+# group: [pivot]
+
+statement ok
+CREATE TABLE t1 AS SELECT 1 AS id, 42 AS i, 84 AS j;
+
+statement ok
+CREATE TABLE t2 AS SELECT * FROM (VALUES ('a', 1), ('b', 2)) v(k, i);
+
+statement ok
+CREATE MACRO unp(vars) AS TABLE UNPIVOT t1 ON COLUMNS(vars);
+
+query III
+FROM unp(['i', 'j']) ORDER BY name;
+----
+1	i	42
+1	j	84
+
+statement ok
+CREATE MACRO unp_lambda(pat) AS TABLE UNPIVOT t1 ON COLUMNS(lambda c: c LIKE pat);
+
+query IIII
+FROM unp_lambda('j');
+----
+1	42	j	84
+
+statement ok
+CREATE MACRO piv(sfx) AS TABLE PIVOT t2 ON (k || sfx) IN ('a_x', 'b_x') USING sum(i);
+
+query II
+FROM piv('_x');
+----
+1	2
+
+# also in a subquery of a scalar macro
+statement ok
+CREATE MACRO first_sum(sfx) AS (SELECT a_x FROM (PIVOT t2 ON (k || sfx) IN ('a_x', 'b_x') USING sum(i)));
+
+query I
+SELECT first_sum('_x');
+----
+1
+
+# a name of a parameter is the parameter also where the source has a column of that name, as elsewhere in a macro,
+# so that column groups the rows
+statement ok
+CREATE TABLE t3 AS SELECT * FROM (VALUES ('a', 'x', 1), ('b', 'y', 2)) v(k, sfx, i);
+
+statement ok
+CREATE MACRO piv_shadow(sfx) AS TABLE PIVOT t3 ON (k || sfx) IN ('a_z', 'b_z') USING sum(i);
+
+query III
+FROM piv_shadow('_z') ORDER BY sfx;
+----
+x	1	NULL
+y	NULL	2

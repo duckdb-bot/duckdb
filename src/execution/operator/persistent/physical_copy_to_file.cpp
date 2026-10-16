@@ -140,7 +140,7 @@ private:
 	mutex lock;
 	std::condition_variable condition;
 	unordered_map<string, DirectoryEntry> directories;
-	//! The directories under each case folded path
+	//! The directories under each case candidate key
 	unordered_map<string, vector<string>> directories_ignoring_case;
 };
 
@@ -1743,16 +1743,27 @@ void CopyFileLifecycleExecutor::ThrowError() {
 //===--------------------------------------------------------------------===//
 // Copy File State Helpers
 //===--------------------------------------------------------------------===//
-//! One key for the paths that a file system ignoring case treats as one, as a PARTITION_PATH can hold any letter
-static string CaseFoldedPath(const string &path) {
-	utf8proc_uint8_t *folded = nullptr;
-	auto length = utf8proc_map(const_data_ptr_cast(path.c_str()), NumericCast<utf8proc_ssize_t>(path.size()), &folded,
-	                           utf8proc_option_t(UTF8PROC_STABLE | UTF8PROC_COMPOSE | UTF8PROC_CASEFOLD));
+//! A candidate key, shared by the paths that file systems ignoring case may treat as one, which either fold or
+//! uppercase names. A PARTITION_PATH can hold any letter.
+static string CaseCandidateKey(const string &path) {
+	utf8proc_uint8_t *folded_data = nullptr;
+	auto length = utf8proc_map(const_data_ptr_cast(path.c_str()), NumericCast<utf8proc_ssize_t>(path.size()),
+	                           &folded_data, utf8proc_option_t(UTF8PROC_STABLE | UTF8PROC_COMPOSE | UTF8PROC_CASEFOLD));
+	if (length == UTF8PROC_ERROR_NOMEM) {
+		throw OutOfMemoryException("Failed to fold the case of \"%s\"", path);
+	}
 	if (length < 0) {
 		return path;
 	}
-	string result(char_ptr_cast(folded), NumericCast<idx_t>(length));
-	free(folded);
+	unique_ptr<utf8proc_uint8_t, decltype(&free)> folded(folded_data, &free);
+	string result;
+	for (utf8proc_ssize_t position = 0; position < length;) {
+		utf8proc_int32_t codepoint;
+		position += utf8proc_iterate(folded.get() + position, length - position, &codepoint);
+		utf8proc_uint8_t encoded[4];
+		auto encoded_length = utf8proc_encode_char(utf8proc_toupper(codepoint), encoded);
+		result.append(char_ptr_cast(encoded), NumericCast<idx_t>(encoded_length));
+	}
 	return result;
 }
 
@@ -1766,7 +1777,7 @@ bool CopyDirectoryManager::EnsureDirectory(FileSystem &fs, const string &dir_pat
 			auto entry = directories.find(dir_path);
 			if (entry == directories.end()) {
 				// registered first, so that a failure leaves no pending entry that nobody completes
-				directories_ignoring_case[CaseFoldedPath(dir_path)].push_back(dir_path);
+				directories_ignoring_case[CaseCandidateKey(dir_path)].push_back(dir_path);
 				directories.emplace(dir_path, DirectoryEntry());
 #ifdef D_ASSERT_IS_ENABLED
 				created_entry = true;
@@ -1836,7 +1847,7 @@ void CopyDirectoryManager::CheckCaseCollision(FileSystem &fs, const string &dir_
 	vector<string> variants;
 	{
 		lock_guard<mutex> guard(lock);
-		for (auto &path : directories_ignoring_case[CaseFoldedPath(dir_path)]) {
+		for (auto &path : directories_ignoring_case[CaseCandidateKey(dir_path)]) {
 			if (path != dir_path) {
 				variants.push_back(path);
 			}

@@ -32,7 +32,7 @@ string Uppercase(const string &name) {
 	return result;
 }
 
-enum class CaseMode { PRESERVE, LOWERCASE, NO_IDENTITY, STATS_THROW };
+enum class CaseMode { PRESERVE, LOWERCASE, NO_IDENTITY, STATS_THROW, NO_UPPERCASE_IDENTITY };
 
 //! A file system under "casetest://" that ignores case and keeps or lowercases names, or that tells case apart but
 //! reports no directory identities. Its operations run one at a time.
@@ -90,7 +90,8 @@ public:
 			throw IOException("Cannot get the stats of \"%s\"", file.path);
 		}
 		auto metadata = local->GetStatsIfExists(OpenFileInfo(Resolve(file.path)), opener);
-		if (metadata && mode == CaseMode::NO_IDENTITY) {
+		auto uppercase = file.path.find('A') != string::npos;
+		if (metadata && (mode == CaseMode::NO_IDENTITY || (mode == CaseMode::NO_UPPERCASE_IDENTITY && uppercase))) {
 			metadata->device_id = optional_idx();
 			metadata->file_id = optional_idx();
 		}
@@ -171,7 +172,9 @@ TEST_CASE("COPY with PARTITION_BY refuses partitions that a file system ignoring
 		    "COPY (SELECT * FROM (VALUES ('\xC3\xA4', 1), ('\xC3\x84', 2)) v(k, x)) TO 'casetest://out' (FORMAT "
 		    "parquet, PARTITION_BY (k), PARTITION_PATH k)",
 		    "COPY (SELECT * FROM (VALUES ('\xCF\x83', 1), ('\xCF\x82', 2)) v(k, x)) TO 'casetest://out' (FORMAT "
-		    "parquet, PARTITION_BY (k), PARTITION_PATH k)"};
+		    "parquet, PARTITION_BY (k), PARTITION_PATH k)",
+		    "COPY (SELECT * FROM (VALUES ('\xC4\xB1', 1), ('I', 2)) v(k, x)) TO 'casetest://out' (FORMAT parquet, "
+		    "PARTITION_BY (k), PARTITION_PATH k)"};
 		for (auto &query : collisions) {
 			RequireCaseCollision(con, query);
 			TestDeleteDirectory(root);
@@ -247,8 +250,8 @@ TEST_CASE("COPY with PARTITION_BY writes partitions that differ only in case whe
 	TestCreateDirectory(root + "/out/k=A");
 	auto fs = FileSystem::CreateLocal();
 	if (!fs->DirectoryExists(root + "/out/K=A")) {
-		for (auto mode : {CaseMode::NO_IDENTITY, CaseMode::STATS_THROW}) {
-			INFO("stats throw " << (mode == CaseMode::STATS_THROW));
+		for (auto mode : {CaseMode::NO_IDENTITY, CaseMode::STATS_THROW, CaseMode::NO_UPPERCASE_IDENTITY}) {
+			INFO("mode " << static_cast<int>(mode));
 			DuckDB db(nullptr);
 			Connection con(db);
 			RegisterCaseTestFileSystem(con, root, mode);

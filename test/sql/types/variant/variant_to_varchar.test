@@ -1,0 +1,347 @@
+# name: test/sql/types/variant/variant_to_varchar.test
+# description: Test the text of VARIANT values cast to VARCHAR
+# group: [variant]
+
+require json
+
+query I
+SELECT struct_pack(i := 1, s := 'str', l := [1, 2, 3], st := struct_pack(a := 1, b := 'x'))::VARIANT::VARCHAR
+----
+{'i': 1, 'l': [1, 2, 3], 's': str, 'st': {'a': 1, 'b': x}}
+
+query I
+SELECT [1, 2, 3]::VARIANT::VARCHAR
+----
+[1, 2, 3]
+
+query I
+SELECT ['a', 'b c', 'it''s', '', 'a,b', '[x]', '{y}', 'NULL', 'null', ' lead', 'trail ', 'x\y', 'q"r', 'k=v', '(p)', 'c:d']::VARIANT::VARCHAR
+----
+[a, b c, 'it\'s', '', 'a,b', '[x]', '{y}', 'NULL', 'null', ' lead', 'trail ', 'x\\y', 'q"r', 'k=v', '(p)', 'c:d']
+
+query I
+SELECT ['a', 'b c', 'it''s', '', NULL, 'a,b', 'null']::VARIANT::VARCHAR
+----
+[a, b c, it's, , NULL, a,b, null]
+
+query I
+SELECT '{"k''ey": "v", "a b": null, "x:y": [1.5, 2.25], "n": "null", "e": ""}'::JSON::VARIANT::VARCHAR
+----
+{'a b': NULL, 'e': '', 'k\'ey': v, 'n': 'null', 'x:y': [1.5, 2.25]}
+
+query I
+SELECT [1.5::DOUBLE, 'inf'::DOUBLE, -0.0::DOUBLE, 'nan'::DOUBLE]::VARIANT::VARCHAR
+----
+[1.5, inf, -0.0, nan]
+
+query I
+SELECT [TIMESTAMP '2020-01-01 10:00:00', TIMESTAMP '2021-01-01 10:00:00']::VARIANT::VARCHAR
+----
+['2020-01-01 10:00:00', '2021-01-01 10:00:00']
+
+query I
+SELECT [TIMESTAMP '2020-01-01 10:00:00', NULL]::VARIANT::VARCHAR
+----
+[2020-01-01 10:00:00, NULL]
+
+query I
+SELECT [DATE '2020-01-01', TIMESTAMP '2020-01-01 10:00:00']::VARIANT::VARCHAR
+----
+['2020-01-01 00:00:00', '2020-01-01 10:00:00']
+
+query I
+SELECT ['\x01'::BLOB, 'abc'::BLOB]::VARIANT::VARCHAR
+----
+['\\x01', abc]
+
+query I
+SELECT [1.25::DECIMAL(5,2), 2::DECIMAL(5,2)]::VARIANT::VARCHAR
+----
+[1.25, 2.00]
+
+query I
+SELECT [1.25::DECIMAL(5,2)::VARIANT, 2.5::DECIMAL(4,1)::VARIANT]::VARIANT::VARCHAR
+----
+[1.25, 2.5]
+
+query I
+SELECT [true, false, true]::VARIANT::VARCHAR
+----
+[true, false, true]
+
+query I
+SELECT [INTERVAL '1 day 10:00:00', INTERVAL 1 hour]::VARIANT::VARCHAR
+----
+['1 day 10:00:00', '01:00:00']
+
+query I
+SELECT ['POINT(1 2)'::GEOMETRY]::VARIANT::VARCHAR
+----
+['POINT (1 2)']
+
+query I
+SELECT [[1, 2], [], NULL, [3]]::VARIANT::VARCHAR
+----
+[[1, 2], [], NULL, [3]]
+
+query I
+SELECT [['a:b'], ['c', NULL]]::VARIANT::VARCHAR
+----
+[['a:b'], [c, NULL]]
+
+query I
+SELECT [{'a': 'x:y'}, {'a': 'x:z'}]::VARIANT::VARCHAR
+----
+[{'a': 'x:y'}, {'a': 'x:z'}]
+
+query I
+SELECT [{'a': 1}::VARIANT, [1]::VARIANT, 'x y'::VARIANT, 'p:q'::VARIANT, NULL::VARIANT, 2::VARIANT]::VARIANT::VARCHAR
+----
+[{'a': 1}, [1], x y, p:q, NULL, 2]
+
+query I
+SELECT {'a': {}, 'b': [], 'c': [[]], 'd': {'e': {'f': 'g:h'}}}::VARIANT::VARCHAR
+----
+{'a': {}, 'b': [], 'c': [[]], 'd': {'e': {'f': 'g:h'}}}
+
+query I
+SELECT []::INT[]::VARIANT::VARCHAR
+----
+[]
+
+query I
+SELECT MAP {'a': 1, 'b:c': 2}::VARIANT::VARCHAR
+----
+[{'key': a, 'value': 1}, {'key': 'b:c', 'value': 2}]
+
+query I
+SELECT '{"": 1}'::JSON::VARIANT::VARCHAR
+----
+{''=1}
+
+query I
+SELECT '{"": "x:y"}'::JSON::VARIANT::VARCHAR
+----
+{''='x:y'}
+
+query I
+SELECT '{"": 1, "a": 2}'::JSON::VARIANT::VARCHAR
+----
+{'': 1, 'a': 2}
+
+query I
+SELECT '[{"": 1}, 2]'::JSON::VARIANT::VARCHAR
+----
+[[{'key': '', 'value': 1}], 2]
+
+query I
+SELECT '[{"": "x y"}, {"": "z"}]'::JSON::VARIANT::VARCHAR
+----
+[{''=x y}, {''=z}]
+
+query I
+SELECT '{"a": [1, {"": [true]}]}'::JSON::VARIANT::VARCHAR
+----
+{'a': [1, [{'key': '', 'value': [true]}]]}
+
+query I
+SELECT '[null, null]'::JSON::VARIANT::VARCHAR
+----
+[NULL, NULL]
+
+query I
+SELECT '[1, "a b", [1], {"k": "v"}, null, true, 1.5]'::JSON::VARIANT::VARCHAR
+----
+[1, a b, [1], {'k': v}, NULL, true, 1.5]
+
+query I
+SELECT '{"a": [1, {"b": null}]}'::JSON::VARIANT::VARCHAR
+----
+{'a': [1, {'b': NULL}]}
+
+query I
+SELECT 1::VARIANT::VARCHAR
+----
+1
+
+query I
+SELECT 'a:b'::VARIANT::VARCHAR
+----
+a:b
+
+query I
+SELECT 1.5::VARIANT::VARCHAR
+----
+1.5
+
+query I
+SELECT (DATE '2020-01-01')::VARIANT::VARCHAR
+----
+2020-01-01
+
+query I
+SELECT (TIMESTAMP '2020-01-01 10:00:00')::VARIANT::VARCHAR
+----
+2020-01-01 10:00:00
+
+query I
+SELECT 'null'::JSON::VARIANT::VARCHAR
+----
+NULL
+
+query I
+SELECT NULL::VARIANT::VARCHAR
+----
+NULL
+
+query I
+SELECT ''::VARIANT::VARCHAR
+----
+(empty)
+
+query I
+SELECT [''::VARIANT]::VARIANT::VARCHAR
+----
+['']
+
+query I
+SELECT {'a': ''}::VARIANT::VARCHAR
+----
+{'a': ''}
+
+query I
+SELECT TRY_CAST([1, 2]::VARIANT AS VARCHAR)
+----
+[1, 2]
+
+query I
+SELECT ({'a': [1], 'b': 'x:y', 'c': {'d': 'e f'}}::VARIANT)::STRUCT(a VARCHAR, b VARCHAR, c VARCHAR)
+----
+{'a': '[1]', 'b': 'x:y', 'c': '{\'d\': e f}'}
+
+query I
+SELECT {'var': [1::VARIANT, 'x'::VARIANT]}::VARIANT::VARCHAR
+----
+{'var': [1, x]}
+
+query I
+SELECT [[1::VARIANT, 'x:y'::VARIANT], [2::VARIANT, 3::VARIANT]]::VARIANT::VARCHAR
+----
+[[1, x:y], [2, 3]]
+
+query I
+SELECT [12345678901234567890123::HUGEINT, 1::HUGEINT]::VARIANT::VARCHAR
+----
+[12345678901234567890123, 1]
+
+query I
+SELECT [1::UTINYINT, 2::UTINYINT]::VARIANT::VARCHAR
+----
+[1, 2]
+
+query I
+SELECT [uuid '00000000-0000-0000-0000-000000000001']::VARIANT::VARCHAR
+----
+[00000000-0000-0000-0000-000000000001]
+
+query I
+SELECT ['0101'::BIT]::VARIANT::VARCHAR
+----
+[0101]
+
+query I
+SELECT ['123456789012345678901234567890'::BIGNUM]::VARIANT::VARCHAR
+----
+[123456789012345678901234567890]
+
+query I
+SELECT [TIME '10:00:00', TIME '11:00:00']::VARIANT::VARCHAR
+----
+['10:00:00', '11:00:00']
+
+query I
+SELECT [TIMETZ '10:00:00+01']::VARIANT::VARCHAR
+----
+['10:00:00+01']
+
+query I
+SELECT [TIMESTAMP_NS '2020-01-01 10:00:00.123456789', TIMESTAMP_MS '2020-01-01 10:00:00.123', TIMESTAMP_S '2020-01-01 10:00:00']::VARIANT::VARCHAR
+----
+['2020-01-01 10:00:00.123456789', '2020-01-01 10:00:00.123', '2020-01-01 10:00:00']
+
+query I
+SELECT [1.5::FLOAT, 2::FLOAT]::VARIANT::VARCHAR
+----
+[1.5, 2.0]
+
+# a VARIANT cast to a nested type with VARCHAR children
+query I
+SELECT ('["a:b", [1, "x"], {"k": "v w"}, 3, null, ""]'::JSON::VARIANT)::VARCHAR[]
+----
+['a:b', '[1, x]', '{\'k\': v w}', 3, NULL, '']
+
+# rows of different kinds in one vector
+query I
+SELECT rv::VARCHAR FROM (VALUES (1, [1, 2]::VARIANT), (2, NULL), (3, '{"": 1}'::JSON::VARIANT), (4, '{"a": "b:c", "d": [1, "e"]}'::JSON::VARIANT), (5, 'x'::VARIANT), (6, 3::VARIANT), (7, '[{"": [2, 3]}]'::JSON::VARIANT), (8, [TIMESTAMP '2020-01-01 10:00:00']::VARIANT)) t(i, rv) ORDER BY i
+----
+[1, 2]
+NULL
+{''=1}
+{'a': 'b:c', 'd': [1, e]}
+x
+3
+[{''=[2, 3]}]
+['2020-01-01 10:00:00']
+
+# more values than fit in one vector
+query I
+SELECT md5(string_agg(coalesce(v::VARCHAR, '<null>'), '|' ORDER BY i)) FROM (SELECT i, CASE i % 6 WHEN 0 THEN NULL WHEN 1 THEN struct_pack(a := i, b := 'x:' || i, c := [i, NULL], d := struct_pack(e := i % 4 = 0))::VARIANT WHEN 2 THEN ('{"": ' || i || '}')::JSON::VARIANT WHEN 3 THEN [i::VARIANT, ('s ' || i)::VARIANT, [i]::VARIANT]::VARIANT WHEN 4 THEN (TIMESTAMP '2020-01-01' + INTERVAL (i) SECOND)::VARIANT ELSE ('p:' || i)::VARIANT END AS v FROM range(5000) t(i))
+----
+99fa1454cdaa689e881a67c3ff6979c8
+
+query I
+SELECT count(*) FROM (SELECT CASE WHEN i % 7 = 0 THEN NULL ELSE struct_pack(a := i, b := 'x:' || i, c := [i, i + 1], d := struct_pack(e := i % 3 = 0, f := i::DOUBLE / 4)) END AS rs FROM range(5000) t(i)) WHERE rs::VARIANT::VARCHAR IS DISTINCT FROM rs::VARCHAR
+----
+0
+
+query II
+SELECT count(*), max(length(rv::VARCHAR)) FROM (SELECT struct_pack(i := i, s := 'str' || i, l := [i, i+1, i+2], st := struct_pack(a := i, b := 'x' || i))::VARIANT AS rv FROM range(200000) t(i))
+----
+200000	95
+
+query II
+SELECT count(*), max(length(rv::VARCHAR)) FROM (SELECT [i, i+1, i+2]::VARIANT AS rv FROM range(200000) t(i))
+----
+200000	24
+
+# keys that differ only in case
+query I
+SELECT '{"a": 1, "A": [2, "x:y"], "b": {"c": 1, "C": 2}}'::JSON::VARIANT::VARCHAR
+----
+{'A': [2, x:y], 'a': 1, 'b': {'C': 2, 'c': 1}}
+
+# implicit cast to VARCHAR
+query I
+SELECT {'a': [1, 2]}::VARIANT || 'x'
+----
+{'a': [1, 2]}x
+
+require icu
+
+statement ok
+SET TimeZone='America/New_York'
+
+query I
+SELECT [TIMESTAMPTZ '2020-01-01 10:00:00+00', TIMESTAMPTZ '2020-06-01 10:00:00+00']::VARIANT::VARCHAR
+----
+['2020-01-01 05:00:00-05', '2020-06-01 06:00:00-04']
+
+query I
+SELECT {'t': TIMESTAMPTZ '2020-01-01 10:00:00+00'}::VARIANT::VARCHAR
+----
+{'t': '2020-01-01 05:00:00-05'}
+
+query I
+SELECT (TIMESTAMPTZ '2020-01-01 10:00:00+00')::VARIANT::VARCHAR
+----
+2020-01-01 05:00:00-05

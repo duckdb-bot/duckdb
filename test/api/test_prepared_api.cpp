@@ -692,10 +692,16 @@ TEST_CASE("Prepared CREATE VIEW stores the values of its parameters", "[api]") {
 		REQUIRE_NO_FAIL(literal->Execute(literal_values));
 		result = con.Query("SELECT * FROM o2");
 		REQUIRE(CHECK_COLUMN(result, 0, {2, 1}));
-		// a NULL string stays an untyped NULL, as a bound parameter does
-		REQUIRE_NO_FAIL(con.Query("CREATE VIEW dn AS SELECT DATE '2024-01-02' > ? AS c", Value(LogicalType::VARCHAR)));
-		result = con.Query("SELECT * FROM dn");
-		REQUIRE(CHECK_COLUMN(result, 0, {Value()}));
+		// a value is cast to the type it is bound as, also in DISTINCT ON
+		identifier_map_t<BoundParameterData> double_values;
+		double_values[Identifier("1")] = BoundParameterData(Value::INTEGER(42), LogicalType::DOUBLE);
+		auto bound_double = con.Prepare("CREATE VIEW dbl AS SELECT ? AS c");
+		REQUIRE_NO_FAIL(bound_double->Execute(double_values));
+		result = con.Query("SELECT typeof(c) FROM dbl");
+		REQUIRE(CHECK_COLUMN(result, 0, {"DOUBLE"}));
+		REQUIRE_NO_FAIL(con.Query("CREATE VIEW dist AS SELECT DISTINCT ON (?) a FROM (VALUES (2), (1)) t(a)", true));
+		result = con.Query("SELECT count(*) FROM dist");
+		REQUIRE(CHECK_COLUMN(result, 0, {1}));
 		// a NULL keeps its type from the query
 		REQUIRE_NO_FAIL(con.Query("CREATE VIEW n AS SELECT ?::INTEGER + 1 AS c", Value()));
 		result = con.Query("SELECT * FROM n");

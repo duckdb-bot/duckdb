@@ -9,12 +9,13 @@ namespace duckdb {
 
 namespace {
 
-//! Two arrays or two objects being compared, with the needle child to find and the haystack child to try next
+//! Two arrays or two objects being compared, with the needle child to match and the haystack child to try next.
+//! Children of objects are taken by raw position, skipping the fields missing in the row
 struct VariantCompareFrame {
 	VariantCompareFrame(const VariantNode &haystack, const VariantNode &needle, VariantComparisonType category) {
 		if (category == VariantComparisonType::OBJECT) {
-			haystack_entries.emplace(haystack, VariantIterationOrder::LEXICOGRAPHIC);
-			needle_entries.emplace(needle, VariantIterationOrder::LEXICOGRAPHIC);
+			haystack_entries.emplace(haystack, VariantIterationOrder::INTERNAL);
+			needle_entries.emplace(needle, VariantIterationOrder::INTERNAL);
 		} else {
 			haystack_elements.emplace(haystack.GetArrayChildren());
 			needle_elements.emplace(needle.GetArrayChildren());
@@ -22,34 +23,39 @@ struct VariantCompareFrame {
 	}
 
 	idx_t NeedleCount() const {
-		return needle_elements ? needle_elements->size() : needle_entries->GetOrderedEntries().size();
+		return needle_elements ? needle_elements->size() : needle_entries->GetRawCount();
 	}
 
 	//! Finds the next pair of children to compare, or returns false when the needle child has no candidate left
 	bool NextPair(VariantNode &haystack_child, VariantNode &needle_child) {
-		if (needle_index == NeedleCount()) {
-			return false;
-		}
 		if (needle_elements) {
-			if (haystack_index == haystack_elements->size()) {
+			if (needle_index == needle_elements->size() || haystack_index == haystack_elements->size()) {
 				return false;
 			}
 			haystack_child = (*haystack_elements)[haystack_index];
 			needle_child = (*needle_elements)[needle_index];
 			return true;
 		}
-		// a needle entry only matches a haystack entry with the same key
-		auto &haystack = haystack_entries->GetOrderedEntries();
-		auto &needle = needle_entries->GetOrderedEntries()[needle_index];
-		while (haystack_index < haystack.size() && haystack[haystack_index].key != needle.key) {
-			haystack_index++;
+		VariantObjectEntry needle_entry;
+		for (; needle_index < needle_entries->GetRawCount(); needle_index++) {
+			needle_entry = needle_entries->RawEntry(needle_index);
+			if (!needle_entry.value.IsMissing()) {
+				break;
+			}
 		}
-		if (haystack_index == haystack.size()) {
+		if (needle_index == needle_entries->GetRawCount()) {
 			return false;
 		}
-		haystack_child = haystack[haystack_index].value;
-		needle_child = needle.value;
-		return true;
+		// a needle entry only matches a haystack entry with the same key
+		for (; haystack_index < haystack_entries->GetRawCount(); haystack_index++) {
+			auto haystack_entry = haystack_entries->RawEntry(haystack_index);
+			if (!haystack_entry.value.IsMissing() && haystack_entry.key == needle_entry.key) {
+				haystack_child = haystack_entry.value;
+				needle_child = needle_entry.value;
+				return true;
+			}
+		}
+		return false;
 	}
 
 	optional<VariantArrayIterator> haystack_elements;
@@ -62,9 +68,9 @@ struct VariantCompareFrame {
 
 //! An array or object of the haystack being searched, with the child to search next
 struct VariantWalkFrame {
-	explicit VariantWalkFrame(const VariantNode &container) {
-		if (container.GetTypeId() == VariantLogicalType::OBJECT) {
-			entries.emplace(container, VariantIterationOrder::LEXICOGRAPHIC);
+	VariantWalkFrame(const VariantNode &container, VariantLogicalType type_id) {
+		if (type_id == VariantLogicalType::OBJECT) {
+			entries.emplace(container, VariantIterationOrder::INTERNAL);
 		} else {
 			elements.emplace(container.GetArrayChildren());
 		}
@@ -78,12 +84,14 @@ struct VariantWalkFrame {
 			child = (*elements)[next_index++];
 			return true;
 		}
-		auto &children = entries->GetOrderedEntries();
-		if (next_index == children.size()) {
-			return false;
+		while (next_index < entries->GetRawCount()) {
+			auto entry = entries->RawEntry(next_index++);
+			if (!entry.value.IsMissing()) {
+				child = entry.value;
+				return true;
+			}
 		}
-		child = children[next_index++].value;
-		return true;
+		return false;
 	}
 
 	optional<VariantArrayIterator> elements;
@@ -100,14 +108,13 @@ struct VariantContainsStacks {
 
 enum class VariantCompareResult : uint8_t { NOT_EQUAL, EQUAL, OPENED };
 
-bool IsPrimitiveEqual(const VariantNode &haystack, const VariantNode &needle, VariantComparisonType category) {
-	const auto haystack_type = haystack.GetTypeId();
-	const auto needle_type = needle.GetTypeId();
+bool IsPrimitiveEqual(const VariantNode &haystack, VariantLogicalType haystack_type, const VariantNode &needle,
+                      VariantLogicalType needle_type, VariantComparisonType category) {
 	switch (category) {
 	case VariantComparisonType::NULL_VALUE:
 		return true;
 	case VariantComparisonType::BOOLEAN:
-		return haystack.GetTypeId() == needle.GetTypeId();
+		return haystack_type == needle_type;
 	case VariantComparisonType::UUID:
 		return haystack.GetData<hugeint_t>() == needle.GetData<hugeint_t>();
 	case VariantComparisonType::REAL:
@@ -137,24 +144,27 @@ bool IsPrimitiveEqual(const VariantNode &haystack, const VariantNode &needle, Va
 }
 
 //! Compares two primitive values, or opens the frame that compares the children of two arrays or two objects
-VariantCompareResult CompareOrOpen(const VariantNode &haystack, const VariantNode &needle,
+VariantCompareResult CompareOrOpen(const VariantNode &haystack, VariantLogicalType haystack_type,
+                                   const VariantNode &needle, VariantLogicalType needle_type,
                                    vector<VariantCompareFrame> &frames) {
-	const auto category = GetVariantComparisonType(haystack.GetTypeId());
-	if (category != GetVariantComparisonType(needle.GetTypeId())) {
+	const auto category = GetVariantComparisonType(haystack_type);
+	if (category != GetVariantComparisonType(needle_type)) {
 		return VariantCompareResult::NOT_EQUAL;
 	}
 	if (category == VariantComparisonType::ARRAY || category == VariantComparisonType::OBJECT) {
 		frames.emplace_back(haystack, needle, category);
 		return VariantCompareResult::OPENED;
 	}
-	return IsPrimitiveEqual(haystack, needle, category) ? VariantCompareResult::EQUAL : VariantCompareResult::NOT_EQUAL;
+	return IsPrimitiveEqual(haystack, haystack_type, needle, needle_type, category) ? VariantCompareResult::EQUAL
+	                                                                                : VariantCompareResult::NOT_EQUAL;
 }
 
 //! Whether the haystack value contains the needle value, every needle child of an array or object being matched by a
 //! child of the haystack. Haystack children are not consumed, so one can match several needle children
-bool IsEqual(const VariantNode &haystack, const VariantNode &needle, vector<VariantCompareFrame> &frames) {
+bool IsEqual(const VariantNode &haystack, VariantLogicalType haystack_type, const VariantNode &needle,
+             VariantLogicalType needle_type, vector<VariantCompareFrame> &frames) {
 	frames.clear();
-	auto result = CompareOrOpen(haystack, needle, frames);
+	auto result = CompareOrOpen(haystack, haystack_type, needle, needle_type, frames);
 	while (!frames.empty()) {
 		auto &frame = frames.back();
 		if (result == VariantCompareResult::EQUAL) {
@@ -173,37 +183,48 @@ bool IsEqual(const VariantNode &haystack, const VariantNode &needle, vector<Vari
 			continue;
 		}
 		// the frame is not used after this, as opening another may move it
-		result = CompareOrOpen(haystack_child, needle_child, frames);
+		result =
+		    CompareOrOpen(haystack_child, haystack_child.GetTypeId(), needle_child, needle_child.GetTypeId(), frames);
 	}
 	return result == VariantCompareResult::EQUAL;
 }
 
-bool IsContainer(const VariantNode &node) {
-	auto type_id = node.GetTypeId();
+bool IsContainer(VariantLogicalType type_id) {
 	return type_id == VariantLogicalType::ARRAY || type_id == VariantLogicalType::OBJECT;
 }
 
 //! Whether the haystack value or any value nested in it contains the needle
 bool HaystackContains(const VariantNode &haystack, const VariantNode &needle, VariantContainsStacks &stacks) {
-	if (IsEqual(haystack, needle, stacks.compare)) {
+	const auto haystack_type = haystack.GetTypeId();
+	const auto needle_type = needle.GetTypeId();
+	const auto needle_category = GetVariantComparisonType(needle_type);
+	if (IsEqual(haystack, haystack_type, needle, needle_type, stacks.compare)) {
 		return true;
 	}
 	auto &walk = stacks.walk;
 	walk.clear();
-	if (IsContainer(haystack)) {
-		walk.emplace_back(haystack);
+	if (IsContainer(haystack_type)) {
+		walk.emplace_back(haystack, haystack_type);
 	}
 	while (!walk.empty()) {
+		auto &frame = walk.back();
+		auto opened = false;
 		VariantNode child;
-		if (!walk.back().Next(child)) {
+		while (!opened && frame.Next(child)) {
+			// a value of another category cannot contain the needle, which is checked here as most values differ
+			const auto child_type = child.GetTypeId();
+			if (GetVariantComparisonType(child_type) == needle_category &&
+			    IsEqual(child, child_type, needle, needle_type, stacks.compare)) {
+				return true;
+			}
+			if (IsContainer(child_type)) {
+				// the frame is not used after this, as opening another may move it
+				walk.emplace_back(child, child_type);
+				opened = true;
+			}
+		}
+		if (!opened) {
 			walk.pop_back();
-			continue;
-		}
-		if (IsEqual(child, needle, stacks.compare)) {
-			return true;
-		}
-		if (IsContainer(child)) {
-			walk.emplace_back(child);
 		}
 	}
 	return false;

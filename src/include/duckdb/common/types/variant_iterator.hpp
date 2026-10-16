@@ -322,15 +322,14 @@ public:
 		return Iterator(*this, EndPos());
 	}
 
-	//! The entries sorted by key, only for LEXICOGRAPHIC order
-	const vector<VariantObjectEntry> &GetOrderedEntries() const {
-		D_ASSERT(order == VariantIterationOrder::LEXICOGRAPHIC);
-		return ordered_entries;
+	//! The number of raw entries, including the fields missing in this row
+	idx_t GetRawCount() const {
+		return raw_count;
 	}
-
-private:
 	//! Materializes the entry at the given raw position (before missing-field skipping)
 	VariantObjectEntry RawEntry(idx_t raw_pos) const;
+
+private:
 	//! The end position in the iteration space
 	idx_t EndPos() const {
 		return order == VariantIterationOrder::LEXICOGRAPHIC ? ordered_entries.size() : raw_count;

@@ -520,7 +520,7 @@ public:
 		return arena_ptr<TransformProcess>(process_allocator.Make<T>(std::forward<Args>(args)...));
 	}
 
-	//! The result a transformer hands back, carved out of the same arena
+	//! The result a transformer hands back outlives the frame of its process, so it comes from the transformer's arena
 	template <class T, typename... Args>
 	arena_ptr<TransformResultValue> MakeResult(Args &&...args) {
 		return arena_ptr<TransformResultValue>(allocator.Make<TypedTransformResult<T>>(std::forward<Args>(args)...));

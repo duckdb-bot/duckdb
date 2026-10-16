@@ -144,7 +144,7 @@ bool ScanMatches(ArrowSchema &col_schema, ArrowArray &col_array, const string &q
 	return ArrowTestHelper::RunArrowComparison(con, query, stream);
 }
 
-// Run-end encoded utf8 column: run i ends at run_ends[i] and holds values[i].
+// Run-end encoded utf8 column, whose run i ends at run_ends[i] and holds values[i].
 struct RunEndStringColumn {
 	RunEndStringColumn(const char *name, const std::vector<int32_t> &run_ends_p, const std::vector<string> &values_p)
 	    : run_ends(run_ends_p) {
@@ -312,6 +312,7 @@ TEST_CASE("Arrow scan of a table with a run-end encoded column and a filter", "[
 		auto result =
 		    arrow_run_end_encoded_test::QueryArrowTable(con, {&i.schema, &r.schema}, {&i.array, &r.array}, queries[q]);
 		REQUIRE_NO_FAIL(*result);
+		REQUIRE(result->RowCount() == expected[q].size());
 		REQUIRE(CHECK_COLUMN(result, 0, expected[q]));
 	}
 	arrow_run_end_encoded_test::Int32Column i("i", {1, 2, 3});
@@ -319,6 +320,18 @@ TEST_CASE("Arrow scan of a table with a run-end encoded column and a filter", "[
 	auto result = arrow_run_end_encoded_test::QueryArrowTable(con, {&i.schema, &r.schema}, {&i.array, &r.array},
 	                                                          "SELECT i, item FROM t WHERE i > 1 ORDER BY i");
 	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->RowCount() == 2);
 	REQUIRE(CHECK_COLUMN(result, 0, {2, 3}));
 	REQUIRE(CHECK_COLUMN(result, 1, {10, 20}));
+
+	// a run-end encoded child of a list counts as well, child [7, 7, 8, 9]
+	arrow_run_end_encoded_test::Int32Column j("i", {1, 2, 3});
+	arrow_run_end_encoded_test::RunEndColumn child({2, 3, 4}, {7, 8, 9}, {});
+	arrow_run_end_encoded_test::ListColumn list(child, {0, 2, 3, 4});
+	result = arrow_run_end_encoded_test::QueryArrowTable(con, {&j.schema, &list.schema}, {&j.array, &list.array},
+	                                                     "SELECT i, a FROM t WHERE i > 1 ORDER BY i");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->RowCount() == 2);
+	REQUIRE(CHECK_COLUMN(result, 0, {2, 3}));
+	REQUIRE(CHECK_COLUMN(result, 1, {Value::LIST({Value::INTEGER(8)}), Value::LIST({Value::INTEGER(9)})}));
 }

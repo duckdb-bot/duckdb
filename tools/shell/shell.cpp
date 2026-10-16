@@ -96,8 +96,6 @@
 #include "terminal.hpp"
 
 #include "duckdb.hpp"
-#include "duckdb/common/operator/add.hpp"
-#include "duckdb/common/operator/multiply.hpp"
 #include "shell_renderer.hpp"
 #include "shell_highlight.hpp"
 #include "shell_manual.hpp"
@@ -630,7 +628,6 @@ static int hexDigitValue(char c) {
 ** Interpret zArg as an integer value, possibly with suffixes.
 */
 int64_t ShellState::StringToInt(const string &arg) {
-	int64_t v = 0;
 	static const struct {
 		const char *zSuffix;
 		int iMult;
@@ -648,32 +645,39 @@ int64_t ShellState::StringToInt(const string &arg) {
 	} else if (zArg[0] == '+') {
 		zArg++;
 	}
-	// append a digit to v, or throw when the number does not fit
-	auto append_digit = [&](int64_t base, int64_t digit) {
-		if (!duckdb::TryMultiplyOperator::Operation(v, base, v) || !duckdb::TryAddOperator::Operation(v, digit, v)) {
+	// the magnitude, which fits a negative number down to the minimum of int64_t
+	uint64_t magnitude = 0;
+	const uint64_t limit =
+	    isNeg ? uint64_t(duckdb::NumericLimits<int64_t>::Maximum()) + 1 : duckdb::NumericLimits<int64_t>::Maximum();
+	auto append_digit = [&](uint64_t base, uint64_t digit) {
+		if (magnitude > (limit - digit) / base) {
 			throw duckdb::InvalidInputException("The number \"%s\" is out of range", arg);
 		}
+		magnitude = magnitude * base + digit;
 	};
 	if (zArg[0] == '0' && zArg[1] == 'x') {
 		int x;
 		zArg += 2;
 		while ((x = hexDigitValue(zArg[0])) >= 0) {
-			append_digit(16, x);
+			append_digit(16, uint64_t(x));
 			zArg++;
 		}
 	} else {
 		while (IsDigit(zArg[0])) {
-			append_digit(10, zArg[0] - '0');
+			append_digit(10, uint64_t(zArg[0] - '0'));
 			zArg++;
 		}
 	}
 	for (i = 0; i < ArraySize(aMult); i++) {
 		if (StringUtil::CIEquals(aMult[i].zSuffix, zArg)) {
-			append_digit(aMult[i].iMult, 0);
+			append_digit(uint64_t(aMult[i].iMult), 0);
 			break;
 		}
 	}
-	return isNeg ? -v : v;
+	if (isNeg) {
+		return magnitude == limit ? duckdb::NumericLimits<int64_t>::Minimum() : -int64_t(magnitude);
+	}
+	return int64_t(magnitude);
 }
 
 string ShellState::ModeToString(RenderMode mode) {
@@ -2749,6 +2753,7 @@ MetadataResult ShellState::ToggleTimer(ShellState &state, const vector<string> &
 	if (args.size() < 2 || args.size() > 3) {
 		return MetadataResult::PRINT_USAGE;
 	}
+	auto enable_timer = state.StringToBool(args[1]);
 	if (args.size() == 3) {
 		auto digits = ShellState::StringToInt(args[2]);
 		if (digits < 0 || digits > 9) {
@@ -2757,7 +2762,7 @@ MetadataResult ShellState::ToggleTimer(ShellState &state, const vector<string> &
 		}
 		timerDigits = static_cast<int>(digits);
 	}
-	enableTimer = state.StringToBool(args[1]);
+	enableTimer = enable_timer;
 	if (enableTimer && !HAS_TIMER) {
 		state.PrintF(PrintOutput::STDERR, "Error: timer not available on this system.\n");
 		enableTimer = false;

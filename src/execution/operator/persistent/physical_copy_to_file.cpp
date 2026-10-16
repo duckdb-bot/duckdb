@@ -1751,8 +1751,9 @@ bool CopyDirectoryManager::EnsureDirectory(FileSystem &fs, const string &dir_pat
 		while (true) {
 			auto entry = directories.find(dir_path);
 			if (entry == directories.end()) {
-				directories.emplace(dir_path, DirectoryEntry());
+				// registered first, so that a failure leaves no pending entry that nobody completes
 				directories_ignoring_case[dir_path].push_back(dir_path);
+				directories.emplace(dir_path, DirectoryEntry());
 #ifdef D_ASSERT_IS_ENABLED
 				created_entry = true;
 #endif

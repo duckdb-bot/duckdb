@@ -9,7 +9,7 @@ using namespace duckdb;
 
 namespace {
 
-enum class CaseMode { PRESERVE, LOWERCASE, UNLISTABLE, UNLISTABLE_THROWS };
+enum class CaseMode { PRESERVE, LOWERCASE, UNLISTABLE, UNLISTABLE_THROWS, LISTING_THROWS_AFTER_ENTRIES };
 
 //! A file system under "casetest://" that ignores case and keeps or lowercases names, or that tells case apart but
 //! cannot list directories. Its operations run one at a time.
@@ -64,6 +64,10 @@ public:
 		}
 		if (mode == CaseMode::UNLISTABLE_THROWS) {
 			throw IOException("Cannot list \"%s\"", path);
+		}
+		if (mode == CaseMode::LISTING_THROWS_AFTER_ENTRIES) {
+			local->ListFiles(Resolve(path), callback, opener);
+			throw NotImplementedException("Cannot finish listing \"%s\"", path);
 		}
 		return local->ListFiles(Resolve(path), callback, opener);
 	}
@@ -138,7 +142,7 @@ TEST_CASE("COPY with PARTITION_BY refuses partitions that a file system ignoring
 		}
 
 #ifndef DUCKDB_NO_THREADS
-		// partitions that threads create at the same time
+		// partition directories created by several threads
 		REQUIRE_NO_FAIL(con.Query("SET threads = 8"));
 		auto parallel_result =
 		    con.Query("COPY (SELECT CASE WHEN i % 2 = 0 THEN 'a' ELSE 'A' END AS k, i FROM range(200000) t(i)) "
@@ -211,8 +215,8 @@ TEST_CASE("COPY with PARTITION_BY writes partitions that differ only in case whe
 	TestCreateDirectory(root + "/out/k=A");
 	auto fs = FileSystem::CreateLocal();
 	if (!fs->DirectoryExists(root + "/out/K=A")) {
-		for (auto mode : {CaseMode::UNLISTABLE, CaseMode::UNLISTABLE_THROWS}) {
-			INFO("throws " << (mode == CaseMode::UNLISTABLE_THROWS));
+		for (auto mode : {CaseMode::UNLISTABLE, CaseMode::UNLISTABLE_THROWS, CaseMode::LISTING_THROWS_AFTER_ENTRIES}) {
+			INFO("mode " << static_cast<int>(mode));
 			DuckDB db(nullptr);
 			Connection con(db);
 			RegisterCaseTestFileSystem(con, root, mode);

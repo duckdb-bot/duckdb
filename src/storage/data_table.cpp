@@ -68,6 +68,52 @@ IndexStorageInfo DataTableInfo::ExtractIndexStorageInfo(const Identifier &name) 
 	throw InternalException("ExtractIndexStorageInfo: index storage info with name %s not found", name);
 }
 
+unique_ptr<StorageLockKey> DataTableInfo::GetInPlaceUpdateLock() {
+	return in_place_update_lock.GetSharedLock();
+}
+
+void DataTableInfo::VerifyInPlaceUpdate(const vector<PhysicalIndex> &column_ids) {
+	// a build publishes its index before it unregisters, so under this lock one of the two is seen
+	lock_guard<mutex> guard(index_builds_lock);
+	unordered_set<column_t> indexed_columns;
+	if (!indexes.Empty()) {
+		indexed_columns = indexes.GetIndexedColumns();
+	}
+	for (auto &column_id : column_ids) {
+		for (auto &index_build : index_builds) {
+			auto &build_columns = index_build.get().GetColumns();
+			if (std::find(build_columns.begin(), build_columns.end(), column_id.index) != build_columns.end()) {
+				throw TransactionException(
+				    "Transaction conflict: cannot update table \"%s\" while an index on the updated columns is created",
+				    GetTableName());
+			}
+		}
+		if (indexed_columns.find(column_id.index) != indexed_columns.end()) {
+			throw TransactionException("Transaction conflict: cannot update table \"%s\" because an index on the "
+			                           "updated columns was created after the update was planned",
+			                           GetTableName());
+		}
+	}
+}
+
+IndexBuildRegistration::IndexBuildRegistration(shared_ptr<DataTableInfo> info_p, vector<column_t> columns_p)
+    : info(std::move(info_p)), columns(std::move(columns_p)) {
+	auto lock = info->in_place_update_lock.GetExclusiveLock();
+	lock_guard<mutex> guard(info->index_builds_lock);
+	info->index_builds.push_back(*this);
+}
+
+IndexBuildRegistration::~IndexBuildRegistration() {
+	lock_guard<mutex> guard(info->index_builds_lock);
+	auto &index_builds = info->index_builds;
+	for (idx_t i = 0; i < index_builds.size(); i++) {
+		if (&index_builds[i].get() == this) {
+			index_builds.erase_at(i);
+			break;
+		}
+	}
+}
+
 DataTable::DataTable(AttachedDatabase &db, shared_ptr<TableIOManager> table_io_manager_p,
                      vector<Identifier> schema_path, Identifier table, vector<ColumnDefinition> column_definitions_p,
                      unique_ptr<PersistentTableData> data)
@@ -1492,19 +1538,26 @@ void DataTable::Update(TableUpdateState &state, ClientContext &context, DuckTabl
 		    GetTableName(), TableModification());
 	}
 
-	// first verify that no constraints are violated
-	VerifyUpdateConstraints(*state.constraint_state, context, updates, column_ids);
-
-	// now perform the actual update
 	Vector max_row_id_vec(Value::BIGINT(MAX_ROW_ID), count_t(count));
-	Vector row_ids_slice(LogicalType::BIGINT);
-	DataChunk updates_slice;
-	updates_slice.InitializeEmpty(updates.GetTypes());
-
 	SelectionVector sel_local_update(count), sel_global_update(count);
 	auto n_local_update = VectorOperations::GreaterThanEquals(row_ids, max_row_id_vec, nullptr, count,
 	                                                          &sel_local_update, &sel_global_update);
 	auto n_global_update = count - n_local_update;
+
+	// an index built since the update was planned would miss what it writes in place to the table
+	unique_ptr<StorageLockKey> in_place_update_lock;
+	if (n_global_update > 0) {
+		in_place_update_lock = info->GetInPlaceUpdateLock();
+		info->VerifyInPlaceUpdate(column_ids);
+	}
+
+	// first verify that no constraints are violated
+	VerifyUpdateConstraints(*state.constraint_state, context, updates, column_ids);
+
+	// now perform the actual update
+	Vector row_ids_slice(LogicalType::BIGINT);
+	DataChunk updates_slice;
+	updates_slice.InitializeEmpty(updates.GetTypes());
 
 	// row id > MAX_ROW_ID? transaction-local storage
 	if (n_local_update > 0) {

@@ -1,4 +1,6 @@
 #include "duckdb/catalog/catalog.hpp"
+#include "duckdb/common/type_visitor.hpp"
+#include "duckdb/parser/expression/cast_expression.hpp"
 #include "duckdb/parser/expression/comparison_expression.hpp"
 #include "duckdb/parser/expression/conjunction_expression.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
@@ -535,6 +537,30 @@ unique_ptr<MergeIntoStatement> Binder::GenerateMergeInto(InsertQueryNode &node, 
 			source->column_name_alias.emplace_back(column.Name());
 		}
 	}
+	// cast the conflict columns to the types of the table, so they are compared as they are inserted
+	// a collation is not part of the value, so it is left out of the cast
+	auto cast_star = make_uniq<StarExpression>();
+	for (auto &distinct_on_columns : all_distinct_on_columns) {
+		for (auto &col : distinct_on_columns) {
+			auto type = TypeVisitor::VisitReplace(columns.GetColumn(col).Type(), [](const LogicalType &child) {
+				return StringType::GetCollation(child).empty() ? child : LogicalType::VARCHAR;
+			});
+			if (!TypeExpression::CanRepresent(type) || type.HasAlias() || type.id() == LogicalTypeId::ENUM) {
+				// a parsed cast resolves these types again, by name or from all their values
+				continue;
+			}
+			cast_star->ReplaceListMutable()[col] = make_uniq<CastExpression>(type, make_uniq<ColumnRefExpression>(col));
+		}
+	}
+	if (!cast_star->ReplaceList().empty()) {
+		auto cast_node = make_uniq<SelectNode>();
+		cast_node->select_list.push_back(std::move(cast_star));
+		cast_node->from_table = std::move(source);
+		auto cast_stmt = make_uniq<SelectStatement>();
+		cast_stmt->node = std::move(cast_node);
+		source = make_uniq<SubqueryRef>(std::move(cast_stmt), "excluded");
+	}
+
 	// push DISTINCT ON(unique_columns)
 	for (auto &distinct_on_columns : all_distinct_on_columns) {
 		auto distinct_stmt = make_uniq<SelectStatement>();

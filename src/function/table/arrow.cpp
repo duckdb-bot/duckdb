@@ -185,14 +185,15 @@ void ArrowTableFunction::ArrowScanFunction(ClientContext &context, TableFunction
 	auto output_size =
 	    MinValue<idx_t>(STANDARD_VECTOR_SIZE, NumericCast<idx_t>(state.chunk->arrow_array.length) - state.chunk_offset);
 	data.lines_read += output_size;
+	auto stream_is_projected = data.factory->AppliesParameters();
 	if (global_state.CanRemoveFilterColumns()) {
 		state.all_columns.Reset();
 		state.all_columns.SetChildCardinality(output_size);
-		ArrowToDuckDB(state, data.arrow_table.GetColumns(), state.all_columns);
+		ArrowToDuckDB(state, data.arrow_table.GetColumns(), state.all_columns, stream_is_projected);
 		output.ReferenceColumns(state.all_columns, global_state.projection_ids);
 	} else {
 		output.SetChildCardinality(output_size);
-		ArrowToDuckDB(state, data.arrow_table.GetColumns(), output);
+		ArrowToDuckDB(state, data.arrow_table.GetColumns(), output, stream_is_projected);
 	}
 
 	output.Verify(context);
@@ -308,6 +309,9 @@ static bool TableHasViewTypes(const arrow_column_map_t &column_info) {
 
 bool ArrowTableFunction::ArrowPushdownType(const FunctionData &bind_data, idx_t col_idx) {
 	auto &arrow_bind_data = bind_data.Cast<ArrowScanFunctionData>();
+	if (!arrow_bind_data.factory->AppliesParameters()) {
+		return false;
+	}
 	const auto &column_info = arrow_bind_data.arrow_table.GetColumns();
 	// PyArrow's array_filter kernel doesn't support string_view/binary_view types.
 	// The filter is applied to ALL columns in a record batch, so if any column has a

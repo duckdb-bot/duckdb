@@ -133,6 +133,12 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalGet &op) {
 				} else {
 					column_type = op.returned_types[column_id];
 				}
+				if (projection_ids.empty()) {
+					// no projection means every column, list them so the filter can refer to its column among them
+					for (idx_t i = 0; i < column_ids.size(); i++) {
+						projection_ids.emplace_back(i);
+					}
+				}
 				optional_idx column_id_filter;
 				for (idx_t i = 0; i < projection_ids.size(); i++) {
 					if (column_ids[projection_ids[i]] == column_idx) {

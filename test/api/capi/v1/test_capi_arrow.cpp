@@ -821,3 +821,146 @@ TEST_CASE("Test C-API Arrow string views retain data after aligned scratch is re
 		}
 	}
 }
+
+namespace {
+
+int32_t unfiltered_stream_first[3] = {-1, -1, -1};
+int32_t unfiltered_stream_values[3] = {1, 2, 3};
+
+void ReleaseUnfilteredSchema(ArrowSchema *schema) {
+	schema->release = nullptr;
+}
+
+void ReleaseUnfilteredArray(ArrowArray *array) {
+	array->release = nullptr;
+}
+
+// A stream of one batch with int32 columns a holding -1, -1 and -1, and i holding 1, 2 and 3, which ignores the
+// projection and the filters of the scan
+struct UnfilteredStream {
+	UnfilteredStream() {
+		first_schema.format = "i";
+		first_schema.name = "a";
+		first_schema.flags = ARROW_FLAG_NULLABLE;
+		first_schema.release = ReleaseUnfilteredSchema;
+		column_schema.format = "i";
+		column_schema.name = "i";
+		column_schema.flags = ARROW_FLAG_NULLABLE;
+		column_schema.release = ReleaseUnfilteredSchema;
+		schema_children[0] = &first_schema;
+		schema_children[1] = &column_schema;
+		schema.format = "+s";
+		schema.name = "";
+		schema.n_children = 2;
+		schema.children = schema_children;
+		schema.release = ReleaseUnfilteredSchema;
+
+		first_buffers[1] = unfiltered_stream_first;
+		first_array.length = 3;
+		first_array.n_buffers = 2;
+		first_array.buffers = first_buffers;
+		first_array.release = ReleaseUnfilteredArray;
+		column_buffers[1] = unfiltered_stream_values;
+		column_array.length = 3;
+		column_array.n_buffers = 2;
+		column_array.buffers = column_buffers;
+		column_array.release = ReleaseUnfilteredArray;
+		array_children[0] = &first_array;
+		array_children[1] = &column_array;
+		array.length = 3;
+		array.n_buffers = 1;
+		array.buffers = array_buffers;
+		array.n_children = 2;
+		array.children = array_children;
+		array.release = ReleaseUnfilteredArray;
+
+		stream.get_schema = GetSchema;
+		stream.get_next = GetNext;
+		stream.get_last_error = GetLastError;
+		stream.release = Release;
+		stream.private_data = this;
+	}
+
+	static int GetSchema(ArrowArrayStream *stream, ArrowSchema *out) {
+		*out = static_cast<UnfilteredStream *>(stream->private_data)->schema;
+		return 0;
+	}
+	static int GetNext(ArrowArrayStream *stream, ArrowArray *out) {
+		auto &self = *static_cast<UnfilteredStream *>(stream->private_data);
+		*out = self.array;
+		if (self.sent) {
+			out->release = nullptr;
+		}
+		self.sent = true;
+		return 0;
+	}
+	static const char *GetLastError(ArrowArrayStream *stream) {
+		return nullptr;
+	}
+	static void Release(ArrowArrayStream *stream) {
+	}
+
+	ArrowSchema first_schema {};
+	ArrowSchema column_schema {};
+	ArrowSchema *schema_children[2];
+	ArrowSchema schema {};
+	const void *first_buffers[2] = {nullptr, nullptr};
+	const void *column_buffers[2] = {nullptr, nullptr};
+	const void *array_buffers[1] = {nullptr};
+	ArrowArray first_array {};
+	ArrowArray column_array {};
+	ArrowArray *array_children[2];
+	ArrowArray array {};
+	ArrowArrayStream stream {};
+	bool sent = false;
+};
+
+} // namespace
+
+TEST_CASE("Test C-API Arrow scans apply the projection and the filters of the query", "[capi][arrow]") {
+	CAPITester tester;
+	REQUIRE(tester.OpenDatabase(nullptr));
+
+	// the stream returns every column and row, so the scan has to pick the column and the query has to filter
+	UnfilteredStream stream;
+	REQUIRE(duckdb_arrow_scan(tester.connection, "t", reinterpret_cast<duckdb_arrow_stream>(&stream.stream)) ==
+	        DuckDBSuccess);
+	auto result = tester.Query("SELECT i FROM t WHERE i > 1 ORDER BY i");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->row_count() == 2);
+	REQUIRE(result->Fetch<int32_t>(0, 0) == 2);
+	REQUIRE(result->Fetch<int32_t>(0, 1) == 3);
+
+	stream.sent = false;
+	result = tester.Query("SELECT count(*) FROM t WHERE i = 2");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->Fetch<int64_t>(0, 0) == 1);
+
+	stream.sent = false;
+	result = tester.Query("SELECT sum(i) FROM t");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->Fetch<int64_t>(0, 0) == 6);
+
+	// without the optimizer that prunes unused columns, the scan returns every column besides the filtered one
+	REQUIRE_NO_FAIL(tester.Query("SET disabled_optimizers = 'unused_columns'"));
+	stream.sent = false;
+	result = tester.Query("SELECT * FROM t WHERE i > 1 ORDER BY i");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->row_count() == 2);
+	REQUIRE(result->Fetch<int32_t>(0, 0) == -1);
+	REQUIRE(result->Fetch<int32_t>(1, 0) == 2);
+	REQUIRE(result->Fetch<int32_t>(1, 1) == 3);
+	REQUIRE_NO_FAIL(tester.Query("RESET disabled_optimizers"));
+
+	// a view over a single array
+	UnfilteredStream array_source;
+	duckdb_arrow_stream array_stream = nullptr;
+	REQUIRE(duckdb_arrow_array_scan(tester.connection, "u", reinterpret_cast<duckdb_arrow_schema>(&array_source.schema),
+	                                reinterpret_cast<duckdb_arrow_array>(&array_source.array),
+	                                &array_stream) == DuckDBSuccess);
+	result = tester.Query("SELECT i FROM u WHERE i = 2");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->row_count() == 1);
+	REQUIRE(result->Fetch<int32_t>(0, 0) == 2);
+	duckdb_destroy_arrow_stream(&array_stream);
+}

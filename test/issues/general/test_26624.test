@@ -1,0 +1,135 @@
+# name: test/issues/general/test_26624.test
+# description: Issue 26624: common subexpression elimination does not move expressions out of TRY
+# group: [general]
+
+statement ok
+CREATE TABLE t (s VARCHAR);
+
+statement ok
+INSERT INTO t VALUES ('abc'), ('42');
+
+query II
+SELECT TRY(CAST(s AS INTEGER) + 1) AS x, TRY(CAST(s AS INTEGER) + 2) AS y FROM t ORDER BY s
+----
+43	44
+NULL	NULL
+
+# an occurrence in a branch of a CASE does not make the one inside TRY unconditional
+query II
+SELECT TRY(CAST(s AS INTEGER) + 1) AS x, CASE WHEN s = 'abc' THEN 0 ELSE CAST(s AS INTEGER) + 2 END AS y FROM t ORDER BY s
+----
+43	44
+NULL	0
+
+query II
+SELECT TRY(CAST(s AS INTEGER) * 2 + CAST(s AS INTEGER)) AS x, TRY(-CAST(s AS INTEGER)) AS y FROM t ORDER BY s
+----
+126	-42
+NULL	NULL
+
+query II
+SELECT SUM(TRY(CAST(s AS INTEGER) + 1)), SUM(TRY(CAST(s AS INTEGER) + 2)) FROM t
+----
+43	44
+
+# TRY inside a WHERE and nested in other expressions
+query I
+SELECT s FROM t WHERE TRY(CAST(s AS INTEGER) + 1) IS NULL AND TRY(CAST(s AS INTEGER) + 2) IS NULL
+----
+abc
+
+query II
+SELECT coalesce(TRY(CAST(s AS INTEGER) + 1), -1) AS x, coalesce(TRY(CAST(s AS INTEGER) + 2), -2) AS y FROM t ORDER BY s
+----
+43	44
+-1	-2
+
+# an occurrence that always runs is shared with the one inside TRY, which still catches its own errors
+statement ok
+CREATE TABLE big(s VARCHAR);
+
+statement ok
+INSERT INTO big VALUES ('9223372036854775807'), ('1');
+
+query II
+SELECT CAST(s AS BIGINT) AS x, TRY(CAST(s AS BIGINT) + 1) AS y FROM big ORDER BY x
+----
+1	2
+9223372036854775807	NULL
+
+query II
+EXPLAIN SELECT CAST(s AS BIGINT) AS x, TRY(CAST(s AS BIGINT) + 1) AS y FROM big
+----
+physical_plan	<REGEX>:[\s\S]*Projection ─[\s\S]*Projection ─[\s\S]*
+
+# an occurrence outside of TRY throws for 'abc' on its own
+statement error
+SELECT TRY(CAST(s AS INTEGER) + 1) AS x, CAST(s AS INTEGER) + 2 AS y FROM t
+----
+Could not convert string 'abc' to INT32
+
+# the same TRY twice is still computed once, in a projection of its own
+query II
+SELECT TRY(CAST(s AS INTEGER) + 1) AS x, TRY(CAST(s AS INTEGER) + 1) AS y FROM t ORDER BY s
+----
+43	43
+NULL	NULL
+
+query II
+EXPLAIN SELECT TRY(CAST(s AS INTEGER) + 1) AS x, TRY(CAST(s AS INTEGER) + 1) AS y FROM t
+----
+physical_plan	<REGEX>:[\s\S]*Projection ─[\s\S]*Projection ─[\s\S]*
+
+query II
+EXPLAIN SELECT TRY(CAST(s AS INTEGER) + 1) AS x, TRY(CAST(s AS INTEGER) + 2) AS y FROM t
+----
+physical_plan	<!REGEX>:[\s\S]*Projection ─[\s\S]*Projection ─[\s\S]*
+
+# the arguments of COALESCE after the first only run for the rows that are NULL so far
+statement ok
+CREATE TABLE c(s VARCHAR, i INTEGER);
+
+statement ok
+INSERT INTO c VALUES ('abc', 0), ('42', NULL);
+
+query II
+SELECT COALESCE(i, CAST(s AS INTEGER) + 1) AS a, TRY(CAST(s AS INTEGER) + 2) AS b FROM c ORDER BY s
+----
+43	44
+0	NULL
+
+query II
+SELECT TRY(CAST(s AS INTEGER) + 2) AS b, COALESCE(i, CAST(s AS INTEGER) + 1) AS a FROM c ORDER BY s
+----
+44	43
+NULL	0
+
+query II
+SELECT COALESCE(i, CAST(s AS INTEGER) + 1) AS a, CASE WHEN i IS NULL THEN CAST(s AS INTEGER) + 2 END AS b FROM c ORDER BY s
+----
+43	44
+0	NULL
+
+query II
+SELECT COALESCE(i, i, CAST(s AS INTEGER) + 1) AS a, COALESCE(i, -i, CAST(s AS INTEGER) + 1) AS b FROM c ORDER BY s
+----
+43	43
+0	0
+
+query II
+SELECT TRY(COALESCE(i, CAST(s AS INTEGER) + 1) + CAST(s AS INTEGER)) AS a, COALESCE(i, CAST(s AS INTEGER) + 1) AS b FROM c ORDER BY s
+----
+85	43
+NULL	0
+
+# the first argument of COALESCE always runs, so it is still shared
+query II
+SELECT COALESCE(CAST(i AS BIGINT) + 1, -1) AS a, CAST(i AS BIGINT) + 2 AS b FROM c ORDER BY s
+----
+-1	NULL
+1	2
+
+query II
+EXPLAIN SELECT COALESCE(CAST(i AS BIGINT) + 1, -1) AS a, CAST(i AS BIGINT) + 2 AS b FROM c
+----
+physical_plan	<REGEX>:[\s\S]*Projection ─[\s\S]*Projection ─[\s\S]*

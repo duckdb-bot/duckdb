@@ -657,21 +657,16 @@ void DBConfig::SetDefaultTempDirectory() {
 		options.temporary_directory = string();
 		return;
 	}
-	if (DBConfig::IsInMemoryDatabase(options.database_path.c_str())) {
-		options.temporary_directory = ".tmp";
-		return;
-	}
-	// the path without its extension prefix, as opening the database leaves it: "catalog.ducklake" for
-	// "ducklake:catalog.ducklake"
+	// the path without the extension prefix that opening the database removes
 	auto path = options.database_path;
 	if (options.database_type.empty()) {
 		string database_type;
 		DBPathAndType::ExtractExtensionPrefix(path, database_type);
 	}
-	bool duckdb_file = StringUtil::CIEquals(options.database_type, "duckdb");
-	if (FileSystem::IsRemoteFile(path) ||
-	    (!duckdb_file && !ExtensionHelper::ExtractExtensionPrefixFromPath(path).empty())) {
-		// a remote path, or one of another extension such as "postgres:dbname=lake", is no local file to be next to
+	auto prefix = ExtensionHelper::ExtractExtensionPrefixFromPath(path);
+	if (DBConfig::IsInMemoryDatabase(path.c_str()) || FileSystem::IsRemoteFile(path) ||
+	    (!prefix.empty() && !StringUtil::CIEquals(prefix, "file"))) {
+		// remote paths and connection strings of extensions, unlike file URLs, have no local file to be next to
 		options.temporary_directory = ".tmp";
 	} else {
 		options.temporary_directory = Path::AddSuffixToPath(path, ".tmp");

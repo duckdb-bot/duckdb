@@ -191,10 +191,15 @@ TEST_CASE("Test temp_directory defaults", "[api][.]") {
 
 TEST_CASE("Test the default temp_directory of databases with an extension prefix or a remote path", "[api]") {
 	DBConfig config;
-	vector<std::pair<string, string>> paths {
-	    {"file.duckdb", "file.duckdb.tmp"},        {"ducklake:catalog.ducklake", "catalog.ducklake.tmp"},
-	    {"sqlite:file.db", "file.db.tmp"},         {"ducklake:r2://bucket/catalog.ducklake", ".tmp"},
-	    {"ducklake:postgres:dbname=lake", ".tmp"}, {"s3://bucket/file.duckdb", ".tmp"}};
+	vector<std::pair<string, string>> paths {{"file.duckdb", "file.duckdb.tmp"},
+	                                         {"ducklake:catalog.ducklake", "catalog.ducklake.tmp"},
+	                                         {"sqlite:file.db", "file.db.tmp"},
+	                                         {"duckdb:file:/data/file.duckdb", "file:/data/file.duckdb.tmp"},
+	                                         {"C:\\data\\file.duckdb", "C:\\data\\file.duckdb.tmp"},
+	                                         {"ducklake:r2://bucket/catalog.ducklake", ".tmp"},
+	                                         {"ducklake:postgres:dbname=lake", ".tmp"},
+	                                         {"s3://bucket/file.duckdb", ".tmp"},
+	                                         {"duckdb::memory:", ".tmp"}};
 	for (auto &entry : paths) {
 		config.options.database_path = entry.first;
 		config.options.database_type = string();
@@ -205,11 +210,18 @@ TEST_CASE("Test the default temp_directory of databases with an extension prefix
 		config.SetDefaultTempDirectory();
 		REQUIRE(config.options.temporary_directory == entry.second);
 	}
-	// a path of a DuckDB file keeps its colon
-	config.options.database_path = "file:/data/file.duckdb";
-	config.options.database_type = "duckdb";
-	config.SetDefaultTempDirectory();
-	REQUIRE(config.options.temporary_directory == "file:/data/file.duckdb.tmp");
+}
+
+TEST_CASE("Test the default temp_directory of a database opened with an extension prefix", "[api]") {
+	auto path = TestCreatePath("temp_directory_of_prefixed_path.duckdb");
+	DuckDB db("duckdb:" + path);
+	Connection con(db);
+	auto query = "SELECT current_setting('temp_directory')";
+	auto result = con.Query(query);
+	REQUIRE(CHECK_COLUMN(result, 0, {path + ".tmp"}));
+	REQUIRE_NO_FAIL(con.Query("RESET temp_directory"));
+	result = con.Query(query);
+	REQUIRE(CHECK_COLUMN(result, 0, {path + ".tmp"}));
 }
 
 TEST_CASE("Test parallel usage of single client", "[api][.]") {

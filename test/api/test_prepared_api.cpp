@@ -642,10 +642,11 @@ TEST_CASE("Prepared CREATE VIEW stores the values of its parameters", "[api]") {
 		REQUIRE(CHECK_COLUMN(result, 0, {42}));
 		REQUIRE(CHECK_COLUMN(result, 1, {"x"}));
 		result = con.Query("SELECT sql FROM duckdb_views() WHERE view_name = 'v'");
-		REQUIRE(CHECK_COLUMN(result, 0,
-		                     {"CREATE VIEW v AS SELECT CAST(42 AS INTEGER) AS a, (SELECT 'x') AS b FROM "
-		                      "read_csv('data/csv/test/test.csv', (\"header\" = false)) WHERE (column0 > 1) "
-		                      "LIMIT 1;"}));
+		REQUIRE(
+		    CHECK_COLUMN(result, 0,
+		                 {"CREATE VIEW v AS SELECT CAST(CAST(42 AS INTEGER) AS INTEGER) AS a, (SELECT 'x') AS b FROM "
+		                  "read_csv('data/csv/test/test.csv', (\"header\" = false)) WHERE (column0 > CAST(1 AS "
+		                  "INTEGER)) LIMIT 1;"}));
 		// executing it again stores the new values
 		REQUIRE_NO_FAIL(prepared->Execute(43, "y", "data/csv/test/test.csv", 1));
 		result = con.Query("SELECT * FROM v");
@@ -664,17 +665,25 @@ TEST_CASE("Prepared CREATE VIEW stores the values of its parameters", "[api]") {
 		// a view whose binding is deferred, over a table that does not exist yet
 		REQUIRE_NO_FAIL(con.Query("CREATE VIEW d WITH (DEFER_BINDING) AS SELECT ? AS c FROM later", 3));
 		REQUIRE_NO_FAIL(con.Query("CREATE TABLE later AS SELECT 1 AS i"));
-		// a parameter in ORDER BY, GROUP BY or DISTINCT ON is an error, as in a SELECT, also for a deferred view
-		vector<std::pair<string, string>> errors {
-		    {"CREATE VIEW o AS SELECT a FROM (VALUES (2), (1)) t(a) ORDER BY ?", "ORDER BY"},
-		    {"CREATE VIEW o WITH (DEFER_BINDING) AS SELECT a FROM (VALUES (2), (1)) t(a) ORDER BY ?", "ORDER BY"},
-		    {"CREATE VIEW o AS WITH c AS (SELECT a FROM (VALUES (2), (1)) t(a) GROUP BY ?) FROM c", "GROUP BY"},
-		    {"CREATE VIEW o AS FROM (SELECT DISTINCT ON (?) a FROM (VALUES (2), (1)) t(a))", "DISTINCT ON"}};
-		for (auto &entry : errors) {
-			result = con.Query(entry.first, 1);
-			REQUIRE(result->HasError());
-			REQUIRE(StringUtil::Contains(result->GetError(), "Parameter not supported in " + entry.second));
-		}
+		// a value in ORDER BY or GROUP BY is a constant, not a column index, also for a deferred view
+		REQUIRE_NO_FAIL(con.Query("CREATE VIEW o AS SELECT a FROM (VALUES (2), (1)) t(a) ORDER BY ?", 1));
+		result = con.Query("SELECT * FROM o");
+		REQUIRE(CHECK_COLUMN(result, 0, {2, 1}));
+		REQUIRE_NO_FAIL(
+		    con.Query("CREATE VIEW od WITH (DEFER_BINDING) AS SELECT a FROM (VALUES (2), (1)) t(a) ORDER BY ?", 1));
+		result = con.Query("SELECT * FROM od");
+		REQUIRE(CHECK_COLUMN(result, 0, {2, 1}));
+		REQUIRE_NO_FAIL(con.Query("CREATE VIEW g AS SELECT count(*) AS c FROM (VALUES (2), (1)) t(a) GROUP BY ?", 1));
+		result = con.Query("SELECT * FROM g");
+		REQUIRE(CHECK_COLUMN(result, 0, {2}));
+		// a string stays a literal that compares with a date, as a bound parameter does
+		REQUIRE_NO_FAIL(con.Query("CREATE VIEW dt AS SELECT DATE '2024-01-02' > ? AS c", "2024-01-01"));
+		result = con.Query("SELECT * FROM dt");
+		REQUIRE(CHECK_COLUMN(result, 0, {true}));
+		// a NULL keeps its type from the query
+		REQUIRE_NO_FAIL(con.Query("CREATE VIEW n AS SELECT ?::INTEGER + 1 AS c", Value()));
+		result = con.Query("SELECT * FROM n");
+		REQUIRE(CHECK_COLUMN(result, 0, {Value()}));
 
 		// a named parameter without a value still reads the variable when the view is queried
 		REQUIRE_NO_FAIL(con.Query("SET VARIABLE x = 5"));
@@ -686,7 +695,7 @@ TEST_CASE("Prepared CREATE VIEW stores the values of its parameters", "[api]") {
 		REQUIRE_NO_FAIL(con.Query("SET VARIABLE x = 7"));
 		result = con.Query("SELECT * FROM w");
 		REQUIRE(CHECK_COLUMN(result, 0, {7}));
-		// an explicit value of a named parameter is not stored either, as on main
+		// an explicit value of a named parameter is not stored either
 		identifier_map_t<BoundParameterData> named_values;
 		named_values[Identifier("x")] = BoundParameterData(Value::INTEGER(42));
 		REQUIRE_NO_FAIL(named->Execute(named_values));
@@ -695,7 +704,7 @@ TEST_CASE("Prepared CREATE VIEW stores the values of its parameters", "[api]") {
 
 		// a positional parameter needs a value
 		REQUIRE_FAIL(con.Query("CREATE VIEW u AS SELECT ? AS c"));
-		// one in the values of a PIVOT is not replaced, and still fails as on main
+		// one in the values of a PIVOT is not replaced, and still fails
 		REQUIRE_FAIL(con.Query("CREATE VIEW pv AS FROM (SELECT 1 AS a, 'x' AS b) PIVOT (sum(a) FOR b IN (?))", "x"));
 	}
 	DuckDB db(path);

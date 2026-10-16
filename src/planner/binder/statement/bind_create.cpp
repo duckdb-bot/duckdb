@@ -18,6 +18,7 @@
 #include "duckdb/parser/constraints/list.hpp"
 #include "duckdb/parser/constraints/unique_constraint.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/parser/expression/cast_expression.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/parser/expression/function_expression.hpp"
 #include "duckdb/parser/expression/subquery_expression.hpp"
@@ -33,10 +34,6 @@
 #include "duckdb/parser/common_table_expression_info.hpp"
 #include "duckdb/parser/expression/star_expression.hpp"
 #include "duckdb/parser/query_node/select_node.hpp"
-#include "duckdb/parser/query_node/recursive_cte_node.hpp"
-#include "duckdb/parser/query_node/set_operation_node.hpp"
-#include "duckdb/parser/result_modifier.hpp"
-#include "duckdb/parser/tableref/subqueryref.hpp"
 #include "duckdb/parser/tableref/basetableref.hpp"
 #include "duckdb/parser/tableref/table_function_ref.hpp"
 #include "duckdb/planner/binder.hpp"
@@ -376,51 +373,7 @@ static bool IsPositionalParameter(const ParsedExpression &expr) {
 	       !PreparedStatement::AllowsUserVariableFallback(expr.Cast<ParameterExpression>().Identifier());
 }
 
-//! A value in ORDER BY or GROUP BY would be a column index, so a parameter there is an error as in a SELECT
-static void CheckParameterClauses(QueryNode &node) {
-	for (auto &modifier : node.modifiers) {
-		if (modifier->type == ResultModifierType::ORDER_MODIFIER) {
-			for (auto &order : modifier->Cast<OrderModifier>().orders) {
-				if (IsPositionalParameter(*order.expression)) {
-					throw ParameterNotAllowedException("Parameter not supported in ORDER BY clause");
-				}
-			}
-		} else if (modifier->type == ResultModifierType::DISTINCT_MODIFIER) {
-			for (auto &target : modifier->Cast<DistinctModifier>().distinct_on_targets) {
-				if (IsPositionalParameter(*target)) {
-					throw ParameterNotAllowedException("Parameter not supported in DISTINCT ON clause");
-				}
-			}
-		}
-	}
-	switch (node.type) {
-	case QueryNodeType::SELECT_NODE:
-		for (auto &group : node.Cast<SelectNode>().groups.group_expressions) {
-			if (IsPositionalParameter(*group)) {
-				throw ParameterNotAllowedException("Parameter not supported in GROUP BY clause");
-			}
-		}
-		break;
-	case QueryNodeType::SET_OPERATION_NODE:
-		for (auto &child : node.Cast<SetOperationNode>().children) {
-			CheckParameterClauses(*child);
-		}
-		break;
-	case QueryNodeType::RECURSIVE_CTE_NODE:
-		CheckParameterClauses(*node.Cast<RecursiveCTENode>().left);
-		CheckParameterClauses(*node.Cast<RecursiveCTENode>().right);
-		break;
-	default:
-		break;
-	}
-	for (auto &cte : node.cte_map.map) {
-		if (cte.second->query_node) {
-			CheckParameterClauses(*cte.second->query_node);
-		}
-	}
-}
-
-//! Replaces the positional parameters of a query with their values, or only checks them when replace is false
+//! Replaces the positional parameters of a query with their values, or only finds them when replace is false
 struct ViewParameterReplacer {
 	const identifier_map_t<BoundParameterData> &values;
 	bool replace;
@@ -439,7 +392,15 @@ struct ViewParameterReplacer {
 			}
 			found = true;
 			if (replace) {
-				auto constant = ConstantExpression::FromValue(entry->second.GetValue());
+				// as when a parameter is bound, a string stays a literal and any other value keeps its type, so an
+				// integer in ORDER BY or GROUP BY is no column index
+				auto &data = entry->second;
+				auto constant = ConstantExpression::FromValue(data.GetValue());
+				auto type_id = data.return_type.id();
+				if (type_id != LogicalTypeId::STRING_LITERAL && type_id != LogicalTypeId::INTEGER_LITERAL &&
+				    type_id != LogicalTypeId::SQLNULL) {
+					constant = make_uniq<CastExpression>(data.return_type, std::move(constant));
+				}
 				constant->SetAlias(expr->GetAlias());
 				expr = std::move(constant);
 			}
@@ -452,16 +413,8 @@ struct ViewParameterReplacer {
 	}
 
 	void Visit(QueryNode &node) {
-		if (!replace) {
-			CheckParameterClauses(node);
-		}
 		ParsedExpressionIterator::EnumerateQueryNodeChildren(
-		    node, [&](unique_ptr<ParsedExpression> &child) { Visit(child); },
-		    [&](TableRef &ref) {
-			    if (!replace && ref.type == TableReferenceType::SUBQUERY) {
-				    CheckParameterClauses(*ref.Cast<SubqueryRef>().subquery->node);
-			    }
-		    });
+		    node, [&](unique_ptr<ParsedExpression> &child) { Visit(child); });
 	}
 };
 

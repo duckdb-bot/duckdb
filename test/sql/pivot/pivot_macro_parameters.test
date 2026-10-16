@@ -52,6 +52,16 @@ SELECT unp_sum(['i', 'j']);
 ----
 126
 
+# a column named like a parameter stays a column outside COLUMNS
+statement ok
+CREATE MACRO unp_name(tbl, i) AS TABLE UNPIVOT query_table(tbl) ON i::VARCHAR, j::VARCHAR;
+
+query III
+FROM unp_name('t1', 'ignored') ORDER BY name;
+----
+1	i	42
+1	j	84
+
 statement ok
 CREATE MACRO piv(sfx) AS TABLE PIVOT t2 ON (k || sfx) IN ('a_x', 'b_x') USING sum(i);
 

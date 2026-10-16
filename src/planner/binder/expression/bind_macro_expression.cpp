@@ -103,16 +103,6 @@ void ExpressionBinder::ReplaceMacroParameters(unique_ptr<ParsedExpression> &expr
 	    *expr, [&](unique_ptr<ParsedExpression> &child) { ReplaceMacroParameters(child, lambda_params); });
 }
 
-void ExpressionBinder::ReplaceMacroParametersInColumns(unique_ptr<ParsedExpression> &expr,
-                                                       vector<identifier_set_t> &lambda_params) {
-	if (expr->GetExpressionClass() == ExpressionClass::STAR) {
-		ReplaceMacroParameters(expr, lambda_params);
-		return;
-	}
-	ParsedExpressionIterator::EnumerateChildren(
-	    *expr, [&](unique_ptr<ParsedExpression> &child) { ReplaceMacroParametersInColumns(child, lambda_params); });
-}
-
 void ExpressionBinder::ReplaceMacroParametersInQuery(QueryNode &node, vector<identifier_set_t> &lambda_params) {
 	ParsedExpressionIterator::EnumerateQueryNodeChildren(
 	    node, [&](unique_ptr<ParsedExpression> &child) { ReplaceMacroParameters(child, lambda_params); },
@@ -129,10 +119,17 @@ void ExpressionBinder::ReplaceMacroParametersInQuery(QueryNode &node, vector<ide
 			    if (pivot.unpivot_names.empty()) {
 				    continue;
 			    }
+			    // the names in an UNPIVOT entry are columns, only its COLUMNS expressions take parameters
 			    for (auto &entry : column.entries) {
-				    if (entry.expr) {
-					    ReplaceMacroParametersInColumns(entry.expr, lambda_params);
+				    if (!entry.expr) {
+					    continue;
 				    }
+				    ParsedExpressionIterator::VisitExpressionClassMutable(
+				        *entry.expr, ExpressionClass::STAR, [&](ParsedExpression &star) {
+					        ParsedExpressionIterator::EnumerateChildren(star, [&](unique_ptr<ParsedExpression> &child) {
+						        ReplaceMacroParameters(child, lambda_params);
+					        });
+				        });
 			    }
 		    }
 	    });

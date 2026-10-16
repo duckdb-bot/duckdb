@@ -1,6 +1,5 @@
 #include "benchmark_runner.hpp"
 #include "duckdb_benchmark_macro.hpp"
-#include "duckdb/main/materialized_query_result.hpp"
 
 using namespace duckdb;
 
@@ -26,8 +25,7 @@ string VerifyResult(QueryResult *result) override {
 	if (result->HasError()) {
 		return result->GetError();
 	}
-	auto &materialized = result->Cast<MaterializedQueryResult>();
-	if (materialized.GetValue(0, 0) != Value::BIGINT(LIST_LITERAL_COUNT)) {
+	if (result->Collection().GetValue(0, 0) != Value::BIGINT(LIST_LITERAL_COUNT)) {
 		return "Incorrect list length";
 	}
 	return string();

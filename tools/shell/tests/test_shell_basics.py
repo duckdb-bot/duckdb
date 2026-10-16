@@ -1568,3 +1568,18 @@ def test_describe_dynamic_pivot_renders_the_description(shell):
     result.check_not_exist("column_type")
 
 # fmt: on
+
+
+@pytest.mark.parametrize("number", ["18446744073709551620", "0x10000000000000000", "9223372036854775807K"])
+def test_dot_command_number_out_of_range(shell, number):
+    test = (
+        ShellTest(shell)
+        .statement(".maxrows 5")
+        .statement(f".maxrows {number}")
+        .statement(".mode duckbox")
+        .statement("SELECT * FROM range(10)")
+    )
+    result = test.run()
+    result.check_stderr(f'The number "{number}" is out of range')
+    # the failed command keeps the previous limit
+    assert "(5 shown)" in result.stdout

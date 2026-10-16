@@ -96,6 +96,8 @@
 #include "terminal.hpp"
 
 #include "duckdb.hpp"
+#include "duckdb/common/operator/add.hpp"
+#include "duckdb/common/operator/multiply.hpp"
 #include "shell_renderer.hpp"
 #include "shell_highlight.hpp"
 #include "shell_manual.hpp"
@@ -646,22 +648,28 @@ int64_t ShellState::StringToInt(const string &arg) {
 	} else if (zArg[0] == '+') {
 		zArg++;
 	}
+	// append a digit to v, or throw when the number does not fit
+	auto append_digit = [&](int64_t base, int64_t digit) {
+		if (!duckdb::TryMultiplyOperator::Operation(v, base, v) || !duckdb::TryAddOperator::Operation(v, digit, v)) {
+			throw duckdb::InvalidInputException("The number \"%s\" is out of range", arg);
+		}
+	};
 	if (zArg[0] == '0' && zArg[1] == 'x') {
 		int x;
 		zArg += 2;
 		while ((x = hexDigitValue(zArg[0])) >= 0) {
-			v = (v << 4) + x;
+			append_digit(16, x);
 			zArg++;
 		}
 	} else {
 		while (IsDigit(zArg[0])) {
-			v = v * 10 + zArg[0] - '0';
+			append_digit(10, zArg[0] - '0');
 			zArg++;
 		}
 	}
 	for (i = 0; i < ArraySize(aMult); i++) {
 		if (StringUtil::CIEquals(aMult[i].zSuffix, zArg)) {
-			v *= aMult[i].iMult;
+			append_digit(aMult[i].iMult, 0);
 			break;
 		}
 	}

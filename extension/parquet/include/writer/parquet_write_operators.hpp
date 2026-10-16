@@ -12,6 +12,9 @@
 #include "parquet_interval.hpp"
 #include "parquet_timestamp.hpp"
 #include "zstd/common/xxhash.hpp"
+#include "duckdb/common/bswap.hpp"
+#include "duckdb/common/exception/conversion_exception.hpp"
+#include "duckdb/common/types/hugeint.hpp"
 #include "duckdb/common/types/time.hpp"
 #include "duckdb/common/types/uhugeint.hpp"
 #include "duckdb/common/types/uuid.hpp"
@@ -358,35 +361,67 @@ struct ParquetTimeTZOperator : public BaseParquetOperator {
 	}
 };
 
+//! Writes HUGEINT and UHUGEINT as DECIMAL(38,0), as the Arrow conversion does, and refuses the values that need more
+//! digits
 struct ParquetHugeintOperator : public BaseParquetOperator {
+	static hugeint_t ToDecimal(hugeint_t input) {
+		if (input >= Hugeint::POWERS_OF_TEN[38] || input <= -Hugeint::POWERS_OF_TEN[38]) {
+			throw ConversionException("Could not write HUGEINT value %s to Parquet: it is written as DECIMAL(38,0), "
+			                          "which holds 38 digits",
+			                          input.ToString());
+		}
+		return input;
+	}
+	static hugeint_t ToDecimal(uhugeint_t input) {
+		if (input >= uhugeint_t(Hugeint::POWERS_OF_TEN[38])) {
+			throw ConversionException("Could not write UHUGEINT value %s to Parquet: it is written as DECIMAL(38,0), "
+			                          "which holds 38 digits",
+			                          input.ToString());
+		}
+		return hugeint_t(input);
+	}
+
 	template <class SRC, class TGT>
 	static TGT Operation(SRC input) {
-		return Hugeint::Cast<double>(input);
+		const auto value = ToDecimal(input);
+		TGT result;
+		const auto upper = BSwapIfLE(static_cast<uint64_t>(value.upper));
+		const auto lower = BSwapIfLE(value.lower);
+		memcpy(result.bytes, &upper, sizeof(uint64_t));
+		memcpy(result.bytes + sizeof(uint64_t), &lower, sizeof(uint64_t));
+		return result;
+	}
+
+	template <class SRC, class TGT>
+	static void WriteToStream(const TGT &target_value, WriteStream &ser) {
+		ser.WriteData(target_value.bytes, ParquetHugeintTargetType::PARQUET_HUGEINT_SIZE);
+	}
+
+	template <class SRC, class TGT>
+	static constexpr idx_t WriteSize(const TGT &target_value) {
+		return ParquetHugeintTargetType::PARQUET_HUGEINT_SIZE;
+	}
+
+	template <class SRC, class TGT>
+	static uint64_t XXHash64(const TGT &target_value) {
+		return duckdb_zstd::XXH64(target_value.bytes, ParquetHugeintTargetType::PARQUET_HUGEINT_SIZE, 0);
 	}
 
 	template <class SRC, class TGT>
 	static unique_ptr<ColumnWriterStatistics> InitializeStats() {
-		return make_uniq<ColumnWriterStatistics>();
+		return make_uniq<HugeintStatisticsState>();
 	}
 
 	template <class SRC, class TGT>
-	static void HandleStats(ColumnWriterStatistics *stats, TGT target_value) {
-	}
-};
-
-struct ParquetUhugeintOperator : public BaseParquetOperator {
-	template <class SRC, class TGT>
-	static TGT Operation(SRC input) {
-		return Uhugeint::Cast<double>(input);
-	}
-
-	template <class SRC, class TGT>
-	static unique_ptr<ColumnWriterStatistics> InitializeStats() {
-		return make_uniq<ColumnWriterStatistics>();
-	}
-
-	template <class SRC, class TGT>
-	static void HandleStats(ColumnWriterStatistics *stats, TGT target_value) {
+	static void HandleStats(ColumnWriterStatistics *stats_p, TGT target_value) {
+		auto &stats = stats_p->Cast<HugeintStatisticsState>();
+		if (!stats.has_stats || target_value.LessThan(stats.min)) {
+			stats.min = target_value;
+		}
+		if (!stats.has_stats || stats.max.LessThan(target_value)) {
+			stats.max = target_value;
+		}
+		stats.has_stats = true;
 	}
 };
 

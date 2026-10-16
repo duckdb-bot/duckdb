@@ -1,0 +1,15 @@
+# name: benchmark/micro/copy/to_parquet_hugeint.benchmark
+# description: Copy a HUGEINT column to Parquet
+# group: [copy]
+
+name Copy HUGEINT to Parquet
+group copy
+
+load
+CREATE TABLE tbl AS SELECT (i * 1000003)::HUGEINT AS h FROM range(0, 10000000) tbl(i)
+
+run
+COPY tbl TO '${BENCHMARK_DIR}/hugeint.parquet' (FORMAT parquet);
+
+result I
+10000000

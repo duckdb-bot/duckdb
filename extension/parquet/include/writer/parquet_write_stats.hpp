@@ -236,6 +236,46 @@ struct ParquetUUIDTargetType {
 	data_t bytes[PARQUET_UUID_SIZE];
 };
 
+//! A 128-bit integer stored as a DECIMAL(38,0), in 16 bytes of big-endian two's complement
+struct ParquetHugeintTargetType {
+	static constexpr const idx_t PARQUET_HUGEINT_SIZE = 16;
+	data_t bytes[PARQUET_HUGEINT_SIZE];
+
+	//! Whether this value is smaller than the other one
+	bool LessThan(const ParquetHugeintTargetType &other) const {
+		// the first byte holds the sign, the bytes after it compare as unsigned
+		if (bytes[0] != other.bytes[0]) {
+			return int8_t(bytes[0]) < int8_t(other.bytes[0]);
+		}
+		return memcmp(bytes + 1, other.bytes + 1, PARQUET_HUGEINT_SIZE - 1) < 0;
+	}
+};
+
+class HugeintStatisticsState : public ColumnWriterStatistics {
+public:
+	bool has_stats = false;
+	ParquetHugeintTargetType min;
+	ParquetHugeintTargetType max;
+
+public:
+	bool HasStats() override {
+		return has_stats;
+	}
+
+	string GetMin() override {
+		return GetMinValue();
+	}
+	string GetMax() override {
+		return GetMaxValue();
+	}
+	string GetMinValue() override {
+		return HasStats() ? string(char_ptr_cast(min.bytes), ParquetHugeintTargetType::PARQUET_HUGEINT_SIZE) : string();
+	}
+	string GetMaxValue() override {
+		return HasStats() ? string(char_ptr_cast(max.bytes), ParquetHugeintTargetType::PARQUET_HUGEINT_SIZE) : string();
+	}
+};
+
 class UUIDStatisticsState : public ColumnWriterStatistics {
 public:
 	bool has_stats = false;

@@ -180,6 +180,35 @@ SELECT a FROM th WHERE a IS NOT DISTINCT FROM b AND b = 3 AND a::TINYINT = 3
 ----
 3
 
+# a filter that can throw is not copied to an equal column of a join below
+statement ok
+CREATE TABLE l2(x BIGINT);
+
+statement ok
+CREATE TABLE r2(y BIGINT);
+
+statement ok
+CREATE TABLE k2(b TINYINT);
+
+statement ok
+INSERT INTO l2 VALUES (1);
+
+statement ok
+INSERT INTO r2 VALUES (1), (300);
+
+statement ok
+INSERT INTO k2 VALUES (2);
+
+query I
+SELECT count(*) FROM (SELECT CAST(x + y AS TINYINT) AS a FROM l2 JOIN r2 ON x = y) s WHERE a = 2
+----
+1
+
+query I
+SELECT count(*) FROM (SELECT CAST(x + y AS TINYINT) AS a FROM l2 JOIN r2 ON x = y) s JOIN k2 ON a IS NOT DISTINCT FROM b WHERE b = 2
+----
+1
+
 # filters that contradict the constant
 statement ok
 CREATE TABLE c1 AS SELECT * FROM (VALUES (3), (7)) v(a);

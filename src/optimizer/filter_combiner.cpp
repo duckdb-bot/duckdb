@@ -130,7 +130,8 @@ FilterResult FilterCombiner::AddConjuncts(unique_ptr<Expression> expr) {
 
 void FilterCombiner::GenerateEquivalentFilters(const Expression &filter,
                                                const std::function<void(unique_ptr<Expression> filter)> &callback) {
-	if (filter.IsVolatile()) {
+	// a copy that can throw could be evaluated on rows the original never sees
+	if (filter.IsVolatile() || filter.CanThrow()) {
 		return;
 	}
 	// collect every column reference that belongs to an equivalence set
@@ -239,7 +240,7 @@ void FilterCombiner::AddNotDistinctFromConstants() {
 	if (partners.empty()) {
 		return;
 	}
-	// sets whose constant has not been carried over yet, each is visited once
+	// sets whose constant has not been carried over yet
 	vector<idx_t> pending;
 	for (auto &entry : equivalence_map) {
 		pending.push_back(entry.first);

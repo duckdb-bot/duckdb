@@ -284,6 +284,21 @@ static FileMetadata StatsInternal(int fd, const string &path) {
 	return StatsFromStruct(s);
 }
 
+//! Runs a fcntl lock command, with an open file description lock for FILE_FLAGS_LOCK_OPEN_FILE where the system has
+//! them. Closing another descriptor of the file releases a process-associated lock, but not such a lock.
+static int FileLockCommand(int fd, int command, struct flock &fl, FileOpenFlags flags) {
+#ifdef F_OFD_SETLK
+	if (flags.LockOpenFile()) {
+		int rc = fcntl(fd, command == F_SETLK ? F_OFD_SETLK : F_OFD_GETLK, &fl);
+		if (rc != -1 || errno != EINVAL) {
+			return rc;
+		}
+		// the kernel has no open file description locks
+	}
+#endif
+	return fcntl(fd, command, &fl);
+}
+
 // Apply a fcntl advisory lock per flags.Lock(); throws (and closes fd) on failure. Shared
 // by OpenFile and MemoryMapFile.
 static void TryAcquireFileLock(FileSystem &fs, int fd, const string &path, FileOpenFlags flags) {
@@ -301,7 +316,7 @@ static void TryAcquireFileLock(FileSystem &fs, int fd, const string &path, FileO
 	fl.l_whence = SEEK_SET;
 	fl.l_start = 0;
 	fl.l_len = 0;
-	int rc = fcntl(fd, F_SETLK, &fl);
+	int rc = FileLockCommand(fd, F_SETLK, fl, flags);
 	int retained_errno = errno;
 	bool has_error = rc == -1;
 	string extended_error;
@@ -320,11 +335,14 @@ static void TryAcquireFileLock(FileSystem &fs, int fd, const string &path, FileO
 	}
 	if (extended_error.empty()) {
 		// who is holding the lock?
-		rc = fcntl(fd, F_GETLK, &fl);
+		rc = FileLockCommand(fd, F_GETLK, fl, flags);
 		if (rc == -1) {
 			extended_error = strerror(errno);
 		} else if (fl.l_pid == ProcessUtil::CurrentProcessId()) {
 			extended_error = "Lock is already held in current process, likely another DuckDB instance";
+		} else if (fl.l_pid == -1) {
+			// an open file description lock has no owning process
+			extended_error = "Lock is held by another DuckDB instance, in this or another process";
 		} else {
 			auto process = ProcessUtil::GetProcessDescription(fs, fl.l_pid);
 			if (!process.empty()) {
@@ -334,7 +352,8 @@ static void TryAcquireFileLock(FileSystem &fs, int fd, const string &path, FileO
 		if (flags.Lock() == FileLockType::WRITE_LOCK) {
 			// could we get a read lock?
 			fl.l_type = F_RDLCK;
-			rc = fcntl(fd, F_SETLK, &fl);
+			fl.l_pid = 0;
+			rc = FileLockCommand(fd, F_SETLK, fl, flags);
 			if (rc != -1) {
 				extended_error += ". However, you would be able to open this database in read-only mode, e.g. by "
 				                  "using the -readonly parameter in the CLI";
@@ -387,10 +406,13 @@ unique_ptr<FileHandle> LocalFileSystem::OpenFile(const string &path_p, FileOpenF
 	} else {
 		throw InternalException("READ, WRITE or both should be specified when opening a file");
 	}
+	if (open_write || flags.LockOpenFile()) {
+		// an exec'd process would keep the descriptor, and with it an open file description lock
+		open_flags |= O_CLOEXEC;
+	}
 	if (open_write) {
 		// need Read or Write
 		D_ASSERT(flags.OpenForWriting());
-		open_flags |= O_CLOEXEC;
 		if (flags.CreateFileIfNotExists() || flags.OverwriteExistingFile()) {
 			open_flags |= O_CREAT;
 		}
@@ -966,6 +988,9 @@ unique_ptr<MemoryMappedFile> LocalFileSystem::MemoryMapFile(const OpenFileInfo &
 	}
 	if (open_write && flags.CreateFileIfNotExists()) {
 		open_flags |= O_CREAT;
+	}
+	if (flags.LockOpenFile()) {
+		open_flags |= O_CLOEXEC;
 	}
 
 	int fd = open(path.c_str(), open_flags, 0666);

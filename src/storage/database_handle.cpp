@@ -51,6 +51,8 @@ unique_ptr<DatabaseHandle> DatabaseHandle::OpenFile(QueryContext context, Attach
 	// database files can be read from in parallel
 	file_flags |= FileFlags::FILE_FLAGS_PARALLEL_ACCESS;
 	file_flags |= FileFlags::FILE_FLAGS_MULTI_CLIENT_ACCESS;
+	// another open of the file in this process does not release the lock
+	file_flags |= FileFlags::FILE_FLAGS_LOCK_OPEN_FILE;
 
 	auto &fs = GetDatabaseFileSystem(context, db);
 	auto file_handle = fs.OpenFile(path, file_flags);
@@ -89,6 +91,7 @@ unique_ptr<DatabaseHandle> DatabaseHandle::OpenMemoryMap(QueryContext context, A
 			mmap_flags |= FileFlags::FILE_FLAGS_FILE_CREATE;
 		}
 	}
+	mmap_flags |= FileFlags::FILE_FLAGS_LOCK_OPEN_FILE;
 	auto &fs = GetDatabaseFileSystem(context, db);
 	auto mmap_handle = fs.MemoryMapFile(path, mmap_flags, mmap_options);
 	if (!mmap_handle) {

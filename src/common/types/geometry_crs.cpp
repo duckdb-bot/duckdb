@@ -521,18 +521,14 @@ bool CoordinateReferenceSystem::TryParsePROJJSON(const string &text, CoordinateR
 	auto id_val = target_val.GetMember("id");
 	if (id_val.IsObject()) {
 		auto auth_val = id_val.GetMember("authority");
-		if (auth_val.IsString()) {
-			result.identifier = auth_val.GetString();
-
-			auto code_val = id_val.GetMember("code");
-			if (code_val.IsInteger()) {
-				result.identifier += ":" + StringUtil::Format("%d", code_val.GetSignedInteger());
-				result.identifier_is_id = true;
-			}
-			if (code_val.IsString()) {
-				result.identifier += ":" + code_val.GetString();
-				result.identifier_is_id = true;
-			}
+		auto code_val = id_val.GetMember("code");
+		// an id without a code keeps the name as the identifier
+		if (auth_val.IsString() && code_val.IsInteger()) {
+			result.identifier = auth_val.GetString() + ":" + StringUtil::Format("%d", code_val.GetSignedInteger());
+			result.identifier_is_id = true;
+		} else if (auth_val.IsString() && code_val.IsString()) {
+			result.identifier = auth_val.GetString() + ":" + code_val.GetString();
+			result.identifier_is_id = true;
 		}
 	}
 

@@ -114,3 +114,14 @@ statement error
 SELECT [ST_SetCRS('POINT(1 2)'::GEOMETRY, 'EPSG:4326'), ST_SetCRS('POINT(3 4)'::GEOMETRY, '{"type":"GeographicCRS","name":"Other CRS","id":{"authority":"EPSG:4326","code":true}}')];
 ----
 Cannot cast GEOMETRY with CRS
+
+# without a code, the name identifies the CRS
+query I
+SELECT len([ST_SetCRS('POINT(1 2)'::GEOMETRY, '{"type":"GeographicCRS","name":"A","id":{"authority":"EPSG"}}'), ST_SetCRS('POINT(3 4)'::GEOMETRY, '{"type":"GeographicCRS","name":"A","area":"here","id":{"authority":"EPSG"}}')]);
+----
+2
+
+statement error
+SELECT [ST_SetCRS('POINT(1 2)'::GEOMETRY, '{"type":"GeographicCRS","name":"A","id":{"authority":"EPSG"}}'), ST_SetCRS('POINT(3 4)'::GEOMETRY, '{"type":"GeographicCRS","name":"B","id":{"authority":"EPSG"}}')];
+----
+Cannot cast GEOMETRY with CRS

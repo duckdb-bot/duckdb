@@ -388,7 +388,11 @@ bool CatalogSet::AlterEntry(CatalogTransaction transaction, const Identifier &na
 	} else if (alter_info.type == AlterType::ALTER_SCALAR_FUNCTION ||
 	           alter_info.type == AlterType::ALTER_TABLE_FUNCTION) {
 		// overloads are added outside of a transaction while an extension loads, possibly while a query binds
-		// a call that still refers to the old entry, so the old entry stays alive as the child of the new one
+		// a call that still refers to the old entry, so the old entry is kept alive outside of the entry chain
+		auto replaced_entry = new_entry->TakeChild();
+		if (replaced_entry) {
+			replaced_function_entries.push_back(std::move(replaced_entry));
+		}
 	} else {
 		// if we don't have a transaction this alter is non-transactional
 		// in that case we are able to just directly destroy the child (if there is any)

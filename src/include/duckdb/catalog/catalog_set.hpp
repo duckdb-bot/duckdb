@@ -177,5 +177,7 @@ private:
 	CatalogEntryMap map;
 	//! The generator used to generate default internal entries
 	unique_ptr<DefaultGenerator> defaults;
+	//! Function entries replaced by overloads added outside of a transaction, kept alive for the calls bound with them
+	vector<unique_ptr<CatalogEntry>> replaced_function_entries;
 };
 } // namespace duckdb

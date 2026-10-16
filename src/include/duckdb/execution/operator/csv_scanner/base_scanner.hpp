@@ -32,7 +32,8 @@ public:
 		if (other.buffer_idx == buffer_idx) {
 			return buffer_pos - other.buffer_pos;
 		}
-		return other.buffer_size - other.buffer_pos + buffer_pos;
+		// every buffer before the last one is full
+		return other.buffer_size * (buffer_idx - other.buffer_idx) - other.buffer_pos + buffer_pos;
 	}
 
 	bool operator==(const LinePosition &other) const {

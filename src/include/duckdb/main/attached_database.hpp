@@ -57,6 +57,9 @@ struct StoredDatabasePath {
 	DatabaseManager &db_manager;
 	DatabaseFilePathManager &manager;
 	string path;
+	//! The registry of the process the open is registered in, if any, with the access mode of the open
+	shared_ptr<DatabaseFileRegistry> file_registry;
+	AccessMode registered_access_mode = AccessMode::READ_ONLY;
 
 	void OnDetach();
 };

@@ -30,6 +30,9 @@ StoredDatabasePath::StoredDatabasePath(DatabaseManager &db_manager, DatabaseFile
 }
 
 StoredDatabasePath::~StoredDatabasePath() {
+	if (file_registry) {
+		file_registry->Unregister(db_manager, path, registered_access_mode);
+	}
 	manager.EraseDatabasePath(path);
 }
 

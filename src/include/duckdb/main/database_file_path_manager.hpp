@@ -55,4 +55,35 @@ private:
 #endif // _WIN32 or __APPLE__
 };
 
+//! The DuckDB files that the database instances of this process have open. Each instance keeps its own header, free
+//! list and WAL of a file, and the lock of the file belongs to the process, so no two instances may open the same
+//! file while one of them writes to it
+class DatabaseFileRegistry {
+public:
+	//! The registry of the process
+	static shared_ptr<DatabaseFileRegistry> Get();
+
+	//! Registers an open of the file by the database manager. Returns false while another instance is still reading
+	//! the type of the file, and throws if another instance has it open and one of the two writes to it
+	bool TryRegister(DatabaseManager &manager, const string &path, const Identifier &name, AccessMode access_mode);
+	//! Called once the file at the path is known to be a DuckDB database
+	void Confirm(const string &path);
+	//! Unregisters an open of the file by the database manager
+	void Unregister(DatabaseManager &manager, const string &path, AccessMode access_mode);
+
+private:
+	struct OpenFile {
+		//! The number of opens of the file by each database manager
+		reference_map_t<DatabaseManager, idx_t> opens;
+		//! The number of opens that write to the file
+		idx_t writer_count = 0;
+		//! Whether the file was found to be a DuckDB database, until then it may still be released
+		bool is_database_file = false;
+	};
+
+	mutex files_lock;
+	//! Compared with case, as the volume of a path may be case sensitive
+	unordered_map<string, OpenFile> files;
+};
+
 } // namespace duckdb

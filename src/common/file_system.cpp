@@ -803,6 +803,10 @@ bool FileSystem::IsLocalFileSystem() const {
 	return false;
 }
 
+bool FileSystem::IsLocalFile(const string &path) {
+	return IsLocalFileSystem();
+}
+
 bool FileSystem::OnDiskFile(FileHandle &handle) {
 	throw NotImplementedException("%s: OnDiskFile is not implemented!", GetName());
 }

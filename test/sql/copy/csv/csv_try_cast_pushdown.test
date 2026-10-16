@@ -1,0 +1,75 @@
+# name: test/sql/copy/csv/csv_try_cast_pushdown.test
+# description: TRY_CAST of a CSV column gives NULL for a value that does not convert
+# group: [csv]
+
+statement ok
+COPY (SELECT * FROM (VALUES ('1'), ('nope'), ('2')) v(content)) TO '{TEST_DIR}/try_cast_1.csv' (FORMAT CSV, HEADER false);
+
+statement ok
+COPY (SELECT * FROM (VALUES ('2024-01-02'), ('later'), ('3')) v(content)) TO '{TEST_DIR}/try_cast_2.csv' (FORMAT CSV, HEADER false);
+
+query I
+SELECT TRY_CAST(x AS INTEGER) AS v FROM read_csv('{TEST_DIR}/try_cast_1.csv', columns = {'x': 'VARCHAR'}, header = false)
+----
+1
+NULL
+2
+
+query I
+SELECT TRY_CAST(x AS INTEGER) AS v FROM read_csv('{TEST_DIR}/try_cast_1.csv', columns = {'x': 'VARCHAR'}, header = false, ignore_errors = true)
+----
+1
+NULL
+2
+
+# an auto-detected column
+query I
+SELECT TRY_CAST(column0 AS INTEGER) AS v FROM read_csv('{TEST_DIR}/try_cast_1.csv', header = false)
+----
+1
+NULL
+2
+
+query I
+SELECT TRY_CAST(x AS DATE) AS v FROM read_csv('{TEST_DIR}/try_cast_2.csv', columns = {'x': 'VARCHAR'}, header = false)
+----
+2024-01-02
+NULL
+NULL
+
+# several files
+query II
+SELECT parse_filename(filename), TRY_CAST(x AS INTEGER) AS v FROM read_csv('{TEST_DIR}/try_cast_*.csv', columns = {'x': 'VARCHAR'}, header = false, filename = true) ORDER BY ALL
+----
+try_cast_1.csv	1
+try_cast_1.csv	2
+try_cast_1.csv	NULL
+try_cast_2.csv	3
+try_cast_2.csv	NULL
+try_cast_2.csv	NULL
+
+statement ok
+CREATE TABLE t AS SELECT TRY_CAST(x AS INTEGER) AS v FROM read_csv('{TEST_DIR}/try_cast_1.csv', columns = {'x': 'VARCHAR'}, header = false)
+
+query I
+SELECT v FROM t
+----
+1
+NULL
+2
+
+statement ok
+CREATE VIEW w AS SELECT TRY_CAST(x AS INTEGER) AS v FROM read_csv('{TEST_DIR}/try_cast_1.csv', columns = {'x': 'VARCHAR'}, header = false)
+
+query I
+SELECT v FROM w
+----
+1
+NULL
+2
+
+# a CAST still fails on the value
+statement error
+SELECT CAST(x AS INTEGER) AS v FROM read_csv('{TEST_DIR}/try_cast_1.csv', columns = {'x': 'VARCHAR'}, header = false)
+----
+Could not convert string "nope" to 'INTEGER'

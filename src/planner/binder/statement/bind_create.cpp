@@ -392,14 +392,16 @@ struct ViewParameterReplacer {
 			}
 			found = true;
 			if (replace) {
-				// as when a parameter is bound, a string stays a literal and any other value keeps its type, so an
-				// integer in ORDER BY or GROUP BY is no column index
+				// the constant keeps the type of the value, and a NULL string stays untyped as a bound parameter does
 				auto &data = entry->second;
-				auto constant = ConstantExpression::FromValue(data.GetValue());
-				auto type_id = data.return_type.id();
-				if (type_id != LogicalTypeId::STRING_LITERAL && type_id != LogicalTypeId::INTEGER_LITERAL &&
-				    type_id != LogicalTypeId::SQLNULL) {
-					constant = make_uniq<CastExpression>(data.return_type, std::move(constant));
+				auto &value = data.GetValue();
+				bool null_literal = value.IsNull() && data.return_type.id() == LogicalTypeId::STRING_LITERAL;
+				auto constant = ConstantExpression::FromValue(null_literal ? Value() : value);
+				auto type = value.type().id() == LogicalTypeId::INTEGER_LITERAL ? IntegerLiteral::GetType(value.type())
+				                                                                : value.type();
+				if (!null_literal && type.IsIntegral()) {
+					// an integer in ORDER BY or GROUP BY would be a column index
+					constant = make_uniq<CastExpression>(type, std::move(constant));
 				}
 				constant->SetAlias(expr->GetAlias());
 				expr = std::move(constant);

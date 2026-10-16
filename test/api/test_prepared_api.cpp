@@ -680,6 +680,22 @@ TEST_CASE("Prepared CREATE VIEW stores the values of its parameters", "[api]") {
 		REQUIRE_NO_FAIL(con.Query("CREATE VIEW dt AS SELECT DATE '2024-01-02' > ? AS c", "2024-01-01"));
 		result = con.Query("SELECT * FROM dt");
 		REQUIRE(CHECK_COLUMN(result, 0, {true}));
+		// an integer keeps its width, also one bound as an integer literal
+		REQUIRE_NO_FAIL(con.Query("CREATE VIEW w1 AS SELECT ? AS s, ? AS b", Value::SMALLINT(1), Value::BIGINT(2)));
+		result = con.Query("SELECT typeof(s), typeof(b) FROM w1");
+		REQUIRE(CHECK_COLUMN(result, 0, {"SMALLINT"}));
+		REQUIRE(CHECK_COLUMN(result, 1, {"BIGINT"}));
+		auto literal = con.Prepare("CREATE VIEW o2 AS SELECT a FROM (VALUES (2), (1)) t(a) ORDER BY ?");
+		identifier_map_t<BoundParameterData> literal_values;
+		literal_values[Identifier("1")] =
+		    BoundParameterData(Value::INTEGER(1), LogicalType::INTEGER_LITERAL(Value::INTEGER(1)));
+		REQUIRE_NO_FAIL(literal->Execute(literal_values));
+		result = con.Query("SELECT * FROM o2");
+		REQUIRE(CHECK_COLUMN(result, 0, {2, 1}));
+		// a NULL string stays an untyped NULL, as a bound parameter does
+		REQUIRE_NO_FAIL(con.Query("CREATE VIEW dn AS SELECT DATE '2024-01-02' > ? AS c", Value(LogicalType::VARCHAR)));
+		result = con.Query("SELECT * FROM dn");
+		REQUIRE(CHECK_COLUMN(result, 0, {Value()}));
 		// a NULL keeps its type from the query
 		REQUIRE_NO_FAIL(con.Query("CREATE VIEW n AS SELECT ?::INTEGER + 1 AS c", Value()));
 		result = con.Query("SELECT * FROM n");

@@ -128,7 +128,7 @@ bool MatchStack::ExecuteFrame(MatchStackFrame &frame) {
 		    !child->matcher.Cast<OptionalMatcher>().GetChildMatcher().first_set.MightMatch(child->state)) {
 			// what the optional's own process returns when its element fails
 			child->state.rule = child->matcher.GetRule();
-			frame.child_result = child->state.AllocateParseResult<OptionalParseResult>();
+			frame.child_result = child->state.EmptyOptionalResult();
 			return false;
 		}
 		if (!child->matcher.first_set.MightMatch(child->state)) {

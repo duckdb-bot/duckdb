@@ -64,4 +64,16 @@ ParseResultAllocator::ParseResultAllocator() : arena(Allocator::DefaultAllocator
 
 ParseResultAllocator::~ParseResultAllocator() = default;
 
+optional_ptr<ParseResult> ParseResultAllocator::EmptyOptional(optional_ptr<const CompiledGrammarRule> rule) {
+	auto &result = empty_optionals[rule.get()];
+	if (!result) {
+		result = Make<OptionalParseResult>();
+		if (rule) {
+			result->SetRule(*rule);
+			result->SetNameFrom(*rule);
+		}
+	}
+	return result;
+}
+
 } // namespace duckdb

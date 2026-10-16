@@ -413,6 +413,8 @@ struct TransformStackFrame {
 	arena_ptr<TransformResultValue> child_result;
 	//! How much this frame adds to the expression depth while it is on the stack
 	idx_t expression_depth_weight = 0;
+	//! Position of the process arena to restore when this frame is popped
+	ArenaAllocator::Position process_position;
 };
 
 #ifdef DEBUG
@@ -456,7 +458,8 @@ class PEGTransformer {
 public:
 	PEGTransformer(ArenaAllocator &allocator, TokenIterator &token_iterator, ParserOptions &options_p,
 	               const CompiledGrammar &grammar_p)
-	    : allocator(allocator), token_iterator(token_iterator), options(options_p), grammar(grammar_p) {
+	    : allocator(allocator), process_allocator(allocator.GetUnderlyingAllocator()), token_iterator(token_iterator),
+	      options(options_p), grammar(grammar_p) {
 	}
 
 	const CompiledGrammarRule &GetRule(const string &rule_name) const;
@@ -510,13 +513,14 @@ public:
 		return allocator.Make<T>(std::forward<Args>(args)...);
 	}
 
-	//! Transform processes live exactly as long as one transform run, so they are carved out of the same arena
+	//! A transform process lives as long as its frame on the transform stack, so processes get an arena of their own
+	//! that the stack rewinds as it pops their frames
 	template <class T, typename... Args>
 	arena_ptr<TransformProcess> MakeProcess(Args &&...args) {
-		return arena_ptr<TransformProcess>(allocator.Make<T>(std::forward<Args>(args)...));
+		return arena_ptr<TransformProcess>(process_allocator.Make<T>(std::forward<Args>(args)...));
 	}
 
-	//! The result a transformer hands back, carved out of the same arena
+	//! The result a transformer hands back outlives the frame of its process, so it comes from the transformer's arena
 	template <class T, typename... Args>
 	arena_ptr<TransformResultValue> MakeResult(Args &&...args) {
 		return arena_ptr<TransformResultValue>(allocator.Make<TypedTransformResult<T>>(std::forward<Args>(args)...));
@@ -524,6 +528,9 @@ public:
 
 	ArenaAllocator &GetAllocator() {
 		return allocator;
+	}
+	ArenaAllocator &GetProcessAllocator() {
+		return process_allocator;
 	}
 
 	void Clear();
@@ -568,6 +575,8 @@ private:
 
 public:
 	ArenaAllocator &allocator;
+	//! The arena of the transform processes, see MakeProcess
+	ArenaAllocator process_allocator;
 	TokenIterator &token_iterator;
 	identifier_map_t<idx_t> named_parameter_map;
 	idx_t prepared_statement_parameter_index = 0;

@@ -414,6 +414,7 @@ bool CoordinateReferenceSystem::TryParseWKT2(const string &text, CoordinateRefer
 
 		// TODO: Parse "ID" subnode to get the code
 		auto name = TryExtractIDFromWKTNode(transform_keyword);
+		result.identifier_is_id = !name.empty();
 		if (name.empty()) {
 			// Pick name as fallback instead of code
 			name = first_transform_child->As<WKTString>().GetValue();
@@ -438,6 +439,7 @@ bool CoordinateReferenceSystem::TryParseWKT2(const string &text, CoordinateRefer
 	}
 
 	auto name = TryExtractIDFromWKTNode(keyword);
+	result.identifier_is_id = !name.empty();
 	if (name.empty()) {
 		// Pick name as fallback
 		name = first->As<WKTString>().GetValue();
@@ -521,6 +523,7 @@ bool CoordinateReferenceSystem::TryParsePROJJSON(const string &text, CoordinateR
 		auto auth_val = id_val.GetMember("authority");
 		if (auth_val.IsString()) {
 			result.identifier = auth_val.GetString();
+			result.identifier_is_id = true;
 
 			auto code_val = id_val.GetMember("code");
 			if (code_val.IsInteger()) {
@@ -584,8 +587,8 @@ bool CoordinateReferenceSystem::TryParseAuthCode(const string &text, CoordinateR
 				// Valid AUTH:CODE
 				result.type = CoordinateReferenceSystemType::AUTH_CODE;
 				result.definition = string(beg, UnsafeNumericCast<size_t>(end - beg));
-				// the code is the identifier, so it equals a PROJJSON or WKT2 definition with the same id
 				result.identifier = result.definition;
+				result.identifier_is_id = true;
 				return true;
 			}
 			break;

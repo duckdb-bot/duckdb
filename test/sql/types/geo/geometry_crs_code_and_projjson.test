@@ -2,7 +2,7 @@
 # description: An AUTH:CODE CRS equals a PROJJSON or WKT2 CRS whose id is that code
 # group: [geo]
 
-require parquet
+load __TEST_DIR__/geometry_crs_code_and_projjson.db
 
 statement ok
 SET VARIABLE projjson = '{"type":"GeographicCRS","name":"WGS 84","id":{"authority":"EPSG","code":4326}}';
@@ -24,32 +24,16 @@ SELECT ST_AsText(g) FROM (SELECT ST_SetCRS('POINT(1 2)'::GEOMETRY, 'EPSG:4326') 
 POINT (1 2)
 POINT (3 4)
 
-# a table of either CRS takes a value of the other
-statement ok
-CREATE TABLE t (g GEOMETRY('{"type":"GeographicCRS","name":"WGS 84","id":{"authority":"EPSG","code":4326}}'));
-
-statement ok
-INSERT INTO t SELECT ST_SetCRS('POINT(1 2)'::GEOMETRY, 'EPSG:4326');
-
-statement ok
-CREATE TABLE crs84 (g GEOMETRY('OGC:CRS84'));
-
-statement ok
-INSERT INTO crs84 SELECT ST_SetCRS('POINT(3 4)'::GEOMETRY, '{"type":"GeographicCRS","name":"WGS 84 (CRS84)","id":{"authority":"OGC","code":"CRS84"}}');
-
-query II
-SELECT ST_AsText(t.g), ST_AsText(crs84.g) FROM t, crs84;
-----
-POINT (1 2)	POINT (3 4)
-
-# a GeoParquet file keeps the PROJJSON
-statement ok
-COPY (SELECT ST_SetCRS('POINT(1 2)'::GEOMETRY, getvariable('projjson')) AS g) TO '{TEST_DIR}/crs_code_and_projjson.parquet';
-
+# a code that no catalog knows, with a string code in the id
 query I
-SELECT [g, ST_SetCRS('POINT(3 4)'::GEOMETRY, 'EPSG:4326')]::VARCHAR[] FROM '{TEST_DIR}/crs_code_and_projjson.parquet';
+SELECT [ST_SetCRS('POINT(1 2)'::GEOMETRY, 'TEST:A1'), ST_SetCRS('POINT(3 4)'::GEOMETRY, '{"type":"GeographicCRS","name":"Test","id":{"authority":"TEST","code":"A1"}}')]::VARCHAR[];
 ----
 ['POINT (1 2)', 'POINT (3 4)']
+
+query I
+SELECT [ST_SetCRS('POINT(3 4)'::GEOMETRY, '{"type":"GeographicCRS","name":"Test","id":{"authority":"TEST","code":"A1"}}'), ST_SetCRS('POINT(1 2)'::GEOMETRY, 'TEST:A1')]::VARCHAR[];
+----
+['POINT (3 4)', 'POINT (1 2)']
 
 # a WKT2 definition with that id
 query I
@@ -57,13 +41,37 @@ SELECT len([ST_SetCRS('POINT(1 2)'::GEOMETRY, 'EPSG:4326'), ST_SetCRS('POINT(3 4
 ----
 2
 
-# a different code, or a PROJJSON without an id, still differs
+# a table of the PROJJSON CRS takes a value of the code, also after a restart
+statement ok
+CREATE TABLE t (g GEOMETRY('{"type":"GeographicCRS","name":"WGS 84","id":{"authority":"EPSG","code":4326}}'));
+
+statement ok
+INSERT INTO t SELECT ST_SetCRS('POINT(1 2)'::GEOMETRY, 'EPSG:4326');
+
+restart
+
+statement ok
+INSERT INTO t SELECT ST_SetCRS('POINT(3 4)'::GEOMETRY, 'EPSG:4326');
+
+query I
+SELECT ST_AsText(g) FROM t ORDER BY 1;
+----
+POINT (1 2)
+POINT (3 4)
+
+# a different code differs
 statement error
-SELECT [ST_SetCRS('POINT(1 2)'::GEOMETRY, 'EPSG:4269'), ST_SetCRS('POINT(3 4)'::GEOMETRY, getvariable('projjson'))];
+SELECT [ST_SetCRS('POINT(1 2)'::GEOMETRY, 'EPSG:4269'), ST_SetCRS('POINT(3 4)'::GEOMETRY, '{"type":"GeographicCRS","name":"WGS 84","id":{"authority":"EPSG","code":4326}}')];
+----
+Cannot cast GEOMETRY with CRS
+
+# a PROJJSON or WKT2 definition only named like the code, without an id, differs
+statement error
+SELECT [ST_SetCRS('POINT(1 2)'::GEOMETRY, 'EPSG:4326'), ST_SetCRS('POINT(3 4)'::GEOMETRY, '{"type":"GeographicCRS","name":"EPSG:4326"}')];
 ----
 Cannot cast GEOMETRY with CRS
 
 statement error
-SELECT [ST_SetCRS('POINT(1 2)'::GEOMETRY, 'EPSG:4326'), ST_SetCRS('POINT(3 4)'::GEOMETRY, '{"type":"GeographicCRS","name":"WGS 84"}')];
+SELECT [ST_SetCRS('POINT(1 2)'::GEOMETRY, 'EPSG:4326'), ST_SetCRS('POINT(3 4)'::GEOMETRY, 'GEOGCRS["EPSG:4326",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],CS[ellipsoidal,2],AXIS["latitude",north],AXIS["longitude",east]]')];
 ----
 Cannot cast GEOMETRY with CRS

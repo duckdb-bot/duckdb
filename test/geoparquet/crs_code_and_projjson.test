@@ -1,0 +1,18 @@
+# name: test/geoparquet/crs_code_and_projjson.test
+# description: A GeoParquet file keeps a PROJJSON CRS, which equals the AUTH:CODE CRS of its id
+# group: [geoparquet]
+
+require parquet
+
+statement ok
+COPY (SELECT ST_SetCRS('POINT(1 2)'::GEOMETRY, '{"type":"GeographicCRS","name":"WGS 84","id":{"authority":"EPSG","code":4326}}') AS g) TO '__TEST_DIR__/crs_code_and_projjson.parquet';
+
+query I
+SELECT ST_CRS(g) FROM '__TEST_DIR__/crs_code_and_projjson.parquet';
+----
+{"type":"GeographicCRS","name":"WGS 84","id":{"authority":"EPSG","code":4326}}
+
+query I
+SELECT [g, ST_SetCRS('POINT(3 4)'::GEOMETRY, 'EPSG:4326')]::VARCHAR[] FROM '__TEST_DIR__/crs_code_and_projjson.parquet';
+----
+['POINT (1 2)', 'POINT (3 4)']

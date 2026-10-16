@@ -76,7 +76,11 @@ public:
 	//! - Their type and full text definitions match, character-for-character
 	bool Equals(const CoordinateReferenceSystem &other) const {
 		// Whatever the definitions are, if the identifiers match we consider them equal
-		if (!identifier.empty() && identifier == other.identifier) {
+		// An AUTH:CODE only matches an id, not a CRS with that name
+		auto by_code =
+		    type == CoordinateReferenceSystemType::AUTH_CODE || other.type == CoordinateReferenceSystemType::AUTH_CODE;
+		if (!identifier.empty() && identifier == other.identifier &&
+		    (!by_code || (identifier_is_id && other.identifier_is_id))) {
 			return true;
 		}
 
@@ -131,6 +135,9 @@ private:
 	//! The identifier code of the coordinate reference system
 	//! This can usually be derived from the text definition, but is cached here for convenience
 	string identifier;
+
+	//! Whether the identifier is an AUTH:CODE id, and not the name of the coordinate reference system
+	bool identifier_is_id = false;
 };
 
 } // namespace duckdb

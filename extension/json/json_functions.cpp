@@ -385,7 +385,21 @@ static bool CastVarcharToJSONList(Vector &source, Vector &result, idx_t count, C
 		    size_t arr_idx, max;
 		    yyjson_val *val;
 		    yyjson_arr_foreach(doc->root, arr_idx, max, val) {
-			    result_jsons[current_size + arr_idx] = JSONCommon::WriteVal(val, alc);
+			    idx_t len;
+			    auto data = JSONCommon::WriteVal<yyjson_val>(val, alc, len);
+			    if (len > string_t::MAX_STRING_SIZE) {
+				    // an error of the cast, so that TRY_CAST gives NULL
+				    if (success) {
+					    HandleCastError::AssignError(
+					        StringUtil::Format("Cannot create a string of size: '%d', the maximum "
+					                           "supported string size is: '%d'",
+					                           len, string_t::MAX_STRING_SIZE),
+					        parameters);
+					    success = false;
+				    }
+				    return nullopt;
+			    }
+			    result_jsons[current_size + arr_idx] = string_t(data, UnsafeNumericCast<uint32_t>(len));
 		    }
 
 		    // Update size

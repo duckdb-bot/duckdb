@@ -345,6 +345,10 @@ LogicalType ArrowType::GetDuckType(bool use_dictionary) const {
 		// storage-side conversion, not by the output type.
 		return type;
 	}
+	if (RunEndEncoded()) {
+		// the type info holds the run ends and the values, not the children of this type
+		return type;
+	}
 	// Dictionaries can exist in arbitrarily nested schemas
 	// have to reconstruct the type
 	auto id = type.id();
@@ -367,6 +371,11 @@ LogicalType ArrowType::GetDuckType(bool use_dictionary) const {
 		auto &list_info = type_info->Cast<ArrowListInfo>();
 		auto &child = list_info.GetChild();
 		return LogicalType::LIST(child.GetDuckType(true));
+	}
+	case LogicalTypeId::ARRAY: {
+		auto &array_info = type_info->Cast<ArrowArrayInfo>();
+		auto &child = array_info.GetChild();
+		return LogicalType::ARRAY(child.GetDuckType(true), array_info.FixedSize());
 	}
 	case LogicalTypeId::MAP: {
 		auto &list_info = type_info->Cast<ArrowListInfo>();

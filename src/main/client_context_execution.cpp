@@ -241,6 +241,7 @@ unique_ptr<QueryResult> ClientContext::SubmitPreparedStatementInternal(
 		}
 		active_query->progress_bar =
 		    make_uniq<ProgressBar>(executor, NumericCast<idx_t>(config.wait_time), display_create_func);
+		active_query->progress_bar->SetQueryStart(active_query->start_time);
 		active_query->progress_bar->Start();
 		query_progress.Restart();
 	}

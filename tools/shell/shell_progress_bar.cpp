@@ -202,7 +202,7 @@ ShellProgressBarDisplay::ShellProgressBarDisplay() {
 }
 
 void ShellProgressBarDisplay::Finish() {
-	PrintProgressInternal(100, GetElapsedDuration(), true);
+	PrintProgressInternal(100, GetQueryDuration(), true);
 	Printer::Flush(OutputStream::STREAM_STDOUT);
 }
 
@@ -242,7 +242,7 @@ AgentProgressBarDisplay::AgentProgressBarDisplay() {
 }
 
 void AgentProgressBarDisplay::Finish() {
-	PrintProgressInternal(100, GetElapsedDuration(), true);
+	PrintProgressInternal(100, GetQueryDuration(), true);
 }
 
 void AgentProgressBarDisplay::PrintProgressInternal(int32_t percentage, double seconds, bool is_finished) {

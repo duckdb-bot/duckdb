@@ -437,6 +437,11 @@ public:
 		return result;
 	}
 
+	//! The stream of the caller is returned as it is
+	bool AppliesParameters() const override {
+		return false;
+	}
+
 private:
 	//! The caller retains ownership of the stream and its arrays.
 	duckdb::reference<ArrowArrayStream> stream;

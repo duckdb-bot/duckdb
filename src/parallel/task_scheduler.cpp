@@ -155,19 +155,6 @@ bool TaskScheduler::TryDequeueAndProcessTask(const DBConfig &config, TaskSchedul
 
 void TaskScheduler::ExecuteForever(atomic<bool> *marker, const TaskSchedulerType pool_type) {
 #ifndef DUCKDB_NO_THREADS
-	try {
-		ExecuteForeverInternal(marker, pool_type);
-	} catch (std::bad_alloc &) {
-		// out of memory for the bookkeeping of this thread, it stops and the other threads run the tasks
-	} catch (OutOfMemoryException &) {
-	}
-#else
-	throw NotImplementedException("DuckDB was compiled without threads! Background thread loop is not allowed.");
-#endif
-}
-
-void TaskScheduler::ExecuteForeverInternal(atomic<bool> *marker, const TaskSchedulerType pool_type) {
-#ifndef DUCKDB_NO_THREADS
 	static constexpr int64_t INITIAL_FLUSH_WAIT = 500000; // initial wait time of 0.5s (in mus) before flushing
 
 	const auto &block_allocator = BlockAllocator::Get(db);

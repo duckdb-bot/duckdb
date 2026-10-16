@@ -147,66 +147,105 @@ static void RequireLockError(const string &dbdir, DBConfig &config) {
 	REQUIRE_THROWS_WITH(db = make_uniq<DuckDB>(dbdir, &config), Catch::Contains("Could not set lock on file"));
 }
 
+//! Keeps a database open, as the main database of an instance or attached with memory-mapped IO
+static unique_ptr<DuckDB> OpenDatabase(const string &dbdir, bool read_only, bool mmap) {
+	auto config = SingleThreadConfig(read_only && !mmap);
+	if (!mmap) {
+		return make_uniq<DuckDB>(dbdir, config.get());
+	}
+	auto db = make_uniq<DuckDB>(nullptr, config.get());
+	Connection con(*db);
+	// a small reserve, as a writable mapping extends the file to it
+	REQUIRE_NO_FAIL(con.Query("ATTACH '" + dbdir + "' AS m (IO_MODE 'MMAP', " +
+	                          (read_only ? "READ_ONLY" : "MMAP_RESERVE_SIZE '1MB'") + ")"));
+	return db;
+}
+
 TEST_CASE("Test that another open of a database in the same process keeps its write lock", "[persistence]") {
 	string dbdir = TestCreatePath("samelocktest");
-	DeleteDatabase(dbdir);
 	auto config = SingleThreadConfig();
 	auto read_only_config = SingleThreadConfig(true);
-	{
-		DuckDB db(dbdir, config.get());
-		Connection con(db);
-		REQUIRE_NO_FAIL(con.Query("CREATE TABLE a AS SELECT 42 AS i"));
-		REQUIRE(OpenInChildProcess(dbdir) == 0);
+	for (auto mmap : {false, true}) {
+		DeleteDatabase(dbdir);
+		{ DuckDB db(dbdir, config.get()); }
+		{
+			auto db = OpenDatabase(dbdir, false, mmap);
+			REQUIRE(OpenInChildProcess(dbdir) == 0);
 
-		// another instance in this process conflicts with the lock, and reading the file to refuse it keeps the lock
-		RequireLockError(dbdir, *config);
-		RequireLockError(dbdir, *read_only_config);
-		REQUIRE(OpenInChildProcess(dbdir) == 0);
-		REQUIRE(OpenInChildProcess(dbdir, true) == 0);
+			// another instance in this process conflicts with the lock, and reading the file to refuse it keeps the
+			// lock
+			RequireLockError(dbdir, *config);
+			RequireLockError(dbdir, *read_only_config);
+			REQUIRE(OpenInChildProcess(dbdir) == 0);
+			REQUIRE(OpenInChildProcess(dbdir, true) == 0);
 
-		// a read of the file from this instance
-		REQUIRE_NO_FAIL(con.Query("SELECT octet_length(content) FROM read_blob('" + dbdir + "')"));
-		REQUIRE(OpenInChildProcess(dbdir) == 0);
-		REQUIRE_NO_FAIL(con.Query("SELECT i FROM a"));
-	}
-	// closing the database releases the lock
-	REQUIRE(OpenInChildProcess(dbdir) == 1);
-
-	// two read-only instances in this process, closed in either order
-	for (idx_t first = 0; first < 2; first++) {
-		auto a = make_uniq<DuckDB>(dbdir, read_only_config.get());
-		auto b = make_uniq<DuckDB>(dbdir, read_only_config.get());
-		RequireLockError(dbdir, *config);
-		(first == 0 ? a : b).reset();
-		REQUIRE(OpenInChildProcess(dbdir) == 0);
-		REQUIRE(OpenInChildProcess(dbdir, true) == 1);
-		a.reset();
-		b.reset();
+			// a read of the file from this instance
+			Connection con(*db);
+			REQUIRE_NO_FAIL(con.Query("SELECT octet_length(content) FROM read_blob('" + dbdir + "')"));
+			REQUIRE(OpenInChildProcess(dbdir) == 0);
+		}
+		// closing the database releases the lock
 		REQUIRE(OpenInChildProcess(dbdir) == 1);
+
+		// two read-only opens in this process, closed in either order
+		for (idx_t first = 0; first < 2; first++) {
+			auto a = OpenDatabase(dbdir, true, mmap);
+			auto b = OpenDatabase(dbdir, true, mmap);
+			RequireLockError(dbdir, *config);
+			(first == 0 ? a : b).reset();
+			REQUIRE(OpenInChildProcess(dbdir) == 0);
+			REQUIRE(OpenInChildProcess(dbdir, true) == 1);
+			a.reset();
+			b.reset();
+			REQUIRE(OpenInChildProcess(dbdir) == 1);
+		}
 	}
+}
+
+//! Starts a process with exec, and returns once the exec succeeded
+static pid_t StartSleepingProcess() {
+	int exec_pipe[2];
+	REQUIRE(pipe(exec_pipe) == 0);
+	REQUIRE(fcntl(exec_pipe[1], F_SETFD, FD_CLOEXEC) == 0);
+	pid_t pid = fork();
+	if (pid == 0) {
+		close(exec_pipe[0]);
+		execlp("sleep", "sleep", "60", static_cast<char *>(nullptr));
+		// the exec failed, report it through the pipe that the exec would have closed
+		char failed = 1;
+		if (write(exec_pipe[1], &failed, 1) != 1) {
+			_exit(3);
+		}
+		_exit(2);
+	}
+	close(exec_pipe[1]);
+	char failed = 0;
+	auto read_count = read(exec_pipe[0], &failed, 1);
+	close(exec_pipe[0]);
+	REQUIRE(pid > 0);
+	REQUIRE(read_count == 0);
+	return pid;
 }
 
 TEST_CASE("Test that a process started from DuckDB does not keep the database locked", "[persistence]") {
 	string dbdir = TestCreatePath("execlocktest");
 	DeleteDatabase(dbdir);
 	auto config = SingleThreadConfig();
-	auto read_only_config = SingleThreadConfig(true);
 	{ DuckDB db(dbdir, config.get()); }
-	for (auto open_config : {config.get(), read_only_config.get()}) {
-		auto db = make_uniq<DuckDB>(dbdir, open_config);
-		pid_t pid = fork();
-		if (pid == 0) {
-			execlp("sleep", "sleep", "60", static_cast<char *>(nullptr));
-			_exit(2);
+	for (auto mmap : {false, true}) {
+		for (auto read_only : {false, true}) {
+			auto db = OpenDatabase(dbdir, read_only, mmap);
+			auto pid = StartSleepingProcess();
+			db.reset();
+			// the database is no longer locked while the started process runs
+			auto result = OpenInChildProcess(dbdir);
+			int status = 0;
+			auto still_running = waitpid(pid, &status, WNOHANG) == 0;
+			kill(pid, SIGKILL);
+			waitpid(pid, &status, 0);
+			REQUIRE(still_running);
+			REQUIRE(result == 1);
 		}
-		REQUIRE(pid > 0);
-		db.reset();
-		// the database is no longer locked while the started process runs
-		auto result = OpenInChildProcess(dbdir);
-		kill(pid, SIGKILL);
-		int status = 0;
-		waitpid(pid, &status, 0);
-		REQUIRE(result == 1);
 	}
 }
 #endif

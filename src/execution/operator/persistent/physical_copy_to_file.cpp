@@ -5,6 +5,7 @@
 #include "duckdb/common/path.hpp"
 #include "duckdb/common/optional.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "utf8proc.hpp"
 #include "duckdb/common/sorting/sort_strategy.hpp"
 #include "duckdb/common/types/column/column_data_collection_segment.hpp"
 #include "duckdb/common/value_operations/value_operations.hpp"
@@ -132,9 +133,15 @@ private:
 	};
 
 private:
+	//! Throws if the existing directory is the directory of another path of this COPY that differs only in case
+	void CheckCaseCollision(FileSystem &fs, const string &dir_path);
+
+private:
 	mutex lock;
 	std::condition_variable condition;
 	unordered_map<string, DirectoryEntry> directories;
+	//! The directories under each of their case candidate keys
+	unordered_map<string, vector<string>> directories_ignoring_case;
 };
 
 class CopyOutputFileRegistry {
@@ -1736,6 +1743,47 @@ void CopyFileLifecycleExecutor::ThrowError() {
 //===--------------------------------------------------------------------===//
 // Copy File State Helpers
 //===--------------------------------------------------------------------===//
+//! Maps a path with utf8proc, throwing if it runs out of memory, and keeping a path that is not valid UTF-8
+static string MapUtf8Path(const string &path, utf8proc_option_t options) {
+	utf8proc_uint8_t *mapped_data = nullptr;
+	auto length = utf8proc_map(const_data_ptr_cast(path.c_str()), NumericCast<utf8proc_ssize_t>(path.size()),
+	                           &mapped_data, options);
+	if (length == UTF8PROC_ERROR_NOMEM) {
+		throw OutOfMemoryException("Failed to map the path \"%s\"", path);
+	}
+	if (length < 0) {
+		return path;
+	}
+	unique_ptr<utf8proc_uint8_t, decltype(&free)> mapped(mapped_data, &free);
+	return string(char_ptr_cast(mapped.get()), NumericCast<idx_t>(length));
+}
+
+static string UppercasePath(const string &path) {
+	string result;
+	auto data = const_data_ptr_cast(path.c_str());
+	auto size = NumericCast<utf8proc_ssize_t>(path.size());
+	for (utf8proc_ssize_t position = 0; position < size;) {
+		utf8proc_int32_t codepoint;
+		auto codepoint_length = utf8proc_iterate(data + position, size - position, &codepoint);
+		if (codepoint_length <= 0) {
+			return path;
+		}
+		position += codepoint_length;
+		utf8proc_uint8_t encoded[4];
+		auto encoded_length = utf8proc_encode_char(utf8proc_toupper(codepoint), encoded);
+		result.append(char_ptr_cast(encoded), NumericCast<idx_t>(encoded_length));
+	}
+	return result;
+}
+
+//! The keys that group paths for identity checks, one for file systems that normalize and fold names (as APFS
+//! does) and one for those that uppercase each character (as NTFS does)
+static vector<string> CaseCandidateKeys(const string &path) {
+	auto composed = MapUtf8Path(path, utf8proc_option_t(UTF8PROC_STABLE | UTF8PROC_COMPOSE));
+	auto folded = MapUtf8Path(composed, utf8proc_option_t(UTF8PROC_STABLE | UTF8PROC_COMPOSE | UTF8PROC_CASEFOLD));
+	return {"fold:" + folded, "upper:" + UppercasePath(path)};
+}
+
 bool CopyDirectoryManager::EnsureDirectory(FileSystem &fs, const string &dir_path) {
 #ifdef D_ASSERT_IS_ENABLED
 	bool created_entry = false;
@@ -1745,6 +1793,10 @@ bool CopyDirectoryManager::EnsureDirectory(FileSystem &fs, const string &dir_pat
 		while (true) {
 			auto entry = directories.find(dir_path);
 			if (entry == directories.end()) {
+				// registered first, so that a failure leaves no pending entry that nobody completes
+				for (auto &key : CaseCandidateKeys(dir_path)) {
+					directories_ignoring_case[key].push_back(dir_path);
+				}
 				directories.emplace(dir_path, DirectoryEntry());
 #ifdef D_ASSERT_IS_ENABLED
 				created_entry = true;
@@ -1766,6 +1818,9 @@ bool CopyDirectoryManager::EnsureDirectory(FileSystem &fs, const string &dir_pat
 	bool created = false;
 	try {
 		created = fs.CreateDirectoryExtended(dir_path, {CreateDirectoryMode::SINGLE});
+		if (!created) {
+			CheckCaseCollision(fs, dir_path);
+		}
 	} catch (...) {
 		error = std::current_exception();
 	}
@@ -1787,6 +1842,55 @@ bool CopyDirectoryManager::EnsureDirectory(FileSystem &fs, const string &dir_pat
 		std::rethrow_exception(error);
 	}
 	return created;
+}
+
+//! The device and file id of a directory, if the file system reports them
+static optional<pair<idx_t, idx_t>> DirectoryIdentity(FileSystem &fs, const string &path) {
+	optional<FileMetadata> metadata;
+	try {
+		metadata = fs.GetStatsIfExists(OpenFileInfo(path));
+	} catch (NotImplementedException &) {
+	} catch (IOException &) {
+	}
+	if (!metadata || !metadata->device_id.IsValid() || !metadata->file_id.IsValid()) {
+		return nullopt;
+	}
+	return make_pair(metadata->device_id.GetIndex(), metadata->file_id.GetIndex());
+}
+
+void CopyDirectoryManager::CheckCaseCollision(FileSystem &fs, const string &dir_path) {
+	if (FileSystem::IsRemoteFile(dir_path)) {
+		// an object store has no directories to compare
+		return;
+	}
+	vector<string> variants;
+	{
+		lock_guard<mutex> guard(lock);
+		for (auto &key : CaseCandidateKeys(dir_path)) {
+			for (auto &path : directories_ignoring_case[key]) {
+				if (path != dir_path && std::find(variants.begin(), variants.end(), path) == variants.end()) {
+					variants.push_back(path);
+				}
+			}
+		}
+	}
+	if (variants.empty()) {
+		return;
+	}
+	auto identity = DirectoryIdentity(fs, dir_path);
+	if (!identity) {
+		return;
+	}
+	for (auto &variant : variants) {
+		// a file system that ignores case finds the same directory under both names, created or not
+		auto variant_identity = DirectoryIdentity(fs, variant);
+		if (variant_identity && *variant_identity == *identity) {
+			throw InvalidInputException(
+			    "Partition directories \"%s\" and \"%s\" differ only in case, and this file system treats them as "
+			    "one directory, so the files of one partition would replace those of the other",
+			    variant, dir_path);
+		}
+	}
 }
 
 PendingFileState CopyOutputFileRegistry::ReserveFile(string output_path,

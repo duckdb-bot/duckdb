@@ -325,9 +325,9 @@ COPY multi_partitioned_test TO '{TEST_DIR}/multi_partitioned_test' (FORMAT PARQU
 <REGEX>:.*multi_partitioned_test.*partition_key=1.partition_key2=1.*[.]parquet	417	<REGEX>:\d+	<REGEX>:\d+	<REGEX>:{'"val"'={column_size_bytes=\d+, max=2497, max_is_exact=true, min=1, min_is_exact=true, null_count=0, num_values=417}}	{partition_key=1, partition_key2=1}	{row_group_count=1}
 <REGEX>:.*multi_partitioned_test.*partition_key=1.partition_key2=2.*[.]parquet	416	<REGEX>:\d+	<REGEX>:\d+	<REGEX>:{'"val"'={column_size_bytes=\d+, max=2495, max_is_exact=true, min=5, min_is_exact=true, null_count=0, num_values=416}}	{partition_key=1, partition_key2=2}	{row_group_count=1}
 
-# test all types
+# test all types, with hugeint and uhugeint within the 38 digits of DECIMAL(38,0)
 statement ok
-COPY (SELECT * EXCLUDE (empty_struct) FROM test_all_types()) TO '{TEST_DIR}/test_all_types.parquet' (RETURN_STATS);
+COPY (SELECT * EXCLUDE (empty_struct) REPLACE (hugeint // 10 AS hugeint, uhugeint // 10 AS uhugeint) FROM test_all_types()) TO '{TEST_DIR}/test_all_types.parquet' (RETURN_STATS);
 
 # unsupported format (CSV)
 statement error

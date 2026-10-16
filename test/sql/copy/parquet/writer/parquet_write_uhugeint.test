@@ -40,3 +40,37 @@ statement error
 COPY (SELECT 340282366920938463463374607431768211455::UHUGEINT AS h) TO '{TEST_DIR}/uhugeints_over.parquet' (FORMAT parquet);
 ----
 Could not write UHUGEINT value 340282366920938463463374607431768211455 to Parquet
+
+statement error
+COPY (SELECT 100000000000000000000000000000000000000::UHUGEINT AS h) TO '{TEST_DIR}/uhugeints_over.parquet' (FORMAT parquet);
+----
+Could not write UHUGEINT value 100000000000000000000000000000000000000 to Parquet
+
+# large values with a dictionary, statistics and a bloom filter in each row group
+statement ok
+COPY (SELECT (2 * (i % 256) + 10000000000000000000000000000000000000)::UHUGEINT AS h FROM range(8192) t(i)) TO '{TEST_DIR}/uhugeints_bloom.parquet' (FORMAT parquet, ROW_GROUP_SIZE 2048, BLOOM_FILTER_FALSE_POSITIVE_RATIO 0.0001);
+
+query III
+SELECT count(*), bool_and(encodings LIKE '%DICTIONARY%'), bool_and(bloom_filter_length > 1) FROM parquet_metadata('{TEST_DIR}/uhugeints_bloom.parquet')
+----
+4	true	true
+
+query II
+SELECT DISTINCT stats_min_value::UHUGEINT, stats_max_value::UHUGEINT FROM parquet_metadata('{TEST_DIR}/uhugeints_bloom.parquet')
+----
+10000000000000000000000000000000000000	10000000000000000000000000000000000510
+
+query I
+SELECT bool_and(NOT bloom_filter_excludes) FROM parquet_bloom_probe('{TEST_DIR}/uhugeints_bloom.parquet', 'h', 10000000000000000000000000000000000000::DECIMAL(38,0))
+----
+true
+
+query I
+SELECT bool_and(bloom_filter_excludes) FROM parquet_bloom_probe('{TEST_DIR}/uhugeints_bloom.parquet', 'h', 10000000000000000000000000000000000001::DECIMAL(38,0))
+----
+true
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/uhugeints_bloom.parquet' WHERE h = 10000000000000000000000000000000000001
+----
+0

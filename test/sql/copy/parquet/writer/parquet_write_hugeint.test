@@ -53,3 +53,42 @@ statement error
 COPY (SELECT '-170141183460469231731687303715884105728'::HUGEINT AS h) TO '{TEST_DIR}/hugeints_over.parquet' (FORMAT parquet);
 ----
 Could not write HUGEINT value -170141183460469231731687303715884105728 to Parquet
+
+statement error
+COPY (SELECT '-100000000000000000000000000000000000000'::HUGEINT AS h) TO '{TEST_DIR}/hugeints_over.parquet' (FORMAT parquet);
+----
+Could not write HUGEINT value -100000000000000000000000000000000000000 to Parquet
+
+# large negative values with a dictionary, statistics and a bloom filter in each row group
+statement ok
+COPY (SELECT (2 * (i % 256) - 10000000000000000000000000000000000000)::HUGEINT AS h FROM range(8192) t(i)) TO '{TEST_DIR}/hugeints_bloom.parquet' (FORMAT parquet, ROW_GROUP_SIZE 2048, BLOOM_FILTER_FALSE_POSITIVE_RATIO 0.0001);
+
+query III
+SELECT count(*), bool_and(encodings LIKE '%DICTIONARY%'), bool_and(bloom_filter_length > 1) FROM parquet_metadata('{TEST_DIR}/hugeints_bloom.parquet')
+----
+4	true	true
+
+query II
+SELECT DISTINCT stats_min_value::HUGEINT, stats_max_value::HUGEINT FROM parquet_metadata('{TEST_DIR}/hugeints_bloom.parquet')
+----
+-10000000000000000000000000000000000000	-9999999999999999999999999999999999490
+
+query I
+SELECT bool_and(NOT bloom_filter_excludes) FROM parquet_bloom_probe('{TEST_DIR}/hugeints_bloom.parquet', 'h', (-10000000000000000000000000000000000000)::DECIMAL(38,0))
+----
+true
+
+query I
+SELECT bool_and(bloom_filter_excludes) FROM parquet_bloom_probe('{TEST_DIR}/hugeints_bloom.parquet', 'h', (-9999999999999999999999999999999999999)::DECIMAL(38,0))
+----
+true
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/hugeints_bloom.parquet' WHERE h = -10000000000000000000000000000000000000
+----
+32
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/hugeints_bloom.parquet' WHERE h = -9999999999999999999999999999999999999
+----
+0

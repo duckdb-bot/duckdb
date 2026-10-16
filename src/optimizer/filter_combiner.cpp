@@ -29,6 +29,7 @@
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "utf8proc_wrapper.hpp"
 #include "duckdb/optimizer/in_clause_rewriter.hpp"
+#include "duckdb/optimizer/remove_duplicate_groups.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
 
 namespace duckdb {
@@ -156,7 +157,6 @@ void FilterCombiner::GenerateEquivalentFilters(const Expression &filter,
 	}
 }
 
-//! Whether the expression reads no column other than the given one, and does read it
 static bool ReadsOnlyColumn(const Expression &expr, const Expression &column) {
 	if (expr.Equals(column)) {
 		return true;
@@ -179,21 +179,8 @@ static bool ReadsOnlyColumn(const Expression &expr, const Expression &column) {
 	return reads_column && !reads_other;
 }
 
-//! A copy of the expression with the column replaced by another one
-static unique_ptr<Expression> ReplaceColumn(const Expression &expr, const Expression &column,
-                                            const Expression &replacement) {
-	if (expr.Equals(column)) {
-		return replacement.Copy();
-	}
-	auto result = expr.Copy();
-	ExpressionIterator::EnumerateChildren(
-	    *result, [&](unique_ptr<Expression> &child) { child = ReplaceColumn(*child, column, replacement); });
-	return result;
-}
-
 void FilterCombiner::AddNotDistinctFromConstants() {
-	// when a IS NOT DISTINCT FROM b, an expression of b that equals a constant that is not NULL gives the same
-	// constant for a, so the filter can also be pushed to the side of a
+	// a IS NOT DISTINCT FROM b and E(b) = c, for a constant c that is not NULL, give E(a) = c
 	bool added = true;
 	while (added) {
 		added = false;
@@ -211,10 +198,11 @@ void FilterCombiner::AddNotDistinctFromConstants() {
 			    left.GetReturnType() != right.GetReturnType()) {
 				continue;
 			}
+			// values that are equal but not identical, such as 0.0 and -0.0, can give different results for E
+			const bool identical_values = BaseTypeAllowsCollapse(left.GetReturnType());
 			for (auto &entry : equivalence_map) {
-				auto &constants = constant_values[entry.first];
 				optional_ptr<const Value> constant;
-				for (auto &info : constants) {
+				for (auto &info : constant_values[entry.first]) {
 					if (info.comparison_type == ExpressionType::COMPARE_EQUAL && !info.constant.IsNull()) {
 						constant = &info.constant;
 						break;
@@ -231,31 +219,33 @@ void FilterCombiner::AddNotDistinctFromConstants() {
 					for (idx_t side = 0; side < 2; side++) {
 						auto &source = side == 0 ? left : right;
 						auto &target = side == 0 ? right : left;
-						if (!ReadsOnlyColumn(expr, source)) {
+						if (!expr.Equals(source) && (!identical_values || !ReadsOnlyColumn(expr, source))) {
 							continue;
 						}
-						auto target_expr = ReplaceColumn(expr, source, target);
-						auto target_entry = equivalence_set_map.find(*target_expr);
-						if (target_entry != equivalence_set_map.end() &&
-						    !constant_values[target_entry->second].empty()) {
-							continue;
-						}
-						derived.emplace_back(std::move(target_expr), *constant);
+						derived.emplace_back(ExpressionIterator::ReplaceExpression(expr, source, target), *constant);
 					}
 				}
 			}
 		}
-		// the constant goes straight to the set of the expression, which has none, so it cannot conflict with others
 		for (auto &entry : derived) {
+			auto existing = equivalence_set_map.find(*entry.first);
+			if (existing != equivalence_set_map.end()) {
+				// the constant applies to every expression of the set, so each of them is filtered on it
+				bool can_add = constant_values[existing->second].empty();
+				for (auto &member : equivalence_map[existing->second]) {
+					can_add &= !member.get().IsVolatile() && !member.get().CanThrow();
+				}
+				if (!can_add) {
+					continue;
+				}
+			}
 			auto &node = GetNode(*entry.first);
 			auto &constants = constant_values[GetEquivalenceSet(node)];
-			if (constants.empty()) {
-				ExpressionValueInformation info;
-				info.comparison_type = ExpressionType::COMPARE_EQUAL;
-				info.constant = std::move(entry.second);
-				constants.push_back(std::move(info));
-				added = true;
-			}
+			ExpressionValueInformation info;
+			info.comparison_type = ExpressionType::COMPARE_EQUAL;
+			info.constant = std::move(entry.second);
+			constants.push_back(std::move(info));
+			added = true;
 		}
 	}
 }

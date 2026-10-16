@@ -74,3 +74,9 @@ query I
 SELECT count(*) FROM '{TEST_DIR}/uhugeints_bloom.parquet' WHERE h = 10000000000000000000000000000000000001
 ----
 0
+
+# the statistics of the file combine those of its row groups
+query IIIIIII
+COPY (SELECT CASE WHEN i < 2048 THEN 99999999999999999999999999999999999999 - i ELSE 9007199254740993 + i END::UHUGEINT AS h FROM range(4096) t(i)) TO '{TEST_DIR}/uhugeints_stats.parquet' (FORMAT PARQUET, ROW_GROUP_SIZE 2048, RETURN_STATS);
+----
+<REGEX>:.*uhugeints_stats.parquet	4096	<REGEX>:\d+	<REGEX>:\d+	<REGEX>:{'"h"'={column_size_bytes=\d+, max=99999999999999999999999999999999999999, max_is_exact=true, min=9007199254743041, min_is_exact=true, null_count=0, num_values=4096}}	NULL	{row_group_count=2}

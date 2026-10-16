@@ -926,7 +926,7 @@ static optional<uint64_t> ValueXXH64(const Value &constant, const ParquetColumnS
 			return ValueXH64FixedWidth<int64_t>(constant);
 		} else if (schema.parquet_type == duckdb_parquet::Type::FIXED_LEN_BYTE_ARRAY &&
 		           schema.type_length == sizeof(hugeint_t)) {
-			// hashed as the writer hashes HUGEINT, which a DECIMAL value always fits
+			// the unscaled value always fits DECIMAL(38,0), so it is hashed as the writer hashes HUGEINT
 			auto bytes =
 			    ParquetHugeintOperator::Operation<hugeint_t, ParquetHugeintTargetType>(IntegralValue::Get(constant));
 			return ParquetHugeintOperator::XXHash64<hugeint_t, ParquetHugeintTargetType>(bytes);

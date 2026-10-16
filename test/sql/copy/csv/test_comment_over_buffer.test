@@ -1,0 +1,56 @@
+# name: test/sql/copy/csv/test_comment_over_buffer.test
+# description: Comments in values and lines that cross a buffer end, at every buffer size
+# group: [csv]
+
+statement ok
+COPY (SELECT l FROM (VALUES (1, 'a,b'), (2, '0,'), (3, '2,xxxxxxxxxx#zz'), (4, '3,3')) t(i, l) ORDER BY i) TO '{TEST_DIR}/inline_comment.csv' (HEADER false, QUOTE '');
+
+statement ok
+COPY (SELECT l FROM (VALUES (1, 'a'), (2, '0'), (3, '1#x'), (4, '#line'), (5, '"xxxxxxxxxx"#zz'), (6, '2'), (7, '  #s'), (8, '3')) t(i, l) ORDER BY i) TO '{TEST_DIR}/single_column_comment.csv' (HEADER false, QUOTE '');
+
+statement ok
+COPY (SELECT l FROM (VALUES (1, 'a,b'), (2, '0,0'), (3, '#comment line'), (4, '1,#cc'), (5, '   #indented'), (6, '2,"q,q"#c'), (7, '#'), (8, '3,3')) t(i, l) ORDER BY i) TO '{TEST_DIR}/comment_lines_crlf.csv' (HEADER false, QUOTE '', NEW_LINE '\r\n');
+
+foreach parallel false true
+
+loop buffer_size 17 29
+
+query II
+SELECT a, b FROM read_csv('{TEST_DIR}/inline_comment.csv', header = true, auto_detect = false, columns = {'a': 'INTEGER', 'b': 'VARCHAR'}, comment = '#', buffer_size = {buffer_size}, parallel = {parallel});
+----
+0	NULL
+2	xxxxxxxxxx
+3	3
+
+query I
+SELECT a FROM read_csv('{TEST_DIR}/single_column_comment.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR'}, comment = '#', buffer_size = {buffer_size}, parallel = {parallel});
+----
+0
+1
+xxxxxxxxxx
+2
+3
+
+query II
+SELECT a, b FROM read_csv('{TEST_DIR}/comment_lines_crlf.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, comment = '#', new_line = '\r\n', buffer_size = {buffer_size}, parallel = {parallel});
+----
+0	0
+1	NULL
+2	q,q
+3	3
+
+endloop
+
+# a comment in the last value of a file without a final newline
+loop buffer_size 8 19
+
+query II
+SELECT a, b FROM read_csv('{DATA_DIR}/csv/comment_eof_no_newline.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, comment = '#', buffer_size = {buffer_size}, parallel = {parallel});
+----
+0	0
+1	1
+2	x
+
+endloop
+
+endloop

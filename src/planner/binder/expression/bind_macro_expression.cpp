@@ -14,6 +14,7 @@
 #include "duckdb/parser/expression/window_expression.hpp"
 #include "duckdb/parser/parsed_expression.hpp"
 #include "duckdb/parser/parsed_expression_iterator.hpp"
+#include "duckdb/parser/tableref/pivotref.hpp"
 #include "duckdb/planner/expression_binder.hpp"
 #include "duckdb/parser/expression/lambda_expression.hpp"
 
@@ -91,8 +92,7 @@ void ExpressionBinder::ReplaceMacroParameters(unique_ptr<ParsedExpression> &expr
 	}
 	case ExpressionClass::SUBQUERY: {
 		auto &sq = (expr->Cast<SubqueryExpression>()).Subquery();
-		ParsedExpressionIterator::EnumerateQueryNodeChildren(
-		    *sq->node, [&](unique_ptr<ParsedExpression> &child) { ReplaceMacroParameters(child, lambda_params); });
+		ReplaceMacroParametersInQuery(*sq->node, lambda_params);
 		break;
 	}
 	default:
@@ -101,6 +101,32 @@ void ExpressionBinder::ReplaceMacroParameters(unique_ptr<ParsedExpression> &expr
 
 	ParsedExpressionIterator::EnumerateChildren(
 	    *expr, [&](unique_ptr<ParsedExpression> &child) { ReplaceMacroParameters(child, lambda_params); });
+}
+
+void ExpressionBinder::ReplaceMacroParametersInQuery(QueryNode &node, vector<identifier_set_t> &lambda_params) {
+	ParsedExpressionIterator::EnumerateQueryNodeChildren(
+	    node, [&](unique_ptr<ParsedExpression> &child) { ReplaceMacroParameters(child, lambda_params); },
+	    [&](TableRef &ref) {
+		    // the iterator does not enumerate the ON clause of a PIVOT, as the values in a PIVOT IN list are no
+		    // expressions to bind, while the expressions it pivots on and the COLUMNS it unpivots are
+		    if (ref.type != TableReferenceType::PIVOT) {
+			    return;
+		    }
+		    auto &pivot = ref.Cast<PivotRef>();
+		    for (auto &column : pivot.pivots) {
+			    for (auto &pivot_expr : column.pivot_expressions) {
+				    ReplaceMacroParameters(pivot_expr, lambda_params);
+			    }
+			    if (pivot.unpivot_names.empty()) {
+				    continue;
+			    }
+			    for (auto &entry : column.entries) {
+				    if (entry.expr && entry.expr->GetExpressionClass() == ExpressionClass::STAR) {
+					    ReplaceMacroParameters(entry.expr, lambda_params);
+				    }
+			    }
+		    }
+	    });
 }
 
 // Find aggregate expression children

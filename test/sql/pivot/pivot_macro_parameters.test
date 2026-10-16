@@ -42,16 +42,22 @@ SELECT first_sum('_x');
 ----
 1
 
-# a name of a parameter is the parameter also where the source has a column of that name, as elsewhere in a macro,
-# so that column groups the rows
+# the values of a PIVOT IN list are values, also where they are named like a parameter
 statement ok
-CREATE TABLE t3 AS SELECT * FROM (VALUES ('a', 'x', 1), ('b', 'y', 2)) v(k, sfx, i);
+CREATE TABLE t4 AS SELECT 'a' AS k, 1 AS n, 42 AS v;
 
 statement ok
-CREATE MACRO piv_shadow(sfx) AS TABLE PIVOT t3 ON (k || sfx) IN ('a_z', 'b_z') USING sum(i);
+CREATE MACRO in_list(a) AS (SELECT * FROM t4 PIVOT (sum(v) FOR (k, n) IN ((a, 1))));
 
-query III
-FROM piv_shadow('_z') ORDER BY sfx;
+query I
+SELECT in_list('ignored');
 ----
-x	1	NULL
-y	NULL	2
+42
+
+statement ok
+CREATE MACRO in_list_table(a) AS TABLE SELECT * FROM t4 PIVOT (sum(v) FOR (k, n) IN ((a, 1)));
+
+query I
+FROM in_list_table('ignored');
+----
+42

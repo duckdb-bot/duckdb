@@ -39,3 +39,32 @@ query I
 EXECUTE s6(123);
 ----
 1
+
+# a nested CTE of the same name shadows the one with the parameter, and an unused nested CTE is not read
+statement ok
+PREPARE s7 AS WITH q AS (SELECT $1 AS a), src AS (WITH q AS (SELECT 1 AS a) SELECT * FROM q) PIVOT src ON a;
+
+query I
+EXECUTE s7(5);
+----
+1
+
+statement ok
+PREPARE s8 AS WITH q AS (WITH unused AS (SELECT $1 AS a) SELECT 1 AS a) PIVOT q ON a;
+
+query I
+EXECUTE s8(5);
+----
+1
+
+# a parameter in the UNPIVOT of a CTE
+statement error
+PREPARE s9 AS WITH q AS (UNPIVOT (SELECT 1 AS a) ON a + $1) PIVOT q ON value;
+----
+cannot have parameters in their source
+
+# a recursive CTE with a parameter in its step
+statement error
+PREPARE s10 AS WITH RECURSIVE q AS (SELECT 1 AS a UNION ALL SELECT a + $1 FROM q WHERE a < 3) PIVOT q ON a;
+----
+cannot have parameters in their source

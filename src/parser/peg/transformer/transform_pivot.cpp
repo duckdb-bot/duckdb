@@ -6,6 +6,13 @@
 #include "duckdb/common/types/uuid.hpp"
 #include "duckdb/parser/expression/operator_expression.hpp"
 #include "duckdb/parser/tableref/basetableref.hpp"
+#include "duckdb/parser/query_node/recursive_cte_node.hpp"
+#include "duckdb/parser/query_node/set_operation_node.hpp"
+#include "duckdb/parser/tableref/expressionlistref.hpp"
+#include "duckdb/parser/tableref/table_function_ref.hpp"
+#include "duckdb/parser/tableref/pivotref.hpp"
+#include "duckdb/parser/tableref/subqueryref.hpp"
+#include "duckdb/parser/tableref/joinref.hpp"
 #include "duckdb/parser/expression/subquery_expression.hpp"
 #include "duckdb/parser/parsed_expression_iterator.hpp"
 
@@ -13,12 +20,9 @@ namespace duckdb {
 
 //! Finds a parameter in a PIVOT source, also in the CTEs it reads, which the query of the pivot values copies
 struct PivotSourceParameterFinder {
-	explicit PivotSourceParameterFinder(PEGTransformer &transformer) {
-		transformer.ExtractCTEsRecursive(ctes);
-	}
-
-	CommonTableExpressionMap ctes;
-	identifier_set_t visited_ctes;
+	//! the CTEs in scope, the innermost last
+	vector<reference<CommonTableExpressionMap>> scopes;
+	unordered_set<const CommonTableExpressionInfo *> visited_ctes;
 	bool found = false;
 
 	void Visit(unique_ptr<ParsedExpression> &expr) {
@@ -32,34 +36,122 @@ struct PivotSourceParameterFinder {
 		ParsedExpressionIterator::EnumerateChildren(*expr, [&](unique_ptr<ParsedExpression> &child) { Visit(child); });
 	}
 
+	void Visit(vector<unique_ptr<ParsedExpression>> &expressions) {
+		for (auto &expr : expressions) {
+			Visit(expr);
+		}
+	}
+
+	//! the bodies of the CTEs of a node are only visited when they are read
 	void Visit(QueryNode &node) {
-		ParsedExpressionIterator::EnumerateQueryNodeChildren(
-		    node, [&](unique_ptr<ParsedExpression> &child) { Visit(child); }, [&](TableRef &ref) { VisitCTE(ref); });
+		scopes.push_back(node.cte_map);
+		switch (node.type) {
+		case QueryNodeType::SELECT_NODE: {
+			auto &select = node.Cast<SelectNode>();
+			Visit(select.select_list);
+			Visit(select.groups.group_expressions);
+			for (auto expr : {&select.where_clause, &select.having, &select.qualify}) {
+				if (*expr) {
+					Visit(*expr);
+				}
+			}
+			if (select.from_table) {
+				Visit(*select.from_table);
+			}
+			break;
+		}
+		case QueryNodeType::SET_OPERATION_NODE:
+			for (auto &child : node.Cast<SetOperationNode>().children) {
+				Visit(*child);
+			}
+			break;
+		case QueryNodeType::RECURSIVE_CTE_NODE:
+			Visit(*node.Cast<RecursiveCTENode>().left);
+			Visit(*node.Cast<RecursiveCTENode>().right);
+			break;
+		default:
+			// other nodes cannot be the source of a PIVOT
+			break;
+		}
+		ParsedExpressionIterator::EnumerateQueryNodeModifiers(
+		    node, [&](unique_ptr<ParsedExpression> &child) { Visit(child); });
+		scopes.pop_back();
 	}
 
 	void Visit(TableRef &ref) {
-		ParsedExpressionIterator::EnumerateTableRefChildren(
-		    ref, [&](unique_ptr<ParsedExpression> &child) { Visit(child); }, [&](TableRef &child) { VisitCTE(child); });
+		switch (ref.type) {
+		case TableReferenceType::BASE_TABLE:
+			VisitCTE(ref.Cast<BaseTableRef>());
+			break;
+		case TableReferenceType::JOIN: {
+			auto &join = ref.Cast<JoinRef>();
+			Visit(*join.left);
+			Visit(*join.right);
+			if (join.condition) {
+				Visit(join.condition);
+			}
+			break;
+		}
+		case TableReferenceType::SUBQUERY:
+			Visit(*ref.Cast<SubqueryRef>().subquery->node);
+			break;
+		case TableReferenceType::PIVOT: {
+			auto &pivot = ref.Cast<PivotRef>();
+			Visit(*pivot.source);
+			Visit(pivot.aggregates);
+			for (auto &column : pivot.pivots) {
+				Visit(column.pivot_expressions);
+				for (auto &entry : column.entries) {
+					if (entry.expr) {
+						Visit(entry.expr);
+					}
+				}
+			}
+			break;
+		}
+		case TableReferenceType::TABLE_FUNCTION:
+			Visit(ref.Cast<TableFunctionRef>().function);
+			break;
+		case TableReferenceType::EXPRESSION_LIST:
+			for (auto &row : ref.Cast<ExpressionListRef>().values) {
+				Visit(row);
+			}
+			break;
+		default:
+			break;
+		}
 	}
 
-	void VisitCTE(TableRef &ref) {
-		if (ref.type != TableReferenceType::BASE_TABLE) {
-			return;
-		}
-		auto &name = ref.Cast<BaseTableRef>().GetQualifiedName();
+	//! visits the CTE a table name reads, with the CTEs in scope where it is defined
+	void VisitCTE(BaseTableRef &ref) {
+		auto &name = ref.GetQualifiedName();
 		if (!name.Catalog().empty() || !name.Schema().empty()) {
 			return;
 		}
-		auto entry = ctes.map.find(name.Name());
-		if (entry == ctes.map.end() || !visited_ctes.insert(name.Name()).second || !entry->second->query_node) {
+		for (idx_t i = scopes.size(); i > 0; i--) {
+			auto &ctes = scopes[i - 1].get();
+			auto entry = ctes.map.find(name.Name());
+			if (entry == ctes.map.end()) {
+				continue;
+			}
+			auto &cte = *entry->second;
+			if (!visited_ctes.insert(&cte).second || !cte.query_node) {
+				return;
+			}
+			auto outer_scopes = scopes;
+			scopes.erase(scopes.begin() + NumericCast<int64_t>(i), scopes.end());
+			Visit(*cte.query_node);
+			scopes = std::move(outer_scopes);
 			return;
 		}
-		Visit(*entry->second->query_node);
 	}
 };
 
 static bool SourceHasParameter(PEGTransformer &transformer, TableRef &source) {
-	PivotSourceParameterFinder finder(transformer);
+	CommonTableExpressionMap ctes;
+	transformer.ExtractCTEsRecursive(ctes);
+	PivotSourceParameterFinder finder;
+	finder.scopes.push_back(ctes);
 	finder.Visit(source);
 	return finder.found;
 }
@@ -294,7 +386,7 @@ PEGTransformerFactory::FinalizeUnpivotStatementTrampoline(PEGTransformer &transf
 		return nullptr;
 	}
 	auto source = process.TakeResult<unique_ptr<TableRef>>(0);
-	auto has_parameters = process.TakeResult<bool>(3) || SourceHasParameter(transformer, *source);
+	auto has_parameters = process.TakeResult<bool>(3);
 	auto target_list = process.TakeResult<vector<unique_ptr<ParsedExpression>>>(1);
 	auto &unpivot_names_opt = list_pr.Child<OptionalParseResult>(4);
 	vector<PivotColumn> columns;

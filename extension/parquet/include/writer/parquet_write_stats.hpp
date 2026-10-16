@@ -241,7 +241,6 @@ struct ParquetHugeintTargetType {
 	static constexpr const idx_t PARQUET_HUGEINT_SIZE = 16;
 	data_t bytes[PARQUET_HUGEINT_SIZE];
 
-	//! Whether this value is smaller than the other one
 	bool LessThan(const ParquetHugeintTargetType &other) const {
 		// the first byte holds the sign, the bytes after it compare as unsigned
 		if (bytes[0] != other.bytes[0]) {

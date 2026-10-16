@@ -361,8 +361,7 @@ struct ParquetTimeTZOperator : public BaseParquetOperator {
 	}
 };
 
-//! Writes HUGEINT and UHUGEINT as DECIMAL(38,0), as the Arrow conversion does, and refuses the values that need more
-//! digits
+//! Writes HUGEINT and UHUGEINT as DECIMAL(38,0), and refuses the values that need more digits
 struct ParquetHugeintOperator : public BaseParquetOperator {
 	static hugeint_t ToDecimal(hugeint_t input) {
 		if (input >= Hugeint::POWERS_OF_TEN[38] || input <= -Hugeint::POWERS_OF_TEN[38]) {

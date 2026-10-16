@@ -1502,8 +1502,10 @@ void ArrowToDuckDBConversion::ColumnArrowToDuckDBDictionary(Vector &vector, Arro
 		// dict_length. Re-extend before sizing so the sentinel slot stays in bounds.
 		base_vector->Reserve(dict_length + 1);
 		FlatVector::SetSize(*base_vector, count_t(dict_length + 1));
-		// a union reads its tag, so the sentinel is set NULL in its children too
-		base_vector->SetValue(dict_length, Value());
+		if (base_vector->GetType().id() == LogicalTypeId::UNION) {
+			// union functions read the tag, so the sentinel is NULL in the tag and the members too
+			FlatVector::SetNull(*base_vector, dict_length, true);
+		}
 		array_state.AddDictionary(std::move(base_vector), array.dictionary);
 	}
 	auto offset_type = arrow_type.GetDuckType();

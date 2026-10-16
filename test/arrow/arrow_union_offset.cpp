@@ -102,7 +102,6 @@ struct UnionColumn {
 	ArrowArray array {};
 };
 
-//! Compares the scan of the column, or the projection over it when given, with the query
 bool ScanMatches(ArrowSchema &col_schema, ArrowArray &col_array, const string &query,
                  const string &projection = string()) {
 	ArrowSchema *schema_children[1] = {&col_schema};
@@ -163,8 +162,9 @@ TEST_CASE("Arrow scan of a dictionary of unions with a NULL index", "[arrow]") {
 	// a NULL union has no tag and no member value
 	REQUIRE(arrow_union_offset_test::ScanMatches(
 	    schema, array,
-	    "SELECT * FROM (VALUES ('101', 'i'), ('10', 'd'), (NULL, NULL), ('30', 'd'), ('101', 'i')) t(v, tag)",
-	    "u::VARCHAR AS v, union_tag(u)::VARCHAR AS tag"));
+	    "SELECT * FROM (VALUES ('101', 'i', NULL, 101), ('10', 'd', 10, NULL), (NULL, NULL, NULL, NULL), "
+	    "('30', 'd', 30, NULL), ('101', 'i', NULL, 101)) t(v, tag, d, i)",
+	    "u::VARCHAR AS v, union_tag(u)::VARCHAR AS tag, union_extract(u, 'd') AS d, union_extract(u, 'i') AS i"));
 }
 
 TEST_CASE("Arrow scan of a sparse union with a nonzero offset", "[arrow]") {

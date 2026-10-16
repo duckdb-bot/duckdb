@@ -218,9 +218,8 @@ static void BakeTableName(ParsedExpression &root_expr, const BindingAlias &bindi
 		D_ASSERT(!colref.IsQualified());
 		auto &col_names = colref.ColumnNamesMutable();
 		col_names.insert(col_names.begin(), binding_alias.GetAlias());
-		if (!binding_alias.GetSchema().empty()) {
-			col_names.insert(col_names.begin(), binding_alias.GetSchema());
-		}
+		auto schema_path = binding_alias.GetSchemaPath();
+		col_names.insert(col_names.begin(), schema_path.begin(), schema_path.end());
 		if (!binding_alias.GetCatalog().empty()) {
 			col_names.insert(col_names.begin(), binding_alias.GetCatalog());
 		}
@@ -246,6 +245,21 @@ unique_ptr<ParsedExpression> TableBinding::ExpandGeneratedColumn(const Identifie
 	ReplaceAliases(*expression, table_entry.GetColumns(), alias_map);
 	BakeTableName(*expression, alias);
 	return (expression);
+}
+
+unique_ptr<ParsedExpression> TableBinding::GetRowIdColumn() {
+	auto entry = virtual_columns.find(COLUMN_IDENTIFIER_ROW_ID);
+	if (entry == virtual_columns.end()) {
+		return nullptr;
+	}
+	column_t column_index;
+	if (!TryGetBindingIndex(entry->second.name, column_index) || column_index != COLUMN_IDENTIFIER_ROW_ID) {
+		// the row id is shadowed by a regular column
+		return nullptr;
+	}
+	auto result = make_uniq<ColumnRefExpression>(entry->second.name);
+	BakeTableName(*result, alias);
+	return std::move(result);
 }
 
 const vector<ColumnIndex> &TableBinding::GetBoundColumnIds() const {

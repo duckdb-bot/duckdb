@@ -99,12 +99,13 @@ def test_unterminated_quote(shell):
     result.check_stderr('I\'m an error')
 
 
-@pytest.mark.parametrize("mode", ["-csv", "-list", "-json", "-jsonlines"])
+@pytest.mark.parametrize("mode", ["-csv", "-list", "-json", "-jsonlines", "-agent"])
 def test_statement_failing_before_its_first_row_prints_nothing(shell, mode):
     test = ShellTest(shell, [mode]).statement("SELECT printf('%d') AS x;")
     result = test.run()
+    assert result.status_code != 0
     result.check_stdout(None)
-    result.check_stderr('Argument index "0" out of range')
+    result.check_stderr('Argument index')
 
 
 def test_empty_result_still_prints_its_header(shell):

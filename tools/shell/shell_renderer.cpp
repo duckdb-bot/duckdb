@@ -271,18 +271,16 @@ SuccessState ShellState::RenderPreparedResult(ShellRenderer &renderer, Rendering
 }
 
 SuccessState ShellRenderer::RenderQueryResult(PrintStream &out, ShellState &state, RenderingQueryResult &result) {
-	// the first rows are fetched before the header, so a query that fails before its first row prints nothing
-	auto row = result.begin();
-	if (!(row != result.end()) && result.HasError()) {
+	if (result.FailedBeforeFirstRow()) {
 		return SuccessState::FAILURE;
 	}
 	RenderHeader(out, result.metadata);
-	for (; row != result.end(); ++row) {
+	for (auto &row_data : result) {
 		if (state.seenInterrupt) {
 			state.PrintF("Interrupt\n");
 			return SuccessState::FAILURE;
 		}
-		RenderRow(out, result.metadata, *row);
+		RenderRow(out, result.metadata, row_data);
 	}
 	if (result.HasError()) {
 		// the query failed while streaming - the caller reports it, no footer
@@ -392,6 +390,13 @@ void RenderingQueryResult::Drain(ShellState &state) {
 			exhausted_result = true;
 		}
 	}
+}
+
+bool RenderingQueryResult::FailedBeforeFirstRow() {
+	if (loaded_row_count == 0) {
+		TryConvertChunk();
+	}
+	return loaded_row_count == 0 && HasError();
 }
 
 bool RenderingQueryResult::TryConvertChunk() {
@@ -623,6 +628,9 @@ public:
 	SuccessState RenderQueryResult(PrintStream &out, ShellState &state, RenderingQueryResult &result) override {
 		if (!compact) {
 			return ColumnRenderer::RenderQueryResult(out, state, result);
+		}
+		if (result.FailedBeforeFirstRow()) {
+			return SuccessState::FAILURE;
 		}
 		RenderHeader(out, result.metadata);
 		// the rows are buffered up to the cap (at most max_rows / max_bytes, which is small) so that a result that

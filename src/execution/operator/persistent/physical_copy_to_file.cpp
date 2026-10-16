@@ -140,7 +140,7 @@ private:
 	mutex lock;
 	std::condition_variable condition;
 	unordered_map<string, DirectoryEntry> directories;
-	//! The directories under each case candidate key
+	//! The directories under each of their case candidate keys
 	unordered_map<string, vector<string>> directories_ignoring_case;
 };
 
@@ -1758,27 +1758,30 @@ static string MapUtf8Path(const string &path, utf8proc_option_t options) {
 	return string(char_ptr_cast(mapped.get()), NumericCast<idx_t>(length));
 }
 
-//! Groups paths for identity checks on file systems that fold or uppercase names
-static string CaseCandidateKey(const string &path) {
-	// composed first, as folding can change a combining mark before it is put in order
-	auto composed = MapUtf8Path(path, utf8proc_option_t(UTF8PROC_STABLE | UTF8PROC_COMPOSE));
-	auto folded = MapUtf8Path(composed, utf8proc_option_t(UTF8PROC_STABLE | UTF8PROC_COMPOSE | UTF8PROC_CASEFOLD));
-	string uppercase;
-	auto data = const_data_ptr_cast(folded.c_str());
-	auto size = NumericCast<utf8proc_ssize_t>(folded.size());
+static string UppercasePath(const string &path) {
+	string result;
+	auto data = const_data_ptr_cast(path.c_str());
+	auto size = NumericCast<utf8proc_ssize_t>(path.size());
 	for (utf8proc_ssize_t position = 0; position < size;) {
 		utf8proc_int32_t codepoint;
 		auto codepoint_length = utf8proc_iterate(data + position, size - position, &codepoint);
 		if (codepoint_length <= 0) {
-			return folded;
+			return path;
 		}
 		position += codepoint_length;
 		utf8proc_uint8_t encoded[4];
 		auto encoded_length = utf8proc_encode_char(utf8proc_toupper(codepoint), encoded);
-		uppercase.append(char_ptr_cast(encoded), NumericCast<idx_t>(encoded_length));
+		result.append(char_ptr_cast(encoded), NumericCast<idx_t>(encoded_length));
 	}
-	// uppercasing can leave a letter and an accent that compose
-	return MapUtf8Path(uppercase, utf8proc_option_t(UTF8PROC_STABLE | UTF8PROC_COMPOSE));
+	return result;
+}
+
+//! The keys that group paths for identity checks, one for file systems that normalize and fold names (as APFS
+//! does) and one for those that uppercase each character (as NTFS does)
+static vector<string> CaseCandidateKeys(const string &path) {
+	auto composed = MapUtf8Path(path, utf8proc_option_t(UTF8PROC_STABLE | UTF8PROC_COMPOSE));
+	auto folded = MapUtf8Path(composed, utf8proc_option_t(UTF8PROC_STABLE | UTF8PROC_COMPOSE | UTF8PROC_CASEFOLD));
+	return {"fold:" + folded, "upper:" + UppercasePath(path)};
 }
 
 bool CopyDirectoryManager::EnsureDirectory(FileSystem &fs, const string &dir_path) {
@@ -1791,7 +1794,9 @@ bool CopyDirectoryManager::EnsureDirectory(FileSystem &fs, const string &dir_pat
 			auto entry = directories.find(dir_path);
 			if (entry == directories.end()) {
 				// registered first, so that a failure leaves no pending entry that nobody completes
-				directories_ignoring_case[CaseCandidateKey(dir_path)].push_back(dir_path);
+				for (auto &key : CaseCandidateKeys(dir_path)) {
+					directories_ignoring_case[key].push_back(dir_path);
+				}
 				directories.emplace(dir_path, DirectoryEntry());
 #ifdef D_ASSERT_IS_ENABLED
 				created_entry = true;
@@ -1861,9 +1866,11 @@ void CopyDirectoryManager::CheckCaseCollision(FileSystem &fs, const string &dir_
 	vector<string> variants;
 	{
 		lock_guard<mutex> guard(lock);
-		for (auto &path : directories_ignoring_case[CaseCandidateKey(dir_path)]) {
-			if (path != dir_path) {
-				variants.push_back(path);
+		for (auto &key : CaseCandidateKeys(dir_path)) {
+			for (auto &path : directories_ignoring_case[key]) {
+				if (path != dir_path && std::find(variants.begin(), variants.end(), path) == variants.end()) {
+					variants.push_back(path);
+				}
 			}
 		}
 	}

@@ -211,6 +211,8 @@ TEST_CASE("COPY with PARTITION_BY refuses partitions that a file system ignoring
 			// equal when uppercased, but not when folded
 			collisions.push_back(partition_path_copy("('\xC4\xB1', 1), ('I', 2)"));
 			collisions.push_back(partition_path_copy("('\xC4\xB1\xCC\x81', 1), ('I\xCC\x81', 2)"));
+			collisions.push_back(
+			    partition_path_copy("('\xCE\xB1\xCD\x85\xCC\x81', 1), ('\xCE\x91\xCE\x99\xCC\x81', 2)"));
 		}
 		for (auto &query : collisions) {
 			RequireCaseCollision(con, query);

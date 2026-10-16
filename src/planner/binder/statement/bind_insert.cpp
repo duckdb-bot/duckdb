@@ -33,6 +33,10 @@
 #include "duckdb/parser/tableref/basetableref.hpp"
 #include "duckdb/parser/tableref/emptytableref.hpp"
 #include "duckdb/parser/tableref/subqueryref.hpp"
+#include "duckdb/parser/constraints/not_null_constraint.hpp"
+#include "duckdb/parser/query_node/set_operation_node.hpp"
+#include "duckdb/parser/common_table_expression_info.hpp"
+#include "duckdb/parser/expression/operator_expression.hpp"
 #include "duckdb/parser/expression/lambda_expression.hpp"
 
 namespace duckdb {
@@ -342,6 +346,32 @@ static identifier_set_t GetConflictColumnNames(const TableStorageInfo &storage_i
 	return conflict_column_names;
 }
 
+static bool IsNotNull(const TableCatalogEntry &table, const Identifier &column_name) {
+	auto column_index = table.GetColumns().GetColumn(column_name).Logical();
+	for (auto &constraint : table.GetConstraints()) {
+		if (constraint->type == ConstraintType::NOT_NULL &&
+		    constraint->Cast<NotNullConstraint>().index == column_index) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static unique_ptr<SelectNode> SelectStarFrom(unique_ptr<TableRef> from_table) {
+	auto select_node = make_uniq<SelectNode>();
+	select_node->select_list.push_back(make_uniq<StarExpression>());
+	select_node->from_table = std::move(from_table);
+	return select_node;
+}
+
+static unique_ptr<SelectNode> SelectStarFromCTE(const Identifier &cte_name, unique_ptr<ParsedExpression> filter) {
+	auto cte_ref = make_uniq<BaseTableRef>();
+	cte_ref->SetTable(cte_name);
+	auto select_node = SelectStarFrom(std::move(cte_ref));
+	select_node->where_clause = std::move(filter);
+	return select_node;
+}
+
 unique_ptr<MergeIntoStatement> Binder::GenerateMergeInto(InsertQueryNode &node, TableCatalogEntry &table) {
 	D_ASSERT(node.on_conflict_info);
 
@@ -536,17 +566,45 @@ unique_ptr<MergeIntoStatement> Binder::GenerateMergeInto(InsertQueryNode &node, 
 		}
 	}
 	// push DISTINCT ON(unique_columns)
-	for (auto &distinct_on_columns : all_distinct_on_columns) {
-		auto distinct_stmt = make_uniq<SelectStatement>();
-		auto select_node = make_uniq<SelectNode>();
+	for (idx_t i = 0; i < all_distinct_on_columns.size(); i++) {
 		auto distinct = make_uniq<DistinctModifier>();
-		for (auto &col : distinct_on_columns) {
+		vector<unique_ptr<ParsedExpression>> null_checks;
+		for (auto &col : all_distinct_on_columns[i]) {
 			distinct->distinct_on_targets.push_back(make_uniq<ColumnRefExpression>(col));
+			if (!IsNotNull(table, col)) {
+				null_checks.push_back(make_uniq<OperatorExpression>(ExpressionType::OPERATOR_IS_NULL,
+				                                                    make_uniq<ColumnRefExpression>(col)));
+			}
 		}
-		select_node->modifiers.push_back(std::move(distinct));
-		select_node->select_list.push_back(make_uniq<StarExpression>());
-		select_node->from_table = std::move(source);
-		distinct_stmt->node = std::move(select_node);
+		auto distinct_stmt = make_uniq<SelectStatement>();
+		if (null_checks.empty()) {
+			auto select_node = SelectStarFrom(std::move(source));
+			select_node->modifiers.push_back(std::move(distinct));
+			distinct_stmt->node = std::move(select_node);
+		} else {
+			// a key with a NULL conflicts with no row, so those rows bypass the DISTINCT ON
+			unique_ptr<ParsedExpression> has_null;
+			if (null_checks.size() == 1) {
+				has_null = std::move(null_checks[0]);
+			} else {
+				has_null = make_uniq<ConjunctionExpression>(ExpressionType::CONJUNCTION_OR, std::move(null_checks));
+			}
+			Identifier cte_name("__duckdb_on_conflict_source_" + to_string(i));
+			auto keyed_rows = SelectStarFromCTE(
+			    cte_name, make_uniq<OperatorExpression>(ExpressionType::OPERATOR_NOT, has_null->Copy()));
+			keyed_rows->modifiers.push_back(std::move(distinct));
+			auto union_node = make_uniq<SetOperationNode>();
+			union_node->setop_type = SetOperationType::UNION;
+			union_node->setop_all = true;
+			union_node->children.push_back(std::move(keyed_rows));
+			union_node->children.push_back(SelectStarFromCTE(cte_name, std::move(has_null)));
+			// materialized, so the source runs once
+			auto cte = make_uniq<CommonTableExpressionInfo>();
+			cte->query_node = SelectStarFrom(std::move(source));
+			cte->materialized = CTEMaterialize::CTE_MATERIALIZE_ALWAYS;
+			union_node->cte_map.map[cte_name] = std::move(cte);
+			distinct_stmt->node = std::move(union_node);
+		}
 		source = make_uniq<SubqueryRef>(std::move(distinct_stmt), "excluded");
 	}
 

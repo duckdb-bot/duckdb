@@ -33,6 +33,10 @@
 #include "duckdb/parser/common_table_expression_info.hpp"
 #include "duckdb/parser/expression/star_expression.hpp"
 #include "duckdb/parser/query_node/select_node.hpp"
+#include "duckdb/parser/query_node/recursive_cte_node.hpp"
+#include "duckdb/parser/query_node/set_operation_node.hpp"
+#include "duckdb/parser/result_modifier.hpp"
+#include "duckdb/parser/tableref/subqueryref.hpp"
 #include "duckdb/parser/tableref/basetableref.hpp"
 #include "duckdb/parser/tableref/table_function_ref.hpp"
 #include "duckdb/planner/binder.hpp"
@@ -340,12 +344,9 @@ void Binder::SetCatalogLookupCallback(catalog_entry_callback_t callback) {
 void Binder::BindView(ClientContext &context, const SelectStatement &stmt, const Identifier &catalog_name,
                       const Identifier &schema_name, optional_ptr<LogicalDependencyList> dependencies,
                       const vector<Identifier> &aliases, vector<LogicalType> &result_types,
-                      vector<Identifier> &result_names, optional_ptr<BoundParameterMap> parameters) {
+                      vector<Identifier> &result_names) {
 	auto view_binder = Binder::CreateBinder(context);
 	auto &catalog = Catalog::GetCatalog(context, catalog_name);
-	if (parameters) {
-		view_binder->SetParameters(*parameters);
-	}
 
 	if (dependencies) {
 		view_binder->SetCatalogLookupCallback([&dependencies, &catalog](CatalogEntry &entry) {
@@ -370,7 +371,56 @@ void Binder::BindView(ClientContext &context, const SelectStatement &stmt, const
 	result_names = query_node.names;
 }
 
-//! Replaces the positional parameters of a query with their values, or only finds them when replace is false
+static bool IsPositionalParameter(const ParsedExpression &expr) {
+	return expr.GetExpressionClass() == ExpressionClass::PARAMETER &&
+	       !PreparedStatement::AllowsUserVariableFallback(expr.Cast<ParameterExpression>().Identifier());
+}
+
+//! A value in ORDER BY or GROUP BY would be a column index, so a parameter there is an error as in a SELECT
+static void CheckParameterClauses(QueryNode &node) {
+	for (auto &modifier : node.modifiers) {
+		if (modifier->type == ResultModifierType::ORDER_MODIFIER) {
+			for (auto &order : modifier->Cast<OrderModifier>().orders) {
+				if (IsPositionalParameter(*order.expression)) {
+					throw ParameterNotAllowedException("Parameter not supported in ORDER BY clause");
+				}
+			}
+		} else if (modifier->type == ResultModifierType::DISTINCT_MODIFIER) {
+			for (auto &target : modifier->Cast<DistinctModifier>().distinct_on_targets) {
+				if (IsPositionalParameter(*target)) {
+					throw ParameterNotAllowedException("Parameter not supported in DISTINCT ON clause");
+				}
+			}
+		}
+	}
+	switch (node.type) {
+	case QueryNodeType::SELECT_NODE:
+		for (auto &group : node.Cast<SelectNode>().groups.group_expressions) {
+			if (IsPositionalParameter(*group)) {
+				throw ParameterNotAllowedException("Parameter not supported in GROUP BY clause");
+			}
+		}
+		break;
+	case QueryNodeType::SET_OPERATION_NODE:
+		for (auto &child : node.Cast<SetOperationNode>().children) {
+			CheckParameterClauses(*child);
+		}
+		break;
+	case QueryNodeType::RECURSIVE_CTE_NODE:
+		CheckParameterClauses(*node.Cast<RecursiveCTENode>().left);
+		CheckParameterClauses(*node.Cast<RecursiveCTENode>().right);
+		break;
+	default:
+		break;
+	}
+	for (auto &cte : node.cte_map.map) {
+		if (cte.second->query_node) {
+			CheckParameterClauses(*cte.second->query_node);
+		}
+	}
+}
+
+//! Replaces the positional parameters of a query with their values, or only checks them when replace is false
 struct ViewParameterReplacer {
 	const identifier_map_t<BoundParameterData> &values;
 	bool replace;
@@ -379,11 +429,10 @@ struct ViewParameterReplacer {
 	void Visit(unique_ptr<ParsedExpression> &expr) {
 		if (expr->GetExpressionClass() == ExpressionClass::PARAMETER) {
 			// a named parameter stays, as it can read a variable when the view is queried
-			auto &identifier = expr->Cast<ParameterExpression>().Identifier();
-			if (PreparedStatement::AllowsUserVariableFallback(identifier)) {
+			if (!IsPositionalParameter(*expr)) {
 				return;
 			}
-			auto entry = values.find(identifier);
+			auto entry = values.find(expr->Cast<ParameterExpression>().Identifier());
 			if (entry == values.end()) {
 				// the value is only known when the statement is executed
 				throw ParameterNotResolvedException();
@@ -403,8 +452,16 @@ struct ViewParameterReplacer {
 	}
 
 	void Visit(QueryNode &node) {
+		if (!replace) {
+			CheckParameterClauses(node);
+		}
 		ParsedExpressionIterator::EnumerateQueryNodeChildren(
-		    node, [&](unique_ptr<ParsedExpression> &child) { Visit(child); });
+		    node, [&](unique_ptr<ParsedExpression> &child) { Visit(child); },
+		    [&](TableRef &ref) {
+			    if (!replace && ref.type == TableReferenceType::SUBQUERY) {
+				    CheckParameterClauses(*ref.Cast<SubqueryRef>().subquery->node);
+			    }
+		    });
 	}
 };
 
@@ -421,13 +478,6 @@ void Binder::BindCreateViewInfo(CreateViewInfo &base) {
 		ViewParameterReplacer finder {parameters->GetParameterData(), false};
 		finder.Visit(*base.query->node);
 		if (finder.found) {
-			if (base.binding_mode != CreateViewBindingMode::SKIP_BINDING) {
-				// check the parameters as in a SELECT, where a bare one in ORDER BY is not an ordinal
-				vector<LogicalType> types;
-				vector<Identifier> names;
-				BindView(context, *base.query, base.GetQualifiedName().Catalog(), base.GetQualifiedName().Schema(),
-				         nullptr, base.aliases, types, names, parameters);
-			}
 			ViewParameterReplacer replacer {parameters->GetParameterData(), true};
 			replacer.Visit(*base.query->node);
 			base.sql = base.ToString();

@@ -4,6 +4,7 @@ benchmark/micro/cast/cast_double_string.benchmark
 benchmark/micro/cast/cast_string_double.benchmark
 benchmark/micro/cast/cast_string_int.benchmark
 benchmark/micro/cast/cast_timestamp_string.benchmark
+benchmark/micro/cast/cast_json_documents_to_variant.benchmark
 benchmark/micro/copy/to_parquet_partition_by_few.benchmark
 benchmark/micro/copy/to_parquet_partition_by_many.benchmark
 benchmark/micro/limit/parallel_limit.benchmark
@@ -40,4 +41,5 @@ benchmark/micro/aggregate/group_two_string_dictionaries.benchmark
 benchmark/micro/functions/nested_macros.benchmark
 benchmark/micro/result_collection/stream_drop.benchmark
 benchmark/micro/result_collection/stream_materialize.benchmark
+benchmark/micro/variant/variant_update_nested_constant.benchmark
 benchmark/parquet/dlba_read-long-1000000.benchmark

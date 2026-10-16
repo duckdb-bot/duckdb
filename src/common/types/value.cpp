@@ -1731,6 +1731,79 @@ string Value::ToString() const {
 	return StringValue::Get(DefaultCastAs(LogicalType::VARCHAR));
 }
 
+//! Whether an object converts to a MAP, as one whose only key is empty does
+static bool VariantIsMapObject(const UnifiedVariantVectorData &variant, idx_t row, uint32_t values_idx) {
+	if (variant.GetTypeId(row, values_idx) != VariantLogicalType::OBJECT) {
+		return false;
+	}
+	auto nested_data = VariantUtils::DecodeNestedData(variant, row, values_idx);
+	return nested_data.child_count == 1 &&
+	       variant.GetKey(row, variant.GetKeysIndex(row, nested_data.children_idx)).GetSize() == 0;
+}
+
+static void VariantToSQLString(const UnifiedVariantVectorData &variant, idx_t row, uint32_t values_idx, string &result);
+
+static void VariantChildToSQLString(const UnifiedVariantVectorData &variant, idx_t row, uint32_t values_idx,
+                                    string &result) {
+	if (variant.GetTypeId(row, values_idx) == VariantLogicalType::VARIANT_NULL) {
+		result += "NULL::VARIANT";
+		return;
+	}
+	VariantToSQLString(variant, row, values_idx, result);
+}
+
+//! Renders each array element and object field as a VARIANT of its own, reading each value once
+static void VariantToSQLString(const UnifiedVariantVectorData &variant, idx_t row, uint32_t values_idx,
+                               string &result) {
+	auto type_id = variant.GetTypeId(row, values_idx);
+	if (type_id == VariantLogicalType::ARRAY) {
+		auto nested_data = VariantUtils::DecodeNestedData(variant, row, values_idx);
+		result += "CAST([";
+		for (idx_t i = 0; i < nested_data.child_count; i++) {
+			if (i > 0) {
+				result += ", ";
+			}
+			auto child_idx = variant.GetValuesIndex(row, nested_data.children_idx + i);
+			VariantChildToSQLString(variant, row, child_idx, result);
+		}
+		result += "] AS VARIANT)";
+		return;
+	}
+	if (VariantIsMapObject(variant, row, values_idx)) {
+		// as a VARIANT the MAP becomes a list of its key and value pairs
+		auto nested_data = VariantUtils::DecodeNestedData(variant, row, values_idx);
+		result += "CAST([CAST({'key': CAST(CAST('' AS VARCHAR) AS VARIANT), 'value': ";
+		VariantChildToSQLString(variant, row, variant.GetValuesIndex(row, nested_data.children_idx), result);
+		result += "} AS VARIANT)] AS VARIANT)";
+		return;
+	}
+	if (type_id == VariantLogicalType::OBJECT) {
+		auto nested_data = VariantUtils::DecodeNestedData(variant, row, values_idx);
+		vector<pair<string, uint32_t>> fields;
+		for (idx_t i = 0; i < nested_data.child_count; i++) {
+			auto keys_idx = variant.GetKeysIndex(row, nested_data.children_idx + i);
+			fields.emplace_back(variant.GetKey(row, keys_idx).GetString(),
+			                    variant.GetValuesIndex(row, nested_data.children_idx + i));
+		}
+		std::stable_sort(
+		    fields.begin(), fields.end(),
+		    [](const pair<string, uint32_t> &lhs, const pair<string, uint32_t> &rhs) { return lhs.first < rhs.first; });
+		result += "CAST({";
+		for (idx_t i = 0; i < fields.size(); i++) {
+			if (i > 0) {
+				result += ", ";
+			}
+			result += "'" + StringUtil::Replace(fields[i].first, "'", "''") + "': ";
+			VariantChildToSQLString(variant, row, fields[i].second, result);
+		}
+		result += "} AS VARIANT)";
+		return;
+	}
+	// Preserve the payload's type as well as its value (e.g. SMALLINT versus INTEGER).
+	auto val = VariantUtils::ConvertVariantToValue(variant, row, values_idx);
+	result += "CAST(CAST(" + val.ToSQLString() + " AS " + val.type().ToString() + ") AS VARIANT)";
+}
+
 string Value::ToSQLString() const {
 	if (IsNull()) {
 		auto res = ToString();
@@ -1769,23 +1842,9 @@ string Value::ToSQLString() const {
 		RecursiveUnifiedVectorFormat format;
 		Vector::RecursiveToUnifiedFormat(tmp, format);
 		UnifiedVariantVectorData vector_data(format);
-		auto val = VariantUtils::ConvertVariantToValue(vector_data, 0, 0);
-		if (val.type().id() == LogicalTypeId::STRUCT) {
-			child_list_t<Value> children;
-			auto &values = StructValue::GetChildren(val);
-			for (idx_t i = 0; i < values.size(); i++) {
-				children.emplace_back(StructType::GetChildName(val.type(), i),
-				                      values[i].DefaultCastAs(LogicalType::VARIANT()));
-			}
-			val = Value::STRUCT(std::move(children));
-			return "CAST(" + val.ToSQLString() + " AS VARIANT)";
-		}
-		if (val.type().id() == LogicalTypeId::LIST) {
-			val = Value::LIST(LogicalType::VARIANT(), ListValue::GetChildren(val));
-			return "CAST(" + val.ToSQLString() + " AS VARIANT)";
-		}
-		// Preserve the payload's type as well as its value (e.g. SMALLINT versus INTEGER).
-		return "CAST(CAST(" + val.ToSQLString() + " AS " + val.type().ToString() + ") AS VARIANT)";
+		string result;
+		VariantToSQLString(vector_data, 0, 0, result);
+		return result;
 	}
 	case LogicalTypeId::TUPLE:
 	case LogicalTypeId::STRUCT:

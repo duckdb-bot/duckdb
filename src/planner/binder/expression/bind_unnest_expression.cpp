@@ -263,12 +263,10 @@ BindResult UnnestBinder::Bind(FunctionExpression &function, idx_t depth, bool ro
 		return BindResult(BinderException(
 		    function, "UNNEST() on a struct column can only be applied as the root element of a SELECT expression"));
 	}
-	// the column a struct that cannot be copied is read from, and whether keep_parent_names takes its name
 	optional_ptr<Expression> struct_source;
 	bool struct_source_named = false;
 	if (struct_unnests > 0 && list_unnests == 0 && unnest_expr->HasSubquery() && struct_sources) {
-		// each field is extracted from a copy of the struct, and a subquery cannot be copied: evaluate the struct once,
-		// as the only element of a list unnested below the other unnests, and extract the fields from its column
+		// a subquery cannot be copied, so the struct is evaluated once per row below the other unnests
 		auto alias = unnest_expr->GetAlias();
 		struct_source_named = unnest_expr->GetExpressionClass() == ExpressionClass::BOUND_FUNCTION;
 		vector<unique_ptr<Expression>> children;

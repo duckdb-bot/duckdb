@@ -1,0 +1,104 @@
+# name: test/sql/logging/logging_csv_directory_denormalized.test
+# description: File log storage with a directory path and normalize false writes one denormalized CSV file in the directory
+# group: [logging]
+
+require noforcestorage
+
+# Due to different file locking behaviour, this currently fails on windows
+require notwindows
+
+statement ok
+CALL enable_logging(['QueryLog'], storage = 'file', storage_config = {'path': '{TEMP_DIR}/logging_csv_denormalized_dir', 'normalize': false});
+
+statement ok
+SELECT 42 AS answer;
+
+statement ok
+SELECT 43 AS answer;
+
+query IIIIII
+DESCRIBE FROM '{TEMP_DIR}/logging_csv_denormalized_dir/duckdb_log.csv';
+----
+context_id	BIGINT	YES	NULL	NULL	NULL
+scope	VARCHAR	YES	NULL	NULL	NULL
+connection_id	BIGINT	YES	NULL	NULL	NULL
+transaction_id	BIGINT	YES	NULL	NULL	NULL
+query_id	BIGINT	YES	NULL	NULL	NULL
+thread_id	VARCHAR	YES	NULL	NULL	NULL
+timestamp	TIMESTAMP WITH TIME ZONE	YES	NULL	NULL	NULL
+type	VARCHAR	YES	NULL	NULL	NULL
+log_level	VARCHAR	YES	NULL	NULL	NULL
+message	VARCHAR	YES	NULL	NULL	NULL
+
+query II
+SELECT scope, message FROM '{TEMP_DIR}/logging_csv_denormalized_dir/duckdb_log.csv' WHERE message LIKE 'SELECT 4%' ORDER BY message;
+----
+CONNECTION	SELECT 42 AS answer;
+CONNECTION	SELECT 43 AS answer;
+
+# the logs can be switched off and to another storage
+statement ok
+CALL disable_logging();
+
+statement ok
+CALL enable_logging(['QueryLog'], storage = 'memory');
+
+statement ok
+SELECT 44 AS answer;
+
+query I
+SELECT count(*) FROM duckdb_logs WHERE message = 'SELECT 44 AS answer;';
+----
+1
+
+# a csv path with normalize is refused before the storage is switched, so the memory storage stays usable
+statement error
+CALL enable_logging(['QueryLog'], storage = 'file', storage_config = {'path': '{TEMP_DIR}/logging_csv_refused.csv', 'normalize': true});
+----
+Can not set path to
+
+statement error
+CALL enable_logging(['QueryLog'], storage = 'file', storage_config = {'path': '{TEMP_DIR}/logging_csv_refused.csv', 'normalize': NULL});
+----
+can not be NULL
+
+statement ok
+SELECT 45 AS answer;
+
+query I
+SELECT count(*) FROM duckdb_logs WHERE message = 'SELECT 45 AS answer;';
+----
+1
+
+# switching normalize while the same directory stays configured
+statement ok
+CALL enable_logging(['QueryLog'], storage = 'file', storage_config = {'path': '{TEMP_DIR}/logging_csv_switch_dir', 'normalize': true});
+
+statement ok
+SELECT 46 AS answer;
+
+statement ok
+CALL enable_logging(['QueryLog'], storage = 'file', storage_config = {'path': '{TEMP_DIR}/logging_csv_switch_dir', 'normalize': false});
+
+statement ok
+SELECT 47 AS answer;
+
+statement ok
+CALL enable_logging(['QueryLog'], storage = 'file', storage_config = {'normalize': true});
+
+statement ok
+SELECT 48 AS answer;
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT message FROM '{TEMP_DIR}/logging_csv_switch_dir/duckdb_log.csv' WHERE message LIKE 'SELECT 4%';
+----
+SELECT 47 AS answer;
+
+query I
+SELECT message FROM '{TEMP_DIR}/logging_csv_switch_dir/duckdb_log_entries.csv' WHERE message LIKE 'SELECT 4%' ORDER BY message;
+----
+SELECT 46 AS answer;
+SELECT 48 AS answer;

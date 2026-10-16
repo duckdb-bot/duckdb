@@ -652,8 +652,7 @@ bool Catalog::CheckAmbiguousCatalogOrSchema(ClientContext &context, const Identi
 //===--------------------------------------------------------------------===//
 // Lookup
 //===--------------------------------------------------------------------===//
-//! Whether an error of a database that is only read for suggestions can be left out, so that the error stays about
-//! the missing entry
+//! A database that cannot be read, for example because its files are gone, gives no suggestions for a missing entry
 static bool IsSuggestionErrorIgnorable(const std::exception &ex) {
 	ErrorData error(ex);
 	return error.Type() != ExceptionType::INTERRUPT && error.Type() != ExceptionType::INTERNAL &&
@@ -920,7 +919,6 @@ CatalogException Catalog::CreateMissingEntryException(CatalogEntryRetriever &ret
 		try {
 			current_schemas = catalog.GetSchemas(context);
 		} catch (std::exception &ex) {
-			// a database that cannot be read, for example because its files are gone, gives no suggestions
 			if (!IsSuggestionErrorIgnorable(ex)) {
 				throw;
 			}

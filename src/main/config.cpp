@@ -657,13 +657,14 @@ void DBConfig::SetDefaultTempDirectory() {
 		options.temporary_directory = string();
 		return;
 	}
-	// the path without the extension prefix that opening the database removes
+	// the path and type after opening the database removes the extension prefix
 	auto path = options.database_path;
-	if (options.database_type.empty()) {
-		string database_type;
+	auto database_type = options.database_type;
+	if (database_type.empty()) {
 		DBPathAndType::ExtractExtensionPrefix(path, database_type);
 	}
-	auto prefix = ExtensionHelper::ExtractExtensionPrefixFromPath(path);
+	auto prefix = StringUtil::CIEquals(database_type, "duckdb") ? string()
+	                                                            : ExtensionHelper::ExtractExtensionPrefixFromPath(path);
 	if (DBConfig::IsInMemoryDatabase(path.c_str()) || FileSystem::IsRemoteFile(path) ||
 	    (!prefix.empty() && !StringUtil::CIEquals(prefix, "file"))) {
 		// remote paths and connection strings of extensions, unlike file URLs, have no local file to be next to

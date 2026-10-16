@@ -191,15 +191,18 @@ TEST_CASE("Test temp_directory defaults", "[api][.]") {
 
 TEST_CASE("Test the default temp_directory of databases with an extension prefix or a remote path", "[api]") {
 	DBConfig config;
-	vector<std::pair<string, string>> paths {{"file.duckdb", "file.duckdb.tmp"},
-	                                         {"ducklake:catalog.ducklake", "catalog.ducklake.tmp"},
-	                                         {"sqlite:file.db", "file.db.tmp"},
-	                                         {"duckdb:file:/data/file.duckdb", "file:/data/file.duckdb.tmp"},
-	                                         {"C:\\data\\file.duckdb", "C:\\data\\file.duckdb.tmp"},
-	                                         {"ducklake:r2://bucket/catalog.ducklake", ".tmp"},
-	                                         {"ducklake:postgres:dbname=lake", ".tmp"},
-	                                         {"s3://bucket/file.duckdb", ".tmp"},
-	                                         {"duckdb::memory:", ".tmp"}};
+	vector<std::pair<string, string>> paths {
+	    {"file.duckdb", "file.duckdb.tmp"},
+	    {"ducklake:catalog.ducklake", "catalog.ducklake.tmp"},
+	    {"sqlite:file.db", "file.db.tmp"},
+	    {"duckdb:file:/data/file.duckdb", "file:/data/file.duckdb.tmp"},
+	    {"duckdb:reports:2026.duckdb", "reports:2026.duckdb.tmp"},
+	    {"ducklake:file:/data/catalog.ducklake", "file:/data/catalog.ducklake.tmp"},
+	    {"C:\\data\\file.duckdb", "C:\\data\\file.duckdb.tmp"},
+	    {"ducklake:r2://bucket/catalog.ducklake", ".tmp"},
+	    {"ducklake:postgres:dbname=lake", ".tmp"},
+	    {"s3://bucket/file.duckdb", ".tmp"},
+	    {"duckdb::memory:", ".tmp"}};
 	for (auto &entry : paths) {
 		config.options.database_path = entry.first;
 		config.options.database_type = string();
@@ -219,6 +222,7 @@ TEST_CASE("Test the default temp_directory of a database opened with an extensio
 	auto query = "SELECT current_setting('temp_directory')";
 	auto result = con.Query(query);
 	REQUIRE(CHECK_COLUMN(result, 0, {path + ".tmp"}));
+	REQUIRE_NO_FAIL(con.Query("SET temp_directory = 'elsewhere'"));
 	REQUIRE_NO_FAIL(con.Query("RESET temp_directory"));
 	result = con.Query(query);
 	REQUIRE(CHECK_COLUMN(result, 0, {path + ".tmp"}));

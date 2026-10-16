@@ -1825,10 +1825,14 @@ void CopyDirectoryManager::CheckCaseCollision(FileSystem &fs, const string &dir_
 	auto other_name = fs.ExtractName(other_path);
 	bool listed = false;
 	bool other_listed = false;
-	fs.ListFiles(parent, [&](const string &entry, bool) {
+	auto listed_parent = fs.ListFiles(parent, [&](const string &entry, bool) {
 		listed = listed || entry == name;
 		other_listed = other_listed || entry == other_name;
 	});
+	if (!listed_parent) {
+		// without a listing the two directories cannot be told apart
+		return;
+	}
 	// a file system that ignores case finds a directory under a name that it does not list
 	if (listed && (!other_exists || other_listed)) {
 		return;

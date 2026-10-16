@@ -9,11 +9,10 @@ using namespace duckdb;
 
 namespace {
 
-enum class CaseMode { PRESERVE, LOWERCASE, SENSITIVE };
+enum class CaseMode { PRESERVE, LOWERCASE, UNLISTABLE, UNLISTABLE_THROWS };
 
-//! A file system under "casetest://" that ignores case, either keeping the case a name was created in, as APFS and
-//! NTFS do, or storing every name in lowercase, or that tells case apart but cannot list directories. Its operations
-//! run one at a time, so that resolving a name and creating it cannot interleave with another one
+//! A file system under "casetest://" that ignores case and keeps or lowercases names, or that tells case apart but
+//! cannot list directories. Its operations run one at a time.
 class CaseTestFileSystem : public FileSystem {
 public:
 	CaseTestFileSystem(string root_p, CaseMode mode_p)
@@ -60,8 +59,11 @@ public:
 	bool ListFiles(const string &path, const std::function<void(const string &, bool)> &callback,
 	               FileOpener *opener) override {
 		lock_guard<mutex> guard(lock);
-		if (mode == CaseMode::SENSITIVE) {
+		if (mode == CaseMode::UNLISTABLE) {
 			return false;
+		}
+		if (mode == CaseMode::UNLISTABLE_THROWS) {
+			throw IOException("Cannot list \"%s\"", path);
 		}
 		return local->ListFiles(Resolve(path), callback, opener);
 	}
@@ -81,12 +83,12 @@ public:
 	static constexpr const char *PREFIX = "casetest://";
 
 private:
-	//! The local path of a name, matched to an existing entry regardless of case
+	//! The local path of a name, matched to an existing entry regardless of case if the file system ignores case
 	string Resolve(const string &path) {
 		auto result = root;
 		for (auto &component : StringUtil::Split(path.substr(string(PREFIX).size()), "/")) {
 			auto name = mode == CaseMode::LOWERCASE ? StringUtil::Lower(component) : component;
-			if (mode != CaseMode::SENSITIVE) {
+			if (mode == CaseMode::PRESERVE || mode == CaseMode::LOWERCASE) {
 				local->ListFiles(result, [&](const string &entry, bool) {
 					if (StringUtil::CIEquals(entry, component)) {
 						name = entry;
@@ -209,13 +211,16 @@ TEST_CASE("COPY with PARTITION_BY writes partitions that differ only in case whe
 	TestCreateDirectory(root + "/out/k=A");
 	auto fs = FileSystem::CreateLocal();
 	if (!fs->DirectoryExists(root + "/out/K=A")) {
-		DuckDB db(nullptr);
-		Connection con(db);
-		RegisterCaseTestFileSystem(con, root, CaseMode::SENSITIVE);
-		REQUIRE_NO_FAIL(con.Query("COPY (SELECT * FROM (VALUES ('a', 1), ('A', 2)) v(k, x)) TO 'casetest://out' "
-		                          "(FORMAT parquet, PARTITION_BY (k), OVERWRITE_OR_IGNORE)"));
-		auto result = con.Query("SELECT count(*) FROM read_parquet('" + root + "/out/**/*.parquet')");
-		REQUIRE(CHECK_COLUMN(result, 0, {2}));
+		for (auto mode : {CaseMode::UNLISTABLE, CaseMode::UNLISTABLE_THROWS}) {
+			INFO("throws " << (mode == CaseMode::UNLISTABLE_THROWS));
+			DuckDB db(nullptr);
+			Connection con(db);
+			RegisterCaseTestFileSystem(con, root, mode);
+			REQUIRE_NO_FAIL(con.Query("COPY (SELECT * FROM (VALUES ('a', 1), ('A', 2)) v(k, x)) TO 'casetest://out' "
+			                          "(FORMAT parquet, PARTITION_BY (k), OVERWRITE_OR_IGNORE)"));
+			auto result = con.Query("SELECT count(*) FROM read_parquet('" + root + "/out/**/*.parquet')");
+			REQUIRE(CHECK_COLUMN(result, 0, {2}));
+		}
 	}
 	TestDeleteDirectory(root);
 }

@@ -1819,16 +1819,22 @@ void CopyDirectoryManager::CheckCaseCollision(FileSystem &fs, const string &dir_
 	if (other_path.empty()) {
 		return;
 	}
-	// checked before listing, so that the listing shows the other directory if it is created in between
-	auto other_exists = fs.DirectoryExists(other_path);
 	auto name = fs.ExtractName(dir_path);
 	auto other_name = fs.ExtractName(other_path);
+	bool other_exists = false;
 	bool listed = false;
 	bool other_listed = false;
-	auto listed_parent = fs.ListFiles(parent, [&](const string &entry, bool) {
-		listed = listed || entry == name;
-		other_listed = other_listed || entry == other_name;
-	});
+	bool listed_parent = false;
+	try {
+		// checked before listing, so that the listing shows the other directory if it is created in between
+		other_exists = fs.DirectoryExists(other_path);
+		listed_parent = fs.ListFiles(parent, [&](const string &entry, bool) {
+			listed = listed || entry == name;
+			other_listed = other_listed || entry == other_name;
+		});
+	} catch (NotImplementedException &) {
+	} catch (IOException &) {
+	}
 	if (!listed_parent) {
 		// without a listing the two directories cannot be told apart
 		return;

@@ -134,9 +134,9 @@ struct VariantEncodeFrame {
 	idx_t next_child = 0;
 };
 
-//! Encodes a single value, or opens the frame of an ARRAY or OBJECT
+//! Encodes a single value, or opens the frame of an ARRAY or OBJECT and returns true
 template <class SINK>
-void EncodeVariantNode(const VariantNode &it, SINK &sink, vector<VariantEncodeFrame> &frames) {
+bool EncodeVariantNode(const VariantNode &it, SINK &sink, vector<VariantEncodeFrame> &frames) {
 	const auto type_id = it.GetTypeId();
 	const auto comparison_type = GetVariantComparisonType(type_id);
 	// write the type rank - this guarantees values are ordered by type first
@@ -202,43 +202,55 @@ void EncodeVariantNode(const VariantNode &it, SINK &sink, vector<VariantEncodeFr
 	}
 	case VariantComparisonType::ARRAY:
 		frames.emplace_back(it);
-		break;
+		return true;
 	case VariantComparisonType::OBJECT:
 		// process the children in string-sorted key order so that objects that only differ in key order
 		// compare equal
 		frames.emplace_back(it, VariantIterationOrder::LEXICOGRAPHIC);
-		break;
+		return true;
 	default:
 		throw NotImplementedException("Variant type %s is not supported in variant_comparator",
 		                              EnumUtil::ToString(type_id));
 	}
+	return false;
+}
+
+//! Encodes the children of the frame on top, until one of them opens a frame. Returns whether the frame is done
+template <class SINK>
+bool EncodeVariantChildren(VariantEncodeFrame &frame, SINK &sink, vector<VariantEncodeFrame> &frames) {
+	if (frame.elements) {
+		auto &elements = *frame.elements;
+		while (frame.next_child < elements.size()) {
+			auto element = elements[frame.next_child++];
+			if (EncodeVariantNode(element, sink, frames)) {
+				return false;
+			}
+		}
+		return true;
+	}
+	auto &entries = frame.entries->GetOrderedEntries();
+	while (frame.next_child < entries.size()) {
+		auto entry = entries[frame.next_child++];
+		VariantEncodeString(sink, entry.key, true);
+		if (EncodeVariantNode(entry.value, sink, frames)) {
+			return false;
+		}
+	}
+	return true;
 }
 
 template <class SINK>
 void EncodeVariantValue(const VariantNode &root, SINK &sink, vector<VariantEncodeFrame> &frames) {
 	frames.clear();
-	EncodeVariantNode(root, sink, frames);
+	if (!EncodeVariantNode(root, sink, frames)) {
+		return;
+	}
 	while (!frames.empty()) {
-		auto &frame = frames.back();
-		if (frame.elements) {
-			if (frame.next_child == frame.elements->size()) {
-				frames.pop_back();
-				sink.Write(LIST_DELIMITER);
-				continue;
-			}
-			auto element = (*frame.elements)[frame.next_child++];
-			EncodeVariantNode(element, sink, frames);
-			continue;
-		}
-		auto &entries = frame.entries->GetOrderedEntries();
-		if (frame.next_child == entries.size()) {
+		// the frame is not used after one of its children opened another, which may move it
+		if (EncodeVariantChildren(frames.back(), sink, frames)) {
 			frames.pop_back();
 			sink.Write(LIST_DELIMITER);
-			continue;
 		}
-		auto entry = entries[frame.next_child++];
-		VariantEncodeString(sink, entry.key, true);
-		EncodeVariantNode(entry.value, sink, frames);
 	}
 }
 

@@ -645,7 +645,7 @@ int64_t ShellState::StringToInt(const string &arg) {
 	} else if (zArg[0] == '+') {
 		zArg++;
 	}
-	// the magnitude, which fits a negative number down to the minimum of int64_t
+	// the magnitude, which also holds that of the minimum of int64_t
 	uint64_t magnitude = 0;
 	const uint64_t limit =
 	    isNeg ? uint64_t(duckdb::NumericLimits<int64_t>::Maximum()) + 1 : duckdb::NumericLimits<int64_t>::Maximum();

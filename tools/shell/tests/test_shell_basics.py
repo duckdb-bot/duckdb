@@ -1592,12 +1592,38 @@ def test_dot_command_number_out_of_range_changes_nothing(shell):
         .statement(".maxrows 10 18446744073709551620")
         .statement(".width 7")
         .statement(".width 3 18446744073709551620")
+        .statement(".timer on 3")
+        .statement(".timer off 18446744073709551620")
+        .statement(".show")
         .statement(".mode duckbox")
         .statement("SELECT * FROM range(10)")
     )
     result = test.run()
     result.check_stderr('The number "18446744073709551620" is out of range')
     assert "(5 shown)" in result.stdout
+    assert "width: 7" in result.stdout
+    assert re.search(r"Run Time \(s\): real \d+\.\d{3} ", result.stdout)
+
+
+@pytest.mark.parametrize(
+    "number,in_range",
+    [
+        ("9223372036854775807", True),
+        ("9223372036854775808", False),
+        ("0x7fffffffffffffff", True),
+        ("0x8000000000000000", False),
+        ("-9223372036854775809", False),
+        ("8589934591GiB", True),
+        ("8589934592GiB", False),
+    ],
+)
+def test_dot_command_number_limits(shell, number, in_range):
+    test = ShellTest(shell).statement(f".timer on {number}")
+    result = test.run()
+    if in_range:
+        result.check_stderr(".timer DIGITS must be between 0 and 9")
+    else:
+        result.check_stderr(f'The number "{number}" is out of range')
 
 
 @pytest.mark.parametrize("number", ["-9223372036854775808", "-0x8000000000000000", "-8589934592GiB"])

@@ -1,0 +1,79 @@
+# name: test/sql/optimizer/window_self_join_pruned_files.test
+# description: The window self join reads the same files as the window, after filters pruned some of them
+# group: [optimizer]
+
+require parquet
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+statement ok
+COPY (SELECT i, i % 2 AS p FROM range(10) t(i)) TO '{TEST_DIR}/window_self_join_hive' (FORMAT parquet, PARTITION_BY (p));
+
+# the window self join applies
+query II
+EXPLAIN SELECT i, count(*) OVER () AS c FROM read_parquet('{TEST_DIR}/window_self_join_hive/**/*.parquet', hive_partitioning = true) WHERE p = 0
+----
+physical_plan	<!REGEX>:.*WINDOW.*
+
+query II
+SELECT i, count(*) OVER () AS c FROM read_parquet('{TEST_DIR}/window_self_join_hive/**/*.parquet', hive_partitioning = true) WHERE p = 0 ORDER BY i
+----
+0	5
+2	5
+4	5
+6	5
+8	5
+
+query III
+SELECT i, count(*) OVER () AS c, sum(i) OVER () AS s FROM read_parquet('{TEST_DIR}/window_self_join_hive/**/*.parquet', hive_partitioning = true) WHERE p = 0 AND i > 2 ORDER BY i
+----
+4	3	18
+6	3	18
+8	3	18
+
+query III
+SELECT p, i, count(*) OVER (PARTITION BY p) AS c FROM read_parquet('{TEST_DIR}/window_self_join_hive/**/*.parquet', hive_partitioning = true) WHERE p = 1 AND i < 5 ORDER BY i
+----
+1	1	2
+1	3	2
+
+# the references of an inlined CTE each get their own filters
+query II
+EXPLAIN WITH c AS NOT MATERIALIZED (SELECT * FROM read_parquet('{TEST_DIR}/window_self_join_hive/**/*.parquet', hive_partitioning = true)) SELECT (SELECT count(*) FROM c WHERE p = 0), (SELECT sum(i) FROM c WHERE p = 1)
+----
+physical_plan	<!REGEX>:.*CTE_SCAN.*
+
+query II
+WITH c AS NOT MATERIALIZED (SELECT * FROM read_parquet('{TEST_DIR}/window_self_join_hive/**/*.parquet', hive_partitioning = true)) SELECT (SELECT count(*) FROM c WHERE p = 0), (SELECT sum(i) FROM c WHERE p = 1)
+----
+5	25
+
+# a copy of a copy keeps the pruned files, here a CTE inlined after filter pushdown and then a window self join
+query II
+EXPLAIN WITH c AS (SELECT i FROM read_parquet('{TEST_DIR}/window_self_join_hive/**/*.parquet', hive_partitioning = true) WHERE p = 0 EXCEPT ALL SELECT a.range AS i FROM range(1) a, range(1) b, range(1) d, range(1) e, range(1) f WHERE a.range < 0 AND a.range > 0) SELECT n FROM (SELECT count(*) OVER () AS n FROM c UNION ALL SELECT count(*) OVER () AS n FROM c) LIMIT 100
+----
+physical_plan	<!REGEX>:.*(CTE_SCAN|WINDOW).*
+
+query I
+WITH c AS (SELECT i FROM read_parquet('{TEST_DIR}/window_self_join_hive/**/*.parquet', hive_partitioning = true) WHERE p = 0 EXCEPT ALL SELECT a.range AS i FROM range(1) a, range(1) b, range(1) d, range(1) e, range(1) f WHERE a.range < 0 AND a.range > 0) SELECT DISTINCT n FROM (SELECT n FROM (SELECT count(*) OVER () AS n FROM c UNION ALL SELECT count(*) OVER () AS n FROM c) LIMIT 100)
+----
+5
+
+# the bind data of a scan without complex filter pushdown is not copied
+query I
+SELECT count(*) FROM (WITH c AS (SELECT * FROM range(3)) SELECT * FROM c UNION ALL SELECT * FROM c LIMIT 4)
+----
+4
+
+statement ok
+SET disabled_optimizers = 'window_self_join';
+
+query II
+SELECT i, count(*) OVER () AS c FROM read_parquet('{TEST_DIR}/window_self_join_hive/**/*.parquet', hive_partitioning = true) WHERE p = 0 ORDER BY i
+----
+0	5
+2	5
+4	5
+6	5
+8	5

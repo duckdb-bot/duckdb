@@ -178,21 +178,16 @@ struct VariantDecimalConversion {
 };
 
 //! Converts a value through a Value of its type, for values the conversion can't read directly
-static bool CastVariantThroughValue(FromVariantConversionData &conversion_data, Vector &result, idx_t row_index,
-                                    uint32_t value_index, idx_t result_index) {
-	auto &target_type = result.GetType();
+static optional<Value> CastVariantThroughValue(FromVariantConversionData &conversion_data, idx_t row_index,
+                                               uint32_t value_index, const LogicalType &target_type) {
 	auto value = VariantUtils::ConvertVariantToValue(conversion_data.variant, row_index, value_index);
 	auto cast_value = conversion_data.TryCastAs(value, target_type);
-	bool success = true;
 	if (!cast_value) {
 		auto type_id = conversion_data.variant.GetTypeId(row_index, value_index);
 		conversion_data.error =
 		    StringUtil::Format("Can't convert VARIANT(%s) value '%s'", EnumUtil::ToString(type_id), value.ToString());
-		cast_value = Value(target_type);
-		success = false;
 	}
-	result.SetValue(result_index, *cast_value);
-	return success;
+	return cast_value;
 }
 
 template <class OP, class T = typename OP::type, class PAYLOAD_CLASS>
@@ -201,6 +196,7 @@ static bool CastVariantToPrimitive(FromVariantConversionData &conversion_data, V
                                    PAYLOAD_CLASS payload) {
 	auto &variant = conversion_data.variant;
 
+	auto &target_type = result.GetType();
 	auto result_data = FlatVector::GetDataMutable<T>(result);
 	auto &result_validity = FlatVector::ValidityMutable(result);
 
@@ -226,8 +222,13 @@ static bool CastVariantToPrimitive(FromVariantConversionData &conversion_data, V
 				converted = true;
 			}
 		}
-		if (!converted && !CastVariantThroughValue(conversion_data, result, row_index, sel[i], i + offset)) {
-			all_valid = false;
+		if (!converted) {
+			auto cast_value = CastVariantThroughValue(conversion_data, row_index, sel[i], target_type);
+			if (!cast_value) {
+				cast_value = Value(target_type);
+				all_valid = false;
+			}
+			result.SetValue(i + offset, *cast_value);
 		}
 	}
 	return all_valid;
@@ -436,68 +437,6 @@ private:
 	vector<pair<idx_t, idx_t>> entries;
 };
 
-//! The positions of the children of an OBJECT, in the order of their keys as in the Value of the OBJECT
-static vector<idx_t> GetSortedObjectChildren(const UnifiedVariantVectorData &variant, idx_t row,
-                                             const VariantNestedData &nested_data) {
-	vector<idx_t> children(nested_data.child_count);
-	for (idx_t child_idx = 0; child_idx < nested_data.child_count; child_idx++) {
-		children[child_idx] = child_idx;
-	}
-	auto get_key = [&](idx_t child_idx) -> const string_t & {
-		return variant.GetKey(row, variant.GetKeysIndex(row, nested_data.children_idx + child_idx));
-	};
-	std::stable_sort(children.begin(), children.end(), [&](idx_t left, idx_t right) {
-		auto &left_key = get_key(left);
-		auto &right_key = get_key(right);
-		auto left_size = left_key.GetSize();
-		auto right_size = right_key.GetSize();
-		auto compare = memcmp(left_key.GetData(), right_key.GetData(), MinValue(left_size, right_size));
-		return compare < 0 || (compare == 0 && left_size < right_size);
-	});
-	return children;
-}
-
-//! Adds the primitive values of a VARIANT value to the caster, in the order WriteVariantText writes them
-//! Returns false if the value holds an object with a single empty key, which converts to a MAP instead of a STRUCT
-static bool CollectVariantPrimitives(const UnifiedVariantVectorData &variant, idx_t row, uint32_t value_index,
-                                     VariantPrimitiveCaster &primitives) {
-	auto type_id = variant.GetTypeId(row, value_index);
-	switch (type_id) {
-	case VariantLogicalType::VARIANT_NULL:
-	case VariantLogicalType::VARCHAR:
-		return true;
-	case VariantLogicalType::ARRAY: {
-		auto nested_data = VariantUtils::DecodeNestedData(variant, row, value_index);
-		for (idx_t child_idx = 0; child_idx < nested_data.child_count; child_idx++) {
-			auto child_index = variant.GetValuesIndex(row, nested_data.children_idx + child_idx);
-			if (!CollectVariantPrimitives(variant, row, child_index, primitives)) {
-				return false;
-			}
-		}
-		return true;
-	}
-	case VariantLogicalType::OBJECT: {
-		auto nested_data = VariantUtils::DecodeNestedData(variant, row, value_index);
-		if (nested_data.child_count == 1) {
-			auto key_index = variant.GetKeysIndex(row, nested_data.children_idx);
-			if (variant.GetKey(row, key_index).GetSize() == 0) {
-				return false;
-			}
-		}
-		for (auto child_idx : GetSortedObjectChildren(variant, row, nested_data)) {
-			auto child_index = variant.GetValuesIndex(row, nested_data.children_idx + child_idx);
-			if (!CollectVariantPrimitives(variant, row, child_index, primitives)) {
-				return false;
-			}
-		}
-		return true;
-	}
-	default:
-		primitives.Add(row, value_index);
-		return true;
-	}
-}
-
 //! Whether two primitive VARIANT values convert to Values of the same type
 static bool HaveSameValueType(const UnifiedVariantVectorData &variant, idx_t row, uint32_t left, uint32_t right) {
 	auto left_type = variant.GetTypeId(row, left);
@@ -561,113 +500,197 @@ static void AppendVariantString(string &text, const string_t &str, bool quote) {
 	}
 }
 
-//! Writes the text the cast of the Value of a VARIANT value to VARCHAR produces
-//! A primitive value is quoted when needed if 'quote' is set, as it is inside a STRUCT or a LIST of its type
-static void WriteVariantText(const UnifiedVariantVectorData &variant, idx_t row, uint32_t value_index,
-                             const VariantPrimitiveCaster &primitives, idx_t &primitive_idx, bool quote, string &text) {
-	auto type_id = variant.GetTypeId(row, value_index);
-	switch (type_id) {
-	case VariantLogicalType::VARIANT_NULL:
-		text += "NULL";
-		break;
-	case VariantLogicalType::VARCHAR:
-		AppendVariantString(text, VariantUtils::DecodeStringData(variant, row, value_index), quote);
-		break;
-	case VariantLogicalType::ARRAY: {
-		auto nested_data = VariantUtils::DecodeNestedData(variant, row, value_index);
-		auto quote_elements = HasPrimitiveElementType(variant, row, nested_data);
-		text += '[';
-		for (idx_t child_idx = 0; child_idx < nested_data.child_count; child_idx++) {
-			if (child_idx > 0) {
-				text += ", ";
+//! Writes VARIANT values as the text the cast of their Value to VARCHAR produces, without building the Values
+class VariantTextWriter {
+public:
+	explicit VariantTextWriter(FromVariantConversionData &conversion_data)
+	    : variant(conversion_data.variant), primitives(conversion_data) {
+	}
+
+public:
+	//! Where the data that Collect gathers for a value starts
+	struct Position {
+		idx_t primitive_idx;
+		idx_t object_idx;
+	};
+
+	Position GetPosition() const {
+		return {primitives.Count(), object_children.size()};
+	}
+
+	//! Gathers the primitive values and the key order of the OBJECTs of a value, in the order Write uses them
+	//! Returns false if the value holds an OBJECT with a single empty key, which converts to a MAP instead of a STRUCT
+	bool Collect(idx_t row, uint32_t value_index) {
+		auto type_id = variant.GetTypeId(row, value_index);
+		switch (type_id) {
+		case VariantLogicalType::VARIANT_NULL:
+		case VariantLogicalType::VARCHAR:
+			return true;
+		case VariantLogicalType::ARRAY: {
+			auto nested_data = VariantUtils::DecodeNestedData(variant, row, value_index);
+			for (idx_t child_idx = 0; child_idx < nested_data.child_count; child_idx++) {
+				if (!Collect(row, variant.GetValuesIndex(row, nested_data.children_idx + child_idx))) {
+					return false;
+				}
 			}
-			auto child_index = variant.GetValuesIndex(row, nested_data.children_idx + child_idx);
-			WriteVariantText(variant, row, child_index, primitives, primitive_idx, quote_elements, text);
+			return true;
 		}
-		text += ']';
-		break;
-	}
-	case VariantLogicalType::OBJECT: {
-		auto nested_data = VariantUtils::DecodeNestedData(variant, row, value_index);
-		text += '{';
-		bool first = true;
-		for (auto child_idx : GetSortedObjectChildren(variant, row, nested_data)) {
-			if (!first) {
-				text += ", ";
+		case VariantLogicalType::OBJECT: {
+			auto nested_data = VariantUtils::DecodeNestedData(variant, row, value_index);
+			if (nested_data.child_count == 1 && GetKey(row, nested_data, 0).GetSize() == 0) {
+				return false;
 			}
-			first = false;
-			auto key_index = variant.GetKeysIndex(row, nested_data.children_idx + child_idx);
-			AppendEscapedString<true>(text, variant.GetKey(row, key_index));
-			text += ": ";
-			auto child_index = variant.GetValuesIndex(row, nested_data.children_idx + child_idx);
-			WriteVariantText(variant, row, child_index, primitives, primitive_idx, true, text);
+			auto start = object_children.size();
+			for (uint32_t child_idx = 0; child_idx < nested_data.child_count; child_idx++) {
+				object_children.push_back(child_idx);
+			}
+			std::sort(object_children.begin() + start, object_children.end(), [&](uint32_t left, uint32_t right) {
+				auto &left_key = GetKey(row, nested_data, left);
+				auto &right_key = GetKey(row, nested_data, right);
+				auto left_size = left_key.GetSize();
+				auto right_size = right_key.GetSize();
+				auto compare = memcmp(left_key.GetData(), right_key.GetData(), MinValue(left_size, right_size));
+				if (compare != 0) {
+					return compare < 0;
+				}
+				return left_size != right_size ? left_size < right_size : left < right;
+			});
+			for (idx_t i = 0; i < nested_data.child_count; i++) {
+				auto child_idx = object_children[start + i];
+				if (!Collect(row, variant.GetValuesIndex(row, nested_data.children_idx + child_idx))) {
+					return false;
+				}
+			}
+			return true;
 		}
-		text += '}';
-		break;
+		default:
+			primitives.Add(row, value_index);
+			return true;
+		}
 	}
-	default:
-		AppendVariantString(text, primitives.GetString(primitive_idx++), quote);
-		break;
+
+	bool CastPrimitives() {
+		return primitives.Cast();
 	}
-}
+
+	//! Writes the text of a value, quoting a primitive value when needed if 'quote' is set
+	void Write(idx_t row, uint32_t value_index, Position &position, bool quote, string &text) const {
+		auto type_id = variant.GetTypeId(row, value_index);
+		switch (type_id) {
+		case VariantLogicalType::VARIANT_NULL:
+			text += "NULL";
+			break;
+		case VariantLogicalType::VARCHAR:
+			AppendVariantString(text, VariantUtils::DecodeStringData(variant, row, value_index), quote);
+			break;
+		case VariantLogicalType::ARRAY: {
+			auto nested_data = VariantUtils::DecodeNestedData(variant, row, value_index);
+			auto quote_elements = HasPrimitiveElementType(variant, row, nested_data);
+			text += '[';
+			for (idx_t child_idx = 0; child_idx < nested_data.child_count; child_idx++) {
+				if (child_idx > 0) {
+					text += ", ";
+				}
+				auto child_index = variant.GetValuesIndex(row, nested_data.children_idx + child_idx);
+				Write(row, child_index, position, quote_elements, text);
+			}
+			text += ']';
+			break;
+		}
+		case VariantLogicalType::OBJECT: {
+			auto nested_data = VariantUtils::DecodeNestedData(variant, row, value_index);
+			auto start = position.object_idx;
+			position.object_idx += nested_data.child_count;
+			text += '{';
+			for (idx_t i = 0; i < nested_data.child_count; i++) {
+				if (i > 0) {
+					text += ", ";
+				}
+				auto child_idx = object_children[start + i];
+				AppendEscapedString<true>(text, GetKey(row, nested_data, child_idx));
+				text += ": ";
+				// primitive values inside a STRUCT are quoted when needed
+				Write(row, variant.GetValuesIndex(row, nested_data.children_idx + child_idx), position, true, text);
+			}
+			text += '}';
+			break;
+		}
+		default:
+			AppendVariantString(text, primitives.GetString(position.primitive_idx++), quote);
+			break;
+		}
+	}
+
+private:
+	const string_t &GetKey(idx_t row, const VariantNestedData &nested_data, idx_t child_idx) const {
+		return variant.GetKey(row, variant.GetKeysIndex(row, nested_data.children_idx + child_idx));
+	}
+
+private:
+	const UnifiedVariantVectorData &variant;
+	VariantPrimitiveCaster primitives;
+	//! The positions of the children of every OBJECT, in the order of their keys as in the Value of the OBJECT
+	vector<uint32_t> object_children;
+};
 
 static bool CastVariantToVarchar(FromVariantConversionData &conversion_data, Vector &result, const SelectionVector &sel,
                                  idx_t offset, idx_t count, optional_idx row) {
 	auto &variant = conversion_data.variant;
-	auto &result_validity = FlatVector::ValidityMutable(result);
+	auto &result_validity = FlatVector::Validity(result);
 
-	//! Collect the primitive values of all rows first, so they are cast in batches
-	VariantPrimitiveCaster primitives(conversion_data);
-	vector<idx_t> first_primitive(count, DConstants::INVALID_INDEX);
+	//! Gather the primitive values of all rows first, so they are cast in batches
+	VariantTextWriter text_writer(conversion_data);
+	vector<VariantTextWriter::Position> positions(count);
+	vector<bool> write_text(count, false);
 	for (idx_t i = 0; i < count; i++) {
 		auto row_index = row.IsValid() ? row.GetIndex() : i;
 		if (!variant.RowIsValid(row_index) || !result_validity.RowIsValid(offset + i)) {
 			continue;
 		}
-		auto start = primitives.Count();
-		if (CollectVariantPrimitives(variant, row_index, sel[i], primitives)) {
-			first_primitive[i] = start;
-		}
+		positions[i] = text_writer.GetPosition();
+		write_text[i] = text_writer.Collect(row_index, sel[i]);
 	}
-	if (!primitives.Cast()) {
+	if (!text_writer.CastPrimitives()) {
 		//! Convert every row through a Value, which reports the error of the row that fails
 		StringConversionPayload string_payload(result);
 		return CastVariantToPrimitive<VariantDirectConversion<string_t, VariantLogicalType::VARCHAR>>(
 		    conversion_data, result, sel, offset, count, row, string_payload);
 	}
 
-	auto result_data = FlatVector::GetDataMutable<string_t>(result);
 	bool all_valid = true;
 	string text;
+	auto writer = FlatVector::Writer<string_t>(result, count, offset);
 	for (idx_t i = 0; i < count; i++) {
 		auto row_index = row.IsValid() ? row.GetIndex() : i;
-		if (!variant.RowIsValid(row_index)) {
-			result_validity.SetInvalid(offset + i);
+		if (!variant.RowIsValid(row_index) || !result_validity.RowIsValid(offset + i)) {
+			writer.WriteNull();
 			continue;
 		}
-		if (!result_validity.RowIsValid(offset + i)) {
-			continue;
-		}
-		if (first_primitive[i] == DConstants::INVALID_INDEX) {
-			if (!CastVariantThroughValue(conversion_data, result, row_index, sel[i], offset + i)) {
+		if (!write_text[i]) {
+			auto cast_value = CastVariantThroughValue(conversion_data, row_index, sel[i], result.GetType());
+			if (!cast_value) {
 				all_valid = false;
+			}
+			if (!cast_value || cast_value->IsNull()) {
+				writer.WriteNull();
+			} else {
+				auto &str = StringValue::Get(*cast_value);
+				writer.WriteValue(string_t(str.c_str(), UnsafeNumericCast<uint32_t>(str.size())));
 			}
 			continue;
 		}
 		auto type_id = variant.GetTypeId(row_index, sel[i]);
 		if (type_id == VariantLogicalType::VARIANT_NULL) {
-			result_validity.SetInvalid(offset + i);
+			writer.WriteNull();
 			continue;
 		}
 		if (type_id == VariantLogicalType::VARCHAR) {
-			auto str = VariantUtils::DecodeStringData(variant, row_index, sel[i]);
-			result_data[offset + i] = StringVector::AddStringOrBlob(result, str);
+			writer.WriteValue(VariantUtils::DecodeStringData(variant, row_index, sel[i]));
 			continue;
 		}
 		text.clear();
-		auto primitive_idx = first_primitive[i];
-		WriteVariantText(variant, row_index, sel[i], primitives, primitive_idx, false, text);
-		result_data[offset + i] = StringVector::AddString(result, text);
+		text_writer.Write(row_index, sel[i], positions[i], false, text);
+		writer.WriteValue(string_t(text.data(), UnsafeNumericCast<uint32_t>(text.size())));
 	}
 	return all_valid;
 }

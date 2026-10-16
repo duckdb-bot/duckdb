@@ -481,9 +481,9 @@ void FileLogStorage::UpdateConfigInternal(DatabaseInstance &db, case_insensitive
 
 unique_ptr<TableRef> FileLogStorage::BindReplaceInternal(ClientContext &context, TableFunctionBindInput &input,
                                                          const string &path, const string &select_clause,
-                                                         const string &csv_columns, const string &query_suffix) {
-	string sub_query_string = StringUtil::Format("%s FROM read_csv_auto(%s, columns={%s})%s", select_clause,
-	                                             SQLString(path), csv_columns, query_suffix);
+                                                         const string &csv_columns) {
+	string sub_query_string =
+	    StringUtil::Format("%s FROM read_csv_auto(%s, columns={%s})", select_clause, SQLString(path), csv_columns);
 
 	Parser parser(context);
 	parser.ParseQuery(sub_query_string);
@@ -512,7 +512,6 @@ unique_ptr<TableRef> FileLogStorage::BindReplace(ClientContext &context, TableFu
 	}
 
 	string select = "SELECT *";
-	string suffix;
 	string path = tables[file_table].path;
 
 	string columns;
@@ -537,13 +536,11 @@ unique_ptr<TableRef> FileLogStorage::BindReplace(ClientContext &context, TableFu
 	} else if (file_table != table && table == LoggingTargetTable::LOG_ENTRIES) {
 		select = "SELECT context_id, timestamp, type, log_level, message";
 	} else if (file_table != table) {
-		// every entry repeats its context
-		select =
-		    "SELECT DISTINCT ON (context_id) context_id, scope, connection_id, transaction_id, query_id, thread_id";
-		suffix = " ORDER BY context_id";
+		// every entry repeats its context, and a file appended to by several sessions can reuse a context id
+		select = "SELECT DISTINCT context_id, scope, connection_id, transaction_id, query_id, thread_id";
 	}
 
-	return BindReplaceInternal(context, input, path, select, columns, suffix);
+	return BindReplaceInternal(context, input, path, select, columns);
 }
 
 BufferingLogStorage::BufferingLogStorage(DatabaseInstance &db_p, idx_t buffer_size, bool normalize)

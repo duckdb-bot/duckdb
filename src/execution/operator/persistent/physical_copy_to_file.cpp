@@ -132,9 +132,15 @@ private:
 	};
 
 private:
+	//! Throws if the existing directory is the directory of another path that differs from it only in case
+	void CheckCaseCollision(FileSystem &fs, const string &dir_path);
+
+private:
 	mutex lock;
 	std::condition_variable condition;
 	unordered_map<string, DirectoryEntry> directories;
+	//! The directories with each lowercase path
+	unordered_map<string, vector<string>> lowercase_directories;
 };
 
 class CopyOutputFileRegistry {
@@ -1746,6 +1752,7 @@ bool CopyDirectoryManager::EnsureDirectory(FileSystem &fs, const string &dir_pat
 			auto entry = directories.find(dir_path);
 			if (entry == directories.end()) {
 				directories.emplace(dir_path, DirectoryEntry());
+				lowercase_directories[StringUtil::Lower(dir_path)].push_back(dir_path);
 #ifdef D_ASSERT_IS_ENABLED
 				created_entry = true;
 #endif
@@ -1766,6 +1773,9 @@ bool CopyDirectoryManager::EnsureDirectory(FileSystem &fs, const string &dir_pat
 	bool created = false;
 	try {
 		created = fs.CreateDirectoryExtended(dir_path, {CreateDirectoryMode::SINGLE});
+		if (!created) {
+			CheckCaseCollision(fs, dir_path);
+		}
 	} catch (...) {
 		error = std::current_exception();
 	}
@@ -1787,6 +1797,44 @@ bool CopyDirectoryManager::EnsureDirectory(FileSystem &fs, const string &dir_pat
 		std::rethrow_exception(error);
 	}
 	return created;
+}
+
+void CopyDirectoryManager::CheckCaseCollision(FileSystem &fs, const string &dir_path) {
+	if (FileSystem::IsRemoteFile(dir_path)) {
+		// an object store has no directories to compare
+		return;
+	}
+	// a variant under a parent that differs in case is checked when that parent is created
+	auto parent = Path::FromString(dir_path).Parent().ToString();
+	string other_path;
+	{
+		lock_guard<mutex> guard(lock);
+		for (auto &path : lowercase_directories[StringUtil::Lower(dir_path)]) {
+			if (path != dir_path && Path::FromString(path).Parent().ToString() == parent) {
+				other_path = path;
+				break;
+			}
+		}
+	}
+	if (other_path.empty()) {
+		return;
+	}
+	auto name = fs.ExtractName(dir_path);
+	auto other_name = fs.ExtractName(other_path);
+	bool listed = false;
+	bool other_listed = false;
+	fs.ListFiles(parent, [&](const string &entry, bool) {
+		listed = listed || entry == name;
+		other_listed = other_listed || entry == other_name;
+	});
+	// a file system that ignores case finds a directory under a name that it does not list
+	if (listed && (other_listed || !fs.DirectoryExists(other_path))) {
+		return;
+	}
+	throw InvalidInputException(
+	    "Partition directories \"%s\" and \"%s\" differ only in case, and this file system treats them as one "
+	    "directory, so the files of one partition would replace those of the other",
+	    other_path, dir_path);
 }
 
 PendingFileState CopyOutputFileRegistry::ReserveFile(string output_path,

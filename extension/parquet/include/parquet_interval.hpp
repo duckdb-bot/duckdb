@@ -19,11 +19,16 @@ struct ParquetIntervalUtils {
 	static constexpr const idx_t PARQUET_INTERVAL_SIZE = 12;
 
 	static void Encode(const interval_t &interval, data_ptr_t target) {
-		const auto days = int64_t(interval.days) + interval.micros / Interval::MICROS_PER_DAY;
-		const auto micros = interval.micros % Interval::MICROS_PER_DAY;
+		auto days = int64_t(interval.days);
+		auto millis = interval.micros / Interval::MICROS_PER_MSEC;
+		if (millis > NumericLimits<uint32_t>::Maximum()) {
+			// the milliseconds do not fit in their 32 bits, so the whole days move to the days field
+			days += interval.micros / Interval::MICROS_PER_DAY;
+			millis = interval.micros % Interval::MICROS_PER_DAY / Interval::MICROS_PER_MSEC;
+		}
 		Store<uint32_t>(static_cast<uint32_t>(interval.months), target);
 		Store<uint32_t>(NumericCast<uint32_t>(days), target + sizeof(uint32_t));
-		Store<uint32_t>(NumericCast<uint32_t>(micros / Interval::MICROS_PER_MSEC), target + sizeof(uint32_t) * 2);
+		Store<uint32_t>(NumericCast<uint32_t>(millis), target + sizeof(uint32_t) * 2);
 	}
 
 	static uint64_t HashNormalized(const interval_t &interval) {

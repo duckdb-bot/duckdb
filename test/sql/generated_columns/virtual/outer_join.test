@@ -87,6 +87,24 @@ SELECT t1.c6, count(*) FROM p LEFT JOIN t1 ON p.k = t1.c1 GROUP BY t1.c1 ORDER B
 11	1
 NULL	1
 
+statement ok
+CREATE TABLE gr (a INTEGER, n INTEGER AS (NULL), m INTEGER AS (a + coalesce(a, 0)), c INTEGER AS (coalesce(a, 0) + 5));
+
+statement ok
+INSERT INTO gr VALUES (10);
+
+query III
+SELECT gr.n, gr.m, count(*) FROM p LEFT JOIN gr ON p.k = gr.a GROUP BY gr.a ORDER BY ALL
+----
+NULL	20	1
+NULL	NULL	1
+
+# an expression that is not NULL for a NULL row depends on the row id, which is not grouped
+statement error
+SELECT gr.c FROM p LEFT JOIN gr ON p.k = gr.a GROUP BY gr.a
+----
+must appear in the GROUP BY clause
+
 # a regular column named rowid hides the row id, so a matched row keeps its value
 statement ok
 CREATE TABLE s (rowid INTEGER, g INTEGER AS (42));
@@ -128,3 +146,30 @@ query IIII
 SELECT n1.s.t.g, n1.s.t.k, n2.s.t.g, n2.s.t.k FROM n1.s.t LEFT JOIN n2.s.t ON n1.s.t.a = n2.s.t.a
 ----
 2	42	NULL	NULL
+
+# the expression is checked with the functions that the view sees
+statement ok
+CREATE SCHEMA sp;
+
+statement ok
+CREATE MACRO f(x) AS x + 1;
+
+statement ok
+SET schema = 'sp';
+
+statement ok
+CREATE MACRO f(x) AS coalesce(x, 42);
+
+statement ok
+CREATE TABLE tf (a INTEGER, g INTEGER AS (f(a)));
+
+statement ok
+CREATE VIEW vf AS SELECT tf.g FROM (VALUES (1)) p(x) LEFT JOIN tf ON FALSE;
+
+statement ok
+SET schema = 'main';
+
+query I
+SELECT * FROM sp.vf
+----
+NULL

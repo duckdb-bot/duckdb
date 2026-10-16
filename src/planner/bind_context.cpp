@@ -17,7 +17,9 @@
 #include "duckdb/catalog/catalog_entry/view_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/planner/expression_binder/constant_binder.hpp"
-#include "duckdb/planner/expression_nullability.hpp"
+#include "duckdb/planner/expression/bound_constant_expression.hpp"
+#include "duckdb/planner/expression_iterator.hpp"
+#include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/planner/binder.hpp"
 
 #include <algorithm>
@@ -200,8 +202,8 @@ vector<reference<Binding>> BindContext::GetMatchingBindings(const Identifier &co
 	return result;
 }
 
-//! Whether the generated column is NULL when all columns of its row are NULL
-static bool GeneratedColumnBecomesNull(Binder &binder, TableCatalogEntry &table, const ColumnDefinition &column) {
+//! Whether the generated column gives NULL for a row whose columns are all NULL
+static bool GeneratedColumnIsNullForNullRow(Binder &binder, TableCatalogEntry &table, const ColumnDefinition &column) {
 	vector<Identifier> names;
 	vector<LogicalType> types;
 	for (auto &col : table.GetColumns().Logical()) {
@@ -209,11 +211,18 @@ static bool GeneratedColumnBecomesNull(Binder &binder, TableCatalogEntry &table,
 		types.push_back(col.Type());
 	}
 	auto column_binder = Binder::CreateBinder(binder.context);
+	column_binder->EntryRetriever().Inherit(binder.EntryRetriever());
 	column_binder->bind_context.AddGenericBinding(column_binder->GenerateTableIndex(), table.name, names, types);
 	ExpressionBinder expression_binder(*column_binder, binder.context);
 	auto expression = column.GeneratedExpression().Copy();
 	auto bound_expression = expression_binder.Bind(expression);
-	return ExpressionBecomesNull(*bound_expression, [](const BoundColumnRefExpression &) { return true; });
+	ExpressionIterator::VisitExpressionMutable<BoundColumnRefExpression>(
+	    bound_expression, [](BoundColumnRefExpression &column_ref, unique_ptr<Expression> &expr) {
+		    expr = make_uniq<BoundConstantExpression>(Value(column_ref.GetReturnType()));
+	    });
+	Value result;
+	return bound_expression->IsFoldable() &&
+	       ExpressionExecutor::TryEvaluateScalar(binder.context, *bound_expression, result) && result.IsNull();
 }
 
 unique_ptr<ParsedExpression> BindContext::ExpandGeneratedColumn(TableBinding &table_binding,
@@ -224,7 +233,7 @@ unique_ptr<ParsedExpression> BindContext::ExpandGeneratedColumn(TableBinding &ta
 		auto &table = table_binding.GetStandardEntry()->Cast<TableCatalogEntry>();
 		auto &column = table.GetColumn(LogicalIndex(table_binding.GetBindingIndex(column_name)));
 		auto row_id = table_binding.GetRowIdColumn();
-		if (row_id && !GeneratedColumnBecomesNull(binder, table, column)) {
+		if (row_id && !GeneratedColumnIsNullForNullRow(binder, table, column)) {
 			auto guard = make_uniq<CaseExpression>();
 			CaseCheck check;
 			check.when_expr = make_uniq<OperatorExpression>(ExpressionType::OPERATOR_IS_NOT_NULL, std::move(row_id));

@@ -433,6 +433,44 @@ TEST_CASE("Test buffer pool eviction: SetLimit evicts object cache", "[storage][
 	REQUIRE(evicted_entries == vector<idx_t> {0, 1});
 }
 
+TEST_CASE("Test object cache: an entry reserves its memory again only while its key holds it",
+          "[storage][buffer_pool]") {
+	DuckDB db;
+	Connection con(db);
+	auto &context = *con.context;
+	auto &buffer_pool = DatabaseInstance::GetDatabase(context).GetBufferPool();
+	auto &cache = ObjectCache::GetObjectCache(context);
+	const idx_t initial_memory = buffer_pool.GetUsedMemory();
+	constexpr idx_t obj_size = 1024 * 1024; // 1 MiB
+
+	auto obj = make_shared_ptr<EvictableTestObject>(0, obj_size);
+	cache.Put("obj", obj);
+	REQUIRE(buffer_pool.GetUsedMemory() == initial_memory + obj_size);
+
+	obj->size = 3 * obj_size;
+	cache.UpdateReservation("obj", *obj);
+	REQUIRE(buffer_pool.GetUsedMemory() == initial_memory + 3 * obj_size);
+	REQUIRE(cache.GetEntryCount() == 1);
+	obj->size = obj_size;
+	cache.UpdateReservation("obj", *obj);
+	REQUIRE(buffer_pool.GetUsedMemory() == initial_memory + obj_size);
+
+	// a deleted entry is not put back
+	cache.Delete("obj");
+	REQUIRE(buffer_pool.GetUsedMemory() == initial_memory);
+	cache.UpdateReservation("obj", *obj);
+	REQUIRE(cache.GetEntryCount() == 0);
+	REQUIRE(buffer_pool.GetUsedMemory() == initial_memory);
+
+	// a replaced entry does not change the reservation of the entry that replaced it
+	auto replacement = make_shared_ptr<EvictableTestObject>(1, obj_size);
+	cache.Put("obj", replacement);
+	obj->size = 5 * obj_size;
+	cache.UpdateReservation("obj", *obj);
+	REQUIRE(buffer_pool.GetUsedMemory() == initial_memory + obj_size);
+	REQUIRE(cache.GetObject("obj") == replacement);
+}
+
 TEST_CASE("Temporary buffer cleanup after spill and destruction policy changes", "[storage][buffer_pool]") {
 	for (bool encrypted : {false, true}) {
 		for (idx_t size_multiplier : {1, 2}) {

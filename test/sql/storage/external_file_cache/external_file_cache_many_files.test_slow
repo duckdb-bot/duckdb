@@ -1,0 +1,33 @@
+# name: test/sql/storage/external_file_cache/external_file_cache_many_files.test_slow
+# description: Reading many distinct files keeps the cached file metadata within the memory limit (issue #26377)
+# group: [external_file_cache]
+
+require parquet
+
+statement ok
+SET threads = 1;
+
+statement ok
+SET memory_limit = '16MB';
+
+statement ok
+SET cache_local_files = true;
+
+statement ok
+CREATE TABLE src AS SELECT i AS id, md5((i + 0)::VARCHAR) AS c0, md5((i + 1)::VARCHAR) AS c1, md5((i + 2)::VARCHAR) AS c2, md5((i + 3)::VARCHAR) AS c3, md5((i + 4)::VARCHAR) AS c4, md5((i + 5)::VARCHAR) AS c5, md5((i + 6)::VARCHAR) AS c6, md5((i + 7)::VARCHAR) AS c7, md5((i + 8)::VARCHAR) AS c8, md5((i + 9)::VARCHAR) AS c9 FROM range(5000) r(i);
+
+loop i 0 600
+
+statement ok
+COPY src TO '{TEMP_DIR}/many_files_{i}.parquet' (FORMAT PARQUET, ROW_GROUP_SIZE 2048);
+
+statement ok
+SELECT sum(length(c0) + length(c1) + length(c2) + length(c3) + length(c4) + length(c5) + length(c6) + length(c7) + length(c8) + length(c9)) FROM read_parquet('{TEMP_DIR}/many_files_{i}.parquet');
+
+endloop
+
+# the cached files that do not fit the memory limit are evicted
+query I
+SELECT count(DISTINCT path) < 500 FROM duckdb_external_file_cache()
+----
+true

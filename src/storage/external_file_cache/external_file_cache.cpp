@@ -69,17 +69,12 @@ public:
 	}
 
 	optional_idx GetEstimatedCacheMemory() const override {
-		idx_t file_size = 0;
-		{
-			const annotated_lock_guard<annotated_mutex> meta_guard(cached_file->meta_lock);
-			file_size = cached_file->validation_info.file_size;
-		}
-		const idx_t block_size = cache.GetCacheMaxBlockSize(cached_file->path);
-		const idx_t num_blocks = (file_size + block_size - 1) / block_size;
-		// Estimated memory consumption for each block metadata.
-		static constexpr idx_t BLOCK_METADATA_SIZE = sizeof(CacheBlock);
+		// read without the locks of the file, since the object cache lock is held
+		const idx_t num_blocks = cached_file->reserved_blocks.load();
+		// a block keeps its handle and buffer metadata after eviction, and takes about 64 bytes in the map
+		static constexpr idx_t BLOCK_METADATA_SIZE =
+		    sizeof(CacheBlock) + sizeof(BlockHandle) + sizeof(BlockMemory) + 64;
 		// Filepath is stored at two places: in the object cache key and in the cached file object.
-		// We do over-estimation on memory consumption, which assumes the whole file is cached.
 		return cached_file->path.size() * 2 + num_blocks * BLOCK_METADATA_SIZE;
 	}
 
@@ -371,6 +366,24 @@ shared_ptr<ExternalFileCache::CachedFile> ExternalFileCache::GetOrCreateCachedFi
 			continue;
 		}
 		return cached_file;
+	}
+}
+
+void ExternalFileCache::UpdateCachedFileMemory(CachedFile &cached_file) {
+	{
+		const annotated_lock_guard<annotated_mutex> map_guard(cached_file.map_lock);
+		const idx_t num_blocks = cached_file.blocks.size();
+		// reserving again only when the number of blocks doubled or halved keeps the estimate within a factor of two
+		const idx_t reserved_blocks = cached_file.reserved_blocks.load();
+		if (num_blocks <= 2 * reserved_blocks && 2 * num_blocks >= reserved_blocks) {
+			return;
+		}
+		cached_file.reserved_blocks = num_blocks;
+	}
+	auto &object_cache = buffer_manager.GetDatabase().GetObjectCache();
+	auto entry = object_cache.GetWithTypePrefix<ExternalFileCacheObjectCacheEntry>(cached_file.path);
+	if (entry && entry->GetCachedFile().get() == &cached_file) {
+		object_cache.UpdateReservationWithTypePrefix<ExternalFileCacheObjectCacheEntry>(cached_file.path, *entry);
 	}
 }
 

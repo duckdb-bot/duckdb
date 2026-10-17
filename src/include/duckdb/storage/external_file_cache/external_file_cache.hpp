@@ -76,6 +76,8 @@ public:
 		map<idx_t, shared_ptr<CacheBlock>> blocks DUCKDB_GUARDED_BY(map_lock);
 		//! Incremented whenever the blocks of the file are dropped.
 		idx_t content_generation DUCKDB_GUARDED_BY(map_lock) = 0;
+		//! Block count used for the memory estimate.
+		atomic<idx_t> reserved_blocks {0};
 
 		mutable annotated_mutex meta_lock;
 		//! Metadata for validating the cached blocks against the current file.
@@ -109,6 +111,8 @@ public:
 	//! Gets the shared cached file for the given path, creating it if not yet present.
 	//! When caching is disabled, returns a transient CachedFile that is not tracked in the cached file map.
 	shared_ptr<CachedFile> GetOrCreateCachedFile(const string &path);
+	//! Reserve the memory of a cached file again, when its number of blocks doubled or halved
+	void UpdateCachedFileMemory(CachedFile &cached_file);
 
 	//! Allocate a buffer holding a cache block of the given file. Blocks of remote files spill to the
 	//! temporary directory when they are evicted, instead of being dropped and re-fetched from the

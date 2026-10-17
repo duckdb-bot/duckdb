@@ -87,6 +87,26 @@ public:
 		return true;
 	}
 
+	// Resize the payload of the entry with key `key` in place, if that entry holds `value`, and mark it most recently
+	// used. Evicts other entries when it grew past the maximum weight. Return whether it was resized.
+	bool ResizePayload(const Key &key, const Val &value, idx_t new_weight) {
+		auto it = entry_map.find(key);
+		if (it == entry_map.end() || it->second.value.get() != &value) {
+			return false;
+		}
+		auto &entry = it->second;
+		lru_list.splice(lru_list.begin(), lru_list, entry.lru_iterator);
+		entry.payload->Resize(new_weight);
+		current_total_weight = current_total_weight - entry.payload_weight + new_weight;
+		entry.payload_weight = new_weight;
+		while (max_total_weight > 0 && current_total_weight > max_total_weight && lru_list.size() > 1) {
+			auto stale_it = entry_map.find(lru_list.back());
+			D_ASSERT(stale_it != entry_map.end());
+			DeleteImpl(stale_it);
+		}
+		return true;
+	}
+
 	// Look up the entry with key `key`. Return nullptr if not found.
 	shared_ptr<Val> Get(const Key &key) {
 		auto entry_map_iter = entry_map.find(key);

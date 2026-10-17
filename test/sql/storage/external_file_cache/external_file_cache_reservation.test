@@ -1,0 +1,73 @@
+# name: test/sql/storage/external_file_cache/external_file_cache_reservation.test
+# description: The memory reserved for a cached file follows the blocks it keeps, not the size of the file
+# group: [external_file_cache]
+
+require parquet
+
+statement ok
+SET cache_local_files = true;
+
+statement ok
+COPY (SELECT i AS id, md5(i::VARCHAR) AS c0, md5((i + 1)::VARCHAR) AS c1 FROM range(300000) r(i)) TO '{TEMP_DIR}/reservation.parquet' (FORMAT PARQUET, ROW_GROUP_SIZE 2048);
+
+# COUNT(*) caches only the footer
+query I
+SELECT count(*) FROM read_parquet('{TEMP_DIR}/reservation.parquet')
+----
+300000
+
+query II
+SELECT count(*) < 10, (SELECT sum(memory_usage_bytes) FROM duckdb_memory() WHERE tag = 'OBJECT_CACHE') < 1000 * count(*) FROM duckdb_external_file_cache()
+----
+true	true
+
+query I
+SELECT sum(length(c0)) FROM read_parquet('{TEMP_DIR}/reservation.parquet')
+----
+9600000
+
+query II
+SELECT count(*) > 100, (SELECT sum(memory_usage_bytes) FROM duckdb_memory() WHERE tag = 'OBJECT_CACHE') > 100 * count(*) FROM duckdb_external_file_cache()
+----
+true	true
+
+# rewriting the file with the same size drops its blocks, and their reservation
+statement ok
+COPY (SELECT i AS id, md5(i::VARCHAR) AS c0, md5((i + 1)::VARCHAR) AS c1 FROM range(300000) r(i)) TO '{TEMP_DIR}/reservation.parquet' (FORMAT PARQUET, ROW_GROUP_SIZE 2048);
+
+query I
+SELECT count(*) FROM read_parquet('{TEMP_DIR}/reservation.parquet')
+----
+300000
+
+query II
+SELECT count(*) < 10, (SELECT sum(memory_usage_bytes) FROM duckdb_memory() WHERE tag = 'OBJECT_CACHE') < 1000 * count(*) FROM duckdb_external_file_cache()
+----
+true	true
+
+# with local caching turned off, the blocks a modified file drops release their reservation too
+query I
+SELECT sum(length(c0)) FROM read_parquet('{TEMP_DIR}/reservation.parquet')
+----
+9600000
+
+query I
+SELECT (SELECT sum(memory_usage_bytes) FROM duckdb_memory() WHERE tag = 'OBJECT_CACHE') > 100000
+----
+true
+
+statement ok
+SET cache_local_files = false;
+
+statement ok
+COPY (SELECT i AS id, md5(i::VARCHAR) AS c0, md5((i + 1)::VARCHAR) AS c1 FROM range(300000) r(i)) TO '{TEMP_DIR}/reservation.parquet' (FORMAT PARQUET, ROW_GROUP_SIZE 2048);
+
+query I
+SELECT count(*) FROM read_parquet('{TEMP_DIR}/reservation.parquet')
+----
+300000
+
+query II
+SELECT count(*), (SELECT sum(memory_usage_bytes) FROM duckdb_memory() WHERE tag = 'OBJECT_CACHE') < 1000 FROM duckdb_external_file_cache()
+----
+0	true

@@ -15,13 +15,16 @@ static inline LogicalType RemoveDuplicateStructKeys(const LogicalType &type, con
 		case_insensitive_set_t child_names;
 		child_list_t<LogicalType> child_types;
 		for (auto &child_type : StructType::GetChildTypes(type)) {
-			auto insert_success = child_names.insert(child_type.first.GetIdentifierName()).second;
-			if (!insert_success) {
+			auto entry = child_names.insert(child_type.first.GetIdentifierName());
+			if (!entry.second) {
 				if (ignore_errors) {
 					continue;
 				}
 				throw NotImplementedException(
-				    "Duplicate name \"%s\" in struct auto-detected in JSON, try ignore_errors=true", child_type.first);
+				    "Duplicate names %s and %s in struct auto-detected in JSON: field names are case-insensitive. "
+				    "Specify JSON for the column or a schema containing MAP(VARCHAR, ...) in columns, or set "
+				    "ignore_errors=true to discard other spellings",
+				    Identifier(*entry.first), child_type.first);
 			} else {
 				child_types.emplace_back(child_type.first, RemoveDuplicateStructKeys(child_type.second, ignore_errors));
 			}

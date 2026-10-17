@@ -8,6 +8,7 @@
 #include "duckdb/optimizer/optimizer.hpp"
 #include "duckdb/parser/parser.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
+#include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/planner/logical_operator_visitor.hpp"
 #include "duckdb/planner/planner.hpp"
@@ -113,6 +114,10 @@ static bool BigintToTinyintOffsetCast(Vector &source, Vector &result, idx_t coun
 
 static bool TinyintToBigintOffsetCast(Vector &source, Vector &result, idx_t count, CastParameters &parameters) {
 	return VectorCastHelpers::TemplatedCastLoop<int8_t, int64_t, OffsetCast>(source, result, count, parameters);
+}
+
+static bool ThrowingGeometryCast(Vector &source, Vector &result, idx_t count, CastParameters &parameters) {
+	throw InvalidInputException("registered geometry cast");
 }
 
 static unique_ptr<BaseStatistics> BigintToTinyintOffsetStatistics(CastStatisticsInput &input) {
@@ -361,4 +366,33 @@ TEST_CASE("Compressed materialization uses value-preserving default casts", "[op
 	auto legacy_materialized = connection.Query("SELECT sum(i) FROM (SELECT i FROM custom_values ORDER BY i)");
 	REQUIRE_NO_FAIL(*legacy_materialized);
 	REQUIRE(CHECK_COLUMN(legacy_materialized, 0, {5050}));
+}
+
+TEST_CASE("Registered casts that replace a reinterpret cast can throw", "[optimizer][cast]") {
+	DuckDB db;
+	Connection connection(db);
+	REQUIRE_NO_FAIL(connection.Query("CREATE TABLE t AS SELECT i::VARCHAR AS id, ('POINT(' || i || ' ' || i || "
+	                                 "')')::GEOMETRY('OGC:CRS84') AS g FROM range(3) t(i)"));
+	auto crs_type = connection.Query("SELECT g FROM t")->GetTypes()[0];
+	auto &casts = DBConfig::GetConfig(*connection.context).GetCastFunctions();
+	casts.RegisterCastFunction(crs_type, LogicalType::GEOMETRY(), BoundCastInfo(ThrowingGeometryCast));
+
+	for (auto &query : {"SELECT CAST(g AS GEOMETRY) FROM t",
+	                    "SELECT count(*) FROM t WHERE g::GEOMETRY && 'POINT(1 1)'::GEOMETRY AND id::INT = 1"}) {
+		auto result = connection.Query(query);
+		REQUIRE(result->HasError());
+		REQUIRE(result->GetErrorType() == ExceptionType::INVALID_INPUT);
+		REQUIRE(StringUtil::Contains(result->GetError(), "registered geometry cast"));
+	}
+	REQUIRE_NO_FAIL(connection.Query("SELECT 42"));
+}
+
+TEST_CASE("Built-in reinterpret casts cannot throw", "[optimizer][cast]") {
+	auto timestamp = make_uniq<BoundConstantExpression>(Value::TIMESTAMP(timestamp_t(0)));
+	auto to_timestamp_tz = BoundCastExpression::AddDefaultCastToType(std::move(timestamp), LogicalType::TIMESTAMP_TZ);
+	REQUIRE(BoundCastExpression::IsCast(*to_timestamp_tz));
+	REQUIRE(!to_timestamp_tz->CanThrow());
+	auto to_timestamp = BoundCastExpression::AddDefaultCastToType(std::move(to_timestamp_tz), LogicalType::TIMESTAMP);
+	REQUIRE(BoundCastExpression::IsCast(*to_timestamp));
+	REQUIRE(!to_timestamp->CanThrow());
 }

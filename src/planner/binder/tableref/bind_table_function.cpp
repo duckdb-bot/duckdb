@@ -465,7 +465,8 @@ BoundStatement Binder::Bind(TableFunctionRef &ref) {
 	D_ASSERT(func_catalog.type == CatalogType::TABLE_FUNCTION_ENTRY);
 	auto &function = func_catalog.Cast<TableFunctionCatalogEntry>();
 	// binding the parameters can autoload an extension that replaces this entry, so it is looked up again afterwards
-	auto function_name = function.ParentSchema().GetQualifiedName(function.name);
+	auto &schema = function.ParentSchema();
+	auto function_name = function.name;
 
 	// bind the input parameters to the function - they are folded to constants after the overload is chosen
 	vector<unique_ptr<Expression>> positional_arguments;
@@ -486,7 +487,9 @@ BoundStatement Binder::Bind(TableFunctionRef &ref) {
 	}
 
 	// selection, named-argument checking, folding and casting all happen in the function binder
-	auto &current_function = Catalog::GetEntry<TableFunctionCatalogEntry>(context, function_name);
+	auto &current_function =
+	    schema.GetEntry(schema.GetCatalogTransaction(context), CatalogType::TABLE_FUNCTION_ENTRY, function_name)
+	        ->Cast<TableFunctionCatalogEntry>();
 	FunctionBinder function_binder(*this);
 	vector<Value> parameters;
 	named_argument_map_t named_parameters;

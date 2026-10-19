@@ -219,7 +219,8 @@ BindResult ExpressionBinder::TryBindLambdaOrJson(FunctionExpression &function, i
 	                   "For more information, see https://duckdb.org/docs/current/sql/functions/lambda.html.";
 
 	// binding the lambda can autoload an extension that replaces this entry, so it is looked up again afterwards
-	auto function_name = func.ParentSchema().GetQualifiedName(func.name);
+	auto &schema = func.ParentSchema();
+	auto function_name = func.name;
 	BindResult lambda_bind_result;
 	ErrorData error;
 	try {
@@ -249,8 +250,10 @@ BindResult ExpressionBinder::TryBindLambdaOrJson(FunctionExpression &function, i
 	// lambda attempt already bound is therefore bound twice, which repeats that bind's side effects
 	// (correlated-column registration, subquery planning). Only the deprecated arrow syntax is
 	// ambiguous enough to reach here, so this goes away with it rather than being worked around.
-	auto json_bind_result =
-	    BindFunction(function, Catalog::GetEntry<ScalarFunctionCatalogEntry>(context, function_name), depth);
+	auto &current_func =
+	    schema.GetEntry(schema.GetCatalogTransaction(context), CatalogType::SCALAR_FUNCTION_ENTRY, function_name)
+	        ->Cast<ScalarFunctionCatalogEntry>();
+	auto json_bind_result = BindFunction(function, current_func, depth);
 	if (!json_bind_result.HasError()) {
 		return json_bind_result;
 	}
@@ -360,7 +363,8 @@ BindResult ExpressionBinder::BindAggregateInEnclosingScope(FunctionExpression &a
 
 BindResult ExpressionBinder::BindFunction(FunctionExpression &function, ScalarFunctionCatalogEntry &func, idx_t depth) {
 	// binding the children can autoload an extension that replaces this entry, so it is looked up again afterwards
-	auto function_name = func.ParentSchema().GetQualifiedName(func.name);
+	auto &schema = func.ParentSchema();
+	auto function_name = func.name;
 
 	// bind the children of the function expression
 	ErrorData error;
@@ -412,7 +416,9 @@ BindResult ExpressionBinder::BindFunction(FunctionExpression &function, ScalarFu
 		}
 	}
 
-	auto &current_func = Catalog::GetEntry<ScalarFunctionCatalogEntry>(context, function_name);
+	auto &current_func =
+	    schema.GetEntry(schema.GetCatalogTransaction(context), CatalogType::SCALAR_FUNCTION_ENTRY, function_name)
+	        ->Cast<ScalarFunctionCatalogEntry>();
 	FunctionBinder function_binder(binder);
 	auto result =
 	    function_binder.BindScalarFunction(current_func, std::move(arguments), error, function.IsOperator(), &binder);
@@ -452,7 +458,8 @@ BindResult ExpressionBinder::BindLambdaFunction(FunctionExpression &function, Sc
 	// the aliases of list_reduce (e.g. reduce) are separate catalog entries
 	const bool is_list_reduce = func.name == "list_reduce" || func.alias_of == "list_reduce";
 	// binding the children can autoload an extension that replaces this entry, so it is looked up again afterwards
-	auto function_name = func.ParentSchema().GetQualifiedName(func.name);
+	auto &schema = func.ParentSchema();
+	auto function_name = func.name;
 	if (args.size() <= lambda_expr_idx ||
 	    args[lambda_expr_idx].GetExpression().GetExpressionClass() != ExpressionClass::LAMBDA) {
 		return BindResult("This scalar function requires a lambda expression!");
@@ -555,7 +562,9 @@ BindResult ExpressionBinder::BindLambdaFunction(FunctionExpression &function, Sc
 	CaptureLambdaColumns(bound_lambda_expr, bound_lambda_expr.LambdaExprMutable(), capture_bind_lambda,
 	                     override_bind_lambda_context, capture_child_types);
 
-	auto &current_func = Catalog::GetEntry<ScalarFunctionCatalogEntry>(context, function_name);
+	auto &current_func =
+	    schema.GetEntry(schema.GetCatalogTransaction(context), CatalogType::SCALAR_FUNCTION_ENTRY, function_name)
+	        ->Cast<ScalarFunctionCatalogEntry>();
 	FunctionBinder function_binder(binder);
 	unique_ptr<Expression> result =
 	    function_binder.BindScalarFunction(current_func, std::move(children), error, function.IsOperator(), &binder);

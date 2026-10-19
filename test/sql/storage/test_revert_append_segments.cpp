@@ -30,35 +30,28 @@ idx_t AppendSegmentAfterGap(ClientContext &context, ColumnData &column) {
 
 } // namespace
 
-TEST_CASE("Test reverting an append whose segment starts after a gap in the row ids", "[storage]") {
+TEST_CASE("Test that reverting an append to a row in a gap of the column segment tree reports corruption",
+          "[storage]") {
 	DuckDB db(nullptr);
 	Connection con(db);
 	REQUIRE_NO_FAIL(con.Query("CREATE TABLE t (i INTEGER)"));
 	REQUIRE_NO_FAIL(con.Query("INSERT INTO t SELECT range FROM range(100)"));
 
-	for (idx_t revert_to : {idx_t(100), idx_t(50)}) {
-		REQUIRE_NO_FAIL(con.Query("BEGIN TRANSACTION"));
-		auto &table =
-		    Catalog::GetEntry<TableCatalogEntry>(*con.context, QualifiedName(INVALID_CATALOG, DEFAULT_SCHEMA, "t"))
-		        .Cast<DuckTableEntry>();
-		auto &column = table.GetStorage().GetRowGroupCollection()->GetRowGroup(0)->GetRawColumnData(0);
-		auto end = AppendSegmentAfterGap(*con.context, column);
-		REQUIRE(end == 100);
+	REQUIRE_NO_FAIL(con.Query("BEGIN TRANSACTION"));
+	auto &table =
+	    Catalog::GetEntry<TableCatalogEntry>(*con.context, QualifiedName(INVALID_CATALOG, DEFAULT_SCHEMA, "t"))
+	        .Cast<DuckTableEntry>();
+	auto &column = table.GetStorage().GetRowGroupCollection()->GetRowGroup(0)->GetRawColumnData(0);
+	auto end = AppendSegmentAfterGap(*con.context, column);
+	REQUIRE(end == 100);
 
-		// the reverted row lies before the segment, in the gap or in the segment before it
-		REQUIRE_NOTHROW(column.RevertAppend(UnsafeNumericCast<row_t>(revert_to)));
-		{
-			auto &segment_tree = column.GetSegmentTree();
-			auto lock = segment_tree.Lock();
-			REQUIRE(segment_tree.GetSegmentCount(lock) == 1);
-			REQUIRE(segment_tree.GetLastSegment(lock)->GetRowEnd() == revert_to);
-		}
-		REQUIRE(column.count == revert_to);
-		REQUIRE_NO_FAIL(con.Query("ROLLBACK"));
-		if (revert_to == 100) {
-			auto result = con.Query("SELECT count(*), sum(i) FROM t");
-			REQUIRE(CHECK_COLUMN(result, 0, {100}));
-			REQUIRE(CHECK_COLUMN(result, 1, {4950}));
-		}
+	// the row lies in the gap before the appended segment
+	REQUIRE_THROWS_AS(column.RevertAppend(UnsafeNumericCast<row_t>(end)), DataCorruptionException);
+	{
+		auto &segment_tree = column.GetSegmentTree();
+		auto lock = segment_tree.Lock();
+		REQUIRE(segment_tree.GetSegmentCount(lock) == 2);
 	}
+	REQUIRE(column.count == 100);
+	REQUIRE_NO_FAIL(con.Query("ROLLBACK"));
 }

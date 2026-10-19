@@ -1,0 +1,135 @@
+# name: test/sql/storage/commit_out_of_memory_reverts_append.test
+# description: A commit that runs out of memory while it appends to the table removes the rows and index entries it appended
+# group: [storage]
+
+require skip_reload
+
+require vector_size 2048
+
+require block_size 262144
+
+require no_alternative_verify
+
+require 64bit
+
+load {TEST_DIR}/commit_out_of_memory_reverts_append.db
+
+statement ok
+SET threads = 1
+
+statement ok
+SET temp_directory = ''
+
+statement ok
+CREATE TABLE t (i BIGINT PRIMARY KEY, s VARCHAR)
+
+statement ok
+INSERT INTO t VALUES (0, 'x')
+
+statement ok
+CREATE TABLE wide (i INTEGER, s VARCHAR)
+
+statement ok
+INSERT INTO wide VALUES (0, 'x')
+
+# the append fails after it added rows to new row groups and keys to the index
+statement ok
+SET memory_limit = '40MB'
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO t SELECT i, repeat('x', 20) || i FROM range(1, 1000000) r(i)
+
+statement ok
+DELETE FROM t WHERE i = 1
+
+statement error
+COMMIT
+----
+<REGEX>:.*Failed to commit.*(could not allocate|failed to pin) block.*
+
+statement ok
+RESET memory_limit
+
+query III
+SELECT count(*), sum(i), max(s) FROM t
+----
+1	0	x
+
+# the keys of the failed append are not in the index
+statement ok
+INSERT INTO t SELECT i, 'y' || i FROM range(1, 5000) r(i)
+
+query IIII
+SELECT count(*), sum(i), min(s), max(s) FROM t
+----
+5000	12497500	x	y999
+
+statement error
+INSERT INTO t VALUES (4999, 'z')
+----
+<REGEX>:Constraint Error.*Duplicate key.*
+
+# the append fails inside the row group that it started in
+statement ok
+SET memory_limit = '40MB'
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO wide SELECT i, repeat('x', 1000) || i FROM range(1, 25000) r(i)
+
+statement ok
+DELETE FROM wide WHERE i = 1
+
+statement error
+COMMIT
+----
+<REGEX>:.*Failed to commit.*(could not allocate|failed to pin) block.*
+
+statement ok
+RESET memory_limit
+
+query III
+SELECT count(*), sum(i), max(s) FROM wide
+----
+1	0	x
+
+statement ok
+INSERT INTO wide SELECT 100000 + i, 'y' || i FROM range(1, 5000) r(i)
+
+query IIII
+SELECT count(*), sum(i), sum(length(s)), max(s) FROM wide
+----
+5000	512397500	23889	y999
+
+statement ok
+CHECKPOINT
+
+restart
+
+query IIII
+SELECT count(*), sum(i), min(s), max(s) FROM t
+----
+5000	12497500	x	y999
+
+query II
+SELECT i, s FROM t WHERE i = 4999
+----
+4999	y4999
+
+query IIII
+SELECT count(*), sum(i), sum(length(s)), max(s) FROM wide
+----
+5000	512397500	23889	y999
+
+statement ok
+INSERT INTO wide VALUES (1, 'z')
+
+query II
+SELECT count(*), max(s) FROM wide
+----
+5001	z

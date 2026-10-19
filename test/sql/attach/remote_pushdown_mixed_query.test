@@ -309,6 +309,31 @@ SELECT v FROM (SELECT r.obj.k AS v FROM r.nested_tbl, (VALUES (99)) obj(k)) s, l
 ----
 8
 
+# positional references are named after the column they refer to
+query I
+SELECT id FROM (SELECT #1 FROM r.tbl) s, local_tbl ORDER BY 1;
+----
+0
+1
+2
+9
+10
+
+query I
+WITH a AS (SELECT #1 FROM r.tbl) SELECT id FROM a, local_tbl ORDER BY 1;
+----
+0
+1
+2
+9
+10
+
+# the ranking expression of a NEAREST join stays local
+query III
+SELECT * FROM (SELECT * FROM (VALUES (1)) a(v) JOIN r.tbl NEAREST BY DISTANCE abs(a.v - r.tbl.id)) s, local_tbl;
+----
+1	1	1
+
 # a volatile function can depend on a local object
 statement ok
 CREATE TEMP SEQUENCE local_seq START 10;

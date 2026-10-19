@@ -1026,6 +1026,10 @@ CatalogPushdownResult RemotePushdownOptimizer::Rewrite(JoinRef &ref) {
 	remote_subqueries.insert(remote_subqueries.end(), child_optimizer.remote_subqueries.begin(),
 	                         child_optimizer.remote_subqueries.end());
 
+	if (ref.ranking_expression) {
+		// the ranking expression of a NEAREST join is neither analyzed nor stripped of the catalog
+		MarkStaysWithParent();
+	}
 	auto result = Merge(left_result, right_result);
 	// Also analyze the join condition - it may contain subqueries or local macro calls
 	// that affect whether the join can be pushed as a whole.
@@ -2060,7 +2064,9 @@ static void KeepColumnNames(QueryNode &node) {
 		bool has_star = false;
 		ParsedExpressionIterator::VisitExpressionClass(*expr, ExpressionClass::STAR,
 		                                               [&](const ParsedExpression &) { has_star = true; });
-		if (expr->GetAlias().empty() && expr->GetExpressionClass() != ExpressionClass::COLUMN_REF && !has_star) {
+		auto expression_class = expr->GetExpressionClass();
+		if (expr->GetAlias().empty() && expression_class != ExpressionClass::COLUMN_REF &&
+		    expression_class != ExpressionClass::POSITIONAL_REFERENCE && !has_star) {
 			expr->SetAlias(Identifier(expr->ToString()));
 		}
 	}

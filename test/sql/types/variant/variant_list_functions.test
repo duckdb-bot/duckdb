@@ -44,6 +44,16 @@ SELECT v[-1] FROM t
 ----
 can't be cast because the value is out of range for the destination type UINT32
 
+statement error
+SELECT list_extract(NULL::VARIANT, -1)
+----
+can't be cast because the value is out of range for the destination type UINT32
+
+statement error
+SELECT (NULL::VARIANT)[-1]
+----
+can't be cast because the value is out of range for the destination type UINT32
+
 # the index is a constant, as with the subscript
 statement error
 SELECT list_extract(v, i) FROM t, range(1, 4) r(i)
@@ -55,6 +65,16 @@ SELECT v[i] FROM t, range(1, 4) r(i)
 ----
 No function matches the given name and argument types 'variant_extract(VARIANT, BIGINT)'
 
+statement error
+SELECT list_extract(v, 1 + 1) FROM t
+----
+No function matches the given name and argument types 'variant_extract(VARIANT, INTEGER)'
+
+statement error
+SELECT v[1 + 1] FROM t
+----
+No function matches the given name and argument types 'variant_extract(VARIANT, INTEGER)'
+
 statement ok
 PREPARE extract_index AS SELECT list_extract(v, ?), v[?] FROM t
 
@@ -62,6 +82,30 @@ query II
 EXECUTE extract_index(2, 2)
 ----
 20	20
+
+query II
+EXECUTE extract_index(3, 3)
+----
+30	30
+
+statement ok
+PREPARE extract_typed_index AS SELECT list_extract(v, $1::UINTEGER), v[$1::UINTEGER] FROM t
+
+query II
+EXECUTE extract_typed_index(2)
+----
+20	20
+
+# a string is a key, as with the subscript
+query IIII
+SELECT array_extract({'a': 42}::VARIANT, 'a'), ({'a': 42}::VARIANT)['a'], list_extract(v, '1'), v['1'] FROM t
+----
+42	42	NULL	NULL
+
+query II
+SELECT list_transform([[1, 2]::VARIANT, [3]::VARIANT], lambda x: list_extract(x, 1)), typeof(list_transform([[1, 2]::VARIANT, [3]::VARIANT], lambda x: list_extract(x, 1)))
+----
+[1, 3]	VARIANT[]
 
 # a VARIANT that is not a list gives NULL
 query IIII

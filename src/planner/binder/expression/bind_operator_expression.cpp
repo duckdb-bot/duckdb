@@ -12,6 +12,7 @@
 #include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/catalog/catalog_entry/scalar_function_catalog_entry.hpp"
 #include "duckdb/function/function_binder.hpp"
+#include "duckdb/function/scalar/variant_utils.hpp"
 
 namespace duckdb {
 
@@ -223,14 +224,7 @@ BindResult ExpressionBinder::BindExpression(OperatorExpression &op, idx_t depth)
 			}
 		} else if (b_exp_type.id() == LogicalTypeId::VARIANT && children.size() == 2) {
 			function_name = "variant_extract";
-			auto &i_exp = *children[1];
-			if (i_exp.GetExpressionClass() == ExpressionClass::BOUND_CONSTANT) {
-				auto &const_exp = i_exp.Cast<BoundConstantExpression>();
-				if (!const_exp.GetValue().IsNull() && const_exp.GetReturnType().IsIntegral()) {
-					const_exp.SetValue(const_exp.GetValue().DefaultCastAs(LogicalType::UINTEGER, true));
-					const_exp.SetReturnType(LogicalType::UINTEGER);
-				}
-			}
+			VariantBindUtils::BindExtractIndex(*children[1]);
 		} else {
 			function_name = "array_extract";
 		}

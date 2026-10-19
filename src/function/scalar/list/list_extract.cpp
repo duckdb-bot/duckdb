@@ -4,14 +4,13 @@
 #include "duckdb/common/types/data_chunk.hpp"
 #include "duckdb/common/uhugeint.hpp"
 #include "duckdb/common/vector_operations/binary_executor.hpp"
-#include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/function/function_binder.hpp"
 #include "duckdb/function/scalar/nested_functions.hpp"
 #include "duckdb/function/scalar/string_common.hpp"
 #include "duckdb/function/scalar/list_functions.hpp"
 #include "duckdb/function/scalar/variant_functions.hpp"
+#include "duckdb/function/scalar/variant_utils.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
-#include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/storage/statistics/list_stats.hpp"
 
@@ -156,23 +155,27 @@ static unique_ptr<FunctionData> StringExtractBind(BindScalarFunctionInput &input
 	return nullptr;
 }
 
-//! A VARIANT binds to variant_extract with a UINTEGER constant index, as its subscript does
+//! The index keeps its own type, as in the subscript
+static void VariantExtractResolveTypes(ResolveScalarFunctionTypesInput &input) {
+	input.GetBoundFunction().GetArguments()[1] = input.GetArgumentType(1);
+}
+
+//! A VARIANT binds to variant_extract, as its subscript does
 static unique_ptr<Expression> BindVariantExtract(FunctionBindExpressionInput &input) {
-	auto &children = input.children;
-	if (children[1]->IsFoldable()) {
-		auto index = ExpressionExecutor::EvaluateScalar(input.context, *children[1]);
-		children[1] = make_uniq<BoundConstantExpression>(index.DefaultCastAs(LogicalType::UINTEGER, true));
-	}
+	VariantBindUtils::BindExtractIndex(*input.children[1]);
 	FunctionBinder function_binder(input.context);
 	return function_binder.BindScalarFunction(Identifier::DefaultSchema(), VariantExtractFun::Name,
-	                                          std::move(children));
+	                                          std::move(input.children));
 }
 
 static ScalarFunction GetVariantExtractFunction() {
 	ScalarFunction vfun({LogicalType::VARIANT(), LogicalType::BIGINT}, LogicalType::VARIANT(), ListExtractFunction);
 	vfun.GetSignature().GetParameter(0).SetName("list");
 	vfun.GetSignature().GetParameter(1).SetName("index");
+	vfun.SetResolveTypesCallback(VariantExtractResolveTypes);
 	vfun.SetBindExpressionCallback(BindVariantExtract);
+	// variant_extract folds NULL arguments after it reads the index
+	vfun.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	return vfun;
 }
 

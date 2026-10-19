@@ -185,11 +185,19 @@ SELECT typeof(ts), count(*), list(DISTINCT ts) FROM read_csv('{TEST_DIR}/past_sa
 ----
 TIMESTAMP	2049	['2020-01-01 10:00:00']
 
-# TINYINT is sniffed as strictly as the other integer types
+# TINYINT values in the first chunk are sniffed as CAST does
 statement ok
 COPY (SELECT CASE WHEN i < 10 THEN '1' ELSE '1.5' END AS c0 FROM range(11) t(i)) TO '{TEST_DIR}/tinyint_decimal.csv' (HEADER, QUOTE '');
 
 query II
 SELECT typeof(c0), max(c0) FROM read_csv('{TEST_DIR}/tinyint_decimal.csv', auto_type_candidates = ['TINYINT', 'VARCHAR']) GROUP BY ALL
 ----
-VARCHAR	1.5
+TINYINT	2
+
+statement ok
+COPY (SELECT CASE WHEN i = 5 THEN '1.5' WHEN i < 2048 THEN '1' ELSE '0x10' END AS c0 FROM range(2049) t(i)) TO '{TEST_DIR}/tinyint_hex_past_sample.csv' (HEADER, QUOTE '');
+
+query II
+SELECT typeof(c0), max(c0) FROM read_csv('{TEST_DIR}/tinyint_hex_past_sample.csv', sample_size = 2048, auto_type_candidates = ['TINYINT', 'DOUBLE']) GROUP BY ALL
+----
+TINYINT	16

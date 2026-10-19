@@ -119,6 +119,15 @@ SELECT typeof(c0), max(c0) FROM read_csv('{TEST_DIR}/past_sample_decimal.csv', s
 ----
 DOUBLE	1.5
 
+# no warning for TINYINT values that the first sniffed chunk accepts
+statement ok
+COPY (SELECT CASE WHEN i < 10 THEN '1' ELSE '1.5' END AS c0 FROM range(11) t(i)) TO '{TEST_DIR}/tinyint_decimal.csv' (HEADER, QUOTE '');
+
+query II
+SELECT typeof(c0), max(c0) FROM read_csv('{TEST_DIR}/tinyint_decimal.csv', auto_type_candidates = ['TINYINT', 'VARCHAR']) GROUP BY ALL
+----
+TINYINT	2
+
 # no warning for types given by the user
 query I
 SELECT max(c0) FROM read_csv('{TEST_DIR}/past_sample_decimal.csv', sample_size = 2048, types = {'c0': 'BIGINT'})

@@ -369,8 +369,9 @@ bool StringValueResult::WriteValue(const char *&value_ptr, idx_t &size, const bo
 		    TryCastStringBool(value_ptr, size, static_cast<bool *>(vector_ptr[chunk_col_id])[number_of_rows], strict);
 		break;
 	case LogicalTypeId::TINYINT:
+		// The first sniffed chunk accepts TINYINT values as CAST does
 		success = TrySimpleIntegerCast(value_ptr, size, static_cast<int8_t *>(vector_ptr[chunk_col_id])[number_of_rows],
-		                               strict);
+		                               false);
 		break;
 	case LogicalTypeId::SMALLINT:
 		success = TrySimpleIntegerCast(value_ptr, size,

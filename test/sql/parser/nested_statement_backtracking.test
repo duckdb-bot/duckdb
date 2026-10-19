@@ -2,6 +2,8 @@
 # description: Nested CTEs and parentheses parse in linear time
 # group: [parser]
 
+require json
+
 statement ok
 CREATE TABLE t(x INTEGER);
 
@@ -23,17 +25,39 @@ WITH a0 AS (WITH a1 AS (WITH a2 AS (WITH a3 AS (WITH a4 AS (WITH a5 AS (WITH a6 
 statement error
 WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (
 ----
-<REGEX>:Parser Error.*syntax error.*
+<REGEX>:Parser Error.*syntax error at or near "\(".*
 
 statement error
 WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM
 ----
-<REGEX>:Parser Error.*syntax error.*
+<REGEX>:Parser Error.*syntax error at or near "FROM".*
 
 query I
 WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (SELECT 42 AS x) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a
 ----
 74
+
+query I
+WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (SELECT 'a'
+'b' AS s) SELECT s FROM a) SELECT s FROM a) SELECT s FROM a) SELECT s FROM a) SELECT s FROM a) SELECT s FROM a) SELECT s FROM a) SELECT s FROM a) SELECT s FROM a) SELECT s FROM a) SELECT s FROM a) SELECT s FROM a) SELECT s FROM a) SELECT s FROM a) SELECT s FROM a) SELECT s FROM a) SELECT s FROM a) SELECT s FROM a) SELECT s FROM a) SELECT s FROM a) SELECT s FROM a) SELECT s FROM a) SELECT s FROM a) SELECT s FROM a) SELECT s FROM a) SELECT s FROM a) SELECT s FROM a) SELECT s FROM a) SELECT s FROM a) SELECT s FROM a) SELECT s FROM a) SELECT s FROM a
+----
+ab
+
+# the error is reported at the same token after a cached failure and after a cached success
+query II
+SELECT j->>'error_message', j->>'position' FROM (SELECT json_serialize_sql(repeat('WITH a AS (', 32))::JSON AS j)
+----
+syntax error at or near "("	351
+
+query II
+SELECT j->>'error_message', j->>'position' FROM (SELECT json_serialize_sql(repeat('WITH a AS (', 32) || 'DELETE FROM t WHERE' || repeat(') DELETE FROM t', 32))::JSON AS j)
+----
+syntax error at or near ")"	371
+
+query II
+SELECT j->>'error_message', j->>'position' FROM (SELECT json_serialize_sql(repeat('WITH a AS (', 32) || 'DELETE FROM t' || repeat(') DELETE FROM t', 32) || ' WHERE')::JSON AS j)
+----
+syntax error at or near "WHERE"	846
 
 # 4096 parentheses in FROM, each tried as a subquery before it is tried as a parenthesized table reference
 query I
@@ -46,17 +70,33 @@ SELECT count(*) FROM query('SELECT * FROM ' || repeat('(', 4096) || '(SELECT * F
 ----
 2
 
-statement error
-SELECT * FROM query('SELECT * FROM ' || repeat('(', 4096))
+query I
+SELECT * FROM (((SELECT 'a'
+'b' AS s)))
 ----
-<REGEX>:Parser Error.*syntax error.*
+ab
+
+query II
+SELECT j->>'error_message', j->>'position' FROM (SELECT json_serialize_sql('SELECT * FROM ' || repeat('(', 4096))::JSON AS j)
+----
+syntax error at or near "("	4109
+
+query II
+SELECT j->>'error_message', j->>'position' FROM (SELECT json_serialize_sql('SELECT * FROM ' || repeat('(', 4096) || 't WHERE' || repeat(')', 4096))::JSON AS j)
+----
+syntax error at or near "WHERE"	4112
+
+query II
+SELECT j->>'error_message', j->>'position' FROM (SELECT json_serialize_sql('SELECT * FROM ' || repeat('(', 4096) || 't' || repeat(')', 4097))::JSON AS j)
+----
+syntax error at or near ")"	8207
 
 statement error
 SELECT * FROM query('SELECT ' || repeat('(', 4096))
 ----
-<REGEX>:Parser Error.*syntax error.*
+<REGEX>:Parser Error.*syntax error at or near "\(".*
 
 statement error
 SELECT * FROM query('SELECT 1 WHERE x IN ' || repeat('(', 4096))
 ----
-<REGEX>:Parser Error.*syntax error.*
+<REGEX>:Parser Error.*syntax error at or near "\(".*

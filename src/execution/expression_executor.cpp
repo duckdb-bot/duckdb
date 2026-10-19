@@ -154,6 +154,10 @@ static void VerifyNoDatabaseModification(ClientContext &context, const Expressio
 				                      function.GetName());
 			}
 		}
+		auto lambda_expr = function_expr.GetLambdaExpression();
+		if (lambda_expr) {
+			VerifyNoDatabaseModification(context, *lambda_expr);
+		}
 	}
 	ExpressionIterator::EnumerateChildren(
 	    expr, [&](const Expression &child) { VerifyNoDatabaseModification(context, child); });

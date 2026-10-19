@@ -290,8 +290,7 @@ public:
 	bool HandleTooManyColumnsError(const char *value_ptr, const idx_t size);
 	//! Adds a value to its column, returns false if it cannot be converted to the type of the column
 	inline bool AddValueToVector(const char *value_ptr, idx_t size, bool allocate = false);
-	//! Adds a value the strict casts reject as a value of a type given by the user, and warns when type detection
-	//! would reject it
+	//! Adds a value the strict casts reject as for a type given by the user, warns if type detection rejects it
 	bool AddValueNonStrict(const char *value_ptr, idx_t size, bool allocate);
 	static inline void SetComment(StringValueResult &result, idx_t buffer_pos);
 	static inline bool UnsetComment(StringValueResult &result, idx_t buffer_pos);

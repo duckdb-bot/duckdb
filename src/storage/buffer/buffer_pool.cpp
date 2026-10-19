@@ -117,7 +117,7 @@ private:
 	//! We multiply the base purge size by this value.
 	constexpr static idx_t PURGE_SIZE_MULTIPLIER = 2;
 	//! We multiply the purge size by this value to determine early-outs. This is the minimum queue size.
-	//! We never purge below this point.
+	//! Below it, a queue is only purged when it holds many dead nodes.
 	constexpr static idx_t EARLY_OUT_MULTIPLIER = 4;
 	//! We multiply the approximate alive nodes by this value to test whether our total dead nodes
 	//! exceed their allowed ratio. Must be greater than 1.
@@ -166,7 +166,7 @@ void EvictionQueue::Purge() {
 
 	// early-out, if the queue is not big enough to justify purging and holds few dead nodes
 	// - we want to keep the LRU characteristic alive
-	// - dead nodes keep the memory of their destroyed blocks' reference counts alive
+	// - dead nodes keep the control blocks of destroyed blocks alive
 	if (approx_q_size < purge_size * EARLY_OUT_MULTIPLIER && total_dead_nodes < purge_size) {
 		return;
 	}
@@ -236,6 +236,7 @@ void EvictionQueue::PurgeIteration(const idx_t purge_size) {
 		auto &node = purge_nodes[i];
 		if (node.IsDeadNode(debug_sleep_micros)) {
 			dead_count++;
+			node.memory_p.reset();
 		} else {
 			// Move alive nodes to the front for bulk re-enqueue
 			purge_nodes[alive_count++] = std::move(node);
@@ -250,7 +251,8 @@ void EvictionQueue::PurgeIteration(const idx_t purge_size) {
 		if (!purge_producer_token.valid()) {
 			throw OutOfMemoryException("Failed to allocate eviction queue producer");
 		}
-		q.enqueue_bulk(purge_producer_token, purge_nodes.begin(), alive_count);
+		// move, so that purge_nodes holds no references once the nodes die
+		q.enqueue_bulk(purge_producer_token, std::make_move_iterator(purge_nodes.begin()), alive_count);
 	}
 }
 

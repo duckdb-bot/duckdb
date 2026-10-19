@@ -86,6 +86,20 @@ PREPARE cl AS COPY (SELECT 42) TO '{TEST_DIR}/test_26144.csv' (DELIMITER chr(inv
 Binder Error: Function "nextval" modifies the database and cannot be evaluated while binding
 
 statement ok
+CREATE TABLE tt (i INTEGER);
+
+statement error
+SELECT * FROM tt AT (VERSION => nextval('s'));
+----
+Binder Error: Function "nextval" modifies the database and cannot be evaluated while binding
+
+# a volatile function that does not modify the database is still evaluated
+statement error
+SELECT * FROM tt AT (VERSION => random());
+----
+Binder Error: Catalog type does not support time travel
+
+statement ok
 BEGIN;
 
 statement error

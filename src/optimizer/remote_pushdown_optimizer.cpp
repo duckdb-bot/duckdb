@@ -82,6 +82,7 @@ RemotePushdownOptimizer::RemotePushdownOptimizer(optional_ptr<RemotePushdownOpti
     : binder(parent_p->binder), parent(parent_p), pushdown_state(parent->pushdown_state) {
 	// inherit table / column names from parent (for correlated subquery detection)
 	local_table_names = parent->local_table_names;
+	outer_scope_has_tables = parent->outer_scope_has_tables || parent->scope_has_tables;
 }
 
 void RemotePushdownOptimizer::FindRemoteCatalogsInSearchPath() {
@@ -265,11 +266,11 @@ CatalogPushdownResult RemotePushdownOptimizer::Rewrite(QueryNode &node) {
 		const Identifier &cte_name = cte_pair.first;
 		auto &cte_info = *cte_pair.second;
 		CatalogPushdownResult cte_result;
-		bool cte_refers_to_cte = true;
+		bool cte_is_self_contained = false;
 		if (cte_info.query_node) {
 			RemotePushdownOptimizer child_optimizer(this);
 			cte_result = child_optimizer.Rewrite(*cte_info.query_node);
-			cte_refers_to_cte = child_optimizer.refers_to_parent_cte;
+			cte_is_self_contained = child_optimizer.IsSelfContained(*cte_info.query_node);
 		} else {
 			cte_result = CatalogPushdownResult::Unknown();
 		}
@@ -277,7 +278,7 @@ CatalogPushdownResult RemotePushdownOptimizer::Rewrite(QueryNode &node) {
 			cte_result = Merge(cte_result, Rewrite(key));
 		}
 		cte_results[cte_name] = cte_result;
-		if (cte_result.reference_type == CatalogReferenceType::SINGLE_REMOTE_CATALOG && !cte_refers_to_cte &&
+		if (cte_result.reference_type == CatalogReferenceType::SINGLE_REMOTE_CATALOG && cte_is_self_contained &&
 		    cte_info.key_targets.empty()) {
 			remote_ctes.emplace_back(cte_info, cte_result);
 		}
@@ -835,7 +836,11 @@ CatalogPushdownResult RemotePushdownOptimizer::Rewrite(unique_ptr<TableRef> &ref
 		result = CatalogPushdownResult::NoCatalogReference();
 		break;
 	default:
-		return CatalogPushdownResult::Unknown();
+		result = CatalogPushdownResult::Unknown();
+		break;
+	}
+	if (ref->type != TableReferenceType::JOIN && ref->type != TableReferenceType::EMPTY_FROM) {
+		scope_has_tables = true;
 	}
 	if (result.reference_type == CatalogReferenceType::SINGLE_REMOTE_CATALOG) {
 		// the table reference is fully remote - check if the remote catalog supports pushing it down
@@ -867,10 +872,18 @@ CatalogPushdownResult RemotePushdownOptimizer::Rewrite(SubqueryRef &ref) {
 	if (result.reference_type == CatalogReferenceType::UNKNOWN_CATALOG_REFERENCE) {
 		TrackLocalTable(ref);
 	} else if (result.reference_type == CatalogReferenceType::SINGLE_REMOTE_CATALOG &&
-	           !child_binder.refers_to_parent_cte) {
+	           child_binder.IsSelfContained(*ref.subquery->node)) {
 		remote_subqueries.emplace_back(ref, result);
 	}
 	return result;
+}
+
+bool RemotePushdownOptimizer::IsSelfContained(const QueryNode &node) const {
+	// DML has side effects that must run even if nothing reads its result, and a recursive CTE refers to itself
+	if (node.type != QueryNodeType::SELECT_NODE && node.type != QueryNodeType::SET_OPERATION_NODE) {
+		return false;
+	}
+	return !refers_to_parent_cte && !may_refer_to_outer_column;
 }
 
 CatalogPushdownResult RemotePushdownOptimizer::RewriteTableFunctionOnly(TableFunctionRef &ref) {
@@ -1172,6 +1185,10 @@ ExpressionPushdownResult RemotePushdownOptimizer::AnalyzeExpression(const TypeEx
 
 ExpressionPushdownResult RemotePushdownOptimizer::AnalyzeExpression(const ColumnRefExpression &col_ref) {
 	ExpressionPushdownResult state;
+	// without binding, the column might refer to any table visible from outside each enclosing scope
+	for (auto scope = this; scope && scope->outer_scope_has_tables; scope = scope->parent.get()) {
+		scope->may_refer_to_outer_column = true;
+	}
 	if (RefersToLocalTable(col_ref)) {
 		// column refers to local table - bail
 		state.result = CatalogPushdownResult::Unknown();

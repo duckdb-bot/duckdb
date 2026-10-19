@@ -121,5 +121,31 @@ SELECT (SELECT n FROM (SELECT count(*) AS n FROM r.tbl WHERE id = l.x) s) AS v F
 ----
 1
 
+# a subquery that refers to a column of a preceding FROM entry is not pushed on its own
+query II
+SELECT l.x, s.n FROM (VALUES (1)) l(x), LATERAL (SELECT count(*) AS n FROM r.tbl WHERE id = l.x) s, local_tbl z;
+----
+1	1
+
+# a recursive CTE stays in one piece
+query II
+WITH RECURSIVE a(i) AS (SELECT min(id) FROM r.tbl UNION ALL SELECT i + 1 FROM a WHERE i < 2) SELECT * FROM a, local_tbl ORDER BY i;
+----
+0	1
+1	1
+2	1
+
+# a data-modifying CTE runs even if nothing reads it
+statement ok
+WITH a AS (INSERT INTO r.tbl VALUES (9)) SELECT * FROM local_tbl;
+
+statement ok
+WITH a AS MATERIALIZED (INSERT INTO r.tbl VALUES (10)) SELECT * FROM local_tbl;
+
+query I
+SELECT count(*) FROM tbl;
+----
+5
+
 statement ok
 CALL quack_stop('quack:127.0.0.1:9619');

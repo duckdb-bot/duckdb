@@ -499,6 +499,14 @@ DUCKDB_API bool TryCast::Operation(double input, double &result, bool strict);
 // String -> Numeric Casts
 //===--------------------------------------------------------------------===//
 static inline bool TryCastStringBool(const char *input_data, idx_t input_size, bool &result, bool strict) {
+	// surrounding whitespace is skipped, as in the casts to numbers
+	while (input_size > 0 && StringUtil::CharacterIsSpace(input_data[0])) {
+		input_data++;
+		input_size--;
+	}
+	while (input_size > 0 && StringUtil::CharacterIsSpace(input_data[input_size - 1])) {
+		input_size--;
+	}
 	switch (input_size) {
 	case 1: {
 		unsigned char c = static_cast<uint8_t>(std::tolower(*input_data));

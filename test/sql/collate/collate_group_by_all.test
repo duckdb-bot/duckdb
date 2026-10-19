@@ -103,10 +103,11 @@ SELECT currval('seq');
 statement ok
 CREATE SEQUENCE seq2;
 
-query I
-SELECT count(*) FROM (SELECT (SELECT c0 || (nextval('seq2') * 0)) AS k, count(*) FROM t WHERE id < 2 GROUP BY ALL);
+query II rowsort
+SELECT (SELECT c0 || (nextval('seq2') * 0)) AS k, count(*) FROM t WHERE id < 2 GROUP BY ALL;
 ----
-2
+A0	1
+a0	1
 
 query I
 SELECT currval('seq2');

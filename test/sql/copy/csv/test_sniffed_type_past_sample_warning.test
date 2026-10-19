@@ -283,6 +283,11 @@ SELECT b::HUGEINT AS v FROM read_csv(['{TEST_DIR}/columns_ab.csv', '{TEST_DIR}/c
 ----
 2
 
+statement error
+SELECT a, b::HUGEINT FROM read_csv(['{TEST_DIR}/columns_ab.csv', '{TEST_DIR}/columns_ba.csv'], sample_size = 2048, union_by_name = true)
+----
+<REGEX>:.*Column "a" of CSV file ".*columns_ba\.csv".*
+
 # one warning per column and file, also when many scanners read a file
 statement ok
 SET warnings_as_errors=false;

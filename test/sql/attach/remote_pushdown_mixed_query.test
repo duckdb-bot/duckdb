@@ -1,0 +1,125 @@
+# name: test/sql/attach/remote_pushdown_mixed_query.test
+# description: Subqueries and CTEs on one remote catalog are pushed down when the rest of the query stays local
+# group: [attach]
+
+require quack
+
+require httpfs
+
+statement ok
+CALL quack_serve('quack:127.0.0.1:9619', token = 'test_token');
+
+statement ok
+CREATE TABLE tbl AS SELECT range AS id FROM range(3);
+
+statement ok
+ATTACH 'quack:127.0.0.1:9619' AS r (TOKEN 'test_token');
+
+statement ok
+ATTACH 'quack:127.0.0.1:9619' AS r2 (TOKEN 'test_token');
+
+statement ok
+CREATE TABLE local_tbl AS SELECT 1 AS x;
+
+# a subquery in FROM next to a local table: the server computes the count
+query II
+SELECT * FROM (SELECT count(*) AS n FROM r.tbl) s, local_tbl;
+----
+3	1
+
+query II
+EXPLAIN SELECT * FROM (SELECT count(*) AS n FROM r.tbl) s, local_tbl;
+----
+physical_plan	<!REGEX>:.*Ungrouped Aggregate.*
+
+# a CTE body joined with a local table: the server computes the groups
+query II
+WITH a AS (SELECT id, count(*) AS c FROM r.tbl GROUP BY id) SELECT l.x, sum(a.c) FROM local_tbl AS l JOIN a ON a.id = l.x GROUP BY l.x;
+----
+1	1
+
+query II
+EXPLAIN WITH a AS (SELECT id, count(*) AS c FROM r.tbl GROUP BY id) SELECT l.x, sum(a.c) FROM local_tbl AS l JOIN a ON a.id = l.x GROUP BY l.x;
+----
+physical_plan	<!REGEX>:.*Aggregates: count_star.*
+
+# subqueries and CTEs on two remote catalogs are each pushed to their own catalog
+query II
+SELECT * FROM (SELECT count(*) AS a FROM r.tbl) a, (SELECT count(*) AS b FROM r2.tbl) b;
+----
+3	3
+
+query II
+EXPLAIN SELECT * FROM (SELECT count(*) AS a FROM r.tbl) a, (SELECT count(*) AS b FROM r2.tbl) b;
+----
+physical_plan	<!REGEX>:.*Ungrouped Aggregate.*
+
+query II
+WITH a AS (SELECT count(*) AS a FROM r.tbl), b AS (SELECT count(*) AS b FROM r2.tbl) SELECT * FROM a, b;
+----
+3	3
+
+query II
+EXPLAIN WITH a AS (SELECT count(*) AS a FROM r.tbl), b AS (SELECT count(*) AS b FROM r2.tbl) SELECT * FROM a, b;
+----
+physical_plan	<!REGEX>:.*Ungrouped Aggregate.*
+
+# a subquery nested in a local subquery, in UPDATE and INSERT statements
+query II
+SELECT * FROM (SELECT * FROM (SELECT count(*) AS n FROM r.tbl) s1 WHERE n > 0) s2, local_tbl;
+----
+3	1
+
+statement ok
+BEGIN;
+
+statement ok
+UPDATE local_tbl SET x = s.c FROM (SELECT count(*) AS c FROM r.tbl) s;
+
+statement ok
+INSERT INTO local_tbl SELECT s.n + local_tbl.x FROM (SELECT count(*) AS n FROM r.tbl) s, local_tbl;
+
+query I
+SELECT x FROM local_tbl ORDER BY x;
+----
+3
+6
+
+statement ok
+ROLLBACK;
+
+# a CTE that refers to another CTE stays local, the CTE it refers to is pushed
+query II
+WITH a AS (SELECT id FROM r.tbl), b AS (SELECT count(*) AS c FROM a) SELECT * FROM b, local_tbl;
+----
+3	1
+
+query II
+EXPLAIN WITH a AS (SELECT id FROM r.tbl), b AS (SELECT count(*) AS c FROM a) SELECT * FROM b, local_tbl;
+----
+physical_plan	<REGEX>:.*Ungrouped Aggregate.*
+
+# a subquery that refers to a CTE of the outer query is not pushed on its own
+query II
+WITH c AS (SELECT 1 AS y) SELECT * FROM (SELECT count(*) AS n FROM r.tbl, c WHERE id >= y) s, local_tbl;
+----
+2	1
+
+query II
+EXPLAIN WITH c AS (SELECT 1 AS y) SELECT * FROM (SELECT count(*) AS n FROM r.tbl, c WHERE id >= y) s, local_tbl;
+----
+physical_plan	<REGEX>:.*Ungrouped Aggregate.*
+
+# subqueries that refer to local columns are not pushed
+query II
+SELECT * FROM local_tbl l, LATERAL (SELECT count(*) AS n FROM r.tbl WHERE id = l.x) s;
+----
+1	1
+
+query I
+SELECT (SELECT n FROM (SELECT count(*) AS n FROM r.tbl WHERE id = l.x) s) AS v FROM local_tbl l;
+----
+1
+
+statement ok
+CALL quack_stop('quack:127.0.0.1:9619');

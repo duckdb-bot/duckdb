@@ -23,6 +23,7 @@ class ExpressionListRef;
 class FunctionExpression;
 class JoinRef;
 class SubqueryRef;
+struct CommonTableExpressionInfo;
 class TableFunctionRef;
 class TableRef;
 class QueryNode;
@@ -189,6 +190,8 @@ private:
 
 	void FinishPushdown(unique_ptr<SQLStatement> &statement, CatalogPushdownResult result);
 	void FinishPushdown(unique_ptr<QueryNode> &node, CatalogPushdownResult result);
+	//! Replace the node with a scan of the result of running it in the remote catalog
+	void PushdownNode(unique_ptr<QueryNode> &node, CatalogPushdownResult &result);
 	//! Wrap a table ref that produces a remote statement's result into "SELECT * FROM <ref>"
 	static unique_ptr<SelectStatement> WrapRemoteRef(unique_ptr<TableRef> ref);
 
@@ -196,7 +199,7 @@ private:
 	unique_ptr<TableRef> CreateRemoteFunctionRef(CatalogPushdownResult &result, unique_ptr<QueryNode> node);
 	bool RefersToLocalTable(const ColumnRefExpression &col_ref) const;
 
-	bool RefersToCTE(const Identifier &cte_name, CatalogPushdownResult &result) const;
+	bool RefersToCTE(const Identifier &cte_name, CatalogPushdownResult &result);
 
 private:
 	Binder &binder;
@@ -207,5 +210,11 @@ private:
 	identifier_set_t local_table_names;
 	//! CTE name to catalog pushdown result, populated as CTEs are analyzed (inner scopes restore on exit)
 	identifier_map_t<CatalogPushdownResult> cte_results;
+	//! Whether this scope refers to a CTE of a parent scope, so that it cannot be pushed on its own
+	bool refers_to_parent_cte = false;
+	//! Subqueries in the FROM clause of the current node that a single remote catalog can run on their own
+	vector<std::pair<reference<SubqueryRef>, CatalogPushdownResult>> remote_subqueries;
+	//! CTEs of the current node that a single remote catalog can run on their own
+	vector<std::pair<reference<CommonTableExpressionInfo>, CatalogPushdownResult>> remote_ctes;
 };
 } // namespace duckdb

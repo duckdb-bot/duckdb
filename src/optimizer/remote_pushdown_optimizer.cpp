@@ -265,9 +265,11 @@ CatalogPushdownResult RemotePushdownOptimizer::Rewrite(QueryNode &node) {
 		const Identifier &cte_name = cte_pair.first;
 		auto &cte_info = *cte_pair.second;
 		CatalogPushdownResult cte_result;
+		bool cte_refers_to_cte = true;
 		if (cte_info.query_node) {
 			RemotePushdownOptimizer child_optimizer(this);
 			cte_result = child_optimizer.Rewrite(*cte_info.query_node);
+			cte_refers_to_cte = child_optimizer.refers_to_parent_cte;
 		} else {
 			cte_result = CatalogPushdownResult::Unknown();
 		}
@@ -275,6 +277,10 @@ CatalogPushdownResult RemotePushdownOptimizer::Rewrite(QueryNode &node) {
 			cte_result = Merge(cte_result, Rewrite(key));
 		}
 		cte_results[cte_name] = cte_result;
+		if (cte_result.reference_type == CatalogReferenceType::SINGLE_REMOTE_CATALOG && !cte_refers_to_cte &&
+		    cte_info.key_targets.empty()) {
+			remote_ctes.emplace_back(cte_info, cte_result);
+		}
 	}
 	CatalogPushdownResult result;
 	switch (node.type) {
@@ -318,6 +324,15 @@ CatalogPushdownResult RemotePushdownOptimizer::Rewrite(QueryNode &node) {
 		}
 	} else if (result.reference_type == CatalogReferenceType::NO_CATALOG_REFERENCED) {
 		result.used_nodes.push_back(node);
+	}
+	if (result.reference_type == CatalogReferenceType::UNKNOWN_CATALOG_REFERENCE) {
+		// the node stays local, push the subqueries and CTEs that a single remote catalog can run on their own
+		for (auto &entry : remote_subqueries) {
+			PushdownNode(entry.first.get().subquery->node, entry.second);
+		}
+		for (auto &entry : remote_ctes) {
+			PushdownNode(entry.first.get().query_node, entry.second);
+		}
 	}
 	return result;
 }
@@ -851,6 +866,9 @@ CatalogPushdownResult RemotePushdownOptimizer::Rewrite(SubqueryRef &ref) {
 	auto result = child_binder.Rewrite(*ref.subquery->node);
 	if (result.reference_type == CatalogReferenceType::UNKNOWN_CATALOG_REFERENCE) {
 		TrackLocalTable(ref);
+	} else if (result.reference_type == CatalogReferenceType::SINGLE_REMOTE_CATALOG &&
+	           !child_binder.refers_to_parent_cte) {
+		remote_subqueries.emplace_back(ref, result);
 	}
 	return result;
 }
@@ -956,6 +974,8 @@ CatalogPushdownResult RemotePushdownOptimizer::Rewrite(JoinRef &ref) {
 	// the right side of a join can be correlated to the left side - use a child optimizer to track this
 	RemotePushdownOptimizer child_optimizer(this);
 	auto right_result = child_optimizer.Rewrite(ref.right);
+	remote_subqueries.insert(remote_subqueries.end(), child_optimizer.remote_subqueries.begin(),
+	                         child_optimizer.remote_subqueries.end());
 
 	auto result = Merge(left_result, right_result);
 	// Also analyze the join condition - it may contain subqueries or local macro calls
@@ -990,14 +1010,15 @@ void RemotePushdownOptimizer::TrackLocalTable(const SubqueryRef &ref) {
 	}
 }
 
-bool RemotePushdownOptimizer::RefersToCTE(const Identifier &cte_name, CatalogPushdownResult &result) const {
+bool RemotePushdownOptimizer::RefersToCTE(const Identifier &cte_name, CatalogPushdownResult &result) {
 	auto entry = cte_results.find(cte_name);
 	if (entry != cte_results.end()) {
 		result = entry->second;
 		return true;
 	}
-	if (parent) {
-		return parent->RefersToCTE(cte_name, result);
+	if (parent && parent->RefersToCTE(cte_name, result)) {
+		refers_to_parent_cte = true;
+		return true;
 	}
 	return false;
 }
@@ -1889,6 +1910,10 @@ void RemotePushdownOptimizer::FinishPushdown(unique_ptr<QueryNode> &node, Catalo
 			}
 		}
 	}
+	PushdownNode(node, result);
+}
+
+void RemotePushdownOptimizer::PushdownNode(unique_ptr<QueryNode> &node, CatalogPushdownResult &result) {
 	StripCatalogName(*node, result.catalog->GetName());
 	auto select_node = make_uniq<SelectNode>();
 	select_node->select_list.push_back(make_uniq<StarExpression>());

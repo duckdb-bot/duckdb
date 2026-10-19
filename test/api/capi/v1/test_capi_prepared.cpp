@@ -1062,4 +1062,12 @@ TEST_CASE("Preparing a statement that folds nextval while binding in the C API",
 	REQUIRE_NO_FAIL(tester.QueryPrepared(set_prepared.prepared));
 	REQUIRE(tester.Query("SELECT currval('s')")->Fetch<int64_t>(0, 0) == 4);
 	REQUIRE(tester.Query("SELECT current_setting('threads')")->Fetch<int64_t>(0, 0) == 4);
+
+	// a prepared EXECUTE binds the statement it executes when it runs
+	REQUIRE_NO_FAIL(tester.Query("PREPARE p AS SELECT count(*) FROM range(nextval('s'))"));
+	CAPIPrepared execute_prepared;
+	REQUIRE(execute_prepared.Prepare(tester, "EXECUTE p"));
+	REQUIRE(tester.Query("SELECT currval('s')")->Fetch<int64_t>(0, 0) == 4);
+	REQUIRE(tester.QueryPrepared(execute_prepared.prepared)->Fetch<int64_t>(0, 0) == 5);
+	REQUIRE(tester.QueryPrepared(execute_prepared.prepared)->Fetch<int64_t>(0, 0) == 6);
 }

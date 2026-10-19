@@ -5,7 +5,6 @@
 #include "duckdb/planner/operator/logical_execute.hpp"
 #include "duckdb/planner/expression_binder/constant_binder.hpp"
 #include "duckdb/main/client_data.hpp"
-#include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/main/client_context.hpp"
@@ -84,11 +83,13 @@ BoundStatement Binder::Bind(ExecuteStatement &stmt) {
 		// catalog was modified or statement does not have clear types: rebind the statement before running the execute
 		Planner prepared_planner(context);
 		prepared_planner.parameter_data = bind_values;
-		// EXECUTE binds the statement to run it, with every parameter value supplied
-		prepared = prepared_planner.PrepareSQLStatement(entry->second->unbound_statement->Copy(),
-		                                                BindingMode::STANDARD_BINDING);
+		// EXECUTE binds the statement to run it, unless the EXECUTE is prepared itself
+		auto mode = GetBindingMode() == BindingMode::PREPARE ? BindingMode::PREPARE : BindingMode::STANDARD_BINDING;
+		prepared = prepared_planner.PrepareSQLStatement(entry->second->unbound_statement->Copy(), mode);
+		if (!prepared->properties.bound_all_parameters) {
+			throw ParameterNotResolvedException();
+		}
 		rebound_plan = std::move(prepared_planner.plan);
-		D_ASSERT(prepared->properties.bound_all_parameters);
 		global_binder_state->bound_tables = prepared_planner.binder->global_binder_state->bound_tables;
 	}
 	// copy the properties of the prepared statement into the planner

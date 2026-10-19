@@ -439,7 +439,7 @@ Value Binder::FoldExpression(const Expression &expr) {
 		// PREPARE does not run the statement, so the expression is evaluated when EXECUTE binds it again
 		throw ParameterNotResolvedException();
 	}
-	// refuse a modification that execution refuses before the expression makes it
+	// refuse a write to a read-only database or in a read-only transaction before the expression makes it
 	for (auto &entry : properties.modified_databases) {
 		auto &db = *DatabaseManager::Get(context).GetDatabase(context, entry.first);
 		if (db.IsReadOnly()) {

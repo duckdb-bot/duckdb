@@ -4,7 +4,6 @@
 #include "duckdb/parser/tableref/table_function_ref.hpp"
 #include "duckdb/planner/operator/logical_attach.hpp"
 #include "duckdb/planner/expression_binder/table_function_binder.hpp"
-#include "duckdb/execution/expression_executor.hpp"
 
 namespace duckdb {
 

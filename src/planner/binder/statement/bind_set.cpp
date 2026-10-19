@@ -2,7 +2,6 @@
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/operator/logical_set.hpp"
 #include "duckdb/planner/operator/logical_reset.hpp"
-#include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/planner/expression_binder/constant_binder.hpp"
 #include "duckdb/parser/tableref/emptytableref.hpp"
 #include "duckdb/parser/query_node/select_node.hpp"

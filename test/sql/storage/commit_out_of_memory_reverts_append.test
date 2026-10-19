@@ -4,7 +4,7 @@
 
 require skip_reload
 
-require vector_size 2048
+require exact_vector_size 2048
 
 require block_size 262144
 
@@ -27,10 +27,13 @@ statement ok
 INSERT INTO t VALUES (0, 'x')
 
 statement ok
-CREATE TABLE wide (i INTEGER, s VARCHAR)
+CREATE TABLE wide (i INTEGER, s VARCHAR, l INTEGER[], st STRUCT(a INTEGER, b VARCHAR))
 
 statement ok
-INSERT INTO wide VALUES (0, 'x')
+INSERT INTO wide VALUES (0, 'x', [0], {'a': 0, 'b': 'x'})
+
+statement ok
+CHECKPOINT
 
 # the append fails after it added rows to new row groups and keys to the index
 statement ok
@@ -62,10 +65,13 @@ SELECT count(*), sum(i), max(s) FROM t
 statement ok
 INSERT INTO t SELECT i, 'y' || i FROM range(1, 5000) r(i)
 
+statement ok
+INSERT INTO t VALUES (999999, 'z')
+
 query IIII
 SELECT count(*), sum(i), min(s), max(s) FROM t
 ----
-5000	12497500	x	y999
+5001	13497499	x	z
 
 statement error
 INSERT INTO t VALUES (4999, 'z')
@@ -80,7 +86,7 @@ statement ok
 BEGIN
 
 statement ok
-INSERT INTO wide SELECT i, repeat('x', 1000) || i FROM range(1, 25000) r(i)
+INSERT INTO wide SELECT i, repeat('x', 1000) || i, [i, i], {'a': i, 'b': repeat('x', 100)} FROM range(1, 20000) r(i)
 
 statement ok
 DELETE FROM wide WHERE i = 1
@@ -93,18 +99,18 @@ COMMIT
 statement ok
 RESET memory_limit
 
-query III
-SELECT count(*), sum(i), max(s) FROM wide
+query IIII
+SELECT count(*), sum(i), max(s), max(st.b) FROM wide
 ----
-1	0	x
+1	0	x	x
 
 statement ok
-INSERT INTO wide SELECT 100000 + i, 'y' || i FROM range(1, 5000) r(i)
+INSERT INTO wide SELECT 100000 + i, 'y' || i, [i], {'a': i, 'b': 'y'} FROM range(1, 5000) r(i)
 
-query IIII
-SELECT count(*), sum(i), sum(length(s)), max(s) FROM wide
+query IIIIII
+SELECT count(*), sum(i), sum(length(s)), max(s), sum(len(l)), sum(st.a) FROM wide
 ----
-5000	512397500	23889	y999
+5000	512397500	23889	y999	5000	12497500
 
 statement ok
 CHECKPOINT
@@ -114,22 +120,23 @@ restart
 query IIII
 SELECT count(*), sum(i), min(s), max(s) FROM t
 ----
-5000	12497500	x	y999
+5001	13497499	x	z
 
 query II
-SELECT i, s FROM t WHERE i = 4999
+SELECT i, s FROM t WHERE i IN (4999, 999999) ORDER BY i
 ----
 4999	y4999
+999999	z
 
-query IIII
-SELECT count(*), sum(i), sum(length(s)), max(s) FROM wide
+query IIIIII
+SELECT count(*), sum(i), sum(length(s)), max(s), sum(len(l)), sum(st.a) FROM wide
 ----
-5000	512397500	23889	y999
+5000	512397500	23889	y999	5000	12497500
 
 statement ok
-INSERT INTO wide VALUES (1, 'z')
+INSERT INTO wide VALUES (1, 'z', [1, 2], {'a': 1, 'b': 'z'})
 
-query II
-SELECT count(*), max(s) FROM wide
+query III
+SELECT count(*), max(s), max(st.b) FROM wide
 ----
-5001	z
+5001	z	z

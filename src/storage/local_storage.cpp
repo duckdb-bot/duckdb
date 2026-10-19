@@ -645,7 +645,7 @@ void LocalStorage::Flush(DataTable &table, LocalTableStorage &storage, optional_
 		} catch (...) {
 			// remove the rows and index entries that the failed append added
 			try {
-				table.RevertAppendInternal(NumericCast<idx_t>(append_state.row_start));
+				table.RevertFailedAppend(append_state);
 				// free the memory of the reverted rows before this storage is scanned again
 				append_state.row_group_append_state.states.reset();
 				append_state.row_groups.reset();

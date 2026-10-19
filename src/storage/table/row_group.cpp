@@ -1269,14 +1269,12 @@ void RowGroup::RevertAppend(idx_t new_count) {
 		throw InternalException("RowGroup::RevertAppend new_count out of range");
 	}
 	if (new_count < this->count) {
+		// rows past the count have no version info
 		auto &vinfo = GetOrCreateVersionInfo();
 		vinfo.RevertAppend(new_count);
 	}
-	for (idx_t c = 0; c < GetColumnCount(); c++) {
-		// a column that is not loaded has no appended rows
-		if (ColumnIsLoaded(c)) {
-			columns[c]->RevertAppend(UnsafeNumericCast<row_t>(new_count));
-		}
+	for (auto &column : GetColumns()) {
+		column->RevertAppend(UnsafeNumericCast<row_t>(new_count));
 	}
 	if (transient) {
 		*transient = SuballocationBlock();

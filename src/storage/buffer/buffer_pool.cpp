@@ -236,7 +236,6 @@ void EvictionQueue::PurgeIteration(const idx_t purge_size) {
 		auto &node = purge_nodes[i];
 		if (node.IsDeadNode(debug_sleep_micros)) {
 			dead_count++;
-			node.memory_p.reset();
 		} else {
 			// Move alive nodes to the front for bulk re-enqueue
 			purge_nodes[alive_count++] = std::move(node);
@@ -251,8 +250,11 @@ void EvictionQueue::PurgeIteration(const idx_t purge_size) {
 		if (!purge_producer_token.valid()) {
 			throw OutOfMemoryException("Failed to allocate eviction queue producer");
 		}
-		// move, so that purge_nodes holds no references once the nodes die
 		q.enqueue_bulk(purge_producer_token, std::make_move_iterator(purge_nodes.begin()), alive_count);
+	}
+	// the moves emptied the re-enqueued slots, clear the rest so that purge_nodes keeps no control blocks alive
+	for (idx_t i = alive_count; i < actually_dequeued; i++) {
+		purge_nodes[i].memory_p.reset();
 	}
 }
 

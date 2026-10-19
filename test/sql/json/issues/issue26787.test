@@ -1,0 +1,78 @@
+# name: test/sql/json/issues/issue26787.test
+# description: A parallel newline-delimited scan reads lines that continue across a buffer without a newline
+# group: [issues]
+
+require json
+
+statement ok
+SET threads=4;
+
+# a parallel scan reads one file in buffers of 16777212 bytes
+# the last line has no newline, and its last 36 bytes are the only bytes of the third buffer
+statement ok
+COPY (SELECT (repeat('{"pad":"' || repeat('x', 89) || '"}' || chr(10), 335541) || '{"pad":"' || repeat('x', 149) || '"}' || chr(10) || '{"pad":"' || repeat('y', 190) || '"}')::BLOB) TO '{TEST_DIR}/unterminated_last_line.jsonl' (FORMAT BLOB);
+
+query IIII
+SELECT count(*), count(pad), max(length(pad)), count(*) FILTER (pad LIKE 'y%') FROM read_json('{TEST_DIR}/unterminated_last_line.jsonl', format = 'newline_delimited');
+----
+335543	335543	190	1
+
+query IIII
+SELECT count(*), count(pad), max(length(pad)), count(*) FILTER (pad LIKE 'y%') FROM read_json('{TEST_DIR}/unterminated_last_line.jsonl', format = 'newline_delimited', ignore_errors = true);
+----
+335543	335543	190	1
+
+query IIII
+SELECT count(*), count(pad), max(length(pad)), count(*) FILTER (pad LIKE 'y%') FROM read_json('{TEST_DIR}/unterminated_last_line.jsonl');
+----
+335543	335543	190	1
+
+query II
+SELECT count(*), count(json) FROM read_json_objects('{TEST_DIR}/unterminated_last_line.jsonl', format = 'newline_delimited');
+----
+335543	335543
+
+statement ok
+COPY (SELECT (repeat('{"pad":"' || repeat('x', 89) || '"}' || chr(10), 335541) || '{"pad":"' || repeat('x', 149) || '"}' || chr(10) || '{"pad":"' || repeat('y', 190) || '"}')::BLOB) TO '{TEST_DIR}/unterminated_last_line.jsonl.gz' (FORMAT BLOB, COMPRESSION gzip);
+
+query III
+SELECT count(*), count(pad), count(*) FILTER (pad LIKE 'y%') FROM read_json('{TEST_DIR}/unterminated_last_line.jsonl.gz', format = 'newline_delimited');
+----
+335543	335543	1
+
+# a line that fills the whole second buffer and ends with the first byte of the third
+statement ok
+COPY (SELECT (repeat('{"pad":"' || repeat('x', 89) || '"}' || chr(10), 167771) || '{"pad":"' || repeat('x', 98) || '"}' || chr(10) || '{"pad":"' || repeat('g', 16777205) || '"}' || chr(10) || repeat('{"pad":"' || repeat('x', 89) || '"}' || chr(10), 3))::BLOB) TO '{TEST_DIR}/line_over_buffer.jsonl' (FORMAT BLOB);
+
+query III
+SELECT count(*), count(pad), max(length(pad)) FROM read_json('{TEST_DIR}/line_over_buffer.jsonl', format = 'newline_delimited');
+----
+167776	167776	16777205
+
+query III
+SELECT count(*), count(pad), max(length(pad)) FROM read_json('{TEST_DIR}/line_over_buffer.jsonl', format = 'newline_delimited', ignore_errors = true);
+----
+167776	167776	16777205
+
+# the same line ends the file without a newline, at the end of the second buffer
+statement ok
+COPY (SELECT (repeat('{"pad":"' || repeat('x', 89) || '"}' || chr(10), 167771) || '{"pad":"' || repeat('x', 98) || '"}' || chr(10) || '{"pad":"' || repeat('g', 16777205) || '"}')::BLOB) TO '{TEST_DIR}/line_over_buffer_at_end.jsonl' (FORMAT BLOB);
+
+query III
+SELECT count(*), count(pad), max(length(pad)) FROM read_json('{TEST_DIR}/line_over_buffer_at_end.jsonl', format = 'newline_delimited');
+----
+167773	167773	16777205
+
+# a single thread reads the files the same way
+statement ok
+SET threads=1;
+
+query IIII
+SELECT count(*), count(pad), max(length(pad)), count(*) FILTER (pad LIKE 'y%') FROM read_json('{TEST_DIR}/unterminated_last_line.jsonl', format = 'newline_delimited');
+----
+335543	335543	190	1
+
+query III
+SELECT count(*), count(pad), max(length(pad)) FROM read_json('{TEST_DIR}/line_over_buffer.jsonl', format = 'newline_delimited');
+----
+167776	167776	16777205

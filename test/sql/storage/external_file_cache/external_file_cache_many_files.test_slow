@@ -4,6 +4,8 @@
 
 require parquet
 
+require skip_reload
+
 statement ok
 SET threads = 1;
 
@@ -26,8 +28,8 @@ SELECT sum(length(c0) + length(c1) + length(c2) + length(c3) + length(c4) + leng
 
 endloop
 
-# the cached files that do not fit the memory limit are evicted
-query I
-SELECT count(DISTINCT path) < 500 FROM duckdb_external_file_cache()
+# the cached files that do not fit the memory limit are evicted, the most recent ones stay
+query II
+SELECT count(DISTINCT path) > 0, count(DISTINCT path) < 500 FROM duckdb_external_file_cache()
 ----
-true
+true	true

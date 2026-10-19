@@ -24,12 +24,15 @@ static bool HasInfinities(const LogicalType &type) {
 	}
 }
 
-//! The smallest finite date or timestamp lies below -infinity, so the casts of the infinities between the bounds can
-//! lie outside the casts of the bounds
+//! The smallest finite date or timestamp lies below -infinity, so the casts of the bounds can be out of order, and the
+//! casts of the infinities between the bounds can lie outside them
 static bool WidenByInfinities(const BaseStatistics &input, const LogicalType &target, Value &min, Value &max) {
 	auto &source = input.GetType();
 	if (!HasInfinities(source)) {
 		return true;
+	}
+	if (max < min) {
+		std::swap(min, max);
 	}
 	auto source_min = NumericStats::Min(input);
 	auto source_max = NumericStats::Max(input);

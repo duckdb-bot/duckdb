@@ -27,6 +27,27 @@ SELECT count(*) FROM t WHERE c::{target} < '1970-01-01'::{target};
 
 endloop
 
+# bounds from the smallest finite value to -infinity, whose casts are in the other order
+statement ok
+CREATE TABLE v(c TIMESTAMP_NS);
+
+statement ok
+INSERT INTO v VALUES (make_timestamp_ns(-9223372036854775807 - 1)), ('-infinity');
+
+foreach target TIMESTAMP TIMESTAMP_MS DATE
+
+query I
+SELECT count(*) FROM v WHERE c::{target} <> '-infinity'::{target};
+----
+1
+
+query I
+SELECT count(*) FROM v WHERE c::{target} = '-infinity'::{target};
+----
+1
+
+endloop
+
 query I
 SELECT min(c::TIMESTAMP) = '-infinity'::TIMESTAMP FROM t WHERE c::TIMESTAMP < '1900-01-01';
 ----

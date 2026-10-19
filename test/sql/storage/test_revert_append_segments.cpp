@@ -38,8 +38,9 @@ TEST_CASE("Test reverting an append whose segment starts after a gap in the row 
 
 	for (idx_t revert_to : {idx_t(100), idx_t(50)}) {
 		REQUIRE_NO_FAIL(con.Query("BEGIN TRANSACTION"));
-		auto &table = Catalog::GetEntry<TableCatalogEntry>(*con.context, INVALID_CATALOG, DEFAULT_SCHEMA, "t")
-		                  .Cast<DuckTableEntry>();
+		auto &table =
+		    Catalog::GetEntry<TableCatalogEntry>(*con.context, QualifiedName(INVALID_CATALOG, DEFAULT_SCHEMA, "t"))
+		        .Cast<DuckTableEntry>();
 		auto &column = table.GetStorage().GetRowGroupCollection()->GetRowGroup(0)->GetRawColumnData(0);
 		auto end = AppendSegmentAfterGap(*con.context, column);
 		REQUIRE(end == 100);

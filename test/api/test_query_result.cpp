@@ -14,6 +14,7 @@
 #include "duckdb/main/query_result_stream.hpp"
 #include "duckdb/logging/log_manager.hpp"
 #include "duckdb/logging/log_storage.hpp"
+#include "duckdb/logging/log_type.hpp"
 #include "result_wait_helpers.hpp"
 #include "test_result_format.hpp"
 
@@ -1140,11 +1141,14 @@ TEST_CASE("Every state ends a query when the end of one fails", "[api][query_res
 	REQUIRE(StringUtil::Contains(invalidated->GetError(), "database has been invalidated"));
 }
 
-//! A log storage whose flush fails once, at the flush it is asked to fail
+//! A log storage whose flush fails once, at the flush it is asked to fail, and that can fail on the profiler metrics
 class FailingLogStorage : public LogStorage {
 public:
 	void WriteLogEntry(timestamp_t timestamp, LogLevel level, const string &log_type, const string &log_message,
 	                   const RegisteredLoggingContext &context) override {
+		if (fail_metrics && log_type == MetricsLogType::NAME) {
+			throw InternalException("metrics log failed");
+		}
 	}
 	void WriteLogEntries(DataChunk &chunk, const RegisteredLoggingContext &context) override {
 	}
@@ -1165,6 +1169,7 @@ public:
 
 	idx_t flushes = 0;
 	idx_t fail_at_flush = 0;
+	bool fail_metrics = false;
 };
 
 TEST_CASE("Every state ends a query when an end error is internal or the log fails", "[api][query_result]") {
@@ -1234,6 +1239,29 @@ TEST_CASE("Every state ends a query when an end error is internal or the log fai
 	REQUIRE(state->begins == state->ends);
 	auto next = con.Query("SELECT 42");
 	REQUIRE(CHECK_COLUMN(next, 0, {42}));
+}
+
+TEST_CASE("An internal error of the profiler at the end of a query invalidates the database", "[api][query_result]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	auto state = make_shared_ptr<CountingQueryState>();
+	con.context->registered_state->Insert("counting_query_state", state);
+	auto log_storage = make_shared_ptr<FailingLogStorage>();
+	duckdb::shared_ptr<LogStorage> base_storage = log_storage;
+	db.instance->GetLogManager().RegisterLogStorage("failing_log_storage", base_storage);
+	REQUIRE_NO_FAIL(con.Query("SET enable_logging = true"));
+	REQUIRE_NO_FAIL(con.Query("SET logging_storage = 'failing_log_storage'"));
+	REQUIRE_NO_FAIL(con.Query("PRAGMA enable_profiling = 'no_output'"));
+	// the profiler logs its metrics when the query ends
+	log_storage->fail_metrics = true;
+	auto failed = con.Query("SELECT 42");
+	REQUIRE(failed->HasError());
+	REQUIRE(failed->GetErrorType() == ExceptionType::INTERNAL);
+	REQUIRE(StringUtil::Contains(failed->GetError(), "metrics log failed"));
+	REQUIRE(state->begins == state->ends);
+	auto invalidated = con.Query("SELECT 42");
+	REQUIRE(invalidated->HasError());
+	REQUIRE(StringUtil::Contains(invalidated->GetError(), "database has been invalidated"));
 }
 
 TEST_CASE("An appender is refused while a result is open", "[api][query_result]") {

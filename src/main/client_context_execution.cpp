@@ -162,8 +162,12 @@ ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success,
 		client_data->profiler->EndQuery();
 	} catch (std::exception &ex) {
 		// e.g. the profiling output could not be written - report it as the error of the query
+		ErrorData profiler_error(ex);
+		if (Exception::InvalidatesDatabase(profiler_error.Type()) || profiler_error.Type() == ExceptionType::INTERNAL) {
+			ValidChecker::Invalidate(DatabaseInstance::GetDatabase(*this), profiler_error.RawMessage());
+		}
 		if (!error.HasError()) {
-			error = ErrorData(ex);
+			error = std::move(profiler_error);
 		}
 	}
 

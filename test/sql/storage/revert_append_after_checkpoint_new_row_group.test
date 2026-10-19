@@ -8,6 +8,10 @@ require no_alternative_verify
 
 load {TEST_DIR}/revert_append_after_checkpoint_new_row_group.db
 
+# keep the row groups in memory until the explicit checkpoints
+statement ok
+SET wal_autocheckpoint = '1TB'
+
 statement ok
 CREATE TABLE v (i INTEGER, x VARIANT)
 

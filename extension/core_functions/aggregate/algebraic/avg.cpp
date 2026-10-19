@@ -166,11 +166,14 @@ struct TimestampAverageOperation : public DiscreteAverageOperation {
 	}
 
 	template <class STATE, class OP>
-	static void Combine(const STATE &source, STATE &target, AggregateInputData &input) {
+	static void Combine(const STATE &source, STATE &target, AggregateInputData &) {
 		if (HasInfinity(source)) {
 			AddInfinity(target, source.value.lower);
 		} else if (source.count != 0 && !HasInfinity(target)) {
-			DiscreteAverageOperation::Combine<STATE, OP>(source, target, input);
+			if (!TryAddOperator::Operation(target.count, source.count, target.count)) {
+				throw OutOfRangeException("Overflow in aggregate state combine");
+			}
+			CombineSumStateValue(target.value, source.value);
 		}
 	}
 

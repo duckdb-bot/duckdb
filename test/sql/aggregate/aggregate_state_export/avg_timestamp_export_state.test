@@ -53,3 +53,9 @@ query I
 SELECT finalize(combine(to_aggregate_state({'count': 0, 'value': 5::HUGEINT}, 'avg', ['TIMESTAMP']), to_aggregate_state({'count': 0, 'value': -4::HUGEINT}, 'avg', ['TIMESTAMP'])));
 ----
 NULL
+
+# counts that overflow fail instead of wrapping around to an infinity
+statement error
+SELECT finalize(combine(to_aggregate_state({'count': 18446744073709551615, 'value': 0::HUGEINT}, 'avg', ['TIMESTAMP']), to_aggregate_state({'count': 1, 'value': 1::HUGEINT}, 'avg', ['TIMESTAMP'])));
+----
+Overflow in aggregate state combine

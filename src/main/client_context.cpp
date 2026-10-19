@@ -842,7 +842,7 @@ unique_ptr<QueryResult> ClientContext::SubmitStatement(ClientContextLock &lock, 
 		// other types of exceptions do invalidate the current transaction
 		result = ErrorResult<QueryResult>(std::move(error), query);
 	}
-	if (handle) {
+	if (handle) { // NOLINT(bugprone-use-after-move): handle is empty once it was handed out as the result
 		// A handle that is not handed out is released without the context lock its Close would take
 		handle->context.reset();
 	}
@@ -1497,6 +1497,7 @@ ParserOptions ClientContext::GetParserOptions() {
 	options.extensions = DBConfig::GetConfig(*this).GetCallbackManager();
 	options.parser_override_setting = Settings::Get<AllowParserOverrideExtensionSetting>(*this);
 	options.compiled_grammar = CompiledGrammar::Get(*this);
+	options.context = *this;
 	return options;
 }
 

@@ -41,3 +41,6 @@ benchmark/micro/functions/nested_macros.benchmark
 benchmark/micro/result_collection/stream_drop.benchmark
 benchmark/micro/result_collection/stream_materialize.benchmark
 benchmark/parquet/dlba_read-long-1000000.benchmark
+benchmark/micro/insert/bulk_insert_commit_batch.benchmark
+benchmark/micro/insert/bulk_insert_commit_parallel.benchmark
+benchmark/micro/insert/bulk_insert_commit_in_memory.benchmark

@@ -19,16 +19,8 @@
 #include <utility>
 
 namespace duckdb {
-//! Whether the result of the operator changes when its input rows are duplicated
-static bool DependsOnDuplicates(LogicalOperator &op) {
-	switch (op.type) {
-	case LogicalOperatorType::LOGICAL_LIMIT:
-	case LogicalOperatorType::LOGICAL_SAMPLE:
-	case LogicalOperatorType::LOGICAL_WINDOW:
-		return true;
-	default:
-		break;
-	}
+//! Whether any expression of the operator is volatile
+static bool HasVolatileExpression(LogicalOperator &op) {
 	bool has_volatile = false;
 	LogicalOperatorVisitor::EnumerateExpressions(op, [&](unique_ptr<Expression> *expr) {
 		if ((*expr)->IsVolatile()) {
@@ -39,8 +31,8 @@ static bool DependsOnDuplicates(LogicalOperator &op) {
 }
 
 void JoinElimination::OptimizeChildren(LogicalOperator &op, optional_ptr<LogicalOperator> parent, idx_t idx) {
-	if (DependsOnDuplicates(op)) {
-		// a distinct group above this operator does not hold below it
+	if (HasVolatileExpression(op)) {
+		// volatile expressions run once per row, so a distinct group above them does not hold below them
 		pipe_info.distinct_groups.clear();
 	}
 	if (op.type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN) {

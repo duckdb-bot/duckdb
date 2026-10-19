@@ -24,30 +24,6 @@ struct AvgState {
 	}
 };
 
-//! The infinities of timestamps are counted apart from the sum, as their sentinels are no microsecond counts
-struct TimestampAvgState {
-	static constexpr const char *STATE_NAMES[] = {"count", "value", "positive_infinities", "negative_infinities"};
-	using STATE_TYPE = StructStateType<uint64_t, hugeint_t, uint64_t, uint64_t>;
-
-	uint64_t count;
-	hugeint_t value;
-	uint64_t positive_infinities;
-	uint64_t negative_infinities;
-
-	void Combine(const TimestampAvgState &other) {
-		AddCount(this->count, other.count);
-		CombineSumStateValue(this->value, other.value);
-		AddCount(this->positive_infinities, other.positive_infinities);
-		AddCount(this->negative_infinities, other.negative_infinities);
-	}
-
-	static void AddCount(uint64_t &target, uint64_t source) {
-		if (!TryAddOperator::Operation(target, source, target)) {
-			throw OutOfRangeException("Overflow in aggregate state combine");
-		}
-	}
-};
-
 struct IntervalAvgState {
 	static constexpr const char *STATE_NAMES[] = {"count", "value"};
 	using STATE_TYPE = StructStateType<int64_t, interval_t>;
@@ -168,61 +144,80 @@ struct DiscreteAverageOperation : public BaseSumOperation<AverageSetOperation, A
 };
 
 //! The average of timestamps that include an infinity is that infinity, and NULL when both signs are included, as for
-//! DOUBLE it is NaN
-struct TimestampAverageOperation {
+//! DOUBLE it is NaN. A state that saw an infinity needs no sum, so it keeps a count of 0 and the infinities in the
+//! value
+struct TimestampAverageOperation : public DiscreteAverageOperation {
+	static constexpr uint64_t POSITIVE_INFINITY = 1;
+	static constexpr uint64_t NEGATIVE_INFINITY = 2;
+
+	template <class STATE>
+	static bool HasInfinity(const STATE &state) {
+		return state.count == 0 && state.value != hugeint_t(0);
+	}
+
+	template <class STATE>
+	static void AddInfinity(STATE &state, uint64_t infinities) {
+		if (!HasInfinity(state)) {
+			state.count = 0;
+			state.value = hugeint_t(0);
+		}
+		state.value.lower |= infinities;
+	}
+
 	template <class STATE, class OP>
-	static void Combine(const STATE &source, STATE &target, AggregateInputData &) {
-		target.Combine(source);
+	static void Combine(const STATE &source, STATE &target, AggregateInputData &input) {
+		if (HasInfinity(source)) {
+			AddInfinity(target, source.value.lower);
+		} else if (!HasInfinity(target)) {
+			DiscreteAverageOperation::Combine<STATE, OP>(source, target, input);
+		}
 	}
 
 	template <class STATE, class OP>
 	static void RepeatedCombine(const STATE &source, STATE &target, AggregateInputData &input, idx_t count) {
-		RepeatedAverageState::AddCount(target.positive_infinities,
-		                               RepeatedAverageState::MultiplyCount(source.positive_infinities, count));
-		RepeatedAverageState::AddCount(target.negative_infinities,
-		                               RepeatedAverageState::MultiplyCount(source.negative_infinities, count));
-		RepeatedAverageState::Combine(source, target, input, count);
-	}
-
-	template <class INPUT_TYPE, class STATE, class OP>
-	static void Operation(STATE &state, const INPUT_TYPE &input, AggregateUnaryInput &) {
-		if (input == timestamp_t::infinity().value) {
-			state.positive_infinities++;
-		} else if (input == timestamp_t::ninfinity().value) {
-			state.negative_infinities++;
-		} else {
-			state.count++;
-			AddToHugeint::AddNumber<STATE, INPUT_TYPE>(state, input);
+		if (HasInfinity(source)) {
+			if (count > 0) {
+				AddInfinity(target, source.value.lower);
+			}
+		} else if (!HasInfinity(target)) {
+			DiscreteAverageOperation::RepeatedCombine<STATE, OP>(source, target, input, count);
 		}
 	}
 
 	template <class INPUT_TYPE, class STATE, class OP>
-	static void ConstantOperation(STATE &state, const INPUT_TYPE &input, AggregateUnaryInput &, idx_t count) {
+	static void Operation(STATE &state, const INPUT_TYPE &input, AggregateUnaryInput &unary_input) {
 		if (input == timestamp_t::infinity().value) {
-			state.positive_infinities += count;
+			AddInfinity(state, POSITIVE_INFINITY);
 		} else if (input == timestamp_t::ninfinity().value) {
-			state.negative_infinities += count;
-		} else {
-			state.count += count;
-			AddToHugeint::AddConstant<STATE, INPUT_TYPE>(state, input, count);
+			AddInfinity(state, NEGATIVE_INFINITY);
+		} else if (!HasInfinity(state)) {
+			DiscreteAverageOperation::Operation<INPUT_TYPE, STATE, OP>(state, input, unary_input);
+		}
+	}
+
+	template <class INPUT_TYPE, class STATE, class OP>
+	static void ConstantOperation(STATE &state, const INPUT_TYPE &input, AggregateUnaryInput &unary_input,
+	                              idx_t count) {
+		if (input == timestamp_t::infinity().value) {
+			AddInfinity(state, POSITIVE_INFINITY);
+		} else if (input == timestamp_t::ninfinity().value) {
+			AddInfinity(state, NEGATIVE_INFINITY);
+		} else if (!HasInfinity(state)) {
+			DiscreteAverageOperation::ConstantOperation<INPUT_TYPE, STATE, OP>(state, input, unary_input, count);
 		}
 	}
 
 	template <class T, class STATE>
 	static void Finalize(STATE &state, T &target, AggregateFinalizeData &finalize_data) {
-		if (state.positive_infinities > 0 && state.negative_infinities > 0) {
-			finalize_data.ReturnNull();
-		} else if (state.positive_infinities > 0) {
+		if (state.count != 0) {
+			DiscreteAverageOperation::Finalize<T, STATE>(state, target, finalize_data);
+		} else if (state.value == hugeint_t(POSITIVE_INFINITY)) {
 			target = timestamp_t::infinity().value;
-		} else if (state.negative_infinities > 0) {
+		} else if (state.value == hugeint_t(NEGATIVE_INFINITY)) {
 			target = timestamp_t::ninfinity().value;
 		} else {
-			DiscreteAverageOperation::Finalize<T, STATE>(state, target, finalize_data);
+			finalize_data.ReturnNull();
 		}
-	}
-
-	static bool IgnoreNull() {
-		return true;
 	}
 };
 
@@ -434,13 +429,13 @@ AggregateFunctionSet AvgFun::GetFunctions() {
 	avg.AddFunction(numeric_avg);
 
 	auto timestamp_avg =
-	    AggregateFunction::UnaryAggregate<TimestampAvgState, int64_t, int64_t, TimestampAverageOperation>(
+	    AggregateFunction::UnaryAggregate<AvgState<hugeint_t>, int64_t, int64_t, TimestampAverageOperation>(
 	        LogicalType::TIMESTAMP, LogicalType::TIMESTAMP);
 	timestamp_avg.GetSignature().GetParameter(0).SetName("x");
 	avg.AddFunction(timestamp_avg);
 
 	auto timestamp_tz_avg =
-	    AggregateFunction::UnaryAggregate<TimestampAvgState, int64_t, int64_t, TimestampAverageOperation>(
+	    AggregateFunction::UnaryAggregate<AvgState<hugeint_t>, int64_t, int64_t, TimestampAverageOperation>(
 	        LogicalType::TIMESTAMP_TZ, LogicalType::TIMESTAMP_TZ);
 	timestamp_tz_avg.GetSignature().GetParameter(0).SetName("x");
 	avg.AddFunction(timestamp_tz_avg);

@@ -378,18 +378,6 @@ unique_ptr<ExportAggregateBindData> BindAggregateStateInternal(ClientContext &co
 	auto order_entry = ext_info->properties.find("order_bys");
 	if (order_entry == ext_info->properties.end()) {
 		// a plain (non-ordered) aggregate state
-		// a state exported with another layout of this aggregate cannot be read with the current one
-		if (inner->aggr.HasGetStateTypeCallback()) {
-			// the stored type carries the AGGREGATE_STATE alias in place of the alias of the layout, e.g. JSON
-			auto layout =
-			    inner->aggr.GetStateType(inner->bind_data.get()).type.WithAlias(string()).WithExtensionInfo(nullptr);
-			auto stored_layout = arg_return_type.WithAlias(string()).WithExtensionInfo(nullptr);
-			if (stored_layout != layout) {
-				throw BinderException("Cannot use a state of aggregate \"%s\" with the layout %s, as its current state "
-				                      "layout is %s. The state was exported by another version of DuckDB",
-				                      function_name, stored_layout.ToString(), layout.ToString());
-			}
-		}
 		return inner;
 	}
 	// an ordered aggregate state: the value is the buffer (LIST<buffered_struct>) - reconstruct the sorted wrapper

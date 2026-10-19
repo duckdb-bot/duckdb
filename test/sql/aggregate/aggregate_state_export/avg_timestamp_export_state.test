@@ -1,11 +1,11 @@
 # name: test/sql/aggregate/aggregate_state_export/avg_timestamp_export_state.test
-# description: Exported avg states of timestamps keep their infinities apart from the sum
+# description: Exported avg states of timestamps keep their infinities
 # group: [aggregate_state_export]
 
 query I
 SELECT avg(ts) EXPORT_STATE FROM (VALUES ('infinity'::TIMESTAMP), (TIMESTAMP '2000-01-01')) t(ts);
 ----
-{'count': 1, 'value': 946684800000000, 'positive_infinities': 1, 'negative_infinities': 0}
+{'count': 0, 'value': 1}
 
 statement ok
 CREATE TABLE states AS SELECT g, avg(ts) EXPORT_STATE AS st FROM (VALUES (0, 'infinity'::TIMESTAMP), (0, 'infinity'::TIMESTAMP), (1, TIMESTAMP '2000-01-01'), (1, TIMESTAMP '2000-01-03'), (2, '-infinity'::TIMESTAMP)) t(g, ts) GROUP BY g;
@@ -25,11 +25,19 @@ NULL	infinity
 query II
 SELECT combine_aggr(st, 3), finalize(combine_aggr(st, 3)) FROM states WHERE g = 0;
 ----
-{'count': 0, 'value': 0, 'positive_infinities': 6, 'negative_infinities': 0}	infinity
+{'count': 0, 'value': 1}	infinity
 
-# counts that overflow fail instead of wrapping around
-statement error
-WITH s AS (SELECT combine_aggr(st, 4611686018427387904) AS st FROM states WHERE g = 0)
-SELECT finalize(combine(st, st)) FROM s;
+# a multiplicity of zero adds no infinity
+query I
+SELECT finalize(combine_aggr(st, CASE WHEN g = 0 THEN 0 ELSE 1 END)) FROM states WHERE g < 2;
 ----
-Overflow in aggregate state combine
+2000-01-02 00:00:00
+
+# imported states with a count of 0 hold the infinities in their value
+query I
+SELECT finalize(to_aggregate_state({'count': 0, 'value': v}, 'avg', ['TIMESTAMP'])) FROM (VALUES (1), (2), (3), (5)) t(v) ORDER BY v;
+----
+infinity
+-infinity
+NULL
+NULL

@@ -81,6 +81,16 @@ SET threads = list_sum(list_transform([1], lambda x: list_sum(list_transform([2]
 Binder Error: Function "setval" modifies the database and cannot be evaluated while binding
 
 statement error
+SET threads = list_reduce([1, 2], lambda a, x: nextval('s'), 0);
+----
+Binder Error: Function "nextval" modifies the database and cannot be evaluated while binding
+
+statement error
+COPY (SELECT 42) TO '{TEST_DIR}/test_26144.csv' (DELIMITER chr(list_reduce([1], lambda a, x: a + x, nextval('s'))::INTEGER + 43));
+----
+Binder Error: Function "nextval" modifies the database and cannot be evaluated while binding
+
+statement error
 PREPARE cl AS COPY (SELECT 42) TO '{TEST_DIR}/test_26144.csv' (DELIMITER chr(invoke(lambda x: nextval('s'), 0)::INTEGER + 43));
 ----
 Binder Error: Function "nextval" modifies the database and cannot be evaluated while binding

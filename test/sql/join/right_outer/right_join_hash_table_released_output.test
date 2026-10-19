@@ -13,6 +13,21 @@ CREATE TABLE build AS SELECT i AS k, repeat('unmatched build payload ', 2) || i:
 {'name': 'struct payload ' || i::VARCHAR, 'tags': ['tag ' || i::VARCHAR, 'tag ' || (i + 1)::VARCHAR]} AS nested
 FROM range(95, 105) t(i);
 
+statement ok
+CREATE TABLE build_struct AS SELECT i AS k,
+{'name': 'unmatched struct name ' || i::VARCHAR, 'note': 'unmatched struct note ' || i::VARCHAR} AS info
+FROM range(95, 105) t(i);
+
+# a struct of strings keeps the filter caching its output until the pipeline flushes
+query I
+SELECT b.info FROM probe p RIGHT JOIN build_struct b ON p.k = b.k WHERE p.id IS NULL ORDER BY ALL;
+----
+{'name': unmatched struct name 100, 'note': unmatched struct note 100}
+{'name': unmatched struct name 101, 'note': unmatched struct note 101}
+{'name': unmatched struct name 102, 'note': unmatched struct note 102}
+{'name': unmatched struct name 103, 'note': unmatched struct note 103}
+{'name': unmatched struct name 104, 'note': unmatched struct note 104}
+
 # keys 100 to 104 have no match, the scan of the unmatched build rows emits them after the probe
 query III
 SELECT b.payload, b.nested.name, b.nested.tags FROM probe p RIGHT JOIN build b ON p.k = b.k WHERE p.id IS NULL

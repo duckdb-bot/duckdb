@@ -29,6 +29,9 @@ void Load(DuckDBBenchmarkState *state) override {
 void RunBenchmark(DuckDBBenchmarkState *state) override {
 	for (idx_t i = 0; i < QUERY_COUNT; i++) {
 		state->result = state->conn.Query(query);
+		if (state->result->HasError()) {
+			state->result->ThrowError();
+		}
 	}
 }
 string VerifyResult(QueryResult *result) override {

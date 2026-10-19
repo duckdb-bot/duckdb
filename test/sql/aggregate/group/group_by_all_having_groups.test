@@ -40,6 +40,23 @@ SELECT count(*) FROM range(6) t(x) GROUP BY ALL HAVING x > 3;
 1
 1
 
+# a collated group of GROUP BY ALL
+statement ok
+CREATE TABLE collated (s VARCHAR COLLATE NOCASE, i INTEGER);
+
+statement ok
+INSERT INTO collated VALUES ('a', 1), ('A', 2), ('b', 3);
+
+query II
+SELECT lower(s) AS l, count(*) FROM collated GROUP BY ALL HAVING l = 'a';
+----
+a	2
+
+query II
+SELECT lower(s) AS l, count(*) FROM collated GROUP BY ALL HAVING lower(s) = 'A';
+----
+a	2
+
 # GROUPING and correlated subqueries in HAVING see the groups of GROUP BY ALL
 query II
 SELECT x % 2 AS k, count(*) AS n FROM range(6) t(x) GROUP BY ALL HAVING GROUPING(x % 2) = 0 ORDER BY ALL;

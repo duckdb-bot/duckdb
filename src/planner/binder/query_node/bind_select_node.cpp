@@ -768,11 +768,10 @@ BoundStatement Binder::BindSelectNode(SelectNode &statement, BoundStatement from
 			auto aggregate_idx = ColumnBinding::PushExpression(result.aggregates, std::move(function));
 			expr =
 			    make_uniq<BoundColumnRefExpression>(return_type, ColumnBinding(result.aggregate_index, aggregate_idx));
-			continue;
+			bind_state.collated_groups[group_proj_idx] = aggregate_idx;
+		} else {
+			expr = make_uniq<BoundColumnRefExpression>(return_type, ColumnBinding(result.group_index, group_proj_idx));
 		}
-		auto group_ref =
-		    make_uniq<BoundColumnRefExpression>(return_type, ColumnBinding(result.group_index, group_proj_idx));
-		expr = std::move(group_ref);
 		// map the select expression to its group, so HAVING binds to it
 		auto group_copy = bind_state.original_expressions[group_by_all_index]->Copy();
 		bind_state.group_map[*group_copy] = group_proj_idx;

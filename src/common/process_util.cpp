@@ -1,7 +1,6 @@
 #include "duckdb/common/process_util.hpp"
 
 #include "duckdb/common/file_system.hpp"
-#include "duckdb/common/limits.hpp"
 #include "duckdb/common/query_context.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/windows.hpp"
@@ -16,10 +15,6 @@ extern "C" WINBASEAPI BOOL QueryFullProcessImageNameW(HANDLE, DWORD, LPWSTR, PDW
 #include <cerrno>
 #include <csignal>
 #include <unistd.h>
-#endif
-
-#if !defined(_WIN32) && !defined(__EMSCRIPTEN__)
-#include <sys/resource.h>
 #endif
 
 // includes for describing the process holding a lock
@@ -171,20 +166,5 @@ string ProcessUtil::GetProcessDescription(FileSystem &fs, int64_t pid) {
 }
 
 #endif
-
-optional_idx ProcessUtil::GetFileDescriptorLimit() {
-#if !defined(_WIN32) && !defined(__EMSCRIPTEN__)
-	struct rlimit limit;
-	if (getrlimit(RLIMIT_NOFILE, &limit) != 0 || limit.rlim_cur == RLIM_INFINITY) {
-		return optional_idx();
-	}
-	if (limit.rlim_cur >= NumericLimits<idx_t>::Maximum()) {
-		return optional_idx();
-	}
-	return optional_idx(static_cast<idx_t>(limit.rlim_cur));
-#else
-	return optional_idx();
-#endif
-}
 
 } // namespace duckdb

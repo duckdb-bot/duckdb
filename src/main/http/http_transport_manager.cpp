@@ -3,7 +3,6 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/file_opener.hpp"
 #include "duckdb/common/limits.hpp"
-#include "duckdb/common/process_util.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/main/database.hpp"
 
@@ -224,7 +223,7 @@ idx_t HTTPTransportManager::CalculateCapacity(idx_t system_concurrency, optional
 	if (!file_descriptor_limit.IsValid()) {
 		return cpu_target;
 	}
-	auto fd_target = MaxValue<idx_t>(file_descriptor_limit.GetIndex() / 8, 1);
+	auto fd_target = FileSystem::GetFileDescriptorShare(file_descriptor_limit.GetIndex());
 	return MinValue<idx_t>(cpu_target, fd_target);
 }
 
@@ -265,7 +264,7 @@ idx_t HTTPTransportManager::AutomaticCapacity(const DBConfig &config) {
 	auto io_concurrency = config.options.async_threads == DConstants::INVALID_INDEX
 	                          ? DBConfig::GetSystemMaxAsyncThreads(fs)
 	                          : config.options.async_threads;
-	return CalculateCapacity(DBConfig::GetSystemMaxThreads(fs), ProcessUtil::GetFileDescriptorLimit(), io_concurrency);
+	return CalculateCapacity(DBConfig::GetSystemMaxThreads(fs), FileSystem::GetFileDescriptorLimit(), io_concurrency);
 }
 
 idx_t HTTPTransportManager::GetCapacity() const {

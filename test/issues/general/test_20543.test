@@ -108,12 +108,50 @@ ALTER TABLE t5 ALTER p SET TYPE USING ident(p::e);
 statement ok
 ALTER TABLE t5 ALTER q SET TYPE INTEGER USING keep_one(q::missing_type);
 
+# user types nested in other types, in nested casts, TRY_CAST and CASE, and a type defined as another type
+statement ok
+CREATE TYPE myint AS INTEGER;
+
+statement ok
+CREATE TABLE t6 (a VARCHAR, b VARCHAR, c VARCHAR, d VARCHAR, f VARCHAR, g VARCHAR);
+
+statement ok
+INSERT INTO t6 VALUES ('a', 'b', 'a', 'z', 'q', '7');
+
+statement ok
+ALTER TABLE t6 ALTER a SET TYPE USING {'k': a}::STRUCT(k e);
+
+statement ok
+ALTER TABLE t6 ALTER b SET TYPE USING b::e::UNION(k e, n INTEGER);
+
+statement ok
+ALTER TABLE t6 ALTER c SET TYPE USING (c::e)::VARCHAR || '!';
+
+statement ok
+ALTER TABLE t6 ALTER d SET TYPE USING TRY_CAST(d AS e);
+
+statement ok
+ALTER TABLE t6 ALTER f SET TYPE USING CASE WHEN f = 'a' THEN f::e ELSE 'b'::e END;
+
+statement ok
+ALTER TABLE t6 ALTER g SET TYPE USING g::myint;
+
 restart
 
 query III
 SELECT p, typeof(p), q FROM t5;
 ----
 b	ENUM('a', 'b')	1
+
+query IIIIII
+SELECT typeof(COLUMNS(*)) FROM t6;
+----
+STRUCT(k ENUM('a', 'b'))	UNION(k ENUM('a', 'b'), n INTEGER)	VARCHAR	ENUM('a', 'b')	ENUM('a', 'b')	INTEGER
+
+query IIIIII
+SELECT * FROM t6;
+----
+{'k': a}	b	a!	NULL	b	7
 
 query II
 SELECT p, typeof(p) FROM t4;

@@ -130,6 +130,9 @@ bool Binder::DebugAggregateStateExportVerify(BoundSelectNode &statement, unique_
 unique_ptr<LogicalOperator> Binder::PlanVolatileGroups(BoundSelectNode &statement, unique_ptr<LogicalOperator> root) {
 	// the projection computes the volatile groups and passes every column of its child through
 	auto expressions = std::move(statement.volatile_groups);
+	for (auto &expr : expressions) {
+		PlanSubqueries(expr, root);
+	}
 	root->ResolveOperatorTypes();
 	auto child_bindings = root->GetColumnBindings();
 	vector<ColumnBinding> pass_through_bindings;

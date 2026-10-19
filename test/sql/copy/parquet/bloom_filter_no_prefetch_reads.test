@@ -88,3 +88,23 @@ SELECT count(*), count(*) FILTER (bytes::BIGINT < 8) FROM duckdb_logs_parsed('Fi
 WHERE path LIKE '%issue6990.parquet' AND op = 'READ' AND pos::BIGINT < 19227
 ----
 3	0
+
+# bloom filters rejected after reading their header
+statement ok
+CALL truncate_duckdb_logs()
+
+query I
+SELECT count(*) FROM read_parquet('{DATA_DIR}/parquet-testing/bloom_filter_bad_numbytes.parquet') WHERE r = 0
+----
+1000
+
+query I
+SELECT count(*) FROM read_parquet('{DATA_DIR}/parquet-testing/bloom_filter_short_numbytes.parquet') WHERE r = 200
+----
+100
+
+query I
+SELECT count(*) FROM duckdb_logs_parsed('FileSystem')
+WHERE path LIKE '%bloom_filter_%_numbytes.parquet' AND op = 'READ' AND bytes::BIGINT < 8
+----
+0

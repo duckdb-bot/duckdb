@@ -23,6 +23,7 @@
 #include "duckdb/common/vector.hpp"
 #include "duckdb/common/winapi.hpp"
 #include "duckdb/storage/buffer/buffer_handle.hpp"
+#include "duckdb/storage/buffer/buffer_pool_reservation.hpp"
 #include "duckdb/storage/buffer/temporary_file_information.hpp"
 #include "duckdb/storage/external_file_cache/external_file_cache_block.hpp"
 
@@ -32,6 +33,7 @@ namespace duckdb {
 class ClientContext;
 class DatabaseInstance;
 class BufferManager;
+class BufferPool;
 
 //! File metadata used to determine whether cached file data is still valid.
 struct CacheValidationInfo {
@@ -65,7 +67,11 @@ public:
 	//! Cached files
 	struct CachedFile {
 	public:
-		CachedFile(string path_p, idx_t generation_p);
+		CachedFile(string path_p, idx_t generation_p, BufferPool &buffer_pool);
+
+	public:
+		//! Resize the block metadata reservation to the current number of blocks.
+		void UpdateBlockReservation() DUCKDB_REQUIRES(map_lock);
 
 	public:
 		const string path;
@@ -76,8 +82,8 @@ public:
 		map<idx_t, shared_ptr<CacheBlock>> blocks DUCKDB_GUARDED_BY(map_lock);
 		//! Incremented whenever the blocks of the file are dropped.
 		idx_t content_generation DUCKDB_GUARDED_BY(map_lock) = 0;
-		//! Block count used for the memory estimate.
-		atomic<idx_t> reserved_blocks {0};
+		//! Memory reserved for the metadata of the blocks.
+		TempBufferPoolReservation block_reservation DUCKDB_GUARDED_BY(map_lock);
 
 		mutable annotated_mutex meta_lock;
 		//! Metadata for validating the cached blocks against the current file.
@@ -111,8 +117,6 @@ public:
 	//! Gets the shared cached file for the given path, creating it if not yet present.
 	//! When caching is disabled, returns a transient CachedFile that is not tracked in the cached file map.
 	shared_ptr<CachedFile> GetOrCreateCachedFile(const string &path);
-	//! Reserve the memory of a cached file again, when its number of blocks doubled or halved
-	void UpdateCachedFileMemory(CachedFile &cached_file);
 
 	//! Allocate a buffer holding a cache block of the given file. Blocks of remote files spill to the
 	//! temporary directory when they are evicted, instead of being dropped and re-fetched from the

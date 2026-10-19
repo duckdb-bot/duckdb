@@ -1,50 +1,61 @@
 # name: test/sql/storage/external_file_cache/external_file_cache_metadata_memory.test
-# description: The metadata of the blocks a file caches is reserved, so that it can be evicted (issue #26377)
+# description: Block metadata of cached files is accounted as object cache memory
 # group: [external_file_cache]
 
 require parquet
 
 statement ok
-SET cache_local_files = true;
+SET cache_local_files=true;
 
 statement ok
-CREATE TABLE src AS SELECT i AS id, md5(i::VARCHAR) AS c0, md5((i + 1)::VARCHAR) AS c1 FROM range(5000) r(i);
+SET parquet_metadata_cache=false;
 
 statement ok
-COPY src TO '{TEMP_DIR}/metadata_memory.parquet' (FORMAT PARQUET, ROW_GROUP_SIZE 2048);
+SET external_file_cache_local_max_block_size=4096;
+
+statement ok
+COPY (SELECT i, md5(i::VARCHAR) AS s FROM range(100000) r(i)) TO '{TEST_DIR}/efc_metadata_memory.parquet' (FORMAT PARQUET);
+
+statement ok
+SELECT sum(length(s)) FROM '{TEST_DIR}/efc_metadata_memory.parquet';
 
 query I
-SELECT sum(length(c0) + length(c1)) FROM read_parquet('{TEMP_DIR}/metadata_memory.parquet')
+SELECT count(*) > 100 FROM duckdb_external_file_cache();
 ----
-320000
+true
 
-# every cached block costs more than a hundred bytes of metadata
+# the object cache memory covers every cached block, not only the file path
 query I
-SELECT (SELECT sum(memory_usage_bytes) FROM duckdb_memory() WHERE tag = 'OBJECT_CACHE') > 100 * count(*) AND count(*) > 0 FROM duckdb_external_file_cache()
+SELECT (SELECT memory_usage_bytes FROM duckdb_memory() WHERE tag = 'OBJECT_CACHE') >= 100 * (SELECT count(*) FROM duckdb_external_file_cache());
 ----
 true
 
 # reads of one column leave many more blocks than the size of the file needs
 statement ok
-SET external_file_cache_local_max_block_size = 1048576;
+SET external_file_cache_local_max_block_size=1048576;
 
 statement ok
-CREATE TABLE wide AS SELECT i AS id, md5(i::VARCHAR) AS c0, md5((i + 1)::VARCHAR) AS c1 FROM range(300000) r(i);
-
-statement ok
-COPY wide TO '{TEMP_DIR}/metadata_memory_wide.parquet' (FORMAT PARQUET, ROW_GROUP_SIZE 2048);
+COPY (SELECT i AS id, md5(i::VARCHAR) AS c0, md5((i + 1)::VARCHAR) AS c1 FROM range(300000) r(i)) TO '{TEST_DIR}/efc_metadata_memory_wide.parquet' (FORMAT PARQUET, ROW_GROUP_SIZE 2048);
 
 query I
-SELECT sum(id) FROM read_parquet('{TEMP_DIR}/metadata_memory_wide.parquet')
+SELECT sum(id) FROM read_parquet('{TEST_DIR}/efc_metadata_memory_wide.parquet');
 ----
 44999850000
 
 query I
-SELECT count(*) > 2 * ceil((SELECT size FROM read_blob('{TEMP_DIR}/metadata_memory_wide.parquet')) / 1048576) FROM duckdb_external_file_cache() WHERE path LIKE '%metadata_memory_wide.parquet'
+SELECT count(*) > 2 * ceil((SELECT size FROM read_blob('{TEST_DIR}/efc_metadata_memory_wide.parquet')) / 1048576) FROM duckdb_external_file_cache() WHERE path LIKE '%efc_metadata_memory_wide.parquet';
 ----
 true
 
 query I
-SELECT (SELECT sum(memory_usage_bytes) FROM duckdb_memory() WHERE tag = 'OBJECT_CACHE') > 100 * count(*) FROM duckdb_external_file_cache()
+SELECT (SELECT memory_usage_bytes FROM duckdb_memory() WHERE tag = 'OBJECT_CACHE') >= 100 * (SELECT count(*) FROM duckdb_external_file_cache());
 ----
 true
+
+statement ok
+SET enable_external_file_cache=false;
+
+query II
+SELECT (SELECT count(*) FROM duckdb_external_file_cache()), (SELECT memory_usage_bytes FROM duckdb_memory() WHERE tag = 'OBJECT_CACHE');
+----
+0	0

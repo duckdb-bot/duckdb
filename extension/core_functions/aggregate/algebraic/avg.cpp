@@ -152,7 +152,8 @@ struct TimestampAverageOperation : public DiscreteAverageOperation {
 
 	template <class STATE>
 	static bool HasInfinity(const STATE &state) {
-		return state.count == 0 && state.value != hugeint_t(0);
+		return state.count == 0 && state.value >= hugeint_t(POSITIVE_INFINITY) &&
+		       state.value <= hugeint_t(POSITIVE_INFINITY | NEGATIVE_INFINITY);
 	}
 
 	template <class STATE>

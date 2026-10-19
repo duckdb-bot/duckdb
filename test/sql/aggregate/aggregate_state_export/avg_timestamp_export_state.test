@@ -35,9 +35,16 @@ SELECT finalize(combine_aggr(st, CASE WHEN g = 0 THEN 0 ELSE 1 END)) FROM states
 
 # imported states with a count of 0 hold the infinities in their value
 query I
-SELECT finalize(to_aggregate_state({'count': 0, 'value': v}, 'avg', ['TIMESTAMP'])) FROM (VALUES (1), (2), (3), (5)) t(v) ORDER BY v;
+SELECT finalize(to_aggregate_state({'count': 0, 'value': v}, 'avg', ['TIMESTAMP'])) FROM (VALUES (1::HUGEINT), (2), (3), (5), (18446744073709551617)) t(v) ORDER BY v;
 ----
 infinity
 -infinity
 NULL
 NULL
+NULL
+
+# other values with a count of 0 hold no infinity, also when combined
+query II
+SELECT finalize(combine_aggr(st)), finalize(combine_aggr(st, 2)) FROM (SELECT to_aggregate_state({'count': 0, 'value': 18446744073709551617::HUGEINT}, 'avg', ['TIMESTAMP']) AS st);
+----
+NULL	NULL

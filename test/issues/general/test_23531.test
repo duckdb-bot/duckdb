@@ -8,9 +8,6 @@ require icu
 restart no_extension_load
 
 statement ok
-SET autoinstall_known_extensions = false
-
-statement ok
 SET autoload_known_extensions = true
 
 query I
@@ -20,9 +17,6 @@ SELECT (current_date + 1) - current_date
 
 # the same in a WHERE clause
 restart no_extension_load
-
-statement ok
-SET autoinstall_known_extensions = false
 
 statement ok
 SET autoload_known_extensions = true
@@ -36,9 +30,6 @@ SELECT 42 WHERE current_date - 1 < current_date
 restart no_extension_load
 
 statement ok
-SET autoinstall_known_extensions = false
-
-statement ok
 SET autoload_known_extensions = true
 
 query I
@@ -48,9 +39,6 @@ true
 
 # a table function argument loads icu, which adds overloads of range
 restart no_extension_load
-
-statement ok
-SET autoinstall_known_extensions = false
 
 statement ok
 SET autoload_known_extensions = true
@@ -64,9 +52,6 @@ SELECT count(*) FROM range(current_date, current_date + 3, INTERVAL 1 DAY)
 restart no_extension_load
 
 statement ok
-SET autoinstall_known_extensions = false
-
-statement ok
 SET autoload_known_extensions = true
 
 query I
@@ -76,9 +61,6 @@ SELECT 1 + (SELECT current_date - current_date)
 
 # a lambda body loads icu
 restart no_extension_load
-
-statement ok
-SET autoinstall_known_extensions = false
 
 statement ok
 SET autoload_known_extensions = true
@@ -92,9 +74,6 @@ SELECT list_transform([1, 2], lambda x: (current_date + x) - current_date)
 restart no_extension_load
 
 statement ok
-SET autoinstall_known_extensions = false
-
-statement ok
 SET autoload_known_extensions = true
 
 query I
@@ -104,9 +83,6 @@ TIMESTAMP WITH TIME ZONE
 
 # a call without a matching overload is still an error
 restart no_extension_load
-
-statement ok
-SET autoinstall_known_extensions = false
 
 statement ok
 SET autoload_known_extensions = true

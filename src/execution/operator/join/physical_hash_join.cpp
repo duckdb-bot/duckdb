@@ -2584,7 +2584,7 @@ void HashJoinGlobalSourceState::PrepareBuild(HashJoinGlobalSinkState &sink) {
 	// Try to put the next partitions in the block collection of the HT
 	if (!sink.external || !ht.PrepareExternalFinalize(sink.GetMaxExternalHTSize())) {
 		global_stage = HashJoinSourceStage::DONE;
-		// every task is done, only the dictionaries of dictionary emission can still be read by caching operators
+		// dictionary caches can retain strings from the row heap of the hash table
 		if (!sink.preserve_build_for_reuse && !ht.use_dict_emission) {
 			ht.Reset();
 		}

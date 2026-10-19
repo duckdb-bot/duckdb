@@ -1,0 +1,36 @@
+# name: test/sql/join/right_outer/right_join_hash_table_released_output.test
+# description: Rows a right or full join emits after its probe stay valid after it releases its hash table
+# group: [right_outer]
+
+statement ok
+SET threads = 4;
+
+statement ok
+CREATE TABLE probe AS SELECT i AS id, i % 100 AS k FROM range(1000) t(i);
+
+statement ok
+CREATE TABLE build AS SELECT i AS k, repeat('unmatched build payload ', 2) || i::VARCHAR AS payload,
+{'name': 'struct payload ' || i::VARCHAR, 'tags': ['tag ' || i::VARCHAR, 'tag ' || (i + 1)::VARCHAR]} AS nested
+FROM range(95, 105) t(i);
+
+# keys 100 to 104 have no match, the scan of the unmatched build rows emits them after the probe
+query III
+SELECT b.payload, b.nested.name, b.nested.tags FROM probe p RIGHT JOIN build b ON p.k = b.k WHERE p.id IS NULL
+ORDER BY ALL;
+----
+unmatched build payload unmatched build payload 100	struct payload 100	[tag 100, tag 101]
+unmatched build payload unmatched build payload 101	struct payload 101	[tag 101, tag 102]
+unmatched build payload unmatched build payload 102	struct payload 102	[tag 102, tag 103]
+unmatched build payload unmatched build payload 103	struct payload 103	[tag 103, tag 104]
+unmatched build payload unmatched build payload 104	struct payload 104	[tag 104, tag 105]
+
+query III
+SELECT b.payload, b.nested.name, p.id FROM probe p FULL OUTER JOIN build b ON p.k = b.k
+WHERE p.id IS NULL OR p.id = 999 ORDER BY ALL;
+----
+unmatched build payload unmatched build payload 100	struct payload 100	NULL
+unmatched build payload unmatched build payload 101	struct payload 101	NULL
+unmatched build payload unmatched build payload 102	struct payload 102	NULL
+unmatched build payload unmatched build payload 103	struct payload 103	NULL
+unmatched build payload unmatched build payload 104	struct payload 104	NULL
+unmatched build payload unmatched build payload 99	struct payload 99	999

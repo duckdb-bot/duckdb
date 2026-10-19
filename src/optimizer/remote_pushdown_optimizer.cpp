@@ -293,6 +293,10 @@ CatalogPushdownResult RemotePushdownOptimizer::Rewrite(QueryNode &node) {
 		// stripping the catalog changes generated names that the recursive part can refer to
 		MarkStaysWithParent();
 	}
+	if (!node.cte_map.map.empty()) {
+		// once the catalog is stripped, a table of the remote catalog can resolve to a CTE of the same name
+		MarkStaysWithParent();
+	}
 	switch (node.type) {
 	case QueryNodeType::SELECT_NODE:
 		result = RewriteNode(node.Cast<SelectNode>());
@@ -851,6 +855,11 @@ CatalogPushdownResult RemotePushdownOptimizer::Rewrite(unique_ptr<TableRef> &ref
 	if (ref->type != TableReferenceType::JOIN && ref->type != TableReferenceType::EMPTY_FROM) {
 		scope_has_tables = true;
 	}
+	auto table_name = ref->type == TableReferenceType::BASE_TABLE ? ref->Cast<BaseTableRef>().Table() : Identifier();
+	if (IsRemoteCatalogName(ref->alias) || IsRemoteCatalogName(table_name)) {
+		// stripping the catalog would also strip this table from its qualified columns
+		MarkStaysWithParent();
+	}
 	if (result.reference_type == CatalogReferenceType::SINGLE_REMOTE_CATALOG) {
 		// the table reference is fully remote - check if the remote catalog supports pushing it down
 		// (e.g. DuckDB-specific join types or TABLESAMPLE clauses cannot be sent to most remotes)
@@ -900,6 +909,11 @@ void RemotePushdownOptimizer::MarkOuterColumnReference() {
 	for (auto scope = this; scope && scope->outer_scope_has_names; scope = scope->parent.get()) {
 		scope->may_refer_to_outer_column = true;
 	}
+}
+
+bool RemotePushdownOptimizer::IsRemoteCatalogName(const Identifier &name) {
+	return !name.empty() && ResolveRemoteCatalog(name, RemoteCapability::EXECUTE_QUERY_NODE).reference_type ==
+	                            CatalogReferenceType::SINGLE_REMOTE_CATALOG;
 }
 
 void RemotePushdownOptimizer::MarkStaysWithParent() {
@@ -1237,9 +1251,7 @@ ExpressionPushdownResult RemotePushdownOptimizer::AnalyzeExpression(const Column
 	ExpressionPushdownResult state;
 	MarkOuterColumnReference();
 	auto &column_names = col_ref.ColumnNames();
-	if (column_names.size() == 2 &&
-	    ResolveRemoteCatalog(column_names[0], RemoteCapability::EXECUTE_QUERY_NODE).reference_type ==
-	        CatalogReferenceType::SINGLE_REMOTE_CATALOG) {
+	if (column_names.size() == 2 && IsRemoteCatalogName(column_names[0])) {
 		// "catalog.table" could be a whole row, which stripping the catalog does not rewrite
 		MarkStaysWithParent();
 	}
@@ -1303,11 +1315,18 @@ ExpressionPushdownResult RemotePushdownOptimizer::AnalyzeExpression(const Parsed
 		return AnalyzeExpression(expr.Cast<TypeExpression>());
 	case ExpressionClass::COLUMN_REF:
 		return AnalyzeExpression(expr.Cast<ColumnRefExpression>());
-	case ExpressionClass::STAR:
-		if (!expr.Cast<StarExpression>().RelationName().empty()) {
+	case ExpressionClass::STAR: {
+		auto &star = expr.Cast<StarExpression>();
+		if (!star.RelationName().empty()) {
 			MarkOuterColumnReference();
 		}
+		if (star.IsColumns() || !star.ExcludeList().empty() || !star.ReplaceList().empty() ||
+		    !star.RenameList().empty()) {
+			// stripping the catalog does not rewrite the qualified names these refer to or are named after
+			MarkStaysWithParent();
+		}
 		return ExpressionPushdownResult();
+	}
 	case ExpressionClass::PARAMETER:
 		// the values of parameters are only known to the statement
 		MarkStaysWithParent();
@@ -2010,7 +2029,7 @@ static void KeepColumnNames(TableRef &ref) {
 	}
 }
 
-//! Name unaliased projections after their text before the catalog is stripped from it, as the local binder would
+//! Name unaliased projections after their text before the catalog is stripped from it
 static void KeepColumnNames(QueryNode &node) {
 	for (auto &cte : node.cte_map.map) {
 		if (cte.second->query_node) {

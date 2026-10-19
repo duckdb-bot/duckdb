@@ -209,6 +209,7 @@ private:
 	void MarkOuterColumnReference();
 	//! Marks this scope and all enclosing scopes as unable to be pushed on their own
 	void MarkStaysWithParent();
+	bool IsRemoteCatalogName(const Identifier &name);
 
 private:
 	Binder &binder;

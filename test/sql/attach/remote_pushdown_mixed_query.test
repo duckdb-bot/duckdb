@@ -13,6 +13,9 @@ statement ok
 CREATE TABLE tbl AS SELECT range AS id FROM range(3);
 
 statement ok
+CREATE TABLE struct_tbl AS SELECT {'k': 7} AS obj;
+
+statement ok
 ATTACH 'quack:127.0.0.1:9619' AS r (TOKEN 'test_token');
 
 statement ok
@@ -281,6 +284,36 @@ query I
 WITH a AS (SELECT r.tbl AS row_value FROM r.tbl) SELECT count(*) FROM a, local_tbl;
 ----
 5
+
+# names that stripping the catalog would change: a CTE named like a remote table, a table aliased like the
+# catalog, qualified star modifiers and COLUMNS
+query I
+SELECT s.id FROM (WITH tbl AS (SELECT 99 AS id) SELECT * FROM r.tbl) s, local_tbl ORDER BY 1;
+----
+0
+1
+2
+9
+10
+
+query II
+SELECT * FROM (SELECT r.obj.k FROM r.struct_tbl r, (VALUES (99)) obj(k)) s, local_tbl;
+----
+7	1
+
+query I
+SELECT renamed FROM (SELECT * RENAME (r.main.tbl.id AS renamed) FROM r.tbl) s, local_tbl ORDER BY 1;
+----
+0
+1
+2
+9
+10
+
+query I
+SELECT "count_star() FILTER (WHERE (r.main.tbl.id > 0))" FROM (SELECT count(*) FILTER (WHERE COLUMNS('id') > 0) FROM r.tbl) s, local_tbl;
+----
+4
 
 # a subquery inside an expression keeps the generated name of the expression
 statement ok

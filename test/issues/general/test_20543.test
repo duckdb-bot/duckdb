@@ -70,7 +70,31 @@ INSERT INTO s.w VALUES ('b');
 statement ok
 ALTER TABLE s.w ALTER p SET TYPE USING p::e;
 
+# a type found through the search path of the session, with a type of the same name in the main schema
+statement ok
+CREATE TYPE s.e AS ENUM ('a', 'x');
+
+statement ok
+SET search_path = 's,main';
+
+statement ok
+CREATE TABLE main.t4 (p VARCHAR);
+
+statement ok
+INSERT INTO main.t4 VALUES ('x');
+
+statement ok
+ALTER TABLE main.t4 ALTER p SET TYPE USING p::e;
+
+statement ok
+RESET search_path;
+
 restart
+
+query II
+SELECT p, typeof(p) FROM t4;
+----
+x	ENUM('a', 'x')
 
 query IIII
 SELECT p, typeof(p), q, typeof(q) FROM t;
@@ -129,6 +153,16 @@ INSERT INTO d2.v2 VALUES (1);
 statement ok
 ALTER TABLE d2.v2 ALTER q SET TYPE INTEGER USING f(q);
 
+# a type qualified with the name the database had when the WAL was written
+statement ok
+CREATE TABLE d2.w (p VARCHAR);
+
+statement ok
+INSERT INTO d2.w VALUES ('m');
+
+statement ok
+ALTER TABLE d2.w ALTER p SET TYPE USING p::d2.e3;
+
 statement ok
 DETACH d2;
 
@@ -139,3 +173,8 @@ query IIII
 SELECT p, typeof(p), q, (SELECT q FROM d3.v2) FROM d3.v;
 ----
 n	ENUM('m', 'n')	11	2
+
+query II
+SELECT p, typeof(p) FROM d3.w;
+----
+m	ENUM('m', 'n')

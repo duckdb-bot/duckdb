@@ -13,6 +13,7 @@
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/database_manager.hpp"
 #include "duckdb/parser/constraints/list.hpp"
+#include "duckdb/parser/expression/cast_expression.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/parser/parsed_data/comment_on_column_info.hpp"
 #include "duckdb/parser/parsed_expression_iterator.hpp"
@@ -1200,6 +1201,19 @@ unique_ptr<CatalogEntry> DuckTableEntry::DropNotNull(ClientContext &context, Dro
 	return make_uniq<DuckTableEntry>(catalog, schema, *bound_create_info, storage, triggers);
 }
 
+//! Spell out the type of every cast, so that binding the expression again does not look up user types
+static void ResolveCastTypes(Binder &binder, ParsedExpression &expr) {
+	if (expr.GetExpressionClass() == ExpressionClass::CAST) {
+		auto &cast = expr.Cast<CastExpression>();
+		auto type = binder.BindLogicalType(cast.TargetType());
+		if (TypeExpression::CanRepresent(type)) {
+			cast.SetTargetType(TypeExpression::FromLogicalType(type));
+		}
+	}
+	ParsedExpressionIterator::EnumerateChildren(expr,
+	                                            [&](ParsedExpression &child) { ResolveCastTypes(binder, child); });
+}
+
 unique_ptr<CatalogEntry> DuckTableEntry::ChangeColumnType(ClientContext &context, ChangeColumnTypeInfo &info,
                                                           AlterTableType alter_table_type) {
 	// Only reject a user issued ALTER TYPE ADD/REMOVE/RENAME_FIELD's internal calls use a single element
@@ -1247,6 +1261,8 @@ unique_ptr<CatalogEntry> DuckTableEntry::ChangeColumnType(ClientContext &context
 		binder->EntryRetriever().SetSearchPath(std::move(replay_path));
 		bound_expression = bind_using(*binder);
 	}
+	// The WAL stores the USING expression, and its replay binds it again without the search path of this session
+	ResolveCastTypes(*binder, *info.expression);
 
 	// Infer the target_type from the USING expression, if not set explicitly.
 	if (info.target_type == LogicalType::UNKNOWN) {

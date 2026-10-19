@@ -333,7 +333,7 @@ unique_ptr<ArrowType> ArrowType::CreateListType(ClientContext &context, ArrowSch
 
 LogicalType ArrowType::GetDuckType(bool use_dictionary) const {
 	if (use_dictionary && dictionary_type) {
-		return dictionary_type->GetDuckType();
+		return dictionary_type->GetDuckType(true);
 	}
 	if (!use_dictionary) {
 		return type;

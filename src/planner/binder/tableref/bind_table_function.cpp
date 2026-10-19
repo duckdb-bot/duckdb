@@ -487,9 +487,8 @@ BoundStatement Binder::Bind(TableFunctionRef &ref) {
 	}
 
 	// selection, named-argument checking, folding and casting all happen in the function binder
-	auto &current_function =
-	    schema.GetEntry(schema.GetCatalogTransaction(context), CatalogType::TABLE_FUNCTION_ENTRY, function_name)
-	        ->Cast<TableFunctionCatalogEntry>();
+	auto &current_function = LookupFunctionEntryAgain(schema, CatalogType::TABLE_FUNCTION_ENTRY, function_name)
+	                             .Cast<TableFunctionCatalogEntry>();
 	FunctionBinder function_binder(*this);
 	vector<Value> parameters;
 	named_argument_map_t named_parameters;

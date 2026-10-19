@@ -250,9 +250,8 @@ BindResult ExpressionBinder::TryBindLambdaOrJson(FunctionExpression &function, i
 	// lambda attempt already bound is therefore bound twice, which repeats that bind's side effects
 	// (correlated-column registration, subquery planning). Only the deprecated arrow syntax is
 	// ambiguous enough to reach here, so this goes away with it rather than being worked around.
-	auto &current_func =
-	    schema.GetEntry(schema.GetCatalogTransaction(context), CatalogType::SCALAR_FUNCTION_ENTRY, function_name)
-	        ->Cast<ScalarFunctionCatalogEntry>();
+	auto &current_func = binder.LookupFunctionEntryAgain(schema, CatalogType::SCALAR_FUNCTION_ENTRY, function_name)
+	                         .Cast<ScalarFunctionCatalogEntry>();
 	auto json_bind_result = BindFunction(function, current_func, depth);
 	if (!json_bind_result.HasError()) {
 		return json_bind_result;
@@ -416,9 +415,8 @@ BindResult ExpressionBinder::BindFunction(FunctionExpression &function, ScalarFu
 		}
 	}
 
-	auto &current_func =
-	    schema.GetEntry(schema.GetCatalogTransaction(context), CatalogType::SCALAR_FUNCTION_ENTRY, function_name)
-	        ->Cast<ScalarFunctionCatalogEntry>();
+	auto &current_func = binder.LookupFunctionEntryAgain(schema, CatalogType::SCALAR_FUNCTION_ENTRY, function_name)
+	                         .Cast<ScalarFunctionCatalogEntry>();
 	FunctionBinder function_binder(binder);
 	auto result =
 	    function_binder.BindScalarFunction(current_func, std::move(arguments), error, function.IsOperator(), &binder);
@@ -562,9 +560,8 @@ BindResult ExpressionBinder::BindLambdaFunction(FunctionExpression &function, Sc
 	CaptureLambdaColumns(bound_lambda_expr, bound_lambda_expr.LambdaExprMutable(), capture_bind_lambda,
 	                     override_bind_lambda_context, capture_child_types);
 
-	auto &current_func =
-	    schema.GetEntry(schema.GetCatalogTransaction(context), CatalogType::SCALAR_FUNCTION_ENTRY, function_name)
-	        ->Cast<ScalarFunctionCatalogEntry>();
+	auto &current_func = binder.LookupFunctionEntryAgain(schema, CatalogType::SCALAR_FUNCTION_ENTRY, function_name)
+	                         .Cast<ScalarFunctionCatalogEntry>();
 	FunctionBinder function_binder(binder);
 	unique_ptr<Expression> result =
 	    function_binder.BindScalarFunction(current_func, std::move(children), error, function.IsOperator(), &binder);

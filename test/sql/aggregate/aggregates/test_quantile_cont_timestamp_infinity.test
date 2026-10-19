@@ -45,6 +45,12 @@ SELECT median(ts) FROM (VALUES ('infinity'::TIMESTAMP), ('infinity'::TIMESTAMP))
 ----
 infinity
 
+# mad finds no interval for the deviations from an infinite median, as when the median is an infinity value
+statement error
+SELECT mad(ts) FROM (VALUES ('-infinity'::TIMESTAMP), (TIMESTAMP '2000-01-01')) t(ts);
+----
+Overflow in timestamp subtraction
+
 # a descending quantile, dates and timestamps with time zone
 query II
 SELECT percentile_cont(0.75) WITHIN GROUP (ORDER BY ts DESC), median(ts::DATE) FROM (VALUES ('infinity'::TIMESTAMP), (TIMESTAMP '2000-01-01')) t(ts);

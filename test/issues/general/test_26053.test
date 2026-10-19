@@ -3,6 +3,9 @@
 # group: [general]
 
 statement ok
+ATTACH ':memory:' AS other;
+
+statement ok
 ATTACH '{TEST_DIR}/checkpoint_detached.db' AS mydb;
 
 statement ok
@@ -21,7 +24,7 @@ statement ok
 PREPARE checkpoint_default AS SELECT * FROM checkpoint();
 
 statement ok
-USE memory;
+USE other;
 
 statement ok
 EXECUTE checkpoint_named;
@@ -32,7 +35,7 @@ DETACH mydb;
 foreach stmt checkpoint_named force_checkpoint_named checkpoint_default
 
 statement error
-EXECUTE ${stmt};
+EXECUTE {stmt};
 ----
 Database "mydb" not found
 
@@ -50,7 +53,7 @@ ATTACH '{TEST_DIR}/checkpoint_detached.db' AS mydb;
 foreach stmt checkpoint_named force_checkpoint_named checkpoint_default
 
 statement ok
-EXECUTE ${stmt};
+EXECUTE {stmt};
 
 endloop
 

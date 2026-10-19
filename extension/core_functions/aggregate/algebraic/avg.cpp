@@ -35,10 +35,16 @@ struct TimestampAvgState {
 	uint64_t negative_infinities;
 
 	void Combine(const TimestampAvgState &other) {
-		this->count += other.count;
+		AddCount(this->count, other.count);
 		CombineSumStateValue(this->value, other.value);
-		this->positive_infinities += other.positive_infinities;
-		this->negative_infinities += other.negative_infinities;
+		AddCount(this->positive_infinities, other.positive_infinities);
+		AddCount(this->negative_infinities, other.negative_infinities);
+	}
+
+	static void AddCount(uint64_t &target, uint64_t source) {
+		if (!TryAddOperator::Operation(target, source, target)) {
+			throw OutOfRangeException("Overflow in aggregate state combine");
+		}
 	}
 };
 

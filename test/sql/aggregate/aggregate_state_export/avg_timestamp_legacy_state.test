@@ -1,0 +1,31 @@
+# name: test/sql/aggregate/aggregate_state_export/avg_timestamp_legacy_state.test
+# description: avg states of timestamps exported before the infinities were counted cannot be used
+# group: [aggregate_state_export]
+
+# The database is written with a vector size of 2048.
+require vector_size 2048
+
+unzip data/storage/avg_timestamp_legacy_state.db.gz {TEST_DIR}/avg_timestamp_legacy_state.db
+
+statement ok
+ATTACH '{TEST_DIR}/avg_timestamp_legacy_state.db' AS legacy
+
+query I
+SELECT st FROM legacy.t
+----
+{'count': 2, 'value': 1893542400000000}
+
+statement error
+SELECT finalize(st) FROM legacy.t
+----
+Cannot use a state of aggregate "avg" with the layout STRUCT(count UBIGINT, "value" HUGEINT)
+
+statement error
+SELECT finalize(combine(st, st)) FROM legacy.t
+----
+Cannot use a state of aggregate "avg" with the layout STRUCT(count UBIGINT, "value" HUGEINT)
+
+statement error
+SELECT finalize(combine_aggr(st)) FROM legacy.t
+----
+Cannot use a state of aggregate "avg" with the layout STRUCT(count UBIGINT, "value" HUGEINT)

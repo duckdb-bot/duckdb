@@ -56,15 +56,45 @@ SELECT avg('infinity'::TIMESTAMP), avg(TIMESTAMP '2000-01-01') FROM range(3000);
 ----
 infinity	2000-01-01 00:00:00
 
-# many rows in groups, combined across threads
+# many rows in groups, with infinities in different row groups that threads combine
+statement ok
+SET threads=4
+
+statement ok
+CREATE TABLE many AS SELECT i % 3 AS g, CASE WHEN i = 1 THEN '-infinity'::TIMESTAMP WHEN i IN (399997, 399998) THEN 'infinity'::TIMESTAMP ELSE TIMESTAMP '2000-01-01' + INTERVAL (i) SECOND END AS ts FROM range(400000) t(i);
+
 query II
-SELECT g, avg(ts) FROM (
-	SELECT i % 2 AS g, CASE WHEN i = 7 THEN '-infinity'::TIMESTAMP ELSE TIMESTAMP '2000-01-01' + INTERVAL (i) SECOND END AS ts
-	FROM range(100000) t(i)
-) GROUP BY g ORDER BY g;
+SELECT g, avg(ts) FROM many GROUP BY g ORDER BY g;
 ----
-0	2000-01-01 13:53:19
-1	-infinity
+0	2000-01-03 07:33:19.5
+1	NULL
+2	infinity
+
+query II
+SELECT avg(ts), avg(ts) FILTER (g <> 1) FROM many;
+----
+NULL	infinity
+
+# window frames that move past infinities, wide enough that the segment tree combines its nodes
+query IIII
+SELECT CASE WHEN a IS NULL THEN 'NULL' WHEN isfinite(a) THEN 'finite' ELSE a::VARCHAR END AS kind, count(*), min(i), max(i)
+FROM (
+	SELECT i, avg(ts) OVER (ORDER BY i ROWS BETWEEN 80 PRECEDING AND CURRENT ROW) AS a
+	FROM (SELECT i, CASE WHEN i = 50 THEN 'infinity'::TIMESTAMP WHEN i = 120 THEN '-infinity'::TIMESTAMP ELSE TIMESTAMP '2000-01-01' + INTERVAL (i) HOUR END AS ts FROM range(200) t(i))
+)
+GROUP BY kind ORDER BY min(i);
+----
+finite	50	0	49
+infinity	70	50	119
+NULL	11	120	130
+-infinity	69	131	199
+
+query II
+SELECT i, avg(ts) OVER (ORDER BY i ROWS BETWEEN 80 PRECEDING AND CURRENT ROW) AS a
+FROM (SELECT i, CASE WHEN i = 50 THEN 'infinity'::TIMESTAMP WHEN i = 120 THEN '-infinity'::TIMESTAMP ELSE TIMESTAMP '2000-01-01' + INTERVAL (i) HOUR END AS ts FROM range(200) t(i))
+QUALIFY i = 49;
+----
+49	2000-01-02 00:30:00
 
 # a window frame that moves past an infinity
 query II

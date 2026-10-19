@@ -45,6 +45,18 @@ struct SequenceData {
 	bool cycle;
 };
 
+//! The state of a sequence: shared by all versions of the catalog entry, so that altering the entry (e.g. setting a
+//! comment) does not fork the counter
+struct SequenceState {
+	explicit SequenceState(CreateSequenceInfo &info) : data(info) {
+	}
+
+	//! Lock for getting a value on the sequence
+	mutable mutex lock;
+	//! Sequence data
+	SequenceData data;
+};
+
 //! A sequence catalog entry
 class SequenceCatalogEntry : public StandardEntry {
 public:
@@ -73,9 +85,7 @@ private:
 	//! An exhaustion counter outside of the range, if the range and the storage format permit one
 	optional<int64_t> GetExhaustedCounter() const;
 
-	//! Lock for getting a value on the sequence
-	mutable mutex lock;
-	//! Sequence data
-	SequenceData data;
+	//! The sequence state (shared with the other versions of this entry)
+	shared_ptr<SequenceState> state;
 };
 } // namespace duckdb

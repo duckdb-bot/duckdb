@@ -1,0 +1,382 @@
+# name: test/sql/trigger/trigger_body_schema.test
+# description: Trigger bodies look up names in the schema of the trigger, not in the schema of the statement that fires it
+# group: [trigger]
+
+require noforcestorage
+
+statement ok
+CREATE SCHEMA s1;
+
+statement ok
+CREATE SCHEMA s2;
+
+statement ok
+CREATE TABLE s1.t (i INTEGER);
+
+statement ok
+CREATE TABLE s1.r (i INTEGER);
+
+statement ok
+CREATE TABLE s1.lookup (v INTEGER);
+
+statement ok
+CREATE TABLE s2.lookup (v INTEGER);
+
+statement ok
+CREATE TABLE s1.audit (x INTEGER);
+
+statement ok
+CREATE TABLE s2.audit (x INTEGER);
+
+statement ok
+INSERT INTO s1.lookup VALUES (10);
+
+statement ok
+INSERT INTO s2.lookup VALUES (20);
+
+statement ok
+SET schema = 's1';
+
+statement ok
+CREATE TRIGGER t_after AFTER INSERT ON t FOR EACH STATEMENT INSERT INTO audit SELECT v FROM lookup;
+
+statement ok
+CREATE TRIGGER t_before BEFORE INSERT ON t FOR EACH STATEMENT INSERT INTO audit VALUES (1);
+
+statement ok
+CREATE TRIGGER t_new_rows AFTER INSERT ON t REFERENCING NEW TABLE AS new_rows FOR EACH STATEMENT INSERT INTO audit SELECT i + 100 FROM new_rows;
+
+statement ok
+CREATE TRIGGER r_row AFTER INSERT ON r FOR EACH ROW INSERT INTO audit VALUES (NEW.i);
+
+statement ok
+SET schema = 's2';
+
+statement ok
+INSERT INTO s1.t VALUES (42);
+
+statement ok
+INSERT INTO s1.r VALUES (7);
+
+query I
+SELECT list(x ORDER BY x) FROM s1.audit;
+----
+[1, 7, 10, 142]
+
+query I
+SELECT count(*) FROM s2.audit;
+----
+0
+
+statement ok
+SET schema = 'main';
+
+statement ok
+SET search_path = 's2';
+
+statement ok
+INSERT INTO s1.t VALUES (43);
+
+query I
+SELECT list(x ORDER BY x) FROM s1.audit;
+----
+[1, 1, 7, 10, 10, 142, 143]
+
+query I
+SELECT count(*) FROM s2.audit;
+----
+0
+
+statement ok
+SET schema = 's1';
+
+statement ok
+CREATE TABLE u (i INTEGER);
+
+statement ok
+INSERT INTO u VALUES (1), (2);
+
+statement ok
+CREATE TRIGGER u_update AFTER UPDATE ON u FOR EACH STATEMENT INSERT INTO audit VALUES (500);
+
+statement ok
+CREATE TRIGGER u_delete AFTER DELETE ON u FOR EACH STATEMENT INSERT INTO audit VALUES (600);
+
+statement ok
+SET schema = 's2';
+
+statement ok
+UPDATE s1.u SET i = i + 1;
+
+statement ok
+DELETE FROM s1.u WHERE i = 3;
+
+query II
+SELECT (SELECT list(x ORDER BY x) FROM s1.audit WHERE x >= 500), (SELECT count(*) FROM s2.audit);
+----
+[500, 600]	0
+
+statement ok
+RESET search_path;
+
+# a trigger in an attached database writes to its own database
+statement ok
+ATTACH ':memory:' AS other;
+
+statement ok
+CREATE TABLE other.t (i INTEGER);
+
+statement ok
+CREATE TABLE other.audit (x INTEGER);
+
+statement ok
+CREATE TABLE memory.main.audit (x INTEGER);
+
+statement ok
+USE other;
+
+statement ok
+CREATE TRIGGER other_after AFTER INSERT ON t FOR EACH STATEMENT INSERT INTO audit VALUES (2);
+
+statement ok
+USE memory;
+
+statement ok
+INSERT INTO other.t VALUES (1);
+
+query II
+SELECT (SELECT count(*) FROM other.audit), (SELECT count(*) FROM memory.main.audit);
+----
+1	0
+
+# a trigger created from another schema depends on the tables of its own schema
+statement ok
+USE memory.main;
+
+statement ok
+CREATE SCHEMA s3;
+
+statement ok
+CREATE TABLE s3.t (i INTEGER);
+
+statement ok
+CREATE TABLE s3.log (x INTEGER);
+
+statement ok
+CREATE TABLE main.log (x INTEGER);
+
+statement ok
+CREATE TRIGGER s3_after AFTER INSERT ON s3.t FOR EACH STATEMENT INSERT INTO log VALUES (3);
+
+statement ok
+INSERT INTO s3.t VALUES (1);
+
+query II
+SELECT (SELECT count(*) FROM s3.log), (SELECT count(*) FROM main.log);
+----
+1	0
+
+statement error
+DROP TABLE s3.log;
+----
+<REGEX>:.*Dependency Error.*
+
+statement ok
+DROP TABLE main.log;
+
+# the firing statement and the trigger body each read their own schema
+statement ok
+CREATE TABLE s1.copy (v INTEGER);
+
+statement ok
+SET schema = 's1';
+
+statement ok
+CREATE TRIGGER copy_after AFTER INSERT ON copy FOR EACH STATEMENT INSERT INTO audit SELECT v + 1000 FROM lookup;
+
+statement ok
+SET schema = 's2';
+
+statement ok
+INSERT INTO s1.copy SELECT v FROM lookup;
+
+query II
+SELECT (SELECT list(v) FROM s1.copy), (SELECT max(x) FROM s1.audit);
+----
+[20]	1010
+
+# RETURNING in a trigger body looks up names in the schema of the trigger too
+statement ok
+USE memory.main;
+
+statement ok
+CREATE SCHEMA s4;
+
+statement ok
+CREATE TABLE s4.t (i INTEGER);
+
+statement ok
+CREATE TABLE s4.log (x INTEGER);
+
+statement ok
+CREATE MACRO s4.plus_one(x) AS x + 1;
+
+statement ok
+CREATE TRIGGER s4_after AFTER INSERT ON s4.t FOR EACH STATEMENT INSERT INTO log VALUES (1) RETURNING plus_one(x);
+
+statement ok
+INSERT INTO s4.t VALUES (1);
+
+query I
+SELECT count(*) FROM s4.log;
+----
+1
+
+# a trigger in a nested schema keeps the search path of the statement that fires it
+statement ok
+CREATE SCHEMA p;
+
+statement ok
+CREATE SCHEMA p.s;
+
+statement ok
+CREATE SCHEMA s;
+
+statement ok
+CREATE TABLE p.s.t (i INTEGER);
+
+statement ok
+CREATE TABLE p.s.log (x INTEGER);
+
+statement ok
+CREATE TABLE s.log (x INTEGER);
+
+statement ok
+CREATE TABLE main.log (x INTEGER);
+
+statement ok
+CREATE TRIGGER nested_after AFTER INSERT ON p.s.t FOR EACH STATEMENT INSERT INTO log VALUES (4);
+
+statement ok
+INSERT INTO p.s.t VALUES (1);
+
+query III
+SELECT (SELECT count(*) FROM p.s.log), (SELECT count(*) FROM s.log), (SELECT count(*) FROM main.log);
+----
+0	0	1
+
+# RETURNING of a trigger body that fires a trigger itself, and the dependency on its macro
+statement ok
+CREATE TABLE s4.log_audit (x INTEGER);
+
+statement ok
+CREATE TRIGGER s4_log_after AFTER INSERT ON s4.log FOR EACH STATEMENT INSERT INTO log_audit VALUES (5);
+
+statement ok
+INSERT INTO s4.t VALUES (2);
+
+query II
+SELECT (SELECT count(*) FROM s4.log), (SELECT count(*) FROM s4.log_audit);
+----
+2	1
+
+statement error
+DROP MACRO s4.plus_one;
+----
+<REGEX>:.*Dependency Error.*
+
+# qualified names in a trigger body of an attached database resolve in that database
+statement ok
+CREATE SCHEMA other.q;
+
+statement ok
+CREATE SCHEMA memory.q;
+
+statement ok
+CREATE MACRO other.q.val() AS 10;
+
+statement ok
+CREATE MACRO memory.q.val() AS 20;
+
+statement ok
+CREATE TABLE other.q.log (x INTEGER);
+
+statement ok
+CREATE TABLE memory.q.log (x INTEGER);
+
+statement ok
+USE other;
+
+statement ok
+CREATE TRIGGER other_qualified AFTER INSERT ON t FOR EACH STATEMENT INSERT INTO q.log VALUES (q.val());
+
+statement ok
+USE memory;
+
+statement ok
+INSERT INTO other.t VALUES (2);
+
+query II
+SELECT (SELECT list(x) FROM other.q.log), (SELECT count(*) FROM memory.q.log);
+----
+[10]	0
+
+# a qualifier that names a database for the trigger, and a schema for the statement that fires it
+statement ok
+CREATE SCHEMA memory.other;
+
+statement ok
+CREATE MACRO other.main.val() AS 30;
+
+statement ok
+USE other.main;
+
+statement ok
+CREATE TRIGGER other_catalog AFTER INSERT ON t FOR EACH STATEMENT INSERT INTO audit VALUES (other.val());
+
+statement ok
+USE memory;
+
+statement ok
+INSERT INTO other.main.t VALUES (3);
+
+query I
+SELECT list(x ORDER BY x) FROM other.main.audit;
+----
+[2, 2, 2, 30]
+
+# names qualified with a nested schema resolve in the database of the trigger
+statement ok
+CREATE SCHEMA other.q.r;
+
+statement ok
+CREATE SCHEMA memory.q.r;
+
+statement ok
+CREATE MACRO other.q.r.val() AS 40;
+
+statement ok
+CREATE MACRO memory.q.r.val() AS 50;
+
+statement ok
+CREATE TABLE other.q.r.log (x INTEGER);
+
+statement ok
+CREATE TABLE memory.q.r.log (x INTEGER);
+
+statement ok
+USE other.main;
+
+statement ok
+CREATE TRIGGER other_nested AFTER INSERT ON t FOR EACH STATEMENT INSERT INTO q.r.log VALUES (q.r.val());
+
+statement ok
+USE memory;
+
+statement ok
+INSERT INTO other.main.t VALUES (4);
+
+query II
+SELECT (SELECT list(x) FROM other.q.r.log), (SELECT count(*) FROM memory.q.r.log);
+----
+[40]	0

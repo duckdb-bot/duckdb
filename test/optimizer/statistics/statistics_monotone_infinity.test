@@ -47,20 +47,44 @@ SELECT count(epoch_ns(c)), epoch_ns(min(c)) FROM timestamps_tz_ns
 ----
 2	-9223372036854775808
 
-# -infinity as a bound, and the smallest finite value without -infinity, give the right counts
-statement ok
-DELETE FROM dates WHERE c = make_date(-2147483647 - 1)
-
+# -infinity keeps its value under addition, below the finite values that follow it
 query I
-SELECT count(last_day(c)) FROM dates
+SELECT count(*) FROM dates WHERE c + 2 = '-infinity'::DATE
 ----
 1
 
 statement ok
-DELETE FROM timestamps_ns WHERE NOT isfinite(c)
+CREATE TABLE days(i INTEGER);
+
+statement ok
+INSERT INTO days VALUES (-2147483648), (-2147483647);
+
+query I
+SELECT make_date(i) + 2 FROM days ORDER BY i
+----
+5877642-06-25 (BC)
+-infinity
+
+# -infinity as a bound, and the smallest finite value without -infinity, give the right counts
+statement ok
+CREATE TABLE dates_from_infinity(c DATE);
+
+statement ok
+INSERT INTO dates_from_infinity VALUES ('-infinity'), ('1970-01-01');
+
+query I
+SELECT count(last_day(c)) FROM dates_from_infinity
+----
+1
+
+statement ok
+CREATE TABLE smallest_ns(c TIMESTAMP_NS);
+
+statement ok
+INSERT INTO smallest_ns VALUES (make_timestamp_ns(-9223372036854775807 - 1)), ('1970-01-01');
 
 query III
-SELECT count(epoch_ns(c)), min(epoch_ns(c)), max(epoch_ns(c)) FROM timestamps_ns
+SELECT count(epoch_ns(c)), min(epoch_ns(c)), max(epoch_ns(c)) FROM smallest_ns
 ----
 2	-9223372036854775808	0
 

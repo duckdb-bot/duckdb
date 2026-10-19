@@ -24,8 +24,8 @@ bool TryEvaluateAtConstants(ClientContext &context, const BoundFunctionExpressio
 	return ExpressionExecutor::TryEvaluateScalar(context, *clone, result);
 }
 
-// The smallest finite DATE or TIMESTAMP sorts below -infinity, so -infinity can lie between finite bounds.
-bool HasInfinityBetween(const Value &lo, const Value &hi) {
+// The smallest finite DATE or TIMESTAMP sorts below -infinity, so -infinity can lie above the lower bound.
+bool HasInfinityAboveMin(const Value &lo, const Value &hi) {
 	switch (lo.type().id()) {
 	case LogicalTypeId::DATE:
 	case LogicalTypeId::TIMESTAMP:
@@ -35,7 +35,7 @@ bool HasInfinityBetween(const Value &lo, const Value &hi) {
 	case LogicalTypeId::TIMESTAMP_TZ:
 	case LogicalTypeId::TIMESTAMP_TZ_NS: {
 		auto ninfinity = Value::NegativeInfinity(lo.type());
-		return lo < ninfinity && ninfinity < hi;
+		return lo < ninfinity && ninfinity <= hi;
 	}
 	default:
 		return false;
@@ -163,8 +163,8 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateMonotoneBounds(ClientC
 		}
 		Value lo = NumericStats::Min(cs);
 		Value hi = NumericStats::Max(cs);
-		// the function is not evaluated at -infinity, which can give NULL or a value outside of the bounds
-		if (HasInfinityBetween(lo, hi)) {
+		// a function at -infinity can give NULL or a value outside of the bounds
+		if (HasInfinityAboveMin(lo, hi)) {
 			return nullptr;
 		}
 

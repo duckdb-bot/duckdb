@@ -6,6 +6,9 @@ require quack
 
 require httpfs
 
+# connection errors fail the test instead of skipping it
+set ignore_error_messages __none__
+
 statement ok
 CREATE TABLE events(id INT, t VARCHAR);
 
@@ -59,3 +62,20 @@ query I
 EXECUTE sel_named(t := 'literal', n := 1);
 ----
 1
+
+# parameters only inside a CTE and inside a scalar subquery
+statement ok
+PREPARE in_cte AS WITH c AS (SELECT id FROM r.events WHERE id = $1) SELECT count(*) FROM c;
+
+query I
+EXECUTE in_cte(1);
+----
+1
+
+statement ok
+PREPARE in_subquery AS SELECT (SELECT t FROM r.events WHERE id = $1) AS t;
+
+query I
+EXECUTE in_subquery(2);
+----
+parameter

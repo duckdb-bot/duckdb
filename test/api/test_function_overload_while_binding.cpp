@@ -4,6 +4,7 @@
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/main/extension/linked_extension_registry.hpp"
+#include "duckdb/main/extension_helper.hpp"
 #include "test_helpers.hpp"
 
 using namespace duckdb;
@@ -93,6 +94,10 @@ TEST_CASE("Test adding an overload of a lambda function while its lambda is boun
 
 TEST_CASE("Test adding an overload of a function while an arrow is bound as a lambda", "[api]") {
 	DuckDB db(nullptr);
+	if (!db.ExtensionIsLoaded("json")) {
+		SUCCEED("json is not linked into this binary, so the arrow cannot be bound as a JSON operator");
+		return;
+	}
 	RegisterTestFunctions(db);
 	Connection con(db);
 
@@ -108,8 +113,8 @@ TEST_CASE("Test autoloading an extension while a function call is bound", "[api]
 	for (auto &linked : LinkedExtensionRegistry::Get()) {
 		icu_linked = icu_linked || linked.name == "icu";
 	}
-	if (!icu_linked) {
-		SUCCEED("icu is not linked into this binary, so it cannot be autoloaded from it");
+	if (!icu_linked || !ExtensionHelper::CanAutoloadExtension(*OpenWithoutLoadedExtensions()->instance, "icu")) {
+		SUCCEED("icu is not linked into this binary or cannot be autoloaded");
 		return;
 	}
 	struct AutoloadCase {
@@ -117,7 +122,7 @@ TEST_CASE("Test autoloading an extension while a function call is bound", "[api]
 		Value expected;
 	};
 	vector<AutoloadCase> cases {
-	    // current_date loads icu while the call to + is bound, in the select list and in a WHERE clause
+	    // current_date loads icu while the arithmetic around it is bound, in the select list and in a WHERE clause
 	    {"SELECT (current_date + 1) - current_date", Value::BIGINT(1)},
 	    {"SELECT 42 WHERE current_date - 1 < current_date", Value::INTEGER(42)},
 	    // date_part of a TIMESTAMPTZ loads icu from its bind callback

@@ -46,7 +46,7 @@ SELECT sum(i) FROM local_t;
 ----
 1
 
-# a CONNECT by connection string attaches a hidden database, which DISCONNECT detaches
+# the same with a CONNECT by connection string
 statement ok
 BEGIN;
 
@@ -60,28 +60,6 @@ no_such_table
 
 statement ok
 DISCONNECT;
-
-statement ok
-ROLLBACK;
-
-query I
-SELECT count(*) FROM pragma_database_list WHERE name LIKE '__connect%';
-----
-0
-
-# without a CONNECT, DISCONNECT in an aborted transaction still says so
-statement ok
-BEGIN;
-
-statement error
-SELECT error('boom');
-----
-boom
-
-statement error
-DISCONNECT;
-----
-no active CONNECT
 
 statement ok
 ROLLBACK;

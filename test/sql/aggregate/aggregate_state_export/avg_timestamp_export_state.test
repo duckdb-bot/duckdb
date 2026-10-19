@@ -54,6 +54,11 @@ SELECT finalize(combine(to_aggregate_state({'count': 0, 'value': 5::HUGEINT}, 'a
 ----
 NULL
 
+query II
+SELECT finalize(combine(a, b)), finalize(combine(b, a)) FROM (SELECT to_aggregate_state({'count': 1, 'value': 0::HUGEINT}, 'avg', ['TIMESTAMP']) AS a, to_aggregate_state({'count': 0, 'value': 5::HUGEINT}, 'avg', ['TIMESTAMP']) AS b);
+----
+1970-01-01 00:00:00	1970-01-01 00:00:00
+
 # counts that overflow fail instead of wrapping around to an infinity
 statement error
 SELECT finalize(combine(to_aggregate_state({'count': 18446744073709551615, 'value': 0::HUGEINT}, 'avg', ['TIMESTAMP']), to_aggregate_state({'count': 1, 'value': 1::HUGEINT}, 'avg', ['TIMESTAMP'])));

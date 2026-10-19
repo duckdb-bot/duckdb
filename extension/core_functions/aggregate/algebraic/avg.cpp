@@ -170,6 +170,10 @@ struct TimestampAverageOperation : public DiscreteAverageOperation {
 		if (HasInfinity(source)) {
 			AddInfinity(target, source.value.lower);
 		} else if (source.count != 0 && !HasInfinity(target)) {
+			if (target.count == 0) {
+				// an empty target holds no sum
+				target.value = hugeint_t(0);
+			}
 			if (!TryAddOperator::Operation(target.count, source.count, target.count)) {
 				throw OutOfRangeException("Overflow in aggregate state combine");
 			}

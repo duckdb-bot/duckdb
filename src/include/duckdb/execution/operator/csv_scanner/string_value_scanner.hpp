@@ -172,7 +172,7 @@ struct ParseTypeInfo {
 	}
 
 	bool validate_utf8;
-	//! Whether values are cast strictly, for a type the sniffer detected
+	//! Whether values are checked against the rules of the sniffer first, for a type the sniffer detected
 	bool strict;
 	LogicalTypeId type_id;
 	PhysicalType internal_type;
@@ -289,6 +289,8 @@ public:
 	void HandleUnicodeError(idx_t col_idx, LinePosition &error_position);
 	bool HandleTooManyColumnsError(const char *value_ptr, const idx_t size);
 	inline void AddValueToVector(const char *value_ptr, idx_t size, bool allocate = false);
+	//! Writes the value to its column, returns false if it cannot be converted to the type of the column
+	inline bool WriteValue(const char *&value_ptr, idx_t &size, bool allocate, bool strict);
 	static inline void SetComment(StringValueResult &result, idx_t buffer_pos);
 	static inline bool UnsetComment(StringValueResult &result, idx_t buffer_pos);
 

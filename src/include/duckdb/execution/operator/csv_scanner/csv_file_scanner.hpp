@@ -55,6 +55,8 @@ public:
 
 	//! Initialize the actual names and types to be scanned from the file
 	void InitializeFileNamesTypes();
+	//! Warns once per column that a value outside the sample was converted although the sniffer rejects it
+	void WarnSniffedTypeMismatch(idx_t column_idx, LogicalTypeId type, const string &value);
 
 public:
 	//! The file that is read
@@ -103,7 +105,11 @@ public:
 	atomic<idx_t> finished_tasks {0};
 
 private:
+	ClientContext &context;
 	vector<string> names;
 	vector<LogicalType> types;
+	//! The columns a sniffed type mismatch was warned about
+	unordered_set<idx_t> sniffed_type_mismatch_columns;
+	mutex sniffed_type_mismatch_lock;
 };
 } // namespace duckdb

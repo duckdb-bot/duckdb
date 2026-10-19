@@ -83,6 +83,7 @@ RemotePushdownOptimizer::RemotePushdownOptimizer(optional_ptr<RemotePushdownOpti
 	// inherit table / column names from parent (for correlated subquery detection)
 	local_table_names = parent->local_table_names;
 	outer_scope_has_names = parent->outer_scope_has_names || parent->scope_has_tables;
+	in_expression_subquery = parent->in_expression_subquery;
 }
 
 void RemotePushdownOptimizer::FindRemoteCatalogsInSearchPath() {
@@ -887,7 +888,7 @@ bool RemotePushdownOptimizer::IsSelfContained(const QueryNode &node) const {
 	if (node.type != QueryNodeType::SELECT_NODE && node.type != QueryNodeType::SET_OPERATION_NODE) {
 		return false;
 	}
-	return !refers_to_parent_cte && !may_refer_to_outer_column && !needs_enclosing_statement;
+	return !refers_to_parent_cte && !may_refer_to_outer_column && !needs_enclosing_statement && !in_expression_subquery;
 }
 
 void RemotePushdownOptimizer::MarkOuterColumnReference() {
@@ -1131,6 +1132,7 @@ ExpressionPushdownResult RemotePushdownOptimizer::AnalyzeExpression(const Subque
 	RemotePushdownOptimizer child_optimizer(this);
 	// the subquery sees the FROM clause and the select list aliases of this scope
 	child_optimizer.outer_scope_has_names = true;
+	child_optimizer.in_expression_subquery = true;
 	state.result = child_optimizer.Rewrite(*subquery_expr.Subquery()->node);
 	return state;
 }
@@ -1201,9 +1203,26 @@ ExpressionPushdownResult RemotePushdownOptimizer::AnalyzeExpression(const TypeEx
 	state.result = CheckCatalogQualification(type_expr, type_expr.GetQualifiedName());
 	return state;
 }
+CatalogPushdownResult RemotePushdownOptimizer::CheckType(const TypeExpression &type_expr) {
+	auto result = CheckCatalogQualification(type_expr, type_expr.GetQualifiedName());
+	// a user type of a local catalog does not exist remotely, built-in types exist everywhere
+	EntryLookupInfo type_lookup(CatalogType::TYPE_ENTRY, type_expr.GetQualifiedName());
+	auto entry = Catalog::GetEntry(binder.context, type_lookup, OnEntryNotFound::RETURN_NULL);
+	if (entry && !entry->ParentCatalog().IsSystemCatalog() &&
+	    !entry->ParentCatalog().Supports(RemoteCapability::EXECUTE_QUERY_NODE)) {
+		result = CatalogPushdownResult::Unknown();
+	}
+	for (auto &child : type_expr.GetChildren()) {
+		if (child->GetExpressionClass() == ExpressionClass::TYPE) {
+			result = Merge(result, CheckType(child->Cast<TypeExpression>()));
+		}
+	}
+	return result;
+}
 ExpressionPushdownResult RemotePushdownOptimizer::AnalyzeExpression(const CastExpression &cast_expr) {
-	// the target type is not a child expression, so its catalog is checked here
-	auto state = AnalyzeExpression(cast_expr.TargetType());
+	// the target type is not a child expression, so it is checked here
+	ExpressionPushdownResult state;
+	state.result = CheckType(cast_expr.TargetType());
 	state.foldability = ExpressionFoldability::FOLDABLE;
 	return state;
 }
@@ -1961,8 +1980,25 @@ void RemotePushdownOptimizer::FinishPushdown(unique_ptr<QueryNode> &node, Catalo
 	PushdownNode(node, result);
 }
 
-//! Name unaliased expressions after their text before the catalog is stripped from it, as the local binder would
+static void KeepColumnNames(QueryNode &node);
+
+static void KeepColumnNames(TableRef &ref) {
+	if (ref.type == TableReferenceType::SUBQUERY) {
+		KeepColumnNames(*ref.Cast<SubqueryRef>().subquery->node);
+	} else if (ref.type == TableReferenceType::JOIN) {
+		auto &join = ref.Cast<JoinRef>();
+		KeepColumnNames(*join.left);
+		KeepColumnNames(*join.right);
+	}
+}
+
+//! Name unaliased projections after their text before the catalog is stripped from it, as the local binder would
 static void KeepColumnNames(QueryNode &node) {
+	for (auto &cte : node.cte_map.map) {
+		if (cte.second->query_node) {
+			KeepColumnNames(*cte.second->query_node);
+		}
+	}
 	if (node.type == QueryNodeType::SET_OPERATION_NODE) {
 		for (auto &child : node.Cast<SetOperationNode>().children) {
 			KeepColumnNames(*child);
@@ -1972,22 +2008,25 @@ static void KeepColumnNames(QueryNode &node) {
 	if (node.type != QueryNodeType::SELECT_NODE) {
 		return;
 	}
-	for (auto &expr : node.Cast<SelectNode>().select_list) {
-		auto expression_class = expr->GetExpressionClass();
-		if (expr->GetAlias().empty() && expression_class != ExpressionClass::COLUMN_REF &&
-		    expression_class != ExpressionClass::STAR) {
+	auto &select_node = node.Cast<SelectNode>();
+	for (auto &expr : select_node.select_list) {
+		// a star is named after the columns it expands to
+		bool has_star = false;
+		ParsedExpressionIterator::VisitExpressionClass(*expr, ExpressionClass::STAR,
+		                                               [&](const ParsedExpression &) { has_star = true; });
+		if (expr->GetAlias().empty() && expr->GetExpressionClass() != ExpressionClass::COLUMN_REF && !has_star) {
 			expr->SetAlias(Identifier(expr->ToString()));
 		}
+	}
+	if (select_node.from_table) {
+		KeepColumnNames(*select_node.from_table);
 	}
 }
 
 void RemotePushdownOptimizer::PushdownNode(unique_ptr<QueryNode> &node, CatalogPushdownResult &result) {
 	KeepColumnNames(*node);
 	StripCatalogName(*node, result.catalog->GetName());
-	auto select_node = make_uniq<SelectNode>();
-	select_node->select_list.push_back(make_uniq<StarExpression>());
-	select_node->from_table = CreateRemoteFunctionRef(result, std::move(node));
-	node = std::move(select_node);
+	node = std::move(WrapRemoteRef(CreateRemoteFunctionRef(result, std::move(node)))->node);
 }
 
 } // namespace duckdb

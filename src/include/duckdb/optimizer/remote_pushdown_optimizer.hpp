@@ -175,6 +175,7 @@ private:
 	ExpressionPushdownResult AnalyzeExpression(const WindowExpression &expr);
 	ExpressionPushdownResult AnalyzeExpression(const TypeExpression &expr);
 	ExpressionPushdownResult AnalyzeExpression(const CastExpression &expr);
+	CatalogPushdownResult CheckType(const TypeExpression &type_expr);
 	ExpressionPushdownResult AnalyzeExpression(const ColumnRefExpression &expr);
 	//! Bind and evaluate an expression locally, replacing it with the resulting constant
 	ConstantFoldResult TryConstantFold(unique_ptr<ParsedExpression> &expr);
@@ -228,6 +229,8 @@ private:
 	bool may_refer_to_outer_column = false;
 	//! Whether this scope contains parameters or data-modifying statements, which run only as part of the statement
 	bool needs_enclosing_statement = false;
+	//! Whether this scope is part of a subquery expression, whose generated name would change with a pushdown
+	bool in_expression_subquery = false;
 	//! Subqueries in the FROM clause of the current node that a single remote catalog can run on their own
 	vector<std::pair<reference<SubqueryRef>, CatalogPushdownResult>> remote_subqueries;
 	//! CTEs of the current node that a single remote catalog can run on their own

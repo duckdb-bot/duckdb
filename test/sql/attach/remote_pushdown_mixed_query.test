@@ -228,7 +228,45 @@ SELECT "(r.tbl.id + 1)" FROM (SELECT r.tbl.id + 1 FROM r.tbl UNION ALL SELECT x 
 10
 11
 
-# a cast to a type of a local catalog keeps the subquery local
+# names of COLUMNS expressions and of nested projections
+query I
+SELECT id FROM (SELECT min(COLUMNS(*)) FROM r.tbl) s, local_tbl;
+----
+0
+
+query I
+WITH a AS (SELECT min(COLUMNS(*)) FROM r.tbl) SELECT id FROM a, local_tbl;
+----
+0
+
+query I
+SELECT "(r.tbl.id + 1)" FROM (SELECT * FROM (SELECT r.tbl.id + 1 FROM r.tbl) inner_s) outer_s, local_tbl ORDER BY 1;
+----
+1
+2
+3
+10
+11
+
+query I
+SELECT "(r.tbl.id + 1)" FROM (WITH c AS (SELECT r.tbl.id + 1 FROM r.tbl) SELECT * FROM c) s, local_tbl ORDER BY 1;
+----
+1
+2
+3
+10
+11
+
+# a subquery inside an expression keeps the generated name of the expression
+statement ok
+CREATE TABLE names AS SELECT (SELECT n FROM (SELECT count(*) AS n FROM r.tbl) s) FROM local_tbl;
+
+query I
+SELECT column_name FROM information_schema.columns WHERE table_name = 'names';
+----
+(SELECT n FROM (SELECT count_star() AS n FROM r.tbl) AS s)
+
+# casts to a type of a local catalog keep the subquery local
 statement ok
 CREATE TEMPORARY TYPE local_enum AS ENUM ('0', '1', '2', '9', '10');
 
@@ -240,6 +278,24 @@ SELECT v FROM (SELECT id::VARCHAR::temp.local_enum AS v FROM r.tbl) s, local_tbl
 2
 9
 10
+
+query I
+SELECT v FROM (SELECT id::VARCHAR::local_enum AS v FROM r.tbl) s, local_tbl ORDER BY v;
+----
+0
+1
+2
+9
+10
+
+query I
+SELECT v FROM (SELECT [id::VARCHAR]::temp.local_enum[] AS v FROM r.tbl) s, local_tbl ORDER BY v;
+----
+[0]
+[1]
+[2]
+[9]
+[10]
 
 statement ok
 CALL quack_stop('quack:127.0.0.1:9619');

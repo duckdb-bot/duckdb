@@ -820,7 +820,8 @@ optional_idx DBConfig::ParseMemoryLimitSlurm(const string &arg) {
 
 // Right now we only really care about access mode when comparing DBConfigs
 bool DBConfigOptions::operator==(const DBConfigOptions &other) const {
-	return other.access_mode == access_mode && other.user_options == user_options;
+	return other.access_mode == access_mode && other.user_options == user_options &&
+	       other.configuration_env == configuration_env;
 }
 
 bool DBConfig::operator==(const DBConfig &other) {
@@ -992,6 +993,41 @@ set<OptimizerType> DBConfig::GetDisabledOptimizers() const {
 void DBConfig::SetDisabledOptimizers(set<OptimizerType> disabled_optimizers) {
 	lock_guard<mutex> guard(disabled_optimizers_lock);
 	options.disabled_optimizers = std::move(disabled_optimizers);
+}
+
+void DBConfig::SetAllowedDirectories(const vector<string> &paths) {
+	decltype(options.allowed_directories) new_directories;
+	for (auto &path : paths) {
+		auto allowed_directory = SanitizeAllowedPath(path);
+		if (allowed_directory.empty()) {
+			throw InvalidInputException("Cannot provide an empty string for allowed_directory");
+		}
+		if (!StringUtil::EndsWith(allowed_directory, "/")) {
+			allowed_directory += "/";
+		}
+		new_directories.insert(std::move(allowed_directory));
+	}
+	lock_guard<mutex> guard(allowed_paths_lock);
+	options.allowed_directories = std::move(new_directories);
+}
+
+void DBConfig::SetAllowedPaths(const vector<string> &paths) {
+	decltype(options.allowed_paths) new_paths;
+	for (auto &path : paths) {
+		new_paths.insert(SanitizeAllowedPath(path));
+	}
+	lock_guard<mutex> guard(allowed_paths_lock);
+	options.allowed_paths = std::move(new_paths);
+}
+
+void DBConfig::ResetAllowedDirectories() {
+	lock_guard<mutex> guard(allowed_paths_lock);
+	options.allowed_directories = DBConfigOptions().allowed_directories;
+}
+
+void DBConfig::ResetAllowedPaths() {
+	lock_guard<mutex> guard(allowed_paths_lock);
+	options.allowed_paths = DBConfigOptions().allowed_paths;
 }
 
 void DBConfig::AddAllowedPath(const string &path) {

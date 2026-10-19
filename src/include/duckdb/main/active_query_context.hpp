@@ -29,6 +29,8 @@ public:
 
 	//! The text of the statement that is running
 	string query;
+	//! The time the query started, before it is bound
+	std::chrono::steady_clock::time_point start_time = std::chrono::steady_clock::now();
 	//! Prepared statement data of the statement that is running
 	shared_ptr<PreparedStatementData> prepared;
 	//! The executor of the statement that is running

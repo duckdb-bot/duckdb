@@ -245,6 +245,46 @@ B
 a
 b
 
+# such a key is compared with the default collation
+statement ok
+SET default_collation = 'nocase';
+
+statement ok
+CREATE TABLE t8f (k VARCHAR PRIMARY KEY, n INTEGER);
+
+statement ok
+INSERT INTO t8f VALUES ('B', 0);
+
+statement ok
+INSERT INTO t8f SELECT 'A' COLLATE "binary", 1 UNION ALL SELECT 'a' COLLATE "binary", 1 ON CONFLICT DO NOTHING;
+
+query II
+INSERT INTO t8f SELECT 'b' COLLATE "binary", 2 ON CONFLICT DO UPDATE SET n = excluded.n RETURNING k, n;
+----
+B	2
+
+query II
+SELECT lower(k), n FROM t8f ORDER BY n
+----
+a	1
+b	2
+
+statement ok
+RESET default_collation;
+
+statement ok
+PREPARE upsert_t8f AS INSERT INTO t8f SELECT $1::VARCHAR, 3 ON CONFLICT DO UPDATE SET n = t8f.n + 1 RETURNING k, n;
+
+query II
+EXECUTE upsert_t8f('x');
+----
+x	3
+
+query II
+EXECUTE upsert_t8f('x');
+----
+x	4
+
 # TIMETZ keys are equal only with the same time and offset
 statement ok
 CREATE TABLE t8d (k TIMETZ PRIMARY KEY, n INTEGER);

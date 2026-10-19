@@ -257,6 +257,31 @@ SELECT "(r.tbl.id + 1)" FROM (WITH c AS (SELECT r.tbl.id + 1 FROM r.tbl) SELECT 
 10
 11
 
+# generated names that subqueries, recursive CTEs and unpacked stars refer to, and whole rows of catalog tables
+query II
+SELECT * FROM (SELECT (SELECT "(r.tbl.id + 1)" FROM (SELECT r.tbl.id + 1 FROM r.tbl) t ORDER BY 1 LIMIT 1) AS v) s, local_tbl;
+----
+1	1
+
+query I
+SELECT "COALESCE(r.main.tbl.id)" FROM (SELECT coalesce(*COLUMNS(*)) FROM r.tbl) s, local_tbl ORDER BY 1;
+----
+0
+1
+2
+9
+10
+
+query I
+SELECT count(*) FROM (SELECT r.tbl AS row_value FROM r.tbl) s, local_tbl;
+----
+5
+
+query I
+WITH a AS (SELECT r.tbl AS row_value FROM r.tbl) SELECT count(*) FROM a, local_tbl;
+----
+5
+
 # a subquery inside an expression keeps the generated name of the expression
 statement ok
 CREATE TABLE names AS SELECT (SELECT n FROM (SELECT count(*) AS n FROM r.tbl) s) FROM local_tbl;

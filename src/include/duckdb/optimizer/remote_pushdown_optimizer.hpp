@@ -207,8 +207,8 @@ private:
 	bool IsSelfContained(const QueryNode &node) const;
 	//! Marks the scopes from which a column or a qualified star might refer to a table outside of them
 	void MarkOuterColumnReference();
-	//! Marks this scope and all enclosing scopes as only able to run as part of the whole statement
-	void MarkNeedsEnclosingStatement();
+	//! Marks this scope and all enclosing scopes as unable to be pushed on their own
+	void MarkStaysWithParent();
 
 private:
 	Binder &binder;
@@ -227,8 +227,8 @@ private:
 	bool outer_scope_has_names = false;
 	//! Whether a column of this scope might refer to such a table, so that it cannot be pushed on its own
 	bool may_refer_to_outer_column = false;
-	//! Whether this scope contains parameters or data-modifying statements, which run only as part of the statement
-	bool needs_enclosing_statement = false;
+	//! Whether this scope contains something that breaks when the scope is pushed on its own
+	bool stays_with_parent = false;
 	//! Whether this scope is part of a subquery expression, whose generated name would change with a pushdown
 	bool in_expression_subquery = false;
 	//! Subqueries in the FROM clause of the current node that a single remote catalog can run on their own

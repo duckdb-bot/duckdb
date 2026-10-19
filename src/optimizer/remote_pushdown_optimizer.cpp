@@ -287,7 +287,11 @@ CatalogPushdownResult RemotePushdownOptimizer::Rewrite(QueryNode &node) {
 	CatalogPushdownResult result;
 	if (node.type == QueryNodeType::INSERT_QUERY_NODE || node.type == QueryNodeType::DELETE_QUERY_NODE ||
 	    node.type == QueryNodeType::UPDATE_QUERY_NODE || node.type == QueryNodeType::MERGE_QUERY_NODE) {
-		MarkNeedsEnclosingStatement();
+		// data-modifying statements run only as part of the statement
+		MarkStaysWithParent();
+	} else if (node.type == QueryNodeType::RECURSIVE_CTE_NODE) {
+		// stripping the catalog changes generated names that the recursive part can refer to
+		MarkStaysWithParent();
 	}
 	switch (node.type) {
 	case QueryNodeType::SELECT_NODE:
@@ -888,7 +892,7 @@ bool RemotePushdownOptimizer::IsSelfContained(const QueryNode &node) const {
 	if (node.type != QueryNodeType::SELECT_NODE && node.type != QueryNodeType::SET_OPERATION_NODE) {
 		return false;
 	}
-	return !refers_to_parent_cte && !may_refer_to_outer_column && !needs_enclosing_statement && !in_expression_subquery;
+	return !refers_to_parent_cte && !may_refer_to_outer_column && !stays_with_parent && !in_expression_subquery;
 }
 
 void RemotePushdownOptimizer::MarkOuterColumnReference() {
@@ -898,9 +902,9 @@ void RemotePushdownOptimizer::MarkOuterColumnReference() {
 	}
 }
 
-void RemotePushdownOptimizer::MarkNeedsEnclosingStatement() {
+void RemotePushdownOptimizer::MarkStaysWithParent() {
 	for (auto scope = this; scope; scope = scope->parent.get()) {
-		scope->needs_enclosing_statement = true;
+		scope->stays_with_parent = true;
 	}
 }
 
@@ -1133,6 +1137,8 @@ ExpressionPushdownResult RemotePushdownOptimizer::AnalyzeExpression(const Subque
 	// the subquery sees the FROM clause and the select list aliases of this scope
 	child_optimizer.outer_scope_has_names = true;
 	child_optimizer.in_expression_subquery = true;
+	// stripping the catalog changes generated names in the subquery that it can refer to
+	MarkStaysWithParent();
 	state.result = child_optimizer.Rewrite(*subquery_expr.Subquery()->node);
 	return state;
 }
@@ -1230,6 +1236,13 @@ ExpressionPushdownResult RemotePushdownOptimizer::AnalyzeExpression(const CastEx
 ExpressionPushdownResult RemotePushdownOptimizer::AnalyzeExpression(const ColumnRefExpression &col_ref) {
 	ExpressionPushdownResult state;
 	MarkOuterColumnReference();
+	auto &column_names = col_ref.ColumnNames();
+	if (column_names.size() == 2 &&
+	    ResolveRemoteCatalog(column_names[0], RemoteCapability::EXECUTE_QUERY_NODE).reference_type ==
+	        CatalogReferenceType::SINGLE_REMOTE_CATALOG) {
+		// "catalog.table" could be a whole row, which stripping the catalog does not rewrite
+		MarkStaysWithParent();
+	}
 	if (RefersToLocalTable(col_ref)) {
 		// column refers to local table - bail
 		state.result = CatalogPushdownResult::Unknown();
@@ -1275,6 +1288,10 @@ RemotePushdownOptimizer::TryConstantFold(unique_ptr<ParsedExpression> &expr) {
 }
 
 ExpressionPushdownResult RemotePushdownOptimizer::AnalyzeExpression(const ParsedExpression &expr) {
+	if (StarExpression::IsColumnsUnpacked(expr)) {
+		// an unpacked star is named after the qualified columns, which stripping the catalog changes
+		MarkStaysWithParent();
+	}
 	switch (expr.GetExpressionClass()) {
 	case ExpressionClass::SUBQUERY:
 		return AnalyzeExpression(expr.Cast<SubqueryExpression>());
@@ -1292,7 +1309,8 @@ ExpressionPushdownResult RemotePushdownOptimizer::AnalyzeExpression(const Parsed
 		}
 		return ExpressionPushdownResult();
 	case ExpressionClass::PARAMETER:
-		MarkNeedsEnclosingStatement();
+		// the values of parameters are only known to the statement
+		MarkStaysWithParent();
 		return ExpressionPushdownResult();
 	case ExpressionClass::CAST:
 		return AnalyzeExpression(expr.Cast<CastExpression>());
@@ -2010,7 +2028,7 @@ static void KeepColumnNames(QueryNode &node) {
 	}
 	auto &select_node = node.Cast<SelectNode>();
 	for (auto &expr : select_node.select_list) {
-		// a star is named after the columns it expands to
+		// a star is named after the columns it expands to, unpacked stars keep the subquery local
 		bool has_star = false;
 		ParsedExpressionIterator::VisitExpressionClass(*expr, ExpressionClass::STAR,
 		                                               [&](const ParsedExpression &) { has_star = true; });

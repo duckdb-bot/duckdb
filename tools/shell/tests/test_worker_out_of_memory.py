@@ -33,6 +33,7 @@ def run_with_address_space_limit(shell, limit_mb, sql):
     ],
 )
 def test_worker_out_of_memory(shell, limit_mb, sql, runs):
+    checked_runs = 0
     for _ in range(runs):
         result = run_with_address_space_limit(shell, limit_mb, sql)
         if result.returncode == -signal.SIGSEGV:
@@ -41,3 +42,6 @@ def test_worker_out_of_memory(shell, limit_mb, sql, runs):
         assert result.returncode in (0, 1), result.stderr
         if result.returncode == 1:
             assert b"Out of Memory" in result.stderr, result.stderr
+        checked_runs += 1
+    if checked_runs == 0:
+        pytest.skip("every run ended in a segmentation fault")

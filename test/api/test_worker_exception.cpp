@@ -23,8 +23,8 @@ struct UndeschedulableTask : public Task {
 	void Deschedule() override {
 		auto now = std::chrono::steady_clock::now();
 		auto attempt = ++attempts;
-		if (attempt == 1) {
-			first_attempt = now;
+		if (attempt > 1 && now - last_attempt < shortest_gap) {
+			shortest_gap = now - last_attempt;
 		}
 		last_attempt = now;
 		if (attempt <= failures) {
@@ -42,8 +42,9 @@ struct UndeschedulableTask : public Task {
 	atomic<idx_t> executions {0};
 	atomic<idx_t> attempts {0};
 	atomic<bool> descheduled {false};
-	std::chrono::steady_clock::time_point first_attempt;
 	std::chrono::steady_clock::time_point last_attempt;
+	//! The shortest time between two attempts
+	std::chrono::steady_clock::duration shortest_gap = std::chrono::steady_clock::duration::max();
 };
 
 struct FinishingTask : public Task {
@@ -72,13 +73,13 @@ TEST_CASE("A worker thread that cannot deschedule a blocked task tries again", "
 	auto &scheduler = TaskScheduler::GetScheduler(*con.context);
 	auto producer = scheduler.CreateProducer();
 
-	auto blocked = make_shared_ptr<UndeschedulableTask>(3);
+	auto blocked = make_shared_ptr<UndeschedulableTask>(5);
 	scheduler.ScheduleTask(*producer, blocked);
 	REQUIRE(WaitFor([&]() { return blocked->descheduled.load(); }));
-	// the task ran once, and the worker waited between its attempts
+	// the task ran once, and the worker waited before every new attempt
 	REQUIRE(blocked->executions == 1);
-	REQUIRE(blocked->attempts == 4);
-	REQUIRE(blocked->last_attempt - blocked->first_attempt >= std::chrono::milliseconds(3));
+	REQUIRE(blocked->attempts == 6);
+	REQUIRE(blocked->shortest_gap >= std::chrono::milliseconds(1));
 
 	// the worker still runs tasks
 	auto next = make_shared_ptr<FinishingTask>();

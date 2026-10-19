@@ -75,3 +75,28 @@ query I
 SELECT count(*) FROM d WHERE c::DATE = '-infinity'::DATE;
 ----
 1
+
+# time zone aware timestamps
+require icu
+
+statement ok
+SET TimeZone = 'UTC';
+
+statement ok
+CREATE TABLE z(c TIMESTAMPTZ_NS);
+
+statement ok
+INSERT INTO z VALUES (make_timestamp_ns(-9223372036854775807 - 1)::TIMESTAMPTZ_NS), ('-infinity'), ('1970-01-01');
+
+query I
+SELECT count(*) FROM z WHERE c::TIMESTAMPTZ = '-infinity'::TIMESTAMPTZ;
+----
+1
+
+statement ok
+DELETE FROM z WHERE c = '1970-01-01';
+
+query I
+SELECT count(*) FROM z WHERE c::TIMESTAMPTZ <> '-infinity'::TIMESTAMPTZ;
+----
+1

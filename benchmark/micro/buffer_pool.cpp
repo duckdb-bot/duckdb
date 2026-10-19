@@ -77,3 +77,31 @@ string BenchmarkInfo() override {
 	return "Four threads each allocate and release 50000 buffers of 64 KiB, keeping every 1000th one";
 }
 FINISH_BENCHMARK(ManagedBufferChurn)
+
+// One thread pins and unpins the same few blocks over and over, so the eviction queue fills with stale nodes
+DUCKDB_BENCHMARK(ManagedBufferRepin, "[micro]")
+static constexpr idx_t BLOCK_COUNT = 64;
+static constexpr idx_t ROUND_COUNT = 2000;
+vector<shared_ptr<BlockHandle>> blocks;
+void Load(DuckDBBenchmarkState *state) override {
+	auto &buffer_manager = BufferManager::GetBufferManager(*state->conn.context);
+	for (idx_t i = 0; i < BLOCK_COUNT; i++) {
+		auto pin = buffer_manager.Allocate(MemoryTag::EXTENSION, 64 * 1024, true);
+		blocks.push_back(pin.GetBlockHandle());
+	}
+}
+void RunBenchmark(DuckDBBenchmarkState *state) override {
+	auto &buffer_manager = BufferManager::GetBufferManager(*state->conn.context);
+	for (idx_t round = 0; round < ROUND_COUNT; round++) {
+		for (auto &block : blocks) {
+			auto pin = buffer_manager.Pin(block);
+		}
+	}
+}
+string VerifyResult(QueryResult *result) override {
+	return string();
+}
+string BenchmarkInfo() override {
+	return "Pin and unpin 64 buffers of 64 KiB 2000 times each";
+}
+FINISH_BENCHMARK(ManagedBufferRepin)

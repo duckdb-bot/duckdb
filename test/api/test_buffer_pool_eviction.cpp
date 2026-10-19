@@ -449,6 +449,39 @@ TEST_CASE("Test eviction queue: blocks stay evictable after a purge of a queue b
 	}
 }
 
+TEST_CASE("Test eviction queue: stale nodes of repinned blocks are purged from a queue below the purge minimum",
+          "[storage][buffer_pool]") {
+	DuckDB db;
+	Connection con(db);
+	auto &context = *con.context;
+	auto &buffer_manager = BufferManager::GetBufferManager(context);
+	auto &buffer_pool = DatabaseInstance::GetDatabase(context).GetBufferPool();
+	const idx_t initial_memory = buffer_pool.GetUsedMemory();
+
+	constexpr idx_t block_count = 64;
+	constexpr idx_t rounds = 300;
+	vector<shared_ptr<BlockHandle>> blocks;
+	for (idx_t i = 0; i < block_count; ++i) {
+		auto pin = buffer_manager.Allocate(MemoryTag::EXTENSION, 64 * 1024, /*can_destroy=*/true);
+		blocks.push_back(pin.GetBlockHandle());
+	}
+	// every unpin queues a new node for the block, which makes its previous node stale
+	for (idx_t round = 0; round < rounds; ++round) {
+		for (auto &block : blocks) {
+			auto pin = buffer_manager.Pin(block);
+		}
+	}
+	for (const auto &q : buffer_pool.GetEvictionQueueInfo()) {
+		REQUIRE(q.dead_nodes < 16384);
+	}
+
+	// the latest node of every block survives the purges
+	buffer_pool.SetLimit(initial_memory, EXCEPTION_POSTSCRIPT);
+	for (auto &block : blocks) {
+		REQUIRE(block->GetMemory().GetState() == BlockState::BLOCK_UNLOADED);
+	}
+}
+
 TEST_CASE("Test buffer pool eviction: SetLimit evicts object cache", "[storage][buffer_pool]") {
 	DuckDB db;
 	Connection con(db);

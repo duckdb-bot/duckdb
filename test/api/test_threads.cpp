@@ -3,6 +3,7 @@
 #include "duckdb/execution/operator/scan/physical_column_data_scan.hpp"
 #include "duckdb/execution/physical_plan_generator.hpp"
 #include "duckdb/parallel/task_scheduler.hpp"
+#include "duckdb/common/local_file_system.hpp"
 #include "duckdb/common/virtual_file_system.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/storage/storage_info.hpp"
@@ -135,6 +136,32 @@ TEST_CASE("Test async threads", "[api]") {
 	con.Query("SET async_threads=2");
 	REQUIRE(scheduler.NumberOfAsyncThreads() == 2);
 }
+
+#ifdef __linux__
+static idx_t ProcessThreadCount() {
+	LocalFileSystem fs;
+	idx_t count = 0;
+	fs.ListFiles("/proc/self/task", [&](const string &, bool) { count++; });
+	return count;
+}
+
+TEST_CASE("Test async threads are launched on their first use", "[api]") {
+	const auto threads_before = ProcessThreadCount();
+	DBConfig config;
+	config.options.maximum_threads = 1;
+	config.options.async_threads = 16;
+	DuckDB db(nullptr, &config);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE t AS SELECT range AS i FROM range(10000)"));
+	auto result = con.Query("SELECT sum(i) FROM t");
+	REQUIRE(CHECK_COLUMN(result, 0, {Value::HUGEINT(49995000)}));
+	REQUIRE(ProcessThreadCount() < threads_before + 16);
+
+	auto &scheduler = TaskScheduler::GetScheduler(*con.context);
+	REQUIRE(scheduler.NumberOfAsyncThreads() == 16);
+	REQUIRE(ProcessThreadCount() >= threads_before + 16);
+}
+#endif
 
 static idx_t ColumnDataScanMaxThreads(Connection &con, QueryResult &result,
                                       const OperatorPartitionInfo &partition_info) {

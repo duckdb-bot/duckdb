@@ -93,6 +93,8 @@ private:
 	                              shared_ptr<Task> &task);
 
 	void SetThreadsInternal(TaskSchedulerType pool_type, idx_t n);
+	//! Launches the async threads, which are launched on their first use
+	void LaunchAsyncThreads();
 	void Signal(TaskSchedulerType pool_type, idx_t n);
 	void SignalAllPools(idx_t n);
 	void SignalForTaskType(TaskSchedulerType task_type, idx_t n);
@@ -101,6 +103,10 @@ private:
 	DatabaseInstance &db;
 	//! Lock for modifying the thread count
 	mutex thread_lock;
+	//! Lock for launching the async threads, not thread_lock, which is held while threads that run tasks are joined
+	mutex async_launch_lock;
+	//! Whether the async threads have been launched
+	atomic<bool> async_threads_launched;
 	//! The thread pools
 	array<unique_ptr<TaskSchedulerPool>, TASK_SCHEDULER_TYPE_COUNT> pools;
 	//! The task queues

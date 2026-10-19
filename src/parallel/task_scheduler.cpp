@@ -27,7 +27,7 @@
 
 namespace duckdb {
 
-TaskScheduler::TaskScheduler(DatabaseInstance &db) : db(db) {
+TaskScheduler::TaskScheduler(DatabaseInstance &db) : db(db), async_threads_launched(false) {
 	for (uint8_t i = 0; i < TASK_SCHEDULER_TYPE_COUNT; i++) {
 		pools[i] = make_uniq<TaskSchedulerPool>(db, static_cast<TaskSchedulerType>(i));
 		queues[i] = make_uniq<TaskSchedulerQueue>(static_cast<TaskSchedulerType>(i));
@@ -94,12 +94,18 @@ void TaskScheduler::SetThreadsInternal(TaskSchedulerType pool_type, idx_t n) {
 }
 
 void TaskScheduler::ScheduleTask(ProducerToken &token, shared_ptr<Task> task, TaskSchedulerType pool_type) {
+	if (pool_type == TaskSchedulerType::ASYNC) {
+		LaunchAsyncThreads();
+	}
 	GetQueue(pool_type).Enqueue(token, std::move(task));
 	SignalForTaskType(pool_type, 1);
 }
 
 void TaskScheduler::ScheduleTasks(ProducerToken &producer, vector<shared_ptr<Task>> &tasks,
                                   TaskSchedulerType pool_type) {
+	if (pool_type == TaskSchedulerType::ASYNC) {
+		LaunchAsyncThreads();
+	}
 	GetQueue(pool_type).EnqueueBulk(producer, tasks);
 	SignalForTaskType(pool_type, tasks.size());
 }
@@ -279,6 +285,8 @@ idx_t TaskScheduler::NumberOfThreads() {
 }
 
 idx_t TaskScheduler::NumberOfAsyncThreads() {
+	// callers ask before they schedule async tasks
+	LaunchAsyncThreads();
 	return GetPool(TaskSchedulerType::ASYNC).NumberOfThreads();
 }
 
@@ -395,10 +403,25 @@ idx_t TaskScheduler::GetEstimatedCPUId() {
 #endif
 }
 
+void TaskScheduler::LaunchAsyncThreads() {
+	if (async_threads_launched) {
+		return;
+	}
+	lock_guard<mutex> guard(async_launch_lock);
+	if (async_threads_launched) {
+		return;
+	}
+	GetPool(TaskSchedulerType::ASYNC).RelaunchThreads(*this, false);
+	async_threads_launched = true;
+}
+
 void TaskScheduler::RelaunchThreads() {
 	lock_guard<mutex> t(thread_lock);
-	for (auto &pool : pools) {
-		pool->RelaunchThreads(*this, false);
+	GetPool(TaskSchedulerType::REGULAR).RelaunchThreads(*this, false);
+	// the async threads are only relaunched once they have been launched
+	lock_guard<mutex> guard(async_launch_lock);
+	if (async_threads_launched) {
+		GetPool(TaskSchedulerType::ASYNC).RelaunchThreads(*this, false);
 	}
 }
 

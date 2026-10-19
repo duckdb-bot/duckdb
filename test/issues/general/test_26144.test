@@ -163,9 +163,110 @@ SELECT * FROM tt AT (VERSION => random());
 ----
 Binder Error: Catalog type does not support time travel
 
-restart
+# binding in a read-only transaction refuses the modification before it is made
+statement ok
+BEGIN TRANSACTION READ ONLY;
+
+statement ok
+PREPARE r AS SELECT count(*) FROM range(nextval('s'));
+
+statement error
+EXECUTE r;
+----
+transaction is launched in read-only mode
+
+statement ok
+ROLLBACK;
+
+statement ok
+BEGIN TRANSACTION READ ONLY;
+
+statement error
+SELECT count(*) FROM range(nextval('s'));
+----
+transaction is launched in read-only mode
+
+statement ok
+ROLLBACK;
+
+statement ok
+BEGIN TRANSACTION READ ONLY;
+
+statement error
+SET threads = nextval('s');
+----
+transaction is launched in read-only mode
+
+statement ok
+ROLLBACK;
+
+statement ok
+BEGIN TRANSACTION READ ONLY;
+
+statement error
+EXECUTE e(nextval('s'));
+----
+transaction is launched in read-only mode
+
+statement ok
+ROLLBACK;
 
 query I
 SELECT nextval('s');
 ----
 20
+
+# a temporary sequence can change in a read-only transaction
+statement ok
+CREATE TEMP SEQUENCE ts;
+
+statement ok
+BEGIN TRANSACTION READ ONLY;
+
+query I
+SELECT count(*) FROM range(nextval('ts'));
+----
+1
+
+statement ok
+COMMIT;
+
+statement ok
+ATTACH '{TEST_DIR}/test_26144_ro.db' AS ro;
+
+statement ok
+CREATE SEQUENCE ro.s;
+
+statement ok
+DETACH ro;
+
+statement ok
+ATTACH '{TEST_DIR}/test_26144_ro.db' AS ro (READ_ONLY);
+
+statement ok
+PREPARE a AS SELECT count(*) FROM range(nextval('ro.s'));
+
+statement error
+EXECUTE a;
+----
+Invalid Input Error: Cannot modify database "ro" which is attached in read-only mode
+
+statement error
+SELECT count(*) FROM range(setval('ro.s', 5));
+----
+Invalid Input Error: Cannot modify database "ro" which is attached in read-only mode
+
+query I
+SELECT last_value FROM duckdb_sequences() WHERE database_name = 'ro';
+----
+NULL
+
+statement ok
+DETACH ro;
+
+restart
+
+query I
+SELECT nextval('s');
+----
+21

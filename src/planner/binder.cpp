@@ -34,8 +34,10 @@
 #include "duckdb/storage/data_table.hpp"
 #include "duckdb/common/types/uuid.hpp"
 #include "duckdb/execution/expression_executor.hpp"
+#include "duckdb/main/database_manager.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
+#include "duckdb/transaction/meta_transaction.hpp"
 
 #include <algorithm>
 
@@ -436,6 +438,17 @@ Value Binder::FoldExpression(const Expression &expr) {
 	if (!properties.modified_databases.empty() && GetBindingMode() == BindingMode::PREPARE) {
 		// PREPARE does not run the statement, so the expression is evaluated when EXECUTE binds it again
 		throw ParameterNotResolvedException();
+	}
+	// refuse a modification that execution refuses before the expression makes it
+	for (auto &entry : properties.modified_databases) {
+		auto &db = *DatabaseManager::Get(context).GetDatabase(context, entry.first);
+		if (db.IsReadOnly()) {
+			throw InvalidInputException("Cannot modify database %s which is attached in read-only mode", db.GetName());
+		}
+		if (MetaTransaction::Get(context).IsReadOnly() && !db.IsTemporary()) {
+			throw TransactionException("Cannot write to database %s - transaction is launched in read-only mode",
+			                           db.GetName());
+		}
 	}
 	return ExpressionExecutor::EvaluateScalar(context, expr, true);
 }

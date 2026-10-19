@@ -3,6 +3,7 @@
 #include "duckdb/main/database.hpp"
 #include "duckdb/parser/parsed_data/create_pragma_function_info.hpp"
 #include "duckdb/parser/parser.hpp"
+#include "duckdb/parser/statement/multi_statement.hpp"
 #include "json_deserializer.hpp"
 #include "json_functions.hpp"
 #include "json_serializer.hpp"
@@ -98,6 +99,14 @@ static void JsonSerializeFunction(DataChunk &args, ExpressionState &state, Vecto
 			auto statements_arr = yyjson_mut_arr(doc);
 
 			for (auto &statement : parser.statements) {
+				if (statement->type == StatementType::MULTI_STATEMENT) {
+					auto &multi = statement->Cast<MultiStatement>();
+					if (!multi.statements.empty() && multi.statements.back()->type == StatementType::SELECT_STATEMENT) {
+						// a PIVOT without an IN list first creates an enum type of the values in the data
+						throw NotImplementedException("A PIVOT without an IN list cannot be serialized to json, as its "
+						                              "pivot values come from the data: list them with IN (...)");
+					}
+				}
 				if (statement->type != StatementType::SELECT_STATEMENT) {
 					throw NotImplementedException("Only SELECT statements can be serialized to json!");
 				}

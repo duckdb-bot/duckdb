@@ -52,6 +52,6 @@ SELECT g, sum(v) OVER () FROM t GROUP BY ALL;
 Cannot group on a window clause
 
 statement error
-SELECT g, v, row_number() OVER (PARTITION BY g ORDER BY v) FROM t GROUP BY ALL;
+SELECT g, row_number() OVER (PARTITION BY g) FROM t GROUP BY ALL;
 ----
 Cannot group on a window clause

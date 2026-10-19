@@ -81,10 +81,11 @@ static void CheckTypeIsSupported(const LogicalType &logical_type, AttachedDataba
 			}
 		} break;
 		case LogicalTypeId::TUPLE: {
-			// TUPLEs are stored as unnamed STRUCTs on disk, which older engines reject - gate them to v2.0.0+
+			// TUPLEs are stored as unnamed STRUCTs on disk, which older engines reject - gate creation to v2.0.0+
+			// existing unnamed STRUCTs (deserialized as TUPLE while loading an older file) must stay attachable
 			const auto storage_version = db.GetStorageManager().GetStorageVersion();
 
-			if (storage_version < StorageVersion::V2_0_0) {
+			if (storage_version < StorageVersion::V2_0_0 && db.GetStorageManager().IsLoaded()) {
 				auto required = GetStorageVersionName(StorageVersion::V2_0_0, false);
 				auto current = GetStorageVersionName(storage_version, false);
 
@@ -1456,6 +1457,24 @@ unique_ptr<CatalogEntry> DuckTableEntry::AddConstraint(ClientContext &context, A
 	} else {
 		throw NotImplementedException("No support for adding %s constraints with ALTER TABLE",
 		                              EnumUtil::ToString(info.constraint->type));
+	}
+
+	// The indexes of constraints must precede all other indexes. A concurrent CREATE INDEX is not visible as a
+	// dependency yet, but it has already registered its index with the storage.
+	idx_t constraint_index_count = 0;
+	for (const auto &constraint : GetConstraints()) {
+		if (constraint->type == ConstraintType::UNIQUE) {
+			constraint_index_count++;
+		} else if (constraint->type == ConstraintType::FOREIGN_KEY) {
+			auto &fk = constraint->Cast<ForeignKeyConstraint>();
+			if (fk.info.type == ForeignKeyType::FK_TYPE_FOREIGN_KEY_TABLE ||
+			    fk.info.type == ForeignKeyType::FK_TYPE_SELF_REFERENCE_TABLE) {
+				constraint_index_count++;
+			}
+		}
+	}
+	if (storage->GetDataTableInfo()->GetIndexes().Count() > constraint_index_count) {
+		throw DependencyException("Cannot alter entry %s because there are entries that depend on it.", name);
 	}
 
 	// We create a physical table with a new constraint and a new unique index.

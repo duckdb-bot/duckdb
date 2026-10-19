@@ -18,6 +18,13 @@ CREATE TABLE t AS SELECT range AS id FROM range(250000);
 statement ok
 CREATE TABLE s AS SELECT range AS id FROM range(250000);
 
+# the same ids from every second row, so that inserts merge collections smaller than a row group
+statement ok
+CREATE TABLE s2 AS SELECT range AS id FROM range(500000);
+
+statement ok
+CREATE VIEW s_half AS SELECT id // 2 AS id FROM s2 WHERE id % 2 = 0;
+
 statement ok
 CHECKPOINT
 
@@ -26,6 +33,8 @@ foreach preserve_insertion_order true false
 
 statement ok
 SET preserve_insertion_order = {preserve_insertion_order};
+
+foreach source s s_half
 
 concurrentloop threadid 0 2
 
@@ -41,7 +50,7 @@ DELETE FROM t
 
 onlyif threadid=0
 statement ok
-INSERT INTO t SELECT * FROM s
+INSERT INTO t SELECT * FROM {source}
 
 onlyif threadid=0
 statement ok
@@ -54,6 +63,8 @@ query II
 SELECT count(*), count(DISTINCT id) FROM t
 ----
 250000	250000
+
+endloop
 
 endloop
 

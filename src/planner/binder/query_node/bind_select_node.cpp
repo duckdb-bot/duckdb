@@ -409,12 +409,6 @@ void Binder::BindModifiers(BoundQueryNode &result, TableIndex table_index, const
 	}
 }
 
-static void BindHaving(Binder &binder, SelectNode &statement, BoundSelectNode &result) {
-	HavingBinder having_binder(binder, binder.context, result, statement.aggregate_handling);
-	ExpressionBinder::QualifyColumnNames(having_binder, statement.having);
-	result.having = having_binder.Bind(statement.having);
-}
-
 BoundStatement Binder::BindNode(SelectNode &statement) {
 	D_ASSERT(statement.from_table);
 
@@ -661,12 +655,6 @@ BoundStatement Binder::BindSelectNode(SelectNode &statement, BoundStatement from
 	}
 	result.groups.grouping_sets = std::move(statement.groups.grouping_sets);
 
-	// bind the HAVING clause, if any, after the groups of GROUP BY ALL are known
-	const bool group_by_all = statement.aggregate_handling == AggregateHandling::FORCE_AGGREGATES;
-	if (statement.having && !group_by_all) {
-		BindHaving(*this, statement, result);
-	}
-
 	// bind the QUALIFY clause, if any
 	vector<BoundColumnReferenceInfo> bound_qualify_columns;
 	if (statement.qualify) {
@@ -790,8 +778,12 @@ BoundStatement Binder::BindSelectNode(SelectNode &statement, BoundStatement from
 		bind_state.group_map[*group_copy] = group_proj_idx;
 		bind_state.unbound_groups.push_back(std::move(group_copy));
 	}
-	if (statement.having && group_by_all) {
-		BindHaving(*this, statement, result);
+
+	// bind the HAVING clause, if any, once all groups are known
+	if (statement.having) {
+		HavingBinder having_binder(*this, context, result, statement.aggregate_handling);
+		ExpressionBinder::QualifyColumnNames(having_binder, statement.having);
+		result.having = having_binder.Bind(statement.having);
 	}
 	set<ProjectionIndex> group_by_all_indexes_set;
 	if (!group_by_all_indexes.empty()) {

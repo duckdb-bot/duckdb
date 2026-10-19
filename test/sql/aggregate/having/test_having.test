@@ -14,6 +14,12 @@ SELECT b, SUM(a) AS sum FROM test GROUP BY b HAVING b=21 ORDER BY b;
 ----
 21	12.000000
 
+# the SELECT list is bound before HAVING
+statement error
+SELECT c FROM test GROUP BY b HAVING d > 1;
+----
+Referenced column "c" not found
+
 # HAVING with condition on sum
 query IR
 SELECT b, SUM(a) FROM test GROUP BY b HAVING SUM(a) < 20 ORDER BY b;

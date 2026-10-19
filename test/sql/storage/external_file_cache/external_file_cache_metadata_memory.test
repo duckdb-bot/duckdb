@@ -30,6 +30,18 @@ SELECT (SELECT memory_usage_bytes FROM duckdb_memory() WHERE tag = 'OBJECT_CACHE
 ----
 true
 
+# start from an empty cache, so that the checks below count only the next file
+statement ok
+SET enable_external_file_cache=false;
+
+statement ok
+SET enable_external_file_cache=true;
+
+query I
+SELECT (SELECT count(*) FROM duckdb_external_file_cache()) + (SELECT memory_usage_bytes FROM duckdb_memory() WHERE tag = 'OBJECT_CACHE');
+----
+0
+
 # reads of one column leave many more blocks than the size of the file needs
 statement ok
 SET external_file_cache_local_max_block_size=1048576;

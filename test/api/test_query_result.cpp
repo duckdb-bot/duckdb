@@ -1116,13 +1116,9 @@ TEST_CASE("Every state ends a query when the end of one fails", "[api][query_res
 	REQUIRE_NO_FAIL(con.Query("PRAGMA enable_profiling = 'json'"));
 	REQUIRE_NO_FAIL(con.Query("PRAGMA profiling_output = '" + profile_path + "'"));
 	REQUIRE_NO_FAIL(con.Query("BEGIN TRANSACTION"));
-	string profile_error;
-	try {
-		con.Query("SELECT 42");
-	} catch (std::exception &ex) {
-		profile_error = ex.what();
-	}
-	REQUIRE(StringUtil::Contains(profile_error, "profile.json"));
+	auto unwritten_profile = con.Query("SELECT 42");
+	REQUIRE(unwritten_profile->HasError());
+	REQUIRE(StringUtil::Contains(unwritten_profile->GetError(), "profile.json"));
 	require_paired();
 	REQUIRE_NO_FAIL(con.Query("PRAGMA disable_profiling"));
 	REQUIRE_NO_FAIL(con.Query("ROLLBACK"));

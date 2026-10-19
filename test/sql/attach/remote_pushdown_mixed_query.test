@@ -147,5 +147,60 @@ SELECT count(*) FROM tbl;
 ----
 5
 
+# a data-modifying CTE inside a subquery is still rejected
+statement error
+SELECT * FROM (WITH ins AS (INSERT INTO r.tbl VALUES (11) RETURNING id) SELECT * FROM ins) s, local_tbl;
+----
+data-modifying statement
+
+query I
+SELECT count(*) FROM tbl;
+----
+5
+
+# a qualified star might refer to a preceding FROM entry
+query III
+SELECT * FROM (VALUES (1)) l(x), LATERAL (SELECT l.* FROM r.tbl) s, local_tbl z;
+----
+1	1	1
+1	1	1
+1	1	1
+1	1	1
+1	1	1
+
+# parameters stay with the statement
+statement ok
+PREPARE p AS SELECT * FROM (SELECT ?::INTEGER AS n FROM r.tbl LIMIT 1) s, local_tbl;
+
+query II
+EXECUTE p(17);
+----
+17	1
+
+statement ok
+PREPARE q AS WITH a AS (SELECT id + ?::INTEGER AS v FROM r.tbl) SELECT sum(v) FROM a, local_tbl;
+
+query I
+EXECUTE q(10);
+----
+72
+
+# a set operation subquery and a CTE that is read twice
+query II
+SELECT * FROM (SELECT count(*) AS n FROM r.tbl UNION ALL SELECT max(id) FROM r.tbl) s, local_tbl ORDER BY n;
+----
+5	1
+10	1
+
+query II
+EXPLAIN SELECT * FROM (SELECT count(*) AS n FROM r.tbl UNION ALL SELECT max(id) FROM r.tbl) s, local_tbl ORDER BY n;
+----
+physical_plan	<!REGEX>:.*Ungrouped Aggregate.*
+
+query II
+WITH a AS (SELECT count(*) AS n FROM r.tbl) SELECT x1.n, x2.n FROM a x1, a x2, local_tbl;
+----
+5	5
+
 statement ok
 CALL quack_stop('quack:127.0.0.1:9619');

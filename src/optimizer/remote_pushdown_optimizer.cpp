@@ -284,6 +284,10 @@ CatalogPushdownResult RemotePushdownOptimizer::Rewrite(QueryNode &node) {
 		}
 	}
 	CatalogPushdownResult result;
+	if (node.type == QueryNodeType::INSERT_QUERY_NODE || node.type == QueryNodeType::DELETE_QUERY_NODE ||
+	    node.type == QueryNodeType::UPDATE_QUERY_NODE || node.type == QueryNodeType::MERGE_QUERY_NODE) {
+		MarkNeedsEnclosingStatement();
+	}
 	switch (node.type) {
 	case QueryNodeType::SELECT_NODE:
 		result = RewriteNode(node.Cast<SelectNode>());
@@ -879,11 +883,24 @@ CatalogPushdownResult RemotePushdownOptimizer::Rewrite(SubqueryRef &ref) {
 }
 
 bool RemotePushdownOptimizer::IsSelfContained(const QueryNode &node) const {
-	// DML has side effects that must run even if nothing reads its result, and a recursive CTE refers to itself
+	// only plain queries, a recursive CTE refers to itself
 	if (node.type != QueryNodeType::SELECT_NODE && node.type != QueryNodeType::SET_OPERATION_NODE) {
 		return false;
 	}
-	return !refers_to_parent_cte && !may_refer_to_outer_column;
+	return !refers_to_parent_cte && !may_refer_to_outer_column && !needs_enclosing_statement;
+}
+
+void RemotePushdownOptimizer::MarkOuterColumnReference() {
+	// without binding, the reference might be to any table visible from outside each enclosing scope
+	for (auto scope = this; scope && scope->outer_scope_has_tables; scope = scope->parent.get()) {
+		scope->may_refer_to_outer_column = true;
+	}
+}
+
+void RemotePushdownOptimizer::MarkNeedsEnclosingStatement() {
+	for (auto scope = this; scope; scope = scope->parent.get()) {
+		scope->needs_enclosing_statement = true;
+	}
 }
 
 CatalogPushdownResult RemotePushdownOptimizer::RewriteTableFunctionOnly(TableFunctionRef &ref) {
@@ -1185,10 +1202,7 @@ ExpressionPushdownResult RemotePushdownOptimizer::AnalyzeExpression(const TypeEx
 
 ExpressionPushdownResult RemotePushdownOptimizer::AnalyzeExpression(const ColumnRefExpression &col_ref) {
 	ExpressionPushdownResult state;
-	// without binding, the column might refer to any table visible from outside each enclosing scope
-	for (auto scope = this; scope && scope->outer_scope_has_tables; scope = scope->parent.get()) {
-		scope->may_refer_to_outer_column = true;
-	}
+	MarkOuterColumnReference();
 	if (RefersToLocalTable(col_ref)) {
 		// column refers to local table - bail
 		state.result = CatalogPushdownResult::Unknown();
@@ -1245,6 +1259,14 @@ ExpressionPushdownResult RemotePushdownOptimizer::AnalyzeExpression(const Parsed
 		return AnalyzeExpression(expr.Cast<TypeExpression>());
 	case ExpressionClass::COLUMN_REF:
 		return AnalyzeExpression(expr.Cast<ColumnRefExpression>());
+	case ExpressionClass::STAR:
+		if (!expr.Cast<StarExpression>().RelationName().empty()) {
+			MarkOuterColumnReference();
+		}
+		return ExpressionPushdownResult();
+	case ExpressionClass::PARAMETER:
+		MarkNeedsEnclosingStatement();
+		return ExpressionPushdownResult();
 	case ExpressionClass::CONSTANT:
 	case ExpressionClass::CAST:
 	case ExpressionClass::COMPARISON:

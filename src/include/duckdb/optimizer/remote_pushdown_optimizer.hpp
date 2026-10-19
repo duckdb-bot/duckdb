@@ -202,6 +202,10 @@ private:
 	bool RefersToCTE(const Identifier &cte_name, CatalogPushdownResult &result);
 	//! Whether the node, analyzed by this optimizer, can be pushed on its own when its parent stays local
 	bool IsSelfContained(const QueryNode &node) const;
+	//! Marks the scopes from which a column or a qualified star might refer to a table outside of them
+	void MarkOuterColumnReference();
+	//! Marks this scope and all enclosing scopes as only able to run as part of the whole statement
+	void MarkNeedsEnclosingStatement();
 
 private:
 	Binder &binder;
@@ -220,6 +224,8 @@ private:
 	bool outer_scope_has_tables = false;
 	//! Whether a column of this scope might refer to such a table, so that it cannot be pushed on its own
 	bool may_refer_to_outer_column = false;
+	//! Whether this scope contains parameters or data-modifying statements, which run only as part of the statement
+	bool needs_enclosing_statement = false;
 	//! Subqueries in the FROM clause of the current node that a single remote catalog can run on their own
 	vector<std::pair<reference<SubqueryRef>, CatalogPushdownResult>> remote_subqueries;
 	//! CTEs of the current node that a single remote catalog can run on their own

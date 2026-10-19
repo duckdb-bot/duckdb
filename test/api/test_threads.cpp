@@ -139,15 +139,26 @@ TEST_CASE("Test async threads", "[api]") {
 }
 
 #ifdef __linux__
-static idx_t ProcessThreadCount() {
+static unordered_set<string> ProcessThreadIds() {
 	LocalFileSystem fs;
+	unordered_set<string> ids;
+	REQUIRE(fs.ListFiles("/proc/self/task", [&](const string &id, bool) { ids.insert(id); }));
+	return ids;
+}
+
+// threads of the process that did not exist yet, so that threads exiting in the meantime do not count
+static idx_t NewThreadCount(const unordered_set<string> &threads_before) {
 	idx_t count = 0;
-	REQUIRE(fs.ListFiles("/proc/self/task", [&](const string &, bool) { count++; }));
+	for (auto &id : ProcessThreadIds()) {
+		if (threads_before.find(id) == threads_before.end()) {
+			count++;
+		}
+	}
 	return count;
 }
 
 TEST_CASE("Test async threads are launched on their first use", "[api]") {
-	const auto threads_before = ProcessThreadCount();
+	const auto threads_before = ProcessThreadIds();
 	DBConfig config;
 	config.options.maximum_threads = 1;
 	config.options.async_threads = 16;
@@ -156,16 +167,18 @@ TEST_CASE("Test async threads are launched on their first use", "[api]") {
 	REQUIRE_NO_FAIL(con.Query("CREATE TABLE t AS SELECT range AS i FROM range(10000)"));
 	auto result = con.Query("SELECT sum(i) FROM t");
 	REQUIRE(CHECK_COLUMN(result, 0, {Value::HUGEINT(49995000)}));
-	REQUIRE(ProcessThreadCount() < threads_before + 16);
+	REQUIRE(NewThreadCount(threads_before) < 16);
 
 	auto &scheduler = TaskScheduler::GetScheduler(*con.context);
 	REQUIRE(scheduler.NumberOfAsyncThreads() == 16);
-	REQUIRE(ProcessThreadCount() >= threads_before + 16);
+	REQUIRE(NewThreadCount(threads_before) >= 16);
 }
 
-class CountingTask : public BaseExecutorTask {
+namespace {
+
+class AsyncCountingTask : public BaseExecutorTask {
 public:
-	CountingTask(TaskExecutor &executor, atomic<idx_t> &count_p) : BaseExecutorTask(executor), count(count_p) {
+	AsyncCountingTask(TaskExecutor &executor, atomic<idx_t> &count_p) : BaseExecutorTask(executor), count(count_p) {
 	}
 	void ExecuteTask() override {
 		count++;
@@ -175,25 +188,27 @@ private:
 	atomic<idx_t> &count;
 };
 
+} // namespace
+
 TEST_CASE("Test async threads are launched by the first async task", "[api]") {
-	const auto threads_before = ProcessThreadCount();
+	const auto threads_before = ProcessThreadIds();
 	DBConfig config;
 	config.options.maximum_threads = 1;
 	config.options.async_threads = 16;
 	DuckDB db(nullptr, &config);
 	Connection con(db);
-	REQUIRE(ProcessThreadCount() < threads_before + 16);
+	REQUIRE(NewThreadCount(threads_before) < 16);
 
 	atomic<idx_t> count {0};
 	TaskExecutor executor(*con.context, TaskSchedulerType::ASYNC);
 	vector<unique_ptr<BaseExecutorTask>> tasks;
 	for (idx_t i = 0; i < 8; i++) {
-		tasks.push_back(make_uniq<CountingTask>(executor, count));
+		tasks.push_back(make_uniq<AsyncCountingTask>(executor, count));
 	}
 	executor.ScheduleTasks(std::move(tasks));
 	executor.WorkOnTasks();
 	REQUIRE(count == 8);
-	REQUIRE(ProcessThreadCount() >= threads_before + 16);
+	REQUIRE(NewThreadCount(threads_before) >= 16);
 }
 #endif
 
@@ -209,18 +224,27 @@ TEST_CASE("Test launching async threads while the thread count changes", "[api]"
 		config.options.async_threads = 4;
 		DuckDB db(nullptr, &config);
 		std::vector<std::thread> threads;
+		vector<string> results(4);
 		for (idx_t t = 0; t < 4; t++) {
-			threads.emplace_back([&db, &path]() {
+			threads.emplace_back([&db, &path, &results, t]() {
 				Connection con(db);
 				for (idx_t q = 0; q < 5; q++) {
-					auto result = con.Query("SELECT sum(i) FROM '" + path + "'");
-					REQUIRE(CHECK_COLUMN(result, 0, {Value::HUGEINT(4999950000)}));
+					auto result = con.Query("SELECT sum(i)::VARCHAR FROM '" + path + "'");
+					if (result->HasError()) {
+						results[t] += result->GetError();
+					}
+					for (auto &row : *result) {
+						results[t] += row.GetValue<string>(0) + ";";
+					}
 				}
 			});
 		}
 		change_thread_counts(db);
 		for (auto &thread : threads) {
 			thread.join();
+		}
+		for (auto &result : results) {
+			REQUIRE(result == StringUtil::Repeat("4999950000;", 5));
 		}
 	}
 }

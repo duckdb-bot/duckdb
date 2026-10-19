@@ -19,11 +19,10 @@ class DatabaseFilePathManager;
 
 struct DatabaseCacheEntry {
 	DatabaseCacheEntry();
-	explicit DatabaseCacheEntry(const shared_ptr<DuckDB> &database);
+	explicit DatabaseCacheEntry(const shared_ptr<DatabaseInstance> &instance);
 	~DatabaseCacheEntry();
 
-	weak_ptr<DuckDB> database;
-	//! The instance of that handle, which a connection or a result keeps alive after the last handle is gone
+	//! Connections and results keep the instance alive after its last handle is closed
 	weak_ptr<DatabaseInstance> instance;
 	mutex update_database_mutex;
 };

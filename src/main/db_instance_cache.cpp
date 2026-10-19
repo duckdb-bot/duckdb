@@ -7,8 +7,7 @@ namespace duckdb {
 DatabaseCacheEntry::DatabaseCacheEntry() {
 }
 
-DatabaseCacheEntry::DatabaseCacheEntry(const shared_ptr<DuckDB> &database_p)
-    : database(database_p), instance(database_p ? database_p->instance : nullptr) {
+DatabaseCacheEntry::DatabaseCacheEntry(const shared_ptr<DatabaseInstance> &instance_p) : instance(instance_p) {
 }
 
 DatabaseCacheEntry::~DatabaseCacheEntry() {
@@ -71,19 +70,11 @@ shared_ptr<DuckDB> DBInstanceCache::GetInstanceInternal(const string &database, 
 		db_instances.erase(entry);
 		return nullptr;
 	}
-	shared_ptr<DuckDB> db_instance;
+	shared_ptr<DatabaseInstance> db_instance;
 	{
 		db_instances_lock.unlock();
 		std::lock_guard<mutex> create_db_lock(cache_entry->update_database_mutex);
-		db_instance = cache_entry->database.lock();
-		if (!db_instance) {
-			// a connection or a result can keep the instance open after its last handle is gone
-			auto instance = cache_entry->instance.lock();
-			if (instance) {
-				db_instance = make_shared_ptr<DuckDB>(*instance);
-				cache_entry->database = db_instance;
-			}
-		}
+		db_instance = cache_entry->instance.lock();
 	}
 	// cache entry exists - check if the actual database still exists
 	if (!db_instance) {
@@ -101,11 +92,11 @@ shared_ptr<DuckDB> DBInstanceCache::GetInstanceInternal(const string &database, 
 		return nullptr;
 	}
 	// the database instance exists - check that the config matches
-	if (db_instance->instance->config != config) {
+	if (db_instance->config != config) {
 		throw ConnectionException("Can't open a connection to same database file with a different configuration "
 		                          "than existing connections");
 	}
-	return db_instance;
+	return make_shared_ptr<DuckDB>(*db_instance);
 }
 
 shared_ptr<DuckDB> DBInstanceCache::GetInstance(const string &database, const DBConfig &config) {
@@ -142,7 +133,6 @@ shared_ptr<DuckDB> DBInstanceCache::CreateInstanceInternal(const string &databas
 		db_instances[cache_key] = cache_entry;
 		db_instances_lock.unlock();
 		db_instance = make_shared_ptr<DuckDB>(instance_path, &config);
-		cache_entry->database = db_instance;
 		cache_entry->instance = db_instance->instance;
 	} else {
 		db_instances_lock.unlock();

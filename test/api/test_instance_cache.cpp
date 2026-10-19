@@ -313,6 +313,7 @@ TEST_CASE("Test the instance cache hands out a database that is still open after
 		REQUIRE_NO_FAIL(con->Query("CREATE TABLE t AS SELECT 42 AS i"));
 		weak_ptr<DatabaseInstance> instance = db->instance;
 		db.reset();
+		REQUIRE(instance_cache.GetInstance(path, config)->instance == instance.lock());
 
 		auto reopened = instance_cache.GetOrCreateInstance(path, config, true);
 		REQUIRE(reopened->instance == instance.lock());
@@ -328,6 +329,7 @@ TEST_CASE("Test the instance cache hands out a database that is still open after
 
 		// the instance closes once nothing holds it anymore
 		reopened.reset();
+		REQUIRE_NO_FAIL(con->Query("SELECT i FROM t"));
 		con.reset();
 		REQUIRE(instance.expired());
 	}

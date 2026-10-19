@@ -48,3 +48,8 @@ query II
 SELECT finalize(combine_aggr(st)), finalize(combine_aggr(st, 2)) FROM (SELECT to_aggregate_state({'count': 0, 'value': 18446744073709551617::HUGEINT}, 'avg', ['TIMESTAMP']) AS st);
 ----
 NULL	NULL
+
+query I
+SELECT finalize(combine(to_aggregate_state({'count': 0, 'value': 5::HUGEINT}, 'avg', ['TIMESTAMP']), to_aggregate_state({'count': 0, 'value': -4::HUGEINT}, 'avg', ['TIMESTAMP'])));
+----
+NULL

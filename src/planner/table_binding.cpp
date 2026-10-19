@@ -122,8 +122,9 @@ void Binding::SetBoundColumnAlias(ColumnRefExpression &colref) {
 }
 
 ErrorData Binding::ColumnNotFoundError(const Identifier &column_name) const {
-	return ErrorData(ExceptionType::BINDER,
-	                 StringUtil::Format("Values list %s does not have a column named %s", GetAlias(), column_name));
+	return ErrorData(
+	    BinderException(Exception::InitializeExtraInfo("TABLE_COLUMN_NOT_FOUND", QueryLocation()),
+	                    StringUtil::Format("Values list %s does not have a column named %s", GetAlias(), column_name)));
 }
 
 BindResult Binding::Bind(ColumnRefExpression &colref, idx_t depth) {
@@ -328,8 +329,9 @@ optional_ptr<StandardEntry> TableBinding::GetStandardEntry() {
 ErrorData TableBinding::ColumnNotFoundError(const Identifier &column_name) const {
 	auto candidate_message = StringUtil::CandidatesErrorMessage(
 	    IdentifiersToStrings(names), column_name.GetIdentifierName(), "Candidate bindings: ");
-	return ErrorData(ExceptionType::BINDER, StringUtil::Format("Table %s does not have a column named %s\n%s",
-	                                                           alias.GetAlias(), column_name, candidate_message));
+	return ErrorData(BinderException(Exception::InitializeExtraInfo("TABLE_COLUMN_NOT_FOUND", QueryLocation()),
+	                                 StringUtil::Format("Table %s does not have a column named %s\n%s",
+	                                                    alias.GetAlias(), column_name, candidate_message)));
 }
 
 DummyBinding::DummyBinding(vector<LogicalType> types, vector<Identifier> names, string dummy_name)

@@ -409,6 +409,17 @@ void Binder::BindModifiers(BoundQueryNode &result, TableIndex table_index, const
 	}
 }
 
+//! Returns a first(x) aggregate that selects the uncollated value x of a collated group
+static unique_ptr<Expression> BindUncollatedFirst(Binder &binder, unique_ptr<Expression> uncollated_expr) {
+	auto first_fun = GetBuiltinAggregateFunction(binder.context, FirstFun::Name, {uncollated_expr->GetReturnType()});
+	vector<unique_ptr<Expression>> first_children;
+	first_children.push_back(std::move(uncollated_expr));
+	FunctionBinder function_binder(binder);
+	auto function = function_binder.BindAggregateFunction(std::move(first_fun), std::move(first_children));
+	function->SetAlias("__collated_group");
+	return std::move(function);
+}
+
 BoundStatement Binder::BindNode(SelectNode &statement) {
 	D_ASSERT(statement.from_table);
 
@@ -636,17 +647,8 @@ BoundStatement Binder::BindSelectNode(SelectNode &statement, BoundStatement from
 			if (requires_collation) {
 				// if there is a collation on a group x, we should group by the collated expr,
 				// but also push a first(x) aggregate in case x is selected (uncollated)
-
-				auto first_fun =
-				    GetBuiltinAggregateFunction(context, FirstFun::Name, {uncollated_expr->GetReturnType()});
-				vector<unique_ptr<Expression>> first_children;
-				first_children.push_back(std::move(uncollated_expr));
-
-				FunctionBinder function_binder(*this);
-				auto function = function_binder.BindAggregateFunction(std::move(first_fun), std::move(first_children));
-				function->SetAlias("__collated_group");
-
-				auto collated_idx = ColumnBinding::PushExpression(result.aggregates, std::move(function));
+				auto uncollated_first = BindUncollatedFirst(*this, std::move(uncollated_expr));
+				auto collated_idx = ColumnBinding::PushExpression(result.aggregates, std::move(uncollated_first));
 				bind_state.collated_groups[ProjectionIndex(i)] = collated_idx;
 			}
 			result.groups.group_expressions.push_back(std::move(bound_expr));
@@ -762,17 +764,26 @@ BoundStatement Binder::BindSelectNode(SelectNode &statement, BoundStatement from
 		auto &expr = result.select_list[group_by_all_index];
 		auto return_type = expr->GetReturnType();
 		// group by the collated expression, and select the uncollated value through a first(x) aggregate
-		unique_ptr<Expression> uncollated_expr = expr->HasSubquery() ? nullptr : expr->Copy();
-		bool requires_collation = ExpressionBinder::PushCollation(context, expr, return_type);
+		unique_ptr<Expression> uncollated_first;
+		// avoid evaluating volatile groups twice
+		if (!expr->IsVolatile()) {
+			// copy before pushing the collation, which can replace the expression
+			bool contains_subquery = expr->HasSubquery();
+			auto uncollated_expr = contains_subquery ? nullptr : expr->Copy();
+			if (ExpressionBinder::PushCollation(context, expr, return_type)) {
+				if (contains_subquery) {
+					// bound subqueries cannot be copied, so bind the select-list expression again
+					auto parsed_copy = bind_state.original_expressions[group_by_all_index]->Copy();
+					auto bound_column_count = select_binder.GetBoundColumns().size();
+					uncollated_expr = select_binder.Bind(parsed_copy);
+					select_binder.TruncateBoundColumns(bound_column_count);
+				}
+				uncollated_first = BindUncollatedFirst(*this, std::move(uncollated_expr));
+			}
+		}
 		auto group_proj_idx = ColumnBinding::PushExpression(result.groups.group_expressions, std::move(expr));
-		if (uncollated_expr && requires_collation) {
-			auto first_fun = GetBuiltinAggregateFunction(context, FirstFun::Name, {uncollated_expr->GetReturnType()});
-			vector<unique_ptr<Expression>> first_children;
-			first_children.push_back(std::move(uncollated_expr));
-			FunctionBinder function_binder(*this);
-			auto function = function_binder.BindAggregateFunction(std::move(first_fun), std::move(first_children));
-			function->SetAlias("__collated_group");
-			auto aggregate_idx = ColumnBinding::PushExpression(result.aggregates, std::move(function));
+		if (uncollated_first) {
+			auto aggregate_idx = ColumnBinding::PushExpression(result.aggregates, std::move(uncollated_first));
 			expr =
 			    make_uniq<BoundColumnRefExpression>(return_type, ColumnBinding(result.aggregate_index, aggregate_idx));
 			continue;

@@ -3,6 +3,7 @@
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
+#include "duckdb/main/extension/linked_extension_registry.hpp"
 #include "test_helpers.hpp"
 
 using namespace duckdb;
@@ -40,9 +41,8 @@ unique_ptr<FunctionData> RegisterOverloadBind(BindScalarFunctionInput &input) {
 	return nullptr;
 }
 
-unique_ptr<ScalarFunction> EchoOverload(const string &name) {
-	return make_uniq<ScalarFunction>(Identifier(name), vector<LogicalType> {LogicalType::VARCHAR}, LogicalType::VARCHAR,
-	                                 EchoFunction);
+unique_ptr<ScalarFunction> EchoOverload(const string &name, vector<LogicalType> arguments = {LogicalType::VARCHAR}) {
+	return make_uniq<ScalarFunction>(Identifier(name), std::move(arguments), LogicalType::VARCHAR, EchoFunction);
 }
 
 //! Registers outer_function(INTEGER), and inner_function() whose bind adds the pending overload
@@ -52,6 +52,15 @@ void RegisterTestFunctions(DuckDB &db) {
 	ScalarFunction inner("inner_function", {}, LogicalType::VARCHAR, DuckFunction);
 	inner.SetBindCallback(RegisterOverloadBind);
 	RegisterFunction(*db.instance, std::move(inner));
+}
+
+//! Opens a database that autoloads the extensions linked into this binary instead of loading them
+unique_ptr<DuckDB> OpenWithoutLoadedExtensions() {
+	DBConfig config;
+	config.options.load_extensions = false;
+	config.SetOptionByName("autoload_known_extensions", true);
+	config.SetOptionByName("autoinstall_known_extensions", false);
+	return make_uniq<DuckDB>(nullptr, &config);
 }
 
 } // namespace
@@ -87,10 +96,52 @@ TEST_CASE("Test adding an overload of a function while an arrow is bound as a la
 	RegisterTestFunctions(db);
 	Connection con(db);
 
-	// an arrow that does not bind as a lambda is bound again as a JSON operator
-	pending_overload = EchoOverload("list_filter");
+	// an arrow that does not bind as a lambda is bound again as a JSON operator, with the overload added meanwhile
+	pending_overload = EchoOverload("list_filter", {LogicalType::VARCHAR, LogicalType::ANY});
 	auto result = con.Query("SELECT list_filter(inner_function(), '{\"a\": 1}' -> '$.a')");
-	REQUIRE(result->HasError());
-	REQUIRE(StringUtil::Contains(result->GetError(), "list_filter"));
+	REQUIRE(CHECK_COLUMN(result, 0, {"duck"}));
 	REQUIRE(!pending_overload);
+}
+
+TEST_CASE("Test autoloading an extension while a function call is bound", "[api]") {
+	bool icu_linked = false;
+	for (auto &linked : LinkedExtensionRegistry::Get()) {
+		icu_linked = icu_linked || linked.name == "icu";
+	}
+	if (!icu_linked) {
+		SUCCEED("icu is not linked into this binary, so it cannot be autoloaded from it");
+		return;
+	}
+	struct AutoloadCase {
+		string query;
+		Value expected;
+	};
+	vector<AutoloadCase> cases {
+	    // current_date loads icu while the call to + is bound, in the select list and in a WHERE clause
+	    {"SELECT (current_date + 1) - current_date", Value::BIGINT(1)},
+	    {"SELECT 42 WHERE current_date - 1 < current_date", Value::INTEGER(42)},
+	    // date_part of a TIMESTAMPTZ loads icu from its bind callback
+	    {"SELECT date_part('year', now()) + 1 > 2000", Value::BOOLEAN(true)},
+	    // icu adds overloads of the table function range
+	    {"SELECT count(*) FROM range(current_date, current_date + 3, INTERVAL 1 DAY)", Value::BIGINT(3)},
+	    {"SELECT 1 + (SELECT current_date - current_date)", Value::BIGINT(1)},
+	    {"SELECT list_transform([1, 2], lambda x: (current_date + x) - current_date)::VARCHAR", Value("[1, 2]")},
+	    // the call is bound with the overload of + that icu adds
+	    {"SELECT typeof(current_date::TIMESTAMPTZ + INTERVAL 1 DAY)", Value("TIMESTAMP WITH TIME ZONE")},
+	};
+	for (auto &autoload_case : cases) {
+		auto db = OpenWithoutLoadedExtensions();
+		Connection con(*db);
+		REQUIRE(!db->ExtensionIsLoaded("icu"));
+		auto result = con.Query(autoload_case.query);
+		REQUIRE(CHECK_COLUMN(result, 0, {autoload_case.expected}));
+		REQUIRE(db->ExtensionIsLoaded("icu"));
+	}
+
+	// a call without a matching overload is still an error
+	auto db = OpenWithoutLoadedExtensions();
+	Connection con(*db);
+	auto result = con.Query("SELECT current_date + [1]");
+	REQUIRE(result->HasError());
+	REQUIRE(StringUtil::Contains(result->GetError(), "No function matches"));
 }

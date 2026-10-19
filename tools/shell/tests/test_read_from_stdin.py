@@ -71,6 +71,26 @@ class TestReadFromStdin(object):
             '2,Jose,2.0,data/csv/bug_9005/teste1.csv'
         ])
 
+    def test_read_stdin_insert_by_name_on_conflict(self, shell):
+        # the SELECT is bound once, so the conflict handling does not read the input before the insert does
+        test = (
+            ShellTest(shell)
+            .input_file('data/csv/test/test.csv')
+            .statement("create table t (column0 integer primary key, column1 integer, extra integer default 9)")
+            .statement("""
+                insert into t by name select column0, column1 from read_csv_auto('/dev/stdin')
+                on conflict do nothing
+            """)
+            .statement("select count(*), min(extra) from t;")
+            .add_argument(
+                '-csv',
+                ':memory:'
+            )
+        )
+        result = test.run()
+        result.check_stdout('count_star(),min(extra)')
+        result.check_stdout('5000,9')
+
     def test_read_stdin_csv_auto(self, shell):
         test = (
             ShellTest(shell)

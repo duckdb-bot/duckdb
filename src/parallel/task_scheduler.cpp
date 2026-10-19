@@ -285,7 +285,6 @@ idx_t TaskScheduler::NumberOfThreads() {
 }
 
 idx_t TaskScheduler::NumberOfAsyncThreads() {
-	// callers ask before they schedule async tasks
 	LaunchAsyncThreads();
 	return GetPool(TaskSchedulerType::ASYNC).NumberOfThreads();
 }
@@ -418,7 +417,6 @@ void TaskScheduler::LaunchAsyncThreads() {
 void TaskScheduler::RelaunchThreads() {
 	lock_guard<mutex> t(thread_lock);
 	GetPool(TaskSchedulerType::REGULAR).RelaunchThreads(*this, false);
-	// the async threads are only relaunched once they have been launched
 	lock_guard<mutex> guard(async_launch_lock);
 	if (async_threads_launched) {
 		GetPool(TaskSchedulerType::ASYNC).RelaunchThreads(*this, false);

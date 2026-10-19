@@ -41,7 +41,7 @@ public:
 	unique_ptr<ProducerToken> CreateProducer();
 	//! Returns the number of threads
 	DUCKDB_API idx_t NumberOfThreads();
-	//! Returns the number of async threads
+	//! Returns the number of async threads, launching them on the first call
 	DUCKDB_API idx_t NumberOfAsyncThreads();
 
 	idx_t GetNumberOfTasks() const;
@@ -93,7 +93,7 @@ private:
 	                              shared_ptr<Task> &task);
 
 	void SetThreadsInternal(TaskSchedulerType pool_type, idx_t n);
-	//! Launches the async threads, which are launched on their first use
+	//! Launches the async threads once, on their first use
 	void LaunchAsyncThreads();
 	void Signal(TaskSchedulerType pool_type, idx_t n);
 	void SignalAllPools(idx_t n);

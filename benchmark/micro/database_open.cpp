@@ -14,7 +14,10 @@ void RunBenchmark(DuckDBBenchmarkState *state) override {
 	for (idx_t i = 0; i < OPEN_DATABASE_COUNT; i++) {
 		databases.push_back(make_uniq<DuckDB>(nullptr));
 		connections.push_back(make_uniq<Connection>(*databases.back()));
-		connections.back()->Query("CREATE TABLE t1 (i1 INTEGER)");
+		auto result = connections.back()->Query("CREATE TABLE t1 (i1 INTEGER)");
+		if (result->HasError()) {
+			result->ThrowError();
+		}
 	}
 }
 string VerifyResult(QueryResult *result) override {

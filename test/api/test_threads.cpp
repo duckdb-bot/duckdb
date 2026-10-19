@@ -2,6 +2,7 @@
 #include "test_helpers.hpp"
 #include "duckdb/execution/operator/scan/physical_column_data_scan.hpp"
 #include "duckdb/execution/physical_plan_generator.hpp"
+#include "duckdb/parallel/task_executor.hpp"
 #include "duckdb/parallel/task_scheduler.hpp"
 #include "duckdb/common/local_file_system.hpp"
 #include "duckdb/common/virtual_file_system.hpp"
@@ -141,7 +142,7 @@ TEST_CASE("Test async threads", "[api]") {
 static idx_t ProcessThreadCount() {
 	LocalFileSystem fs;
 	idx_t count = 0;
-	fs.ListFiles("/proc/self/task", [&](const string &, bool) { count++; });
+	REQUIRE(fs.ListFiles("/proc/self/task", [&](const string &, bool) { count++; }));
 	return count;
 }
 
@@ -161,7 +162,68 @@ TEST_CASE("Test async threads are launched on their first use", "[api]") {
 	REQUIRE(scheduler.NumberOfAsyncThreads() == 16);
 	REQUIRE(ProcessThreadCount() >= threads_before + 16);
 }
+
+class CountingTask : public BaseExecutorTask {
+public:
+	CountingTask(TaskExecutor &executor, atomic<idx_t> &count_p) : BaseExecutorTask(executor), count(count_p) {
+	}
+	void ExecuteTask() override {
+		count++;
+	}
+
+private:
+	atomic<idx_t> &count;
+};
+
+TEST_CASE("Test async threads are launched by the first async task", "[api]") {
+	const auto threads_before = ProcessThreadCount();
+	DBConfig config;
+	config.options.maximum_threads = 1;
+	config.options.async_threads = 16;
+	DuckDB db(nullptr, &config);
+	Connection con(db);
+	REQUIRE(ProcessThreadCount() < threads_before + 16);
+
+	atomic<idx_t> count {0};
+	TaskExecutor executor(*con.context, TaskSchedulerType::ASYNC);
+	vector<unique_ptr<BaseExecutorTask>> tasks;
+	for (idx_t i = 0; i < 8; i++) {
+		tasks.push_back(make_uniq<CountingTask>(executor, count));
+	}
+	executor.ScheduleTasks(std::move(tasks));
+	executor.WorkOnTasks();
+	REQUIRE(count == 8);
+	REQUIRE(ProcessThreadCount() >= threads_before + 16);
+}
 #endif
+
+TEST_CASE("Test launching async threads while the thread count changes", "[api]") {
+	auto path = TestCreatePath("async_threads_launch.parquet");
+	{
+		DuckDB db(nullptr);
+		Connection con(db);
+		REQUIRE_NO_FAIL(con.Query("COPY (SELECT range AS i FROM range(100000)) TO '" + path + "'"));
+	}
+	for (idx_t i = 0; i < 5; i++) {
+		DBConfig config;
+		config.options.async_threads = 4;
+		DuckDB db(nullptr, &config);
+		std::vector<std::thread> threads;
+		for (idx_t t = 0; t < 4; t++) {
+			threads.emplace_back([&db, &path]() {
+				Connection con(db);
+				for (idx_t q = 0; q < 5; q++) {
+					auto result = con.Query("SELECT sum(i) FROM '" + path + "'");
+					REQUIRE(CHECK_COLUMN(result, 0, {Value::HUGEINT(4999950000)}));
+				}
+			});
+		}
+		change_thread_counts(db);
+		for (auto &thread : threads) {
+			thread.join();
+		}
+	}
+}
 
 static idx_t ColumnDataScanMaxThreads(Connection &con, QueryResult &result,
                                       const OperatorPartitionInfo &partition_info) {

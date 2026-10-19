@@ -191,24 +191,27 @@ private:
 } // namespace
 
 TEST_CASE("Test async threads are launched by the first async task", "[api]") {
-	const auto threads_before = ProcessThreadIds();
-	DBConfig config;
-	config.options.maximum_threads = 1;
-	config.options.async_threads = 16;
-	DuckDB db(nullptr, &config);
-	Connection con(db);
-	REQUIRE(NewThreadCount(threads_before) < 16);
+	// one task goes through ScheduleTask, more through ScheduleTasks
+	for (idx_t task_count : {1, 8}) {
+		const auto threads_before = ProcessThreadIds();
+		DBConfig config;
+		config.options.maximum_threads = 1;
+		config.options.async_threads = 16;
+		DuckDB db(nullptr, &config);
+		Connection con(db);
+		REQUIRE(NewThreadCount(threads_before) < 16);
 
-	atomic<idx_t> count {0};
-	TaskExecutor executor(*con.context, TaskSchedulerType::ASYNC);
-	vector<unique_ptr<BaseExecutorTask>> tasks;
-	for (idx_t i = 0; i < 8; i++) {
-		tasks.push_back(make_uniq<AsyncCountingTask>(executor, count));
+		atomic<idx_t> count {0};
+		TaskExecutor executor(*con.context, TaskSchedulerType::ASYNC);
+		vector<unique_ptr<BaseExecutorTask>> tasks;
+		for (idx_t i = 0; i < task_count; i++) {
+			tasks.push_back(make_uniq<AsyncCountingTask>(executor, count));
+		}
+		executor.ScheduleTasks(std::move(tasks));
+		REQUIRE(NewThreadCount(threads_before) >= 16);
+		executor.WorkOnTasks();
+		REQUIRE(count == task_count);
 	}
-	executor.ScheduleTasks(std::move(tasks));
-	executor.WorkOnTasks();
-	REQUIRE(count == 8);
-	REQUIRE(NewThreadCount(threads_before) >= 16);
 }
 #endif
 
@@ -232,6 +235,7 @@ TEST_CASE("Test launching async threads while the thread count changes", "[api]"
 					auto result = con.Query("SELECT sum(i)::VARCHAR FROM '" + path + "'");
 					if (result->HasError()) {
 						results[t] += result->GetError();
+						continue;
 					}
 					for (auto &row : *result) {
 						results[t] += row.GetValue<string>(0) + ";";

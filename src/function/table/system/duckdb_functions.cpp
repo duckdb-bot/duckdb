@@ -640,6 +640,51 @@ static Value GetParameterNames(CatalogEntry &entry, idx_t function_idx, Function
 	return Value::LIST(LogicalType::VARCHAR, parameter_names);
 }
 
+// the number of wildcards a documented type needs to describe a parameter type, or Invalid() when it does not
+static optional_idx MatchDescriptionType(const LogicalType &description_type, const LogicalType &parameter_type) {
+	if (description_type.id() == LogicalTypeId::ANY) {
+		return 1;
+	}
+	if (description_type == parameter_type) {
+		return 0;
+	}
+	if (description_type.id() != parameter_type.id()) {
+		return optional_idx::Invalid();
+	}
+	optional_idx match;
+	switch (description_type.id()) {
+	case LogicalTypeId::LIST:
+		if (description_type.HasParameters() && parameter_type.HasParameters()) {
+			match =
+			    MatchDescriptionType(ListType::GetChildType(description_type), ListType::GetChildType(parameter_type));
+		}
+		break;
+	case LogicalTypeId::MAP:
+		if (description_type.HasParameters() && parameter_type.HasParameters()) {
+			auto key_match = MatchDescriptionType(MapType::KeyType(description_type), MapType::KeyType(parameter_type));
+			auto value_match =
+			    MatchDescriptionType(MapType::ValueType(description_type), MapType::ValueType(parameter_type));
+			if (key_match.IsValid() && value_match.IsValid()) {
+				match = key_match.GetIndex() + value_match.GetIndex();
+			}
+		}
+		break;
+	case LogicalTypeId::STRUCT:
+		// a STRUCT without fields describes any STRUCT
+		if (!description_type.HasParameters() || StructType::GetChildCount(description_type) == 0) {
+			return 1;
+		}
+		break;
+	default:
+		break;
+	}
+	// unequal types match only through a wildcard
+	if (!match.IsValid() || match.GetIndex() == 0) {
+		return optional_idx::Invalid();
+	}
+	return match;
+}
+
 // returns values:
 // 0: exact type match; N: match using N <ANY> values; Invalid(): no match
 static optional_idx CalcDescriptionSpecificity(FunctionDescription &description,
@@ -649,11 +694,11 @@ static optional_idx CalcDescriptionSpecificity(FunctionDescription &description,
 	}
 	idx_t any_count = 0;
 	for (idx_t i = 0; i < description.parameter_types.size(); i++) {
-		if (description.parameter_types[i].id() == LogicalTypeId::ANY) {
-			any_count++;
-		} else if (description.parameter_types[i] != parameter_types[i]) {
+		auto type_match = MatchDescriptionType(description.parameter_types[i], parameter_types[i]);
+		if (!type_match.IsValid()) {
 			return optional_idx::Invalid();
 		}
+		any_count += type_match.GetIndex();
 	}
 	return any_count;
 }
@@ -665,8 +710,9 @@ static optional_idx GetFunctionDescriptionIndex(vector<FunctionDescription> &fun
 		// one description, use it even if nr of parameters don't match
 		idx_t nr_function_parameters = function_parameter_types.size();
 		for (idx_t i = 0; i < function_descriptions[0].parameter_types.size(); i++) {
-			if (i < nr_function_parameters && function_descriptions[0].parameter_types[i] != LogicalTypeId::ANY &&
-			    function_descriptions[0].parameter_types[i] != function_parameter_types[i]) {
+			if (i < nr_function_parameters &&
+			    !MatchDescriptionType(function_descriptions[0].parameter_types[i], function_parameter_types[i])
+			         .IsValid()) {
 				return optional_idx::Invalid();
 			}
 		}

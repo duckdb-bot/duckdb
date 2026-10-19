@@ -1200,17 +1200,28 @@ unique_ptr<CatalogEntry> DuckTableEntry::DropNotNull(ClientContext &context, Dro
 	return make_uniq<DuckTableEntry>(catalog, schema, *bound_create_info, storage, triggers);
 }
 
-//! Spell out the type of every cast, so that binding the expression again does not look up user types
+//! Replace the type of every cast by the type it binds to, as TypeExpression::FromLogicalType writes it
 static void ResolveCastTypes(Binder &binder, ParsedExpression &expr) {
-	if (expr.GetExpressionClass() == ExpressionClass::CAST) {
-		auto &cast = expr.Cast<CastExpression>();
-		auto type = binder.BindLogicalType(cast.TargetType());
-		if (TypeExpression::CanRepresent(type)) {
-			cast.SetTargetType(TypeExpression::FromLogicalType(type));
-		}
-	}
 	ParsedExpressionIterator::EnumerateChildren(expr,
 	                                            [&](ParsedExpression &child) { ResolveCastTypes(binder, child); });
+	if (expr.GetExpressionClass() != ExpressionClass::CAST) {
+		return;
+	}
+	auto &cast = expr.Cast<CastExpression>();
+	LogicalType type;
+	try {
+		type = binder.BindLogicalType(cast.TargetType());
+	} catch (std::exception &ex) {
+		ErrorData error(ex);
+		if (error.Type() != ExceptionType::CATALOG && error.Type() != ExceptionType::BINDER) {
+			throw;
+		}
+		// A macro drops the arguments it does not use, so their casts were never bound
+		return;
+	}
+	if (TypeExpression::CanRepresent(type)) {
+		cast.SetTargetType(TypeExpression::FromLogicalType(type));
+	}
 }
 
 unique_ptr<CatalogEntry> DuckTableEntry::ChangeColumnType(ClientContext &context, ChangeColumnTypeInfo &info,

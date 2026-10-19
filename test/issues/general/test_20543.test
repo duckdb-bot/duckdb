@@ -89,7 +89,31 @@ ALTER TABLE main.t4 ALTER p SET TYPE USING p::e;
 statement ok
 RESET search_path;
 
+# a cast in a macro argument, which the macro uses or drops
+statement ok
+CREATE MACRO ident(x) AS x;
+
+statement ok
+CREATE MACRO keep_one(x) AS 1;
+
+statement ok
+CREATE TABLE t5 (p VARCHAR, q INTEGER);
+
+statement ok
+INSERT INTO t5 VALUES ('b', 5);
+
+statement ok
+ALTER TABLE t5 ALTER p SET TYPE USING ident(p::e);
+
+statement ok
+ALTER TABLE t5 ALTER q SET TYPE INTEGER USING keep_one(q::missing_type);
+
 restart
+
+query III
+SELECT p, typeof(p), q FROM t5;
+----
+b	ENUM('a', 'b')	1
 
 query II
 SELECT p, typeof(p) FROM t4;

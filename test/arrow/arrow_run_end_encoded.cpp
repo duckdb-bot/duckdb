@@ -1,4 +1,4 @@
-// Arrow scans of run-end encoded columns, at the top level and as children of LIST.
+// Arrow scans of run-end encoded columns, at the top level and as children of LIST and FIXED_SIZE_LIST.
 
 #include "catch.hpp"
 
@@ -85,9 +85,10 @@ struct RunEndColumn {
 	ArrowArray array {};
 };
 
-// LIST column over a run-end encoded child with the given offsets.
+// LIST column over a run-end encoded or fixed-size list child with the given offsets.
 struct ListColumn {
-	ListColumn(RunEndColumn &child, const std::vector<int32_t> &offsets_p) : offsets(offsets_p) {
+	template <class CHILD>
+	ListColumn(CHILD &child, const std::vector<int32_t> &offsets_p) : offsets(offsets_p) {
 		schema_children[0] = &child.schema;
 		schema.format = "+l";
 		schema.name = "a";
@@ -115,7 +116,48 @@ struct ListColumn {
 	ArrowArray array {};
 };
 
-bool ScanMatches(ArrowSchema &col_schema, ArrowArray &col_array, const string &query) {
+// FIXED_SIZE_LIST column of list_size elements over a run-end encoded child, starting at row offset, NULL for the
+// given rows.
+struct FixedSizeListColumn {
+	FixedSizeListColumn(RunEndColumn &child, idx_t list_size, int64_t length, int64_t offset,
+	                    const std::vector<idx_t> &null_rows = {})
+	    : format("+w:" + std::to_string(list_size)), validity((length + offset + 7) / 8 + 1, 0xFF) {
+		for (auto row : null_rows) {
+			auto bit = row + idx_t(offset);
+			validity[bit / 8] &= uint8_t(~(1u << (bit % 8)));
+		}
+		buffers[0] = null_rows.empty() ? nullptr : validity.data();
+		schema_children[0] = &child.schema;
+		schema.format = format.c_str();
+		schema.name = "a";
+		schema.flags = 2;
+		schema.n_children = 1;
+		schema.children = schema_children;
+		schema.release = ReleaseSchema;
+		array_children[0] = &child.array;
+		array.length = length;
+		array.offset = offset;
+		array.null_count = int64_t(null_rows.size());
+		array.n_buffers = 1;
+		array.buffers = buffers;
+		array.n_children = 1;
+		array.children = array_children;
+		array.release = ReleaseArray;
+	}
+	FixedSizeListColumn(const FixedSizeListColumn &) = delete;
+
+	std::string format;
+	std::vector<uint8_t> validity;
+	ArrowSchema *schema_children[1];
+	ArrowArray *array_children[1];
+	const void *buffers[1];
+	ArrowSchema schema {};
+	ArrowArray array {};
+};
+
+// Calls scan with a stream of one record batch that holds the column.
+template <class SCAN>
+bool WithStream(ArrowSchema &col_schema, ArrowArray &col_array, SCAN scan) {
 	ArrowSchema *schema_children[1] = {&col_schema};
 	ArrowSchema record_schema {};
 	record_schema.format = "+s";
@@ -138,9 +180,31 @@ bool ScanMatches(ArrowSchema &col_schema, ArrowArray &col_array, const string &q
 	if (duckdb_adbc::BatchToArrayStream(&record_array, &record_schema, &stream, &err) != ADBC_STATUS_OK) {
 		return false;
 	}
-	DuckDB db(nullptr);
-	Connection con(db);
-	return ArrowTestHelper::RunArrowComparison(con, query, stream);
+	return scan(stream);
+}
+
+bool ScanMatches(ArrowSchema &col_schema, ArrowArray &col_array, const string &query) {
+	return WithStream(col_schema, col_array, [&](ArrowArrayStream &stream) {
+		DuckDB db(nullptr);
+		Connection con(db);
+		return ArrowTestHelper::RunArrowComparison(con, query, stream);
+	});
+}
+
+// Runs the query over the scan of the column, as the view arrow_view, and checks that it returns expected.
+bool QueryMatches(ArrowSchema &col_schema, ArrowArray &col_array, const string &query, const string &expected) {
+	return WithStream(col_schema, col_array, [&](ArrowArrayStream &stream) {
+		DuckDB db(nullptr);
+		Connection con(db);
+		con.TableFunction("arrow_scan", {}, {}, ArrowTestHelper::ConstructArrowScan(stream))->CreateView("arrow_view");
+		auto result = con.Query(query);
+		auto expected_result = con.Query(expected);
+		stream.release = nullptr;
+		if (result->HasError() || expected_result->HasError()) {
+			return false;
+		}
+		return result->Equals(*expected_result, false);
+	});
 }
 
 } // namespace arrow_run_end_encoded_test
@@ -180,4 +244,45 @@ TEST_CASE("Arrow scan of LIST(run-end encoded) across chunks with a leading chil
 	    col.schema, col.array,
 	    "SELECT [CASE WHEN s // 1000 = 1 THEN NULL ELSE LEAST(s // 1000, 5) + 1 END::INT FOR s IN [3 + 2 * r, 4 + 2 * "
 	    "r]] FROM range(3000) t(r)"));
+}
+
+TEST_CASE("Arrow scan of FIXED_SIZE_LIST(run-end encoded)", "[arrow]") {
+	// the child holds 10, 10, 10 and 20
+	arrow_run_end_encoded_test::RunEndColumn child({3, 4}, {10, 20}, {});
+	arrow_run_end_encoded_test::FixedSizeListColumn col(child, 2, 2, 0);
+	REQUIRE(arrow_run_end_encoded_test::ScanMatches(col.schema, col.array,
+	                                                "SELECT * FROM (VALUES ([10, 10]::INT[2]), ([10, 20]))"));
+}
+
+TEST_CASE("Arrow scan of FIXED_SIZE_LIST(run-end encoded) across chunks with an offset", "[arrow]") {
+	// child slot s holds s / 1000 + 1, and NULL for slots 1000 to 1999, and row r covers child slots 2 + 2r and 3 + 2r
+	arrow_run_end_encoded_test::RunEndColumn child({1000, 2000, 3000, 4000, 5000, 6002}, {1, 2, 3, 4, 5, 6}, {1});
+	arrow_run_end_encoded_test::FixedSizeListColumn col(child, 2, 3000, 1);
+	REQUIRE(arrow_run_end_encoded_test::ScanMatches(
+	    col.schema, col.array,
+	    "SELECT [CASE WHEN s // 1000 = 1 THEN NULL ELSE LEAST(s // 1000, 5) + 1 END::INT FOR s IN [2 + 2 * r, 3 + 2 * "
+	    "r]]::INT[2] FROM range(3000) t(r)"));
+}
+
+TEST_CASE("Arrow scan of FIXED_SIZE_LIST(run-end encoded) with NULL rows over values", "[arrow]") {
+	// the child holds 1000, 1000, NULL, NULL, 5 and 5, and the first row, over the two values 1000, is NULL
+	arrow_run_end_encoded_test::RunEndColumn child({2, 4, 6}, {1000, 0, 5}, {1});
+	arrow_run_end_encoded_test::FixedSizeListColumn col(child, 2, 3, 0, {0});
+	REQUIRE(arrow_run_end_encoded_test::QueryMatches(
+	    col.schema, col.array, "SELECT a::TINYINT[2] FROM arrow_view",
+	    "SELECT * FROM (VALUES (NULL::TINYINT[2]), ([NULL, NULL]::TINYINT[2]), ([5, 5]::TINYINT[2]))"));
+}
+
+TEST_CASE("Arrow scan of LIST(run-end encoded) with only empty lists", "[arrow]") {
+	arrow_run_end_encoded_test::RunEndColumn child({2}, {7}, {});
+	arrow_run_end_encoded_test::ListColumn col(child, {0, 0, 0});
+	REQUIRE(arrow_run_end_encoded_test::ScanMatches(col.schema, col.array, "SELECT * FROM (VALUES ([]::INT[]), ([]))"));
+}
+
+TEST_CASE("Arrow scan of LIST(FIXED_SIZE_LIST(run-end encoded)) with only empty lists", "[arrow]") {
+	arrow_run_end_encoded_test::RunEndColumn child({2}, {7}, {});
+	arrow_run_end_encoded_test::FixedSizeListColumn fixed_size_list(child, 2, 1, 0);
+	arrow_run_end_encoded_test::ListColumn col(fixed_size_list, {0, 0, 0});
+	REQUIRE(
+	    arrow_run_end_encoded_test::ScanMatches(col.schema, col.array, "SELECT * FROM (VALUES ([]::INT[2][]), ([]))"));
 }

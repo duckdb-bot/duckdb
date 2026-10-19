@@ -187,8 +187,6 @@ struct RunEndStringColumn {
 		array_children[0] = &run_ends_array;
 		array_children[1] = &values_array;
 		array.length = run_ends.empty() ? 0 : run_ends.back();
-		array.n_buffers = 1;
-		array.buffers = buffers;
 		array.n_children = 2;
 		array.children = array_children;
 		array.release = ReleaseArray;
@@ -200,7 +198,6 @@ struct RunEndStringColumn {
 	string data;
 	const void *run_ends_buffers[2];
 	const void *values_buffers[3];
-	const void *buffers[1] = {nullptr};
 	ArrowSchema *schema_children[2];
 	ArrowArray *array_children[2];
 	ArrowSchema run_ends_schema {};

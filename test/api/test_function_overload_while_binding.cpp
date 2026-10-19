@@ -129,6 +129,7 @@ TEST_CASE("Test autoloading an extension while a function call is bound", "[api]
 	    {"SELECT date_part('year', now()) + 1 > 2000", Value::BOOLEAN(true)},
 	    // icu adds overloads of the table function range
 	    {"SELECT count(*) FROM range(current_date, current_date + 3, INTERVAL 1 DAY)", Value::BIGINT(3)},
+	    // a subquery or a lambda in an argument loads icu
 	    {"SELECT 1 + (SELECT current_date - current_date)", Value::BIGINT(1)},
 	    {"SELECT list_transform([1, 2], lambda x: (current_date + x) - current_date)::VARCHAR", Value("[1, 2]")},
 	    // the call is bound with the overload of + that icu adds

@@ -229,8 +229,6 @@ public:
 	void ReplaceMacroParametersInLambda(FunctionExpression &function, vector<identifier_set_t> &lambda_params);
 
 	static LogicalType GetExpressionReturnType(const Expression &expr);
-	//! Reads a constant subscript of a JSON value as the json_extract path of an array element or a field
-	static void BindJSONSubscript(ClientContext &context, Expression &index);
 
 	virtual unique_ptr<ParsedExpression> QualifyColumnName(ColumnRefExpression &col_ref, ErrorData &error);
 

@@ -10,7 +10,6 @@
 #include "duckdb/function/scalar/list_functions.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
-#include "duckdb/planner/expression_binder.hpp"
 #include "duckdb/storage/statistics/list_stats.hpp"
 
 namespace duckdb {
@@ -137,10 +136,6 @@ static unique_ptr<FunctionData> ListExtractBind(BindScalarFunctionInput &input) 
 //! Extracting from a list returns NULL for indexes that are out of range instead
 static unique_ptr<FunctionData> StringExtractBind(BindScalarFunctionInput &input) {
 	auto &bound_function = input.GetBoundFunction();
-	if (input.GetArguments()[0]->GetReturnType().IsJSONType()) {
-		// bound to json_extract by StringExtractBindExpression
-		return nullptr;
-	}
 	auto index = input.TryGetConstant(1);
 	if (!index) {
 		bound_function.SetFallible();
@@ -158,22 +153,18 @@ static unique_ptr<FunctionData> StringExtractBind(BindScalarFunctionInput &input
 	return nullptr;
 }
 
-//! A JSON and its index keep their types, as in the subscript
+//! A JSON keeps its type, so that it can bind to json_extract
 static void StringExtractResolveTypes(ResolveScalarFunctionTypesInput &input) {
-	if (!input.GetArgumentType(0).IsJSONType()) {
-		return;
+	if (input.GetArgumentType(0).IsJSONType()) {
+		input.GetBoundFunction().GetArguments()[0] = input.GetArgumentType(0);
 	}
-	auto &bound_function = input.GetBoundFunction();
-	bound_function.GetArguments()[0] = input.GetArgumentType(0);
-	bound_function.GetArguments()[1] = input.GetArgumentType(1);
 }
 
-//! A JSON binds to json_extract, as its subscript does
+//! A JSON binds to json_extract, which extracts the same array element as its subscript
 static unique_ptr<Expression> StringExtractBindExpression(FunctionBindExpressionInput &input) {
 	if (!input.children[0]->GetReturnType().IsJSONType()) {
 		return nullptr;
 	}
-	ExpressionBinder::BindJSONSubscript(input.context, *input.children[1]);
 	FunctionBinder function_binder(input.context);
 	return function_binder.BindScalarFunction(Identifier::DefaultSchema(), "json_extract", std::move(input.children));
 }

@@ -93,26 +93,6 @@ BindResult ExpressionBinder::BindGroupingFunction(OperatorExpression &op, idx_t 
 	return BindResult("GROUPING function is not supported here");
 }
 
-void ExpressionBinder::BindJSONSubscript(ClientContext &context, Expression &index) {
-	if (index.GetExpressionClass() != ExpressionClass::BOUND_CONSTANT ||
-	    index.Cast<BoundConstantExpression>().GetValue().IsNull()) {
-		return;
-	}
-	// Make sure we only extract array elements, not fields, by adding the $[] syntax
-	auto &const_exp = index.Cast<BoundConstantExpression>();
-	auto uinteger_value = const_exp.GetValue().TryCastAs(context, LogicalType::UINTEGER);
-	if (uinteger_value) {
-		// Array extraction: if the cast fails it's definitely out-of-bounds for a JSON array
-		auto array_index = UIntegerValue::Get(*uinteger_value);
-		const_exp.SetValue(StringUtil::Format("$[%lld]", array_index));
-		const_exp.SetReturnType(LogicalType::VARCHAR);
-	} else if (const_exp.GetReturnType().id() == LogicalType::VARCHAR) {
-		// Field extraction
-		const_exp.SetValue(StringUtil::Format("$.\"%s\"", const_exp.GetValue().ToString()));
-		const_exp.SetReturnType(LogicalType::VARCHAR);
-	}
-}
-
 //! Bind an operator that is really a call to a scalar function, over children this binder has
 //! already bound. The name is resolved exactly as a written function call would be, so that the
 //! search path and the binder's catalog-lookup callback still apply.
@@ -224,7 +204,23 @@ BindResult ExpressionBinder::BindExpression(OperatorExpression &op, idx_t depth)
 			function_name = "map_extract_value";
 		} else if (b_exp_type.IsJSONType() && children.size() == 2) {
 			function_name = "json_extract";
-			BindJSONSubscript(context, *children[1]);
+			// Make sure we only extract array elements, not fields, by adding the $[] syntax
+			auto &i_exp = *children[1];
+			if (i_exp.GetExpressionClass() == ExpressionClass::BOUND_CONSTANT &&
+			    !i_exp.Cast<BoundConstantExpression>().GetValue().IsNull()) {
+				auto &const_exp = i_exp.Cast<BoundConstantExpression>();
+				auto uinteger_value = const_exp.GetValue().TryCastAs(context, LogicalType::UINTEGER);
+				if (uinteger_value) {
+					// Array extraction: if the cast fails it's definitely out-of-bounds for a JSON array
+					auto index = UIntegerValue::Get(*uinteger_value);
+					const_exp.SetValue(StringUtil::Format("$[%lld]", index));
+					const_exp.SetReturnType(LogicalType::VARCHAR);
+				} else if (const_exp.GetReturnType().id() == LogicalType::VARCHAR) {
+					// Field extraction
+					const_exp.SetValue(StringUtil::Format("$.\"%s\"", const_exp.GetValue().ToString()));
+					const_exp.SetReturnType(LogicalType::VARCHAR);
+				}
+			}
 		} else if (b_exp_type.id() == LogicalTypeId::VARIANT && children.size() == 2) {
 			function_name = "variant_extract";
 			auto &i_exp = *children[1];

@@ -2,6 +2,9 @@
 # description: A sequence that does not cycle returns the last value of the int64 range once, also after a restart
 # group: [sequence]
 
+statement ok
+SET storage_compatibility_version = 'v2.0.0';
+
 load {TEST_DIR}/sequence_int64_limit.db
 
 statement ok

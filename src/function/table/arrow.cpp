@@ -213,6 +213,12 @@ OperatorPartitionData ArrowTableFunction::ArrowGetPartitionData(ClientContext &c
 }
 
 static bool CanPushdown(const ArrowType &type) {
+	if (type.RunEndEncoded()) {
+		return false;
+	}
+	if (type.HasDictionary()) {
+		return CanPushdown(type.GetDictionary());
+	}
 	auto duck_type = type.GetDuckType();
 	switch (duck_type.id()) {
 	case LogicalTypeId::BOOLEAN:
@@ -266,10 +272,11 @@ static bool CanPushdown(const ArrowType &type) {
 		return false;
 	}
 }
-//! Whether the type is or holds a view type or a run-end encoded type, which PyArrow's filter kernel cannot filter
+
+// PyArrow's array_filter kernel has no implementation for string view, binary view and run-end encoded arrays.
+// It filters a dictionary by its indices, so a dictionary of view values is fine here.
 static bool HasUnfilterableType(const ArrowType &type) {
 	if (type.RunEndEncoded()) {
-		// the type info of a run-end encoded type holds the run ends and the values, not the values' type info
 		return true;
 	}
 	auto duck_type = type.GetDuckType();
@@ -314,10 +321,8 @@ static bool TableHasUnfilterableTypes(const arrow_column_map_t &column_info) {
 bool ArrowTableFunction::ArrowPushdownType(const FunctionData &bind_data, idx_t col_idx) {
 	auto &arrow_bind_data = bind_data.Cast<ArrowScanFunctionData>();
 	const auto &column_info = arrow_bind_data.arrow_table.GetColumns();
-	// PyArrow's array_filter kernel doesn't support string_view/binary_view or run-end encoded types.
-	// The filter is applied to ALL columns in a record batch, so if any column has such a
-	// type, we must disable filter pushdown for the entire table.
-	// See https://github.com/duckdb/duckdb-python/issues/227
+	// The producer applies a pushed filter to every column of a record batch, so one column that cannot be
+	// filtered turns pushdown off for the entire table.
 	if (TableHasUnfilterableTypes(column_info)) {
 		return false;
 	}

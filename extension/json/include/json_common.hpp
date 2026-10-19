@@ -235,7 +235,12 @@ public:
 		D_ASSERT(alc);
 		idx_t len;
 		auto data = WriteVal<YYJSON_VAL_T>(val, alc, len);
-		return string_t(data, len);
+		if (len > string_t::MAX_STRING_SIZE) {
+			throw OutOfRangeException(
+			    "Cannot create a string of size: '%d', the maximum supported string size is: '%d'", len,
+			    string_t::MAX_STRING_SIZE);
+		}
+		return string_t(data, UnsafeNumericCast<uint32_t>(len));
 	}
 
 	//! Slow and easy ToString for errors

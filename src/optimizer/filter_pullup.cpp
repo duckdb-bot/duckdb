@@ -102,8 +102,10 @@ unique_ptr<LogicalOperator> FilterPullup::PullupInnerJoin(unique_ptr<LogicalOper
 	// Convert to cross product
 	op = make_uniq<LogicalCrossProduct>(std::move(op->children[0]), std::move(op->children[1]));
 	if (can_pullup) {
-		for (auto &expr : expressions) {
-			filters_expr_pullup.push_back(std::move(expr));
+		// a volatile condition stays above the cross product, where it runs once per pair of rows
+		auto volatile_expressions = PullupNonVolatile(expressions);
+		if (!volatile_expressions.empty()) {
+			op = GeneratePullupFilter(std::move(op), volatile_expressions);
 		}
 	} else {
 		op = GeneratePullupFilter(std::move(op), expressions);
@@ -137,6 +139,25 @@ unique_ptr<LogicalOperator> FilterPullup::GeneratePullupFilter(unique_ptr<Logica
 	expressions.clear();
 	filter->children.push_back(std::move(child));
 	return std::move(filter);
+}
+
+vector<unique_ptr<Expression>> FilterPullup::PullupNonVolatile(vector<unique_ptr<Expression>> &expressions) {
+	LogicalFilter::SplitPredicates(expressions);
+	// a volatile expression that can throw keeps the expressions that guard it
+	bool keep_all = false;
+	for (auto &expr : expressions) {
+		keep_all = keep_all || (expr->IsVolatile() && expr->CanThrow());
+	}
+	vector<unique_ptr<Expression>> volatile_expressions;
+	for (auto &expr : expressions) {
+		if (keep_all || expr->IsVolatile()) {
+			volatile_expressions.push_back(std::move(expr));
+		} else {
+			filters_expr_pullup.push_back(std::move(expr));
+		}
+	}
+	expressions.clear();
+	return volatile_expressions;
 }
 
 unique_ptr<LogicalOperator> FilterPullup::FinishPullup(unique_ptr<LogicalOperator> op) {

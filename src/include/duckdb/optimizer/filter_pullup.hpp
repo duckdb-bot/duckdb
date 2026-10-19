@@ -37,6 +37,8 @@ private:
 	// Generate logical filters pulled up
 	unique_ptr<LogicalOperator> GeneratePullupFilter(unique_ptr<LogicalOperator> child,
 	                                                 vector<unique_ptr<Expression>> &expressions);
+	//! Pull up the expressions, except the volatile ones and their guards, which are returned to stay where they are
+	vector<unique_ptr<Expression>> PullupNonVolatile(vector<unique_ptr<Expression>> &expressions);
 
 	//! Pull up a LogicalFilter op
 	unique_ptr<LogicalOperator> PullupFilter(unique_ptr<LogicalOperator> op);

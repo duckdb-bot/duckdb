@@ -5,6 +5,7 @@
 #include "duckdb/parser/expression/function_expression.hpp"
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
+#include "duckdb/function/function_binder.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_expanded_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
@@ -113,9 +114,11 @@ private:
 class UnnestBinder {
 public:
 	UnnestBinder(ExpressionBinder &expression_binder, Binder &binder, ClientContext &context, BoundUnnestMap &unnests,
-	             idx_t &unnest_level, StructUnnestHandling struct_handling, string struct_error)
+	             idx_t &unnest_level, StructUnnestHandling struct_handling, string struct_error,
+	             optional_ptr<BoundUnnestMap> struct_sources = nullptr)
 	    : expression_binder(expression_binder), binder(binder), context(context), unnests(unnests),
-	      unnest_level(unnest_level), struct_handling(struct_handling), struct_error(std::move(struct_error)) {
+	      unnest_level(unnest_level), struct_handling(struct_handling), struct_error(std::move(struct_error)),
+	      struct_sources(struct_sources) {
 	}
 
 	BindResult Bind(FunctionExpression &function, idx_t depth, bool root_expression);
@@ -128,6 +131,7 @@ private:
 	idx_t &unnest_level;
 	StructUnnestHandling struct_handling;
 	string struct_error;
+	optional_ptr<BoundUnnestMap> struct_sources;
 };
 
 BindResult UnnestBinder::Bind(FunctionExpression &function, idx_t depth, bool root_expression) {
@@ -259,6 +263,24 @@ BindResult UnnestBinder::Bind(FunctionExpression &function, idx_t depth, bool ro
 		return BindResult(BinderException(
 		    function, "UNNEST() on a struct column can only be applied as the root element of a SELECT expression"));
 	}
+	optional_ptr<Expression> struct_source;
+	bool struct_source_named = false;
+	if (struct_unnests > 0 && list_unnests == 0 && unnest_expr->HasSubquery() && struct_sources) {
+		// a subquery cannot be copied, so the struct is evaluated once per row below the other unnests
+		auto alias = unnest_expr->GetAlias();
+		struct_source_named = unnest_expr->GetExpressionClass() == ExpressionClass::BOUND_FUNCTION;
+		vector<unique_ptr<Expression>> children;
+		children.push_back(std::move(unnest_expr));
+		FunctionBinder function_binder(binder);
+		auto source = make_uniq<BoundUnnestExpression>(child_type);
+		source->ChildMutable() = function_binder.BindScalarFunction(DEFAULT_SCHEMA, "list_value", std::move(children));
+		TableIndex source_table_index;
+		ProjectionIndex source_column_index;
+		AddUnnestExpression(binder, *struct_sources, 0, std::move(source), source_table_index, source_column_index);
+		unnest_expr = make_uniq<BoundColumnRefExpression>(
+		    std::move(alias), child_type, ColumnBinding(source_table_index, source_column_index), depth);
+		struct_source = unnest_expr.get();
+	}
 	// perform all LIST unnests
 	auto return_type = child_type;
 	for (idx_t current_depth = 0; current_depth < list_unnests; current_depth++) {
@@ -305,7 +327,9 @@ BindResult UnnestBinder::Bind(FunctionExpression &function, idx_t depth, bool ro
 						for (auto &entry : child_types) {
 							vector<string> current_key_path;
 							// During recursive expansion, not all expressions are BoundFunctionExpression
-							if (keep_parent_names && expr->GetExpressionClass() == ExpressionClass::BOUND_FUNCTION) {
+							bool named_parent = expr->GetExpressionClass() == ExpressionClass::BOUND_FUNCTION ||
+							                    (struct_source_named && expr.get() == struct_source.get());
+							if (keep_parent_names && named_parent) {
 								current_key_path.emplace_back(expr->GetAlias());
 							}
 							current_key_path.emplace_back(entry.first);
@@ -334,7 +358,8 @@ BindResult SelectBinder::BindUnnest(FunctionExpression &function, idx_t depth, b
 		return BindResult(BinderException(function, UnsupportedUnnestMessage()));
 	}
 	UnnestBinder unnest_binder(*this, binder, context, node.unnests.SelectList(), unnest_level,
-	                           StructUnnestHandling::ALLOW_ROOT, "UNNEST of struct cannot be used in GROUP BY clause");
+	                           StructUnnestHandling::ALLOW_ROOT, "UNNEST of struct cannot be used in GROUP BY clause",
+	                           node.unnests.StructSources());
 	return unnest_binder.Bind(function, depth, root_expression);
 }
 

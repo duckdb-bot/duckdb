@@ -36,7 +36,7 @@ SELECT partition_keys['kind'],
        column_statistics['"a"."element"']['null_count']
 FROM stats;
 ----
-0	{null_count=1, num_values=1}	1	{null_count=1, num_values=1}	1	{null_count=1, num_values=1}	1	{null_count=1, num_values=1}	2
+0	{null_count=1, num_values=1}	1	{null_count=1, num_values=1}	1	{null_count=1, num_values=1}	1	{null_count=1, num_values=1}	1
 1	{null_count=0, num_values=1}	1	{null_count=0, num_values=1}	1	{null_count=0, num_values=1}	1	{null_count=0, num_values=1}	2
 2	{null_count=0, num_values=1}	1	{null_count=0, num_values=1}	0	{null_count=0, num_values=1}	1	{null_count=0, num_values=1}	0
 

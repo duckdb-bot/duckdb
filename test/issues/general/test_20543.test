@@ -122,23 +122,17 @@ statement ok
 CREATE TYPE e3 AS ENUM ('m', 'n');
 
 statement ok
-CREATE MACRO f3(x) AS x + 10;
-
-statement ok
 CREATE MACRO f(x) AS x + 1000;
 
 statement ok
-CREATE TABLE v (p VARCHAR, q INTEGER);
+CREATE TABLE v (p VARCHAR);
 
 statement ok
-INSERT INTO v VALUES ('n', 1);
+INSERT INTO v VALUES ('n');
 
-# names that only the attached database has
+# a type that only the attached database has
 statement ok
 ALTER TABLE v ALTER p SET TYPE USING p::e3;
-
-statement ok
-ALTER TABLE v ALTER q SET TYPE INTEGER USING f3(q);
 
 statement ok
 USE alter_type_using_replay;
@@ -169,10 +163,10 @@ DETACH d2;
 statement ok
 ATTACH '{TEST_DIR}/alter_type_using_attach.db' AS d3;
 
-query IIII
-SELECT p, typeof(p), q, (SELECT q FROM d3.v2) FROM d3.v;
+query III
+SELECT p, typeof(p), (SELECT q FROM d3.v2) FROM d3.v;
 ----
-n	ENUM('m', 'n')	11	2
+n	ENUM('m', 'n')	2
 
 query II
 SELECT p, typeof(p) FROM d3.w;

@@ -32,16 +32,9 @@ BindResult ExpressionBinder::BindExpression(TypeExpression &type_expr, idx_t dep
 	bool is_qualified = bound_name.Path().size() > 1;
 
 	if (type_catalog.empty() && !DatabaseManager::Get(context).HasAttachedDatabase()) {
-		// No database is attached yet, as while the WAL of the first one is replayed. Look in the search path the
-		// binder was given, if any, and then in the system catalog
-		if (binder.entry_retriever.HasSearchPath()) {
-			entry =
-			    binder.entry_retriever.GetEntry(EntryLookupInfo(type_lookup, bound_name), OnEntryNotFound::RETURN_NULL);
-		}
-		if (!IsValidTypeLookup(entry)) {
-			entry = binder.entry_retriever.GetEntry(
-			    EntryLookupInfo(type_lookup, bound_name.WithCatalog(Identifier::SystemCatalog())));
-		}
+		// Look in the system catalog if no catalog was specified
+		entry = binder.entry_retriever.GetEntry(
+		    EntryLookupInfo(type_lookup, bound_name.WithCatalog(Identifier::SystemCatalog())));
 	} else {
 		// Try to search from most specific to least specific
 		// The search path should already have been set to the correct catalog/schema,

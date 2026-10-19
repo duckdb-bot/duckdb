@@ -138,6 +138,8 @@ public:
 
 public:
 	unique_ptr<ParsedExpression> ExpandGeneratedColumn(const Identifier &column_name);
+	//! A reference to the row id, or nullptr when there is none or a regular column shadows it
+	unique_ptr<ParsedExpression> GetRowIdColumn();
 	BindResult Bind(ColumnRefExpression &colref, idx_t depth) override;
 	optional_ptr<StandardEntry> GetStandardEntry() override;
 	ErrorData ColumnNotFoundError(const Identifier &column_name) const override;

@@ -4,10 +4,14 @@
 #include "duckdb/common/types/data_chunk.hpp"
 #include "duckdb/common/uhugeint.hpp"
 #include "duckdb/common/vector_operations/binary_executor.hpp"
+#include "duckdb/execution/expression_executor.hpp"
+#include "duckdb/function/function_binder.hpp"
 #include "duckdb/function/scalar/nested_functions.hpp"
 #include "duckdb/function/scalar/string_common.hpp"
 #include "duckdb/function/scalar/list_functions.hpp"
+#include "duckdb/function/scalar/variant_functions.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
+#include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/storage/statistics/list_stats.hpp"
 
@@ -152,22 +156,23 @@ static unique_ptr<FunctionData> StringExtractBind(BindScalarFunctionInput &input
 	return nullptr;
 }
 
-//! A VARIANT is read as TRY_CAST(v AS VARIANT[]), which is NULL for a VARIANT that does not convert
-static unique_ptr<FunctionData> VariantListExtractBind(BindScalarFunctionInput &input) {
-	auto &context = input.GetClientContext();
-	auto &arguments = input.GetArguments();
-	auto list_type = LogicalType::LIST(LogicalType::VARIANT());
-	arguments[0] = BoundCastExpression::AddCastToType(context, std::move(arguments[0]), list_type, true);
-	input.GetBoundFunction().GetArguments()[0] = list_type;
-	return nullptr;
+//! A VARIANT binds to variant_extract with a UINTEGER constant index, as its subscript does
+static unique_ptr<Expression> BindVariantExtract(FunctionBindExpressionInput &input) {
+	auto &children = input.children;
+	if (children[1]->IsFoldable()) {
+		auto index = ExpressionExecutor::EvaluateScalar(input.context, *children[1]);
+		children[1] = make_uniq<BoundConstantExpression>(index.DefaultCastAs(LogicalType::UINTEGER, true));
+	}
+	FunctionBinder function_binder(input.context);
+	return function_binder.BindScalarFunction(Identifier::DefaultSchema(), VariantExtractFun::Name,
+	                                          std::move(children));
 }
 
 static ScalarFunction GetVariantExtractFunction() {
-	ScalarFunction vfun({LogicalType::VARIANT(), LogicalType::BIGINT}, LogicalType::VARIANT(), ListExtractFunction,
-	                    VariantListExtractBind);
+	ScalarFunction vfun({LogicalType::VARIANT(), LogicalType::BIGINT}, LogicalType::VARIANT(), ListExtractFunction);
 	vfun.GetSignature().GetParameter(0).SetName("list");
 	vfun.GetSignature().GetParameter(1).SetName("index");
-	vfun.SetFallible();
+	vfun.SetBindExpressionCallback(BindVariantExtract);
 	return vfun;
 }
 

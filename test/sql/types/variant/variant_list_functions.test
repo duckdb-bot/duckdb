@@ -1,5 +1,5 @@
 # name: test/sql/types/variant/variant_list_functions.test
-# description: List extraction and concatenation read a VARIANT as a list of VARIANT values
+# description: List extraction binds a VARIANT as its subscript does, and list concatenation reads it as a list
 # group: [variant]
 
 statement ok
@@ -8,49 +8,88 @@ CREATE TABLE t AS SELECT [10, 20, 30]::VARIANT AS v;
 statement ok
 CREATE TABLE s AS SELECT 'hello'::VARCHAR::VARIANT AS v;
 
-query IIIII
-SELECT list_extract(v, 1), array_extract(v, 1), list_element(v, 2), v[1], typeof(list_extract(v, 1)) FROM t
+query IIII
+SELECT ([1,2,3]::VARIANT)[1] AS "operator[]", list_extract([1,2,3]::VARIANT, 1) AS "list_extract", typeof(([1,2,3]::VARIANT)[1]), typeof(list_extract([1,2,3]::VARIANT, 1))
 ----
-10	10	20	10	VARIANT
+1	1	VARIANT	VARIANT
 
-query III
-SELECT list_extract(v, -1), list_extract(v, 4), list_extract(v, NULL) FROM t
+query IIIIIII
+SELECT list_extract(v, 1), array_extract(v, 1), list_element(v, 2), v[1], typeof(list_extract(v, 1)), typeof(array_extract(v, 1)), typeof(list_element(v, 2)) FROM t
 ----
-30	NULL	NULL
+10	10	20	10	VARIANT	VARIANT	VARIANT
 
-query I
-SELECT list_extract(v, i) FROM t, range(1, 4) r(i) ORDER BY i
+query IIIIII
+SELECT list_extract(v, 3), list_extract(v, 4), list_extract(v, NULL), v[3], v[4], v[NULL] FROM t
 ----
-10
-20
-30
+30	NULL	NULL	30	NULL	NULL
 
-# a VARIANT that does not convert to a list gives NULL
-query III
-SELECT list_extract(v, 1), array_extract(v, 1), list_element(v, 1) FROM s
+# indexes are 1-based and not negative, as with the subscript
+statement error
+SELECT list_extract(v, 0) FROM t
 ----
-NULL	NULL	NULL
+Extracting index 0 from VARIANT(ARRAY) is invalid, indexes are 1-based
+
+statement error
+SELECT v[0] FROM t
+----
+Extracting index 0 from VARIANT(ARRAY) is invalid, indexes are 1-based
+
+statement error
+SELECT array_extract(v, -1) FROM t
+----
+can't be cast because the value is out of range for the destination type UINT32
+
+statement error
+SELECT v[-1] FROM t
+----
+can't be cast because the value is out of range for the destination type UINT32
+
+# the index is a constant, as with the subscript
+statement error
+SELECT list_extract(v, i) FROM t, range(1, 4) r(i)
+----
+No function matches the given name and argument types 'variant_extract(VARIANT, BIGINT)'
+
+statement error
+SELECT v[i] FROM t, range(1, 4) r(i)
+----
+No function matches the given name and argument types 'variant_extract(VARIANT, BIGINT)'
+
+statement ok
+PREPARE extract_index AS SELECT list_extract(v, ?), v[?] FROM t
+
+query II
+EXECUTE extract_index(2, 2)
+----
+20	20
+
+# a VARIANT that is not a list gives NULL
+query IIII
+SELECT list_extract(v, 1), array_extract(v, 1), list_element(v, 1), v[1] FROM s
+----
+NULL	NULL	NULL	NULL
 
 # nested, empty and NULL elements, and rows with and without a list
-query III
-SELECT i, list_extract(v, 1), list_extract(v, 2) FROM (VALUES (1, [[1, 2], [3]]::VARIANT), (2, []::INTEGER[]::VARIANT), (3, [NULL, 5]::VARIANT), (4, 42::VARIANT), (5, NULL::VARIANT)) t(i, v) ORDER BY i
+query IIIII
+SELECT i, list_extract(v, 1), list_extract(v, 2), v[1], v[2] FROM (VALUES (1, [[1, 2], [3]]::VARIANT), (2, []::INTEGER[]::VARIANT), (3, [NULL, 5]::VARIANT), (4, 42::VARIANT), (5, NULL::VARIANT), (6, {'a': 1}::VARIANT)) t(i, v) ORDER BY i
 ----
-1	[1, 2]	[3]
-2	NULL	NULL
-3	NULL	5
-4	NULL	NULL
-5	NULL	NULL
+1	[1, 2]	[3]	[1, 2]	[3]
+2	NULL	NULL	NULL	NULL
+3	NULL	5	NULL	5
+4	NULL	NULL	NULL	NULL
+5	NULL	NULL	NULL	NULL
+6	NULL	NULL	NULL	NULL
 
-# a string that reads as a list converts, as with an explicit cast
+# a string that reads as a list is not a list
 query II
-SELECT list_extract('[1, 2]'::VARIANT, 1), list_extract(TRY_CAST('[1, 2]'::VARIANT AS VARIANT[]), 1)
+SELECT list_extract('[1, 2]'::VARIANT, 1), ('[1, 2]'::VARIANT)[1]
 ----
-1	1
+NULL	NULL
 
-query I
-SELECT list_extract(NULL::VARIANT, 1)
+query II
+SELECT list_extract(NULL::VARIANT, 1), (NULL::VARIANT)[1]
 ----
-NULL
+NULL	NULL
 
 # an untyped NULL keeps the string overload
 query IIII

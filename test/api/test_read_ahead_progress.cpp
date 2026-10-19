@@ -179,16 +179,23 @@ TEST_CASE("Read-ahead of a file scan keeps its queued jobs within the open windo
 		struct JobState {};
 		const idx_t job_count = 32;
 		idx_t produced = 0;
+		idx_t consumed = 0;
 		auto produce = [&](duckdb::vector<duckdb::unique_ptr<AsyncTask>> &) -> duckdb::unique_ptr<ScanReadAheadJob> {
 			if (produced == job_count) {
 				return nullptr;
+			}
+			if (jobs_hold_files) {
+				// pushed jobs count against the window, the slot of this producer does not
+				const idx_t queued = produced - consumed;
+				REQUIRE(read_ahead->CanScheduleOpen(open_window - 1 - queued));
+				REQUIRE_FALSE(read_ahead->CanScheduleOpen(open_window - queued));
 			}
 			auto job = make_uniq<ScanReadAheadJobWrapper<JobState>>();
 			job->batch_index = produced++;
 			return std::move(job);
 		};
 		TableFunctionInput input(nullptr, nullptr, nullptr);
-		for (idx_t consumed = 0; consumed < job_count; consumed++) {
+		for (; consumed < job_count; consumed++) {
 			duckdb::unique_ptr<ScanReadAheadJob> job;
 			REQUIRE(read_ahead->AcquireJob(*con.context, input, produce, job) == ScanReadAheadAcquire::ACQUIRED);
 			REQUIRE(job->batch_index == consumed);

@@ -376,8 +376,11 @@ void ScanReadAhead::ScheduleFileOpen(std::function<void()> open_fn, std::functio
 }
 
 bool ScanReadAhead::CanScheduleOpen(idx_t files_ahead) const {
-	// the files of queued jobs stay open until the scan finishes them
-	return files_ahead + active_jobs.load() < open_window && ReadAheadOpenFile::Count() < open_file_budget;
+	// queued jobs keep their files open, the file a producer waits for is counted in files_ahead
+	const idx_t producers = active_producers.load();
+	const idx_t jobs = active_jobs.load();
+	const idx_t queued_jobs = jobs > producers ? jobs - producers : 0;
+	return files_ahead + queued_jobs < open_window && ReadAheadOpenFile::Count() < open_file_budget;
 }
 
 bool ScanReadAhead::TryRunPendingTask() {

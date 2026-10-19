@@ -715,6 +715,7 @@ private:
 	shared_ptr<Binder> CreateBinderWithSearchPath(const Identifier &catalog_name, const Identifier &schema_name);
 
 	bool DebugAggregateStateExportVerify(BoundSelectNode &statement, unique_ptr<LogicalOperator> &root);
+	unique_ptr<LogicalOperator> PlanVolatileGroups(BoundSelectNode &statement, unique_ptr<LogicalOperator> root);
 
 private:
 	Binder(ClientContext &context, shared_ptr<Binder> parent, BinderType binder_type);

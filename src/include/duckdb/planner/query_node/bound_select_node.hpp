@@ -104,6 +104,11 @@ public:
 	//! UNNEST expressions, split by SELECT-list and GROUP BY binding context
 	BoundUnnestCollection unnests;
 
+	//! Volatile collated groups, computed once below the aggregate so the group and its first(x) see one value
+	vector<unique_ptr<Expression>> volatile_groups;
+	//! Index of the projection that computes the volatile groups
+	TableIndex volatile_group_index;
+
 	//! Index of pruned node
 	TableIndex prune_index;
 	bool need_prune = false;

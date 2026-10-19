@@ -1,0 +1,56 @@
+# name: test/optimizer/statistics/statistics_cast_infinity.test
+# description: Cast statistics of a column whose bounds hold -infinity, below which the smallest finite value lies
+# group: [statistics]
+
+statement ok
+CREATE TABLE t(c TIMESTAMP_NS);
+
+statement ok
+INSERT INTO t VALUES (make_timestamp_ns(-9223372036854775807 - 1)), ('-infinity'), ('1970-01-01'), ('infinity');
+
+foreach target TIMESTAMP TIMESTAMP_MS DATE
+
+query I
+SELECT count(*) FROM t WHERE c::{target} = '-infinity'::{target};
+----
+1
+
+query I
+SELECT count(*) FROM t WHERE c::{target} = 'infinity'::{target};
+----
+1
+
+query I
+SELECT count(*) FROM t WHERE c::{target} < '1970-01-01'::{target};
+----
+2
+
+endloop
+
+query I
+SELECT min(c::TIMESTAMP) = '-infinity'::TIMESTAMP FROM t WHERE c::TIMESTAMP < '1900-01-01';
+----
+true
+
+# without the smallest finite value the bounds stay as they are
+statement ok
+CREATE TABLE u(c TIMESTAMP_NS);
+
+statement ok
+INSERT INTO u VALUES ('-infinity'), ('1970-01-01');
+
+query I
+SELECT count(*) FROM u WHERE c::TIMESTAMP = '-infinity'::TIMESTAMP;
+----
+1
+
+statement ok
+CREATE TABLE d(c TIMESTAMP);
+
+statement ok
+INSERT INTO d VALUES (make_timestamp(-9223372036854775807 - 1)), ('-infinity'), ('1970-01-01');
+
+query I
+SELECT count(*) FROM d WHERE c::DATE = '-infinity'::DATE;
+----
+1

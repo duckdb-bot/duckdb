@@ -9,6 +9,48 @@
 
 namespace duckdb {
 
+static bool HasInfinities(const LogicalType &type) {
+	switch (type.id()) {
+	case LogicalTypeId::DATE:
+	case LogicalTypeId::TIMESTAMP:
+	case LogicalTypeId::TIMESTAMP_SEC:
+	case LogicalTypeId::TIMESTAMP_MS:
+	case LogicalTypeId::TIMESTAMP_NS:
+	case LogicalTypeId::TIMESTAMP_TZ:
+	case LogicalTypeId::TIMESTAMP_TZ_NS:
+		return true;
+	default:
+		return false;
+	}
+}
+
+//! The smallest finite date or timestamp lies below -infinity, so the casts of the infinities between the bounds can
+//! lie outside the casts of the bounds
+static bool WidenByInfinities(const BaseStatistics &input, const LogicalType &target, Value &min, Value &max) {
+	auto &source = input.GetType();
+	if (!HasInfinities(source)) {
+		return true;
+	}
+	auto source_min = NumericStats::Min(input);
+	auto source_max = NumericStats::Max(input);
+	for (auto &infinity : {Value::NegativeInfinity(source), Value::Infinity(source)}) {
+		if (infinity < source_min || infinity > source_max) {
+			continue;
+		}
+		auto cast_infinity = infinity.DefaultTryCastAs(target);
+		if (!cast_infinity) {
+			return false;
+		}
+		if (*cast_infinity < min) {
+			min = *cast_infinity;
+		}
+		if (*cast_infinity > max) {
+			max = *cast_infinity;
+		}
+	}
+	return true;
+}
+
 static unique_ptr<BaseStatistics> StatisticsOperationsNumericNumericCast(const BaseStatistics &input,
                                                                          const LogicalType &target) {
 	// Bail out if the stats are not numeric
@@ -25,7 +67,7 @@ static unique_ptr<BaseStatistics> StatisticsOperationsNumericNumericCast(const B
 	}
 	auto min = NumericStats::Min(input).DefaultTryCastAs(target);
 	auto max = NumericStats::Max(input).DefaultTryCastAs(target);
-	if (!min || !max) {
+	if (!min || !max || !WidenByInfinities(input, target, *min, *max)) {
 		// overflow in cast: bailout
 		return nullptr;
 	}

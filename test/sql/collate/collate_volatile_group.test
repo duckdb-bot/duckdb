@@ -112,14 +112,37 @@ statement ok
 CREATE SEQUENCE seq8;
 
 query IIIII
-SELECT (nextval('seq7') % 2)::VARCHAR COLLATE NOCASE AS a, (nextval('seq8') % 3)::VARCHAR COLLATE NOCASE AS b, count(*), sum(i) FILTER (WHERE i > 1), string_agg(i::VARCHAR, ',' ORDER BY i DESC) FROM range(4) r(i) GROUP BY a, b ORDER BY a, b;
+SELECT (nextval('seq7') % 2)::VARCHAR COLLATE NOCASE AS a, (nextval('seq8') % 3)::VARCHAR COLLATE NOCASE AS b, count(*), sum(i) FILTER (WHERE i > 1), string_agg(i::VARCHAR, ',' ORDER BY i DESC) FROM range(12) r(i) GROUP BY a, b ORDER BY a, b;
 ----
-0	1	1	3	3
-0	2	1	NULL	1
-1	0	1	2	2
-1	1	1	NULL	0
+0	0	2	16	11,5
+0	1	2	12	9,3
+0	2	2	7	7,1
+1	0	2	10	8,2
+1	1	2	6	6,0
+1	2	2	14	10,4
 
 query II
 SELECT currval('seq7'), currval('seq8');
 ----
-4	4
+12	12
+
+# the volatile function inside a correlated subquery
+statement ok
+CREATE SEQUENCE seq9;
+
+query II
+SELECT ((SELECT nextval('seq9') + r.i * 0) % 2)::VARCHAR COLLATE NOCASE AS k, count(*) FROM range(3) r(i) GROUP BY k ORDER BY k;
+----
+0	1
+1	2
+
+query II
+SELECT ((SELECT nextval('seq9') + r.i * 0) % 2)::VARCHAR COLLATE NOCASE AS k, count(*) FROM range(3) r(i) GROUP BY ALL ORDER BY k;
+----
+0	2
+1	1
+
+query I
+SELECT currval('seq9');
+----
+6

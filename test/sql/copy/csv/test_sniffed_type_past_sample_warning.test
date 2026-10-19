@@ -41,7 +41,7 @@ COPY (SELECT CASE WHEN i < 2048 THEN '1,5' ELSE '+2,5' END AS d FROM range(2049)
 statement error
 SELECT * FROM read_csv('{TEST_DIR}/past_sample_decimal.csv', sample_size = 2048)
 ----
-<REGEX>:Invalid Input Error: Column "c0" of CSV file ".*past_sample_decimal\.csv" has values outside the sample that type detection does not accept as BIGINT, such as "1\.5"\. They are converted as CAST does\. To detect the type from more values, set sample_size=-1, or set the type of the column explicitly\..*
+<REGEX>:Invalid Input Error: Column "c0" of CSV file ".*past_sample_decimal\.csv" has values outside the sample that type detection does not accept as BIGINT, such as "1\.5"\. They are still read as BIGINT, which can change them\. To detect the type from more values, set sample_size=-1, or set the type of the column explicitly\..*
 
 statement error
 SELECT * FROM read_csv('{TEST_DIR}/past_sample_zero.csv', sample_size = 2048)
@@ -97,6 +97,15 @@ statement error
 SELECT * FROM read_csv('{TEST_DIR}/past_sample_comma.csv', delim = ';', decimal_separator = ',', sample_size = 2048)
 ----
 <REGEX>:.*does not accept as DOUBLE, such as "\+2,5".*
+
+# the warning shows the value as it is in the file
+statement ok
+COPY (SELECT CASE WHEN i < 2048 THEN '"1,000"' ELSE '"2,000.4"' END AS a, 'x' AS b FROM range(2049) t(i)) TO '{TEST_DIR}/past_sample_thousands.csv' (HEADER, QUOTE '');
+
+statement error
+SELECT a, b FROM read_csv('{TEST_DIR}/past_sample_thousands.csv', thousands = ',', sample_size = 2048)
+----
+<REGEX>:.*Column "a" of CSV file .*does not accept as BIGINT, such as "2,000\.4".*
 
 # ignore_errors keeps the value and warns
 statement error

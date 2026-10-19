@@ -1,5 +1,5 @@
 # name: test/sql/copy/csv/test_sniffed_type_past_sample.test
-# description: Values after the sample that the sniffer rejects for a sniffed type are converted as CAST does
+# description: Values after the sample that the sniffer rejects for a sniffed type are read as for a type given by the user
 # group: [csv]
 
 statement ok
@@ -72,6 +72,23 @@ query II
 SELECT count(*), max(c0) FROM read_csv('{TEST_DIR}/past_sample_decimal_text.csv', sample_size = 2048, ignore_errors = true)
 ----
 2049	2
+
+statement ok
+COPY (SELECT CASE WHEN i < 2048 THEN '1' WHEN i = 2048 THEN 'abc' ELSE '1.5' END AS c0 FROM range(2050) t(i)) TO '{TEST_DIR}/past_sample_text_decimal.csv' (HEADER, QUOTE '');
+
+query II
+SELECT count(*), max(c0) FROM read_csv('{TEST_DIR}/past_sample_text_decimal.csv', sample_size = 2048, ignore_errors = true)
+----
+2049	2
+
+# quoted values with a thousands separator, followed by another column
+statement ok
+COPY (SELECT CASE WHEN i < 2048 THEN '"1,000"' ELSE '"2,000.4"' END AS a, 'x' AS b FROM range(2049) t(i)) TO '{TEST_DIR}/past_sample_thousands.csv' (HEADER, QUOTE '');
+
+query IIII
+SELECT typeof(a), sum(a), max(a), count(b) FROM read_csv('{TEST_DIR}/past_sample_thousands.csv', thousands = ',', sample_size = 2048) GROUP BY ALL
+----
+BIGINT	2050000	2000	2049
 
 # a larger sample detects the type of the value
 query II

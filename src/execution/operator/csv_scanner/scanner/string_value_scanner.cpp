@@ -300,6 +300,7 @@ bool StringValueResult::AddValueToVector(const char *value_ptr, idx_t size, bool
 			}
 			if (is_null) {
 				bool empty = false;
+				bool converted = true;
 				if (chunk_col_id < state_machine.options.force_not_null.size()) {
 					empty = state_machine.options.force_not_null[chunk_col_id];
 				}
@@ -307,6 +308,7 @@ bool StringValueResult::AddValueToVector(const char *value_ptr, idx_t size, bool
 					if (parse_types[chunk_col_id].type_id != LogicalTypeId::VARCHAR) {
 						// If it is not a varchar, empty values are not accepted, we must error.
 						current_errors.Insert(CAST_ERROR, cur_col_id, chunk_col_id, last_position);
+						converted = false;
 					} else {
 						static_cast<string_t *>(vector_ptr[chunk_col_id])[number_of_rows] = string_t();
 					}
@@ -319,7 +321,7 @@ bool StringValueResult::AddValueToVector(const char *value_ptr, idx_t size, bool
 				}
 				cur_col_id++;
 				chunk_col_id++;
-				return true;
+				return converted;
 			}
 		}
 	}
@@ -536,7 +538,7 @@ bool StringValueResult::AddValueToVector(const char *value_ptr, idx_t size, bool
 	}
 	}
 	if (!success && strict) {
-		return AddValueAsCast(file_value_ptr, file_value_size, allocate);
+		return AddValueNonStrict(file_value_ptr, file_value_size, allocate);
 	}
 	if (!success) {
 		current_errors.Insert(CAST_ERROR, cur_col_id, chunk_col_id, last_position);
@@ -557,7 +559,7 @@ bool StringValueResult::AddValueToVector(const char *value_ptr, idx_t size, bool
 	return success;
 }
 
-bool StringValueResult::AddValueAsCast(const char *value_ptr, idx_t size, bool allocate) {
+bool StringValueResult::AddValueNonStrict(const char *value_ptr, idx_t size, bool allocate) {
 	auto &parse_type = parse_types[chunk_col_id];
 	const auto column_idx = cur_col_id;
 	parse_type.strict = false;
@@ -565,14 +567,12 @@ bool StringValueResult::AddValueAsCast(const char *value_ptr, idx_t size, bool a
 		parse_type.strict = true;
 		return false;
 	}
+	// The strict casts stay off for the rest of this column in this scanner
 	const string_t value(value_ptr, UnsafeNumericCast<uint32_t>(size));
-	if (try_row || CSVSniffer::IsAcceptedByTypeDetection(csv_file_scan->context, value, parse_type.type_id,
-	                                                     state_machine.options)) {
-		parse_type.strict = true;
-		return true;
+	if (!try_row && !CSVSniffer::IsAcceptedByTypeDetection(csv_file_scan->context, value, parse_type.type_id,
+	                                                       state_machine.options)) {
+		csv_file_scan->WarnSniffedTypeMismatch(column_idx, parse_type.type_id, value.GetString());
 	}
-	// The rest of this column is converted as CAST does
-	csv_file_scan->WarnSniffedTypeMismatch(column_idx, parse_type.type_id, value.GetString());
 	return true;
 }
 

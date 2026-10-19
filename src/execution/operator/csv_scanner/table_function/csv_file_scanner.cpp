@@ -170,9 +170,9 @@ void CSVFileScan::WarnSniffedTypeMismatch(idx_t column_idx, LogicalTypeId type, 
 	const auto column_name = column_idx < names.size() ? names[column_idx] : to_string(column_idx);
 	auto message = StringUtil::Format(
 	    "Column \"%s\" of CSV file \"%s\" has values outside the sample that type detection does not accept as %s, "
-	    "such as \"%s\". They are converted as CAST does. To detect the type from more values, set sample_size=-1, or "
-	    "set the type of the column explicitly.",
-	    column_name, file.path, LogicalTypeIdToString(type), value);
+	    "such as \"%s\". They are still read as %s, which can change them. To detect the type from more values, set "
+	    "sample_size=-1, or set the type of the column explicitly.",
+	    column_name, file.path, LogicalTypeIdToString(type), value, LogicalTypeIdToString(type));
 	FullLinePosition::SanitizeError(message);
 	DUCKDB_LOG_WARNING(context, message);
 }

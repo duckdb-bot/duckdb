@@ -1,0 +1,101 @@
+#include "catch.hpp"
+#include "test_helpers.hpp"
+#include "duckdb/parallel/task_scheduler.hpp"
+
+#include <chrono>
+#include <new>
+#include <thread>
+
+using namespace duckdb;
+
+#ifndef DUCKDB_NO_THREADS
+
+//! Blocks when it runs, and its first `failures` deschedules throw, like a worker that cannot allocate
+struct UndeschedulableTask : public Task {
+	explicit UndeschedulableTask(idx_t failures) : failures(failures) {
+	}
+
+	TaskExecutionResult Execute(TaskExecutionMode mode) override {
+		executions++;
+		return TaskExecutionResult::TASK_BLOCKED;
+	}
+
+	void Deschedule() override {
+		auto now = std::chrono::steady_clock::now();
+		auto attempt = ++attempts;
+		if (attempt == 1) {
+			first_attempt = now;
+		}
+		last_attempt = now;
+		if (attempt <= failures) {
+			throw std::bad_alloc();
+		}
+		descheduled = true;
+	}
+
+	const idx_t failures;
+	atomic<idx_t> executions {0};
+	atomic<idx_t> attempts {0};
+	atomic<bool> descheduled {false};
+	std::chrono::steady_clock::time_point first_attempt;
+	std::chrono::steady_clock::time_point last_attempt;
+};
+
+struct FinishingTask : public Task {
+	TaskExecutionResult Execute(TaskExecutionMode mode) override {
+		done = true;
+		return TaskExecutionResult::TASK_FINISHED;
+	}
+
+	atomic<bool> done {false};
+};
+
+template <class CONDITION>
+static bool WaitFor(CONDITION condition) {
+	auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+	while (!condition() && std::chrono::steady_clock::now() < deadline) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+	return condition();
+}
+
+TEST_CASE("A worker thread that cannot deschedule a blocked task tries again", "[scheduler]") {
+	DuckDB db;
+	Connection con(db);
+	// a single worker thread
+	REQUIRE_NO_FAIL(con.Query("SET threads=2"));
+	auto &scheduler = TaskScheduler::GetScheduler(*con.context);
+	auto producer = scheduler.CreateProducer();
+
+	auto blocked = make_shared_ptr<UndeschedulableTask>(3);
+	scheduler.ScheduleTask(*producer, blocked);
+	REQUIRE(WaitFor([&]() { return blocked->descheduled.load(); }));
+	// the task ran once, and the worker waited between its attempts
+	REQUIRE(blocked->executions == 1);
+	REQUIRE(blocked->attempts == 4);
+	REQUIRE(blocked->last_attempt - blocked->first_attempt >= std::chrono::milliseconds(3));
+
+	// the worker still runs tasks
+	auto next = make_shared_ptr<FinishingTask>();
+	scheduler.ScheduleTask(*producer, next);
+	REQUIRE(WaitFor([&]() { return next->done.load(); }));
+}
+
+TEST_CASE("A worker thread that stops first deschedules the blocked task it holds", "[scheduler]") {
+	DuckDB db;
+	Connection con(db);
+	// a single worker thread
+	REQUIRE_NO_FAIL(con.Query("SET threads=2"));
+	auto &scheduler = TaskScheduler::GetScheduler(*con.context);
+	auto producer = scheduler.CreateProducer();
+
+	auto blocked = make_shared_ptr<UndeschedulableTask>(20);
+	scheduler.ScheduleTask(*producer, blocked);
+	REQUIRE(WaitFor([&]() { return blocked->attempts.load() > 0; }));
+	// stopping the worker waits for it to exit
+	REQUIRE_NO_FAIL(con.Query("SET threads=1"));
+	REQUIRE(blocked->descheduled);
+	REQUIRE(blocked->executions == 1);
+}
+
+#endif

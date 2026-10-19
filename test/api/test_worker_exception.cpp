@@ -28,12 +28,17 @@ struct UndeschedulableTask : public Task {
 		}
 		last_attempt = now;
 		if (attempt <= failures) {
+			while (fail_after_stop && *fail_after_stop) {
+				std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			}
 			throw std::bad_alloc();
 		}
 		descheduled = true;
 	}
 
 	const idx_t failures;
+	//! The marker of the worker, a failing deschedule waits until it is false
+	optional_ptr<const atomic<bool>> fail_after_stop;
 	atomic<idx_t> executions {0};
 	atomic<idx_t> attempts {0};
 	atomic<bool> descheduled {false};
@@ -84,18 +89,24 @@ TEST_CASE("A worker thread that cannot deschedule a blocked task tries again", "
 TEST_CASE("A worker thread that stops first deschedules the blocked task it holds", "[scheduler]") {
 	DuckDB db;
 	Connection con(db);
-	// a single worker thread
-	REQUIRE_NO_FAIL(con.Query("SET threads=2"));
+	// no worker threads of the pool, the test runs its own
+	REQUIRE_NO_FAIL(con.Query("SET threads=1"));
 	auto &scheduler = TaskScheduler::GetScheduler(*con.context);
 	auto producer = scheduler.CreateProducer();
 
-	auto blocked = make_shared_ptr<UndeschedulableTask>(20);
+	atomic<bool> marker {true};
+	auto blocked = make_shared_ptr<UndeschedulableTask>(1);
+	blocked->fail_after_stop = marker;
 	scheduler.ScheduleTask(*producer, blocked);
-	REQUIRE(WaitFor([&]() { return blocked->attempts.load() > 0; }));
-	// stopping the worker waits for it to exit
-	REQUIRE_NO_FAIL(con.Query("SET threads=1"));
+	std::thread worker([&]() { scheduler.ExecuteForever(&marker); });
+	auto attempted = WaitFor([&]() { return blocked->attempts.load() > 0; });
+	// the deschedule throws once the worker is told to stop
+	marker = false;
+	worker.join();
+	REQUIRE(attempted);
 	REQUIRE(blocked->descheduled);
 	REQUIRE(blocked->executions == 1);
+	REQUIRE(blocked->attempts == 2);
 }
 
 #endif

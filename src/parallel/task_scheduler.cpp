@@ -123,6 +123,8 @@ struct TaskScheduler::WorkerTask {
 	shared_ptr<Task> task;
 	//! The queue the task came from
 	optional_ptr<TaskSchedulerQueue> queue;
+	//! Whether the worker tried to read the execution mode, the task runs in the default mode when that threw
+	bool read_mode = false;
 	//! Whether the task is running, and whether it ran with the given result
 	bool executing = false;
 	bool executed = false;
@@ -142,14 +144,17 @@ bool TaskScheduler::TryDequeueTask(TaskSchedulerQueue &queue, ConsumerToken &con
 	return false;
 }
 
-//! Runs the task unless it ran already, then reschedules or releases it. When this throws, the worker calls it again
-//! for the same task, and it continues where it stopped
+//! Runs the task unless it ran already, then reschedules or releases it. After an exception outside of the task
+//! itself, the worker calls this again for the same task, and it continues where it stopped
 void TaskScheduler::ProcessTask(const DBConfig &config, WorkerTask &worker_task) {
 	auto &task = worker_task.task;
 	if (!worker_task.executed) {
 		auto process_mode = TaskExecutionMode::PROCESS_ALL;
-		if (Settings::Get<SchedulerProcessPartialSetting>(config)) {
-			process_mode = TaskExecutionMode::PROCESS_PARTIAL;
+		if (!worker_task.read_mode) {
+			worker_task.read_mode = true;
+			if (Settings::Get<SchedulerProcessPartialSetting>(config)) {
+				process_mode = TaskExecutionMode::PROCESS_PARTIAL;
+			}
 		}
 		worker_task.executing = true;
 		worker_task.result = task->Execute(process_mode);
@@ -161,19 +166,15 @@ void TaskScheduler::ProcessTask(const DBConfig &config, WorkerTask &worker_task)
 	case TaskExecutionResult::TASK_FINISHED:
 	case TaskExecutionResult::TASK_ERROR:
 		break;
-	case TaskExecutionResult::TASK_NOT_FINISHED: {
+	case TaskExecutionResult::TASK_NOT_FINISHED:
 		// task is not finished - reschedule immediately
-		auto &queue = *worker_task.queue;
-		queue.Enqueue(*task->token, task);
-		SignalForTaskType(queue.GetPoolType(), 1);
+		ScheduleTask(*task->token, task, worker_task.queue->GetPoolType());
 		break;
-	}
 	case TaskExecutionResult::TASK_BLOCKED:
 		task->Deschedule();
 		break;
 	}
-	task.reset();
-	worker_task.executed = false;
+	worker_task = WorkerTask();
 }
 
 void TaskScheduler::ExecuteForever(atomic<bool> *marker, const TaskSchedulerType pool_type) {

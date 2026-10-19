@@ -1200,29 +1200,18 @@ unique_ptr<CatalogEntry> DuckTableEntry::DropNotNull(ClientContext &context, Dro
 	return make_uniq<DuckTableEntry>(catalog, schema, *bound_create_info, storage, triggers);
 }
 
-//! Replace the target of each cast by its bound type, where that type can be written as a type expression
-static void ResolveCastTypes(Binder &binder, ParsedExpression &expr) {
+//! Replace the target of each cast the binder bound by its bound type, where that has a type expression
+static void ResolveCastTypes(const AlterBinder &expr_binder, ParsedExpression &expr) {
 	ParsedExpressionIterator::EnumerateChildren(expr,
-	                                            [&](ParsedExpression &child) { ResolveCastTypes(binder, child); });
+	                                            [&](ParsedExpression &child) { ResolveCastTypes(expr_binder, child); });
 	if (expr.GetExpressionClass() != ExpressionClass::CAST) {
 		return;
 	}
 	auto &cast = expr.Cast<CastExpression>();
-	LogicalType type;
-	try {
-		type = binder.BindLogicalType(cast.TargetType());
-	} catch (std::exception &ex) {
-		ErrorData error(ex);
-		auto error_type = error.Type();
-		if (error_type != ExceptionType::CATALOG && error_type != ExceptionType::BINDER &&
-		    !Exception::IsExecutionError(error_type)) {
-			throw;
-		}
-		// A macro drops the arguments it does not use, so their casts were never bound
-		return;
-	}
-	if (TypeExpression::CanRepresent(type)) {
-		cast.SetTargetType(TypeExpression::FromLogicalType(type));
+	// A macro drops the arguments it does not use, so their casts are not bound
+	auto entry = expr_binder.bound_cast_types.find(cast.TargetType().ToString());
+	if (entry != expr_binder.bound_cast_types.end() && TypeExpression::CanRepresent(entry->second)) {
+		cast.SetTargetType(TypeExpression::FromLogicalType(entry->second));
 	}
 }
 
@@ -1251,7 +1240,7 @@ unique_ptr<CatalogEntry> DuckTableEntry::ChangeColumnType(ClientContext &context
 	auto expression = info.expression->Copy();
 	auto bound_expression = expr_binder.Bind(expression);
 	// The WAL stores the USING expression, and its replay binds it again without the search path of this session
-	ResolveCastTypes(*binder, *info.expression);
+	ResolveCastTypes(expr_binder, *info.expression);
 
 	// Infer the target_type from the USING expression, if not set explicitly.
 	if (info.target_type == LogicalType::UNKNOWN) {

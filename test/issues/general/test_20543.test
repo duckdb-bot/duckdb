@@ -97,10 +97,10 @@ statement ok
 CREATE MACRO keep_one(x) AS 1;
 
 statement ok
-CREATE TABLE t5 (p VARCHAR, q INTEGER, r INTEGER, s INTEGER);
+CREATE TABLE t5 (p VARCHAR, q INTEGER, r INTEGER, s INTEGER, u INTEGER);
 
 statement ok
-INSERT INTO t5 VALUES ('b', 5, 6, 7);
+INSERT INTO t5 VALUES ('b', 5, 6, 7, 8);
 
 statement ok
 ALTER TABLE t5 ALTER p SET TYPE USING ident(p::e);
@@ -113,6 +113,22 @@ ALTER TABLE t5 ALTER r SET TYPE INTEGER USING keep_one(r::DECIMAL(50, 2));
 
 statement ok
 ALTER TABLE t5 ALTER s SET TYPE INTEGER USING keep_one(s::ENUM('a', 'a'));
+
+# and does not load the extension of a type that only a dropped argument names
+statement ok
+SET autoinstall_known_extensions = false;
+
+statement ok
+SET autoload_known_extensions = true;
+
+statement ok
+ALTER TABLE t5 ALTER u SET TYPE INTEGER USING keep_one(u::INET);
+
+statement ok
+RESET autoload_known_extensions;
+
+statement ok
+RESET autoinstall_known_extensions;
 
 # user types nested in other types, in nested casts, TRY_CAST and CASE, and a type defined as another type
 statement ok
@@ -144,10 +160,10 @@ ALTER TABLE t6 ALTER g SET TYPE USING g::myint;
 
 restart
 
-query IIIII
-SELECT p, typeof(p), q, r, s FROM t5;
+query IIIIII
+SELECT p, typeof(p), q, r, s, u FROM t5;
 ----
-b	ENUM('a', 'b')	1	1	1
+b	ENUM('a', 'b')	1	1	1	1
 
 query IIIIII
 SELECT typeof(COLUMNS(*)) FROM t6;

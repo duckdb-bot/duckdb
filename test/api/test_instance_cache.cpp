@@ -422,7 +422,7 @@ TEST_CASE("Test reopening a database from several threads while it shuts down", 
 		auto db = instance_cache.GetOrCreateInstance(path, config, true);
 		weak_ptr<DatabaseInstance> instance = db->instance;
 
-		// every reopener finds the entry of the instance that is shutting down
+		// the slow catalog gives the reopeners time to look up the entry during shutdown
 		vector<shared_ptr<DuckDB>> reopened(REOPENER_COUNT);
 		vector<std::exception_ptr> reopen_errors(REOPENER_COUNT);
 		vector<std::thread> reopeners;

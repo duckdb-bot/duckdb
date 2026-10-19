@@ -221,6 +221,10 @@ CatalogPushdownResult RemotePushdownOptimizer::Merge(CatalogPushdownResult a, Ca
 }
 
 void RemotePushdownOptimizer::Rewrite(unique_ptr<SQLStatement> &statement) {
+	if (!statement->named_param_map.empty()) {
+		// the remote catalog would receive the statement without the values of its parameters
+		return;
+	}
 	CatalogPushdownResult result;
 	switch (statement->type) {
 	case StatementType::SELECT_STATEMENT:

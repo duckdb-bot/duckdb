@@ -34,6 +34,17 @@ SELECT median(ts), quantile_cont(ts, 0.0), quantile_cont(ts, 1.0) FROM (VALUES (
 ----
 -infinity	-infinity	2000-01-01 00:00:00
 
+# between equal infinities lies that infinity
+query II
+SELECT median(ts), quantile_cont(ts, 0.25) FROM (VALUES ('-infinity'::TIMESTAMP), ('-infinity'::TIMESTAMP), (TIMESTAMP '2000-01-01')) t(ts);
+----
+-infinity	-infinity
+
+query I
+SELECT median(ts) FROM (VALUES ('infinity'::TIMESTAMP), ('infinity'::TIMESTAMP)) t(ts);
+----
+infinity
+
 # a descending quantile, dates and timestamps with time zone
 query II
 SELECT percentile_cont(0.75) WITHIN GROUP (ORDER BY ts DESC), median(ts::DATE) FROM (VALUES ('infinity'::TIMESTAMP), (TIMESTAMP '2000-01-01')) t(ts);

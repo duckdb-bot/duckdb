@@ -93,7 +93,9 @@ StringValueResult::StringValueResult(CSVStates &states, CSVStateMachine &state_m
 			if (StringValueScanner::CanDirectlyCast(type, icu_loaded)) {
 				auto &projection_ids = csv_file_scan->projection_ids;
 				const auto column_idx = i < projection_ids.size() ? projection_ids[i].first : i;
-				const bool sniffed = !TypeIsSetByUser(state_machine.options, csv_file_scan->GetNames(), column_idx);
+				// A type in the cast map is the type the scan of this file is asked for
+				const bool sniffed = !TypeIsSetByUser(state_machine.options, csv_file_scan->GetNames(), column_idx) &&
+				                     csv_file_scan->cast_map.find(column_idx) == csv_file_scan->cast_map.end();
 				parse_types[i] = ParseTypeInfo(type, true, sniffed);
 				logical_types.emplace_back(type);
 			} else {

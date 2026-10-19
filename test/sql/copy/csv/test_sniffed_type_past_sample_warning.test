@@ -153,6 +153,15 @@ SELECT typeof(c0), sum(c0) FROM read_csv('{TEST_DIR}/promoted_tinyint.csv', auto
 ----
 SMALLINT	138
 
+# no warning when a cast in the query sets the type that a column is read as
+statement ok
+COPY (SELECT CASE WHEN i < 5 THEN '1' ELSE '1.5' END AS c0 FROM range(10) t(i)) TO '{TEST_DIR}/small_decimal.csv' (HEADER, QUOTE '');
+
+query I
+SELECT c0::BIGINT AS v FROM read_csv('{TEST_DIR}/small_decimal.csv') ORDER BY v DESC LIMIT 1
+----
+2
+
 # no warning for types given by the user
 query I
 SELECT max(c0) FROM read_csv('{TEST_DIR}/past_sample_decimal.csv', sample_size = 2048, types = {'c0': 'BIGINT'})

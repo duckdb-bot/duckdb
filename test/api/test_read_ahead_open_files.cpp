@@ -175,8 +175,7 @@ TEST_CASE("Read-ahead keeps the files open ahead of a scan within its window", "
 	REQUIRE_NO_FAIL(*result);
 	REQUIRE(CHECK_COLUMN(result, 0, {1000}));
 	REQUIRE(CHECK_COLUMN(result, 1, {499500}));
-	// the window of files opened ahead and files of queued jobs, the file of the job each thread decodes and of the
-	// next one it claims, and the file the bind opened
+	// the open window, two files per scan thread and the file the bind opened
 	const idx_t open_window = 2 * async_threads;
 	REQUIRE(counting_fs.MaxOpenFiles() <= open_window + 2 * threads + 1);
 #endif

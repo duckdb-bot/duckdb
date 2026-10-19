@@ -251,14 +251,14 @@ void FullLinePosition::SanitizeError(string &value) {
 	value = {char_array.begin(), char_array.end() - 1};
 }
 
-void StringValueResult::AddValueToVector(const char *value_ptr, idx_t size, bool allocate) {
+bool StringValueResult::AddValueToVector(const char *value_ptr, idx_t size, bool allocate) {
 	if (HandleTooManyColumnsError(value_ptr, size)) {
-		return;
+		return true;
 	}
 	if (cur_col_id >= number_of_columns) {
 		if (!state_machine.state_machine_options.strict_mode.GetValue()) {
 			used_unstrictness = true;
-			return;
+			return true;
 		}
 		bool error = true;
 		if (cur_col_id == number_of_columns && ((quoted && state_machine.options.allow_quoted_nulls) || !quoted)) {
@@ -275,13 +275,13 @@ void StringValueResult::AddValueToVector(const char *value_ptr, idx_t size, bool
 			current_errors.Insert(TOO_MANY_COLUMNS, cur_col_id, chunk_col_id, last_position);
 			cur_col_id++;
 		}
-		return;
+		return true;
 	}
 
 	if (projecting_columns) {
 		if (!projected_columns[cur_col_id]) {
 			cur_col_id++;
-			return;
+			return true;
 		}
 	}
 
@@ -311,16 +311,19 @@ void StringValueResult::AddValueToVector(const char *value_ptr, idx_t size, bool
 				} else {
 					if (chunk_col_id == number_of_columns) {
 						// We check for a weird case, where we ignore an extra value, if it is a null value
-						return;
+						return true;
 					}
 					validity_mask[chunk_col_id]->SetInvalid(static_cast<idx_t>(number_of_rows));
 				}
 				cur_col_id++;
 				chunk_col_id++;
-				return;
+				return true;
 			}
 		}
 	}
+	const auto file_value_ptr = value_ptr;
+	const auto file_value_size = size;
+	bool success = true;
 	string strip_thousands;
 	// Whether current type is logically numeric (BIGNUM is physically stored as VARCHAR instead of numerical value).
 	if ((LogicalType::IsNumeric(parse_types[chunk_col_id].type_id) ||
@@ -331,38 +334,7 @@ void StringValueResult::AddValueToVector(const char *value_ptr, idx_t size, bool
 		value_ptr = strip_thousands.c_str();
 		size = strip_thousands.size();
 	}
-	auto &parse_type = parse_types[chunk_col_id];
-	bool success = WriteValue(value_ptr, size, allocate, parse_type.strict);
-	if (!success && parse_type.strict) {
-		// A value the sniffer rejects is converted as CAST does, and so is the rest of this column
-		success = WriteValue(value_ptr, size, allocate, false);
-		if (success) {
-			parse_type.strict = false;
-			if (!try_row) {
-				csv_file_scan->WarnSniffedTypeMismatch(cur_col_id, parse_type.type_id, string(value_ptr, size));
-			}
-		}
-	}
-	if (!success) {
-		current_errors.Insert(CAST_ERROR, cur_col_id, chunk_col_id, last_position);
-		if (!state_machine.options.IgnoreErrors()) {
-			// We have to write the cast error message.
-			std::ostringstream error;
-			// Casting Error Message
-			error << "Could not convert string \"" << std::string(value_ptr, size) << "\" to \'"
-			      << LogicalTypeIdToString(parse_types[chunk_col_id].type_id) << "\'";
-			auto error_string = error.str();
-			FullLinePosition::SanitizeError(error_string);
-
-			current_errors.ModifyErrorMessageOfLastError(error_string);
-		}
-	}
-	cur_col_id++;
-	chunk_col_id++;
-}
-
-bool StringValueResult::WriteValue(const char *&value_ptr, idx_t &size, const bool allocate, const bool strict) {
-	bool success = true;
+	const bool strict = parse_types[chunk_col_id].strict;
 	switch (parse_types[chunk_col_id].type_id) {
 	case LogicalTypeId::BOOLEAN:
 		success =
@@ -561,7 +533,41 @@ bool StringValueResult::WriteValue(const char *&value_ptr, idx_t &size, const bo
 		break;
 	}
 	}
+	if (!success && strict) {
+		return AddValueAsCast(file_value_ptr, file_value_size, allocate);
+	}
+	if (!success) {
+		current_errors.Insert(CAST_ERROR, cur_col_id, chunk_col_id, last_position);
+		if (!state_machine.options.IgnoreErrors()) {
+			// We have to write the cast error message.
+			std::ostringstream error;
+			// Casting Error Message
+			error << "Could not convert string \"" << std::string(value_ptr, size) << "\" to \'"
+			      << LogicalTypeIdToString(parse_types[chunk_col_id].type_id) << "\'";
+			auto error_string = error.str();
+			FullLinePosition::SanitizeError(error_string);
+
+			current_errors.ModifyErrorMessageOfLastError(error_string);
+		}
+	}
+	cur_col_id++;
+	chunk_col_id++;
 	return success;
+}
+
+bool StringValueResult::AddValueAsCast(const char *value_ptr, idx_t size, bool allocate) {
+	auto &parse_type = parse_types[chunk_col_id];
+	const auto column_idx = cur_col_id;
+	// The rest of this column is converted as CAST does
+	parse_type.strict = false;
+	if (!AddValueToVector(value_ptr, size, allocate)) {
+		parse_type.strict = true;
+		return false;
+	}
+	if (!try_row) {
+		csv_file_scan->WarnSniffedTypeMismatch(column_idx, parse_type.type_id, string(value_ptr, size));
+	}
+	return true;
 }
 
 DataChunk &StringValueResult::ToChunk() {

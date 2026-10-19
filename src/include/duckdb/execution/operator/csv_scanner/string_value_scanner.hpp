@@ -288,9 +288,10 @@ public:
 	//! Force the throw of a Unicode error
 	void HandleUnicodeError(idx_t col_idx, LinePosition &error_position);
 	bool HandleTooManyColumnsError(const char *value_ptr, const idx_t size);
-	inline void AddValueToVector(const char *value_ptr, idx_t size, bool allocate = false);
-	//! Writes the value to its column, returns false if it cannot be converted to the type of the column
-	inline bool WriteValue(const char *&value_ptr, idx_t &size, bool allocate, bool strict);
+	//! Adds a value to its column, returns false if casting it to the type of the column fails
+	inline bool AddValueToVector(const char *value_ptr, idx_t size, bool allocate = false);
+	//! Adds a value the sniffer rejects as CAST converts it, and warns about it
+	bool AddValueAsCast(const char *value_ptr, idx_t size, bool allocate);
 	static inline void SetComment(StringValueResult &result, idx_t buffer_pos);
 	static inline bool UnsetComment(StringValueResult &result, idx_t buffer_pos);
 

@@ -164,9 +164,10 @@ void EvictionQueue::Purge() {
 	// get an estimate of the queue size as-of now
 	idx_t approx_q_size = q.size_approx();
 
-	// early-out, if the queue is not big enough to justify purging
+	// early-out, if the queue is not big enough to justify purging and holds few dead nodes
 	// - we want to keep the LRU characteristic alive
-	if (approx_q_size < purge_size * EARLY_OUT_MULTIPLIER) {
+	// - dead nodes keep the memory of their destroyed blocks' reference counts alive
+	if (approx_q_size < purge_size * EARLY_OUT_MULTIPLIER && total_dead_nodes < purge_size) {
 		return;
 	}
 

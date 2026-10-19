@@ -399,6 +399,26 @@ TEST_CASE("Test eviction queue: dead_nodes invariants hold under destroyable blo
 	}
 }
 
+TEST_CASE("Test eviction queue: dead nodes are purged from a queue below the purge minimum", "[storage][buffer_pool]") {
+	DuckDB db;
+	Connection con(db);
+	auto &context = *con.context;
+	auto &buffer_manager = BufferManager::GetBufferManager(context);
+	auto &buffer_pool = DatabaseInstance::GetDatabase(context).GetBufferPool();
+
+	// fewer nodes than a queue needs (32768) before it is purged for its size
+	constexpr idx_t churn_iterations = 20000;
+	for (idx_t i = 0; i < churn_iterations; ++i) {
+		// the pin enqueues the block when it is released, then the block is destroyed and its node is dead
+		auto pin = buffer_manager.Allocate(MemoryTag::EXTENSION, 64 * 1024, /*can_destroy=*/true);
+	}
+
+	// a dead node keeps the memory of its block's reference counts, so they cannot pile up
+	for (const auto &q : buffer_pool.GetEvictionQueueInfo()) {
+		REQUIRE(q.dead_nodes < 16384);
+	}
+}
+
 TEST_CASE("Test buffer pool eviction: SetLimit evicts object cache", "[storage][buffer_pool]") {
 	DuckDB db;
 	Connection con(db);

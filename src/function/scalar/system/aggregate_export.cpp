@@ -380,7 +380,9 @@ unique_ptr<ExportAggregateBindData> BindAggregateStateInternal(ClientContext &co
 		// a plain (non-ordered) aggregate state
 		// a state exported with another layout of this aggregate cannot be read with the current one
 		if (inner->aggr.HasGetStateTypeCallback()) {
-			auto layout = inner->aggr.GetStateType(inner->bind_data.get()).type;
+			// the stored type carries the AGGREGATE_STATE alias in place of the alias of the layout, e.g. JSON
+			auto layout =
+			    inner->aggr.GetStateType(inner->bind_data.get()).type.WithAlias(string()).WithExtensionInfo(nullptr);
 			auto stored_layout = arg_return_type.WithAlias(string()).WithExtensionInfo(nullptr);
 			if (stored_layout != layout) {
 				throw BinderException("Cannot use a state of aggregate \"%s\" with the layout %s, as its current state "

@@ -153,6 +153,26 @@ bool CSVSniffer::CanYouCastBignum(const char *value_ptr, idx_t value_size) {
 	}
 }
 
+bool CSVSniffer::IsAcceptedByTypeDetection(ClientContext &context, const string_t value, LogicalTypeId type,
+                                           const CSVReaderOptions &options) {
+	// A value accepted as a more specific candidate is kept when a later value makes the type less specific
+	auto &candidates = options.auto_type_candidates;
+	for (idx_t candidate_idx = candidates.size(); candidate_idx > 0; candidate_idx--) {
+		auto &candidate = candidates[candidate_idx - 1];
+		if (candidate.id() == LogicalTypeId::SQLNULL) {
+			continue;
+		}
+		if (CanYouCastIt(context, value, candidate, options.dialect_options, false, options.decimal_separator[0],
+		                 options.thousands_separator)) {
+			return true;
+		}
+		if (candidate.id() == type) {
+			return false;
+		}
+	}
+	return false;
+}
+
 bool CSVSniffer::CanYouCastIt(ClientContext &context, const string_t value, const LogicalType &type,
                               const DialectOptions &dialect_options, const bool is_null, const char decimal_separator,
                               const char thousands_separator) {

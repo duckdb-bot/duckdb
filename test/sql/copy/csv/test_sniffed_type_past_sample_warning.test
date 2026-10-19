@@ -128,6 +128,31 @@ SELECT typeof(c0), max(c0) FROM read_csv('{TEST_DIR}/tinyint_decimal.csv', auto_
 ----
 TINYINT	2
 
+# no warning for values that type detection accepted as a more specific type, before a later value made it less specific
+statement ok
+COPY (SELECT CASE WHEN i = 0 THEN '1 ' WHEN i < 10 THEN '1' ELSE '1.5' END AS c0 FROM range(30) t(i)) TO '{TEST_DIR}/promoted_first_chunk.csv' (HEADER, QUOTE '');
+
+query II
+SELECT typeof(c0), sum(c0) FROM read_csv('{TEST_DIR}/promoted_first_chunk.csv') GROUP BY ALL
+----
+DOUBLE	40.0
+
+statement ok
+COPY (SELECT CASE WHEN i < 1000 THEN '1 ' WHEN i < 3000 THEN '1' ELSE '1.5' END AS c0 FROM range(4096) t(i)) TO '{TEST_DIR}/promoted_second_chunk.csv' (HEADER, QUOTE '');
+
+query II
+SELECT typeof(c0), sum(c0) FROM read_csv('{TEST_DIR}/promoted_second_chunk.csv') GROUP BY ALL
+----
+DOUBLE	4644.0
+
+statement ok
+COPY (SELECT CASE WHEN i = 0 THEN '1.5' WHEN i = 1 THEN '128' ELSE '1' END AS c0 FROM range(10) t(i)) TO '{TEST_DIR}/promoted_tinyint.csv' (HEADER, QUOTE '');
+
+query II
+SELECT typeof(c0), sum(c0) FROM read_csv('{TEST_DIR}/promoted_tinyint.csv', auto_type_candidates = ['TINYINT', 'SMALLINT']) GROUP BY ALL
+----
+SMALLINT	138
+
 # no warning for types given by the user
 query I
 SELECT max(c0) FROM read_csv('{TEST_DIR}/past_sample_decimal.csv', sample_size = 2048, types = {'c0': 'BIGINT'})

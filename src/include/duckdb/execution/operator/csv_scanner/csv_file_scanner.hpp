@@ -55,10 +55,12 @@ public:
 
 	//! Initialize the actual names and types to be scanned from the file
 	void InitializeFileNamesTypes();
-	//! Warns once per column that a value outside the sample was converted although the sniffer rejects it
+	//! Warns once per column that a value outside the sample was converted although type detection rejects it
 	void WarnSniffedTypeMismatch(idx_t column_idx, LogicalTypeId type, const string &value);
 
 public:
+	//! The context the file is read in
+	ClientContext &context;
 	//! The file that is read
 	OpenFileInfo file;
 	//! The index of this file within the scan it is part of - it identifies the file in the rejects tables
@@ -105,7 +107,6 @@ public:
 	atomic<idx_t> finished_tasks {0};
 
 private:
-	ClientContext &context;
 	vector<string> names;
 	vector<LogicalType> types;
 	//! The columns a sniffed type mismatch was warned about

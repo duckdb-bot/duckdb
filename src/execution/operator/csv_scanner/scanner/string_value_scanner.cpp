@@ -558,15 +558,19 @@ bool StringValueResult::AddValueToVector(const char *value_ptr, idx_t size, bool
 bool StringValueResult::AddValueAsCast(const char *value_ptr, idx_t size, bool allocate) {
 	auto &parse_type = parse_types[chunk_col_id];
 	const auto column_idx = cur_col_id;
-	// The rest of this column is converted as CAST does
 	parse_type.strict = false;
 	if (!AddValueToVector(value_ptr, size, allocate)) {
 		parse_type.strict = true;
 		return false;
 	}
-	if (!try_row) {
-		csv_file_scan->WarnSniffedTypeMismatch(column_idx, parse_type.type_id, string(value_ptr, size));
+	const string_t value(value_ptr, UnsafeNumericCast<uint32_t>(size));
+	if (try_row || CSVSniffer::IsAcceptedByTypeDetection(csv_file_scan->context, value, parse_type.type_id,
+	                                                     state_machine.options)) {
+		parse_type.strict = true;
+		return true;
 	}
+	// The rest of this column is converted as CAST does
+	csv_file_scan->WarnSniffedTypeMismatch(column_idx, parse_type.type_id, value.GetString());
 	return true;
 }
 

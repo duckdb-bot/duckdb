@@ -1,0 +1,62 @@
+# name: test/sql/parser/nested_statement_backtracking.test
+# description: Nested CTEs and parentheses parse in linear time
+# group: [parser]
+
+statement ok
+CREATE TABLE t(x INTEGER);
+
+statement ok
+INSERT INTO t VALUES (1), (2);
+
+# 32 levels of CTEs, each body tried as a SELECT and then as each data-modifying statement, all of which start with
+# the nested WITH clause
+statement error
+WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t
+----
+<REGEX>:Binder Error.*data-modifying statement must be at the top level.*
+
+statement error
+WITH a0 AS (WITH a1 AS (WITH a2 AS (WITH a3 AS (WITH a4 AS (WITH a5 AS (WITH a6 AS (WITH a7 AS (WITH a8 AS (WITH a9 AS (WITH a10 AS (WITH a11 AS (WITH a12 AS (WITH a13 AS (WITH a14 AS (WITH a15 AS (WITH a16 AS (WITH a17 AS (WITH a18 AS (WITH a19 AS (WITH a20 AS (WITH a21 AS (WITH a22 AS (WITH a23 AS (WITH a24 AS (WITH a25 AS (WITH a26 AS (WITH a27 AS (WITH a28 AS (WITH a29 AS (WITH a30 AS (WITH a31 AS (DELETE FROM t WHERE x = 1) INSERT INTO t VALUES (1)) UPDATE t SET x = 2) DELETE FROM t) INSERT INTO t VALUES (1)) UPDATE t SET x = 2) DELETE FROM t) INSERT INTO t VALUES (1)) UPDATE t SET x = 2) DELETE FROM t) INSERT INTO t VALUES (1)) UPDATE t SET x = 2) DELETE FROM t) INSERT INTO t VALUES (1)) UPDATE t SET x = 2) DELETE FROM t) INSERT INTO t VALUES (1)) UPDATE t SET x = 2) DELETE FROM t) INSERT INTO t VALUES (1)) UPDATE t SET x = 2) DELETE FROM t) INSERT INTO t VALUES (1)) UPDATE t SET x = 2) DELETE FROM t) INSERT INTO t VALUES (1)) UPDATE t SET x = 2) DELETE FROM t) INSERT INTO t VALUES (1)) UPDATE t SET x = 2) DELETE FROM t) INSERT INTO t VALUES (1)) UPDATE t SET x = 2
+----
+<REGEX>:Binder Error.*data-modifying statement must be at the top level.*
+
+statement error
+WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (
+----
+<REGEX>:Parser Error.*syntax error.*
+
+statement error
+WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM
+----
+<REGEX>:Parser Error.*syntax error.*
+
+query I
+WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (SELECT 42 AS x) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a
+----
+74
+
+# 4096 parentheses in FROM, each tried as a subquery before it is tried as a parenthesized table reference
+query I
+SELECT count(*) FROM query('SELECT * FROM ' || repeat('(', 4096) || 't' || repeat(')', 4096))
+----
+2
+
+query I
+SELECT count(*) FROM query('SELECT * FROM ' || repeat('(', 4096) || '(SELECT * FROM t) sq' || repeat(')', 4096))
+----
+2
+
+statement error
+SELECT * FROM query('SELECT * FROM ' || repeat('(', 4096))
+----
+<REGEX>:Parser Error.*syntax error.*
+
+statement error
+SELECT * FROM query('SELECT ' || repeat('(', 4096))
+----
+<REGEX>:Parser Error.*syntax error.*
+
+statement error
+SELECT * FROM query('SELECT 1 WHERE x IN ' || repeat('(', 4096))
+----
+<REGEX>:Parser Error.*syntax error.*

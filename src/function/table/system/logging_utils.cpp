@@ -5,6 +5,7 @@
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/logging/log_manager.hpp"
 #include "duckdb/logging/logging.hpp"
+#include "duckdb/logging/log_storage.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/main/settings.hpp"
@@ -136,6 +137,13 @@ static unique_ptr<FunctionData> BindEnableLogging(ClientContext &context, TableF
 				throw InvalidInputException(
 				    "Cannot enable 'file' log storage without a valid path. Provide one via storage_path, "
 				    "e.g. CALL enable_logging(storage='file', storage_path='mylog.csv');");
+			}
+			auto normalize_entry = result->storage_config.find("normalize");
+			if (normalize_entry != result->storage_config.end()) {
+				if (normalize_entry->second.IsNull()) {
+					throw InvalidConfigurationException("The normalize option of 'file' log storage can not be NULL");
+				}
+				FileLogStorage::VerifyPath(path_entry->second.ToString(), normalize_entry->second.GetValue<bool>());
 			}
 		}
 	}

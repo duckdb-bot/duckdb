@@ -308,15 +308,20 @@ TEST_CASE("Test the instance cache hands out a database that is still open after
 	auto path = TestCreatePath("instance_cache_in_use.db");
 
 	SECTION("A connection keeps the database open") {
-		auto db = instance_cache.GetOrCreateInstance(path, config, true);
+		idx_t create_count = 0;
+		auto on_create = [&](DuckDB &) {
+			create_count++;
+		};
+		auto db = instance_cache.GetOrCreateInstance(path, config, true, on_create);
 		auto con = make_uniq<Connection>(*db);
 		REQUIRE_NO_FAIL(con->Query("CREATE TABLE t AS SELECT 42 AS i"));
 		weak_ptr<DatabaseInstance> instance = db->instance;
 		db.reset();
 		REQUIRE(instance_cache.GetInstance(path, config)->instance == instance.lock());
 
-		auto reopened = instance_cache.GetOrCreateInstance(path, config, true);
+		auto reopened = instance_cache.GetOrCreateInstance(path, config, true, on_create);
 		REQUIRE(reopened->instance == instance.lock());
+		REQUIRE(create_count == 1);
 		auto result = Connection(*reopened).Query("SELECT i FROM t");
 		REQUIRE(CHECK_COLUMN(result, 0, {42}));
 		result.reset();
@@ -366,12 +371,20 @@ TEST_CASE("Test the instance cache hands out a database that is still open after
 			auto con = make_uniq<Connection>(*db);
 			db.reset();
 			shared_ptr<DuckDB> reopened;
+			std::exception_ptr reopen_error;
 			std::thread reopener([&]() {
-				DBConfig reopen_config;
-				reopened = instance_cache.GetOrCreateInstance(path, reopen_config, true);
+				try {
+					DBConfig reopen_config;
+					reopened = instance_cache.GetOrCreateInstance(path, reopen_config, true);
+				} catch (...) {
+					reopen_error = std::current_exception();
+				}
 			});
 			con.reset();
 			reopener.join();
+			if (reopen_error) {
+				std::rethrow_exception(reopen_error);
+			}
 			REQUIRE_NO_FAIL(Connection(*reopened).Query("SELECT 42"));
 		}
 	}

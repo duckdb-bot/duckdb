@@ -22,7 +22,7 @@ struct DatabaseCacheEntry {
 	explicit DatabaseCacheEntry(const shared_ptr<DatabaseInstance> &instance);
 	~DatabaseCacheEntry();
 
-	//! Connections and results keep the instance alive after its last handle is closed
+	//! Connections and unfinished results keep the instance alive after its last handle is closed
 	weak_ptr<DatabaseInstance> instance;
 	mutex update_database_mutex;
 };

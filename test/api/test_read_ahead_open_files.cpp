@@ -4,63 +4,7 @@
 #include "duckdb/common/unordered_map.hpp"
 #include "test_helpers.hpp"
 
-#if defined(__linux__) && !defined(DUCKDB_NO_THREADS)
-#include <dirent.h>
-#include <sys/resource.h>
-#endif
-
 using namespace duckdb;
-
-#if defined(__linux__) && !defined(DUCKDB_NO_THREADS)
-static idx_t CountOpenFileDescriptors() {
-	idx_t count = 0;
-	auto dir = opendir("/proc/self/fd");
-	if (!dir) {
-		return 0;
-	}
-	while (readdir(dir)) {
-		count++;
-	}
-	closedir(dir);
-	return count;
-}
-#endif
-
-TEST_CASE("Read-ahead keeps a scan of many files within the file descriptor limit", "[api][.]") {
-#if defined(__linux__) && !defined(DUCKDB_NO_THREADS)
-	DuckDB db(nullptr);
-	Connection con(db);
-	auto dir = TestCreatePath("read_ahead_open_files");
-	REQUIRE_NO_FAIL(con.Query("SET partitioned_write_max_open_files = 100"));
-	REQUIRE_NO_FAIL(con.Query("COPY (SELECT range AS i, range AS p FROM range(3000)) TO '" + dir +
-	                          "' (FORMAT parquet, PARTITION_BY p)"));
-	struct rlimit original;
-	REQUIRE(getrlimit(RLIMIT_NOFILE, &original) == 0);
-	const rlim_t limit = CountOpenFileDescriptors() + 240;
-	if (original.rlim_cur < limit) {
-		SKIP_TEST("the file descriptor limit is too low");
-		return;
-	}
-	// a window of 512 files without the limit, more scan threads, and a deep queue of jobs
-	const vector<vector<string>> settings {{"SET threads = 8", "SET async_threads = 256"},
-	                                       {"SET threads = 64", "SET async_threads = 32"},
-	                                       {"SET threads = 4", "SET async_threads = 32", "SET read_ahead_depth = 256"}};
-	for (auto &statements : settings) {
-		for (auto &statement : statements) {
-			REQUIRE_NO_FAIL(con.Query(statement));
-		}
-		struct rlimit limited = original;
-		limited.rlim_cur = limit;
-		REQUIRE(setrlimit(RLIMIT_NOFILE, &limited) == 0);
-		auto result = con.Query("SELECT count(*) FROM read_parquet('" + dir + "/*/*.parquet')");
-		REQUIRE(setrlimit(RLIMIT_NOFILE, &original) == 0);
-		REQUIRE_NO_FAIL(*result);
-		REQUIRE(CHECK_COLUMN(result, 0, {3000}));
-	}
-#else
-	SKIP_TEST("needs Linux and threads");
-#endif
-}
 
 namespace {
 

@@ -589,12 +589,21 @@ void Executor::PushError(ErrorData exception) {
 
 void Executor::PushTaskError(const std::exception &ex) {
 	error_manager.PushTaskError([&]() { return ErrorData(ex); });
-	InterruptPipelines();
+	TryInterruptPipelines();
 }
 
 void Executor::PushTaskError(const char *message) {
 	error_manager.PushTaskError([&]() { return ErrorData(message); });
-	InterruptPipelines();
+	TryInterruptPipelines();
+}
+
+void Executor::TryInterruptPipelines() {
+	try {
+		InterruptPipelines();
+	} catch (...) { // NOLINT
+		// rescheduling blocked tasks can fail when memory runs out, and the error is recorded, so the main thread
+		// sees it and cancels the remaining tasks
+	}
 }
 
 void Executor::InterruptPipelines() {

@@ -164,6 +164,8 @@ private:
 	bool NextExecutor();
 	//! Interrupt the execution of the pipelines of this executor after an error
 	void InterruptPipelines();
+	//! Interrupt them from a task, where an exception would end the process
+	void TryInterruptPipelines();
 	//! The state to report when this thread has no task to run
 	QueryResultState IdleState();
 	//! Cancel all tasks and throw the recorded error

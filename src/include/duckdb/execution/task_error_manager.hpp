@@ -29,12 +29,13 @@ public:
 	}
 
 	//! Push the error of a task that create_error returns. An exception that leaves a worker thread ends the process,
-	//! so when memory runs out while creating or recording the error, OutOfMemoryError takes its place
+	//! so when creating or recording the error fails, which happens when memory runs out, OutOfMemoryError takes its
+	//! place
 	template <class CREATE_ERROR>
 	void PushTaskError(CREATE_ERROR &&create_error) {
 		try {
 			PushError(create_error());
-		} catch (std::bad_alloc &) {
+		} catch (...) {
 			PushOutOfMemoryError();
 		}
 	}

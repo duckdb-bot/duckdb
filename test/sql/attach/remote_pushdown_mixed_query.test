@@ -16,6 +16,9 @@ statement ok
 CREATE TABLE struct_tbl AS SELECT {'k': 7} AS obj;
 
 statement ok
+CREATE TABLE nested_tbl AS SELECT {'obj': {'k': 8}} AS r;
+
+statement ok
 ATTACH 'quack:127.0.0.1:9619' AS r (TOKEN 'test_token');
 
 statement ok
@@ -300,6 +303,25 @@ query II
 SELECT * FROM (SELECT r.obj.k FROM r.struct_tbl r, (VALUES (99)) obj(k)) s, local_tbl;
 ----
 7	1
+
+query I
+SELECT v FROM (SELECT r.obj.k AS v FROM r.nested_tbl, (VALUES (99)) obj(k)) s, local_tbl;
+----
+8
+
+# a volatile function can depend on a local object
+statement ok
+CREATE TEMP SEQUENCE local_seq START 10;
+
+query I
+SELECT count(DISTINCT n) FROM (SELECT nextval('temp.local_seq') AS n FROM r.tbl) s, local_tbl;
+----
+5
+
+query I
+WITH a AS (SELECT nextval('temp.local_seq') AS n FROM r.tbl) SELECT min(n) FROM a, local_tbl;
+----
+15
 
 query I
 SELECT renamed FROM (SELECT * RENAME (r.main.tbl.id AS renamed) FROM r.tbl) s, local_tbl ORDER BY 1;

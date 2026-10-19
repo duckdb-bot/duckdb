@@ -1198,11 +1198,19 @@ ExpressionPushdownResult RemotePushdownOptimizer::AnalyzeExpression(const Functi
 	case CatalogType::SCALAR_FUNCTION_ENTRY: {
 		// at least one overload must be non-volatile (the selected overload is verified after binding)
 		auto &scalar_entry = entry->Cast<ScalarFunctionCatalogEntry>();
+		bool all_volatile = true;
 		for (auto &overload : scalar_entry.functions.functions) {
-			if (foldable_modifiers && overload->GetStability() != FunctionStability::VOLATILE) {
-				state.foldability = ExpressionFoldability::FOLDABLE;
+			if (overload->GetStability() != FunctionStability::VOLATILE) {
+				all_volatile = false;
+				if (foldable_modifiers) {
+					state.foldability = ExpressionFoldability::FOLDABLE;
+				}
 				break;
 			}
+		}
+		if (all_volatile) {
+			// a volatile function such as nextval can depend on local objects
+			MarkStaysWithParent();
 		}
 		break;
 	}
@@ -1251,8 +1259,9 @@ ExpressionPushdownResult RemotePushdownOptimizer::AnalyzeExpression(const Column
 	ExpressionPushdownResult state;
 	MarkOuterColumnReference();
 	auto &column_names = col_ref.ColumnNames();
-	if (column_names.size() == 2 && IsRemoteCatalogName(column_names[0])) {
-		// "catalog.table" could be a whole row, which stripping the catalog does not rewrite
+	if (column_names.size() >= 2 && IsRemoteCatalogName(column_names[0])) {
+		// the first name could also be a struct column, a lambda parameter or a whole row of the catalog's table,
+		// which stripping the catalog would get wrong
 		MarkStaysWithParent();
 	}
 	if (RefersToLocalTable(col_ref)) {

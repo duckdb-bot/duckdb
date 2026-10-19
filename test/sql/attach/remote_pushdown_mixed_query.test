@@ -202,5 +202,44 @@ WITH a AS (SELECT count(*) AS n FROM r.tbl) SELECT x1.n, x2.n FROM a x1, a x2, l
 ----
 5	5
 
+# a subquery in an expression sees the select list aliases of the enclosing query
+query II
+SELECT 42 AS x, (SELECT n FROM (SELECT x AS n FROM r.tbl LIMIT 1) s, local_tbl) AS y;
+----
+42	42
+
+# the outer query refers to the columns of a pushed subquery by their local names
+query I
+SELECT "(r.tbl.id + 1)" FROM (SELECT r.tbl.id + 1 FROM r.tbl) s, local_tbl ORDER BY 1;
+----
+1
+2
+3
+10
+11
+
+query I
+SELECT "(r.tbl.id + 1)" FROM (SELECT r.tbl.id + 1 FROM r.tbl UNION ALL SELECT x FROM local_tbl) ORDER BY 1;
+----
+1
+1
+2
+3
+10
+11
+
+# a cast to a type of a local catalog keeps the subquery local
+statement ok
+CREATE TEMPORARY TYPE local_enum AS ENUM ('0', '1', '2', '9', '10');
+
+query I
+SELECT v FROM (SELECT id::VARCHAR::temp.local_enum AS v FROM r.tbl) s, local_tbl ORDER BY v;
+----
+0
+1
+2
+9
+10
+
 statement ok
 CALL quack_stop('quack:127.0.0.1:9619');

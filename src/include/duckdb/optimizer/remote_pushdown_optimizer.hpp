@@ -20,6 +20,7 @@ class Binder;
 class Catalog;
 class CatalogEntry;
 class ExpressionListRef;
+class CastExpression;
 class FunctionExpression;
 class JoinRef;
 class SubqueryRef;
@@ -173,6 +174,7 @@ private:
 	ExpressionPushdownResult AnalyzeExpression(const FunctionExpression &expr);
 	ExpressionPushdownResult AnalyzeExpression(const WindowExpression &expr);
 	ExpressionPushdownResult AnalyzeExpression(const TypeExpression &expr);
+	ExpressionPushdownResult AnalyzeExpression(const CastExpression &expr);
 	ExpressionPushdownResult AnalyzeExpression(const ColumnRefExpression &expr);
 	//! Bind and evaluate an expression locally, replacing it with the resulting constant
 	ConstantFoldResult TryConstantFold(unique_ptr<ParsedExpression> &expr);
@@ -220,8 +222,8 @@ private:
 	bool refers_to_parent_cte = false;
 	//! Whether the FROM clause of this scope has tables, which later subqueries can refer to (LATERAL)
 	bool scope_has_tables = false;
-	//! Whether tables of a parent scope or of a preceding FROM entry are visible here
-	bool outer_scope_has_tables = false;
+	//! Whether names of a parent scope or of a preceding FROM entry are visible here
+	bool outer_scope_has_names = false;
 	//! Whether a column of this scope might refer to such a table, so that it cannot be pushed on its own
 	bool may_refer_to_outer_column = false;
 	//! Whether this scope contains parameters or data-modifying statements, which run only as part of the statement

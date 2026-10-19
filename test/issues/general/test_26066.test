@@ -1,5 +1,5 @@
 # name: test/issues/general/test_26066.test
-# description: Rows of an INSERT with ON CONFLICT whose conflict key holds a NULL conflict with no row, so all are inserted
+# description: Rows of an INSERT with ON CONFLICT whose conflict key holds a NULL never conflict on that key
 # group: [general]
 
 statement ok
@@ -80,7 +80,7 @@ SELECT count(*), count(val) FROM t;
 ----
 15	1
 
-# a composite key with a NULL part, next to duplicates without NULLs, and a key on two constraints
+# a composite key with a NULL part, next to duplicates without NULLs, and two unique constraints
 statement ok
 CREATE TABLE c (a INTEGER, b INTEGER, d INTEGER UNIQUE, UNIQUE (a, b));
 
@@ -108,3 +108,29 @@ SELECT a, b, count(*) FROM c2 GROUP BY ALL ORDER BY ALL;
 3	4	1
 NULL	1	1
 NULL	2	2
+
+# a user macro named uuid does not change which rows are kept
+statement ok
+CREATE MACRO uuid() AS 42;
+
+statement ok
+CREATE TABLE u (id INTEGER, val INTEGER UNIQUE);
+
+statement ok
+INSERT INTO u VALUES (1, NULL), (2, NULL), (3, 4), (4, 4) ON CONFLICT DO NOTHING;
+
+query II
+SELECT count(*), count(val) FROM u;
+----
+3	1
+
+statement ok
+CREATE TEMP MACRO uuid() AS 43;
+
+statement ok
+INSERT INTO u VALUES (5, NULL), (6, NULL) ON CONFLICT DO NOTHING;
+
+query II
+SELECT count(*), count(val) FROM u;
+----
+5	1

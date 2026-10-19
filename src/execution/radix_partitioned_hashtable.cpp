@@ -546,6 +546,9 @@ bool ShouldExportStates(RadixHTGlobalSinkState &gstate, RadixHTLocalSinkState &l
 
 void UpdateSinkReservation(ClientContext &context, RadixHTGlobalSinkState &gstate, GroupedAggregateHashTable &ht,
                            idx_t total_size) {
+	// the aggregate states alone may use only part of the thread limit (StatePressureExceeded)
+	const auto aggregate_allocator_size = ht.GetAggregateAllocator()->AllocationSize();
+	total_size = MaxValue(total_size, aggregate_allocator_size * RadixHTConfig::AGGREGATE_STATE_PRESSURE_DIVISOR);
 	if (total_size <= gstate.GetThreadLimit() || gstate.external) {
 		return;
 	}
@@ -554,7 +557,6 @@ void UpdateSinkReservation(ClientContext &context, RadixHTGlobalSinkState &gstat
 		return;
 	}
 	auto &temporary_memory_state = *gstate.temporary_memory_state;
-	const auto aggregate_allocator_size = ht.GetAggregateAllocator()->AllocationSize();
 	// Account for tuple metadata and the headroom deducted by GetThreadLimit.
 	const auto minimum_reservation =
 	    (gstate.minimum_reservation + gstate.number_of_threads * gstate.block_alloc_size) / 8 * 10;

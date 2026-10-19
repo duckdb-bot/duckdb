@@ -1,0 +1,27 @@
+# name: benchmark/micro/aggregate/first_variant_many_groups.benchmark
+# description: first() of a VARIANT over 100,000 groups, far below the memory limit
+# group: [aggregate]
+
+name First VARIANT many groups
+group aggregate
+
+cache first_nested_many_groups.duckdb
+
+load
+CREATE TABLE t AS
+SELECT s, s::VARIANT AS v
+FROM (
+    SELECT struct_pack(f1 := i, f2 := i % 7, f3 := 'x' || (i % 13), f4 := i::DOUBLE / 7,
+                       f5 := [i, i % 3], f6 := struct_pack(a := i % 5, b := 'y'),
+                       f7 := md5(i::VARCHAR)::UUID, f8 := DATE '2020-01-01' + (i % 3650)::INTEGER) AS s
+    FROM range(1000000) r(i)
+);
+
+init
+SET threads = 4;
+
+run
+SELECT count(*) FROM (SELECT first(v) AS f FROM t GROUP BY s.f1 % 100000) WHERE f IS NOT NULL
+
+result I
+100000

@@ -931,7 +931,7 @@ bool JSONReader::CopyRemainderFromPreviousBuffer(JSONReaderScanState &scan_state
 	if (*prev_newline == '\n') {
 		prev_object_offset = NumericCast<idx_t>(prev_newline - prev_buffer_data) + 1;
 	} else {
-		// The previous block has no newline, so the line starts in what was copied into it from the block before
+		// The previous block has no newline, so wait until it has copied its own remainder
 		while ((prev_object_offset = previous_buffer_handle->remainder_start.load()) == DConstants::INVALID_INDEX) {
 			if (HasThrown()) {
 				return false;

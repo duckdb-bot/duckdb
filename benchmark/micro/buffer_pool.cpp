@@ -79,26 +79,45 @@ string BenchmarkInfo() override {
 FINISH_BENCHMARK(ManagedBufferChurn)
 
 // One thread pins and unpins the same few blocks over and over, so the eviction queue fills with stale nodes
+struct ManagedBufferRepinState : public DuckDBBenchmarkState {
+	ManagedBufferRepinState() : DuckDBBenchmarkState(string()) {
+	}
+	//! Destroyed before the database
+	vector<shared_ptr<BlockHandle>> blocks;
+};
+
 DUCKDB_BENCHMARK(ManagedBufferRepin, "[micro]")
 static constexpr idx_t BLOCK_COUNT = 64;
 static constexpr idx_t ROUND_COUNT = 2000;
-vector<shared_ptr<BlockHandle>> blocks;
-void Load(DuckDBBenchmarkState *state) override {
-	auto &buffer_manager = BufferManager::GetBufferManager(*state->conn.context);
+idx_t invalid_pins = 0;
+unique_ptr<DuckDBBenchmarkState> CreateBenchmarkState() override {
+	return make_uniq<ManagedBufferRepinState>();
+}
+void Load(DuckDBBenchmarkState *state_p) override {
+	auto &state = static_cast<ManagedBufferRepinState &>(*state_p);
+	auto &buffer_manager = BufferManager::GetBufferManager(*state.conn.context);
 	for (idx_t i = 0; i < BLOCK_COUNT; i++) {
 		auto pin = buffer_manager.Allocate(MemoryTag::EXTENSION, 64 * 1024, true);
-		blocks.push_back(pin.GetBlockHandle());
+		state.blocks.push_back(pin.GetBlockHandle());
 	}
 }
-void RunBenchmark(DuckDBBenchmarkState *state) override {
-	auto &buffer_manager = BufferManager::GetBufferManager(*state->conn.context);
+void RunBenchmark(DuckDBBenchmarkState *state_p) override {
+	auto &state = static_cast<ManagedBufferRepinState &>(*state_p);
+	auto &buffer_manager = BufferManager::GetBufferManager(*state.conn.context);
+	invalid_pins = 0;
 	for (idx_t round = 0; round < ROUND_COUNT; round++) {
-		for (auto &block : blocks) {
+		for (auto &block : state.blocks) {
 			auto pin = buffer_manager.Pin(block);
+			if (!pin.IsValid()) {
+				invalid_pins++;
+			}
 		}
 	}
 }
 string VerifyResult(QueryResult *result) override {
+	if (invalid_pins > 0) {
+		return to_string(invalid_pins) + " pins of evicted blocks";
+	}
 	return string();
 }
 string BenchmarkInfo() override {

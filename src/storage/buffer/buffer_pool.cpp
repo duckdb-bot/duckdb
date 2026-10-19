@@ -252,7 +252,8 @@ void EvictionQueue::PurgeIteration(const idx_t purge_size) {
 		}
 		q.enqueue_bulk(purge_producer_token, std::make_move_iterator(purge_nodes.begin()), alive_count);
 	}
-	// the moves emptied the re-enqueued slots, clear the rest so that purge_nodes keeps no control blocks alive
+	// the enqueue moved the alive nodes out, but the compaction above copied them (weak_ptr has no move assignment)
+	// so clear the other slots, purge_nodes must keep no control blocks alive
 	for (idx_t i = alive_count; i < actually_dequeued; i++) {
 		purge_nodes[i].memory_p.reset();
 	}

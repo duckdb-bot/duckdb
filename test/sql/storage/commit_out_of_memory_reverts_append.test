@@ -21,21 +21,36 @@ statement ok
 SET temp_directory = ''
 
 statement ok
+CREATE MACRO wide_rows(first_row, last_row, width) AS TABLE
+SELECT i, repeat('x', width) || i AS s,
+       CASE WHEN i % 3 = 0 THEN NULL WHEN i % 3 = 1 THEN [] ELSE [i, NULL, i] END AS l,
+       [i, i + 1]::INTEGER[2] AS a,
+       {'a': i, 'b': repeat('y', width // 10)} AS st
+FROM range(first_row, last_row) r(i)
+
+# the next append to this table starts a new row group
+statement ok
+CREATE TABLE fresh (i INTEGER, s VARCHAR, l INTEGER[], a INTEGER[2], st STRUCT(a INTEGER, b VARCHAR))
+
+statement ok
+INSERT INTO fresh FROM wide_rows(0, 1, 1)
+
+statement ok
+CHECKPOINT
+
+statement ok
 CREATE TABLE t (i BIGINT PRIMARY KEY, s VARCHAR)
 
 statement ok
 INSERT INTO t VALUES (0, 'x')
 
 statement ok
-CREATE TABLE wide (i INTEGER, s VARCHAR, l INTEGER[], st STRUCT(a INTEGER, b VARCHAR))
+CREATE TABLE wide (i INTEGER, s VARCHAR, l INTEGER[], a INTEGER[2], st STRUCT(a INTEGER, b VARCHAR))
 
 statement ok
-INSERT INTO wide VALUES (0, 'x', [0], {'a': 0, 'b': 'x'})
+INSERT INTO wide FROM wide_rows(0, 1, 1)
 
-statement ok
-CHECKPOINT
-
-# the append fails after it added rows to new row groups and keys to the index
+# the append fails after it added rows to the row group it started in, to new row groups and to the index
 statement ok
 SET memory_limit = '40MB'
 
@@ -53,40 +68,12 @@ COMMIT
 ----
 <REGEX>:.*Failed to commit.*(could not allocate|failed to pin) block.*
 
-statement ok
-RESET memory_limit
-
-query III
-SELECT count(*), sum(i), max(s) FROM t
-----
-1	0	x
-
-# the keys of the failed append are not in the index
-statement ok
-INSERT INTO t SELECT i, 'y' || i FROM range(1, 5000) r(i)
-
-statement ok
-INSERT INTO t VALUES (999999, 'z')
-
-query IIII
-SELECT count(*), sum(i), min(s), max(s) FROM t
-----
-5001	13497499	x	z
-
-statement error
-INSERT INTO t VALUES (4999, 'z')
-----
-<REGEX>:Constraint Error.*Duplicate key.*
-
 # the append fails inside the row group that it started in
-statement ok
-SET memory_limit = '40MB'
-
 statement ok
 BEGIN
 
 statement ok
-INSERT INTO wide SELECT i, repeat('x', 1000) || i, [i, i], {'a': i, 'b': repeat('x', 100)} FROM range(1, 20000) r(i)
+INSERT INTO wide FROM wide_rows(1, 20000, 1000)
 
 statement ok
 DELETE FROM wide WHERE i = 1
@@ -96,26 +83,58 @@ COMMIT
 ----
 <REGEX>:.*Failed to commit.*(could not allocate|failed to pin) block.*
 
+# the append fails inside the new row group that it created
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO fresh FROM wide_rows(1, 20000, 1000)
+
+statement ok
+DELETE FROM fresh WHERE i = 1
+
+statement error
+COMMIT
+----
+<REGEX>:.*Failed to commit.*(could not allocate|failed to pin) block.*
+
 statement ok
 RESET memory_limit
 
-query IIII
-SELECT count(*), sum(i), max(s), max(st.b) FROM wide
+query III
+SELECT count(*), sum(i), max(s) FROM t
 ----
-1	0	x	x
+1	0	x
+
+query IIIIIII
+SELECT count(*), sum(i), max(s), count(l), sum(list_sum(l)), sum(a[2]), max(st.b) FROM wide
+----
+1	0	x0	0	NULL	1	(empty)
+
+query IIIIIII
+SELECT count(*), sum(i), max(s), count(l), sum(list_sum(l)), sum(a[2]), max(st.b) FROM fresh
+----
+1	0	x0	0	NULL	1	(empty)
+
+# the keys of the failed append are not in the index
+statement ok
+INSERT INTO t SELECT i, 'y' || i FROM range(1, 5000) r(i)
 
 statement ok
-INSERT INTO wide SELECT 100000 + i, 'y' || i, [i], {'a': i, 'b': 'y'} FROM range(1, 5000) r(i)
+INSERT INTO t VALUES (999999, 'z')
 
-query IIIIII
-SELECT count(*), sum(i), sum(length(s)), max(s), sum(len(l)), sum(st.a) FROM wide
+statement error
+INSERT INTO t VALUES (4999, 'z')
 ----
-5000	512397500	23889	y999	5000	12497500
+<REGEX>:Constraint Error.*Duplicate key.*
 
 statement ok
-CHECKPOINT
+INSERT INTO wide FROM wide_rows(100000, 105000, 1)
 
-restart
+statement ok
+INSERT INTO fresh FROM wide_rows(100000, 105000, 1)
+
+loop k 0 2
 
 query IIII
 SELECT count(*), sum(i), min(s), max(s) FROM t
@@ -128,15 +147,26 @@ SELECT i, s FROM t WHERE i IN (4999, 999999) ORDER BY i
 4999	y4999
 999999	z
 
-query IIIIII
-SELECT count(*), sum(i), sum(length(s)), max(s), sum(len(l)), sum(st.a) FROM wide
+query IIIIIII
+SELECT count(*), sum(i), sum(length(s)), count(l), sum(len(l)), sum(list_sum(l)), sum(a[1] + a[2] + st.a) FROM wide
 ----
-5000	512397500	23889	y999	5000	12497500
+5001	512497500	35002	3334	5001	341735000	1537497501
 
-statement ok
-INSERT INTO wide VALUES (1, 'z', [1, 2], {'a': 1, 'b': 'z'})
+query IIIIIII
+SELECT count(*), sum(i), sum(length(s)), count(l), sum(len(l)), sum(list_sum(l)), sum(a[1] + a[2] + st.a) FROM fresh
+----
+5001	512497500	35002	3334	5001	341735000	1537497501
 
 query III
-SELECT count(*), max(s), max(st.b) FROM wide
+SELECT i, l, a FROM wide WHERE i IN (100000, 100001, 100002) ORDER BY i
 ----
-5001	z	z
+100000	[]	[100000, 100001]
+100001	[100001, NULL, 100001]	[100001, 100002]
+100002	NULL	[100002, 100003]
+
+statement ok
+CHECKPOINT
+
+restart
+
+endloop

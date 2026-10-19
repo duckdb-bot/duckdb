@@ -927,7 +927,9 @@ bool JSONReader::CopyRemainderFromPreviousBuffer(JSONReaderScanState &scan_state
 	idx_t prev_buffer_size = previous_buffer_handle->buffer_size - previous_buffer_handle->buffer_start;
 	auto prev_buffer_ptr = prev_buffer_data + previous_buffer_handle->buffer_size;
 	auto prev_object_start = PreviousNewline(prev_buffer_ptr, prev_buffer_size);
-	if (prev_object_start == prev_buffer_data + previous_buffer_handle->buffer_start && *prev_object_start != '\n') {
+	if (*prev_object_start == '\n') {
+		prev_object_start++;
+	} else {
 		// The previous block has no newline, so the line starts in what was copied into it from the block before
 		idx_t remainder_start;
 		while ((remainder_start = previous_buffer_handle->remainder_start.load()) == DConstants::INVALID_INDEX) {
@@ -951,8 +953,7 @@ bool JSONReader::CopyRemainderFromPreviousBuffer(JSONReaderScanState &scan_state
 		RemoveBuffer(*previous_buffer_handle);
 	}
 
-	if (prev_object_size == 1) {
-		// Just a newline
+	if (prev_object_size == 0) {
 		return false;
 	}
 	scan_state.buffer_offset -= prev_object_size;

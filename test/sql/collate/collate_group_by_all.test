@@ -50,6 +50,37 @@ A	2
 b	1
 NULL	2
 
+query III
+SELECT id > 1 AS big, (SELECT c0) || 'x' AS k, count(*) FROM t GROUP BY ALL ORDER BY ALL;
+----
+false	Ax	2
+true	bx	1
+true	NULL	2
+
+query III
+SELECT c0 AS x, (SELECT x) AS k, count(*) FROM t GROUP BY ALL ORDER BY ALL;
+----
+A	A	2
+b	b	1
+NULL	NULL	2
+
+statement ok
+PREPARE p AS SELECT (SELECT c0 || $1::VARCHAR) AS k, count(*) FROM t GROUP BY ALL ORDER BY ALL;
+
+query II
+EXECUTE p('x');
+----
+Ax	2
+bx	1
+NULL	2
+
+query II
+EXECUTE p('y');
+----
+Ay	2
+by	1
+NULL	2
+
 statement error
 SELECT (SELECT c0) AS k, count(*) FROM t GROUP BY ALL ORDER BY id;
 ----
@@ -68,6 +99,19 @@ query I
 SELECT currval('seq');
 ----
 3
+
+statement ok
+CREATE SEQUENCE seq2;
+
+query I
+SELECT count(*) FROM (SELECT (SELECT c0 || (nextval('seq2') * 0)) AS k, count(*) FROM t WHERE id < 2 GROUP BY ALL);
+----
+2
+
+query I
+SELECT currval('seq2');
+----
+2
 
 statement ok
 CREATE TABLE u (c VARCHAR COLLATE NOACCENT.NOCASE);

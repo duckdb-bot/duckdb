@@ -152,18 +152,98 @@ SELECT * FROM t5 ORDER BY a
 ----
 1	1	2000-01-01	3
 
-# the key cast does not add the collation of the column
+# keys with a collation are compared with it, in the source as against the table
 statement ok
-CREATE TABLE t8 (k VARCHAR COLLATE NOCASE PRIMARY KEY);
+CREATE TABLE t8 (k VARCHAR COLLATE NOCASE PRIMARY KEY, n INTEGER);
 
 statement ok
-INSERT INTO t8 SELECT 'A'::BLOB UNION ALL SELECT 'a'::BLOB ON CONFLICT DO NOTHING;
+INSERT INTO t8 VALUES ('A', 0);
+
+statement ok
+INSERT INTO t8 SELECT 'a', 1 UNION ALL SELECT 'A', 1 ON CONFLICT DO UPDATE SET n = excluded.n;
+
+statement ok
+INSERT INTO t8 SELECT 'b'::BLOB, 2 UNION ALL SELECT 'B'::BLOB, 2 ON CONFLICT DO NOTHING;
+
+statement ok
+INSERT OR IGNORE INTO t8 SELECT 'c', 3 UNION ALL SELECT 'C', 3;
+
+statement ok
+INSERT OR REPLACE INTO t8 SELECT 'd', 4 UNION ALL SELECT 'D', 4;
+
+statement ok
+INSERT INTO t8 SELECT 'Q', 5 ON CONFLICT DO NOTHING;
+
+query II
+SELECT lower(k), n FROM t8 ORDER BY n
+----
+a	1
+b	2
+c	3
+d	4
+q	5
 
 query I
-SELECT k FROM t8 ORDER BY k::BLOB
+SELECT k FROM t8 WHERE n IN (1, 5) ORDER BY n
 ----
 A
-a
+Q
+
+statement ok
+PREPARE upsert_t8 AS INSERT INTO t8 SELECT $1, 6 ON CONFLICT DO UPDATE SET n = excluded.n RETURNING k, n;
+
+query II
+EXECUTE upsert_t8('q');
+----
+Q	6
+
+query I
+SELECT count(*) FROM t8
+----
+5
+
+statement ok
+CREATE TABLE t8b (k VARCHAR COLLATE NOACCENT UNIQUE);
+
+statement ok
+INSERT INTO t8b SELECT 'é' UNION ALL SELECT 'e' ON CONFLICT DO NOTHING;
+
+query I
+SELECT count(*) FROM t8b
+----
+1
+
+statement ok
+CREATE TABLE t8c (a INTEGER, b VARCHAR COLLATE NOCASE, n INTEGER, PRIMARY KEY (a, b));
+
+statement ok
+INSERT INTO t8c SELECT 1.4, 'X', 1 UNION ALL SELECT 1, 'x', 1 ON CONFLICT DO NOTHING;
+
+query II
+SELECT a, lower(b) FROM t8c
+----
+1	x
+
+# TIMETZ keys are equal only with the same time and offset
+statement ok
+CREATE TABLE t8d (k TIMETZ PRIMARY KEY, n INTEGER);
+
+statement ok
+INSERT INTO t8d VALUES ('12:00:00+00', 0);
+
+statement ok
+INSERT INTO t8d SELECT '13:00:00+01', 1 UNION ALL SELECT '12:00:00+00', 2 ON CONFLICT DO UPDATE SET n = excluded.n;
+
+statement ok
+INSERT INTO t8d SELECT '14:00:00+02', 3 UNION ALL SELECT '15:00:00+03', 4 ON CONFLICT DO NOTHING;
+
+query II
+SELECT k::VARCHAR, n FROM t8d ORDER BY n
+----
+13:00:00+01	1
+12:00:00+00	2
+14:00:00+02	3
+15:00:00+03	4
 
 # ENUM keys
 statement ok

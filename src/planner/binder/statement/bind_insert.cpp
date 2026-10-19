@@ -1,8 +1,8 @@
 #include "duckdb/catalog/catalog.hpp"
-#include "duckdb/common/type_visitor.hpp"
 #include "duckdb/parser/constraints/not_null_constraint.hpp"
 #include "duckdb/parser/expression/case_expression.hpp"
 #include "duckdb/parser/expression/cast_expression.hpp"
+#include "duckdb/parser/expression/collate_expression.hpp"
 #include "duckdb/parser/expression/comparison_expression.hpp"
 #include "duckdb/parser/expression/operator_expression.hpp"
 #include "duckdb/parser/expression/conjunction_expression.hpp"
@@ -552,18 +552,21 @@ unique_ptr<MergeIntoStatement> Binder::GenerateMergeInto(InsertQueryNode &node, 
 		}
 	}
 	// cast the conflict columns to the types of the table, so they are compared as they are inserted
-	// a collation is not part of the value, so it is left out of the cast
 	auto cast_star = make_uniq<StarExpression>();
 	for (auto &distinct_on_columns : all_distinct_on_columns) {
 		for (auto &col : distinct_on_columns) {
-			auto type = TypeVisitor::VisitReplace(columns.GetColumn(col).Type(), [](const LogicalType &child) {
-				return StringType::GetCollation(child).empty() ? child : LogicalType::VARCHAR;
-			});
+			auto &type = columns.GetColumn(col).Type();
 			if (!TypeExpression::CanRepresent(type) || type.HasAlias() || type.id() == LogicalTypeId::ENUM) {
 				// a parsed cast resolves these types again, by name or from all their values
 				continue;
 			}
-			cast_star->ReplaceListMutable()[col] = make_uniq<CastExpression>(type, make_uniq<ColumnRefExpression>(col));
+			unique_ptr<ParsedExpression> key = make_uniq<CastExpression>(type, make_uniq<ColumnRefExpression>(col));
+			auto collation = StringType::GetCollation(type);
+			if (!collation.empty()) {
+				// a cast from VARCHAR keeps the collation of its source
+				key = make_uniq<CollateExpression>(collation, std::move(key));
+			}
+			cast_star->ReplaceListMutable()[col] = std::move(key);
 		}
 	}
 	if (!cast_star->ReplaceList().empty()) {

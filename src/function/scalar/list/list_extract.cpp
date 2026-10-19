@@ -4,11 +4,13 @@
 #include "duckdb/common/types/data_chunk.hpp"
 #include "duckdb/common/uhugeint.hpp"
 #include "duckdb/common/vector_operations/binary_executor.hpp"
+#include "duckdb/function/function_binder.hpp"
 #include "duckdb/function/scalar/nested_functions.hpp"
 #include "duckdb/function/scalar/string_common.hpp"
 #include "duckdb/function/scalar/list_functions.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
+#include "duckdb/planner/expression_binder.hpp"
 #include "duckdb/storage/statistics/list_stats.hpp"
 
 namespace duckdb {
@@ -135,6 +137,10 @@ static unique_ptr<FunctionData> ListExtractBind(BindScalarFunctionInput &input) 
 //! Extracting from a list returns NULL for indexes that are out of range instead
 static unique_ptr<FunctionData> StringExtractBind(BindScalarFunctionInput &input) {
 	auto &bound_function = input.GetBoundFunction();
+	if (input.GetArguments()[0]->GetReturnType().IsJSONType()) {
+		// bound to json_extract by StringExtractBindExpression
+		return nullptr;
+	}
 	auto index = input.TryGetConstant(1);
 	if (!index) {
 		bound_function.SetFallible();
@@ -150,6 +156,34 @@ static unique_ptr<FunctionData> StringExtractBind(BindScalarFunctionInput &input
 		bound_function.SetFallible();
 	}
 	return nullptr;
+}
+
+//! A JSON and its index keep their types, as in the subscript
+static void StringExtractResolveTypes(ResolveScalarFunctionTypesInput &input) {
+	if (!input.GetArgumentType(0).IsJSONType()) {
+		return;
+	}
+	auto &bound_function = input.GetBoundFunction();
+	bound_function.GetArguments()[0] = input.GetArgumentType(0);
+	bound_function.GetArguments()[1] = input.GetArgumentType(1);
+}
+
+//! A JSON binds to json_extract, as its subscript does
+static unique_ptr<Expression> StringExtractBindExpression(FunctionBindExpressionInput &input) {
+	if (!input.children[0]->GetReturnType().IsJSONType()) {
+		return nullptr;
+	}
+	ExpressionBinder::BindJSONSubscript(input.context, *input.children[1]);
+	FunctionBinder function_binder(input.context);
+	return function_binder.BindScalarFunction(Identifier::DefaultSchema(), "json_extract", std::move(input.children));
+}
+
+static ScalarFunction GetStringExtractFunction() {
+	ScalarFunction sfun({}, LogicalType::VARCHAR, ListExtractFunction, StringExtractBind);
+	sfun.GetSignature().AddParameter("string", LogicalType::VARCHAR).AddParameter("index", LogicalType::BIGINT);
+	sfun.SetResolveTypesCallback(StringExtractResolveTypes);
+	sfun.SetBindExpressionCallback(StringExtractBindExpression);
+	return sfun;
 }
 
 static unique_ptr<BaseStatistics> ListExtractStats(ClientContext &context, FunctionStatisticsInput &input) {
@@ -174,14 +208,9 @@ ScalarFunctionSet ListExtractFun::GetFunctions() {
 	lfun.GetSignature().GetParameter(0).SetName("list");
 	lfun.GetSignature().GetParameter(1).SetName("index");
 
-	ScalarFunction sfun({LogicalType::VARCHAR, LogicalType::BIGINT}, LogicalType::VARCHAR, ListExtractFunction,
-	                    StringExtractBind);
-	sfun.GetSignature().GetParameter(0).SetName("string");
-	sfun.GetSignature().GetParameter(1).SetName("index");
-
 	lfun.SetFallible();
 	list_extract_set.AddFunction(lfun);
-	list_extract_set.AddFunction(sfun);
+	list_extract_set.AddFunction(GetStringExtractFunction());
 	return list_extract_set;
 }
 
@@ -195,11 +224,8 @@ ScalarFunctionSet ArrayExtractFun::GetFunctions() {
 	lfun.GetSignature().GetParameter(0).SetName("list");
 	lfun.GetSignature().GetParameter(1).SetName("index");
 
-	ScalarFunction sfun({}, LogicalType::VARCHAR, ListExtractFunction, StringExtractBind);
-	sfun.GetSignature().AddParameter("string", LogicalType::VARCHAR).AddParameter("index", LogicalType::BIGINT);
-
 	array_extract_set.AddFunction(lfun);
-	array_extract_set.AddFunction(sfun);
+	array_extract_set.AddFunction(GetStringExtractFunction());
 	array_extract_set.AddFunction(GetKeyExtractFunction());
 	array_extract_set.AddFunction(GetIndexExtractFunction());
 	return array_extract_set;

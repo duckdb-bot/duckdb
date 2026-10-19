@@ -1,0 +1,77 @@
+# name: test/optimizer/statistics/statistics_monotone_infinity.test
+# description: Monotone bounds are not inferred when -infinity lies between finite bounds
+# group: [statistics]
+
+# the smallest finite DATE and TIMESTAMP values sort below -infinity
+statement ok
+CREATE TABLE dates(c DATE);
+
+statement ok
+INSERT INTO dates VALUES (make_date(-2147483647 - 1)), ('-infinity'), ('1970-01-01');
+
+query II
+SELECT count(last_day(c)), count(*) FILTER (last_day(c) IS NOT NULL) FROM dates
+----
+2	2
+
+statement ok
+CREATE TABLE timestamps(c TIMESTAMP);
+
+statement ok
+INSERT INTO timestamps VALUES (make_timestamp(-9223372036854775807 - 1)), ('-infinity'), ('1970-01-01');
+
+query I
+SELECT count(last_day(c)) FROM timestamps
+----
+2
+
+statement ok
+CREATE TABLE timestamps_ns(c TIMESTAMP_NS);
+
+statement ok
+INSERT INTO timestamps_ns VALUES (make_timestamp_ns(-9223372036854775807 - 1)), ('-infinity'), ('1970-01-01');
+
+query I
+SELECT count(epoch_ns(c)) FROM timestamps_ns
+----
+2
+
+statement ok
+CREATE TABLE timestamps_tz_ns(c TIMESTAMPTZ_NS);
+
+statement ok
+INSERT INTO timestamps_tz_ns VALUES ('1677-09-21 00:12:43.145224192+00'), ('-infinity'), ('1970-01-01 00:00:00+00');
+
+query II
+SELECT count(epoch_ns(c)), epoch_ns(min(c)) FROM timestamps_tz_ns
+----
+2	-9223372036854775808
+
+# -infinity as a bound, and the smallest finite value without -infinity, give the right counts
+statement ok
+DELETE FROM dates WHERE c = make_date(-2147483647 - 1)
+
+query I
+SELECT count(last_day(c)) FROM dates
+----
+1
+
+statement ok
+DELETE FROM timestamps_ns WHERE NOT isfinite(c)
+
+query III
+SELECT count(epoch_ns(c)), min(epoch_ns(c)), max(epoch_ns(c)) FROM timestamps_ns
+----
+2	-9223372036854775808	0
+
+# ranges that cannot hold -infinity keep their bounds
+statement ok
+CREATE TABLE recent_ns(c TIMESTAMP_NS);
+
+statement ok
+INSERT INTO recent_ns VALUES ('1970-01-01'), ('2000-01-01');
+
+query I
+SELECT stats(epoch_ns(c)) FROM recent_ns LIMIT 1
+----
+{'has_no_null': true, 'has_null': false, 'max': 946684800000000000, 'min': 0}

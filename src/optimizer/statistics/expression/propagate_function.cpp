@@ -24,6 +24,24 @@ bool TryEvaluateAtConstants(ClientContext &context, const BoundFunctionExpressio
 	return ExpressionExecutor::TryEvaluateScalar(context, *clone, result);
 }
 
+// The smallest finite DATE or TIMESTAMP sorts below -infinity, so -infinity can lie between finite bounds.
+bool HasInfinityBetween(const Value &lo, const Value &hi) {
+	switch (lo.type().id()) {
+	case LogicalTypeId::DATE:
+	case LogicalTypeId::TIMESTAMP:
+	case LogicalTypeId::TIMESTAMP_SEC:
+	case LogicalTypeId::TIMESTAMP_MS:
+	case LogicalTypeId::TIMESTAMP_NS:
+	case LogicalTypeId::TIMESTAMP_TZ:
+	case LogicalTypeId::TIMESTAMP_TZ_NS: {
+		auto ninfinity = Value::NegativeInfinity(lo.type());
+		return lo < ninfinity && ninfinity < hi;
+	}
+	default:
+		return false;
+	}
+}
+
 // Equal bounds need not imply identical inputs for certain types, so we skip this optimization for those values.
 // Floating-point bounds only lose information for the sign of zero.
 bool CanInferConstantFromNumericBounds(const Value &value) {
@@ -145,6 +163,10 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateMonotoneBounds(ClientC
 		}
 		Value lo = NumericStats::Min(cs);
 		Value hi = NumericStats::Max(cs);
+		// the function is not evaluated at -infinity, which can give NULL or a value outside of the bounds
+		if (HasInfinityBetween(lo, hi)) {
+			return nullptr;
+		}
 
 		if (!IsKnownMonotonic(m)) {
 			return nullptr;

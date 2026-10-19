@@ -42,6 +42,19 @@ SELECT (SELECT t) AS s, count(*) FROM (VALUES ('10:00:00+00'::TIMETZ)) v(t) GROU
 ----
 10:00:00+00	1
 
+# a group with a subquery is grouped by its collation
+query II
+SELECT (SELECT c0) AS k, count(*) FROM t GROUP BY ALL ORDER BY ALL;
+----
+A	2
+b	1
+NULL	2
+
+statement error
+SELECT (SELECT c0) AS k, count(*) FROM t GROUP BY ALL ORDER BY id;
+----
+<REGEX>:Binder Error:.*column "id" must appear in the GROUP BY clause.*
+
 statement ok
 CREATE SEQUENCE seq;
 

@@ -765,11 +765,19 @@ BoundStatement Binder::BindSelectNode(SelectNode &statement, BoundStatement from
 		auto return_type = expr->GetReturnType();
 		// group by the collated expression, and select the uncollated value through a first(x) aggregate
 		unique_ptr<Expression> uncollated_first;
-		// avoid evaluating subqueries and volatile groups twice
-		if (!expr->HasSubquery() && !expr->IsVolatile()) {
+		// avoid evaluating volatile groups twice
+		if (!expr->IsVolatile()) {
 			// copy before pushing the collation, which can replace the expression
-			auto uncollated_expr = expr->Copy();
+			bool contains_subquery = expr->HasSubquery();
+			auto uncollated_expr = contains_subquery ? nullptr : expr->Copy();
 			if (ExpressionBinder::PushCollation(context, expr, return_type)) {
+				if (contains_subquery) {
+					// bound subqueries cannot be copied, so bind the select-list expression again
+					auto parsed_copy = bind_state.original_expressions[group_by_all_index]->Copy();
+					auto bound_column_count = select_binder.GetBoundColumns().size();
+					uncollated_expr = select_binder.Bind(parsed_copy);
+					select_binder.TruncateBoundColumns(bound_column_count);
+				}
 				uncollated_first = BindUncollatedFirst(*this, std::move(uncollated_expr));
 			}
 		}

@@ -2584,6 +2584,10 @@ void HashJoinGlobalSourceState::PrepareBuild(HashJoinGlobalSinkState &sink) {
 	// Try to put the next partitions in the block collection of the HT
 	if (!sink.external || !ht.PrepareExternalFinalize(sink.GetMaxExternalHTSize())) {
 		global_stage = HashJoinSourceStage::DONE;
+		if (!sink.preserve_build_for_reuse) {
+			// every task is done, nothing reads the hash table anymore
+			ht.Reset();
+		}
 		sink.temporary_memory_state->SetZero();
 		return;
 	}

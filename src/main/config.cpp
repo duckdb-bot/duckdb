@@ -8,6 +8,7 @@
 #include "duckdb/common/operator/multiply.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/main/database.hpp"
+#include "duckdb/main/database_path_and_type.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/main/extension_helper.hpp"
 #include "duckdb/storage/storage_extension.hpp"
@@ -654,10 +655,22 @@ void DBConfig::SetDefaultMaxMemory() {
 void DBConfig::SetDefaultTempDirectory() {
 	if (!options.use_temporary_directory) {
 		options.temporary_directory = string();
-	} else if (DBConfig::IsInMemoryDatabase(options.database_path.c_str())) {
+		return;
+	}
+	// match the prefix handling of opening the database
+	auto path = options.database_path;
+	auto database_type = options.database_type;
+	if (database_type.empty()) {
+		DBPathAndType::ExtractExtensionPrefix(path, database_type);
+	}
+	auto prefix = StringUtil::CIEquals(database_type, "duckdb") ? string()
+	                                                            : ExtensionHelper::ExtractExtensionPrefixFromPath(path);
+	if (DBConfig::IsInMemoryDatabase(path.c_str()) || FileSystem::IsRemoteFile(path) ||
+	    (!prefix.empty() && !StringUtil::CIEquals(prefix, "file"))) {
+		// remote paths and connection strings of extensions, unlike file URLs, have no local file to be next to
 		options.temporary_directory = ".tmp";
 	} else {
-		options.temporary_directory = Path::AddSuffixToPath(options.database_path, ".tmp");
+		options.temporary_directory = Path::AddSuffixToPath(path, ".tmp");
 	}
 }
 

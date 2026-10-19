@@ -18,6 +18,7 @@ add_library_unity(
   test_external_file_cache.cpp
   test_hyperlog.cpp
   test_hugeint_constexpr.cpp
+  test_hugeint_long_double.cpp
   test_http_transport_manager.cpp
   test_http_retry_budget.cpp
   test_httplib_sigpipe.cpp

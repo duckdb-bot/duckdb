@@ -9,6 +9,7 @@
 #include "duckdb/main/settings.hpp"
 #include "duckdb/storage/storage_info.hpp"
 
+#include <chrono>
 #include <thread>
 #if defined(__GLIBC__)
 #include <pthread.h>
@@ -244,15 +245,21 @@ TEST_CASE("Test async threads launched from a pinned thread run on every CPU", "
 	REQUIRE(pthread_setaffinity_np(pthread_self(), sizeof(process_cpus), &process_cpus) == 0);
 	REQUIRE(async_threads == 4);
 
+	// each async thread sets its CPUs when it starts
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
 	idx_t threads_on_every_cpu = 0;
-	for (auto &id : ProcessThreadIds()) {
-		if (threads_before.find(id) != threads_before.end()) {
-			continue;
-		}
-		cpu_set_t thread_cpus;
-		if (sched_getaffinity(std::stoi(id), sizeof(thread_cpus), &thread_cpus) == 0 &&
-		    CPU_EQUAL(&thread_cpus, &process_cpus)) {
-			threads_on_every_cpu++;
+	while (threads_on_every_cpu < 4 && std::chrono::steady_clock::now() < deadline) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		threads_on_every_cpu = 0;
+		for (auto &id : ProcessThreadIds()) {
+			if (threads_before.find(id) != threads_before.end()) {
+				continue;
+			}
+			cpu_set_t thread_cpus;
+			if (sched_getaffinity(std::stoi(id), sizeof(thread_cpus), &thread_cpus) == 0 &&
+			    CPU_EQUAL(&thread_cpus, &process_cpus)) {
+				threads_on_every_cpu++;
+			}
 		}
 	}
 	REQUIRE(threads_on_every_cpu >= 4);

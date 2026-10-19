@@ -34,6 +34,8 @@ public:
 #ifndef DUCKDB_NO_THREADS
 	void Wait();
 	bool Wait(int64_t timeout_usecs);
+	//! Runs the calling thread on the launch CPUs of the pool, if it has them
+	void RunOnLaunchCPUs();
 #endif
 
 private:

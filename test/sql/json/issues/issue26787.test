@@ -119,6 +119,31 @@ SELECT count(*), count(pad), max(length(pad)) FROM read_json('{TEST_DIR}/malform
 ----
 167776	167775	98
 
+# whitespace without a newline over more than maximum_object_size bytes is not part of a line
+statement ok
+COPY (SELECT (repeat(' ', 33554424) || '{"pad":"x"}' || chr(10))::BLOB) TO '{TEST_DIR}/whitespace_before_line.jsonl' (FORMAT BLOB);
+
+query II
+SELECT count(*), count(pad) FROM read_json('{TEST_DIR}/whitespace_before_line.jsonl', format = 'newline_delimited', columns = {pad: 'VARCHAR'}, records = true);
+----
+1	1
+
+statement ok
+COPY (SELECT ('{"pad":"a"}' || chr(10) || repeat(' ', 33554424) || '{"pad":"x"}')::BLOB) TO '{TEST_DIR}/whitespace_before_last_line.jsonl' (FORMAT BLOB);
+
+query II
+SELECT count(*), count(pad) FROM read_json('{TEST_DIR}/whitespace_before_last_line.jsonl', format = 'newline_delimited', columns = {pad: 'VARCHAR'}, records = true);
+----
+2	2
+
+statement ok
+COPY (SELECT (repeat(' ', 20000000))::BLOB) TO '{TEST_DIR}/whitespace_only.jsonl' (FORMAT BLOB);
+
+query II
+SELECT count(*), count(pad) FROM read_json('{TEST_DIR}/whitespace_only.jsonl', format = 'newline_delimited', columns = {pad: 'VARCHAR'}, records = true);
+----
+0	0
+
 # a single thread reads the files the same way
 statement ok
 SET threads=1;
@@ -147,3 +172,8 @@ statement error
 SELECT count(*) FROM read_json('{TEST_DIR}/malformed_line_over_buffer.jsonl', format = 'newline_delimited', columns = {pad: 'VARCHAR'}, records = true);
 ----
 <REGEX>:Invalid Input Error.*Malformed JSON.*at byte 16777216 in line.*
+
+query II
+SELECT count(*), count(pad) FROM read_json('{TEST_DIR}/whitespace_before_line.jsonl', format = 'newline_delimited', columns = {pad: 'VARCHAR'}, records = true);
+----
+1	1

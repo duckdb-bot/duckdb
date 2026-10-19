@@ -926,20 +926,21 @@ bool JSONReader::CopyRemainderFromPreviousBuffer(JSONReaderScanState &scan_state
 	auto prev_buffer_data = char_ptr_cast(previous_buffer_handle->buffer.get());
 	idx_t prev_buffer_size = previous_buffer_handle->buffer_size - previous_buffer_handle->buffer_start;
 	auto prev_buffer_ptr = prev_buffer_data + previous_buffer_handle->buffer_size;
-	auto prev_object_start = PreviousNewline(prev_buffer_ptr, prev_buffer_size);
-	if (*prev_object_start == '\n') {
-		prev_object_start++;
+	auto prev_newline = PreviousNewline(prev_buffer_ptr, prev_buffer_size);
+	idx_t prev_object_offset;
+	if (*prev_newline == '\n') {
+		prev_object_offset = NumericCast<idx_t>(prev_newline - prev_buffer_data) + 1;
 	} else {
 		// The previous block has no newline, so the line starts in what was copied into it from the block before
-		idx_t remainder_start;
-		while ((remainder_start = previous_buffer_handle->remainder_start.load()) == DConstants::INVALID_INDEX) {
+		while ((prev_object_offset = previous_buffer_handle->remainder_start.load()) == DConstants::INVALID_INDEX) {
 			if (HasThrown()) {
 				return false;
 			}
 		}
-		prev_object_start = prev_buffer_data + remainder_start;
 	}
-	auto prev_object_size = NumericCast<idx_t>(prev_buffer_ptr - prev_object_start);
+	SkipWhitespace(prev_buffer_data, prev_object_offset, previous_buffer_handle->buffer_size);
+	auto prev_object_start = prev_buffer_data + prev_object_offset;
+	auto prev_object_size = previous_buffer_handle->buffer_size - prev_object_offset;
 
 	D_ASSERT(scan_state.buffer_offset == options.maximum_object_size);
 	if (prev_object_size > scan_state.buffer_offset) {

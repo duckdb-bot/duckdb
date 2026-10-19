@@ -2,6 +2,7 @@
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/storage/storage_manager.hpp"
 #include "duckdb/transaction/transaction_manager.hpp"
+#include "duckdb/main/attached_database.hpp"
 #include "duckdb/main/database_manager.hpp"
 #include "duckdb/function/function_set.hpp"
 
@@ -39,15 +40,23 @@ static unique_ptr<FunctionData> CheckpointBind(ClientContext &context, TableFunc
 	names.emplace_back("Success");
 
 	Identifier db_name;
+	optional_ptr<AttachedDatabase> db;
 	if (!input.inputs.empty()) {
 		if (input.inputs[0].IsNull()) {
 			throw BinderException("Database cannot be NULL");
 		}
 		db_name = Identifier(StringValue::Get(input.inputs[0]));
+		db = GetCheckpointDatabase(context, db_name);
 	} else {
 		db_name = DatabaseManager::GetDefaultDatabase(context);
+		db = DatabaseManager::Get(context).GetDatabase(context, db_name);
+		if (!db) {
+			throw BinderException("Catalog %s does not exist!", db_name);
+		}
 	}
-	GetCheckpointDatabase(context, db_name);
+	if (db->IsSystem() || db->IsTemporary()) {
+		throw BinderException("Cannot checkpoint database %s: it does not have storage", db->GetName());
+	}
 	return make_uniq<CheckpointBindData>(std::move(db_name));
 }
 

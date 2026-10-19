@@ -377,3 +377,68 @@ TEST_CASE("Test the instance cache hands out a database that is still open after
 	}
 	TestDeleteFile(path);
 }
+
+struct SlowShutdownCatalog : public DuckCatalog {
+	explicit SlowShutdownCatalog(AttachedDatabase &db) : DuckCatalog(db) {
+	}
+	~SlowShutdownCatalog() override {
+		std::this_thread::sleep_for(std::chrono::milliseconds(100));
+	}
+};
+
+struct SlowShutdownStorageExtension : StorageExtension {
+	SlowShutdownStorageExtension() {
+		attach = [](optional_ptr<StorageExtensionInfo>, ClientContext &, AttachedDatabase &db, const string &,
+		            AttachInfo &, AttachOptions &) -> unique_ptr<Catalog> {
+			return make_uniq_base<Catalog, SlowShutdownCatalog>(db);
+		};
+		create_transaction_manager = [](optional_ptr<StorageExtensionInfo>, AttachedDatabase &db,
+		                                Catalog &) -> unique_ptr<TransactionManager> {
+			return make_uniq<DuckTransactionManager>(db);
+		};
+	}
+};
+
+TEST_CASE("Test reopening a database from several threads while it shuts down", "[api][.]") {
+	DBInstanceCache instance_cache;
+	const string path = "slow_shutdown::memory:";
+	constexpr idx_t REOPENER_COUNT = 4;
+	for (idx_t i = 0; i < 20; i++) {
+		DBConfig config;
+		StorageExtension::Register(config, "slow_shutdown", make_shared_ptr<SlowShutdownStorageExtension>());
+		auto db = instance_cache.GetOrCreateInstance(path, config, true);
+		weak_ptr<DatabaseInstance> instance = db->instance;
+
+		// every reopener finds the entry of the instance that is shutting down
+		vector<shared_ptr<DuckDB>> reopened(REOPENER_COUNT);
+		vector<std::exception_ptr> reopen_errors(REOPENER_COUNT);
+		vector<std::thread> reopeners;
+		for (idx_t reopener_idx = 0; reopener_idx < REOPENER_COUNT; reopener_idx++) {
+			reopeners.emplace_back([&, reopener_idx]() {
+				try {
+					while (!instance.expired()) {
+					}
+					DBConfig reopen_config;
+					StorageExtension::Register(reopen_config, "slow_shutdown",
+					                           make_shared_ptr<SlowShutdownStorageExtension>());
+					reopened[reopener_idx] = instance_cache.GetOrCreateInstance(path, reopen_config, true);
+				} catch (...) {
+					reopen_errors[reopener_idx] = std::current_exception();
+				}
+			});
+		}
+		db.reset();
+		for (auto &reopener : reopeners) {
+			reopener.join();
+		}
+		for (auto &reopen_error : reopen_errors) {
+			if (reopen_error) {
+				std::rethrow_exception(reopen_error);
+			}
+		}
+		// they all share the one new instance
+		for (auto &reopened_db : reopened) {
+			REQUIRE(reopened_db->instance == reopened[0]->instance);
+		}
+	}
+}

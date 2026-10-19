@@ -87,7 +87,11 @@ shared_ptr<DuckDB> DBInstanceCache::GetInstanceInternal(const string &database, 
 		D_ASSERT(!cache_entry);
 		// the cache entry has now been deleted - clear it from the set of database instances and return
 		db_instances_lock.lock();
-		db_instances.erase(cache_key);
+		// another thread can have cached a new entry under the same key by now
+		auto current_entry = db_instances.find(cache_key);
+		if (current_entry != db_instances.end() && current_entry->second.expired()) {
+			db_instances.erase(current_entry);
+		}
 		db_instances_lock.unlock();
 		return nullptr;
 	}

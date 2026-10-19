@@ -21,7 +21,7 @@ CHECKPOINT
 
 concurrentloop threadid 0 2
 
-loop i 0 5
+loop i 0 3
 
 onlyif threadid=0
 statement ok
@@ -39,8 +39,8 @@ onlyif threadid=0
 statement ok
 COMMIT
 
-# enough reads to outlast the generation, so that they overlap every commit
-loop j 0 600
+# keep reading for longer than the writer runs, so that the reads overlap its commits
+loop j 0 4000
 
 onlyif threadid=1
 query I

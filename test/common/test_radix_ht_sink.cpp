@@ -184,6 +184,27 @@ TEST_CASE("Increasing the reservation preserves an underfull aggregate table", "
 	REQUIRE_FALSE(local.spilling);
 }
 
+TEST_CASE("Aggregate states that fit in memory are not exported", "[radix_ht_sink]") {
+	RadixSinkFixture fixture("4GB", true);
+	auto &local = fixture.Local();
+	auto &global = fixture.Global();
+	fixture.SetPayload(Value(string(2048, 'p')));
+	const auto initial_limit = global.GetThreadLimit();
+	fixture.Keys(0, 4096);
+	fixture.Sink();
+	// the states outgrow the initial thread limit, far below the memory limit
+	for (idx_t offset = STANDARD_VECTOR_SIZE;
+	     local.abandoned_exported_data.empty() && local.ht->GetAggregateAllocator()->AllocationSize() <= initial_limit;
+	     offset += STANDARD_VECTOR_SIZE) {
+		fixture.Keys(offset, 4096);
+		fixture.Sink();
+	}
+	REQUIRE(local.abandoned_exported_data.empty());
+	REQUIRE_FALSE(local.spilling);
+	REQUIRE_FALSE(global.external);
+	REQUIRE(global.GetThreadLimit() > initial_limit);
+}
+
 TEST_CASE("A reduced reservation does not prevent external aggregation", "[radix_ht_sink]") {
 	RadixSinkFixture fixture("128MB");
 	auto &global = fixture.Global();

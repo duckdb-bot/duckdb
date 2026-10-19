@@ -824,6 +824,10 @@ void RowGroupCollection::RevertAppendInternal(idx_t new_end_idx) {
 		new_total_rows += entry.GetNode().count;
 		reverted_row_groups->AppendSegment(rlock, entry.ReferenceNode(), row_start);
 	}
+	if (reverted_row_groups->GetSegmentCount(rlock) < segment_count) {
+		// the reverted append created a row group, so the row group that is last again might not take appends
+		SetRowGroupAppendMode(RowGroupAppendMode::SUGGEST_NEW);
+	}
 	SetRowGroups(std::move(reverted_row_groups));
 	total_rows = new_total_rows;
 	next_row_id = new_end_idx - row_groups->GetBaseRowId();

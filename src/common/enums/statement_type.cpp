@@ -115,4 +115,16 @@ void StatementProperties::RegisterDBModify(Catalog &catalog, ClientContext &cont
 	entry.first->second.modifications |= modification;
 }
 
+void StatementProperties::MergeDatabases(const StatementProperties &source) {
+	for (auto &entry : source.read_databases) {
+		read_databases.insert(entry);
+	}
+	for (auto &entry : source.modified_databases) {
+		auto inserted = modified_databases.insert(entry);
+		if (!inserted.second) {
+			inserted.first->second.modifications |= entry.second.modifications;
+		}
+	}
+}
+
 } // namespace duckdb

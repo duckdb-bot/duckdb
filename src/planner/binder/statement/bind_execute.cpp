@@ -95,6 +95,8 @@ BoundStatement Binder::Bind(ExecuteStatement &stmt) {
 	auto &properties = GetStatementProperties();
 	properties = prepared->properties;
 	properties.parameter_count = parameter_count;
+	// the parameters are evaluated by this statement
+	properties.MergeDatabases(constant_binder->GetStatementProperties());
 
 	BoundStatement result;
 	result.names = prepared->names;

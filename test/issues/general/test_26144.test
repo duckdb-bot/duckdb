@@ -126,6 +126,20 @@ EXECUTE cur;
 statement ok
 COMMIT;
 
+# EXECUTE evaluates its parameters while binding
+statement ok
+PREPARE e AS SELECT $1::BIGINT;
+
+query I
+EXECUTE e(nextval('s'));
+----
+16
+
+query I
+EXECUTE e(1 + nextval('s'));
+----
+18
+
 # an expression that is evaluated while executing advances the sequence on every EXECUTE too
 statement ok
 PREPARE l AS SELECT count(*) FROM (SELECT * FROM range(100) LIMIT nextval('s'));
@@ -133,12 +147,12 @@ PREPARE l AS SELECT count(*) FROM (SELECT * FROM range(100) LIMIT nextval('s'));
 query I
 EXECUTE l;
 ----
-16
+18
 
 query I
 EXECUTE l;
 ----
-17
+19
 
 # a volatile function that does not modify the database is evaluated while binding
 statement ok
@@ -154,4 +168,4 @@ restart
 query I
 SELECT nextval('s');
 ----
-18
+20

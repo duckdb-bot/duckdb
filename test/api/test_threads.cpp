@@ -11,6 +11,7 @@
 #include "duckdb/storage/storage_info.hpp"
 
 #include <chrono>
+#include <condition_variable>
 #include <thread>
 #if defined(__GLIBC__)
 #include <pthread.h>
@@ -199,6 +200,73 @@ TEST_CASE("Test idle memory reclamation does not launch the async threads", "[ap
 	allocator.ThreadIdle();
 	result = con.Query("SELECT sum(i) FROM t");
 	REQUIRE(CHECK_COLUMN(result, 0, {Value::HUGEINT(49995000)}));
+}
+
+namespace {
+
+class BlockingTask : public BaseExecutorTask {
+public:
+	BlockingTask(TaskExecutor &executor, mutex &lock_p, std::condition_variable &cv_p, bool &blocked_p,
+	             bool &released_p)
+	    : BaseExecutorTask(executor), lock(lock_p), cv(cv_p), blocked(blocked_p), released(released_p) {
+	}
+	void ExecuteTask() override {
+		unique_lock<mutex> guard(lock);
+		blocked = true;
+		cv.notify_all();
+		cv.wait(guard, [&]() { return released; });
+	}
+
+private:
+	mutex &lock;
+	std::condition_variable &cv;
+	bool &blocked;
+	bool &released;
+};
+
+} // namespace
+
+TEST_CASE("Test idle workers reclaim memory without launching the async threads", "[api]") {
+	constexpr idx_t SIZE = 8 * 1024 * 1024;
+	const auto threads_before = ProcessThreadIds();
+	DBConfig config;
+	config.options.maximum_threads = 2;
+	config.options.async_threads = 16;
+	DuckDB db(nullptr, &config);
+	Connection con(db);
+	auto &allocator = BlockAllocator::Get(*db.instance);
+	auto pointer = allocator.AllocateData(SIZE);
+	pointer[0] = 42;
+
+	// the worker runs this task while the memory is freed, so it cannot reclaim it before the check
+	mutex lock;
+	std::condition_variable cv;
+	bool blocked = false;
+	bool released = false;
+	TaskExecutor executor(*con.context);
+	executor.ScheduleTask(make_uniq<BlockingTask>(executor, lock, cv, blocked, released));
+	bool worker_blocked;
+	{
+		unique_lock<mutex> guard(lock);
+		worker_blocked = cv.wait_for(guard, std::chrono::seconds(10), [&]() { return blocked; });
+	}
+	allocator.FreeData(pointer, SIZE);
+	const auto cached = allocator.GetCachedMemory();
+	{
+		lock_guard<mutex> guard(lock);
+		released = true;
+	}
+	cv.notify_all();
+	executor.WorkOnTasks();
+	REQUIRE(worker_blocked);
+	REQUIRE(cached >= SIZE);
+
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+	while (allocator.GetCachedMemory() != 0 && std::chrono::steady_clock::now() < deadline) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	REQUIRE(allocator.GetCachedMemory() == 0);
+	REQUIRE(NewThreadCount(threads_before) < 16);
 }
 
 namespace {

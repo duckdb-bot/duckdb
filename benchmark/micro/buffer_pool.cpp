@@ -3,6 +3,7 @@
 #include "duckdb/storage/buffer_manager.hpp"
 #include "duckdb/storage/buffer/block_handle.hpp"
 
+#include <exception>
 #include <thread>
 
 using namespace duckdb;
@@ -55,19 +56,29 @@ void Load(DuckDBBenchmarkState *state) override {
 void RunBenchmark(DuckDBBenchmarkState *state) override {
 	auto &buffer_manager = BufferManager::GetBufferManager(*state->conn.context);
 	vector<std::thread> threads;
+	vector<std::exception_ptr> errors(THREAD_COUNT);
 	for (idx_t t = 0; t < THREAD_COUNT; t++) {
-		threads.emplace_back([&buffer_manager]() {
-			vector<shared_ptr<BlockHandle>> live_blocks;
-			for (idx_t i = 0; i < BUFFERS_PER_THREAD; i++) {
-				auto pin = buffer_manager.Allocate(MemoryTag::EXTENSION, 64 * 1024, true);
-				if (i % LIVE_BUFFER_INTERVAL == 0) {
-					live_blocks.push_back(pin.GetBlockHandle());
+		threads.emplace_back([&buffer_manager, &errors, t]() {
+			try {
+				vector<shared_ptr<BlockHandle>> live_blocks;
+				for (idx_t i = 0; i < BUFFERS_PER_THREAD; i++) {
+					auto pin = buffer_manager.Allocate(MemoryTag::EXTENSION, 64 * 1024, true);
+					if (i % LIVE_BUFFER_INTERVAL == 0) {
+						live_blocks.push_back(pin.GetBlockHandle());
+					}
 				}
+			} catch (...) {
+				errors[t] = std::current_exception();
 			}
 		});
 	}
 	for (auto &thread : threads) {
 		thread.join();
+	}
+	for (auto &error : errors) {
+		if (error) {
+			std::rethrow_exception(error);
+		}
 	}
 }
 string VerifyResult(QueryResult *result) override {

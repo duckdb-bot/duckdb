@@ -441,6 +441,9 @@ TEST_CASE("Test eviction queue: blocks stay evictable after a purge of a queue b
 	for (const auto &q : buffer_pool.GetEvictionQueueInfo()) {
 		REQUIRE(q.dead_nodes < 16384);
 	}
+	for (auto &block : live_blocks) {
+		REQUIRE(block->GetMemory().GetState() == BlockState::BLOCK_LOADED);
+	}
 
 	// the purges moved the nodes of the live blocks, a memory limit still evicts every one of them
 	buffer_pool.SetLimit(initial_memory, EXCEPTION_POSTSCRIPT);
@@ -469,10 +472,14 @@ TEST_CASE("Test eviction queue: stale nodes of repinned blocks are purged from a
 	for (idx_t round = 0; round < rounds; ++round) {
 		for (auto &block : blocks) {
 			auto pin = buffer_manager.Pin(block);
+			REQUIRE(pin.IsValid());
 		}
 	}
 	for (const auto &q : buffer_pool.GetEvictionQueueInfo()) {
 		REQUIRE(q.dead_nodes < 16384);
+	}
+	for (auto &block : blocks) {
+		REQUIRE(block->GetMemory().GetState() == BlockState::BLOCK_LOADED);
 	}
 
 	// the latest node of every block survives the purges

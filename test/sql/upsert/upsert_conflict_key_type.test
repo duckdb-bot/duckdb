@@ -224,6 +224,27 @@ SELECT a, lower(b) FROM t8c
 ----
 1	x
 
+# a key without a collation is compared without the collation of its source
+statement ok
+CREATE TABLE t8e (k VARCHAR PRIMARY KEY);
+
+statement ok
+INSERT INTO t8e VALUES ('B');
+
+statement ok
+INSERT INTO t8e SELECT 'A' COLLATE NOCASE UNION ALL SELECT 'a' COLLATE NOCASE ON CONFLICT DO NOTHING;
+
+statement ok
+INSERT INTO t8e SELECT 'b' COLLATE NOCASE ON CONFLICT DO NOTHING;
+
+query I
+SELECT k FROM t8e ORDER BY k::BLOB
+----
+A
+B
+a
+b
+
 # TIMETZ keys are equal only with the same time and offset
 statement ok
 CREATE TABLE t8d (k TIMETZ PRIMARY KEY, n INTEGER);

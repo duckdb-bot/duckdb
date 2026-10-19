@@ -561,10 +561,9 @@ unique_ptr<MergeIntoStatement> Binder::GenerateMergeInto(InsertQueryNode &node, 
 				continue;
 			}
 			unique_ptr<ParsedExpression> key = make_uniq<CastExpression>(type, make_uniq<ColumnRefExpression>(col));
-			auto collation = StringType::GetCollation(type);
-			if (!collation.empty()) {
+			if (type.id() == LogicalTypeId::VARCHAR) {
 				// a cast from VARCHAR keeps the collation of its source
-				key = make_uniq<CollateExpression>(collation, std::move(key));
+				key = make_uniq<CollateExpression>(StringType::GetCollation(type), std::move(key));
 			}
 			cast_star->ReplaceListMutable()[col] = std::move(key);
 		}

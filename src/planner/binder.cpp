@@ -33,6 +33,9 @@
 #include "duckdb/planner/tableref/list.hpp"
 #include "duckdb/storage/data_table.hpp"
 #include "duckdb/common/types/uuid.hpp"
+#include "duckdb/execution/expression_executor.hpp"
+#include "duckdb/planner/expression/bound_function_expression.hpp"
+#include "duckdb/planner/expression_iterator.hpp"
 
 #include <algorithm>
 
@@ -407,6 +410,34 @@ bool Binder::CanContainNulls() const {
 void Binder::SetAlwaysRequireRebind() {
 	auto &properties = GetStatementProperties();
 	properties.always_require_rebind = true;
+}
+
+//! Register the databases that the functions of the expression modify, including inside lambda bodies
+static void RegisterModifiedDatabases(ClientContext &context, const Expression &expr, StatementProperties &properties) {
+	if (expr.GetExpressionClass() == ExpressionClass::BOUND_FUNCTION) {
+		auto &function_expr = expr.Cast<BoundFunctionExpression>();
+		auto &function = function_expr.Function();
+		if (function.HasModifiedDatabasesCallback()) {
+			FunctionModifiedDatabasesInput input(function_expr.BindInfo().get(), properties);
+			function.GetModifiedDatabasesCallback()(context, input);
+		}
+		auto lambda_expr = function_expr.GetLambdaExpression();
+		if (lambda_expr) {
+			RegisterModifiedDatabases(context, *lambda_expr, properties);
+		}
+	}
+	ExpressionIterator::EnumerateChildren(
+	    expr, [&](const Expression &child) { RegisterModifiedDatabases(context, child, properties); });
+}
+
+Value Binder::FoldExpression(const Expression &expr) {
+	StatementProperties properties;
+	RegisterModifiedDatabases(context, expr, properties);
+	if (!properties.modified_databases.empty() && GetBindingMode() == BindingMode::PREPARE) {
+		// PREPARE does not run the statement, so the expression is evaluated when EXECUTE binds it again
+		throw ParameterNotResolvedException();
+	}
+	return ExpressionExecutor::EvaluateScalar(context, expr, true);
 }
 
 void Binder::AddTableName(string table_name) {

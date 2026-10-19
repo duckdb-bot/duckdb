@@ -401,6 +401,9 @@ public:
 	void SetCanContainNulls(bool can_contain_nulls);
 	bool CanContainNulls() const;
 	void SetAlwaysRequireRebind();
+	//! Evaluate an expression that binding folds to a constant, delaying a PREPARE to EXECUTE when it modifies a
+	//! database
+	Value FoldExpression(const Expression &expr);
 	void SetInsideSubquery();
 	bool IsInsideSubquery() const;
 

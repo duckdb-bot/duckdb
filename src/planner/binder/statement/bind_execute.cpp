@@ -60,7 +60,7 @@ BoundStatement Binder::Bind(ExecuteStatement &stmt) {
 			}
 			parameter_data = BoundParameterData(constant.TakeValue(), std::move(return_type));
 		} else {
-			auto value = ExpressionExecutor::EvaluateScalar(context, *bound_expr, true);
+			auto value = FoldExpression(*bound_expr);
 			auto value_type = value.type();
 			parameter_data = BoundParameterData(std::move(value), std::move(value_type));
 		}
@@ -84,7 +84,9 @@ BoundStatement Binder::Bind(ExecuteStatement &stmt) {
 		// catalog was modified or statement does not have clear types: rebind the statement before running the execute
 		Planner prepared_planner(context);
 		prepared_planner.parameter_data = bind_values;
-		prepared = prepared_planner.PrepareSQLStatement(entry->second->unbound_statement->Copy());
+		// EXECUTE binds the statement to run it, with every parameter value supplied
+		prepared = prepared_planner.PrepareSQLStatement(entry->second->unbound_statement->Copy(),
+		                                                BindingMode::STANDARD_BINDING);
 		rebound_plan = std::move(prepared_planner.plan);
 		D_ASSERT(prepared->properties.bound_all_parameters);
 		global_binder_state->bound_tables = prepared_planner.binder->global_binder_state->bound_tables;

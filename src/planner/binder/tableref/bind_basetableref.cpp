@@ -114,7 +114,7 @@ unique_ptr<BoundAtClause> Binder::BindAtClause(optional_ptr<AtClause> at_clause)
 	}
 	ConstantBinder binder(*this, context, "AT clause");
 	auto expr = binder.Bind(at_clause->ExpressionMutable());
-	auto val = ExpressionExecutor::EvaluateScalar(context, *expr, true);
+	auto val = FoldExpression(*expr);
 	return make_uniq<BoundAtClause>(at_clause->Unit(), std::move(val));
 }
 

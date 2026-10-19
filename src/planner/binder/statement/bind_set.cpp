@@ -23,7 +23,7 @@ BoundStatement Binder::Bind(SetVariableStatement &stmt) {
 		if (bound_value->HasParameter()) {
 			throw NotImplementedException("SET statements cannot have parameters");
 		}
-		value = ExpressionExecutor::EvaluateScalar(context, *bound_value, true);
+		value = FoldExpression(*bound_value);
 	} else {
 		auto select_node = make_uniq<SelectNode>();
 		select_node->select_list.push_back(std::move(stmt.value));

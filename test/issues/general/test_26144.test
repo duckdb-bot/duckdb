@@ -1,5 +1,5 @@
 # name: test/issues/general/test_26144.test
-# description: Binding rejects functions that modify the database where it evaluates an expression
+# description: PREPARE delays binding an expression that modifies the database and is folded while binding to EXECUTE
 # group: [general]
 
 load {TEST_DIR}/test_26144.db
@@ -7,135 +7,109 @@ load {TEST_DIR}/test_26144.db
 statement ok
 CREATE SEQUENCE s;
 
-statement error
+statement ok
 PREPARE p AS SELECT count(*) FROM range(nextval('s'));
-----
-Binder Error: Function "nextval" modifies the database and cannot be evaluated while binding
 
 query I
 SELECT 42;
 ----
 42
 
+# PREPARE did not advance the sequence
 statement error
-SELECT count(*) FROM range(nextval('s'));
+SELECT currval('s');
 ----
-Binder Error: Function "nextval" modifies the database and cannot be evaluated while binding
+currval: sequence is not yet defined in this session
 
-statement error
+# every EXECUTE binds the statement again and advances the sequence once
+query I
+EXECUTE p;
+----
+1
+
+query I
+EXECUTE p;
+----
+2
+
+statement ok
 PREPARE g AS SELECT count(*) FROM generate_series(1, nextval('s'));
-----
-Binder Error: Function "nextval" modifies the database and cannot be evaluated while binding
 
-statement error
+query I
+EXECUTE g;
+----
+3
+
+statement ok
 PREPARE v AS SELECT count(*) FROM range(setval('s', 10));
-----
-Binder Error: Function "setval" modifies the database and cannot be evaluated while binding
 
-# the check does not depend on the branch that runs
-statement error
-PREPARE x AS SELECT count(*) FROM range(CASE WHEN false THEN nextval('s') ELSE 2 END);
+query I
+SELECT currval('s');
 ----
-Binder Error: Function "nextval" modifies the database and cannot be evaluated while binding
+3
+
+query I
+EXECUTE v;
+----
+10
 
 statement ok
 CREATE MACRO m(x) AS TABLE SELECT * FROM range(x);
 
-statement error
+statement ok
 PREPARE t AS SELECT count(*) FROM m(nextval('s'));
+
+query I
+EXECUTE t;
 ----
-Binder Error: Function "nextval" modifies the database and cannot be evaluated while binding
+11
 
 statement ok
-PREPARE e AS SELECT $1::BIGINT;
+PREPARE cl AS COPY (SELECT 42) TO '{TEST_DIR}/test_26144.csv' (DELIMITER chr(invoke(lambda x: nextval('s'), 0)::INTEGER + 32));
 
-statement error
-EXECUTE e(1 + nextval('s'));
+query I
+SELECT currval('s');
 ----
-Binder Error: Function "nextval" modifies the database and cannot be evaluated while binding
-
-statement error
-PREPARE c AS COPY (SELECT 42) TO '{TEST_DIR}/test_26144.csv' (DELIMITER chr(nextval('s')::INTEGER + 43));
-----
-Binder Error: Function "nextval" modifies the database and cannot be evaluated while binding
-
-statement error
-SET threads = nextval('s');
-----
-Binder Error: Function "nextval" modifies the database and cannot be evaluated while binding
-
-# lambda bodies are checked too
-statement error
-SET threads = invoke(lambda x: nextval('s'), 0) + 1;
-----
-Binder Error: Function "nextval" modifies the database and cannot be evaluated while binding
-
-statement error
-SET threads = list_sum(list_transform([1, 2], lambda x: nextval('s')));
-----
-Binder Error: Function "nextval" modifies the database and cannot be evaluated while binding
-
-statement error
-SET threads = list_sum(list_transform([1], lambda x: list_sum(list_transform([2], lambda y: setval('s', 10)))));
-----
-Binder Error: Function "setval" modifies the database and cannot be evaluated while binding
-
-statement error
-SET threads = list_reduce([1, 2], lambda a, x: nextval('s'), 0);
-----
-Binder Error: Function "nextval" modifies the database and cannot be evaluated while binding
-
-statement error
-COPY (SELECT 42) TO '{TEST_DIR}/test_26144.csv' (DELIMITER chr(list_reduce([1], lambda a, x: a + x, nextval('s'))::INTEGER + 43));
-----
-Binder Error: Function "nextval" modifies the database and cannot be evaluated while binding
-
-statement error
-PREPARE cl AS COPY (SELECT 42) TO '{TEST_DIR}/test_26144.csv' (DELIMITER chr(invoke(lambda x: nextval('s'), 0)::INTEGER + 43));
-----
-Binder Error: Function "nextval" modifies the database and cannot be evaluated while binding
+11
 
 statement ok
-CREATE TABLE tt (i INTEGER);
+EXECUTE cl;
 
-statement error
-SELECT * FROM tt AT (VERSION => nextval('s'));
+query I
+SELECT currval('s');
 ----
-Binder Error: Function "nextval" modifies the database and cannot be evaluated while binding
+12
 
-# a volatile function that does not modify the database is still evaluated
-statement error
-SELECT * FROM tt AT (VERSION => random());
+# a directly run statement evaluates the expression while binding, as EXECUTE does
+query I
+SELECT count(*) FROM range(nextval('s'));
 ----
-Binder Error: Catalog type does not support time travel
+13
 
 statement ok
 BEGIN;
 
-statement error
+statement ok
 PREPARE q AS SELECT count(*) FROM range(nextval('s'));
-----
-Binder Error: Function "nextval" modifies the database and cannot be evaluated while binding
 
 statement ok
-ROLLBACK;
+COMMIT;
 
 statement ok
-BEGIN TRANSACTION READ ONLY;
+BEGIN;
 
-statement error
-PREPARE r AS SELECT count(*) FROM range(nextval('s'));
-----
-Binder Error: Function "nextval" modifies the database and cannot be evaluated while binding
-
-statement ok
-ROLLBACK;
-
-# none of the statements above advanced the sequence
 query I
-SELECT nextval('s');
+EXECUTE q;
 ----
-1
+14
+
+statement ok
+COMMIT;
+
+query I
+EXECUTE q;
+----
+15
 
 # currval only reads the sequence
 statement ok
@@ -147,66 +121,37 @@ PREPARE cur AS SELECT count(*) FROM range(currval('s'));
 query I
 EXECUTE cur;
 ----
-1
+15
 
 statement ok
 COMMIT;
 
-# sequence functions that are evaluated while executing advance the sequence on every EXECUTE
+# an expression that is evaluated while executing advances the sequence on every EXECUTE too
 statement ok
-PREPARE l AS SELECT count(*) FROM (SELECT * FROM range(10) LIMIT nextval('s'));
+PREPARE l AS SELECT count(*) FROM (SELECT * FROM range(100) LIMIT nextval('s'));
 
 query I
 EXECUTE l;
 ----
-2
+16
 
 query I
 EXECUTE l;
 ----
-3
+17
 
+# a volatile function that does not modify the database is evaluated while binding
 statement ok
-PREPARE sub AS SELECT count(*) FROM range((SELECT nextval('s')));
-
-query I
-EXECUTE sub;
-----
-4
-
-statement ok
-ATTACH '{TEST_DIR}/test_26144_ro.db' AS ro;
-
-statement ok
-CREATE SEQUENCE ro.s;
-
-statement ok
-DETACH ro;
-
-statement ok
-ATTACH '{TEST_DIR}/test_26144_ro.db' AS ro (READ_ONLY);
+CREATE TABLE tt (i INTEGER);
 
 statement error
-PREPARE a AS SELECT count(*) FROM range(nextval('ro.s'));
+SELECT * FROM tt AT (VERSION => random());
 ----
-Binder Error: Function "nextval" modifies the database and cannot be evaluated while binding
-
-statement error
-PREPARE b AS SELECT count(*) FROM range(setval('ro.s', 10));
-----
-Binder Error: Function "setval" modifies the database and cannot be evaluated while binding
-
-query I
-SELECT 42;
-----
-42
-
-statement ok
-DETACH ro;
+Binder Error: Catalog type does not support time travel
 
 restart
 
 query I
 SELECT nextval('s');
 ----
-5
+18

@@ -778,7 +778,7 @@ BoundStatement Binder::BindSelectNode(SelectNode &statement, BoundStatement from
 		bind_state.unbound_groups.push_back(std::move(group_copy));
 	}
 
-	// bind the HAVING clause, if any, once all groups are known
+	// bind the HAVING clause, if any, after the SELECT list and its groups
 	if (statement.having) {
 		HavingBinder having_binder(*this, context, result, statement.aggregate_handling);
 		ExpressionBinder::QualifyColumnNames(having_binder, statement.having);

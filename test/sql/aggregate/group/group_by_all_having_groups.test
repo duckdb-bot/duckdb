@@ -57,6 +57,12 @@ SELECT lower(s) AS l, count(*) FROM collated GROUP BY ALL HAVING lower(s) = 'A';
 ----
 a	2
 
+# HAVING reads the selected value, not the collated group
+query TI
+SELECT s AS k, count(*) FROM (SELECT 'A' COLLATE NOCASE AS s FROM range(2)) t GROUP BY ALL HAVING unicode(k) = 65;
+----
+A	2
+
 # GROUPING and correlated subqueries in HAVING see the groups of GROUP BY ALL
 query II
 SELECT x % 2 AS k, count(*) AS n FROM range(6) t(x) GROUP BY ALL HAVING GROUPING(x % 2) = 0 ORDER BY ALL;

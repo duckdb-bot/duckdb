@@ -1151,11 +1151,10 @@ ParquetStatisticsUtils::GetBloomFilterHashStrategy(const ParquetColumnSchema &sc
 	}
 }
 
-bool ParquetStatisticsUtils::BloomFilterExcludes(const TableFilter &duckdb_filter,
-                                                 const duckdb_parquet::ColumnMetaData &column_meta_data,
-                                                 TProtocol &file_proto, Allocator &allocator,
-                                                 const ParquetColumnSchema &schema,
-                                                 ParquetBloomFilterHashStrategy hash_strategy) {
+static bool ReadAndApplyBloomFilter(const TableFilter &duckdb_filter,
+                                    const duckdb_parquet::ColumnMetaData &column_meta_data, TProtocol &file_proto,
+                                    Allocator &allocator, const ParquetColumnSchema &schema,
+                                    ParquetBloomFilterHashStrategy hash_strategy) {
 	if (!HasFilterConstants(duckdb_filter, hash_strategy) || !column_meta_data.__isset.bloom_filter_offset ||
 	    column_meta_data.bloom_filter_offset <= 0) {
 		return false;
@@ -1214,6 +1213,22 @@ bool ParquetStatisticsUtils::BloomFilterExcludes(const TableFilter &duckdb_filte
 	transport.read(new_buffer->ptr, UnsafeNumericCast<uint32_t>(bloom_filter_data_size));
 	ParquetBloomFilter bloom_filter(std::move(new_buffer));
 	return ApplyBloomFilter(duckdb_filter, bloom_filter, schema, hash_strategy);
+}
+
+bool ParquetStatisticsUtils::BloomFilterExcludes(const TableFilter &duckdb_filter,
+                                                 const duckdb_parquet::ColumnMetaData &column_meta_data,
+                                                 TProtocol &file_proto, Allocator &allocator,
+                                                 const ParquetColumnSchema &schema,
+                                                 ParquetBloomFilterHashStrategy hash_strategy) {
+	auto &transport = reinterpret_cast<ThriftFileTransport &>(*file_proto.getTransport());
+	// page headers are read in one go only while the transport holds no prefetched data
+	const bool had_prefetch = transport.HasPrefetch();
+	auto excludes =
+	    ReadAndApplyBloomFilter(duckdb_filter, column_meta_data, file_proto, allocator, schema, hash_strategy);
+	if (!had_prefetch) {
+		transport.ClearPrefetch();
+	}
+	return excludes;
 }
 
 ParquetBloomFilter::ParquetBloomFilter(idx_t num_entries, double bloom_filter_false_positive_ratio) {

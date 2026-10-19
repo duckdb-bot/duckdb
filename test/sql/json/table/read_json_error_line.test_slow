@@ -1,0 +1,57 @@
+# name: test/sql/json/table/read_json_error_line.test_slow
+# description: JSON parse errors report the malformed line when it lies in a later buffer or spans two buffers
+# group: [table]
+
+require json
+
+# lines of 64 bytes, so that line 262144 spans the end of the first parallel read of 16 MiB, line 524288 the end of
+# the first serial read of 32 MiB, and line 550000 lies in a later read
+statement ok
+CREATE MACRO json_lines(bad, bad_line) AS TABLE SELECT CASE WHEN i = bad THEN bad_line ELSE '{"a":' || i || ',"p":"' || repeat('p', 50 - length(i::VARCHAR)) || '"}' END FROM range(1, 600001) t(i)
+
+statement ok
+COPY (FROM json_lines(550000, '{"a":x,"p":"' || repeat('p', 49) || '"}')) TO '__TEST_DIR__/late.jsonl' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '', DELIMITER '\t')
+
+statement ok
+COPY (FROM json_lines(262144, '{"a":x,"p":"' || repeat('p', 49) || '"}')) TO '__TEST_DIR__/boundary.jsonl' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '', DELIMITER '\t')
+
+statement ok
+COPY (FROM json_lines(524288, '{"a":x,"p":"' || repeat('p', 49) || '"}')) TO '__TEST_DIR__/serial_boundary.jsonl' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '', DELIMITER '\t')
+
+statement ok
+COPY (FROM json_lines(550000, '{"a":x,"p":"' || repeat('p', 49) || '"}')) TO '__TEST_DIR__/late.jsonl.gz' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '', DELIMITER '\t', COMPRESSION gzip)
+
+statement ok
+COPY (FROM json_lines(550000, '{"a":"x","p":"' || repeat('p', 47) || '"}')) TO '__TEST_DIR__/late_transform.jsonl' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '', DELIMITER '\t')
+
+foreach threads 1 4
+
+statement ok
+SET threads = ${threads}
+
+statement error
+SELECT sum(a) FROM read_json('__TEST_DIR__/late.jsonl', format = 'newline_delimited', columns = {a: 'INT', p: 'VARCHAR'})
+----
+at byte 6 in line 550000: unexpected character
+
+statement error
+SELECT sum(a) FROM read_json('__TEST_DIR__/boundary.jsonl', format = 'newline_delimited', columns = {a: 'INT', p: 'VARCHAR'})
+----
+at byte 6 in line 262144: unexpected character
+
+statement error
+SELECT sum(a) FROM read_json('__TEST_DIR__/serial_boundary.jsonl', format = 'newline_delimited', columns = {a: 'INT', p: 'VARCHAR'})
+----
+at byte 6 in line 524288: unexpected character
+
+statement error
+SELECT sum(a) FROM read_json('__TEST_DIR__/late.jsonl.gz', format = 'newline_delimited', columns = {a: 'INT', p: 'VARCHAR'})
+----
+at byte 6 in line 550000: unexpected character
+
+statement error
+SELECT sum(a) FROM read_json('__TEST_DIR__/late_transform.jsonl', format = 'newline_delimited', columns = {a: 'INT', p: 'VARCHAR'})
+----
+in line 550000: Failed to cast value to numerical
+
+endloop

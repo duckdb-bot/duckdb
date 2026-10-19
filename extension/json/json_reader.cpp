@@ -317,7 +317,7 @@ void JSONReader::AddParseError(JSONReaderScanState &scan_state, idx_t line_or_ob
 	auto error_msg = StringUtil::Format("Malformed JSON in file \"%s\", at byte %llu in %s {line}: %s. %s",
 	                                    GetFileName(), err.pos + 1, unit, err.msg, extra);
 	lock_guard<mutex> guard(lock);
-	AddError(scan_state.current_buffer_handle->buffer_index, line_or_object_in_buf + 1, error_msg);
+	AddError(scan_state.current_buffer_handle->buffer_index, line_or_object_in_buf, error_msg);
 	ThrowErrorsIfPossible();
 	// if we could not throw immediately - finish processing this buffer
 	scan_state.buffer_offset = 0;
@@ -1004,7 +1004,8 @@ bool JSONReader::ParseNextChunk(JSONReaderScanState &scan_state) {
 				err.code = YYJSON_READ_ERROR_UNEXPECTED_CHARACTER;
 				err.msg = "unexpected character";
 				err.pos = json_size;
-				AddParseError(scan_state, scan_state.lines_or_objects_in_buffer, err);
+				// The offset counts from the start of the value before it, which was already counted
+				AddParseError(scan_state, scan_state.lines_or_objects_in_buffer - 1, err);
 				return false;
 			}
 		}

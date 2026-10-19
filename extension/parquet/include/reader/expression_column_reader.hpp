@@ -55,6 +55,8 @@ public:
 
 	// If this reader was created on top of a child reader, after-the-fact, the schema needs to live somewhere
 	unique_ptr<ParquetColumnSchema> owned_schema;
+	//! Whether the expression casts a file column to the type of the column across all files
+	bool casts_to_global_type = false;
 
 public:
 	void InitializeRead(idx_t row_group_idx_p, idx_t row_group_num_rows, const vector<ColumnChunk> &columns,
@@ -74,6 +76,9 @@ public:
 			child_reader->GatherColumnChunks(column_chunks);
 		}
 	}
+
+	//! Adds the file and the column to an error of the expression, as the multi-file reader does for its casts
+	[[noreturn]] void ThrowExpressionError(std::exception &ex) const;
 
 	idx_t FileOffset() const override {
 		return child_readers[0]->FileOffset();

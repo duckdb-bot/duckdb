@@ -6,6 +6,11 @@
 #include "duckdb/common/types/vector.hpp"
 #include "duckdb/common/vector/flat_vector.hpp"
 #include "duckdb/planner/filter/expression_filter.hpp"
+#include "duckdb/common/error_data.hpp"
+#include "duckdb/common/multi_file/multi_file_reader.hpp"
+#include "duckdb/planner/expression/bound_cast_expression.hpp"
+#include "duckdb/planner/expression/bound_function_expression.hpp"
+#include "duckdb/planner/expression/bound_reference_expression.hpp"
 
 namespace duckdb_apache {
 namespace thrift {
@@ -123,7 +128,11 @@ void ExpressionColumnReader::Select(ColumnReaderInput &input, Vector &result, co
 	}
 	intermediate_chunk.SetChildCardinality(input.num_values);
 	//! This executes the expression *and* applies the selection vector in the process
-	executor.ExecuteExpression(intermediate_chunk, result, sel, approved_tuple_count);
+	try {
+		executor.ExecuteExpression(intermediate_chunk, result, sel, approved_tuple_count);
+	} catch (std::exception &ex) {
+		ThrowExpressionError(ex);
+	}
 	if (input.num_values != approved_tuple_count) {
 		//! Since the caller expects the rows to be in the spot they would have been in the input chunk
 		//! We now have to reverse this selection ..
@@ -151,8 +160,32 @@ idx_t ExpressionColumnReader::Read(ColumnReaderInput &input, Vector &result) {
 
 	// Execute the expression
 	intermediate_chunk.SetChildCardinality(amount.GetIndex());
-	executor.ExecuteExpression(intermediate_chunk, result);
+	try {
+		executor.ExecuteExpression(intermediate_chunk, result);
+	} catch (std::exception &ex) {
+		ThrowExpressionError(ex);
+	}
 	return amount.GetIndex();
+}
+
+void ExpressionColumnReader::ThrowExpressionError(std::exception &ex) const {
+	ErrorData error(ex);
+	if (!casts_to_global_type || error.Type() == ExceptionType::INTERNAL ||
+	    expr->GetExpressionType() != ExpressionType::OPERATOR_CAST) {
+		throw;
+	}
+	auto &cast = expr->Cast<BoundFunctionExpression>();
+	auto &child = BoundCastExpression::Child(cast);
+	if (child.GetExpressionType() != ExpressionType::BOUND_REF) {
+		throw;
+	}
+	auto &column = child_readers[child.Cast<BoundReferenceExpression>().Index()]->Schema();
+	Identifier column_name(column.name);
+	auto &source_type = child.GetReturnType();
+	auto &target_type = cast.GetReturnType();
+	throw ConversionException("Error while reading file \"%s\": failed to cast column %s from type %s to %s: %s\n\n%s",
+	                          reader.GetFileName(), column_name, source_type, target_type, error.RawMessage(),
+	                          MultiFileReader::GetCastErrorHint(reader, column_name, source_type, target_type));
 }
 
 void ExpressionColumnReader::Skip(idx_t num_values) {

@@ -81,7 +81,8 @@ public:
 		annotated_lock_guard lock(index_entries_lock);
 		return unbound_count != 0;
 	}
-	//! Returns true if an unbound index has buffered WAL operations.
+	//! Returns true if an unbound index has buffered WAL operations. Does not wait, and counts a busy list or entry
+	//! as having them.
 	bool HasBufferedReplays() const;
 	//! Returns true, if there are unique indexes.
 	bool HasUniqueIndexes() const;

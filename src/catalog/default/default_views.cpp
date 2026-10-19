@@ -41,9 +41,10 @@ static const DefaultView internal_views[] = {
      "SELECT table_oid attrelid, column_name attname, data_type_id atttypid, 0 attstattarget, NULL attlen, "
      "column_index attnum, 0 attndims, -1 attcacheoff, case when data_type ilike '%decimal%' then "
      "numeric_precision*1000+numeric_scale else -1 end atttypmod, false attbyval, NULL attstorage, NULL attalign, NOT "
-     "is_nullable attnotnull, column_default IS NOT NULL atthasdef, false atthasmissing, '' attidentity, '' "
-     "attgenerated, false attisdropped, true attislocal, 0 attinhcount, 0 attcollation, NULL attcompression, NULL "
-     "attacl, NULL attoptions, NULL attfdwoptions, NULL attmissingval FROM duckdb_columns()"},
+     "is_nullable attnotnull, column_default IS NOT NULL atthasdef, false atthasmissing, '' attidentity, CASE WHEN "
+     "is_generated THEN 'v' ELSE '' END attgenerated, false attisdropped, true attislocal, 0 attinhcount, 0 "
+     "attcollation, NULL attcompression, NULL attacl, NULL attoptions, NULL attfdwoptions, NULL attmissingval FROM "
+     "duckdb_columns()"},
     {"pg_catalog", "pg_attrdef",
      "SELECT column_index oid, table_oid adrelid, column_index adnum, column_default adbin from duckdb_columns() where "
      "column_default is not null;"},

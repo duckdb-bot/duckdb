@@ -10,6 +10,10 @@
 #include "duckdb/storage/storage_info.hpp"
 
 #include <thread>
+#if defined(__GLIBC__)
+#include <pthread.h>
+#include <sched.h>
+#endif
 
 using namespace duckdb;
 
@@ -213,6 +217,47 @@ TEST_CASE("Test async threads are launched by the first async task", "[api]") {
 		REQUIRE(count == task_count);
 	}
 }
+#if defined(__GLIBC__)
+TEST_CASE("Test async threads launched from a pinned thread run on every CPU", "[api]") {
+	cpu_set_t process_cpus;
+	REQUIRE(sched_getaffinity(0, sizeof(process_cpus), &process_cpus) == 0);
+	if (CPU_COUNT(&process_cpus) < 2) {
+		return;
+	}
+	DBConfig config;
+	config.options.maximum_threads = 1;
+	config.options.async_threads = 4;
+	DuckDB db(nullptr, &config);
+	Connection con(db);
+	const auto threads_before = ProcessThreadIds();
+
+	// launch the async threads from a thread that is pinned to one CPU, like a pinned worker
+	int first_cpu = 0;
+	while (!CPU_ISSET(first_cpu, &process_cpus)) {
+		first_cpu++;
+	}
+	cpu_set_t one_cpu;
+	CPU_ZERO(&one_cpu);
+	CPU_SET(first_cpu, &one_cpu);
+	REQUIRE(pthread_setaffinity_np(pthread_self(), sizeof(one_cpu), &one_cpu) == 0);
+	auto async_threads = TaskScheduler::GetScheduler(*con.context).NumberOfAsyncThreads();
+	REQUIRE(pthread_setaffinity_np(pthread_self(), sizeof(process_cpus), &process_cpus) == 0);
+	REQUIRE(async_threads == 4);
+
+	idx_t threads_on_every_cpu = 0;
+	for (auto &id : ProcessThreadIds()) {
+		if (threads_before.find(id) != threads_before.end()) {
+			continue;
+		}
+		cpu_set_t thread_cpus;
+		if (sched_getaffinity(std::stoi(id), sizeof(thread_cpus), &thread_cpus) == 0 &&
+		    CPU_EQUAL(&thread_cpus, &process_cpus)) {
+			threads_on_every_cpu++;
+		}
+	}
+	REQUIRE(threads_on_every_cpu >= 4);
+}
+#endif
 #endif
 
 TEST_CASE("Test launching async threads while the thread count changes", "[api]") {

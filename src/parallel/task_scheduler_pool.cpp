@@ -44,11 +44,18 @@ struct TaskSchedulerThread {
 #endif
 };
 
+#ifndef DUCKDB_NO_THREADS
+static vector<int> GetProcessCPUMask();
+#endif
+
 TaskSchedulerPool::TaskSchedulerPool(DatabaseInstance &db_p, TaskSchedulerType pool_type_p)
     : db(db_p), pool_type(pool_type_p), requested_thread_count(0),
       current_thread_count(pool_type == TaskSchedulerType::REGULAR ? 1 : 0) {
 #ifndef DUCKDB_NO_THREADS
 	semaphore = make_uniq<LightWeightSemaphoreWrapper>();
+	if (pool_type == TaskSchedulerType::ASYNC) {
+		launch_cpus = GetProcessCPUMask();
+	}
 #endif
 }
 
@@ -115,6 +122,17 @@ static void SetThreadAffinity(thread &thread, const vector<int> &available_cpus,
 		// if we did not manage to set affinity, the thread just does not have affinity, which is OK
 		pthread_setaffinity_np(thread.native_handle(), sizeof(cpu_set_t), &cpuset);
 	}
+#endif
+}
+
+static void SetThreadAffinityMask(thread &thread, const vector<int> &cpus) {
+#if defined(__GLIBC__)
+	cpu_set_t cpuset;
+	CPU_ZERO(&cpuset);
+	for (auto cpu : cpus) {
+		CPU_SET(cpu, &cpuset);
+	}
+	pthread_setaffinity_np(thread.native_handle(), sizeof(cpu_set_t), &cpuset);
 #endif
 }
 
@@ -202,6 +220,9 @@ void TaskSchedulerPool::RelaunchThreads(TaskScheduler &scheduler, bool destroy) 
 				worker_thread = make_uniq<thread>(ThreadExecuteTasks, &scheduler, marker.get(), pool_type);
 				if (!available_cpus.empty()) {
 					SetThreadAffinity(*worker_thread, available_cpus, threads.size());
+				} else if (!launch_cpus.empty()) {
+					// a thread inherits the CPUs of the thread that launches it, which can be a pinned worker
+					SetThreadAffinityMask(*worker_thread, launch_cpus);
 				}
 			} catch (std::exception &ex) {
 				// thread constructor failed - this can happen when the system has too many threads allocated

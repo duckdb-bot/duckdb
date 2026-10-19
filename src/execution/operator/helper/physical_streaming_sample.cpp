@@ -147,7 +147,7 @@ InsertionOrderPreservingMap<string> PhysicalStreamingSample::ParamsToString() co
 	InsertionOrderPreservingMap<string> result;
 	if (sample_options->is_percentage) {
 		result["Sample Method"] =
-		    EnumUtil::ToString(sample_options->method) + ": " + StringUtil::Format("%f%%", 100 * percentage);
+		    EnumUtil::ToString(sample_options->method) + ": " + StringUtil::ToString(100 * percentage) + "%";
 	} else {
 		result["Sample Method"] = EnumUtil::ToString(sample_options->method) + ": " + to_string(rows) + " rows";
 	}

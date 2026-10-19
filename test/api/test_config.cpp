@@ -2,6 +2,7 @@
 #include "test_helpers.hpp"
 #include "duckdb/main/http/http_util.hpp"
 #include "duckdb/common/local_file_system.hpp"
+#include "duckdb/common/virtual_file_system.hpp"
 
 #include <set>
 #include <map>
@@ -59,15 +60,6 @@ TEST_CASE("Test allowed options", "[api]") {
 	identifier_map_t<Value> config_dict;
 	string option;
 
-	SECTION("allowed_directories") {
-		config_dict.emplace("allowed_directories", Value::LIST({Value("test")}));
-		option = "allowed_directories";
-	}
-	SECTION("allowed_paths") {
-		config_dict.emplace("allowed_paths", Value::LIST({Value("test")}));
-		option = "allowed_paths";
-	}
-
 	SECTION("enable_logging") {
 		config_dict.emplace("enable_logging", Value::BOOLEAN(false));
 		option = "enable_logging";
@@ -111,6 +103,74 @@ TEST_CASE("Test allowed options", "[api]") {
 		REQUIRE(error_data.RawMessage() ==
 		        StringUtil::Format("Cannot change/set %s before the database is started", option));
 	}
+}
+
+TEST_CASE("Allowed directories and paths set before the database starts", "[api]") {
+	LocalFileSystem fs;
+	auto allowed_directory = TestCreatePath("allowed_before_start");
+	fs.CreateDirectory(allowed_directory);
+	auto directory_file = fs.JoinPath(allowed_directory, "in_directory.csv");
+	auto allowed_file = TestCreatePath("allowed_before_start.csv");
+	auto other_file = TestCreatePath("not_allowed_before_start.csv");
+	{
+		DuckDB db(nullptr);
+		Connection con(db);
+		for (auto &file : {directory_file, allowed_file, other_file}) {
+			REQUIRE_NO_FAIL(con.Query("COPY (SELECT 42 AS i) TO '" + file + "'"));
+		}
+	}
+
+	// with enable_external_access disabled before and after them, and with a file system given to the config
+	for (idx_t test_case = 0; test_case < 3; test_case++) {
+		DBConfig config;
+		if (test_case == 2) {
+			config.file_system = make_uniq<VirtualFileSystem>();
+		}
+		if (test_case != 1) {
+			config.SetOptionByName("enable_external_access", Value::BOOLEAN(false));
+		}
+		config.SetOptionByName("allowed_directories", Value::LIST({Value(allowed_directory)}));
+		config.SetOptionByName("allowed_paths", Value::LIST({Value(allowed_file)}));
+		if (test_case == 1) {
+			config.SetOptionByName("enable_external_access", Value::BOOLEAN(false));
+		}
+		// they are sanitized when they are set
+		auto directories = config.GetAllowedDirectories();
+		REQUIRE(directories.size() == 1);
+		REQUIRE(StringUtil::EndsWith(directories[0], "/"));
+		REQUIRE_THROWS(config.SetOptionByName("allowed_paths", Value::LIST({Value("file://otherhost/tmp/x.csv")})));
+		config.SetOptionByName("allowed_paths", Value::LIST({Value(allowed_file)}));
+		REQUIRE(config.GetAllowedPaths().size() == 1);
+
+		DuckDB db(nullptr, &config);
+		Connection con(db);
+		auto result = con.Query("SELECT * FROM read_csv('" + directory_file + "')");
+		REQUIRE(CHECK_COLUMN(result, 0, {42}));
+		result = con.Query("SELECT * FROM read_csv('" + allowed_file + "')");
+		REQUIRE(CHECK_COLUMN(result, 0, {42}));
+		REQUIRE_FAIL(con.Query("SELECT * FROM read_csv('" + other_file + "')"));
+		// they cannot be widened or reset once the database runs, also not through its config
+		REQUIRE_FAIL(con.Query("SET allowed_paths = ['" + other_file + "']"));
+		REQUIRE_FAIL(con.Query("RESET allowed_directories"));
+		auto &db_config = DBConfig::GetConfig(*db.instance);
+		REQUIRE_THROWS(db_config.SetOptionByName("allowed_paths", Value::LIST({Value(other_file)})));
+		REQUIRE_THROWS(db_config.SetOptionByName("allowed_directories", Value::LIST({Value(other_file)})));
+		REQUIRE_FAIL(con.Query("SELECT * FROM read_csv('" + other_file + "')"));
+	}
+
+	// a caller-owned config can also reset them
+	DBConfig config;
+	config.SetOptionByName("enable_external_access", Value::BOOLEAN(false));
+	config.SetOptionByName("allowed_paths", Value::LIST({Value(allowed_file)}));
+	config.SetOptionByName("allowed_directories", Value::LIST({Value(allowed_directory)}));
+	auto paths_option = DBConfig::GetOptionByName("allowed_paths");
+	auto directories_option = DBConfig::GetOptionByName("allowed_directories");
+	REQUIRE(paths_option);
+	REQUIRE(directories_option);
+	REQUIRE_NOTHROW(config.ResetOption(nullptr, *paths_option));
+	REQUIRE_NOTHROW(config.ResetOption(nullptr, *directories_option));
+	REQUIRE(config.GetAllowedPaths().empty());
+	REQUIRE(config.GetAllowedDirectories().empty());
 }
 
 TEST_CASE("Test user_agent", "[api]") {

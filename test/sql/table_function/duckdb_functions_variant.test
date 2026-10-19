@@ -1,0 +1,26 @@
+# name: test/sql/table_function/duckdb_functions_variant.test
+# description: Every overload of the VARIANT functions has the description and examples written for it
+# group: [table_function]
+
+query III
+SELECT count(*), count(description), count(*) FILTER (len(examples) > 0) FROM duckdb_functions() WHERE function_name IN ('variant_array_length', 'variant_contains', 'variant_exists', 'variant_extract', 'variant_extract_string', 'variant_keys', 'variant_type', 'variant_normalize', 'variant_comparator', 'variant_typeof')
+----
+19	19	19
+
+# each overload gets the description of its own parameters
+query III
+SELECT function_name, parameter_types, description FROM duckdb_functions() WHERE function_name IN ('variant_extract', 'variant_extract_string', 'variant_exists') ORDER BY ALL
+----
+variant_exists	[VARIANT, VARCHAR]	Returns whether the specified path exists in the variant.
+variant_exists	[VARIANT, 'VARCHAR[]']	Returns a boolean for each specified path, indicating whether that path exists in the variant.
+variant_extract	[VARIANT, UINTEGER]	Returns the entry at `index` from the `input_variant` if it's an ARRAY.
+variant_extract	[VARIANT, VARCHAR]	Returns the `field` from the `input_variant` if it's an OBJECT.
+variant_extract_string	[VARIANT, VARCHAR]	Returns the stringified representation at `path` from the `input_variant`.
+variant_extract_string	[VARIANT, 'VARCHAR[]']	Returns the stringified representation for each `path` from the `input_variant`.
+
+query IIII
+SELECT parameter_types, description, examples, categories FROM duckdb_functions() WHERE function_name = 'variant_type' ORDER BY ALL
+----
+[VARIANT]	Returns the type of the root `input_variant`.	['variant_type({\'a\': { \'a\': 1, \'b\': 2}}::VARIANT)']	[variant]
+[VARIANT, VARCHAR]	Returns the type of the value at the specified path.	['variant_type({\'a\': { \'a\': 1, \'b\': 2}}::VARIANT, \'a\')']	[variant]
+[VARIANT, 'VARCHAR[]']	Returns a list of types for the values at each specified path.	['variant_type({\'a\': { \'a\': 1, \'b\': 2}, \'b\': {\'c\': 3}}::VARIANT, [\'a\', \'b\'])']	[variant]

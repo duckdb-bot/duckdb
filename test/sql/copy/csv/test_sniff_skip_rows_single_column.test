@@ -1,0 +1,171 @@
+# name: test/sql/copy/csv/test_sniff_skip_rows_single_column.test
+# description: The sniffer does not skip the rows of a single column file for a delimiter seen only in its last row
+# group: [csv]
+
+foreach delimiter ; |
+
+statement ok
+COPY (SELECT l FROM (VALUES (1, 'c0'), (2, 'v0'), (3, 'a{delimiter}b')) t(i, l) ORDER BY i) TO '{TEST_DIR}/last_row.csv' (FORMAT CSV, QUOTE '', HEADER 0);
+
+query I
+SELECT c0 = 'a{delimiter}b' FROM read_csv('{TEST_DIR}/last_row.csv');
+----
+false
+true
+
+endloop
+
+statement ok
+COPY (SELECT l FROM (VALUES (1, 'c0'), (2, 'v0'), (3, 'a' || chr(9) || 'b')) t(i, l) ORDER BY i) TO '{TEST_DIR}/tab.csv' (FORMAT CSV, QUOTE '', HEADER 0);
+
+query I
+SELECT c0 = 'a' || chr(9) || 'b' FROM read_csv('{TEST_DIR}/tab.csv');
+----
+false
+true
+
+# a single column file written by COPY reads back as it was written
+statement ok
+CREATE TABLE t(c0 VARCHAR);
+
+statement ok
+INSERT INTO t VALUES ('a'), ('b'), ('x;y');
+
+statement ok
+COPY t TO '{TEST_DIR}/roundtrip.csv' (FORMAT CSV);
+
+query I
+SELECT c0 FROM read_csv('{TEST_DIR}/roundtrip.csv');
+----
+a
+b
+x;y
+
+# leading rows are still skipped when a header and a row follow them
+statement ok
+COPY (SELECT l FROM (VALUES (1, 'report'), (2, 'june'), (3, 'id;name'), (4, '1;a')) t(i, l) ORDER BY i) TO '{TEST_DIR}/notes.csv' (FORMAT CSV, QUOTE '', HEADER 0);
+
+query II
+SELECT id, name FROM read_csv('{TEST_DIR}/notes.csv');
+----
+1	a
+
+# the same with a quoted value written before the last one
+statement ok
+CREATE TABLE q(c0 VARCHAR);
+
+statement ok
+INSERT INTO q VALUES ('a,b'), ('x;y');
+
+statement ok
+COPY q TO '{TEST_DIR}/quoted.csv' (FORMAT CSV);
+
+query I
+SELECT c0 FROM read_csv('{TEST_DIR}/quoted.csv');
+----
+a,b
+x;y
+
+# comments are not skipped rows
+statement ok
+COPY (SELECT l FROM (VALUES (1, '# note'), (2, '1;2')) t(i, l) ORDER BY i) TO '{TEST_DIR}/comment.csv' (FORMAT CSV, QUOTE '', HEADER 0);
+
+query II
+FROM read_csv('{TEST_DIR}/comment.csv', header = false);
+----
+1	2
+
+# leading rows that fill the whole sample are still skipped
+statement ok
+COPY (SELECT l FROM (SELECT i, 'note ' || i AS l FROM range(2047) t(i) UNION ALL VALUES (2047, 'id;name'), (2048, '1;a'), (2049, '2;b')) ORDER BY i) TO '{TEST_DIR}/long_notes.csv' (FORMAT CSV, QUOTE '', HEADER 0);
+
+query II
+SELECT id, name FROM read_csv('{TEST_DIR}/long_notes.csv');
+----
+1	a
+2	b
+
+# an empty line before a single row is not a skipped row
+statement ok
+COPY (SELECT l FROM (VALUES (1, ''), (2, '1;2')) t(i, l) ORDER BY i) TO '{TEST_DIR}/empty_line.csv' (FORMAT CSV, QUOTE '', HEADER 0);
+
+query II
+FROM read_csv('{TEST_DIR}/empty_line.csv', header = false);
+----
+1	2
+
+# skipped rows that hold the delimiter, also as a trailing delimiter
+statement ok
+COPY (SELECT l FROM (VALUES (1, 'a;b'), (2, '1;2;3')) t(i, l) ORDER BY i) TO '{TEST_DIR}/delimiter_notes.csv' (FORMAT CSV, QUOTE '', HEADER 0);
+
+query III
+FROM read_csv('{TEST_DIR}/delimiter_notes.csv', header = false);
+----
+1	2	3
+
+statement ok
+COPY (SELECT l FROM (VALUES (1, 'report'), (2, 'note;'), (3, '1;2;')) t(i, l) ORDER BY i) TO '{TEST_DIR}/trailing_delimiter.csv' (FORMAT CSV, QUOTE '', HEADER 0);
+
+query III
+FROM read_csv('{TEST_DIR}/trailing_delimiter.csv', header = false);
+----
+1	2	NULL
+
+# with a set delimiter, rows without it are still skipped
+statement ok
+COPY (SELECT l FROM (VALUES (1, 'note'), (2, '1;2')) t(i, l) ORDER BY i) TO '{TEST_DIR}/set_delimiter.csv' (FORMAT CSV, QUOTE '', HEADER 0);
+
+query II
+FROM read_csv('{TEST_DIR}/set_delimiter.csv', delim = ';', header = false);
+----
+1	2
+
+statement ok
+COPY (SELECT l FROM (VALUES (1, '1'), (2, '2'), (3, '3;4')) t(i, l) ORDER BY i) TO '{TEST_DIR}/null_padding.csv' (FORMAT CSV, QUOTE '', HEADER 0);
+
+# column names or types for two columns still skip rows without the delimiter
+query II
+FROM read_csv('{TEST_DIR}/set_delimiter.csv', header = false, names = ['x', 'y']);
+----
+1	2
+
+query II
+FROM read_csv('{TEST_DIR}/set_delimiter.csv', header = false, types = ['INTEGER', 'INTEGER']);
+----
+1	2
+
+# a single column name or type keeps the single column reading
+query I
+SELECT x FROM read_csv('{TEST_DIR}/last_row.csv', names = ['x']);
+----
+v0
+a|b
+
+query I
+SELECT c0 FROM read_csv('{TEST_DIR}/last_row.csv', types = ['VARCHAR']);
+----
+v0
+a|b
+
+# a wider dialect that is the only one to read the file is kept
+statement ok
+COPY (SELECT l FROM (VALUES (1, 'report'), (2, '"hello",42')) t(i, l) ORDER BY i) TO '{TEST_DIR}/only_dialect.csv' (FORMAT CSV, QUOTE '', HEADER 0);
+
+query II
+FROM read_csv('{TEST_DIR}/only_dialect.csv', quote = '"', header = false);
+----
+hello	42
+
+# null padding reads every row
+query II
+FROM read_csv('{TEST_DIR}/null_padding.csv', header = false, null_padding = true);
+----
+1	NULL
+2	NULL
+3	4
+
+# a file without a final newline that ends right at the end of the sample
+query II
+SELECT count(*), count(*) FILTER (c0 = 'a;b') FROM read_csv('{DATA_DIR}/csv/single_column_sample_end.csv');
+----
+2047	1

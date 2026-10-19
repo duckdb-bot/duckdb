@@ -1,106 +1,134 @@
 # name: test/issues/general/test_26144.test
-# description: A sequence function folded while binding a prepared statement marks the database as modified
+# description: Binding rejects functions that modify the database where it evaluates an expression
 # group: [general]
 
 load {TEST_DIR}/test_26144.db
 
-# the restart below replays the sequence changes from the WAL
-statement ok
-PRAGMA disable_checkpoint_on_shutdown
-
-statement ok
-PRAGMA wal_autocheckpoint='1TB';
-
 statement ok
 CREATE SEQUENCE s;
 
-statement ok
-CREATE SEQUENCE s2;
-
-statement ok
-PREPARE z AS SELECT count(*) FROM range(nextval('s2'));
-
-statement ok
+statement error
 PREPARE p AS SELECT count(*) FROM range(nextval('s'));
+----
+Binder Error: Function "nextval" modifies the database and cannot be evaluated while binding
 
 query I
 SELECT 42;
 ----
 42
 
-query I
-EXECUTE p;
+statement error
+SELECT count(*) FROM range(nextval('s'));
 ----
-1
+Binder Error: Function "nextval" modifies the database and cannot be evaluated while binding
+
+statement error
+PREPARE g AS SELECT count(*) FROM generate_series(1, nextval('s'));
+----
+Binder Error: Function "nextval" modifies the database and cannot be evaluated while binding
+
+statement error
+PREPARE v AS SELECT count(*) FROM range(setval('s', 10));
+----
+Binder Error: Function "setval" modifies the database and cannot be evaluated while binding
+
+# the check does not depend on the branch that runs
+statement error
+PREPARE x AS SELECT count(*) FROM range(CASE WHEN false THEN nextval('s') ELSE 2 END);
+----
+Binder Error: Function "nextval" modifies the database and cannot be evaluated while binding
 
 statement ok
-PREPARE g AS SELECT count(*) FROM generate_series(1, nextval('s'));
+CREATE MACRO m(x) AS TABLE SELECT * FROM range(x);
 
-query I
-SELECT currval('s');
+statement error
+PREPARE t AS SELECT count(*) FROM m(nextval('s'));
 ----
-2
+Binder Error: Function "nextval" modifies the database and cannot be evaluated while binding
+
+statement ok
+PREPARE e AS SELECT $1::BIGINT;
+
+statement error
+EXECUTE e(1 + nextval('s'));
+----
+Binder Error: Function "nextval" modifies the database and cannot be evaluated while binding
+
+statement error
+PREPARE c AS COPY (SELECT 42) TO '{TEST_DIR}/test_26144.csv' (DELIMITER chr(nextval('s')::INTEGER + 43));
+----
+Binder Error: Function "nextval" modifies the database and cannot be evaluated while binding
+
+statement error
+SET threads = nextval('s');
+----
+Binder Error: Function "nextval" modifies the database and cannot be evaluated while binding
 
 statement ok
 BEGIN;
 
-statement ok
+statement error
 PREPARE q AS SELECT count(*) FROM range(nextval('s'));
+----
+Binder Error: Function "nextval" modifies the database and cannot be evaluated while binding
 
 statement ok
-COMMIT;
+ROLLBACK;
 
-query I
-SELECT currval('s');
-----
-3
-
-# a read-only transaction cannot advance the sequence
 statement ok
 BEGIN TRANSACTION READ ONLY;
 
 statement error
 PREPARE r AS SELECT count(*) FROM range(nextval('s'));
 ----
-transaction is launched in read-only mode
+Binder Error: Function "nextval" modifies the database and cannot be evaluated while binding
 
 statement ok
 ROLLBACK;
 
-# currval only reads it
+# none of the statements above advanced the sequence
+query I
+SELECT nextval('s');
+----
+1
+
+# currval only reads the sequence
 statement ok
 BEGIN TRANSACTION READ ONLY;
 
 statement ok
-PREPARE c AS SELECT count(*) FROM range(currval('s'));
+PREPARE cur AS SELECT count(*) FROM range(currval('s'));
 
 query I
-EXECUTE c;
+EXECUTE cur;
+----
+1
+
+statement ok
+COMMIT;
+
+# sequence functions that are evaluated while executing advance the sequence on every EXECUTE
+statement ok
+PREPARE l AS SELECT count(*) FROM (SELECT * FROM range(10) LIMIT nextval('s'));
+
+query I
+EXECUTE l;
+----
+2
+
+query I
+EXECUTE l;
 ----
 3
 
 statement ok
-COMMIT;
-
-statement ok
-PREPARE v AS SELECT count(*) FROM range(setval('s', 10));
+PREPARE sub AS SELECT count(*) FROM range((SELECT nextval('s')));
 
 query I
-SELECT currval('s');
+EXECUTE sub;
 ----
-10
+4
 
-# a sequence function in a branch that does not run marks nothing
-statement ok
-BEGIN TRANSACTION READ ONLY;
-
-statement ok
-PREPARE x AS SELECT count(*) FROM range(CASE WHEN false THEN nextval('s') ELSE 2 END);
-
-statement ok
-COMMIT;
-
-# a database attached read-only cannot advance its sequence
 statement ok
 ATTACH '{TEST_DIR}/test_26144_ro.db' AS ro;
 
@@ -116,25 +144,24 @@ ATTACH '{TEST_DIR}/test_26144_ro.db' AS ro (READ_ONLY);
 statement error
 PREPARE a AS SELECT count(*) FROM range(nextval('ro.s'));
 ----
-which is attached in read-only mode
+Binder Error: Function "nextval" modifies the database and cannot be evaluated while binding
 
 statement error
 PREPARE b AS SELECT count(*) FROM range(setval('ro.s', 10));
 ----
-which is attached in read-only mode
+Binder Error: Function "setval" modifies the database and cannot be evaluated while binding
 
 query I
 SELECT 42;
 ----
 42
 
-# the sequence advanced while binding is persisted
 statement ok
 DETACH ro;
 
 restart
 
-query II
-SELECT nextval('s'), nextval('s2');
+query I
+SELECT nextval('s');
 ----
-11	2
+5

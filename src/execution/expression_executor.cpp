@@ -5,6 +5,7 @@
 #include "duckdb/execution/execution_context.hpp"
 #include "duckdb/storage/statistics/base_statistics.hpp"
 #include "duckdb/planner/expression/list.hpp"
+#include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/function/cast/cast_function_set.hpp"
 #include "duckdb/common/type_visitor.hpp"
@@ -139,9 +140,29 @@ void ExpressionExecutor::ExecuteExpression(idx_t expr_idx, Vector &result) {
 	Execute(*expressions[expr_idx], states[expr_idx]->root_state.get(), nullptr, chunk ? chunk->size() : 1, result);
 }
 
+//! Throw if a function in the expression modifies a database, which folding while binding must never do
+static void VerifyNoDatabaseModification(ClientContext &context, const Expression &expr) {
+	if (expr.GetExpressionClass() == ExpressionClass::BOUND_FUNCTION) {
+		auto &function_expr = expr.Cast<BoundFunctionExpression>();
+		auto &function = function_expr.Function();
+		if (function.HasModifiedDatabasesCallback()) {
+			StatementProperties properties;
+			FunctionModifiedDatabasesInput input(function_expr.BindInfo().get(), properties);
+			function.GetModifiedDatabasesCallback()(context, input);
+			if (!properties.modified_databases.empty()) {
+				throw BinderException(expr, "Function %s modifies the database and cannot be evaluated while binding",
+				                      function.GetName());
+			}
+		}
+	}
+	ExpressionIterator::EnumerateChildren(
+	    expr, [&](const Expression &child) { VerifyNoDatabaseModification(context, child); });
+}
+
 Value ExpressionExecutor::EvaluateScalar(ClientContext &context, const Expression &expr, bool allow_unfoldable) {
 	D_ASSERT(allow_unfoldable || expr.IsFoldable());
 	D_ASSERT(expr.IsScalar());
+	VerifyNoDatabaseModification(context, expr);
 	// use an ExpressionExecutor to execute the expression
 	ExpressionExecutor executor(context, expr);
 

@@ -44,6 +44,8 @@ public:
 	DUCKDB_API idx_t NumberOfThreads();
 	//! Returns the number of async threads, launching them on the first call
 	DUCKDB_API idx_t NumberOfAsyncThreads();
+	//! Returns the number of async threads without launching them, zero until their launch has finished
+	idx_t NumberOfLaunchedAsyncThreads();
 
 	idx_t GetNumberOfTasks() const;
 	idx_t GetProducerCount() const;

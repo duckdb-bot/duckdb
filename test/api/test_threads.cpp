@@ -7,6 +7,7 @@
 #include "duckdb/common/local_file_system.hpp"
 #include "duckdb/common/virtual_file_system.hpp"
 #include "duckdb/main/settings.hpp"
+#include "duckdb/storage/block_allocator.hpp"
 #include "duckdb/storage/storage_info.hpp"
 
 #include <chrono>
@@ -177,6 +178,27 @@ TEST_CASE("Test async threads are launched on their first use", "[api]") {
 	auto &scheduler = TaskScheduler::GetScheduler(*con.context);
 	REQUIRE(scheduler.NumberOfAsyncThreads() == 16);
 	REQUIRE(NewThreadCount(threads_before) >= 16);
+}
+
+TEST_CASE("Test idle memory reclamation does not launch the async threads", "[api]") {
+	const auto threads_before = ProcessThreadIds();
+	DBConfig config;
+	config.options.maximum_threads = 1;
+	config.options.async_threads = 16;
+	DuckDB db(nullptr, &config);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE t AS SELECT range AS i FROM range(10000)"));
+	// what a worker runs after it was idle for the decay delay
+	auto &allocator = BlockAllocator::Get(*db.instance);
+	allocator.ThreadIdle();
+	REQUIRE(NewThreadCount(threads_before) < 16);
+	auto result = con.Query("SELECT sum(i) FROM t");
+	REQUIRE(CHECK_COLUMN(result, 0, {Value::HUGEINT(49995000)}));
+
+	REQUIRE(TaskScheduler::GetScheduler(*con.context).NumberOfAsyncThreads() == 16);
+	allocator.ThreadIdle();
+	result = con.Query("SELECT sum(i) FROM t");
+	REQUIRE(CHECK_COLUMN(result, 0, {Value::HUGEINT(49995000)}));
 }
 
 namespace {

@@ -311,6 +311,13 @@ idx_t TaskScheduler::NumberOfAsyncThreads() {
 	return GetPool(TaskSchedulerType::ASYNC).NumberOfThreads();
 }
 
+idx_t TaskScheduler::NumberOfLaunchedAsyncThreads() {
+	if (!async_threads_launched) {
+		return 0;
+	}
+	return GetPool(TaskSchedulerType::ASYNC).NumberOfThreads();
+}
+
 idx_t TaskScheduler::GetNumberOfTasks() const {
 	idx_t num_tasks = 0;
 	for (auto &queue : queues) {

@@ -628,3 +628,140 @@ TEST_CASE("Test prepared statements with extension that can request a rebind", "
 	// SetVariableStatement
 	REQUIRE_NO_FAIL(con.Prepare("SET VARIABLE test_var = ?")->Execute(42));
 }
+
+TEST_CASE("Prepared CREATE VIEW stores the values of its parameters", "[api]") {
+	auto path = TestCreatePath("prepared_view_parameters.db");
+	{
+		DuckDB db(path);
+		Connection con(db);
+		auto prepared = con.Prepare("CREATE OR REPLACE VIEW v AS SELECT ?::INTEGER AS a, (SELECT ?) AS b FROM "
+		                            "read_csv(?, header = false) WHERE column0 > ? LIMIT 1");
+		REQUIRE(!prepared->HasError());
+		REQUIRE_NO_FAIL(prepared->Execute(42, "x", "data/csv/test/test.csv", 1));
+		auto result = con.Query("SELECT * FROM v");
+		REQUIRE(CHECK_COLUMN(result, 0, {42}));
+		REQUIRE(CHECK_COLUMN(result, 1, {"x"}));
+		result = con.Query("SELECT sql FROM duckdb_views() WHERE view_name = 'v'");
+		REQUIRE(
+		    CHECK_COLUMN(result, 0,
+		                 {"CREATE VIEW v AS SELECT CAST(CAST(42 AS INTEGER) AS INTEGER) AS a, (SELECT 'x') AS b FROM "
+		                  "read_csv('data/csv/test/test.csv', (\"header\" = false)) WHERE (column0 > CAST(1 AS "
+		                  "INTEGER)) LIMIT 1;"}));
+		// executing it again stores the new values
+		REQUIRE_NO_FAIL(prepared->Execute(43, "y", "data/csv/test/test.csv", 1));
+		result = con.Query("SELECT * FROM v");
+		REQUIRE(CHECK_COLUMN(result, 0, {43}));
+		REQUIRE(CHECK_COLUMN(result, 1, {"y"}));
+
+		// LIMIT, a CTE and a lambda, with the values passed directly
+		REQUIRE_NO_FAIL(con.Query("CREATE VIEW l AS WITH c AS (SELECT list_transform([1, 2], lambda x: x + ?) AS l) "
+		                          "SELECT unnest(l) AS v FROM c LIMIT ?",
+		                          10, 1));
+		result = con.Query("SELECT * FROM l");
+		REQUIRE(CHECK_COLUMN(result, 0, {11}));
+		// creating the view binds it once, so the sequence advances once
+		REQUIRE_NO_FAIL(con.Query("CREATE SEQUENCE s MINVALUE 0 START 1 MAXVALUE 1"));
+		REQUIRE_NO_FAIL(con.Query("CREATE VIEW sv AS SELECT ? AS c FROM range(nextval('s'))", 7));
+		// a view whose binding is deferred, over a table that does not exist yet
+		REQUIRE_NO_FAIL(con.Query("CREATE VIEW d WITH (DEFER_BINDING) AS SELECT ? AS c FROM later", 3));
+		REQUIRE_NO_FAIL(con.Query("CREATE TABLE later AS SELECT 1 AS i"));
+		// a value in ORDER BY or GROUP BY is a constant, not a column index, also for a deferred view
+		REQUIRE_NO_FAIL(con.Query("CREATE VIEW o AS SELECT a FROM (VALUES (2), (1)) t(a) ORDER BY ?", 1));
+		result = con.Query("SELECT * FROM o");
+		REQUIRE(CHECK_COLUMN(result, 0, {2, 1}));
+		REQUIRE_NO_FAIL(
+		    con.Query("CREATE VIEW od WITH (DEFER_BINDING) AS SELECT a FROM (VALUES (2), (1)) t(a) ORDER BY ?", 1));
+		result = con.Query("SELECT * FROM od");
+		REQUIRE(CHECK_COLUMN(result, 0, {2, 1}));
+		REQUIRE_NO_FAIL(con.Query("CREATE VIEW g AS SELECT count(*) AS c FROM (VALUES (2), (1)) t(a) GROUP BY ?", 1));
+		result = con.Query("SELECT * FROM g");
+		REQUIRE(CHECK_COLUMN(result, 0, {2}));
+		// a string stays a literal that compares with a date, as a bound parameter does
+		REQUIRE_NO_FAIL(con.Query("CREATE VIEW dt AS SELECT DATE '2024-01-02' > ? AS c", "2024-01-01"));
+		result = con.Query("SELECT * FROM dt");
+		REQUIRE(CHECK_COLUMN(result, 0, {true}));
+		// an integer keeps its width, also one bound as an integer literal
+		REQUIRE_NO_FAIL(con.Query("CREATE VIEW w1 AS SELECT ? AS s, ? AS b", Value::SMALLINT(1), Value::BIGINT(2)));
+		result = con.Query("SELECT typeof(s), typeof(b) FROM w1");
+		REQUIRE(CHECK_COLUMN(result, 0, {"SMALLINT"}));
+		REQUIRE(CHECK_COLUMN(result, 1, {"BIGINT"}));
+		auto literal = con.Prepare("CREATE VIEW o2 AS SELECT a FROM (VALUES (2), (1)) t(a) ORDER BY ?");
+		identifier_map_t<BoundParameterData> literal_values;
+		literal_values[Identifier("1")] =
+		    BoundParameterData(Value::INTEGER(1), LogicalType::INTEGER_LITERAL(Value::INTEGER(1)));
+		REQUIRE_NO_FAIL(literal->Execute(literal_values));
+		result = con.Query("SELECT * FROM o2");
+		REQUIRE(CHECK_COLUMN(result, 0, {2, 1}));
+		// a value is cast to the type it is bound as, also in DISTINCT ON
+		identifier_map_t<BoundParameterData> double_values;
+		double_values[Identifier("1")] = BoundParameterData(Value::INTEGER(42), LogicalType::DOUBLE);
+		auto bound_double = con.Prepare("CREATE VIEW dbl AS SELECT ? AS c");
+		REQUIRE_NO_FAIL(bound_double->Execute(double_values));
+		result = con.Query("SELECT typeof(c), c FROM dbl");
+		REQUIRE(CHECK_COLUMN(result, 0, {"DOUBLE"}));
+		REQUIRE(CHECK_COLUMN(result, 1, {42.0}));
+		REQUIRE_NO_FAIL(con.Query("CREATE VIEW lst AS SELECT ? AS c",
+		                          Value::LIST(LogicalType::SMALLINT, {Value::SMALLINT(1), Value::SMALLINT(2)})));
+		result = con.Query("SELECT typeof(c), c::VARCHAR FROM lst");
+		REQUIRE(CHECK_COLUMN(result, 0, {"SMALLINT[]"}));
+		REQUIRE(CHECK_COLUMN(result, 1, {"[1, 2]"}));
+		// a collation stays outside the cast, so the stored SQL parses
+		identifier_map_t<BoundParameterData> collated_values;
+		collated_values[Identifier("1")] = BoundParameterData(Value("a"), LogicalType::VARCHAR_COLLATION("nocase"));
+		auto collated = con.Prepare("CREATE VIEW col AS SELECT ? = 'A' AS c");
+		REQUIRE_NO_FAIL(collated->Execute(collated_values));
+		result = con.Query("SELECT * FROM col");
+		REQUIRE(CHECK_COLUMN(result, 0, {true}));
+		// the stored SQL creates the same views when it is parsed again
+		result =
+		    con.Query("SELECT sql FROM duckdb_views() WHERE view_name IN ('dbl', 'lst', 'col') ORDER BY view_name");
+		REQUIRE(!result->HasError());
+		DuckDB reparsed_db(nullptr);
+		Connection reparsed(reparsed_db);
+		auto &views = result->Collection();
+		REQUIRE(views.Count() == 3);
+		for (idx_t i = 0; i < views.Count(); i++) {
+			REQUIRE_NO_FAIL(reparsed.Query(views.GetValue(0, i).ToString()));
+		}
+		auto reparsed_result = reparsed.Query("SELECT typeof(c), c::VARCHAR FROM dbl UNION ALL SELECT typeof(c), "
+		                                      "c::VARCHAR FROM lst UNION ALL SELECT typeof(c), c::VARCHAR FROM col");
+		REQUIRE(CHECK_COLUMN(reparsed_result, 0, {"DOUBLE", "SMALLINT[]", "BOOLEAN"}));
+		REQUIRE(CHECK_COLUMN(reparsed_result, 1, {"42.0", "[1, 2]", "true"}));
+		REQUIRE_NO_FAIL(con.Query("CREATE VIEW dist AS SELECT DISTINCT ON (?) a FROM (VALUES (2), (1)) t(a)", true));
+		result = con.Query("SELECT count(*) FROM dist");
+		REQUIRE(CHECK_COLUMN(result, 0, {1}));
+		// a NULL keeps its type from the query
+		REQUIRE_NO_FAIL(con.Query("CREATE VIEW n AS SELECT ?::INTEGER + 1 AS c", Value()));
+		result = con.Query("SELECT * FROM n");
+		REQUIRE(CHECK_COLUMN(result, 0, {Value()}));
+
+		// a named parameter without a value still reads the variable when the view is queried
+		REQUIRE_NO_FAIL(con.Query("SET VARIABLE x = 5"));
+		auto named = con.Prepare("CREATE OR REPLACE VIEW w AS SELECT $x AS c");
+		REQUIRE(!named->HasError());
+		REQUIRE_NO_FAIL(named->Execute());
+		REQUIRE_NO_FAIL(con.Query("SET VARIABLE x = 6"));
+		REQUIRE_NO_FAIL(named->Execute());
+		REQUIRE_NO_FAIL(con.Query("SET VARIABLE x = 7"));
+		result = con.Query("SELECT * FROM w");
+		REQUIRE(CHECK_COLUMN(result, 0, {7}));
+		// an explicit value of a named parameter is not stored either
+		identifier_map_t<BoundParameterData> named_values;
+		named_values[Identifier("x")] = BoundParameterData(Value::INTEGER(42));
+		REQUIRE_NO_FAIL(named->Execute(named_values));
+		result = con.Query("SELECT * FROM w");
+		REQUIRE(CHECK_COLUMN(result, 0, {7}));
+
+		// a positional parameter needs a value
+		REQUIRE_FAIL(con.Query("CREATE VIEW u AS SELECT ? AS c"));
+		// one in the values of a PIVOT is not replaced, and still fails
+		REQUIRE_FAIL(con.Query("CREATE VIEW pv AS FROM (SELECT 1 AS a, 'x' AS b) PIVOT (sum(a) FOR b IN (?))", "x"));
+	}
+	DuckDB db(path);
+	Connection con(db);
+	auto result = con.Query("SELECT * FROM v");
+	REQUIRE(CHECK_COLUMN(result, 0, {43}));
+	REQUIRE(CHECK_COLUMN(result, 1, {"y"}));
+	result = con.Query("SELECT * FROM d");
+	REQUIRE(CHECK_COLUMN(result, 0, {3}));
+}

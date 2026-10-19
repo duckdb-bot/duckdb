@@ -55,3 +55,36 @@ query IIII
 SELECT count(*), sum(v), sum(l[3]), max(s.s) FROM '{TEST_DIR}/bloom_no_prefetch.parquet' WHERE k = 'key7'
 ----
 600	8989200	8989800	str9957
+
+# bloom filters without a length, three of them probed per row group
+statement ok
+CALL enable_logging('FileSystem')
+
+query I
+SELECT count(*) FROM '{DATA_DIR}/parquet-testing/issue6990.parquet' WHERE access_mode = 'x' AND action = 'y' AND addr = 'z'
+----
+0
+
+# with prefetching, one read before the first page serves all three bloom filters
+query I
+SELECT count(*) FROM duckdb_logs_parsed('FileSystem')
+WHERE path LIKE '%issue6990.parquet' AND op = 'READ' AND pos::BIGINT < 19227
+----
+1
+
+statement ok
+CALL truncate_duckdb_logs()
+
+statement ok
+SET disable_parquet_prefetching=true
+
+query I
+SELECT count(*) FROM '{DATA_DIR}/parquet-testing/issue6990.parquet' WHERE access_mode = 'x' AND action = 'y' AND addr = 'z'
+----
+0
+
+query II
+SELECT count(*), count(*) FILTER (bytes::BIGINT < 8) FROM duckdb_logs_parsed('FileSystem')
+WHERE path LIKE '%issue6990.parquet' AND op = 'READ' AND pos::BIGINT < 19227
+----
+3	0

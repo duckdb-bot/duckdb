@@ -1180,6 +1180,10 @@ static bool ReadAndApplyBloomFilter(const TableFilter &duckdb_filter,
 	transport.SetLocation(bloom_filter_start);
 	if (bloom_filter_length > 0) {
 		transport.Prefetch(bloom_filter_start, bloom_filter_length);
+	} else if (!transport.IsPrefetchMode()) {
+		// without a length, read at least the header in one go
+		static constexpr idx_t ASSUMED_HEADER_SIZE = 256;
+		transport.Prefetch(bloom_filter_start, MinValue(transport.GetSize() - bloom_filter_start, ASSUMED_HEADER_SIZE));
 	}
 
 	duckdb_parquet::BloomFilterHeader filter_header;
@@ -1220,12 +1224,11 @@ bool ParquetStatisticsUtils::BloomFilterExcludes(const TableFilter &duckdb_filte
                                                  TProtocol &file_proto, Allocator &allocator,
                                                  const ParquetColumnSchema &schema,
                                                  ParquetBloomFilterHashStrategy hash_strategy) {
-	auto &transport = reinterpret_cast<ThriftFileTransport &>(*file_proto.getTransport());
-	// page headers are read in one go only while the transport holds no prefetched data
-	const bool had_prefetch = transport.HasPrefetch();
 	auto excludes =
 	    ReadAndApplyBloomFilter(duckdb_filter, column_meta_data, file_proto, allocator, schema, hash_strategy);
-	if (!had_prefetch) {
+	auto &transport = reinterpret_cast<ThriftFileTransport &>(*file_proto.getTransport());
+	if (!transport.IsPrefetchMode()) {
+		// without prefetching, page headers are read in one go only while the transport holds no read heads
 		transport.ClearPrefetch();
 	}
 	return excludes;

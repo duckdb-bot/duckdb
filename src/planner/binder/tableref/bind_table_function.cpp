@@ -106,6 +106,13 @@ bool Binder::BindTableFunctionParameters(TableFunctionCatalogEntry &table_functi
 		table_in_out = true;
 		return true;
 	}
+	// binding a parameter can autoload an extension that replaces this entry, so the loop below does not use it
+	auto function_name = table_function.name.GetIdentifierName();
+	shared_ptr<const TableFunction> table_parameter_function;
+	if (bind_type == TableFunctionBindType::TABLE_PARAMETER_FUNCTION) {
+		D_ASSERT(table_function.functions.Size() == 1);
+		table_parameter_function = table_function.functions.GetFunctionByOffset(0);
+	}
 	bool seen_subquery = false;
 	for (auto &child : expressions) {
 		Identifier parameter_name;
@@ -127,12 +134,10 @@ bool Binder::BindTableFunctionParameters(TableFunctionCatalogEntry &table_functi
 		}
 		if (bind_type == TableFunctionBindType::TABLE_PARAMETER_FUNCTION &&
 		    child->GetExpressionType() == ExpressionType::SUBQUERY) {
-			D_ASSERT(table_function.functions.Size() == 1);
-			const auto &fun = *table_function.functions.GetFunctionByOffset(0);
-			if (table_function.functions.Size() != 1 || fun.GetSignature().GetPositionalParameterCount() == 0) {
+			if (table_parameter_function->GetSignature().GetPositionalParameterCount() == 0) {
 				throw BinderException(
 				    "Only table-in-out functions can have subquery parameters - %s only accepts constant parameters",
-				    fun.GetName());
+				    table_parameter_function->GetName());
 			}
 			if (seen_subquery) {
 				error = ErrorData("Table function can have at most one subquery parameter");
@@ -148,7 +153,7 @@ bool Binder::BindTableFunctionParameters(TableFunctionCatalogEntry &table_functi
 			continue;
 		}
 
-		TableFunctionBinder binder(*this, context, table_function.name.GetIdentifierName());
+		TableFunctionBinder binder(*this, context, function_name);
 		auto expr = binder.Bind(child);
 		if (expr->HasParameter()) {
 			throw ParameterNotResolvedException();
@@ -459,6 +464,8 @@ BoundStatement Binder::Bind(TableFunctionRef &ref) {
 	}
 	D_ASSERT(func_catalog.type == CatalogType::TABLE_FUNCTION_ENTRY);
 	auto &function = func_catalog.Cast<TableFunctionCatalogEntry>();
+	// binding the parameters can autoload an extension that replaces this entry, so it is looked up again afterwards
+	auto function_name = function.ParentSchema().GetQualifiedName(function.name);
 
 	// bind the input parameters to the function - they are folded to constants after the overload is chosen
 	vector<unique_ptr<Expression>> positional_arguments;
@@ -479,19 +486,22 @@ BoundStatement Binder::Bind(TableFunctionRef &ref) {
 	}
 
 	// selection, named-argument checking, folding and casting all happen in the function binder
+	auto &current_function = Catalog::GetEntry<TableFunctionCatalogEntry>(context, function_name);
 	FunctionBinder function_binder(*this);
 	vector<Value> parameters;
 	named_argument_map_t named_parameters;
 	auto best_function_idx =
-	    table_in_out ? function_binder.BindTableInOutFunction(function.name, function.functions, subquery.types, error)
-	                 : function_binder.BindFunction(function.name, function.functions, positional_arguments,
-	                                                named_arguments, parameters, named_parameters, error);
+	    table_in_out
+	        ? function_binder.BindTableInOutFunction(current_function.name, current_function.functions, subquery.types,
+	                                                 error)
+	        : function_binder.BindFunction(current_function.name, current_function.functions, positional_arguments,
+	                                       named_arguments, parameters, named_parameters, error);
 	if (!best_function_idx.IsValid()) {
 		error.AddQueryLocation(ref);
 		error.Throw();
 	}
 	// copied out of the set: BindTableFunctionInternal fills in the bound return types
-	BoundTableFunction table_function(function.functions.GetFunctionByOffset(best_function_idx.GetIndex()));
+	BoundTableFunction table_function(current_function.functions.GetFunctionByOffset(best_function_idx.GetIndex()));
 
 	vector<LogicalType> input_table_types;
 	vector<Identifier> input_table_names;

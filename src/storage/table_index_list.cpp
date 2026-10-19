@@ -339,32 +339,21 @@ bool TableIndexList::HasBufferedReplays() const {
 	return false;
 }
 
-shared_ptr<IndexEntry> TableIndexList::FindEntry(const Identifier &name) const {
+shared_ptr<IndexEntry> TableIndexList::FindEntry(const IndexEntry &index) const {
+	return FindEntry(index.GetIndexOid());
+}
+
+shared_ptr<IndexEntry> TableIndexList::FindEntry(idx_t index_oid) const {
 	annotated_lock_guard lock(index_entries_lock);
 	for (const auto &entry : index_entries) {
-		if (entry->GetName() != name) {
+		if (entry->GetIndexOid() != index_oid) {
 			continue;
 		}
 		if (entry->IsStorageMissing()) {
 			throw InvalidInputException("Cannot use index %s, because the database file holds no data for it (as "
 			                            "written by COPY FROM DATABASE in DuckDB 1.1). Drop the index and create it "
 			                            "again.",
-			                            name);
-		}
-		if (entry->GetBindState() != IndexBindState::BOUND) {
-			throw InternalException("TableIndexList::FindEntry cannot return an unbound index");
-		}
-		return entry;
-	}
-	return nullptr;
-}
-
-shared_ptr<IndexEntry> TableIndexList::FindEntry(const IndexEntry &index) const {
-	auto index_oid = index.GetIndexOid();
-	annotated_lock_guard lock(index_entries_lock);
-	for (const auto &entry : index_entries) {
-		if (entry->GetIndexOid() != index_oid) {
-			continue;
+			                            entry->GetName());
 		}
 		if (entry->GetBindState() != IndexBindState::BOUND) {
 			throw InternalException("TableIndexList::FindEntry cannot return an unbound index");

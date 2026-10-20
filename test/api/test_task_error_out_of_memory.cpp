@@ -1,5 +1,7 @@
 #include "catch.hpp"
 #include "test_helpers.hpp"
+#include "duckdb/common/json_document.hpp"
+#include "duckdb/common/limits.hpp"
 #include "duckdb/execution/task_error_manager.hpp"
 
 #include <new>
@@ -34,4 +36,11 @@ TEST_CASE("A task error that cannot be recorded for lack of memory is reported a
 	errors.Reset();
 	errors.PushTaskError([]() -> ErrorData { throw SerializationException("Failed to parse JSON string"); });
 	REQUIRE(errors.GetError().Type() == ExceptionType::OUT_OF_MEMORY);
+}
+
+TEST_CASE("Parsing the JSON message of an error throws std::bad_alloc when memory runs out", "[api]") {
+	// yyjson fails to allocate a copy of an input this long before reading it
+	string json = "{}";
+	JSONParseError error;
+	REQUIRE_THROWS_AS(JSONDocument::TryParse(json.c_str(), NumericLimits<idx_t>::Maximum(), error), std::bad_alloc);
 }

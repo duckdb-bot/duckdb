@@ -143,6 +143,7 @@ public:
 	//! Parse the given input. Throws an InvalidInputException on failure.
 	static unique_ptr<JSONDocument> Parse(const char *data, idx_t len, JSONReadFlags flags = JSONReadFlags::NONE);
 	//! Parse the given input. Returns nullptr on failure, in which case "error" is populated.
+	//! Throws std::bad_alloc when memory runs out.
 	static unique_ptr<JSONDocument> TryParse(const char *data, idx_t len, JSONParseError &error,
 	                                         JSONReadFlags flags = JSONReadFlags::NONE);
 

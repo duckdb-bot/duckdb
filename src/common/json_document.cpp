@@ -197,12 +197,15 @@ unique_ptr<JSONDocument> JSONDocument::TryParse(const char *data, idx_t len, JSO
 	yyjson_read_err read_error;
 	auto parsed = yyjson_read_opts((char *)data, len, TranslateReadFlags(flags), nullptr, &read_error); // NOLINT
 	if (!parsed || read_error.code != YYJSON_READ_SUCCESS) {
-		error.has_error = true;
-		error.position = read_error.pos;
-		error.message = read_error.msg ? read_error.msg : "Unknown error";
 		if (parsed) {
 			yyjson_doc_free(parsed);
 		}
+		if (read_error.code == YYJSON_READ_ERROR_MEMORY_ALLOCATION) {
+			throw std::bad_alloc();
+		}
+		error.has_error = true;
+		error.position = read_error.pos;
+		error.message = read_error.msg ? read_error.msg : "Unknown error";
 		return nullptr;
 	}
 	auto result = make_uniq<JSONDocument>();

@@ -1247,11 +1247,18 @@ ExpressionPushdownResult RemotePushdownOptimizer::AnalyzeExpression(const TypeEx
 	state.result = CheckCatalogQualification(type_expr, type_expr.GetQualifiedName());
 	return state;
 }
-CatalogPushdownResult RemotePushdownOptimizer::CheckType(const TypeExpression &type_expr) {
-	auto result = CheckCatalogQualification(type_expr, type_expr.GetQualifiedName());
-	if (type_expr.GetCatalog().empty()) {
-		// a user type of a local catalog might not exist remotely, built-in types exist everywhere. The lookup does
-		// not autoload extensions, whose types the server can have
+void RemotePushdownOptimizer::CheckCastType(const TypeExpression &type_expr) {
+	// a user type of a local catalog might not exist remotely, built-in types exist everywhere. The lookups do not
+	// autoload extensions, whose types the server can have
+	Identifier catalog_name;
+	vector<Identifier> schema_path;
+	ResolveQualification(type_expr.GetQualifiedName(), catalog_name, schema_path);
+	if (!catalog_name.empty()) {
+		auto catalog = Catalog::GetCatalogEntry(binder.context, catalog_name);
+		if (catalog && !catalog->IsSystemCatalog() && !catalog->Supports(RemoteCapability::EXECUTE_QUERY_NODE)) {
+			MarkStaysWithParent();
+		}
+	} else {
 		FindRemoteCatalogsInSearchPath();
 		CatalogEntryRetriever retriever(binder.context);
 		for (auto &local_entry : pushdown_state.local_catalogs_in_search_path) {
@@ -1259,9 +1266,14 @@ CatalogPushdownResult RemotePushdownOptimizer::CheckType(const TypeExpression &t
 			if (!catalog || catalog->IsSystemCatalog()) {
 				continue;
 			}
-			auto schema = type_expr.GetSchema().empty() ? local_entry.GetSchema() : type_expr.GetSchema();
+			vector<Identifier> path {catalog->GetName()};
+			if (schema_path.empty()) {
+				path.push_back(local_entry.GetSchema());
+			} else {
+				path.insert(path.end(), schema_path.begin(), schema_path.end());
+			}
 			EntryLookupInfo type_lookup(CatalogType::TYPE_ENTRY,
-			                            QualifiedName(catalog->GetName(), schema, type_expr.GetTypeName()));
+			                            QualifiedName(std::move(path), type_expr.GetTypeName()));
 			if (catalog->LookupEntry(retriever, type_lookup, OnEntryNotFound::RETURN_NULL).Found()) {
 				MarkStaysWithParent();
 				break;
@@ -1270,15 +1282,14 @@ CatalogPushdownResult RemotePushdownOptimizer::CheckType(const TypeExpression &t
 	}
 	for (auto &child : type_expr.GetChildren()) {
 		if (child->GetExpressionClass() == ExpressionClass::TYPE) {
-			result = Merge(result, CheckType(child->Cast<TypeExpression>()));
+			CheckCastType(child->Cast<TypeExpression>());
 		}
 	}
-	return result;
 }
 ExpressionPushdownResult RemotePushdownOptimizer::AnalyzeExpression(const CastExpression &cast_expr) {
 	// the target type is not a child expression, so it is checked here
+	CheckCastType(cast_expr.TargetType());
 	ExpressionPushdownResult state;
-	state.result = CheckType(cast_expr.TargetType());
 	state.foldability = ExpressionFoldability::FOLDABLE;
 	return state;
 }

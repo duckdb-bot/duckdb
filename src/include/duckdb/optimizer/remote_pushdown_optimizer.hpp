@@ -175,7 +175,8 @@ private:
 	ExpressionPushdownResult AnalyzeExpression(const WindowExpression &expr);
 	ExpressionPushdownResult AnalyzeExpression(const TypeExpression &expr);
 	ExpressionPushdownResult AnalyzeExpression(const CastExpression &expr);
-	CatalogPushdownResult CheckType(const TypeExpression &type_expr);
+	//! Keeps the scope from being pushed on its own if a cast goes to a type of a local catalog
+	void CheckCastType(const TypeExpression &type_expr);
 	ExpressionPushdownResult AnalyzeExpression(const ColumnRefExpression &expr);
 	//! Bind and evaluate an expression locally, replacing it with the resulting constant
 	ConstantFoldResult TryConstantFold(unique_ptr<ParsedExpression> &expr);

@@ -468,6 +468,24 @@ SELECT v FROM (SELECT id::VARCHAR::local_enum AS v FROM r.tbl) s, local_tbl ORDE
 9
 10
 
+# built-in and shared types still let a whole query be pushed
+query I
+SELECT id::system.main.BIGINT FROM r.tbl UNION ALL SELECT id FROM r.tbl ORDER BY 1 LIMIT 2;
+----
+0
+0
+
+statement ok
+UPDATE r.tbl SET id = id::system.main.BIGINT + 1 WHERE id = 10;
+
+query I
+SELECT max(id) FROM tbl;
+----
+11
+
+statement ok
+UPDATE r.tbl SET id = id::system.main.BIGINT - 1 WHERE id = 11;
+
 # a type that the server has too still lets a whole query be pushed
 statement ok
 CREATE TYPE shared_int AS BIGINT;

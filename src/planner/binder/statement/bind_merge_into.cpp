@@ -218,7 +218,7 @@ static void MoveValuesIntoAction(unique_ptr<Expression> &expr, TableIndex proj_i
 	expr = std::move(value);
 }
 
-//! Moves the values that one action uses out of the projection below the MERGE, which runs on every joined row
+//! Moves the computed values with a single reference out of the projection below the MERGE into their actions
 static void MoveValuesIntoActions(LogicalMergeInto &merge_into, TableIndex proj_index,
                                   vector<unique_ptr<Expression>> &proj_expressions) {
 	vector<idx_t> reference_counts(proj_expressions.size(), 0);
@@ -230,7 +230,7 @@ static void MoveValuesIntoActions(LogicalMergeInto &merge_into, TableIndex proj_
 			    }
 		    });
 	});
-	// a value that is used once moves into its action, columns and subqueries stay in the projection
+	// the projection runs on every joined row, so it keeps only columns, subqueries and shared values
 	vector<unique_ptr<Expression>> new_expressions;
 	vector<optional_idx> kept_columns(proj_expressions.size());
 	for (idx_t i = 0; i < proj_expressions.size(); i++) {

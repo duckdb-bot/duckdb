@@ -1,8 +1,12 @@
 #include "duckdb/optimizer/filter_pushdown.hpp"
+#include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/planner/column_binding_map.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
+#include "duckdb/planner/expression/bound_conjunction_expression.hpp"
+#include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
+#include "duckdb/planner/expression/bound_operator_expression.hpp"
 #include "duckdb/planner/expression/bound_window_expression.hpp"
 #include "duckdb/planner/operator/logical_window.hpp"
 
@@ -31,7 +35,7 @@ bool CanPushdownFilter(vector<column_binding_set_t> window_exprs_partition_bindi
 	return filter_on_all_partitions;
 }
 
-unique_ptr<Filter> CreateAuxiliaryFilter(const Expression &partition, const Filter &filter) {
+unique_ptr<Filter> CreateAuxiliaryFilter(ClientContext &context, const Expression &partition, const Filter &filter) {
 	//	Must be comparison
 	if (!BoundComparisonExpression::IsComparison(*filter.filter)) {
 		return nullptr;
@@ -99,12 +103,22 @@ unique_ptr<Filter> CreateAuxiliaryFilter(const Expression &partition, const Filt
 		return nullptr;
 	}
 
-	//	Generate an auxiliary filter b 𝜃 c => e(b) 𝜃' e(c)
-	auto e_b = partition_func.Copy();
+	//	e can be NULL for a value that passes b 𝜃 c, e.g. year('infinity')
 	auto c_b = partition_func.Copy();
 	c_b->Cast<BoundFunctionExpression>().GetChildrenMutable()[0] = children[const_idx]->Copy();
-	auto aux_comp = BoundComparisonExpression::Create(aux_type, std::move(e_b), std::move(c_b));
-	auto aux_filter = make_uniq<Filter>(std::move(aux_comp));
+	Value e_c;
+	if (!ExpressionExecutor::TryEvaluateScalar(context, *c_b, e_c) || e_c.IsNull()) {
+		return nullptr;
+	}
+
+	//	Generate an auxiliary filter b 𝜃 c => e(b) 𝜃' e(c) OR e(b) IS NULL
+	auto aux_comp = BoundComparisonExpression::Create(aux_type, partition_func.Copy(),
+	                                                  make_uniq<BoundConstantExpression>(std::move(e_c)));
+	auto e_b_is_null = make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_IS_NULL, LogicalType::BOOLEAN);
+	e_b_is_null->GetChildrenMutable().push_back(partition_func.Copy());
+	auto aux_or = make_uniq<BoundConjunctionExpression>(ExpressionType::CONJUNCTION_OR, std::move(aux_comp),
+	                                                    std::move(e_b_is_null));
+	auto aux_filter = make_uniq<Filter>(std::move(aux_or));
 	aux_filter->ExtractBindings();
 	aux_filter->ExtractBarrier();
 
@@ -186,7 +200,7 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownWindow(unique_ptr<LogicalOpe
 			if (p.second != window_exprs_partition_bindings.size()) {
 				continue;
 			}
-			auto aux_filter = CreateAuxiliaryFilter(p.first, *filters.at(i));
+			auto aux_filter = CreateAuxiliaryFilter(optimizer.context, p.first, *filters.at(i));
 			if (aux_filter) {
 				pushdown.filters.push_back(std::move(aux_filter));
 			}

@@ -1,0 +1,41 @@
+# name: test/optimizer/pushdown/pushdown_window_partition_null.test
+# description: Auxiliary window filters keep the rows whose partition expression is NULL
+# group: [pushdown]
+
+statement ok
+SET explain_output = OPTIMIZED_ONLY
+
+foreach type DATE TIMESTAMP
+
+statement ok
+CREATE OR REPLACE TABLE t(d {type});
+
+statement ok
+INSERT INTO t VALUES ('-infinity'), ('2000-01-01'), ('infinity'), (NULL);
+
+# year and last_day are NULL at both infinities, which share the partition of the NULL row
+query II
+SELECT d::DATE, n FROM (SELECT d, count(*) OVER (PARTITION BY year(d)) AS n FROM t) s WHERE d > '2010-01-01'::{type}
+----
+infinity	3
+
+query II
+SELECT d::DATE, n FROM (SELECT d, count(*) OVER (PARTITION BY last_day(d)) AS n FROM t) s WHERE d < '1970-01-01'::{type}
+----
+-infinity	3
+
+# year('infinity') is NULL, so no auxiliary filter is built from it
+query II
+SELECT d::DATE, n FROM (SELECT d, count(*) OVER (PARTITION BY year(d)) AS n FROM t) s WHERE d < 'infinity'::{type}
+ORDER BY d
+----
+-infinity	3
+2000-01-01	1
+
+# finite constants still push the auxiliary filter below the window
+query II
+EXPLAIN SELECT d, n FROM (SELECT d, count(*) OVER (PARTITION BY year(d)) AS n FROM t) s WHERE d > '2010-01-01'::{type}
+----
+logical_opt	<REGEX>:.*\("year"\(d\) >= 2010\) OR \("year"\(d\) IS NULL\).*
+
+endloop

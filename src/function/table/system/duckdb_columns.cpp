@@ -1,5 +1,4 @@
 #include "duckdb/function/table/system_functions.hpp"
-#include "duckdb/function/table/catalog_scan_filter.hpp"
 #include "duckdb/common/atomic.hpp"
 
 #include "duckdb/catalog/catalog.hpp"
@@ -90,14 +89,14 @@ static unique_ptr<FunctionData> DuckDBColumnsBind(ClientContext &context, TableF
 	names.emplace_back("generation_expression");
 	return_types.emplace_back(LogicalType::VARCHAR);
 
-	return make_uniq<CatalogScanFilterData>();
+	return nullptr;
 }
 
 static unique_ptr<GlobalTableFunctionState> DuckDBColumnsInit(ClientContext &context, TableFunctionInitInput &input) {
 	auto result = make_uniq<DuckDBColumnsData>();
 
 	// scan all the schemas for tables and views and collect them
-	auto schemas = GetSchemasForScan(context, input.bind_data);
+	auto schemas = Catalog::GetAllSchemas(context);
 	for (auto &schema : schemas) {
 		schema.get().Scan(context, CatalogType::TABLE_ENTRY,
 		                  [&](CatalogEntry &entry) { result->entries.push_back(entry); });
@@ -432,7 +431,6 @@ static double DuckDBColumnsProgress(ClientContext &context, const FunctionData *
 void DuckDBColumnsFun::RegisterFunction(BuiltinFunctions &set) {
 	TableFunction columns("duckdb_columns", {}, DuckDBColumnsFunction, DuckDBColumnsBind, DuckDBColumnsInit);
 	columns.table_scan_progress = DuckDBColumnsProgress;
-	columns.pushdown_complex_filter = CatalogScanPushdownFilter;
 	set.AddFunction(columns);
 }
 

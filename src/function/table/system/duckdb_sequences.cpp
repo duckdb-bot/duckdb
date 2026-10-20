@@ -69,7 +69,7 @@ static unique_ptr<FunctionData> DuckDBSequencesBind(ClientContext &context, Tabl
 	names.emplace_back("sql");
 	return_types.emplace_back(LogicalType::VARCHAR);
 
-	return make_uniq<CatalogScanFilterData>();
+	return make_uniq<CatalogScanFilterData>(names);
 }
 
 unique_ptr<GlobalTableFunctionState> DuckDBSequencesInit(ClientContext &context, TableFunctionInitInput &input) {

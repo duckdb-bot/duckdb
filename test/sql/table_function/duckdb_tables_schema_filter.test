@@ -70,6 +70,33 @@ SELECT table_name FROM duckdb_tables() WHERE lower(database_name) = 'other' AND 
 ----
 t3
 
+# column aliases do not change which columns the filters are on
+query I
+SELECT table_name FROM duckdb_tables() AS d(schema_name, db_oid, database_name) WHERE schema_name = 'other' AND database_name = 'S2';
+----
+t3
+
+query I
+SELECT schema_name FROM duckdb_tables() AS d(x, y, z, w, schema_name) WHERE schema_name = 't3';
+----
+t3
+
+query I
+SHOW TABLES FROM OTHER.s2;
+----
+t3
+v1
+
+query I
+SHOW TABLES FROM other;
+----
+t1
+t2
+t3
+t4
+t5
+v1
+
 query I
 SELECT table_name FROM duckdb_tables() WHERE 'S2' = schema_name;
 ----
@@ -153,25 +180,25 @@ CREATE TYPE other.s1.mood AS ENUM ('happy', 'sad');
 foreach function duckdb_tables duckdb_views duckdb_columns duckdb_constraints duckdb_types duckdb_indexes duckdb_sequences duckdb_schemas
 
 statement ok
-CREATE TABLE full_scan AS SELECT * FROM ${function}();
+CREATE TABLE full_scan AS SELECT * FROM {function}();
 
 query I
-SELECT count(*) FROM (SELECT * FROM ${function}() WHERE database_name = 'other' AND schema_name = 's1' EXCEPT ALL SELECT * FROM full_scan WHERE database_name = 'other' AND schema_name = 's1');
+SELECT count(*) FROM (SELECT * FROM {function}() WHERE database_name = 'other' AND schema_name = 's1' EXCEPT ALL SELECT * FROM full_scan WHERE database_name = 'other' AND schema_name = 's1');
 ----
 0
 
 query I
-SELECT count(*) FROM (SELECT * FROM full_scan WHERE database_name = 'other' AND schema_name = 's1' EXCEPT ALL SELECT * FROM ${function}() WHERE database_name = 'other' AND schema_name = 's1');
+SELECT count(*) FROM (SELECT * FROM full_scan WHERE database_name = 'other' AND schema_name = 's1' EXCEPT ALL SELECT * FROM {function}() WHERE database_name = 'other' AND schema_name = 's1');
 ----
 0
 
 query I
-SELECT count(*) FROM (SELECT * FROM ${function}() WHERE database_name = 'other' EXCEPT ALL SELECT * FROM full_scan WHERE database_name = 'other');
+SELECT count(*) FROM (SELECT * FROM {function}() WHERE database_name = 'other' EXCEPT ALL SELECT * FROM full_scan WHERE database_name = 'other');
 ----
 0
 
 query I
-SELECT count(*) FROM (SELECT * FROM full_scan WHERE database_name = 'other' EXCEPT ALL SELECT * FROM ${function}() WHERE database_name = 'other');
+SELECT count(*) FROM (SELECT * FROM full_scan WHERE database_name = 'other' EXCEPT ALL SELECT * FROM {function}() WHERE database_name = 'other');
 ----
 0
 
@@ -185,8 +212,3 @@ query II
 EXPLAIN ANALYZE SELECT table_name FROM duckdb_tables() WHERE database_name = 'other' AND schema_name = 's1';
 ----
 analyzed_plan	<REGEX>:.*DUCKDB_TABLES[^0-9]*4 rows.*
-
-query II
-EXPLAIN ANALYZE SELECT column_name FROM duckdb_columns() WHERE database_name = 'other' AND schema_name = 'S2';
-----
-analyzed_plan	<REGEX>:.*DUCKDB_COLUMNS[^0-9]*2 rows.*

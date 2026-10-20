@@ -198,6 +198,10 @@ BoundStatement Binder::BindDescribeTable(ShowRef &ref) {
 				throw CatalogException("SHOW TABLES FROM: No catalog + schema named \"%s.%s\" found.",
 				                       catalog_name.GetIdentifierName(), schema_name.GetIdentifierName());
 			}
+			if (!schema_oid.IsValid()) {
+				catalog_name = schema_entry->catalog.GetName();
+				schema_name = schema_entry->name;
+			}
 		} else if (catalog_name.empty() && !schema_name.empty()) {
 			// We have a schema name, use default catalog
 			auto &client_data = ClientData::Get(context);
@@ -208,7 +212,15 @@ BoundStatement Binder::BindDescribeTable(ShowRef &ref) {
 				throw CatalogException("SHOW TABLES FROM: No catalog + schema named \"%s.%s\" found.",
 				                       catalog_name.GetIdentifierName(), schema_name.GetIdentifierName());
 			}
+			catalog_name = schema_entry->catalog.GetName();
+			schema_name = schema_entry->name;
+		} else if (!catalog_name.empty()) {
+			auto catalog = Catalog::GetCatalogEntry(context, catalog_name);
+			if (catalog) {
+				catalog_name = catalog->GetName();
+			}
 		}
+		// the names of the catalog entries, which the system functions compare to exactly
 		sql = PragmaShowTables(catalog_name.GetIdentifierName(), schema_name.GetIdentifierName(), schema_oid);
 	} else if (lname == "\"variables\"") {
 		sql = PragmaShowVariables();

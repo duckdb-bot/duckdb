@@ -60,7 +60,7 @@ static unique_ptr<FunctionData> DuckDBViewsBind(ClientContext &context, TableFun
 	names.emplace_back("is_bound");
 	return_types.emplace_back(LogicalType::BOOLEAN);
 
-	return make_uniq<CatalogScanFilterData>();
+	return make_uniq<CatalogScanFilterData>(names);
 }
 
 unique_ptr<GlobalTableFunctionState> DuckDBViewsInit(ClientContext &context, TableFunctionInitInput &input) {

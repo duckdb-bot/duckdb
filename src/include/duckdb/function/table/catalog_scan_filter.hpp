@@ -15,21 +15,16 @@ namespace duckdb {
 
 class SchemaCatalogEntry;
 
-//! A constant that a filter compares the database or schema name column to
-struct CatalogNameFilter {
-	string value;
-	//! Whether the filter compares lower() of the column to the value
-	bool lower_case = false;
-
-	bool Matches(const string &name) const;
-	bool operator==(const CatalogNameFilter &other) const;
-};
-
 //! Bind data of the catalog table functions that list the entries of schemas, such as duckdb_tables()
 struct CatalogScanFilterData : public TableFunctionData {
-	//! The names the database_name and schema_name columns are filtered to, all of which must match
-	vector<CatalogNameFilter> database_filters;
-	vector<CatalogNameFilter> schema_filters;
+	explicit CatalogScanFilterData(const vector<Identifier> &names);
+
+	//! The columns with the database and the schema name
+	optional_idx database_column;
+	optional_idx schema_column;
+	//! The names that filters compare these columns to, all of which a schema must have
+	vector<string> database_names;
+	vector<string> schema_names;
 
 	unique_ptr<FunctionData> Copy() const override;
 	bool Equals(const FunctionData &other) const override;

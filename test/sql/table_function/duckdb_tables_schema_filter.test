@@ -390,6 +390,34 @@ DROP TABLE full_scan;
 
 endloop
 
+# a transaction sees the skipped catalogs as of its first scan, as with a full scan
+statement ok con1
+BEGIN;
+
+query I con1
+SELECT count(*) FROM duckdb_tables() WHERE database_name = 'memory' AND table_name = 'mine';
+----
+1
+
+statement ok con2
+CREATE TABLE other.s1.late (a INTEGER);
+
+query I con1
+SELECT count(*) FROM duckdb_tables() WHERE database_name = 'other' AND table_name = 'late';
+----
+0
+
+statement ok con1
+COMMIT;
+
+query I con1
+SELECT count(*) FROM duckdb_tables() WHERE database_name = 'other' AND table_name = 'late';
+----
+1
+
+statement ok
+DROP TABLE other.s1.late;
+
 # only the pinned schema is scanned
 query II
 EXPLAIN ANALYZE SELECT table_name FROM duckdb_tables() WHERE database_name = 'other' AND schema_name = 's1';

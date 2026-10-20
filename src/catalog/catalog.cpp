@@ -1550,6 +1550,8 @@ Catalog::GetAllSchemas(ClientContext &context, const std::function<bool(Catalog 
 		}
 		auto &catalog = database->GetCatalog();
 		if (!include_catalog(catalog)) {
+			// start the transaction as listing the schemas would, so later queries see the same snapshot
+			catalog.GetCatalogTransaction(context);
 			continue;
 		}
 		for (auto &schema : catalog.GetSchemas(context)) {

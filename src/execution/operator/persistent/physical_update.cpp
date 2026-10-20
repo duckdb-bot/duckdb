@@ -320,8 +320,10 @@ unique_ptr<GlobalSinkState> PhysicalUpdate::GetGlobalSinkState(ClientContext &co
 }
 
 unique_ptr<LocalSinkState> PhysicalUpdate::GetLocalSinkState(ExecutionContext &context) const {
+	// an in-place update reads indexed columns only for RETURNING and never fetches into the delete chunk
 	return make_uniq<UpdateLocalState>(context.client, expressions, table.GetTypes(), bound_defaults, bound_constraints,
-	                                   capture_old_rows, index_update, columns, returning_only_column_count);
+	                                   capture_old_rows, update_is_del_and_insert && index_update, columns,
+	                                   returning_only_column_count);
 }
 
 SinkCombineResultType PhysicalUpdate::Combine(ExecutionContext &context, OperatorSinkCombineInput &input) const {

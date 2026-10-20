@@ -60,29 +60,32 @@ FROM '{TEST_DIR}/split_interval.parquet'
 ----
 720:00:00	0	720	36:00:00	0	36
 
-# The milliseconds field keeps the time part up to its 32 bit limit, next to days and months
+# The time part stays in the milliseconds field while it fits in 32 bits, next to days and months
 statement ok
-COPY (
-	SELECT * FROM (VALUES
-		(1, INTERVAL '1193 hours 2 minutes 47.295 seconds'),
-		(2, INTERVAL '1193 hours 2 minutes 47.296 seconds'),
-		(3, INTERVAL '1 day 25 hours'),
-		(4, INTERVAL '1 month 36 hours')
-	) t(id, i)
-) TO '{TEST_DIR}/interval_time_part.parquet' (DICTIONARY_SIZE_LIMIT 1000)
+CREATE TABLE interval_time_part AS SELECT * FROM (VALUES
+	(1, INTERVAL '1193 hours 2 minutes 47.295 seconds'),
+	(2, INTERVAL '1193 hours 2 minutes 47.296 seconds'),
+	(3, INTERVAL '1200 hours'),
+	(4, INTERVAL '1 day 25 hours'),
+	(5, INTERVAL '1 month 36 hours')
+) t(id, i)
+
+statement ok
+COPY interval_time_part TO '{TEST_DIR}/interval_time_part.parquet' (DICTIONARY_SIZE_LIMIT 1000)
 
 query II
 SELECT id, i FROM '{TEST_DIR}/interval_time_part.parquet' ORDER BY id
 ----
 1	1193:02:47.295
 2	49 days 17:02:47.296
-3	1 day 25:00:00
-4	1 month 36:00:00
+3	50 days
+4	1 day 25:00:00
+5	1 month 36:00:00
 
-# also without a dictionary, and nested in lists and structs
+# Plain encoding, also in lists and structs
 statement ok
 COPY (
-	SELECT id, i, [i] AS l, {'i': i} AS s FROM '{TEST_DIR}/interval_time_part.parquet'
+	SELECT id, i, [i] AS l, {'i': i} AS s FROM interval_time_part
 ) TO '{TEST_DIR}/interval_time_part_plain.parquet' (DICTIONARY_SIZE_LIMIT 1)
 
 query IIII
@@ -90,10 +93,11 @@ SELECT id, i, l, s FROM '{TEST_DIR}/interval_time_part_plain.parquet' ORDER BY i
 ----
 1	1193:02:47.295	['1193:02:47.295']	{'i': '1193:02:47.295'}
 2	49 days 17:02:47.296	['49 days 17:02:47.296']	{'i': '49 days 17:02:47.296'}
-3	1 day 25:00:00	['1 day 25:00:00']	{'i': '1 day 25:00:00'}
-4	1 month 36:00:00	['1 month 36:00:00']	{'i': '1 month 36:00:00'}
+3	50 days	[50 days]	{'i': 50 days}
+4	1 day 25:00:00	['1 day 25:00:00']	{'i': '1 day 25:00:00'}
+5	1 month 36:00:00	['1 month 36:00:00']	{'i': '1 month 36:00:00'}
 
-# the bloom filter holds the normalized interval, so equal intervals written another way find the rows
+# The bloom filter matches an equal interval written another way
 query I
 SELECT bool_or(bloom_filter_excludes) FROM parquet_bloom_probe('{TEST_DIR}/interval_time_part.parquet', 'i', INTERVAL '2 days 1 hour')
 ----
@@ -107,9 +111,9 @@ true
 query I
 SELECT id FROM '{TEST_DIR}/interval_time_part.parquet' WHERE i = INTERVAL '2 days 1 hour'
 ----
-3
+4
 
 query I
 SELECT id FROM '{TEST_DIR}/interval_time_part.parquet' WHERE i = INTERVAL '1 month 1 day 12 hours'
 ----
-4
+5

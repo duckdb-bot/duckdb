@@ -50,3 +50,34 @@ query II
 SELECT sum(TRY(x::INTEGER)) AS a, sum(TRY(x::INTEGER + 5)) AS b FROM (VALUES ('1'), ('bad'), ('3')) v(x);
 ----
 4	14
+
+# an occurrence in a branch of a CASE does not move the one inside TRY out of it
+query II
+SELECT TRY(s::INTEGER + 1) AS a, CASE WHEN s = 'bad' THEN 0 ELSE s::INTEGER + 2 END AS b FROM t;
+----
+NULL	0
+
+# the same sub-expression twice inside one TRY
+query II
+SELECT TRY(s::INTEGER * 2 + s::INTEGER) AS a, TRY(-s::INTEGER) AS b FROM t;
+----
+NULL	NULL
+
+# the cast succeeds outside of TRY while the addition inside TRY overflows
+query II
+SELECT x::BIGINT AS a, TRY(x::BIGINT + 1) AS b FROM (VALUES ('9223372036854775807'), ('1')) v(x) ORDER BY a;
+----
+1	2
+9223372036854775807	NULL
+
+# identical TRY expressions are computed once in a projection of their own
+query II
+EXPLAIN SELECT TRY(s::INTEGER + 5) AS a, TRY(s::INTEGER + 5) AS b FROM t;
+----
+physical_plan	<REGEX>:[\s\S]*Projection ─[\s\S]*Projection ─[\s\S]*
+
+# nothing inside TRY is moved to a projection below it
+query II
+EXPLAIN SELECT TRY(s::INTEGER + 1) AS a, TRY(s::INTEGER + 2) AS b FROM t;
+----
+physical_plan	<!REGEX>:[\s\S]*Projection ─[\s\S]*Projection ─[\s\S]*

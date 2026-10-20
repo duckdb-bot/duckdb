@@ -82,3 +82,33 @@ SELECT x, n FROM (SELECT x, count(*) OVER (PARTITION BY sqrt(x)) AS n FROM doubl
 1.0	1
 4.0	2
 4.0	2
+
+# sqrt(-infinity) fails without IEEE semantics, which does not make its NULL partition pass the filter
+statement ok
+CREATE TABLE doubles_with_null(id INTEGER, x DOUBLE);
+
+statement ok
+INSERT INTO doubles_with_null VALUES (1, NULL), (2, 1000), (3, 1000);
+
+query II
+EXPLAIN SELECT id, n FROM (SELECT id, x, row_number() OVER (PARTITION BY sqrt(x) ORDER BY id) AS n FROM doubles_with_null) s
+WHERE x > 100
+----
+logical_opt	<!REGEX>:.*IS NULL.*
+
+statement ok
+SET ieee_floating_point_ops = true
+
+# make_date of a STRUCT is NULL when a field is NULL
+statement ok
+CREATE TABLE structs(id INTEGER, b STRUCT(year BIGINT, month BIGINT, day BIGINT));
+
+statement ok
+INSERT INTO structs VALUES (1, row(2000, 1, 1)), (2, row(2000, NULL, 1)), (3, NULL);
+
+query II
+SELECT id, n FROM (SELECT id, b, count(*) OVER (PARTITION BY make_date(b)) AS n FROM structs) s
+WHERE b > row(1995, 1, 1)::STRUCT(year BIGINT, month BIGINT, day BIGINT) ORDER BY id
+----
+1	1
+2	2

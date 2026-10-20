@@ -200,7 +200,7 @@ void TaskScheduler::ExecuteForever(atomic<bool> *marker, const TaskSchedulerType
 		GetPinnedCPUId() = cpu;
 	}
 	static constexpr int64_t INITIAL_FLUSH_WAIT = 500000; // initial wait time of 0.5s (in mus) before flushing
-	static constexpr int64_t RETRY_WAIT = 10000; // wait time of 10ms (in mus) before retrying after an exception
+	static constexpr int64_t RETRY_WAIT = 10000;    // wait time of 10ms (in mus) before retrying after an exception
 	static constexpr idx_t MAX_TASK_RETRIES = 1000; // retries of the held task, about 10s, before rethrowing
 
 	const auto &block_allocator = BlockAllocator::Get(db);
@@ -278,14 +278,11 @@ void TaskScheduler::ExecuteForever(atomic<bool> *marker, const TaskSchedulerType
 				}
 			}
 			// this thread will exit, flush all of its outstanding allocations
-			if (block_allocator.SupportsFlush()) {
-				if (ran_task) {
-					block_allocator.ThreadFlush(Settings::Get<AllocatorBackgroundThreadsSetting>(db), 0,
-					                            GetPool(TaskSchedulerType::REGULAR).NumberOfThreads());
-				}
-				block_allocator.ThreadExit();
+			if (ran_task && block_allocator.SupportsFlush()) {
+				block_allocator.ThreadFlush(Settings::Get<AllocatorBackgroundThreadsSetting>(db), 0,
+				                            GetPool(TaskSchedulerType::REGULAR).NumberOfThreads());
 			}
-			return;
+			break;
 		} catch (...) {
 			if (worker_task.executing) {
 				// the task could not report its own error, so it can neither be dropped nor run again
@@ -297,10 +294,17 @@ void TaskScheduler::ExecuteForever(atomic<bool> *marker, const TaskSchedulerType
 			}
 			if (!*marker && !worker_task.task) {
 				// the flush at exit only gives memory back, so the thread exits without it
-				return;
+				break;
 			}
 		}
 		std::this_thread::sleep_for(std::chrono::microseconds(RETRY_WAIT));
+	}
+	if (block_allocator.SupportsFlush()) {
+		try {
+			block_allocator.ThreadExit();
+		} catch (...) {
+			// returning the memory of an exiting thread is best effort
+		}
 	}
 #else
 	throw NotImplementedException("DuckDB was compiled without threads! Background thread loop is not allowed.");

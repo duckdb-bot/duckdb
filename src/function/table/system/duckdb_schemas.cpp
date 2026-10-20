@@ -50,7 +50,7 @@ static unique_ptr<FunctionData> DuckDBSchemasBind(ClientContext &context, TableF
 	names.emplace_back("parent_schema_oid");
 	return_types.emplace_back(LogicalType::BIGINT);
 
-	return SystemCatalogScanner::CreateBindData(names);
+	return SystemCatalogScanner::CreateBindData(names, return_types);
 }
 
 unique_ptr<GlobalTableFunctionState> DuckDBSchemasInit(ClientContext &context, TableFunctionInitInput &input) {

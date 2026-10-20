@@ -100,7 +100,7 @@ static unique_ptr<FunctionData> DuckDBFunctionsBind(ClientContext &context, Tabl
 	names.emplace_back("categories");
 	return_types.emplace_back(LogicalType::LIST(LogicalType::VARCHAR));
 
-	return SystemCatalogScanner::CreateBindData(names);
+	return SystemCatalogScanner::CreateBindData(names, return_types);
 }
 
 static void ExtractFunctionsFromSchema(ClientContext &context, SchemaCatalogEntry &schema,

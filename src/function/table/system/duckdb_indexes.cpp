@@ -62,7 +62,7 @@ static unique_ptr<FunctionData> DuckDBIndexesBind(ClientContext &context, TableF
 	names.emplace_back("sql");
 	return_types.emplace_back(LogicalType::VARCHAR);
 
-	return SystemCatalogScanner::CreateBindData(names);
+	return SystemCatalogScanner::CreateBindData(names, return_types);
 }
 
 unique_ptr<GlobalTableFunctionState> DuckDBIndexesInit(ClientContext &context, TableFunctionInitInput &input) {

@@ -48,16 +48,20 @@ bool SystemCatalogScannerData::Equals(const FunctionData &other_p) const {
 	       schema_name_idx == other.schema_name_idx && schema_oid_idx == other.schema_oid_idx;
 }
 
-unique_ptr<FunctionData> SystemCatalogScanner::CreateBindData(const vector<Identifier> &names) {
+unique_ptr<FunctionData> SystemCatalogScanner::CreateBindData(const vector<Identifier> &names,
+                                                              const vector<LogicalType> &types) {
 	auto result = make_uniq<SystemCatalogScannerData>();
 	for (idx_t i = 0; i < names.size(); i++) {
-		if (names[i] == "database_name") {
+		// the scan evaluates the filters on the names as VARCHAR and on the oids as BIGINT
+		const bool is_name = types[i].id() == LogicalTypeId::VARCHAR;
+		const bool is_oid = types[i].id() == LogicalTypeId::BIGINT;
+		if (names[i] == "database_name" && is_name) {
 			result->database_name_idx = i;
-		} else if (names[i] == "database_oid") {
+		} else if (names[i] == "database_oid" && is_oid) {
 			result->database_oid_idx = i;
-		} else if (names[i] == "schema_name") {
+		} else if (names[i] == "schema_name" && is_name) {
 			result->schema_name_idx = i;
-		} else if (names[i] == "schema_oid") {
+		} else if (names[i] == "schema_oid" && is_oid) {
 			result->schema_oid_idx = i;
 		}
 	}

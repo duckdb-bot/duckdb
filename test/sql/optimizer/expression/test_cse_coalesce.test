@@ -1,0 +1,99 @@
+# name: test/sql/optimizer/expression/test_cse_coalesce.test
+# description: Common subexpression elimination only shares the arguments of COALESCE after the first with an occurrence that always runs
+# group: [expression]
+
+statement ok
+CREATE TABLE c(s VARCHAR, i INTEGER, l INTEGER[]);
+
+statement ok
+INSERT INTO c VALUES ('abc', 0, [0]), ('42', NULL, NULL);
+
+# the arguments of COALESCE after the first only run for the rows that are NULL so far
+query II
+SELECT COALESCE(i, CAST(s AS INTEGER) + 1) AS a, COALESCE(i, CAST(s AS INTEGER) + 2) AS b FROM c ORDER BY s
+----
+43	44
+0	0
+
+query II
+SELECT IFNULL(i, CAST(s AS INTEGER) + 1) AS a, IFNULL(i, CAST(s AS INTEGER) + 2) AS b FROM c ORDER BY s
+----
+43	44
+0	0
+
+query II
+SELECT COALESCE(i, i, CAST(s AS INTEGER) + 1) AS a, COALESCE(i, -i, CAST(s AS INTEGER) + 1) AS b FROM c ORDER BY s
+----
+43	43
+0	0
+
+query II
+SELECT COALESCE(i, CAST(s AS INTEGER) + 1) AS a, CASE WHEN i IS NULL THEN CAST(s AS INTEGER) + 2 END AS b FROM c ORDER BY s
+----
+43	44
+0	NULL
+
+query II
+SELECT COALESCE(l, [CAST(s AS INTEGER) + 1]) AS a, COALESCE(l, [CAST(s AS INTEGER) + 2]) AS b FROM c ORDER BY s
+----
+[43]	[44]
+[0]	[0]
+
+query II
+SELECT SUM(COALESCE(i, CAST(s AS INTEGER) + 1)), SUM(COALESCE(i, CAST(s AS INTEGER) + 2)) FROM c
+----
+43	44
+
+query II
+EXPLAIN SELECT COALESCE(i, CAST(s AS INTEGER) + 1) AS a, COALESCE(i, CAST(s AS INTEGER) + 2) AS b FROM c
+----
+physical_plan	<!REGEX>:[\s\S]*Projection ─[\s\S]*Projection ─[\s\S]*
+
+# with TRY
+query II
+SELECT COALESCE(i, CAST(s AS INTEGER) + 1) AS a, TRY(CAST(s AS INTEGER) + 2) AS b FROM c ORDER BY s
+----
+43	44
+0	NULL
+
+query II
+SELECT TRY(COALESCE(i, CAST(s AS INTEGER) + 1) + CAST(s AS INTEGER)) AS a, COALESCE(i, CAST(s AS INTEGER) + 1) AS b FROM c ORDER BY s
+----
+85	43
+NULL	0
+
+query II
+SELECT COALESCE(TRY(CAST(s AS INTEGER) + 1), -1) AS a, COALESCE(TRY(CAST(s AS INTEGER) + 2), -2) AS b FROM c ORDER BY s
+----
+43	44
+-1	-2
+
+# an occurrence outside of COALESCE always runs
+statement error
+SELECT COALESCE(i, CAST(s AS INTEGER) + 1) AS a, CAST(s AS INTEGER) + 2 AS b FROM c
+----
+Could not convert string 'abc' to INT32
+
+# the first argument of COALESCE always runs, so it is still shared
+query II
+SELECT COALESCE(CAST(i AS BIGINT) + 1, -1) AS a, CAST(i AS BIGINT) + 2 AS b FROM c ORDER BY s
+----
+-1	NULL
+1	2
+
+query II
+EXPLAIN SELECT COALESCE(CAST(i AS BIGINT) + 1, -1) AS a, CAST(i AS BIGINT) + 2 AS b FROM c
+----
+physical_plan	<REGEX>:[\s\S]*Projection ─[\s\S]*Projection ─[\s\S]*
+
+# a later argument of COALESCE is shared with an occurrence that always runs before it
+query II
+SELECT length(s) AS a, COALESCE(i, length(s) + 1) AS b FROM c ORDER BY s
+----
+2	3
+3	0
+
+query II
+EXPLAIN SELECT length(s) AS a, COALESCE(i, length(s) + 1) AS b FROM c
+----
+physical_plan	<REGEX>:[\s\S]*Projection ─[\s\S]*Projection ─[\s\S]*

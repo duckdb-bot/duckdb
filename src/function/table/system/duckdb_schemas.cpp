@@ -55,7 +55,6 @@ static unique_ptr<FunctionData> DuckDBSchemasBind(ClientContext &context, TableF
 unique_ptr<GlobalTableFunctionState> DuckDBSchemasInit(ClientContext &context, TableFunctionInitInput &input) {
 	auto result = make_uniq<DuckDBSchemasData>();
 
-	// scan all the schemas and collect them
 	result->entries = GetSchemasForScan(context, input.bind_data);
 
 	return std::move(result);

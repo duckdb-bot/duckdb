@@ -78,7 +78,6 @@ static unique_ptr<FunctionData> DuckDBTablesBind(ClientContext &context, TableFu
 unique_ptr<GlobalTableFunctionState> DuckDBTablesInit(ClientContext &context, TableFunctionInitInput &input) {
 	auto result = make_uniq<DuckDBTablesData>();
 
-	// scan all the schemas for tables and collect themand collect them
 	auto schemas = GetSchemasForScan(context, input.bind_data);
 	for (auto &schema : schemas) {
 		schema.get().Scan(context, CatalogType::TABLE_ENTRY,

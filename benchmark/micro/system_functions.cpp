@@ -3,13 +3,12 @@
 
 using namespace duckdb;
 
-// A second database with 1000 schemas of 20 tables each, next to one table in the pinned schema
+// 1000 schemas of 20 tables each, next to one table in the pinned schema
 #define PINNED_SCHEMA_BODY(QUERY)                                                                                      \
 	void Load(DuckDBBenchmarkState *state) override {                                                                  \
 		state->conn.Query("CREATE TABLE mine (i INTEGER)");                                                            \
-		state->conn.Query("ATTACH ':memory:' AS other");                                                               \
 		for (idx_t i = 0; i < 1000; i++) {                                                                             \
-			auto schema = "other.s" + to_string(i);                                                                    \
+			auto schema = "s" + to_string(i);                                                                          \
 			state->conn.Query("CREATE SCHEMA " + schema);                                                              \
 			for (idx_t j = 0; j < 20; j++) {                                                                           \
 				state->conn.Query("CREATE TABLE " + schema + ".t" + to_string(j) + " (a INTEGER)");                    \
@@ -30,7 +29,7 @@ using namespace duckdb;
 		return string();                                                                                               \
 	}                                                                                                                  \
 	string BenchmarkInfo() override {                                                                                  \
-		return "Run " + string(QUERY) + " next to a database with 1000 schemas of 20 tables";                          \
+		return "Run " + string(QUERY) + " next to 1000 schemas of 20 tables";                                          \
 	}
 
 DUCKDB_BENCHMARK(DuckDBTablesPinnedSchema, "[system_functions]")

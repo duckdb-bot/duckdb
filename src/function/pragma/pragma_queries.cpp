@@ -29,10 +29,10 @@ string PragmaShowTables(const string &database, const string &schema, optional_i
 		where_conditions.push_back(StringUtil::Format("schema_oid = %llu", schema_oid.GetIndex()));
 	} else {
 		if (!database.empty()) {
-			where_conditions.push_back(StringUtil::Format("database_name = %s", SQLString(database)));
+			where_conditions.push_back(StringUtil::Format("lower(database_name) = lower(%s)", SQLString(database)));
 		}
 		if (!schema.empty()) {
-			where_conditions.push_back(StringUtil::Format("schema_name = %s", SQLString(schema)));
+			where_conditions.push_back(StringUtil::Format("lower(schema_name) = lower(%s)", SQLString(schema)));
 		}
 	}
 	if (where_conditions.empty()) {

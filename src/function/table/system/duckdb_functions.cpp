@@ -115,7 +115,6 @@ static void ExtractFunctionsFromSchema(ClientContext &context, SchemaCatalogEntr
 unique_ptr<GlobalTableFunctionState> DuckDBFunctionsInit(ClientContext &context, TableFunctionInitInput &input) {
 	auto result = make_uniq<DuckDBFunctionsData>();
 
-	// scan all the schemas for tables and collect them and collect them
 	auto schemas = GetSchemasForScan(context, input.bind_data);
 	for (auto &schema : schemas) {
 		ExtractFunctionsFromSchema(context, schema.get(), *result);

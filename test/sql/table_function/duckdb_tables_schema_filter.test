@@ -70,6 +70,143 @@ SELECT table_name FROM duckdb_tables() WHERE lower(database_name) = 'other' AND 
 ----
 t3
 
+query I
+SELECT table_name FROM duckdb_tables() WHERE lower(schema_name) = 'S2';
+----
+
+# collations compare through lower() and other functions
+query I
+SELECT table_name FROM duckdb_tables() WHERE database_name = 'other' AND schema_name COLLATE nocase = 'S2';
+----
+t3
+
+query I
+SELECT table_name FROM duckdb_tables() WHERE database_name COLLATE nocase = 'OTHER' AND schema_name COLLATE noaccent = 'S2';
+----
+t3
+
+statement ok
+SET default_collation = 'nocase';
+
+query I
+SELECT table_name FROM duckdb_tables() WHERE database_name = 'Other' AND schema_name = 's2';
+----
+t3
+
+statement ok
+RESET default_collation;
+
+# names that are only equal after lower()
+statement ok
+CREATE SCHEMA "Ä";
+
+statement ok
+CREATE SCHEMA "ä";
+
+statement ok
+CREATE TABLE "Ä".upper_t (i INTEGER);
+
+statement ok
+CREATE TABLE "ä".lower_t (i INTEGER);
+
+query I
+SHOW TABLES FROM memory."Ä";
+----
+lower_t
+upper_t
+
+query I
+SELECT table_name FROM duckdb_tables() WHERE schema_name = 'Ä';
+----
+upper_t
+
+query I
+SELECT table_name FROM duckdb_tables() WHERE lower(schema_name) = 'ä' ORDER BY ALL;
+----
+lower_t
+upper_t
+
+query I
+SELECT table_name FROM duckdb_tables() WHERE schema_name COLLATE nocase = 'Ä' ORDER BY ALL;
+----
+lower_t
+upper_t
+
+query I
+SELECT table_name FROM duckdb_tables() WHERE schema_name COLLATE noaccent = 'A';
+----
+upper_t
+
+statement ok
+DROP SCHEMA "Ä" CASCADE;
+
+statement ok
+DROP SCHEMA "ä" CASCADE;
+
+# prepared statements see the catalog of each execution
+statement ok
+PREPARE pinned AS SELECT table_name FROM duckdb_tables() WHERE database_name = 'other' AND schema_name = $1 ORDER BY ALL;
+
+query I
+EXECUTE pinned('S2');
+----
+t3
+
+query I
+EXECUTE pinned('s1');
+----
+t1
+t2
+t5
+
+statement ok
+PREPARE pinned_s1 AS SELECT table_name FROM duckdb_tables() WHERE database_name = 'other' AND schema_name = 's1' ORDER BY ALL;
+
+query I
+EXECUTE pinned_s1;
+----
+t1
+t2
+t5
+
+statement ok
+CREATE TABLE other.s1.t7 (a INTEGER);
+
+query I
+EXECUTE pinned_s1;
+----
+t1
+t2
+t5
+t7
+
+statement ok
+DROP TABLE other.s1.t7;
+
+query I
+EXECUTE pinned_s1;
+----
+t1
+t2
+t5
+
+# WITH ORDINALITY numbers the rows of the full scan
+statement ok
+CREATE TABLE ordinality_scan AS SELECT database_name, schema_name, table_name, ordinality FROM duckdb_tables() WITH ORDINALITY;
+
+query I
+SELECT count(*) FROM (SELECT database_name, schema_name, table_name, ordinality FROM duckdb_tables() WITH ORDINALITY WHERE database_name = 'other' AND schema_name = 's1' EXCEPT ALL SELECT * FROM ordinality_scan WHERE database_name = 'other' AND schema_name = 's1');
+----
+0
+
+query I
+SELECT count(*) FROM ordinality_scan WHERE database_name = 'other' AND schema_name = 's1';
+----
+3
+
+statement ok
+DROP TABLE ordinality_scan;
+
 # column aliases do not change which columns the filters are on
 query I
 SELECT table_name FROM duckdb_tables() AS d(schema_name, db_oid, database_name) WHERE schema_name = 'other' AND database_name = 'S2';
@@ -133,6 +270,40 @@ SELECT count(*) FROM duckdb_tables() WHERE schema_name LIKE 's%';
 ----
 3
 
+# schemas of the same name in other databases and in nested schemas
+statement ok
+ATTACH ':memory:' AS parent;
+
+statement ok
+CREATE SCHEMA parent.s1;
+
+statement ok
+CREATE SCHEMA parent.p;
+
+statement ok
+CREATE SCHEMA parent.p.s1;
+
+statement ok
+CREATE TABLE parent.s1.top_t (a INTEGER);
+
+statement ok
+CREATE TABLE parent.p.s1.nested_t (a INTEGER);
+
+query II
+SELECT database_name, table_name FROM duckdb_tables() WHERE schema_name = 's1' ORDER BY ALL;
+----
+other	t1
+other	t2
+other	t5
+parent	nested_t
+parent	top_t
+
+query I
+SELECT table_name FROM duckdb_tables() WHERE database_name = 'parent' AND schema_name = 's1' ORDER BY ALL;
+----
+nested_t
+top_t
+
 # the other catalog functions
 query III
 SELECT schema_name, table_name, column_name FROM duckdb_columns() WHERE database_name = 'other' AND schema_name = 'S2';
@@ -177,7 +348,19 @@ CREATE TABLE other.s1.t6 (a INTEGER PRIMARY KEY, b INTEGER CHECK (b > 0));
 statement ok
 CREATE TYPE other.s1.mood AS ENUM ('happy', 'sad');
 
-foreach function duckdb_tables duckdb_views duckdb_columns duckdb_constraints duckdb_types duckdb_indexes duckdb_sequences duckdb_schemas
+statement ok
+CREATE MACRO other.s1.add_one(x) AS x + 1;
+
+statement ok
+CREATE MACRO other.s1.one_row() AS TABLE SELECT 1 AS x;
+
+statement ok
+CREATE TABLE other.s1.log (i INTEGER);
+
+statement ok
+CREATE TRIGGER other_trigger AFTER INSERT ON other.s1.t1 FOR EACH STATEMENT INSERT INTO other.s1.log SELECT 1;
+
+foreach function duckdb_tables duckdb_views duckdb_columns duckdb_constraints duckdb_types duckdb_indexes duckdb_sequences duckdb_schemas duckdb_functions duckdb_triggers
 
 statement ok
 CREATE TABLE full_scan AS SELECT * FROM {function}();
@@ -211,4 +394,4 @@ endloop
 query II
 EXPLAIN ANALYZE SELECT table_name FROM duckdb_tables() WHERE database_name = 'other' AND schema_name = 's1';
 ----
-analyzed_plan	<REGEX>:.*DUCKDB_TABLES[^0-9]*4 rows.*
+analyzed_plan	<REGEX>:.*DUCKDB_TABLES[^0-9]*5 rows.*

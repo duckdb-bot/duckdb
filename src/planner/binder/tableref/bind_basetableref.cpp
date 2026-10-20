@@ -15,7 +15,6 @@
 #include "duckdb/planner/expression_binder/constant_binder.hpp"
 #include "duckdb/catalog/catalog_search_path.hpp"
 #include "duckdb/planner/tableref/bound_at_clause.hpp"
-#include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/parser/query_node/cte_node.hpp"
 #include "duckdb/planner/operator/logical_dummy_scan.hpp"
 #include "duckdb/planner/operator/logical_secure_view.hpp"
@@ -114,7 +113,7 @@ unique_ptr<BoundAtClause> Binder::BindAtClause(optional_ptr<AtClause> at_clause)
 	}
 	ConstantBinder binder(*this, context, "AT clause");
 	auto expr = binder.Bind(at_clause->ExpressionMutable());
-	auto val = ExpressionExecutor::EvaluateScalar(context, *expr);
+	auto val = FoldExpression(*expr);
 	return make_uniq<BoundAtClause>(at_clause->Unit(), std::move(val));
 }
 

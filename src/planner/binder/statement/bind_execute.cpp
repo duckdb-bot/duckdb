@@ -5,7 +5,6 @@
 #include "duckdb/planner/operator/logical_execute.hpp"
 #include "duckdb/planner/expression_binder/constant_binder.hpp"
 #include "duckdb/main/client_data.hpp"
-#include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/main/client_context.hpp"
@@ -60,7 +59,7 @@ BoundStatement Binder::Bind(ExecuteStatement &stmt) {
 			}
 			parameter_data = BoundParameterData(constant.TakeValue(), std::move(return_type));
 		} else {
-			auto value = ExpressionExecutor::EvaluateScalar(context, *bound_expr, true);
+			auto value = FoldExpression(*bound_expr);
 			auto value_type = value.type();
 			parameter_data = BoundParameterData(std::move(value), std::move(value_type));
 		}
@@ -84,15 +83,21 @@ BoundStatement Binder::Bind(ExecuteStatement &stmt) {
 		// catalog was modified or statement does not have clear types: rebind the statement before running the execute
 		Planner prepared_planner(context);
 		prepared_planner.parameter_data = bind_values;
-		prepared = prepared_planner.PrepareSQLStatement(entry->second->unbound_statement->Copy());
+		// EXECUTE binds the statement to run it, unless the EXECUTE is prepared itself
+		auto mode = GetBindingMode() == BindingMode::PREPARE ? BindingMode::PREPARE : BindingMode::STANDARD_BINDING;
+		prepared = prepared_planner.PrepareSQLStatement(entry->second->unbound_statement->Copy(), mode);
+		if (!prepared->properties.bound_all_parameters) {
+			throw ParameterNotResolvedException();
+		}
 		rebound_plan = std::move(prepared_planner.plan);
-		D_ASSERT(prepared->properties.bound_all_parameters);
 		global_binder_state->bound_tables = prepared_planner.binder->global_binder_state->bound_tables;
 	}
 	// copy the properties of the prepared statement into the planner
 	auto &properties = GetStatementProperties();
 	properties = prepared->properties;
 	properties.parameter_count = parameter_count;
+	// the parameters are evaluated by this statement
+	properties.MergeDatabases(constant_binder->GetStatementProperties());
 
 	BoundStatement result;
 	result.names = prepared->names;

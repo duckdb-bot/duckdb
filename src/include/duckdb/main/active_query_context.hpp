@@ -72,7 +72,7 @@ public:
 	}
 	//! Records the databases a statement of the query read and modified
 	void RecordDatabases(const StatementProperties &properties) {
-		MergeDatabases(properties, databases);
+		databases.MergeDatabases(properties);
 	}
 	//! Whether a statement of the query that started modifies a database
 	bool Wrote() const {
@@ -80,7 +80,7 @@ public:
 	}
 	//! The properties of the statement that produces the result, describing the databases of the whole query
 	StatementProperties QueryProperties(StatementProperties properties) const {
-		MergeDatabases(databases, properties);
+		properties.MergeDatabases(databases);
 		return properties;
 	}
 
@@ -93,19 +93,6 @@ private:
 	idx_t next_statement = 0;
 	//! The databases the statements that already ran read and modified
 	StatementProperties databases;
-
-private:
-	static void MergeDatabases(const StatementProperties &source, StatementProperties &target) {
-		for (auto &entry : source.read_databases) {
-			target.read_databases.insert(entry);
-		}
-		for (auto &entry : source.modified_databases) {
-			auto inserted = target.modified_databases.insert(entry);
-			if (!inserted.second) {
-				inserted.first->second.modifications |= entry.second.modifications;
-			}
-		}
-	}
 };
 
 } // namespace duckdb

@@ -504,28 +504,28 @@ Value FunctionBinder::CastToParameterType(ClientContext &context, Value value, c
 
 //! Fold an argument to the constant it was bound to. A constant expression carries its value directly - evaluating
 //! one is both wasteful and impossible for the types that have no vector representation, such as TABLE
-static Value FoldArgument(ClientContext &context, Expression &expr) {
+static Value FoldArgument(Binder &binder, Expression &expr) {
 	if (expr.GetExpressionClass() == ExpressionClass::BOUND_CONSTANT) {
 		return expr.Cast<BoundConstantExpression>().GetValue();
 	}
-	return ExpressionExecutor::EvaluateScalar(context, expr, true);
+	return binder.FoldExpression(expr);
 }
 
 //! Fold an argument to a constant and cast it to the type of the parameter it fills
-static Value PlaceArgument(ClientContext &context, Expression &expr, const LogicalType &target_type) {
+static Value PlaceArgument(ClientContext &context, Binder &binder, Expression &expr, const LogicalType &target_type) {
 	if (target_type.id() == LogicalTypeId::TABLE) {
 		// A TABLE parameter is filled by the subquery itself rather than by a value, so its slot holds a plain
 		// NULL. A NULL of type TABLE would not do: TABLE has no physical type, so such a value cannot be read
 		// back when the plan is deserialized.
 		return Value();
 	}
-	return FunctionBinder::CastToParameterType(context, FoldArgument(context, expr), target_type);
+	return FunctionBinder::CastToParameterType(context, FoldArgument(binder, expr), target_type);
 }
 
 //! Fold an option to a constant and cast it to its type like an explicit cast - overload selection never checked it.
 //! A failed cast names the option, as the cast alone cannot tell which one it was
-static Value PlaceOption(ClientContext &context, Expression &expr, const TypedKwarg &option) {
-	auto value = FoldArgument(context, expr);
+static Value PlaceOption(ClientContext &context, Binder &binder, Expression &expr, const TypedKwarg &option) {
+	auto value = FoldArgument(binder, expr);
 	if (RequiresCast(value.type(), option.type) != LogicalTypeComparisonResult::DIFFERENT_TYPES) {
 		return value;
 	}
@@ -547,7 +547,7 @@ static Value PlaceOption(ClientContext &context, Expression &expr, const TypedKw
 //! has already established that every parameter's cast is one the implicit rules allow. An option takes no part in
 //! selection, so it is cast to its type like an explicit cast.
 template <class T>
-static void PlaceArguments(ClientContext &context, const T &function,
+static void PlaceArguments(ClientContext &context, Binder &binder, const T &function,
                            vector<unique_ptr<Expression>> &positional_arguments,
                            vector<pair<Identifier, unique_ptr<Expression>>> &named_arguments, vector<Value> &parameters,
                            named_argument_map_t &named_parameters) {
@@ -571,7 +571,7 @@ static void PlaceArguments(ClientContext &context, const T &function,
 				// received by "**kwargs" - cast to its type, as overload selection checked, unless that is ANY
 				auto &kwargs_type = signature.GetKwargs()->GetType();
 				named_parameters.insert(
-				    make_pair(argument_name, PlaceArgument(context, *named_argument.second, kwargs_type)));
+				    make_pair(argument_name, PlaceArgument(context, binder, *named_argument.second, kwargs_type)));
 				continue;
 			}
 			auto &expr = *named_argument.second;
@@ -598,13 +598,14 @@ static void PlaceArguments(ClientContext &context, const T &function,
 				                      "Named parameter %s was passed more than once in function call to %s",
 				                      option.name, function.GetName().GetIdentifierName());
 			}
-			named_parameters.insert(make_pair(option.name, PlaceOption(context, *named_argument.second, option)));
+			named_parameters.insert(
+			    make_pair(option.name, PlaceOption(context, binder, *named_argument.second, option)));
 			continue;
 		}
 		auto &param = signature.GetParameter(param_idx.GetIndex());
 		if (!param.AcceptsPosition()) {
 			named_parameters.insert(
-			    make_pair(argument_name, PlaceArgument(context, *named_argument.second, param.GetType())));
+			    make_pair(argument_name, PlaceArgument(context, binder, *named_argument.second, param.GetType())));
 			continue;
 		}
 		if (param_idx.GetIndex() < passed_count) {
@@ -620,9 +621,9 @@ static void PlaceArguments(ClientContext &context, const T &function,
 	for (idx_t i = 0; i < positional_count; i++) {
 		auto &param = signature.GetParameter(i);
 		if (i < passed_count) {
-			parameters.push_back(PlaceArgument(context, *positional_arguments[i], param.GetType()));
+			parameters.push_back(PlaceArgument(context, binder, *positional_arguments[i], param.GetType()));
 		} else if (named_slots[i]) {
-			parameters.push_back(PlaceArgument(context, *named_slots[i], param.GetType()));
+			parameters.push_back(PlaceArgument(context, binder, *named_slots[i], param.GetType()));
 		} else if (param.HasDefaultValue()) {
 			parameters.push_back(
 			    FunctionBinder::CastToParameterType(context, *param.GetDefaultValue(), param.GetType()));
@@ -636,7 +637,7 @@ static void PlaceArguments(ClientContext &context, const T &function,
 		// overload selection only picks an overload with "*args" for surplus positional arguments
 		auto &args_type = signature.GetArgs()->GetType();
 		for (idx_t i = positional_count; i < passed_count; i++) {
-			parameters.push_back(PlaceArgument(context, *positional_arguments[i], args_type));
+			parameters.push_back(PlaceArgument(context, binder, *positional_arguments[i], args_type));
 		}
 	}
 	signature.FillNamedDefaults(context, named_parameters);
@@ -652,8 +653,8 @@ optional_idx FunctionBinder::BindFunction(const Identifier &name, const TableFun
 	if (!entry.IsValid()) {
 		return entry;
 	}
-	PlaceArguments(context, *functions.GetFunctionByOffset(entry.GetIndex()), positional_arguments, named_arguments,
-	               parameters, named_parameters);
+	PlaceArguments(context, *binder, *functions.GetFunctionByOffset(entry.GetIndex()), positional_arguments,
+	               named_arguments, parameters, named_parameters);
 	return entry;
 }
 
@@ -673,8 +674,8 @@ optional_idx FunctionBinder::BindFunction(const Identifier &name, const PragmaFu
 	if (!entry.IsValid()) {
 		error.Throw();
 	}
-	PlaceArguments(context, *functions.GetFunctionByOffset(entry.GetIndex()), positional_arguments, named_arguments,
-	               parameters, named_parameters);
+	PlaceArguments(context, *binder, *functions.GetFunctionByOffset(entry.GetIndex()), positional_arguments,
+	               named_arguments, parameters, named_parameters);
 	return entry;
 }
 

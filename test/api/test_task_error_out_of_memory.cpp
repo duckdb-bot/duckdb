@@ -31,11 +31,15 @@ TEST_CASE("A task error that cannot be recorded for lack of memory is reported a
 	errors.PushTaskError(FailToAllocate);
 	REQUIRE(errors.GetError().Type() == ExceptionType::INVALID_INPUT);
 	REQUIRE(errors.GetError().RawMessage() == "the first error");
+}
 
-	// parsing the message of an error fails with another exception when memory runs out
-	errors.Reset();
-	errors.PushTaskError([]() -> ErrorData { throw SerializationException("Failed to parse JSON string"); });
-	REQUIRE(errors.GetError().Type() == ExceptionType::OUT_OF_MEMORY);
+TEST_CASE("A task error that fails to be created for another reason is not reported as out of memory", "[api]") {
+	TaskErrorManager errors;
+	auto fail_to_parse = []() -> ErrorData {
+		throw SerializationException("Failed to parse JSON string");
+	};
+	REQUIRE_THROWS_AS(errors.PushTaskError(fail_to_parse), SerializationException);
+	REQUIRE(!errors.HasError());
 }
 
 TEST_CASE("Parsing the JSON message of an error throws std::bad_alloc when memory runs out", "[api]") {

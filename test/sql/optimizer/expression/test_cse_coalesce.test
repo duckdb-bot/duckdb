@@ -85,3 +85,15 @@ query II
 EXPLAIN SELECT COALESCE(CAST(i AS BIGINT) + 1, -1) AS a, CAST(i AS BIGINT) + 2 AS b FROM c
 ----
 physical_plan	<REGEX>:[\s\S]*Projection ─[\s\S]*Projection ─[\s\S]*
+
+# a later argument of COALESCE is shared with an occurrence that always runs before it
+query II
+SELECT length(s) AS a, COALESCE(i, length(s) + 1) AS b FROM c ORDER BY s
+----
+2	3
+3	0
+
+query II
+EXPLAIN SELECT length(s) AS a, COALESCE(i, length(s) + 1) AS b FROM c
+----
+physical_plan	<REGEX>:[\s\S]*Projection ─[\s\S]*Projection ─[\s\S]*

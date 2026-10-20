@@ -14,15 +14,15 @@ statement ok
 SET Calendar = '{calendar}';
 
 query IIII
-SELECT count(*), bool_and(x::TIMESTAMP::VARCHAR = replace(x::VARCHAR, '+00', '')),
-	bool_and(x::DATE = x::TIMESTAMP::DATE), bool_and(x::TIMESTAMP::TIMESTAMPTZ = x)
+SELECT count(*), count(*) FILTER (WHERE x::TIMESTAMP::VARCHAR = replace(x::VARCHAR, '+00', '')),
+	count(*) FILTER (WHERE x::DATE = x::TIMESTAMP::DATE), count(*) FILTER (WHERE x::TIMESTAMP::TIMESTAMPTZ = x)
 FROM (VALUES
 	(TIMESTAMPTZ '2024-06-15 12:34:56.789+00'),
 	(TIMESTAMPTZ '1985-03-01 00:00:00+00'),
 	('0500-03-01 (BC) 06:00:00+00'::TIMESTAMPTZ)
 ) v(x)
 ----
-3	true	true	true
+3	3	3	3
 
 endloop
 
@@ -49,6 +49,12 @@ SELECT TIMESTAMP '2019-04-15 10:00:00'::TIMESTAMPTZ = TIMESTAMPTZ '2019-04-15 01
 ----
 true	2019-04-16
 
+# AT TIME ZONE converts through the same naive values
+query II
+SELECT TIMESTAMP '2019-04-15 10:00:00' AT TIME ZONE 'UTC', TIMESTAMPTZ '2024-06-15 12:00:00+00' AT TIME ZONE 'UTC'
+----
+2019-04-15 19:00:00+09	2024-06-15 12:00:00
+
 statement ok
 SET TimeZone = 'UTC';
 
@@ -56,11 +62,12 @@ SET TimeZone = 'UTC';
 statement ok
 SET Calendar = 'islamic-civil';
 
-query III
+query IIII
 SELECT (TIMESTAMPTZ '2024-06-15 12:00:00+00')::TIMESTAMP, (TIMESTAMPTZ '2024-06-15 12:00:00+00')::DATE,
-	TIMESTAMP '1445-12-08 12:00:00'::TIMESTAMPTZ = TIMESTAMPTZ '2024-06-15 12:00:00+00'
+	TIMESTAMP '1445-12-08 12:00:00'::TIMESTAMPTZ = TIMESTAMPTZ '2024-06-15 12:00:00+00',
+	TIMESTAMPTZ '2024-06-15 12:00:00+00' AT TIME ZONE 'Asia/Tokyo'
 ----
-1445-12-08 12:00:00	1445-12-08	true
+1445-12-08 12:00:00	1445-12-08	true	1445-12-08 21:00:00
 
 foreach calendar buddhist roc
 

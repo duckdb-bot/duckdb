@@ -136,10 +136,10 @@ SELECT list_extract(NULL::VARIANT, 1), (NULL::VARIANT)[1]
 NULL	NULL
 
 # an untyped NULL binds to the VARIANT overload
-query IIII
-SELECT typeof(list_extract(NULL, 1)), typeof(array_extract(NULL, 1)), typeof(list_element(NULL, 1)), typeof(list_extract(NULL::VARIANT, 1))
+query IIIII
+SELECT typeof(list_extract(NULL, 1)), typeof(array_extract(NULL, 1)), typeof(list_element(NULL, 1)), typeof(list_extract(NULL::VARIANT, 1)), typeof(NULL['a'])
 ----
-VARIANT	VARIANT	VARIANT	VARIANT
+VARIANT	VARIANT	VARIANT	VARIANT	VARIANT
 
 query IIII
 SELECT list_concat(v, v), array_concat(v, v), list_cat(v, [40::VARIANT]), list_concat(v, NULL) FROM t

@@ -179,7 +179,7 @@ SELECT struct_extract(NULL::INT, 'a')
 query IIII
 SELECT typeof(NULL || 'z'), typeof([1] || NULL), typeof(NULL || NULL), typeof(list_extract(NULL, 1))
 ----
-"NULL"	"NULL"	"NULL"	VARCHAR
+"NULL"	"NULL"	"NULL"	VARIANT
 
 # functions with a known return type still fold typed NULLs without binding
 query IIII

@@ -1,12 +1,12 @@
-#include "duckdb/common/exception/conversion_exception.hpp"
 #include "duckdb/common/pair.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/data_chunk.hpp"
 #include "duckdb/common/uhugeint.hpp"
-#include "duckdb/common/vector_operations/binary_executor.hpp"
+#include "duckdb/function/function_binder.hpp"
 #include "duckdb/function/scalar/nested_functions.hpp"
-#include "duckdb/function/scalar/string_common.hpp"
 #include "duckdb/function/scalar/list_functions.hpp"
+#include "duckdb/function/scalar/variant_functions.hpp"
+#include "duckdb/function/scalar/variant_utils.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/storage/statistics/list_stats.hpp"
@@ -94,12 +94,6 @@ static void ExecuteListExtract(Vector &result, const Vector &list, const Vector 
 	}
 }
 
-static void ExecuteStringExtract(Vector &result, const Vector &input_vector, const Vector &subscript_vector) {
-	BinaryExecutor::Execute<string_t, int64_t, string_t>(
-	    input_vector, subscript_vector, result,
-	    [&](string_t input_string, int64_t subscript) { return SubstringUnicode(result, input_string, subscript, 1); });
-}
-
 static void ListExtractFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	D_ASSERT(args.ColumnCount() == 2);
 	const auto count = args.size();
@@ -110,9 +104,6 @@ static void ListExtractFunction(DataChunk &args, ExpressionState &state, Vector 
 	switch (base.GetType().id()) {
 	case LogicalTypeId::LIST:
 		ExecuteListExtract(result, base, subscript);
-		break;
-	case LogicalTypeId::VARCHAR:
-		ExecuteStringExtract(result, base, subscript);
 		break;
 	case LogicalTypeId::SQLNULL:
 		ConstantVector::SetNull(result, count_t(count));
@@ -130,26 +121,26 @@ static unique_ptr<FunctionData> ListExtractBind(BindScalarFunctionInput &input) 
 	return nullptr;
 }
 
-//! Extracting from a string throws if the index is outside of the range supported by substring - if the index is a
-//! constant within that range the extract cannot throw
-//! Extracting from a list returns NULL for indexes that are out of range instead
-static unique_ptr<FunctionData> StringExtractBind(BindScalarFunctionInput &input) {
-	auto &bound_function = input.GetBoundFunction();
-	auto index = input.TryGetConstant(1);
-	if (!index) {
-		bound_function.SetFallible();
-		return nullptr;
-	}
-	string error;
-	auto index_value = index->DefaultTryCastAs(LogicalType::BIGINT, &error);
-	if (!index_value) {
-		// the index is a constant that cannot be converted to an integer at all - report that directly
-		throw ConversionException(error);
-	}
-	if (index_value->IsNull() || !SubstringInSupportedRange(BigIntValue::Get(*index_value), 1)) {
-		bound_function.SetFallible();
-	}
-	return nullptr;
+//! The index keeps its own type, as in the subscript
+static void VariantExtractResolveTypes(ResolveScalarFunctionTypesInput &input) {
+	input.GetBoundFunction().GetArguments()[1] = input.GetArgumentType(1);
+}
+
+//! A VARIANT binds to variant_extract, as its subscript does
+static unique_ptr<Expression> BindVariantExtract(FunctionBindExpressionInput &input) {
+	VariantBindUtils::BindExtractIndex(*input.children[1]);
+	FunctionBinder function_binder(input.context);
+	return function_binder.BindScalarFunction(Identifier::DefaultSchema(), VariantExtractFun::Name,
+	                                          std::move(input.children));
+}
+
+static ScalarFunction GetVariantExtractFunction() {
+	ScalarFunction vfun({LogicalType::VARIANT(), LogicalType::BIGINT}, LogicalType::VARIANT(), ListExtractFunction);
+	vfun.GetSignature().GetParameter(0).SetName("list");
+	vfun.GetSignature().GetParameter(1).SetName("index");
+	vfun.SetResolveTypesCallback(VariantExtractResolveTypes);
+	vfun.SetBindExpressionCallback(BindVariantExtract);
+	return vfun;
 }
 
 static unique_ptr<BaseStatistics> ListExtractStats(ClientContext &context, FunctionStatisticsInput &input) {
@@ -174,14 +165,9 @@ ScalarFunctionSet ListExtractFun::GetFunctions() {
 	lfun.GetSignature().GetParameter(0).SetName("list");
 	lfun.GetSignature().GetParameter(1).SetName("index");
 
-	ScalarFunction sfun({LogicalType::VARCHAR, LogicalType::BIGINT}, LogicalType::VARCHAR, ListExtractFunction,
-	                    StringExtractBind);
-	sfun.GetSignature().GetParameter(0).SetName("string");
-	sfun.GetSignature().GetParameter(1).SetName("index");
-
 	lfun.SetFallible();
 	list_extract_set.AddFunction(lfun);
-	list_extract_set.AddFunction(sfun);
+	list_extract_set.AddFunction(GetVariantExtractFunction());
 	return list_extract_set;
 }
 
@@ -195,11 +181,8 @@ ScalarFunctionSet ArrayExtractFun::GetFunctions() {
 	lfun.GetSignature().GetParameter(0).SetName("list");
 	lfun.GetSignature().GetParameter(1).SetName("index");
 
-	ScalarFunction sfun({}, LogicalType::VARCHAR, ListExtractFunction, StringExtractBind);
-	sfun.GetSignature().AddParameter("string", LogicalType::VARCHAR).AddParameter("index", LogicalType::BIGINT);
-
 	array_extract_set.AddFunction(lfun);
-	array_extract_set.AddFunction(sfun);
+	array_extract_set.AddFunction(GetVariantExtractFunction());
 	array_extract_set.AddFunction(GetKeyExtractFunction());
 	array_extract_set.AddFunction(GetIndexExtractFunction());
 	return array_extract_set;

@@ -1,5 +1,6 @@
 #include "duckdb/function/scalar/variant_utils.hpp"
 #include "duckdb/execution/expression_executor.hpp"
+#include "duckdb/planner/expression/bound_constant_expression.hpp"
 
 namespace duckdb {
 
@@ -98,6 +99,17 @@ unique_ptr<FunctionData> VariantBindUtils::VariantPathBind(BindScalarFunctionInp
 	}
 
 	throw BinderException("%s received an unexpected type for the second argument", function_name);
+}
+
+void VariantBindUtils::BindExtractIndex(Expression &index) {
+	if (index.GetExpressionClass() != ExpressionClass::BOUND_CONSTANT) {
+		return;
+	}
+	auto &constant = index.Cast<BoundConstantExpression>();
+	if (!constant.GetValue().IsNull() && constant.GetReturnType().IsIntegral()) {
+		constant.SetValue(constant.GetValue().DefaultCastAs(LogicalType::UINTEGER, true));
+		constant.SetReturnType(LogicalType::UINTEGER);
+	}
 }
 
 } // namespace duckdb

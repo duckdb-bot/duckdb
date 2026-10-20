@@ -468,6 +468,19 @@ SELECT v FROM (SELECT id::VARCHAR::local_enum AS v FROM r.tbl) s, local_tbl ORDE
 9
 10
 
+# a type that the server has too still lets a whole query be pushed
+statement ok
+CREATE TYPE shared_int AS BIGINT;
+
+query I
+SELECT a.id::shared_int AS v FROM r.tbl a JOIN r.tbl b USING (id) ORDER BY 1;
+----
+0
+1
+2
+9
+10
+
 query I
 SELECT v FROM (SELECT [id::VARCHAR]::temp.local_enum[] AS v FROM r.tbl) s, local_tbl ORDER BY v;
 ----

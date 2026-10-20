@@ -1250,7 +1250,7 @@ ExpressionPushdownResult RemotePushdownOptimizer::AnalyzeExpression(const TypeEx
 CatalogPushdownResult RemotePushdownOptimizer::CheckType(const TypeExpression &type_expr) {
 	auto result = CheckCatalogQualification(type_expr, type_expr.GetQualifiedName());
 	if (type_expr.GetCatalog().empty()) {
-		// a user type of a local catalog does not exist remotely, built-in types exist everywhere. The lookup does
+		// a user type of a local catalog might not exist remotely, built-in types exist everywhere. The lookup does
 		// not autoload extensions, whose types the server can have
 		FindRemoteCatalogsInSearchPath();
 		CatalogEntryRetriever retriever(binder.context);
@@ -1263,7 +1263,7 @@ CatalogPushdownResult RemotePushdownOptimizer::CheckType(const TypeExpression &t
 			EntryLookupInfo type_lookup(CatalogType::TYPE_ENTRY,
 			                            QualifiedName(catalog->GetName(), schema, type_expr.GetTypeName()));
 			if (catalog->LookupEntry(retriever, type_lookup, OnEntryNotFound::RETURN_NULL).Found()) {
-				result = CatalogPushdownResult::Unknown();
+				MarkStaysWithParent();
 				break;
 			}
 		}

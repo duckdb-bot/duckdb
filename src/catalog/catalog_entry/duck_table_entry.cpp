@@ -1375,6 +1375,7 @@ unique_ptr<CatalogEntry> DuckTableEntry::AddForeignKeyConstraint(AlterForeignKey
 	create_info->tags = tags;
 
 	create_info->columns = columns.Copy();
+	create_info->dependencies = dependencies;
 	bool exists = false;
 	for (idx_t i = 0; i < constraints.size(); i++) {
 		if (constraints[i]->type == ConstraintType::FOREIGN_KEY) {
@@ -1422,7 +1423,8 @@ unique_ptr<CatalogEntry> DuckTableEntry::DropForeignKeyConstraint(ClientContext 
 
 	auto binder = Binder::CreateBinder(context);
 	auto bound_create_info = binder->BindCreateTableInfo(std::move(create_info), schema, info.bind_mode);
-	SetAlterDependencies(context, *bound_create_info, info);
+	// removing a reverse foreign key changes no dependency, and a WAL replay does not bind the default values
+	bound_create_info->Base().dependencies = dependencies;
 	return make_uniq<DuckTableEntry>(catalog, schema, *bound_create_info, storage, triggers);
 }
 

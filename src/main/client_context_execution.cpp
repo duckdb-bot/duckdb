@@ -98,6 +98,7 @@ ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success,
 	}
 	active_query->progress_bar.reset();
 	D_ASSERT(active_query.get());
+	invalidate_transaction = invalidate_transaction && !active_query->outside_local_transaction;
 	active_query.reset();
 	query_deadline.SetInvalid();
 	query_progress.Initialize();
@@ -111,8 +112,7 @@ ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success,
 				} else {
 					transaction.Rollback(previous_error);
 				}
-			} else if (invalidate_transaction && !is_connected) {
-				// a statement issued while CONNECT-ed is not part of the local transaction
+			} else if (invalidate_transaction) {
 				D_ASSERT(!success);
 				if (transaction.GetAutoRollback()) {
 					transaction.Rollback(previous_error);

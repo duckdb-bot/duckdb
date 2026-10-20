@@ -68,3 +68,20 @@ query I
 SELECT count(*) FROM r2 JOIN d2 ON r2.gx BETWEEN d2.gx - 1 AND d2.gx + 1 AND r2.gy BETWEEN d2.gy - 1 AND d2.gy + 1;
 ----
 400
+
+# a band on a column with few values does not replace more selective conditions
+statement ok
+CREATE TABLE r3 AS SELECT i::INTEGER AS x, i::INTEGER AS y, (i % 3)::INTEGER AS b FROM range(1000) t(i);
+
+statement ok
+CREATE TABLE d3 AS SELECT i::INTEGER AS x, i::INTEGER AS y, (i % 3)::INTEGER AS b FROM range(1000) t(i);
+
+query II
+EXPLAIN SELECT count(*) FROM r3 JOIN d3 ON r3.x <= d3.x AND r3.y >= d3.y AND r3.b >= d3.b - 1 AND r3.b <= d3.b + 1;
+----
+physical_plan	<REGEX>:.*IE Join.*Conditions: x <= x,[^b]*y >= y,.*
+
+query I
+SELECT count(*) FROM r3 JOIN d3 ON r3.x <= d3.x AND r3.y >= d3.y AND r3.b >= d3.b - 1 AND r3.b <= d3.b + 1;
+----
+1000

@@ -44,6 +44,10 @@ void PhysicalIEJoin::MoveBandToFront() {
 	// the first two conditions pick the candidate pairs, a band on one expression leaves the fewest of them
 	for (idx_t first = 0; first < conditions.size(); first++) {
 		for (idx_t second = first + 1; second < conditions.size(); second++) {
+			// the conditions are ordered by selectivity, a band of less selective ones does not replace them
+			if (DistinctCountBound(conditions[second]) < DistinctCountBound(conditions[1])) {
+				return;
+			}
 			if (!FormBand(conditions[first], conditions[second])) {
 				continue;
 			}

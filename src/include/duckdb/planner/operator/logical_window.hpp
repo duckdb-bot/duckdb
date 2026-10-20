@@ -27,7 +27,7 @@ public:
 	}
 
 	TableIndex window_index;
-	//! Whether the window only numbers the rows to tell them apart, so any numbering of them is as good
+	//! Whether the numbers only tell rows apart, so they may change as long as every reader sees the same ones
 	bool numbering_is_arbitrary = false;
 
 public:

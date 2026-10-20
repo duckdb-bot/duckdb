@@ -36,16 +36,33 @@ SELECT i, v.a FROM src LEFT JOIN LATERAL UNNEST(xs) u(v) ON true WHERE i IN (3, 
 3	3
 60	60
 
-# a volatile lateral subquery numbers its input rows as well
-query I
-SELECT count(*) FROM src, LATERAL (SELECT src.i + (random() * 0)::INT AS j) s WHERE src.i < 10;
-----
-10
+# a volatile lateral subquery numbers its input rows as well, and runs once for each row that passes the filter
+statement ok
+CREATE TABLE dups AS SELECT * FROM (VALUES (1), (1), (2), (2), (3)) t(k);
+
+statement ok
+CREATE SEQUENCE seq;
 
 query II
-EXPLAIN SELECT count(*) FROM src, LATERAL (SELECT src.i + (random() * 0)::INT AS j) s WHERE src.i < 10;
+SELECT count(*), count(DISTINCT j) FROM dups, LATERAL (SELECT dups.k * 0 + nextval('seq') AS j) s WHERE dups.k < 3;
 ----
-physical_plan	<REGEX>:.*Filters: i < 10.*
+4	4
+
+query I
+SELECT nextval('seq');
+----
+5
+
+query II
+EXPLAIN SELECT count(*) FROM dups, LATERAL (SELECT dups.k * 0 + nextval('seq') AS j) s WHERE dups.k < 3;
+----
+physical_plan	<REGEX>:.*Filters: k < 3.*
+
+# volatile filters stay above the numbering
+query I
+SELECT count(*) FROM src, UNNEST(xs) u(v) WHERE part = 'a' AND random() < 2;
+----
+50
 
 # filters that read both sides stay above the join
 query II
@@ -58,3 +75,55 @@ query I
 SELECT max(rn) > 10 FROM (SELECT i, row_number() OVER () AS rn FROM src) WHERE i >= 90;
 ----
 true
+
+# NULL and empty lists
+statement ok
+CREATE TABLE lists AS SELECT * FROM (VALUES (1, 'a', [1, 2]), (2, 'a', []), (3, 'a', NULL), (4, 'b', [4])) t(i, part, l);
+
+query II
+SELECT i, x FROM lists, UNNEST(l) u(x) WHERE part = 'a' ORDER BY ALL;
+----
+1	1
+1	2
+
+query II
+SELECT i, x FROM lists LEFT JOIN LATERAL UNNEST(l) u(x) ON true WHERE part = 'a' ORDER BY ALL;
+----
+1	1
+1	2
+2	NULL
+3	NULL
+
+# a lateral subquery with ORDER BY, LIMIT and OFFSET, with a filter on its result
+query II
+SELECT i, s.x FROM src, LATERAL (SELECT v.a AS x FROM UNNEST(src.xs) u(v) ORDER BY x LIMIT 1 OFFSET 0) s WHERE s.x > 95 AND part = 'b' ORDER BY ALL;
+----
+96	96
+97	97
+98	98
+99	99
+
+# readers of a CTE with a lateral join that filter differently, and one that does not filter
+query III
+WITH x AS MATERIALIZED (SELECT i, part, v FROM src, UNNEST(xs) u(v))
+SELECT (SELECT count(*) FROM x WHERE part = 'a'), (SELECT count(*) FROM x WHERE part = 'b'), (SELECT count(*) FROM x);
+----
+50	50	100
+
+query III
+WITH x AS NOT MATERIALIZED (SELECT i, part, v FROM src, UNNEST(xs) u(v))
+SELECT (SELECT count(*) FROM x WHERE part = 'a'), (SELECT sum(v.a) FROM x WHERE part = 'b'), (SELECT count(*) FROM x);
+----
+50	3725	100
+
+# a filter from outside a secure view does not run before the filter of the view
+statement ok
+CREATE TABLE secrets AS SELECT i, CASE WHEN i < 50 THEN i::VARCHAR ELSE 'x' END AS s, [i] AS l FROM range(100) t(i);
+
+statement ok
+CREATE SECURE VIEW secure_lateral AS SELECT i, s, x FROM secrets, UNNEST(l) u(x) WHERE i < 50;
+
+query I
+SELECT count(*) FROM secure_lateral WHERE s::INT >= 0;
+----
+50

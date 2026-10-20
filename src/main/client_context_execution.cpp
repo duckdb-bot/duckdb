@@ -111,7 +111,8 @@ ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success,
 				} else {
 					transaction.Rollback(previous_error);
 				}
-			} else if (invalidate_transaction) {
+			} else if (invalidate_transaction && !is_connected) {
+				// a statement issued while CONNECT-ed is not part of the local transaction
 				D_ASSERT(!success);
 				if (transaction.GetAutoRollback()) {
 					transaction.Rollback(previous_error);

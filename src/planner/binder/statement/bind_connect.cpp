@@ -50,7 +50,7 @@ BoundStatement Binder::Bind(DisconnectStatement &stmt) {
 
 	auto &properties = GetStatementProperties();
 	properties.return_type = StatementReturnType::NOTHING;
-	// DISCONNECT returns to LOCAL also in an aborted transaction, so that it can be rolled back
+	// DISCONNECT only changes where statements run, so it does not need a valid transaction
 	properties.requires_valid_transaction = false;
 	return result;
 }

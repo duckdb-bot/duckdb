@@ -246,7 +246,8 @@ void ClientContext::ApplyInvalidationPolicy(const ErrorData &error) {
 		auto &db_instance = DatabaseInstance::GetDatabase(*this);
 		ValidChecker::Invalidate(db_instance, error.RawMessage());
 	}
-	if (invalidates_transaction && HasActiveTransaction()) {
+	// a statement issued while CONNECT-ed is not part of the local transaction
+	if (invalidates_transaction && HasActiveTransaction() && !is_connected) {
 		ValidChecker::Invalidate(ActiveTransaction(), error.RawMessage());
 	}
 }

@@ -258,6 +258,8 @@ void RemotePushdownOptimizer::Rewrite(unique_ptr<SQLStatement> &statement) {
 	FinishPushdown(statement, result);
 }
 
+static bool StrippingChangesNames(QueryNode &node, const Identifier &catalog_name);
+
 CatalogPushdownResult RemotePushdownOptimizer::Rewrite(QueryNode &node) {
 	if (!cte_results.empty()) {
 		throw InternalException(
@@ -343,10 +345,16 @@ CatalogPushdownResult RemotePushdownOptimizer::Rewrite(QueryNode &node) {
 	if (result.reference_type == CatalogReferenceType::UNKNOWN_CATALOG_REFERENCE) {
 		// the node stays local, push the subqueries and CTEs that a single remote catalog can run on their own
 		for (auto &entry : remote_subqueries) {
-			PushdownNode(entry.first.get().subquery->node, entry.second);
+			auto &subquery_node = entry.first.get().subquery->node;
+			if (!StrippingChangesNames(*subquery_node, entry.second.catalog->GetName())) {
+				PushdownNode(subquery_node, entry.second);
+			}
 		}
 		for (auto &entry : remote_ctes) {
-			PushdownNode(entry.first.get().query_node, entry.second);
+			auto &cte_node = entry.first.get().query_node;
+			if (!StrippingChangesNames(*cte_node, entry.second.catalog->GetName())) {
+				PushdownNode(cte_node, entry.second);
+			}
 		}
 	}
 	return result;
@@ -2034,53 +2042,47 @@ void RemotePushdownOptimizer::FinishPushdown(unique_ptr<QueryNode> &node, Catalo
 	PushdownNode(node, result);
 }
 
-static void KeepColumnNames(QueryNode &node, const Identifier &catalog_name);
-
-static void KeepColumnNames(TableRef &ref, const Identifier &catalog_name) {
+static bool StrippingChangesNames(TableRef &ref, const Identifier &catalog_name) {
 	if (ref.type == TableReferenceType::SUBQUERY) {
-		KeepColumnNames(*ref.Cast<SubqueryRef>().subquery->node, catalog_name);
-	} else if (ref.type == TableReferenceType::JOIN) {
-		auto &join = ref.Cast<JoinRef>();
-		KeepColumnNames(*join.left, catalog_name);
-		KeepColumnNames(*join.right, catalog_name);
+		return StrippingChangesNames(*ref.Cast<SubqueryRef>().subquery->node, catalog_name);
 	}
+	if (ref.type == TableReferenceType::JOIN) {
+		auto &join = ref.Cast<JoinRef>();
+		return StrippingChangesNames(*join.left, catalog_name) || StrippingChangesNames(*join.right, catalog_name);
+	}
+	return false;
 }
 
-//! Preserve projection names before stripping catalog qualifiers
-static void KeepColumnNames(QueryNode &node, const Identifier &catalog_name) {
+//! Whether stripping the catalog changes the name of a projection, which the query might refer to
+static bool StrippingChangesNames(QueryNode &node, const Identifier &catalog_name) {
 	for (auto &cte : node.cte_map.map) {
-		if (cte.second->query_node) {
-			KeepColumnNames(*cte.second->query_node, catalog_name);
+		if (cte.second->query_node && StrippingChangesNames(*cte.second->query_node, catalog_name)) {
+			return true;
 		}
 	}
 	if (node.type == QueryNodeType::SET_OPERATION_NODE) {
 		for (auto &child : node.Cast<SetOperationNode>().children) {
-			KeepColumnNames(*child, catalog_name);
+			if (StrippingChangesNames(*child, catalog_name)) {
+				return true;
+			}
 		}
-		return;
+		return false;
 	}
 	if (node.type != QueryNodeType::SELECT_NODE) {
-		return;
+		return false;
 	}
 	auto &select_node = node.Cast<SelectNode>();
 	for (auto &expr : select_node.select_list) {
-		if (!expr->GetAlias().empty()) {
-			continue;
-		}
-		auto name = expr->GetName();
 		auto stripped = expr->Copy();
 		RemotePushdownOptimizer::StripCatalogName(*stripped, catalog_name);
-		if (stripped->GetName() != name) {
-			expr->SetAlias(name);
+		if (stripped->GetName() != expr->GetName()) {
+			return true;
 		}
 	}
-	if (select_node.from_table) {
-		KeepColumnNames(*select_node.from_table, catalog_name);
-	}
+	return select_node.from_table && StrippingChangesNames(*select_node.from_table, catalog_name);
 }
 
 void RemotePushdownOptimizer::PushdownNode(unique_ptr<QueryNode> &node, CatalogPushdownResult &result) {
-	KeepColumnNames(*node, result.catalog->GetName());
 	StripCatalogName(*node, result.catalog->GetName());
 	node = std::move(WrapRemoteRef(CreateRemoteFunctionRef(result, std::move(node)))->node);
 }

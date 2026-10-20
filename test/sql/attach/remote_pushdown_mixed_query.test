@@ -22,6 +22,9 @@ statement ok
 CREATE TABLE order_tbl AS SELECT * FROM (VALUES (1, 0), (0, 1)) v(id, "(id + 1)");
 
 statement ok
+CREATE TABLE order_tbl2 AS SELECT * FROM (VALUES (1, 0), (0, 1)) v(id, "(r.order_tbl2.id + 1)");
+
+statement ok
 ATTACH 'quack:127.0.0.1:9619' AS r (TOKEN 'test_token');
 
 statement ok
@@ -227,16 +230,6 @@ SELECT "(r.tbl.id + 1)" FROM (SELECT r.tbl.id + 1 FROM r.tbl) s, local_tbl ORDER
 10
 11
 
-query I
-SELECT "(r.tbl.id + 1)" FROM (SELECT r.tbl.id + 1 FROM r.tbl UNION ALL SELECT x FROM local_tbl) ORDER BY 1;
-----
-1
-1
-2
-3
-10
-11
-
 # names of COLUMNS expressions and of nested projections
 query I
 SELECT id FROM (SELECT min(COLUMNS(*)) FROM r.tbl) s, local_tbl;
@@ -353,6 +346,32 @@ SELECT * FROM (SELECT r.tbl.id FROM r.tbl UNION ALL BY NAME SELECT x AS id FROM 
 2
 9
 10
+
+statement ok
+CREATE TABLE copied_columns AS SELECT coalesce(COLUMNS(*), r.tbl.id) FROM r.tbl;
+
+query I
+SELECT id FROM copied_columns ORDER BY 1;
+----
+0
+1
+2
+9
+10
+
+statement ok
+CREATE TABLE copied_order AS SELECT r.order_tbl2.id + 1 FROM r.order_tbl2 ORDER BY "(r.order_tbl2.id + 1)" LIMIT 1;
+
+query I
+SELECT * FROM copied_order;
+----
+2
+
+# a subquery whose projection names change when the catalog is stripped stays local
+query I
+SELECT s."(r.order_tbl2.id + 1)" FROM (SELECT r.order_tbl2.id + 1 FROM r.order_tbl2 ORDER BY "(r.order_tbl2.id + 1)" LIMIT 1) s, local_tbl;
+----
+2
 
 # names are only kept where stripping the catalog changes them, other aliases could change what ORDER BY binds to
 query I

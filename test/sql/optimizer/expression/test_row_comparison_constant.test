@@ -1,0 +1,102 @@
+# name: test/sql/optimizer/expression/test_row_comparison_constant.test
+# description: Row equality with a constant row prunes row groups like the equalities of its fields
+# group: [expression]
+
+statement ok
+ATTACH '{TEST_DIR}/row_comparison_constant.duckdb' AS db (ROW_GROUP_SIZE 2048);
+
+statement ok
+USE db;
+
+# a is sorted, so each value of a lies in one of the three row groups, and b is NULL in every 100th row
+statement ok
+CREATE TABLE facts AS
+    SELECT range::BIGINT AS a, CASE WHEN range % 100 = 0 THEN NULL ELSE (range % 10)::INTEGER END AS b
+    FROM range(6144);
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM facts WHERE (a, b) = (3001, 1);
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 3.*
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM facts WHERE (3001, 1) = (a, b);
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 3.*
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM facts WHERE (a, b) = (3000, NULL);
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 3.*
+
+statement ok
+CREATE TABLE pairs AS SELECT * FROM (VALUES (NULL::BIGINT, NULL::INTEGER), (1, 2)) t(a, b);
+
+loop i 0 2
+
+query I
+SELECT a FROM facts WHERE (a, b) = (3001, 1);
+----
+3001
+
+query I
+SELECT a FROM facts WHERE (3001, 1) = (a, b);
+----
+3001
+
+query I
+SELECT count(*) FROM facts WHERE (a, b) = (3001, 2);
+----
+0
+
+# row equality treats NULL fields as equal
+query I
+SELECT a FROM facts WHERE (a, b) = (3000, NULL);
+----
+3000
+
+query I
+SELECT count(*) FROM facts WHERE (a, b) = (3001, NULL);
+----
+0
+
+query I
+SELECT count(*) FROM facts WHERE (a, b) = (NULL, 1);
+----
+0
+
+# a NULL row is not a row of NULL fields
+query I
+SELECT count(*) FROM pairs WHERE (a, b) = NULL::TUPLE(BIGINT, INTEGER);
+----
+0
+
+query I
+SELECT count(*) FROM pairs WHERE (a, b) = (NULL, NULL);
+----
+1
+
+# below an OR the comparison of rows stays
+query I
+SELECT a FROM facts WHERE (a, b) = (3001, 1) OR a = 5 ORDER BY a;
+----
+5
+3001
+
+# a constant of another type casts the row, which keeps the comparison of rows
+query I
+SELECT a FROM facts WHERE (a, b) = (3001, 1.0);
+----
+3001
+
+query III
+SELECT a, (a, b) = (3000, NULL), (a, b) = (3001, 1) FROM facts WHERE a IN (3000, 3001) ORDER BY a;
+----
+3000	true	false
+3001	false	true
+
+# the same results without the rewrite
+statement ok
+SET disabled_optimizers = 'expression_rewriter';
+
+endloop

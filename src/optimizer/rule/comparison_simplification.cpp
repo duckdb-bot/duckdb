@@ -154,8 +154,19 @@ RowComparisonSimplificationRule::RowComparisonSimplificationRule(ExpressionRewri
 	auto comparison = make_uniq<ComparisonExpressionMatcher>();
 	comparison->expr_type = make_uniq<SpecificExpressionTypeMatcher>(ExpressionType::COMPARE_EQUAL);
 	comparison->matchers.push_back(make_uniq<ExpressionMatcher>(ExpressionClass::BOUND_FUNCTION));
-	comparison->matchers.push_back(make_uniq<ExpressionMatcher>(ExpressionClass::BOUND_FUNCTION));
+	comparison->policy = SetMatcher::Policy::SOME;
 	root = std::move(comparison);
+}
+
+static bool IsRowConstructor(const Expression &expr) {
+	return expr.GetExpressionClass() == ExpressionClass::BOUND_FUNCTION &&
+	       expr.Cast<BoundFunctionExpression>().Function().GetName() == "row";
+}
+
+//! Whether a row field can be compared on its own, the fields of a row constructor must be plain columns
+static bool IsComparableField(const Expression &field, const LogicalType &other_type) {
+	return field.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF && !field.GetReturnType().IsNested() &&
+	       field.GetReturnType() == other_type;
 }
 
 unique_ptr<Expression> RowComparisonSimplificationRule::Apply(LogicalOperator &op,
@@ -164,26 +175,60 @@ unique_ptr<Expression> RowComparisonSimplificationRule::Apply(LogicalOperator &o
 	if (!is_root || op.type != LogicalOperatorType::LOGICAL_FILTER) {
 		return nullptr;
 	}
-	auto &left = bindings[1].get().Cast<BoundFunctionExpression>();
-	auto &right = bindings[2].get().Cast<BoundFunctionExpression>();
-	if (left.Function().GetName() != "row" || right.Function().GetName() != "row") {
+	auto &comparison = bindings[0].get().Cast<BoundFunctionExpression>();
+	auto &left_expr = BoundComparisonExpression::LeftMutable(comparison);
+	auto &right_expr = BoundComparisonExpression::RightMutable(comparison);
+	if (!IsRowConstructor(*left_expr) && !IsRowConstructor(*right_expr)) {
 		return nullptr;
 	}
-	auto &left_children = left.GetChildrenMutable();
-	auto &right_children = right.GetChildrenMutable();
-	if (left_children.empty() || left_children.size() != right_children.size()) {
+	// equality is symmetric, so the row constructor can be taken as the left side
+	auto &left = IsRowConstructor(*left_expr) ? left_expr : right_expr;
+	auto &right = RefersToSameObject(left, left_expr) ? right_expr : left_expr;
+	auto &left_children = left->Cast<BoundFunctionExpression>().GetChildrenMutable();
+	if (left_children.empty()) {
 		return nullptr;
-	}
-	for (idx_t child_idx = 0; child_idx < left_children.size(); child_idx++) {
-		auto &left_child = *left_children[child_idx];
-		auto &right_child = *right_children[child_idx];
-		if (left_child.GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF ||
-		    right_child.GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF ||
-		    left_child.GetReturnType().IsNested() || left_child.GetReturnType() != right_child.GetReturnType()) {
-			return nullptr;
-		}
 	}
 
+	// the right side is a row constructor too, or the constant that constant folding made of one
+	vector<unique_ptr<Expression>> right_children;
+	if (IsRowConstructor(*right)) {
+		auto &children = right->Cast<BoundFunctionExpression>().GetChildrenMutable();
+		if (children.size() != left_children.size()) {
+			return nullptr;
+		}
+		for (idx_t child_idx = 0; child_idx < children.size(); child_idx++) {
+			if (!IsComparableField(*left_children[child_idx], children[child_idx]->GetReturnType()) ||
+			    !IsComparableField(*children[child_idx], left_children[child_idx]->GetReturnType())) {
+				return nullptr;
+			}
+		}
+		for (auto &child : children) {
+			right_children.push_back(std::move(child));
+		}
+	} else if (right->GetExpressionClass() == ExpressionClass::BOUND_CONSTANT) {
+		// a NULL row is not a row of NULL fields, so it keeps the original comparison
+		auto &value = right->Cast<BoundConstantExpression>().GetValue();
+		if (value.IsNull() || !StructType::IsStruct(value.type())) {
+			return nullptr;
+		}
+		auto &fields = StructValue::GetChildren(value);
+		auto &field_types = StructType::GetChildTypes(value.type());
+		if (fields.size() != left_children.size()) {
+			return nullptr;
+		}
+		for (idx_t child_idx = 0; child_idx < fields.size(); child_idx++) {
+			if (!IsComparableField(*left_children[child_idx], field_types[child_idx].second)) {
+				return nullptr;
+			}
+		}
+		for (idx_t child_idx = 0; child_idx < fields.size(); child_idx++) {
+			right_children.push_back(make_uniq<BoundConstantExpression>(fields[child_idx]));
+		}
+	} else {
+		return nullptr;
+	}
+
+	// row equality treats NULL fields as equal, like IS NOT DISTINCT FROM does
 	auto result = make_uniq<BoundConjunctionExpression>(ExpressionType::CONJUNCTION_AND);
 	for (idx_t child_idx = 0; child_idx < left_children.size(); child_idx++) {
 		result->GetChildrenMutable().push_back(BoundComparisonExpression::Create(

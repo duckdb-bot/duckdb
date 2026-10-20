@@ -1,0 +1,31 @@
+# name: test/sql/function/timestamp/age_timestamp_out_of_range.test
+# description: age of a timestamp that cannot be converted to a date raises an error that TRY catches
+# group: [timestamp]
+
+statement error
+SELECT age(make_timestamp(-9223372036854775807 - 1), TIMESTAMP '2000-01-01');
+----
+Conversion Error: Date out of range in timestamp conversion
+
+statement error
+SELECT age(make_timestamp(-9223372036854775000));
+----
+Conversion Error: Date out of range in timestamp conversion
+
+query II
+SELECT TRY(age(make_timestamp(-9223372036854775807 - 1), TIMESTAMP '2000-01-01')), TRY(age(make_timestamp(-9223372036854775000)));
+----
+NULL	NULL
+
+# the database is still usable, and other timestamps keep their age
+query I
+SELECT age(TIMESTAMP '2001-04-10', TIMESTAMP '1992-09-20');
+----
+8 years 6 months 20 days
+
+query I
+SELECT TRY(age(ts, TIMESTAMP '2000-01-01')) FROM (VALUES (make_timestamp(-9223372036854775807 - 1)), (TIMESTAMP '2001-01-01'), (NULL)) t(ts);
+----
+NULL
+1 year
+NULL

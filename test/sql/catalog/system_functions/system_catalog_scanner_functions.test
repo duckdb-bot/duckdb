@@ -5,6 +5,55 @@
 # The fixture and expected output name the default catalog 'memory'.
 require noforcestorage
 
+# filters that can throw run on the rows, not on the names of schemas without rows
+statement ok
+CREATE SCHEMA "1";
+
+statement ok
+CREATE TABLE "1".t (i INTEGER);
+
+statement ok
+CREATE INDEX idx ON "1".t (i);
+
+statement ok
+CREATE SEQUENCE "1".seq;
+
+statement ok
+CREATE TABLE "1".log (i INTEGER);
+
+statement ok
+CREATE TRIGGER trig AFTER INSERT ON "1".t FOR EACH STATEMENT INSERT INTO "1".log SELECT 1;
+
+query I
+SELECT table_name FROM duckdb_tables() WHERE schema_name::INTEGER = 1 ORDER BY ALL;
+----
+log
+t
+
+query I
+SELECT index_name FROM duckdb_indexes() WHERE schema_name::INTEGER = 1;
+----
+idx
+
+query I
+SELECT sequence_name FROM duckdb_sequences() WHERE schema_name::INTEGER = 1;
+----
+seq
+
+query I
+SELECT trigger_name FROM duckdb_triggers() WHERE schema_name::INTEGER = 1;
+----
+trig
+
+# they still fail on the rows they fail on
+statement error
+SELECT table_name FROM duckdb_tables() WHERE schema_name = '1' AND schema_name::DATE IS NOT NULL;
+----
+Conversion Error
+
+statement ok
+DROP SCHEMA "1" CASCADE;
+
 statement ok
 CREATE TABLE mine (i INTEGER);
 

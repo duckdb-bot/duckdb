@@ -69,6 +69,10 @@ static bool PushdownExpression(ClientContext &context, const LogicalGet &get, Ex
 	if (!get.bind_data) {
 		return false;
 	}
+	// the scan also evaluates the filter on names that no row has, where it must not throw
+	if (expr.CanThrow()) {
+		return false;
+	}
 	auto &data = get.bind_data->Cast<SystemCatalogScannerData>();
 	vector<ColumnBinding> bindings;
 	ColumnLifetimeAnalyzer::ExtractColumnBindings(expr, bindings);

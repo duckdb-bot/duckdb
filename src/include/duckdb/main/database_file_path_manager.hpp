@@ -25,11 +25,11 @@ enum class InsertDatabasePathResult { SUCCESS, ALREADY_EXISTS };
 struct DatabasePathInfo {
 	DatabasePathInfo(DatabaseManager &manager, const Identifier &name_p, AccessMode access_mode);
 
-	//! The name of the first attach of the path, for error messages
-	string name;
 	AccessMode access_mode;
 	//! The names under which each database manager has the path attached
 	reference_map_t<DatabaseManager, vector<string>> attached_databases;
+	//! The name of the database detached last, which keeps the path until the detach finishes
+	string detached_name;
 	idx_t reference_count = 1;
 };
 

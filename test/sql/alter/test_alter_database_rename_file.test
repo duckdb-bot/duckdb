@@ -111,3 +111,81 @@ ATTACH '{TEST_DIR}/rename_file.db' AS writable;
 
 statement ok
 INSERT INTO writable.t VALUES (3);
+
+statement ok
+DETACH writable;
+
+# an attach that fails or is rolled back leaves no name behind
+statement ok
+ATTACH '{TEST_DIR}/rename_file.db' AS anchor (READ_ONLY);
+
+statement error
+ATTACH '{TEST_DIR}/rename_file.db' AS failed (READ_ONLY, UNKNOWN_OPTION 1);
+----
+Unrecognized option
+
+statement ok
+ATTACH IF NOT EXISTS '{TEST_DIR}/rename_file.db' AS failed (READ_ONLY);
+
+statement ok
+BEGIN;
+
+statement ok
+ATTACH '{TEST_DIR}/rename_file.db' AS rolled_back (READ_ONLY);
+
+statement ok
+ROLLBACK;
+
+statement ok
+ATTACH IF NOT EXISTS '{TEST_DIR}/rename_file.db' AS rolled_back (READ_ONLY);
+
+query I
+SELECT database_name FROM duckdb_databases() WHERE NOT internal ORDER BY ALL;
+----
+anchor
+failed
+memory
+rolled_back
+
+statement ok
+DETACH anchor;
+
+statement ok
+DETACH failed;
+
+statement ok
+DETACH rolled_back;
+
+# a renamed database that another transaction still uses after the detach
+statement ok con1
+ATTACH '{TEST_DIR}/rename_file.db' AS kept;
+
+statement ok con1
+ALTER DATABASE kept SET ALIAS TO kept_renamed;
+
+statement ok con2
+BEGIN;
+
+query I con2
+SELECT count(*) FROM kept_renamed.t;
+----
+4
+
+statement ok con1
+DETACH kept_renamed;
+
+statement error con1
+ATTACH IF NOT EXISTS '{TEST_DIR}/rename_file.db' AS kept_renamed;
+----
+in the process of being detached
+
+statement ok con2
+COMMIT;
+
+statement ok con1
+ATTACH IF NOT EXISTS '{TEST_DIR}/rename_file.db' AS kept_renamed;
+
+query I con1
+SELECT count(*) FROM kept_renamed.t;
+----
+4

@@ -8,17 +8,8 @@
 namespace duckdb {
 
 DatabasePathInfo::DatabasePathInfo(DatabaseManager &manager, const Identifier &name_p, AccessMode access_mode)
-    : name(name_p.GetIdentifierName()), access_mode(access_mode) {
-	attached_databases[manager].push_back(name);
-}
-
-static bool HasName(const vector<string> &names, const Identifier &name) {
-	for (auto &entry : names) {
-		if (entry == name) {
-			return true;
-		}
-	}
-	return false;
+    : access_mode(access_mode) {
+	attached_databases[manager].push_back(name_p.GetIdentifierName());
 }
 
 idx_t DatabaseFilePathManager::ApproxDatabaseCount() const {
@@ -37,34 +28,38 @@ InsertDatabasePathResult DatabaseFilePathManager::InsertDatabasePath(DatabaseMan
 	auto entry = db_paths.emplace(path, DatabasePathInfo(manager, name, options.access_mode));
 	if (!entry.second) {
 		auto &existing = entry.first->second;
-		// this system compares to the names it uses for the path, which a rename may have changed
 		auto attached = existing.attached_databases.find(manager);
-		vector<string> no_names;
-		auto &names = attached == existing.attached_databases.end() ? no_names : attached->second;
-		bool attached_in_this_system = HasName(names, name);
-		bool already_exists = on_conflict == OnCreateConflict::IGNORE_ON_CONFLICT &&
-		                      (attached_in_this_system || (names.empty() && existing.name == name));
+		bool attached_in_this_system = false;
+		if (attached != existing.attached_databases.end()) {
+			auto &names = attached->second;
+			attached_in_this_system = std::find(names.begin(), names.end(), name) != names.end();
+		}
+		if (on_conflict == OnCreateConflict::IGNORE_ON_CONFLICT && attached_in_this_system) {
+			return InsertDatabasePathResult::ALREADY_EXISTS;
+		}
 		if (options.access_mode == AccessMode::READ_ONLY && existing.access_mode == AccessMode::READ_ONLY) {
-			if (already_exists && attached_in_this_system) {
-				return InsertDatabasePathResult::ALREADY_EXISTS;
-			}
 			// all attaches are in read-only mode - there is no conflict, just increase the reference count
 			existing.attached_databases[manager].push_back(name.GetIdentifierName());
 			existing.reference_count++;
 		} else {
-			if (already_exists) {
-				if (attached_in_this_system) {
-					return InsertDatabasePathResult::ALREADY_EXISTS;
-				}
+			if (existing.attached_databases.empty() && on_conflict == OnCreateConflict::IGNORE_ON_CONFLICT &&
+			    existing.detached_name == name) {
 				throw ResourceInUseException(
 				    "Unique file handle conflict: Cannot attach %s - the database file \"%s\" is in "
 				    "the process of being detached",
 				    name, path);
 			}
+			// name a database of this system if there is one
+			string holder_name = existing.detached_name;
+			if (attached != existing.attached_databases.end()) {
+				holder_name = attached->second[0];
+			} else if (!existing.attached_databases.empty()) {
+				holder_name = existing.attached_databases.begin()->second[0];
+			}
 			throw ResourceInUseException(
 			    "Unique file handle conflict: Cannot attach %s - the database file \"%s\" is already "
 			    "attached by database \"%s\"",
-			    name, path, names.empty() ? existing.name : names[0]);
+			    name, path, holder_name);
 		}
 	}
 	options.stored_database_path = make_uniq<StoredDatabasePath>(manager, *this, path, name);
@@ -108,6 +103,7 @@ void DatabaseFilePathManager::DetachDatabase(DatabaseManager &manager, const str
 	auto position = std::find(names.begin(), names.end(), name);
 	if (position != names.end()) {
 		names.erase(position);
+		entry->second.detached_name = name;
 	}
 	if (names.empty()) {
 		entry->second.attached_databases.erase(attached);
@@ -124,16 +120,13 @@ void DatabaseFilePathManager::RenameDatabase(DatabaseManager &manager, const str
 	if (entry == db_paths.end()) {
 		return;
 	}
-	auto &info = entry->second;
-	auto attached = info.attached_databases.find(manager);
-	if (attached != info.attached_databases.end()) {
-		auto position = std::find(attached->second.begin(), attached->second.end(), old_name);
-		if (position != attached->second.end()) {
-			*position = new_name;
-		}
+	auto attached = entry->second.attached_databases.find(manager);
+	if (attached == entry->second.attached_databases.end()) {
+		return;
 	}
-	if (info.name == old_name) {
-		info.name = new_name;
+	auto position = std::find(attached->second.begin(), attached->second.end(), old_name);
+	if (position != attached->second.end()) {
+		*position = new_name;
 	}
 }
 

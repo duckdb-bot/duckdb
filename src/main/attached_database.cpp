@@ -30,15 +30,22 @@ StoredDatabasePath::StoredDatabasePath(DatabaseManager &db_manager, DatabaseFile
 }
 
 StoredDatabasePath::~StoredDatabasePath() {
+	// an attach that failed or was rolled back never detaches
+	OnDetach();
 	manager.EraseDatabasePath(path);
 }
 
 void StoredDatabasePath::OnDetach() {
-	manager.DetachDatabase(db_manager, path, name);
+	if (registered) {
+		manager.DetachDatabase(db_manager, path, name);
+		registered = false;
+	}
 }
 
 void StoredDatabasePath::OnRename(const Identifier &new_name) {
-	manager.RenameDatabase(db_manager, path, name, new_name.GetIdentifierName());
+	if (registered) {
+		manager.RenameDatabase(db_manager, path, name, new_name.GetIdentifierName());
+	}
 	name = new_name.GetIdentifierName();
 }
 

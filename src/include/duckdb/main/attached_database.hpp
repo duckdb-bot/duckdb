@@ -59,6 +59,8 @@ struct StoredDatabasePath {
 	string path;
 	//! The name of the database that has the path attached
 	string name;
+	//! Whether the name is still registered with the manager
+	bool registered = true;
 
 	void OnDetach();
 	void OnRename(const Identifier &new_name);

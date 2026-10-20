@@ -1559,13 +1559,6 @@ vector<reference<SchemaCatalogEntry>> Catalog::GetSchemas(ClientContext &context
 }
 
 vector<reference<SchemaCatalogEntry>> Catalog::GetAllSchemas(ClientContext &context) {
-	return GetAllSchemas(
-	    context, [](Catalog &) { return true; }, [](SchemaCatalogEntry &) { return true; });
-}
-
-vector<reference<SchemaCatalogEntry>>
-Catalog::GetAllSchemas(ClientContext &context, const std::function<bool(Catalog &catalog)> &include_catalog,
-                       const std::function<bool(SchemaCatalogEntry &schema)> &include_schema) {
 	vector<reference<SchemaCatalogEntry>> result;
 
 	auto &db_manager = DatabaseManager::Get(context);
@@ -1575,16 +1568,8 @@ Catalog::GetAllSchemas(ClientContext &context, const std::function<bool(Catalog 
 			continue;
 		}
 		auto &catalog = database->GetCatalog();
-		if (!include_catalog(catalog)) {
-			// start the transaction as listing the schemas would, so later queries see the same snapshot
-			catalog.GetCatalogTransaction(context);
-			continue;
-		}
-		for (auto &schema : catalog.GetSchemas(context)) {
-			if (include_schema(schema.get())) {
-				result.push_back(schema);
-			}
-		}
+		auto new_schemas = catalog.GetSchemas(context);
+		result.insert(result.end(), new_schemas.begin(), new_schemas.end());
 	}
 	sort(result.begin(), result.end(),
 	     [&](reference<SchemaCatalogEntry> left_p, reference<SchemaCatalogEntry> right_p) {

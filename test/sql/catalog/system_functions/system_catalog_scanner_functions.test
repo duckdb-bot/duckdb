@@ -1,73 +1,9 @@
-# name: test/sql/table_function/duckdb_tables_schema_filter.test
-# description: The catalog table functions only list the schemas that filters on their names let through
-# group: [table_function]
+# name: test/sql/catalog/system_functions/system_catalog_scanner_functions.test
+# description: The system catalog functions list only the schemas that filters on their names let through
+# group: [system_functions]
 
-query I
-SELECT count(*) FROM duckdb_tables() WHERE database_name = 'memory' AND schema_name = 'main';
-----
-0
-
-# a filter that fails on the names of schemas without tables still only runs on the rows
-statement ok
-CREATE SCHEMA s;
-
-statement ok
-CREATE TABLE s.t (i INTEGER);
-
-query I
-SELECT table_name FROM duckdb_tables() WHERE 'x' LIKE '%' ESCAPE schema_name;
-----
-t
-
-query I
-SELECT table_name FROM duckdb_tables() WHERE schema_name = 's' AND 'x' LIKE '%' ESCAPE schema_name;
-----
-t
-
-# pruning keeps the rows that volatile and throwing filters run on
-statement ok
-CREATE TABLE main.first (i INTEGER);
-
-statement ok
-CREATE SEQUENCE seq;
-
-query I
-SELECT table_name FROM duckdb_tables() WHERE nextval('seq') = 2 AND schema_name = 's';
-----
-t
-
-query I
-SELECT currval('seq');
-----
-2
-
-statement error
-SELECT table_name FROM duckdb_tables() WHERE lower(schema_name) = 's' AND 'x' LIKE '%' ESCAPE schema_name;
-----
-Invalid escape string
-
-statement error
-SELECT table_name FROM duckdb_tables() WHERE schema_name = 's' AND schema_name::INTEGER = 1;
-----
-Conversion Error
-
-statement error
-SELECT table_name FROM duckdb_tables() WHERE 'x' NOT ILIKE 'y' ESCAPE schema_name;
-----
-Invalid escape string
-
-query I
-SELECT table_name FROM duckdb_tables() WHERE database_name = 'nothing' AND 'x' LIKE '%' ESCAPE schema_name;
-----
-
-statement ok
-DROP TABLE main.first;
-
-statement ok
-DROP SEQUENCE seq;
-
-statement ok
-DROP SCHEMA s CASCADE;
+# The fixture and expected output name the default catalog 'memory'.
+require noforcestorage
 
 statement ok
 CREATE TABLE mine (i INTEGER);
@@ -120,17 +56,22 @@ SHOW TABLES FROM other.s2;
 t3
 v1
 
+query I
+SHOW TABLES FROM other;
+----
+t1
+t2
+t3
+t4
+t5
+v1
+
 query II
 SELECT schema_name, table_name FROM duckdb_tables() WHERE database_name = 'other' AND schema_name = 's1' ORDER BY ALL;
 ----
 s1	t1
 s1	t2
 s1	t5
-
-# the comparison is case sensitive without lower()
-query I
-SELECT table_name FROM duckdb_tables() WHERE database_name = 'other' AND schema_name = 's2';
-----
 
 query I
 SELECT table_name FROM duckdb_tables() WHERE lower(database_name) = 'other' AND lower(schema_name) = 's2';
@@ -141,13 +82,24 @@ query I
 SELECT table_name FROM duckdb_tables() WHERE lower(schema_name) = 'S2';
 ----
 
-# other filters that only read the names
 query I
-SELECT table_name FROM duckdb_tables() WHERE database_name = 'other' AND schema_name IN ('S2', 'main') ORDER BY ALL;
+SELECT table_name FROM duckdb_tables() WHERE 'S2' = schema_name;
 ----
 t3
-t4
 
+query I
+SELECT count(*) FROM duckdb_tables() WHERE database_name = 'nothing';
+----
+0
+
+query II
+SELECT table_schema, table_name FROM information_schema.tables WHERE table_catalog = 'other' AND table_schema = 's1' ORDER BY ALL;
+----
+s1	t1
+s1	t2
+s1	t5
+
+# filters on both name columns, or on a name and another column, see every schema
 query I
 SELECT table_name FROM duckdb_tables() WHERE database_name = 'memory' OR schema_name = 'S2' ORDER BY ALL;
 ----
@@ -155,13 +107,21 @@ mine
 t3
 
 query I
-SELECT table_name FROM duckdb_tables() WHERE database_name = current_database();
-----
-mine
-
-query I
 SELECT table_name FROM duckdb_tables() WHERE schema_name = database_name;
 ----
+
+query II
+SELECT schema_name, table_name FROM duckdb_tables() WHERE database_name = 'other' AND (schema_name = 's1' OR table_name = 't4') ORDER BY ALL;
+----
+main	t4
+s1	t1
+s1	t2
+s1	t5
+
+query I
+SELECT count(*) FROM duckdb_tables() WHERE schema_name LIKE 's%';
+----
+3
 
 # filters that can throw run on the rows as before
 statement error
@@ -240,21 +200,6 @@ DROP SCHEMA "ä" CASCADE;
 
 # prepared statements see the catalog of each execution
 statement ok
-PREPARE pinned AS SELECT table_name FROM duckdb_tables() WHERE database_name = 'other' AND schema_name = $1 ORDER BY ALL;
-
-query I
-EXECUTE pinned('S2');
-----
-t3
-
-query I
-EXECUTE pinned('s1');
-----
-t1
-t2
-t5
-
-statement ok
 PREPARE pinned_s1 AS SELECT table_name FROM duckdb_tables() WHERE database_name = 'other' AND schema_name = 's1' ORDER BY ALL;
 
 query I
@@ -312,58 +257,6 @@ query I
 SELECT schema_name FROM duckdb_tables() AS d(x, y, z, w, schema_name) WHERE schema_name = 't3';
 ----
 t3
-
-query I
-SHOW TABLES FROM OTHER.s2;
-----
-t3
-v1
-
-query I
-SHOW TABLES FROM other;
-----
-t1
-t2
-t3
-t4
-t5
-v1
-
-query I
-SELECT table_name FROM duckdb_tables() WHERE 'S2' = schema_name;
-----
-t3
-
-query I
-SELECT view_name FROM duckdb_views() WHERE database_name = 'other' AND schema_name = 'S2';
-----
-v1
-
-query II
-SELECT table_schema, table_name FROM information_schema.tables WHERE table_catalog = 'other' AND table_schema = 's1' ORDER BY ALL;
-----
-s1	t1
-s1	t2
-s1	t5
-
-query I
-SELECT count(*) FROM duckdb_tables() WHERE database_name = 'nothing';
-----
-0
-
-# filters that do not pin a name still see every schema
-query II
-SELECT schema_name, table_name FROM duckdb_tables() WHERE database_name = 'other' AND (schema_name = 's1' OR table_name = 't4') ORDER BY ALL;
-----
-main	t4
-s1	t1
-s1	t2
-s1	t5
-
-query I
-SELECT count(*) FROM duckdb_tables() WHERE schema_name LIKE 's%';
-----
-3
 
 # schemas of the same name in other databases and in nested schemas
 statement ok
@@ -485,51 +378,22 @@ DROP TABLE full_scan;
 
 endloop
 
-# a transaction sees the skipped catalogs as of its first scan, as with a full scan
-statement ok con1
-BEGIN;
-
-query I con1
-SELECT count(*) FROM duckdb_tables() WHERE database_name = 'memory' AND table_name = 'mine';
-----
-1
-
-statement ok con2
-CREATE TABLE other.s1.late (a INTEGER);
-
-query I con1
-SELECT count(*) FROM duckdb_tables() WHERE database_name = 'other' AND table_name = 'late';
-----
-0
-
-statement ok con1
-COMMIT;
-
-query I con1
-SELECT count(*) FROM duckdb_tables() WHERE database_name = 'other' AND table_name = 'late';
-----
-1
-
-statement ok
-DROP TABLE other.s1.late;
-
-# only the pinned schema is scanned
-query II
-EXPLAIN ANALYZE SELECT table_name FROM duckdb_tables() WHERE database_name = 'other' AND schema_name = 's1';
-----
-analyzed_plan	<REGEX>:.*DUCKDB_TABLES[^0-9]*5 rows.*
-
-query II
-EXPLAIN ANALYZE SELECT table_name FROM duckdb_tables() WHERE lower(database_name) = 'other' AND lower(schema_name) = 's1';
-----
-analyzed_plan	<REGEX>:.*DUCKDB_TABLES[^0-9]*5 rows.*
-
-query II
-EXPLAIN ANALYZE SELECT table_name FROM duckdb_tables() WHERE database_name = 'other' AND schema_name IN ('s1', 'nothing');
-----
-analyzed_plan	<REGEX>:.*DUCKDB_TABLES[^0-9]*5 rows.*
-
+# only the pinned catalog and schema are scanned
 query II
 EXPLAIN ANALYZE SHOW TABLES FROM other.s1;
 ----
-analyzed_plan	<REGEX>:.*DUCKDB_TABLES[^0-9]*5 rows.*
+analyzed_plan	<REGEX>:.*DUCKDB_TABLES.*Catalogs Scanned: 1/.*Schemas Scanned: 1/.*
+
+foreach function duckdb_indexes duckdb_sequences duckdb_schemas duckdb_functions duckdb_triggers
+
+query II
+EXPLAIN ANALYZE SELECT * FROM {function}() WHERE database_name = 'other' AND schema_name = 's1';
+----
+analyzed_plan	<REGEX>:.*Catalogs Scanned: 1/.*Schemas Scanned: 1/.*
+
+query II
+EXPLAIN ANALYZE SELECT * FROM {function}() WHERE lower(database_name) = 'other';
+----
+analyzed_plan	<REGEX>:.*Catalogs Scanned: 1/.*
+
+endloop

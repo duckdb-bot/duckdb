@@ -1,5 +1,5 @@
 #include "duckdb/function/table/system_functions.hpp"
-#include "duckdb/function/table/catalog_scan_filter.hpp"
+#include "duckdb/function/table/system_catalog_scanner.hpp"
 
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
@@ -15,6 +15,7 @@ struct DuckDBSchemasData : public GlobalTableFunctionState {
 
 	vector<reference<SchemaCatalogEntry>> entries;
 	idx_t offset;
+	SystemCatalogScannerStats stats;
 };
 
 static unique_ptr<FunctionData> DuckDBSchemasBind(ClientContext &context, TableFunctionBindInput &input,
@@ -49,13 +50,14 @@ static unique_ptr<FunctionData> DuckDBSchemasBind(ClientContext &context, TableF
 	names.emplace_back("parent_schema_oid");
 	return_types.emplace_back(LogicalType::BIGINT);
 
-	return make_uniq<CatalogScanFilterData>(names);
+	return SystemCatalogScanner::CreateBindData(names);
 }
 
 unique_ptr<GlobalTableFunctionState> DuckDBSchemasInit(ClientContext &context, TableFunctionInitInput &input) {
 	auto result = make_uniq<DuckDBSchemasData>();
 
-	result->entries = GetSchemasForScan(context, input.bind_data);
+	// collect the surviving schemas
+	result->entries = SystemCatalogScanner::GetSchemas(context, input, result->stats);
 
 	return std::move(result);
 }
@@ -116,9 +118,14 @@ void DuckDBSchemasFunction(ClientContext &context, TableFunctionInput &data_p, D
 	}
 }
 
+static void DuckDBSchemasGetMetrics(TableFunctionGetMetricsInput &input) {
+	SystemCatalogScanner::ReportMetrics(input, input.global_state->Cast<DuckDBSchemasData>().stats);
+}
+
 void DuckDBSchemasFun::RegisterFunction(BuiltinFunctions &set) {
 	TableFunction function("duckdb_schemas", {}, DuckDBSchemasFunction, DuckDBSchemasBind, DuckDBSchemasInit);
-	function.pushdown_complex_filter = CatalogScanPushdownFilter;
+	SystemCatalogScanner::RegisterPushdown(function);
+	function.get_metrics = DuckDBSchemasGetMetrics;
 	set.AddFunction(std::move(function));
 }
 

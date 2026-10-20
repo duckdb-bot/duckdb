@@ -1,5 +1,5 @@
 #include "duckdb/function/table/system_functions.hpp"
-#include "duckdb/function/table/catalog_scan_filter.hpp"
+#include "duckdb/function/table/system_catalog_scanner.hpp"
 #include "duckdb/common/atomic.hpp"
 
 #include "duckdb/catalog/catalog.hpp"
@@ -32,6 +32,7 @@ struct DuckDBFunctionsData : public GlobalTableFunctionState {
 	idx_t offset_in_entry;
 	//! The offset, published once per chunk (for progress)
 	atomic<idx_t> progress_offset {0};
+	SystemCatalogScannerStats stats;
 };
 
 static unique_ptr<FunctionData> DuckDBFunctionsBind(ClientContext &context, TableFunctionBindInput &input,
@@ -99,7 +100,7 @@ static unique_ptr<FunctionData> DuckDBFunctionsBind(ClientContext &context, Tabl
 	names.emplace_back("categories");
 	return_types.emplace_back(LogicalType::LIST(LogicalType::VARCHAR));
 
-	return make_uniq<CatalogScanFilterData>(names);
+	return SystemCatalogScanner::CreateBindData(names);
 }
 
 static void ExtractFunctionsFromSchema(ClientContext &context, SchemaCatalogEntry &schema,
@@ -115,7 +116,8 @@ static void ExtractFunctionsFromSchema(ClientContext &context, SchemaCatalogEntr
 unique_ptr<GlobalTableFunctionState> DuckDBFunctionsInit(ClientContext &context, TableFunctionInitInput &input) {
 	auto result = make_uniq<DuckDBFunctionsData>();
 
-	auto schemas = GetSchemasForScan(context, input.bind_data);
+	// scan the surviving schemas for functions and collect them
+	auto schemas = SystemCatalogScanner::GetSchemas(context, input, result->stats);
 	for (auto &schema : schemas) {
 		ExtractFunctionsFromSchema(context, schema.get(), *result);
 	};
@@ -844,10 +846,15 @@ static double DuckDBFunctionsProgress(ClientContext &context, const FunctionData
 	return 100.0 * static_cast<double>(offset) / static_cast<double>(data.entries.size());
 }
 
+static void DuckDBFunctionsGetMetrics(TableFunctionGetMetricsInput &input) {
+	SystemCatalogScanner::ReportMetrics(input, input.global_state->Cast<DuckDBFunctionsData>().stats);
+}
+
 void DuckDBFunctionsFun::RegisterFunction(BuiltinFunctions &set) {
 	TableFunction functions("duckdb_functions", {}, DuckDBFunctionsFunction, DuckDBFunctionsBind, DuckDBFunctionsInit);
 	functions.table_scan_progress = DuckDBFunctionsProgress;
-	functions.pushdown_complex_filter = CatalogScanPushdownFilter;
+	SystemCatalogScanner::RegisterPushdown(functions);
+	functions.get_metrics = DuckDBFunctionsGetMetrics;
 	set.AddFunction(functions);
 }
 

@@ -82,6 +82,11 @@ TEST_CASE("Filters on the database name do not list the schemas of other catalog
 	REQUIRE(CHECK_COLUMN(result, 0, {"mine"}));
 	result = con.Query("SHOW TABLES FROM memory.main");
 	REQUIRE(CHECK_COLUMN(result, 0, {"mine"}));
+	vector<string> functions {"duckdb_schemas", "duckdb_indexes", "duckdb_sequences", "duckdb_triggers",
+	                          "duckdb_functions"};
+	for (auto &function : functions) {
+		REQUIRE_NO_FAIL(con.Query("SELECT * FROM " + function + "() WHERE database_name = 'memory'"));
+	}
 	REQUIRE(schema_scans == 0);
 
 	result = con.Query("SELECT table_name FROM duckdb_tables() WHERE database_name = 'counted'");

@@ -1,5 +1,5 @@
 # name: test/optimizer/statistics/statistics_monotone_infinity.test
-# description: Monotone bounds are not inferred when -infinity lies between finite bounds
+# description: Monotone functions keep correct statistics when -infinity lies between finite bounds
 # group: [statistics]
 
 # the smallest finite DATE and TIMESTAMP values sort below -infinity
@@ -9,10 +9,13 @@ CREATE TABLE dates(c DATE);
 statement ok
 INSERT INTO dates VALUES (make_date(-2147483647 - 1)), ('-infinity'), ('1970-01-01');
 
-query II
-SELECT count(last_day(c)), count(*) FILTER (last_day(c) IS NOT NULL) FROM dates
+# functions that return NULL for -infinity
+query IIIII
+SELECT count(last_day(c)), count(*) FILTER (last_day(c) IS NOT NULL), count(date_diff('day', DATE '2000-01-01', c)),
+       count(date_diff('day', c, DATE '2000-01-01')), count(*) FILTER (date_diff('day', c, DATE '2000-01-01') IS NULL)
+FROM dates
 ----
-2	2
+2	2	2	2	1
 
 statement ok
 CREATE TABLE timestamps(c TIMESTAMP);
@@ -20,10 +23,12 @@ CREATE TABLE timestamps(c TIMESTAMP);
 statement ok
 INSERT INTO timestamps VALUES (make_timestamp(-9223372036854775807 - 1)), ('-infinity'), ('1970-01-01');
 
-query I
-SELECT count(last_day(c)) FROM timestamps
+query III
+SELECT count(last_day(c)), count(date_diff('day', TIMESTAMP '2000-01-01', c)),
+       count(date_diff('day', c, TIMESTAMP '2000-01-01'))
+FROM timestamps
 ----
-2
+2	2	2
 
 statement ok
 CREATE TABLE timestamps_ns(c TIMESTAMP_NS);
@@ -54,10 +59,10 @@ CREATE TABLE dates_from_infinity(c DATE);
 statement ok
 INSERT INTO dates_from_infinity VALUES ('-infinity'), ('1970-01-01');
 
-query I
-SELECT count(last_day(c)) FROM dates_from_infinity
+query II
+SELECT count(last_day(c)), count(date_sub('day', DATE '2000-01-01', c)) FROM dates_from_infinity
 ----
-1
+1	1
 
 statement ok
 CREATE TABLE smallest_ns(c TIMESTAMP_NS);
@@ -81,6 +86,18 @@ query I
 SELECT stats(epoch_ns(c)) FROM recent_ns LIMIT 1
 ----
 {'has_no_null': true, 'has_null': false, 'max': 946684800000000000, 'min': 0}
+
+statement ok
+CREATE TABLE recent(c DATE);
+
+statement ok
+INSERT INTO recent VALUES ('1970-01-01'), ('2000-01-01');
+
+query III
+SELECT stats(last_day(c)), stats(date_diff('day', DATE '1970-01-01', c)), stats(date_sub('day', DATE '1970-01-01', c))
+FROM recent LIMIT 1
+----
+{'has_no_null': true, 'has_null': false, 'max': 2000-01-31, 'min': 1970-01-31}	{'has_no_null': true, 'has_null': false, 'max': 10957, 'min': 0}	{'has_no_null': true, 'has_null': false, 'max': 10957, 'min': 0}
 
 # adding days to a date keeps it on its side of -infinity
 query IIII
@@ -134,3 +151,28 @@ query I
 SELECT count(*) FROM dates_from_infinity WHERE c + 2 = '-infinity'::DATE
 ----
 1
+
+require icu
+
+statement ok
+SET TimeZone = 'UTC';
+
+statement ok
+CREATE TABLE timestamps_tz(c TIMESTAMPTZ);
+
+statement ok
+INSERT INTO timestamps_tz VALUES (make_timestamptz(-9223372036854775807 - 1)), ('-infinity'),
+                                 ('1970-01-01 00:00:00+00');
+
+query III
+SELECT count(era(c)), count(isoyear(c)), count(date_sub('day', TIMESTAMPTZ '2000-01-01 00:00:00+00', c))
+FROM timestamps_tz
+----
+2	2	2
+
+query II
+SELECT count(date_diff('day', '2000-01-01 00:00:00+00'::TIMESTAMPTZ_NS, c)),
+       count(date_diff('day', c, '2000-01-01 00:00:00+00'::TIMESTAMPTZ_NS))
+FROM timestamps_tz_ns
+----
+2	2

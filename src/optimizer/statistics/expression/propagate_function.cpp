@@ -227,6 +227,18 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateMonotoneBounds(ClientC
 	return result.ToUnique();
 }
 
+unique_ptr<BaseStatistics> StatisticsPropagator::PropagateFiniteMonotoneBounds(ClientContext &context,
+                                                                               FunctionStatisticsInput &input) {
+	// -infinity gives NULL, and it can lie between the bounds of an argument
+	for (auto &stats : input.child_stats) {
+		if (stats.GetStatsType() == StatisticsType::NUMERIC_STATS && NumericStats::HasMinMax(stats) &&
+		    HoldsNegativeInfinity(NumericStats::Min(stats), NumericStats::Max(stats))) {
+			return nullptr;
+		}
+	}
+	return PropagateMonotoneBounds(context, input.expr, input.child_stats);
+}
+
 unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundFunctionExpression &func,
                                                                      unique_ptr<Expression> &expr_ptr) {
 	if (func.GetExpressionType() == ExpressionType::COMPARE_BETWEEN) {

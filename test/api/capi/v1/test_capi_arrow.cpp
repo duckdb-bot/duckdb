@@ -821,3 +821,58 @@ TEST_CASE("Test C-API Arrow string views retain data after aligned scratch is re
 		}
 	}
 }
+
+TEST_CASE("Test C-API Arrow array scan estimates the length of the array", "[capi][arrow]") {
+	CAPITester tester;
+	REQUIRE(tester.OpenDatabase(nullptr));
+	auto &con = *reinterpret_cast<Connection *>(tester.connection);
+	auto options = con.context->GetClientProperties();
+	const auto types = duckdb::vector<LogicalType> {LogicalType::BIGINT};
+	const auto names = duckdb::vector<string> {"value"};
+
+	// one array of the values below 1,000,000 in a scrambled order
+	const idx_t row_count = 1000000;
+	auto source = con.Query("SELECT (i * 7919) % 1000000 AS value FROM range(1000000) t(i)");
+	REQUIRE(!source->HasError());
+	unordered_map<idx_t, const duckdb::shared_ptr<ArrowTypeExtensionData>> extension_type_cast;
+	ArrowAppender appender(types, row_count, options, extension_type_cast);
+	while (auto chunk = source->Fetch()) {
+		if (chunk->size() == 0) {
+			break;
+		}
+		appender.Append(*chunk, 0, chunk->size(), chunk->size());
+	}
+	ArrowArray arrow_array = appender.Finalize();
+	REQUIRE(arrow_array.length == static_cast<int64_t>(row_count));
+	ArrowSchema arrow_schema;
+	ArrowConverter::ToArrowSchema(&arrow_schema, types, names, options);
+
+	ArrowArrayStream *arrow_stream = nullptr;
+	auto out_stream = reinterpret_cast<duckdb_arrow_stream *>(&arrow_stream);
+	REQUIRE(duckdb_arrow_array_scan(tester.connection, "arrow_values",
+	                                reinterpret_cast<duckdb_arrow_schema>(&arrow_schema),
+	                                reinterpret_cast<duckdb_arrow_array>(&arrow_array), out_stream) == DuckDBSuccess);
+
+	// a limit of 6,000 is above 5,000 rows but below 0.7% of the array, so a top-N beats sorting all of it
+	REQUIRE_NO_FAIL(tester.Query("SET profiling_renderer_settings = MAP {'operator_casing': 'upper'}"));
+	auto explain = tester.Query("EXPLAIN SELECT value FROM arrow_values ORDER BY value DESC LIMIT 6000");
+	REQUIRE_NO_FAIL(*explain);
+	auto plan = explain->Fetch<string>(1, 0);
+	INFO(plan);
+	REQUIRE(plan.find("TOP_N") != string::npos);
+	REQUIRE(plan.find("ORDER_BY") == string::npos);
+	REQUIRE(plan.find("~1,000,000 rows") != string::npos);
+
+	// the array is scanned once, by this query
+	auto result =
+	    tester.Query("SELECT count(*), min(value), max(value) FROM (SELECT value FROM arrow_values ORDER BY value DESC "
+	                 "LIMIT 6000)");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->Fetch<int64_t>(0, 0) == 6000);
+	REQUIRE(result->Fetch<int64_t>(1, 0) == 994000);
+	REQUIRE(result->Fetch<int64_t>(2, 0) == 999999);
+
+	duckdb_destroy_arrow_stream(out_stream);
+	arrow_schema.release(&arrow_schema);
+	arrow_array.release(&arrow_array);
+}

@@ -422,7 +422,8 @@ int GetNext(struct ArrowArrayStream *stream, struct ArrowArray *out) {
 
 class CArrowScanFactory : public duckdb::ArrowScanFactory {
 public:
-	explicit CArrowScanFactory(ArrowArrayStream &stream_p) : stream(stream_p) {
+	CArrowScanFactory(ArrowArrayStream &stream_p, duckdb::optional_idx row_count_p)
+	    : stream(stream_p), row_count(row_count_p) {
 	}
 
 	void GetSchema(ArrowSchema &schema) override {
@@ -437,9 +438,15 @@ public:
 		return result;
 	}
 
+	duckdb::optional_idx GetRowCount() override {
+		return row_count;
+	}
+
 private:
 	//! The caller retains ownership of the stream and its arrays.
 	duckdb::reference<ArrowArrayStream> stream;
+	//! The length of the array a stream of duckdb_arrow_array_scan returns
+	duckdb::optional_idx row_count;
 };
 
 // LCOV_EXCL_START
@@ -459,13 +466,14 @@ void Release(struct ArrowArrayStream *stream) {
 	stream->release = nullptr;
 }
 
-duckdb_state Ingest(duckdb_connection connection, const char *table_name, struct ArrowArrayStream *input) {
+duckdb_state Ingest(duckdb_connection connection, const char *table_name, struct ArrowArrayStream *input,
+                    duckdb::optional_idx row_count) {
 	try {
 		auto cconn = reinterpret_cast<duckdb::Connection *>(connection);
 		if (!input) {
 			return DuckDBError;
 		}
-		auto factory = duckdb::make_shared_ptr<CArrowScanFactory>(*input);
+		auto factory = duckdb::make_shared_ptr<CArrowScanFactory>(*input, row_count);
 		cconn->TableFunction("arrow_scan", {}, {}, std::move(factory))
 		    ->CreateView(duckdb::Identifier(table_name), true, false);
 	} catch (...) { // LCOV_EXCL_START
@@ -480,12 +488,9 @@ duckdb_state Ingest(duckdb_connection connection, const char *table_name, struct
 
 	return DuckDBSuccess;
 }
-} // namespace
-} // namespace arrow_array_stream_wrapper
 
-duckdb_state duckdb_arrow_scan(duckdb_connection connection, const char *table_name, duckdb_arrow_stream arrow) {
-	auto stream = reinterpret_cast<ArrowArrayStream *>(arrow);
-
+duckdb_state Scan(duckdb_connection connection, const char *table_name, ArrowArrayStream *stream,
+                  duckdb::optional_idx row_count) {
 	// Backup release functions - we nullify children schema release functions because we don't want to release on
 	// behalf of the caller, downstream in our code. Note that Arrow releases target immediate children, but aren't
 	// recursive. So we only back up immediate children here and restore their functions.
@@ -502,7 +507,7 @@ duckdb_state duckdb_arrow_scan(duckdb_connection connection, const char *table_n
 		child->release = arrow_array_stream_wrapper::EmptySchemaRelease;
 	}
 
-	auto ret = arrow_array_stream_wrapper::Ingest(connection, table_name, stream);
+	auto ret = arrow_array_stream_wrapper::Ingest(connection, table_name, stream, row_count);
 
 	// Restore release functions.
 	for (idx_t i = 0; i < duckdb::NumericCast<idx_t>(schema.n_children); i++) {
@@ -510,6 +515,13 @@ duckdb_state duckdb_arrow_scan(duckdb_connection connection, const char *table_n
 	}
 
 	return ret;
+}
+} // namespace
+} // namespace arrow_array_stream_wrapper
+
+duckdb_state duckdb_arrow_scan(duckdb_connection connection, const char *table_name, duckdb_arrow_stream arrow) {
+	return arrow_array_stream_wrapper::Scan(connection, table_name, reinterpret_cast<ArrowArrayStream *>(arrow),
+	                                        duckdb::optional_idx());
 }
 
 duckdb_state duckdb_arrow_array_scan(duckdb_connection connection, const char *table_name,
@@ -535,7 +547,11 @@ duckdb_state duckdb_arrow_array_scan(duckdb_connection connection, const char *t
 		stream->release = arrow_array_stream_wrapper::Release;
 		stream->private_data = private_data;
 
-		return duckdb_arrow_scan(connection, table_name, reinterpret_cast<duckdb_arrow_stream>(stream));
+		duckdb::optional_idx row_count;
+		if (private_data->array && private_data->array->length >= 0) {
+			row_count = duckdb::NumericCast<idx_t>(private_data->array->length);
+		}
+		return arrow_array_stream_wrapper::Scan(connection, table_name, stream, row_count);
 	} catch (...) {
 		delete private_data;
 		delete stream;

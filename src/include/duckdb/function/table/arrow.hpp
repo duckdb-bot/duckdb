@@ -47,6 +47,11 @@ struct ArrowStreamParameters {
 struct ArrowScanFactory : public TableFunctionInfo {
 	virtual void GetSchema(ArrowSchema &schema) = 0;
 	virtual unique_ptr<ArrowArrayStreamWrapper> ProduceStream(ArrowStreamParameters &parameters) = 0;
+	//! The number of rows a produced stream returns before filters, if known. Read once when the scan binds and
+	//! used as an estimate only, since the source can change before the plan runs.
+	virtual optional_idx GetRowCount() {
+		return optional_idx();
+	}
 };
 
 struct ArrowScanFunctionData : public TableFunctionData {
@@ -64,6 +69,8 @@ public:
 	ArrowTableSchema arrow_table;
 	//! Whether projection pushdown is enabled on the scan
 	bool projection_pushdown_enabled = true;
+	//! The row count the factory reported when the scan was bound
+	optional_idx row_count;
 };
 
 struct ArrowRunEndEncodingState {

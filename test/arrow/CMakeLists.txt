@@ -5,6 +5,7 @@ add_library_unity(
   arrow_roundtrip.cpp
   arrow_move_children.cpp
   arrow_filter_pushdown.cpp
+  arrow_scan_cardinality.cpp
   arrow_dictionary_sentinel.cpp
   arrow_dict_nested_offset.cpp
   arrow_list_view_nested_offset.cpp

@@ -66,6 +66,7 @@ unique_ptr<FunctionData> ArrowTableFunction::ArrowScanBind(ClientContext &contex
 	auto factory = shared_ptr_cast<TableFunctionInfo, ArrowScanFactory>(input.ref.bind_info);
 	auto res = make_uniq<ArrowScanFunctionData>(std::move(factory));
 	res->factory->GetSchema(res->schema_root.arrow_schema);
+	res->row_count = res->factory->GetRowCount();
 	PopulateArrowTableSchema(context, res->arrow_table, res->schema_root.arrow_schema);
 	names = StringsToIdentifiers(res->arrow_table.GetNames());
 	return_types = res->arrow_table.GetTypes();
@@ -200,7 +201,12 @@ void ArrowTableFunction::ArrowScanFunction(ClientContext &context, TableFunction
 }
 
 unique_ptr<NodeStatistics> ArrowTableFunction::ArrowScanCardinality(ClientContext &context, const FunctionData *data) {
-	return make_uniq<NodeStatistics>();
+	auto &bind_data = data->Cast<ArrowScanFunctionData>();
+	if (!bind_data.row_count.IsValid()) {
+		return make_uniq<NodeStatistics>();
+	}
+	// no maximum, the source can grow before a prepared plan runs again
+	return make_uniq<NodeStatistics>(bind_data.row_count.GetIndex());
 }
 
 OperatorPartitionData ArrowTableFunction::ArrowGetPartitionData(ClientContext &context,

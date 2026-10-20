@@ -309,6 +309,25 @@ SELECT v FROM (SELECT r.obj.k AS v FROM r.nested_tbl, (VALUES (99)) obj(k)) s, l
 ----
 8
 
+# column aliases apply before duplicate names are made unique
+query I
+SELECT s.a FROM (SELECT id AS a, id + 1 AS a FROM r.tbl) s(b), local_tbl ORDER BY 1;
+----
+1
+2
+3
+10
+11
+
+query I
+WITH s(b) AS (SELECT id AS a, id + 1 AS a FROM r.tbl) SELECT s.a FROM s, local_tbl ORDER BY 1;
+----
+1
+2
+3
+10
+11
+
 # positional references are named after the column they refer to
 query I
 SELECT id FROM (SELECT #1 FROM r.tbl) s, local_tbl ORDER BY 1;

@@ -279,8 +279,9 @@ CatalogPushdownResult RemotePushdownOptimizer::Rewrite(QueryNode &node) {
 			cte_result = Merge(cte_result, Rewrite(key));
 		}
 		cte_results[cte_name] = cte_result;
+		// column aliases apply to the names before the server makes duplicate names unique
 		if (cte_result.reference_type == CatalogReferenceType::SINGLE_REMOTE_CATALOG && cte_is_self_contained &&
-		    cte_info.key_targets.empty()) {
+		    cte_info.key_targets.empty() && cte_info.aliases.empty()) {
 			remote_ctes.emplace_back(cte_info, cte_result);
 		}
 	}
@@ -889,8 +890,11 @@ CatalogPushdownResult RemotePushdownOptimizer::Rewrite(SubqueryRef &ref) {
 	auto result = child_binder.Rewrite(*ref.subquery->node);
 	if (result.reference_type == CatalogReferenceType::UNKNOWN_CATALOG_REFERENCE) {
 		TrackLocalTable(ref);
-	} else if (result.reference_type == CatalogReferenceType::SINGLE_REMOTE_CATALOG &&
-	           child_binder.IsSelfContained(*ref.subquery->node)) {
+		return result;
+	}
+	// column aliases apply to the names before the server makes duplicate names unique
+	if (result.reference_type == CatalogReferenceType::SINGLE_REMOTE_CATALOG &&
+	    child_binder.IsSelfContained(*ref.subquery->node) && ref.column_name_alias.empty()) {
 		remote_subqueries.emplace_back(ref, result);
 	}
 	return result;

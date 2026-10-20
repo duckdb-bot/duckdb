@@ -2,10 +2,23 @@
 # description: Exported avg states of timestamps keep their infinities
 # group: [aggregate_state_export]
 
-query I
-SELECT avg(ts) EXPORT_STATE FROM (VALUES ('infinity'::TIMESTAMP), (TIMESTAMP '2000-01-01')) t(ts);
+# a state that saw an infinity has the maximum count, and 1 for infinity, 2 for -infinity or 3 for both as its value
+query III
+SELECT avg(ts) EXPORT_STATE, avg(ts) FILTER (ts < TIMESTAMP '2001-01-01') EXPORT_STATE, avg(ts) FILTER (ts > TIMESTAMP '1999-01-01') EXPORT_STATE
+FROM (VALUES ('infinity'::TIMESTAMP), (TIMESTAMP '2000-01-01'), ('-infinity'::TIMESTAMP)) t(ts);
 ----
-{'count': 0, 'value': 1}
+{'count': 18446744073709551615, 'value': 3}	{'count': 18446744073709551615, 'value': 2}	{'count': 18446744073709551615, 'value': 1}
+
+query I
+SELECT avg(ts) EXPORT_STATE FROM (VALUES (TIMESTAMP '2000-01-01'), (TIMESTAMP '2000-01-03')) t(ts);
+----
+{'count': 2, 'value': 1893542400000000}
+
+# dates average as timestamps
+query II
+SELECT avg(d) EXPORT_STATE, finalize(avg(d) EXPORT_STATE) FROM (VALUES ('-infinity'::DATE), (DATE '2000-01-01')) t(d);
+----
+{'count': 18446744073709551615, 'value': 2}	-infinity
 
 statement ok
 CREATE TABLE states AS SELECT g, avg(ts) EXPORT_STATE AS st FROM (VALUES (0, 'infinity'::TIMESTAMP), (0, 'infinity'::TIMESTAMP), (1, TIMESTAMP '2000-01-01'), (1, TIMESTAMP '2000-01-03'), (2, '-infinity'::TIMESTAMP)) t(g, ts) GROUP BY g;
@@ -25,7 +38,7 @@ NULL	infinity
 query II
 SELECT combine_aggr(st, 3), finalize(combine_aggr(st, 3)) FROM states WHERE g = 0;
 ----
-{'count': 0, 'value': 1}	infinity
+{'count': 18446744073709551615, 'value': 1}	infinity
 
 # a multiplicity of zero adds no infinity
 query I
@@ -33,17 +46,48 @@ SELECT finalize(combine_aggr(st, CASE WHEN g = 0 THEN 0 ELSE 1 END)) FROM states
 ----
 2000-01-02 00:00:00
 
-# imported states with a count of 0 hold the infinities in their value
+# imported states with the maximum count hold the infinities in their value
 query I
-SELECT finalize(to_aggregate_state({'count': 0, 'value': v}, 'avg', ['TIMESTAMP'])) FROM (VALUES (1::HUGEINT), (2), (3), (5), (18446744073709551617)) t(v) ORDER BY v;
+SELECT finalize(to_aggregate_state({'count': 18446744073709551615, 'value': v}, 'avg', ['TIMESTAMP'])) FROM (VALUES (1::HUGEINT), (2), (3)) t(v) ORDER BY v;
 ----
 infinity
 -infinity
 NULL
+
+query II
+SELECT finalize(combine(a, b)), finalize(combine(b, a)) FROM (SELECT to_aggregate_state({'count': 1, 'value': 0::HUGEINT}, 'avg', ['TIMESTAMP']) AS a, to_aggregate_state({'count': 18446744073709551615, 'value': 2::HUGEINT}, 'avg', ['TIMESTAMP']) AS b);
+----
+-infinity	-infinity
+
+# and other values with the maximum count are rejected
+statement error
+SELECT finalize(to_aggregate_state({'count': 18446744073709551615, 'value': 4::HUGEINT}, 'avg', ['TIMESTAMP']));
+----
+Invalid avg state - with a count of 18446744073709551615 the value must be 1 (infinity), 2 (-infinity) or 3 (both), not 4
+
+foreach v 0 4 -1 18446744073709551617
+
+statement error
+SELECT finalize(to_aggregate_state({'count': 18446744073709551615, 'value': {v}::HUGEINT}, 'avg', ['TIMESTAMP']));
+----
+Invalid avg state - with a count of 18446744073709551615
+
+statement error
+SELECT finalize(combine_aggr(to_aggregate_state({'count': 18446744073709551615, 'value': {v}::HUGEINT}, 'avg', ['TIMESTAMPTZ'])));
+----
+Invalid avg state - with a count of 18446744073709551615
+
+endloop
+
+# states with a count of 0 are empty whatever their value
+query I
+SELECT finalize(to_aggregate_state({'count': 0, 'value': v}, 'avg', ['TIMESTAMP'])) FROM (VALUES (1::HUGEINT), (2), (3), (5)) t(v) ORDER BY v;
+----
+NULL
+NULL
 NULL
 NULL
 
-# other values with a count of 0 hold no infinity, also when combined
 query II
 SELECT finalize(combine_aggr(st)), finalize(combine_aggr(st, 2)) FROM (SELECT to_aggregate_state({'count': 0, 'value': 18446744073709551617::HUGEINT}, 'avg', ['TIMESTAMP']) AS st);
 ----
@@ -59,8 +103,23 @@ SELECT finalize(combine(a, b)), finalize(combine(b, a)) FROM (SELECT to_aggregat
 ----
 1970-01-01 00:00:00	1970-01-01 00:00:00
 
-# counts that overflow fail instead of wrapping around to an infinity
+# counts that reach the maximum fail instead of turning into an infinity
 statement error
-SELECT finalize(combine(to_aggregate_state({'count': 18446744073709551615, 'value': 0::HUGEINT}, 'avg', ['TIMESTAMP']), to_aggregate_state({'count': 1, 'value': 1::HUGEINT}, 'avg', ['TIMESTAMP'])));
+SELECT finalize(combine(to_aggregate_state({'count': 18446744073709551614, 'value': 0::HUGEINT}, 'avg', ['TIMESTAMP']), to_aggregate_state({'count': 1, 'value': 1::HUGEINT}, 'avg', ['TIMESTAMP'])));
 ----
 Overflow in aggregate state combine
+
+statement error
+SELECT finalize(combine(to_aggregate_state({'count': 18446744073709551614, 'value': 0::HUGEINT}, 'avg', ['TIMESTAMP']), to_aggregate_state({'count': 2, 'value': 1::HUGEINT}, 'avg', ['TIMESTAMP'])));
+----
+Overflow in aggregate state combine
+
+statement error
+SELECT finalize(combine_aggr(to_aggregate_state({'count': 6148914691236517205, 'value': 0::HUGEINT}, 'avg', ['TIMESTAMP']), 3));
+----
+Overflow in repeated aggregate state combine
+
+query I
+SELECT finalize(combine_aggr(to_aggregate_state({'count': 6148914691236517204, 'value': 0::HUGEINT}, 'avg', ['TIMESTAMP']), 3));
+----
+1970-01-01 00:00:00

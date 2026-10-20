@@ -10,6 +10,9 @@ using namespace duckdb;
 
 #ifndef DUCKDB_NO_THREADS
 
+//! How long a worker waits before it retries after an exception
+static constexpr auto RETRY_WAIT = std::chrono::milliseconds(10);
+
 //! Blocks when it runs, and its first `failures` deschedules throw, like a worker that cannot allocate
 struct UndeschedulableTask : public Task {
 	explicit UndeschedulableTask(idx_t failures) : failures(failures) {
@@ -79,7 +82,7 @@ TEST_CASE("A worker thread that cannot deschedule a blocked task tries again", "
 	// the task ran once, and the worker waited before every new attempt
 	REQUIRE(blocked->executions == 1);
 	REQUIRE(blocked->attempts == 6);
-	REQUIRE(blocked->shortest_gap >= std::chrono::milliseconds(1));
+	REQUIRE(blocked->shortest_gap >= RETRY_WAIT);
 
 	// the worker still runs tasks
 	auto next = make_shared_ptr<FinishingTask>();

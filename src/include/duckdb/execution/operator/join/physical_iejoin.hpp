@@ -31,6 +31,11 @@ public:
 	vector<BoundOrderByNode> lhs_orders;
 	vector<BoundOrderByNode> rhs_orders;
 
+private:
+	//! Puts two inequalities that bound one expression from both sides first, when there are such
+	void MoveBandToFront();
+
+public:
 public:
 	// CachingOperator Interface
 	OperatorResultType ExecuteInternal(ExecutionContext &context, DataChunk &input, DataChunk &chunk,

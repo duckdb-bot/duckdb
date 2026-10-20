@@ -21,11 +21,63 @@
 
 namespace duckdb {
 
+static bool IsLowerBound(ExpressionType type) {
+	return type == ExpressionType::COMPARE_GREATERTHAN || type == ExpressionType::COMPARE_GREATERTHANOREQUALTO;
+}
+
+static bool IsUpperBound(ExpressionType type) {
+	return type == ExpressionType::COMPARE_LESSTHAN || type == ExpressionType::COMPARE_LESSTHANOREQUALTO;
+}
+
+//! Whether the two inequalities bound the same expression of one side from both directions
+static bool FormBand(const JoinCondition &a, const JoinCondition &b) {
+	if (!a.IsComparison() || !b.IsComparison()) {
+		return false;
+	}
+	auto a_type = a.GetComparisonType();
+	auto b_type = b.GetComparisonType();
+	bool opposite = (IsLowerBound(a_type) && IsUpperBound(b_type)) || (IsUpperBound(a_type) && IsLowerBound(b_type));
+	return opposite && (a.GetLHS().Equals(b.GetLHS()) || a.GetRHS().Equals(b.GetRHS()));
+}
+
+void PhysicalIEJoin::MoveBandToFront() {
+	// the first two conditions pick the candidate pairs, a band on one expression leaves the fewest of them
+	for (idx_t first = 0; first < conditions.size(); first++) {
+		for (idx_t second = first + 1; second < conditions.size(); second++) {
+			if (!FormBand(conditions[first], conditions[second])) {
+				continue;
+			}
+			if (first == 0 && second == 1) {
+				return;
+			}
+			// keep the order of the other conditions, which is the order of their selectivity
+			vector<idx_t> order {first, second};
+			for (idx_t i = 0; i < conditions.size(); i++) {
+				if (i != first && i != second) {
+					order.push_back(i);
+				}
+			}
+			vector<JoinCondition> reordered;
+			for (auto i : order) {
+				reordered.push_back(std::move(conditions[i]));
+			}
+			conditions = std::move(reordered);
+			if (filter_pushdown) {
+				for (auto &index : filter_pushdown->join_condition) {
+					index = NumericCast<idx_t>(std::find(order.begin(), order.end(), index) - order.begin());
+				}
+			}
+			return;
+		}
+	}
+}
+
 PhysicalIEJoin::PhysicalIEJoin(PhysicalPlan &physical_plan, LogicalComparisonJoin &op, PhysicalOperator &left,
                                PhysicalOperator &right, vector<JoinCondition> cond, JoinType join_type,
                                idx_t estimated_cardinality, unique_ptr<JoinFilterPushdownInfo> pushdown_info)
     : PhysicalRangeJoin(physical_plan, op, PhysicalOperatorType::IE_JOIN, left, right, std::move(cond), join_type,
                         estimated_cardinality, std::move(pushdown_info)) {
+	MoveBandToFront();
 	// 1. let L1 (resp. L2) be the array of column X (resp. Y)
 	D_ASSERT(conditions.size() >= 2);
 	for (idx_t i = 0; i < 2; ++i) {

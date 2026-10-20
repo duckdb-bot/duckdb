@@ -1,0 +1,70 @@
+# name: test/sql/join/iejoin/iejoin_band_conditions.test
+# description: IEJoin starts with two conditions that bound one expression from both sides
+# group: [iejoin]
+
+statement ok
+SET nested_loop_join_threshold = 0;
+
+statement ok
+SET merge_join_threshold = 0;
+
+statement ok
+CREATE TABLE r AS SELECT i AS id, (i * 7) % 100 AS gx, (i * 13) % 100 AS gy FROM range(1000) t(i);
+
+statement ok
+CREATE TABLE d AS SELECT i AS id, (i * 11) % 100 AS gx, (i * 17) % 100 AS gy FROM range(1000) t(i);
+
+# BETWEEN lists both lower bounds first
+query II
+EXPLAIN SELECT count(*) FROM r JOIN d ON d.gx BETWEEN r.gx - 1 AND r.gx + 1 AND d.gy BETWEEN r.gy - 1 AND r.gy + 1;
+----
+physical_plan	<REGEX>:.*IE Join.*Conditions: \(gx - 1\) <= gx,[^(]*\(gx \+ 1\) >= gx,[^(]*\(gy - 1\) <= gy,[^(]*\(gy \+ 1\) >= gy.*
+
+query I
+SELECT count(*) FROM r JOIN d ON d.gx BETWEEN r.gx - 1 AND r.gx + 1 AND d.gy BETWEEN r.gy - 1 AND r.gy + 1;
+----
+1200
+
+query I
+SELECT count(*) FROM r JOIN d ON (d.gx >= r.gx - 1 AND d.gx <= r.gx + 1) AND (d.gy >= r.gy - 1 AND d.gy <= r.gy + 1);
+----
+1200
+
+# a band on an expression of the left side
+query I
+SELECT count(*) FROM r JOIN d ON r.gx BETWEEN d.gx - 1 AND d.gx + 1 AND r.gy BETWEEN d.gy - 1 AND d.gy + 1;
+----
+1200
+
+query II
+EXPLAIN SELECT count(*) FROM r JOIN d ON r.gx >= d.gx - 1 AND r.gy >= d.gy - 1 AND r.gx <= d.gx + 1 AND r.gy <= d.gy + 1;
+----
+physical_plan	<REGEX>:.*IE Join.*Conditions: gx >= \(gx - 1\),[^(]*gx <= \(gx \+ 1\),.*
+
+# without a band the conditions keep their order
+query II
+EXPLAIN SELECT count(*) FROM r JOIN d ON d.gx >= r.gx AND d.gy >= r.gy AND d.id < r.id;
+----
+physical_plan	<REGEX>:.*IE Join.*Conditions: id > id,[^g]*gx <= gx,[^g]*gy <= gy.*
+
+query I
+SELECT count(*) FROM r JOIN d ON d.gx >= r.gx AND d.gy >= r.gy AND d.id < r.id;
+----
+124375
+
+# the join filters follow their conditions to the new positions
+statement ok
+CREATE TABLE r2 AS SELECT i AS id, (i * 7) % 100 AS gx, 1000 + (i * 13) % 100 AS gy FROM range(1000) t(i);
+
+statement ok
+CREATE TABLE d2 AS SELECT i AS id, 50 + (i * 11) % 100 AS gx, 1000 + (i * 17) % 100 AS gy FROM range(1000) t(i);
+
+query I
+SELECT count(*) FROM r2 JOIN d2 ON d2.gx BETWEEN r2.gx - 1 AND r2.gx + 1 AND d2.gy BETWEEN r2.gy - 1 AND r2.gy + 1;
+----
+400
+
+query I
+SELECT count(*) FROM r2 JOIN d2 ON r2.gx BETWEEN d2.gx - 1 AND d2.gx + 1 AND r2.gy BETWEEN d2.gy - 1 AND d2.gy + 1;
+----
+400

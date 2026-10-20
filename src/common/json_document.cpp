@@ -162,8 +162,12 @@ JSONValue JSONValue::GetMember(const string &key) const {
 
 string JSONValue::ToString(JSONWriteFlags flags) const {
 	size_t len;
-	auto json = yyjson_val_write(val, TranslateWriteFlags(flags), &len);
+	yyjson_write_err write_error;
+	auto json = yyjson_val_write_opts(val, TranslateWriteFlags(flags), nullptr, &len, &write_error);
 	if (!json) {
+		if (write_error.code == YYJSON_WRITE_ERROR_MEMORY_ALLOCATION) {
+			throw std::bad_alloc();
+		}
 		throw SerializationException("Failed to write JSON string");
 	}
 	string result(json, len);

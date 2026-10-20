@@ -43,7 +43,7 @@ TEST_CASE("A task error that fails to be created for another reason is not repor
 }
 
 TEST_CASE("Parsing the JSON message of an error throws std::bad_alloc when memory runs out", "[api]") {
-	// yyjson fails to allocate a copy of an input this long before reading it
+	// yyjson reports an input this long as an allocation failure before reading it
 	string json = "{}";
 	JSONParseError error;
 	REQUIRE_THROWS_AS(JSONDocument::TryParse(json.c_str(), NumericLimits<idx_t>::Maximum(), error), std::bad_alloc);

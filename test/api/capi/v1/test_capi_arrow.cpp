@@ -824,7 +824,7 @@ TEST_CASE("Test C-API Arrow string views retain data after aligned scratch is re
 
 namespace {
 
-int32_t unfiltered_stream_first[3] = {-1, -1, -1};
+int32_t unfiltered_stream_first[3] = {0, -1, 0};
 int32_t unfiltered_stream_values[3] = {1, 2, 3};
 
 void ReleaseUnfilteredSchema(ArrowSchema *schema) {
@@ -835,7 +835,7 @@ void ReleaseUnfilteredArray(ArrowArray *array) {
 	array->release = nullptr;
 }
 
-// A stream of one batch with int32 columns a holding -1, -1 and -1, and i holding 1, 2 and 3, which ignores the
+// A stream of one batch with int32 columns a holding 0, -1 and 0, and i holding 1, 2 and 3, which ignores the
 // projection and the filters of the scan
 struct UnfilteredStream {
 	UnfilteredStream() {
@@ -941,6 +941,20 @@ TEST_CASE("Test C-API Arrow scans apply the projection and the filters of the qu
 	REQUIRE_NO_FAIL(*result);
 	REQUIRE(result->Fetch<int64_t>(0, 0) == 6);
 
+	// the filtered column is not returned
+	stream.sent = false;
+	result = tester.Query("SELECT a FROM t WHERE i > 1 ORDER BY a");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->row_count() == 2);
+	REQUIRE(result->Fetch<int32_t>(0, 0) == -1);
+	REQUIRE(result->Fetch<int32_t>(0, 1) == 0);
+
+	stream.sent = false;
+	result = tester.Query("SELECT i FROM t WHERE a = 0 AND i > 1");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->row_count() == 1);
+	REQUIRE(result->Fetch<int32_t>(0, 0) == 3);
+
 	// without the optimizer that prunes unused columns, the scan returns every column besides the filtered one
 	REQUIRE_NO_FAIL(tester.Query("SET disabled_optimizers = 'unused_columns'"));
 	stream.sent = false;
@@ -948,8 +962,15 @@ TEST_CASE("Test C-API Arrow scans apply the projection and the filters of the qu
 	REQUIRE_NO_FAIL(*result);
 	REQUIRE(result->row_count() == 2);
 	REQUIRE(result->Fetch<int32_t>(0, 0) == -1);
+	REQUIRE(result->Fetch<int32_t>(0, 1) == 0);
 	REQUIRE(result->Fetch<int32_t>(1, 0) == 2);
 	REQUIRE(result->Fetch<int32_t>(1, 1) == 3);
+
+	stream.sent = false;
+	result = tester.Query("SELECT i FROM t WHERE a = 0 AND i > 1");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->row_count() == 1);
+	REQUIRE(result->Fetch<int32_t>(0, 0) == 3);
 	REQUIRE_NO_FAIL(tester.Query("RESET disabled_optimizers"));
 
 	// a view over a single array

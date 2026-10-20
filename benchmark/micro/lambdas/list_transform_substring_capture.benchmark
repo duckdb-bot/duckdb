@@ -1,0 +1,15 @@
+# name: benchmark/micro/lambdas/list_transform_substring_capture.benchmark
+# description: Split a 64 MB ASCII string into 64 KB chunks with substring in a lambda that captures it
+# group: [lambdas]
+
+name list_transform substring of a captured string
+group lambdas
+
+load
+CREATE TABLE t AS SELECT repeat('x', 64 * 1024 * 1024) AS s;
+
+run
+SELECT count(*) FROM (SELECT unnest(list_transform(range(0, length(s) // 65536), lambda i: substring(s, i * 65536 + 1, 65536))) FROM t);
+
+result I
+1024

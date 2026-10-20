@@ -58,11 +58,34 @@ EXPLAIN SELECT count(*) FROM dups, LATERAL (SELECT dups.k * 0 + nextval('seq') A
 ----
 physical_plan	<REGEX>:.*Filters: k < 3.*
 
-# volatile filters stay above the numbering
+# volatile filters stay above the numbering, and run for the rows that pass the other filters
+statement ok
+CREATE SEQUENCE filter_seq;
+
 query I
-SELECT count(*) FROM src, UNNEST(xs) u(v) WHERE part = 'a' AND random() < 2;
+SELECT count(*) FROM src, UNNEST(xs) u(v) WHERE part = 'a' AND nextval('filter_seq') % 2 = 1;
 ----
-50
+25
+
+query I
+SELECT nextval('filter_seq');
+----
+51
+
+# filters that can throw stay above when another filter does
+statement ok
+CREATE TABLE bad AS SELECT 'bad' AS s, [1] AS l;
+
+statement ok
+SET delim_join_as_cte = false;
+
+query I
+SELECT count(*) FROM bad, UNNEST(l) u(v) WHERE s::INT > 0 AND random() < 0;
+----
+0
+
+statement ok
+RESET delim_join_as_cte;
 
 # filters that read both sides stay above the join
 query II
@@ -94,14 +117,14 @@ SELECT i, x FROM lists LEFT JOIN LATERAL UNNEST(l) u(x) ON true WHERE part = 'a'
 2	NULL
 3	NULL
 
-# a lateral subquery with ORDER BY, LIMIT and OFFSET, with a filter on its result
+# a lateral subquery with ORDER BY, LIMIT and OFFSET, with a filter on its result that rejects the element it picks
+statement ok
+CREATE TABLE triples AS SELECT i, CASE WHEN i < 50 THEN 'a' ELSE 'b' END AS part, [{'x': i}, {'x': i + 1}, {'x': i + 2}] AS l FROM range(100) t(i);
+
 query II
-SELECT i, s.x FROM src, LATERAL (SELECT v.a AS x FROM UNNEST(src.xs) u(v) ORDER BY x LIMIT 1 OFFSET 0) s WHERE s.x > 95 AND part = 'b' ORDER BY ALL;
+SELECT count(*), sum(s.x) FROM triples, LATERAL (SELECT v.x AS x FROM UNNEST(triples.l) u(v) ORDER BY x LIMIT 1 OFFSET 1) s WHERE s.x % 2 = 0 AND part = 'b';
 ----
-96	96
-97	97
-98	98
-99	99
+25	1900
 
 # readers of a CTE with a lateral join that filter differently, and one that does not filter
 query III

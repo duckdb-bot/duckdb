@@ -119,10 +119,13 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownWindow(unique_ptr<LogicalOpe
 	FilterPushdown pushdown(optimizer, convert_mark_joins, projection_mode);
 
 	if (window.numbering_is_arbitrary) {
-		// filters on the input can run before the rows are numbered, keeping the filters of a barrier on top
+		// filters on the input that cannot throw run before the rows are numbered, the others keep their place
+		// since the filters they ran after can arrive later
 		vector<unique_ptr<Filter>> leftover_filters;
 		for (auto &filter : filters) {
-			if (filter->bindings.count(window.window_index) || filter->filter->IsVolatile() || filter->has_barrier) {
+			auto &expr = *filter->filter;
+			if (filter->bindings.count(window.window_index) || expr.IsVolatile() || expr.CanThrow() ||
+			    filter->has_barrier) {
 				leftover_filters.push_back(std::move(filter));
 			} else {
 				pushdown.filters.push_back(std::move(filter));

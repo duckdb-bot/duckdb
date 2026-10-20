@@ -110,17 +110,15 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalGet &op) {
 
 	optional_ptr<PhysicalOperator> filter;
 	auto &projection_ids = op.projection_ids;
+	// A filter re-created above the scan must reference the scan's output layout: every column in order without
+	// projection pushdown, column_ids when projection_ids is empty, projection_ids otherwise
+	// (see LogicalGet::ResolveTypes).
+	const bool scan_emits_all_columns = !op.function.projection_pushdown;
+	const bool scan_emits_column_ids = !scan_emits_all_columns && projection_ids.empty();
 	// the columns of the get, before those that only a filter reads are added to the scan
-	auto returned_column_count = projection_ids.size();
+	const auto returned_column_count = projection_ids.size();
 
 	if (table_filters && op.function.supports_pushdown_type) {
-		if (projection_ids.empty()) {
-			// an empty list projects every column, which stops being true once a filter column is added
-			for (idx_t i = 0; i < column_ids.size(); i++) {
-				projection_ids.emplace_back(i);
-			}
-			returned_column_count = projection_ids.size();
-		}
 		vector<unique_ptr<Expression>> select_list;
 		unique_ptr<Expression> unsupported_filter;
 		unordered_set<ProjectionIndex> to_remove;
@@ -142,18 +140,26 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalGet &op) {
 				} else {
 					column_type = op.returned_types[column_id];
 				}
-				optional_idx column_id_filter;
-				for (idx_t i = 0; i < projection_ids.size(); i++) {
-					if (column_ids[projection_ids[i]] == column_idx) {
-						column_id_filter = i;
-						break;
+				idx_t filter_column;
+				if (scan_emits_all_columns) {
+					filter_column = column_id;
+				} else if (scan_emits_column_ids) {
+					filter_column = filter_idx.GetIndex();
+				} else {
+					optional_idx column_id_filter;
+					for (idx_t i = 0; i < projection_ids.size(); i++) {
+						if (column_ids[projection_ids[i]] == column_idx) {
+							column_id_filter = i;
+							break;
+						}
 					}
+					if (!column_id_filter.IsValid()) {
+						projection_ids.push_back(filter_idx);
+						column_id_filter = projection_ids.size() - 1;
+					}
+					filter_column = column_id_filter.GetIndex();
 				}
-				if (!column_id_filter.IsValid()) {
-					projection_ids.push_back(filter_idx);
-					column_id_filter = projection_ids.size() - 1;
-				}
-				auto column = make_uniq<BoundReferenceExpression>(column_type, column_id_filter.GetIndex());
+				auto column = make_uniq<BoundReferenceExpression>(column_type, filter_column);
 				select_list.push_back(filter_expr.ToExpression(*column));
 				to_remove.insert(filter_idx);
 			}
@@ -163,14 +169,23 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalGet &op) {
 		}
 
 		if (!select_list.empty()) {
-			vector<LogicalType> filter_types;
-			for (auto &c : projection_ids) {
-				auto column_id = column_ids[c].GetPrimaryIndex();
+			auto column_type = [&](const ColumnIndex &column_index) {
+				auto column_id = column_index.GetPrimaryIndex();
 				if (IsVirtualColumn(column_id)) {
-					auto &column = virtual_columns.at(column_id);
-					filter_types.push_back(column.type);
-				} else {
-					filter_types.push_back(op.returned_types[column_id]);
+					return virtual_columns.at(column_id).type;
+				}
+				return op.returned_types[column_id];
+			};
+			vector<LogicalType> filter_types;
+			if (scan_emits_all_columns) {
+				filter_types = op.returned_types;
+			} else if (scan_emits_column_ids) {
+				for (auto &column_index : column_ids) {
+					filter_types.push_back(column_type(column_index));
+				}
+			} else {
+				for (auto &c : projection_ids) {
+					filter_types.push_back(column_type(column_ids[c]));
 				}
 			}
 			filter = Make<PhysicalFilter>(filter_types, std::move(select_list), op.estimated_cardinality);

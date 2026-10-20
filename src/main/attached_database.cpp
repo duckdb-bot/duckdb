@@ -30,7 +30,7 @@ StoredDatabasePath::StoredDatabasePath(DatabaseManager &db_manager, DatabaseFile
 }
 
 StoredDatabasePath::~StoredDatabasePath() {
-	// an attach that failed or was rolled back never detaches
+	// an attach that failed never detaches
 	OnDetach();
 	manager.EraseDatabasePath(path);
 }

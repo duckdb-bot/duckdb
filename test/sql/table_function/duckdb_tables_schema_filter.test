@@ -2,6 +2,31 @@
 # description: The catalog table functions only list the schemas that filters on their names let through
 # group: [table_function]
 
+query I
+SELECT count(*) FROM duckdb_tables() WHERE database_name = 'memory' AND schema_name = 'main';
+----
+0
+
+# a filter that fails on the names of schemas without tables still only runs on the rows
+statement ok
+CREATE SCHEMA s;
+
+statement ok
+CREATE TABLE s.t (i INTEGER);
+
+query I
+SELECT table_name FROM duckdb_tables() WHERE 'x' LIKE '%' ESCAPE schema_name;
+----
+t
+
+query I
+SELECT table_name FROM duckdb_tables() WHERE schema_name = 's' AND 'x' LIKE '%' ESCAPE schema_name;
+----
+t
+
+statement ok
+DROP SCHEMA s CASCADE;
+
 statement ok
 CREATE TABLE mine (i INTEGER);
 

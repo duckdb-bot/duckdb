@@ -124,10 +124,10 @@ public:
 		auto schema_name_str = schema_name.GetIdentifierName();
 		FlatVector::Writer<string_t>(names.data[0], 1).WriteValue(string_t(database_name_str));
 		FlatVector::Writer<string_t>(names.data[1], 1).WriteValue(string_t(schema_name_str));
-		names.SetCardinality(1);
+		names.CheckCardinality(1);
 		SelectionVector sel(1);
 		for (auto &executor : executors) {
-			if (executor->SelectExpression(names, sel) == 0) {
+			if (executor && !Selects(executor, sel)) {
 				return false;
 			}
 		}
@@ -135,6 +135,18 @@ public:
 	}
 
 private:
+	//! Whether the filter lets the names through, a filter that fails is dropped as the rows run it anyway
+	bool Selects(unique_ptr<ExpressionExecutor> &executor, SelectionVector &sel) {
+		try {
+			return executor->SelectExpression(names, sel) > 0;
+		} catch (InternalException &ex) {
+			throw;
+		} catch (...) {
+			executor.reset();
+			return true;
+		}
+	}
+
 	vector<unique_ptr<ExpressionExecutor>> executors;
 	DataChunk names;
 };

@@ -1,0 +1,86 @@
+# name: test/sql/timezone/test_icu_calendar_naive_year.test
+# description: Casts between TIMESTAMPTZ and TIMESTAMP or DATE use the year that the calendar prints
+# group: [timezone]
+
+require icu
+
+statement ok
+SET TimeZone = 'UTC';
+
+# the naive value shows the date of the TIMESTAMPTZ and casts back to the same instant
+foreach calendar buddhist chinese coptic dangi ethiopic ethiopic-amete-alem gregorian hebrew indian islamic islamic-civil islamic-rgsa islamic-tbla islamic-umalqura iso8601 japanese persian roc
+
+statement ok
+SET Calendar = '{calendar}';
+
+query IIII
+SELECT count(*), bool_and(x::TIMESTAMP::VARCHAR = replace(x::VARCHAR, '+00', '')),
+	bool_and(x::DATE = x::TIMESTAMP::DATE), bool_and(x::TIMESTAMP::TIMESTAMPTZ = x)
+FROM (VALUES
+	(TIMESTAMPTZ '2024-06-15 12:34:56.789+00'),
+	(TIMESTAMPTZ '1985-03-01 00:00:00+00'),
+	('0500-03-01 (BC) 06:00:00+00'::TIMESTAMPTZ)
+) v(x)
+----
+3	true	true	true
+
+endloop
+
+# the year of a naive value is the Gregorian year in the Japanese calendar, not a year of the current era
+statement ok
+SET Calendar = 'japanese';
+
+query IIII
+SELECT TIMESTAMPTZ '2019-04-15', TIMESTAMP '2019-04-15 10:00:00'::TIMESTAMPTZ, DATE '2019-04-15'::TIMESTAMPTZ,
+	make_timestamptz(2019, 4, 15, 0, 0, 0)
+----
+2019-04-15 00:00:00+00	2019-04-15 10:00:00+00	2019-04-15 00:00:00+00	2019-04-15 00:00:00+00
+
+query II
+SELECT (TIMESTAMPTZ '2024-06-15 12:00:00+00')::TIMESTAMP, (TIMESTAMPTZ '2024-06-15 12:00:00+00')::DATE
+----
+2024-06-15 12:00:00	2024-06-15
+
+statement ok
+SET TimeZone = 'Asia/Tokyo';
+
+query II
+SELECT TIMESTAMP '2019-04-15 10:00:00'::TIMESTAMPTZ = TIMESTAMPTZ '2019-04-15 01:00:00+00',
+	(TIMESTAMPTZ '2019-04-15 20:00:00+00')::DATE
+----
+true	2019-04-16
+
+statement ok
+SET TimeZone = 'UTC';
+
+# single-era calendars keep their year instead of turning it into a BC year
+statement ok
+SET Calendar = 'islamic-civil';
+
+query III
+SELECT (TIMESTAMPTZ '2024-06-15 12:00:00+00')::TIMESTAMP, (TIMESTAMPTZ '2024-06-15 12:00:00+00')::DATE,
+	TIMESTAMP '1445-12-08 12:00:00'::TIMESTAMPTZ = TIMESTAMPTZ '2024-06-15 12:00:00+00'
+----
+1445-12-08 12:00:00	1445-12-08	true
+
+foreach calendar buddhist roc
+
+statement ok
+SET Calendar = '{calendar}';
+
+query II
+SELECT TIMESTAMPTZ '2024-04-15' = TIMESTAMPTZ '2024-04-15 00:00:00+00', (TIMESTAMPTZ '2024-04-15 00:00:00+00')::DATE
+----
+true	2024-04-15
+
+endloop
+
+# BC dates in the Gregorian calendar
+statement ok
+SET Calendar = 'gregorian';
+
+query IIII
+SELECT ('0002-06-01 (BC) 12:00:00+00'::TIMESTAMPTZ)::TIMESTAMP, ('0002-06-01 (BC) 12:00:00+00'::TIMESTAMPTZ)::DATE,
+	TIMESTAMP '0002-06-01 (BC) 12:00:00'::TIMESTAMPTZ, make_timestamptz(-2, 6, 1, 12, 0, 0)
+----
+0002-06-01 (BC) 12:00:00	0002-06-01 (BC)	0002-06-01 (BC) 12:00:00+00	0002-06-01 (BC) 12:00:00+00

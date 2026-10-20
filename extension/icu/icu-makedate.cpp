@@ -22,12 +22,10 @@ date_t ICUMakeDate::Operation(Calendar *calendar, timestamp_tz_t instant) {
 
 	// Extract the time zone parts
 	SetTime(calendar, instant);
-	const auto era = ExtractField(calendar, CAL_ERA);
-	const auto year = ExtractField(calendar, CAL_YEAR);
+	const auto yyyy = ExtractField(calendar, CAL_EXTENDED_YEAR);
 	const auto mm = ExtractField(calendar, CAL_MONTH) + 1;
 	const auto dd = ExtractField(calendar, CAL_DATE);
 
-	const auto yyyy = era ? year : (-year + 1);
 	date_t result;
 	if (!Date::TryFromDate(yyyy, mm, dd, result)) {
 		throw ConversionException("Unable to convert TIMESTAMPTZ to DATE");
@@ -111,7 +109,7 @@ struct ICUMakeTimestampTZFunc : public ICUDateFunc {
 		const auto millis = int32_t(ss);
 		int64_t micros = LossyNumericCast<int64_t, double>(std::round((ss - millis) * Interval::MICROS_PER_MSEC));
 
-		calendar->Set(CAL_YEAR, year);
+		calendar->Set(CAL_EXTENDED_YEAR, year);
 		calendar->Set(CAL_MONTH, month);
 		calendar->Set(CAL_DATE, day);
 		calendar->Set(CAL_HOUR_OF_DAY, hour);

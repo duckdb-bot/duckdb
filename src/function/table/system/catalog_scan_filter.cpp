@@ -2,30 +2,14 @@
 
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
-#include "duckdb/function/scalar/string_common.hpp"
-#include "duckdb/function/scalar/string_functions.hpp"
+#include "duckdb/common/vector/vector_writer.hpp"
+#include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
-#include "duckdb/planner/expression/bound_comparison_expression.hpp"
-#include "duckdb/planner/expression/bound_constant_expression.hpp"
-#include "duckdb/planner/expression/bound_function_expression.hpp"
+#include "duckdb/planner/expression/bound_reference_expression.hpp"
+#include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 
 namespace duckdb {
-
-static string LowerName(const string &name) {
-	auto length = LowerLength(name.c_str(), name.size());
-	string result(length, '\0');
-	LowerCase(name.c_str(), name.size(), &result[0]);
-	return result;
-}
-
-bool CatalogNameFilter::Matches(const string &name) const {
-	return (lower_case ? LowerName(name) : name) == value;
-}
-
-bool CatalogNameFilter::operator==(const CatalogNameFilter &other) const {
-	return value == other.value && lower_case == other.lower_case;
-}
 
 CatalogScanFilterData::CatalogScanFilterData(const vector<Identifier> &names) {
 	for (idx_t i = 0; i < names.size(); i++) {
@@ -37,92 +21,125 @@ CatalogScanFilterData::CatalogScanFilterData(const vector<Identifier> &names) {
 	}
 }
 
+static vector<unique_ptr<Expression>> CopyFilters(const vector<unique_ptr<Expression>> &filters) {
+	vector<unique_ptr<Expression>> result;
+	for (auto &filter : filters) {
+		result.push_back(filter->Copy());
+	}
+	return result;
+}
+
 unique_ptr<FunctionData> CatalogScanFilterData::Copy() const {
-	return make_uniq<CatalogScanFilterData>(*this);
+	auto result = make_uniq<CatalogScanFilterData>(vector<Identifier>());
+	result->database_column = database_column;
+	result->schema_column = schema_column;
+	result->database_filters = CopyFilters(database_filters);
+	result->schema_filters = CopyFilters(schema_filters);
+	return std::move(result);
 }
 
 bool CatalogScanFilterData::Equals(const FunctionData &other_p) const {
 	auto &other = other_p.Cast<CatalogScanFilterData>();
 	return database_column == other.database_column && schema_column == other.schema_column &&
-	       database_filters == other.database_filters && schema_filters == other.schema_filters;
+	       Expression::ListEquals(database_filters, other.database_filters) &&
+	       Expression::ListEquals(schema_filters, other.schema_filters);
 }
 
-//! Whether the function is the built-in lower(), another function can have its name and callbacks
-static bool IsBuiltinLower(const BoundScalarFunction &function) {
-	using callback_t = void (*)(DataChunk &, ExpressionState &, Vector &);
-	auto builtin = LowerFun::GetFunction();
-	auto builtin_callback = builtin.GetFunctionCallback();
-	auto callback = function.GetFunctionCallback();
-	auto builtin_target = builtin_callback.target<callback_t>();
-	auto target = callback.target<callback_t>();
-	return function.GetCallbacks() == builtin.GetCallbacks() && builtin_target && target && *builtin_target == *target;
-}
-
-//! The column that the expression is, or the built-in lower() of
-static optional_ptr<const BoundColumnRefExpression> GetFilteredColumn(const Expression &expr, bool &lower_case) {
-	if (expr.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
-		lower_case = false;
-		return expr.Cast<BoundColumnRefExpression>();
+//! Replaces the name columns with references to the names, false if the filter reads anything else
+static bool ReferenceNames(unique_ptr<Expression> &expr, const LogicalGet &get, const CatalogScanFilterData &bind_data,
+                           bool &reads_name, bool &reads_schema) {
+	switch (expr->GetExpressionClass()) {
+	case ExpressionClass::BOUND_COLUMN_REF: {
+		auto &column = expr->Cast<BoundColumnRefExpression>();
+		auto &column_ids = get.GetColumnIds();
+		auto column_index = column.Binding().column_index.GetIndex();
+		if (column.Depth() != 0 || column.Binding().table_index != get.table_index ||
+		    column_index >= column_ids.size() || column_ids[column_index].IsVirtualColumn()) {
+			return false;
+		}
+		auto primary_index = column_ids[column_index].GetPrimaryIndex();
+		if (bind_data.database_column != primary_index && bind_data.schema_column != primary_index) {
+			return false;
+		}
+		bool is_schema = bind_data.schema_column == primary_index;
+		reads_name = true;
+		reads_schema = reads_schema || is_schema;
+		expr = make_uniq<BoundReferenceExpression>(expr->GetReturnType(), is_schema ? 1 : 0);
+		return true;
 	}
-	if (expr.GetExpressionClass() != ExpressionClass::BOUND_FUNCTION) {
-		return nullptr;
+	case ExpressionClass::BOUND_CONSTANT:
+		return true;
+	case ExpressionClass::BOUND_FUNCTION:
+	case ExpressionClass::BOUND_CONJUNCTION:
+	case ExpressionClass::BOUND_OPERATOR:
+	case ExpressionClass::BOUND_CASE: {
+		bool success = true;
+		ExpressionIterator::EnumerateChildren(*expr, [&](unique_ptr<Expression> &child) {
+			success = success && ReferenceNames(child, get, bind_data, reads_name, reads_schema);
+		});
+		return success;
 	}
-	auto &function = expr.Cast<BoundFunctionExpression>();
-	auto &children = function.GetChildren();
-	if (!IsBuiltinLower(function.Function()) || children.size() != 1 ||
-	    children[0]->GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
-		return nullptr;
+	default:
+		return false;
 	}
-	lower_case = true;
-	return children[0]->Cast<BoundColumnRefExpression>();
 }
 
 void CatalogScanPushdownFilter(ClientContext &context, LogicalGet &get, FunctionData *bind_data_p,
                                vector<unique_ptr<Expression>> &filters) {
 	auto &bind_data = bind_data_p->Cast<CatalogScanFilterData>();
-	auto &column_ids = get.GetColumnIds();
 	for (auto &filter : filters) {
-		if (!BoundComparisonExpression::IsComparison(*filter) ||
-		    filter->GetExpressionType() != ExpressionType::COMPARE_EQUAL) {
+		// the filters run on the names before any row exists, so they must give the same result and never throw
+		if (filter->IsVolatile() || filter->CanThrow()) {
 			continue;
 		}
-		auto &comparison = filter->Cast<BoundFunctionExpression>();
-		auto &left = BoundComparisonExpression::Left(comparison);
-		auto &right = BoundComparisonExpression::Right(comparison);
-		auto &constant_side = left.GetExpressionClass() == ExpressionClass::BOUND_CONSTANT ? left : right;
-		auto &column_side = &constant_side == &left ? right : left;
-		if (constant_side.GetExpressionClass() != ExpressionClass::BOUND_CONSTANT) {
+		auto name_filter = filter->Copy();
+		bool reads_name = false;
+		bool reads_schema = false;
+		if (!ReferenceNames(name_filter, get, bind_data, reads_name, reads_schema) || !reads_name) {
 			continue;
 		}
-		auto &constant = constant_side.Cast<BoundConstantExpression>().GetValue();
-		bool lower_case;
-		auto column = GetFilteredColumn(column_side, lower_case);
-		if (!column || column->Depth() != 0 || column->Binding().table_index != get.table_index || constant.IsNull() ||
-		    constant.type().id() != LogicalTypeId::VARCHAR) {
-			continue;
-		}
-		auto column_index = column->Binding().column_index.GetIndex();
-		if (column_index >= column_ids.size() || column_ids[column_index].IsVirtualColumn()) {
-			continue;
-		}
-		auto primary_index = column_ids[column_index].GetPrimaryIndex();
-		CatalogNameFilter name_filter {StringValue::Get(constant), lower_case};
-		if (bind_data.database_column == primary_index) {
-			bind_data.database_filters.push_back(std::move(name_filter));
-		} else if (bind_data.schema_column == primary_index) {
-			bind_data.schema_filters.push_back(std::move(name_filter));
-		}
+		auto &target = reads_schema ? bind_data.schema_filters : bind_data.database_filters;
+		target.push_back(std::move(name_filter));
 	}
 }
 
-static bool MatchesAll(const vector<CatalogNameFilter> &name_filters, const string &name) {
-	for (auto &name_filter : name_filters) {
-		if (!name_filter.Matches(name)) {
-			return false;
+namespace {
+
+//! Runs recorded filters on a database name and a schema name
+class CatalogNameMatcher {
+public:
+	CatalogNameMatcher(ClientContext &context, const vector<unique_ptr<Expression>> &filters) {
+		for (auto &filter : filters) {
+			executors.push_back(make_uniq<ExpressionExecutor>(context, *filter));
 		}
+		names.Initialize(context, {LogicalType::VARCHAR, LogicalType::VARCHAR}, 1);
 	}
-	return true;
-}
+
+	bool Matches(const Identifier &database_name, const Identifier &schema_name) {
+		if (executors.empty()) {
+			return true;
+		}
+		names.Reset();
+		auto database_name_str = database_name.GetIdentifierName();
+		auto schema_name_str = schema_name.GetIdentifierName();
+		FlatVector::Writer<string_t>(names.data[0], 1).WriteValue(string_t(database_name_str));
+		FlatVector::Writer<string_t>(names.data[1], 1).WriteValue(string_t(schema_name_str));
+		names.SetCardinality(1);
+		SelectionVector sel(1);
+		for (auto &executor : executors) {
+			if (executor->SelectExpression(names, sel) == 0) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+private:
+	vector<unique_ptr<ExpressionExecutor>> executors;
+	DataChunk names;
+};
+
+} // namespace
 
 vector<reference<SchemaCatalogEntry>> GetSchemasForScan(ClientContext &context,
                                                         optional_ptr<const FunctionData> bind_data_p) {
@@ -130,12 +147,11 @@ vector<reference<SchemaCatalogEntry>> GetSchemasForScan(ClientContext &context,
 		return Catalog::GetAllSchemas(context);
 	}
 	auto &bind_data = bind_data_p->Cast<CatalogScanFilterData>();
+	CatalogNameMatcher database_matcher(context, bind_data.database_filters);
+	CatalogNameMatcher schema_matcher(context, bind_data.schema_filters);
 	return Catalog::GetAllSchemas(
-	    context,
-	    [&](Catalog &catalog) { return MatchesAll(bind_data.database_filters, catalog.GetName().GetIdentifierName()); },
-	    [&](SchemaCatalogEntry &schema) {
-		    return MatchesAll(bind_data.schema_filters, schema.name.GetIdentifierName());
-	    });
+	    context, [&](Catalog &catalog) { return database_matcher.Matches(catalog.GetName(), Identifier()); },
+	    [&](SchemaCatalogEntry &schema) { return schema_matcher.Matches(schema.catalog.GetName(), schema.name); });
 }
 
 } // namespace duckdb

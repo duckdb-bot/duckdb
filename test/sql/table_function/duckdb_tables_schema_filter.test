@@ -74,6 +74,34 @@ query I
 SELECT table_name FROM duckdb_tables() WHERE lower(schema_name) = 'S2';
 ----
 
+# other filters that only read the names
+query I
+SELECT table_name FROM duckdb_tables() WHERE database_name = 'other' AND schema_name IN ('S2', 'main') ORDER BY ALL;
+----
+t3
+t4
+
+query I
+SELECT table_name FROM duckdb_tables() WHERE database_name = 'memory' OR schema_name = 'S2' ORDER BY ALL;
+----
+mine
+t3
+
+query I
+SELECT table_name FROM duckdb_tables() WHERE database_name = current_database();
+----
+mine
+
+query I
+SELECT table_name FROM duckdb_tables() WHERE schema_name = database_name;
+----
+
+# filters that can throw run on the rows as before
+statement error
+SELECT table_name FROM duckdb_tables() WHERE schema_name::INTEGER = 1;
+----
+Conversion Error
+
 # collations compare through lower() and other functions
 query I
 SELECT table_name FROM duckdb_tables() WHERE database_name = 'other' AND schema_name COLLATE nocase = 'S2';
@@ -426,6 +454,11 @@ analyzed_plan	<REGEX>:.*DUCKDB_TABLES[^0-9]*5 rows.*
 
 query II
 EXPLAIN ANALYZE SELECT table_name FROM duckdb_tables() WHERE lower(database_name) = 'other' AND lower(schema_name) = 's1';
+----
+analyzed_plan	<REGEX>:.*DUCKDB_TABLES[^0-9]*5 rows.*
+
+query II
+EXPLAIN ANALYZE SELECT table_name FROM duckdb_tables() WHERE database_name = 'other' AND schema_name IN ('s1', 'nothing');
 ----
 analyzed_plan	<REGEX>:.*DUCKDB_TABLES[^0-9]*5 rows.*
 

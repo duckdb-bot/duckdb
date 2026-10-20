@@ -16,7 +16,7 @@ static void IdentityFunction(DataChunk &args, ExpressionState &state, Vector &re
 }
 
 // A function with the name and the other callbacks of lower() but another implementation
-TEST_CASE("Filters through a function that only looks like lower() do not prune duckdb_tables", "[api]") {
+TEST_CASE("Filters through a function that only looks like lower() keep the tables it matches", "[api]") {
 	DuckDB db(nullptr);
 	Connection con(db);
 	REQUIRE_NO_FAIL(con.Query("CREATE SCHEMA \"MiXeD\""));
@@ -41,33 +41,25 @@ TEST_CASE("Filters through a function that only looks like lower() do not prune 
 	REQUIRE(CHECK_COLUMN(result, 0, {"t"}));
 }
 
+static atomic<idx_t> schema_scans {0};
+
 // Counts how often the schemas are listed, which is a remote request for catalogs such as iceberg
 class CountingCatalog : public DuckCatalog {
 public:
-	explicit CountingCatalog(AttachedDatabase &db, atomic<idx_t> &schema_scans)
-	    : DuckCatalog(db), schema_scans(schema_scans) {
+	explicit CountingCatalog(AttachedDatabase &db) : DuckCatalog(db) {
 	}
 
 	void ScanSchemas(ClientContext &context, std::function<void(SchemaCatalogEntry &)> callback) override {
 		schema_scans++;
 		DuckCatalog::ScanSchemas(context, std::move(callback));
 	}
-
-private:
-	atomic<idx_t> &schema_scans;
-};
-
-struct CountingStorageExtensionInfo : StorageExtensionInfo {
-	atomic<idx_t> schema_scans {0};
 };
 
 struct CountingStorageExtension : StorageExtension {
 	CountingStorageExtension() {
-		storage_info = make_shared_ptr<CountingStorageExtensionInfo>();
-		attach = [](optional_ptr<StorageExtensionInfo> info, ClientContext &, AttachedDatabase &db, const string &,
+		attach = [](optional_ptr<StorageExtensionInfo>, ClientContext &, AttachedDatabase &db, const string &,
 		            AttachInfo &, AttachOptions &) -> unique_ptr<Catalog> {
-			auto &schema_scans = dynamic_cast<CountingStorageExtensionInfo &>(*info).schema_scans;
-			return make_uniq_base<Catalog, CountingCatalog>(db, schema_scans);
+			return make_uniq_base<Catalog, CountingCatalog>(db);
 		};
 		create_transaction_manager = [](optional_ptr<StorageExtensionInfo>, AttachedDatabase &db,
 		                                Catalog &) -> unique_ptr<TransactionManager> {
@@ -78,9 +70,7 @@ struct CountingStorageExtension : StorageExtension {
 
 TEST_CASE("Filters on the database name do not list the schemas of other catalogs", "[api]") {
 	DBConfig config;
-	auto extension = make_shared_ptr<CountingStorageExtension>();
-	auto &schema_scans = dynamic_cast<CountingStorageExtensionInfo &>(*extension->storage_info).schema_scans;
-	StorageExtension::Register(config, "counting", extension);
+	StorageExtension::Register(config, "counting", make_shared_ptr<CountingStorageExtension>());
 	DuckDB db(nullptr, &config);
 	Connection con(db);
 	REQUIRE_NO_FAIL(con.Query("ATTACH ':memory:' AS counted (TYPE counting)"));

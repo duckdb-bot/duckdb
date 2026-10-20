@@ -3,10 +3,11 @@
 
 using namespace duckdb;
 
-// 1000 schemas of 20 tables each, next to one table in the pinned schema
+// 1000 schemas of 20 tables each, next to one table and one macro in the pinned schema
 #define PINNED_SCHEMA_BODY(QUERY)                                                                                      \
 	void Load(DuckDBBenchmarkState *state) override {                                                                  \
 		state->conn.Query("CREATE TABLE mine (i INTEGER)");                                                            \
+		state->conn.Query("CREATE MACRO mine() AS 1");                                                                 \
 		for (idx_t i = 0; i < 1000; i++) {                                                                             \
 			auto schema = "s" + to_string(i);                                                                          \
 			state->conn.Query("CREATE SCHEMA " + schema);                                                              \
@@ -24,7 +25,7 @@ using namespace duckdb;
 		}                                                                                                              \
 		auto row_count = result->RowCount();                                                                           \
 		if (row_count != 1) {                                                                                          \
-			return "expected only the table of the pinned schema, got " + to_string(row_count) + " rows";              \
+			return "expected only the entry of the pinned schema, got " + to_string(row_count) + " rows";              \
 		}                                                                                                              \
 		return string();                                                                                               \
 	}                                                                                                                  \
@@ -39,3 +40,8 @@ FINISH_BENCHMARK(DuckDBTablesPinnedSchema)
 DUCKDB_BENCHMARK(ShowTablesPinnedSchema, "[system_functions]")
 PINNED_SCHEMA_BODY("SHOW TABLES FROM memory.main")
 FINISH_BENCHMARK(ShowTablesPinnedSchema)
+
+DUCKDB_BENCHMARK(DuckDBFunctionsPinnedSchema, "[system_functions]")
+PINNED_SCHEMA_BODY(
+    "SELECT function_name FROM duckdb_functions() WHERE database_name = 'memory' AND schema_name = 'main'")
+FINISH_BENCHMARK(DuckDBFunctionsPinnedSchema)

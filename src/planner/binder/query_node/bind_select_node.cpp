@@ -655,13 +655,6 @@ BoundStatement Binder::BindSelectNode(SelectNode &statement, BoundStatement from
 	}
 	result.groups.grouping_sets = std::move(statement.groups.grouping_sets);
 
-	// bind the HAVING clause, if any
-	if (statement.having) {
-		HavingBinder having_binder(*this, context, result, statement.aggregate_handling);
-		ExpressionBinder::QualifyColumnNames(having_binder, statement.having);
-		result.having = having_binder.Bind(statement.having);
-	}
-
 	// bind the QUALIFY clause, if any
 	vector<BoundColumnReferenceInfo> bound_qualify_columns;
 	if (statement.qualify) {
@@ -775,11 +768,21 @@ BoundStatement Binder::BindSelectNode(SelectNode &statement, BoundStatement from
 			auto aggregate_idx = ColumnBinding::PushExpression(result.aggregates, std::move(function));
 			expr =
 			    make_uniq<BoundColumnRefExpression>(return_type, ColumnBinding(result.aggregate_index, aggregate_idx));
-			continue;
+			bind_state.collated_groups[group_proj_idx] = aggregate_idx;
+		} else {
+			expr = make_uniq<BoundColumnRefExpression>(return_type, ColumnBinding(result.group_index, group_proj_idx));
 		}
-		auto group_ref =
-		    make_uniq<BoundColumnRefExpression>(return_type, ColumnBinding(result.group_index, group_proj_idx));
-		expr = std::move(group_ref);
+		// map the select expression to its group, so HAVING binds to it
+		auto group_copy = bind_state.original_expressions[group_by_all_index]->Copy();
+		bind_state.group_map[*group_copy] = group_proj_idx;
+		bind_state.unbound_groups.push_back(std::move(group_copy));
+	}
+
+	// bind the HAVING clause, if any, after the SELECT list and its groups
+	if (statement.having) {
+		HavingBinder having_binder(*this, context, result, statement.aggregate_handling);
+		ExpressionBinder::QualifyColumnNames(having_binder, statement.having);
+		result.having = having_binder.Bind(statement.having);
 	}
 	set<ProjectionIndex> group_by_all_indexes_set;
 	if (!group_by_all_indexes.empty()) {

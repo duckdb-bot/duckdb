@@ -385,6 +385,7 @@ void DatabaseManager::RenameDatabase(ClientContext &context, const Identifier &o
 			default_database = new_name;
 		}
 	}
+	attached_db->OnRename(new_name);
 }
 
 shared_ptr<AttachedDatabase> DatabaseManager::DetachInternal(const Identifier &name) {

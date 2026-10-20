@@ -26,7 +26,7 @@ namespace duckdb {
 
 StoredDatabasePath::StoredDatabasePath(DatabaseManager &db_manager, DatabaseFilePathManager &manager, string path_p,
                                        const Identifier &name)
-    : db_manager(db_manager), manager(manager), path(std::move(path_p)) {
+    : db_manager(db_manager), manager(manager), path(std::move(path_p)), name(name.GetIdentifierName()) {
 }
 
 StoredDatabasePath::~StoredDatabasePath() {
@@ -34,7 +34,12 @@ StoredDatabasePath::~StoredDatabasePath() {
 }
 
 void StoredDatabasePath::OnDetach() {
-	manager.DetachDatabase(db_manager, path);
+	manager.DetachDatabase(db_manager, path, name);
+}
+
+void StoredDatabasePath::OnRename(const Identifier &new_name) {
+	manager.RenameDatabase(db_manager, path, name, new_name.GetIdentifierName());
+	name = new_name.GetIdentifierName();
 }
 
 //===--------------------------------------------------------------------===//
@@ -238,6 +243,12 @@ shared_ptr<CompiledGrammar> AttachedDatabase::GetConnectedGrammar(const ClientCo
 		return connected_grammar;
 	}
 	return db.GetParserCache().GetPassthroughMatcher(context);
+}
+
+void AttachedDatabase::OnRename(const Identifier &new_name) {
+	if (stored_database_path) {
+		stored_database_path->OnRename(new_name);
+	}
 }
 
 string AttachedDatabase::StoredPath() const {

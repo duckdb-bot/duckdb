@@ -1,0 +1,113 @@
+# name: test/sql/alter/test_alter_database_rename_file.test
+# description: Attaching the file of a renamed database again
+# group: [alter]
+
+statement ok
+SET max_execution_time = 10000;
+
+statement ok
+ATTACH '{TEST_DIR}/rename_file.db' AS orig_name;
+
+statement ok
+CREATE TABLE orig_name.t AS SELECT range AS i FROM range(3);
+
+statement ok
+ALTER DATABASE orig_name SET ALIAS TO other_name;
+
+statement error
+ATTACH IF NOT EXISTS '{TEST_DIR}/rename_file.db' AS orig_name;
+----
+already attached by database "other_name"
+
+query I
+SELECT database_name FROM duckdb_databases() WHERE NOT internal ORDER BY ALL;
+----
+memory
+other_name
+
+statement ok
+ATTACH IF NOT EXISTS '{TEST_DIR}/rename_file.db' AS other_name;
+
+query I
+SELECT count(*) FROM other_name.t;
+----
+3
+
+statement error
+ATTACH '{TEST_DIR}/rename_file.db' AS third;
+----
+already attached by database "other_name"
+
+# the rename can spell the name in another case
+statement ok
+ALTER DATABASE OTHER_NAME SET ALIAS TO orig_name;
+
+statement ok
+ATTACH IF NOT EXISTS '{TEST_DIR}/rename_file.db' AS orig_name;
+
+statement error
+ATTACH IF NOT EXISTS '{TEST_DIR}/rename_file.db' AS other_name;
+----
+already attached by database "orig_name"
+
+# detaching the renamed database frees the file
+statement ok
+DETACH orig_name;
+
+statement ok
+ATTACH '{TEST_DIR}/rename_file.db' AS fresh;
+
+query I
+SELECT count(*) FROM fresh.t;
+----
+3
+
+statement ok
+DETACH fresh;
+
+# the same file attached read-only under two names
+statement ok
+ATTACH '{TEST_DIR}/rename_file.db' AS r1 (READ_ONLY);
+
+statement ok
+ATTACH '{TEST_DIR}/rename_file.db' AS r2 (READ_ONLY);
+
+statement ok
+ALTER DATABASE r1 SET ALIAS TO r3;
+
+statement ok
+ATTACH IF NOT EXISTS '{TEST_DIR}/rename_file.db' AS r2 (READ_ONLY);
+
+statement ok
+ATTACH IF NOT EXISTS '{TEST_DIR}/rename_file.db' AS r3 (READ_ONLY);
+
+statement ok
+ATTACH IF NOT EXISTS '{TEST_DIR}/rename_file.db' AS r1 (READ_ONLY);
+
+query I
+SELECT database_name FROM duckdb_databases() WHERE NOT internal ORDER BY ALL;
+----
+memory
+r1
+r2
+r3
+
+statement ok
+DETACH r2;
+
+statement ok
+DETACH r3;
+
+query I
+SELECT count(*) FROM r1.t;
+----
+3
+
+statement ok
+DETACH r1;
+
+statement ok
+ATTACH '{TEST_DIR}/rename_file.db' AS writable;
+
+statement ok
+INSERT INTO writable.t VALUES (3);

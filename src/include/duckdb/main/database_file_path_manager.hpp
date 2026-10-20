@@ -25,9 +25,11 @@ enum class InsertDatabasePathResult { SUCCESS, ALREADY_EXISTS };
 struct DatabasePathInfo {
 	DatabasePathInfo(DatabaseManager &manager, const Identifier &name_p, AccessMode access_mode);
 
+	//! The name of the first attach of the path, for error messages
 	string name;
 	AccessMode access_mode;
-	reference_set_t<DatabaseManager> attached_databases;
+	//! The names under which each database manager has the path attached
+	reference_map_t<DatabaseManager, vector<string>> attached_databases;
 	idx_t reference_count = 1;
 };
 
@@ -40,7 +42,9 @@ public:
 	//! Erase a database path - indicating we are done with using it
 	void EraseDatabasePath(const string &path);
 	//! Called when a database is detached, but before it is fully finished being used
-	void DetachDatabase(DatabaseManager &manager, const string &path);
+	void DetachDatabase(DatabaseManager &manager, const string &path, const string &name);
+	//! Called when a database manager gives a database of the path a new name
+	void RenameDatabase(DatabaseManager &manager, const string &path, const string &old_name, const string &new_name);
 	//! Whether the (canonicalized) path is in use by an attached database
 	bool IsDatabasePath(const string &path) const;
 

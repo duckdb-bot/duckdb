@@ -15,7 +15,7 @@ static constexpr auto RETRY_WAIT = std::chrono::milliseconds(10);
 //! How often a worker retries the task it holds before the exception leaves the worker
 static constexpr idx_t MAX_TASK_RETRIES = 1000;
 
-//! Not derived from std::exception
+//! An exception type outside the standard exception hierarchy
 struct NonStandardError {};
 
 //! Blocks when it runs, and its first `failures` deschedules throw, like a worker that cannot allocate

@@ -45,6 +45,11 @@ SELECT finalize(combine_aggr(st, 2)), finalize(combine_aggr(st, 2) FILTER (g > 0
 ----
 NULL	-infinity	NULL
 
+query II
+SELECT combine_aggr(st, 2), finalize(combine_aggr(st, 2)) FROM (SELECT combine_aggr(st) AS st FROM states WHERE g <> 1);
+----
+{'count': 18446744073709551615, 'value': 3}	NULL
+
 # a multiplicity of zero adds no infinity
 query I
 SELECT finalize(combine_aggr(st, CASE WHEN g = 0 THEN 0 ELSE 1 END)) FROM states WHERE g < 2;
@@ -88,12 +93,12 @@ SELECT finalize(combine_aggr(to_aggregate_state({'count': 18446744073709551615, 
 Invalid avg state - with a count of 18446744073709551615
 
 statement error
-SELECT finalize(combine(to_aggregate_state({'count': 18446744073709551615, 'value': {v}::HUGEINT}, 'avg', ['TIMESTAMP']), st)) FROM states;
+SELECT combine(to_aggregate_state({'count': 18446744073709551615, 'value': {v}::HUGEINT}, 'avg', ['TIMESTAMP']), st) FROM states;
 ----
 Invalid avg state - with a count of 18446744073709551615
 
 statement error
-SELECT finalize(combine(st, to_aggregate_state({'count': 18446744073709551615, 'value': {v}::HUGEINT}, 'avg', ['TIMESTAMP']))) FROM states;
+SELECT combine(st, to_aggregate_state({'count': 18446744073709551615, 'value': {v}::HUGEINT}, 'avg', ['TIMESTAMP'])) FROM states;
 ----
 Invalid avg state - with a count of 18446744073709551615
 

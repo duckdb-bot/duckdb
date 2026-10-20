@@ -26,6 +26,10 @@ OperatorExpression::OperatorExpression(ExpressionType type, vector<unique_ptr<Pa
     : ParsedExpression(type, ExpressionClass::OPERATOR), children(std::move(children)) {
 }
 
+string OperatorExpression::GetStructExtractField(const ParsedExpression &field) {
+	return field.Cast<ConstantExpression>().GetLiteral().ToValue().ToString();
+}
+
 string OperatorExpression::ToString() const {
 	return ToString<OperatorExpression, ParsedExpression>(*this);
 }

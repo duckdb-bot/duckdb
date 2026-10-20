@@ -103,3 +103,57 @@ FROM (
 1	1	1	1	true	true	true
 
 endloop
+
+# dates in eras that count backward, or before the epoch of a calendar, also truncate to year 1 of their era
+foreach calendar buddhist chinese coptic dangi ethiopic ethiopic-amete-alem gregorian hebrew indian islamic islamic-civil islamic-rgsa islamic-tbla islamic-umalqura iso8601 japanese persian roc
+
+statement ok
+SET Calendar = '{calendar}';
+
+query IIII
+SELECT year(t), era(t) = era(x), date_trunc('era', t) = t, hour(t) + minute(t) + second(t)
+FROM (SELECT x, date_trunc('era', x) AS t FROM (VALUES ('0100-06-01 (BC) 12:00:00+00'::TIMESTAMPTZ), (TIMESTAMPTZ '0100-06-01 12:00:00+00')) v(x))
+----
+1	true	true	0
+1	true	true	0
+
+endloop
+
+# there year 1 comes after the input
+foreach calendar coptic islamic-civil persian roc
+
+statement ok
+SET Calendar = '{calendar}';
+
+query II
+SELECT date_trunc('era', x) > x, month(date_trunc('era', x)) + day(date_trunc('era', x))
+FROM (VALUES (TIMESTAMPTZ '0100-06-01 12:00:00+00')) v(x)
+----
+true	2
+
+endloop
+
+statement ok
+SET Calendar = 'roc';
+
+query I
+SELECT date_trunc('era', TIMESTAMPTZ '1900-06-15 12:00:00+00')
+----
+1911-01-01 00:00:00+00
+
+# before the first Japanese era, the dates count back from it
+statement ok
+SET Calendar = 'japanese';
+
+query II
+SELECT date_trunc('era', TIMESTAMPTZ '0600-06-01 12:00:00+00'), era(TIMESTAMPTZ '0600-06-01 12:00:00+00')
+----
+0645-06-19 00:00:00+00	0
+
+statement ok
+SET Calendar = 'gregorian';
+
+query III
+SELECT date_trunc('era', NULL::TIMESTAMPTZ), date_trunc('era', 'infinity'::TIMESTAMPTZ), date_trunc('era', '-infinity'::TIMESTAMPTZ)
+----
+NULL	infinity	-infinity

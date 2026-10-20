@@ -738,13 +738,7 @@ void ColumnData::RevertAppend(row_t new_count_p) {
 		return;
 	}
 	// find the segment index that the current row belongs to
-	idx_t segment_index;
-	if (!data.TryGetSegmentIndex(l, new_count, segment_index)) {
-		// the segments of a column are contiguous, so the row can only be missing from a corrupt segment tree
-		throw DataCorruptionException("Corrupted column segment tree: cannot revert an append to row %llu, which is "
-		                              "not in any of its %llu segments",
-		                              new_count, data.GetSegmentCount(l));
-	}
+	idx_t segment_index = data.GetSegmentIndex(l, new_count);
 	auto segment = data.GetSegmentByIndex(l, UnsafeNumericCast<int64_t>(segment_index));
 	if (segment->GetRowStart() == new_count) {
 		// we are truncating exactly this segment - erase it entirely

@@ -51,6 +51,9 @@ TEST_CASE("Test that reverting an append to a row in a gap of the column segment
 		auto &segment_tree = column.GetSegmentTree();
 		auto lock = segment_tree.Lock();
 		REQUIRE(segment_tree.GetSegmentCount(lock) == 2);
+		idx_t segment_index;
+		REQUIRE(!segment_tree.TryGetSegmentIndex(lock, end, segment_index));
+		REQUIRE_THROWS_AS(segment_tree.GetSegmentIndex(lock, end), DataCorruptionException);
 	}
 	REQUIRE(column.count == 100);
 	REQUIRE_NO_FAIL(con.Query("ROLLBACK"));

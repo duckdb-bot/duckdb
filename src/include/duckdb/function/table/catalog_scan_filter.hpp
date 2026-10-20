@@ -10,6 +10,7 @@
 
 #include "duckdb/function/function.hpp"
 #include "duckdb/function/table_function.hpp"
+#include "duckdb/planner/expression.hpp"
 
 namespace duckdb {
 

@@ -88,10 +88,12 @@ void CatalogScanPushdownFilter(ClientContext &context, LogicalGet &get, Function
                                vector<unique_ptr<Expression>> &filters) {
 	auto &bind_data = bind_data_p->Cast<CatalogScanFilterData>();
 	for (auto &filter : filters) {
-		// the filters run on the names before any row exists, so they must give the same result and never throw
+		// pruning would change the rows that volatile or throwing filters run on
 		if (filter->IsVolatile() || filter->CanThrow()) {
-			continue;
+			return;
 		}
+	}
+	for (auto &filter : filters) {
 		auto name_filter = filter->Copy();
 		bool reads_name = false;
 		bool reads_schema = false;
@@ -116,7 +118,7 @@ public:
 	}
 
 	bool Matches(const Identifier &database_name, const Identifier &schema_name) {
-		if (executors.empty()) {
+		if (executors.empty() || failed) {
 			return true;
 		}
 		names.Reset();
@@ -126,27 +128,25 @@ public:
 		FlatVector::Writer<string_t>(names.data[1], 1).WriteValue(string_t(schema_name_str));
 		names.CheckCardinality(1);
 		SelectionVector sel(1);
+		bool matches = true;
+		// every filter runs, so that a filter that fails on these names is found
 		for (auto &executor : executors) {
-			if (executor && !Selects(executor, sel)) {
-				return false;
+			try {
+				matches = executor->SelectExpression(names, sel) > 0 && matches;
+			} catch (InternalException &ex) {
+				throw;
+			} catch (...) {
+				failed = true;
+				return true;
 			}
 		}
-		return true;
+		return matches;
 	}
+
+	//! Whether a filter failed on some names, then it may fail on rows that a pruned scan would not produce
+	bool failed = false;
 
 private:
-	//! Whether the filter lets the names through, a filter that fails is dropped as the rows run it anyway
-	bool Selects(unique_ptr<ExpressionExecutor> &executor, SelectionVector &sel) {
-		try {
-			return executor->SelectExpression(names, sel) > 0;
-		} catch (InternalException &ex) {
-			throw;
-		} catch (...) {
-			executor.reset();
-			return true;
-		}
-	}
-
 	vector<unique_ptr<ExpressionExecutor>> executors;
 	DataChunk names;
 };
@@ -161,9 +161,13 @@ vector<reference<SchemaCatalogEntry>> GetSchemasForScan(ClientContext &context,
 	auto &bind_data = bind_data_p->Cast<CatalogScanFilterData>();
 	CatalogNameMatcher database_matcher(context, bind_data.database_filters);
 	CatalogNameMatcher schema_matcher(context, bind_data.schema_filters);
-	return Catalog::GetAllSchemas(
+	auto schemas = Catalog::GetAllSchemas(
 	    context, [&](Catalog &catalog) { return database_matcher.Matches(catalog.GetName(), Identifier()); },
 	    [&](SchemaCatalogEntry &schema) { return schema_matcher.Matches(schema.catalog.GetName(), schema.name); });
+	if (database_matcher.failed || schema_matcher.failed) {
+		return Catalog::GetAllSchemas(context);
+	}
+	return schemas;
 }
 
 } // namespace duckdb

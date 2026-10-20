@@ -24,6 +24,39 @@ SELECT table_name FROM duckdb_tables() WHERE schema_name = 's' AND 'x' LIKE '%' 
 ----
 t
 
+# pruning keeps the rows that volatile and throwing filters run on
+statement ok
+CREATE TABLE main.first (i INTEGER);
+
+statement ok
+CREATE SEQUENCE seq;
+
+query I
+SELECT table_name FROM duckdb_tables() WHERE nextval('seq') = 2 AND schema_name = 's';
+----
+t
+
+query I
+SELECT currval('seq');
+----
+2
+
+statement error
+SELECT table_name FROM duckdb_tables() WHERE lower(schema_name) = 's' AND 'x' LIKE '%' ESCAPE schema_name;
+----
+Invalid escape string
+
+statement error
+SELECT table_name FROM duckdb_tables() WHERE schema_name = 's' AND schema_name::INTEGER = 1;
+----
+Conversion Error
+
+statement ok
+DROP TABLE main.first;
+
+statement ok
+DROP SEQUENCE seq;
+
 statement ok
 DROP SCHEMA s CASCADE;
 

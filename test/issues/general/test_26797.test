@@ -62,6 +62,23 @@ SELECT time_bucket(INTERVAL '1 hour', TIMESTAMP '290309-12-22 (BC) 00:00:00', TI
 ----
 290309-12-21 (BC) 23:00:01
 
+# timestamp series step through the first, partial day
+query I
+SELECT epoch_us(ts) FROM generate_series(make_timestamp(-9223372036854775807 - 1), make_timestamp(-9223372036854775804), INTERVAL 2 MICROSECOND) g(ts);
+----
+-9223372036854775808
+-9223372036854775806
+-9223372036854775804
+
+query I
+SELECT ts FROM range(TIMESTAMP '290309-12-22 (BC) 00:00:00', make_timestamp(-9223372036854775806), -INTERVAL 1 HOUR) g(ts);
+----
+290309-12-22 (BC) 00:00:00
+290309-12-21 (BC) 23:00:00
+290309-12-21 (BC) 22:00:00
+290309-12-21 (BC) 21:00:00
+290309-12-21 (BC) 20:00:00
+
 # results beyond the finite values still fail
 statement error
 SELECT make_timestamp(-9223372036854775807 - 1) - INTERVAL 1 MICROSECOND;

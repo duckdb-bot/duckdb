@@ -193,7 +193,7 @@ static void PushInputsIntoProjection(unique_ptr<Expression> &expr, TableIndex pr
 	}
 }
 
-//! Rewrites the references of an action to the old projection, moving the values that are not kept into it
+//! Points the references of an action to the kept columns, and replaces references to other values by the values
 static void MoveValuesIntoAction(unique_ptr<Expression> &expr, TableIndex proj_index,
                                  vector<unique_ptr<Expression>> &old_expressions,
                                  const vector<optional_idx> &kept_columns,
@@ -218,9 +218,7 @@ static void MoveValuesIntoAction(unique_ptr<Expression> &expr, TableIndex proj_i
 	expr = std::move(value);
 }
 
-//! The projection below the MERGE runs for every row of the join, also for rows that no action applies to
-//! Moves the values that the actions compute into the actions, which only run on their own rows, and keeps the
-//! columns and subqueries that the values read in the projection
+//! Moves the values that one action uses out of the projection below the MERGE, which runs on every joined row
 static void MoveValuesIntoActions(LogicalMergeInto &merge_into, TableIndex proj_index,
                                   vector<unique_ptr<Expression>> &proj_expressions) {
 	vector<idx_t> reference_counts(proj_expressions.size(), 0);

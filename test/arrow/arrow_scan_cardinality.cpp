@@ -60,3 +60,15 @@ TEST_CASE("Arrow scan estimates the row count its factory reports", "[arrow]") {
 	REQUIRE(CHECK_COLUMN(result, 1, {1990000}));
 	REQUIRE(CHECK_COLUMN(result, 2, {1999999}));
 }
+
+TEST_CASE("Arrow scan keeps a LIMIT above the row count its factory reports", "[arrow]") {
+	DuckDB db;
+	Connection con(db);
+	// the factory reports one row but serves three, like a source that grew after the scan was bound
+	auto factory =
+	    make_shared_ptr<CountedArrowFactory>(con, "SELECT * FROM (VALUES (10), (20), (30)) t(v)", optional_idx(1));
+	// a maximum of one row would let the optimizer drop the LIMIT as redundant
+	auto result = con.TableFunction("arrow_scan", {}, {}, factory)->Limit(2)->Execute();
+	REQUIRE(CHECK_COLUMN(result, 0, {10, 20}));
+	REQUIRE(result->RowCount() == 2);
+}

@@ -17,7 +17,7 @@
 
 namespace duckdb {
 
-//! The types whose subscript array_extract binds, the others are indexed as a string when they cast to one
+//! The types whose subscript binds to array_extract
 static bool IsArrayExtractType(const LogicalType &type) {
 	switch (type.id()) {
 	case LogicalTypeId::LIST:

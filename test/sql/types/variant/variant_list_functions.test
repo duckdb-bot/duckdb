@@ -55,6 +55,12 @@ SELECT list_extract(NULL, i) FROM range(1, 2) t(i)
 ----
 NULL
 
+# the subscript reads the index of a NULL VARIANT
+statement error
+SELECT (NULL::VARIANT)[-1]
+----
+can't be cast because the value is out of range for the destination type UINT32
+
 # the index is a constant, as with the subscript
 statement error
 SELECT list_extract(v, i) FROM t, range(1, 4) r(i)
@@ -66,11 +72,16 @@ SELECT v[i] FROM t, range(1, 4) r(i)
 ----
 No function matches the given name and argument types 'variant_extract(VARIANT, BIGINT)'
 
-# a constant index expression is folded first
+# a constant index expression is folded first, the subscript takes only a literal
 query I
 SELECT list_extract(v, 1 + 1) FROM t
 ----
 20
+
+statement error
+SELECT v[1 + 1] FROM t
+----
+No function matches the given name and argument types 'variant_extract(VARIANT, INTEGER)'
 
 statement ok
 PREPARE extract_index AS SELECT list_extract(v, ?), v[?] FROM t

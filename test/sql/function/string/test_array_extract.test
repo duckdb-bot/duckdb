@@ -160,6 +160,24 @@ SELECT '0'[-9223372036854775808];
 ----
 Out of Range Error: Substring offset outside of supported range (< -4294967296)
 
+query TT
+SELECT 'abc'[0], ('Ab' COLLATE nocase)[1] = 'a'
+----
+(empty)	true
+
+statement ok
+PREPARE subscript_base AS SELECT $1[2]
+
+query T
+EXECUTE subscript_base('abc')
+----
+b
+
+query I
+EXECUTE subscript_base([10, 20])
+----
+20
+
 # a value that casts implicitly to a string is indexed as one
 statement ok
 CREATE TYPE mood AS ENUM ('happy', 'sad')
@@ -169,6 +187,11 @@ SELECT ('happy'::mood)[1]
 ----
 h
 
+statement error
+SELECT (union_value(s := 'abc'))[1]
+----
+No function matches the given name and argument types 'array_extract(UNION(s VARCHAR), INTEGER_LITERAL)'
+
 statement ok
 SET old_implicit_casting = true
 
@@ -176,6 +199,11 @@ query TT
 SELECT (42)[1], (union_value(s := 'abc'))[1]
 ----
 4	a
+
+statement error
+SELECT ('abc'::BLOB)[1]
+----
+No function matches the given name and argument types 'array_extract(BLOB, INTEGER_LITERAL)'
 
 statement ok
 RESET old_implicit_casting

@@ -446,6 +446,40 @@ DROP TABLE full_scan;
 
 endloop
 
+# filters on the schema oid
+statement ok
+SET VARIABLE s1_oid = (SELECT oid FROM duckdb_schemas() WHERE database_name = 'other' AND schema_name = 's1');
+
+foreach function duckdb_indexes duckdb_sequences duckdb_triggers
+
+statement ok
+CREATE TABLE full_scan AS SELECT * FROM {function}();
+
+query I
+SELECT count(*) > 0 FROM full_scan WHERE schema_oid = getvariable('s1_oid');
+----
+true
+
+query I
+SELECT count(*) FROM (SELECT * FROM {function}() WHERE schema_oid = getvariable('s1_oid') EXCEPT ALL SELECT * FROM full_scan WHERE schema_oid = getvariable('s1_oid'));
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT * FROM full_scan WHERE schema_oid = getvariable('s1_oid') EXCEPT ALL SELECT * FROM {function}() WHERE schema_oid = getvariable('s1_oid'));
+----
+0
+
+query II
+EXPLAIN ANALYZE SELECT * FROM {function}() WHERE schema_oid = getvariable('s1_oid');
+----
+analyzed_plan	<REGEX>:.*Schemas Scanned: 1/.*
+
+statement ok
+DROP TABLE full_scan;
+
+endloop
+
 # only the pinned catalog and schema are scanned
 query II
 EXPLAIN ANALYZE SHOW TABLES FROM other.s1;

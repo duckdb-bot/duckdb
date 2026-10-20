@@ -1034,9 +1034,18 @@ void IEJoinLocalSourceState::ResolveSimpleJoin(ExecutionContext &context) {
 
 			//	Apply any tail conditions
 			if (conditions.size() > 2) {
-				//	Strip out remaining left side duplicates
 				auto sel = ApplyTailConditions();
-				result_count = FilterSemiJoin(sel);
+				if (op.predicate) {
+					//	Keep every pair, the predicate can reject the first match of a row but not a later one
+					result_count = lpayload.size();
+					for (idx_t i = 0; i < result_count; ++i) {
+						lsel[i] = lsel[sel->get_index(i)];
+					}
+					lsel.resize(result_count);
+				} else {
+					//	Strip out remaining left side duplicates
+					result_count = FilterSemiJoin(sel);
+				}
 
 				//	If we filtered out everything, go back for more
 				if (result_count == 0) {

@@ -38,6 +38,16 @@ PhysicalOperator &PlanMergeActionSource(PhysicalPlanGenerator &planner, Physical
 	return projection;
 }
 
+//! The row id columns are the trailing columns of the merge input - the merge binder appends them with the same
+//! helper that a regular DELETE/UPDATE uses, so they are in the order that the catalog expects them in
+static vector<unique_ptr<Expression>> PlanMergeRowIdReferences(LogicalMergeInto &op, PhysicalOperator &plan) {
+	vector<unique_ptr<Expression>> result;
+	for (idx_t i = op.row_id_start; i < plan.types.size(); i++) {
+		result.push_back(make_uniq<BoundReferenceExpression>(plan.types[i], i));
+	}
+	return result;
+}
+
 //===--------------------------------------------------------------------===//
 // DuckDB merge into planning
 //===--------------------------------------------------------------------===//
@@ -65,10 +75,30 @@ unique_ptr<MergeIntoOperator> PlanMergeIntoAction(ClientContext &context, Logica
 		for (auto &def : op.bound_defaults) {
 			defaults.push_back(def->Copy());
 		}
+		vector<unique_ptr<Expression>> update_expressions;
+		bool computes_values = false;
+		for (auto &expr : action.expressions) {
+			computes_values = computes_values || expr->GetExpressionType() != ExpressionType::BOUND_REF;
+		}
+		if (computes_values) {
+			// compute the new values on the rows of this action, followed by their row ids
+			vector<unique_ptr<Expression>> select_list;
+			for (auto &expr : action.expressions) {
+				update_expressions.push_back(
+				    make_uniq<BoundReferenceExpression>(expr->GetReturnType(), select_list.size()));
+				select_list.push_back(std::move(expr));
+			}
+			for (auto &row_id_reference : PlanMergeRowIdReferences(op, plan)) {
+				select_list.push_back(std::move(row_id_reference));
+			}
+			result->expressions = std::move(select_list);
+		} else {
+			update_expressions = std::move(action.expressions);
+		}
 		auto &action_input = PlanMergeActionSource(planner, plan, condition, *result);
 		result->op = planner.Make<PhysicalUpdate>(std::move(return_types), op.table.Cast<DuckTableEntry>(),
 		                                          op.table.GetStorage(), std::move(action.columns),
-		                                          std::move(action.expressions), std::move(defaults),
+		                                          std::move(update_expressions), std::move(defaults),
 		                                          std::move(bound_constraints), cardinality, op.return_chunk,
 		                                          /*capture_old_rows=*/false, /*old_row_columns=*/vector<idx_t>(),
 		                                          /*row_id_handling=*/RowIdHandling::ASSUME_UNIQUE);
@@ -165,16 +195,6 @@ PhysicalOperator &DuckCatalog::PlanMergeInto(ClientContext &context, PhysicalPla
 //===--------------------------------------------------------------------===//
 // Generic merge into planning
 //===--------------------------------------------------------------------===//
-//! The row id columns are the trailing columns of the merge input - the merge binder appends them with the same
-//! helper that a regular DELETE/UPDATE uses, so they are in the order that the catalog expects them in
-static vector<unique_ptr<Expression>> PlanMergeRowIdReferences(LogicalMergeInto &op, PhysicalOperator &plan) {
-	vector<unique_ptr<Expression>> result;
-	for (idx_t i = op.row_id_start; i < plan.types.size(); i++) {
-		result.push_back(make_uniq<BoundReferenceExpression>(plan.types[i], i));
-	}
-	return result;
-}
-
 //! The operators of a regular INSERT/UPDATE read the values of a row in the types of the table - cast the values that
 //! the action generates, so that the catalog gets the same input that it gets for a regular INSERT/UPDATE
 static void CastActionExpressionsToColumnTypes(ClientContext &context, TableCatalogEntry &table,

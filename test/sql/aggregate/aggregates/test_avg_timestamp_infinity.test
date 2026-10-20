@@ -56,6 +56,13 @@ SELECT avg('infinity'::TIMESTAMP), avg(TIMESTAMP '2000-01-01') FROM range(3000);
 ----
 infinity	2000-01-01 00:00:00
 
+# DISTINCT and ordered aggregates
+query III
+SELECT avg(DISTINCT ts), avg(ts ORDER BY ts DESC), avg(DISTINCT ts) FILTER (ts < TIMESTAMP '2001-01-01')
+FROM (VALUES ('infinity'::TIMESTAMP), ('infinity'::TIMESTAMP), (TIMESTAMP '2000-01-01'), ('-infinity'::TIMESTAMP)) t(ts);
+----
+NULL	NULL	-infinity
+
 # many rows in groups, with infinities in different row groups that threads combine
 statement ok
 SET threads=4
@@ -106,3 +113,30 @@ ORDER BY i;
 2	-infinity
 3	-infinity
 4	2000-01-04 00:00:00
+
+# a frame over the whole partition, and a DISTINCT frame
+query III
+SELECT i, avg(ts) OVER (PARTITION BY i % 2), avg(DISTINCT ts) OVER (ORDER BY i ROWS BETWEEN 1 PRECEDING AND CURRENT ROW)
+FROM (VALUES (1, TIMESTAMP '2000-01-01'), (2, '-infinity'::TIMESTAMP), (3, TIMESTAMP '2000-01-03'), (4, TIMESTAMP '2000-01-05')) t(i, ts)
+ORDER BY i;
+----
+1	2000-01-02 00:00:00	2000-01-01 00:00:00
+2	-infinity	-infinity
+3	2000-01-02 00:00:00	-infinity
+4	-infinity	2000-01-04 00:00:00
+
+# the same results through exported and finalized states
+statement ok
+SET debug_verify_aggregate_state_export=true
+
+query II
+SELECT g, avg(ts) FROM many GROUP BY g ORDER BY g;
+----
+0	2000-01-03 07:33:19.5
+1	NULL
+2	infinity
+
+query II
+SELECT avg(d), avg(d) FILTER (d > DATE '1999-01-01') FROM (VALUES ('-infinity'::DATE), (DATE '2000-01-01'), (DATE '2000-01-03')) t(d);
+----
+-infinity	2000-01-02 00:00:00

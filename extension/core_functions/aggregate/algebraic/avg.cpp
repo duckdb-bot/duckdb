@@ -144,9 +144,8 @@ struct DiscreteAverageOperation : public BaseSumOperation<AverageSetOperation, A
 	}
 };
 
-//! The average of timestamps that include an infinity is that infinity, and NULL when both signs are included, as for
-//! DOUBLE it is NaN. A state that saw an infinity needs no sum, so it takes the maximum count and keeps the
-//! infinities in the value
+//! The average of timestamps with an infinity is that infinity, or NULL with both, as for DOUBLE it is NaN. A state
+//! that saw an infinity has the maximum count and the infinities as its value
 struct TimestampAverageOperation : public DiscreteAverageOperation {
 	static constexpr uint64_t INFINITE_COUNT = NumericLimits<uint64_t>::Maximum();
 	static constexpr uint64_t POSITIVE_INFINITY = 1;

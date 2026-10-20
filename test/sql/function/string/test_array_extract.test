@@ -164,10 +164,27 @@ Out of Range Error: Substring offset outside of supported range (< -4294967296)
 statement ok
 CREATE TYPE mood AS ENUM ('happy', 'sad')
 
-query TT
-SELECT ('happy'::mood)[1], typeof(NULL[1])
+query T
+SELECT ('happy'::mood)[1]
 ----
-h	VARCHAR
+h
+
+statement ok
+SET old_implicit_casting = true
+
+query TT
+SELECT (42)[1], (union_value(s := 'abc'))[1]
+----
+4	a
+
+statement ok
+RESET old_implicit_casting
+
+# an untyped NULL is not a string, its subscript binds to array_extract
+query TTT
+SELECT typeof(NULL[1]), typeof(array_extract(NULL, 1)), NULL[k] FROM (VALUES ('x')) t(k)
+----
+VARIANT	VARIANT	NULL
 
 # array_extract, list_extract and list_element take no strings
 statement error

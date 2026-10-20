@@ -118,6 +118,21 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownWindow(unique_ptr<LogicalOpe
 	auto &window = op->Cast<LogicalWindow>();
 	FilterPushdown pushdown(optimizer, convert_mark_joins, projection_mode);
 
+	if (window.numbering_is_arbitrary) {
+		// filters on the input can run before the rows are numbered, keeping the filters of a barrier on top
+		vector<unique_ptr<Filter>> leftover_filters;
+		for (auto &filter : filters) {
+			if (filter->bindings.count(window.window_index) || filter->filter->IsVolatile() || filter->has_barrier) {
+				leftover_filters.push_back(std::move(filter));
+			} else {
+				pushdown.filters.push_back(std::move(filter));
+			}
+		}
+		op->children[0] = pushdown.Rewrite(std::move(op->children[0]));
+		filters = std::move(leftover_filters);
+		return PushFinalFilters(std::move(op));
+	}
+
 	// 1. Loop through the expressions, find the window expressions and investigate the partitions
 	// if a filter applies to a partition in each window expression then you can push the filter
 	// into the children.

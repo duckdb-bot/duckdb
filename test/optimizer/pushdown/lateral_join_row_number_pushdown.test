@@ -1,0 +1,60 @@
+# name: test/optimizer/pushdown/lateral_join_row_number_pushdown.test
+# description: Filters on the input of a lateral join that tells its rows apart by number reach the scan
+# group: [pushdown]
+
+require parquet
+
+statement ok
+CREATE TABLE src AS SELECT i, CASE WHEN i < 50 THEN 'a' ELSE 'b' END AS part, [{'a': i, 'b': i::VARCHAR}] AS xs FROM range(100) t(i);
+
+statement ok
+COPY src TO '{TEST_DIR}/lateral_parts' (FORMAT parquet, PARTITION_BY (part));
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/lateral_parts/*/*.parquet', hive_partitioning=true) p, UNNEST(xs) u(v) WHERE part = 'a';
+----
+50
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM read_parquet('{TEST_DIR}/lateral_parts/*/*.parquet', hive_partitioning=true) p, UNNEST(xs) u(v) WHERE part = 'a';
+----
+analyzed_plan	<REGEX>:.*Total Files Read: 1\b.*
+
+query II
+SELECT i, v.a FROM src, UNNEST(xs) u(v) WHERE i = 7;
+----
+7	7
+
+query II
+EXPLAIN SELECT i, v.a FROM src, UNNEST(xs) u(v) WHERE i = 7;
+----
+physical_plan	<REGEX>:.*Filters: i = 7.*
+
+query II
+SELECT i, v.a FROM src LEFT JOIN LATERAL UNNEST(xs) u(v) ON true WHERE i IN (3, 60) ORDER BY ALL;
+----
+3	3
+60	60
+
+# a volatile lateral subquery numbers its input rows as well
+query I
+SELECT count(*) FROM src, LATERAL (SELECT src.i + (random() * 0)::INT AS j) s WHERE src.i < 10;
+----
+10
+
+query II
+EXPLAIN SELECT count(*) FROM src, LATERAL (SELECT src.i + (random() * 0)::INT AS j) s WHERE src.i < 10;
+----
+physical_plan	<REGEX>:.*Filters: i < 10.*
+
+# filters that read both sides stay above the join
+query II
+SELECT i, v.a FROM src, UNNEST(xs) u(v) WHERE i + v.a = 14 AND part = 'a';
+----
+7	7
+
+# a row number of the query still numbers every row before the filter
+query I
+SELECT max(rn) > 10 FROM (SELECT i, row_number() OVER () AS rn FROM src) WHERE i >= 90;
+----
+true

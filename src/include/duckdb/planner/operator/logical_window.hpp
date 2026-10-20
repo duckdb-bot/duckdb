@@ -27,6 +27,8 @@ public:
 	}
 
 	TableIndex window_index;
+	//! Whether the window only numbers the rows to tell them apart, so any numbering of them is as good
+	bool numbering_is_arbitrary = false;
 
 public:
 	vector<ColumnBinding> GetColumnBindings() override;

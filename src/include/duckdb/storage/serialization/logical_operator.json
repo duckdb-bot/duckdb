@@ -131,6 +131,12 @@
         "id": 201,
         "name": "expressions",
         "type": "vector<Expression*>"
+      },
+      {
+        "id": 202,
+        "name": "numbering_is_arbitrary",
+        "type": "bool",
+        "default": "false"
       }
     ],
     "constructor": [

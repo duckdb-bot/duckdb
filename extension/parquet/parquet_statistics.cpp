@@ -892,10 +892,6 @@ static optional<uint64_t> TryHashTimestamp(const Value &constant, const ParquetC
 	}
 }
 
-static uint64_t HashNormalizedInterval(const Value &constant) {
-	return ParquetIntervalUtils::HashNormalized(constant.GetValue<interval_t>());
-}
-
 // TODO we can only this if the parquet representation of the type exactly matches the duckdb rep!
 // TODO TEST THIS!
 // TODO perhaps we can re-use some writer infra here
@@ -916,8 +912,10 @@ static optional<uint64_t> ValueXXH64(const Value &constant, const ParquetColumnS
 	case LogicalTypeId::TIMESTAMP_TZ:
 		return TryHashTimestamp(constant, schema);
 	case LogicalTypeId::INTERVAL:
-		return UsesNormalizedIntervalHash(hash_strategy) ? optional<uint64_t>(HashNormalizedInterval(constant))
-		                                                 : nullopt;
+		if (!UsesNormalizedIntervalHash(hash_strategy)) {
+			return nullopt;
+		}
+		return ParquetIntervalUtils::TryHashNormalized(constant.GetValue<interval_t>());
 	case LogicalTypeId::DECIMAL:
 		if (schema.parquet_type == duckdb_parquet::Type::INT32) {
 			return ValueXH64FixedWidth<int32_t>(constant);

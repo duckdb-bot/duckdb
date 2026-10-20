@@ -490,6 +490,31 @@ UPDATE r.tbl SET id = id::system.main.BIGINT - 1 WHERE id = 11;
 statement ok
 CREATE TYPE shared_int AS BIGINT;
 
+statement ok
+CREATE SCHEMA r;
+
+query I
+SELECT id::r.shared_int AS v FROM r.main.tbl ORDER BY 1;
+----
+0
+1
+2
+9
+10
+
+query I
+SELECT * FROM (SELECT id::r.shared_int AS v FROM r.main.tbl UNION ALL SELECT x FROM local_tbl) ORDER BY 1;
+----
+0
+1
+1
+2
+9
+10
+
+statement ok
+DROP SCHEMA r;
+
 query I
 SELECT a.id::shared_int AS v FROM r.tbl a JOIN r.tbl b USING (id) ORDER BY 1;
 ----

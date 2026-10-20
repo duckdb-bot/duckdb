@@ -1250,14 +1250,14 @@ ExpressionPushdownResult RemotePushdownOptimizer::AnalyzeExpression(const TypeEx
 void RemotePushdownOptimizer::CheckCastType(const TypeExpression &type_expr) {
 	// a user type of a local catalog might not exist remotely, built-in types exist everywhere. The lookups do not
 	// autoload extensions, whose types the server can have
-	Identifier catalog_name;
-	vector<Identifier> schema_path;
-	ResolveQualification(type_expr.GetQualifiedName(), catalog_name, schema_path);
-	if (!catalog_name.empty()) {
-		auto catalog = Catalog::GetCatalogEntry(binder.context, catalog_name);
+	if (!type_expr.GetCatalog().empty()) {
+		auto catalog = Catalog::GetCatalogEntry(binder.context, type_expr.GetCatalog());
 		if (catalog && !catalog->IsSystemCatalog() && !catalog->Supports(RemoteCapability::EXECUTE_QUERY_NODE)) {
 			MarkStaysWithParent();
 		}
+	} else if (!type_expr.GetSchema().empty()) {
+		// the schema could also be a catalog, which is not resolved here
+		MarkStaysWithParent();
 	} else {
 		FindRemoteCatalogsInSearchPath();
 		CatalogEntryRetriever retriever(binder.context);
@@ -1266,14 +1266,9 @@ void RemotePushdownOptimizer::CheckCastType(const TypeExpression &type_expr) {
 			if (!catalog || catalog->IsSystemCatalog()) {
 				continue;
 			}
-			vector<Identifier> path {catalog->GetName()};
-			if (schema_path.empty()) {
-				path.push_back(local_entry.GetSchema());
-			} else {
-				path.insert(path.end(), schema_path.begin(), schema_path.end());
-			}
-			EntryLookupInfo type_lookup(CatalogType::TYPE_ENTRY,
-			                            QualifiedName(std::move(path), type_expr.GetTypeName()));
+			EntryLookupInfo type_lookup(
+			    CatalogType::TYPE_ENTRY,
+			    QualifiedName(catalog->GetName(), local_entry.GetSchema(), type_expr.GetTypeName()));
 			if (catalog->LookupEntry(retriever, type_lookup, OnEntryNotFound::RETURN_NULL).Found()) {
 				MarkStaysWithParent();
 				break;
@@ -1286,6 +1281,7 @@ void RemotePushdownOptimizer::CheckCastType(const TypeExpression &type_expr) {
 		}
 	}
 }
+
 ExpressionPushdownResult RemotePushdownOptimizer::AnalyzeExpression(const CastExpression &cast_expr) {
 	// the target type is not a child expression, so it is checked here
 	CheckCastType(cast_expr.TargetType());

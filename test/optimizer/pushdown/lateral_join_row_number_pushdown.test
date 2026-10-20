@@ -76,11 +76,6 @@ SELECT nextval('filter_seq');
 statement ok
 CREATE TABLE bad AS SELECT 'bad' AS s, [1] AS l;
 
-query I
-SELECT count(*) FROM (SELECT s::INT AS n, l FROM bad WHERE random() < 0) q, UNNEST(l) u(v) WHERE n > 0;
-----
-0
-
 statement ok
 SET delim_join_as_cte = false;
 
@@ -89,13 +84,41 @@ SELECT count(*) FROM bad, UNNEST(l) u(v) WHERE s::INT > 0 AND random() < 0;
 ----
 0
 
-query I
-SELECT count(*) FROM (SELECT s::INT AS n, l FROM bad WHERE random() < 0) q, UNNEST(l) u(v) WHERE n > 0;
-----
-0
-
 statement ok
 RESET delim_join_as_cte;
+
+# filters of the input below the numbering run as they do without the lateral join
+statement ok
+CREATE TABLE guarded AS SELECT * FROM (VALUES ('1', [1]), ('bad', [1])) t(s, l);
+
+query II
+SELECT
+	(SELECT count(*) FROM (SELECT l FROM (SELECT s::INT AS n, s, l FROM guarded) p WHERE CASE WHEN s = '1' THEN n > 0 ELSE false END) q),
+	(SELECT count(*) FROM (SELECT l FROM (SELECT s::INT AS n, s, l FROM guarded) p WHERE CASE WHEN s = '1' THEN n > 0 ELSE false END) q, UNNEST(l) u(v));
+----
+1	1
+
+statement ok
+SET threads = 1;
+
+statement ok
+CREATE SEQUENCE plain_seq;
+
+statement ok
+CREATE SEQUENCE lateral_seq;
+
+statement ok
+CREATE TABLE numbered AS SELECT i, [i] AS l FROM range(1, 5) t(i);
+
+query I
+SELECT
+	(SELECT count(*) FROM (SELECT * FROM numbered WHERE nextval('plain_seq') % 2 = 1) q WHERE i = 2) =
+	(SELECT count(*) FROM (SELECT * FROM numbered WHERE nextval('lateral_seq') % 2 = 1) q, UNNEST(l) u(v) WHERE i = 2);
+----
+true
+
+statement ok
+RESET threads;
 
 # filters that read both sides stay above the join
 query II

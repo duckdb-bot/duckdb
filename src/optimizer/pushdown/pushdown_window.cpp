@@ -119,9 +119,8 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownWindow(unique_ptr<LogicalOpe
 	FilterPushdown pushdown(optimizer, convert_mark_joins, projection_mode);
 
 	if (window.numbering_is_arbitrary) {
-		// filters on the input that cannot throw run before the rows are numbered, the others keep their place
-		// since the filters they ran after can arrive later, and they do not take computed expressions with them
-		FilterPushdown input_pushdown(optimizer, convert_mark_joins, ProjectionMode::PRESERVE_COMPUTED_EXPRESSIONS);
+		// the numbers only tell rows apart, so filters on the input run first as they would without the window
+		// a filter that can throw stays, as filters it ran after may only reach the window later
 		vector<unique_ptr<Filter>> leftover_filters;
 		for (auto &filter : filters) {
 			auto &expr = *filter->filter;
@@ -129,10 +128,10 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownWindow(unique_ptr<LogicalOpe
 			    filter->has_barrier) {
 				leftover_filters.push_back(std::move(filter));
 			} else {
-				input_pushdown.filters.push_back(std::move(filter));
+				pushdown.filters.push_back(std::move(filter));
 			}
 		}
-		op->children[0] = input_pushdown.Rewrite(std::move(op->children[0]));
+		op->children[0] = pushdown.Rewrite(std::move(op->children[0]));
 		filters = std::move(leftover_filters);
 		return PushFinalFilters(std::move(op));
 	}

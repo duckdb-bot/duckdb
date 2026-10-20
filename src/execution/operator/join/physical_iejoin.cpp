@@ -46,7 +46,7 @@ void PhysicalIEJoin::MoveBandToFront() {
 		for (idx_t second = first + 1; second < conditions.size(); second++) {
 			// the conditions are ordered by selectivity, a band of less selective ones does not replace them
 			if (DistinctCountBound(conditions[second]) < DistinctCountBound(conditions[1])) {
-				return;
+				break;
 			}
 			if (!FormBand(conditions[first], conditions[second])) {
 				continue;

@@ -82,3 +82,36 @@ query I
 SELECT count(*) FROM duckdb_databases() WHERE database_name = 'source_db';
 ----
 0
+
+# the rollback of an ATTACH keeps a database another connection attached under the name after this transaction
+# detached its own
+statement ok
+BEGIN;
+
+statement ok
+ATTACH ':memory:' AS x;
+
+statement ok
+CREATE TABLE x.original AS SELECT 1 AS i;
+
+statement ok
+DETACH x;
+
+statement ok other
+ATTACH ':memory:' AS x;
+
+statement ok other
+CREATE TABLE x.replacement AS SELECT 2 AS i;
+
+statement ok
+ROLLBACK;
+
+query I other
+SELECT i FROM x.replacement;
+----
+2
+
+query I
+SELECT count(*) FROM duckdb_databases() WHERE database_name = 'x';
+----
+1

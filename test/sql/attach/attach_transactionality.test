@@ -60,7 +60,7 @@ DETACH attach_transaction
 ----
 database not found
 
-# DETACH after a write in the same transaction, then ROLLBACK: the write is undone, the detach is not
+# DETACH after a write in the same transaction, then ROLLBACK, which undoes the write but not the detach
 statement ok
 BEGIN TRANSACTION
 
@@ -113,7 +113,7 @@ SELECT * FROM attach_transaction.integers ORDER BY 1
 42
 84
 
-# DETACH after a write in the same transaction, then COMMIT: the write is committed
+# DETACH after a write in the same transaction, then COMMIT, which commits the write
 statement ok
 BEGIN TRANSACTION
 

@@ -109,7 +109,7 @@ struct ICUMakeTimestampTZFunc : public ICUDateFunc {
 		const auto millis = int32_t(ss);
 		int64_t micros = LossyNumericCast<int64_t, double>(std::round((ss - millis) * Interval::MICROS_PER_MSEC));
 
-		calendar->Set(CAL_EXTENDED_YEAR, year);
+		calendar->Set(CAL_YEAR, year);
 		calendar->Set(CAL_MONTH, month);
 		calendar->Set(CAL_DATE, day);
 		calendar->Set(CAL_HOUR_OF_DAY, hour);

@@ -51,6 +51,15 @@ SELECT table_name FROM duckdb_tables() WHERE schema_name = 's' AND schema_name::
 ----
 Conversion Error
 
+statement error
+SELECT table_name FROM duckdb_tables() WHERE 'x' NOT ILIKE 'y' ESCAPE schema_name;
+----
+Invalid escape string
+
+query I
+SELECT table_name FROM duckdb_tables() WHERE database_name = 'nothing' AND 'x' LIKE '%' ESCAPE schema_name;
+----
+
 statement ok
 DROP TABLE main.first;
 

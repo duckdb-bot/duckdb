@@ -7,7 +7,7 @@ statement ok
 CREATE TABLE dates(c DATE);
 
 statement ok
-INSERT INTO dates VALUES (make_date(-2147483647 - 1)), ('-infinity'), ('1970-01-01');
+INSERT INTO dates VALUES (make_date(-2147483647 - 1)), ('-infinity'), ('1970-01-01'), (NULL);
 
 # functions that return NULL for -infinity
 query IIIII
@@ -15,7 +15,19 @@ SELECT count(last_day(c)), count(*) FILTER (last_day(c) IS NOT NULL), count(date
        count(date_diff('day', c, DATE '2000-01-01')), count(*) FILTER (date_diff('day', c, DATE '2000-01-01') IS NULL)
 FROM dates
 ----
-2	2	2	2	1
+2	2	2	2	2
+
+statement ok
+CREATE TABLE date_pairs(a DATE, b DATE);
+
+statement ok
+INSERT INTO date_pairs VALUES (make_date(-2147483647 - 1), '1970-01-01'), ('-infinity', '1971-01-01'),
+                              ('1970-01-01', '1972-01-01');
+
+query I
+SELECT count(date_diff('day', a, b)) FROM date_pairs
+----
+2
 
 statement ok
 CREATE TABLE timestamps(c TIMESTAMP);
@@ -23,12 +35,13 @@ CREATE TABLE timestamps(c TIMESTAMP);
 statement ok
 INSERT INTO timestamps VALUES (make_timestamp(-9223372036854775807 - 1)), ('-infinity'), ('1970-01-01');
 
-query III
+query IIIII
 SELECT count(last_day(c)), count(date_diff('day', TIMESTAMP '2000-01-01', c)),
-       count(date_diff('day', c, TIMESTAMP '2000-01-01'))
+       count(date_diff('day', c, TIMESTAMP '2000-01-01')), count(date_sub('day', TIMESTAMP '1960-01-01', c)),
+       count(date_sub('day', c, TIMESTAMP '1960-01-01'))
 FROM timestamps
 ----
-2	2	2
+2	2	2	2	2
 
 statement ok
 CREATE TABLE timestamps_ns(c TIMESTAMP_NS);
@@ -93,11 +106,12 @@ CREATE TABLE recent(c DATE);
 statement ok
 INSERT INTO recent VALUES ('1970-01-01'), ('2000-01-01');
 
-query III
-SELECT stats(last_day(c)), stats(date_diff('day', DATE '1970-01-01', c)), stats(date_sub('day', DATE '1970-01-01', c))
+query IIII
+SELECT stats(last_day(c)), stats(date_diff('day', DATE '1970-01-01', c)), stats(date_diff('day', c, DATE '2000-01-01')),
+       stats(date_sub('day', DATE '1970-01-01', c))
 FROM recent LIMIT 1
 ----
-{'has_no_null': true, 'has_null': false, 'max': 2000-01-31, 'min': 1970-01-31}	{'has_no_null': true, 'has_null': false, 'max': 10957, 'min': 0}	{'has_no_null': true, 'has_null': false, 'max': 10957, 'min': 0}
+{'has_no_null': true, 'has_null': false, 'max': 2000-01-31, 'min': 1970-01-31}	{'has_no_null': true, 'has_null': false, 'max': 10957, 'min': 0}	{'has_no_null': true, 'has_null': false, 'max': 10957, 'min': 0}	{'has_no_null': true, 'has_null': false, 'max': 10957, 'min': 0}
 
 # adding days to a date keeps it on its side of -infinity
 query IIII
@@ -169,18 +183,13 @@ statement ok
 INSERT INTO timestamps_tz VALUES (make_timestamptz(-9223372036854775807 - 1)), ('-infinity'),
                                  ('1970-01-01 00:00:00+00');
 
-query III
-SELECT count(era(c)), count(isoyear(c)), count(date_sub('day', TIMESTAMPTZ '2000-01-01 00:00:00+00', c))
+query IIIII
+SELECT count(era(c)), count(isoyear(c)), count(date_sub('day', TIMESTAMPTZ '2000-01-01 00:00:00+00', c)),
+       count(date_diff('era', TIMESTAMPTZ '2000-01-01 00:00:00+00', c)),
+       count(date_diff('era', c, TIMESTAMPTZ '2000-01-01 00:00:00+00'))
 FROM timestamps_tz
 ----
-2	2	2
-
-query II
-SELECT count(date_diff('day', '2000-01-01 00:00:00+00'::TIMESTAMPTZ_NS, c)),
-       count(date_diff('day', c, '2000-01-01 00:00:00+00'::TIMESTAMPTZ_NS))
-FROM timestamps_tz_ns
-----
-2	2
+2	2	2	2	2
 
 # truncating to an era is not monotone, so -infinity keeps its row
 statement ok
@@ -193,3 +202,10 @@ query I
 SELECT count(*) FROM era_bounds WHERE date_trunc('era', c) < TIMESTAMPTZ '0001-01-01 00:00:00+00'
 ----
 1
+
+query II
+SELECT count(date_diff('day', '2000-01-01 00:00:00+00'::TIMESTAMPTZ_NS, c)),
+       count(date_diff('day', c, '2000-01-01 00:00:00+00'::TIMESTAMPTZ_NS))
+FROM timestamps_tz_ns
+----
+2	2

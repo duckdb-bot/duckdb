@@ -181,3 +181,15 @@ SELECT count(date_diff('day', '2000-01-01 00:00:00+00'::TIMESTAMPTZ_NS, c)),
 FROM timestamps_tz_ns
 ----
 2	2
+
+# truncating to an era is not monotone, so -infinity keeps its row
+statement ok
+CREATE TABLE era_bounds(c TIMESTAMPTZ);
+
+statement ok
+INSERT INTO era_bounds VALUES (make_timestamptz(-9223372036854775807 - 1)), ('-infinity'), ('0001-01-01 (BC)');
+
+query I
+SELECT count(*) FROM era_bounds WHERE date_trunc('era', c) < TIMESTAMPTZ '0001-01-01 00:00:00+00'
+----
+1

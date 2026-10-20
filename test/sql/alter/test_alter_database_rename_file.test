@@ -3,7 +3,7 @@
 # group: [alter]
 
 statement ok
-SET max_execution_time = 10000;
+SET GLOBAL max_execution_time = 10000;
 
 statement ok
 ATTACH '{TEST_DIR}/rename_file.db' AS orig_name;
@@ -187,5 +187,77 @@ ATTACH IF NOT EXISTS '{TEST_DIR}/rename_file.db' AS kept_renamed;
 
 query I con1
 SELECT count(*) FROM kept_renamed.t;
+----
+4
+
+statement ok con1
+DETACH kept_renamed;
+
+# a rolled back attach that another transaction still uses
+statement ok con1
+BEGIN;
+
+statement ok con1
+ATTACH '{TEST_DIR}/rename_file.db' AS rolled;
+
+statement ok con1
+ALTER DATABASE rolled SET ALIAS TO rolled_renamed;
+
+statement ok con2
+BEGIN;
+
+query I con2
+SELECT count(*) FROM rolled_renamed.t;
+----
+4
+
+statement ok con1
+ROLLBACK;
+
+statement error con1
+ATTACH IF NOT EXISTS '{TEST_DIR}/rename_file.db' AS rolled_renamed;
+----
+in the process of being detached
+
+statement ok con2
+COMMIT;
+
+statement ok con1
+ATTACH IF NOT EXISTS '{TEST_DIR}/rename_file.db' AS rolled_renamed;
+
+statement ok con1
+DETACH rolled_renamed;
+
+# a hidden attach that another transaction still uses after its detach
+statement ok con1
+ATTACH '{TEST_DIR}/rename_file.db' AS hidden_db (HIDDEN true);
+
+statement ok con1
+ALTER DATABASE hidden_db SET ALIAS TO hidden_renamed;
+
+statement ok con2
+BEGIN;
+
+query I con2
+SELECT count(*) FROM hidden_renamed.t;
+----
+4
+
+statement ok con1
+DETACH hidden_renamed;
+
+statement error con1
+ATTACH IF NOT EXISTS '{TEST_DIR}/rename_file.db' AS hidden_renamed;
+----
+in the process of being detached
+
+statement ok con2
+COMMIT;
+
+statement ok con1
+ATTACH IF NOT EXISTS '{TEST_DIR}/rename_file.db' AS hidden_renamed;
+
+query I con1
+SELECT count(*) FROM hidden_renamed.t;
 ----
 4

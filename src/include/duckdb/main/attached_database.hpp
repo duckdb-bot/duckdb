@@ -162,6 +162,8 @@ public:
 	}
 	//! Called when the database manager renames this database
 	void OnRename(const Identifier &new_name);
+	//! Removes the name of this database from the file path registry, which keeps the path until it is destroyed
+	void UnregisterStoredPath();
 	//! Move the deleter binding out, if any. Call once the attachment is out of the databases map and
 	//! held exclusively, and run the deleter only with no lock held -- it executes SQL.
 	unique_ptr<ResourceDeleter> ExtractDeleter();

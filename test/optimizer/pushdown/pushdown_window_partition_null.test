@@ -39,3 +39,46 @@ EXPLAIN SELECT d, n FROM (SELECT d, count(*) OVER (PARTITION BY year(d)) AS n FR
 logical_opt	<REGEX>:.*\("year"\(d\) >= 2010\) OR \("year"\(d\) IS NULL\).*
 
 endloop
+
+# make_date of an integer is NULL only for NULL, so its NULL partition stays out of the filter below the window
+statement ok
+CREATE TABLE ints(id INTEGER, v INTEGER);
+
+statement ok
+INSERT INTO ints VALUES (1, NULL), (2, NULL), (3, 1000), (4, 1000), (5, 20);
+
+query III
+SELECT id, v, n FROM (SELECT id, v, row_number() OVER (PARTITION BY make_date(v) ORDER BY id) AS n FROM ints) s
+WHERE v > 100 ORDER BY id
+----
+3	1000	1
+4	1000	2
+
+query II
+EXPLAIN SELECT id, n FROM (SELECT id, v, row_number() OVER (PARTITION BY make_date(v) ORDER BY id) AS n FROM ints) s
+WHERE v > 100
+----
+logical_opt	<!REGEX>:.*IS NULL.*
+
+query II
+EXPLAIN SELECT id, n FROM (SELECT id, v, row_number() OVER (PARTITION BY make_date(v) ORDER BY id) AS n FROM ints) s
+WHERE v > 100
+----
+logical_opt	<REGEX>:.*make_date\(v\) > '1970-04-11'::DATE.*
+
+# no auxiliary filter is built when e(c) cannot be evaluated
+statement ok
+SET ieee_floating_point_ops = false
+
+statement ok
+CREATE TABLE doubles(x DOUBLE);
+
+statement ok
+INSERT INTO doubles VALUES (1), (4), (4);
+
+query II
+SELECT x, n FROM (SELECT x, count(*) OVER (PARTITION BY sqrt(x)) AS n FROM doubles) s WHERE x > -1::DOUBLE ORDER BY x
+----
+1.0	1
+4.0	2
+4.0	2

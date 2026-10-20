@@ -35,6 +35,35 @@ bool CanPushdownFilter(vector<column_binding_set_t> window_exprs_partition_bindi
 	return filter_on_all_partitions;
 }
 
+//	Whether e is NULL for an infinite input, as date parts are
+bool IsNullAtInfinity(ClientContext &context, const BoundFunctionExpression &partition_func) {
+	auto &input_type = partition_func.GetChildren()[0]->GetReturnType();
+	switch (input_type.id()) {
+	case LogicalTypeId::DATE:
+	case LogicalTypeId::TIMESTAMP:
+	case LogicalTypeId::TIMESTAMP_SEC:
+	case LogicalTypeId::TIMESTAMP_MS:
+	case LogicalTypeId::TIMESTAMP_NS:
+	case LogicalTypeId::TIMESTAMP_TZ:
+	case LogicalTypeId::TIMESTAMP_TZ_NS:
+	case LogicalTypeId::FLOAT:
+	case LogicalTypeId::DOUBLE:
+		break;
+	default:
+		return false;
+	}
+	for (auto &infinity : {Value::NegativeInfinity(input_type), Value::Infinity(input_type)}) {
+		auto e_infinity = partition_func.Copy();
+		e_infinity->Cast<BoundFunctionExpression>().GetChildrenMutable()[0] =
+		    make_uniq<BoundConstantExpression>(infinity);
+		Value result;
+		if (!ExpressionExecutor::TryEvaluateScalar(context, *e_infinity, result) || result.IsNull()) {
+			return true;
+		}
+	}
+	return false;
+}
+
 unique_ptr<Filter> CreateAuxiliaryFilter(ClientContext &context, const Expression &partition, const Filter &filter) {
 	//	Must be comparison
 	if (!BoundComparisonExpression::IsComparison(*filter.filter)) {
@@ -103,7 +132,7 @@ unique_ptr<Filter> CreateAuxiliaryFilter(ClientContext &context, const Expressio
 		return nullptr;
 	}
 
-	//	e can be NULL for a value that passes b 𝜃 c, e.g. year('infinity')
+	//	e(c) can be NULL although c is not, e.g. year('infinity')
 	auto c_b = partition_func.Copy();
 	c_b->Cast<BoundFunctionExpression>().GetChildrenMutable()[0] = children[const_idx]->Copy();
 	Value e_c;
@@ -111,14 +140,17 @@ unique_ptr<Filter> CreateAuxiliaryFilter(ClientContext &context, const Expressio
 		return nullptr;
 	}
 
-	//	Generate an auxiliary filter b 𝜃 c => e(b) 𝜃' e(c) OR e(b) IS NULL
-	auto aux_comp = BoundComparisonExpression::Create(aux_type, partition_func.Copy(),
-	                                                  make_uniq<BoundConstantExpression>(std::move(e_c)));
-	auto e_b_is_null = make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_IS_NULL, LogicalType::BOOLEAN);
-	e_b_is_null->GetChildrenMutable().push_back(partition_func.Copy());
-	auto aux_or = make_uniq<BoundConjunctionExpression>(ExpressionType::CONJUNCTION_OR, std::move(aux_comp),
-	                                                    std::move(e_b_is_null));
-	auto aux_filter = make_uniq<Filter>(std::move(aux_or));
+	//	Generate an auxiliary filter b 𝜃 c => e(b) 𝜃' e(c)
+	unique_ptr<Expression> aux_expr = BoundComparisonExpression::Create(
+	    aux_type, partition_func.Copy(), make_uniq<BoundConstantExpression>(std::move(e_c)));
+	if (IsNullAtInfinity(context, partition_func)) {
+		//	Rows of the NULL partition can pass b 𝜃 c, so keep the whole partition
+		auto e_b_is_null = make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_IS_NULL, LogicalType::BOOLEAN);
+		e_b_is_null->GetChildrenMutable().push_back(partition_func.Copy());
+		aux_expr = make_uniq<BoundConjunctionExpression>(ExpressionType::CONJUNCTION_OR, std::move(aux_expr),
+		                                                 std::move(e_b_is_null));
+	}
+	auto aux_filter = make_uniq<Filter>(std::move(aux_expr));
 	aux_filter->ExtractBindings();
 	aux_filter->ExtractBarrier();
 

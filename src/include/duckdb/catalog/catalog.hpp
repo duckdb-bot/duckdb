@@ -491,6 +491,10 @@ public:
 	DUCKDB_API static vector<reference<SchemaCatalogEntry>> GetSchemas(CatalogEntryRetriever &retriever,
 	                                                                   const string &catalog_name);
 	DUCKDB_API static vector<reference<SchemaCatalogEntry>> GetAllSchemas(ClientContext &context);
+	//! The schemas of the catalogs that include_catalog accepts, that include_schema accepts, sorted by name
+	DUCKDB_API static vector<reference<SchemaCatalogEntry>>
+	GetAllSchemas(ClientContext &context, const std::function<bool(Catalog &catalog)> &include_catalog,
+	              const std::function<bool(SchemaCatalogEntry &schema)> &include_schema);
 
 	static vector<reference<CatalogEntry>> GetAllEntries(ClientContext &context, CatalogType catalog_type);
 

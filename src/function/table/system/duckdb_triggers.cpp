@@ -1,4 +1,5 @@
 #include "duckdb/function/table/system_functions.hpp"
+#include "duckdb/function/table/catalog_scan_filter.hpp"
 
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
@@ -64,13 +65,13 @@ static unique_ptr<FunctionData> DuckDBTriggersBind(ClientContext &context, Table
 	names.emplace_back("sql");
 	return_types.emplace_back(LogicalType::VARCHAR);
 
-	return nullptr;
+	return make_uniq<CatalogScanFilterData>();
 }
 
 unique_ptr<GlobalTableFunctionState> DuckDBTriggersInit(ClientContext &context, TableFunctionInitInput &input) {
 	auto result = make_uniq<DuckDBTriggersData>();
 
-	auto schemas = Catalog::GetAllSchemas(context);
+	auto schemas = GetSchemasForScan(context, input.bind_data);
 	vector<reference<TableCatalogEntry>> tables;
 	for (auto &schema : schemas) {
 		schema.get().Scan(context, CatalogType::TABLE_ENTRY, [&](CatalogEntry &entry) {
@@ -143,8 +144,9 @@ void DuckDBTriggersFunction(ClientContext &context, TableFunctionInput &data_p, 
 }
 
 void DuckDBTriggersFun::RegisterFunction(BuiltinFunctions &set) {
-	set.AddFunction(
-	    TableFunction("duckdb_triggers", {}, DuckDBTriggersFunction, DuckDBTriggersBind, DuckDBTriggersInit));
+	TableFunction function("duckdb_triggers", {}, DuckDBTriggersFunction, DuckDBTriggersBind, DuckDBTriggersInit);
+	function.pushdown_complex_filter = CatalogScanPushdownFilter;
+	set.AddFunction(std::move(function));
 }
 
 } // namespace duckdb

@@ -4,6 +4,7 @@
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/function/table/system_functions.hpp"
+#include "duckdb/function/table/catalog_scan_filter.hpp"
 #include "duckdb/main/client_data.hpp"
 
 namespace duckdb {
@@ -60,14 +61,14 @@ static unique_ptr<FunctionData> DuckDBIndexesBind(ClientContext &context, TableF
 	names.emplace_back("sql");
 	return_types.emplace_back(LogicalType::VARCHAR);
 
-	return nullptr;
+	return make_uniq<CatalogScanFilterData>();
 }
 
 unique_ptr<GlobalTableFunctionState> DuckDBIndexesInit(ClientContext &context, TableFunctionInitInput &input) {
 	auto result = make_uniq<DuckDBIndexesData>();
 
 	// scan all the schemas for tables and collect them
-	auto schemas = Catalog::GetAllSchemas(context);
+	auto schemas = GetSchemasForScan(context, input.bind_data);
 	for (auto &schema : schemas) {
 		schema.get().Scan(context, CatalogType::INDEX_ENTRY,
 		                  [&](CatalogEntry &entry) { result->entries.push_back(entry); });
@@ -158,7 +159,9 @@ void DuckDBIndexesFunction(ClientContext &context, TableFunctionInput &data_p, D
 }
 
 void DuckDBIndexesFun::RegisterFunction(BuiltinFunctions &set) {
-	set.AddFunction(TableFunction("duckdb_indexes", {}, DuckDBIndexesFunction, DuckDBIndexesBind, DuckDBIndexesInit));
+	TableFunction function("duckdb_indexes", {}, DuckDBIndexesFunction, DuckDBIndexesBind, DuckDBIndexesInit);
+	function.pushdown_complex_filter = CatalogScanPushdownFilter;
+	set.AddFunction(std::move(function));
 }
 
 } // namespace duckdb

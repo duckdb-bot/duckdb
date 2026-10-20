@@ -1,4 +1,5 @@
 #include "duckdb/function/table/system_functions.hpp"
+#include "duckdb/function/table/catalog_scan_filter.hpp"
 
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
@@ -68,14 +69,14 @@ static unique_ptr<FunctionData> DuckDBSequencesBind(ClientContext &context, Tabl
 	names.emplace_back("sql");
 	return_types.emplace_back(LogicalType::VARCHAR);
 
-	return nullptr;
+	return make_uniq<CatalogScanFilterData>();
 }
 
 unique_ptr<GlobalTableFunctionState> DuckDBSequencesInit(ClientContext &context, TableFunctionInitInput &input) {
 	auto result = make_uniq<DuckDBSequencesData>();
 
 	// scan all the schemas for tables and collect themand collect them
-	auto schemas = Catalog::GetAllSchemas(context);
+	auto schemas = GetSchemasForScan(context, input.bind_data);
 	for (auto &schema : schemas) {
 		schema.get().Scan(context, CatalogType::SEQUENCE_ENTRY,
 		                  [&](CatalogEntry &entry) { result->entries.push_back(entry.Cast<SequenceCatalogEntry>()); });
@@ -158,6 +159,7 @@ void DuckDBSequencesFunction(ClientContext &context, TableFunctionInput &data_p,
 void DuckDBSequencesFun::RegisterFunction(BuiltinFunctions &set) {
 	auto function =
 	    TableFunction("duckdb_sequences", {}, DuckDBSequencesFunction, DuckDBSequencesBind, DuckDBSequencesInit);
+	function.pushdown_complex_filter = CatalogScanPushdownFilter;
 	set.AddFunction(std::move(function));
 }
 

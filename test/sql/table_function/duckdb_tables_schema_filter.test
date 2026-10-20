@@ -1,0 +1,170 @@
+# name: test/sql/table_function/duckdb_tables_schema_filter.test
+# description: The catalog table functions only list the schemas that filters on their names let through
+# group: [table_function]
+
+statement ok
+CREATE TABLE mine (i INTEGER);
+
+statement ok
+CREATE VIEW mine_view AS SELECT 42 AS x;
+
+statement ok
+ATTACH ':memory:' AS other;
+
+statement ok
+CREATE SCHEMA other.s1;
+
+statement ok
+CREATE SCHEMA other."S2";
+
+statement ok
+CREATE TABLE other.s1.t1 (a INTEGER);
+
+statement ok
+CREATE TABLE other.s1.t2 (a INTEGER);
+
+statement ok
+CREATE TABLE other."S2".t3 (a INTEGER);
+
+statement ok
+CREATE VIEW other."S2".v1 AS SELECT 1 AS y;
+
+statement ok
+CREATE TABLE other.main.t4 (a INTEGER);
+
+statement ok
+CREATE SEQUENCE other.s1.seq1;
+
+statement ok
+CREATE INDEX idx1 ON other.s1.t1 (a);
+
+statement ok
+CREATE TYPE other.s1.mood AS ENUM ('happy', 'sad');
+
+statement ok
+CREATE TABLE other.s1.t5 (a INTEGER PRIMARY KEY, b INTEGER CHECK (b > 0));
+
+query I
+SHOW TABLES FROM memory.main;
+----
+mine
+mine_view
+
+query I
+SHOW TABLES FROM other.s2;
+----
+t3
+v1
+
+query II
+SELECT schema_name, table_name FROM duckdb_tables() WHERE database_name = 'other' AND schema_name = 's1' ORDER BY ALL;
+----
+s1	t1
+s1	t2
+s1	t5
+
+# the comparison is case sensitive without lower()
+query I
+SELECT table_name FROM duckdb_tables() WHERE database_name = 'other' AND schema_name = 's2';
+----
+
+query I
+SELECT table_name FROM duckdb_tables() WHERE lower(database_name) = 'other' AND lower(schema_name) = 's2';
+----
+t3
+
+query I
+SELECT table_name FROM duckdb_tables() WHERE 'S2' = schema_name;
+----
+t3
+
+query I
+SELECT view_name FROM duckdb_views() WHERE database_name = 'other' AND schema_name = 'S2';
+----
+v1
+
+query II
+SELECT table_schema, table_name FROM information_schema.tables WHERE table_catalog = 'other' AND table_schema = 's1' ORDER BY ALL;
+----
+s1	t1
+s1	t2
+s1	t5
+
+query I
+SELECT count(*) FROM duckdb_tables() WHERE database_name = 'nothing';
+----
+0
+
+# filters that do not pin a name still see every schema
+query II
+SELECT schema_name, table_name FROM duckdb_tables() WHERE database_name = 'other' AND (schema_name = 's1' OR table_name = 't4') ORDER BY ALL;
+----
+main	t4
+s1	t1
+s1	t2
+s1	t5
+
+query I
+SELECT count(*) FROM duckdb_tables() WHERE schema_name LIKE 's%';
+----
+3
+
+# the other catalog functions
+query III
+SELECT schema_name, table_name, column_name FROM duckdb_columns() WHERE database_name = 'other' AND schema_name = 'S2';
+----
+S2	t3	a
+S2	v1	y
+
+query II
+SELECT table_name, column_name FROM information_schema.columns WHERE table_catalog = 'other' AND table_schema = 'main';
+----
+t4	a
+
+query II
+SELECT database_name, schema_name FROM duckdb_schemas() WHERE database_name = 'other' AND schema_name = 's1';
+----
+other	s1
+
+query I
+SELECT sequence_name FROM duckdb_sequences() WHERE database_name = 'other' AND schema_name = 's1';
+----
+seq1
+
+query I
+SELECT index_name FROM duckdb_indexes() WHERE database_name = 'other' AND schema_name = 's1';
+----
+idx1
+
+query I
+SELECT type_name FROM duckdb_types() WHERE database_name = 'other' AND schema_name = 's1';
+----
+mood
+
+query II
+SELECT table_name, constraint_type FROM duckdb_constraints() WHERE database_name = 'other' AND schema_name = 's1' ORDER BY ALL;
+----
+t5	CHECK
+t5	NOT NULL
+t5	PRIMARY KEY
+
+query I
+SELECT count(*) > 100 FROM duckdb_functions() WHERE database_name = 'system' AND schema_name = 'main';
+----
+true
+
+query I
+SELECT count(*) FROM duckdb_functions() WHERE database_name = 'other';
+----
+0
+
+# only the pinned schema is scanned
+query II
+EXPLAIN ANALYZE SELECT table_name FROM duckdb_tables() WHERE database_name = 'other' AND schema_name = 's1';
+----
+analyzed_plan	<REGEX>:.*DUCKDB_TABLES[^0-9]*3 rows.*
+
+query II
+EXPLAIN ANALYZE SELECT column_name FROM duckdb_columns() WHERE database_name = 'other' AND schema_name = 'S2';
+----
+analyzed_plan	<REGEX>:.*DUCKDB_COLUMNS[^0-9]*2 rows.*

@@ -76,11 +76,21 @@ SELECT nextval('filter_seq');
 statement ok
 CREATE TABLE bad AS SELECT 'bad' AS s, [1] AS l;
 
+query I
+SELECT count(*) FROM (SELECT s::INT AS n, l FROM bad WHERE random() < 0) q, UNNEST(l) u(v) WHERE n > 0;
+----
+0
+
 statement ok
 SET delim_join_as_cte = false;
 
 query I
 SELECT count(*) FROM bad, UNNEST(l) u(v) WHERE s::INT > 0 AND random() < 0;
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT s::INT AS n, l FROM bad WHERE random() < 0) q, UNNEST(l) u(v) WHERE n > 0;
 ----
 0
 

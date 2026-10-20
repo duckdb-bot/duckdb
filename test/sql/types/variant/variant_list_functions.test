@@ -137,7 +137,7 @@ NULL	NULL
 
 # an untyped NULL binds to the VARIANT overload
 query IIIII
-SELECT typeof(list_extract(NULL, 1)), typeof(array_extract(NULL, 1)), typeof(list_element(NULL, 1)), typeof(list_extract(NULL::VARIANT, 1)), typeof(NULL['a'])
+SELECT typeof(list_extract(NULL, 1)), typeof(array_extract(NULL, 1)), typeof(list_element(NULL, 1)), typeof(list_extract(NULL::VARIANT, 1)), typeof(array_extract(NULL, 'a'))
 ----
 VARIANT	VARIANT	VARIANT	VARIANT	VARIANT
 

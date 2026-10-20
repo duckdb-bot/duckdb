@@ -11,6 +11,7 @@
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/catalog/catalog_entry/scalar_function_catalog_entry.hpp"
+#include "duckdb/function/cast/cast_function_set.hpp"
 #include "duckdb/function/function_binder.hpp"
 #include "duckdb/function/scalar/variant_utils.hpp"
 
@@ -225,8 +226,9 @@ BindResult ExpressionBinder::BindExpression(OperatorExpression &op, idx_t depth)
 		} else if (b_exp_type.id() == LogicalTypeId::VARIANT && children.size() == 2) {
 			function_name = "variant_extract";
 			VariantBindUtils::BindExtractIndex(*children[1]);
-		} else if (b_exp_type.id() == LogicalTypeId::VARCHAR && children.size() == 2) {
-			// a string subscript is the character at that position
+		} else if (!b_exp_type.IsNested() && !b_exp_type.IsUnknown() && children.size() == 2 &&
+		           CastFunctionSet::ImplicitCastCost(context, b_exp_type, LogicalType::VARCHAR) >= 0) {
+			// a subscript on a string, or on a value that casts implicitly to one, is the character at that position
 			function_name = "substring";
 			children.push_back(make_uniq<BoundConstantExpression>(Value::BIGINT(1)));
 		} else {

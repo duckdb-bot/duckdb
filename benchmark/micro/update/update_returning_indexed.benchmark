@@ -18,6 +18,11 @@ CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s VARCHAR);
 INSERT INTO t SELECT i, i, 'str_' || i::VARCHAR FROM range(1000000) t(i);
 
 result_query IIIII
-SELECT count(*), count(DISTINCT id), count(*) FILTER (WHERE id % 10 <> 0 OR v <> id + 1), (SELECT count(*) FROM t), (SELECT count(*) FROM t WHERE v <> CASE WHEN id % 10 = 0 THEN id + 1 ELSE id END) FROM __answer
+SELECT count(*),
+    count(DISTINCT id),
+    count(*) FILTER (WHERE id % 10 <> 0 OR v IS DISTINCT FROM id + 1),
+    (SELECT count(*) FROM t),
+    (SELECT count(*) FROM t WHERE v IS DISTINCT FROM CASE WHEN id % 10 = 0 THEN id + 1 ELSE id END)
+FROM __answer
 ----
 100000	100000	0	1000000	0

@@ -47,48 +47,6 @@ SELECT count(epoch_ns(c)), epoch_ns(min(c)) FROM timestamps_tz_ns
 ----
 2	-9223372036854775808
 
-# -infinity keeps its value under addition, below the finite values that follow it
-query I
-SELECT count(*) FROM dates WHERE c + 2 = '-infinity'::DATE
-----
-1
-
-statement ok
-CREATE TABLE days(i INTEGER);
-
-statement ok
-INSERT INTO days VALUES (-2147483648), (-2147483647);
-
-query I
-SELECT make_date(i) + 2 FROM days ORDER BY i
-----
-5877642-06-25 (BC)
--infinity
-
-# finite values can move below -infinity when it is the lower bound
-statement ok
-CREATE TABLE dates_above_infinity(c DATE);
-
-statement ok
-INSERT INTO dates_above_infinity VALUES ('-infinity'), (make_date(-2147483646)), ('1970-01-01');
-
-query I
-SELECT count(*) FROM dates_above_infinity WHERE c + (-2) = make_date(-2147483648)
-----
-1
-
-statement ok
-CREATE TABLE days_above_infinity(i INTEGER);
-
-statement ok
-INSERT INTO days_above_infinity VALUES (-2147483647), (-2147483646);
-
-query I
-SELECT make_date(i) + (-2) FROM days_above_infinity ORDER BY i
-----
--infinity
-5877642-06-23 (BC)
-
 # -infinity as a bound, and the smallest finite value without -infinity, give the right counts
 statement ok
 CREATE TABLE dates_from_infinity(c DATE);
@@ -123,3 +81,56 @@ query I
 SELECT stats(epoch_ns(c)) FROM recent_ns LIMIT 1
 ----
 {'has_no_null': true, 'has_null': false, 'max': 946684800000000000, 'min': 0}
+
+# adding days to a date keeps it on its side of -infinity
+query IIII
+SELECT '-infinity'::DATE + 2, 2 + '-infinity'::DATE, '-infinity'::DATE - 2, DATE '5877642-06-25 (BC)' + 0
+----
+-infinity	-infinity	-infinity	5877642-06-25 (BC)
+
+statement error
+SELECT make_date(-2147483647 - 1) + 2
+----
+Out of Range Error: Date out of range
+
+statement error
+SELECT 2 + make_date(-2147483647 - 1)
+----
+Out of Range Error: Date out of range
+
+statement error
+SELECT make_date(-2147483647 - 1) - (-2)
+----
+Out of Range Error: Date out of range
+
+statement error
+SELECT DATE '5877642-06-25 (BC)' + (-2)
+----
+Out of Range Error: Date out of range
+
+statement error
+SELECT DATE '5877642-06-25 (BC)' - 2
+----
+Out of Range Error: Date out of range
+
+statement error
+SELECT count(*) FROM dates WHERE c + 2 = '-infinity'::DATE
+----
+Out of Range Error: Date out of range
+
+statement ok
+CREATE TABLE days(i INTEGER);
+
+statement ok
+INSERT INTO days VALUES (-2147483648), (-2147483647);
+
+statement error
+SELECT make_date(i) + 2 FROM days ORDER BY i
+----
+Out of Range Error: Date out of range
+
+# -infinity as the lower bound gives the right rows for date arithmetic
+query I
+SELECT count(*) FROM dates_from_infinity WHERE c + 2 = '-infinity'::DATE
+----
+1

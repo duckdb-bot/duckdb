@@ -30,16 +30,25 @@ struct ICUCalendarSub : public ICUDateFunc {
 		return SubtractOperatorOverflowCheck::Operation<int64_t, int64_t, int64_t>(end_date.value, start_date.value);
 	}
 
+	template <int64_t MICROS_PER_UNIT>
+	static int64_t SubtractUnits(timestamp_tz_t start_date, timestamp_tz_t end_date) {
+		int64_t delta_us;
+		if (TrySubtractOperator::Operation(end_date.value, start_date.value, delta_us)) {
+			return delta_us / MICROS_PER_UNIT;
+		}
+		return Interval::GetDifferenceInUnits(start_date.value, end_date.value, MICROS_PER_UNIT);
+	}
+
 	static int64_t SubtractMillisecond(Calendar *calendar, timestamp_tz_t start_date, timestamp_tz_t end_date) {
-		return SubtractMicrosecond(calendar, start_date, end_date) / Interval::MICROS_PER_MSEC;
+		return SubtractUnits<Interval::MICROS_PER_MSEC>(start_date, end_date);
 	}
 
 	static int64_t SubtractSecond(Calendar *calendar, timestamp_tz_t start_date, timestamp_tz_t end_date) {
-		return SubtractMicrosecond(calendar, start_date, end_date) / Interval::MICROS_PER_SEC;
+		return SubtractUnits<Interval::MICROS_PER_SEC>(start_date, end_date);
 	}
 
 	static int64_t SubtractMinute(Calendar *calendar, timestamp_tz_t start_date, timestamp_tz_t end_date) {
-		return SubtractMicrosecond(calendar, start_date, end_date) / Interval::MICROS_PER_MINUTE;
+		return SubtractUnits<Interval::MICROS_PER_MINUTE>(start_date, end_date);
 	}
 
 	static int64_t SubtractHour(Calendar *calendar, timestamp_tz_t start_date, timestamp_tz_t end_date) {

@@ -50,6 +50,9 @@ private:
 	OperatorExpression();
 
 public:
+	//! The field name of a STRUCT_EXTRACT with a constant field
+	static string GetStructExtractField(const ParsedExpression &field);
+
 	template <class T, class BASE>
 	static string ToString(const T &entry) {
 		auto &children = entry.GetChildren();
@@ -126,11 +129,8 @@ public:
 			if (children[1]->GetExpressionType() != ExpressionType::VALUE_CONSTANT) {
 				return string();
 			}
-			auto child_string = children[1]->ToString();
-			D_ASSERT(child_string.size() >= 3);
-			D_ASSERT(child_string[0] == '\'' && child_string[child_string.size() - 1] == '\'');
 			return StringUtil::Format("(%s).%s", children[0]->ToString(),
-			                          SQLIdentifier(child_string.substr(1, child_string.size() - 2)));
+			                          SQLIdentifier(T::GetStructExtractField(*children[1])));
 		}
 		case ExpressionType::ARRAY_CONSTRUCTOR: {
 			string result = "(ARRAY[";

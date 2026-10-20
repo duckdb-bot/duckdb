@@ -1,11 +1,16 @@
 #include "duckdb/planner/expression/bound_operator_expression.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/parser/expression/operator_expression.hpp"
+#include "duckdb/planner/expression/bound_constant_expression.hpp"
 
 namespace duckdb {
 
 BoundOperatorExpression::BoundOperatorExpression(ExpressionType type, LogicalType return_type)
     : Expression(type, ExpressionClass::BOUND_OPERATOR, std::move(return_type)) {
+}
+
+string BoundOperatorExpression::GetStructExtractField(const Expression &field) {
+	return field.Cast<BoundConstantExpression>().GetValue().ToString();
 }
 
 string BoundOperatorExpression::ToString() const {

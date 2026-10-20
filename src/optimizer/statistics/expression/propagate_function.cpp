@@ -163,10 +163,6 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateMonotoneBounds(ClientC
 		}
 		Value lo = NumericStats::Min(cs);
 		Value hi = NumericStats::Max(cs);
-		// functions are not monotone across -infinity
-		if (HoldsNegativeInfinity(lo, hi)) {
-			return nullptr;
-		}
 
 		if (!IsKnownMonotonic(m)) {
 			return nullptr;

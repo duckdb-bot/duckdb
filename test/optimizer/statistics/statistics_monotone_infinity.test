@@ -146,11 +146,16 @@ SELECT make_date(i) + 2 FROM days ORDER BY i
 ----
 Out of Range Error: Date out of range
 
-# -infinity as the lower bound gives the right rows for date arithmetic
+# -infinity as the lower bound keeps the bounds of date arithmetic
 query I
 SELECT count(*) FROM dates_from_infinity WHERE c + 2 = '-infinity'::DATE
 ----
 1
+
+query II
+SELECT stats(c + 2), stats(c - 2) FROM dates_from_infinity LIMIT 1
+----
+{'has_no_null': true, 'has_null': false, 'max': 1970-01-03, 'min': -infinity}	{'has_no_null': true, 'has_null': false, 'max': 1969-12-30, 'min': -infinity}
 
 require icu
 

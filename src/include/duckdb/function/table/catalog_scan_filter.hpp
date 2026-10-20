@@ -39,8 +39,7 @@ struct CatalogScanFilterData : public TableFunctionData {
 void CatalogScanPushdownFilter(ClientContext &context, LogicalGet &get, FunctionData *bind_data,
                                vector<unique_ptr<Expression>> &filters);
 
-//! The schemas of the visible catalogs, as Catalog::GetAllSchemas, without the ones the recorded filters exclude, so
-//! that the catalogs and schemas that cannot match are not listed
+//! The visible schemas that match the recorded filters
 vector<reference<SchemaCatalogEntry>> GetSchemasForScan(ClientContext &context,
                                                         optional_ptr<const FunctionData> bind_data);
 

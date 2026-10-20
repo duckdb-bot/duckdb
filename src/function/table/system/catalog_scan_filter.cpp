@@ -3,6 +3,7 @@
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
 #include "duckdb/function/scalar/string_common.hpp"
+#include "duckdb/function/scalar/string_functions.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
@@ -49,7 +50,9 @@ static optional_ptr<const BoundColumnRefExpression> GetFilteredColumn(const Expr
 	}
 	auto &function = expr.Cast<BoundFunctionExpression>();
 	auto &children = function.GetChildren();
-	if (function.Function().GetName() != "lower" || children.size() != 1 ||
+	// only the built-in lower(), another function can have the same name
+	if (function.Function().GetName() != "lower" ||
+	    function.Function().GetCallbacks() != LowerFun::GetFunction().GetCallbacks() || children.size() != 1 ||
 	    children[0]->GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
 		return nullptr;
 	}

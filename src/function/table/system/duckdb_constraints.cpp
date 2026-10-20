@@ -5,7 +5,6 @@
 #include "duckdb/common/enum_util.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/function/table/system_functions.hpp"
-#include "duckdb/function/table/catalog_scan_filter.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/client_data.hpp"
 #include "duckdb/parser/constraint.hpp"
@@ -95,14 +94,14 @@ static unique_ptr<FunctionData> DuckDBConstraintsBind(ClientContext &context, Ta
 	names.emplace_back("constraint_check_mode");
 	return_types.emplace_back(LogicalType::VARCHAR);
 
-	return make_uniq<CatalogScanFilterData>();
+	return nullptr;
 }
 
 unique_ptr<GlobalTableFunctionState> DuckDBConstraintsInit(ClientContext &context, TableFunctionInitInput &input) {
 	auto result = make_uniq<DuckDBConstraintsData>();
 
 	// scan all the schemas for tables and collect them
-	auto schemas = GetSchemasForScan(context, input.bind_data);
+	auto schemas = Catalog::GetAllSchemas(context);
 
 	for (auto &schema : schemas) {
 		vector<reference<CatalogEntry>> entries;
@@ -348,10 +347,8 @@ void DuckDBConstraintsFunction(ClientContext &context, TableFunctionInput &data_
 }
 
 void DuckDBConstraintsFun::RegisterFunction(BuiltinFunctions &set) {
-	TableFunction function("duckdb_constraints", {}, DuckDBConstraintsFunction, DuckDBConstraintsBind,
-	                       DuckDBConstraintsInit);
-	function.pushdown_complex_filter = CatalogScanPushdownFilter;
-	set.AddFunction(std::move(function));
+	set.AddFunction(TableFunction("duckdb_constraints", {}, DuckDBConstraintsFunction, DuckDBConstraintsBind,
+	                              DuckDBConstraintsInit));
 }
 
 } // namespace duckdb

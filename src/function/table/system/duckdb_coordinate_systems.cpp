@@ -1,5 +1,4 @@
 #include "duckdb/function/table/system_functions.hpp"
-#include "duckdb/function/table/catalog_scan_filter.hpp"
 
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/catalog/catalog_entry/coordinate_system_catalog_entry.hpp"
@@ -54,13 +53,13 @@ static unique_ptr<FunctionData> DuckDBCoordinateSystemsBind(ClientContext &conte
 	names.emplace_back("wkt2_2019");
 	return_types.emplace_back(LogicalType::VARCHAR);
 
-	return make_uniq<CatalogScanFilterData>();
+	return nullptr;
 }
 
 static unique_ptr<GlobalTableFunctionState> DuckDBCoordinateSystemsInit(ClientContext &context,
                                                                         TableFunctionInitInput &input) {
 	auto result = make_uniq<DuckDBCoordinateSystemsData>();
-	auto schemas = GetSchemasForScan(context, input.bind_data);
+	auto schemas = Catalog::GetAllSchemas(context);
 	for (auto &schema : schemas) {
 		schema.get().Scan(context, CatalogType::COORDINATE_SYSTEM_ENTRY, [&](CatalogEntry &entry) {
 			result->entries.push_back(entry.Cast<CoordinateSystemCatalogEntry>());
@@ -127,10 +126,8 @@ static void DuckDBCoordinateSystemsFunction(ClientContext &context, TableFunctio
 }
 
 void DuckDBCoordinateSystemsFun::RegisterFunction(BuiltinFunctions &set) {
-	TableFunction function("duckdb_coordinate_systems", {}, DuckDBCoordinateSystemsFunction,
-	                       DuckDBCoordinateSystemsBind, DuckDBCoordinateSystemsInit);
-	function.pushdown_complex_filter = CatalogScanPushdownFilter;
-	set.AddFunction(std::move(function));
+	set.AddFunction(TableFunction("duckdb_coordinate_systems", {}, DuckDBCoordinateSystemsFunction,
+	                              DuckDBCoordinateSystemsBind, DuckDBCoordinateSystemsInit));
 }
 
 } // namespace duckdb

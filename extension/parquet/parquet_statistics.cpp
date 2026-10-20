@@ -911,11 +911,18 @@ static optional<uint64_t> ValueXXH64(const Value &constant, const ParquetColumnS
 	case LogicalTypeId::TIMESTAMP:
 	case LogicalTypeId::TIMESTAMP_TZ:
 		return TryHashTimestamp(constant, schema);
-	case LogicalTypeId::INTERVAL:
+	case LogicalTypeId::INTERVAL: {
 		if (!UsesNormalizedIntervalHash(hash_strategy)) {
 			return nullopt;
 		}
-		return ParquetIntervalUtils::TryHashNormalized(constant.GetValue<interval_t>());
+		const auto interval = constant.GetValue<interval_t>();
+		// files of different versions hash an interval whose normalization saturates and keeps whole days in its
+		// microseconds differently, so a filter on one cannot rely on the bloom filter
+		if (interval.Normalize().micros >= Interval::MICROS_PER_DAY) {
+			return nullopt;
+		}
+		return ParquetIntervalUtils::TryHashNormalized(interval);
+	}
 	case LogicalTypeId::DECIMAL:
 		if (schema.parquet_type == duckdb_parquet::Type::INT32) {
 			return ValueXH64FixedWidth<int32_t>(constant);

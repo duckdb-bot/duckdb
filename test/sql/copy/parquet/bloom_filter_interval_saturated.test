@@ -53,7 +53,8 @@ SELECT bloom_filter_excludes FROM parquet_bloom_probe('{TEST_DIR}/bloom_interval
 ----
 false
 
-# v2.0 writes the same hash for it, as it also puts the whole days in the days field
+# files of v2.0 hash it with the whole days in the days field, and files of main before this change in the
+# milliseconds field, so a filter on it keeps the row groups of both
 query I
 SELECT bloom_filter_excludes FROM parquet_bloom_probe('data/parquet-testing/interval_bloom_saturated_v2_0.parquet', 'iv', to_months(2147483646) + to_days(2147483647) + INTERVAL '744 hours');
 ----
@@ -61,5 +62,20 @@ false
 
 query I
 SELECT bloom_filter_excludes FROM parquet_bloom_probe('data/parquet-testing/interval_bloom_saturated_v2_0.parquet', 'iv', INTERVAL '50 days');
+----
+true
+
+query I
+SELECT bloom_filter_excludes FROM parquet_bloom_probe('data/parquet-testing/interval_bloom_saturated_main.parquet', 'iv', to_months(2147483646) + to_days(2147483647) + INTERVAL '744 hours');
+----
+false
+
+query I
+SELECT count(*) FROM 'data/parquet-testing/interval_bloom_saturated_main.parquet' WHERE iv = to_months(2147483646) + to_days(2147483647) + INTERVAL '744 hours';
+----
+1
+
+query I
+SELECT bloom_filter_excludes FROM parquet_bloom_probe('data/parquet-testing/interval_bloom_saturated_main.parquet', 'iv', INTERVAL '50 days');
 ----
 true

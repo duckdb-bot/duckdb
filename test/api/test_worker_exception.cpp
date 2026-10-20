@@ -13,9 +13,13 @@ using namespace duckdb;
 //! How long a worker waits before it retries after an exception
 static constexpr auto RETRY_WAIT = std::chrono::milliseconds(10);
 
+//! Not derived from std::exception
+struct NonStandardError {};
+
 //! Blocks when it runs, and its first `failures` deschedules throw, like a worker that cannot allocate
 struct UndeschedulableTask : public Task {
-	explicit UndeschedulableTask(idx_t failures) : failures(failures) {
+	explicit UndeschedulableTask(idx_t failures, bool standard_error = true)
+	    : failures(failures), standard_error(standard_error) {
 	}
 
 	TaskExecutionResult Execute(TaskExecutionMode mode) override {
@@ -34,12 +38,16 @@ struct UndeschedulableTask : public Task {
 			while (fail_after_stop && *fail_after_stop) {
 				std::this_thread::sleep_for(std::chrono::milliseconds(1));
 			}
+			if (!standard_error) {
+				throw NonStandardError();
+			}
 			throw std::bad_alloc();
 		}
 		descheduled = true;
 	}
 
 	const idx_t failures;
+	const bool standard_error;
 	//! The marker of the worker, a failing deschedule waits until it is false
 	optional_ptr<const atomic<bool>> fail_after_stop;
 	atomic<idx_t> executions {0};
@@ -88,6 +96,21 @@ TEST_CASE("A worker thread that cannot deschedule a blocked task tries again", "
 	auto next = make_shared_ptr<FinishingTask>();
 	scheduler.ScheduleTask(*producer, next);
 	REQUIRE(WaitFor([&]() { return next->done.load(); }));
+}
+
+TEST_CASE("A worker thread tries again after an exception that is not a std::exception", "[scheduler]") {
+	DuckDB db;
+	Connection con(db);
+	// a single worker thread
+	REQUIRE_NO_FAIL(con.Query("SET threads=2"));
+	auto &scheduler = TaskScheduler::GetScheduler(*con.context);
+	auto producer = scheduler.CreateProducer();
+
+	auto blocked = make_shared_ptr<UndeschedulableTask>(1, false);
+	scheduler.ScheduleTask(*producer, blocked);
+	REQUIRE(WaitFor([&]() { return blocked->descheduled.load(); }));
+	REQUIRE(blocked->executions == 1);
+	REQUIRE(blocked->attempts == 2);
 }
 
 TEST_CASE("A worker thread that stops first deschedules the blocked task it holds", "[scheduler]") {

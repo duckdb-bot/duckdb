@@ -282,7 +282,7 @@ void TaskScheduler::ExecuteForever(atomic<bool> *marker, const TaskSchedulerType
 				block_allocator.ThreadExit();
 			}
 			return;
-		} catch (std::exception &) {
+		} catch (...) {
 			if (worker_task.executing) {
 				// the task could not report its own error, so it can neither be dropped nor run again
 				throw;

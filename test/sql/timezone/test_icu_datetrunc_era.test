@@ -1,0 +1,105 @@
+# name: test/sql/timezone/test_icu_datetrunc_era.test
+# description: date_trunc to an era gives the start of the first year of that era
+# group: [timezone]
+
+require icu
+
+statement ok
+SET TimeZone = 'UTC';
+
+query IIII
+SELECT x, date_trunc('era', x), era(date_trunc('era', x)) = era(x), year(date_trunc('era', x))
+FROM (VALUES
+	(TIMESTAMPTZ '2002-06-01 12:34:56.789123+00'),
+	(TIMESTAMPTZ '0001-01-01 00:00:00+00'),
+	('0001-12-31 (BC) 23:59:59.999999+00'::TIMESTAMPTZ),
+	('0002-06-01 (BC) 00:00:00+00'::TIMESTAMPTZ),
+	('4713-01-01 (BC) 00:00:00+00'::TIMESTAMPTZ)
+) v(x)
+ORDER BY x
+----
+4713-01-01 (BC) 00:00:00+00	0001-01-01 (BC) 00:00:00+00	true	1
+0002-06-01 (BC) 00:00:00+00	0001-01-01 (BC) 00:00:00+00	true	1
+0001-12-31 (BC) 23:59:59.999999+00	0001-01-01 (BC) 00:00:00+00	true	1
+0001-01-01 00:00:00+00	0001-01-01 00:00:00+00	true	1
+2002-06-01 12:34:56.789123+00	0001-01-01 00:00:00+00	true	1
+
+# the era starts at local midnight
+statement ok
+SET TimeZone = 'Asia/Tokyo';
+
+query I
+SELECT date_trunc('era', TIMESTAMPTZ '2002-06-01 00:00:00+00') = date_trunc('year', TIMESTAMPTZ '0001-06-01 00:00:00+00')
+----
+true
+
+statement ok
+SET TimeZone = 'UTC';
+
+# grouping and filtering on the era
+statement ok
+CREATE TABLE eras AS SELECT * FROM (VALUES
+	('0002-06-01 (BC) 00:00:00+00'::TIMESTAMPTZ),
+	('0100-01-01 (BC) 00:00:00+00'::TIMESTAMPTZ),
+	(TIMESTAMPTZ '2002-06-01 00:00:00+00')
+) v(x);
+
+query II
+SELECT date_trunc('era', x) AS t, count(*) FROM eras GROUP BY t ORDER BY t
+----
+0001-01-01 (BC) 00:00:00+00	2
+0001-01-01 00:00:00+00	1
+
+query I
+SELECT count(*) FROM eras WHERE date_trunc('era', x) = TIMESTAMPTZ '0001-01-01 00:00:00+00'
+----
+1
+
+# Japanese eras start during a year
+statement ok
+SET Calendar = 'japanese';
+
+query IIII
+SELECT x, date_trunc('era', x), era(date_trunc('era', x)) = era(x),
+	era(date_trunc('era', x) - INTERVAL 1 MICROSECOND) = era(x) - 1
+FROM (VALUES
+	(TIMESTAMPTZ '2024-06-15 12:00:00+00'),
+	(TIMESTAMPTZ '2019-06-15 12:00:00+00'),
+	(TIMESTAMPTZ '2019-05-01 00:00:00+00'),
+	(TIMESTAMPTZ '2019-04-30 23:59:59+00'),
+	(TIMESTAMPTZ '1989-01-08 00:00:00+00'),
+	(TIMESTAMPTZ '1989-01-07 12:00:00+00')
+) v(x)
+ORDER BY x
+----
+1989-01-07 12:00:00+00	1926-12-25 00:00:00+00	true	true
+1989-01-08 00:00:00+00	1989-01-08 00:00:00+00	true	true
+2019-04-30 23:59:59+00	1989-01-08 00:00:00+00	true	true
+2019-05-01 00:00:00+00	2019-05-01 00:00:00+00	true	true
+2019-06-15 12:00:00+00	2019-05-01 00:00:00+00	true	true
+2024-06-15 12:00:00+00	2019-05-01 00:00:00+00	true	true
+
+query III
+SELECT date_diff('era', TIMESTAMPTZ '2019-04-15 00:00:00+00', TIMESTAMPTZ '2019-06-15 00:00:00+00'),
+	date_diff('era', TIMESTAMPTZ '1989-06-15 00:00:00+00', TIMESTAMPTZ '2019-06-15 00:00:00+00'),
+	date_diff('era', TIMESTAMPTZ '1926-12-24 00:00:00+00', TIMESTAMPTZ '2019-06-15 00:00:00+00')
+----
+1	1	3
+
+# every calendar starts an era in the first year of that era
+foreach calendar buddhist chinese coptic dangi ethiopic ethiopic-amete-alem gregorian hebrew indian islamic islamic-civil islamic-rgsa islamic-tbla islamic-umalqura iso8601 japanese persian roc
+
+statement ok
+SET Calendar = '{calendar}';
+
+query IIIIIII
+SELECT count(DISTINCT t), min(year(t)), max(year(t)), min(day(t)), bool_and(era(t) = era(x)), bool_and(t <= x),
+	bool_and(date_trunc('era', t) = t)
+FROM (
+	SELECT x, date_trunc('era', x) AS t
+	FROM (VALUES (TIMESTAMPTZ '2024-06-15 12:00:00+00'), (TIMESTAMPTZ '2025-01-01 00:00:00+00')) v(x)
+)
+----
+1	1	1	1	true	true	true
+
+endloop

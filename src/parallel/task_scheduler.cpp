@@ -127,6 +127,8 @@ struct TaskScheduler::WorkerTask {
 	bool executing = false;
 	bool executed = false;
 	TaskExecutionResult result = TaskExecutionResult::TASK_FINISHED;
+	//! How often the worker retried the task after an exception
+	idx_t retries = 0;
 };
 
 bool TaskScheduler::TryDequeueTask(TaskSchedulerQueue &queue, ConsumerToken &consumer, WorkerTask &worker_task) {
@@ -199,6 +201,7 @@ void TaskScheduler::ExecuteForever(atomic<bool> *marker, const TaskSchedulerType
 	}
 	static constexpr int64_t INITIAL_FLUSH_WAIT = 500000; // initial wait time of 0.5s (in mus) before flushing
 	static constexpr int64_t RETRY_WAIT = 10000; // wait time of 10ms (in mus) before retrying after an exception
+	static constexpr idx_t MAX_TASK_RETRIES = 1000; // retries of the held task, about 10s, before rethrowing
 
 	const auto &block_allocator = BlockAllocator::Get(db);
 	const auto &config = DBConfig::GetConfig(db);
@@ -215,7 +218,8 @@ void TaskScheduler::ExecuteForever(atomic<bool> *marker, const TaskSchedulerType
 	WorkerTask worker_task;
 
 	// An exception that leaves this thread ends the process. When the bookkeeping of the thread throws, for example
-	// because it cannot allocate, the thread waits and continues where it was, with the task it holds
+	// because it cannot allocate, the thread waits and continues where it was, with the task it holds, up to
+	// MAX_TASK_RETRIES times
 	while (true) {
 		try {
 			if (!consumer) {
@@ -285,6 +289,10 @@ void TaskScheduler::ExecuteForever(atomic<bool> *marker, const TaskSchedulerType
 		} catch (...) {
 			if (worker_task.executing) {
 				// the task could not report its own error, so it can neither be dropped nor run again
+				throw;
+			}
+			if (worker_task.task && ++worker_task.retries > MAX_TASK_RETRIES) {
+				// a step that keeps failing would hold this thread and whoever waits for the task forever
 				throw;
 			}
 			if (!*marker && !worker_task.task) {

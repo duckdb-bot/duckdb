@@ -12,6 +12,8 @@ using namespace duckdb;
 
 //! How long a worker waits before it retries after an exception
 static constexpr auto RETRY_WAIT = std::chrono::milliseconds(10);
+//! How often a worker retries the task it holds before the exception leaves the worker
+static constexpr idx_t MAX_TASK_RETRIES = 1000;
 
 //! Not derived from std::exception
 struct NonStandardError {};
@@ -134,6 +136,33 @@ TEST_CASE("A worker thread that stops first deschedules the blocked task it hold
 	REQUIRE(blocked->descheduled);
 	REQUIRE(blocked->executions == 1);
 	REQUIRE(blocked->attempts == 2);
+}
+
+TEST_CASE("A worker thread that can never deschedule the task it holds gives up after its retries", "[scheduler][.]") {
+	DuckDB db;
+	Connection con(db);
+	// no worker threads of the pool, the test runs its own
+	REQUIRE_NO_FAIL(con.Query("SET threads=1"));
+	auto &scheduler = TaskScheduler::GetScheduler(*con.context);
+	auto producer = scheduler.CreateProducer();
+
+	atomic<bool> marker {true};
+	auto blocked = make_shared_ptr<UndeschedulableTask>(NumericLimits<idx_t>::Maximum());
+	scheduler.ScheduleTask(*producer, blocked);
+	// in a thread of the pool, the exception ends the process
+	atomic<bool> rethrown {false};
+	std::thread worker([&]() {
+		try {
+			scheduler.ExecuteForever(&marker);
+		} catch (std::bad_alloc &) {
+			rethrown = true;
+		}
+	});
+	worker.join();
+	REQUIRE(rethrown);
+	REQUIRE(blocked->executions == 1);
+	REQUIRE(blocked->attempts == MAX_TASK_RETRIES + 1);
+	REQUIRE(!blocked->descheduled);
 }
 
 #endif

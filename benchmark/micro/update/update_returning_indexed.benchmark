@@ -16,3 +16,8 @@ cleanup
 DROP TABLE IF EXISTS t;
 CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s VARCHAR);
 INSERT INTO t SELECT i, i, 'str_' || i::VARCHAR FROM range(1000000) t(i);
+
+result_query IIIII
+SELECT count(*), sum(v), count(*) FILTER (WHERE v <> id + 1), (SELECT count(*) FROM t WHERE v = id + 1), (SELECT sum(v) FROM t) FROM __answer
+----
+100000	49999600000	0	100000	499999600000

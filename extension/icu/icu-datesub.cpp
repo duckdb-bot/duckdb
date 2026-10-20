@@ -4,6 +4,7 @@
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/common/enums/date_part_specifier.hpp"
 #include "duckdb/common/operator/subtract.hpp"
+#include "duckdb/optimizer/statistics_propagator.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 
 namespace duckdb {
@@ -159,6 +160,7 @@ struct ICUCalendarSub : public ICUDateFunc {
 		set.SetFallible();
 		set.SetArgProperties(1, ArgProperties().NonIncreasing());
 		set.SetArgProperties(2, ArgProperties().NonDecreasing());
+		set.SetStatisticsCallback(StatisticsPropagator::PropagateFiniteMonotoneBounds);
 		loader.RegisterFunction(set);
 	}
 };
@@ -343,6 +345,7 @@ struct ICUCalendarDiff : public ICUDateFunc {
 		set.SetFallible();
 		set.SetArgProperties(1, ArgProperties().NonIncreasing());
 		set.SetArgProperties(2, ArgProperties().NonDecreasing());
+		set.SetStatisticsCallback(StatisticsPropagator::PropagateFiniteMonotoneBounds);
 		loader.RegisterFunction(set);
 	}
 };

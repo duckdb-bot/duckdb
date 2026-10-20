@@ -6,6 +6,7 @@
 #include "duckdb/common/types/interval.hpp"
 #include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/common/vector_operations/ternary_executor.hpp"
+#include "duckdb/optimizer/statistics_propagator.hpp"
 
 namespace duckdb {
 
@@ -455,6 +456,7 @@ ScalarFunctionSet DateSubFun::GetFunctions() {
 	date_sub.SetFallible();
 	date_sub.SetArgProperties(1, ArgProperties().NonIncreasing());
 	date_sub.SetArgProperties(2, ArgProperties().NonDecreasing());
+	date_sub.SetStatisticsCallback(StatisticsPropagator::PropagateFiniteMonotoneBounds);
 	return date_sub;
 }
 

@@ -373,7 +373,7 @@ SELECT s."(r.order_tbl2.id + 1)" FROM (SELECT r.order_tbl2.id + 1 FROM r.order_t
 ----
 2
 
-# names are only kept where stripping the catalog changes them, other aliases could change what ORDER BY binds to
+# ORDER BY still binds to the input column named like the projection
 query I
 SELECT s."(id + 1)" FROM (SELECT id + 1 FROM r.order_tbl ORDER BY "(id + 1)" LIMIT 1) s, local_tbl;
 ----

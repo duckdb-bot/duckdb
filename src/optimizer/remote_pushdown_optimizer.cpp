@@ -1249,12 +1249,24 @@ ExpressionPushdownResult RemotePushdownOptimizer::AnalyzeExpression(const TypeEx
 }
 CatalogPushdownResult RemotePushdownOptimizer::CheckType(const TypeExpression &type_expr) {
 	auto result = CheckCatalogQualification(type_expr, type_expr.GetQualifiedName());
-	// a user type of a local catalog does not exist remotely, built-in types exist everywhere
-	EntryLookupInfo type_lookup(CatalogType::TYPE_ENTRY, type_expr.GetQualifiedName());
-	auto entry = Catalog::GetEntry(binder.context, type_lookup, OnEntryNotFound::RETURN_NULL);
-	if (entry && !entry->ParentCatalog().IsSystemCatalog() &&
-	    !entry->ParentCatalog().Supports(RemoteCapability::EXECUTE_QUERY_NODE)) {
-		result = CatalogPushdownResult::Unknown();
+	if (type_expr.GetCatalog().empty()) {
+		// a user type of a local catalog does not exist remotely, built-in types exist everywhere. The lookup does
+		// not autoload extensions, whose types the server can have
+		FindRemoteCatalogsInSearchPath();
+		CatalogEntryRetriever retriever(binder.context);
+		for (auto &local_entry : pushdown_state.local_catalogs_in_search_path) {
+			auto catalog = Catalog::GetCatalogEntry(binder.context, local_entry.GetCatalog());
+			if (!catalog || catalog->IsSystemCatalog()) {
+				continue;
+			}
+			auto schema = type_expr.GetSchema().empty() ? local_entry.GetSchema() : type_expr.GetSchema();
+			EntryLookupInfo type_lookup(CatalogType::TYPE_ENTRY,
+			                            QualifiedName(catalog->GetName(), schema, type_expr.GetTypeName()));
+			if (catalog->LookupEntry(retriever, type_lookup, OnEntryNotFound::RETURN_NULL).Found()) {
+				result = CatalogPushdownResult::Unknown();
+				break;
+			}
+		}
 	}
 	for (auto &child : type_expr.GetChildren()) {
 		if (child->GetExpressionClass() == ExpressionClass::TYPE) {

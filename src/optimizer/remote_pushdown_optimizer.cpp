@@ -2046,7 +2046,7 @@ static void KeepColumnNames(TableRef &ref, const Identifier &catalog_name) {
 	}
 }
 
-//! Name unaliased projections whose text contains the catalog after that text, before the catalog is stripped
+//! Preserve projection names before stripping catalog qualifiers
 static void KeepColumnNames(QueryNode &node, const Identifier &catalog_name) {
 	for (auto &cte : node.cte_map.map) {
 		if (cte.second->query_node) {
@@ -2067,11 +2067,11 @@ static void KeepColumnNames(QueryNode &node, const Identifier &catalog_name) {
 		if (!expr->GetAlias().empty()) {
 			continue;
 		}
-		auto name = expr->ToString();
+		auto name = expr->GetName();
 		auto stripped = expr->Copy();
 		RemotePushdownOptimizer::StripCatalogName(*stripped, catalog_name);
-		if (stripped->ToString() != name) {
-			expr->SetAlias(Identifier(name));
+		if (stripped->GetName() != name) {
+			expr->SetAlias(name);
 		}
 	}
 	if (select_node.from_table) {

@@ -331,6 +331,29 @@ WITH s(b) AS (SELECT id AS a, id + 1 AS a FROM r.tbl) SELECT s.a FROM s, local_t
 10
 11
 
+# plain qualified columns keep their column names, also for queries pushed as a whole and set operation children
+statement ok
+CREATE TABLE copied AS SELECT r.tbl.id FROM r.tbl;
+
+query I
+SELECT id FROM copied ORDER BY 1;
+----
+0
+1
+2
+9
+10
+
+query I
+SELECT * FROM (SELECT r.tbl.id FROM r.tbl UNION ALL BY NAME SELECT x AS id FROM local_tbl) ORDER BY 1;
+----
+0
+1
+1
+2
+9
+10
+
 # names are only kept where stripping the catalog changes them, other aliases could change what ORDER BY binds to
 query I
 SELECT s."(id + 1)" FROM (SELECT id + 1 FROM r.order_tbl ORDER BY "(id + 1)" LIMIT 1) s, local_tbl;

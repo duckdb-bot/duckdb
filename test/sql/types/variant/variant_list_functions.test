@@ -44,15 +44,16 @@ SELECT v[-1] FROM t
 ----
 can't be cast because the value is out of range for the destination type UINT32
 
-statement error
-SELECT list_extract(NULL::VARIANT, -1)
+# a NULL argument gives NULL before the index is read, also an untyped NULL
+query IIIII
+SELECT list_extract(NULL::VARIANT, -1), list_extract(NULL, -1), array_extract(NULL, -1), list_element(NULL, 0), NULL[-1]
 ----
-can't be cast because the value is out of range for the destination type UINT32
+NULL	NULL	NULL	NULL	NULL
 
-statement error
-SELECT (NULL::VARIANT)[-1]
+query I
+SELECT list_extract(NULL, i) FROM range(1, 2) t(i)
 ----
-can't be cast because the value is out of range for the destination type UINT32
+NULL
 
 # the index is a constant, as with the subscript
 statement error
@@ -65,15 +66,11 @@ SELECT v[i] FROM t, range(1, 4) r(i)
 ----
 No function matches the given name and argument types 'variant_extract(VARIANT, BIGINT)'
 
-statement error
+# a constant index expression is folded first
+query I
 SELECT list_extract(v, 1 + 1) FROM t
 ----
-No function matches the given name and argument types 'variant_extract(VARIANT, INTEGER)'
-
-statement error
-SELECT v[1 + 1] FROM t
-----
-No function matches the given name and argument types 'variant_extract(VARIANT, INTEGER)'
+20
 
 statement ok
 PREPARE extract_index AS SELECT list_extract(v, ?), v[?] FROM t

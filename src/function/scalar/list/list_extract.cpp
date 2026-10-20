@@ -140,8 +140,6 @@ static ScalarFunction GetVariantExtractFunction() {
 	vfun.GetSignature().GetParameter(1).SetName("index");
 	vfun.SetResolveTypesCallback(VariantExtractResolveTypes);
 	vfun.SetBindExpressionCallback(BindVariantExtract);
-	// variant_extract folds NULL arguments after it reads the index
-	vfun.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	return vfun;
 }
 

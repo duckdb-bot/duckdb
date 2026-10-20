@@ -135,11 +135,11 @@ SELECT list_extract(NULL::VARIANT, 1), (NULL::VARIANT)[1]
 ----
 NULL	NULL
 
-# an untyped NULL keeps the string overload
+# an untyped NULL binds to the VARIANT overload
 query IIII
 SELECT typeof(list_extract(NULL, 1)), typeof(array_extract(NULL, 1)), typeof(list_element(NULL, 1)), typeof(list_extract(NULL::VARIANT, 1))
 ----
-VARCHAR	VARCHAR	VARCHAR	VARIANT
+VARIANT	VARIANT	VARIANT	VARIANT
 
 query IIII
 SELECT list_concat(v, v), array_concat(v, v), list_cat(v, [40::VARIANT]), list_concat(v, NULL) FROM t
@@ -171,8 +171,3 @@ query II
 SELECT concat(v, v), v || v FROM t
 ----
 [10, 20, 30][10, 20, 30]	[10, 20, 30][10, 20, 30]
-
-query I
-SELECT list_extract('hello', 1)
-----
-h

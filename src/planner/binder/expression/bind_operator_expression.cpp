@@ -225,6 +225,10 @@ BindResult ExpressionBinder::BindExpression(OperatorExpression &op, idx_t depth)
 		} else if (b_exp_type.id() == LogicalTypeId::VARIANT && children.size() == 2) {
 			function_name = "variant_extract";
 			VariantBindUtils::BindExtractIndex(*children[1]);
+		} else if (b_exp_type.id() == LogicalTypeId::VARCHAR && children.size() == 2) {
+			// a string subscript is the character at that position
+			function_name = "substring";
+			children.push_back(make_uniq<BoundConstantExpression>(Value::BIGINT(1)));
 		} else {
 			function_name = "array_extract";
 		}

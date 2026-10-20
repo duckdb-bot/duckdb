@@ -19,6 +19,9 @@ statement ok
 CREATE TABLE nested_tbl AS SELECT {'obj': {'k': 8}} AS r;
 
 statement ok
+CREATE TABLE order_tbl AS SELECT * FROM (VALUES (1, 0), (0, 1)) v(id, "(id + 1)");
+
+statement ok
 ATTACH 'quack:127.0.0.1:9619' AS r (TOKEN 'test_token');
 
 statement ok
@@ -327,6 +330,17 @@ WITH s(b) AS (SELECT id AS a, id + 1 AS a FROM r.tbl) SELECT s.a FROM s, local_t
 3
 10
 11
+
+# names are only kept where stripping the catalog changes them, other aliases could change what ORDER BY binds to
+query I
+SELECT s."(id + 1)" FROM (SELECT id + 1 FROM r.order_tbl ORDER BY "(id + 1)" LIMIT 1) s, local_tbl;
+----
+2
+
+query I
+WITH s AS (SELECT id + 1 FROM r.order_tbl ORDER BY "(id + 1)" LIMIT 1) SELECT s."(id + 1)" FROM s, local_tbl;
+----
+2
 
 # positional references are named after the column they refer to
 query I

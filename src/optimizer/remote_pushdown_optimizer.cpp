@@ -2034,28 +2034,28 @@ void RemotePushdownOptimizer::FinishPushdown(unique_ptr<QueryNode> &node, Catalo
 	PushdownNode(node, result);
 }
 
-static void KeepColumnNames(QueryNode &node);
+static void KeepColumnNames(QueryNode &node, const Identifier &catalog_name);
 
-static void KeepColumnNames(TableRef &ref) {
+static void KeepColumnNames(TableRef &ref, const Identifier &catalog_name) {
 	if (ref.type == TableReferenceType::SUBQUERY) {
-		KeepColumnNames(*ref.Cast<SubqueryRef>().subquery->node);
+		KeepColumnNames(*ref.Cast<SubqueryRef>().subquery->node, catalog_name);
 	} else if (ref.type == TableReferenceType::JOIN) {
 		auto &join = ref.Cast<JoinRef>();
-		KeepColumnNames(*join.left);
-		KeepColumnNames(*join.right);
+		KeepColumnNames(*join.left, catalog_name);
+		KeepColumnNames(*join.right, catalog_name);
 	}
 }
 
-//! Name unaliased projections after their text before the catalog is stripped from it
-static void KeepColumnNames(QueryNode &node) {
+//! Name unaliased projections whose text contains the catalog after that text, before the catalog is stripped
+static void KeepColumnNames(QueryNode &node, const Identifier &catalog_name) {
 	for (auto &cte : node.cte_map.map) {
 		if (cte.second->query_node) {
-			KeepColumnNames(*cte.second->query_node);
+			KeepColumnNames(*cte.second->query_node, catalog_name);
 		}
 	}
 	if (node.type == QueryNodeType::SET_OPERATION_NODE) {
 		for (auto &child : node.Cast<SetOperationNode>().children) {
-			KeepColumnNames(*child);
+			KeepColumnNames(*child, catalog_name);
 		}
 		return;
 	}
@@ -2064,23 +2064,23 @@ static void KeepColumnNames(QueryNode &node) {
 	}
 	auto &select_node = node.Cast<SelectNode>();
 	for (auto &expr : select_node.select_list) {
-		// a star is named after the columns it expands to, unpacked stars keep the subquery local
-		bool has_star = false;
-		ParsedExpressionIterator::VisitExpressionClass(*expr, ExpressionClass::STAR,
-		                                               [&](const ParsedExpression &) { has_star = true; });
-		auto expression_class = expr->GetExpressionClass();
-		if (expr->GetAlias().empty() && expression_class != ExpressionClass::COLUMN_REF &&
-		    expression_class != ExpressionClass::POSITIONAL_REFERENCE && !has_star) {
-			expr->SetAlias(Identifier(expr->ToString()));
+		if (!expr->GetAlias().empty()) {
+			continue;
+		}
+		auto name = expr->ToString();
+		auto stripped = expr->Copy();
+		RemotePushdownOptimizer::StripCatalogName(*stripped, catalog_name);
+		if (stripped->ToString() != name) {
+			expr->SetAlias(Identifier(name));
 		}
 	}
 	if (select_node.from_table) {
-		KeepColumnNames(*select_node.from_table);
+		KeepColumnNames(*select_node.from_table, catalog_name);
 	}
 }
 
 void RemotePushdownOptimizer::PushdownNode(unique_ptr<QueryNode> &node, CatalogPushdownResult &result) {
-	KeepColumnNames(*node);
+	KeepColumnNames(*node, result.catalog->GetName());
 	StripCatalogName(*node, result.catalog->GetName());
 	node = std::move(WrapRemoteRef(CreateRemoteFunctionRef(result, std::move(node)))->node);
 }

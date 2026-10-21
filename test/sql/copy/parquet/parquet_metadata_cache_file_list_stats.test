@@ -53,6 +53,34 @@ SELECT min(x), max(x), count(*) FROM read_parquet(['{TEST_DIR}/list_stats_1.parq
 ----
 0	209997	120000
 
+# a file rewritten in place with the same size within the same second, after a pause longer than the timestamp
+# granularity of file systems
+statement ok
+COPY (SELECT 1::INTEGER AS x) TO '{TEST_DIR}/list_stats_same_1.parquet' (USE_TMP_FILE false);
+
+statement ok
+COPY (SELECT 10::INTEGER AS x) TO '{TEST_DIR}/list_stats_same_2.parquet' (USE_TMP_FILE false);
+
+query I
+SELECT count(*) FROM read_parquet(['{TEST_DIR}/list_stats_same_1.parquet', '{TEST_DIR}/list_stats_same_2.parquet']);
+----
+2
+
+sleep 20 milliseconds
+
+statement ok
+COPY (SELECT 20::INTEGER AS x) TO '{TEST_DIR}/list_stats_same_2.parquet' (USE_TMP_FILE false);
+
+query III
+SELECT min(x), max(x), count(*) FROM read_parquet(['{TEST_DIR}/list_stats_same_1.parquet', '{TEST_DIR}/list_stats_same_2.parquet']);
+----
+1	20	2
+
+query III
+SELECT min(x), max(x), count(*) FROM read_parquet('{TEST_DIR}/list_stats_same_2.parquet');
+----
+20	20	1
+
 # files with the columns in another order
 statement ok
 COPY (SELECT 1 AS x, 100 AS y) TO '{TEST_DIR}/list_stats_a.parquet';

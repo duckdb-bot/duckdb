@@ -15,6 +15,9 @@ struct ReadSingleCSVFileData : public ReadCSVData {
 	//! The names/types this file is read with
 	vector<Identifier> csv_names;
 	vector<LogicalType> csv_types;
+	//! The buffers of the files that are pipes, by path, when this describes the combined schema of a scan. A pipe
+	//! cannot be opened again, so the bind that reads it continues with what was read to combine the schemas
+	unordered_map<string, shared_ptr<CSVBufferManager>> pipe_buffers;
 };
 
 struct ReadSingleCSVFileGlobalState : public GlobalTableFunctionState {
@@ -93,7 +96,9 @@ static void SniffCSVFile(ClientContext &context, ReadSingleCSVFileData &result, 
                          const MultiFileOptions &file_options, vector<LogicalType> &return_types,
                          vector<Identifier> &names) {
 	auto &options = result.options;
-	result.buffer_manager = CSVBufferManager::Open(context, options, options.file_path, false);
+	if (!result.buffer_manager) {
+		result.buffer_manager = CSVBufferManager::Open(context, options, options.file_path, false);
+	}
 	auto &state_machine_cache = CSVStateMachineCache::Get(context);
 	if (file_schema.Empty()) {
 		// the columns of this file are fixed - only its dialect is sniffed
@@ -109,6 +114,29 @@ static void SniffCSVFile(ClientContext &context, ReadSingleCSVFileData &result, 
 	auto sniff_result = sniffer.AdaptiveSniff(file_schema);
 	names = std::move(sniff_result.names);
 	return_types = std::move(sniff_result.return_types);
+}
+
+static bool IsPipe(const shared_ptr<CSVBufferManager> &buffer_manager) {
+	return buffer_manager && buffer_manager->file_handle && buffer_manager->file_handle->IsPipe();
+}
+
+//! The buffers an earlier bind read from this file if it is a pipe, which cannot be opened to be read again
+static shared_ptr<CSVBufferManager> GetPipeBuffers(const TableFunctionFileBindInput &file_input,
+                                                   optional_ptr<const ReadSingleCSVFileData> schema_source,
+                                                   const string &path) {
+	if (file_input.file_bind_data) {
+		auto &file_data = file_input.file_bind_data->Cast<ReadSingleCSVFileData>();
+		if (IsPipe(file_data.buffer_manager)) {
+			return file_data.buffer_manager;
+		}
+	}
+	if (schema_source) {
+		auto entry = schema_source->pipe_buffers.find(path);
+		if (entry != schema_source->pipe_buffers.end()) {
+			return entry->second;
+		}
+	}
+	return nullptr;
 }
 
 static unique_ptr<FunctionData> ReadSingleCSVFileBind(ClientContext &context, TableFunctionBindInput &input,
@@ -162,6 +190,7 @@ static unique_ptr<FunctionData> ReadSingleCSVFileBind(ClientContext &context, Ta
 		}
 	}
 	options.file_path = result->file.path;
+	result->buffer_manager = GetPipeBuffers(file_input, schema_source, result->file.path);
 	// when several files are read, options like "names" describe the scan and not this file - the sniffer is then
 	// lenient about a file whose columns do not line up with them exactly
 	options.multi_file_reader = file_input.multi_file_scan;
@@ -255,8 +284,12 @@ static unique_ptr<FunctionData> ReadSingleCSVFileCombineSchema(ClientContext &co
 	}
 	optional_ptr<const ReadSingleCSVFileData> first_file;
 	CSVSchema best_schema;
+	unordered_map<string, shared_ptr<CSVBufferManager>> pipe_buffers;
 	for (auto &bind_data : input.bind_data) {
 		auto &csv_data = bind_data.get().Cast<ReadSingleCSVFileData>();
+		if (IsPipe(csv_data.buffer_manager)) {
+			pipe_buffers.emplace(csv_data.file.path, csv_data.buffer_manager);
+		}
 		if (csv_data.csv_schema.Empty()) {
 			// the schema of this file was not sniffed - fall back to combining the types
 			return nullptr;
@@ -296,6 +329,7 @@ static unique_ptr<FunctionData> ReadSingleCSVFileCombineSchema(ClientContext &co
 	// the buffer manager of the first file is kept, like the multi-file sniffer does - it tells the scan whether
 	// the files can be read ahead, and the first file does not need to be opened again
 	result->buffer_manager = first_file->buffer_manager;
+	result->pipe_buffers = std::move(pipe_buffers);
 	result->csv_schema = best_schema;
 	result->csv_names = names;
 	result->csv_types = return_types;

@@ -109,6 +109,28 @@ class TestReadFromStdin(object):
         result.check_stdout('count,min,max')
         result.check_stdout(expected)
 
+    # a pipe can only be read once, also when it is read together with other files
+    @pytest.mark.parametrize("pipe_first", [True, False])
+    @pytest.mark.parametrize("options", ["", ", union_by_name = true"])
+    @pytest.mark.parametrize("rows,buffer_size", [(20, ""), (100000, ", buffer_size = 262144")])
+    def test_read_stdin_csv_with_other_files(self, shell, tmp_path, pipe_first, options, rows, buffer_size):
+        piped = tmp_path / 'piped.csv'
+        piped.write_text('id,payload\n' + ''.join(f'{i},v{i}\n' for i in range(rows)))
+        other = tmp_path / 'other.csv'
+        other.write_text('id,payload\n50,other\n')
+        files = ['/dev/stdin', str(other)] if pipe_first else [str(other), '/dev/stdin']
+        test = (
+            ShellTest(shell)
+            .input_file(piped)
+            .statement(f"SELECT count(*), sum(id) FROM read_csv({files}{options}{buffer_size})")
+            .add_argument(
+                '-csv',
+                ':memory:'
+            )
+        )
+        result = test.run()
+        result.check_stdout(f'{rows + 1},{rows * (rows - 1) // 2 + 50}')
+
     def test_split_part_csv(self, shell):
         test = (
             ShellTest(shell)

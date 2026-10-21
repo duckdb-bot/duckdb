@@ -1516,11 +1516,20 @@ void ArrowToDuckDBConversion::ColumnArrowToDuckDBDictionary(Vector &vector, Arro
 		default:
 			throw NotImplementedException("ArrowArrayPhysicalType not recognized");
 		};
-		// the dictionary buffer holds dict_length entries plus one trailing NULL sentinel slot.
-		// the inner ColumnArrowToDuckDB call may have replaced the buffer via FlatVector::SetData
-		// (e.g. DirectConversion's zero-copy path), shrinking capacity from dict_length+1 to
-		// dict_length. Re-extend before sizing so the sentinel slot stays in bounds.
-		base_vector->Reserve(dict_length + 1);
+		const auto internal_type = base_vector->GetType().InternalType();
+		if (internal_type == PhysicalType::STRUCT || internal_type == PhysicalType::ARRAY) {
+			// the children of struct and array values can hold Arrow buffers or dictionaries that cannot grow by the
+			// sentinel, so the values are copied into a vector with room for it
+			auto values = make_uniq<Vector>(base_vector->GetType(), dict_length + 1);
+			VectorOperations::Copy(*base_vector, *values, dict_length, 0, 0);
+			base_vector = std::move(values);
+		} else {
+			// the dictionary buffer holds dict_length entries plus one trailing NULL sentinel slot.
+			// the inner ColumnArrowToDuckDB call may have replaced the buffer via FlatVector::SetData
+			// (e.g. DirectConversion's zero-copy path), shrinking capacity from dict_length+1 to
+			// dict_length. Re-extend before sizing so the sentinel slot stays in bounds.
+			base_vector->Reserve(dict_length + 1);
+		}
 		FlatVector::SetSize(*base_vector, count_t(dict_length + 1));
 		// nested children of the sentinel slot hold uninitialized data unless they are marked NULL as well
 		FlattenForSetNull(*base_vector);

@@ -1131,7 +1131,7 @@ static string PushArgumentCollations(ClientContext &context, BoundSimpleFunction
 		return PushCollations(context, bound_function, children, CollationType::COMBINABLE_COLLATIONS);
 	case FunctionCollationHandling::PUSH_DISTINCT_COLLATIONS:
 		throw InternalException("PUSH_DISTINCT_COLLATIONS is only supported for aggregate functions");
-	case FunctionCollationHandling::PUSH_NORMALIZING_COLLATIONS: {
+	case FunctionCollationHandling::PUSH_HASH_COLLATIONS: {
 		auto &argument_types = bound_function.GetArguments();
 		for (idx_t i = 0; i < children.size(); i++) {
 			auto &arg_type = argument_types[i];
@@ -1139,8 +1139,8 @@ static string PushArgumentCollations(ClientContext &context, BoundSimpleFunction
 				children[i] = BoundCastExpression::AddCastToType(context, std::move(children[i]), arg_type);
 			}
 			if (ExpressionBinder::PushCollation(context, children[i], children[i]->GetReturnType(),
-			                                    CollationType::NORMALIZING_COLLATIONS)) {
-				// the normalized value can have another type, do not cast it back to the argument type
+			                                    CollationType::HASH_COLLATIONS)) {
+				// the key can have another type, do not cast it back to the argument type
 				arg_type = children[i]->GetReturnType();
 			}
 		}

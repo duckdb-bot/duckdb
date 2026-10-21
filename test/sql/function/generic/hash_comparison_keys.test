@@ -90,11 +90,16 @@ SELECT count(DISTINCT hash(v)) FROM (SELECT a AS v FROM stored UNION ALL SELECT 
 ----
 3
 
-# string collations and ordering keys are not applied, so these hashes stay as they were
+# string collations and the keys of types that hash by value are not applied, so these hashes stay as they were
 query IIIII
 SELECT hash('12:00:00+01'::TIMETZ), hash('0101'::BIT), hash(INTERVAL '1 month 3 days'), hash('A' COLLATE NOCASE), hash({'t': '12:00:00+01'::TIMETZ, 's': 'A' COLLATE NOCASE})
 ----
 13605450143474883824	2527836143571797051	3575937371036775958	7589485043483979011	2894428462036555909
+
+query II
+SELECT hash(INTERVAL '-2147483648 months -2147483648 days -9223372036854775807 microseconds'), hash([INTERVAL '2147483647 months 2147483647 days 9223372036854775807 microseconds'])
+----
+10698964209986971760	14945741554909537998
 
 # an index on hash() finds its rows after a restart with another default collation
 statement ok

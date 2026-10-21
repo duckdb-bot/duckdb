@@ -218,14 +218,11 @@ void interval_t::Borrow(const int64_t msf, int64_t &lsf, int32_t &f, const int64
 		return;
 	}
 
-	//	The borrowed amount is not always representable, so saturate instead of overflowing.
-	//	Normalize leaves lsf in [0, scale), so the headroom below keeps the addition in range as well.
+	//	The sum always fits, since the input holds the same total in fields of these widths.
+	//	Normalize leaves lsf in [0, scale), so a negative remainder gives one unit to lsf to fit the product.
 	const int64_t remainder = msf - f;
-	const int64_t max_units = NumericLimits<int64_t>::Maximum() / scale - 1;
-	if (remainder > max_units) {
-		lsf = NumericLimits<int64_t>::Maximum();
-	} else if (remainder < -max_units) {
-		lsf = NumericLimits<int64_t>::Minimum();
+	if (remainder < 0) {
+		lsf = (remainder + 1) * scale + (lsf - scale);
 	} else {
 		lsf += remainder * scale;
 	}

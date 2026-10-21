@@ -47,13 +47,16 @@ class PhysicalOperator;
 
 struct ParquetMetadataCacheEntry {
 	ParquetMetadataCacheEntry(shared_ptr<ParquetFileMetadataCache> metadata, ParquetCacheValidity validity,
-	                          bool has_deletes, shared_ptr<ParquetEncryptionConfig> file_encryption_config);
+	                          bool has_deletes, shared_ptr<ParquetEncryptionConfig> file_encryption_config,
+	                          bool has_reader_options);
 
 	shared_ptr<ParquetFileMetadataCache> metadata;
 	ParquetCacheValidity validity;
 	bool has_deletes;
 	//! The key the file list gives this file, which the file is read with instead of the encryption configuration
 	shared_ptr<ParquetEncryptionConfig> file_encryption_config;
+	//! Whether the file list gives the reader of this file options besides what a file system tells about the file
+	bool has_reader_options;
 };
 
 struct ParquetReadBindData : public TableFunctionData {
@@ -137,9 +140,10 @@ static vector<column_t> ParquetGetRowIdColumns(ClientContext &context, optional_
 
 ParquetMetadataCacheEntry::ParquetMetadataCacheEntry(shared_ptr<ParquetFileMetadataCache> metadata_p,
                                                      ParquetCacheValidity validity_p, bool has_deletes_p,
-                                                     shared_ptr<ParquetEncryptionConfig> file_encryption_config_p)
+                                                     shared_ptr<ParquetEncryptionConfig> file_encryption_config_p,
+                                                     bool has_reader_options_p)
     : metadata(std::move(metadata_p)), validity(validity_p), has_deletes(has_deletes_p),
-      file_encryption_config(std::move(file_encryption_config_p)) {
+      file_encryption_config(std::move(file_encryption_config_p)), has_reader_options(has_reader_options_p) {
 }
 
 //! The cached metadata of every file of the scan - empty unless the metadata of all of them is cached
@@ -162,17 +166,25 @@ static vector<ParquetMetadataCacheEntry> LoadMetadataCaches(ClientContext &conte
 		// FIXME: we could emit partition stats but set count to `COUNT_APPROXIMATE` instead of `COUNT_EXACT`
 		bool has_deletes = false;
 		shared_ptr<ParquetEncryptionConfig> file_encryption_config;
+		bool has_reader_options = false;
 		if (file.extended_info) {
 			file.extended_info->TryGetOption("has_deletes", has_deletes);
 			string encryption_key;
 			if (file.extended_info->TryGetOption("encryption_key", encryption_key)) {
 				file_encryption_config = make_shared_ptr<ParquetEncryptionConfig>(std::move(encryption_key));
 			}
+			for (auto &option : file.extended_info->options) {
+				if (option.first != "type" && option.first != "file_size" && option.first != "last_modified" &&
+				    option.first != "etag" && option.first != "has_deletes") {
+					has_reader_options = true;
+				}
+			}
 		}
 
 		// check if the cache is valid based ONLY on the OpenFileInfo (do not do any file system requests here)
 		const auto is_valid = metadata_entry->IsValid(file, context);
-		result.emplace_back(std::move(metadata_entry), is_valid, has_deletes, std::move(file_encryption_config));
+		result.emplace_back(std::move(metadata_entry), is_valid, has_deletes, std::move(file_encryption_config),
+		                    has_reader_options);
 	}
 	return result;
 }
@@ -307,16 +319,11 @@ static vector<PartitionStatistics> GetCachedPartitionStats(ClientContext &contex
 	for (auto &cache : cached_metadata) {
 		const auto file_start = result.size();
 		ParquetReader::GetPartitionStats(*cache.metadata->metadata, result);
-		if (!shared_options) {
+		if (!shared_options || cache.has_reader_options) {
+			// the reader checks and applies the options of the file itself, which the metadata alone cannot do
 			continue;
 		}
-		auto file_options = shared_options;
-		if (cache.file_encryption_config) {
-			auto options_with_key = make_shared_ptr<ParquetOptions>(*shared_options);
-			options_with_key->encryption_config = cache.file_encryption_config;
-			file_options = std::move(options_with_key);
-		}
-		auto file = make_shared_ptr<CachedParquetFileStatistics>(context, bind_data, cache.metadata, file_options);
+		auto file = make_shared_ptr<CachedParquetFileStatistics>(context, bind_data, cache.metadata, shared_options);
 		for (idx_t i = file_start; i < result.size(); i++) {
 			result[i].partition_row_group = make_shared_ptr<CachedParquetPartitionRowGroup>(file, i - file_start);
 		}
@@ -350,8 +357,12 @@ static vector<PartitionStatistics> ParquetMultiFileGetPartitionStats(ClientConte
 	auto &file_options = bind_data.bind_data->Cast<TableFunctionMultiFileData>().options;
 	auto &file_bind_data = file_options.schema_bind_data;
 	if (file_bind_data) {
-		parquet_options = ParquetScanFunction::GetFileOptions(*file_bind_data);
-		encryption_config = parquet_options->encryption_config;
+		encryption_config = ParquetScanFunction::GetFileOptions(*file_bind_data).encryption_config;
+		if (file_options.named_parameters.empty()) {
+			// options can change the values the reader produces from the values the statistics describe, e.g.
+			// binary_as_string with utf8_validation, so only a plain scan takes the column statistics of the files
+			parquet_options = ParquetScanFunction::GetFileOptions(*file_bind_data);
+		}
 	} else if (!file_options.named_parameters.empty()) {
 		// the options are only checked when a file is bound, e.g. an invalid value or an encryption configuration for
 		// a plaintext file is an error, so the metadata of the files cannot answer the scan

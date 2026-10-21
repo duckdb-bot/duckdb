@@ -164,3 +164,37 @@ statement error
 SELECT count(*) FROM read_parquet(['{TEST_DIR}/list_stats_a.parquet', '{TEST_DIR}/list_stats_x.parquet'], schema = MAP {1: {name: 'x', type: 'INTEGER', default_value: NULL}}, prefetch_strategy = 'nonsense');
 ----
 Unrecognized prefetch_strategy 'nonsense'
+
+# options can change the values from the ones the statistics describe, so a scan with options is not answered from them
+statement ok
+COPY (SELECT x FROM (VALUES ('a'::BLOB), ('\x80'::BLOB), (encode('é'))) t(x)) TO '{TEST_DIR}/list_stats_blob_1.parquet';
+
+statement ok
+COPY (SELECT x FROM (VALUES ('a'::BLOB), ('\x80'::BLOB), (encode('é'))) t(x)) TO '{TEST_DIR}/list_stats_blob_2.parquet';
+
+query I
+SELECT count(*) FROM read_parquet(['{TEST_DIR}/list_stats_blob_1.parquet', '{TEST_DIR}/list_stats_blob_2.parquet']);
+----
+6
+
+query III
+SELECT min(x) = '', max(x) = 'é', count(*) FROM read_parquet(['{TEST_DIR}/list_stats_blob_1.parquet', '{TEST_DIR}/list_stats_blob_2.parquet'], binary_as_string = true, utf8_validation = 'ignore');
+----
+true	true	6
+
+query III
+SELECT min(x) = '?', max(x) = 'é', count(*) FROM read_parquet(['{TEST_DIR}/list_stats_blob_1.parquet', '{TEST_DIR}/list_stats_blob_2.parquet'], binary_as_string = true, utf8_validation = 'replace');
+----
+true	true	6
+
+# an option the file list gives one of the files is checked by its reader
+statement ok
+SET validate_external_file_cache = 'NO_VALIDATION';
+
+statement error
+SELECT min(x), max(x), count(*) FROM read_parquet([{filename: '{TEST_DIR}/list_stats_a.parquet'}, {filename: '{TEST_DIR}/list_stats_b.parquet', footer_size: -1}]);
+----
+Invalid value for file option "footer_size"
+
+statement ok
+RESET validate_external_file_cache;

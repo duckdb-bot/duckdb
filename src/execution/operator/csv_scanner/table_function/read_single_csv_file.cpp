@@ -110,7 +110,7 @@ static void SniffCSVFile(ClientContext &context, ReadSingleCSVFileData &result, 
 		sniffer.SniffCSV();
 		return;
 	}
-	// an empty file has no dialect for us to reconcile with the schema of the scan - a pipe has no known size
+	// an empty file has no dialect for us to reconcile with the schema of the scan. A pipe has no known size
 	auto &buffer_manager = *result.buffer_manager;
 	if (IsPipe(result.buffer_manager) ? buffer_manager.GetBuffer(0)->actual_size == 0
 	                                  : buffer_manager.file_handle->FileSize() == 0) {

@@ -443,6 +443,15 @@ FileSystem &VirtualFileSystem::FindFileSystem(shared_ptr<FileSystemRegistry> &re
 	return *fs;
 }
 
+bool VirtualFileSystem::IsLocalFile(const string &path) {
+	auto registry = file_system_registry.atomic_load();
+	auto fs = FindFileSystemInternal(*registry, path);
+	if (!fs) {
+		fs = registry->default_fs->file_system;
+	}
+	return fs->IsLocalFileSystem();
+}
+
 optional_ptr<FileSystem> VirtualFileSystem::FindFileSystemInternal(FileSystemRegistry &registry, const string &path) {
 	optional_ptr<FileSystem> fs;
 	for (auto &sub_system : registry.sub_systems) {

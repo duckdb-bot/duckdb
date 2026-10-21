@@ -1,0 +1,42 @@
+# name: test/sql/function/timestamp/age_timestamp_out_of_range.test
+# description: age of a timestamp that cannot be converted to a date raises an error that TRY catches
+# group: [timestamp]
+
+# timestamps below the first midnight of the range, read from a table so that no constant is folded
+statement ok
+CREATE TABLE timestamps AS SELECT * FROM (VALUES
+	(1, make_timestamp(-9223372036854775807 - 1)),
+	(2, make_timestamp(-9223372036854775000)),
+	(3, TIMESTAMP '2001-01-01'),
+	(4, NULL)
+) t(id, ts);
+
+statement error
+SELECT age(ts, TIMESTAMP '2000-01-01') FROM timestamps WHERE id = 1;
+----
+Conversion Error: Date out of range in timestamp conversion
+
+statement error
+SELECT age(ts) FROM timestamps WHERE id = 2;
+----
+Conversion Error: Date out of range in timestamp conversion
+
+query II
+SELECT id, TRY(age(ts, TIMESTAMP '2000-01-01')) FROM timestamps ORDER BY id;
+----
+1	NULL
+2	NULL
+3	1 year
+4	NULL
+
+query II
+SELECT id, TRY(age(ts)) IS NULL FROM timestamps WHERE id <= 2 ORDER BY id;
+----
+1	true
+2	true
+
+# the database is still usable, and other timestamps keep their age
+query I
+SELECT age(TIMESTAMP '2001-04-10', TIMESTAMP '1992-09-20');
+----
+8 years 6 months 20 days

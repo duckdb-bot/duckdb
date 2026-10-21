@@ -50,6 +50,8 @@ ScalarFunctionSet AgeFun::GetFunctions() {
 	    .AddParameter("timestamp1", LogicalType::TIMESTAMP)
 	    .AddParameter("timestamp2", LogicalType::TIMESTAMP);
 	age.AddFunction(binary_fun);
+	// a timestamp below the first midnight of the range fails to convert
+	age.SetFallible();
 	return age;
 }
 

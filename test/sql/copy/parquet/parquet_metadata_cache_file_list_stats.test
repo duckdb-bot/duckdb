@@ -1,0 +1,113 @@
+# name: test/sql/copy/parquet/parquet_metadata_cache_file_list_stats.test
+# description: MIN, MAX and COUNT over a list of Parquet files whose metadata is cached use its column statistics
+# group: [parquet]
+
+require parquet
+
+statement ok
+SET parquet_metadata_cache = true;
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+statement ok
+COPY (SELECT i AS x FROM range(50000) t(i)) TO '{TEST_DIR}/list_stats_1.parquet';
+
+statement ok
+COPY (SELECT i + 50000 AS x FROM range(50000) t(i)) TO '{TEST_DIR}/list_stats_2.parquet';
+
+# the first query reads the files and caches their metadata
+query I
+SELECT count(*) FROM read_parquet(['{TEST_DIR}/list_stats_1.parquet', '{TEST_DIR}/list_stats_2.parquet']);
+----
+100000
+
+statement ok
+PRAGMA explain_output = 'physical_only';
+
+# a list of files, then a glob, are answered from the cached metadata
+query II
+EXPLAIN SELECT min(x), max(x), count(*) FROM read_parquet(['{TEST_DIR}/list_stats_1.parquet', '{TEST_DIR}/list_stats_2.parquet']);
+----
+physical_plan	<!REGEX>:.*READ_PARQUET.*
+
+query II
+EXPLAIN SELECT min(x), max(x), count(*) FROM read_parquet('{TEST_DIR}/list_stats_*.parquet');
+----
+physical_plan	<!REGEX>:.*READ_PARQUET.*
+
+statement ok
+PRAGMA explain_output = 'all';
+
+query III
+SELECT min(x), max(x), count(*) FROM read_parquet(['{TEST_DIR}/list_stats_1.parquet', '{TEST_DIR}/list_stats_2.parquet']);
+----
+0	99999	100000
+
+# a file rewritten after its metadata was cached
+statement ok
+COPY (SELECT i * 3 AS x FROM range(70000) t(i)) TO '{TEST_DIR}/list_stats_2.parquet';
+
+query III
+SELECT min(x), max(x), count(*) FROM read_parquet(['{TEST_DIR}/list_stats_1.parquet', '{TEST_DIR}/list_stats_2.parquet']);
+----
+0	209997	120000
+
+# files with the columns in another order
+statement ok
+COPY (SELECT 1 AS x, 100 AS y) TO '{TEST_DIR}/list_stats_a.parquet';
+
+statement ok
+COPY (SELECT 200 AS y, 2 AS x) TO '{TEST_DIR}/list_stats_b.parquet';
+
+query I
+SELECT count(*) FROM read_parquet(['{TEST_DIR}/list_stats_a.parquet', '{TEST_DIR}/list_stats_b.parquet']);
+----
+2
+
+query IIII
+SELECT min(x), max(x), max(y), count(*) FROM read_parquet(['{TEST_DIR}/list_stats_a.parquet', '{TEST_DIR}/list_stats_b.parquet']);
+----
+1	2	200	2
+
+query IIII
+SELECT min(x), max(x), max(y), count(*) FROM read_parquet(['{TEST_DIR}/list_stats_a.parquet', '{TEST_DIR}/list_stats_b.parquet'], union_by_name = true);
+----
+1	2	200	2
+
+# files with a column of another type
+statement ok
+COPY (SELECT 5::INTEGER AS x) TO '{TEST_DIR}/list_stats_int.parquet';
+
+statement ok
+COPY (SELECT 9000000000::BIGINT AS x) TO '{TEST_DIR}/list_stats_bigint.parquet';
+
+query II
+SELECT count(*), typeof(min(x)) FROM read_parquet(['{TEST_DIR}/list_stats_bigint.parquet', '{TEST_DIR}/list_stats_int.parquet']);
+----
+2	BIGINT
+
+query II
+SELECT min(x), max(x) FROM read_parquet(['{TEST_DIR}/list_stats_bigint.parquet', '{TEST_DIR}/list_stats_int.parquet']);
+----
+5	9000000000
+
+query II
+SELECT min(x), max(x) FROM read_parquet(['{TEST_DIR}/list_stats_int.parquet', '{TEST_DIR}/list_stats_bigint.parquet'], union_by_name = true);
+----
+5	9000000000
+
+# a file without one of the columns
+statement ok
+COPY (SELECT 7 AS x) TO '{TEST_DIR}/list_stats_x.parquet';
+
+query III
+SELECT min(y), max(y), count(*) FROM read_parquet(['{TEST_DIR}/list_stats_a.parquet', '{TEST_DIR}/list_stats_x.parquet'], union_by_name = true);
+----
+100	100	2
+
+# a generated column next to the columns of the files
+query II
+SELECT min(x), max(filename LIKE '%list_stats_b%') FROM read_parquet(['{TEST_DIR}/list_stats_a.parquet', '{TEST_DIR}/list_stats_b.parquet'], filename = true);
+----
+1	true

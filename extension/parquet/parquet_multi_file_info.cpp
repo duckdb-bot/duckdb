@@ -1,4 +1,5 @@
 #include "parquet_multi_file_info.hpp"
+#include "duckdb/common/once_flag.hpp"
 #include "duckdb/common/multi_file/table_function_multi_file.hpp"
 #include "duckdb/main/client_context.hpp"
 
@@ -178,10 +179,76 @@ const vector<ParquetMetadataCacheEntry> &ParquetReadBindData::TryLoadCaches(cons
 	return caches;
 }
 
+namespace {
+
+//! The column statistics of the row groups of a file with cached metadata, which a scan of several files has not
+//! opened. The schema of the file is only derived from the metadata when they are first asked for, and they are only
+//! given if the file has the columns of the scan in the same order and with the same types, as for a single file
+class CachedParquetFileStatistics {
+public:
+	CachedParquetFileStatistics(ClientContext &context, const MultiFileBindData &bind_data,
+	                            shared_ptr<ParquetFileMetadataCache> metadata, shared_ptr<const ParquetOptions> options)
+	    : context(context), bind_data(bind_data), metadata(std::move(metadata)), options(std::move(options)) {
+	}
+
+	//! The statistics of a row group of the file, if the file has the columns of the scan
+	optional_ptr<PartitionRowGroup> GetRowGroup(idx_t row_group_idx) {
+		CallOnce(initialized, [&] {
+			auto reader = ParquetReader::CreateMetadataReader(context, *options, metadata);
+			if (!reader->can_use_metadata_statistics || !bind_data.HasIdentityMapping(reader->GetColumns())) {
+				return;
+			}
+			ParquetReader::GetPartitionStats(*metadata->metadata, row_groups, *reader->root_schema,
+			                                 reader->parquet_options, reader);
+		});
+		if (row_group_idx >= row_groups.size()) {
+			return nullptr;
+		}
+		return row_groups[row_group_idx].partition_row_group.get();
+	}
+
+private:
+	//! Both outlive the statistics of the scan, which are taken from the bind data
+	ClientContext &context;
+	const MultiFileBindData &bind_data;
+	shared_ptr<ParquetFileMetadataCache> metadata;
+	//! The options of the scan, shared by its files
+	shared_ptr<const ParquetOptions> options;
+	OnceFlag initialized;
+	vector<PartitionStatistics> row_groups;
+};
+
+struct CachedParquetPartitionRowGroup : public PartitionRowGroup {
+	CachedParquetPartitionRowGroup(shared_ptr<CachedParquetFileStatistics> file_p, idx_t row_group_idx_p)
+	    : file(std::move(file_p)), row_group_idx(row_group_idx_p) {
+	}
+
+	unique_ptr<BaseStatistics> GetColumnStatistics(const StorageIndex &storage_index) override {
+		auto row_group = file->GetRowGroup(row_group_idx);
+		return row_group ? row_group->GetColumnStatistics(storage_index) : nullptr;
+	}
+
+	bool MinMaxIsExact(const StorageIndex &storage_index) override {
+		auto row_group = file->GetRowGroup(row_group_idx);
+		return row_group && row_group->MinMaxIsExact(storage_index);
+	}
+
+	bool HasPendingWrites() override {
+		return false;
+	}
+
+private:
+	shared_ptr<CachedParquetFileStatistics> file;
+	idx_t row_group_idx;
+};
+
+} // namespace
+
 //! The row groups of every file of the scan, taken from their cached metadata - empty unless all of it can be used
-static vector<PartitionStatistics>
-GetCachedPartitionStats(ClientContext &context, const vector<ParquetMetadataCacheEntry> &cached_metadata,
-                        const shared_ptr<ParquetEncryptionConfig> &encryption_config) {
+static vector<PartitionStatistics> GetCachedPartitionStats(ClientContext &context, const MultiFileBindData &bind_data,
+                                                           const vector<ParquetMetadataCacheEntry> &cached_metadata,
+                                                           const shared_ptr<ParquetEncryptionConfig> &encryption_config,
+                                                           optional_ptr<const ParquetOptions> parquet_options) {
 	vector<PartitionStatistics> result;
 	if (cached_metadata.empty()) {
 		// no cached metadata - bail
@@ -211,8 +278,20 @@ GetCachedPartitionStats(ClientContext &context, const vector<ParquetMetadataCach
 	}
 
 	// all caches are valid! we can return the partition stats
+	shared_ptr<const ParquetOptions> shared_options;
+	if (parquet_options) {
+		shared_options = make_shared_ptr<ParquetOptions>(*parquet_options);
+	}
 	for (auto &cache : cached_metadata) {
+		const auto file_start = result.size();
 		ParquetReader::GetPartitionStats(*cache.metadata->metadata, result);
+		if (!shared_options) {
+			continue;
+		}
+		auto file = make_shared_ptr<CachedParquetFileStatistics>(context, bind_data, cache.metadata, shared_options);
+		for (idx_t i = file_start; i < result.size(); i++) {
+			result[i].partition_row_group = make_shared_ptr<CachedParquetPartitionRowGroup>(file, i - file_start);
+		}
 	}
 	return result;
 }
@@ -239,11 +318,14 @@ static vector<PartitionStatistics> ParquetMultiFileGetPartitionStats(ClientConte
 	// without the bind of a file we do not know the key the files are encrypted with - encrypted files are then not
 	// answered from their metadata
 	shared_ptr<ParquetEncryptionConfig> encryption_config;
+	optional_ptr<const ParquetOptions> parquet_options;
 	auto &file_bind_data = bind_data.bind_data->Cast<TableFunctionMultiFileData>().options.schema_bind_data;
 	if (file_bind_data) {
-		encryption_config = ParquetScanFunction::GetFileOptions(*file_bind_data).encryption_config;
+		parquet_options = ParquetScanFunction::GetFileOptions(*file_bind_data);
+		encryption_config = parquet_options->encryption_config;
 	}
-	return GetCachedPartitionStats(context, LoadMetadataCaches(context, *bind_data.file_list), encryption_config);
+	return GetCachedPartitionStats(context, bind_data, LoadMetadataCaches(context, *bind_data.file_list),
+	                               encryption_config, parquet_options);
 }
 
 void ParquetScanFunction::AddNamedParameters(TableFunction &table_function) {

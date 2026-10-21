@@ -2159,7 +2159,22 @@ static bool IsSymbolicLink(const string &path) {
 vector<OpenFileInfo> LocalFileSystem::FetchFileWithoutGlob(const string &path, optional_ptr<FileOpener> opener,
                                                            bool absolute_path) {
 	vector<OpenFileInfo> result;
-	if (FileExists(path, opener) || IsPipe(path, opener)) {
+	// a file comes with its size, modification time and version tag, as from a glob, so that the caches of its
+	// contents can be validated without another request
+	auto add_file = [&](const string &file_path) {
+		OpenFileInfo info(file_path);
+		auto file_metadata = GetStatsIfExists(info, opener);
+		if (file_metadata) {
+			info.extended_info = make_shared_ptr<ExtendedOpenFileInfo>();
+			auto &options = info.extended_info->options;
+			options.emplace("type", Value("file"));
+			FillFileOptions(*file_metadata, options);
+		}
+		result.push_back(std::move(info));
+	};
+	if (FileExists(path, opener)) {
+		add_file(path);
+	} else if (IsPipe(path, opener)) {
 		result.emplace_back(path);
 	} else if (!absolute_path) {
 		Value value;
@@ -2168,7 +2183,9 @@ vector<OpenFileInfo> LocalFileSystem::FetchFileWithoutGlob(const string &path, o
 			vector<std::string> search_paths = StringUtil::Split(search_paths_str, ',');
 			for (const auto &search_path : search_paths) {
 				auto joined_path = JoinPath(search_path, path);
-				if (FileExists(joined_path, opener) || IsPipe(joined_path, opener)) {
+				if (FileExists(joined_path, opener)) {
+					add_file(joined_path);
+				} else if (IsPipe(joined_path, opener)) {
 					result.emplace_back(joined_path);
 				}
 			}

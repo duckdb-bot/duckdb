@@ -241,7 +241,15 @@ static void CloseFileAndAppendError(int fd, string &extended_error) {
 static FileMetadata StatsFromStruct(struct stat s) {
 	FileMetadata file_metadata;
 	file_metadata.file_size = s.st_size;
-	file_metadata.last_modification_time = Timestamp::FromEpochSeconds(s.st_mtime);
+#ifdef __APPLE__
+	const auto &modification_time = s.st_mtimespec;
+#else
+	const auto &modification_time = s.st_mtim;
+#endif
+	// with the fraction of a second, so that a file rewritten within the same second gets another version tag
+	file_metadata.last_modification_time =
+	    Timestamp::FromEpochMicroSeconds(static_cast<int64_t>(modification_time.tv_sec) * Interval::MICROS_PER_SEC +
+	                                     static_cast<int64_t>(modification_time.tv_nsec) / Interval::NANOS_PER_MICRO);
 	file_metadata.device_id = static_cast<idx_t>(s.st_dev);
 	file_metadata.file_id = static_cast<idx_t>(s.st_ino);
 
@@ -1106,9 +1114,11 @@ static timestamp_t FiletimeToTimeStamp(FILETIME file_time) {
 	// https://docs.microsoft.com/en-us/windows/win32/api/minwinbase/ns-minwinbase-filetime
 
 	// Adapted from: https://stackoverflow.com/questions/6161776/convert-windows-filetime-to-second-in-unix-linux
-	const auto WINDOWS_TICK = 10000000;
+	// with the fraction of a second, so that a file rewritten within the same second gets another version tag
+	const auto WINDOWS_TICKS_PER_MICRO = 10;
 	const auto SEC_TO_UNIX_EPOCH = 11644473600LL;
-	return Timestamp::FromEpochSeconds(fileTime64 / WINDOWS_TICK - SEC_TO_UNIX_EPOCH);
+	return Timestamp::FromEpochMicroSeconds(fileTime64 / WINDOWS_TICKS_PER_MICRO -
+	                                        SEC_TO_UNIX_EPOCH * Interval::MICROS_PER_SEC);
 }
 
 static FileMetadata StatsInternal(HANDLE hFile, const string &path) {

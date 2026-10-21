@@ -52,6 +52,11 @@ SELECT b, rank() OVER (ORDER BY a, b DESC) AS r FROM {table} ORDER BY b
 20	1
 
 query II
+EXPLAIN SELECT b, row_number() OVER (PARTITION BY a, b) AS rn FROM {table} ORDER BY b
+----
+physical_plan	<REGEX>:.*PARTITION BY a, b\).*
+
+query II
 SELECT b, row_number() OVER (PARTITION BY a, b) AS rn FROM {table} ORDER BY b
 ----
 10	1
@@ -64,6 +69,11 @@ SELECT b FROM ck ORDER BY a, c, b DESC
 ----
 20
 10
+
+query II
+EXPLAIN SELECT b, row_number() OVER (PARTITION BY a, c, b) AS rn FROM ck ORDER BY b
+----
+physical_plan	<REGEX>:.*PARTITION BY a, c, b\).*
 
 query II
 SELECT b, row_number() OVER (PARTITION BY a, c, b) AS rn FROM ck ORDER BY b

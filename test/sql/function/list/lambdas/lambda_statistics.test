@@ -1,5 +1,5 @@
-# name: test/sql/function/list/lambdas/lambda_string_statistics.test
-# description: substring and string subscripts in lambda bodies, over list elements and captured columns with and without unicode characters
+# name: test/sql/function/list/lambdas/lambda_statistics.test
+# description: Lambda bodies that statistics propagate into, over list elements and captured columns with and without unicode characters
 # group: [lambdas]
 
 # every column has exact statistics, so the statistics of the wrong lambda input would cut a unicode character
@@ -92,3 +92,31 @@ statement error
 SELECT u1[5000000000] FROM caps;
 ----
 Out of Range Error: Substring offset outside of supported range
+
+# a constant that fails to evaluate raises its error only when the lambda body runs
+statement ok
+CREATE TABLE lists(l INTEGER[]);
+
+statement ok
+INSERT INTO lists VALUES ([]), (NULL);
+
+query II
+SELECT list_transform(l, lambda x: CAST('bad' AS INTEGER) > 0 AND x > 0), list_filter(l, lambda x: x > 0 OR CAST('bad' AS INTEGER) > 0) FROM lists ORDER BY l NULLS LAST;
+----
+[]	[]
+NULL	NULL
+
+statement ok
+CREATE TABLE no_rows(x INTEGER);
+
+query I
+SELECT CAST('bad' AS INTEGER) > 0 AND x > 0 FROM no_rows;
+----
+
+statement ok
+INSERT INTO lists VALUES ([1]);
+
+statement error
+SELECT list_transform(l, lambda x: CAST('bad' AS INTEGER) > 0 AND x > 0) FROM lists;
+----
+Could not convert string 'bad' to INT32

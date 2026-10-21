@@ -204,14 +204,19 @@ unique_ptr<FileHandle> VirtualFileSystem::OpenFileExtended(const OpenFileInfo &f
 	try {
 		// Evaluate and apply compression option then.
 		const auto context = !flags.MultiClientAccess() ? FileOpener::TryGetClientContext(opener) : QueryContext();
-		if (file_handle->GetType() == FileType::FILE_TYPE_FIFO) {
+		const bool is_pipe = file_handle->GetType() == FileType::FILE_TYPE_FIFO;
+		if (is_pipe) {
 			file_handle = PipeFileSystem::OpenPipe(context, std::move(file_handle));
-		} else {
-			auto compression_filesystem = FindCompressionFileSystem(*registry, compression, file.path);
-			if (compression_filesystem) {
-				file_handle =
-				    compression_filesystem->OpenCompressedFile(context, std::move(file_handle), flags.OpenForWriting());
+		}
+		auto compression_filesystem = FindCompressionFileSystem(*registry, compression, file.path);
+		if (compression_filesystem) {
+			if (is_pipe && !flags.OpenForWriting()) {
+				// decompressing needs a file that can be read again from the start, which a pipe cannot
+				throw NotImplementedException(
+				    "Cannot read compressed data from the pipe \"%s\", decompress it before reading it", file.path);
 			}
+			file_handle =
+			    compression_filesystem->OpenCompressedFile(context, std::move(file_handle), flags.OpenForWriting());
 		}
 	} catch (...) {
 		auto error = std::current_exception();

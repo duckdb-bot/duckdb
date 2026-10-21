@@ -1,0 +1,49 @@
+# name: test/sql/copy/parquet/parquet_metadata_cache_file_list_encryption.test
+# description: A key the file list gives one of the files is checked before the cached metadata of the files is used
+# group: [parquet]
+
+require parquet
+
+# parquet keys are not persisted across restarts
+require noforcestorage
+
+# writing encrypted parquet requires httpfs to be loaded
+require httpfs
+
+statement ok
+SET parquet_metadata_cache = true;
+
+# the entries of the file list below carry no version tag, so the cache is not validated against the files
+statement ok
+SET validate_external_file_cache = 'NO_VALIDATION';
+
+statement ok
+PRAGMA add_parquet_key('list_key', '0123456789112345');
+
+statement ok
+COPY (SELECT 1 AS x) TO '{TEST_DIR}/list_enc_1.parquet' (ENCRYPTION_CONFIG {footer_key: 'list_key'});
+
+statement ok
+COPY (SELECT 2 AS x) TO '{TEST_DIR}/list_enc_2.parquet' (ENCRYPTION_CONFIG {footer_key: 'list_key'});
+
+query I
+SELECT count(*) FROM read_parquet(['{TEST_DIR}/list_enc_1.parquet', '{TEST_DIR}/list_enc_2.parquet'], encryption_config = {footer_key: 'list_key'});
+----
+2
+
+query III
+SELECT min(x), max(x), count(*) FROM read_parquet(['{TEST_DIR}/list_enc_1.parquet', '{TEST_DIR}/list_enc_2.parquet'], encryption_config = {footer_key: 'list_key'});
+----
+1	2	2
+
+# the right key given for each file
+query III
+SELECT min(x), max(x), count(*) FROM read_parquet([{filename: '{TEST_DIR}/list_enc_1.parquet', encryption_key: '0123456789112345'}, {filename: '{TEST_DIR}/list_enc_2.parquet', encryption_key: '0123456789112345'}], encryption_config = {footer_key: 'list_key'});
+----
+1	2	2
+
+# a wrong key for one of the files
+statement error
+SELECT min(x), max(x), count(*) FROM read_parquet([{filename: '{TEST_DIR}/list_enc_1.parquet', encryption_key: '0123456789112345'}, {filename: '{TEST_DIR}/list_enc_2.parquet', encryption_key: '1123456789112345'}], encryption_config = {footer_key: 'list_key'});
+----
+Computed AES tag differs from read AES tag

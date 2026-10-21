@@ -158,3 +158,9 @@ statement error
 SELECT count(*) FROM read_parquet(['{TEST_DIR}/list_stats_a.parquet', '{TEST_DIR}/list_stats_x.parquet'], schema = MAP {1: {name: 'x', type: 'INTEGER', default_value: NULL}}, encryption_config = {footer_key: 'missing_key'});
 ----
 No key with name
+
+# the other options are checked when a file is bound as well
+statement error
+SELECT count(*) FROM read_parquet(['{TEST_DIR}/list_stats_a.parquet', '{TEST_DIR}/list_stats_x.parquet'], schema = MAP {1: {name: 'x', type: 'INTEGER', default_value: NULL}}, prefetch_strategy = 'nonsense');
+----
+Unrecognized prefetch_strategy 'nonsense'

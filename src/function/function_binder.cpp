@@ -1131,6 +1131,20 @@ static string PushArgumentCollations(ClientContext &context, BoundSimpleFunction
 		return PushCollations(context, bound_function, children, CollationType::COMBINABLE_COLLATIONS);
 	case FunctionCollationHandling::PUSH_DISTINCT_COLLATIONS:
 		throw InternalException("PUSH_DISTINCT_COLLATIONS is only supported for aggregate functions");
+	case FunctionCollationHandling::PUSH_ALL_COLLATIONS: {
+		auto &argument_types = bound_function.GetArguments();
+		for (idx_t i = 0; i < children.size(); i++) {
+			auto &arg_type = argument_types[i];
+			if (arg_type.IsComplete()) {
+				children[i] = BoundCastExpression::AddCastToType(context, std::move(children[i]), arg_type);
+			}
+			if (ExpressionBinder::PushCollation(context, children[i], children[i]->GetReturnType())) {
+				// the comparison key has its own type, do not cast it back to the argument type
+				arg_type = children[i]->GetReturnType();
+			}
+		}
+		return string();
+	}
 	default:
 		throw InternalException("Unrecognized collation handling");
 	}

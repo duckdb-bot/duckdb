@@ -11,6 +11,8 @@ ScalarFunction HashFun::GetFunction() {
 	hash_fun.GetSignature().AddParameter("value", LogicalType::ANY);
 	hash_fun.GetSignature().AddArgs("args", LogicalType::ANY);
 	hash_fun.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
+	// values that compare equal must hash equally, so hash the comparison keys
+	hash_fun.SetCollationHandling(FunctionCollationHandling::PUSH_ALL_COLLATIONS);
 	return hash_fun;
 }
 

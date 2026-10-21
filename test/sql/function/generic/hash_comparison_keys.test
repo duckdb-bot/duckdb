@@ -1,0 +1,108 @@
+# name: test/sql/function/generic/hash_comparison_keys.test
+# description: values that compare equal have equal hashes
+# group: [generic]
+
+load {TEST_DIR}/hash_comparison_keys.db
+
+statement ok
+CREATE TABLE vals AS SELECT * FROM (VALUES (1::TINYINT::VARIANT, 'i8'), (1::BIGINT::VARIANT, 'i64'), (1::UINTEGER::VARIANT, 'u32'), (1.00::DECIMAL(5,2)::VARIANT, 'dec'), (1::BIGNUM::VARIANT, 'bignum'), (1.0::DOUBLE::VARIANT, 'dbl'), (1.0::FLOAT::VARIANT, 'flt'), (2::INTEGER::VARIANT, 'two'), ('1'::VARIANT, 'str')) t(v, label);
+
+# equality puts the integers, decimal and bignum in one class, and the float and double in another
+query I
+SELECT count(*) FROM vals a JOIN vals b ON a.v = b.v
+----
+31
+
+query I
+SELECT count(*) FROM vals a JOIN vals b ON a.v = b.v WHERE hash(a.v) <> hash(b.v)
+----
+0
+
+query I
+SELECT count(*) FROM vals a JOIN vals b ON hash(a.v) = hash(b.v) WHERE a.v <> b.v
+----
+0
+
+query III
+SELECT count(DISTINCT v), count(DISTINCT hash(v)), count(DISTINCT hash(v, label = 'two'))
+FROM vals
+----
+4	4	4
+
+query II
+SELECT list(label ORDER BY label), count(*) FROM vals GROUP BY hash(v) ORDER BY ALL
+----
+[bignum, dec, i64, i8, u32]	5
+[dbl, flt]	2
+[str]	1
+[two]	1
+
+# nested values
+query III
+SELECT hash({'a': 1::TINYINT::VARIANT, 'b': 'x'}) = hash({'a': 1::BIGINT::VARIANT, 'b': 'x'}),
+       hash([1::TINYINT::VARIANT, NULL]) = hash([1.00::DECIMAL(5,2)::VARIANT, NULL]),
+       hash([1::UINTEGER::VARIANT, 2::INTEGER::VARIANT]::VARIANT[2]) = hash([1::BIGNUM::VARIANT, 2.0::DECIMAL(3,1)::VARIANT]::VARIANT[2])
+----
+true	true	true
+
+query II
+SELECT hash({'a': 1::TINYINT, 'b': [2::SMALLINT]}::VARIANT) = hash({'b': [2::BIGINT], 'a': 1::INTEGER}::VARIANT),
+       hash({'a': 1}::VARIANT) = hash({'a': 2}::VARIANT)
+----
+true	false
+
+query I
+SELECT hash(1::TINYINT::VARIANT, 'x') = hash(1::BIGINT::VARIANT, 'x')
+----
+true
+
+# NULL hashes like the NULL of any other type
+query II
+SELECT hash(NULL::VARIANT) = hash(NULL), hash({'a': NULL::VARIANT}) = hash({'a': NULL::INTEGER})
+----
+true	true
+
+# VARIANT values stored as typed (shredded) columns
+statement ok
+SET variant_minimum_shredding_size = 0;
+
+statement ok
+CREATE TABLE stored AS SELECT i, (i % 3)::TINYINT::VARIANT AS a, (i % 3)::DECIMAL(10, 1)::VARIANT AS b FROM range(5000) t(i);
+
+statement ok
+CHECKPOINT
+
+restart
+
+query I
+SELECT list(segment_type ORDER BY column_name) FROM pragma_storage_info('stored') WHERE segment_type IN ('TINYINT', 'DECIMAL(10,1)')
+----
+[TINYINT, 'DECIMAL(10,1)']
+
+query II
+SELECT count(*), count(*) FILTER (WHERE hash(a) = hash(b) AND hash(a) = hash((i % 3)::BIGINT::VARIANT))
+FROM stored
+----
+5000	5000
+
+query I
+SELECT count(DISTINCT hash(v)) FROM (SELECT a AS v FROM stored UNION ALL SELECT b FROM stored)
+----
+3
+
+# collated strings compare equal, so they hash equally
+query III
+SELECT hash('A' COLLATE NOCASE) = hash('a' COLLATE NOCASE), hash('A') = hash('a'), hash('A' COLLATE NOCASE) = hash('b' COLLATE NOCASE)
+----
+true	false	false
+
+statement ok
+CREATE TABLE names (s VARCHAR COLLATE NOCASE);
+
+statement ok
+INSERT INTO names VALUES ('duck'), ('DUCK'), ('Duck'), ('goose');
+
+query II
+SELECT count(DISTINCT s), count(DISTINCT hash(s)) FROM names
+----
+2	2

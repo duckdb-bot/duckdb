@@ -200,7 +200,7 @@ TEST_CASE("Arrow scan of a dictionary of structs across several chunks", "[arrow
 	for (idx_t i = 0; i < 5000; i++) {
 		indices.push_back(i % 7 == 0 ? int8_t(-1) : int8_t(i % 3));
 	}
-	auto &column = b.Dictionary("s", indices, values);
+	auto &column = b.Dictionary("s", std::move(indices), values);
 	REQUIRE(ScanMatches(column, "SELECT CASE WHEN i % 7 = 0 THEN NULL ELSE {'d': ([30, 20, 10])[i % 3 + 1]} "
 	                            "END::STRUCT(d INT) FROM range(5000) t(i)"));
 }

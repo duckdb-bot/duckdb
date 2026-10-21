@@ -72,6 +72,11 @@ struct ICUTableRange {
 			end.store(end_p.value, std::memory_order_relaxed);
 			current.store(start_p.value, std::memory_order_relaxed);
 		}
+
+		//! Input rows are independent, so an in-out call can use all threads
+		idx_t MaxThreads() const override {
+			return GlobalTableFunctionState::MAX_THREADS;
+		}
 	};
 
 	struct ICURangeLocalState : public LocalTableFunctionState {

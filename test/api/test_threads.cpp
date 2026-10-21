@@ -172,6 +172,50 @@ TEST_CASE("Column data scan batch sizes preserve source parallelism", "[api]") {
 #endif
 }
 #endif
+
+static idx_t InOutFunctionMaxThreads(Connection &con, const string &query, idx_t source_max_threads) {
+	REQUIRE_NO_FAIL(con.Query("BEGIN"));
+	auto logical_plan = con.ExtractPlan(query);
+	PhysicalPlanGenerator physical_planner(*con.context);
+	auto physical_plan = physical_planner.Plan(std::move(logical_plan));
+	optional_idx max_threads;
+	vector<reference<PhysicalOperator>> operators {physical_plan->Root()};
+	while (!operators.empty()) {
+		auto &op = operators.back().get();
+		operators.pop_back();
+		if (op.type == PhysicalOperatorType::INOUT_FUNCTION) {
+			REQUIRE(!max_threads.IsValid());
+			REQUIRE(op.ParallelOperator());
+			// the pipeline runs on the fewest threads its source and operators allow
+			auto op_max_threads = op.GetGlobalOperatorState(*con.context)->MaxThreads(source_max_threads);
+			max_threads = MinValue<idx_t>(source_max_threads, op_max_threads);
+		}
+		for (auto &child : op.children) {
+			operators.push_back(child);
+		}
+	}
+	REQUIRE_NO_FAIL(con.Query("ROLLBACK"));
+	REQUIRE(max_threads.IsValid());
+	return max_threads.GetIndex();
+}
+
+TEST_CASE("range and generate_series called per row use the threads of their input", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("SET threads=8"));
+
+	const vector<string> queries {
+	    "SELECT * FROM range(100) t(i), LATERAL range(i % 3) r(x)",
+	    "SELECT * FROM range(100) t(i) CROSS JOIN generate_series(1, i % 3) g(x)",
+	    "SELECT * FROM range(100) t(i), LATERAL range(TIMESTAMP '2020-01-01', TIMESTAMP '2020-01-01' + "
+	    "(i % 3) * INTERVAL 1 DAY, INTERVAL 1 DAY) r(x)",
+	    "SELECT * FROM range(100) t(i), LATERAL generate_series(TIMESTAMPTZ '2020-01-01 00:00:00+00', "
+	    "TIMESTAMPTZ '2020-01-01 00:00:00+00' + (i % 3) * INTERVAL 1 DAY, INTERVAL 1 DAY) g(x)"};
+	for (auto &query : queries) {
+		INFO(query);
+		REQUIRE(InOutFunctionMaxThreads(con, query, 8) == 8);
+	}
+}
 #endif
 
 #ifdef DUCKDB_NO_THREADS

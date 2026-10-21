@@ -317,6 +317,13 @@ static vector<PartitionStatistics> GetCachedPartitionStats(ClientContext &contex
 		shared_options = make_shared_ptr<ParquetOptions>(*parquet_options);
 	}
 	for (auto &cache : cached_metadata) {
+		if (cache.metadata->metadata->row_groups.empty()) {
+			// the columns of a file are checked when the statistics of its row groups are first asked for, which never
+			// happens for a file without row groups, so then the scan reads the files
+			shared_options.reset();
+		}
+	}
+	for (auto &cache : cached_metadata) {
 		const auto file_start = result.size();
 		ParquetReader::GetPartitionStats(*cache.metadata->metadata, result);
 		if (!shared_options || cache.has_reader_options) {

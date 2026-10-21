@@ -199,3 +199,15 @@ TEST_CASE("Arrow scan of a dictionary of structs with a dictionary field", "[arr
 	REQUIRE(ScanMatches(column, "SELECT s::STRUCT(f TINYINT) FROM (VALUES ({'f': 7}), (NULL), ({'f': 9}), ({'f': 8})) "
 	                            "t(s)"));
 }
+
+TEST_CASE("Arrow scan of an empty dictionary of structs and fixed-size lists", "[arrow]") {
+	Builder b;
+	auto &values = b.Struct("", {&b.Int32("d", {})});
+	auto &column = b.Dictionary("s", {-1, -1}, values);
+	REQUIRE(ScanMatches(column, "SELECT s::STRUCT(d INT) FROM (VALUES (NULL), (NULL)) t(s)"));
+
+	Builder c;
+	auto &list_values = c.FixedSizeList("+w:2", "", 0, c.Int32("item", {}));
+	auto &list_column = c.Dictionary("a", {-1, -1}, list_values);
+	REQUIRE(ScanMatches(list_column, "SELECT a::INT[2] FROM (VALUES (NULL), (NULL)) t(a)"));
+}

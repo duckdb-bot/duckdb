@@ -1,8 +1,12 @@
 #include "duckdb/optimizer/filter_pushdown.hpp"
+#include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/planner/column_binding_map.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
+#include "duckdb/planner/expression/bound_conjunction_expression.hpp"
+#include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
+#include "duckdb/planner/expression/bound_operator_expression.hpp"
 #include "duckdb/planner/expression/bound_window_expression.hpp"
 #include "duckdb/planner/operator/logical_window.hpp"
 
@@ -31,7 +35,38 @@ bool CanPushdownFilter(vector<column_binding_set_t> window_exprs_partition_bindi
 	return filter_on_all_partitions;
 }
 
-unique_ptr<Filter> CreateAuxiliaryFilter(const Expression &partition, const Filter &filter) {
+//	Whether e can be NULL for a non-NULL input, as date parts are for the infinities
+bool CanBeNullForValidInput(ClientContext &context, const BoundFunctionExpression &partition_func) {
+	auto &input_type = partition_func.GetChildren()[0]->GetReturnType();
+	switch (input_type.id()) {
+	case LogicalTypeId::DATE:
+	case LogicalTypeId::TIMESTAMP:
+	case LogicalTypeId::TIMESTAMP_SEC:
+	case LogicalTypeId::TIMESTAMP_MS:
+	case LogicalTypeId::TIMESTAMP_NS:
+	case LogicalTypeId::TIMESTAMP_TZ:
+	case LogicalTypeId::TIMESTAMP_TZ_NS:
+	case LogicalTypeId::FLOAT:
+	case LogicalTypeId::DOUBLE:
+		break;
+	default:
+		//	Other inputs can hold NULLs inside a non-NULL value, e.g. a STRUCT field
+		return !input_type.IsNumeric();
+	}
+	for (auto &infinity : {Value::NegativeInfinity(input_type), Value::Infinity(input_type)}) {
+		auto e_infinity = partition_func.Copy();
+		e_infinity->Cast<BoundFunctionExpression>().GetChildrenMutable()[0] =
+		    make_uniq<BoundConstantExpression>(infinity);
+		//	An error at infinity is raised for those rows anyway
+		Value result;
+		if (ExpressionExecutor::TryEvaluateScalar(context, *e_infinity, result) && result.IsNull()) {
+			return true;
+		}
+	}
+	return false;
+}
+
+unique_ptr<Filter> CreateAuxiliaryFilter(ClientContext &context, const Expression &partition, const Filter &filter) {
 	//	Must be comparison
 	if (!BoundComparisonExpression::IsComparison(*filter.filter)) {
 		return nullptr;
@@ -99,12 +134,25 @@ unique_ptr<Filter> CreateAuxiliaryFilter(const Expression &partition, const Filt
 		return nullptr;
 	}
 
-	//	Generate an auxiliary filter b 𝜃 c => e(b) 𝜃' e(c)
-	auto e_b = partition_func.Copy();
+	//	e(c) can be NULL although c is not, e.g. year('infinity')
 	auto c_b = partition_func.Copy();
 	c_b->Cast<BoundFunctionExpression>().GetChildrenMutable()[0] = children[const_idx]->Copy();
-	auto aux_comp = BoundComparisonExpression::Create(aux_type, std::move(e_b), std::move(c_b));
-	auto aux_filter = make_uniq<Filter>(std::move(aux_comp));
+	Value e_c;
+	if (!ExpressionExecutor::TryEvaluateScalar(context, *c_b, e_c) || e_c.IsNull()) {
+		return nullptr;
+	}
+
+	//	Generate an auxiliary filter b 𝜃 c => e(b) 𝜃' e(c)
+	unique_ptr<Expression> aux_expr = BoundComparisonExpression::Create(
+	    aux_type, partition_func.Copy(), make_uniq<BoundConstantExpression>(std::move(e_c)));
+	if (CanBeNullForValidInput(context, partition_func)) {
+		//	Rows of the NULL partition can pass b 𝜃 c, so keep the whole partition
+		auto e_b_is_null = make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_IS_NULL, LogicalType::BOOLEAN);
+		e_b_is_null->GetChildrenMutable().push_back(partition_func.Copy());
+		aux_expr = make_uniq<BoundConjunctionExpression>(ExpressionType::CONJUNCTION_OR, std::move(aux_expr),
+		                                                 std::move(e_b_is_null));
+	}
+	auto aux_filter = make_uniq<Filter>(std::move(aux_expr));
 	aux_filter->ExtractBindings();
 	aux_filter->ExtractBarrier();
 
@@ -186,7 +234,7 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownWindow(unique_ptr<LogicalOpe
 			if (p.second != window_exprs_partition_bindings.size()) {
 				continue;
 			}
-			auto aux_filter = CreateAuxiliaryFilter(p.first, *filters.at(i));
+			auto aux_filter = CreateAuxiliaryFilter(optimizer.context, p.first, *filters.at(i));
 			if (aux_filter) {
 				pushdown.filters.push_back(std::move(aux_filter));
 			}

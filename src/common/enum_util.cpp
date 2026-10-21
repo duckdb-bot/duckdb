@@ -2850,7 +2850,7 @@ const StringUtil::EnumStringLiteral *GetFunctionCollationHandlingValues() {
 		{ static_cast<uint32_t>(FunctionCollationHandling::PUSH_COMBINABLE_COLLATIONS), "PUSH_COMBINABLE_COLLATIONS" },
 		{ static_cast<uint32_t>(FunctionCollationHandling::IGNORE_COLLATIONS), "IGNORE_COLLATIONS" },
 		{ static_cast<uint32_t>(FunctionCollationHandling::PUSH_DISTINCT_COLLATIONS), "PUSH_DISTINCT_COLLATIONS" },
-		{ static_cast<uint32_t>(FunctionCollationHandling::PUSH_ALL_COLLATIONS), "PUSH_ALL_COLLATIONS" }
+		{ static_cast<uint32_t>(FunctionCollationHandling::PUSH_NORMALIZING_COLLATIONS), "PUSH_NORMALIZING_COLLATIONS" }
 	};
 	return values;
 }

@@ -51,10 +51,10 @@ SELECT hash({'a': 1::TINYINT, 'b': [2::SMALLINT]}::VARIANT) = hash({'b': [2::BIG
 ----
 true	false
 
-query I
-SELECT hash(1::TINYINT::VARIANT, 'x') = hash(1::BIGINT::VARIANT, 'x')
+query II
+SELECT hash(1::TINYINT::VARIANT, 'x') = hash(1::BIGINT::VARIANT, 'x'), hash(0, 'x', 1::TINYINT::VARIANT) = hash(0, 'x', 1::BIGINT::VARIANT)
 ----
-true
+true	true
 
 # NULL hashes like the NULL of any other type
 query II
@@ -90,19 +90,36 @@ SELECT count(DISTINCT hash(v)) FROM (SELECT a AS v FROM stored UNION ALL SELECT 
 ----
 3
 
-# collated strings compare equal, so they hash equally
-query III
-SELECT hash('A' COLLATE NOCASE) = hash('a' COLLATE NOCASE), hash('A') = hash('a'), hash('A' COLLATE NOCASE) = hash('b' COLLATE NOCASE)
+# string collations and ordering keys are not applied, so these hashes stay as they were
+query IIIII
+SELECT hash('12:00:00+01'::TIMETZ), hash('0101'::BIT), hash(INTERVAL '1 month 3 days'), hash('A' COLLATE NOCASE), hash({'t': '12:00:00+01'::TIMETZ, 's': 'A' COLLATE NOCASE})
 ----
-true	false	false
+13605450143474883824	2527836143571797051	3575937371036775958	7589485043483979011	2894428462036555909
+
+# an index on hash() finds its rows after a restart with another default collation
+statement ok
+CREATE TABLE names (s VARCHAR);
 
 statement ok
-CREATE TABLE names (s VARCHAR COLLATE NOCASE);
+INSERT INTO names VALUES ('A'), ('b');
 
 statement ok
-INSERT INTO names VALUES ('duck'), ('DUCK'), ('Duck'), ('goose');
+CREATE INDEX names_hash ON names (hash(s));
 
-query II
-SELECT count(DISTINCT s), count(DISTINCT hash(s)) FROM names
+statement ok
+CHECKPOINT
+
+restart
+
+statement ok
+SET default_collation = 'nocase';
+
+query T
+SELECT s FROM names WHERE hash(s) = hash('A')
 ----
-2	2
+A
+
+query T
+SELECT s FROM names WHERE hash(s) = hash('A')
+----
+A

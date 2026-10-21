@@ -139,3 +139,22 @@ query II
 SELECT min(x), max(filename LIKE '%list_stats_b%') FROM read_parquet(['{TEST_DIR}/list_stats_a.parquet', '{TEST_DIR}/list_stats_b.parquet'], filename = true);
 ----
 1	true
+
+# with an explicit schema no file is bound before the scan, which checks an encryption configuration
+statement ok
+PRAGMA add_parquet_key('list_stats_key', '0123456789112345');
+
+query I
+SELECT count(*) FROM read_parquet(['{TEST_DIR}/list_stats_a.parquet', '{TEST_DIR}/list_stats_x.parquet'], schema = MAP {1: {name: 'x', type: 'INTEGER', default_value: NULL}});
+----
+2
+
+statement error
+SELECT count(*) FROM read_parquet(['{TEST_DIR}/list_stats_a.parquet', '{TEST_DIR}/list_stats_x.parquet'], schema = MAP {1: {name: 'x', type: 'INTEGER', default_value: NULL}}, encryption_config = {footer_key: 'list_stats_key'});
+----
+is not encrypted, but 'encryption_config' was set
+
+statement error
+SELECT count(*) FROM read_parquet(['{TEST_DIR}/list_stats_a.parquet', '{TEST_DIR}/list_stats_x.parquet'], schema = MAP {1: {name: 'x', type: 'INTEGER', default_value: NULL}}, encryption_config = {footer_key: 'missing_key'});
+----
+No key with name

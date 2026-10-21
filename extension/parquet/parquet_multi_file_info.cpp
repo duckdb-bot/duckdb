@@ -319,10 +319,15 @@ static vector<PartitionStatistics> ParquetMultiFileGetPartitionStats(ClientConte
 	// answered from their metadata
 	shared_ptr<ParquetEncryptionConfig> encryption_config;
 	optional_ptr<const ParquetOptions> parquet_options;
-	auto &file_bind_data = bind_data.bind_data->Cast<TableFunctionMultiFileData>().options.schema_bind_data;
+	auto &file_options = bind_data.bind_data->Cast<TableFunctionMultiFileData>().options;
+	auto &file_bind_data = file_options.schema_bind_data;
 	if (file_bind_data) {
 		parquet_options = ParquetScanFunction::GetFileOptions(*file_bind_data);
 		encryption_config = parquet_options->encryption_config;
+	} else if (file_options.named_parameters.find("encryption_config") != file_options.named_parameters.end()) {
+		// an encryption configuration is only checked when a file is bound, e.g. it is an error for a plaintext file,
+		// so the metadata of the files cannot answer the scan
+		return vector<PartitionStatistics>();
 	}
 	return GetCachedPartitionStats(context, bind_data, LoadMetadataCaches(context, *bind_data.file_list),
 	                               encryption_config, parquet_options);

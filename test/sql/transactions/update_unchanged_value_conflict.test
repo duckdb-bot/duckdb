@@ -2,7 +2,7 @@
 # description: An UPDATE that writes the current value of a cell conflicts with a concurrent UPDATE of that cell
 # group: [transactions]
 
-load __TEST_DIR__/update_unchanged_value_conflict.db
+load {TEST_DIR}/update_unchanged_value_conflict.db
 
 statement ok
 SET immediate_transaction_mode = true
@@ -309,3 +309,38 @@ query III
 SELECT min(i), max(i), count(*) FROM x
 ----
 0	4999	5000
+
+# the statistics include the value of an update that failed with a conflict, the root of the vector is kept
+statement ok
+CREATE TABLE y AS SELECT range i FROM range(1);
+
+statement ok
+CHECKPOINT
+
+statement ok con1
+BEGIN
+
+statement ok con2
+BEGIN
+
+statement ok con1
+UPDATE y SET i = i
+
+statement error con2
+UPDATE y SET i = 100000
+----
+<REGEX>:TransactionContext Error.*Conflict on update.*
+
+statement ok con2
+ROLLBACK
+
+statement ok con1
+COMMIT
+
+statement ok
+UPDATE y SET i = i
+
+query III
+SELECT min(i), max(i), count(*) FROM y
+----
+0	0	1

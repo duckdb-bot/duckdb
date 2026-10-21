@@ -535,6 +535,7 @@ static UpdateSegment::fetch_committed_range_function_t GetFetchCommittedRangeFun
 
 void UpdateSegment::FetchCommittedRange(idx_t start_row, idx_t count, Vector &result) {
 	D_ASSERT(count > 0);
+	auto lock_handle = lock.GetSharedLock();
 	if (!root) {
 		return;
 	}
@@ -547,7 +548,6 @@ void UpdateSegment::FetchCommittedRange(idx_t start_row, idx_t count, Vector &re
 	idx_t end_vector = (end_row - 1) / STANDARD_VECTOR_SIZE;
 	D_ASSERT(start_vector <= end_vector);
 
-	auto lock_handle = lock.GetSharedLock();
 	for (idx_t vector_idx = start_vector; vector_idx <= end_vector; vector_idx++) {
 		auto entry = GetUpdateNode(*lock_handle, vector_idx);
 		if (!entry.IsSet()) {
@@ -676,11 +676,14 @@ static UpdateSegment::fetch_rows_function_t GetFetchRowsFunction(PhysicalType ty
 
 void UpdateSegment::FetchRows(TransactionData transaction, const idx_t *offsets, const SelectionVector &sel,
                               idx_t fetch_count, Vector &result, idx_t result_offset) {
-	if (fetch_count == 0 || !root) {
+	if (fetch_count == 0) {
+		return;
+	}
+	auto lock_handle = lock.GetSharedLock();
+	if (!root) {
 		return;
 	}
 
-	auto lock_handle = lock.GetSharedLock();
 	for (idx_t idx = 0; idx < fetch_count;) {
 		const idx_t offset = offsets[sel.get_index(idx)];
 		if (offset > column_data.count) {
@@ -876,7 +879,7 @@ void UpdateSegment::CleanupUpdateInternal(const StorageLockKey &lock, UpdateInfo
 	}
 	auto &prev = UpdateInfo::Get(prev_pin);
 	if (values_written || prev.version_number != MAX_COMMIT_ID) {
-		// a root that held values stays, the statistics can include values of rolled back updates
+		// a root that held values stays, the statistics can include values of failed or rolled back updates
 		return;
 	}
 	// only updates that changed nothing were made to this segment, and none is left in this vector
@@ -1629,6 +1632,10 @@ void UpdateSegment::Update(TransactionData transaction, DuckTableEntry &table_en
 			return;
 		}
 	}
+	if (write_count > 0) {
+		// the statistics now include the new values, also when the update fails before writing them
+		values_written = true;
+	}
 	if (statistics_update_function == UpdateStringStatistics) {
 		// for strings - we need to push all strings we are going to place here into the string heap of the segment
 		update_p.Flatten();
@@ -1753,12 +1760,12 @@ void UpdateSegment::Update(TransactionData transaction, DuckTableEntry &table_en
 		return;
 	}
 	// write the new values into the root
-	values_written = true;
 	merge_update_function(root_info, update_format, ids, write_count, write_sel, vector_offset);
 	root_info.Verify();
 }
 
 bool UpdateSegment::HasUpdates() const {
+	auto read_lock = lock.GetSharedLock();
 	return root.get() != nullptr;
 }
 

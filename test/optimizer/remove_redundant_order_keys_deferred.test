@@ -62,6 +62,17 @@ SELECT b, row_number() OVER (PARTITION BY a, b) AS rn FROM {table} ORDER BY b
 10	1
 20	1
 
+# a second row with the same partition keys is numbered within the same partition
+statement ok
+INSERT INTO {table} VALUES (1, 10);
+
+query II
+SELECT b, row_number() OVER (PARTITION BY a, b) AS rn FROM {table} ORDER BY b, rn
+----
+10	1
+10	2
+20	1
+
 endloop
 
 query I
@@ -79,6 +90,16 @@ query II
 SELECT b, row_number() OVER (PARTITION BY a, c, b) AS rn FROM ck ORDER BY b
 ----
 10	1
+20	1
+
+statement ok
+INSERT INTO ck VALUES (1, 1, 10);
+
+query II
+SELECT b, row_number() OVER (PARTITION BY a, c, b) AS rn FROM ck ORDER BY b, rn
+----
+10	1
+10	2
 20	1
 
 # an immediate primary key still erases the keys behind it

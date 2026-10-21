@@ -597,7 +597,7 @@ static void FetchRowsInternal(const SnapshotView &view, UpdateInfo &root, const 
 		const idx_t result_idx = result_offset + fetch_offset + idx;
 		idx_t update_idx;
 		if (!FindUpdatedTuple(root, row_idx, update_idx)) {
-			// every update in the chain is also present in the root
+			// every tuple that an update in the chain changed is also present in the root
 			continue;
 		}
 		auto base_value = result.Get(result_idx);
@@ -710,6 +710,49 @@ void UpdateSegment::FetchRows(TransactionData transaction, const idx_t *offsets,
 	}
 }
 
+idx_t UpdateSegment::GetWrittenTuples(UpdateInfo &info, sel_t *result) {
+	auto read_lock = lock.GetSharedLock();
+	auto entry = GetUpdateNode(*read_lock, info.vector_index);
+	if (!entry.IsSet()) {
+		return 0;
+	}
+	auto pin = entry.Pin();
+	auto &root_info = UpdateInfo::Get(pin);
+	auto root_tuples = root_info.GetTuples();
+	auto tuples = info.GetTuples();
+	if (root_info.N == STANDARD_VECTOR_SIZE) {
+		memcpy(result, tuples, info.N * sizeof(sel_t));
+		return info.N;
+	}
+	idx_t root_idx = 0;
+	idx_t result_count = 0;
+	for (idx_t i = 0; i < info.N; i++) {
+		while (root_idx < root_info.N && root_tuples[root_idx] < tuples[i]) {
+			root_idx++;
+		}
+		if (root_idx < root_info.N && root_tuples[root_idx] == tuples[i]) {
+			result[result_count++] = tuples[i];
+		}
+	}
+	return result_count;
+}
+
+idx_t UpdateSegment::GetUnchangedSize(UpdateInfo &info) {
+	if (info.N == 0) {
+		return 0;
+	}
+	auto read_lock = lock.GetSharedLock();
+	auto entry = GetUpdateNode(*read_lock, info.vector_index);
+	if (entry.IsSet()) {
+		auto pin = entry.Pin();
+		if (UpdateInfo::Get(pin).N > 0) {
+			// the update changed values, or another one did
+			return 0;
+		}
+	}
+	return UpdateInfo::GetAllocSize(type_size, info.max, info.value_max);
+}
+
 //===--------------------------------------------------------------------===//
 // Rollback update
 //===--------------------------------------------------------------------===//
@@ -726,6 +769,11 @@ static void RollbackUpdate(UpdateInfo &root, UpdateInfo &rollback_info) {
 	for (idx_t i = 0; i < root.N; i++) {
 		auto id = root_tuples[i];
 		auto value = root_data[i];
+		while (rollback_idx < rollback_info.N && rollback_tuples[rollback_idx] < id) {
+			// a tuple the update did not change is not in the root, and has no value from before the update
+			D_ASSERT(!value_mask.RowIsValid(rollback_idx));
+			rollback_idx++;
+		}
 		if (rollback_idx < rollback_info.N && rollback_tuples[rollback_idx] == id) {
 			if (!value_mask.RowIsValid(rollback_idx++)) {
 				// the tuple had no update before: remove it from the root
@@ -736,7 +784,11 @@ static void RollbackUpdate(UpdateInfo &root, UpdateInfo &rollback_info) {
 		root_tuples[result_count] = id;
 		root_data[result_count++] = value;
 	}
-	D_ASSERT(rollback_idx == rollback_info.N);
+#ifdef DEBUG
+	for (; rollback_idx < rollback_info.N; rollback_idx++) {
+		D_ASSERT(!value_mask.RowIsValid(rollback_idx));
+	}
+#endif
 	root.N = UnsafeNumericCast<sel_t>(result_count);
 }
 
@@ -791,10 +843,12 @@ void UpdateSegment::RollbackUpdate(UpdateInfo &info) {
 	if (!entry.IsSet()) {
 		return;
 	}
-	auto pin = entry.Pin();
-	rollback_update_function(UpdateInfo::Get(pin), info);
+	{
+		auto pin = entry.Pin();
+		rollback_update_function(UpdateInfo::Get(pin), info);
+	}
 
-	// clean up the update chain
+	// clean up the update chain, which can free the root
 	CleanupUpdateInternal(*lock_handle, info);
 }
 
@@ -816,6 +870,20 @@ void UpdateSegment::CleanupUpdateInternal(const StorageLockKey &lock, UpdateInfo
 	}
 	if (next_pin.IsSet()) {
 		UpdateInfo::Get(next_pin).prev = info.prev;
+	}
+	if (!prev_pin.IsSet() || next_pin.IsSet()) {
+		return;
+	}
+	auto &prev = UpdateInfo::Get(prev_pin);
+	if (values_written || prev.version_number != MAX_COMMIT_ID) {
+		// a root that held values stays, the statistics can include values of rolled back updates
+		return;
+	}
+	// only updates that changed nothing were made to this segment, and none is left in this vector
+	prev_pin = UndoBufferReference();
+	root->info[info.vector_index] = UndoBufferPointer();
+	if (--root->info_count == 0) {
+		root.reset();
 	}
 }
 
@@ -1317,6 +1385,31 @@ idx_t GetEffectiveUpdatesValidity(UnifiedVectorFormat &update, row_t *ids, idx_t
 	return effective_count;
 }
 
+//! The tuples a transaction records in the update info of the validity: those that are NULL before or after it
+static idx_t GetValidityLockTuples(UnifiedVectorFormat &update, row_t *ids, idx_t count, SelectionVector &sel,
+                                   Vector &base_data, idx_t id_offset) {
+	auto &original_validity = FlatVector::ValidityMutable(base_data);
+	if (update.validity.AllValid() && original_validity.AllValid()) {
+		return 0;
+	}
+
+	SelectionVector new_sel;
+	new_sel.Initialize(STANDARD_VECTOR_SIZE);
+
+	idx_t lock_count = 0;
+	for (idx_t i = 0; i < count; i++) {
+		auto sel_idx = sel.get_index(i);
+		auto update_idx = update.sel->get_index(sel_idx);
+		auto original_idx = UnsafeNumericCast<idx_t>(ids[sel_idx]) - id_offset;
+		if (original_validity.RowIsValid(original_idx) && update.validity.RowIsValid(update_idx)) {
+			continue;
+		}
+		new_sel.set_index(lock_count++, sel_idx);
+	}
+	sel.Initialize(new_sel);
+	return lock_count;
+}
+
 template <class T>
 idx_t TemplatedGetEffectiveUpdates(UnifiedVectorFormat &update, row_t *ids, idx_t count, SelectionVector &sel,
                                    Vector &base_data, idx_t id_offset) {
@@ -1511,13 +1604,28 @@ void UpdateSegment::Update(TransactionData transaction, DuckTableEntry &table_en
 	idx_t vector_index = (UnsafeNumericCast<idx_t>(first_id) - row_group_start) / STANDARD_VECTOR_SIZE;
 	idx_t vector_offset = row_group_start + vector_index * STANDARD_VECTOR_SIZE;
 
-	if (!root || vector_index >= root->info.size() || !root->info[vector_index].IsSet()) {
+	// the tuples whose values are written into the root, and the tuples the update info of the transaction records
+	SelectionVector write_sel(sel);
+	idx_t write_count = count;
+	SelectionVector lock_sel(sel);
+	idx_t lock_count = count;
+	bool has_values = false;
+	if (root && vector_index < root->info.size() && root->info[vector_index].IsSet()) {
+		auto pin = root->info[vector_index].Pin();
+		has_values = UpdateInfo::Get(pin).N > 0;
+	}
+	if (!has_values) {
 		// get a list of effective updates - i.e. updates that actually change rows
 		// if updates have the same value as the base row we can skip them
-		// we only do that if we have no updates for this vector
+		// we only do that if no update wrote a value into this vector
 		// we could do it otherwise - but that would require merging updates in order to find the current values
-		count = get_effective_updates(update_format, ids, count, sel, base_data, vector_offset);
-		if (count == 0) {
+		write_count = get_effective_updates(update_format, ids, count, write_sel, base_data, vector_offset);
+		// a transaction still records the skipped tuples (without a value), so that concurrent writes conflict
+		if (write_count < count && statistics_update_function == UpdateValidityStatistics) {
+			// a value that stays valid is recorded by the update of the data
+			lock_count = GetValidityLockTuples(update_format, ids, count, lock_sel, base_data, vector_offset);
+		}
+		if (write_count == 0 && (lock_count == 0 || !transaction.transaction)) {
 			return;
 		}
 	}
@@ -1525,8 +1633,8 @@ void UpdateSegment::Update(TransactionData transaction, DuckTableEntry &table_en
 		// for strings - we need to push all strings we are going to place here into the string heap of the segment
 		update_p.Flatten();
 		auto update_data = FlatVector::GetDataMutable<string_t>(update_p);
-		for (idx_t i = 0; i < count; i++) {
-			auto idx = sel.get_index(i);
+		for (idx_t i = 0; i < write_count; i++) {
+			auto idx = write_sel.get_index(i);
 			update_data[idx] = GetStringHeap().AddBlob(update_data[idx]);
 		}
 		update_p.ToUnifiedFormat(update_format);
@@ -1538,7 +1646,7 @@ void UpdateSegment::Update(TransactionData transaction, DuckTableEntry &table_en
 
 	if (!root->info[vector_index].IsSet()) {
 		// there are no updates for this vector yet: create the root update info
-		idx_t compact_capacity = UpdateInfo::GetCompactCapacity(count);
+		idx_t compact_capacity = UpdateInfo::GetCompactCapacity(write_count);
 		auto handle = root->allocator.Allocate(UpdateInfo::GetAllocSize(type_size, compact_capacity));
 		auto &root_info = UpdateInfo::Get(handle);
 		UpdateInfo::Initialize(root_info, table_entry, MAX_COMMIT_ID, row_group_start, compact_capacity);
@@ -1546,12 +1654,13 @@ void UpdateSegment::Update(TransactionData transaction, DuckTableEntry &table_en
 		root_info.vector_index = vector_index;
 		root_info.column_index = column_index;
 		root->info[vector_index] = handle.GetBufferPointer();
+		root->info_count++;
 	}
 
 	// make room in the root before modifying anything
 	{
 		auto root_pin = root->info[vector_index].Pin();
-		ReallocateRootInfoIfNeeded(UpdateInfo::Get(root_pin), count, vector_index);
+		ReallocateRootInfoIfNeeded(UpdateInfo::Get(root_pin), write_count, vector_index);
 	}
 	auto root_pointer = root->info[vector_index];
 	auto root_pin = root_pointer.Pin();
@@ -1559,8 +1668,8 @@ void UpdateSegment::Update(TransactionData transaction, DuckTableEntry &table_en
 	if (transaction.transaction) {
 		// check if there are any conflicts and search for the update info that belongs to this transaction
 		UndoBufferReference node_ref;
-		CheckForConflicts(root_info.next, transaction, ids, sel, count, UnsafeNumericCast<row_t>(vector_offset),
-		                  node_ref);
+		CheckForConflicts(root_info.next, transaction, ids, lock_sel, lock_count,
+		                  UnsafeNumericCast<row_t>(vector_offset), node_ref);
 		optional_ptr<UpdateInfo> node;
 		if (node_ref.IsSet()) {
 			node = &UpdateInfo::Get(node_ref);
@@ -1578,17 +1687,17 @@ void UpdateSegment::Update(TransactionData transaction, DuckTableEntry &table_en
 				save_required = false;
 			} else {
 				auto node_value_count = node->GetValueMask().CountValid(node->N);
-				fits = node->N + count <= node->max && node_value_count + count <= node->value_max;
+				fits = node->N + lock_count <= node->max && node_value_count + lock_count <= node->value_max;
 			}
 		} else if (root_info.N == 0 || root_info.N == STANDARD_VECTOR_SIZE) {
 			// either none or all of the tuples have a value in the root
-			tuple_count = count;
-			value_count = root_info.N == 0 ? 0 : count;
+			tuple_count = lock_count;
+			value_count = root_info.N == 0 ? 0 : lock_count;
 		} else {
-			CountUndoValues(node, root_info, ids, count, sel, vector_offset, tuple_count, value_count);
+			CountUndoValues(node, root_info, ids, lock_count, lock_sel, vector_offset, tuple_count, value_count);
 		}
 		if (save_required && node && !fits) {
-			CountUndoValues(node, root_info, ids, count, sel, vector_offset, tuple_count, value_count);
+			CountUndoValues(node, root_info, ids, lock_count, lock_sel, vector_offset, tuple_count, value_count);
 			if (tuple_count == node->N) {
 				// this transaction updated all of these tuples before - their values before it are saved
 				save_required = false;
@@ -1599,7 +1708,7 @@ void UpdateSegment::Update(TransactionData transaction, DuckTableEntry &table_en
 			// the update info of this transaction does not change
 		} else if (fits) {
 			// the values from before the update fit into the update info of this transaction
-			save_undo_function(*node, root_info, ids, count, sel, vector_offset, *node);
+			save_undo_function(*node, root_info, ids, lock_count, lock_sel, vector_offset, *node);
 			node->Verify();
 		} else {
 			// create a new update info that fits all values from before the updates of this transaction
@@ -1615,7 +1724,7 @@ void UpdateSegment::Update(TransactionData transaction, DuckTableEntry &table_en
 			new_node.segment = this;
 			new_node.vector_index = vector_index;
 			new_node.column_index = column_index;
-			save_undo_function(node ? *node : new_node, root_info, ids, count, sel, vector_offset, new_node);
+			save_undo_function(node ? *node : new_node, root_info, ids, lock_count, lock_sel, vector_offset, new_node);
 			new_node.Verify();
 
 			// insert the new update info into the chain - replacing the old one (if any)
@@ -1640,8 +1749,12 @@ void UpdateSegment::Update(TransactionData transaction, DuckTableEntry &table_en
 			}
 		}
 	}
+	if (write_count == 0) {
+		return;
+	}
 	// write the new values into the root
-	merge_update_function(root_info, update_format, ids, count, sel, vector_offset);
+	values_written = true;
+	merge_update_function(root_info, update_format, ids, write_count, write_sel, vector_offset);
 	root_info.Verify();
 }
 
@@ -1662,7 +1775,8 @@ bool UpdateSegment::HasUncommittedUpdates(idx_t vector_index) {
 	}
 	auto pin = entry.Pin();
 	auto &info = UpdateInfo::Get(pin);
-	if (info.HasNext()) {
+	// updates that changed no value hold no values in the root
+	if (info.N > 0 && info.HasNext()) {
 		return true;
 	}
 	return false;

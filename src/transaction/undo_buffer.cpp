@@ -10,11 +10,13 @@
 #include "duckdb/main/database.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
 #include "duckdb/storage/data_table.hpp"
+#include "duckdb/storage/table/update_segment.hpp"
 #include "duckdb/storage/write_ahead_log.hpp"
 #include "duckdb/transaction/cleanup_state.hpp"
 #include "duckdb/transaction/commit_state.hpp"
 #include "duckdb/transaction/delete_info.hpp"
 #include "duckdb/transaction/rollback_state.hpp"
+#include "duckdb/transaction/update_info.hpp"
 #include "duckdb/transaction/wal_write_state.hpp"
 #include "duckdb/transaction/duck_transaction.hpp"
 
@@ -123,9 +125,13 @@ UndoBufferProperties UndoBuffer::GetProperties() {
 	IteratorState iterator_state;
 	IterateEntries(iterator_state, [&](UndoFlags entry_type, data_ptr_t data) {
 		switch (entry_type) {
-		case UndoFlags::UPDATE_TUPLE:
+		case UndoFlags::UPDATE_TUPLE: {
 			properties.has_updates = true;
+			// an update that changed no value is not written to the WAL
+			auto info = reinterpret_cast<UpdateInfo *>(data);
+			properties.estimated_size -= info->segment->GetUnchangedSize(*info);
 			break;
+		}
 		case UndoFlags::DELETE_TUPLE: {
 			auto info = reinterpret_cast<DeleteInfo *>(data);
 			if (info->is_consecutive) {

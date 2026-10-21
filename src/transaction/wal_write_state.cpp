@@ -211,6 +211,12 @@ void WALWriteState::WriteDelete(DeleteInfo &info) {
 }
 
 void WALWriteState::WriteUpdate(UpdateInfo &info) {
+	// only the tuples the update changed are logged
+	sel_t tuples[STANDARD_VECTOR_SIZE];
+	auto tuple_count = info.segment->GetWrittenTuples(info, tuples);
+	if (tuple_count == 0) {
+		return;
+	}
 	// switch to the current table, if necessary
 	auto &column_data = info.segment->column_data;
 
@@ -234,21 +240,20 @@ void WALWriteState::WriteUpdate(UpdateInfo &info) {
 	// write the row ids into the chunk
 	auto row_ids = FlatVector::GetDataMutable<row_t>(update_chunk->data[1]);
 	idx_t start = info.row_group_start + info.vector_index * STANDARD_VECTOR_SIZE;
-	auto tuples = info.GetTuples();
-	for (idx_t i = 0; i < info.N; i++) {
+	for (idx_t i = 0; i < tuple_count; i++) {
 		row_ids[tuples[i]] = UnsafeNumericCast<int64_t>(start + tuples[i]);
 	}
 	if (column_data.type.id() == LogicalTypeId::VALIDITY) {
 		// zero-initialize the booleans
 		// FIXME: this is only required because of NullValue<T> in Vector::Serialize...
 		auto booleans = FlatVector::GetDataMutable<bool>(update_chunk->data[0]);
-		for (idx_t i = 0; i < info.N; i++) {
+		for (idx_t i = 0; i < tuple_count; i++) {
 			auto idx = tuples[i];
 			booleans[idx] = false;
 		}
 	}
-	SelectionVector sel(tuples, info.N);
-	update_chunk->Slice(sel, info.N);
+	SelectionVector sel(tuples, tuple_count);
+	update_chunk->Slice(sel, tuple_count);
 
 	// construct the column index path
 	vector<column_t> column_indexes;

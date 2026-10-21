@@ -44,6 +44,10 @@ public:
 	            row_t *ids, idx_t count, Vector &base_data, idx_t row_group_start);
 	void FetchRows(TransactionData transaction, const idx_t *offsets, const SelectionVector &sel, idx_t count,
 	               Vector &result, idx_t result_offset);
+	//! Get the tuples of an update whose values it wrote, the tuples it did not change are only in the update info
+	idx_t GetWrittenTuples(UpdateInfo &info, sel_t *result);
+	//! The size of an update info that changed no value, or 0
+	idx_t GetUnchangedSize(UpdateInfo &info);
 
 	void RollbackUpdate(UpdateInfo &info);
 	void CleanupUpdateInternal(const StorageLockKey &lock, UpdateInfo &info);
@@ -59,6 +63,8 @@ private:
 	mutable StorageLock lock;
 	//! The root node (if any)
 	unique_ptr<UpdateNode> root;
+	//! Whether an update wrote values into the root, and not only recorded tuples it did not change
+	bool values_written = false;
 	//! Update statistics
 	SegmentStatistics stats;
 	//! Stats lock
@@ -109,6 +115,8 @@ struct UpdateNode {
 
 	UndoBufferAllocator allocator;
 	vector<UndoBufferPointer> info;
+	//! The number of vectors that have a root update info
+	idx_t info_count = 0;
 };
 
 } // namespace duckdb

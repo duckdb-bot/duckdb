@@ -142,6 +142,24 @@ WHERE constraint_schema = 'scheme' AND check_clause LIKE 'CHECK%'
 ----
 True
 
+# a CHECK appears once, whatever the number of columns it references
+statement ok
+CREATE TABLE scheme.check_columns (a INTEGER NOT NULL, b INTEGER, CHECK (a > 0 AND b > 0), CHECK (1 = 1), CHECK (a < b));
+
+query II
+SELECT constraint_name, check_clause
+FROM information_schema.check_constraints
+WHERE constraint_schema = 'scheme' AND constraint_name LIKE 'check_columns%'
+ORDER BY ALL
+----
+check_columns_a_b_check	CHECK(((a > 0) AND (b > 0)))
+check_columns_a_b_check	CHECK((a < b))
+check_columns_a_not_null	a IS NOT NULL
+check_columns_check	CHECK((1 = 1))
+
+statement ok
+DROP TABLE scheme.check_columns
+
 statement ok
 CREATE OR REPLACE VIEW scheme.emp_dept_view AS SELECT emp.*, dept.dept_name FROM scheme.emp JOIN scheme.dept ON emp.dept_id = dept.dept_id;
 

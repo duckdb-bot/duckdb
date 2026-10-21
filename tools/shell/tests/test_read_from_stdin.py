@@ -161,11 +161,15 @@ class TestReadFromStdin(object):
         assert len(estimates) == 1
         return int(estimates[0].replace(',', ''))
 
-    def test_read_stdin_csv_cardinality(self, shell):
-        # the sniffer reads all of this input, so the pipe is estimated like the file
+    # the sniffer reads all of this input, in one buffer or in many, so the pipe is estimated like the file
+    @pytest.mark.parametrize("options", [
+        '',
+        ', buffer_size = 8192, sample_size = -1'
+    ])
+    def test_read_stdin_csv_cardinality(self, shell, options):
         input_file = 'data/csv/test/test.csv'
-        pipe_estimate = self.scan_estimate(shell, input_file, '/dev/stdin')
-        file_estimate = self.scan_estimate(shell, input_file, input_file)
+        pipe_estimate = self.scan_estimate(shell, input_file, '/dev/stdin', options)
+        file_estimate = self.scan_estimate(shell, input_file, input_file, options)
         assert pipe_estimate == file_estimate
 
     def test_read_stdin_csv_cardinality_partial(self, shell):

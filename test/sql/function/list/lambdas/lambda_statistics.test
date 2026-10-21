@@ -31,6 +31,18 @@ SELECT list_reduce(ul, lambda acc, x: acc || substring(x, 2, 1) || u1[2] || a1[2
 ----
 óúüçéb	Qóádçée
 
+# the accumulator has no statistics, whatever the statistics of the elements and the initial value
+query II
+SELECT list_reduce(al || ['rst'], lambda acc, x: substring(acc, 1, 2) || u1[1] || substring(acc, 3, 1) || x[1]), list_reduce(al, lambda acc, x: substring(acc, 1, 2) || x[2], 'é') FROM caps;
+----
+xyáár	éyv
+
+# the string variants of list_extract and array_extract
+query IIII
+SELECT list_extract(a1, 2), list_extract(u1, 2), array_extract(a1, -1), list_transform([1, 3], lambda i: list_extract(u1, i) || list_extract(a1, i) || array_extract(a1, i)) FROM caps;
+----
+b	é	c	[áaa, ícc]
+
 query I
 SELECT list_transform(ul, lambda x: list_transform([1, 2, 3], lambda i: substring(a1, i, 1) || u1[i] || x[i])) FROM caps;
 ----
@@ -55,6 +67,17 @@ SELECT list_transform(['óúü', 'xyz']::VARCHAR[2], lambda x: x[2] || substring
 # NULL and empty lists, NULL elements and NULL captures
 statement ok
 CREATE TABLE nulls AS SELECT NULL::VARCHAR AS n, 'abc' AS a;
+
+statement ok
+CREATE TABLE stored_lists AS SELECT * FROM (VALUES (1, ['ab', NULL]), (2, NULL), (3, []), (4, ['é', 'xy'])) t(id, l);
+
+query II
+SELECT id, list_transform(l, lambda x: x[2] || a[2]) FROM stored_lists, nulls ORDER BY id;
+----
+1	[bb, NULL]
+2	NULL
+3	[]
+4	[b, yb]
 
 query IIII
 SELECT list_transform([1, 2], lambda i: n[i] || a[i]), list_transform(NULL::VARCHAR[], lambda x: x[1] || a[1]), list_transform([]::VARCHAR[], lambda x: x[1]), list_transform(['ab', NULL], lambda x: x[2] || a[2]) FROM nulls;

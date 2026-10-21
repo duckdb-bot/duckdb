@@ -42,11 +42,11 @@ SELECT list_reduce(k, lambda acc, x, i: acc + stats(x).max::INT * 100 + stats(m)
 ----
 2040
 
-# an outer lambda parameter and a captured column inside a nested lambda
+# an outer lambda parameter and a captured column inside a nested lambda, and the outer parameter after it
 query I
-SELECT list_transform(l, lambda x: list_transform([1], lambda i: [stats(x).max_string_length::INT, stats(n).min::INT])) FROM t;
+SELECT list_transform(l, lambda x: [list_transform(k, lambda y: [stats(y).max::INT, stats(x).max_string_length::INT, stats(n).min::INT]), [[stats(x).max_string_length::INT]]]) FROM t;
 ----
-[[[2, 10]], [[2, 10]]]
+[[[[5, 2, 10], [5, 2, 10]], [[2]]], [[[5, 2, 10], [5, 2, 10]], [[2]]]]
 
 # a lambda in an unnest
 query I

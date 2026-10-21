@@ -8620,7 +8620,10 @@ typedef enum DUCKDB_V2_EXPRESSION_TYPE {
 	//! `IS DISTINCT FROM`. Two children.
 	DUCKDB_V2_EXPRESSION_TYPE_COMPARE_DISTINCT_FROM = 37,
 
-	//! `BETWEEN`. Three children: the value tested, the lower bound and the upper bound.
+	/*!
+	 * `BETWEEN`. Three children: the value tested, the lower bound and the upper bound.
+	 * `duckdb_v2_expression_between_get_inclusive()` tells whether each bound is inclusive.
+	 */
 	DUCKDB_V2_EXPRESSION_TYPE_COMPARE_BETWEEN = 38,
 
 	//! `IS NOT DISTINCT FROM`. Two children.
@@ -8866,6 +8869,29 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_expression_function_get_qname(duckdb_v2_e
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_expression_cast_get_mode(duckdb_v2_expression_handle expression,
                                                                 DUCKDB_V2_CAST_MODE *mode,
                                                                 duckdb_v2_error_info_handle *err);
+#endif
+
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+/*!
+ * Returns whether the lower and the upper bound of a `BETWEEN` node are inclusive.
+ *
+ * Fails if the node is not of type `EXPRESSION_TYPE_COMPARE_BETWEEN`. A SQL `BETWEEN` includes both bounds, but the
+ * optimizer also folds pairs of range comparisons into this node, so `x > a AND x < b` yields a node with both bounds
+ * exclusive.
+ *
+ * history:
+ * - unstable: v2.0.0
+ *
+ * @param expression The `BETWEEN` node.
+ * @param lower_inclusive Receives whether the value can equal the lower bound.
+ * @param upper_inclusive Receives whether the value can equal the upper bound.
+ * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
+ * `duckdb_v2_error_info_destroy()`.
+ * @return DUCKDB_V2_ERROR
+ */
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_expression_between_get_inclusive(duckdb_v2_expression_handle expression,
+                                                                        bool *lower_inclusive, bool *upper_inclusive,
+                                                                        duckdb_v2_error_info_handle *err);
 #endif
 
 /* --- Struct definitions for expression --- */

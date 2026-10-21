@@ -70,7 +70,7 @@ enums:
         description: '`IS DISTINCT FROM`. Two children.'
       EXPRESSION_TYPE_COMPARE_BETWEEN:
         value: 38
-        description: '`BETWEEN`. Three children: the value tested, the lower bound and the upper bound.'
+        description: '`BETWEEN`. Three children: the value tested, the lower bound and the upper bound. `[[expression_between_get_inclusive]]` tells whether each bound is inclusive.'
       EXPRESSION_TYPE_COMPARE_NOT_DISTINCT_FROM:
         value: 40
         description: '`IS NOT DISTINCT FROM`. Two children.'
@@ -328,6 +328,35 @@ functions:
         indirection: 1
         kind: OUT
         description: Receives the cast mode.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  expression_between_get_inclusive:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-21" ]
+    description: |
+      Returns whether the lower and the upper bound of a `BETWEEN` node are inclusive.
+
+      Fails if the node is not of type `EXPRESSION_TYPE_COMPARE_BETWEEN`. A SQL `BETWEEN` includes both bounds, but
+      the optimizer also folds pairs of range comparisons into this node, so `x > a AND x < b` yields a node with
+      both bounds exclusive.
+    parameters:
+      expression:
+        type: expression
+        description: The `BETWEEN` node.
+      lower_inclusive:
+        type: bool
+        indirection: 1
+        kind: OUT
+        description: Receives whether the value can equal the lower bound.
+      upper_inclusive:
+        type: bool
+        indirection: 1
+        kind: OUT
+        description: Receives whether the value can equal the upper bound.
       err:
         type: error_info
         indirection: 1

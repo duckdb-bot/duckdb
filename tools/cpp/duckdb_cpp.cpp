@@ -5204,6 +5204,20 @@ auto Expression::GetCastMode() const -> CastMode {
 	return static_cast<CastMode>(mode);
 }
 
+auto Expression::IsLowerBoundInclusive() const -> bool {
+	bool lower_inclusive = true;
+	bool upper_inclusive = true;
+	CheckedAPICall(duckdb_v2_expression_between_get_inclusive, handle(), &lower_inclusive, &upper_inclusive);
+	return lower_inclusive;
+}
+
+auto Expression::IsUpperBoundInclusive() const -> bool {
+	bool lower_inclusive = true;
+	bool upper_inclusive = true;
+	CheckedAPICall(duckdb_v2_expression_between_get_inclusive, handle(), &lower_inclusive, &upper_inclusive);
+	return upper_inclusive;
+}
+
 //----------------------------------------------------------------------------------------------------------------------
 // Custom Type
 //----------------------------------------------------------------------------------------------------------------------

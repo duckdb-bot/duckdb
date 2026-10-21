@@ -1,4 +1,5 @@
 #include "duckdb/main/capi_v2/capi_v2_internal.hpp"
+#include "duckdb/planner/expression/bound_between_expression.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
@@ -217,5 +218,21 @@ DUCKDB_V2_ERROR duckdb_v2_expression_cast_get_mode(duckdb_v2_expression_handle e
 		CV2ExpressionRequireType(node, duckdb::ExpressionType::OPERATOR_CAST, "duckdb_v2_expression_cast_get_mode");
 		const auto &cast = node.Cast<duckdb::BoundFunctionExpression>();
 		*mode = duckdb::BoundCastExpression::IsTryCast(cast) ? DUCKDB_V2_CAST_MODE_TRY : DUCKDB_V2_CAST_MODE_NORMAL;
+	});
+}
+
+DUCKDB_V2_ERROR duckdb_v2_expression_between_get_inclusive(duckdb_v2_expression_handle expression,
+                                                           bool *lower_inclusive, bool *upper_inclusive,
+                                                           duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(expression);
+	DUCKDB_CHECK_ARG(lower_inclusive);
+	DUCKDB_CHECK_ARG(upper_inclusive);
+	return WithErrorHandler(err, [&]() {
+		const auto &node = *Convert(expression);
+		CV2ExpressionRequireType(node, duckdb::ExpressionType::COMPARE_BETWEEN,
+		                         "duckdb_v2_expression_between_get_inclusive");
+		const auto &between = node.Cast<duckdb::BoundFunctionExpression>();
+		*lower_inclusive = duckdb::BoundBetweenExpression::LowerInclusive(between);
+		*upper_inclusive = duckdb::BoundBetweenExpression::UpperInclusive(between);
 	});
 }

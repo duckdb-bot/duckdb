@@ -4440,6 +4440,8 @@ enum class ExpressionType : uint8_t {
 	/// `IS DISTINCT FROM`. Two children.
 	COMPARE_DISTINCT_FROM = 37,
 	/// `BETWEEN`. Three children: the value tested, the lower bound and the upper bound.
+	/// `Expression::IsLowerBoundInclusive` and `Expression::IsUpperBoundInclusive` tell whether each bound is
+	/// inclusive.
 	COMPARE_BETWEEN = 38,
 	/// `IS NOT DISTINCT FROM`. Two children.
 	COMPARE_NOT_DISTINCT_FROM = 40,
@@ -4504,6 +4506,13 @@ public:
 	/// Whether an `OPERATOR_CAST` node is a regular `CAST` or a `TRY_CAST`.
 	/// @throws InvalidInputException When the node is not a cast.
 	auto GetCastMode() const -> CastMode;
+	/// Whether a `COMPARE_BETWEEN` node includes its lower bound. The optimizer also folds range comparisons into
+	/// this node, so `x > a AND x < b` includes neither bound.
+	/// @throws InvalidInputException When the node is not a `BETWEEN`.
+	auto IsLowerBoundInclusive() const -> bool;
+	/// Whether a `COMPARE_BETWEEN` node includes its upper bound.
+	/// @throws InvalidInputException When the node is not a `BETWEEN`.
+	auto IsUpperBoundInclusive() const -> bool;
 
 private:
 	explicit Expression(void *impl);

@@ -122,8 +122,8 @@ bool ProbeIsFunction(DUCKDB_V2_EXPRESSION_TYPE type) {
 }
 
 // Renders a predicate: constants as their text, column references as "col<declared index>", plain function calls
-// as "qualified.name(children)", comparisons as "op(children)", casts as "cast(child)::TYPE", and everything else
-// as "tag(children)".
+// as "qualified.name(children)", comparisons as "op(children)", casts as "cast(child)::TYPE", BETWEEN as
+// "between[children]" with a parenthesis for each exclusive bound, and everything else as "tag(children)".
 std::string ProbeRender(duckdb_v2_table_function_filter_pushdown_info_handle info, duckdb_v2_expression_handle expr,
                         duckdb_v2_error_info_handle *err, bool &ok) {
 	DUCKDB_V2_EXPRESSION_TYPE type = DUCKDB_V2_EXPRESSION_TYPE_INVALID;
@@ -186,7 +186,14 @@ std::string ProbeRender(duckdb_v2_table_function_filter_pushdown_info_handle inf
 		       ")::" + target_text;
 	}
 	if (type == DUCKDB_V2_EXPRESSION_TYPE_COMPARE_BETWEEN) {
-		return "between(" + children + ")";
+		bool lower_inclusive = false;
+		bool upper_inclusive = false;
+		if (duckdb_v2_expression_between_get_inclusive(expr, &lower_inclusive, &upper_inclusive, err) !=
+		    DUCKDB_V2_ERROR_NONE) {
+			ok = false;
+			return "";
+		}
+		return std::string("between") + (lower_inclusive ? "[" : "(") + children + (upper_inclusive ? "]" : ")");
 	}
 	if (type == DUCKDB_V2_EXPRESSION_TYPE_BOUND_FUNCTION) {
 		duckdb_v2_qname_handle qname = nullptr;
@@ -243,6 +250,9 @@ void ProbeMisuse(duckdb_v2_table_function_filter_pushdown_info_handle info, duck
 	count_failure(duckdb_v2_expression_function_get_qname(constant, &qname, &err), &err);
 	DUCKDB_V2_CAST_MODE mode = DUCKDB_V2_CAST_MODE_NORMAL;
 	count_failure(duckdb_v2_expression_cast_get_mode(root, &mode, &err), &err);
+	bool lower_inclusive = false;
+	bool upper_inclusive = false;
+	count_failure(duckdb_v2_expression_between_get_inclusive(root, &lower_inclusive, &upper_inclusive, &err), &err);
 	duckdb_v2_expression_handle child = nullptr;
 	count_failure(duckdb_v2_expression_get_child(root, 2, &child, &err), &err);
 	count_failure(duckdb_v2_expression_get_child(column, 0, &child, &err), &err);
@@ -443,9 +453,9 @@ TEST_CASE("V2 expression: type-specific accessors refuse other node types", "[ca
 	duckdb_v2_result_destroy(&result);
 	REQUIRE(expression_probe.failure.empty());
 	REQUIRE(expression_probe.filters == Filters {"<(col0, 3)"});
-	// Seven accessor misuses on the expression plus three out-of-bounds indices on the pushdown info, counted on
+	// Eight accessor misuses on the expression plus three out-of-bounds indices on the pushdown info, counted on
 	// every round the optimizer offered the predicate.
-	REQUIRE(expression_probe.misuse_failures % 10 == 0);
+	REQUIRE(expression_probe.misuse_failures % 11 == 0);
 	REQUIRE(expression_probe.misuse_failures > 0);
 }
 
@@ -464,7 +474,7 @@ TEST_CASE("V2 expression: conjunctions, operators and functions", "[capi_v2][exp
 	        Filters {"=(\"system\".main.lower(col1), 2)"});
 	REQUIRE(Probe(fx.conn, "SELECT count(*) FROM expr_probe() WHERE a IN (1, 2)", 2) == Filters {"in(col0, 1, 2)"});
 	REQUIRE(Probe(fx.conn, "SELECT count(*) FROM expr_probe() WHERE a BETWEEN 1 AND 2", 2) ==
-	        Filters {"between(col0, 1, 2)"});
+	        Filters {"between[col0, 1, 2]"});
 }
 
 TEST_CASE("V2 expression: casts report their mode and target", "[capi_v2][expression]") {
@@ -475,6 +485,23 @@ TEST_CASE("V2 expression: casts report their mode and target", "[capi_v2][expres
 	        Filters {"=(cast(col1)::INTEGER, 3)"});
 	REQUIRE(Probe(fx.conn, "SELECT count(*) FROM expr_probe() WHERE TRY_CAST(b AS INTEGER) = 3", 1) ==
 	        Filters {"=(try_cast(col1)::INTEGER, 3)"});
+}
+
+TEST_CASE("V2 expression: BETWEEN reports whether each bound is inclusive", "[capi_v2][expression]") {
+	EnvFixture fx;
+	RegisterProbe(fx.conn);
+
+	// the optimizer folds range comparisons into BETWEEN, keeping which bounds are inclusive
+	REQUIRE(Probe(fx.conn, "SELECT count(*) FROM expr_probe() WHERE a BETWEEN 0 AND 3", 4) ==
+	        Filters {"between[col0, 0, 3]"});
+	REQUIRE(Probe(fx.conn, "SELECT count(*) FROM expr_probe() WHERE a >= 0 AND a <= 3", 4) ==
+	        Filters {"between[col0, 0, 3]"});
+	REQUIRE(Probe(fx.conn, "SELECT count(*) FROM expr_probe() WHERE a > 0 AND a < 3", 2) ==
+	        Filters {"between(col0, 0, 3)"});
+	REQUIRE(Probe(fx.conn, "SELECT count(*) FROM expr_probe() WHERE a >= 0 AND a < 3", 3) ==
+	        Filters {"between[col0, 0, 3)"});
+	REQUIRE(Probe(fx.conn, "SELECT count(*) FROM expr_probe() WHERE a > 0 AND a <= 3", 3) ==
+	        Filters {"between(col0, 0, 3]"});
 }
 
 TEST_CASE("V2 expression: column references resolve to declared columns", "[capi_v2][expression]") {
@@ -505,6 +532,10 @@ TEST_CASE("V2 expression: null arguments", "[capi_v2][expression]") {
 	duckdb_v2_qname_handle qname = nullptr;
 	REQUIRE(duckdb_v2_expression_function_get_qname(nullptr, &qname, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(duckdb_v2_expression_cast_get_mode(nullptr, &mode, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	bool lower_inclusive = false;
+	bool upper_inclusive = false;
+	REQUIRE(duckdb_v2_expression_between_get_inclusive(nullptr, &lower_inclusive, &upper_inclusive, nullptr) ==
+	        DUCKDB_V2_ERROR_INPUT_INVALID);
 
 	REQUIRE(duckdb_v2_table_function_filter_pushdown_get_filter_count(nullptr, &count, nullptr) ==
 	        DUCKDB_V2_ERROR_INPUT_INVALID);

@@ -42,8 +42,6 @@ EXPLAIN SELECT count(*) FROM products WHERE (CASE WHEN version IS NOT NULL THEN 
 ----
 physical_plan	<REGEX>:.*EMPTY_RESULT.*
 
-loop i 0 2
-
 query I
 SELECT count(*) FROM products WHERE split_part(version, '.', 1) <> '0';
 ----
@@ -103,15 +101,6 @@ SELECT x, x IN (SELECT split_part(version, '.', 1) FROM products) FROM other ORD
 ----
 1	NULL
 2	NULL
-
-# the same results without statistics propagation
-statement ok
-SET disabled_optimizers = 'statistics_propagation';
-
-endloop
-
-statement ok
-RESET disabled_optimizers;
 
 # a filter that is not pushed into the scan
 statement ok

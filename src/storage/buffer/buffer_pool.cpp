@@ -166,7 +166,6 @@ void EvictionQueue::Purge() {
 
 	// early-out, if the queue is not big enough to justify purging and holds few dead nodes
 	// - we want to keep the LRU characteristic alive
-	// - dead nodes keep the control blocks of destroyed blocks alive
 	if (approx_q_size < purge_size * EARLY_OUT_MULTIPLIER && total_dead_nodes < purge_size) {
 		return;
 	}

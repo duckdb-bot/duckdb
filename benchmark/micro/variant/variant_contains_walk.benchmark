@@ -1,0 +1,20 @@
+# name: benchmark/micro/variant/variant_contains_walk.benchmark
+# description: variant_contains of a needle found nowhere in a shredded VARIANT column of nested objects and arrays, which walks every value
+# group: [variant]
+
+name variant_contains_walk
+group variant
+storage persistent v2.0.0
+
+cache variant_contains_walk.duckdb
+
+load
+SET variant_minimum_shredding_size = 0;
+CREATE TABLE tbl AS SELECT {'id': i, 'tags': [i % 3, i % 5], 'items': [{'k': i % 7, 'v': [i % 2]}, {'k': i % 11, 'v': []}]}::VARIANT v FROM range(3000000) t(i);
+CHECKPOINT;
+
+run
+SELECT count(*) FROM tbl WHERE variant_contains(v, 'missing'::VARIANT);
+
+result I
+0

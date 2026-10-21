@@ -118,6 +118,8 @@ struct ICUTableRange {
 	template <bool GENERATE_SERIES>
 	static void GenerateRangeDateTimeParameters(DataChunk &input, idx_t row_id, ICURangeLocalState &result) {
 		input.Flatten();
+		// the local state is reused for every input row
+		result.empty_range = false;
 		for (idx_t c = 0; c < input.ColumnCount(); c++) {
 			if (FlatVector::IsNull(input.data[c], row_id)) {
 				result.start = timestamp_tz_t::epoch();

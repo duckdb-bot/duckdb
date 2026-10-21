@@ -204,13 +204,15 @@ TEST_CASE("range and generate_series called per row use the threads of their inp
 	Connection con(db);
 	REQUIRE_NO_FAIL(con.Query("SET threads=8"));
 
-	const vector<string> queries {
-	    "SELECT * FROM range(100) t(i), LATERAL range(i % 3) r(x)",
-	    "SELECT * FROM range(100) t(i) CROSS JOIN generate_series(1, i % 3) g(x)",
-	    "SELECT * FROM range(100) t(i), LATERAL range(TIMESTAMP '2020-01-01', TIMESTAMP '2020-01-01' + "
-	    "(i % 3) * INTERVAL 1 DAY, INTERVAL 1 DAY) r(x)",
-	    "SELECT * FROM range(100) t(i), LATERAL generate_series(TIMESTAMPTZ '2020-01-01 00:00:00+00', "
-	    "TIMESTAMPTZ '2020-01-01 00:00:00+00' + (i % 3) * INTERVAL 1 DAY, INTERVAL 1 DAY) g(x)"};
+	vector<string> queries {"SELECT * FROM range(100) t(i), LATERAL range(i % 3) r(x)",
+	                        "SELECT * FROM range(100) t(i) CROSS JOIN generate_series(1, i % 3) g(x)",
+	                        "SELECT * FROM range(100) t(i), LATERAL range(TIMESTAMP '2020-01-01', TIMESTAMP "
+	                        "'2020-01-01' + (i % 3) * INTERVAL 1 DAY, INTERVAL 1 DAY) r(x)"};
+	if (db.ExtensionIsLoaded("icu")) {
+		queries.push_back(
+		    "SELECT * FROM range(100) t(i), LATERAL generate_series(TIMESTAMPTZ '2020-01-01 00:00:00+00', "
+		    "TIMESTAMPTZ '2020-01-01 00:00:00+00' + (i % 3) * INTERVAL 1 DAY, INTERVAL 1 DAY) g(x)");
+	}
 	for (auto &query : queries) {
 		INFO(query);
 		REQUIRE(InOutFunctionMaxThreads(con, query, 8) == 8);

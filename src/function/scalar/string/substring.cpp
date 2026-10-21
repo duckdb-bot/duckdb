@@ -109,30 +109,7 @@ string_t SubstringASCII(Vector &result, string_t input, int64_t offset, int64_t 
 	return SubstringSlice(result, input_data, start, UnsafeNumericCast<int64_t>(end - start));
 }
 
-bool AsciiPrefixCache::IsAsciiPrefix(const string_t &input, idx_t n) {
-	if (input.IsInlined()) {
-		// an inlined string lives in the string_t, whose address says nothing about the contents
-		return IsAscii(input.GetData(), n);
-	}
-	if (input.GetData() != data || input.GetSize() != size) {
-		data = input.GetData();
-		size = input.GetSize();
-		ascii_bytes = 0;
-		found_non_ascii = false;
-	}
-	if (n <= ascii_bytes) {
-		return true;
-	}
-	if (found_non_ascii) {
-		return false;
-	}
-	ascii_bytes += FirstNonAscii(data + ascii_bytes, n - ascii_bytes);
-	found_non_ascii = ascii_bytes < n;
-	return !found_non_ascii;
-}
-
-string_t SubstringUnicode(Vector &result, string_t input, int64_t offset, int64_t length,
-                          optional_ptr<AsciiPrefixCache> cache) {
+string_t SubstringUnicode(Vector &result, string_t input, int64_t offset, int64_t length) {
 	auto input_data = input.GetData();
 	auto input_size = input.GetSize();
 
@@ -143,8 +120,7 @@ string_t SubstringUnicode(Vector &result, string_t input, int64_t offset, int64_
 		// ASCII, code points and bytes coincide and we can slice directly
 		const auto needed =
 		    MinValue<int64_t>(UnsafeNumericCast<int64_t>(input_size), offset - 1 + MaxValue<int64_t>(length, 0));
-		const auto needed_bytes = UnsafeNumericCast<idx_t>(needed);
-		if (cache ? cache->IsAsciiPrefix(input, needed_bytes) : IsAscii(input_data, needed_bytes)) {
+		if (IsAscii(input_data, UnsafeNumericCast<idx_t>(needed))) {
 			return SubstringASCII(result, input, offset, length);
 		}
 	}
@@ -285,13 +261,13 @@ string_t SubstringGrapheme(Vector &result, string_t input, int64_t offset, int64
 namespace {
 
 struct SubstringUnicodeOp {
-	static string_t Substring(Vector &result, string_t input, int64_t offset, int64_t length, AsciiPrefixCache &cache) {
-		return SubstringUnicode(result, input, offset, length, cache);
+	static string_t Substring(Vector &result, string_t input, int64_t offset, int64_t length) {
+		return SubstringUnicode(result, input, offset, length);
 	}
 };
 
 struct SubstringGraphemeOp {
-	static string_t Substring(Vector &result, string_t input, int64_t offset, int64_t length, AsciiPrefixCache &cache) {
+	static string_t Substring(Vector &result, string_t input, int64_t offset, int64_t length) {
 		return SubstringGrapheme(result, input, offset, length);
 	}
 };
@@ -300,19 +276,18 @@ template <class OP>
 void SubstringFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	const auto &input_vector = args.data[0];
 	const auto &offset_vector = args.data[1];
-	AsciiPrefixCache cache;
 	if (args.ColumnCount() == 3) {
 		const auto &length_vector = args.data[2];
 
 		TernaryExecutor::Execute<string_t, int64_t, int64_t, string_t>(
 		    input_vector, offset_vector, length_vector, result,
 		    [&](string_t input_string, int64_t offset, int64_t length) {
-			    return OP::Substring(result, input_string, offset, length, cache);
+			    return OP::Substring(result, input_string, offset, length);
 		    });
 	} else {
 		BinaryExecutor::Execute<string_t, int64_t, string_t>(
 		    input_vector, offset_vector, result, [&](string_t input_string, int64_t offset) {
-			    return OP::Substring(result, input_string, offset, NumericLimits<uint32_t>::Maximum(), cache);
+			    return OP::Substring(result, input_string, offset, NumericLimits<uint32_t>::Maximum());
 		    });
 	}
 }

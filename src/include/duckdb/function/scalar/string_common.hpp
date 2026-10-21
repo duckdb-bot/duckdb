@@ -1,6 +1,5 @@
 #pragma once
 
-#include "duckdb/common/optional_ptr.hpp"
 #include "duckdb/common/typedefs.hpp"
 #include "duckdb/function/scalar_function.hpp"
 #include "utf8proc_wrapper.hpp"
@@ -17,22 +16,7 @@ void LowerCase(const char *input_data, idx_t input_length, char *result_data);
 idx_t FindStrInStr(const string_t &haystack_s, const string_t &needle_s);
 idx_t FindStrInStr(const unsigned char *haystack, idx_t haystack_size, const unsigned char *needle, idx_t needle_size);
 string_t SubstringASCII(Vector &result, string_t input, int64_t offset, int64_t length);
-//! Remembers how many leading bytes of the last string were found to be ASCII, so that substrings taken row after row
-//! of one string (e.g. of a string that a lambda captures) check each of its bytes once
-struct AsciiPrefixCache {
-	//! Whether the first n bytes of the input are ASCII
-	bool IsAsciiPrefix(const string_t &input, idx_t n);
-
-private:
-	const char *data = nullptr;
-	idx_t size = 0;
-	//! The number of leading bytes found to be ASCII, all of them if found_non_ascii is not set
-	idx_t ascii_bytes = 0;
-	//! Whether the byte after the first ascii_bytes bytes is not ASCII
-	bool found_non_ascii = false;
-};
-string_t SubstringUnicode(Vector &result, string_t input, int64_t offset, int64_t length,
-                          optional_ptr<AsciiPrefixCache> cache = nullptr);
+string_t SubstringUnicode(Vector &result, string_t input, int64_t offset, int64_t length);
 string_t SubstringGrapheme(Vector &result, string_t input, int64_t offset, int64_t length);
 //! Whether the offset and length are within the range supported by substring - it throws for values outside of it
 bool SubstringInSupportedRange(int64_t offset, int64_t length);

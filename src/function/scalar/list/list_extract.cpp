@@ -95,11 +95,9 @@ static void ExecuteListExtract(Vector &result, const Vector &list, const Vector 
 }
 
 static void ExecuteStringExtract(Vector &result, const Vector &input_vector, const Vector &subscript_vector) {
-	AsciiPrefixCache cache;
 	BinaryExecutor::Execute<string_t, int64_t, string_t>(
-	    input_vector, subscript_vector, result, [&](string_t input_string, int64_t subscript) {
-		    return SubstringUnicode(result, input_string, subscript, 1, cache);
-	    });
+	    input_vector, subscript_vector, result,
+	    [&](string_t input_string, int64_t subscript) { return SubstringUnicode(result, input_string, subscript, 1); });
 }
 
 static void ListExtractFunction(DataChunk &args, ExpressionState &state, Vector &result) {

@@ -24,6 +24,8 @@ struct ExpressionProbe {
 	std::string failure;
 	idx_t misuse_failures = 0;
 	bool check_misuse = false;
+	idx_t null_output_refusals = 0;
+	bool check_null_outputs = false;
 
 	void Reset() {
 		filters.clear();
@@ -31,6 +33,8 @@ struct ExpressionProbe {
 		failure.clear();
 		misuse_failures = 0;
 		check_misuse = false;
+		null_output_refusals = 0;
+		check_null_outputs = false;
 	}
 };
 
@@ -263,6 +267,19 @@ void ProbeMisuse(duckdb_v2_table_function_filter_pushdown_info_handle info, duck
 	count_failure(duckdb_v2_table_function_filter_pushdown_accept(info, 99, &err), &err);
 }
 
+// Counts how often the BETWEEN accessor refuses a missing output on a BETWEEN node, once for each output.
+void ProbeNullOutputs(duckdb_v2_expression_handle between) {
+	bool inclusive = false;
+	if (duckdb_v2_expression_between_get_inclusive(between, nullptr, &inclusive, nullptr) ==
+	    DUCKDB_V2_ERROR_INPUT_INVALID) {
+		expression_probe.null_output_refusals++;
+	}
+	if (duckdb_v2_expression_between_get_inclusive(between, &inclusive, nullptr, nullptr) ==
+	    DUCKDB_V2_ERROR_INPUT_INVALID) {
+		expression_probe.null_output_refusals++;
+	}
+}
+
 void ProbePushdownCb(duckdb_v2_table_function_filter_pushdown_info_handle info, duckdb_v2_context_handle,
                      duckdb_v2_error_info_handle *err) {
 	// The optimizer may offer the (unclaimed) predicates more than once per query: keep the last round.
@@ -296,6 +313,9 @@ void ProbePushdownCb(duckdb_v2_table_function_filter_pushdown_info_handle info, 
 			duckdb_v2_logical_type_destroy(&type);
 			if (expression_probe.check_misuse) {
 				ProbeMisuse(info, filter);
+			}
+			if (expression_probe.check_null_outputs) {
+				ProbeNullOutputs(filter);
 			}
 		}
 	}
@@ -502,6 +522,18 @@ TEST_CASE("V2 expression: BETWEEN reports whether each bound is inclusive", "[ca
 	        Filters {"between[col0, 0, 3)"});
 	REQUIRE(Probe(fx.conn, "SELECT count(*) FROM expr_probe() WHERE a > 0 AND a <= 3", 3) ==
 	        Filters {"between(col0, 0, 3]"});
+
+	// both outputs are required
+	expression_probe.Reset();
+	expression_probe.check_null_outputs = true;
+	duckdb_v2_result_handle result = nullptr;
+	REQUIRE(Query(fx.conn, "SELECT count(*) FROM expr_probe() WHERE a > 0 AND a < 3", &result) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(DrainRowCount(result) == 1);
+	duckdb_v2_result_destroy(&result);
+	REQUIRE(expression_probe.failure.empty());
+	REQUIRE(expression_probe.filters == Filters {"between(col0, 0, 3)"});
+	REQUIRE(expression_probe.null_output_refusals > 0);
+	REQUIRE(expression_probe.null_output_refusals % 2 == 0);
 }
 
 TEST_CASE("V2 expression: column references resolve to declared columns", "[capi_v2][expression]") {

@@ -10,6 +10,7 @@
 #include <chrono>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 // ---------------------------------------------------------------------------
@@ -492,10 +493,18 @@ TEST_CASE("Stable C++API: table function filter pushdown", "[cpp_api]") {
 	REQUIRE(claim_seen == std::vector<std::string> {"=(try_cast(col0)::VARCHAR, 1)", "or(=(col0, 1), is_null(col0))"});
 
 	// range comparisons are folded into BETWEEN, which tells whether each bound is inclusive
-	claim_seen.clear();
-	REQUIRE(CollectBigints(conn.Execute("SELECT count(*) FROM cpp_claim(100) WHERE i > 2 AND i <= 5")) ==
-	        std::vector<int64_t> {3});
-	REQUIRE(std::count(claim_seen.begin(), claim_seen.end(), "between(col0, 2, 5]") >= 1);
+	const std::vector<std::tuple<std::string, int64_t, std::string>> ranges {
+	    {"i >= 2 AND i <= 5", 4, "between[col0, 2, 5]"},
+	    {"i > 2 AND i < 5", 2, "between(col0, 2, 5)"},
+	    {"i >= 2 AND i < 5", 3, "between[col0, 2, 5)"},
+	    {"i > 2 AND i <= 5", 3, "between(col0, 2, 5]"},
+	};
+	for (auto &range : ranges) {
+		claim_seen.clear();
+		REQUIRE(CollectBigints(conn.Execute("SELECT count(*) FROM cpp_claim(100) WHERE " + std::get<0>(range))) ==
+		        std::vector<int64_t> {std::get<1>(range)});
+		REQUIRE(std::count(claim_seen.begin(), claim_seen.end(), std::get<2>(range)) >= 1);
+	}
 }
 
 TEST_CASE("Stable C++API: expression accessors refuse other node types and errors propagate", "[cpp_api]") {

@@ -63,7 +63,7 @@ private:
 	mutable StorageLock lock;
 	//! The root node (if any)
 	unique_ptr<UpdateNode> root;
-	//! Whether an update wrote values into the root, and not only recorded tuples it did not change
+	//! Whether the update statistics can hold values that are not in the data, from updates that wrote or failed
 	bool values_written = false;
 	//! Update statistics
 	SegmentStatistics stats;

@@ -10,11 +10,12 @@ SET parquet_metadata_cache = true;
 statement ok
 SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 
+# files of several row groups, with the extremes in their last row groups
 statement ok
-COPY (SELECT i AS x FROM range(50000) t(i)) TO '{TEST_DIR}/list_stats_1.parquet';
+COPY (SELECT i AS x FROM range(50000) t(i)) TO '{TEST_DIR}/list_stats_1.parquet' (ROW_GROUP_SIZE 10000);
 
 statement ok
-COPY (SELECT i + 50000 AS x FROM range(50000) t(i)) TO '{TEST_DIR}/list_stats_2.parquet';
+COPY (SELECT i + 50000 AS x FROM range(50000) t(i)) TO '{TEST_DIR}/list_stats_2.parquet' (ROW_GROUP_SIZE 10000);
 
 # the first query reads the files and caches their metadata
 query I
@@ -51,7 +52,7 @@ SELECT min(x), max(x), count(*) FROM read_parquet('{TEST_DIR}/list_stats_[12].pa
 
 # a file rewritten after its metadata was cached
 statement ok
-COPY (SELECT i * 3 AS x FROM range(70000) t(i)) TO '{TEST_DIR}/list_stats_2.parquet';
+COPY (SELECT i * 3 AS x FROM range(70000) t(i)) TO '{TEST_DIR}/list_stats_2.parquet' (ROW_GROUP_SIZE 10000);
 
 query III
 SELECT min(x), max(x), count(*) FROM read_parquet('{TEST_DIR}/list_stats_[12].parquet');
@@ -134,6 +135,23 @@ query II
 SELECT min(x), max(x) FROM read_parquet('{TEST_DIR}/list_stats_*int.parquet', union_by_name = true);
 ----
 5	9000000000
+
+# a later file whose column has a wider type than the scan, with a minimum that fits the type of the scan
+statement ok
+COPY (SELECT 5::INTEGER AS x) TO '{TEST_DIR}/list_stats_type_1.parquet';
+
+statement ok
+COPY (SELECT x::BIGINT AS x FROM (VALUES (1), (9000000000)) t(x)) TO '{TEST_DIR}/list_stats_type_2.parquet';
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/list_stats_type_[12].parquet');
+----
+3
+
+statement error
+SELECT min(x) FROM read_parquet('{TEST_DIR}/list_stats_type_[12].parquet');
+----
+failed to cast column "x" from type BIGINT to INTEGER
 
 # a file without one of the columns
 statement ok

@@ -449,7 +449,7 @@ TEST_CASE("GetStatsIfExists returns path metadata", "[file_system]") {
 #ifndef _WIN32
 TEST_CASE("Local modification times keep the fraction of a second", "[file_system]") {
 	auto fs = FileSystem::CreateLocal();
-	auto fname = TestCreatePath("subsecond_modification_time");
+	const auto fname = TestCreatePath("subsecond_modification_time");
 	fs->TryRemoveFile(fname);
 	CreateDummyFile(fname);
 
@@ -461,13 +461,13 @@ TEST_CASE("Local modification times keep the fraction of a second", "[file_syste
 	times[1].tv_sec = MODIFICATION_SECONDS;
 	times[1].tv_nsec = 250000000;
 	REQUIRE(utimensat(AT_FDCWD, fname.c_str(), times, 0) == 0);
-	auto first = fs->GetStatsIfExists(fname);
+	const auto first = fs->GetStatsIfExists(fname);
 	REQUIRE(first.has_value());
 	REQUIRE(first->last_modification_time.value == MODIFICATION_SECONDS * Interval::MICROS_PER_SEC + 250000);
 
 	times[1].tv_nsec = 750000000;
 	REQUIRE(utimensat(AT_FDCWD, fname.c_str(), times, 0) == 0);
-	auto second = fs->GetStatsIfExists(fname);
+	const auto second = fs->GetStatsIfExists(fname);
 	REQUIRE(second.has_value());
 	REQUIRE(second->last_modification_time.value == MODIFICATION_SECONDS * Interval::MICROS_PER_SEC + 750000);
 	REQUIRE(second->file_size == first->file_size);

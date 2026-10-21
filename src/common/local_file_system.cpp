@@ -2171,8 +2171,7 @@ static bool IsSymbolicLink(const string &path) {
 vector<OpenFileInfo> LocalFileSystem::FetchFileWithoutGlob(const string &path, optional_ptr<FileOpener> opener,
                                                            bool absolute_path) {
 	vector<OpenFileInfo> result;
-	// a file comes with its size, modification time and version tag, as from a glob, so that the caches of its
-	// contents can be validated without another request
+	// a regular file comes with its type, size, modification time and version tag, as from a glob
 	auto add_file = [&](const string &file_path) {
 		OpenFileInfo info(file_path);
 		auto file_metadata = GetStatsIfExists(info, opener);

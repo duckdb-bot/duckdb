@@ -486,7 +486,7 @@ void ColumnReader::PreparePageV2(PageHeader &page_hdr) {
 		// LCOV_EXCL_STOP
 	}
 
-	// the levels are not compressed, the values are - an encrypted page body is a single module, so it is read at once
+	// only the values are compressed, and an encrypted page body is a single module, so the body is read at once
 	ResizeableBuffer page_buffer;
 	page_buffer.resize(GetAllocator(), page_body_size + 1);
 	ReadData(page_buffer.ptr, page_body_size, page_hdr.type);
@@ -520,9 +520,10 @@ uint32_t ColumnReader::GetPageBodySize(const PageHeader &page_hdr) const {
 			const uint32_t framing =
 			    ParquetCrypto::LENGTH_BYTES + ParquetCrypto::NONCE_BYTES + ParquetCrypto::TAG_BYTES;
 			if (page_body_size < framing) {
-				throw InvalidInputException("Parquet file (%s) corrupted: compressed page size %d is smaller than the "
-				                            "encryption framing",
-				                            reader.GetFileName(), page_hdr.compressed_page_size);
+				throw DataCorruptionException(
+				    "Parquet file (%s) corrupted: compressed page size %d is smaller than the "
+				    "encryption framing",
+				    reader.GetFileName(), page_hdr.compressed_page_size);
 			}
 			page_body_size -= framing;
 		}

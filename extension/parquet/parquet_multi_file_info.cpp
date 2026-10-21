@@ -365,10 +365,13 @@ static vector<PartitionStatistics> ParquetMultiFileGetPartitionStats(ClientConte
 	auto &file_bind_data = file_options.schema_bind_data;
 	if (file_bind_data) {
 		encryption_config = ParquetScanFunction::GetFileOptions(*file_bind_data).encryption_config;
-		if (file_options.named_parameters.empty()) {
+		auto &file_parquet_options = ParquetScanFunction::GetFileOptions(*file_bind_data);
+		if (file_options.named_parameters.empty() && !file_parquet_options.binary_as_string &&
+		    !file_parquet_options.variant_legacy_encoding) {
 			// options can change the values the reader produces from the values the statistics describe, e.g.
-			// binary_as_string with utf8_validation, so only a plain scan takes the column statistics of the files
-			parquet_options = ParquetScanFunction::GetFileOptions(*file_bind_data);
+			// binary_as_string with utf8_validation, so only a plain scan takes the column statistics of the files,
+			// also when a setting sets the option
+			parquet_options = file_parquet_options;
 		}
 	} else if (!file_options.named_parameters.empty()) {
 		// the options are only checked when a file is bound, e.g. an invalid value or an encryption configuration for

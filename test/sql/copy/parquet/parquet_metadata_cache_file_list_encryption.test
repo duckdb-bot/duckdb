@@ -42,8 +42,13 @@ SELECT min(x), max(x), count(*) FROM read_parquet([{filename: '{TEST_DIR}/list_e
 ----
 1	2	2
 
-# a wrong key for one of the files
+# a wrong key for one of the files, also when only the counts of the cached metadata are needed
 statement error
 SELECT min(x), max(x), count(*) FROM read_parquet([{filename: '{TEST_DIR}/list_enc_1.parquet', encryption_key: '0123456789112345'}, {filename: '{TEST_DIR}/list_enc_2.parquet', encryption_key: '1123456789112345'}], encryption_config = {footer_key: 'list_key'});
+----
+Computed AES tag differs from read AES tag
+
+statement error
+SELECT count(*) FROM read_parquet([{filename: '{TEST_DIR}/list_enc_1.parquet', encryption_key: '0123456789112345'}, {filename: '{TEST_DIR}/list_enc_2.parquet', encryption_key: '1123456789112345'}], encryption_config = {footer_key: 'list_key'});
 ----
 Computed AES tag differs from read AES tag

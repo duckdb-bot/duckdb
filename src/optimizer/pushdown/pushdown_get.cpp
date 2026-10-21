@@ -131,7 +131,11 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownGet(unique_ptr<LogicalOperat
 		}
 		filters.clear();
 
+		const auto filter_count = expressions.size();
 		get.function.pushdown_complex_filter(optimizer.context, get, get.bind_data.get(), expressions);
+		if (expressions.size() < filter_count) {
+			get.has_pushed_complex_filter = true;
+		}
 
 		if (expressions.empty()) {
 			restore_barrier_filters();

@@ -2,6 +2,9 @@ ParserKeywordIdentifiers
 ParserWideSelect
 ParserNestedExpressions
 ParserMalformedSelect
+ParserNestedCTEs
+ParserMalformedCTEs
+ParserNestedParens
 ParserStatements
 ParserTPCH
 ParserTPCDS

@@ -1,0 +1,47 @@
+# name: test/sql/parser/nested_statement_backtracking_errors.test
+# description: Syntax errors in nested CTEs and parentheses point at the offending token
+# group: [parser]
+
+require json
+
+# 32 levels of CTEs, with failed and successful WITH clause matches before the error
+query II
+SELECT j->>'error_message', j->>'position' FROM (SELECT json_serialize_sql(repeat('WITH a AS (', 32))::JSON AS j)
+----
+syntax error at or near "("	351
+
+query II
+SELECT j->>'error_message', j->>'position' FROM (SELECT json_serialize_sql(repeat('WITH a AS (', 32) || 'DELETE FROM t WHERE' || repeat(') DELETE FROM t', 32))::JSON AS j)
+----
+syntax error at or near ")"	371
+
+query II
+SELECT j->>'error_message', j->>'position' FROM (SELECT json_serialize_sql(repeat('WITH a AS (', 32) || 'DELETE FROM t' || repeat(') DELETE FROM t', 32) || ' WHERE')::JSON AS j)
+----
+syntax error at or near "WHERE"	846
+
+# 4096 parentheses in FROM, with failed and successful subquery matches before the error
+query II
+SELECT j->>'error_message', j->>'position' FROM (SELECT json_serialize_sql('SELECT * FROM ' || repeat('(', 4096))::JSON AS j)
+----
+syntax error at or near "("	4109
+
+query II
+SELECT j->>'error_message', j->>'position' FROM (SELECT json_serialize_sql('SELECT * FROM ' || repeat('(', 4096) || 't WHERE' || repeat(')', 4096))::JSON AS j)
+----
+syntax error at or near "WHERE"	4112
+
+query II
+SELECT j->>'error_message', j->>'position' FROM (SELECT json_serialize_sql('SELECT * FROM ' || repeat('(', 4096) || 't' || repeat(')', 4097))::JSON AS j)
+----
+syntax error at or near ")"	8207
+
+query II
+SELECT j->>'error_message', j->>'position' FROM (SELECT json_serialize_sql('SELECT * FROM ' || repeat('(', 4096) || '(SELECT 1) sq' || repeat(')', 4096) || ' WHERE')::JSON AS j)
+----
+syntax error at or near "WHERE"	8220
+
+query II
+SELECT j->>'error_message', j->>'position' FROM (SELECT json_serialize_sql('SELECT * FROM ' || repeat('(', 4096) || '((SELECT 1)) sq, ' || repeat(')', 4096))::JSON AS j)
+----
+syntax error at or near ","	4125

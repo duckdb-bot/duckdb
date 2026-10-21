@@ -10,7 +10,7 @@ SET parquet_metadata_cache = true;
 statement ok
 SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 
-# files of several row groups, with the extremes in their last row groups
+# files of several row groups, with their maxima in their last row groups
 statement ok
 COPY (SELECT i AS x FROM range(50000) t(i)) TO '{TEST_DIR}/list_stats_1.parquet' (ROW_GROUP_SIZE 10000);
 

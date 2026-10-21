@@ -140,7 +140,7 @@ bool ScanMatches(ArrowSchema &col_schema, ArrowArray &col_array, const string &q
 } // namespace arrow_union_offset_test
 
 TEST_CASE("Arrow scan of a dictionary of unions with a NULL index", "[arrow]") {
-	// the union holds d := 10, i := 101, d := 30 and i := 103
+	// the union holds d = 10, i = 101, d = 30 and i = 103
 	arrow_union_offset_test::UnionColumn values({0, 1, 0, 1}, 0);
 	const int8_t indices[5] = {1, 0, 0, 2, 1};
 	// the third index is NULL

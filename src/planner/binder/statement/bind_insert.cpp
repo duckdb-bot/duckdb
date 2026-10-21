@@ -574,7 +574,9 @@ unique_ptr<MergeIntoStatement> Binder::GenerateMergeInto(InsertQueryNode &node, 
 			auto unique_null_key = make_uniq<CaseExpression>();
 			CaseCheck null_check;
 			null_check.when_expr = std::move(any_key_null);
-			null_check.then_expr = make_uniq<FunctionExpression>("uuid", vector<unique_ptr<ParsedExpression>>());
+			// qualified, so a user macro named uuid cannot shadow it
+			QualifiedName uuid_name(Identifier::SystemCatalog(), Identifier::DefaultSchema(), Identifier("uuid"));
+			null_check.then_expr = make_uniq<FunctionExpression>(uuid_name, vector<unique_ptr<ParsedExpression>>());
 			unique_null_key->CaseChecksMutable().push_back(std::move(null_check));
 			unique_null_key->ElseMutable() = ConstantExpression::FromValue(Value());
 			distinct->distinct_on_targets.push_back(std::move(unique_null_key));

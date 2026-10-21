@@ -7,7 +7,6 @@
 #include "duckdb/function/scalar/generic_functions.hpp"
 #include "duckdb/function/scalar/generic_common.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
-#include "duckdb/planner/expression/bound_function_expression.hpp"
 
 namespace duckdb {
 
@@ -95,7 +94,7 @@ unique_ptr<Expression> ExpressionRewriter::ConstantOrNull(ClientContext &context
 unique_ptr<Expression> ExpressionRewriter::ConstantOrNull(ClientContext &context,
                                                           vector<unique_ptr<Expression>> children, Value value) {
 	children.insert(children.begin(), make_uniq<BoundConstantExpression>(std::move(value)));
-	// constant_or_null has the type of the leading constant, also when a NULL child folds the call
+	// constant_or_null has the type of the leading constant, also when a typed NULL child folds the call
 	return BindBuiltinScalarExpression(context, ConstantOrNullFun::Name, std::move(children));
 }
 

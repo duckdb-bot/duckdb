@@ -70,7 +70,7 @@ static void ConstantOrNullFunction(DataChunk &args, ExpressionState &state, Vect
 	}
 }
 
-//! The result has the type of the leading constant, resolved before binding so that a call folded to NULL has it too
+//! Resolves the type of the leading constant before binding, so that a call folded on a typed NULL keeps it
 void ConstantOrNullResolveTypes(ResolveScalarFunctionTypesInput &input) {
 	D_ASSERT(input.GetArgumentCount() >= 2);
 	input.GetBoundFunction().SetReturnType(input.GetArgumentType(0));

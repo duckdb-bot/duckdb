@@ -80,6 +80,15 @@ NULL
 NULL
 NULL
 
+# the folded comparison is a BOOLEAN NULL, so it can be stored in a BOOLEAN column
+statement ok
+CREATE TABLE comparison_results AS SELECT split_part(version, '.', 1) <> '0' AS c FROM products;
+
+query III
+SELECT typeof(c), count(*), count(c) FROM comparison_results GROUP BY ALL;
+----
+BOOLEAN	3	0
+
 query I
 SELECT count(*) FROM (SELECT version FROM products GROUP BY version HAVING split_part(version, '.', 1) <> '0');
 ----

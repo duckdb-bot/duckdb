@@ -90,6 +90,10 @@ static void ApplyForceNotNull(CSVReaderOptions &options, const vector<Identifier
 	}
 }
 
+static bool IsPipe(const shared_ptr<CSVBufferManager> &buffer_manager) {
+	return buffer_manager && buffer_manager->file_handle && buffer_manager->file_handle->IsPipe();
+}
+
 //! Sniff this file - the dialect that is detected is stored in the options of the bind data. When a schema is given
 //! the sniffed schema is reconciled with it, and files whose schema does not match it are reported
 static void SniffCSVFile(ClientContext &context, ReadSingleCSVFileData &result, const CSVSchema &file_schema,
@@ -106,18 +110,16 @@ static void SniffCSVFile(ClientContext &context, ReadSingleCSVFileData &result, 
 		sniffer.SniffCSV();
 		return;
 	}
-	if (result.buffer_manager->file_handle->FileSize() == 0) {
-		// an empty file has no dialect for us to reconcile with the schema of the scan
+	// an empty file has no dialect for us to reconcile with the schema of the scan - a pipe has no known size
+	auto &buffer_manager = *result.buffer_manager;
+	if (IsPipe(result.buffer_manager) ? buffer_manager.GetBuffer(0)->actual_size == 0
+	                                  : buffer_manager.file_handle->FileSize() == 0) {
 		return;
 	}
 	CSVSniffer sniffer(options, file_options, result.buffer_manager, state_machine_cache, false);
 	auto sniff_result = sniffer.AdaptiveSniff(file_schema);
 	names = std::move(sniff_result.names);
 	return_types = std::move(sniff_result.return_types);
-}
-
-static bool IsPipe(const shared_ptr<CSVBufferManager> &buffer_manager) {
-	return buffer_manager && buffer_manager->file_handle && buffer_manager->file_handle->IsPipe();
 }
 
 //! The buffers an earlier bind read from this file if it is a pipe, which cannot be opened to be read again

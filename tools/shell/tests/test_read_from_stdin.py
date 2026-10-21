@@ -122,14 +122,36 @@ class TestReadFromStdin(object):
         test = (
             ShellTest(shell)
             .input_file(piped)
-            .statement(f"SELECT count(*), sum(id) FROM read_csv({files}{options}{buffer_size})")
+            .statement(f"SELECT count(*), sum(id), max(payload) FROM read_csv({files}{options}{buffer_size})")
             .add_argument(
                 '-csv',
                 ':memory:'
             )
         )
         result = test.run()
-        result.check_stdout(f'{rows + 1},{rows * (rows - 1) // 2 + 50}')
+        max_payload = max(['other'] + [f'v{i}' for i in range(rows)])
+        result.check_stdout(f'{rows + 1},{rows * (rows - 1) // 2 + 50},{max_payload}')
+
+    # the dialect of a pipe is sniffed from the pipe, not taken from the other files
+    @pytest.mark.parametrize("pipe_first", [True, False])
+    @pytest.mark.parametrize("options", ["", ", union_by_name = true"])
+    def test_read_stdin_csv_dialect_with_other_files(self, shell, tmp_path, pipe_first, options):
+        piped = tmp_path / 'piped.csv'
+        piped.write_text('id;payload\n"a;b";"c,d"\nleft,first;right\n')
+        other = tmp_path / 'other.csv'
+        other.write_text('id,payload\n50,other\n')
+        files = ['/dev/stdin', str(other)] if pipe_first else [str(other), '/dev/stdin']
+        test = (
+            ShellTest(shell)
+            .input_file(piped)
+            .statement(f"SELECT * FROM read_csv({files}{options}) ORDER BY ALL")
+            .add_argument(
+                '-csv',
+                ':memory:'
+            )
+        )
+        result = test.run()
+        result.check_stdout(['id,payload', '50,other', 'a;b,"c,d"', '"left,first",right'])
 
     def test_split_part_csv(self, shell):
         test = (

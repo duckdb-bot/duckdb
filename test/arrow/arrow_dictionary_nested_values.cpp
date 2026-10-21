@@ -29,13 +29,14 @@ struct Node {
 	vector<int32_t> values;
 	vector<int8_t> indices;
 	vector<uint8_t> validity;
+	string data;
 };
 
 // Builds Arrow arrays, each node keeps its buffers
 struct Builder {
 	std::deque<Node> nodes;
 
-	Node &NewNode(const char *format, const char *name, int64_t length, vector<Node *> children) {
+	Node &NewNode(const char *format, const char *name, int64_t length, const vector<Node *> &children) {
 		nodes.emplace_back();
 		auto &node = nodes.back();
 		for (auto child : children) {
@@ -71,6 +72,29 @@ struct Builder {
 		SetNulls(node, null_slots);
 		return node;
 	}
+	Node &Utf8(const char *name, const vector<string> &strings) {
+		auto &node = NewNode("u", name, int64_t(strings.size()), {});
+		node.values.push_back(0);
+		for (auto &str : strings) {
+			node.data += str;
+			node.values.push_back(int32_t(node.data.size()));
+		}
+		node.buffers = {nullptr, node.values.data(), node.data.data()};
+		node.array.n_buffers = 3;
+		node.array.buffers = node.buffers.data();
+		SetNulls(node, {});
+		return node;
+	}
+	// offsets holds one more entry than there are lists
+	Node &List(const char *name, vector<int32_t> offsets, Node &child, const vector<idx_t> &null_slots = {}) {
+		auto &node = NewNode("+l", name, int64_t(offsets.size()) - 1, {&child});
+		node.values = std::move(offsets);
+		node.buffers = {nullptr, node.values.data()};
+		node.array.n_buffers = 2;
+		node.array.buffers = node.buffers.data();
+		SetNulls(node, null_slots);
+		return node;
+	}
 	Node &Int8(const char *name, vector<int8_t> values) {
 		auto &node = NewNode("c", name, int64_t(values.size()), {});
 		node.indices = std::move(values);
@@ -79,7 +103,7 @@ struct Builder {
 		node.array.buffers = node.buffers.data();
 		return node;
 	}
-	Node &Struct(const char *name, vector<Node *> children, const vector<idx_t> &null_slots = {}) {
+	Node &Struct(const char *name, const vector<Node *> &children, const vector<idx_t> &null_slots = {}) {
 		auto &node = NewNode("+s", name, children[0]->array.length, children);
 		node.buffers = {nullptr};
 		node.array.n_buffers = 1;
@@ -210,4 +234,20 @@ TEST_CASE("Arrow scan of an empty dictionary of structs and fixed-size lists", "
 	auto &list_values = c.FixedSizeList("+w:2", "", 0, c.Int32("item", {}));
 	auto &list_column = c.Dictionary("a", {-1, -1}, list_values);
 	REQUIRE(ScanMatches(list_column, "SELECT a::INT[2] FROM (VALUES (NULL), (NULL)) t(a)"));
+}
+
+TEST_CASE("Arrow scan of a dictionary of structs with string and list fields", "[arrow]") {
+	Builder b;
+	auto &strings =
+	    b.Utf8("v", {"a string longer than the inlined length", "short", "another string that is not inlined"});
+	// entry 1 holds an empty list and entry 2 a NULL list
+	auto &list = b.List("l", {0, 2, 2, 2}, b.Utf8("item", {"a list element that is not inlined", "second"}), {2});
+	auto &values = b.Struct("", {&strings, &list});
+	auto &column = b.Dictionary("s", {0, -1, 2, 1, 0}, values);
+	REQUIRE(ScanMatches(column,
+	                    "SELECT s::STRUCT(v VARCHAR, l VARCHAR[]) FROM (VALUES "
+	                    "({'v': 'a string longer than the inlined length', 'l': ['a list element that is not "
+	                    "inlined', 'second']}), (NULL), ({'v': 'another string that is not inlined', 'l': NULL}), "
+	                    "({'v': 'short', 'l': []::VARCHAR[]}), ({'v': 'a string longer than the inlined length', "
+	                    "'l': ['a list element that is not inlined', 'second']})) t(s)"));
 }

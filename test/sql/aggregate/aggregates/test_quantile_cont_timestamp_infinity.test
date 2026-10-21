@@ -1,0 +1,80 @@
+# name: test/sql/aggregate/aggregates/test_quantile_cont_timestamp_infinity.test
+# description: median and quantile_cont interpolate next to a timestamp infinity to that infinity
+# group: [aggregates]
+
+query I
+SELECT median(ts) FROM (VALUES ('-infinity'::TIMESTAMP), (TIMESTAMP '2000-01-01')) t(ts);
+----
+-infinity
+
+query I
+SELECT median(ts) FROM (VALUES ('infinity'::TIMESTAMP), (TIMESTAMP '2000-01-01')) t(ts);
+----
+infinity
+
+query I
+SELECT quantile_cont(ts, [0.25, 0.75]) FROM (VALUES ('-infinity'::TIMESTAMP), (TIMESTAMP '2000-01-01')) t(ts);
+----
+[-infinity, -infinity]
+
+query I
+SELECT median(ts)::VARCHAR FROM (VALUES ('-infinity'::TIMESTAMP), (TIMESTAMP '290309-12-22 (BC) 00:00:00')) t(ts);
+----
+-infinity
+
+# between infinities of opposite signs lies no timestamp, as for DOUBLE it is NaN
+statement error
+SELECT median(ts) FROM (VALUES ('infinity'::TIMESTAMP), ('-infinity'::TIMESTAMP)) t(ts);
+----
+Cannot interpolate between infinite timestamps of opposite signs
+
+# equal infinities, and quantiles that hit a value
+query III
+SELECT median(ts), quantile_cont(ts, 0.0), quantile_cont(ts, 1.0) FROM (VALUES ('-infinity'::TIMESTAMP), ('-infinity'::TIMESTAMP), (TIMESTAMP '2000-01-01')) t(ts);
+----
+-infinity	-infinity	2000-01-01 00:00:00
+
+# between equal infinities lies that infinity
+query II
+SELECT median(ts), quantile_cont(ts, 0.25) FROM (VALUES ('-infinity'::TIMESTAMP), ('-infinity'::TIMESTAMP), (TIMESTAMP '2000-01-01')) t(ts);
+----
+-infinity	-infinity
+
+query I
+SELECT median(ts) FROM (VALUES ('infinity'::TIMESTAMP), ('infinity'::TIMESTAMP)) t(ts);
+----
+infinity
+
+# mad finds no interval for the deviations from an infinite median, as when the median is an infinity value
+statement error
+SELECT mad(ts) FROM (VALUES ('-infinity'::TIMESTAMP), (TIMESTAMP '2000-01-01')) t(ts);
+----
+Overflow in timestamp subtraction
+
+# a descending quantile, dates and timestamps with time zone
+query II
+SELECT percentile_cont(0.75) WITHIN GROUP (ORDER BY ts DESC), median(ts::DATE) FROM (VALUES ('infinity'::TIMESTAMP), (TIMESTAMP '2000-01-01')) t(ts);
+----
+infinity	infinity
+
+query I
+SELECT median(ts)::VARCHAR FROM (VALUES ('infinity'::TIMESTAMPTZ), (TIMESTAMPTZ '2000-01-01 00:00:00+00')) t(ts);
+----
+infinity
+
+# finite timestamps interpolate as before
+query I
+SELECT median(ts) FROM (VALUES (TIMESTAMP '2000-01-01'), (TIMESTAMP '2000-01-03')) t(ts);
+----
+2000-01-02 00:00:00
+
+# a window frame that moves past an infinity
+query II
+SELECT i, median(ts) OVER (ORDER BY i ROWS BETWEEN 1 PRECEDING AND CURRENT ROW)
+FROM (VALUES (1, TIMESTAMP '2000-01-01'), (2, '-infinity'::TIMESTAMP), (3, TIMESTAMP '2000-01-03'), (4, TIMESTAMP '2000-01-05')) t(i, ts)
+ORDER BY i;
+----
+1	2000-01-01 00:00:00
+2	-infinity
+3	-infinity
+4	2000-01-04 00:00:00

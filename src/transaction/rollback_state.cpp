@@ -51,6 +51,8 @@ void RollbackState::RollbackEntry(UndoFlags type, data_ptr_t data) {
 		auto &db_manager = DatabaseManager::Get(db->GetDatabase());
 		auto attached_db = db_manager.DetachInternal(db->name);
 		if (attached_db) {
+			// another transaction can keep the database alive, its name must not wait for that
+			attached_db->UnregisterStoredPath();
 			// Teardown runs SQL, which cannot happen under the transaction lock: it would need a
 			// transaction on the same manager, and rollback may not fail. Extracting the deleter is a
 			// field move, safe here; the DatabaseManager drains the queue once rollback completes.

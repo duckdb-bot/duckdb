@@ -1584,6 +1584,10 @@ void UpdateSegment::Update(TransactionData transaction, DuckTableEntry &table_en
 	UnifiedVectorFormat update_format;
 	update_p.ToUnifiedFormat(update_format);
 
+	// the statistics include the new values from here on, also when the update fails before writing them
+	auto values_written_before = values_written;
+	values_written = true;
+
 	// update statistics
 	SelectionVector sel;
 	{
@@ -1591,6 +1595,7 @@ void UpdateSegment::Update(TransactionData transaction, DuckTableEntry &table_en
 		count = statistics_update_function(this, stats, update_format, count, sel);
 	}
 	if (count == 0) {
+		values_written = values_written_before;
 		return;
 	}
 
@@ -1598,7 +1603,9 @@ void UpdateSegment::Update(TransactionData transaction, DuckTableEntry &table_en
 	// this is usually the case for "standard" queries (e.g. UPDATE tbl SET x=bla WHERE cond)
 	// however, for more exotic queries involving e.g. cross products/joins this might not be the case
 	// hence we explicitly check here if the ids are sorted and, if not, sort + duplicate eliminate them
-	count = SortSelectionVector(sel, count, ids);
+	auto unique_count = SortSelectionVector(sel, count, ids);
+	bool has_duplicates = unique_count < count;
+	count = unique_count;
 	D_ASSERT(count > 0);
 
 	// get the vector index based on the first id
@@ -1628,13 +1635,13 @@ void UpdateSegment::Update(TransactionData transaction, DuckTableEntry &table_en
 			// a value that stays valid is recorded by the update of the data
 			lock_count = GetValidityLockTuples(update_format, ids, count, lock_sel, base_data, vector_offset);
 		}
+		if (write_count == 0 && !has_duplicates) {
+			// the statistics only received values that are already in the data
+			values_written = values_written_before;
+		}
 		if (write_count == 0 && (lock_count == 0 || !transaction.transaction)) {
 			return;
 		}
-	}
-	if (write_count > 0) {
-		// the statistics now include the new values, also when the update fails before writing them
-		values_written = true;
 	}
 	if (statistics_update_function == UpdateStringStatistics) {
 		// for strings - we need to push all strings we are going to place here into the string heap of the segment

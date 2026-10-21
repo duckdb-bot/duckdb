@@ -94,6 +94,23 @@ void LocalTableStorage::InitializeScan(CollectionScanState &state, optional_ptr<
 	collection.InitializeScan(context, state, state.GetColumnIds(), table_filters.get());
 }
 
+//! The size of a value of the type before compression, without string data and list children
+static idx_t EstimatedValueSize(const LogicalType &type) {
+	switch (type.InternalType()) {
+	case PhysicalType::STRUCT: {
+		idx_t size = 0;
+		for (auto &child : StructType::GetChildTypes(type)) {
+			size += EstimatedValueSize(child.second);
+		}
+		return size;
+	}
+	case PhysicalType::ARRAY:
+		return ArrayType::GetSize(type) * EstimatedValueSize(ArrayType::GetChildType(type));
+	default:
+		return GetTypeIdSize(type.InternalType());
+	}
+}
+
 idx_t LocalTableStorage::EstimatedSize() const {
 	// count the appended rows
 	auto &collection = *row_groups->collection;
@@ -114,7 +131,7 @@ idx_t LocalTableStorage::EstimatedSize() const {
 		idx_t row_size = 0;
 		auto &types = collection.GetTypes();
 		for (auto &type : types) {
-			row_size += GetTypeIdSize(type.InternalType());
+			row_size += EstimatedValueSize(type);
 		}
 
 		data_size = appended_rows * row_size;

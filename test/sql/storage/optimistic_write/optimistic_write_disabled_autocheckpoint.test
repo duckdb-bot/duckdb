@@ -1,0 +1,35 @@
+# name: test/sql/storage/optimistic_write/optimistic_write_disabled_autocheckpoint.test
+# description: A large load that is not written optimistically counts its full size towards the automatic checkpoint
+# group: [optimistic_write]
+
+load {TEST_DIR}/optimistic_write_disabled_autocheckpoint.db
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown
+
+statement ok
+SET enable_optimistic_write = false
+
+statement ok
+SET wal_autocheckpoint = '1MB'
+
+statement ok
+CREATE TABLE t AS SELECT range::INTEGER i FROM range(1000000)
+
+# the commit checkpoints instead of logging the rows
+query I
+SELECT wal_size = '0 bytes' FROM pragma_database_size()
+----
+true
+
+query II
+SELECT count(*), sum(i) FROM t
+----
+1000000	499999500000
+
+restart
+
+query II
+SELECT count(*), sum(i) FROM t
+----
+1000000	499999500000

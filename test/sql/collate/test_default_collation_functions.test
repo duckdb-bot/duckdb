@@ -11,8 +11,17 @@ SELECT contains('ABC', 'b'), 'ABC' LIKE '%b%', starts_with('ABC', 'a'), 'ABC' GL
 ----
 false	false	false	false	0	false
 
+# a statement prepared before the setting changes follows it
+statement ok
+PREPARE contains_b AS SELECT contains(?, 'b');
+
 statement ok
 SET default_collation = 'nocase';
+
+query I
+EXECUTE contains_b('ABC')
+----
+true
 
 query IIIIIII
 SELECT contains('ABC', 'b'), 'ABC' LIKE '%b%', starts_with('ABC', 'a'), 'ABC' GLOB '*b*', instr('ABC', 'b'), list_contains(['A'], 'a'), 'A' = 'a'
@@ -31,6 +40,12 @@ query I
 SELECT count(*) FROM strings WHERE list_contains(['abc'], s)
 ----
 2500
+
+query IIIII
+SELECT list_position(['x', 'A'], 'a'), 'ABC' NOT LIKE '%b%', 'ABC' NOT ILIKE '%b%', 'A_C' LIKE 'aX_c' ESCAPE 'X',
+       ('A_C' LIKE 'aX_c' ESCAPE 'X') = ('A_C' COLLATE NOCASE LIKE 'aX_c' ESCAPE 'X')
+----
+2	false	false	true	true
 
 statement ok
 SET default_collation = 'noaccent.nocase';

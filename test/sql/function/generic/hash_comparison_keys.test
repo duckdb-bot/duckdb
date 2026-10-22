@@ -1,5 +1,5 @@
 # name: test/sql/function/generic/hash_comparison_keys.test
-# description: values that compare equal have equal hashes
+# description: values that compare equal hash equally, for VARIANT, combinable string collations, TIMETZ, BIT and INTERVAL
 # group: [generic]
 
 load {TEST_DIR}/hash_comparison_keys.db

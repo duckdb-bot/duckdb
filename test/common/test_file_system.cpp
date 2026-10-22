@@ -674,17 +674,42 @@ static void TestSearchRootIdentity(const string &allowed_directory, const string
 	REQUIRE_NO_FAIL(con.Query("SET enable_external_access = false"));
 	auto result = con.Query("SELECT parse_filename(file) FROM glob('guess*.csv') ORDER BY 1");
 	REQUIRE(CHECK_COLUMN(result, 0, {"guess_inside.csv"}));
+	REQUIRE(result->RowCount() == 1);
 }
+
+//! The directory tree of the search root test, removed again even when an assertion fails
+struct SearchRootFixture {
+	SearchRootFixture(FileSystem &fs, string base_p) : fs(fs), base(std::move(base_p)) {
+		Remove();
+		fs.CreateDirectory(base);
+	}
+	~SearchRootFixture() {
+		Remove();
+	}
+
+	void Remove() {
+		// the link goes first, since removing the tree would follow it
+		try {
+			fs.RemoveFile(fs.JoinPath(fs.JoinPath(base, "inside"), "link"));
+		} catch (...) { // NOLINT
+		}
+		try {
+			if (fs.DirectoryExists(base)) {
+				fs.RemoveDirectory(base);
+			}
+		} catch (...) { // NOLINT
+		}
+	}
+
+	FileSystem &fs;
+	string base;
+};
 
 TEST_CASE("A search path root is listed in the form allowed_directories checked", "[file_system]") {
 	auto fs = FileSystem::CreateLocal();
-	auto base = fs->JoinPath(fs->GetWorkingDirectory(), TestCreatePath("search_root_identity"));
-	if (fs->DirectoryExists(base)) {
-		fs->RemoveDirectory(base);
-	}
-	fs->CreateDirectory(base);
-	auto inside = fs->JoinPath(base, "inside");
-	auto other = fs->JoinPath(base, "other");
+	SearchRootFixture fixture(*fs, TestMakeAbsolute(TestCreatePath("search_root_identity"), fs->GetWorkingDirectory()));
+	auto inside = fs->JoinPath(fixture.base, "inside");
+	auto other = fs->JoinPath(fixture.base, "other");
 	fs->CreateDirectory(inside);
 	fs->CreateDirectory(other);
 	fs->CreateDirectory(fs->JoinPath(other, "sub"));
@@ -705,7 +730,6 @@ TEST_CASE("A search path root is listed in the form allowed_directories checked"
 	TestWriteFile(*fs, backslash_directory + "/guess_other.csv");
 	TestSearchRootIdentity(sub, backslash_directory);
 #endif
-	fs->RemoveDirectory(base);
 }
 
 TEST_CASE("Test path canonicalization with symlinks", "[file_system]") {

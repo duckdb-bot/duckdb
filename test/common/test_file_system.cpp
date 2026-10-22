@@ -669,8 +669,8 @@ static void TestWriteFile(FileSystem &fs, const string &path) {
 static void TestSearchRootIdentity(const string &allowed_directory, const string &search_path) {
 	DuckDB db(nullptr);
 	Connection con(db);
-	REQUIRE_NO_FAIL(con.Query(StringUtil::Format("SET allowed_directories = ['%s']", allowed_directory)));
-	REQUIRE_NO_FAIL(con.Query(StringUtil::Format("SET file_search_path = '%s'", search_path)));
+	REQUIRE_NO_FAIL(con.Query(StringUtil::Format("SET allowed_directories = [%s]", SQLString(allowed_directory))));
+	REQUIRE_NO_FAIL(con.Query(StringUtil::Format("SET file_search_path = %s", SQLString(search_path))));
 	REQUIRE_NO_FAIL(con.Query("SET enable_external_access = false"));
 	auto result = con.Query("SELECT parse_filename(file) FROM glob('guess*.csv') ORDER BY 1");
 	REQUIRE(CHECK_COLUMN(result, 0, {"guess_inside.csv"}));

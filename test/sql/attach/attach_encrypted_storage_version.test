@@ -1,0 +1,106 @@
+# name: test/sql/attach/attach_encrypted_storage_version.test
+# description: An encrypted database attached without STORAGE_VERSION keeps the storage version of its file
+# group: [attach]
+
+# alternative verify forces the latest storage version
+require no_alternative_verify
+
+statement ok
+SET force_mbedtls_unsafe = true
+
+# a new encrypted database without STORAGE_VERSION gets v1.5.0
+statement ok
+ATTACH '{TEST_DIR}/encrypted_default.db' AS e (ENCRYPTION_KEY 'k')
+
+query I
+SELECT tags['storage_version'] FROM duckdb_databases() WHERE database_name = 'e'
+----
+v1.5.0+
+
+statement ok
+DETACH e
+
+statement ok
+ATTACH '{TEST_DIR}/encrypted_v2_0.db' AS e (ENCRYPTION_KEY 'k', STORAGE_VERSION 'v2.0.0')
+
+statement ok
+CREATE TABLE e.t AS SELECT 42 AS i
+
+statement ok
+DETACH e
+
+statement ok
+ATTACH '{TEST_DIR}/encrypted_v2_0.db' AS e (ENCRYPTION_KEY 'k')
+
+query II
+SELECT i, (SELECT tags['storage_version'] FROM duckdb_databases() WHERE database_name = 'e') FROM e.t
+----
+42	v2.0.0+
+
+statement ok
+DETACH e
+
+statement ok
+ATTACH '{TEST_DIR}/encrypted_v2_0.db' AS e (ENCRYPTION_KEY 'k', READ_ONLY)
+
+query I
+SELECT i FROM e.t
+----
+42
+
+statement ok
+DETACH e
+
+# the same with the older encryption format
+statement ok
+ATTACH '{TEST_DIR}/encrypted_v2_0.db' AS e (ENCRYPTION_KEY 'k', debug_encryption_version 'v0')
+
+query II
+SELECT i, (SELECT tags['storage_version'] FROM duckdb_databases() WHERE database_name = 'e') FROM e.t
+----
+42	v2.0.0+
+
+statement ok
+DETACH e
+
+# an explicit lower version is still rejected
+statement error
+ATTACH '{TEST_DIR}/encrypted_v2_0.db' AS e (ENCRYPTION_KEY 'k', STORAGE_VERSION 'v1.5.0')
+----
+The storage version of an existing database cannot be lowered
+
+# writing to a v1.4.0 file keeps it at v1.4.0
+statement ok
+ATTACH '{TEST_DIR}/encrypted_v1_4.db' AS e (ENCRYPTION_KEY 'k', STORAGE_VERSION 'v1.4.0')
+
+statement ok
+CREATE TABLE e.t AS SELECT 1 AS i
+
+statement ok
+DETACH e
+
+statement ok
+ATTACH '{TEST_DIR}/encrypted_v1_4.db' AS e (ENCRYPTION_KEY 'k')
+
+statement ok
+INSERT INTO e.t VALUES (2)
+
+statement ok
+CHECKPOINT e
+
+statement ok
+DETACH e
+
+statement ok
+ATTACH '{TEST_DIR}/encrypted_v1_4.db' AS e (ENCRYPTION_KEY 'k')
+
+query II
+SELECT sum(i), (SELECT tags['storage_version'] FROM duckdb_databases() WHERE database_name = 'e') FROM e.t
+----
+3	v1.4.0+
+
+statement ok
+DETACH e
+
+statement ok
+SET force_mbedtls_unsafe = false

@@ -96,6 +96,18 @@ f_1.csv
 f_2.csv
 f_3.csv
 
+# a pattern whose "~" only comes to the front once normalized is refused
+statement ok
+SET home_directory = '{DATA_DIR}/json'
+
+statement ok
+SET file_search_path = '{DATA_DIR}/csv/glob'
+
+statement error
+SELECT * FROM glob('./~/*.csv')
+----
+Cannot access file "./~/*.csv"
+
 # a search path outside the allowed directory is not searched
 statement ok
 SET file_search_path = '{DATA_DIR}/json'

@@ -298,7 +298,8 @@ protected:
 private:
 	bool IsAccessAllowed(const string &path, FileType type);
 	void VerifyCanAccessFileInternal(const string &path, FileType type);
-	//! With file access restricted, the file_search_path entries that a relative local path is looked up in
+	//! With file access restricted, the file_search_path entries that a relative local path is looked up in (throws for
+	//! a path that the glob would expand differently from the check)
 	bool GetRestrictedSearchPaths(const string &path, string &expanded_path, vector<string> &search_paths);
 };
 

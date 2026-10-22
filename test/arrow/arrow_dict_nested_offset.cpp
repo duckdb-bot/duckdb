@@ -319,6 +319,29 @@ TEST_CASE("Arrow scan of fixed-size ARRAY(dict string) with NULL arrays", "[arro
 	                    "SELECT a::TINYINT[2] FROM (VALUES (NULL), ([5, 5]), (NULL), ([5, 5])) t(a)", "a::TINYINT[2]"));
 }
 
+TEST_CASE("Arrow scan of an empty dictionary of fixed-size ARRAY(dict int32)", "[arrow]") {
+	// the only index is NULL and selects the NULL entry after the empty dictionary
+	DictChild child(0, {});
+	FixedArrayColumn values(child, 2, 0, 0);
+	const int8_t indices[1] = {0};
+	const uint8_t validity[1] = {0x00};
+	const void *buffers[2] = {validity, indices};
+	ArrowSchema schema {};
+	schema.format = "c";
+	schema.name = "a";
+	schema.flags = 2;
+	schema.dictionary = &values.schema;
+	schema.release = ReleaseSchema;
+	ArrowArray array {};
+	array.length = 1;
+	array.null_count = 1;
+	array.n_buffers = 2;
+	array.buffers = buffers;
+	array.dictionary = &values.array;
+	array.release = ReleaseArray;
+	REQUIRE(ScanMatches(schema, array, "SELECT NULL::INTEGER[2]", "a"));
+}
+
 TEST_CASE("Arrow scan of LIST(dict string) whose first chunk holds no list elements", "[arrow]") {
 	// dictionary ['a'], child [0], and lists [] x 2048 followed by ['a']
 	const int32_t dict_offsets[2] = {0, 1};

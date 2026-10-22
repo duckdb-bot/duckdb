@@ -212,15 +212,33 @@ TEST_CASE("Test arrow roundtrip of ENUM in fixed-size arrays", "[arrow]") {
 	REQUIRE(ArrowTestHelper::RunArrowComparison(con, query, false));
 }
 
+// Scans the Arrow export of the query and returns the number of rows of the scan.
+static idx_t ArrowRoundtripRowCount(Connection &con, const string &query) {
+	auto result = con.Query(query);
+	REQUIRE_NO_FAIL(*result);
+	auto types = result->GetTypes();
+	auto names = IdentifiersToStrings(result->GetNames());
+	ArrowTestFactory factory(std::move(types), std::move(names), std::move(result), con.context->GetClientProperties(),
+	                         *con.context);
+	auto arrow_result = ArrowTestHelper::ScanArrowObject(con, ArrowTestHelper::ConstructArrowScan(factory));
+	REQUIRE(arrow_result);
+	return arrow_result->RowCount();
+}
+
 TEST_CASE("Test arrow roundtrip of empty lists of ENUM fixed-size arrays", "[arrow]") {
 	DuckDB db;
 	Connection con(db);
 	REQUIRE_NO_FAIL(con.Query("CREATE TYPE color AS ENUM ('red', 'green', 'blue')"));
-	// the lists of the first chunk hold no arrays, so their dictionary is scanned for no elements
-	REQUIRE(ArrowTestHelper::RunArrowComparison(
-	    con, "SELECT CASE WHEN i < 2048 THEN [] ELSE [['red', NULL]] END::color[2][] AS l FROM range(3000) t(i)",
-	    false));
-	REQUIRE(ArrowTestHelper::RunArrowComparison(con, "SELECT []::color[2][] AS l FROM range(3) t(i)", false));
+	// the lists of the first and the third chunk hold no arrays, so their dictionary has no elements to look up
+	auto vector_size = std::to_string(STANDARD_VECTOR_SIZE);
+	auto chunks_query = "SELECT CASE WHEN i < " + vector_size + " OR i >= 2 * " + vector_size +
+	                    " THEN [] ELSE [['red', NULL]] END::color[2][] AS l FROM range(2 * " + vector_size +
+	                    " + 100) t(i)";
+	REQUIRE(ArrowRoundtripRowCount(con, chunks_query) == 2 * STANDARD_VECTOR_SIZE + 100);
+	REQUIRE(ArrowTestHelper::RunArrowComparison(con, chunks_query, false));
+	string empty_query = "SELECT []::color[2][] AS l FROM range(3) t(i)";
+	REQUIRE(ArrowRoundtripRowCount(con, empty_query) == 3);
+	REQUIRE(ArrowTestHelper::RunArrowComparison(con, empty_query, false));
 }
 
 TEST_CASE("Test Arrow fixed-size binary format parsing", "[arrow]") {

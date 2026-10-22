@@ -174,6 +174,10 @@ void PhysicalExport::ExtractEntries(ClientContext &context, vector<reference<Sch
 //! Orders the views so that every view comes after the views it reads. View dependencies are only recorded with
 //! enable_view_dependencies, so the views are bound to find what they read.
 static void ReorderViewEntries(ClientContext &context, catalog_entry_vector_t &views) {
+	unordered_map<LogicalDependency, idx_t, LogicalDependencyHashFunction, LogicalDependencyEquality> view_indexes;
+	for (idx_t i = 0; i < views.size(); i++) {
+		view_indexes.emplace(LogicalDependency(views[i].get()), i);
+	}
 	vector<vector<idx_t>> reads(views.size());
 	for (idx_t i = 0; i < views.size(); i++) {
 		auto &entry = views[i].get();
@@ -198,11 +202,13 @@ static void ReorderViewEntries(ClientContext &context, catalog_entry_vector_t &v
 			// a view that does not bind keeps its place
 			continue;
 		}
-		for (idx_t j = 0; j < views.size(); j++) {
-			if (j != i && dependencies.Contains(views[j].get())) {
-				reads[i].push_back(j);
+		for (auto &dependency : dependencies.Set()) {
+			auto read = view_indexes.find(dependency);
+			if (read != view_indexes.end() && read->second != i) {
+				reads[i].push_back(read->second);
 			}
 		}
+		std::sort(reads[i].begin(), reads[i].end());
 	}
 	// depth first in the current order, so views that read no other view keep their order
 	struct ViewVisit {

@@ -13,7 +13,14 @@ SELECT d(d(d(1)));
 statement ok
 SET max_execution_time=200
 
+# an argument with a subquery is bound for every reference, so this expansion takes 2^24 bindings
 statement error
-SELECT d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(1))))))))))))))))))))))));
+SELECT d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d((SELECT 1)))))))))))))))))))))))));
 ----
 Query exceeded maximum execution time
+
+# other arguments are bound once for all references
+query I
+SELECT d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(1))))))))))))))))))))))));
+----
+16777216

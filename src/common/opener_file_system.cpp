@@ -33,15 +33,32 @@ static PermissionException CannotAccessError(const string &path, FileType type) 
 unique_ptr<MultiFileList> OpenerFileSystem::GlobFilesExtended(const string &path, const FileGlobInput &input,
                                                               optional_ptr<FileOpener> opener) {
 	VerifyNoOpener(opener);
+	string expanded_path;
 	vector<string> search_paths;
-	if (GetRestrictedSearchPaths(path, search_paths)) {
-		return GlobInSearchPaths(path, search_paths);
+	if (!GetRestrictedSearchPaths(path, expanded_path, search_paths)) {
+		VerifyCanAccessFile(path);
+		return GetFileSystem().Glob(path, input, GetOpener());
 	}
-	VerifyCanAccessFile(path);
-	return GetFileSystem().Glob(path, input, GetOpener());
+	// the path is checked where file_search_path resolves it, and only the allowed locations are looked at; a glob is
+	// expanded in the search paths only, a name without glob is also looked up in the working directory
+	auto &fs = GetFileSystem();
+	bool any_allowed = !HasGlob(expanded_path) && IsAccessAllowed(expanded_path, FileType::FILE_TYPE_REGULAR);
+	for (auto &search_path : search_paths) {
+		any_allowed =
+		    any_allowed || IsAccessAllowed(fs.JoinPath(search_path, expanded_path), FileType::FILE_TYPE_REGULAR);
+	}
+	if (!any_allowed) {
+		throw CannotAccessError(path, FileType::FILE_TYPE_REGULAR);
+	}
+	FileGlobInput restricted_input = input;
+	restricted_input.can_access_location = [this](const string &location) {
+		return IsAccessAllowed(location, FileType::FILE_TYPE_REGULAR);
+	};
+	return fs.Glob(path, restricted_input, GetOpener());
 }
 
-bool OpenerFileSystem::GetRestrictedSearchPaths(const string &path, vector<string> &search_paths) {
+bool OpenerFileSystem::GetRestrictedSearchPaths(const string &path, string &expanded_path,
+                                                vector<string> &search_paths) {
 	auto opener = GetOpener();
 	if (!opener) {
 		return false;
@@ -50,7 +67,7 @@ bool OpenerFileSystem::GetRestrictedSearchPaths(const string &path, vector<strin
 	if (!db || Settings::Get<EnableExternalAccessSetting>(db->config)) {
 		return false;
 	}
-	auto expanded_path = FileSystem::ExpandPath(path, opener);
+	expanded_path = FileSystem::ExpandPath(path, opener);
 	if (IsRemoteFile(expanded_path) || Path::FromString(expanded_path).IsAbsolute()) {
 		return false;
 	}
@@ -60,41 +77,6 @@ bool OpenerFileSystem::GetRestrictedSearchPaths(const string &path, vector<strin
 	}
 	search_paths = StringUtil::Split(search_path_setting.ToString(), ',');
 	return !search_paths.empty();
-}
-
-unique_ptr<MultiFileList> OpenerFileSystem::GlobInSearchPaths(const string &path, const vector<string> &search_paths) {
-	// the same order as LocalFileSystem: a name without glob is looked up in the working directory first
-	auto &fs = GetFileSystem();
-	auto opener = GetOpener();
-	vector<string> candidates;
-	auto has_glob = HasGlob(path);
-	if (!has_glob) {
-		candidates.push_back(path);
-	}
-	for (auto &search_path : search_paths) {
-		candidates.push_back(fs.JoinPath(search_path, path));
-	}
-	bool any_allowed = false;
-	vector<OpenFileInfo> files;
-	for (idx_t i = 0; i < candidates.size(); i++) {
-		// a location outside the allowed ones is not looked at, not even whether it exists
-		if (!IsAccessAllowed(candidates[i], FileType::FILE_TYPE_REGULAR)) {
-			continue;
-		}
-		any_allowed = true;
-		// the checked form of the path, which is absolute, so that the search path is not applied again
-		auto checked_path = fs.CanonicalizePath(FileSystem::ExpandPath(candidates[i], opener), opener);
-		for (auto &file : fs.Glob(checked_path, FileGlobOptions::ALLOW_EMPTY, opener)->GetAllFiles()) {
-			files.push_back(std::move(file));
-		}
-		if (!has_glob && i == 0 && !files.empty()) {
-			break;
-		}
-	}
-	if (!any_allowed) {
-		throw CannotAccessError(path, FileType::FILE_TYPE_REGULAR);
-	}
-	return make_uniq<SimpleMultiFileList>(std::move(files));
 }
 
 void OpenerFileSystem::VerifyNoOpener(optional_ptr<FileOpener> opener) {

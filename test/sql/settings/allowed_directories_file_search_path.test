@@ -34,6 +34,40 @@ SELECT count(*) FROM read_text('Makefile')
 ----
 0
 
+# a trailing separator still matches directories
+query I
+SELECT parse_filename(file) FROM glob('*/') ORDER BY 1
+----
+a1
+a2
+a3
+crawl
+empty
+i1
+
+# an empty entry adds nothing
+statement ok
+SET file_search_path = ',{DATA_DIR}/csv/glob'
+
+query I
+SELECT count(*) FROM glob('*.csv')
+----
+3
+
+# a relative home directory is resolved in the search path
+statement ok
+SET home_directory = 'a1'
+
+statement ok
+SET file_search_path = '{DATA_DIR}/csv/glob'
+
+query I
+SELECT * FROM '~/a1.csv'
+----
+2019-06-05
+2019-06-15
+2019-06-25
+
 # a search path outside the allowed directory is not searched
 statement ok
 SET file_search_path = '{DATA_DIR}/json'

@@ -3,9 +3,11 @@
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/common/vector/constant_vector.hpp"
 #include "duckdb/common/vector/flat_vector.hpp"
+#include "duckdb/common/vector/vector_iterator.hpp"
 #include "duckdb/planner/expression/bound_conjunction_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
+#include "duckdb/planner/expression/bound_operator_expression.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/planner/filter/expression_filter.hpp"
 #include "duckdb/planner/filter/table_filter_functions.hpp"
@@ -181,6 +183,124 @@ private:
 	ExpressionType comparison_type;
 	Value constant;
 	SelectionVector result_sel;
+	idx_t current_capacity = 0;
+};
+
+//! Executes col IN (constants) for a short list of constants of the type of the column
+class InListFilterExecutor final : public ExpressionFilterExecutor {
+public:
+	explicit InListFilterExecutor(vector<Value> values_p) : values(std::move(values_p)) {
+	}
+
+	idx_t FilterSelection(SelectionVector &sel, Vector &vector, idx_t scan_count,
+	                      idx_t &approved_tuple_count) override {
+		(void)scan_count;
+		if (approved_tuple_count == 0) {
+			return 0;
+		}
+		PrepareCapacity(approved_tuple_count);
+		const auto before_count = approved_tuple_count;
+		auto &current_sel = sel.IsSet() ? sel : *FlatVector::IncrementalSelectionVector();
+		approved_tuple_count = Select(vector, current_sel, approved_tuple_count);
+		if (approved_tuple_count != before_count) {
+			sel.Initialize(result_sel);
+		}
+		return approved_tuple_count;
+	}
+
+private:
+	template <class T, bool CAN_HAVE_NULL>
+	idx_t TemplatedSelect(const VectorIterator<T> &vector_values, const SelectionVector &sel,
+	                      idx_t approved_tuple_count) {
+		// a NULL row matches no value, and its payload is not compared
+		for (idx_t i = 0; i < approved_tuple_count; i++) {
+			matches[i] = false;
+			valid[i] = !CAN_HAVE_NULL || vector_values[sel.get_index(i)].IsValid();
+		}
+		// compare all rows with one value at a time, a loop without branches when there are no NULL values
+		for (auto &value : values) {
+			auto constant = value.GetValueUnsafe<T>();
+			for (idx_t i = 0; i < approved_tuple_count; i++) {
+				auto entry = vector_values[sel.get_index(i)];
+				if (CAN_HAVE_NULL) {
+					matches[i] = matches[i] || (valid[i] && Equals::Operation(entry.GetValueUnsafe(), constant));
+				} else {
+					matches[i] |= Equals::Operation(entry.GetValueUnsafe(), constant);
+				}
+			}
+		}
+		idx_t result_count = 0;
+		for (idx_t i = 0; i < approved_tuple_count; i++) {
+			result_sel.set_index(result_count, sel.get_index(i));
+			result_count += matches[i];
+		}
+		return result_count;
+	}
+
+	template <class T>
+	idx_t SelectTyped(Vector &vector, const SelectionVector &sel, idx_t approved_tuple_count) {
+		auto vector_values = vector.Values<T>();
+		if (vector_values.CanHaveNull()) {
+			return TemplatedSelect<T, true>(vector_values, sel, approved_tuple_count);
+		}
+		return TemplatedSelect<T, false>(vector_values, sel, approved_tuple_count);
+	}
+
+	idx_t Select(Vector &vector, const SelectionVector &sel, idx_t approved_tuple_count) {
+		switch (values[0].type().InternalType()) {
+		case PhysicalType::BOOL:
+			return SelectTyped<bool>(vector, sel, approved_tuple_count);
+		case PhysicalType::INT8:
+			return SelectTyped<int8_t>(vector, sel, approved_tuple_count);
+		case PhysicalType::INT16:
+			return SelectTyped<int16_t>(vector, sel, approved_tuple_count);
+		case PhysicalType::INT32:
+			return SelectTyped<int32_t>(vector, sel, approved_tuple_count);
+		case PhysicalType::INT64:
+			return SelectTyped<int64_t>(vector, sel, approved_tuple_count);
+		case PhysicalType::INT128:
+			return SelectTyped<hugeint_t>(vector, sel, approved_tuple_count);
+		case PhysicalType::UINT8:
+			return SelectTyped<uint8_t>(vector, sel, approved_tuple_count);
+		case PhysicalType::UINT16:
+			return SelectTyped<uint16_t>(vector, sel, approved_tuple_count);
+		case PhysicalType::UINT32:
+			return SelectTyped<uint32_t>(vector, sel, approved_tuple_count);
+		case PhysicalType::UINT64:
+			return SelectTyped<uint64_t>(vector, sel, approved_tuple_count);
+		case PhysicalType::UINT128:
+			return SelectTyped<uhugeint_t>(vector, sel, approved_tuple_count);
+		case PhysicalType::FLOAT:
+			return SelectTyped<float>(vector, sel, approved_tuple_count);
+		case PhysicalType::DOUBLE:
+			return SelectTyped<double>(vector, sel, approved_tuple_count);
+		case PhysicalType::INTERVAL:
+			return SelectTyped<interval_t>(vector, sel, approved_tuple_count);
+		case PhysicalType::VARCHAR:
+			return SelectTyped<string_t>(vector, sel, approved_tuple_count);
+		default:
+			throw InternalException("Unsupported physical type for IN list filter executor");
+		}
+	}
+
+	void PrepareCapacity(idx_t count) {
+		if (current_capacity >= count) {
+			return;
+		}
+		result_sel.Initialize(count);
+		matches = make_unsafe_uniq_array<bool>(count);
+		valid = make_unsafe_uniq_array<bool>(count);
+		current_capacity = count;
+	}
+
+public:
+	static constexpr idx_t MAX_VALUES = 8;
+
+private:
+	vector<Value> values;
+	SelectionVector result_sel;
+	unsafe_unique_array<bool> matches;
+	unsafe_unique_array<bool> valid;
 	idx_t current_capacity = 0;
 };
 
@@ -532,6 +652,30 @@ static unique_ptr<ExpressionFilterExecutor> TryCreateComparisonExecutor(const Bo
 	return make_uniq<ComparisonFilterExecutor>(comparison_type, constant->GetValue());
 }
 
+static unique_ptr<ExpressionFilterExecutor> TryCreateInListExecutor(const BoundOperatorExpression &op) {
+	auto &children = op.GetChildren();
+	if (op.GetExpressionType() != ExpressionType::COMPARE_IN || children.size() < 2 ||
+	    children.size() - 1 > InListFilterExecutor::MAX_VALUES || !IsColumnReferenceExpression(*children[0])) {
+		return nullptr;
+	}
+	const auto column_type = children[0]->GetReturnType().InternalType();
+	if (!IsSupportedComparisonType(column_type)) {
+		return nullptr;
+	}
+	vector<Value> values;
+	for (idx_t i = 1; i < children.size(); i++) {
+		if (children[i]->GetExpressionClass() != ExpressionClass::BOUND_CONSTANT) {
+			return nullptr;
+		}
+		auto &value = children[i]->Cast<BoundConstantExpression>().GetValue();
+		if (value.IsNull() || value.type().InternalType() != column_type) {
+			return nullptr;
+		}
+		values.push_back(value);
+	}
+	return make_uniq<InListFilterExecutor>(std::move(values));
+}
+
 static unique_ptr<ExpressionFilterExecutor> TryCreateFunctionExecutor(const BoundFunctionExpression &func,
                                                                       bool inside_selectivity_optional) {
 	if (!inside_selectivity_optional && func.GetChildren().size() == 2 &&
@@ -581,6 +725,8 @@ static unique_ptr<ExpressionFilterExecutor> TryCreateFastExecutor(const Expressi
 	switch (expression.GetExpressionClass()) {
 	case ExpressionClass::BOUND_FUNCTION:
 		return TryCreateFunctionExecutor(expression.Cast<BoundFunctionExpression>(), inside_selectivity_optional);
+	case ExpressionClass::BOUND_OPERATOR:
+		return TryCreateInListExecutor(expression.Cast<BoundOperatorExpression>());
 	case ExpressionClass::BOUND_CONJUNCTION: {
 		if (expression.GetExpressionType() != ExpressionType::CONJUNCTION_AND) {
 			return nullptr;

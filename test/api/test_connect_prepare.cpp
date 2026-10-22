@@ -1,6 +1,7 @@
 #include "catch.hpp"
 #include "test_helpers.hpp"
 #include "duckdb/catalog/duck_catalog.hpp"
+#include "duckdb/main/client_context_state.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/parser/parsed_data/attach_info.hpp"
@@ -58,6 +59,19 @@ struct RoutingStorageExtension : StorageExtension {
 			return make_uniq<DuckTransactionManager>(db);
 		};
 	}
+};
+
+//! Rejects the next query from QueryBegin when asked
+class RejectingQueryState : public ClientContextState {
+public:
+	void QueryBegin(ClientContext &context) override {
+		if (reject) {
+			reject = false;
+			throw IOException("query rejected");
+		}
+	}
+
+	bool reject = false;
 };
 
 } // namespace
@@ -176,4 +190,64 @@ TEST_CASE("Prepare statements while CONNECT-ed", "[api][connect]") {
 	REQUIRE(StringUtil::Contains(result->GetError(), "has been detached"));
 	REQUIRE(routed_queries.size() == 9);
 	REQUIRE_NO_FAIL(con.Query("DISCONNECT"));
+}
+
+TEST_CASE("A statement rejected by a QueryBegin hook while CONNECT-ed ends its query", "[api][connect]") {
+	DBConfig config;
+	StorageExtension::Register(config, "connect_routing_test", make_shared_ptr<RoutingStorageExtension>());
+	DuckDB db(nullptr, &config);
+	Connection con(db);
+	auto state = make_shared_ptr<RejectingQueryState>();
+	con.context->registered_state->Insert("rejecting_query_state", state);
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE t (i INTEGER)"));
+	REQUIRE_NO_FAIL(con.Query("ATTACH 'routed' AS remote (TYPE connect_routing_test)"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE remote.r (i INTEGER)"));
+
+	bool prepared = false;
+	SECTION("Query") {
+	}
+	SECTION("Prepare") {
+		prepared = true;
+	}
+	auto run_rejected = [&]() {
+		unique_ptr<QueryResult> result;
+		if (prepared) {
+			auto statement = con.Prepare("SELECT 42");
+			REQUIRE(!statement->HasError());
+			state->reject = true;
+			result = statement->Execute();
+		} else {
+			state->reject = true;
+			result = con.Query("SELECT 42");
+		}
+		REQUIRE_FAIL(result);
+		REQUIRE(StringUtil::Contains(result->GetError(), "query rejected"));
+	};
+
+	// in autocommit, the query ends with its local transaction
+	REQUIRE_NO_FAIL(con.Query("CONNECT remote"));
+	run_rejected();
+	REQUIRE(!con.context->transaction.HasActiveTransaction());
+	REQUIRE_NO_FAIL(con.Query("DISCONNECT"));
+
+	// a statement for the connected database leaves the local transaction valid
+	REQUIRE_NO_FAIL(con.Query("BEGIN"));
+	REQUIRE_NO_FAIL(con.Query("INSERT INTO t VALUES (1)"));
+	REQUIRE_NO_FAIL(con.Query("CONNECT remote"));
+	run_rejected();
+	REQUIRE_NO_FAIL(con.Query("DISCONNECT"));
+	REQUIRE_NO_FAIL(con.Query("COMMIT"));
+	auto count = con.Query("SELECT count(*) FROM t");
+	REQUIRE(CHECK_COLUMN(count, 0, {1}));
+
+	// unless the local transaction runs one on the connected database
+	REQUIRE_NO_FAIL(con.Query("BEGIN"));
+	REQUIRE_NO_FAIL(con.Query("INSERT INTO remote.r VALUES (1)"));
+	REQUIRE_NO_FAIL(con.Query("CONNECT remote"));
+	run_rejected();
+	REQUIRE_NO_FAIL(con.Query("DISCONNECT"));
+	auto aborted = con.Query("SELECT 42");
+	REQUIRE_FAIL(aborted);
+	REQUIRE(StringUtil::Contains(aborted->GetError(), "transaction is aborted"));
+	REQUIRE_NO_FAIL(con.Query("ROLLBACK"));
 }

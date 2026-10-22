@@ -31,7 +31,8 @@
 namespace duckdb {
 
 void ClientContext::BeginQueryInternal(ClientContextLock &lock, PreprocessedStatement statements,
-                                       const QueryParameters &parameters, Retention retention) {
+                                       const QueryParameters &parameters, Retention retention,
+                                       bool outside_local_transaction) {
 	// check if we are on AutoCommit. In this case we should start a transaction
 	D_ASSERT(!active_query);
 	D_ASSERT(!statements.statements.empty());
@@ -42,6 +43,8 @@ void ClientContext::BeginQueryInternal(ClientContextLock &lock, PreprocessedStat
 	auto query = statements.statements[0]->query;
 	active_query = make_uniq<ActiveQueryContext>(std::move(statements));
 	active_query->format = parameters.format;
+	// set before the QueryBegin hooks run, so that a query they reject ends outside the local transaction too
+	active_query->outside_local_transaction = outside_local_transaction;
 	if (retention == Retention::RETAINED_AT_SUBMISSION) {
 		active_query->retention = ResultLifetime::RETAINED;
 	}
@@ -66,9 +69,14 @@ void ClientContext::BeginQueryInternal(ClientContextLock &lock, PreprocessedStat
 		query_deadline.SetInvalid();
 	}
 	// Notify any registered state of query begin
-	for (auto &state : registered_state->States()) {
+	auto states = registered_state->States();
+	active_query->begun_states.reserve(states.size());
+	for (auto &state : states) {
 		state->QueryBegin(*this);
+		active_query->begun_states.push_back(state);
 	}
+	active_query->began_on_all_states = true;
+	active_query->begun_states.clear();
 	RefreshLoggerInternal();
 }
 
@@ -91,6 +99,9 @@ void ClientContext::RefreshLoggerInternal() {
 	DUCKDB_LOG(*this, QueryLogType, active_query->query);
 }
 
+//! Orders the errors of the steps that end a query, the most severe one is thrown after every state ended
+enum class QueryEndErrorSeverity { NONE, ORDINARY, INTERNAL, FATAL };
+
 ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success, bool invalidate_transaction,
                                           optional_ptr<ErrorData> previous_error) {
 	if (active_query->executor) {
@@ -98,6 +109,9 @@ ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success,
 	}
 	active_query->progress_bar.reset();
 	D_ASSERT(active_query.get());
+	// a query that failed to begin ends only on the states it began on
+	const bool began_on_all_states = active_query->began_on_all_states;
+	auto begun_states = std::move(active_query->begun_states);
 	invalidate_transaction = invalidate_transaction && !active_query->outside_local_transaction;
 	active_query.reset();
 	query_deadline.SetInvalid();
@@ -131,21 +145,53 @@ ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success,
 		error = ErrorData("Unhandled exception!");
 	} // LCOV_EXCL_STOP
 
+	// the query ends on every state also when ending the profiler, the logger or one of the states fails
+	ErrorData end_error;
+	auto end_error_severity = QueryEndErrorSeverity::NONE;
+	auto add_end_error = [&](std::exception &ex) {
+		ErrorData step_error(ex);
+		auto severity = QueryEndErrorSeverity::ORDINARY;
+		if (Exception::InvalidatesDatabase(step_error.Type())) {
+			severity = QueryEndErrorSeverity::FATAL;
+		} else if (step_error.Type() == ExceptionType::INTERNAL) {
+			severity = QueryEndErrorSeverity::INTERNAL;
+		}
+		if (severity != QueryEndErrorSeverity::ORDINARY) {
+			ValidChecker::Invalidate(DatabaseInstance::GetDatabase(*this), step_error.RawMessage());
+		}
+		// keep the first error at the highest severity
+		if (severity > end_error_severity) {
+			end_error = std::move(step_error);
+			end_error_severity = severity;
+		}
+	};
 	EndQueryProfiling(error);
 
 	// Refresh the logger
-	logger->Flush();
+	try {
+		logger->Flush();
+	} catch (std::exception &ex) {
+		add_end_error(ex);
+	}
 	LoggingContext context(LogContextScope::CONNECTION);
 	context.connection_id = connection_id;
 	logger = db->GetLogManager().CreateLogger(context, true);
 
 	// Notify any registered state of query end
-	for (auto const &s : registered_state->States()) {
-		if (error.HasError()) {
-			s->QueryEnd(*this, &error);
-		} else {
-			s->QueryEnd(*this, previous_error);
+	auto end_states = began_on_all_states ? registered_state->States() : std::move(begun_states);
+	for (auto const &s : end_states) {
+		try {
+			if (error.HasError()) {
+				s->QueryEnd(*this, &error);
+			} else {
+				s->QueryEnd(*this, previous_error);
+			}
+		} catch (std::exception &ex) {
+			add_end_error(ex);
 		}
+	}
+	if (end_error.HasError()) {
+		end_error.Throw();
 	}
 	return error;
 }
@@ -155,8 +201,12 @@ void ClientContext::EndQueryProfiling(ErrorData &error) {
 	try {
 		client_data->profiler->EndQuery();
 	} catch (std::exception &ex) {
+		ErrorData profiler_error(ex);
+		if (Exception::InvalidatesDatabase(profiler_error.Type()) || profiler_error.Type() == ExceptionType::INTERNAL) {
+			ValidChecker::Invalidate(DatabaseInstance::GetDatabase(*this), profiler_error.RawMessage());
+		}
 		if (!error.HasError()) {
-			error = ErrorData(ex);
+			error = std::move(profiler_error);
 		}
 	} catch (...) { // LCOV_EXCL_START
 		if (!error.HasError()) {

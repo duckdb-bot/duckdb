@@ -1,0 +1,119 @@
+# name: test/issues/general/test_25074.test
+# description: Converting a VARIANT nested deeper than the limit raises an error instead of overflowing the stack
+# group: [general]
+
+statement ok
+CREATE TABLE t AS WITH RECURSIVE r(d, v, o) AS (
+	SELECT 1, [1]::VARIANT, {'a': 1}::VARIANT
+	UNION ALL
+	SELECT d + 1, [v]::VARIANT, {'a': o}::VARIANT FROM r WHERE d < 129
+)
+SELECT d, v, o FROM r WHERE d IN (128, 129);
+
+# 128 nested arrays or objects still convert
+query II
+SELECT length(v::VARCHAR), length(o::VARCHAR) FROM t WHERE d = 128;
+----
+257	897
+
+statement error
+SELECT v::VARCHAR FROM t WHERE d = 129;
+----
+Can't convert VARIANT value nested deeper than 128 levels
+
+statement error
+SELECT o::VARCHAR FROM t WHERE d = 129;
+----
+Can't convert VARIANT value nested deeper than 128 levels
+
+statement error
+SELECT [v]::VARIANT::VARCHAR FROM t WHERE d = 128;
+----
+Can't convert VARIANT value nested deeper than 128 levels
+
+query II
+SELECT TRY_CAST(v AS VARCHAR) IS NULL, TRY_CAST(o AS VARCHAR) IS NULL FROM t ORDER BY d;
+----
+false	false
+true	true
+
+
+# the limit applies to the whole value, whatever the target type and the other rows
+query II
+SELECT d, TRY_CAST(v AS VARCHAR[]) IS NULL FROM t ORDER BY d;
+----
+128	false
+129	true
+
+statement error
+SELECT [v]::VARCHAR FROM t WHERE d = 129;
+----
+Can't convert VARIANT value nested deeper than 128 levels
+
+statement error
+SELECT {'a': v}::VARCHAR FROM t WHERE d = 129;
+----
+Can't convert VARIANT value nested deeper than 128 levels
+
+statement error
+SELECT CAST(o AS STRUCT(a VARIANT)) FROM t WHERE d = 129;
+----
+Can't convert VARIANT value nested deeper than 128 levels
+
+statement error
+SELECT CAST(o AS MAP(VARCHAR, VARIANT)) FROM t WHERE d = 129;
+----
+Can't convert VARIANT value nested deeper than 128 levels
+
+query III
+SELECT d, TRY_CAST(o AS STRUCT(a VARIANT)) IS NULL, TRY_CAST(v AS VARIANT[]) IS NULL FROM t ORDER BY d;
+----
+128	false	false
+129	true	true
+
+# a row of another type sends the whole batch to the conversion through a Value
+statement ok
+CREATE TABLE mixed AS SELECT d, v FROM t UNION ALL SELECT 0, 'x'::VARIANT;
+
+query II
+SELECT d, TRY_CAST(v AS VARCHAR[]) IS NULL FROM mixed ORDER BY d;
+----
+0	true
+128	false
+129	true
+
+# TRY_CAST of a container sets the elements that do not convert to NULL, as for other types
+query II
+SELECT TRY_CAST([v, 1::VARIANT] AS VARCHAR), TRY_CAST({'a': v, 'b': 1::VARIANT} AS VARCHAR) FROM t WHERE d = 129;
+----
+[NULL, 1]	{'a': NULL, 'b': 1}
+
+# the error names the nesting, also when another row of the batch converted another way
+statement error
+SELECT CAST(CASE WHEN i = 0 THEN (SELECT v FROM t WHERE d = 129) ELSE 1.234::DECIMAL(10,3)::VARIANT END AS DECIMAL(9,2))
+FROM range(2) t(i);
+----
+Can't convert VARIANT value nested deeper than 128 levels
+
+query III
+SELECT TRY_CAST([v]::VARIANT[1] AS VARCHAR), TRY_CAST(MAP {'k': v} AS VARCHAR), TRY_CAST(union_value(u := v) AS VARCHAR) IS NULL
+FROM t WHERE d = 129;
+----
+[NULL]	{k=NULL}	true
+
+# arrays and objects with siblings, and a value far past the limit
+statement ok
+CREATE TABLE mix AS WITH RECURSIVE r(d, v) AS (
+	SELECT 1, [1, 2]::VARIANT
+	UNION ALL
+	SELECT d + 1, CASE WHEN d % 2 = 0 THEN [v, 1::VARIANT]::VARIANT ELSE {'a': 1::VARIANT, 'b': v}::VARIANT END
+	FROM r WHERE d < 1000
+)
+SELECT d, v FROM r WHERE d IN (128, 129, 1000);
+
+query II
+SELECT d, TRY_CAST(v AS VARCHAR) IS NULL FROM mix ORDER BY d;
+----
+128	false
+129	true
+1000	true

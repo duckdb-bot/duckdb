@@ -13,7 +13,7 @@ static bool TupleToVarcharCast(Vector &source, Vector &result, idx_t count, Cast
 	auto &cast_data = parameters.cast_data->Cast<StructBoundCastData>();
 	Vector varchar_tuple(cast_data.target, count);
 	FlatVector::SetSize(varchar_tuple, count);
-	StructBoundCastData::StructToStructCast(source, varchar_tuple, count, parameters);
+	bool all_converted = StructBoundCastData::StructToStructCast(source, varchar_tuple, count, parameters);
 	auto &base_children = StructVector::GetEntries(source);
 
 	auto &children = StructVector::GetEntries(varchar_tuple);
@@ -84,7 +84,7 @@ static bool TupleToVarcharCast(Vector &source, Vector &result, idx_t count, Cast
 		dataptr[offset++] = ')';
 		result_str.Finalize();
 	}
-	return true;
+	return all_converted;
 }
 
 BoundCastInfo DefaultCasts::TupleCastSwitch(BindCastInput &input, const LogicalType &source,

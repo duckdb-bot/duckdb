@@ -1769,6 +1769,10 @@ string Value::ToSQLString() const {
 		RecursiveUnifiedVectorFormat format;
 		Vector::RecursiveToUnifiedFormat(tmp, format);
 		UnifiedVariantVectorData vector_data(format);
+		if (VariantUtils::ExceedsNestingDepth(vector_data, 0, 0)) {
+			// naming an expression does not throw, evaluating this SQL does
+			return "CAST(error(" + Value(VariantUtils::NestingDepthError()).ToSQLString() + ") AS VARIANT)";
+		}
 		auto val = VariantUtils::ConvertVariantToValue(vector_data, 0, 0);
 		if (val.type().id() == LogicalTypeId::STRUCT) {
 			child_list_t<Value> children;

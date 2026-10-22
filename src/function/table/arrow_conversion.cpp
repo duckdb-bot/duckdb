@@ -813,6 +813,15 @@ void ArrowToDuckDBConversion::ColumnArrowToDuckDBRunEndEncoded(Vector &vector, c
 	default:
 		throw NotImplementedException("Type '%s' not implemented for RunEndEncoding", TypeIdToString(physical_type));
 	}
+	if (parent_mask && parent_mask->CanHaveNull()) {
+		// decoding sets the validity of every row, so the NULL rows of the parent are set again
+		auto &validity = FlatVector::ValidityMutable(vector);
+		for (idx_t i = 0; i < size; i++) {
+			if (!parent_mask->RowIsValid(i)) {
+				validity.SetInvalid(i);
+			}
+		}
+	}
 }
 template <class SRC>
 static void ConvertDecimal(Vector &vector, ArrowArray &array, idx_t size, idx_t offset) {

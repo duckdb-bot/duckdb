@@ -238,7 +238,8 @@ struct ListColumn {
 // FIXED_SIZE_LIST column of list_size elements over a run-end encoded child, starting at row offset, NULL for the
 // given rows.
 struct FixedSizeListColumn {
-	FixedSizeListColumn(RunEndColumn &child, idx_t list_size, int64_t length, int64_t offset,
+	template <class CHILD>
+	FixedSizeListColumn(CHILD &child, idx_t list_size, int64_t length, int64_t offset,
 	                    const std::vector<idx_t> &null_rows = {})
 	    : format("+w:" + std::to_string(list_size)), validity((length + offset + 7) / 8 + 1, 0xFF) {
 		for (auto row : null_rows) {
@@ -266,6 +267,41 @@ struct FixedSizeListColumn {
 	FixedSizeListColumn(const FixedSizeListColumn &) = delete;
 
 	std::string format;
+	std::vector<uint8_t> validity;
+	ArrowSchema *schema_children[1];
+	ArrowArray *array_children[1];
+	const void *buffers[1];
+	ArrowSchema schema {};
+	ArrowArray array {};
+};
+
+// STRUCT column s whose only field is the given child, NULL for the given rows.
+struct StructColumn {
+	template <class CHILD>
+	StructColumn(CHILD &child, const std::vector<idx_t> &null_rows)
+	    : validity(idx_t(child.array.length + 7) / 8 + 1, 0xFF) {
+		for (auto row : null_rows) {
+			validity[row / 8] &= uint8_t(~(1u << (row % 8)));
+		}
+		schema_children[0] = &child.schema;
+		schema.format = "+s";
+		schema.name = "s";
+		schema.flags = 2;
+		schema.n_children = 1;
+		schema.children = schema_children;
+		schema.release = ReleaseSchema;
+		buffers[0] = validity.data();
+		array_children[0] = &child.array;
+		array.length = child.array.length;
+		array.null_count = int64_t(null_rows.size());
+		array.n_buffers = 1;
+		array.buffers = buffers;
+		array.n_children = 1;
+		array.children = array_children;
+		array.release = ReleaseArray;
+	}
+	StructColumn(const StructColumn &) = delete;
+
 	std::vector<uint8_t> validity;
 	ArrowSchema *schema_children[1];
 	ArrowArray *array_children[1];
@@ -490,6 +526,31 @@ TEST_CASE("Arrow scan of a run-end encoded dictionary column whose dictionary is
 	REQUIRE(
 	    arrow_run_end_encoded_test::QueryMatches(col.schema, col.array, "SELECT * FROM arrow_view",
 	                                             "SELECT * FROM (VALUES ('x'), ('x'), ('y'), ('y'), ('x'), ('x'))"));
+}
+
+TEST_CASE("Arrow scan of STRUCT(run-end encoded) with NULL rows", "[arrow]") {
+	// the field holds x, x, y, y, x and x, and rows 0 and 3 are NULL
+	arrow_run_end_encoded_test::RunEndDictionaryColumn dictionary_child({2, 4, 6}, {0, 1, 0}, {});
+	arrow_run_end_encoded_test::StructColumn dictionary_col(dictionary_child, {0, 3});
+	REQUIRE(arrow_run_end_encoded_test::QueryMatches(
+	    dictionary_col.schema, dictionary_col.array, "SELECT s IS NULL, s.item FROM arrow_view",
+	    "SELECT * FROM (VALUES (true, NULL), (false, 'x'), (false, 'y'), (true, NULL), (false, 'x'), (false, 'x'))"));
+
+	// the field holds 1, NULL and 3, and row 0 is NULL
+	arrow_run_end_encoded_test::RunEndColumn child({1, 2, 3}, {1, 2, 3}, {1});
+	arrow_run_end_encoded_test::StructColumn col(child, {0});
+	REQUIRE(arrow_run_end_encoded_test::QueryMatches(
+	    col.schema, col.array, "SELECT s IS NULL, s.item FROM arrow_view",
+	    "SELECT * FROM (VALUES (true, NULL::INT), (false, NULL), (false, 3))"));
+}
+
+TEST_CASE("Arrow scan of FIXED_SIZE_LIST(run-end encoded dictionary) with an offset and NULL rows", "[arrow]") {
+	// the child holds y, y, x, NULL, NULL, x, x and x, row r covers child slots 2 + 2r and 3 + 2r, and row 1 is NULL
+	arrow_run_end_encoded_test::RunEndDictionaryColumn child({2, 3, 5, 8}, {1, 0, 0, 0}, {2});
+	arrow_run_end_encoded_test::FixedSizeListColumn col(child, 2, 3, 1, {1});
+	REQUIRE(arrow_run_end_encoded_test::QueryMatches(
+	    col.schema, col.array, "SELECT * FROM arrow_view",
+	    "SELECT * FROM (VALUES (['x', NULL]::VARCHAR[2]), (NULL), (['x', 'x']))"));
 }
 
 TEST_CASE("Arrow scan of LIST(run-end encoded) whose first chunk holds no list elements", "[arrow]") {

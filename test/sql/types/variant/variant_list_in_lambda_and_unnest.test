@@ -59,6 +59,11 @@ SELECT x FROM (VALUES ([1, 2]::VARIANT), (NULL), ([]::INTEGER[]::VARIANT)) t(v),
 1
 2
 
+statement error
+SELECT x FROM (VALUES (42::VARIANT)) t(v), LATERAL UNNEST(v) u(x);
+----
+can't convert to 'VARIANT[]'
+
 statement ok
 RESET delim_join_as_cte;
 

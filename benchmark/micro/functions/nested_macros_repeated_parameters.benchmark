@@ -1,5 +1,5 @@
 # name: benchmark/micro/functions/nested_macros_repeated_parameters.benchmark
-# description: Bind nested macros that use their parameters several times
+# description: Bind nested macros that use their parameters several times (the macros of duckdb/duckdb#21747, without time zones)
 # group: [functions]
 
 name NestedMacrosRepeatedParameters
@@ -15,15 +15,12 @@ CREATE OR REPLACE MACRO dateadd(part, amount, dt) AS (
     ELSE NULL
   END
 );
-
 CREATE OR REPLACE MACRO snowflake_to_timestamp_ntz(val) AS (
   CASE WHEN val IS NULL THEN NULL ELSE CAST(val AS TIMESTAMP) END
 );
-
 CREATE OR REPLACE MACRO to_timestamp_tz(arg0) AS (
-  CASE WHEN arg0 IS NULL THEN NULL ELSE (arg0 AT TIME ZONE 'UTC')::timestamptz END
+  CASE WHEN arg0 IS NULL THEN NULL ELSE arg0::TIMESTAMP END
 );
-
 CREATE OR REPLACE MACRO to_date_14b34fda(arg0, arg1) AS (
   CASE
     WHEN UPPER(arg1) = 'MM/DD/YYYY' THEN STRPTIME(arg0, '%m/%d/%Y')
@@ -39,7 +36,6 @@ CREATE OR REPLACE MACRO to_date_14b34fda(arg0, arg1) AS (
     ELSE STRPTIME(arg0, '%Y-%m-%d')
   END::DATE
 );
-
 CREATE OR REPLACE MACRO last_day_2189937d(arg0, arg1) AS (
   CASE lower(arg1)
     WHEN 'year' THEN (date_trunc('year', arg0::date) + interval '1 year' - interval '1 day')::date
@@ -64,15 +60,15 @@ SELECT datediff('day',
                   CAST(CAST(to_timestamp_tz(dateadd('year', CAST(4 AS DOUBLE),
                     CAST(to_timestamp_tz(
                       CAST(CAST(DATE '2026-10-22' AS TIMESTAMP) AS TIMESTAMP)
-                    ) AS TIMESTAMPTZ)
-                  )) AS TIMESTAMPTZ) AS TIMESTAMPTZ)
+                    ) AS TIMESTAMP)
+                  )) AS TIMESTAMP) AS TIMESTAMP)
                 ) AS TIMESTAMP) AS DATE),
               'year') AS TIMESTAMP) AS TIMESTAMP)
-            ) AS TIMESTAMPTZ)
-          )) AS TIMESTAMPTZ) AS TIMESTAMPTZ)
+            ) AS TIMESTAMP)
+          )) AS TIMESTAMP) AS TIMESTAMP)
         ) AS TIMESTAMP) AS DATE) AS TIMESTAMP) AS TIMESTAMP)
-      ) AS TIMESTAMPTZ)
-    )) AS TIMESTAMPTZ) AS TIMESTAMPTZ)
+      ) AS TIMESTAMP)
+    )) AS TIMESTAMP) AS TIMESTAMP)
   ) AS TIMESTAMP) AS DATE)
 );
 

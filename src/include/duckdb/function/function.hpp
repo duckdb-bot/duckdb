@@ -59,14 +59,11 @@ enum class FunctionStability : uint8_t { CONSISTENT = 0, VOLATILE = 1, CONSISTEN
 //! PUSH_DISTINCT_COLLATIONS    -> aggregate DISTINCT arguments are replaced by their comparison keys
 //!                               Only valid for aggregates that can consume keys instead of original values.
 //!                               Ordinary (non-DISTINCT) calls keep their original arguments.
-//! PUSH_HASH_COLLATIONS        -> scalar function arguments are replaced by keys that hash equally for values that
-//!                               compare equal (for hash). String collations are not applied.
 enum class FunctionCollationHandling : uint8_t {
 	PROPAGATE_COLLATIONS = 0,
 	PUSH_COMBINABLE_COLLATIONS = 1,
 	IGNORE_COLLATIONS = 2,
-	PUSH_DISTINCT_COLLATIONS = 3,
-	PUSH_HASH_COLLATIONS = 4
+	PUSH_DISTINCT_COLLATIONS = 3
 };
 
 struct FunctionData {

@@ -2849,20 +2849,19 @@ const StringUtil::EnumStringLiteral *GetFunctionCollationHandlingValues() {
 		{ static_cast<uint32_t>(FunctionCollationHandling::PROPAGATE_COLLATIONS), "PROPAGATE_COLLATIONS" },
 		{ static_cast<uint32_t>(FunctionCollationHandling::PUSH_COMBINABLE_COLLATIONS), "PUSH_COMBINABLE_COLLATIONS" },
 		{ static_cast<uint32_t>(FunctionCollationHandling::IGNORE_COLLATIONS), "IGNORE_COLLATIONS" },
-		{ static_cast<uint32_t>(FunctionCollationHandling::PUSH_DISTINCT_COLLATIONS), "PUSH_DISTINCT_COLLATIONS" },
-		{ static_cast<uint32_t>(FunctionCollationHandling::PUSH_HASH_COLLATIONS), "PUSH_HASH_COLLATIONS" }
+		{ static_cast<uint32_t>(FunctionCollationHandling::PUSH_DISTINCT_COLLATIONS), "PUSH_DISTINCT_COLLATIONS" }
 	};
 	return values;
 }
 
 template<>
 const char* EnumUtil::ToChars<FunctionCollationHandling>(FunctionCollationHandling value) {
-	return StringUtil::EnumToString(GetFunctionCollationHandlingValues(), 5, "FunctionCollationHandling", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetFunctionCollationHandlingValues(), 4, "FunctionCollationHandling", static_cast<uint32_t>(value));
 }
 
 template<>
 FunctionCollationHandling EnumUtil::FromString<FunctionCollationHandling>(const char *value) {
-	return static_cast<FunctionCollationHandling>(StringUtil::StringToEnum(GetFunctionCollationHandlingValues(), 5, "FunctionCollationHandling", value));
+	return static_cast<FunctionCollationHandling>(StringUtil::StringToEnum(GetFunctionCollationHandlingValues(), 4, "FunctionCollationHandling", value));
 }
 
 const StringUtil::EnumStringLiteral *GetFunctionErrorsValues() {

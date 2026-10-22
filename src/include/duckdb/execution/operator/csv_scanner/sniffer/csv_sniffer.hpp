@@ -103,6 +103,11 @@ public:
 	                         const DialectOptions &dialect_options, const bool is_null, const char decimal_separator,
 	                         const char thousands_separator);
 	static bool CanYouCastBignum(const char *value_ptr, idx_t value_size);
+	//! Whether the value has the form the sniffer accepts for a BIGNUM, trims the spaces around it
+	static bool IsBignumValue(const char *&value_ptr, idx_t &value_size);
+	//! Whether type detection can accept the value in a column it detects as the type
+	static bool IsAcceptedByTypeDetection(ClientContext &context, const string_t value, LogicalTypeId type,
+	                                      const CSVReaderOptions &options);
 
 	idx_t LinesSniffed() const;
 

@@ -3,6 +3,8 @@
 #include "duckdb/execution/operator/csv_scanner/sniffer/csv_sniffer.hpp"
 #include "duckdb/execution/operator/csv_scanner/skip_scanner.hpp"
 #include "duckdb/function/table/read_csv.hpp"
+#include "duckdb/logging/logger.hpp"
+#include "duckdb/main/client_context.hpp"
 
 namespace duckdb {
 
@@ -10,7 +12,7 @@ CSVFileScan::CSVFileScan(ClientContext &context, const OpenFileInfo &file_p, CSV
                          const MultiFileOptions &file_options, const vector<Identifier> &names,
                          const vector<LogicalType> &types, CSVSchema &file_schema, bool per_file_single_threaded,
                          shared_ptr<CSVBufferManager> buffer_manager_p, bool fixed_schema)
-    : file(file_p), buffer_manager(std::move(buffer_manager_p)),
+    : context(context), file(file_p), buffer_manager(std::move(buffer_manager_p)),
       error_handler(
           make_shared_ptr<CSVErrorHandler>(options_p.ignore_errors.GetValue(), options_p.store_rejects.GetValue())),
       options(std::move(options_p)) {
@@ -52,8 +54,8 @@ CSVFileScan::CSVFileScan(ClientContext &context, const OpenFileInfo &file_p, CSV
 
 CSVFileScan::CSVFileScan(ClientContext &context, const OpenFileInfo &file_p, const CSVReaderOptions &options_p,
                          const MultiFileOptions &file_options)
-    : file(file_p), error_handler(make_shared_ptr<CSVErrorHandler>(options_p.ignore_errors.GetValue(),
-                                                                   options_p.store_rejects.GetValue())),
+    : context(context), file(file_p), error_handler(make_shared_ptr<CSVErrorHandler>(
+                                          options_p.ignore_errors.GetValue(), options_p.store_rejects.GetValue())),
       options(options_p) {
 	buffer_manager = CSVBufferManager::Open(context, options, file);
 	// Initialize On Disk and Size of file
@@ -156,6 +158,23 @@ void CSVFileScan::InitializeProjection() {
 
 void CSVFileScan::Finish() {
 	buffer_manager.reset();
+}
+
+void CSVFileScan::WarnSniffedTypeMismatch(idx_t column_idx, LogicalTypeId type, const string &value) {
+	{
+		lock_guard<mutex> guard(sniffed_type_mismatch_lock);
+		if (!sniffed_type_mismatch_columns.insert(column_idx).second) {
+			return;
+		}
+	}
+	const auto column_name = column_idx < names.size() ? names[column_idx] : to_string(column_idx);
+	auto message = StringUtil::Format(
+	    "Column \"%s\" of CSV file \"%s\" has values outside the sample that type detection does not accept as %s, "
+	    "such as \"%s\". They are still read as %s, which can change them. To detect the type from more values, set "
+	    "sample_size=-1, or set the type of the column explicitly.",
+	    column_name, file.path, LogicalTypeIdToString(type), value, LogicalTypeIdToString(type));
+	FullLinePosition::SanitizeError(message);
+	DUCKDB_LOG_WARNING(context, message);
 }
 
 double CSVFileScan::GetProgressInFile(ClientContext &context) {

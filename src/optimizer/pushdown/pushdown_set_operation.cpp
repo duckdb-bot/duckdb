@@ -28,6 +28,24 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownSetOperation(unique_ptr<Logi
 	D_ASSERT(op->type == LogicalOperatorType::LOGICAL_UNION || op->type == LogicalOperatorType::LOGICAL_EXCEPT ||
 	         op->type == LogicalOperatorType::LOGICAL_INTERSECT);
 	auto &setop = op->Cast<LogicalSetOperation>();
+	// a volatile filter stays above EXCEPT and INTERSECT: below them, it would run for rows they remove
+	vector<unique_ptr<Filter>> kept_filters;
+	if (op->type != LogicalOperatorType::LOGICAL_UNION) {
+		for (idx_t i = 0; i < filters.size(); i++) {
+			if (filters[i]->filter->IsVolatile()) {
+				kept_filters.push_back(std::move(filters[i]));
+				filters.erase(filters.begin() + NumericCast<int64_t>(i));
+				i--;
+			}
+		}
+		if (!filters.empty()) {
+			op->ResolveOperatorTypes();
+		}
+	}
+	auto finish = [&](unique_ptr<LogicalOperator> result) {
+		filters = std::move(kept_filters);
+		return PushFinalFilters(std::move(result));
+	};
 
 	for (idx_t child_idx = 0; child_idx < op->children.size(); child_idx++) {
 		auto &child = op->children[child_idx];
@@ -66,7 +84,7 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownSetOperation(unique_ptr<Logi
 	}
 	if (all_empty) {
 		// all sides are empty: the result must be empty
-		return make_uniq<LogicalEmptyResult>(std::move(op));
+		return finish(make_uniq<LogicalEmptyResult>(std::move(op)));
 	}
 	if (op->type == LogicalOperatorType::LOGICAL_UNION) {
 		// for UNION (ALL) - delete all empty children and return
@@ -76,7 +94,7 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownSetOperation(unique_ptr<Logi
 				i--;
 			}
 		}
-		return op;
+		return finish(std::move(op));
 	}
 	bool left_empty = op->children[0]->type == LogicalOperatorType::LOGICAL_EMPTY_RESULT;
 	bool right_empty = op->children[1]->type == LogicalOperatorType::LOGICAL_EMPTY_RESULT;
@@ -87,7 +105,7 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownSetOperation(unique_ptr<Logi
 			// except: if left child is empty, return empty result
 		case LogicalOperatorType::LOGICAL_INTERSECT:
 			// intersect: if any child is empty, return empty result itself
-			return make_uniq<LogicalEmptyResult>(std::move(op));
+			return finish(make_uniq<LogicalEmptyResult>(std::move(op)));
 		default:
 			throw InternalException("Unsupported set operation");
 		}
@@ -99,17 +117,17 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownSetOperation(unique_ptr<Logi
 				// union or except with empty right child: return left child
 				auto &projection = op->children[0]->Cast<LogicalProjection>();
 				projection.table_index = setop.table_index;
-				return std::move(op->children[0]);
+				return finish(std::move(op->children[0]));
 			}
 			break;
 		case LogicalOperatorType::LOGICAL_INTERSECT:
 			// intersect: if any child is empty, return empty result itself
-			return make_uniq<LogicalEmptyResult>(std::move(op));
+			return finish(make_uniq<LogicalEmptyResult>(std::move(op)));
 		default:
 			throw InternalException("Unsupported set operation");
 		}
 	}
-	return op;
+	return finish(std::move(op));
 }
 
 } // namespace duckdb

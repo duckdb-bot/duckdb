@@ -107,28 +107,64 @@ static bool IsComparison(const Expression &expr) {
 	}
 }
 
+//! Whether the expression is the collation key of a column, as ExpressionBinder::PushCollation makes it, e.g.
+//! normalized_interval(i) for an INTERVAL column
+static optional_ptr<const BoundColumnRefExpression> CollationKeyColumn(ClientContext &context, const Expression &expr) {
+	if (expr.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
+		return nullptr;
+	}
+	optional_ptr<const BoundColumnRefExpression> column;
+	idx_t column_count = 0;
+	ExpressionIterator::VisitExpression<BoundColumnRefExpression>(expr, [&](const BoundColumnRefExpression &colref) {
+		column = &colref;
+		column_count++;
+	});
+	if (column_count != 1) {
+		return nullptr;
+	}
+	unique_ptr<Expression> key = column->Copy();
+	if (!ExpressionBinder::PushCollation(context, key, column->GetReturnType()) || !key->Equals(expr)) {
+		return nullptr;
+	}
+	return column;
+}
+
 bool LogicalSetOperation::FilterTellsApartEqualRows(ClientContext &context, const Expression &filter) const {
 	if (filter.IsVolatile()) {
 		return true;
 	}
 	bool tells_apart = false;
-	// a column compared directly, e.g. in x > 1.5, cannot tell apart -0.0 and 0.0
+	// the types the operation compares a column with: a collation of either child applies
+	auto get_compared_types = [&](const BoundColumnRefExpression &colref) {
+		vector<reference<const LogicalType>> types {colref.GetReturnType()};
+		auto column = colref.Binding().column_index.GetIndex();
+		for (auto &child : children) {
+			if (column >= child->types.size()) {
+				tells_apart = true;
+				continue;
+			}
+			types.push_back(child->types[column]);
+		}
+		return types;
+	};
+	// a column compared directly, e.g. in x > 1.5, cannot tell apart -0.0 and 0.0, and a column compared by the
+	// collation key the operation compares with cannot tell apart what it treats as equal
 	std::function<void(const Expression &, bool)> visit = [&](const Expression &expr, bool compared) {
+		auto key_column = compared ? CollationKeyColumn(context, expr) : nullptr;
+		if (key_column) {
+			for (auto &type : get_compared_types(*key_column)) {
+				if (type.get() != key_column->GetReturnType()) {
+					tells_apart = true;
+				}
+			}
+			return;
+		}
 		if (expr.GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
 			auto comparison = IsComparison(expr);
 			ExpressionIterator::EnumerateChildren(expr, [&](const Expression &child) { visit(child, comparison); });
 			return;
 		}
-		auto &colref = expr.Cast<BoundColumnRefExpression>();
-		// the set operation compares with the collation of either child
-		vector<reference<const LogicalType>> types {colref.GetReturnType()};
-		auto column = colref.Binding().column_index.GetIndex();
-		for (auto &child : children) {
-			if (column < child->types.size()) {
-				types.push_back(child->types[column]);
-			}
-		}
-		for (auto &type : types) {
+		for (auto &type : get_compared_types(expr.Cast<BoundColumnRefExpression>())) {
 			if (!EqualOnlyToItself(context, type) && !(compared && ComparisonKeepsEquality(type))) {
 				tells_apart = true;
 			}

@@ -58,8 +58,6 @@ private:
 	unique_ptr<LogicalOperator> PullupSetOperation(unique_ptr<LogicalOperator> op);
 	//! Pullup filter in both sides of a join
 	unique_ptr<LogicalOperator> PullupBothSide(unique_ptr<LogicalOperator> op);
-	//! Pullup filter in both sides of a LogicalIntersect op
-	unique_ptr<LogicalOperator> PullupIntersect(unique_ptr<LogicalOperator> op);
 
 	//! Finish pull up at this operator
 	unique_ptr<LogicalOperator> FinishPullup(unique_ptr<LogicalOperator> op);

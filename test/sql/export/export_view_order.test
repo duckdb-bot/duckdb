@@ -62,6 +62,29 @@ CREATE VIEW w AS WITH y AS (SELECT 5 AS x) SELECT x FROM y;
 statement ok
 CREATE VIEW y AS SELECT x + 1 AS x FROM w;
 
+# a common table expression that is not used is not bound, so the views read each other in a cycle by name only
+statement ok
+CREATE VIEW ua AS WITH unused AS (SELECT * FROM ub) SELECT 42 AS x;
+
+statement ok
+CREATE VIEW ub AS SELECT * FROM ua;
+
+# a nested schema with the name of another schema
+statement ok
+CREATE SCHEMA ns;
+
+statement ok
+CREATE SCHEMA zz.ns;
+
+statement ok
+CREATE VIEW ns.va AS SELECT 42 AS x;
+
+statement ok
+CREATE VIEW ns.vb AS SELECT * FROM va;
+
+statement ok
+CREATE VIEW zz.ns.va AS SELECT x + 1 AS x FROM ns.vb;
+
 # a name without a schema in a view of another schema refers to the default schema
 statement ok
 CREATE VIEW aa.reads_main AS SELECT x * 10 AS x FROM n_second;
@@ -136,3 +159,8 @@ query IIIIIIIIIIII
 SELECT (SELECT x FROM a), (SELECT x FROM n_second), (SELECT m FROM c), (SELECT v FROM aa.top), (SELECT x FROM q), (SELECT x FROM f), (SELECT x FROM j), (SELECT x FROM y), (SELECT x FROM aa.reads_main), (SELECT x FROM shared), (SELECT x FROM sa), (SELECT count(*) FROM t)
 ----
 1	102	2	42	14	33	10	6	1020	8	42	3
+
+query II
+SELECT (SELECT x FROM ub), (SELECT x FROM imported.zz.ns.va)
+----
+42	43

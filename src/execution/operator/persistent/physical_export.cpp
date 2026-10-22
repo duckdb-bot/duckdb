@@ -216,6 +216,7 @@ static void CollectQueryReads(QueryNode &node, vector<reference<BaseTableRef>> &
 //! An exported table or view, found by its name
 struct ExportedRelation {
 	reference<CatalogEntry> entry;
+	vector<Identifier> schema_path;
 	//! The index among the exported views, invalid for a table
 	optional_idx view_index;
 };
@@ -225,14 +226,11 @@ static void AddViewReads(ViewCatalogEntry &view, const QualifiedName &name, cons
                          vector<idx_t> &reads) {
 	auto &catalog = view.ParentCatalog();
 	auto &catalog_name = catalog.GetName();
-	if (!name.Catalog().empty() && name.Catalog() != catalog_name) {
-		return;
-	}
-	auto default_schema = catalog.GetDefaultSchema();
-	auto add_schema_reads = [&](const Identifier &schema_name) {
+	vector<Identifier> qualification(name.Path().begin(), name.Path().end() - 1);
+	auto add_schema_reads = [&](const vector<Identifier> &schema_path) {
 		bool found = false;
 		for (auto &relation : relations) {
-			if (relation.entry.get().ParentSchema().name != schema_name) {
+			if (relation.schema_path != schema_path) {
 				continue;
 			}
 			found = true;
@@ -242,17 +240,23 @@ static void AddViewReads(ViewCatalogEntry &view, const QualifiedName &name, cons
 		}
 		return found;
 	};
-	if (!name.Schema().empty()) {
-		// the schema name can also be the name of the catalog
-		if (!add_schema_reads(name.Schema()) && name.Catalog().empty() && name.Schema() == catalog_name &&
-		    default_schema) {
-			add_schema_reads(*default_schema);
+	auto default_schema = catalog.GetDefaultSchema();
+	if (qualification.empty()) {
+		// a name without a schema refers to the schema of the view first, then to the default schema
+		if (!add_schema_reads(view.ParentSchema().GetSchemaPath()) && default_schema) {
+			add_schema_reads(vector<Identifier> {*default_schema});
 		}
 		return;
 	}
-	// a name without a schema refers to the schema of the view first, then to the default schema
-	if (!add_schema_reads(view.ParentSchema().name) && default_schema) {
-		add_schema_reads(*default_schema);
+	if (add_schema_reads(qualification) || qualification[0] != catalog_name) {
+		return;
+	}
+	// the qualification can start with the name of the catalog
+	qualification.erase(qualification.begin());
+	if (!qualification.empty()) {
+		add_schema_reads(qualification);
+	} else if (default_schema) {
+		add_schema_reads(vector<Identifier> {*default_schema});
 	}
 }
 
@@ -261,10 +265,14 @@ static void AddViewReads(ViewCatalogEntry &view, const QualifiedName &name, cons
 static void ReorderViewEntries(const catalog_entry_vector_t &tables, catalog_entry_vector_t &views) {
 	identifier_map_t<vector<ExportedRelation>> relations_by_name;
 	for (auto &table : tables) {
-		relations_by_name[table.get().name].push_back(ExportedRelation {table, optional_idx()});
+		auto &entry = table.get();
+		relations_by_name[entry.name].push_back(
+		    ExportedRelation {entry, entry.ParentSchema().GetSchemaPath(), optional_idx()});
 	}
 	for (idx_t i = 0; i < views.size(); i++) {
-		relations_by_name[views[i].get().name].push_back(ExportedRelation {views[i], optional_idx(i)});
+		auto &entry = views[i].get();
+		relations_by_name[entry.name].push_back(
+		    ExportedRelation {entry, entry.ParentSchema().GetSchemaPath(), optional_idx(i)});
 	}
 	vector<vector<idx_t>> reads(views.size());
 	for (idx_t i = 0; i < views.size(); i++) {
@@ -281,7 +289,7 @@ static void ReorderViewEntries(const catalog_entry_vector_t &tables, catalog_ent
 		CollectQueryReads(*view.query->node, tables, cte_names);
 		for (auto &table : tables) {
 			auto &name = table.get().GetQualifiedName();
-			if (name.Catalog().empty() && name.Schema().empty() && cte_names.count(name.Name())) {
+			if (name.Path().size() == 1 && cte_names.count(name.Name())) {
 				continue;
 			}
 			auto relations = relations_by_name.find(name.Name());
@@ -294,34 +302,65 @@ static void ReorderViewEntries(const catalog_entry_vector_t &tables, catalog_ent
 		std::sort(view_reads.begin(), view_reads.end());
 		view_reads.erase(std::unique(view_reads.begin(), view_reads.end()), view_reads.end());
 	}
-	// depth first in the current order, so views that read no other view keep their order
+	// Tarjan's algorithm finds the groups of views that read each other, and completes a group after the groups it
+	// reads. Views do not read each other in a cycle, so a cycle comes from a name found in a part of a query that is
+	// not bound (e.g. an unused common table expression), and the views of a group keep the current order.
 	struct ViewVisit {
 		idx_t view;
 		idx_t next_read;
 	};
+	const auto unvisited = DConstants::INVALID_INDEX;
+	vector<idx_t> visit_index(views.size(), unvisited);
+	vector<idx_t> low_index(views.size(), unvisited);
+	vector<bool> in_group_stack(views.size(), false);
+	vector<idx_t> group_stack;
+	vector<ViewVisit> stack;
 	catalog_entry_vector_t result;
 	result.reserve(views.size());
-	vector<bool> visited(views.size(), false);
-	vector<ViewVisit> stack;
+	idx_t next_visit_index = 0;
+	auto start_visit = [&](idx_t view) {
+		visit_index[view] = low_index[view] = next_visit_index++;
+		group_stack.push_back(view);
+		in_group_stack[view] = true;
+		stack.push_back(ViewVisit {view, 0});
+	};
 	for (idx_t i = 0; i < views.size(); i++) {
-		if (visited[i]) {
+		if (visit_index[i] != unvisited) {
 			continue;
 		}
-		visited[i] = true;
-		stack.push_back(ViewVisit {i, 0});
+		start_visit(i);
 		while (!stack.empty()) {
 			auto view = stack.back().view;
 			auto next_read = stack.back().next_read;
-			if (next_read == reads[view].size()) {
-				result.push_back(views[view]);
-				stack.pop_back();
+			if (next_read < reads[view].size()) {
+				stack.back().next_read++;
+				auto read = reads[view][next_read];
+				if (visit_index[read] == unvisited) {
+					start_visit(read);
+				} else if (in_group_stack[read]) {
+					low_index[view] = MinValue(low_index[view], visit_index[read]);
+				}
 				continue;
 			}
-			stack.back().next_read++;
-			auto read = reads[view][next_read];
-			if (!visited[read]) {
-				visited[read] = true;
-				stack.push_back(ViewVisit {read, 0});
+			stack.pop_back();
+			if (!stack.empty()) {
+				auto &parent = stack.back().view;
+				low_index[parent] = MinValue(low_index[parent], low_index[view]);
+			}
+			if (low_index[view] != visit_index[view]) {
+				continue;
+			}
+			// the view is the first visited view of its group
+			auto group_start = group_stack.size() - 1;
+			while (group_stack[group_start] != view) {
+				group_start--;
+			}
+			vector<idx_t> group(group_stack.begin() + NumericCast<int64_t>(group_start), group_stack.end());
+			group_stack.resize(group_start);
+			std::sort(group.begin(), group.end());
+			for (auto member : group) {
+				in_group_stack[member] = false;
+				result.push_back(views[member]);
 			}
 		}
 	}

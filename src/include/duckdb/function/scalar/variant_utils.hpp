@@ -114,9 +114,12 @@ struct VariantPathSelection {
 };
 
 struct VariantUtils {
-	//! The deepest nesting of arrays and objects that a JSON document may have to convert to a VARIANT
+	//! The deepest nesting of arrays and objects that a conversion to or from VARIANT accepts
 	static constexpr idx_t MAX_NESTING_DEPTH = 128;
 
+	//! Throws a DataCorruptionException unless 'size' bytes are available in a blob of 'blob_size' starting at
+	//! 'offset'; shared by every call site that decodes a byte_offset/varint-length pair out of a VARIANT blob
+	DUCKDB_API static void Available(idx_t blob_size, idx_t offset, idx_t size);
 	DUCKDB_API static bool IsNestedType(const UnifiedVariantVectorData &variant, idx_t row, uint32_t value_index);
 	DUCKDB_API static VariantDecimalData DecodeDecimalData(const UnifiedVariantVectorData &variant, idx_t row,
 	                                                       uint32_t value_index);

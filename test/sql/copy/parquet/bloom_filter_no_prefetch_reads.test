@@ -1,0 +1,110 @@
+# name: test/sql/copy/parquet/bloom_filter_no_prefetch_reads.test
+# description: Probing a bloom filter without prefetching does not make page headers read byte by byte
+# group: [parquet]
+
+require parquet
+
+require noforcestorage
+
+statement ok
+SET enable_external_file_cache=false
+
+statement ok
+SET threads=1
+
+statement ok
+COPY (SELECT 'key' || (i % 50) AS k, i AS v, [i, NULL, i + 1] AS l, {'s': 'str' || i} AS s FROM range(30000) t(i))
+TO '{TEST_DIR}/bloom_no_prefetch.parquet' (ROW_GROUP_SIZE 10000)
+
+query II
+SELECT count(*), count(bloom_filter_offset) FROM parquet_metadata('{TEST_DIR}/bloom_no_prefetch.parquet')
+WHERE path_in_schema = 'k'
+----
+3	3
+
+statement ok
+SET disable_parquet_prefetching=true
+
+statement ok
+CALL enable_logging('FileSystem')
+
+query IIII
+SELECT count(*), sum(v), sum(l[3]), max(s.s) FROM '{TEST_DIR}/bloom_no_prefetch.parquet' WHERE k = 'key7'
+----
+600	8989200	8989800	str9957
+
+# within the min-max statistics of every row group, but excluded by the bloom filters
+query I
+SELECT count(*) FROM '{TEST_DIR}/bloom_no_prefetch.parquet' WHERE k = 'key55'
+----
+0
+
+query I
+SELECT count(*) FROM duckdb_logs_parsed('FileSystem')
+WHERE path LIKE '%bloom_no_prefetch.parquet' AND op = 'READ' AND bytes::BIGINT < 8
+----
+0
+
+statement ok
+CALL disable_logging()
+
+statement ok
+SET disable_parquet_prefetching=false
+
+query IIII
+SELECT count(*), sum(v), sum(l[3]), max(s.s) FROM '{TEST_DIR}/bloom_no_prefetch.parquet' WHERE k = 'key7'
+----
+600	8989200	8989800	str9957
+
+# bloom filters without a length, three of them probed per row group
+statement ok
+CALL enable_logging('FileSystem')
+
+query I
+SELECT count(*) FROM '{DATA_DIR}/parquet-testing/issue6990.parquet' WHERE access_mode = 'x' AND action = 'y' AND addr = 'z'
+----
+0
+
+# with prefetching, one read before the first page serves all three bloom filters
+query I
+SELECT count(*) FROM duckdb_logs_parsed('FileSystem')
+WHERE path LIKE '%issue6990.parquet' AND op = 'READ' AND pos::BIGINT < 19227
+----
+1
+
+statement ok
+CALL truncate_duckdb_logs()
+
+statement ok
+SET disable_parquet_prefetching=true
+
+query I
+SELECT count(*) FROM '{DATA_DIR}/parquet-testing/issue6990.parquet' WHERE access_mode = 'x' AND action = 'y' AND addr = 'z'
+----
+0
+
+query II
+SELECT count(*), count(*) FILTER (bytes::BIGINT < 8) FROM duckdb_logs_parsed('FileSystem')
+WHERE path LIKE '%issue6990.parquet' AND op = 'READ' AND pos::BIGINT < 19227
+----
+3	0
+
+# bloom filters rejected after reading their header
+statement ok
+CALL truncate_duckdb_logs()
+
+query I
+SELECT count(*) FROM read_parquet('{DATA_DIR}/parquet-testing/bloom_filter_bad_numbytes.parquet') WHERE r = 0
+----
+1000
+
+query I
+SELECT count(*) FROM read_parquet('{DATA_DIR}/parquet-testing/bloom_filter_short_numbytes.parquet') WHERE r = 200
+----
+100
+
+query I
+SELECT count(*) FROM duckdb_logs_parsed('FileSystem')
+WHERE path LIKE '%bloom_filter_%_numbytes.parquet' AND op = 'READ' AND bytes::BIGINT < 8
+----
+0

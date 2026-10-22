@@ -284,10 +284,11 @@ public:
 
 	void SetCatalogLookupCallback(catalog_entry_callback_t callback);
 	void BindCreateViewInfo(CreateViewInfo &base);
+	//! Binds the query of a view, adding the entries of its catalog that it reads to the dependencies when given
 	static void BindView(ClientContext &context, const SelectStatement &stmt, const Identifier &catalog_name,
 	                     const Identifier &schema_name, optional_ptr<LogicalDependencyList> dependencies,
-	                     const vector<Identifier> &aliases, vector<LogicalType> &result_types,
-	                     vector<Identifier> &result_names);
+	                     const DependencyDependentFlags &dependency_flags, const vector<Identifier> &aliases,
+	                     vector<LogicalType> &result_types, vector<Identifier> &result_names);
 
 	void SearchSchema(CreateInfo &info);
 	//! Resolve the leading component of a (possibly qualified) name into a catalog: if it names an attached database it

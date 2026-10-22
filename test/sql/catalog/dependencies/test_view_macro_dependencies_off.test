@@ -1,0 +1,179 @@
+# name: test/sql/catalog/dependencies/test_view_macro_dependencies_off.test
+# description: Without enable_view_dependencies and enable_macro_dependencies, what views and macros read restricts no DROP or ALTER
+# group: [dependencies]
+
+load {TEST_DIR}/view_macro_dependencies_off.db
+
+statement ok
+CREATE TABLE t AS SELECT 1 AS i;
+
+statement ok
+CREATE MACRO s(x) AS x + 1;
+
+statement ok
+CREATE VIEW v AS SELECT i FROM t;
+
+statement ok
+CREATE VIEW vs AS SELECT s(i) AS i FROM v;
+
+statement ok
+CREATE MACRO tm() AS TABLE SELECT i FROM v;
+
+statement ok
+CREATE MACRO s2(x) AS s(x) * 2;
+
+# no dependency of a view or a macro is listed
+query I
+SELECT count(*) FROM duckdb_dependencies() WHERE refobjid IN (SELECT view_oid FROM duckdb_views() UNION ALL SELECT function_oid FROM duckdb_functions());
+----
+0
+
+statement ok
+ALTER TABLE t RENAME COLUMN i TO j;
+
+statement ok
+ALTER TABLE t RENAME COLUMN j TO i;
+
+statement ok
+ALTER TABLE t ALTER COLUMN i TYPE BIGINT;
+
+statement ok
+ALTER TABLE t RENAME TO t_renamed;
+
+statement ok
+ALTER TABLE t_renamed RENAME TO t;
+
+statement ok
+DROP TABLE t;
+
+statement ok
+CREATE TABLE t AS SELECT 1 AS i;
+
+statement ok
+DROP TABLE t CASCADE;
+
+statement ok
+CREATE TABLE t AS SELECT 1 AS i;
+
+statement ok
+DROP MACRO s;
+
+statement ok
+CREATE MACRO s(x) AS x + 10;
+
+statement ok
+CREATE OR REPLACE VIEW v AS SELECT i * 2 AS i FROM t;
+
+statement ok
+ALTER VIEW v RENAME TO v_renamed;
+
+statement ok
+ALTER VIEW v_renamed RENAME TO v;
+
+query IIII
+SELECT (SELECT i FROM vs), (SELECT i FROM tm()), s2(1), (SELECT count(*) FROM duckdb_views() WHERE view_name IN ('v', 'vs'))
+----
+12	2	22	2
+
+# a table of another schema
+statement ok
+CREATE SCHEMA other;
+
+statement ok
+CREATE TABLE other.ot AS SELECT 5 AS i;
+
+statement ok
+CREATE VIEW reads_other AS SELECT i FROM other.ot;
+
+statement ok
+DROP SCHEMA other CASCADE;
+
+query I
+SELECT count(*) FROM duckdb_views() WHERE view_name = 'reads_other';
+----
+1
+
+# a view that reads the view it replaces
+statement ok
+CREATE OR REPLACE VIEW v AS SELECT i FROM vs;
+
+statement error
+SELECT * FROM v;
+----
+recursively
+
+statement ok
+CHECKPOINT
+
+statement ok
+EXPORT DATABASE '{TEST_DIR}/view_macro_dependencies_off_cycle';
+
+statement ok
+CREATE OR REPLACE VIEW v AS SELECT i FROM t;
+
+# a table dropped while a view that reads it is created, in either order of the commits
+statement ok
+CREATE TABLE c1 AS SELECT 1 AS i;
+
+statement ok
+CREATE TABLE c2 AS SELECT 2 AS i;
+
+statement ok con1
+BEGIN
+
+statement ok con1
+CREATE VIEW reads_c1 AS SELECT i FROM c1;
+
+statement ok con2
+DROP TABLE c1;
+
+statement ok con1
+COMMIT
+
+statement ok con1
+BEGIN
+
+statement ok con1
+DROP TABLE c2;
+
+statement ok con2
+CREATE VIEW reads_c2 AS SELECT i FROM c2;
+
+statement ok con1
+COMMIT
+
+statement ok
+CHECKPOINT
+
+statement ok
+EXPORT DATABASE '{TEST_DIR}/view_macro_dependencies_off_dropped';
+
+restart
+
+statement ok
+DROP TABLE t;
+
+statement ok
+DROP MACRO s;
+
+# a database file in a storage version without dependency types
+statement ok
+ATTACH '{TEST_DIR}/view_macro_dependencies_off_v1.db' AS v1 (STORAGE_VERSION 'v1.5.0');
+
+statement ok
+CREATE TABLE v1.t AS SELECT 1 AS i;
+
+statement ok
+CREATE VIEW v1.v AS SELECT i FROM v1.t;
+
+statement ok
+CREATE MACRO v1.m() AS TABLE SELECT i FROM v1.t;
+
+statement ok
+DETACH v1;
+
+statement ok
+ATTACH '{TEST_DIR}/view_macro_dependencies_off_v1.db' AS v1;
+
+statement ok
+DROP TABLE v1.t;

@@ -109,6 +109,7 @@ ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success,
 	// a query that failed to begin ends only on the states it began on
 	const bool began_on_all_states = active_query->began_on_all_states;
 	auto begun_states = std::move(active_query->begun_states);
+	invalidate_transaction = invalidate_transaction && !active_query->outside_local_transaction;
 	active_query.reset();
 	query_deadline.SetInvalid();
 	query_progress.Initialize();

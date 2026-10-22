@@ -21,6 +21,7 @@ public:
 	                              unique_ptr<ParsedExpression> &expr_ptr) override;
 
 protected:
+	bool CanBindMacroArgumentsOnce() const override;
 	void ThrowIfUnnestInLambda(const ColumnBinding &column_binding) override;
 	BindResult BindUnnest(FunctionExpression &function, idx_t depth, bool root_expression) override;
 

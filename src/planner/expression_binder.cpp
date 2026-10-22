@@ -270,6 +270,7 @@ unique_ptr<Expression> ExpressionBinder::Bind(unique_ptr<ParsedExpression> &expr
                                               bool root_expression) {
 	// bind the main expression - a name that reaches out of this scope is resolved where it occurs
 	auto bind_result = Bind(expr, 0, root_expression);
+	macro_argument_references.clear();
 	if (bind_result.HasError()) {
 		bind_result.error.Throw();
 	}
@@ -296,12 +297,53 @@ unique_ptr<Expression> ExpressionBinder::Bind(unique_ptr<ParsedExpression> &expr
 	return result;
 }
 
+//! Whether the bound expression reads nothing from where it was bound (no column, parameter, subquery or lambda)
+static bool IsContextFree(const Expression &expr) {
+	switch (expr.GetExpressionClass()) {
+	case ExpressionClass::BOUND_CONSTANT:
+	case ExpressionClass::BOUND_FUNCTION:
+	case ExpressionClass::BOUND_CASE:
+	case ExpressionClass::BOUND_OPERATOR:
+	case ExpressionClass::BOUND_CONJUNCTION:
+		break;
+	default:
+		return false;
+	}
+	bool result = true;
+	ExpressionIterator::EnumerateChildren(expr,
+	                                      [&](const Expression &child) { result = result && IsContextFree(child); });
+	return result;
+}
+
 BindResult ExpressionBinder::Bind(unique_ptr<ParsedExpression> &expr, idx_t depth, bool root_expression) {
 	auto query_location = expr->GetQueryLocation();
 	auto alias = expr->GetAlias();
+	shared_ptr<MacroArgumentBinding> macro_argument;
+	auto reference = macro_argument_references.find(*expr);
+	if (reference != macro_argument_references.end()) {
+		// a macro parameter replaced by its argument, unless the replacement was itself replaced since
+		macro_argument = std::move(reference->second);
+		macro_argument_references.erase(reference);
+		macro_argument->unbound_references--;
+		if (!expr->Equals(*macro_argument->argument)) {
+			macro_argument = nullptr;
+		} else if (macro_argument->bound) {
+			auto bound = macro_argument->bound->Copy();
+			bound->SetQueryLocation(query_location);
+			if (!alias.empty()) {
+				bound->SetAlias(alias);
+			}
+			return BindResult(std::move(bound));
+		}
+	}
 	BindResult result = BindExpression(expr, depth, root_expression);
 	if (result.HasError()) {
 		return result;
+	}
+	// checked once the argument is bound, so that the check looks up only what binding looked up
+	if (macro_argument && macro_argument->unbound_references > 0 && IsContextFree(*result.expression) &&
+	    IsPureMacroArgument(*macro_argument->argument, identifier_set_t(), 0)) {
+		macro_argument->bound = result.expression->Copy();
 	}
 	// carry the location and alias of the parsed node over to the bound expression
 	result.expression->SetQueryLocation(query_location);

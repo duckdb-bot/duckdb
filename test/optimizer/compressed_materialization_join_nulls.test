@@ -1,0 +1,29 @@
+# name: test/optimizer/compressed_materialization_join_nulls.test
+# description: Compressing the keys of a join keeps the NULL statistics of each side
+# group: [optimizer]
+
+statement ok
+CREATE TABLE no_nulls AS SELECT * FROM (VALUES (4), (5), (6)) t(i);
+
+statement ok
+CREATE TABLE with_nulls AS SELECT * FROM (VALUES (4), (5), (NULL)) t(i);
+
+statement ok
+PRAGMA explain_output = OPTIMIZED_ONLY;
+
+query II
+EXPLAIN SELECT i IS NULL FROM (SELECT * FROM no_nulls ANTI JOIN with_nulls ON no_nulls.i IS NOT DISTINCT FROM with_nulls.i) t(i);
+----
+logical_opt	<!REGEX>:.*IS NULL.*
+
+query II
+SELECT i, i IS NULL FROM (SELECT * FROM no_nulls ANTI JOIN with_nulls ON no_nulls.i IS NOT DISTINCT FROM with_nulls.i) t(i);
+----
+6	false
+
+query II rowsort
+SELECT i, i IS NULL FROM (SELECT * FROM with_nulls SEMI JOIN (SELECT * FROM no_nulls UNION ALL SELECT NULL) r ON with_nulls.i IS NOT DISTINCT FROM r.i) t(i);
+----
+4	false
+5	false
+NULL	true

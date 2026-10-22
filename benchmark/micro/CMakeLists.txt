@@ -10,7 +10,8 @@ add_library(
   in.cpp
   parser.cpp
   storage.cpp
-  string_serialize.cpp)
+  string_serialize.cpp
+  subquery_planning.cpp)
 
 set(BENCHMARK_OBJECT_FILES
     ${BENCHMARK_OBJECT_FILES} $<TARGET_OBJECTS:duckdb_benchmark_micro>

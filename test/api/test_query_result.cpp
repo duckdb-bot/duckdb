@@ -1266,6 +1266,47 @@ TEST_CASE("An internal error of the profiler at the end of a query invalidates t
 	REQUIRE(StringUtil::Contains(invalidated->GetError(), "database has been invalidated"));
 }
 
+//! Fails with an internal error when a file under its prefix is opened
+class FailingProfileFileSystem : public FileSystem {
+public:
+	static constexpr const char *PREFIX = "failing-profile://";
+
+	string GetName() const override {
+		return "FailingProfileFileSystem";
+	}
+	bool CanHandleFile(const string &path) override {
+		return StringUtil::StartsWith(path, PREFIX);
+	}
+	unique_ptr<FileHandle> OpenFile(const string &path, FileOpenFlags flags, optional_ptr<FileOpener> opener) override {
+		throw InternalException("profile output failed");
+	}
+};
+
+TEST_CASE("An internal error of the profiler after a parse error invalidates the database", "[api][query_result]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	FileSystem::GetFileSystem(*con.context).RegisterSubSystem(make_uniq<FailingProfileFileSystem>());
+	REQUIRE_NO_FAIL(con.Query("PRAGMA enable_profiling = 'json'"));
+	REQUIRE_NO_FAIL(
+	    con.Query("PRAGMA profiling_output = '" + string(FailingProfileFileSystem::PREFIX) + "profile.json'"));
+	// the error of the parser is reported, and the profile of the query fails when it is written
+	ErrorData parse_error;
+	SECTION("Query") {
+		parse_error = con.Query("SELEC 42")->GetErrorObject();
+	}
+	SECTION("Prepare") {
+		parse_error = con.Prepare("SELEC 42")->GetErrorObject();
+	}
+	SECTION("Submit") {
+		parse_error = con.Submit("SELEC 42")->GetErrorObject();
+	}
+	REQUIRE(parse_error.HasError());
+	REQUIRE(parse_error.Type() == ExceptionType::PARSER);
+	auto invalidated = con.Query("SELECT 42");
+	REQUIRE(invalidated->HasError());
+	REQUIRE(StringUtil::Contains(invalidated->GetError(), "database has been invalidated"));
+}
+
 //! Allocates a buffer when a query begins while asked to, and holds it until the query ends
 class AllocatingQueryState : public ClientContextState {
 public:

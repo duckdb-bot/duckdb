@@ -20,48 +20,16 @@ unique_ptr<LogicalOperator> FilterPullup::PullupSetOperation(unique_ptr<LogicalO
 	D_ASSERT(op->type == LogicalOperatorType::LOGICAL_INTERSECT || op->type == LogicalOperatorType::LOGICAL_EXCEPT);
 	can_add_column = false;
 	can_pullup = true;
-	auto &setop = op->Cast<LogicalSetOperation>();
-	FilterPullup left_pullup(context, true, can_add_column);
-	// EXCEPT only pulls up filters of its left child
-	FilterPullup right_pullup(context, op->type == LogicalOperatorType::LOGICAL_INTERSECT, can_add_column);
-	op->children[0] = left_pullup.Rewrite(std::move(op->children[0]));
-	op->children[1] = right_pullup.Rewrite(std::move(op->children[1]));
-
-	// A volatile filter stays where it is evaluated. EXCEPT and INTERSECT return rows of the left child, so a filter of
-	// the right child that tells apart rows they treat as equal stays there too: above, it would select left rows.
-	if (!right_pullup.filters_expr_pullup.empty()) {
-		setop.ResolveChildTypes();
-	}
-	vector<unique_ptr<Expression>> pulled_filters;
-	vector<unique_ptr<Expression>> left_filters;
-	vector<unique_ptr<Expression>> right_filters;
-	for (auto &expr : left_pullup.filters_expr_pullup) {
-		if (expr->IsVolatile()) {
-			left_filters.push_back(std::move(expr));
-		} else {
-			pulled_filters.push_back(std::move(expr));
+	// EXCEPT and INTERSECT return rows of the left child, so a filter of the right child does not apply to them
+	op = PullupFromLeft(std::move(op));
+	if (op->type == LogicalOperatorType::LOGICAL_FILTER) {
+		auto &filter = op->Cast<LogicalFilter>();
+		auto &setop = filter.children[0]->Cast<LogicalSetOperation>();
+		for (idx_t i = 0; i < filter.expressions.size(); ++i) {
+			ReplaceFilterTableIndex(*filter.expressions[i], setop);
 		}
 	}
-	for (auto &expr : right_pullup.filters_expr_pullup) {
-		if (setop.FilterTellsApartEqualRows(context, *expr)) {
-			right_filters.push_back(std::move(expr));
-		} else {
-			pulled_filters.push_back(std::move(expr));
-		}
-	}
-	if (!left_filters.empty()) {
-		op->children[0] = GeneratePullupFilter(std::move(op->children[0]), left_filters);
-	}
-	if (!right_filters.empty()) {
-		op->children[1] = GeneratePullupFilter(std::move(op->children[1]), right_filters);
-	}
-	if (pulled_filters.empty()) {
-		return op;
-	}
-	for (auto &expr : pulled_filters) {
-		ReplaceFilterTableIndex(*expr, setop);
-	}
-	return GeneratePullupFilter(std::move(op), pulled_filters);
+	return op;
 }
 
 } // namespace duckdb

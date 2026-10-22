@@ -156,3 +156,51 @@ query I
 SELECT currval('seq9');
 ----
 6
+
+# HAVING refers to the GROUP BY ALL group, and sees its uncollated value
+statement ok
+CREATE SEQUENCE seq10;
+
+query II
+SELECT ('A' || (nextval('seq10') * 0 + i * 0)) COLLATE NOCASE AS k, count(*) FROM range(4) r(i) GROUP BY ALL HAVING unicode(('A' || (nextval('seq10') * 0 + i * 0)) COLLATE NOCASE) = 65;
+----
+A0	4
+
+query I
+SELECT currval('seq10');
+----
+4
+
+# a collation that changes the type of the group keeps the selected value
+statement ok
+CREATE SEQUENCE seq11;
+
+query II
+SELECT CASE WHEN nextval('seq11') + i * 0 > 0 THEN TIMETZ '10:00:00+00' END AS k, count(*) FROM range(3) r(i) GROUP BY k;
+----
+10:00:00+00	3
+
+query II
+SELECT CASE WHEN nextval('seq11') + i * 0 > 0 THEN TIMETZ '10:00:00+00' END AS k, count(*) FROM range(3) r(i) GROUP BY ALL;
+----
+10:00:00+00	3
+
+query I
+SELECT currval('seq11');
+----
+6
+
+# a struct with a collated field, and NULL structs
+statement ok
+CREATE SEQUENCE seq12;
+
+query II
+SELECT CASE WHEN (nextval('seq12') + i * 0) % 3 = 0 THEN NULL ELSE {'x': CASE WHEN i % 2 = 0 THEN 'A' ELSE 'a' END COLLATE NOCASE} END AS k, count(*) FROM range(6) r(i) GROUP BY ALL ORDER BY ALL;
+----
+{'x': A}	4
+NULL	2
+
+query I
+SELECT currval('seq12');
+----
+6

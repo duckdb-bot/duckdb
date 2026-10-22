@@ -2326,8 +2326,12 @@ LocalGlobResult::LocalGlobResult(LocalFileSystem &fs, const string &path_p, cons
 			auto search_paths = StringUtil::Split(search_paths_str, ',');
 			for (const auto &search_path : search_paths) {
 				has_search_path = true;
-				if (!can_access_location || can_access_location(fs.JoinPath(search_path, path))) {
+				if (!can_access_location) {
 					expand_directories.emplace(search_path, 0);
+				} else if (can_access_location(fs.JoinPath(search_path, path))) {
+					// expand the root in the normalized form that the check saw (an empty entry lists nothing)
+					expand_directories.emplace(
+					    search_path.empty() ? search_path : Path::FromString(search_path).ToString(), 0);
 				}
 			}
 		}

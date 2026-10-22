@@ -101,6 +101,12 @@ SELECT hash(INTERVAL '-2147483648 months -2147483648 days -9223372036854775807 m
 ----
 10698964209986971760	14945741554909537998
 
+# each argument is hashed on its own, so the arguments can have different collations
+query I
+SELECT hash('a' COLLATE NOCASE, 'b' COLLATE NOACCENT) = hash('a', 'b')
+----
+true
+
 # an index on hash() finds its rows after a restart with another default collation
 statement ok
 CREATE TABLE names (s VARCHAR);

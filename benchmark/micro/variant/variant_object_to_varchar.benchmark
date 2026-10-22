@@ -1,0 +1,15 @@
+# name: benchmark/micro/variant/variant_object_to_varchar.benchmark
+# description: Cast VARIANT objects holding a list and a nested object to VARCHAR
+# group: [variant]
+
+name variant_object_to_varchar
+group variant
+
+load
+CREATE TABLE tbl AS SELECT struct_pack(i := i, s := 'str' || i, l := [i, i + 1, i + 2], st := struct_pack(a := i, b := 'x' || i))::VARIANT AS v FROM range(200000) t(i);
+
+run
+SELECT count(*), max(length(v::VARCHAR)) FROM tbl;
+
+result II
+200000	95

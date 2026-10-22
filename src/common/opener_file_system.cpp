@@ -43,9 +43,9 @@ unique_ptr<MultiFileList> OpenerFileSystem::GlobFilesExtended(const string &path
 	// (a glob only in the search paths, a name without glob also in the working directory)
 	auto &fs = GetFileSystem();
 	bool any_allowed = !HasGlob(expanded_path) && IsAccessAllowed(expanded_path, FileType::FILE_TYPE_REGULAR);
-	for (auto &search_path : search_paths) {
-		auto location = fs.JoinPath(FileSystem::ExpandPath(search_path, GetOpener()), expanded_path);
-		any_allowed = any_allowed || IsAccessAllowed(location, FileType::FILE_TYPE_REGULAR);
+	for (idx_t i = 0; i < search_paths.size() && !any_allowed; i++) {
+		auto location = fs.JoinPath(FileSystem::ExpandPath(search_paths[i], GetOpener()), expanded_path);
+		any_allowed = IsAccessAllowed(location, FileType::FILE_TYPE_REGULAR);
 	}
 	if (!any_allowed) {
 		throw CannotAccessError(path, FileType::FILE_TYPE_REGULAR);

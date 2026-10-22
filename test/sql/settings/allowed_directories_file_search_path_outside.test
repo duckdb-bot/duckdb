@@ -33,3 +33,12 @@ SELECT * FROM 'data/csv/glob/f_1.csv'
 1	alice	alice@email.com
 2	eve	eve@email.com
 3r	bob	NULL
+
+# a name found in the working directory does not look at the search path
+statement ok
+SET file_search_path = 'file://invalid-local-authority/unused'
+
+query I
+SELECT count(*) FROM 'data/csv/glob/f_2.csv'
+----
+2

@@ -17,7 +17,7 @@ class SchemaCatalogEntry;
 class TableFilter;
 class Value;
 
-//! Filters pushed into a system catalog scan (duckdb_tables, duckdb_views) on the schema identity columns.
+//! Filters pushed into a system catalog scan (such as duckdb_tables) on the schema identity columns.
 struct SchemaScanFilters {
 	optional_ptr<const TableFilter> schema_name;
 	optional_ptr<const TableFilter> schema_oid;

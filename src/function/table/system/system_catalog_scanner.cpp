@@ -48,16 +48,20 @@ bool SystemCatalogScannerData::Equals(const FunctionData &other_p) const {
 	       schema_name_idx == other.schema_name_idx && schema_oid_idx == other.schema_oid_idx;
 }
 
-unique_ptr<FunctionData> SystemCatalogScanner::CreateBindData(const vector<Identifier> &names) {
+unique_ptr<FunctionData> SystemCatalogScanner::CreateBindData(const vector<Identifier> &names,
+                                                              const vector<LogicalType> &types) {
 	auto result = make_uniq<SystemCatalogScannerData>();
 	for (idx_t i = 0; i < names.size(); i++) {
-		if (names[i] == "database_name") {
+		// the scan evaluates the filters on the names as VARCHAR and on the oids as BIGINT
+		const bool is_name = types[i].id() == LogicalTypeId::VARCHAR;
+		const bool is_oid = types[i].id() == LogicalTypeId::BIGINT;
+		if (names[i] == "database_name" && is_name) {
 			result->database_name_idx = i;
-		} else if (names[i] == "database_oid") {
+		} else if (names[i] == "database_oid" && is_oid) {
 			result->database_oid_idx = i;
-		} else if (names[i] == "schema_name") {
+		} else if (names[i] == "schema_name" && is_name) {
 			result->schema_name_idx = i;
-		} else if (names[i] == "schema_oid") {
+		} else if (names[i] == "schema_oid" && is_oid) {
 			result->schema_oid_idx = i;
 		}
 	}
@@ -67,6 +71,10 @@ unique_ptr<FunctionData> SystemCatalogScanner::CreateBindData(const vector<Ident
 // pushdown_expression: accept an expression only if the single column it references is an identity column.
 static bool PushdownExpression(ClientContext &context, const LogicalGet &get, Expression &expr) {
 	if (!get.bind_data) {
+		return false;
+	}
+	// the scan also evaluates the filter on names that no row has, where it must not throw
+	if (expr.CanThrow()) {
 		return false;
 	}
 	auto &data = get.bind_data->Cast<SystemCatalogScannerData>();

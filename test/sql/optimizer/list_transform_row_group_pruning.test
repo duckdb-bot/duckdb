@@ -1,5 +1,5 @@
 # name: test/sql/optimizer/list_transform_row_group_pruning.test
-# description: list_contains prunes row groups through list_transform
+# description: list_contains prunes row groups through list_transform, unless the lambda can throw or has side effects
 # group: [optimizer]
 
 statement ok
@@ -10,31 +10,36 @@ USE db;
 
 statement ok
 CREATE TABLE lists AS
-SELECT [i] AS l, i % 2 AS c
+SELECT [i] AS l, [i * INTERVAL '1 day'] AS li, i % 2 AS c
 FROM range(6144) tbl(i);
 
-# a lambda that reads only the element keeps the min/max of the elements
+# a lambda that reads only the element and cannot throw keeps the min/max of the elements
 query II
-EXPLAIN ANALYZE SELECT count(*) FROM lists WHERE list_contains(list_transform(l, lambda x: x + 1), 3001);
+EXPLAIN ANALYZE SELECT count(*) FROM lists WHERE list_contains(list_transform(l, lambda x: x::DOUBLE), 3000);
 ----
 analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 3.*
 
+query I
+SELECT count(*) FROM lists WHERE list_contains(list_transform(l, lambda x: x::DOUBLE), 3000);
+----
+1
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM lists WHERE list_contains(list_transform(li, lambda x: normalized_interval(x)), INTERVAL '3000 days');
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 3.*
+
+query I
+SELECT count(*) FROM lists WHERE list_contains(list_transform(li, lambda x: normalized_interval(x)), INTERVAL '3000 days');
+----
+1
+
+# lambdas that can throw, or that read another column or the index, find their rows
 query I
 SELECT count(*) FROM lists WHERE list_contains(list_transform(l, lambda x: x + 1), 3001);
 ----
 1
 
-query II
-EXPLAIN ANALYZE SELECT count(*) FROM lists WHERE list_contains(list_transform(l, lambda x: 10000 - x), 7000);
-----
-analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 3.*
-
-query I
-SELECT count(*) FROM lists WHERE list_contains(list_transform(l, lambda x: 10000 - x), 7000);
-----
-1
-
-# a lambda that reads another column or the index finds its rows
 query II
 SELECT count(*) FILTER (WHERE list_contains(list_transform(l, lambda x: x + c), 3000)), count(*) FILTER (WHERE l[1] + c = 3000)
 FROM lists
@@ -45,3 +50,27 @@ query I
 SELECT count(*) FROM lists WHERE list_contains(list_transform(l, lambda x, i: x + i), 3001);
 ----
 1
+
+# the statistics do not skip a lambda whose error TRY has to catch
+statement ok
+CREATE TABLE big_lists AS SELECT [9223372036854775807] AS l;
+
+query I
+SELECT TRY(list_transform(l, lambda x: x + 1) IS NULL) FROM big_lists
+----
+NULL
+
+# nor a lambda with side effects
+statement ok
+CREATE SEQUENCE lambda_seq;
+
+query I
+SELECT coalesce(list_position(list_transform(l, lambda x: CASE WHEN nextval('lambda_seq') > 0 THEN 1 ELSE 2 END), 3), 99)
+FROM big_lists
+----
+99
+
+query I
+SELECT nextval('lambda_seq')
+----
+2

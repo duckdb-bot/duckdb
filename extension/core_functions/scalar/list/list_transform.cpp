@@ -43,6 +43,10 @@ static unique_ptr<BaseStatistics> ListTransformStats(ClientContext &context, Fun
 	if (!bind_data.lambda_expr || bind_data.has_index || list_stats.GetStatsType() != StatisticsType::LIST_STATS) {
 		return nullptr;
 	}
+	// statistics can let the optimizer skip the lambda, which must not hide its errors or side effects
+	if (bind_data.lambda_expr->IsVolatile() || bind_data.lambda_expr->CanThrow()) {
+		return nullptr;
+	}
 	auto &element_stats = ListStats::GetChildStats(list_stats);
 	auto lambda_stats = ExpressionFilter::TryGetExpressionStatistics(
 	    context, *bind_data.lambda_expr, array_ptr<const BaseStatistics>(&element_stats, 1));

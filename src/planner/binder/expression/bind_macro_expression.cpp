@@ -307,14 +307,13 @@ void ExpressionBinder::UnfoldMacroExpression(FunctionExpression &function, Scala
 
 	// now replace the parameters
 	vector<identifier_set_t> lambda_params;
-	// in a pure macro every reference is bound, and so is every argument
-	if (!CanBindMacroArgumentsOnce() || !IsPureMacro(macro_func, 0)) {
+	if (!CanBindMacroArgumentsOnce()) {
 		ReplaceMacroParameters(expr, lambda_params);
 		return;
 	}
 	vector<MacroParameterReference> references;
 	ReplaceMacroParameters(expr, lambda_params, references);
-	// an argument that the macro reads several times is bound once, when it is pure
+	// an argument that the macro reads several times may be bound once, see ExpressionBinder::Bind
 	auto &arguments = *new_macro_binding->arguments;
 	vector<idx_t> reference_counts(arguments.size(), 0);
 	for (auto &reference : references) {
@@ -322,7 +321,7 @@ void ExpressionBinder::UnfoldMacroExpression(FunctionExpression &function, Scala
 	}
 	vector<shared_ptr<MacroArgumentBinding>> argument_bindings(arguments.size());
 	for (idx_t i = 0; i < arguments.size(); i++) {
-		if (reference_counts[i] > 1 && IsPureMacroArgument(*arguments[i], identifier_set_t(), 0)) {
+		if (reference_counts[i] > 1) {
 			argument_bindings[i] = make_shared_ptr<MacroArgumentBinding>(arguments[i]->Copy());
 			argument_bindings[i]->unbound_references = reference_counts[i];
 		}

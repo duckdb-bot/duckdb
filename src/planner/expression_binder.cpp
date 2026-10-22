@@ -340,7 +340,9 @@ BindResult ExpressionBinder::Bind(unique_ptr<ParsedExpression> &expr, idx_t dept
 	if (result.HasError()) {
 		return result;
 	}
-	if (macro_argument && macro_argument->unbound_references > 0 && IsContextFree(*result.expression)) {
+	// checked once the argument is bound, so that the check looks up only what binding looked up
+	if (macro_argument && macro_argument->unbound_references > 0 && IsContextFree(*result.expression) &&
+	    IsPureMacroArgument(*macro_argument->argument, identifier_set_t(), 0)) {
 		macro_argument->bound = result.expression->Copy();
 	}
 	// carry the location and alias of the parsed node over to the bound expression

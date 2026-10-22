@@ -266,3 +266,27 @@ SELECT * FROM (VALUES (1)) t(i) MATCH_RECOGNIZE (
 );
 ----
 <REGEX>:Binder Error.*CLASSIFIER\(\) only means something while the matcher is assembling a match.*
+
+# a call that fails to bind fails as before, without looking up the functions of the macro body first
+statement ok
+SET autoinstall_known_extensions = false;
+
+statement ok
+SET autoload_known_extensions = false;
+
+statement ok
+CREATE MACRO stem(x, y) AS x;
+
+statement ok
+CREATE MACRO typed(x INTEGER) AS stem(x, x);
+
+statement ok
+DROP MACRO stem;
+
+statement ok
+SET autoload_known_extensions = true;
+
+statement error
+SELECT twice(typed('oops'));
+----
+<REGEX>:Binder Error.*Macro typed\(\) does not support the supplied arguments.*

@@ -90,14 +90,14 @@ struct MacroParameterReference {
 	idx_t argument_index;
 };
 
-//! A pure argument of a macro, bound once for all references to its parameter
+//! An argument that a macro reads several times, bound once for all its references when it is pure
 struct MacroArgumentBinding {
 	explicit MacroArgumentBinding(unique_ptr<ParsedExpression> argument_p) : argument(std::move(argument_p)) {
 	}
 
 	//! The argument, to check that a reference is still the argument when it is bound
 	unique_ptr<ParsedExpression> argument;
-	//! The argument bound for its first reference
+	//! The argument bound for its first reference, when it is pure
 	unique_ptr<Expression> bound;
 	//! The references that are not bound yet
 	idx_t unbound_references = 0;

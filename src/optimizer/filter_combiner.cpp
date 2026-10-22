@@ -641,6 +641,12 @@ static bool TryPushdownDenseInFilter(TableFilterSet &table_filters, const BoundC
 	return true;
 }
 
+//! The longest IN list that the scan checks itself, as it compares every row with every value
+static constexpr idx_t MAX_SCAN_IN_FILTER_VALUES = 8;
+//! The scan only keeps checking an IN list while it keeps at most this fraction of the rows
+static constexpr float SCAN_IN_FILTER_SELECTIVITY = 0.001f;
+static constexpr idx_t SCAN_IN_FILTER_VECTORS_TO_CHECK = 6;
+
 FilterPushdownResult FilterCombiner::TryPushdownInFilter(TableFilterSet &table_filters,
                                                          const vector<ColumnIndex> &column_ids, Expression &expr) {
 	if (expr.GetExpressionType() != ExpressionType::COMPARE_IN) {
@@ -696,8 +702,17 @@ FilterPushdownResult FilterCombiner::TryPushdownInFilter(TableFilterSet &table_f
 		return FilterPushdownResult::PUSHED_DOWN_FULLY;
 	}
 	// if this is not a dense range we can push an optional filter for zone-map pruning
+	auto value_count = in_list.size();
 	auto in_expr =
 	    ExpressionFilter::CreateInExpression(CreateFilterTargetExpression(*func.GetChildren()[0]), std::move(in_list));
+	if (value_count <= MAX_SCAN_IN_FILTER_VALUES) {
+		// a short list is also checked during the scan while it keeps almost no rows, so that the scan skips the
+		// other columns of the vectors without a match
+		auto filter_expr = CreateSelectivityOptionalFilterExpression(
+		    std::move(in_expr), type, SCAN_IN_FILTER_SELECTIVITY, SCAN_IN_FILTER_VECTORS_TO_CHECK);
+		table_filters.PushFilter(proj_index, make_uniq<ExpressionFilter>(std::move(filter_expr)));
+		return FilterPushdownResult::PUSHED_DOWN_PARTIALLY;
+	}
 	table_filters.PushFilter(proj_index, CreateOptionalExpressionFilter(std::move(in_expr), type));
 	return FilterPushdownResult::PUSHED_DOWN_PARTIALLY;
 }

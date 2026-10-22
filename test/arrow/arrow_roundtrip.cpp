@@ -212,9 +212,9 @@ TEST_CASE("Test arrow roundtrip of ENUM in fixed-size arrays", "[arrow]") {
 	REQUIRE(ArrowTestHelper::RunArrowComparison(con, query, false));
 }
 
-// Scans the Arrow export of the query and returns the number of rows of the scan.
-static idx_t ArrowRoundtripRowCount(Connection &con, const string &query) {
-	auto result = con.Query(query);
+// Scans the Arrow export of the query in one batch and compares the scan with the expected query, in order.
+static bool ArrowRoundtripMatches(Connection &con, const string &query, const string &expected, idx_t row_count) {
+	auto result = con.context->Query(query, make_shared_ptr<ArrowFormat>(row_count));
 	REQUIRE_NO_FAIL(*result);
 	auto types = result->GetTypes();
 	auto names = IdentifiersToStrings(result->GetNames());
@@ -222,7 +222,7 @@ static idx_t ArrowRoundtripRowCount(Connection &con, const string &query) {
 	                         *con.context);
 	auto arrow_result = ArrowTestHelper::ScanArrowObject(con, ArrowTestHelper::ConstructArrowScan(factory));
 	REQUIRE(arrow_result);
-	return arrow_result->RowCount();
+	return arrow_result->Equals(*con.Query(expected), false);
 }
 
 TEST_CASE("Test arrow roundtrip of empty lists of ENUM fixed-size arrays", "[arrow]") {
@@ -231,14 +231,15 @@ TEST_CASE("Test arrow roundtrip of empty lists of ENUM fixed-size arrays", "[arr
 	REQUIRE_NO_FAIL(con.Query("CREATE TYPE color AS ENUM ('red', 'green', 'blue')"));
 	// the lists of the first and the third chunk hold no arrays, so their dictionary has no elements to look up
 	auto vector_size = std::to_string(STANDARD_VECTOR_SIZE);
-	auto chunks_query = "SELECT CASE WHEN i < " + vector_size + " OR i >= 2 * " + vector_size +
-	                    " THEN [] ELSE [['red', NULL]] END::color[2][] AS l FROM range(2 * " + vector_size +
-	                    " + 100) t(i)";
-	REQUIRE(ArrowRoundtripRowCount(con, chunks_query) == 2 * STANDARD_VECTOR_SIZE + 100);
-	REQUIRE(ArrowTestHelper::RunArrowComparison(con, chunks_query, false));
+	auto lists = "CASE WHEN i < " + vector_size + " OR i >= 2 * " + vector_size + " THEN [] ELSE [['red', NULL]] END";
+	auto rows = " FROM range(2 * " + vector_size + " + 100) t(i)";
+	auto query = "SELECT (" + lists + ")::color[2][] AS l" + rows;
+	REQUIRE(ArrowRoundtripMatches(con, query, "SELECT (" + lists + ")::VARCHAR[2][]" + rows,
+	                              2 * STANDARD_VECTOR_SIZE + 100));
+	REQUIRE(ArrowTestHelper::RunArrowComparison(con, query, true));
 	string empty_query = "SELECT []::color[2][] AS l FROM range(3) t(i)";
-	REQUIRE(ArrowRoundtripRowCount(con, empty_query) == 3);
-	REQUIRE(ArrowTestHelper::RunArrowComparison(con, empty_query, false));
+	REQUIRE(ArrowRoundtripMatches(con, empty_query, "SELECT []::VARCHAR[2][] FROM range(3) t(i)", 3));
+	REQUIRE(ArrowTestHelper::RunArrowComparison(con, empty_query, true));
 }
 
 TEST_CASE("Test Arrow fixed-size binary format parsing", "[arrow]") {

@@ -135,7 +135,7 @@ bool ParquetWriter::TryGetParquetType(const LogicalType &duckdb_type, optional_p
 		break;
 	case LogicalTypeId::UHUGEINT:
 	case LogicalTypeId::HUGEINT:
-		parquet_type = Type::DOUBLE;
+		parquet_type = Type::FIXED_LEN_BYTE_ARRAY;
 		break;
 	case LogicalTypeId::ENUM:
 	case LogicalTypeId::BLOB:
@@ -334,6 +334,21 @@ void ParquetWriter::SetSchemaProperties(const LogicalType &duckdb_type, duckdb_p
 		schema_ele.__isset.type_length = true;
 		schema_ele.__isset.logicalType = true;
 		schema_ele.logicalType.__isset.UUID = true;
+		break;
+	case LogicalTypeId::HUGEINT:
+	case LogicalTypeId::UHUGEINT:
+		schema_ele.converted_type = ConvertedType::DECIMAL;
+		schema_ele.precision = DecimalType::MaxWidth();
+		schema_ele.scale = 0;
+		schema_ele.__isset.converted_type = true;
+		schema_ele.__isset.precision = true;
+		schema_ele.__isset.scale = true;
+		schema_ele.type_length = ParquetHugeintTargetType::PARQUET_HUGEINT_SIZE;
+		schema_ele.__isset.type_length = true;
+		schema_ele.__isset.logicalType = true;
+		schema_ele.logicalType.__isset.DECIMAL = true;
+		schema_ele.logicalType.DECIMAL.precision = schema_ele.precision;
+		schema_ele.logicalType.DECIMAL.scale = schema_ele.scale;
 		break;
 	case LogicalTypeId::DECIMAL:
 		schema_ele.converted_type = ConvertedType::DECIMAL;
@@ -1150,6 +1165,7 @@ static unique_ptr<ColumnStatsUnifier> GetBaseStatsUnifier(const LogicalType &typ
 		return make_uniq<NumericStatsUnifier<float>>();
 	case LogicalTypeId::HUGEINT:
 	case LogicalTypeId::UHUGEINT:
+		return make_uniq<DecimalStatsUnifier<hugeint_t>>(DecimalType::MaxWidth(), 0);
 	case LogicalTypeId::DOUBLE:
 		return make_uniq<NumericStatsUnifier<double>>();
 	case LogicalTypeId::DECIMAL: {

@@ -23,8 +23,9 @@ query T nosort result_1
 select * from all_types_csv_2;
 
 
+# Parquet stores hugeint and uhugeint as DECIMAL(38,0), which holds 38 digits
 statement ok
-copy (SELECT * from all_types) to '{TEST_DIR}/sample_all_types.parquet' (FORMAT PARQUET);
+copy (SELECT * REPLACE (hugeint // 10 AS hugeint, uhugeint // 10 AS uhugeint) from all_types) to '{TEST_DIR}/sample_all_types.parquet' (FORMAT PARQUET);
 
 # test parquet
 statement ok

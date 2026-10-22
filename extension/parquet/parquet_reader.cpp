@@ -2101,15 +2101,18 @@ void ParquetReader::GetPartitionStats(vector<PartitionStatistics> &result) {
 struct ParquetPartitionRowGroup : public PartitionRowGroup {
 	ParquetPartitionRowGroup(const duckdb_parquet::FileMetaData &metadata_p,
 	                         optional_ptr<ParquetColumnSchema> root_schema_p,
-	                         optional_ptr<ParquetOptions> parquet_options_p, const idx_t row_group_idx_p)
+	                         optional_ptr<ParquetOptions> parquet_options_p, const idx_t row_group_idx_p,
+	                         shared_ptr<ParquetReader> reader_p)
 	    : metadata(metadata_p), root_schema(root_schema_p), parquet_options(parquet_options_p),
-	      row_group_idx(row_group_idx_p) {
+	      row_group_idx(row_group_idx_p), reader(std::move(reader_p)) {
 	}
 
 	const duckdb_parquet::FileMetaData &metadata;
 	const optional_ptr<ParquetColumnSchema> root_schema;
 	const optional_ptr<ParquetOptions> parquet_options;
 	const idx_t row_group_idx;
+	//! The reader that holds the metadata, the schema and the options, if nothing else keeps it alive
+	const shared_ptr<ParquetReader> reader;
 
 	unique_ptr<BaseStatistics> GetColumnStatistics(const StorageIndex &storage_index) override {
 		const idx_t primary_index = storage_index.GetPrimaryIndex();
@@ -2160,7 +2163,7 @@ struct ParquetPartitionRowGroup : public PartitionRowGroup {
 
 void ParquetReader::GetPartitionStats(const duckdb_parquet::FileMetaData &metadata, vector<PartitionStatistics> &result,
                                       optional_ptr<ParquetColumnSchema> root_schema,
-                                      optional_ptr<ParquetOptions> parquet_options) {
+                                      optional_ptr<ParquetOptions> parquet_options, shared_ptr<ParquetReader> reader) {
 	idx_t offset = 0;
 	for (idx_t i = 0; i < metadata.row_groups.size(); i++) {
 		auto &row_group = metadata.row_groups[i];
@@ -2170,7 +2173,7 @@ void ParquetReader::GetPartitionStats(const duckdb_parquet::FileMetaData &metada
 		partition_stats.count_type = CountType::COUNT_EXACT;
 		if (root_schema && parquet_options) {
 			partition_stats.partition_row_group =
-			    make_shared_ptr<ParquetPartitionRowGroup>(metadata, root_schema, parquet_options, i);
+			    make_shared_ptr<ParquetPartitionRowGroup>(metadata, root_schema, parquet_options, i, reader);
 		}
 		offset += row_group.num_rows;
 		result.push_back(partition_stats);

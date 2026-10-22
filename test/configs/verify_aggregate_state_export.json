@@ -21,6 +21,7 @@
         "test/optimizer/ordered_aggregate.test",
         "test/sql/copy/parquet/parquet_encryption.test",
         "test/sql/copy/parquet/parquet_glob_cache.test",
+        "test/sql/copy/parquet/parquet_metadata_cache_file_list_stats.test",
         "test/sql/copy/parquet/parquet_expression_filter_pruning.test",
         "test/sql/copy/parquet/parquet_stats.test",
         "test/sql/copy/parquet/read_single_parquet_file.test",

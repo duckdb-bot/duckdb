@@ -943,8 +943,8 @@ TEST_CASE("Test C-API Arrow rejects non-monotonic string offsets", "[capi][arrow
 
 namespace {
 
-int32_t unfiltered_stream_first[3] = {0, -1, 0};
-int32_t unfiltered_stream_values[3] = {1, 2, 3};
+const int32_t unfiltered_stream_first[3] = {0, -1, 0};
+const int32_t unfiltered_stream_values[3] = {1, 2, 3};
 
 void ReleaseUnfilteredSchema(ArrowSchema *schema) {
 	schema->release = nullptr;

@@ -539,8 +539,12 @@ void SingleFileBlockManager::CreateNewDatabase(QueryContext context) {
 	options.version_number = GetVersionNumber();
 	db.GetStorageManager().SetStorageVersion(options.storage_version);
 	AddStorageVersionTag();
+	if (options.storage_version >= StorageVersion::V2_0_0) {
+		checksum_type = ChecksumType::XXHASH64;
+	}
 
 	MainHeader main_header = ConstructMainHeader(options.version_number);
+	main_header.SetChecksumType(checksum_type);
 
 	// Derive the encryption key and add it to the cache.
 	// Not used for plain databases.
@@ -644,6 +648,10 @@ void SingleFileBlockManager::LoadExistingDatabase(QueryContext context) {
 
 	MainHeader main_header = DeserializeMainHeader(header_buffer.GetDataMutable() - delta);
 	memcpy(options.db_identifier, main_header.GetDBIdentifier(), MainHeader::DB_IDENTIFIER_LEN);
+	// only files created from storage version v2.0.0, which have no main header version, can use XXH64
+	if (static_cast<StorageVersion>(main_header.version_number) == MainHeader::DEPRECATED_VERSION_NUMBER) {
+		checksum_type = main_header.GetChecksumType();
+	}
 
 	if (!main_header.IsEncrypted() && options.encryption_options.encryption_enabled) {
 		throw CatalogException("A key is explicitly specified, but database \"%s\" is not encrypted", path);
@@ -733,11 +741,12 @@ void SingleFileBlockManager::CheckChecksum(data_ptr_t start_ptr, uint64_t delta,
 	if (skip_block_header && delta > 0) {
 		//! Even with encryption enabled, the main header should be plaintext
 		stored_checksum = Load<uint64_t>(start_ptr);
-		computed_checksum = Checksum(start_ptr + DEFAULT_BLOCK_HEADER_STORAGE_SIZE, GetBlockSize() + delta);
+		computed_checksum =
+		    Checksum(start_ptr + DEFAULT_BLOCK_HEADER_STORAGE_SIZE, GetBlockSize() + delta, ChecksumType::WORD_XOR);
 	} else {
 		//! We do have to decrypt other headers
 		stored_checksum = Load<uint64_t>(start_ptr + delta);
-		computed_checksum = Checksum(start_ptr + GetBlockHeaderSize(), GetBlockSize());
+		computed_checksum = Checksum(start_ptr + GetBlockHeaderSize(), GetBlockSize(), checksum_type);
 	}
 
 	// verify the checksum
@@ -757,11 +766,11 @@ void SingleFileBlockManager::CheckChecksum(FileBuffer &block, uint64_t location,
 	if (skip_block_header && delta > 0) {
 		//! Even with encryption enabled, the main header should be plaintext
 		stored_checksum = Load<uint64_t>(block.InternalBuffer());
-		computed_checksum = Checksum(block.GetDataMutable() - delta, block.Size() + delta);
+		computed_checksum = Checksum(block.GetDataMutable() - delta, block.Size() + delta, GetChecksumType(location));
 	} else {
 		//! We do have to decrypt other headers
 		stored_checksum = Load<uint64_t>(block.InternalBuffer() + delta);
-		computed_checksum = Checksum(block.GetDataMutable(), block.Size());
+		computed_checksum = Checksum(block.GetDataMutable(), block.Size(), GetChecksumType(location));
 	}
 
 	// verify the checksum
@@ -800,10 +809,10 @@ void SingleFileBlockManager::ChecksumAndWrite(QueryContext context, FileBuffer &
 		memmove(block.InternalBuffer() + Storage::DEFAULT_BLOCK_HEADER_SIZE, block.GetDataMutable(), block.Size());
 		//! zero out the last bytes of the block
 		memset(block.InternalBuffer() + block.Size() + Storage::DEFAULT_BLOCK_HEADER_SIZE, 0, delta);
-		checksum = Checksum(block.GetDataMutable() - delta, block.Size() + delta);
+		checksum = Checksum(block.GetDataMutable() - delta, block.Size() + delta, GetChecksumType(location));
 		delta = 0;
 	} else {
-		checksum = Checksum(block.GetDataMutable(), block.Size());
+		checksum = Checksum(block.GetDataMutable(), block.Size(), GetChecksumType(location));
 	}
 
 	Store<uint64_t>(checksum, block.InternalBuffer() + delta);
@@ -867,6 +876,7 @@ void SingleFileBlockManager::Initialize(const DatabaseHeader &header, const opti
 
 void SingleFileBlockManager::RewriteMainHeader(QueryContext &context, StorageVersion version_number) {
 	MainHeader main_header = ConstructMainHeader(version_number);
+	main_header.SetChecksumType(checksum_type);
 	SerializeHeaderStructure<MainHeader>(main_header, header_buffer.GetDataMutable());
 	// now write the header to the file
 	ChecksumAndWrite(context, header_buffer, 0);
@@ -1165,6 +1175,10 @@ unique_ptr<Block> SingleFileBlockManager::CreateBlock(block_id_t block_id, FileB
 
 idx_t SingleFileBlockManager::GetBlockLocation(block_id_t block_id) const {
 	return BLOCK_START + NumericCast<idx_t>(block_id) * GetBlockAllocSize();
+}
+
+ChecksumType SingleFileBlockManager::GetChecksumType(uint64_t location) const {
+	return location < BLOCK_START ? ChecksumType::WORD_XOR : checksum_type;
 }
 
 void SingleFileBlockManager::ReadBlock(data_ptr_t internal_buffer, uint64_t block_size, bool skip_block_header) const {

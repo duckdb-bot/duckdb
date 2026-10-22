@@ -1,4 +1,5 @@
 #include "duckdb/planner/binder.hpp"
+#include "duckdb/optimizer/column_binding_replacer.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/planner/operator/list.hpp"
@@ -126,6 +127,33 @@ bool Binder::DebugAggregateStateExportVerify(BoundSelectNode &statement, unique_
 	return true;
 }
 
+unique_ptr<LogicalOperator> Binder::PlanVolatileGroups(BoundSelectNode &statement, unique_ptr<LogicalOperator> root) {
+	// the projection computes the volatile groups and passes every column of its child through
+	auto expressions = std::move(statement.volatile_groups);
+	for (auto &expr : expressions) {
+		PlanSubqueries(expr, root);
+	}
+	root->ResolveOperatorTypes();
+	auto child_bindings = root->GetColumnBindings();
+	vector<ColumnBinding> pass_through_bindings;
+	for (idx_t i = 0; i < child_bindings.size(); i++) {
+		pass_through_bindings.emplace_back(statement.volatile_group_index, ProjectionIndex(expressions.size()));
+		expressions.push_back(make_uniq<BoundColumnRefExpression>(root->types[i], child_bindings[i]));
+	}
+	ColumnBindingReplacer replacer;
+	replacer.AddReplacements(child_bindings, pass_through_bindings);
+	replacer.BuildIndex();
+	for (auto &group : statement.groups.group_expressions) {
+		replacer.VisitExpression(&group);
+	}
+	for (auto &aggregate : statement.aggregates) {
+		replacer.VisitExpression(&aggregate);
+	}
+	auto projection = make_uniq<LogicalProjection>(statement.volatile_group_index, std::move(expressions));
+	projection->AddChild(std::move(root));
+	return std::move(projection);
+}
+
 unique_ptr<LogicalOperator> Binder::CreatePlan(BoundSelectNode &statement) {
 	D_ASSERT(statement.from_table.plan);
 	auto root = std::move(statement.from_table.plan);
@@ -163,6 +191,9 @@ unique_ptr<LogicalOperator> Binder::CreatePlan(BoundSelectNode &statement) {
 		// now visit all aggregate expressions
 		for (auto &expr : statement.aggregates) {
 			PlanSubqueries(expr, root);
+		}
+		if (!statement.volatile_groups.empty()) {
+			root = PlanVolatileGroups(statement, std::move(root));
 		}
 
 		if (!DebugAggregateStateExportVerify(statement, root)) {

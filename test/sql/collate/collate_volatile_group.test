@@ -1,0 +1,206 @@
+# name: test/sql/collate/collate_volatile_group.test
+# description: A volatile group with a collation is evaluated once per row, for the grouping and the selected value
+# group: [collate]
+
+statement ok
+CREATE SEQUENCE seq1;
+
+query II
+SELECT ((nextval('seq1') % 2) + i * 0)::VARCHAR COLLATE NOCASE AS k, count(*) AS n FROM range(3) r(i) GROUP BY k ORDER BY k;
+----
+0	1
+1	2
+
+query I
+SELECT currval('seq1');
+----
+3
+
+statement ok
+CREATE SEQUENCE seq2;
+
+query II
+SELECT ((nextval('seq2') % 2) + i * 0)::VARCHAR COLLATE NOCASE AS k, count(*) AS n FROM range(3) r(i) GROUP BY ALL ORDER BY k;
+----
+0	1
+1	2
+
+query I
+SELECT currval('seq2');
+----
+3
+
+# values that differ only in case are still one group
+statement ok
+CREATE SEQUENCE seq3;
+
+query II
+SELECT CASE WHEN nextval('seq3') % 2 = 0 THEN 'A' ELSE 'a' END COLLATE NOCASE AS k, count(*) FROM range(10) GROUP BY k;
+----
+a	10
+
+query I
+SELECT currval('seq3');
+----
+10
+
+query II
+SELECT CASE WHEN (nextval('seq3') + i * 0) % 2 = 0 THEN 'A' ELSE 'a' END COLLATE NOCASE AS k, count(*) FROM range(10) r(i) GROUP BY ALL;
+----
+a	10
+
+query I
+SELECT currval('seq3');
+----
+20
+
+# with other groups, aggregates over other columns, WHERE, HAVING and ROLLUP
+statement ok
+CREATE SEQUENCE seq4;
+
+query IIII
+SELECT i % 3 AS g, (nextval('seq4') % 2)::VARCHAR COLLATE NOCASE AS k, count(*), sum(i) FROM range(9) r(i) WHERE i < 6 GROUP BY g, k HAVING count(*) > 0 ORDER BY g, k;
+----
+0	0	1	3
+0	1	1	0
+1	0	1	1
+1	1	1	4
+2	0	1	5
+2	1	1	2
+
+query I
+SELECT currval('seq4');
+----
+6
+
+statement ok
+CREATE SEQUENCE seq5;
+
+query III
+SELECT GROUPING(k), (nextval('seq5') % 2)::VARCHAR COLLATE NOCASE AS k, count(*) FROM range(10) GROUP BY ROLLUP (k) ORDER BY ALL;
+----
+0	0	5
+0	1	5
+1	NULL	10
+
+query I
+SELECT currval('seq5');
+----
+10
+
+query II
+SELECT (random() < 2)::VARCHAR COLLATE NOCASE AS k, count(*) FROM range(10) GROUP BY k;
+----
+true	10
+
+# a volatile group with a subquery, in GROUP BY and GROUP BY ALL
+statement ok
+CREATE SEQUENCE seq6;
+
+query II
+SELECT ((nextval('seq6') % 2) + (SELECT 0) + i * 0)::VARCHAR COLLATE NOCASE AS k, count(*) FROM range(3) r(i) GROUP BY k ORDER BY k;
+----
+0	1
+1	2
+
+query II
+SELECT ((nextval('seq6') % 2) + (SELECT 0) + i * 0)::VARCHAR COLLATE NOCASE AS k, count(*) FROM range(3) r(i) GROUP BY ALL ORDER BY k;
+----
+0	2
+1	1
+
+query I
+SELECT currval('seq6');
+----
+6
+
+# two volatile groups, and aggregates with FILTER and ORDER BY over the other columns
+statement ok
+CREATE SEQUENCE seq7;
+
+statement ok
+CREATE SEQUENCE seq8;
+
+query IIIII
+SELECT (nextval('seq7') % 2)::VARCHAR COLLATE NOCASE AS a, (nextval('seq8') % 3)::VARCHAR COLLATE NOCASE AS b, count(*), sum(i) FILTER (WHERE i > 1), string_agg(i::VARCHAR, ',' ORDER BY i DESC) FROM range(12) r(i) GROUP BY a, b ORDER BY a, b;
+----
+0	0	2	16	11,5
+0	1	2	12	9,3
+0	2	2	7	7,1
+1	0	2	10	8,2
+1	1	2	6	6,0
+1	2	2	14	10,4
+
+query II
+SELECT currval('seq7'), currval('seq8');
+----
+12	12
+
+# the volatile function inside a correlated subquery
+statement ok
+CREATE SEQUENCE seq9;
+
+query II
+SELECT ((SELECT nextval('seq9') + r.i * 0) % 2)::VARCHAR COLLATE NOCASE AS k, count(*) FROM range(3) r(i) GROUP BY k ORDER BY k;
+----
+0	1
+1	2
+
+query II
+SELECT ((SELECT nextval('seq9') + r.i * 0) % 2)::VARCHAR COLLATE NOCASE AS k, count(*) FROM range(3) r(i) GROUP BY ALL ORDER BY k;
+----
+0	2
+1	1
+
+query I
+SELECT currval('seq9');
+----
+6
+
+# HAVING refers to the GROUP BY ALL group, and sees its uncollated value
+statement ok
+CREATE SEQUENCE seq10;
+
+query II
+SELECT ('A' || (nextval('seq10') * 0 + i * 0)) COLLATE NOCASE AS k, count(*) FROM range(4) r(i) GROUP BY ALL HAVING unicode(('A' || (nextval('seq10') * 0 + i * 0)) COLLATE NOCASE) = 65;
+----
+A0	4
+
+query I
+SELECT currval('seq10');
+----
+4
+
+# a collation that changes the type of the group keeps the selected value
+statement ok
+CREATE SEQUENCE seq11;
+
+query II
+SELECT CASE WHEN nextval('seq11') + i * 0 > 0 THEN TIMETZ '10:00:00+00' END AS k, count(*) FROM range(3) r(i) GROUP BY k;
+----
+10:00:00+00	3
+
+query II
+SELECT CASE WHEN nextval('seq11') + i * 0 > 0 THEN TIMETZ '10:00:00+00' END AS k, count(*) FROM range(3) r(i) GROUP BY ALL;
+----
+10:00:00+00	3
+
+query I
+SELECT currval('seq11');
+----
+6
+
+# a struct with a collated field, and NULL structs
+statement ok
+CREATE SEQUENCE seq12;
+
+query II
+SELECT CASE WHEN (nextval('seq12') + i * 0) % 3 = 0 THEN NULL ELSE {'x': CASE WHEN i % 2 = 0 THEN 'A' ELSE 'a' END COLLATE NOCASE} END AS k, count(*) FROM range(6) r(i) GROUP BY ALL ORDER BY ALL;
+----
+{'x': A}	4
+NULL	2
+
+query I
+SELECT currval('seq12');
+----
+6

@@ -386,7 +386,8 @@ struct ICUStrptime : public ICUDateFunc {
 		const auto len = input.GetSize();
 		string_t tz(nullptr, 0);
 		bool has_offset = false;
-		auto success = Timestamp::TryConvertTimestampTZ(str, len, us, true, has_offset, tz, nanos);
+		TruncatedFraction truncated;
+		auto success = Timestamp::TryConvertTimestampTZ(str, len, us, true, has_offset, tz, nanos, &truncated);
 		if (success != TimestampCastResult::SUCCESS) {
 			string msg;
 			if (success == TimestampCastResult::ERROR_RANGE) {
@@ -417,9 +418,13 @@ struct ICUStrptime : public ICUDateFunc {
 				HandleCastError::AssignError(error_msg, parameters);
 				return nullopt;
 			}
-			return result;
+			us = timestamp_t(result.value);
 		}
-
+		// resolve an ambiguous local time before rounding
+		if (!Timestamp::TryRoundFraction(us, nanos, truncated)) {
+			HandleCastError::AssignError(Timestamp::RangeError(string(str, len)), parameters);
+			return nullopt;
+		}
 		return timestamp_tz_t(us);
 	}
 

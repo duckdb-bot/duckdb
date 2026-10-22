@@ -148,13 +148,73 @@ CHECKPOINT
 statement ok
 EXPORT DATABASE '{TEST_DIR}/view_macro_dependencies_off_dropped';
 
+# a view created in a transaction that is rolled back
+statement ok
+BEGIN
+
+statement ok
+CREATE VIEW rolled_back AS SELECT i FROM t;
+
+statement ok
+ROLLBACK
+
+# a temporary view of a view
+statement ok
+CREATE TEMP VIEW temp_reads_v AS SELECT i FROM v;
+
+statement ok
+DROP VIEW v;
+
+statement ok
+CREATE VIEW v AS SELECT i FROM t;
+
+query I
+SELECT i FROM temp_reads_v;
+----
+1
+
+# built in types are not written as types of the database
+statement ok
+CREATE MACRO int_macro() AS CAST(1 AS view_macro_dependencies_off.main."INTEGER");
+
+statement ok
+CREATE VIEW int_view AS SELECT CAST(1 AS view_macro_dependencies_off.main."INTEGER") AS i;
+
+statement ok
+SET enable_macro_dependencies = true;
+
+statement ok
+SET enable_view_dependencies = true;
+
+statement ok
+CREATE MACRO int_macro_tracked() AS CAST(1 AS view_macro_dependencies_off.main."INTEGER");
+
+statement ok
+CREATE VIEW int_view_tracked AS SELECT CAST(1 AS view_macro_dependencies_off.main."INTEGER") AS i;
+
+statement ok
+SET enable_macro_dependencies = false;
+
+statement ok
+SET enable_view_dependencies = false;
+
 restart
+
+query I
+SELECT count(*) FROM duckdb_types() WHERE database_name = 'view_macro_dependencies_off' AND NOT internal;
+----
+0
 
 statement ok
 DROP TABLE t;
 
 statement ok
 DROP MACRO s;
+
+query II
+SELECT (SELECT count(*) FROM duckdb_views() WHERE view_name IN ('v', 'vs')), (SELECT count(*) FROM duckdb_functions() WHERE function_name IN ('tm', 's2'))
+----
+2	2
 
 # a database file in a storage version without dependency types
 statement ok
@@ -177,3 +237,8 @@ ATTACH '{TEST_DIR}/view_macro_dependencies_off_v1.db' AS v1;
 
 statement ok
 DROP TABLE v1.t;
+
+query II
+SELECT (SELECT count(*) FROM duckdb_views() WHERE database_name = 'v1' AND view_name = 'v'), (SELECT count(*) FROM duckdb_functions() WHERE database_name = 'v1' AND function_name = 'm')
+----
+1	1

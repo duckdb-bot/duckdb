@@ -715,7 +715,8 @@ void DependencyManager::ReorderEntry(CatalogTransaction transaction, CatalogEntr
 
 	// Check if there are any entries that this entry depends on, those are written first
 	catalog_entry_vector_t dependents;
-	auto info = GetLookupProperties(entry);
+	// a weak dependency on a table can find a view with that name, whose own dependencies count
+	auto info = GetLookupProperties(catalog_entry);
 	ScanSubjects(transaction, info, [&](DependencyEntry &dep) { dependents.push_back(dep); });
 	for (auto &dep : dependents) {
 		ReorderEntry(transaction, dep, visited, order, allow_internal);

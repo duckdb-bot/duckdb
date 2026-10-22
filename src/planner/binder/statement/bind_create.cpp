@@ -362,8 +362,8 @@ void Binder::BindView(ClientContext &context, const SelectStatement &stmt, const
 
 	if (dependencies) {
 		auto callback = [&dependencies, dependency_flags, &catalog](CatalogEntry &entry) {
-			if (&catalog != &entry.ParentCatalog()) {
-				// Don't register dependencies between catalogs
+			if (&catalog != &entry.ParentCatalog() || entry.internal) {
+				// Don't register dependencies between catalogs, or on internal entries, which no import or load creates
 				return;
 			}
 			dependencies->AddDependency(entry, dependency_flags);
@@ -569,8 +569,8 @@ SchemaCatalogEntry &Binder::BindCreateFunctionInfo(CreateInfo &info) {
 		auto &dependencies = base.dependencies;
 		const auto dependency_flags = GetReadDependencyFlags(Settings::Get<EnableMacroDependenciesSetting>(context));
 		const auto binder_callback = [&dependencies, dependency_flags, &catalog](CatalogEntry &entry) {
-			if (&catalog != &entry.ParentCatalog()) {
-				// Don't register any cross-catalog dependencies
+			if (&catalog != &entry.ParentCatalog() || entry.internal) {
+				// Don't register cross-catalog dependencies, or dependencies on internal entries
 				return;
 			}
 			// Register any catalog entry required to bind the macro function

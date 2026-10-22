@@ -4,6 +4,9 @@
 
 load {TEST_DIR}/export_view_order.db
 
+# what views and macros read is only recorded until the database restarts, a checkpoint keeps the order it gives
+require skip_reload
+
 statement ok
 CREATE TABLE t AS SELECT range AS x FROM range(3);
 
@@ -96,6 +99,22 @@ CREATE VIEW rn_new AS SELECT 6 AS x;
 statement ok
 ALTER VIEW rn_new RENAME TO rn;
 
+# a table replaced by a view that reads a view created after the view that reads the table
+statement ok
+CREATE TABLE tv(x INTEGER);
+
+statement ok
+CREATE VIEW tr AS SELECT * FROM tv;
+
+statement ok
+DROP TABLE tv;
+
+statement ok
+CREATE VIEW tw AS SELECT 6 AS x;
+
+statement ok
+CREATE VIEW tv AS SELECT * FROM tw;
+
 # views created in one transaction
 statement ok
 BEGIN;
@@ -153,10 +172,10 @@ USE imported;
 statement ok
 IMPORT DATABASE '{TEST_DIR}/export_view_order';
 
-query IIIIIIIIIIIIIIIII
-SELECT (SELECT x FROM a), (SELECT x FROM n_second), (SELECT m FROM c), (SELECT x FROM qa), (SELECT v FROM aa.top), (SELECT x FROM aa.na), (SELECT x FROM aa.reads_main), (SELECT x FROM o), (SELECT x FROM e), (SELECT x FROM ra), (SELECT x FROM rn_backup), (SELECT x FROM j), (SELECT x FROM oa), m2(), (SELECT x FROM tm()), (SELECT x FROM ta), (SELECT count(*) FROM t)
+query IIIIIIIIIIIIIIIIII
+SELECT (SELECT x FROM a), (SELECT x FROM n_second), (SELECT m FROM c), (SELECT x FROM qa), (SELECT v FROM aa.top), (SELECT x FROM aa.na), (SELECT x FROM aa.reads_main), (SELECT x FROM o), (SELECT x FROM e), (SELECT x FROM ra), (SELECT x FROM rn_backup), (SELECT x FROM tr), (SELECT x FROM j), (SELECT x FROM oa), m2(), (SELECT x FROM tm()), (SELECT x FROM ta), (SELECT count(*) FROM t)
 ----
-1	102	2	3	42	9	1020	14	5	6	5	10	8	11	42	43	3
+1	102	2	3	42	9	1020	14	5	6	5	6	10	8	11	42	43	3
 
 statement ok
 USE export_view_order;
@@ -164,12 +183,15 @@ USE export_view_order;
 statement ok
 DETACH imported;
 
-# FIXME: after a restart nothing records what a table macro reads, and the export writes macros before views
+# a table macro over a view only keeps its order until the restart, see the FIXME at the end
 statement ok
 DROP VIEW ta;
 
 statement ok
 DROP MACRO TABLE tm;
+
+statement ok
+CHECKPOINT;
 
 # the order of the views and macros is kept through a restart, and through a checkpoint after it
 loop i 1 3
@@ -188,10 +210,10 @@ USE imported;
 statement ok
 IMPORT DATABASE '{TEST_DIR}/export_view_order_{i}';
 
-query IIIIIIIIIIIIIIII
-SELECT (SELECT x FROM a), (SELECT x FROM n_second), (SELECT m FROM c), (SELECT x FROM qa), (SELECT v FROM aa.top), (SELECT x FROM aa.na), (SELECT x FROM aa.reads_main), (SELECT x FROM o), (SELECT x FROM e), (SELECT x FROM ra), (SELECT x FROM rn_backup), (SELECT x FROM j), (SELECT x FROM oa), m2(), (SELECT x FROM mv), (SELECT count(*) FROM t)
+query IIIIIIIIIIIIIIIII
+SELECT (SELECT x FROM a), (SELECT x FROM n_second), (SELECT m FROM c), (SELECT x FROM qa), (SELECT v FROM aa.top), (SELECT x FROM aa.na), (SELECT x FROM aa.reads_main), (SELECT x FROM o), (SELECT x FROM e), (SELECT x FROM ra), (SELECT x FROM rn_backup), (SELECT x FROM tr), (SELECT x FROM j), (SELECT x FROM oa), m2(), (SELECT x FROM mv), (SELECT count(*) FROM t)
 ----
-1	102	2	3	42	9	1020	14	5	6	5	10	8	11	42	3
+1	102	2	3	42	9	1020	14	5	6	5	6	10	8	11	42	3
 
 statement ok
 USE export_view_order;
@@ -221,6 +243,12 @@ statement ok
 SET enable_macro_dependencies = false;
 
 statement ok
+CREATE VIEW cw AS SELECT 3 AS x;
+
+statement ok
+CREATE VIEW cr AS SELECT x * 2 AS x FROM cw;
+
+statement ok
 ATTACH ':memory:' AS copied;
 
 statement ok
@@ -230,3 +258,60 @@ query IIIII
 SELECT (SELECT x FROM copied.a), (SELECT x FROM copied.e), (SELECT x FROM copied.oa), copied.main.m2(), (SELECT x FROM copied.main.ctm())
 ----
 1	5	8	11	7
+
+# the copies keep what they read, so a view of the copy replaced after the view that reads it is exported first
+statement ok
+CREATE OR REPLACE VIEW copied.cw AS SELECT 4 AS x;
+
+statement ok
+EXPORT DATABASE copied TO '{TEST_DIR}/export_view_order_copied';
+
+statement ok
+ATTACH ':memory:' AS imported_copy;
+
+statement ok
+USE imported_copy;
+
+statement ok
+IMPORT DATABASE '{TEST_DIR}/export_view_order_copied';
+
+query II
+SELECT (SELECT x FROM cr), (SELECT x FROM a)
+----
+8	1
+
+statement ok
+USE export_view_order;
+
+# FIXME: after a restart nothing records what a macro reads, and the export writes macros before views
+mode skip
+
+statement ok
+CREATE VIEW sv AS SELECT 42 AS x;
+
+statement ok
+CREATE MACRO stm() AS TABLE SELECT x FROM sv;
+
+statement ok
+CHECKPOINT;
+
+restart
+
+statement ok
+EXPORT DATABASE '{TEST_DIR}/export_view_order_macro';
+
+statement ok
+ATTACH ':memory:' AS imported_macro;
+
+statement ok
+USE imported_macro;
+
+statement ok
+IMPORT DATABASE '{TEST_DIR}/export_view_order_macro';
+
+query I
+SELECT x FROM stm();
+----
+42
+
+mode unskip

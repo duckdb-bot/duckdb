@@ -114,7 +114,7 @@ struct VariantPathSelection {
 };
 
 struct VariantUtils {
-	//! The deepest nesting of arrays and objects that a conversion to or from VARIANT accepts
+	//! The deepest nesting of arrays and objects that a depth-checked VARIANT conversion accepts
 	static constexpr idx_t MAX_NESTING_DEPTH = 128;
 
 	//! Throws a DataCorruptionException unless 'size' bytes are available in a blob of 'blob_size' starting at

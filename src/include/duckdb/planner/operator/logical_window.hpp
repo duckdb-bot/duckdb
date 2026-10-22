@@ -35,6 +35,9 @@ public:
 	static unique_ptr<LogicalOperator> Deserialize(Deserializer &deserializer);
 	vector<TableIndex> GetTableIndex() const override;
 	string GetName() const override;
+	//! Whether the filter compares something that every window expression partitions by with constants, so that it
+	//! keeps or removes whole partitions
+	bool ComparesPartitions(const Expression &filter) const;
 
 protected:
 	void ResolveTypes() override;

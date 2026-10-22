@@ -72,6 +72,10 @@ public:
 	//! Two-valued MARK comparisons with at least one null-safe equality hash key.
 	bool HasNullSafeMarkJoinConditions() const;
 	bool TryGetMarkJoinGroupTypes(vector<LogicalType> &group_types) const;
+	//! The comparisons with constants that the filters on the other side imply for the target side through the
+	//! equality conditions, e.g. a = 500 for the right side from the condition i = a and the filter i = 500
+	vector<unique_ptr<Expression>> DeriveConstantFilters(const vector<reference<const Expression>> &filters,
+	                                                     JoinSide target_side) const;
 };
 
 } // namespace duckdb

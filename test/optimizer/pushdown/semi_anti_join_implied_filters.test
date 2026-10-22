@@ -122,3 +122,76 @@ query I
 SELECT count(*) FROM t SEMI JOIN u ON u.a IS NOT DISTINCT FROM t.x WHERE t.x = 1 OR t.x IS NULL;
 ----
 2
+
+# a condition with a volatile side implies nothing, the join evaluates it once per row
+statement ok
+CREATE SEQUENCE seq;
+
+statement ok
+CREATE TABLE vl (i BIGINT);
+
+statement ok
+CREATE TABLE vr (i BIGINT);
+
+statement ok
+INSERT INTO vl VALUES (2);
+
+statement ok
+INSERT INTO vr VALUES (1);
+
+query I
+SELECT count(*) FROM vl SEMI JOIN vr ON vl.i = vr.i + nextval('seq') WHERE vl.i = 2;
+----
+1
+
+query I
+SELECT currval('seq');
+----
+1
+
+# a filter that tells apart equal values implies nothing for another condition that compares the same text
+statement ok
+CREATE TABLE dl (x DOUBLE, s VARCHAR);
+
+statement ok
+INSERT INTO dl VALUES (-0.0::DOUBLE, '0.0');
+
+query I
+SELECT count(*) FROM dl SEMI JOIN z ON dl.x = z.x AND dl.s = z.x::VARCHAR WHERE dl.x::VARCHAR = '-0.0';
+----
+1
+
+query I
+SELECT count(*) FROM dl ANTI JOIN z ON dl.x = z.x AND dl.s = z.x::VARCHAR WHERE dl.x::VARCHAR = '-0.0';
+----
+0
+
+# a filter below a window stays there when it tells apart values the window partitions as equal
+statement ok
+CREATE TABLE w (x DOUBLE);
+
+statement ok
+INSERT INTO w VALUES (-0.0::DOUBLE), (0.0::DOUBLE);
+
+statement ok
+CREATE TABLE gw (p INTEGER, s VARCHAR);
+
+statement ok
+INSERT INTO gw VALUES (0, '5'), (1, 'bad');
+
+statement ok
+SET disabled_optimizers = 'filter_pushdown';
+
+query I
+SELECT a.rn FROM (SELECT x, row_number() OVER (PARTITION BY x ORDER BY x::VARCHAR) AS rn FROM w WHERE x::VARCHAR = '0.0') a SEMI JOIN (VALUES (0.0::DOUBLE)) b(x) ON a.x IS NOT DISTINCT FROM b.x;
+----
+1
+
+# and when the window expressions can throw for the rows it removes
+query I
+SELECT a.rn FROM (SELECT p, row_number() OVER (PARTITION BY p ORDER BY s::INTEGER) AS rn FROM gw WHERE p = 0) a SEMI JOIN (VALUES (0)) b(p) ON a.p IS NOT DISTINCT FROM b.p;
+----
+1
+
+statement ok
+RESET disabled_optimizers;

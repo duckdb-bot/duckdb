@@ -6,6 +6,7 @@
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression_binder.hpp"
+#include "duckdb/planner/expression_iterator.hpp"
 
 namespace duckdb {
 
@@ -222,6 +223,39 @@ bool BoundComparisonExpression::IsComparison(const Expression &expr) {
 		return false;
 	}
 	return IsComparison(expr.GetExpressionType());
+}
+
+optional_idx BoundComparisonExpression::ConstantComparisonChild(const Expression &expr) {
+	bool compares_first_child = false;
+	switch (expr.GetExpressionType()) {
+	case ExpressionType::COMPARE_EQUAL:
+	case ExpressionType::COMPARE_NOTEQUAL:
+	case ExpressionType::COMPARE_LESSTHAN:
+	case ExpressionType::COMPARE_GREATERTHAN:
+	case ExpressionType::COMPARE_LESSTHANOREQUALTO:
+	case ExpressionType::COMPARE_GREATERTHANOREQUALTO:
+		break;
+	case ExpressionType::COMPARE_BETWEEN:
+	case ExpressionType::COMPARE_IN:
+		compares_first_child = true;
+		break;
+	default:
+		return optional_idx();
+	}
+	if (expr.IsVolatile()) {
+		return optional_idx();
+	}
+	optional_idx compared_child;
+	bool valid = true;
+	idx_t child_idx = 0;
+	ExpressionIterator::EnumerateChildren(expr, [&](const Expression &child) {
+		if (!child.IsFoldable()) {
+			valid = valid && !compared_child.IsValid() && (!compares_first_child || child_idx == 0);
+			compared_child = child_idx;
+		}
+		child_idx++;
+	});
+	return valid ? compared_child : optional_idx();
 }
 
 const Expression &BoundComparisonExpression::Left(const BoundFunctionExpression &comparison_expr) {

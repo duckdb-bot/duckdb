@@ -1,4 +1,3 @@
-#include "duckdb/optimizer/filter_combiner.hpp"
 #include "duckdb/optimizer/filter_pushdown.hpp"
 #include "duckdb/planner/operator/logical_any_join.hpp"
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
@@ -21,8 +20,7 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownSemiAntiJoin(unique_ptr<Logi
 		for (auto &filter : filters) {
 			left_filters.push_back(*filter->filter);
 		}
-		auto right_filters = FilterCombiner::DeriveConditionFilters(
-		    GetContext(), op->Cast<LogicalComparisonJoin>().conditions, left_filters, JoinSide::RIGHT);
+		auto right_filters = op->Cast<LogicalComparisonJoin>().DeriveConstantFilters(left_filters, JoinSide::RIGHT);
 		for (auto &filter : right_filters) {
 			right_pushdown.AddFilter(std::move(filter));
 		}

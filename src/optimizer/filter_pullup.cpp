@@ -1,16 +1,13 @@
 #include "duckdb/optimizer/filter_pullup.hpp"
 
 #include "duckdb/common/enum_util.hpp"
-#include "duckdb/optimizer/filter_combiner.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/planner/operator/logical_any_join.hpp"
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
 #include "duckdb/planner/operator/logical_cross_product.hpp"
 #include "duckdb/planner/operator/logical_join.hpp"
 #include "duckdb/planner/operator/logical_distinct.hpp"
-#include "duckdb/planner/expression/bound_columnref_expression.hpp"
-#include "duckdb/planner/expression/bound_window_expression.hpp"
-#include "duckdb/planner/expression_iterator.hpp"
+#include "duckdb/planner/operator/logical_window.hpp"
 
 namespace duckdb {
 
@@ -87,8 +84,7 @@ unique_ptr<LogicalOperator> FilterPullup::PullupSemiJoin(unique_ptr<LogicalOpera
 		for (auto &filter : right_pullup.filters_expr_pullup) {
 			right_filters.push_back(*filter);
 		}
-		auto implied_filters =
-		    FilterCombiner::DeriveConditionFilters(context, join.conditions, right_filters, JoinSide::LEFT);
+		auto implied_filters = join.DeriveConstantFilters(right_filters, JoinSide::LEFT);
 		for (auto &filter : implied_filters) {
 			left_filters.push_back(std::move(filter));
 		}
@@ -169,44 +165,26 @@ unique_ptr<LogicalOperator> FilterPullup::PullupWindow(unique_ptr<LogicalOperato
 	if (!can_pullup) {
 		return FinishPullup(std::move(op));
 	}
-	// a filter on columns that every window expression partitions by keeps or removes whole partitions
-	column_binding_set_t partition_columns;
-	for (idx_t expr_idx = 0; expr_idx < op->expressions.size(); expr_idx++) {
-		auto &expr = *op->expressions[expr_idx];
-		if (expr.GetExpressionClass() != ExpressionClass::BOUND_WINDOW || expr.IsVolatile()) {
+	// above the window, the window expressions run for the rows of the partitions the filters remove
+	for (auto &expr : op->expressions) {
+		if (expr->IsVolatile() || expr->CanThrow()) {
 			return FinishPullup(std::move(op));
 		}
-		column_binding_set_t expr_partition_columns;
-		for (auto &partition : expr.Cast<BoundWindowExpression>().Partitions()) {
-			if (partition->GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
-				continue;
-			}
-			auto &binding = partition->Cast<BoundColumnRefExpression>().Binding();
-			if (expr_idx == 0 || partition_columns.find(binding) != partition_columns.end()) {
-				expr_partition_columns.insert(binding);
-			}
-		}
-		partition_columns = std::move(expr_partition_columns);
 	}
 	const auto pulled_before_child = filters_expr_pullup.size();
 	op->children[0] = Rewrite(std::move(op->children[0]));
 
-	auto on_partitions = [&](const Expression &filter) {
-		bool result = !filter.IsVolatile();
-		ExpressionIterator::VisitExpression<BoundColumnRefExpression>(
-		    filter, [&](const BoundColumnRefExpression &colref) {
-			    result = result && partition_columns.find(colref.Binding()) != partition_columns.end();
-		    });
-		return result;
-	};
+	// a filter that compares the partitions with constants keeps or removes whole partitions
+	auto &window = op->Cast<LogicalWindow>();
 	// a filter that stays below the window and can throw keeps the filters that guard it there
 	bool keep_all = false;
 	for (idx_t i = pulled_before_child; i < filters_expr_pullup.size(); i++) {
-		keep_all = keep_all || (filters_expr_pullup[i]->CanThrow() && !on_partitions(*filters_expr_pullup[i]));
+		keep_all =
+		    keep_all || (filters_expr_pullup[i]->CanThrow() && !window.ComparesPartitions(*filters_expr_pullup[i]));
 	}
 	vector<unique_ptr<Expression>> kept_filters;
 	for (idx_t i = pulled_before_child; i < filters_expr_pullup.size(); i++) {
-		if (keep_all || !on_partitions(*filters_expr_pullup[i])) {
+		if (keep_all || !window.ComparesPartitions(*filters_expr_pullup[i])) {
 			kept_filters.push_back(std::move(filters_expr_pullup[i]));
 			filters_expr_pullup.erase_at(i);
 			i--;

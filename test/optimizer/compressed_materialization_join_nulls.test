@@ -27,3 +27,25 @@ SELECT i, i IS NULL FROM (SELECT * FROM with_nulls SEMI JOIN (SELECT * FROM no_n
 4	false
 5	false
 NULL	true
+
+# also when the join is large enough to be compressed in release builds, for either side
+statement ok
+CREATE TABLE big_no_nulls AS SELECT range AS i FROM range(1100000);
+
+statement ok
+CREATE TABLE big_with_nulls AS SELECT CASE WHEN range = 0 THEN NULL ELSE range + 100 END AS i FROM range(1100000);
+
+query II
+EXPLAIN SELECT i IS NULL FROM (SELECT * FROM big_no_nulls ANTI JOIN big_with_nulls ON big_no_nulls.i IS NOT DISTINCT FROM big_with_nulls.i) t(i);
+----
+logical_opt	<!REGEX>:.*IS NULL.*
+
+query II
+EXPLAIN SELECT i IS NULL FROM (SELECT * FROM big_with_nulls ANTI JOIN big_no_nulls ON big_with_nulls.i IS NOT DISTINCT FROM big_no_nulls.i) t(i);
+----
+logical_opt	<REGEX>:.*IS NULL.*
+
+query II
+SELECT count(*), count(*) FILTER (i IS NULL) FROM (SELECT * FROM big_with_nulls ANTI JOIN big_no_nulls ON big_with_nulls.i IS NOT DISTINCT FROM big_no_nulls.i) t(i);
+----
+101	1

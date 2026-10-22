@@ -1,5 +1,6 @@
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
+#include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/common/enum_util.hpp"
 #include "duckdb/common/type_visitor.hpp"
 
@@ -54,6 +55,46 @@ bool LogicalComparisonJoin::HasEquality(idx_t &range_count) const {
 				break;
 			default:
 				throw NotImplementedException("Unimplemented comparison join");
+			}
+		}
+	}
+	return result;
+}
+
+vector<unique_ptr<Expression>>
+LogicalComparisonJoin::DeriveConstantFilters(const vector<reference<const Expression>> &filters,
+                                             JoinSide target_side) const {
+	D_ASSERT(target_side == JoinSide::LEFT || target_side == JoinSide::RIGHT);
+	vector<unique_ptr<Expression>> result;
+	for (auto &cond : conditions) {
+		// a comparison with constants is false for NULL, so NOT DISTINCT FROM acts as equality for it
+		if (!cond.IsComparison() || (cond.GetComparisonType() != ExpressionType::COMPARE_EQUAL &&
+		                             cond.GetComparisonType() != ExpressionType::COMPARE_NOT_DISTINCT_FROM)) {
+			continue;
+		}
+		auto &source = target_side == JoinSide::LEFT ? cond.GetRHS() : cond.GetLHS();
+		auto &target = target_side == JoinSide::LEFT ? cond.GetLHS() : cond.GetRHS();
+		// the join evaluates both sides once per row, a derived filter must not evaluate them differently
+		if (source.IsVolatile() || target.IsVolatile() || target.CanThrow() || source.IsFoldable() ||
+		    target.IsFoldable()) {
+			continue;
+		}
+		for (auto &filter : filters) {
+			auto compared_child = BoundComparisonExpression::ConstantComparisonChild(filter.get());
+			if (!compared_child.IsValid()) {
+				continue;
+			}
+			auto derived = filter.get().Copy();
+			bool compares_source = false;
+			idx_t child_idx = 0;
+			ExpressionIterator::EnumerateChildren(*derived, [&](unique_ptr<Expression> &child) {
+				if (child_idx++ == compared_child.GetIndex() && child->Equals(source)) {
+					child = target.Copy();
+					compares_source = true;
+				}
+			});
+			if (compares_source) {
+				result.push_back(std::move(derived));
 			}
 		}
 	}

@@ -1,11 +1,13 @@
 # name: test/sql/export/export_view_order.test
-# description: EXPORT DATABASE writes a view after the views it reads, in creation order
+# description: EXPORT DATABASE writes a view after the views it reads
 # group: [export]
+
+load {TEST_DIR}/export_view_order.db
 
 statement ok
 CREATE TABLE t AS SELECT range AS x FROM range(3);
 
-# each view reads a view with a later name, so name order would import them before what they read
+# views that read views with a later name, and views that read views with an earlier name
 statement ok
 CREATE VIEW b AS SELECT 1 AS x;
 
@@ -13,13 +15,10 @@ statement ok
 CREATE VIEW a AS SELECT * FROM b;
 
 statement ok
-CREATE VIEW z_base AS SELECT x FROM t;
+CREATE VIEW m_first AS SELECT x + 100 AS x FROM a;
 
 statement ok
-CREATE VIEW y_mid AS SELECT x + 1 AS x FROM z_base;
-
-statement ok
-CREATE VIEW x_top AS SELECT x * 10 AS x FROM y_mid;
+CREATE VIEW n_second AS SELECT x + 1 AS x FROM m_first;
 
 statement ok
 CREATE VIEW d AS SELECT max(x) AS m FROM t;
@@ -39,43 +38,52 @@ CREATE SCHEMA aa;
 statement ok
 CREATE VIEW aa.top AS SELECT v FROM zz.base;
 
+# a view replaced after the views that read it
+statement ok
+CREATE VIEW p AS SELECT 1 AS x;
+
+statement ok
+CREATE VIEW q AS SELECT x * 7 AS x FROM p;
+
+statement ok
+CREATE OR REPLACE VIEW p AS SELECT 2 AS x;
+
+# a view created before the view it reads
+statement ok
+CREATE VIEW f WITH (DEFER_BINDING) AS SELECT x + 3 AS x FROM g;
+
+statement ok
+CREATE VIEW g AS SELECT 30 AS x;
+
+# views created in one transaction
+statement ok
+BEGIN;
+
+statement ok
+CREATE VIEW k AS SELECT 5 AS x;
+
+statement ok
+CREATE VIEW j AS SELECT x * 2 AS x FROM k;
+
+statement ok
+COMMIT;
+
+# the views get new identifiers when the database is loaded again
+restart
+
 statement ok
 EXPORT DATABASE '{TEST_DIR}/export_view_order';
 
 statement ok
-DROP SCHEMA aa CASCADE;
+ATTACH ':memory:' AS imported;
 
 statement ok
-DROP SCHEMA zz CASCADE;
-
-statement ok
-DROP VIEW c;
-
-statement ok
-DROP VIEW d;
-
-statement ok
-DROP VIEW x_top;
-
-statement ok
-DROP VIEW y_mid;
-
-statement ok
-DROP VIEW z_base;
-
-statement ok
-DROP VIEW a;
-
-statement ok
-DROP VIEW b;
-
-statement ok
-DROP TABLE t;
+USE imported;
 
 statement ok
 IMPORT DATABASE '{TEST_DIR}/export_view_order';
 
-query IIIII
-SELECT (SELECT x FROM a), (SELECT list(x ORDER BY x) FROM x_top), (SELECT m FROM c), (SELECT v FROM aa.top), (SELECT count(*) FROM t)
+query IIIIIIII
+SELECT (SELECT x FROM a), (SELECT x FROM n_second), (SELECT m FROM c), (SELECT v FROM aa.top), (SELECT x FROM q), (SELECT x FROM f), (SELECT x FROM j), (SELECT count(*) FROM t)
 ----
-1	[10, 20, 30]	2	42	3
+1	102	2	42	14	33	10	3

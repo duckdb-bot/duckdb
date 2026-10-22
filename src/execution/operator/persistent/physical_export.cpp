@@ -3,11 +3,15 @@
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
+#include "duckdb/catalog/catalog_entry/view_catalog_entry.hpp"
+#include "duckdb/catalog/dependency_list.hpp"
+#include "duckdb/common/error_data.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/parallel/meta_pipeline.hpp"
 #include "duckdb/parallel/pipeline.hpp"
 #include "duckdb/parser/keyword_helper.hpp"
+#include "duckdb/planner/binder.hpp"
 #include "duckdb/transaction/transaction.hpp"
 #include "duckdb/catalog/duck_catalog.hpp"
 #include "duckdb/catalog/dependency_manager.hpp"
@@ -167,6 +171,73 @@ void PhysicalExport::ExtractEntries(ClientContext &context, vector<reference<Sch
 	}
 }
 
+//! Orders the views so that every view comes after the views it reads. View dependencies are only recorded with
+//! enable_view_dependencies, so the views are bound to find what they read.
+static void ReorderViewEntries(ClientContext &context, catalog_entry_vector_t &views) {
+	vector<vector<idx_t>> reads(views.size());
+	for (idx_t i = 0; i < views.size(); i++) {
+		auto &entry = views[i].get();
+		if (entry.type != CatalogType::VIEW_ENTRY) {
+			continue;
+		}
+		auto &view = entry.Cast<ViewCatalogEntry>();
+		if (!view.query) {
+			continue;
+		}
+		LogicalDependencyList dependencies;
+		vector<LogicalType> types;
+		vector<Identifier> names;
+		try {
+			Binder::BindView(context, *view.query, view.ParentCatalog().GetName(), view.ParentSchema().name,
+			                 &dependencies, view.aliases, types, names);
+		} catch (std::exception &ex) {
+			ErrorData error(ex);
+			if (Exception::InvalidatesDatabase(error.Type())) {
+				throw;
+			}
+			// a view that does not bind keeps its place
+			continue;
+		}
+		for (idx_t j = 0; j < views.size(); j++) {
+			if (j != i && dependencies.Contains(views[j].get())) {
+				reads[i].push_back(j);
+			}
+		}
+	}
+	// depth first in the current order, so views that read no other view keep their order
+	struct ViewVisit {
+		idx_t view;
+		idx_t next_read;
+	};
+	catalog_entry_vector_t result;
+	result.reserve(views.size());
+	vector<bool> visited(views.size(), false);
+	vector<ViewVisit> stack;
+	for (idx_t i = 0; i < views.size(); i++) {
+		if (visited[i]) {
+			continue;
+		}
+		visited[i] = true;
+		stack.push_back(ViewVisit {i, 0});
+		while (!stack.empty()) {
+			auto view = stack.back().view;
+			auto next_read = stack.back().next_read;
+			if (next_read == reads[view].size()) {
+				result.push_back(views[view]);
+				stack.pop_back();
+				continue;
+			}
+			stack.back().next_read++;
+			auto read = reads[view][next_read];
+			if (!visited[read]) {
+				visited[read] = true;
+				stack.push_back(ViewVisit {read, 0});
+			}
+		}
+	}
+	views = std::move(result);
+}
+
 static void AddEntries(catalog_entry_vector_t &all_entries, catalog_entry_vector_t &to_add) {
 	for (auto &entry : to_add) {
 		all_entries.push_back(entry);
@@ -182,12 +253,12 @@ catalog_entry_vector_t PhysicalExport::GetNaiveExportOrder(ClientContext &contex
 
 	ReorderTableEntries(entries.tables);
 
-	// order macro's and views by timestamp so nested macro's and views are imported nicely
-	auto by_creation = [](const reference<CatalogEntry> &lhs, const reference<CatalogEntry> &rhs) {
-		return lhs.get().oid < rhs.get().oid;
-	};
-	sort(entries.macros.begin(), entries.macros.end(), by_creation);
-	sort(entries.views.begin(), entries.views.end(), by_creation);
+	// order macro's by timestamp so nested macro's are imported nicely
+	sort(entries.macros.begin(), entries.macros.end(),
+	     [](const reference<CatalogEntry> &lhs, const reference<CatalogEntry> &rhs) {
+		     return lhs.get().oid < rhs.get().oid;
+	     });
+	ReorderViewEntries(context, entries.views);
 
 	catalog_entry_vector_t catalog_entries;
 	idx_t size = 0;

@@ -459,10 +459,12 @@ void ListDistinctByKeyFunction(DataChunk &args, ExpressionState &state, Vector &
 	auto &child_vector = ListVector::GetChild(lists);
 	auto child_validity = child_vector.Validity();
 
-	// the elements to evaluate keys for, once per distinct list entry, as rows can share list entries and a filter
-	// can leave the elements of other lists in the child vector
+	// the valid elements to evaluate keys for, once per distinct list entry, as rows can share list entries and a
+	// filter can leave the elements of other lists in the child vector
 	vector<idx_t> key_elements;
-	// the offset of the keys of every row in key_elements
+	// the key of every element of the distinct list entries, INVALID_INDEX for NULL elements
+	vector<idx_t> element_keys;
+	// the offset of the elements of every row in element_keys
 	vector<idx_t> row_key_offsets(count);
 	unordered_map<idx_t, list_entry_t> entry_key_offsets;
 	idx_t element_count = 0;
@@ -478,9 +480,14 @@ void ListDistinctByKeyFunction(DataChunk &args, ExpressionState &state, Vector &
 			row_key_offsets[i] = entry_keys->second.offset;
 			continue;
 		}
-		row_key_offsets[i] = key_elements.size();
-		entry_key_offsets[list_entry.offset] = list_entry_t(key_elements.size(), list_entry.length);
+		row_key_offsets[i] = element_keys.size();
+		entry_key_offsets[list_entry.offset] = list_entry_t(element_keys.size(), list_entry.length);
 		for (idx_t child_idx = list_entry.offset; child_idx < list_entry.offset + list_entry.length; child_idx++) {
+			if (!child_validity.IsValid(child_idx)) {
+				element_keys.push_back(DConstants::INVALID_INDEX);
+				continue;
+			}
+			element_keys.push_back(key_elements.size());
 			key_elements.push_back(child_idx);
 		}
 	}
@@ -537,8 +544,8 @@ void ListDistinctByKeyFunction(DataChunk &args, ExpressionState &state, Vector &
 		distinct_entries[i].offset = distinct_count;
 		for (idx_t element_idx = 0; element_idx < list_entry.length; element_idx++) {
 			auto child_idx = list_entry.offset + element_idx;
-			auto key_idx = row_key_offsets[i] + element_idx;
-			if (!child_validity.IsValid(child_idx) || !has_key[key_idx] || !seen_keys.insert(keys[key_idx]).second) {
+			auto key_idx = element_keys[row_key_offsets[i] + element_idx];
+			if (key_idx == DConstants::INVALID_INDEX || !has_key[key_idx] || !seen_keys.insert(keys[key_idx]).second) {
 				continue;
 			}
 			if (!IS_UNIQUE) {

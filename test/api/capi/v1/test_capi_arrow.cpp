@@ -2,6 +2,7 @@
 #include "duckdb/common/arrow/arrow_wrapper.hpp"
 #include "duckdb/common/arrow/arrow_appender.hpp"
 #include "duckdb/common/arrow/arrow_converter.hpp"
+#include "duckdb/common/arrow/schema_metadata.hpp"
 #include "duckdb/common/types/arrow_string_view_type.hpp"
 
 using namespace duckdb;
@@ -941,30 +942,6 @@ TEST_CASE("Test C-API Arrow rejects non-monotonic string offsets", "[capi][arrow
 	duckdb_destroy_arrow_converted_schema(&converted);
 }
 
-//! Returns the value of a key in Arrow schema metadata, which holds an int32 count and then length prefixed keys and
-//! values
-static string GetArrowMetadataValue(const char *metadata, const string &key) {
-	if (!metadata) {
-		return string();
-	}
-	int32_t count;
-	memcpy(&count, metadata, sizeof(int32_t));
-	auto pos = metadata + sizeof(int32_t);
-	for (int32_t i = 0; i < count; i++) {
-		int32_t length;
-		memcpy(&length, pos, sizeof(int32_t));
-		string entry_key(pos + sizeof(int32_t), length);
-		pos += sizeof(int32_t) + length;
-		memcpy(&length, pos, sizeof(int32_t));
-		string entry_value(pos + sizeof(int32_t), length);
-		pos += sizeof(int32_t) + length;
-		if (entry_key == key) {
-			return entry_value;
-		}
-	}
-	return string();
-}
-
 //! Runs the query and exports the Arrow schema of its single column, returning the extension metadata of the column
 static string GetGeometryExtensionMetadata(duckdb_connection connection, const char *query) {
 	duckdb_result result;
@@ -980,9 +957,9 @@ static string GetGeometryExtensionMetadata(duckdb_connection connection, const c
 		duckdb_destroy_error_data(&error);
 	} else {
 		REQUIRE(schema.arrow_schema.n_children == 1);
-		auto &child = *schema.arrow_schema.children[0];
-		REQUIRE(GetArrowMetadataValue(child.metadata, "ARROW:extension:name") == "geoarrow.wkb");
-		metadata = GetArrowMetadataValue(child.metadata, "ARROW:extension:metadata");
+		ArrowSchemaMetadata child_metadata(schema.arrow_schema.children[0]->metadata);
+		REQUIRE(child_metadata.GetOption(ArrowSchemaMetadata::ARROW_EXTENSION_NAME) == "geoarrow.wkb");
+		metadata = child_metadata.GetOption(ArrowSchemaMetadata::ARROW_METADATA_KEY);
 	}
 	duckdb_destroy_logical_type(&type);
 	duckdb_destroy_arrow_options(&options);
@@ -1001,6 +978,6 @@ TEST_CASE("Test C-API Arrow schema export of a GEOMETRY whose CRS is an authorit
 	auto inside_transaction = GetGeometryExtensionMetadata(tester.connection, query);
 	REQUIRE_NO_FAIL(tester.Query("COMMIT"));
 
-	REQUIRE(StringUtil::Contains(inside_transaction, "\"crs\""));
+	REQUIRE(StringUtil::Contains(inside_transaction, "\"crs_type\":\"projjson\""));
 	REQUIRE(outside_transaction == inside_transaction);
 }

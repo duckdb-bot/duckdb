@@ -1,4 +1,4 @@
-// Arrow scans of sparse unions with a nonzero offset or custom type ids, including dictionary-encoded members.
+// Arrow scans of sparse unions with offsets or custom type ids, dictionary-encoded members, and dictionaries of unions.
 
 #include "catch.hpp"
 
@@ -105,7 +105,9 @@ struct UnionColumn {
 	ArrowArray array {};
 };
 
-unique_ptr<QueryResult> ScanColumn(Connection &con, ArrowSchema &col_schema, ArrowArray &col_array) {
+// Scans the column with arrow_scan, projected when a projection is given
+unique_ptr<QueryResult> ScanColumn(Connection &con, ArrowSchema &col_schema, ArrowArray &col_array,
+                                   const string &projection = string()) {
 	ArrowSchema *schema_children[1] = {&col_schema};
 	ArrowSchema record_schema {};
 	record_schema.format = "+s";
@@ -126,14 +128,19 @@ unique_ptr<QueryResult> ScanColumn(Connection &con, ArrowSchema &col_schema, Arr
 	ArrowArrayStream stream {};
 	AdbcError err {};
 	REQUIRE(duckdb_adbc::BatchToArrayStream(&record_array, &record_schema, &stream, &err) == ADBC_STATUS_OK);
-	return con.TableFunction("arrow_scan", {}, {}, ArrowTestHelper::ConstructArrowScan(stream))->Execute();
+	auto arrow_scan = con.TableFunction("arrow_scan", {}, {}, ArrowTestHelper::ConstructArrowScan(stream));
+	if (projection.empty()) {
+		return arrow_scan->Execute();
+	}
+	return arrow_scan->Project(projection)->Execute();
 }
 
-// Compares the rows of the scan with those of the query, in order
-bool ScanMatches(ArrowSchema &col_schema, ArrowArray &col_array, const string &query) {
+// Compares the rows of the scan, projected when a projection is given, with those of the query, in order
+bool ScanMatches(ArrowSchema &col_schema, ArrowArray &col_array, const string &query,
+                 const string &projection = string()) {
 	DuckDB db(nullptr);
 	Connection con(db);
-	auto result = ScanColumn(con, col_schema, col_array);
+	auto result = ScanColumn(con, col_schema, col_array, projection);
 	auto expected = con.Query(query);
 	return !result->HasError() && result->Equals(*expected, false);
 }
@@ -158,6 +165,34 @@ string SchemaError(ArrowSchema &col_schema) {
 }
 
 } // namespace arrow_union_offset_test
+
+TEST_CASE("Arrow scan of a dictionary of unions with a NULL index", "[arrow]") {
+	// the union holds d = 10, i = 101, d = 30 and i = 103
+	arrow_union_offset_test::UnionColumn values({0, 1, 0, 1}, 0);
+	const int8_t indices[5] = {1, 0, 0, 2, 1};
+	// the third index is NULL
+	const uint8_t validity[1] = {0xFB};
+	const void *buffers[2] = {validity, indices};
+	ArrowSchema schema {};
+	schema.format = "c";
+	schema.name = "u";
+	schema.flags = 2;
+	schema.dictionary = &values.schema;
+	schema.release = arrow_union_offset_test::ReleaseSchema;
+	ArrowArray array {};
+	array.length = 5;
+	array.null_count = 1;
+	array.n_buffers = 2;
+	array.buffers = buffers;
+	array.dictionary = &values.array;
+	array.release = arrow_union_offset_test::ReleaseArray;
+	// a NULL union has no tag and no member value
+	REQUIRE(arrow_union_offset_test::ScanMatches(
+	    schema, array,
+	    "SELECT * FROM (VALUES ('101', 'i', NULL, 101), ('10', 'd', 10, NULL), (NULL, NULL, NULL, NULL), "
+	    "('30', 'd', 30, NULL), ('101', 'i', NULL, 101)) t(v, tag, d, i)",
+	    "u::VARCHAR AS v, union_tag(u)::VARCHAR AS tag, union_extract(u, 'd') AS d, union_extract(u, 'i') AS i"));
+}
 
 TEST_CASE("Arrow scan of a sparse union with a nonzero offset", "[arrow]") {
 	// slots 0 and 1 are skipped by the offset

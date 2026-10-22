@@ -156,6 +156,13 @@ FROM (SELECT unnest([l]) AS v, unnest(range(2)) AS k FROM (SELECT list(('Key_' |
 ----
 1700	1700
 
+# an empty list can share the offset of the next list
+query II
+SELECT sum(list_unique(v)), sum(len(list_distinct(v)))
+FROM (SELECT unnest([[], l]) AS v FROM (SELECT list(('Key_' || (j % 17)::VARCHAR) COLLATE NOCASE) || list(('KEY_' || (j % 17)::VARCHAR) COLLATE NOCASE) AS l FROM range(64) t(j)), range(100))
+----
+1700	1700
+
 # the default collation applies, as it does for DISTINCT
 statement ok
 SET default_collation = 'nocase'

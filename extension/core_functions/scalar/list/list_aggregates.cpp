@@ -442,6 +442,12 @@ void ListAggregatesFunction(DataChunk &args, ExpressionState &state, Vector &res
 	}
 }
 
+struct ListEntryHash {
+	size_t operator()(const list_entry_t &entry) const {
+		return CombineHash(Hash(entry.offset), Hash(entry.length));
+	}
+};
+
 //! Keeps the first element of every group of elements with equal comparison keys, as DISTINCT does, or counts the
 //! groups for list_unique
 template <bool IS_UNIQUE>
@@ -464,21 +470,21 @@ void ListDistinctByKeyFunction(DataChunk &args, ExpressionState &state, Vector &
 	vector<idx_t> key_elements;
 	vector<idx_t> row_key_offsets(count);
 	// rows can share list entries (e.g. in a dictionary vector, or after an unnest), whose keys are evaluated once
-	unordered_map<idx_t, list_entry_t> entry_key_offsets;
+	unordered_map<list_entry_t, idx_t, ListEntryHash> entry_key_offsets;
 	idx_t element_count = 0;
 	for (idx_t i = 0; i < count; i++) {
 		auto list_value = list_values[i];
-		if (!list_value.IsValid()) {
+		if (!list_value.IsValid() || list_value.GetValue().length == 0) {
 			continue;
 		}
 		auto list_entry = list_value.GetValue();
 		element_count += list_entry.length;
-		auto entry_keys = entry_key_offsets.find(list_entry.offset);
-		if (entry_keys != entry_key_offsets.end() && entry_keys->second.length == list_entry.length) {
-			row_key_offsets[i] = entry_keys->second.offset;
+		auto entry_keys = entry_key_offsets.find(list_entry);
+		if (entry_keys != entry_key_offsets.end()) {
+			row_key_offsets[i] = entry_keys->second;
 			continue;
 		}
-		entry_key_offsets[list_entry.offset] = list_entry_t(key_elements.size(), list_entry.length);
+		entry_key_offsets[list_entry] = key_elements.size();
 		row_key_offsets[i] = key_elements.size();
 		for (idx_t child_idx = list_entry.offset; child_idx < list_entry.offset + list_entry.length; child_idx++) {
 			if (child_validity.IsValid(child_idx)) {

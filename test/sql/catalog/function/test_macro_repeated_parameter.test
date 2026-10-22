@@ -223,3 +223,32 @@ statement error
 SELECT plus_try(sum(i)) FROM range(3) t(i);
 ----
 <REGEX>:Binder Error.*aggregates are not allowed inside the TRY expression.*
+
+statement ok
+CREATE MACRO grouped_plus_sum(x) AS sum(x) + x;
+
+query I
+SELECT grouped_plus_sum(abs(-2)) FROM range(3) GROUP BY GROUPING SETS ((abs(-2)), ()) ORDER BY ALL;
+----
+8
+NULL
+
+statement ok
+CREATE SEQUENCE typeof_seq;
+
+statement ok
+CREATE MACRO grow() AS unnest(range(nextval('typeof_seq')));
+
+statement ok
+CREATE MACRO pair(x) AS [x, x];
+
+query I
+SELECT pair(typeof(grow()));
+----
+[BIGINT, BIGINT]
+[BIGINT, BIGINT]
+
+query I
+SELECT currval('typeof_seq');
+----
+2

@@ -16,6 +16,7 @@
 #include "duckdb/parser/parsed_expression_iterator.hpp"
 #include "duckdb/planner/expression_binder.hpp"
 #include "duckdb/parser/expression/lambda_expression.hpp"
+#include "duckdb/catalog/catalog_entry/macro_catalog_entry.hpp"
 
 namespace duckdb {
 
@@ -56,7 +57,7 @@ void ExpressionBinder::ReplaceMacroParametersInLambda(FunctionExpression &functi
 
 void ExpressionBinder::ReplaceMacroParameters(unique_ptr<ParsedExpression> &expr,
                                               vector<identifier_set_t> &lambda_params,
-                                              optional_ptr<vector<shared_ptr<MacroArgumentBinding>>> arguments) {
+                                              optional_ptr<vector<MacroParameterReference>> references) {
 	switch (expr->GetExpressionClass()) {
 	case ExpressionClass::COLUMN_REF: {
 		// If the expression is a column reference, we replace it with its argument.
@@ -81,10 +82,8 @@ void ExpressionBinder::ReplaceMacroParameters(unique_ptr<ParsedExpression> &expr
 			column_t argument_index;
 			auto has_index = macro_binding->TryGetBindingIndex(col_ref.GetColumnName(), argument_index);
 			expr = macro_binding->ParamToArg(col_ref);
-			if (has_index && arguments && (*arguments)[argument_index]) {
-				auto &argument = (*arguments)[argument_index];
-				argument->unbound_references++;
-				macro_argument_references[*expr] = argument;
+			if (has_index && references) {
+				references->push_back(MacroParameterReference {*expr, argument_index});
 			}
 		}
 		return;
@@ -110,31 +109,87 @@ void ExpressionBinder::ReplaceMacroParameters(unique_ptr<ParsedExpression> &expr
 	}
 
 	ParsedExpressionIterator::EnumerateChildren(
-	    *expr, [&](unique_ptr<ParsedExpression> &child) { ReplaceMacroParameters(child, lambda_params, arguments); });
+	    *expr, [&](unique_ptr<ParsedExpression> &child) { ReplaceMacroParameters(child, lambda_params, references); });
 }
 
-//! Whether the argument can bind to the same expression wherever it is, which binding it checks
-static bool CanBindArgumentOnce(const ParsedExpression &argument) {
-	switch (argument.GetExpressionClass()) {
-	case ExpressionClass::COLUMN_REF:
-	case ExpressionClass::LAMBDA_REF:
-	case ExpressionClass::SUBQUERY:
-	case ExpressionClass::LAMBDA:
-	case ExpressionClass::PARAMETER:
-	case ExpressionClass::STAR:
-	case ExpressionClass::WINDOW:
-		return false;
-	case ExpressionClass::FUNCTION:
-		if (ExpressionBinder::IsUnnestFunction(argument.Cast<FunctionExpression>().GetQualifiedName().Name())) {
+bool ExpressionBinder::CanBindMacroArgumentsOnce() const {
+	return false;
+}
+
+bool ExpressionBinder::IsPureMacroArgument(const ParsedExpression &expr, const identifier_set_t &parameter_names) {
+	switch (expr.GetExpressionClass()) {
+	case ExpressionClass::CONSTANT:
+		return true;
+	case ExpressionClass::COLUMN_REF: {
+		// only the parameters of a macro whose body is checked
+		auto &col_ref = expr.Cast<ColumnRefExpression>();
+		return !col_ref.IsQualified() && parameter_names.count(col_ref.GetColumnName()) > 0;
+	}
+	case ExpressionClass::OPERATOR:
+		if (expr.GetExpressionType() == ExpressionType::GROUPING_FUNCTION) {
 			return false;
 		}
 		break;
-	default:
+	case ExpressionClass::CAST:
+	case ExpressionClass::COMPARISON:
+	case ExpressionClass::CONJUNCTION:
+	case ExpressionClass::CASE:
+	case ExpressionClass::BETWEEN:
+	case ExpressionClass::COLLATE:
 		break;
+	case ExpressionClass::FUNCTION: {
+		auto &function = expr.Cast<FunctionExpression>();
+		auto &name = function.GetQualifiedName();
+		// a qualified name can turn into a column reference, see ColumnQualifier::QualifyFunction
+		if (!name.Catalog().empty() || !name.Schema().empty() || function.Distinct() || function.Filter() ||
+		    (function.OrderBy() && !function.OrderBy()->orders.empty()) || IsUnnestFunction(name.Name())) {
+			return false;
+		}
+		EntryLookupInfo lookup(CatalogType::SCALAR_FUNCTION_ENTRY, name);
+		auto entry = GetCatalogEntry(lookup, OnEntryNotFound::RETURN_NULL);
+		if (!entry) {
+			return false;
+		}
+		if (entry->type == CatalogType::MACRO_ENTRY) {
+			if (!IsPureMacro(*entry)) {
+				return false;
+			}
+		} else if (entry->type != CatalogType::SCALAR_FUNCTION_ENTRY) {
+			return false;
+		}
+		break;
+	}
+	default:
+		// columns, parameters, subqueries, lambdas, windows, stars and the like
+		return false;
 	}
 	bool result = true;
 	ParsedExpressionIterator::EnumerateChildren(
-	    argument, [&](const ParsedExpression &child) { result = result && CanBindArgumentOnce(child); });
+	    expr, [&](const ParsedExpression &child) { result = result && IsPureMacroArgument(child, parameter_names); });
+	return result;
+}
+
+bool ExpressionBinder::IsPureMacro(CatalogEntry &macro) {
+	auto known = pure_macros.find(macro);
+	if (known != pure_macros.end()) {
+		return known->second;
+	}
+	// a macro that is still being checked, a recursive one, counts as not pure
+	pure_macros[macro] = false;
+	bool result = true;
+	for (auto &function : macro.Cast<ScalarMacroCatalogEntry>().macros) {
+		auto &scalar_macro = function->Cast<ScalarMacroFunction>();
+		identifier_set_t parameter_names;
+		for (auto &parameter : scalar_macro.parameters) {
+			parameter_names.insert(parameter->Cast<ColumnRefExpression>().GetColumnName());
+		}
+		for (auto &default_parameter : scalar_macro.default_parameters) {
+			parameter_names.insert(default_parameter.first);
+			result = result && IsPureMacroArgument(*default_parameter.second, identifier_set_t());
+		}
+		result = result && IsPureMacroArgument(*scalar_macro.expression, parameter_names);
+	}
+	pure_macros[macro] = result;
 	return result;
 }
 
@@ -233,13 +288,32 @@ void ExpressionBinder::UnfoldMacroExpression(FunctionExpression &function, Scala
 	ExpressionBinder::QualifyColumnNames(*dummy_binder, expr);
 
 	// now replace the parameters
-	vector<shared_ptr<MacroArgumentBinding>> arguments;
-	for (auto &argument : *new_macro_binding->arguments) {
-		arguments.push_back(CanBindArgumentOnce(*argument) ? make_shared_ptr<MacroArgumentBinding>(argument->Copy())
-		                                                   : nullptr);
-	}
 	vector<identifier_set_t> lambda_params;
-	ReplaceMacroParameters(expr, lambda_params, arguments);
+	if (!CanBindMacroArgumentsOnce()) {
+		ReplaceMacroParameters(expr, lambda_params);
+		return;
+	}
+	vector<MacroParameterReference> references;
+	ReplaceMacroParameters(expr, lambda_params, references);
+	// an argument that the macro reads several times is bound once, when it is pure
+	auto &arguments = *new_macro_binding->arguments;
+	vector<idx_t> reference_counts(arguments.size(), 0);
+	for (auto &reference : references) {
+		reference_counts[reference.argument_index]++;
+	}
+	vector<shared_ptr<MacroArgumentBinding>> argument_bindings(arguments.size());
+	for (idx_t i = 0; i < arguments.size(); i++) {
+		if (reference_counts[i] > 1 && IsPureMacroArgument(*arguments[i], identifier_set_t())) {
+			argument_bindings[i] = make_shared_ptr<MacroArgumentBinding>(arguments[i]->Copy());
+			argument_bindings[i]->unbound_references = reference_counts[i];
+		}
+	}
+	for (auto &reference : references) {
+		auto &argument_binding = argument_bindings[reference.argument_index];
+		if (argument_binding) {
+			macro_argument_references[reference.replacement.get()] = argument_binding;
+		}
+	}
 }
 
 BindResult ExpressionBinder::BindMacro(FunctionExpression &function, ScalarMacroCatalogEntry &macro_func, idx_t depth,

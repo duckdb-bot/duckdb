@@ -84,8 +84,13 @@ struct BindResult {
 	ErrorData error;
 };
 
-//! An argument of a macro, bound once for all references to its parameter when it reads nothing from where it is
-//! bound
+//! A macro parameter reference that was replaced by a copy of its argument
+struct MacroParameterReference {
+	reference<ParsedExpression> replacement;
+	idx_t argument_index;
+};
+
+//! A pure argument of a macro, bound once for all references to its parameter
 struct MacroArgumentBinding {
 	explicit MacroArgumentBinding(unique_ptr<ParsedExpression> argument_p) : argument(std::move(argument_p)) {
 	}
@@ -96,8 +101,6 @@ struct MacroArgumentBinding {
 	unique_ptr<Expression> bound;
 	//! The references that are not bound yet
 	idx_t unbound_references = 0;
-	//! False once a bound reference turned out to depend on where it is bound
-	bool reusable = true;
 };
 
 class ExpressionBinder {
@@ -239,10 +242,10 @@ public:
 	                                  bool root_expression = false);
 
 	//! FIXME: Generalise this for extensibility.
-	//! Recursively replaces macro parameters with the provided input parameters. With the arguments, a replaced
-	//! parameter is bound like the first reference to its argument (null for an argument that is bound every time).
+	//! Recursively replaces macro parameters with the provided input parameters, and collects the replacements outside
+	//! lambdas and subqueries of the macro when given a list.
 	void ReplaceMacroParameters(unique_ptr<ParsedExpression> &expr, vector<identifier_set_t> &lambda_params,
-	                            optional_ptr<vector<shared_ptr<MacroArgumentBinding>>> arguments = nullptr);
+	                            optional_ptr<vector<MacroParameterReference>> references = nullptr);
 	//! Enables special-handling of lambda parameters during macro replacement by tracking them in the lambda_params
 	//! vector.
 	void ReplaceMacroParametersInLambda(FunctionExpression &function, vector<identifier_set_t> &lambda_params);
@@ -323,6 +326,13 @@ protected:
 	void UnfoldMacroExpression(FunctionExpression &function, ScalarMacroCatalogEntry &macro_func,
 	                           unique_ptr<ParsedExpression> &expr, idx_t depth);
 
+	//! Whether a macro argument that IsPureMacroArgument accepts binds to the same expression wherever this binder
+	//! binds it, so that it can be bound once for all references to its parameter
+	virtual bool CanBindMacroArgumentsOnce() const;
+	//! Whether the argument is made of constants, casts, operators, CASE and scalar functions, or macros of these
+	bool IsPureMacroArgument(const ParsedExpression &expr, const identifier_set_t &parameter_names);
+	bool IsPureMacro(CatalogEntry &macro);
+
 	virtual string UnsupportedAggregateMessage();
 	virtual string UnsupportedWindowMessage();
 	virtual string UnsupportedUnnestMessage();
@@ -337,6 +347,8 @@ protected:
 	bool inside_try = false;
 	//! The references to macro parameters replaced by a copy of their argument, which are bound like the first one
 	reference_map_t<ParsedExpression, shared_ptr<MacroArgumentBinding>> macro_argument_references;
+	//! Whether a macro is pure, by IsPureMacro
+	reference_map_t<CatalogEntry, bool> pure_macros;
 
 	BindResult TryBindLambdaOrJson(FunctionExpression &function, idx_t depth, CatalogEntry &func,
 	                               const LambdaSyntaxType syntax_type);

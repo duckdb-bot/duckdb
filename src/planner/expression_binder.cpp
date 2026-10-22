@@ -297,8 +297,7 @@ unique_ptr<Expression> ExpressionBinder::Bind(unique_ptr<ParsedExpression> &expr
 	return result;
 }
 
-//! Whether the bound expression reads nothing from where it was bound (no column, parameter, subquery or lambda), so
-//! that binding the same parsed expression elsewhere gives a copy of it
+//! Whether the bound expression reads nothing from where it was bound (no column, parameter, subquery or lambda)
 static bool IsContextFree(const Expression &expr) {
 	switch (expr.GetExpressionClass()) {
 	case ExpressionClass::BOUND_CONSTANT:
@@ -306,9 +305,6 @@ static bool IsContextFree(const Expression &expr) {
 	case ExpressionClass::BOUND_CASE:
 	case ExpressionClass::BOUND_OPERATOR:
 	case ExpressionClass::BOUND_CONJUNCTION:
-	case ExpressionClass::LEGACY_BOUND_CAST:
-	case ExpressionClass::LEGACY_BOUND_COMPARISON:
-	case ExpressionClass::LEGACY_BOUND_BETWEEN:
 		break;
 	default:
 		return false;
@@ -344,11 +340,8 @@ BindResult ExpressionBinder::Bind(unique_ptr<ParsedExpression> &expr, idx_t dept
 	if (result.HasError()) {
 		return result;
 	}
-	if (macro_argument && macro_argument->reusable && macro_argument->unbound_references > 0) {
-		macro_argument->reusable = IsContextFree(*result.expression);
-		if (macro_argument->reusable) {
-			macro_argument->bound = result.expression->Copy();
-		}
+	if (macro_argument && macro_argument->unbound_references > 0 && IsContextFree(*result.expression)) {
+		macro_argument->bound = result.expression->Copy();
 	}
 	// carry the location and alias of the parsed node over to the bound expression
 	result.expression->SetQueryLocation(query_location);

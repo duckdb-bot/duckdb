@@ -12,9 +12,14 @@
 #include "duckdb/parser/keyword_helper.hpp"
 #include "duckdb/parser/parsed_expression_iterator.hpp"
 #include "duckdb/parser/query_node/recursive_cte_node.hpp"
+#include "duckdb/parser/query_node/select_node.hpp"
 #include "duckdb/parser/query_node/set_operation_node.hpp"
 #include "duckdb/parser/tableref/basetableref.hpp"
+#include "duckdb/parser/tableref/expressionlistref.hpp"
+#include "duckdb/parser/tableref/joinref.hpp"
+#include "duckdb/parser/tableref/pivotref.hpp"
 #include "duckdb/parser/tableref/subqueryref.hpp"
+#include "duckdb/common/reference_map.hpp"
 #include "duckdb/transaction/transaction.hpp"
 #include "duckdb/catalog/duck_catalog.hpp"
 #include "duckdb/catalog/dependency_manager.hpp"
@@ -174,48 +179,145 @@ void PhysicalExport::ExtractEntries(ClientContext &context, vector<reference<Sch
 	}
 }
 
-//! Adds the names of the common table expressions of a query node and of the query nodes it is made of
-static void AddCommonTableExpressionNames(QueryNode &node, identifier_set_t &names) {
-	for (auto &cte : node.cte_map.map) {
-		names.insert(cte.first);
-		if (cte.second->query_node) {
-			AddCommonTableExpressionNames(*cte.second->query_node, names);
-		}
-	}
-	if (node.type == QueryNodeType::SET_OPERATION_NODE) {
-		for (auto &child : node.Cast<SetOperationNode>().children) {
-			AddCommonTableExpressionNames(*child, names);
-		}
-	} else if (node.type == QueryNodeType::RECURSIVE_CTE_NODE) {
-		auto &recursive_node = node.Cast<RecursiveCTENode>();
-		AddCommonTableExpressionNames(*recursive_node.left, names);
-		AddCommonTableExpressionNames(*recursive_node.right, names);
-	}
-}
+//! Finds the names of the tables and views that binding a query reads. A name that refers to a common table
+//! expression is not one, and a common table expression is only bound when the query uses it.
+class QueryReadFinder {
+public:
+	vector<reference<const QualifiedName>> reads;
 
-//! Collects the tables and views a query reads by name, and the names of its common table expressions
-static void CollectQueryReads(QueryNode &node, vector<reference<BaseTableRef>> &tables, identifier_set_t &cte_names) {
-	AddCommonTableExpressionNames(node, cte_names);
-	ParsedExpressionIterator::EnumerateQueryNodeChildren(
-	    node,
-	    [&](unique_ptr<ParsedExpression> &child) {
-		    ParsedExpressionIterator::VisitExpressionClassMutable(
-		        *child, ExpressionClass::SUBQUERY, [&](ParsedExpression &subquery) {
-			        CollectQueryReads(*subquery.Cast<SubqueryExpression>().SubqueryMutable()->node, tables, cte_names);
-		        });
-	    },
-	    [&](TableRef &ref) {
-		    if (ref.type == TableReferenceType::BASE_TABLE) {
-			    tables.push_back(ref.Cast<BaseTableRef>());
-		    } else if (ref.type == TableReferenceType::SUBQUERY) {
-			    AddCommonTableExpressionNames(*ref.Cast<SubqueryRef>().subquery->node, cte_names);
-		    }
-	    });
-}
+public:
+	void VisitNode(QueryNode &node) {
+		scopes.push_back(CTEScope {node, node.cte_map.map.size()});
+		switch (node.type) {
+		case QueryNodeType::SELECT_NODE: {
+			auto &select = node.Cast<SelectNode>();
+			if (select.from_table) {
+				VisitTableRef(*select.from_table);
+			}
+			for (auto &expr : select.select_list) {
+				VisitExpression(*expr);
+			}
+			for (auto &expr : select.groups.group_expressions) {
+				VisitExpression(*expr);
+			}
+			if (select.where_clause) {
+				VisitExpression(*select.where_clause);
+			}
+			if (select.having) {
+				VisitExpression(*select.having);
+			}
+			if (select.qualify) {
+				VisitExpression(*select.qualify);
+			}
+			break;
+		}
+		case QueryNodeType::SET_OPERATION_NODE:
+			for (auto &child : node.Cast<SetOperationNode>().children) {
+				VisitNode(*child);
+			}
+			break;
+		case QueryNodeType::RECURSIVE_CTE_NODE: {
+			auto &recursive = node.Cast<RecursiveCTENode>();
+			VisitNode(*recursive.left);
+			VisitNode(*recursive.right);
+			break;
+		}
+		default:
+			break;
+		}
+		ParsedExpressionIterator::EnumerateQueryNodeModifiers(
+		    node, [&](unique_ptr<ParsedExpression> &child) { VisitExpression(*child); });
+		scopes.pop_back();
+	}
+
+private:
+	//! The common table expressions of a query node that a name can refer to
+	struct CTEScope {
+		reference<QueryNode> node;
+		idx_t visible_count;
+	};
+	vector<CTEScope> scopes;
+	reference_set_t<CommonTableExpressionInfo> bound_ctes;
+
+private:
+	void VisitTableRef(TableRef &ref) {
+		switch (ref.type) {
+		case TableReferenceType::BASE_TABLE:
+			VisitName(ref.Cast<BaseTableRef>().GetQualifiedName());
+			break;
+		case TableReferenceType::SUBQUERY:
+			VisitNode(*ref.Cast<SubqueryRef>().subquery->node);
+			break;
+		case TableReferenceType::JOIN: {
+			auto &join = ref.Cast<JoinRef>();
+			VisitTableRef(*join.left);
+			VisitTableRef(*join.right);
+			if (join.condition) {
+				VisitExpression(*join.condition);
+			}
+			break;
+		}
+		case TableReferenceType::EXPRESSION_LIST:
+			for (auto &row : ref.Cast<ExpressionListRef>().values) {
+				for (auto &expr : row) {
+					VisitExpression(*expr);
+				}
+			}
+			break;
+		case TableReferenceType::PIVOT:
+			VisitTableRef(*ref.Cast<PivotRef>().source);
+			break;
+		default:
+			// e.g. the arguments of a table function, which a table macro does not have to use
+			break;
+		}
+	}
+
+	void VisitExpression(ParsedExpression &expr) {
+		ParsedExpressionIterator::VisitExpressionClassMutable(expr, ExpressionClass::SUBQUERY,
+		                                                      [&](ParsedExpression &child) {
+			                                                      auto &subquery = child.Cast<SubqueryExpression>();
+			                                                      VisitNode(*subquery.SubqueryMutable()->node);
+			                                                      if (subquery.GetChildMutable()) {
+				                                                      VisitExpression(*subquery.GetChildMutable());
+			                                                      }
+		                                                      });
+	}
+
+	void VisitName(const QualifiedName &name) {
+		if (name.Path().size() == 1) {
+			for (idx_t scope_index = scopes.size(); scope_index > 0; scope_index--) {
+				auto &scope = scopes[scope_index - 1];
+				auto &ctes = scope.node.get().cte_map.map;
+				auto cte = ctes.find(name.Name());
+				if (cte != ctes.end() && NumericCast<idx_t>(cte - ctes.begin()) < scope.visible_count) {
+					BindCTE(scope_index - 1, NumericCast<idx_t>(cte - ctes.begin()));
+					return;
+				}
+			}
+		}
+		reads.push_back(name);
+	}
+
+	void BindCTE(idx_t scope_index, idx_t cte_index) {
+		auto &cte = *(scopes[scope_index].node.get().cte_map.map.begin() + NumericCast<int64_t>(cte_index))->second;
+		if (!cte.query_node || !bound_ctes.insert(cte).second) {
+			return;
+		}
+		// the common table expression sees the ones before it, and itself when it is recursive
+		auto outer_scopes = scopes;
+		scopes.erase(scopes.begin() + NumericCast<int64_t>(scope_index + 1), scopes.end());
+		scopes.back().visible_count = cte_index;
+		if (cte.query_node->type == QueryNodeType::RECURSIVE_CTE_NODE) {
+			scopes.back().visible_count++;
+		}
+		VisitNode(*cte.query_node);
+		scopes = std::move(outer_scopes);
+	}
+};
 
 //! An exported table or view, found by its name
 struct ExportedRelation {
-	reference<CatalogEntry> entry;
 	vector<Identifier> schema_path;
 	//! The index among the exported views, invalid for a table
 	optional_idx view_index;
@@ -267,12 +369,12 @@ static void ReorderViewEntries(const catalog_entry_vector_t &tables, catalog_ent
 	for (auto &table : tables) {
 		auto &entry = table.get();
 		relations_by_name[entry.name].push_back(
-		    ExportedRelation {entry, entry.ParentSchema().GetSchemaPath(), optional_idx()});
+		    ExportedRelation {entry.ParentSchema().GetSchemaPath(), optional_idx()});
 	}
 	for (idx_t i = 0; i < views.size(); i++) {
 		auto &entry = views[i].get();
 		relations_by_name[entry.name].push_back(
-		    ExportedRelation {entry, entry.ParentSchema().GetSchemaPath(), optional_idx(i)});
+		    ExportedRelation {entry.ParentSchema().GetSchemaPath(), optional_idx(i)});
 	}
 	vector<vector<idx_t>> reads(views.size());
 	for (idx_t i = 0; i < views.size(); i++) {
@@ -284,14 +386,10 @@ static void ReorderViewEntries(const catalog_entry_vector_t &tables, catalog_ent
 		if (!view.query) {
 			continue;
 		}
-		vector<reference<BaseTableRef>> tables;
-		identifier_set_t cte_names;
-		CollectQueryReads(*view.query->node, tables, cte_names);
-		for (auto &table : tables) {
-			auto &name = table.get().GetQualifiedName();
-			if (name.Path().size() == 1 && cte_names.count(name.Name())) {
-				continue;
-			}
+		QueryReadFinder finder;
+		finder.VisitNode(*view.query->node);
+		for (auto &read : finder.reads) {
+			auto &name = read.get();
 			auto relations = relations_by_name.find(name.Name());
 			if (relations != relations_by_name.end()) {
 				AddViewReads(view, name, relations->second, reads[i]);
@@ -302,65 +400,34 @@ static void ReorderViewEntries(const catalog_entry_vector_t &tables, catalog_ent
 		std::sort(view_reads.begin(), view_reads.end());
 		view_reads.erase(std::unique(view_reads.begin(), view_reads.end()), view_reads.end());
 	}
-	// Tarjan's algorithm finds the groups of views that read each other, and completes a group after the groups it
-	// reads. Views do not read each other in a cycle, so a cycle comes from a name found in a part of a query that is
-	// not bound (e.g. an unused common table expression), and the views of a group keep the current order.
+	// depth first in the current order, so views that read no other view keep their order
 	struct ViewVisit {
 		idx_t view;
 		idx_t next_read;
 	};
-	const auto unvisited = DConstants::INVALID_INDEX;
-	vector<idx_t> visit_index(views.size(), unvisited);
-	vector<idx_t> low_index(views.size(), unvisited);
-	vector<bool> in_group_stack(views.size(), false);
-	vector<idx_t> group_stack;
-	vector<ViewVisit> stack;
 	catalog_entry_vector_t result;
 	result.reserve(views.size());
-	idx_t next_visit_index = 0;
-	auto start_visit = [&](idx_t view) {
-		visit_index[view] = low_index[view] = next_visit_index++;
-		group_stack.push_back(view);
-		in_group_stack[view] = true;
-		stack.push_back(ViewVisit {view, 0});
-	};
+	vector<bool> visited(views.size(), false);
+	vector<ViewVisit> stack;
 	for (idx_t i = 0; i < views.size(); i++) {
-		if (visit_index[i] != unvisited) {
+		if (visited[i]) {
 			continue;
 		}
-		start_visit(i);
+		visited[i] = true;
+		stack.push_back(ViewVisit {i, 0});
 		while (!stack.empty()) {
 			auto view = stack.back().view;
 			auto next_read = stack.back().next_read;
-			if (next_read < reads[view].size()) {
-				stack.back().next_read++;
-				auto read = reads[view][next_read];
-				if (visit_index[read] == unvisited) {
-					start_visit(read);
-				} else if (in_group_stack[read]) {
-					low_index[view] = MinValue(low_index[view], visit_index[read]);
-				}
+			if (next_read == reads[view].size()) {
+				result.push_back(views[view]);
+				stack.pop_back();
 				continue;
 			}
-			stack.pop_back();
-			if (!stack.empty()) {
-				auto &parent = stack.back().view;
-				low_index[parent] = MinValue(low_index[parent], low_index[view]);
-			}
-			if (low_index[view] != visit_index[view]) {
-				continue;
-			}
-			// the view is the first visited view of its group
-			auto group_start = group_stack.size() - 1;
-			while (group_stack[group_start] != view) {
-				group_start--;
-			}
-			vector<idx_t> group(group_stack.begin() + NumericCast<int64_t>(group_start), group_stack.end());
-			group_stack.resize(group_start);
-			std::sort(group.begin(), group.end());
-			for (auto member : group) {
-				in_group_stack[member] = false;
-				result.push_back(views[member]);
+			stack.back().next_read++;
+			auto read = reads[view][next_read];
+			if (!visited[read]) {
+				visited[read] = true;
+				stack.push_back(ViewVisit {read, 0});
 			}
 		}
 	}

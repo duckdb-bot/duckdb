@@ -62,12 +62,29 @@ CREATE VIEW w AS WITH y AS (SELECT 5 AS x) SELECT x FROM y;
 statement ok
 CREATE VIEW y AS SELECT x + 1 AS x FROM w;
 
-# a common table expression that is not used is not bound, so the views read each other in a cycle by name only
+# a common table expression that is not used is not bound
 statement ok
 CREATE VIEW ua AS WITH unused AS (SELECT * FROM ub) SELECT 42 AS x;
 
 statement ok
 CREATE VIEW ub AS SELECT * FROM ua;
+
+# a read that is not found by name, after a view with an unused common table expression
+statement ok
+CREATE VIEW qa AS WITH unused AS (SELECT * FROM qc) SELECT 42 AS x;
+
+statement ok
+CREATE VIEW qb AS SELECT * FROM qa;
+
+statement ok
+CREATE VIEW qc AS SELECT * FROM query_table('qb');
+
+# a common table expression in a subquery hides a view of the same name only within the subquery
+statement ok
+CREATE VIEW sz AS SELECT 42 AS x;
+
+statement ok
+CREATE VIEW ry AS SELECT x + (WITH sz AS (SELECT 7 AS x) SELECT x FROM sz) AS x FROM sz;
 
 # a nested schema with the name of another schema
 statement ok
@@ -160,7 +177,7 @@ SELECT (SELECT x FROM a), (SELECT x FROM n_second), (SELECT m FROM c), (SELECT v
 ----
 1	102	2	42	14	33	10	6	1020	8	42	3
 
-query II
-SELECT (SELECT x FROM ub), (SELECT x FROM imported.zz.ns.va)
+query IIII
+SELECT (SELECT x FROM ub), (SELECT x FROM qc), (SELECT x FROM ry), (SELECT x FROM imported.zz.ns.va)
 ----
-42	43
+42	42	49	43

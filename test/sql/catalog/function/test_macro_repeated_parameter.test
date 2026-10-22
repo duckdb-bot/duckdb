@@ -252,3 +252,17 @@ query I
 SELECT currval('typeof_seq');
 ----
 2
+
+# MATCH_RECOGNIZE binds CLASSIFIER() by name, before the catalog
+statement ok
+CREATE MACRO classifier() AS 'not_used';
+
+statement ok
+CREATE MACRO nav(x) AS x = first(x || '');
+
+statement error
+SELECT * FROM (VALUES (1)) t(i) MATCH_RECOGNIZE (
+	ORDER BY i MEASURES count(*) AS n PATTERN (A+) DEFINE A AS nav(classifier())
+);
+----
+<REGEX>:Binder Error.*CLASSIFIER\(\) only means something while the matcher is assembling a match.*

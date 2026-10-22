@@ -8,6 +8,7 @@
 #include "duckdb/common/unique_ptr.hpp"
 #include "duckdb/function/scalar_macro_function.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/main/settings.hpp"
 #include "duckdb/parser/expression/conjunction_expression.hpp"
 #include "duckdb/parser/expression/function_expression.hpp"
 #include "duckdb/parser/expression/subquery_expression.hpp"
@@ -116,7 +117,11 @@ bool ExpressionBinder::CanBindMacroArgumentsOnce() const {
 	return false;
 }
 
-bool ExpressionBinder::IsPureMacroArgument(const ParsedExpression &expr, const identifier_set_t &parameter_names) {
+bool ExpressionBinder::IsPureMacroArgument(const ParsedExpression &expr, const identifier_set_t &parameter_names,
+                                           idx_t depth) {
+	if (depth >= Settings::Get<MaxExpressionDepthSetting>(context)) {
+		return false;
+	}
 	switch (expr.GetExpressionClass()) {
 	case ExpressionClass::CONSTANT:
 		return true;
@@ -145,13 +150,14 @@ bool ExpressionBinder::IsPureMacroArgument(const ParsedExpression &expr, const i
 		    (function.OrderBy() && !function.OrderBy()->orders.empty()) || IsUnnestFunction(name.Name())) {
 			return false;
 		}
-		EntryLookupInfo lookup(CatalogType::SCALAR_FUNCTION_ENTRY, name);
+		EntryLookupInfo lookup(CatalogType::SCALAR_FUNCTION_ENTRY, name,
+		                       QueryErrorContext(function.GetQueryLocation()));
 		auto entry = GetCatalogEntry(lookup, OnEntryNotFound::RETURN_NULL);
 		if (!entry) {
 			return false;
 		}
 		if (entry->type == CatalogType::MACRO_ENTRY) {
-			if (!IsPureMacro(*entry)) {
+			if (!IsPureMacro(*entry, depth + 1)) {
 				return false;
 			}
 		} else if (entry->type != CatalogType::SCALAR_FUNCTION_ENTRY) {
@@ -164,31 +170,43 @@ bool ExpressionBinder::IsPureMacroArgument(const ParsedExpression &expr, const i
 		return false;
 	}
 	bool result = true;
-	ParsedExpressionIterator::EnumerateChildren(
-	    expr, [&](const ParsedExpression &child) { result = result && IsPureMacroArgument(child, parameter_names); });
+	ParsedExpressionIterator::EnumerateChildren(expr, [&](const ParsedExpression &child) {
+		result = result && IsPureMacroArgument(child, parameter_names, depth + 1);
+	});
 	return result;
 }
 
-bool ExpressionBinder::IsPureMacro(CatalogEntry &macro) {
+static void CollectColumnNames(const ParsedExpression &expr, identifier_set_t &names) {
+	if (expr.GetExpressionClass() == ExpressionClass::COLUMN_REF) {
+		names.insert(expr.Cast<ColumnRefExpression>().GetColumnName());
+	}
+	ParsedExpressionIterator::EnumerateChildren(
+	    expr, [&](const ParsedExpression &child) { CollectColumnNames(child, names); });
+}
+
+bool ExpressionBinder::IsPureMacro(CatalogEntry &macro, idx_t depth) {
 	auto known = pure_macros.find(macro);
 	if (known != pure_macros.end()) {
 		return known->second;
 	}
 	// a macro that is still being checked, a recursive one, counts as not pure
 	pure_macros[macro] = false;
-	bool result = true;
-	for (auto &function : macro.Cast<ScalarMacroCatalogEntry>().macros) {
-		auto &scalar_macro = function->Cast<ScalarMacroFunction>();
-		identifier_set_t parameter_names;
-		for (auto &parameter : scalar_macro.parameters) {
-			parameter_names.insert(parameter->Cast<ColumnRefExpression>().GetColumnName());
-		}
-		for (auto &default_parameter : scalar_macro.default_parameters) {
-			parameter_names.insert(default_parameter.first);
-			result = result && IsPureMacroArgument(*default_parameter.second, identifier_set_t());
-		}
-		result = result && IsPureMacroArgument(*scalar_macro.expression, parameter_names);
+	// with one overload, no defaults and every parameter in a pure body, binding a call binds all of the body and of
+	// its arguments, so checking them looks up nothing that binding does not
+	auto &functions = macro.Cast<ScalarMacroCatalogEntry>().macros;
+	if (functions.size() != 1) {
+		return false;
 	}
+	auto &scalar_macro = functions[0]->Cast<ScalarMacroFunction>();
+	identifier_set_t parameter_names;
+	for (auto &parameter : scalar_macro.parameters) {
+		parameter_names.insert(parameter->Cast<ColumnRefExpression>().GetColumnName());
+	}
+	identifier_set_t referenced_names;
+	CollectColumnNames(*scalar_macro.expression, referenced_names);
+	auto result = scalar_macro.default_parameters.empty() &&
+	              IsPureMacroArgument(*scalar_macro.expression, parameter_names, depth) &&
+	              referenced_names.size() == parameter_names.size();
 	pure_macros[macro] = result;
 	return result;
 }
@@ -289,7 +307,8 @@ void ExpressionBinder::UnfoldMacroExpression(FunctionExpression &function, Scala
 
 	// now replace the parameters
 	vector<identifier_set_t> lambda_params;
-	if (!CanBindMacroArgumentsOnce()) {
+	// in a pure macro every reference is bound, and so is every argument
+	if (!CanBindMacroArgumentsOnce() || !IsPureMacro(macro_func, 0)) {
 		ReplaceMacroParameters(expr, lambda_params);
 		return;
 	}
@@ -303,7 +322,7 @@ void ExpressionBinder::UnfoldMacroExpression(FunctionExpression &function, Scala
 	}
 	vector<shared_ptr<MacroArgumentBinding>> argument_bindings(arguments.size());
 	for (idx_t i = 0; i < arguments.size(); i++) {
-		if (reference_counts[i] > 1 && IsPureMacroArgument(*arguments[i], identifier_set_t())) {
+		if (reference_counts[i] > 1 && IsPureMacroArgument(*arguments[i], identifier_set_t(), 0)) {
 			argument_bindings[i] = make_shared_ptr<MacroArgumentBinding>(arguments[i]->Copy());
 			argument_bindings[i]->unbound_references = reference_counts[i];
 		}

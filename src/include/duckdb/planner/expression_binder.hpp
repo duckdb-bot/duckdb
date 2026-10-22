@@ -329,9 +329,10 @@ protected:
 	//! Whether a macro argument that IsPureMacroArgument accepts binds to the same expression wherever this binder
 	//! binds it, so that it can be bound once for all references to its parameter
 	virtual bool CanBindMacroArgumentsOnce() const;
-	//! Whether the argument is made of constants, casts, operators, CASE and scalar functions, or macros of these
-	bool IsPureMacroArgument(const ParsedExpression &expr, const identifier_set_t &parameter_names);
-	bool IsPureMacro(CatalogEntry &macro);
+	//! Whether the argument is made of constants, casts, operators, CASE and scalar functions, or pure macros of these
+	bool IsPureMacroArgument(const ParsedExpression &expr, const identifier_set_t &parameter_names, idx_t depth);
+	//! Whether the macro has one overload, no defaults, and a pure body that uses every parameter
+	bool IsPureMacro(CatalogEntry &macro, idx_t depth);
 
 	virtual string UnsupportedAggregateMessage();
 	virtual string UnsupportedWindowMessage();

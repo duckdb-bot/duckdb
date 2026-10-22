@@ -103,6 +103,27 @@ WHERE len(list_filter(l, lambda e: NOT list_contains(list_transform(d, lambda x:
 ----
 0
 
+# long keys, which are not inlined, over several vectors of elements
+query III
+SELECT list_unique(list(('long_key_padding_' || (i % 17)::VARCHAR) COLLATE NOCASE)),
+       len(list_distinct(list(('LONG_KEY_padding_' || (i % 17)::VARCHAR) COLLATE NOCASE))),
+       count(DISTINCT ('long_key_padding_' || (i % 17)::VARCHAR) COLLATE NOCASE)
+FROM range(5000) t(i)
+----
+17	17	17
+
+# a filter selects some of the lists
+statement ok
+CREATE TABLE samples AS SELECT id, list(s) AS l FROM (
+	SELECT range // 64 AS id, (CASE WHEN range % 2 = 0 THEN 'Key_number_' ELSE 'kEY_NUMBER_' END || ((range // 2) % 4)::VARCHAR) COLLATE NOCASE AS s
+	FROM range(64000)
+) GROUP BY id
+
+query III
+SELECT sum(list_unique(l)), sum(len(list_distinct(l))), count(*) FROM samples WHERE id % 100 = 0
+----
+40	40	10
+
 # rows of the probe side of a join can share one list entry
 statement ok
 CREATE TABLE shared_lists AS SELECT range % 10 AS k, ['A' COLLATE NOCASE, 'a', 'b' || (range % 3)::VARCHAR] AS l FROM range(1000)

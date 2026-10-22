@@ -553,6 +553,17 @@ TEST_CASE("Arrow scan of FIXED_SIZE_LIST(run-end encoded dictionary) with an off
 	    "SELECT * FROM (VALUES (['x', NULL]::VARCHAR[2]), (NULL), (['x', 'x']))"));
 }
 
+TEST_CASE("Arrow run-end encoded dictionary column of lists binds as the list type", "[arrow]") {
+	// the dictionary holds the lists [7] and [8]
+	arrow_run_end_encoded_test::Int32Column elements("item", {7, 8});
+	arrow_run_end_encoded_test::ListColumn dictionary(elements, {0, 1, 2});
+	arrow_run_end_encoded_test::RunEndDictionaryColumn col({1, 2}, {0, 1}, {});
+	col.values_schema.dictionary = &dictionary.schema;
+	col.values_array.dictionary = &dictionary.array;
+	REQUIRE(arrow_run_end_encoded_test::QueryMatches(
+	    col.schema, col.array, "SELECT column_type FROM (DESCRIBE SELECT * FROM arrow_view)", "SELECT 'INTEGER[]'"));
+}
+
 TEST_CASE("Arrow scan of LIST(run-end encoded) whose first chunk holds no list elements", "[arrow]") {
 	// child: [7, 7], the first 2048 lists are empty
 	arrow_run_end_encoded_test::RunEndColumn child({2}, {7}, {});

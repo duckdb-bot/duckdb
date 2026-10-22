@@ -44,6 +44,16 @@ SELECT currval('seq3');
 ----
 10
 
+query II
+SELECT CASE WHEN (nextval('seq3') + i * 0) % 2 = 0 THEN 'A' ELSE 'a' END COLLATE NOCASE AS k, count(*) FROM range(10) r(i) GROUP BY ALL;
+----
+a	10
+
+query I
+SELECT currval('seq3');
+----
+20
+
 # with other groups, aggregates over other columns, WHERE, HAVING and ROLLUP
 statement ok
 CREATE SEQUENCE seq4;

@@ -149,7 +149,7 @@ TEST_CASE("A WAL entry with a wrong checksum and a damaged size is not a torn ta
 	auto database_path = TestCreatePath("wal_torn_checksum_size");
 	auto wal_path = database_path + ".wal";
 	auto ends = WriteTransactions(database_path, *config);
-	// the entry grows over the commits of the second and the third transaction
+	// the size of the entry grows, so the entries after it are read at the wrong offsets
 	DamageBytes(wal_path, ends[1], 1);
 	REQUIRE_THROWS_WITH(DuckDB(database_path, config.get()), Catch::Contains("does not match stored checksum"));
 	DeleteDatabase(database_path);

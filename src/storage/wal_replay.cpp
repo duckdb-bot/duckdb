@@ -547,12 +547,12 @@ static bool IsZeroUntilEnd(ReplayState &state, const string &wal_path, idx_t pos
 
 //! Whether an entry of a WAL v2 that does not match its checksum is part of a torn tail. At most one WAL_FLUSH, its
 //! own, may follow it, and the entries after it must be intact up to the end of the file, an entry the file cuts off or
-//! zeros up to the end. For a single damaged region, as a torn write leaves, at most its transaction and, when the
-//! damaged entry was its WAL_FLUSH, the next one are dropped. Damage in several entries can hide more commits.
+//! zeros up to the end. When only this entry is damaged, at most its transaction and, when it was a WAL_FLUSH, the next
+//! one are dropped. A damaged range over several entries, such as a zeroed end of the file, can drop more.
 static bool IsTornEntry(ReplayState &state, BufferedFileReader &reader, const string &wal_path,
                         idx_t damaged_entry_start) {
 	if (state.wal_version != 2) {
-		// encrypted WAL entries are verified by their tag before the checksum
+		// encrypted WAL files keep failing on any damaged entry
 		return false;
 	}
 	if (CountFlushEntriesAfter(state, wal_path, damaged_entry_start, 2) > 1) {

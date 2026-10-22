@@ -124,6 +124,19 @@ SELECT sum(list_unique(l)), sum(len(list_distinct(l))), count(*) FROM samples WH
 ----
 40	40	10
 
+# a join selects some of the lists and repeats them
+statement ok
+CREATE TABLE some_lists AS SELECT id, list(('key_' || (j % 17)::VARCHAR) COLLATE NOCASE) AS l
+FROM range(200) ids(id), range(32) vals(j) GROUP BY id
+
+statement ok
+CREATE TABLE repeated_ids AS SELECT i % 10 AS id FROM range(2000) t(i)
+
+query II
+SELECT sum(list_unique(l)), sum(len(list_distinct(l))) FROM some_lists JOIN repeated_ids USING (id)
+----
+34000	34000
+
 # rows of the probe side of a join can share one list entry
 statement ok
 CREATE TABLE shared_lists AS SELECT range % 10 AS k, ['A' COLLATE NOCASE, 'a', 'b' || (range % 3)::VARCHAR] AS l FROM range(1000)

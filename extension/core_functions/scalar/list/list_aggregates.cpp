@@ -454,28 +454,34 @@ void ListDistinctByKeyFunction(DataChunk &args, ExpressionState &state, Vector &
 	auto &local_state = ExecuteFunctionState::GetFunctionState(state)->Cast<ListAggregatesLocalState>();
 	auto &key_executor = *local_state.key_executor;
 
-	// rows can share list entries (e.g. in a dictionary vector) or skip some (e.g. after a filter)
-	idx_t element_count = 0;
-	for (auto list_value : lists.Values<list_entry_t>()) {
-		if (list_value.IsValid()) {
-			element_count += list_value.GetValue().length;
-		}
-	}
-	// the keys are evaluated for the elements of exactly these lists, so a copy holds them once each
-	unique_ptr<Vector> copied_lists;
-	if (element_count != ListVector::GetListSize(lists)) {
-		copied_lists = make_uniq<Vector>(lists.GetType(), count);
-		VectorOperations::Copy(lists, *copied_lists, count, 0, 0);
-	}
-	auto &input_lists = copied_lists ? *copied_lists : lists;
-
-	auto &child_vector = ListVector::GetChild(input_lists);
-	const auto child_count = ListVector::GetListSize(input_lists);
+	auto list_values = lists.Values<list_entry_t>();
+	auto &child_vector = ListVector::GetChild(lists);
 	auto child_validity = child_vector.Validity();
 
-	// the comparison keys of all elements as strings that compare like the keys, NULL elements have none
-	vector<string_t> element_keys(child_count);
-	vector<bool> has_key(child_count, false);
+	// the valid elements of the selected lists once each, as rows can share list entries (e.g. in a dictionary
+	// vector) or skip some (e.g. after a filter), and the position of the key of every element
+	vector<idx_t> key_positions(ListVector::GetListSize(lists), DConstants::INVALID_INDEX);
+	vector<idx_t> key_elements;
+	idx_t element_count = 0;
+	for (idx_t i = 0; i < count; i++) {
+		auto list_value = list_values[i];
+		if (!list_value.IsValid()) {
+			continue;
+		}
+		auto list_entry = list_value.GetValue();
+		element_count += list_entry.length;
+		for (idx_t child_idx = list_entry.offset; child_idx < list_entry.offset + list_entry.length; child_idx++) {
+			if (key_positions[child_idx] != DConstants::INVALID_INDEX || !child_validity.IsValid(child_idx)) {
+				continue;
+			}
+			key_positions[child_idx] = key_elements.size();
+			key_elements.push_back(child_idx);
+		}
+	}
+
+	// the comparison keys as strings that compare like the keys
+	vector<string_t> keys(key_elements.size());
+	vector<bool> has_key(key_elements.size(), false);
 	const auto &key_type = key_executor.expressions[0]->GetReturnType();
 	const bool string_keys = key_type.InternalType() == PhysicalType::VARCHAR;
 	// every batch has its own key vector, which owns the strings of its keys
@@ -483,10 +489,10 @@ void ListDistinctByKeyFunction(DataChunk &args, ExpressionState &state, Vector &
 	DataChunk key_input;
 	key_input.InitializeEmpty({child_vector.GetType()});
 	SelectionVector sel(STANDARD_VECTOR_SIZE);
-	for (idx_t offset = 0; offset < child_count; offset += STANDARD_VECTOR_SIZE) {
-		auto batch_count = MinValue<idx_t>(STANDARD_VECTOR_SIZE, child_count - offset);
+	for (idx_t offset = 0; offset < key_elements.size(); offset += STANDARD_VECTOR_SIZE) {
+		auto batch_count = MinValue<idx_t>(STANDARD_VECTOR_SIZE, key_elements.size() - offset);
 		for (idx_t i = 0; i < batch_count; i++) {
-			sel.set_index(i, offset + i);
+			sel.set_index(i, key_elements[offset + i]);
 		}
 		key_input.data[0].Slice(child_vector, sel, batch_count);
 		key_input.SetChildCardinality(batch_count);
@@ -499,20 +505,19 @@ void ListDistinctByKeyFunction(DataChunk &args, ExpressionState &state, Vector &
 			                                    *sort_key_vector);
 			key_vector = std::move(sort_key_vector);
 		}
-		auto keys = key_vector->Values<string_t>();
+		auto batch_keys = key_vector->Values<string_t>();
 		for (idx_t i = 0; i < batch_count; i++) {
-			if (!child_validity.IsValid(offset + i) || !keys[i].IsValid()) {
+			if (!batch_keys[i].IsValid()) {
 				continue;
 			}
-			element_keys[offset + i] = keys[i].GetValue();
+			keys[offset + i] = batch_keys[i].GetValue();
 			has_key[offset + i] = true;
 		}
 		key_vectors.push_back(std::move(key_vector));
 	}
 
-	auto list_values = input_lists.Values<list_entry_t>();
 	string_set_t seen_keys;
-	SelectionVector distinct_sel(IS_UNIQUE ? 1 : MaxValue<idx_t>(child_count, 1));
+	SelectionVector distinct_sel(IS_UNIQUE ? 1 : MaxValue<idx_t>(element_count, 1));
 	idx_t distinct_count = 0;
 	// the distinct elements of each list, as offset and length in distinct_sel
 	vector<list_entry_t> distinct_entries(count);
@@ -525,7 +530,9 @@ void ListDistinctByKeyFunction(DataChunk &args, ExpressionState &state, Vector &
 		seen_keys.clear();
 		distinct_entries[i].offset = distinct_count;
 		for (idx_t child_idx = list_entry.offset; child_idx < list_entry.offset + list_entry.length; child_idx++) {
-			if (!has_key[child_idx] || !seen_keys.insert(element_keys[child_idx]).second) {
+			auto key_position = key_positions[child_idx];
+			if (key_position == DConstants::INVALID_INDEX || !has_key[key_position] ||
+			    !seen_keys.insert(keys[key_position]).second) {
 				continue;
 			}
 			if (!IS_UNIQUE) {

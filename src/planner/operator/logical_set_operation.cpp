@@ -129,6 +129,14 @@ static optional_ptr<const BoundColumnRefExpression> CollationKeyColumn(ClientCon
 	return column;
 }
 
+void LogicalSetOperation::ResolveChildTypes() {
+	for (auto &child : children) {
+		if (child->types.size() != column_count) {
+			child->ResolveOperatorTypes();
+		}
+	}
+}
+
 bool LogicalSetOperation::FilterTellsApartEqualRows(ClientContext &context, const Expression &filter) const {
 	if (filter.IsVolatile()) {
 		return true;
@@ -153,7 +161,7 @@ bool LogicalSetOperation::FilterTellsApartEqualRows(ClientContext &context, cons
 		auto key_column = compared ? CollationKeyColumn(context, expr) : nullptr;
 		if (key_column) {
 			for (auto &type : get_compared_types(*key_column)) {
-				if (type.get() != key_column->GetReturnType()) {
+				if (!type.get().EqualsIncludingCollation(key_column->GetReturnType())) {
 					tells_apart = true;
 				}
 			}

@@ -39,7 +39,7 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownSetOperation(unique_ptr<Logi
 			}
 		}
 		if (!filters.empty()) {
-			op->ResolveOperatorTypes();
+			setop.ResolveChildTypes();
 		}
 	}
 	auto finish = [&](unique_ptr<LogicalOperator> result) {

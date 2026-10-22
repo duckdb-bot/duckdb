@@ -46,6 +46,8 @@ public:
 	vector<TableIndex> GetTableIndex() const override;
 	string GetName() const override;
 
+	//! Resolves the types of the children that are not resolved yet
+	void ResolveChildTypes();
 	//! Whether the filter can be true for a row and false for a row this operation treats as equal to it, e.g. with
 	//! a collation or for -0.0 and 0.0. Its column references are by the position of the columns of this operation,
 	//! and the types of the children have to be resolved.

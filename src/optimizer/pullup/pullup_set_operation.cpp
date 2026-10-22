@@ -30,7 +30,7 @@ unique_ptr<LogicalOperator> FilterPullup::PullupSetOperation(unique_ptr<LogicalO
 	// A volatile filter stays where it is evaluated. EXCEPT and INTERSECT return rows of the left child, so a filter of
 	// the right child that tells apart rows they treat as equal stays there too: above, it would select left rows.
 	if (!right_pullup.filters_expr_pullup.empty()) {
-		op->ResolveOperatorTypes();
+		setop.ResolveChildTypes();
 	}
 	vector<unique_ptr<Expression>> pulled_filters;
 	vector<unique_ptr<Expression>> left_filters;

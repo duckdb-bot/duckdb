@@ -49,7 +49,7 @@ void ArrowType::SetRunEndEncoded() {
 	auto &struct_info = type_info->Cast<ArrowStructInfo>();
 	D_ASSERT(struct_info.ChildCount() == 2);
 
-	auto actual_type = struct_info.GetChild(1).GetDuckType();
+	auto actual_type = struct_info.GetChild(1).GetDuckType(true);
 	// Override the duckdb type to the actual type
 	type = actual_type;
 	run_end_encoded = true;
@@ -343,6 +343,10 @@ LogicalType ArrowType::GetDuckType(bool use_dictionary) const {
 		// mirror the logical type's children — reconstructing through it would produce a hybrid type.
 		// The logical type is authoritative here; any dictionaries inside the storage are handled by the
 		// storage-side conversion, not by the output type.
+		return type;
+	}
+	if (RunEndEncoded()) {
+		// the type info holds the run ends and the values, not the children of this type
 		return type;
 	}
 	// Dictionaries can exist in arbitrarily nested schemas

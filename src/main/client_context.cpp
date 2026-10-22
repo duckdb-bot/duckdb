@@ -820,7 +820,7 @@ unique_ptr<QueryResult> ClientContext::SubmitStatement(ClientContextLock &lock, 
 	}
 	const bool expands = preprocessed.statements.size() > 1;
 	try {
-		BeginQueryInternal(lock, std::move(preprocessed), parameters, retention);
+		BeginQueryInternal(lock, std::move(preprocessed), parameters, retention, outside_local_transaction);
 	} catch (std::exception &ex) {
 		ErrorData error(ex);
 		if (Exception::InvalidatesDatabase(error.Type())) {
@@ -838,7 +838,6 @@ unique_ptr<QueryResult> ClientContext::SubmitStatement(ClientContextLock &lock, 
 		}
 		return ErrorResult<QueryResult>(std::move(error), query);
 	}
-	active_query->outside_local_transaction = outside_local_transaction;
 
 	unique_ptr<QueryResult> handle;
 	unique_ptr<QueryResult> result;

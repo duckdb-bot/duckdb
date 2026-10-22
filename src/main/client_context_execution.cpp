@@ -31,7 +31,8 @@
 namespace duckdb {
 
 void ClientContext::BeginQueryInternal(ClientContextLock &lock, PreprocessedStatement statements,
-                                       const QueryParameters &parameters, Retention retention) {
+                                       const QueryParameters &parameters, Retention retention,
+                                       bool outside_local_transaction) {
 	// check if we are on AutoCommit. In this case we should start a transaction
 	D_ASSERT(!active_query);
 	D_ASSERT(!statements.statements.empty());
@@ -42,6 +43,8 @@ void ClientContext::BeginQueryInternal(ClientContextLock &lock, PreprocessedStat
 	auto query = statements.statements[0]->query;
 	active_query = make_uniq<ActiveQueryContext>(std::move(statements));
 	active_query->format = parameters.format;
+	// set before the QueryBegin hooks run, so that a query they reject ends outside the local transaction too
+	active_query->outside_local_transaction = outside_local_transaction;
 	if (retention == Retention::RETAINED_AT_SUBMISSION) {
 		active_query->retention = ResultLifetime::RETAINED;
 	}

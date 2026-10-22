@@ -96,6 +96,9 @@ void ClientContext::RefreshLoggerInternal() {
 	DUCKDB_LOG(*this, QueryLogType, active_query->query);
 }
 
+//! Orders the errors of the steps that end a query, the most severe one is thrown after every state ended
+enum class QueryEndErrorSeverity { NONE, ORDINARY, INTERNAL, FATAL };
+
 ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success, bool invalidate_transaction,
                                           optional_ptr<ErrorData> previous_error) {
 	if (active_query->executor) {
@@ -140,16 +143,16 @@ ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success,
 
 	// the query ends on every state also when ending the profiler, the logger or one of the states fails
 	ErrorData end_error;
-	idx_t end_error_severity = 0;
+	auto end_error_severity = QueryEndErrorSeverity::NONE;
 	auto add_end_error = [&](std::exception &ex) {
 		ErrorData step_error(ex);
-		idx_t severity = 1;
+		auto severity = QueryEndErrorSeverity::ORDINARY;
 		if (Exception::InvalidatesDatabase(step_error.Type())) {
-			severity = 3;
+			severity = QueryEndErrorSeverity::FATAL;
 		} else if (step_error.Type() == ExceptionType::INTERNAL) {
-			severity = 2;
+			severity = QueryEndErrorSeverity::INTERNAL;
 		}
-		if (severity > 1) {
+		if (severity != QueryEndErrorSeverity::ORDINARY) {
 			ValidChecker::Invalidate(DatabaseInstance::GetDatabase(*this), step_error.RawMessage());
 		}
 		// keep the first error at the highest severity

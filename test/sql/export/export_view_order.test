@@ -102,6 +102,58 @@ CREATE VIEW ns.vb AS SELECT * FROM va;
 statement ok
 CREATE VIEW zz.ns.va AS SELECT x + 1 AS x FROM ns.vb;
 
+# a view without recorded dependencies before a view with them
+statement ok
+CREATE VIEW rb AS SELECT 42 AS x;
+
+statement ok
+CREATE VIEW rc AS SELECT * FROM query_table('rb');
+
+statement ok
+SET enable_view_dependencies = true;
+
+statement ok
+CREATE VIEW ra AS SELECT * FROM rc;
+
+statement ok
+SET enable_view_dependencies = false;
+
+# subqueries that binding drops: a macro argument the macro does not use, a star that expands to nothing
+statement ok
+CREATE MACRO ignore_arg(x) AS 42;
+
+statement ok
+CREATE VIEW ma AS SELECT ignore_arg((SELECT x FROM mb)) AS x;
+
+statement ok
+CREATE VIEW mb AS SELECT * FROM ma;
+
+statement ok
+CREATE VIEW ca AS SELECT 42 AS x, COLUMNS(* EXCLUDE (dummy)) + (SELECT x FROM cb) FROM (SELECT 1 AS dummy);
+
+statement ok
+CREATE VIEW cb AS SELECT * FROM ca;
+
+# a qualified name for the state of a recursive common table expression
+statement ok
+CREATE SCHEMA recurring;
+
+statement ok
+CREATE VIEW rk AS WITH RECURSIVE r(x) USING KEY (x) AS (SELECT 1 UNION SELECT x + 1 FROM recurring.r WHERE x < 3) SELECT max(x) AS x FROM r;
+
+statement ok
+CREATE VIEW recurring.r AS SELECT * FROM rk;
+
+# a name without a schema in a view of a nested schema
+statement ok
+CREATE VIEW ns.lc AS SELECT 42 AS x;
+
+statement ok
+CREATE VIEW zz.ns.la AS SELECT * FROM lc;
+
+statement ok
+CREATE VIEW zz.ns.lc AS SELECT x + 1 AS x FROM zz.ns.la;
+
 # a name without a schema in a view of another schema refers to the default schema
 statement ok
 CREATE VIEW aa.reads_main AS SELECT x * 10 AS x FROM n_second;
@@ -181,3 +233,8 @@ query IIII
 SELECT (SELECT x FROM ub), (SELECT x FROM qc), (SELECT x FROM ry), (SELECT x FROM imported.zz.ns.va)
 ----
 42	42	49	43
+
+query IIIIII
+SELECT (SELECT x FROM ra), (SELECT x FROM mb), (SELECT x FROM cb), (SELECT x FROM recurring.r), (SELECT x FROM ns.lc), (SELECT x FROM imported.zz.ns.lc)
+----
+42	42	42	3	42	43

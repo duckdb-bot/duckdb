@@ -195,19 +195,19 @@ public:
 				VisitTableRef(*select.from_table);
 			}
 			for (auto &expr : select.select_list) {
-				VisitExpression(*expr);
+				VisitNodeExpression(*expr);
 			}
 			for (auto &expr : select.groups.group_expressions) {
-				VisitExpression(*expr);
+				VisitNodeExpression(*expr);
 			}
 			if (select.where_clause) {
-				VisitExpression(*select.where_clause);
+				VisitNodeExpression(*select.where_clause);
 			}
 			if (select.having) {
-				VisitExpression(*select.having);
+				VisitNodeExpression(*select.having);
 			}
 			if (select.qualify) {
-				VisitExpression(*select.qualify);
+				VisitNodeExpression(*select.qualify);
 			}
 			break;
 		}
@@ -226,7 +226,7 @@ public:
 			break;
 		}
 		ParsedExpressionIterator::EnumerateQueryNodeModifiers(
-		    node, [&](unique_ptr<ParsedExpression> &child) { VisitExpression(*child); });
+		    node, [&](unique_ptr<ParsedExpression> &child) { VisitNodeExpression(*child); });
 		scopes.pop_back();
 	}
 
@@ -253,14 +253,14 @@ private:
 			VisitTableRef(*join.left);
 			VisitTableRef(*join.right);
 			if (join.condition) {
-				VisitExpression(*join.condition);
+				VisitNodeExpression(*join.condition);
 			}
 			break;
 		}
 		case TableReferenceType::EXPRESSION_LIST:
 			for (auto &row : ref.Cast<ExpressionListRef>().values) {
 				for (auto &expr : row) {
-					VisitExpression(*expr);
+					VisitNodeExpression(*expr);
 				}
 			}
 			break;
@@ -274,27 +274,53 @@ private:
 	}
 
 	void VisitExpression(ParsedExpression &expr) {
-		ParsedExpressionIterator::VisitExpressionClassMutable(expr, ExpressionClass::SUBQUERY,
-		                                                      [&](ParsedExpression &child) {
-			                                                      auto &subquery = child.Cast<SubqueryExpression>();
-			                                                      VisitNode(*subquery.SubqueryMutable()->node);
-			                                                      if (subquery.GetChildMutable()) {
-				                                                      VisitExpression(*subquery.GetChildMutable());
-			                                                      }
-		                                                      });
+		switch (expr.GetExpressionClass()) {
+		case ExpressionClass::SUBQUERY: {
+			auto &subquery = expr.Cast<SubqueryExpression>();
+			VisitNode(*subquery.SubqueryMutable()->node);
+			if (subquery.GetChildMutable()) {
+				VisitExpression(*subquery.GetChildMutable());
+			}
+			break;
+		}
+		case ExpressionClass::BETWEEN:
+		case ExpressionClass::CASE:
+		case ExpressionClass::CAST:
+		case ExpressionClass::COLLATE:
+		case ExpressionClass::COMPARISON:
+		case ExpressionClass::CONJUNCTION:
+		case ExpressionClass::OPERATOR:
+			ParsedExpressionIterator::EnumerateChildren(expr, [&](ParsedExpression &child) { VisitExpression(child); });
+			break;
+		default:
+			// e.g. the arguments of a function, which a macro does not have to use
+			break;
+		}
+	}
+
+	//! Visits an expression of the query node, unless it holds a star, which can expand to no expression at all
+	void VisitNodeExpression(ParsedExpression &expr) {
+		bool has_star = false;
+		ParsedExpressionIterator::VisitExpressionClass(expr, ExpressionClass::STAR,
+		                                               [&](const ParsedExpression &) { has_star = true; });
+		if (!has_star) {
+			VisitExpression(expr);
+		}
 	}
 
 	void VisitName(const QualifiedName &name) {
-		if (name.Path().size() == 1) {
-			for (idx_t scope_index = scopes.size(); scope_index > 0; scope_index--) {
-				auto &scope = scopes[scope_index - 1];
-				auto &ctes = scope.node.get().cte_map.map;
-				auto cte = ctes.find(name.Name());
-				if (cte != ctes.end() && NumericCast<idx_t>(cte - ctes.begin()) < scope.visible_count) {
-					BindCTE(scope_index - 1, NumericCast<idx_t>(cte - ctes.begin()));
-					return;
-				}
+		for (idx_t scope_index = scopes.size(); scope_index > 0; scope_index--) {
+			auto &scope = scopes[scope_index - 1];
+			auto &ctes = scope.node.get().cte_map.map;
+			auto cte = ctes.find(name.Name());
+			if (cte == ctes.end() || NumericCast<idx_t>(cte - ctes.begin()) >= scope.visible_count) {
+				continue;
 			}
+			if (name.Path().size() == 1) {
+				BindCTE(scope_index - 1, NumericCast<idx_t>(cte - ctes.begin()));
+			}
+			// a qualified name can refer to the state of a recursive common table expression, e.g. recurring.r
+			return;
 		}
 		reads.push_back(name);
 	}
@@ -319,7 +345,7 @@ private:
 //! An exported table or view, found by its name
 struct ExportedRelation {
 	vector<Identifier> schema_path;
-	//! The index among the exported views, invalid for a table
+	//! The index of a view among the exported entries, invalid for a table
 	optional_idx view_index;
 };
 
@@ -344,8 +370,13 @@ static void AddViewReads(ViewCatalogEntry &view, const QualifiedName &name, cons
 	};
 	auto default_schema = catalog.GetDefaultSchema();
 	if (qualification.empty()) {
+		auto view_schema_path = view.ParentSchema().GetSchemaPath();
+		if (view_schema_path.size() > 1) {
+			// the binder looks a name in a nested schema up by the last name of the schema
+			return;
+		}
 		// a name without a schema refers to the schema of the view first, then to the default schema
-		if (!add_schema_reads(view.ParentSchema().GetSchemaPath()) && default_schema) {
+		if (!add_schema_reads(view_schema_path) && default_schema) {
 			add_schema_reads(vector<Identifier> {*default_schema});
 		}
 		return;
@@ -362,23 +393,19 @@ static void AddViewReads(ViewCatalogEntry &view, const QualifiedName &name, cons
 	}
 }
 
-//! Orders the views so that every view comes after the views it reads. View dependencies are only recorded with
-//! enable_view_dependencies, so the names in the queries of the views are looked up among the exported relations.
-static void ReorderViewEntries(const catalog_entry_vector_t &tables, catalog_entry_vector_t &views) {
+void PhysicalExport::ReorderViewEntries(catalog_entry_vector_t &entries) {
 	identifier_map_t<vector<ExportedRelation>> relations_by_name;
-	for (auto &table : tables) {
-		auto &entry = table.get();
-		relations_by_name[entry.name].push_back(
-		    ExportedRelation {entry.ParentSchema().GetSchemaPath(), optional_idx()});
+	for (idx_t i = 0; i < entries.size(); i++) {
+		auto &entry = entries[i].get();
+		if (entry.type != CatalogType::TABLE_ENTRY && entry.type != CatalogType::VIEW_ENTRY) {
+			continue;
+		}
+		auto view_index = entry.type == CatalogType::VIEW_ENTRY ? optional_idx(i) : optional_idx();
+		relations_by_name[entry.name].push_back(ExportedRelation {entry.ParentSchema().GetSchemaPath(), view_index});
 	}
-	for (idx_t i = 0; i < views.size(); i++) {
-		auto &entry = views[i].get();
-		relations_by_name[entry.name].push_back(
-		    ExportedRelation {entry.ParentSchema().GetSchemaPath(), optional_idx(i)});
-	}
-	vector<vector<idx_t>> reads(views.size());
-	for (idx_t i = 0; i < views.size(); i++) {
-		auto &entry = views[i].get();
+	vector<vector<idx_t>> reads(entries.size());
+	for (idx_t i = 0; i < entries.size(); i++) {
+		auto &entry = entries[i].get();
 		if (entry.type != CatalogType::VIEW_ENTRY) {
 			continue;
 		}
@@ -400,38 +427,39 @@ static void ReorderViewEntries(const catalog_entry_vector_t &tables, catalog_ent
 		std::sort(view_reads.begin(), view_reads.end());
 		view_reads.erase(std::unique(view_reads.begin(), view_reads.end()), view_reads.end());
 	}
-	// depth first in the current order, so views that read no other view keep their order
-	struct ViewVisit {
-		idx_t view;
+	// depth first in the current order: the entries before a view in that order stay before it, so a view only moves
+	// before a view that reads it, together with what it needs
+	struct EntryVisit {
+		idx_t entry;
 		idx_t next_read;
 	};
 	catalog_entry_vector_t result;
-	result.reserve(views.size());
-	vector<bool> visited(views.size(), false);
-	vector<ViewVisit> stack;
-	for (idx_t i = 0; i < views.size(); i++) {
+	result.reserve(entries.size());
+	vector<bool> visited(entries.size(), false);
+	vector<EntryVisit> stack;
+	for (idx_t i = 0; i < entries.size(); i++) {
 		if (visited[i]) {
 			continue;
 		}
 		visited[i] = true;
-		stack.push_back(ViewVisit {i, 0});
+		stack.push_back(EntryVisit {i, 0});
 		while (!stack.empty()) {
-			auto view = stack.back().view;
+			auto entry = stack.back().entry;
 			auto next_read = stack.back().next_read;
-			if (next_read == reads[view].size()) {
-				result.push_back(views[view]);
+			if (next_read == reads[entry].size()) {
+				result.push_back(entries[entry]);
 				stack.pop_back();
 				continue;
 			}
 			stack.back().next_read++;
-			auto read = reads[view][next_read];
+			auto read = reads[entry][next_read];
 			if (!visited[read]) {
 				visited[read] = true;
-				stack.push_back(ViewVisit {read, 0});
+				stack.push_back(EntryVisit {read, 0});
 			}
 		}
 	}
-	views = std::move(result);
+	entries = std::move(result);
 }
 
 static void AddEntries(catalog_entry_vector_t &all_entries, catalog_entry_vector_t &to_add) {
@@ -454,7 +482,6 @@ catalog_entry_vector_t PhysicalExport::GetNaiveExportOrder(ClientContext &contex
 	     [](const reference<CatalogEntry> &lhs, const reference<CatalogEntry> &rhs) {
 		     return lhs.get().oid < rhs.get().oid;
 	     });
-	ReorderViewEntries(entries.tables, entries.views);
 
 	catalog_entry_vector_t catalog_entries;
 	idx_t size = 0;
@@ -494,6 +521,7 @@ SourceResultType PhysicalExport::GetDataInternal(ExecutionContext &context, Data
 	if (dependency_manager) {
 		dependency_manager->ReorderEntries(catalog_entries, ccontext);
 	}
+	ReorderViewEntries(catalog_entries);
 
 	// write the schema.sql file
 	stringstream ss;

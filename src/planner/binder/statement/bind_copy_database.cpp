@@ -26,6 +26,7 @@ unique_ptr<LogicalOperator> Binder::BindCopyDatabaseSchema(Catalog &from_databas
                                                            const Identifier &target_database_name) {
 	catalog_entry_vector_t catalog_entries;
 	catalog_entries = PhysicalExport::GetNaiveExportOrder(context, from_database);
+	PhysicalExport::ReorderViewEntries(catalog_entries);
 
 	auto info = make_uniq<CopyDatabaseInfo>(target_database_name);
 	for (auto &entry : catalog_entries) {

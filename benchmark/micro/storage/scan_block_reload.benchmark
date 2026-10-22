@@ -1,0 +1,21 @@
+# name: benchmark/micro/storage/scan_block_reload.benchmark
+# description: Scanning uncompressed blocks that are reloaded and checksummed under a low memory limit
+# group: [storage]
+
+name Scan With Block Reloads
+group storage
+storage persistent v2.0.0
+
+load
+PRAGMA force_compression='uncompressed';
+CREATE TABLE t AS SELECT range::BIGINT AS v, (range * 7)::BIGINT AS w FROM range(50000000);
+CHECKPOINT;
+
+init
+SET memory_limit='64MB';
+
+run
+SELECT sum(v), sum(w) FROM t;
+
+result II
+1249999975000000	8749999825000000

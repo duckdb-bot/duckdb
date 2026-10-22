@@ -80,3 +80,47 @@ SELECT name, sum(x) FROM collated GROUP BY ALL ORDER BY lower(name);
 ----
 a	3
 B	3
+
+# ORDER BY reads the selected value of a collated group, not its collation key
+query II
+SELECT name, sum(x) FROM collated GROUP BY ALL ORDER BY unicode(name);
+----
+B	3
+a	3
+
+query II
+SELECT DISTINCT ON (unicode(name) < 90) name, count(*) FROM collated GROUP BY ALL ORDER BY unicode(name) < 90, name;
+----
+a	2
+B	1
+
+# a collated group with a subquery
+query II
+SELECT (SELECT name) AS k, count(*) FROM collated GROUP BY ALL ORDER BY unicode((SELECT name));
+----
+B	1
+a	2
+
+statement ok
+PREPARE p AS SELECT name || $1::VARCHAR AS k, count(*) FROM collated GROUP BY ALL ORDER BY unicode(name || $1::VARCHAR);
+
+query II
+EXECUTE p('x');
+----
+Bx	1
+ax	2
+
+# a column of HAVING that is not in the SELECT list is a group too, with and without an ORDER BY expression
+query II
+SELECT s, count(*) FROM (VALUES ('a', 'p'), ('a', 'q'), ('b', 'r')) t(s, y) GROUP BY ALL HAVING y > 'a' ORDER BY lower(s), count(*);
+----
+a	1
+a	1
+b	1
+
+query II
+SELECT s, count(*) FROM (VALUES ('a', 'p'), ('a', 'q'), ('b', 'r')) t(s, y) GROUP BY ALL HAVING y > 'a' ORDER BY s;
+----
+a	1
+a	1
+b	1

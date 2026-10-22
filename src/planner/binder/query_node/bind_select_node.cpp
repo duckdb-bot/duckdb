@@ -727,15 +727,6 @@ BoundStatement Binder::BindSelectNode(SelectNode &statement, BoundStatement from
 			bind_state.group_map[*group_copy] = entry.second;
 			bind_state.unbound_groups.push_back(std::move(group_copy));
 		}
-		set<ProjectionIndex> group_by_all_indexes_set;
-		if (!group_by_all_indexes.empty()) {
-			idx_t num_set_indexes = result.groups.group_expressions.size();
-			for (idx_t i = 0; i < num_set_indexes; i++) {
-				group_by_all_indexes_set.emplace(i);
-			}
-			D_ASSERT(result.groups.grouping_sets.empty());
-			result.groups.grouping_sets.push_back(group_by_all_indexes_set);
-		}
 	};
 
 	for (idx_t i = 0; i < statement.select_list.size(); i++) {
@@ -821,6 +812,15 @@ BoundStatement Binder::BindSelectNode(SelectNode &statement, BoundStatement from
 		HavingBinder having_binder(*this, context, result, statement.aggregate_handling);
 		ExpressionBinder::QualifyColumnNames(having_binder, statement.having);
 		result.having = having_binder.Bind(statement.having);
+	}
+	set<ProjectionIndex> group_by_all_indexes_set;
+	if (!group_by_all_indexes.empty()) {
+		idx_t num_set_indexes = result.groups.group_expressions.size();
+		for (idx_t i = 0; i < num_set_indexes; i++) {
+			group_by_all_indexes_set.emplace(i);
+		}
+		D_ASSERT(result.groups.grouping_sets.empty());
+		result.groups.grouping_sets.push_back(group_by_all_indexes_set);
 	}
 	result.column_count = new_names.size();
 	result.names = std::move(new_names);

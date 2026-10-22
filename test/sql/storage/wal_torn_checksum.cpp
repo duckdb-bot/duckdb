@@ -189,3 +189,42 @@ TEST_CASE("A WAL entry with a wrong checksum before an empty entry is not a torn
 	REQUIRE_THROWS_WITH(DuckDB(database_path, config.get()), Catch::Contains("does not match stored checksum"));
 	DeleteDatabase(database_path);
 }
+
+TEST_CASE("A WAL entry with a wrong checksum before a cut off entry header is a torn tail", "[storage][wal]") {
+	auto config = TornWALConfig(false);
+	auto database_path = TestCreatePath("wal_torn_checksum_header");
+	auto wal_path = database_path + ".wal";
+	for (idx_t kept_header_bytes : {1, 8, 15}) {
+		auto ends = WriteTransactions(database_path, *config);
+		DamageTransaction(wal_path, ends[2], ends[3]);
+		// keep only the start of the header of the last WAL_FLUSH
+		idx_t flush_entry_size = 2 * sizeof(uint64_t) + 5;
+		{
+			LocalFileSystem fs;
+			auto handle = fs.OpenFile(wal_path, FileFlags::FILE_FLAGS_WRITE);
+			fs.Truncate(*handle, NumericCast<int64_t>(ends[3] - flush_entry_size + kept_header_bytes));
+			handle->Sync();
+		}
+		DuckDB db(database_path, config.get());
+		Connection con(db);
+		auto result = con.Query("SELECT k, count(*) FROM t GROUP BY k ORDER BY k");
+		REQUIRE(CHECK_COLUMN(result, 0, {1, 2}));
+		REQUIRE(CHECK_COLUMN(result, 1, {1000, 1000}));
+	}
+	DeleteDatabase(database_path);
+}
+
+TEST_CASE("A damaged WAL_FLUSH drops its transaction and the next one", "[storage][wal]") {
+	auto config = TornWALConfig(false);
+	auto database_path = TestCreatePath("wal_torn_checksum_flush");
+	auto wal_path = database_path + ".wal";
+	auto ends = WriteTransactions(database_path, *config);
+	// damage the WAL_FLUSH of the second transaction, the flush of the third one is the only one after it
+	DamageBytes(wal_path, ends[2] - 1, 1);
+	DuckDB db(database_path, config.get());
+	Connection con(db);
+	auto result = con.Query("SELECT k, count(*) FROM t GROUP BY k ORDER BY k");
+	REQUIRE(CHECK_COLUMN(result, 0, {1}));
+	REQUIRE(CHECK_COLUMN(result, 1, {1000}));
+	DeleteDatabase(database_path);
+}

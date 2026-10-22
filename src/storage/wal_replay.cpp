@@ -124,6 +124,12 @@ public:
 
 		if (state_p.wal_version == 2) {
 			// read the size and checksum
+			if (stream.CurrentOffset() + 2 * sizeof(uint64_t) > stream.FileSize()) {
+				state_p.entry_past_end = true;
+				throw SerializationException("Corrupt WAL file: entry header exceeded remaining data in file at byte "
+				                             "position %llu (file size %llu bytes)",
+				                             stream.CurrentOffset(), stream.FileSize());
+			}
 			auto size = stream.Read<uint64_t>();
 			auto stored_checksum = stream.Read<uint64_t>();
 			auto offset = stream.CurrentOffset();
@@ -539,9 +545,10 @@ static bool IsZeroUntilEnd(ReplayState &state, const string &wal_path, idx_t pos
 	return true;
 }
 
-//! Whether an entry of a WAL v2 that does not match its checksum is part of a torn tail. Only its own WAL_FLUSH may
-//! follow it, the entries after it must be intact up to the end of the file, an entry the file cuts off or zeros up to
-//! the end, so at most its transaction and, when the damaged entry was its WAL_FLUSH, the next one are dropped
+//! Whether an entry of a WAL v2 that does not match its checksum is part of a torn tail. At most one WAL_FLUSH, its
+//! own, may follow it, and the entries after it must be intact up to the end of the file, an entry the file cuts off or
+//! zeros up to the end. For a single damaged region, as a torn write leaves, at most its transaction and, when the
+//! damaged entry was its WAL_FLUSH, the next one are dropped. Damage in several entries can hide more commits.
 static bool IsTornEntry(ReplayState &state, BufferedFileReader &reader, const string &wal_path,
                         idx_t damaged_entry_start) {
 	if (state.wal_version != 2) {

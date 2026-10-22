@@ -574,10 +574,12 @@ bool FileSystem::CreateDirectoryExtended(const string &directory, const CreateDi
 
 		bool target_created = false;
 		for (auto riter = directories.rbegin(); riter != directories.rend(); ++riter) {
+			const bool is_target = *riter == directories.front();
 			CreateDirectoryOptions single_options;
-			single_options.private_directory = options.private_directory;
+			// the missing parents of a private directory get the default permissions
+			single_options.private_directory = options.private_directory && is_target;
 			auto created = CreateDirectoryExtended(*riter, single_options, opener);
-			if (*riter == directories.front()) {
+			if (is_target) {
 				target_created = created;
 			}
 		}

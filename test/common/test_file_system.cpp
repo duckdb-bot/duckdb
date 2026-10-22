@@ -298,7 +298,8 @@ TEST_CASE("Directories get the permissions the umask leaves like files", "[file_
 	auto nested = fs.JoinPath(fs.JoinPath(directory, "a"), "b");
 	auto file = fs.JoinPath(directory, "file");
 	auto private_directory = fs.JoinPath(fs.JoinPath(directory, "c"), "private");
-	auto secret_directory = fs.JoinPath(fs.JoinPath(directory, "d"), "secrets");
+	auto shared_directory = fs.JoinPath(fs.JoinPath(directory, "d"), "shared");
+	auto secret_directory = fs.JoinPath(shared_directory, "secrets");
 	// compare with native creation under the same umask and inherited ACLs
 	auto reference_directory = fs.JoinPath(directory, "reference_directory");
 	auto reference_private = fs.JoinPath(directory, "reference_private");
@@ -322,9 +323,11 @@ TEST_CASE("Directories get the permissions the umask leaves like files", "[file_
 	REQUIRE(GetPermissions(fs.JoinPath(directory, "a")) == GetPermissions(reference_directory));
 	REQUIRE(GetPermissions(nested) == GetPermissions(reference_directory));
 	REQUIRE(GetPermissions(file) == GetPermissions(reference_file));
-	REQUIRE(GetPermissions(fs.JoinPath(directory, "c")) == GetPermissions(reference_private));
+	// only the target of a private directory is private, not the missing parents created for it
+	REQUIRE(GetPermissions(fs.JoinPath(directory, "c")) == GetPermissions(reference_directory));
 	REQUIRE(GetPermissions(private_directory) == GetPermissions(reference_private));
-	REQUIRE(GetPermissions(fs.JoinPath(directory, "d")) == GetPermissions(reference_private));
+	REQUIRE(GetPermissions(fs.JoinPath(directory, "d")) == GetPermissions(reference_directory));
+	REQUIRE(GetPermissions(shared_directory) == GetPermissions(reference_directory));
 	REQUIRE(GetPermissions(secret_directory) == GetPermissions(reference_private));
 }
 #endif

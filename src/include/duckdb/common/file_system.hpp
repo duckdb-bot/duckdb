@@ -62,7 +62,7 @@ enum class RemoveDirectoryMode : uint8_t {
 
 struct CreateDirectoryOptions {
 	CreateDirectoryMode mode = CreateDirectoryMode::SINGLE;
-	//! Only the owner can use the directories created, as FILE_FLAGS_PRIVATE for files
+	//! Only the owner can use the target directory, as FILE_FLAGS_PRIVATE for files. Missing parents are not private
 	bool private_directory = false;
 };
 

@@ -64,6 +64,8 @@ public:
 	optional_idx checkpoint_position;
 	optional_idx checkpoint_end_position;
 	optional_idx expected_checkpoint_id;
+	//! Set when the entry just read does not match its checksum
+	bool checksum_mismatch = false;
 	WALReplayState replay_state;
 	//! Blocks referenced by ROW_GROUP_DATA entries, collected during the deserialize-only scan. They are marked as used
 	//! only once we have decided to replay the WAL, so if log replay is not needed, these blocks won't be
@@ -138,6 +140,7 @@ public:
 			// compute and verify the checksum
 			auto computed_checksum = Checksum(buffer.get(), size);
 			if (stored_checksum != computed_checksum) {
+				state_p.checksum_mismatch = true;
 				throw DataCorruptionException(
 				    "Corrupt WAL file: entry at byte position %llu computed checksum %llu does not match "
 				    "stored checksum %llu",
@@ -216,6 +219,7 @@ public:
 			// compute and verify the checksum
 			auto computed_checksum = Checksum(out_buffer.get(), size);
 			if (stored_checksum != computed_checksum) {
+				state_p.checksum_mismatch = true;
 				throw DataCorruptionException(
 				    "Corrupt WAL file: entry at byte position %llu computed checksum %llu does not match "
 				    "stored checksum %llu",
@@ -474,6 +478,36 @@ void WriteAheadLogReplayer::MergeIntoRecoveryWAL(Connection &con, const ReplaySt
 	fs.RemoveFile(checkpoint_wal_path);
 }
 
+//! Whether an entry that does not match its checksum is part of a torn tail: no complete transaction may follow the
+//! transaction it belongs to, so at most one intact WAL_FLUSH (its own) may come after it
+static bool IsTornEntry(const ReplayState &state, BufferedFileReader &reader) {
+	ReplayState scan_state(state.db, state.context, state.replay_state);
+	scan_state.wal_version = state.wal_version;
+	idx_t flush_count = 0;
+	while (!reader.Finished()) {
+		try {
+			auto deserializer = WriteAheadLogDeserializer::GetEntryDeserializer(scan_state, reader, true);
+			if (deserializer.ReplayEntry()) {
+				flush_count++;
+				if (flush_count > 1) {
+					return false;
+				}
+			}
+		} catch (std::exception &ex) {
+			ErrorData error(ex);
+			if (error.Type() == ExceptionType::SERIALIZATION) {
+				// the rest of the file cannot be read
+				break;
+			}
+			if (!scan_state.checksum_mismatch) {
+				return false;
+			}
+			scan_state.checksum_mismatch = false;
+		}
+	}
+	return true;
+}
+
 unique_ptr<WriteAheadLog> WriteAheadLogReplayer::ReplayLog(unique_ptr<FileHandle> handle, WALReplayState replay_state) {
 	auto &database = storage_manager.GetAttached();
 	Connection con(database.GetDatabase());
@@ -523,8 +557,12 @@ unique_ptr<WriteAheadLog> WriteAheadLogReplayer::ReplayLog(unique_ptr<FileHandle
 		}
 	} catch (std::exception &ex) { // LCOV_EXCL_START
 		ErrorData error(ex);
-		// ignore serialization exceptions - they signal a torn WAL
-		if (config.options.abort_on_wal_failure || error.Type() != ExceptionType::SERIALIZATION) {
+		// ignore serialization exceptions and entries with a wrong checksum at the end - they signal a torn WAL
+		bool torn_wal = error.Type() == ExceptionType::SERIALIZATION;
+		if (!torn_wal && checkpoint_state.checksum_mismatch && !config.options.abort_on_wal_failure) {
+			torn_wal = IsTornEntry(checkpoint_state, reader);
+		}
+		if (config.options.abort_on_wal_failure || !torn_wal) {
 			con.Rollback();
 			error.Throw("Failure while replaying WAL file \"" + wal_path + "\": ");
 		}

@@ -55,6 +55,44 @@ CREATE VIEW f WITH (DEFER_BINDING) AS SELECT x + 3 AS x FROM g;
 statement ok
 CREATE VIEW g AS SELECT 30 AS x;
 
+# a view that defines a common table expression with the name of a view that reads it
+statement ok
+CREATE VIEW w AS WITH y AS (SELECT 5 AS x) SELECT x FROM y;
+
+statement ok
+CREATE VIEW y AS SELECT x + 1 AS x FROM w;
+
+# a name without a schema in a view of another schema refers to the default schema
+statement ok
+CREATE VIEW aa.reads_main AS SELECT x * 10 AS x FROM n_second;
+
+# a name without a schema that refers to a table of the schema of the view
+statement ok
+CREATE SCHEMA ar;
+
+statement ok
+CREATE TABLE ar.shared AS SELECT 7 AS x;
+
+statement ok
+CREATE VIEW ar.reader AS SELECT x FROM shared;
+
+statement ok
+CREATE VIEW shared AS SELECT x + 1 AS x FROM ar.reader;
+
+# a view that reads a temporary view instead after loading
+statement ok
+CREATE VIEW tz AS SELECT 41 AS x;
+
+statement ok
+CREATE VIEW sa AS SELECT x + 1 AS x FROM tz;
+
+# a view with a side effect when it is bound
+statement ok
+CREATE SEQUENCE seq;
+
+statement ok
+CREATE VIEW sv AS SELECT * FROM range(nextval('seq'));
+
 # views created in one transaction
 statement ok
 BEGIN;
@@ -72,7 +110,15 @@ COMMIT;
 restart
 
 statement ok
+CREATE TEMP VIEW tz AS SELECT 99 AS x;
+
+statement ok
 EXPORT DATABASE '{TEST_DIR}/export_view_order';
+
+query I
+SELECT nextval('seq');
+----
+2
 
 statement ok
 ATTACH ':memory:' AS imported;
@@ -83,7 +129,10 @@ USE imported;
 statement ok
 IMPORT DATABASE '{TEST_DIR}/export_view_order';
 
-query IIIIIIII
-SELECT (SELECT x FROM a), (SELECT x FROM n_second), (SELECT m FROM c), (SELECT v FROM aa.top), (SELECT x FROM q), (SELECT x FROM f), (SELECT x FROM j), (SELECT count(*) FROM t)
+statement ok
+DROP VIEW temp.tz;
+
+query IIIIIIIIIIII
+SELECT (SELECT x FROM a), (SELECT x FROM n_second), (SELECT m FROM c), (SELECT v FROM aa.top), (SELECT x FROM q), (SELECT x FROM f), (SELECT x FROM j), (SELECT x FROM y), (SELECT x FROM aa.reads_main), (SELECT x FROM shared), (SELECT x FROM sa), (SELECT count(*) FROM t)
 ----
-1	102	2	42	14	33	10	3
+1	102	2	42	14	33	10	6	1020	8	42	3

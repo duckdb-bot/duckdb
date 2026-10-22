@@ -4,14 +4,17 @@
 #include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/view_catalog_entry.hpp"
-#include "duckdb/catalog/dependency_list.hpp"
-#include "duckdb/common/error_data.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/parallel/meta_pipeline.hpp"
 #include "duckdb/parallel/pipeline.hpp"
+#include "duckdb/parser/expression/subquery_expression.hpp"
 #include "duckdb/parser/keyword_helper.hpp"
-#include "duckdb/planner/binder.hpp"
+#include "duckdb/parser/parsed_expression_iterator.hpp"
+#include "duckdb/parser/query_node/recursive_cte_node.hpp"
+#include "duckdb/parser/query_node/set_operation_node.hpp"
+#include "duckdb/parser/tableref/basetableref.hpp"
+#include "duckdb/parser/tableref/subqueryref.hpp"
 #include "duckdb/transaction/transaction.hpp"
 #include "duckdb/catalog/duck_catalog.hpp"
 #include "duckdb/catalog/dependency_manager.hpp"
@@ -171,12 +174,97 @@ void PhysicalExport::ExtractEntries(ClientContext &context, vector<reference<Sch
 	}
 }
 
+//! Adds the names of the common table expressions of a query node and of the query nodes it is made of
+static void AddCommonTableExpressionNames(QueryNode &node, identifier_set_t &names) {
+	for (auto &cte : node.cte_map.map) {
+		names.insert(cte.first);
+		if (cte.second->query_node) {
+			AddCommonTableExpressionNames(*cte.second->query_node, names);
+		}
+	}
+	if (node.type == QueryNodeType::SET_OPERATION_NODE) {
+		for (auto &child : node.Cast<SetOperationNode>().children) {
+			AddCommonTableExpressionNames(*child, names);
+		}
+	} else if (node.type == QueryNodeType::RECURSIVE_CTE_NODE) {
+		auto &recursive_node = node.Cast<RecursiveCTENode>();
+		AddCommonTableExpressionNames(*recursive_node.left, names);
+		AddCommonTableExpressionNames(*recursive_node.right, names);
+	}
+}
+
+//! Collects the tables and views a query reads by name, and the names of its common table expressions
+static void CollectQueryReads(QueryNode &node, vector<reference<BaseTableRef>> &tables, identifier_set_t &cte_names) {
+	AddCommonTableExpressionNames(node, cte_names);
+	ParsedExpressionIterator::EnumerateQueryNodeChildren(
+	    node,
+	    [&](unique_ptr<ParsedExpression> &child) {
+		    ParsedExpressionIterator::VisitExpressionClassMutable(
+		        *child, ExpressionClass::SUBQUERY, [&](ParsedExpression &subquery) {
+			        CollectQueryReads(*subquery.Cast<SubqueryExpression>().SubqueryMutable()->node, tables, cte_names);
+		        });
+	    },
+	    [&](TableRef &ref) {
+		    if (ref.type == TableReferenceType::BASE_TABLE) {
+			    tables.push_back(ref.Cast<BaseTableRef>());
+		    } else if (ref.type == TableReferenceType::SUBQUERY) {
+			    AddCommonTableExpressionNames(*ref.Cast<SubqueryRef>().subquery->node, cte_names);
+		    }
+	    });
+}
+
+//! An exported table or view, found by its name
+struct ExportedRelation {
+	reference<CatalogEntry> entry;
+	//! The index among the exported views, invalid for a table
+	optional_idx view_index;
+};
+
+//! Adds the exported views of the given name that a name in a view refers to
+static void AddViewReads(ViewCatalogEntry &view, const QualifiedName &name, const vector<ExportedRelation> &relations,
+                         vector<idx_t> &reads) {
+	auto &catalog = view.ParentCatalog();
+	auto &catalog_name = catalog.GetName();
+	if (!name.Catalog().empty() && name.Catalog() != catalog_name) {
+		return;
+	}
+	auto default_schema = catalog.GetDefaultSchema();
+	auto add_schema_reads = [&](const Identifier &schema_name) {
+		bool found = false;
+		for (auto &relation : relations) {
+			if (relation.entry.get().ParentSchema().name != schema_name) {
+				continue;
+			}
+			found = true;
+			if (relation.view_index.IsValid()) {
+				reads.push_back(relation.view_index.GetIndex());
+			}
+		}
+		return found;
+	};
+	if (!name.Schema().empty()) {
+		// the schema name can also be the name of the catalog
+		if (!add_schema_reads(name.Schema()) && name.Catalog().empty() && name.Schema() == catalog_name &&
+		    default_schema) {
+			add_schema_reads(*default_schema);
+		}
+		return;
+	}
+	// a name without a schema refers to the schema of the view first, then to the default schema
+	if (!add_schema_reads(view.ParentSchema().name) && default_schema) {
+		add_schema_reads(*default_schema);
+	}
+}
+
 //! Orders the views so that every view comes after the views it reads. View dependencies are only recorded with
-//! enable_view_dependencies, so the views are bound to find what they read.
-static void ReorderViewEntries(ClientContext &context, catalog_entry_vector_t &views) {
-	unordered_map<LogicalDependency, idx_t, LogicalDependencyHashFunction, LogicalDependencyEquality> view_indexes;
+//! enable_view_dependencies, so the names in the queries of the views are looked up among the exported relations.
+static void ReorderViewEntries(const catalog_entry_vector_t &tables, catalog_entry_vector_t &views) {
+	identifier_map_t<vector<ExportedRelation>> relations_by_name;
+	for (auto &table : tables) {
+		relations_by_name[table.get().name].push_back(ExportedRelation {table, optional_idx()});
+	}
 	for (idx_t i = 0; i < views.size(); i++) {
-		view_indexes.emplace(LogicalDependency(views[i].get()), i);
+		relations_by_name[views[i].get().name].push_back(ExportedRelation {views[i], optional_idx(i)});
 	}
 	vector<vector<idx_t>> reads(views.size());
 	for (idx_t i = 0; i < views.size(); i++) {
@@ -188,27 +276,23 @@ static void ReorderViewEntries(ClientContext &context, catalog_entry_vector_t &v
 		if (!view.query) {
 			continue;
 		}
-		LogicalDependencyList dependencies;
-		vector<LogicalType> types;
-		vector<Identifier> names;
-		try {
-			Binder::BindView(context, *view.query, view.ParentCatalog().GetName(), view.ParentSchema().name,
-			                 &dependencies, view.aliases, types, names);
-		} catch (std::exception &ex) {
-			ErrorData error(ex);
-			if (Exception::InvalidatesDatabase(error.Type())) {
-				throw;
+		vector<reference<BaseTableRef>> tables;
+		identifier_set_t cte_names;
+		CollectQueryReads(*view.query->node, tables, cte_names);
+		for (auto &table : tables) {
+			auto &name = table.get().GetQualifiedName();
+			if (name.Catalog().empty() && name.Schema().empty() && cte_names.count(name.Name())) {
+				continue;
 			}
-			// a view that does not bind keeps its place
-			continue;
-		}
-		for (auto &dependency : dependencies.Set()) {
-			auto read = view_indexes.find(dependency);
-			if (read != view_indexes.end() && read->second != i) {
-				reads[i].push_back(read->second);
+			auto relations = relations_by_name.find(name.Name());
+			if (relations != relations_by_name.end()) {
+				AddViewReads(view, name, relations->second, reads[i]);
 			}
 		}
-		std::sort(reads[i].begin(), reads[i].end());
+		auto &view_reads = reads[i];
+		view_reads.erase(std::remove(view_reads.begin(), view_reads.end(), i), view_reads.end());
+		std::sort(view_reads.begin(), view_reads.end());
+		view_reads.erase(std::unique(view_reads.begin(), view_reads.end()), view_reads.end());
 	}
 	// depth first in the current order, so views that read no other view keep their order
 	struct ViewVisit {
@@ -264,7 +348,7 @@ catalog_entry_vector_t PhysicalExport::GetNaiveExportOrder(ClientContext &contex
 	     [](const reference<CatalogEntry> &lhs, const reference<CatalogEntry> &rhs) {
 		     return lhs.get().oid < rhs.get().oid;
 	     });
-	ReorderViewEntries(context, entries.views);
+	ReorderViewEntries(entries.tables, entries.views);
 
 	catalog_entry_vector_t catalog_entries;
 	idx_t size = 0;

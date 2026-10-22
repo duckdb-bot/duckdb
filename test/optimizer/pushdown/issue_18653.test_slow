@@ -18,7 +18,7 @@ select id, value
 from test_table
 cross join unnest(values) as values(value) where id = 87100;
 ----
-analyzed_plan	<REGEX>:(.*DELIM_JOIN.*FILTER.*)|(.*UNNEST.*FILTER.*)
+analyzed_plan	<REGEX>:.*UNNEST.*Filters: id = 87100.*
 
 query II
 select id, value
@@ -37,7 +37,7 @@ from test_table t
 left join lateral unnest(t.values) as value on true
 where id = 87100;
 ----
-analyzed_plan	<REGEX>:(.*DELIM_JOIN.*FILTER.*)|(.*CTE Name:.*__duckdb_delim.*FILTER.*)
+analyzed_plan	<REGEX>:(.*DELIM_JOIN.*Filters:.*id = 87100.*)|(.*CTE Name:.*__duckdb_delim.*Filters:.*id = 87100.*)
 
 require json
 

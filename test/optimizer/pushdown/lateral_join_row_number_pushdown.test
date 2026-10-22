@@ -1,0 +1,201 @@
+# name: test/optimizer/pushdown/lateral_join_row_number_pushdown.test
+# description: Filters on the input of a lateral join that tells its rows apart by number reach the scan
+# group: [pushdown]
+
+require parquet
+
+statement ok
+CREATE TABLE src AS SELECT i, CASE WHEN i < 50 THEN 'a' ELSE 'b' END AS part, [{'a': i, 'b': i::VARCHAR}] AS xs FROM range(100) t(i);
+
+statement ok
+COPY src TO '{TEST_DIR}/lateral_parts' (FORMAT parquet, PARTITION_BY (part));
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/lateral_parts/*/*.parquet', hive_partitioning=true) p, UNNEST(xs) u(v) WHERE part = 'a';
+----
+50
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM read_parquet('{TEST_DIR}/lateral_parts/*/*.parquet', hive_partitioning=true) p, UNNEST(xs) u(v) WHERE part = 'a';
+----
+analyzed_plan	<REGEX>:.*Total Files Read: 1\b.*
+
+query II
+SELECT i, v.a FROM src, UNNEST(xs) u(v) WHERE i = 7;
+----
+7	7
+
+query II
+EXPLAIN SELECT i, v.a FROM src, UNNEST(xs) u(v) WHERE i = 7;
+----
+physical_plan	<REGEX>:.*Filters: i = 7.*
+
+query II
+SELECT i, v.a FROM src LEFT JOIN LATERAL UNNEST(xs) u(v) ON true WHERE i IN (3, 60) ORDER BY ALL;
+----
+3	3
+60	60
+
+# a volatile lateral subquery numbers its input rows as well, and runs once for each row that passes the filter
+statement ok
+CREATE TABLE dups AS SELECT * FROM (VALUES (1), (1), (2), (2), (3)) t(k);
+
+statement ok
+CREATE SEQUENCE seq;
+
+query II
+SELECT count(*), count(DISTINCT j) FROM dups, LATERAL (SELECT dups.k * 0 + nextval('seq') AS j) s WHERE dups.k < 3;
+----
+4	4
+
+query I
+SELECT nextval('seq');
+----
+5
+
+query II
+EXPLAIN SELECT count(*) FROM dups, LATERAL (SELECT dups.k * 0 + nextval('seq') AS j) s WHERE dups.k < 3;
+----
+physical_plan	<REGEX>:.*Filters: k < 3.*
+
+# volatile filters stay above the numbering, and run for the rows that pass the other filters
+statement ok
+CREATE SEQUENCE filter_seq;
+
+query I
+SELECT count(*) FROM src, UNNEST(xs) u(v) WHERE part = 'a' AND nextval('filter_seq') % 2 = 1;
+----
+25
+
+query I
+SELECT nextval('filter_seq');
+----
+51
+
+# filters that can throw stay above when another filter does
+statement ok
+CREATE TABLE bad AS SELECT 'bad' AS s, [1] AS l;
+
+statement ok
+SET delim_join_as_cte = false;
+
+query I
+SELECT count(*) FROM bad, UNNEST(l) u(v) WHERE s::INT > 0 AND random() < 0;
+----
+0
+
+statement ok
+RESET delim_join_as_cte;
+
+# a filter on a projected cast takes the cast below a volatile filter of the input, with or without the lateral join
+statement error
+SELECT count(*) FROM (SELECT s::INT AS n, l FROM bad WHERE random() < 0) q WHERE n > 0;
+----
+Could not convert string 'bad' to INT32
+
+statement error
+SELECT count(*) FROM (SELECT s::INT AS n, l FROM bad WHERE random() < 0) q, UNNEST(l) u(v) WHERE n > 0;
+----
+Could not convert string 'bad' to INT32
+
+# filters of the input below the numbering run as they do without the lateral join
+statement ok
+CREATE TABLE guarded AS SELECT * FROM (VALUES ('1', [1]), ('bad', [1])) t(s, l);
+
+query II
+SELECT
+	(SELECT count(*) FROM (SELECT l FROM (SELECT s::INT AS n, s, l FROM guarded) p WHERE CASE WHEN s = '1' THEN n > 0 ELSE false END) q),
+	(SELECT count(*) FROM (SELECT l FROM (SELECT s::INT AS n, s, l FROM guarded) p WHERE CASE WHEN s = '1' THEN n > 0 ELSE false END) q, UNNEST(l) u(v));
+----
+1	1
+
+statement ok
+SET threads = 1;
+
+statement ok
+CREATE SEQUENCE plain_seq;
+
+statement ok
+CREATE SEQUENCE lateral_seq;
+
+statement ok
+CREATE TABLE numbered AS SELECT i, [i] AS l FROM range(1, 5) t(i);
+
+query I
+SELECT
+	(SELECT count(*) FROM (SELECT * FROM numbered WHERE nextval('plain_seq') % 2 = 1) q WHERE i = 2) =
+	(SELECT count(*) FROM (SELECT * FROM numbered WHERE nextval('lateral_seq') % 2 = 1) q, UNNEST(l) u(v) WHERE i = 2);
+----
+true
+
+statement ok
+RESET threads;
+
+# filters that read both sides stay above the join
+query II
+SELECT i, v.a FROM src, UNNEST(xs) u(v) WHERE i + v.a = 14 AND part = 'a';
+----
+7	7
+
+# a row number of the query still numbers every row before the filter
+query I
+SELECT max(rn) > 10 FROM (SELECT i, row_number() OVER () AS rn FROM src) WHERE i >= 90;
+----
+true
+
+query I
+SELECT max(rn) > 10 FROM (SELECT i, row_number() OVER () AS rn, xs FROM src) q, UNNEST(xs) u(v) WHERE i >= 90;
+----
+true
+
+# NULL and empty lists
+statement ok
+CREATE TABLE lists AS SELECT * FROM (VALUES (1, 'a', [1, 2]), (2, 'a', []), (3, 'a', NULL), (4, 'b', [4])) t(i, part, l);
+
+query II
+SELECT i, x FROM lists, UNNEST(l) u(x) WHERE part = 'a' ORDER BY ALL;
+----
+1	1
+1	2
+
+query II
+SELECT i, x FROM lists LEFT JOIN LATERAL UNNEST(l) u(x) ON true WHERE part = 'a' ORDER BY ALL;
+----
+1	1
+1	2
+2	NULL
+3	NULL
+
+# a lateral subquery with ORDER BY, LIMIT and OFFSET, with a filter on its result that rejects the element it picks
+statement ok
+CREATE TABLE triples AS SELECT i, CASE WHEN i < 50 THEN 'a' ELSE 'b' END AS part, [{'x': i}, {'x': i + 1}, {'x': i + 2}] AS l FROM range(100) t(i);
+
+query II
+SELECT count(*), sum(s.x) FROM triples, LATERAL (SELECT v.x AS x FROM UNNEST(triples.l) u(v) ORDER BY x LIMIT 1 OFFSET 1) s WHERE s.x % 2 = 0 AND part = 'b';
+----
+25	1900
+
+# readers of a CTE with a lateral join that filter differently, and one that does not filter
+query III
+WITH x AS MATERIALIZED (SELECT i, part, v FROM src, UNNEST(xs) u(v))
+SELECT (SELECT count(*) FROM x WHERE part = 'a'), (SELECT count(*) FROM x WHERE part = 'b'), (SELECT count(*) FROM x);
+----
+50	50	100
+
+query III
+WITH x AS NOT MATERIALIZED (SELECT i, part, v FROM src, UNNEST(xs) u(v))
+SELECT (SELECT count(*) FROM x WHERE part = 'a'), (SELECT sum(v.a) FROM x WHERE part = 'b'), (SELECT count(*) FROM x);
+----
+50	3725	100
+
+# a filter from outside a secure view does not run before the filter of the view
+statement ok
+CREATE TABLE secrets AS SELECT i, CASE WHEN i < 50 THEN i::VARCHAR ELSE 'x' END AS s, [i] AS l FROM range(100) t(i);
+
+statement ok
+CREATE SECURE VIEW secure_lateral AS SELECT i, s, x FROM secrets, UNNEST(l) u(x) WHERE i < 50;
+
+query I
+SELECT count(*) FROM secure_lateral WHERE s::INT >= 0;
+----
+50

@@ -1,5 +1,5 @@
 # name: test/sql/table_function/range_lateral_threads.test
-# description: range and generate_series called per input row run on as many threads as unnest
+# description: range and generate_series called per input row schedule as many pipeline tasks as unnest
 # group: [table_function]
 
 # the logs of a restarted database start over

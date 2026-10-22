@@ -102,7 +102,7 @@
       ]
     },
     {
-      "reason": "The verification pass plans and runs each probe again, which allocates logging contexts that the fixture counts",
+      "reason": "The internal EXPLAIN and the generated SQL change the pipelines of the probes, so their logging context spans differ",
       "paths": [
         "test/sql/table_function/range_lateral_threads.test"
       ]

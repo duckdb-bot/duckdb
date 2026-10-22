@@ -214,6 +214,10 @@ public:
 
 	vector<OpenFileInfo> Glob(const string &path, FileOpener *opener = nullptr) override {
 		VerifyNoOpener(opener);
+		vector<string> search_paths;
+		if (GetRestrictedSearchPaths(path, search_paths)) {
+			return GlobInSearchPaths(path, search_paths)->GetAllFiles();
+		}
 		VerifyCanAccessFile(path);
 		return GetFileSystem().Glob(path, GetOpener().get());
 	}
@@ -297,7 +301,12 @@ protected:
 	}
 
 private:
+	bool IsAccessAllowed(const string &path, FileType type);
 	void VerifyCanAccessFileInternal(const string &path, FileType type);
+	//! With file access restricted, the file_search_path entries that a relative local path is looked up in
+	bool GetRestrictedSearchPaths(const string &path, vector<string> &search_paths);
+	//! Look a relative path up in the working directory and in the search paths, in the allowed ones only
+	unique_ptr<MultiFileList> GlobInSearchPaths(const string &path, const vector<string> &search_paths);
 };
 
 } // namespace duckdb

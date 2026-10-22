@@ -1,0 +1,68 @@
+# name: test/sql/settings/allowed_directories_file_search_path.test
+# description: A relative path is checked against allowed_directories where file_search_path resolves it
+# group: [settings]
+
+require skip_reload
+
+require no_extension_autoloading "EXPECTED: Test disable autoloading"
+
+statement ok
+SET file_search_path = '{DATA_DIR}/csv/glob'
+
+statement ok
+SET allowed_directories = ['{DATA_DIR}/csv/glob']
+
+statement ok
+SET enable_external_access = false
+
+# the working directory is outside the allowed directory, the search path inside it
+query III
+SELECT * FROM 'f_1.csv'
+----
+1	alice	alice@email.com
+2	eve	eve@email.com
+3r	bob	NULL
+
+query I
+SELECT count(*) FROM glob('*/*.csv')
+----
+5
+
+# a name that only the working directory holds is not looked up there
+query I
+SELECT count(*) FROM read_text('Makefile')
+----
+0
+
+# a search path outside the allowed directory is not searched
+statement ok
+SET file_search_path = '{DATA_DIR}/json'
+
+statement error
+SELECT * FROM glob('*.json')
+----
+Cannot access file "*.json"
+
+statement ok
+SET file_search_path = '{DATA_DIR}/json,{DATA_DIR}/csv/glob'
+
+query I
+SELECT count(*) FROM glob('*.json')
+----
+0
+
+query I
+SELECT count(*) FROM glob('*.csv')
+----
+3
+
+# absolute paths are checked as before
+query I
+SELECT count(*) FROM '{DATA_DIR}/csv/glob/f_2.csv'
+----
+2
+
+statement error
+SELECT * FROM read_text('{DATA_DIR}/json/arr.json')
+----
+Cannot access file

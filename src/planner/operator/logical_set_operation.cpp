@@ -2,6 +2,7 @@
 
 #include "duckdb/main/config.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
+#include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/planner/expression_binder.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
@@ -77,24 +78,63 @@ static bool EqualOnlyToItself(ClientContext &context, const LogicalType &type) {
 	}
 }
 
+//! Whether a comparison of values of the type has the same result for values a set operation treats as equal
+static bool ComparisonKeepsEquality(const LogicalType &type) {
+	switch (type.id()) {
+	case LogicalTypeId::FLOAT:
+	case LogicalTypeId::DOUBLE:
+	case LogicalTypeId::INTERVAL:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static bool IsComparison(const Expression &expr) {
+	if (BoundComparisonExpression::IsComparison(expr)) {
+		return true;
+	}
+	switch (expr.GetExpressionType()) {
+	case ExpressionType::COMPARE_BETWEEN:
+	case ExpressionType::COMPARE_NOT_BETWEEN:
+	case ExpressionType::COMPARE_IN:
+	case ExpressionType::COMPARE_NOT_IN:
+	case ExpressionType::OPERATOR_IS_NULL:
+	case ExpressionType::OPERATOR_IS_NOT_NULL:
+		return true;
+	default:
+		return false;
+	}
+}
+
 bool LogicalSetOperation::FilterTellsApartEqualRows(ClientContext &context, const Expression &filter) const {
 	if (filter.IsVolatile()) {
 		return true;
 	}
 	bool tells_apart = false;
-	ExpressionIterator::VisitExpression<BoundColumnRefExpression>(filter, [&](const BoundColumnRefExpression &colref) {
-		if (!EqualOnlyToItself(context, colref.GetReturnType())) {
-			tells_apart = true;
+	// a column compared directly, e.g. in x > 1.5, cannot tell apart -0.0 and 0.0
+	std::function<void(const Expression &, bool)> visit = [&](const Expression &expr, bool compared) {
+		if (expr.GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
+			auto comparison = IsComparison(expr);
+			ExpressionIterator::EnumerateChildren(expr, [&](const Expression &child) { visit(child, comparison); });
 			return;
 		}
+		auto &colref = expr.Cast<BoundColumnRefExpression>();
 		// the set operation compares with the collation of either child
+		vector<reference<const LogicalType>> types {colref.GetReturnType()};
 		auto column = colref.Binding().column_index.GetIndex();
 		for (auto &child : children) {
-			if (column < child->types.size() && !EqualOnlyToItself(context, child->types[column])) {
+			if (column < child->types.size()) {
+				types.push_back(child->types[column]);
+			}
+		}
+		for (auto &type : types) {
+			if (!EqualOnlyToItself(context, type) && !(compared && ComparisonKeepsEquality(type))) {
 				tells_apart = true;
 			}
 		}
-	});
+	};
+	visit(filter, false);
 	return tells_apart;
 }
 

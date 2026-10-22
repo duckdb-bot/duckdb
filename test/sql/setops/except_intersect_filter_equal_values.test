@@ -141,6 +141,11 @@ SELECT count(*) FROM (SELECT x FROM d INTERSECT SELECT x FROM z) WHERE 1 / x < 0
 ----
 1
 
+query I
+SELECT count(*) FROM (SELECT x FROM d EXCEPT SELECT x FROM z) WHERE x <= 0;
+----
+0
+
 # INTERVAL '30 days' equals INTERVAL '1 month'
 query I
 SELECT count(*) FROM (SELECT INTERVAL 30 DAY AS i EXCEPT SELECT INTERVAL 1 MONTH) WHERE i::VARCHAR = '30 days';
@@ -168,3 +173,20 @@ query II
 EXPLAIN SELECT * FROM (SELECT i FROM ints_a INTERSECT SELECT i FROM ints_b WHERE i = 7);
 ----
 physical_plan	<REGEX>:.*Filters: i = 7.*Filters: i = 7.*
+
+# a direct comparison does not tell apart -0.0 and 0.0
+statement ok
+CREATE TABLE doubles_a AS SELECT range::DOUBLE AS x FROM range(100);
+
+statement ok
+CREATE TABLE doubles_b AS SELECT range::DOUBLE AS x FROM range(50);
+
+query II
+EXPLAIN SELECT * FROM (SELECT x FROM doubles_a EXCEPT SELECT x FROM doubles_b) WHERE x = 7;
+----
+physical_plan	<REGEX>:.*Filters: x = 7.0.*Filters: x = 7.0.*
+
+query II
+EXPLAIN SELECT * FROM (SELECT x FROM doubles_a EXCEPT SELECT x FROM doubles_b) WHERE 1 / x = 7;
+----
+physical_plan	<!REGEX>:.*1.0 / x.*1.0 / x.*

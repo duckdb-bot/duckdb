@@ -18,8 +18,8 @@ constexpr const char *CollateCatalogEntry::Name;
 static vector<string> GetVarcharCollationFunctions(ClientContext &context, const LogicalType &sql_type,
                                                    CollationType type) {
 	vector<string> result;
-	if (sql_type.id() != LogicalTypeId::VARCHAR || type == CollationType::HASH_COLLATIONS) {
-		// only VARCHAR columns require collation, and hashes ignore string collations
+	if (sql_type.id() != LogicalTypeId::VARCHAR) {
+		// only VARCHAR columns require collation
 		return result;
 	}
 	// replace default collation with system collation
@@ -69,22 +69,22 @@ static vector<string> GetVarcharCollationFunctions(ClientContext &context, const
 	return result;
 }
 
-static vector<string> GetTimeTZCollationFunctions(ClientContext &, const LogicalType &sql_type, CollationType type) {
-	if (sql_type.id() != LogicalTypeId::TIME_TZ || type == CollationType::HASH_COLLATIONS) {
+static vector<string> GetTimeTZCollationFunctions(ClientContext &, const LogicalType &sql_type, CollationType) {
+	if (sql_type.id() != LogicalTypeId::TIME_TZ) {
 		return vector<string>();
 	}
 	return {"timetz_byte_comparable"};
 }
 
-static vector<string> GetBitStringCollationFunctions(ClientContext &, const LogicalType &sql_type, CollationType type) {
-	if (sql_type.id() != LogicalTypeId::BIT || type == CollationType::HASH_COLLATIONS) {
+static vector<string> GetBitStringCollationFunctions(ClientContext &, const LogicalType &sql_type, CollationType) {
+	if (sql_type.id() != LogicalTypeId::BIT) {
 		return vector<string>();
 	}
 	return {"bitstring_byte_comparable"};
 }
 
-static vector<string> GetIntervalCollationFunctions(ClientContext &, const LogicalType &sql_type, CollationType type) {
-	if (sql_type.id() != LogicalTypeId::INTERVAL || type == CollationType::HASH_COLLATIONS) {
+static vector<string> GetIntervalCollationFunctions(ClientContext &, const LogicalType &sql_type, CollationType) {
+	if (sql_type.id() != LogicalTypeId::INTERVAL) {
 		return vector<string>();
 	}
 	return {"normalized_interval"};

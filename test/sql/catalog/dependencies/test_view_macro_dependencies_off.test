@@ -158,6 +158,11 @@ CREATE VIEW rolled_back AS SELECT i FROM t;
 statement ok
 ROLLBACK
 
+query I
+SELECT count(*) FROM duckdb_views() WHERE view_name = 'rolled_back';
+----
+0
+
 # a temporary view of a view
 statement ok
 CREATE TEMP VIEW temp_reads_v AS SELECT i FROM v;

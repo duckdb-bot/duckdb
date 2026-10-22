@@ -158,18 +158,7 @@ ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success,
 			end_error_severity = severity;
 		}
 	};
-	try {
-		client_data->profiler->EndQuery();
-	} catch (std::exception &ex) {
-		// e.g. the profiling output could not be written - report it as the error of the query
-		ErrorData profiler_error(ex);
-		if (Exception::InvalidatesDatabase(profiler_error.Type()) || profiler_error.Type() == ExceptionType::INTERNAL) {
-			ValidChecker::Invalidate(DatabaseInstance::GetDatabase(*this), profiler_error.RawMessage());
-		}
-		if (!error.HasError()) {
-			error = std::move(profiler_error);
-		}
-	}
+	EndQueryProfiling(error);
 
 	// Refresh the logger
 	try {
@@ -198,6 +187,25 @@ ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success,
 		end_error.Throw();
 	}
 	return error;
+}
+
+void ClientContext::EndQueryProfiling(ErrorData &error) {
+	// this also runs while a connection with an open result is destroyed, so it must not throw
+	try {
+		client_data->profiler->EndQuery();
+	} catch (std::exception &ex) {
+		ErrorData profiler_error(ex);
+		if (Exception::InvalidatesDatabase(profiler_error.Type()) || profiler_error.Type() == ExceptionType::INTERNAL) {
+			ValidChecker::Invalidate(DatabaseInstance::GetDatabase(*this), profiler_error.RawMessage());
+		}
+		if (!error.HasError()) {
+			error = std::move(profiler_error);
+		}
+	} catch (...) { // LCOV_EXCL_START
+		if (!error.HasError()) {
+			error = ErrorData("Unhandled exception!");
+		}
+	} // LCOV_EXCL_STOP
 }
 
 void ClientContext::CleanupInternal(ClientContextLock &lock, BaseQueryResult *result, bool invalidate_transaction) {
@@ -503,6 +511,7 @@ void ClientContext::AbandonActiveQuery(ClientContextLock &lock) {
 		AbortInternal(lock);
 	}
 	interrupt_state = ClientInterruptState::NOT_INTERRUPTED;
+	client_data->profiler->ResetQueryStart();
 }
 
 unique_ptr<QueryResult> ClientContext::CompleteInternal(ClientContextLock &lock, unique_ptr<QueryResult> result) {

@@ -209,6 +209,15 @@ CREATE VIEW pg_am AS SELECT * FROM query_table('pb');
 statement ok
 CREATE VIEW pa AS SELECT 42 AS x FROM pg_am;
 
+statement ok
+CREATE VIEW dtb AS SELECT 42 AS x;
+
+statement ok
+CREATE VIEW duckdb_types AS SELECT * FROM query_table('dtb');
+
+statement ok
+CREATE VIEW dta AS SELECT 42 AS x FROM main.duckdb_types;
+
 # a view that reads a temporary view instead after loading
 statement ok
 CREATE VIEW tz AS SELECT 41 AS x;
@@ -302,10 +311,10 @@ SELECT (SELECT x FROM ra), (SELECT x FROM mb), (SELECT x FROM cb), (SELECT x FRO
 ----
 42	42	42	3	42	43
 
-query IIIII
-SELECT (SELECT x FROM imported.main.tsb), (SELECT x FROM imported.main.tqb), (SELECT x FROM imported.fs.fba), (SELECT x FROM imported.zz.fva), (SELECT x FROM imported.main.pg_am)
+query IIIIII
+SELECT (SELECT x FROM imported.main.tsb), (SELECT x FROM imported.main.tqb), (SELECT x FROM imported.fs.fba), (SELECT x FROM imported.zz.fva), (SELECT x FROM imported.main.pg_am), (SELECT x FROM imported.main.duckdb_types)
 ----
-42	42	42	42	42
+42	42	42	42	42	42
 
 # COPY FROM DATABASE does not bind the views, it creates them with their recorded dependencies
 statement ok

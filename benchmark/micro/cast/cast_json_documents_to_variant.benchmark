@@ -1,0 +1,17 @@
+# name: benchmark/micro/cast/cast_json_documents_to_variant.benchmark
+# description: Cast JSON documents of more than 256 bytes to VARIANT
+# group: [cast]
+
+name JSON Documents To Variant
+group cast
+
+require json
+
+load
+CREATE TABLE docs AS SELECT {'id': i, 'name': 'name ' || i, 'tags': [i, i + 1, i + 2], 'nested': {'a': {'b': [i, i * 2], 'c': 'x' || i}}, 'text': repeat('x', 200)}::JSON AS doc FROM range(1000000) t(i);
+
+run
+SELECT count(doc::VARIANT) FROM docs
+
+result I
+1000000

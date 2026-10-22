@@ -14,6 +14,9 @@
 #include "duckdb/common/checked_integer.hpp"
 
 namespace duckdb {
+
+struct CastParameters;
+
 namespace variant {
 
 void InitializeOffsets(DataChunk &offsets, idx_t count);
@@ -48,8 +51,9 @@ struct ToVariantGlobalResultData {
 public:
 	ToVariantGlobalResultData(VariantVectorData &variant, DataChunk &offsets,
 	                          OrderedOwningStringMap<uint32_t> &dictionary, SelectionVector &keys_selvec,
-	                          Allocator &allocator)
-	    : variant(variant), offsets(offsets), dictionary(dictionary), keys_selvec(keys_selvec), allocator(allocator) {
+	                          Allocator &allocator, CastParameters &parameters)
+	    : variant(variant), offsets(offsets), dictionary(dictionary), keys_selvec(keys_selvec), allocator(allocator),
+	      parameters(parameters) {
 	}
 
 public:
@@ -68,6 +72,9 @@ public:
 	SelectionVector &keys_selvec;
 	//! Allocator for temporary conversion memory (e.g. JSON parsing), tracked by DuckDB's memory accounting
 	Allocator &allocator;
+	CastParameters &parameters;
+	//! Whether every value converted, a value that did not is NULL
+	bool all_converted = true;
 };
 
 template <bool WRITE_DATA>

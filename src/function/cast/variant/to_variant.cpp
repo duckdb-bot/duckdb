@@ -235,7 +235,8 @@ static bool CastToVARIANT(Vector &source, Vector &result, idx_t count, CastParam
 
 	{
 		VariantVectorData variant_data(result);
-		ToVariantGlobalResultData result_data(variant_data, offsets, dictionary, keys_selvec, local_data.allocator);
+		ToVariantGlobalResultData result_data(variant_data, offsets, dictionary, keys_selvec, local_data.allocator,
+		                                      parameters);
 		if (!GatherOffsetsAndSizes(source_data, result_data, count)) {
 			return false;
 		}
@@ -245,12 +246,15 @@ static bool CastToVARIANT(Vector &source, Vector &result, idx_t count, CastParam
 	idx_t keys_selvec_size;
 	InitializeVariants(offsets, result, keys_selvec, keys_selvec_size, dictionary);
 
+	bool all_converted;
 	{
 		VariantVectorData variant_data(result);
-		ToVariantGlobalResultData result_data(variant_data, offsets, dictionary, keys_selvec, local_data.allocator);
+		ToVariantGlobalResultData result_data(variant_data, offsets, dictionary, keys_selvec, local_data.allocator,
+		                                      parameters);
 		if (!WriteVariantResultData(source_data, result_data, count)) {
 			return false;
 		}
+		all_converted = result_data.all_converted;
 	}
 
 	VariantUtils::FinalizeVariantKeys(result, dictionary, keys_selvec, keys_selvec_size);
@@ -265,7 +269,7 @@ static bool CastToVARIANT(Vector &source, Vector &result, idx_t count, CastParam
 
 	keys_entry.Slice(keys_selvec, keys_selvec_size);
 	result.Verify();
-	return true;
+	return all_converted;
 }
 
 } // namespace variant

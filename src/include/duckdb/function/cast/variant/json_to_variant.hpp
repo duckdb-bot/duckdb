@@ -244,6 +244,27 @@ static bool ConvertJSON(yyjson_val *val, ToVariantGlobalResultData &result, idx_
 	}
 }
 
+//! Whether arrays and objects nest deeper than MAX_NESTING_DEPTH, found without recursion
+static bool JSONExceedsNestingDepth(yyjson_doc *doc) {
+	// a document stores its values in document order, each container followed by the values inside it
+	yyjson_val *container_ends[VariantUtils::MAX_NESTING_DEPTH];
+	idx_t depth = 0;
+	auto val = yyjson_doc_get_root(doc);
+	auto end = val + yyjson_doc_get_val_count(doc);
+	for (; val < end; val++) {
+		while (depth > 0 && val == container_ends[depth - 1]) {
+			depth--;
+		}
+		if (unsafe_yyjson_is_ctn(val)) {
+			if (depth == VariantUtils::MAX_NESTING_DEPTH) {
+				return true;
+			}
+			container_ends[depth++] = unsafe_yyjson_get_next(val);
+		}
+	}
+	return false;
+}
+
 template <bool WRITE_DATA, bool IGNORE_NULLS>
 bool ConvertJSONToVariant(ToVariantSourceData &source, ToVariantGlobalResultData &result, idx_t count,
                           optional_ptr<const SelectionVector> selvec,
@@ -289,6 +310,19 @@ bool ConvertJSONToVariant(ToVariantSourceData &source, ToVariantGlobalResultData
 			continue;
 		}
 		auto *root = yyjson_doc_get_root(doc);
+		// a level takes two brackets, so a document of up to twice MAX_NESTING_DEPTH bytes is never too deep
+		if (val.GetSize() > 2 * VariantUtils::MAX_NESTING_DEPTH && JSONExceedsNestingDepth(doc)) {
+			json_allocator.Reset();
+			// the conversion recurses once per level, so a deeper document could overflow the stack
+			HandleCastError::AssignError(
+			    StringUtil::Format("JSON exceeds maximum recursion depth of %d", VariantUtils::MAX_NESTING_DEPTH),
+			    result.parameters);
+			result.all_converted = false;
+			// written even when NULLs are ignored, since the source value is not NULL
+			HandleVariantNull<WRITE_DATA>(result, result_index, values_offset_data, blob_offset_data[result_index],
+			                              values_index_selvec, i, is_root);
+			continue;
+		}
 
 		if (!ConvertJSON<WRITE_DATA, IGNORE_NULLS>(root, result, result_index, is_root)) {
 			return false;

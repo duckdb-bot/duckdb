@@ -51,10 +51,10 @@ public:
 	static optional<RelationStats> ProjectOutputStats(const RelationStats &stats, LogicalOperator &op);
 	static optional<RelationStats> RebindOutputStats(const RelationStats &stats, LogicalOperator &op);
 	static idx_t EstimateDistinctCardinality(const vector<DistinctCount> &distinct_counts, idx_t input_cardinality);
-
-private:
 	static unique_ptr<BaseStatistics> GetColumnStatistics(LogicalGet &get, ClientContext &context,
 	                                                      const ColumnIndex &column_id);
+
+private:
 	static DistinctCount GetDistinctCount(LogicalGet &get, ClientContext &context, const ColumnIndex &column_id,
 	                                      idx_t base_table_cardinality);
 };

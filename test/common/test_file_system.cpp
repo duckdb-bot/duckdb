@@ -659,6 +659,55 @@ void TestCreateSymlink(const string &source, const string &target, bool director
 #endif
 }
 
+static void TestWriteFile(FileSystem &fs, const string &path) {
+	auto handle = fs.OpenFile(path, FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE_NEW);
+	string contents = "v\n1\n";
+	handle->Write((void *)contents.data(), NumericCast<int64_t>(contents.size()));
+	handle->Close();
+}
+
+static void TestSearchRootIdentity(const string &allowed_directory, const string &search_path) {
+	DuckDB db(nullptr);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query(StringUtil::Format("SET allowed_directories = ['%s']", allowed_directory)));
+	REQUIRE_NO_FAIL(con.Query(StringUtil::Format("SET file_search_path = '%s'", search_path)));
+	REQUIRE_NO_FAIL(con.Query("SET enable_external_access = false"));
+	auto result = con.Query("SELECT parse_filename(file) FROM glob('guess*.csv') ORDER BY 1");
+	REQUIRE(CHECK_COLUMN(result, 0, {"guess_inside.csv"}));
+}
+
+TEST_CASE("A search path root is listed in the form allowed_directories checked", "[file_system]") {
+	auto fs = FileSystem::CreateLocal();
+	auto base = fs->JoinPath(fs->GetWorkingDirectory(), TestCreatePath("search_root_identity"));
+	if (fs->DirectoryExists(base)) {
+		fs->RemoveDirectory(base);
+	}
+	fs->CreateDirectory(base);
+	auto inside = fs->JoinPath(base, "inside");
+	auto other = fs->JoinPath(base, "other");
+	fs->CreateDirectory(inside);
+	fs->CreateDirectory(other);
+	fs->CreateDirectory(fs->JoinPath(other, "sub"));
+	TestWriteFile(*fs, fs->JoinPath(inside, "guess_inside.csv"));
+	TestWriteFile(*fs, fs->JoinPath(other, "guess_other.csv"));
+
+	// "inside/link/.." is the other directory for the operating system, and "inside" once normalized
+	TestCreateSymlink(fs->JoinPath(inside, "link"), fs->JoinPath(other, "sub"), true);
+	TestSearchRootIdentity(inside, fs->JoinPath(inside, "link") + "/..");
+
+#ifdef TEST_HAVE_SYMLINK
+	// a backslash is part of a name on POSIX, and a separator once normalized
+	auto sub = fs->JoinPath(inside, "sub");
+	fs->CreateDirectory(sub);
+	TestWriteFile(*fs, fs->JoinPath(sub, "guess_inside.csv"));
+	auto backslash_directory = inside + "\\sub";
+	fs->CreateDirectory(backslash_directory);
+	TestWriteFile(*fs, backslash_directory + "/guess_other.csv");
+	TestSearchRootIdentity(sub, backslash_directory);
+#endif
+	fs->RemoveDirectory(base);
+}
+
 TEST_CASE("Test path canonicalization with symlinks", "[file_system]") {
 	auto fs = FileSystem::CreateLocal();
 

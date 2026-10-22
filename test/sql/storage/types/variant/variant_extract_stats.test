@@ -5,6 +5,10 @@ require noforcestorage
 
 load {TEST_DIR}/variant_extract_stats_propagation.db readwrite v1.5.0
 
+# rows inserted between the checkpoints below stay unshredded until the next one
+statement ok
+SET checkpoint_threshold = '1GB';
+
 statement ok
 SET variant_minimum_shredding_size = 0;
 

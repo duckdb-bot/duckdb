@@ -1,0 +1,40 @@
+# name: test/sql/storage/memory/in_memory_compress_small_nested_appends.test
+# description: Small appends of nested values add up to an automatic checkpoint of an in-memory database
+# group: [memory]
+
+statement ok
+SET checkpoint_threshold = '1GB'
+
+statement ok
+ATTACH ':memory:' AS memory_compressed (COMPRESS)
+
+statement ok
+CREATE TABLE memory_compressed.t (s STRUCT(i INTEGER))
+
+statement ok
+CHECKPOINT memory_compressed
+
+# each append is about 40KB of struct children
+statement ok
+SET checkpoint_threshold = '60KB'
+
+statement ok
+INSERT INTO memory_compressed.t SELECT {'i': range::INTEGER} FROM range(10000)
+
+query I
+SELECT bool_or(compression NOT IN ('Uncompressed', 'Constant')) FROM pragma_storage_info('memory_compressed.t')
+----
+false
+
+statement ok
+INSERT INTO memory_compressed.t SELECT {'i': range::INTEGER} FROM range(10000, 20000)
+
+query I
+SELECT bool_or(compression NOT IN ('Uncompressed', 'Constant')) FROM pragma_storage_info('memory_compressed.t')
+----
+true
+
+query II
+SELECT count(*), sum(s.i) FROM memory_compressed.t
+----
+20000	199990000

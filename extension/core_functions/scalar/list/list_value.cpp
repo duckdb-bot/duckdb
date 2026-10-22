@@ -2,6 +2,8 @@
 #include "duckdb/common/vector/struct_vector.hpp"
 #include "core_functions/scalar/list_functions.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
+#include "duckdb/planner/expression/bound_constant_expression.hpp"
+#include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/data_chunk.hpp"
@@ -303,6 +305,34 @@ void ListValueResolveTypes(ResolveScalarFunctionTypesInput &input) {
 	}
 }
 
+//! A list of constants is a constant, so it does not keep an expression and a cast for each of its elements
+static unique_ptr<Expression> ListValueBindExpression(FunctionBindExpressionInput &input) {
+	auto &child_type = ListType::GetChildType(input.bound_function.GetReturnType());
+	for (auto &child : input.children) {
+		auto &element = BoundCastExpression::IsCast(*child)
+		                    ? BoundCastExpression::Child(child->Cast<BoundFunctionExpression>())
+		                    : *child;
+		if (element.GetExpressionClass() != ExpressionClass::BOUND_CONSTANT || child->GetReturnType() != child_type) {
+			return nullptr;
+		}
+	}
+	vector<Value> values;
+	values.reserve(input.children.size());
+	for (auto &child : input.children) {
+		if (child->GetExpressionClass() == ExpressionClass::BOUND_CONSTANT) {
+			values.push_back(child->Cast<BoundConstantExpression>().GetValue());
+			continue;
+		}
+		// an element that does not cast keeps its cast, so the error surfaces where the list is evaluated
+		Value value;
+		if (!ExpressionExecutor::TryEvaluateScalar(input.context, *child, value)) {
+			return nullptr;
+		}
+		values.push_back(std::move(value));
+	}
+	return make_uniq<BoundConstantExpression>(Value::LIST(child_type, std::move(values)));
+}
+
 ScalarFunctionSet ListValueFun::GetFunctions() {
 	ScalarFunctionSet set("list_value");
 
@@ -318,6 +348,7 @@ ScalarFunctionSet ListValueFun::GetFunctions() {
 	value_fun.GetSignature().GetParameter(0).SetName("value");
 	value_fun.GetSignature().AddArgs("args", element_type);
 	value_fun.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
+	value_fun.SetBindExpressionCallback(ListValueBindExpression);
 	set.AddFunction(value_fun);
 
 	return set;

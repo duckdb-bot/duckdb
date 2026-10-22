@@ -472,7 +472,7 @@ MatchStep MatchStack::ExecuteInternal(optional_ptr<MatchStack> stack, MatchStack
 			}
 			f.awaiting_child = false;
 			if (!child_result->IsSuccess()) {
-				completed = f.state.AllocateParseResult<OptionalParseResult>();
+				completed = f.state.EmptyOptionalResult();
 				break;
 			}
 			f.state.token_iterator.SetPosition(f.child_state.token_iterator);
@@ -537,7 +537,7 @@ MatchStep MatchStack::ExecuteInternal(optional_ptr<MatchStack> stack, MatchStack
 				if (child.matcher.Type() == MatcherType::OPTIONAL && child.matcher.IsStructural() &&
 				    !child.matcher.Cast<OptionalMatcher>().GetChildMatcher().first_set.MightMatch(child.state)) {
 					child.state.rule = child.matcher.GetRule();
-					child_result = child.state.AllocateParseResult<OptionalParseResult>();
+					child_result = child.state.EmptyOptionalResult();
 					continue;
 				}
 				if (!child.matcher.first_set.MightMatch(child.state)) {

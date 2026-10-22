@@ -4856,19 +4856,20 @@ PartitionedColumnDataType EnumUtil::FromString<PartitionedColumnDataType>(const 
 const StringUtil::EnumStringLiteral *GetPartitionedTupleDataTypeValues() {
 	static constexpr StringUtil::EnumStringLiteral values[] {
 		{ static_cast<uint32_t>(PartitionedTupleDataType::INVALID), "INVALID" },
-		{ static_cast<uint32_t>(PartitionedTupleDataType::RADIX), "RADIX" }
+		{ static_cast<uint32_t>(PartitionedTupleDataType::RADIX), "RADIX" },
+		{ static_cast<uint32_t>(PartitionedTupleDataType::INTEGER), "INTEGER" }
 	};
 	return values;
 }
 
 template<>
 const char* EnumUtil::ToChars<PartitionedTupleDataType>(PartitionedTupleDataType value) {
-	return StringUtil::EnumToString(GetPartitionedTupleDataTypeValues(), 2, "PartitionedTupleDataType", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetPartitionedTupleDataTypeValues(), 3, "PartitionedTupleDataType", static_cast<uint32_t>(value));
 }
 
 template<>
 PartitionedTupleDataType EnumUtil::FromString<PartitionedTupleDataType>(const char *value) {
-	return static_cast<PartitionedTupleDataType>(StringUtil::StringToEnum(GetPartitionedTupleDataTypeValues(), 2, "PartitionedTupleDataType", value));
+	return static_cast<PartitionedTupleDataType>(StringUtil::StringToEnum(GetPartitionedTupleDataTypeValues(), 3, "PartitionedTupleDataType", value));
 }
 
 const StringUtil::EnumStringLiteral *GetPatternMatchTypeValues() {
@@ -7639,6 +7640,7 @@ const StringUtil::EnumStringLiteral *GetWindowMergeSortStageValues() {
 		{ static_cast<uint32_t>(WindowMergeSortStage::COMBINE), "COMBINE" },
 		{ static_cast<uint32_t>(WindowMergeSortStage::FINALIZE), "FINALIZE" },
 		{ static_cast<uint32_t>(WindowMergeSortStage::SORTED), "SORTED" },
+		{ static_cast<uint32_t>(WindowMergeSortStage::FINISH), "FINISH" },
 		{ static_cast<uint32_t>(WindowMergeSortStage::FINISHED), "FINISHED" }
 	};
 	return values;
@@ -7646,12 +7648,12 @@ const StringUtil::EnumStringLiteral *GetWindowMergeSortStageValues() {
 
 template<>
 const char* EnumUtil::ToChars<WindowMergeSortStage>(WindowMergeSortStage value) {
-	return StringUtil::EnumToString(GetWindowMergeSortStageValues(), 5, "WindowMergeSortStage", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetWindowMergeSortStageValues(), 6, "WindowMergeSortStage", static_cast<uint32_t>(value));
 }
 
 template<>
 WindowMergeSortStage EnumUtil::FromString<WindowMergeSortStage>(const char *value) {
-	return static_cast<WindowMergeSortStage>(StringUtil::StringToEnum(GetWindowMergeSortStageValues(), 5, "WindowMergeSortStage", value));
+	return static_cast<WindowMergeSortStage>(StringUtil::StringToEnum(GetWindowMergeSortStageValues(), 6, "WindowMergeSortStage", value));
 }
 
 }

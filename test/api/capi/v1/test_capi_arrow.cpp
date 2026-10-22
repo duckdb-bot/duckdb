@@ -2,6 +2,7 @@
 #include "duckdb/common/arrow/arrow_wrapper.hpp"
 #include "duckdb/common/arrow/arrow_appender.hpp"
 #include "duckdb/common/arrow/arrow_converter.hpp"
+#include "duckdb/common/arrow/schema_metadata.hpp"
 #include "duckdb/common/types/arrow_string_view_type.hpp"
 
 using namespace duckdb;
@@ -939,4 +940,44 @@ TEST_CASE("Test C-API Arrow rejects non-monotonic string offsets", "[capi][arrow
 	REQUIRE(err != nullptr);
 	duckdb_destroy_error_data(&err);
 	duckdb_destroy_arrow_converted_schema(&converted);
+}
+
+//! Runs the query and exports the Arrow schema of its single column, returning the extension metadata of the column
+static string GetGeometryExtensionMetadata(duckdb_connection connection, const char *query) {
+	duckdb_result result;
+	REQUIRE(duckdb_query(connection, query, &result) == DuckDBSuccess);
+	auto options = duckdb_result_get_arrow_options(&result);
+	auto type = duckdb_column_logical_type(&result, 0);
+	const char *names[] = {"g"};
+	ArrowSchemaWrapper schema;
+	auto error = duckdb_to_arrow_schema(options, &type, names, 1, &schema.arrow_schema);
+	string metadata;
+	if (error) {
+		metadata = string("error ") + duckdb_error_data_message(error);
+		duckdb_destroy_error_data(&error);
+	} else {
+		REQUIRE(schema.arrow_schema.n_children == 1);
+		ArrowSchemaMetadata child_metadata(schema.arrow_schema.children[0]->metadata);
+		REQUIRE(child_metadata.GetOption(ArrowSchemaMetadata::ARROW_EXTENSION_NAME) == "geoarrow.wkb");
+		metadata = child_metadata.GetOption(ArrowSchemaMetadata::ARROW_METADATA_KEY);
+	}
+	duckdb_destroy_logical_type(&type);
+	duckdb_destroy_arrow_options(&options);
+	duckdb_destroy_result(&result);
+	return metadata;
+}
+
+TEST_CASE("Test C-API Arrow schema export of a GEOMETRY whose CRS is an authority code", "[capi][arrow]") {
+	CAPITester tester;
+	REQUIRE(tester.OpenDatabase(nullptr));
+	auto query = "SELECT ST_SetCRS('POINT(1 2)'::GEOMETRY, 'OGC:CRS84') AS g";
+
+	// the schema is exported after the query and its transaction ended
+	auto outside_transaction = GetGeometryExtensionMetadata(tester.connection, query);
+	REQUIRE_NO_FAIL(tester.Query("BEGIN TRANSACTION"));
+	auto inside_transaction = GetGeometryExtensionMetadata(tester.connection, query);
+	REQUIRE_NO_FAIL(tester.Query("COMMIT"));
+
+	REQUIRE(StringUtil::Contains(inside_transaction, "\"crs_type\":\"projjson\""));
+	REQUIRE(outside_transaction == inside_transaction);
 }

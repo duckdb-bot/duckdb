@@ -7,6 +7,7 @@
 #include "duckdb/common/array.hpp"
 #include "duckdb/common/helper.hpp"
 #include "duckdb/catalog/catalog.hpp"
+#include "duckdb/main/client_context.hpp"
 
 #include "duckdb/common/json_document.hpp"
 #include "duckdb/catalog/catalog_entry/coordinate_system_catalog_entry.hpp"
@@ -662,6 +663,14 @@ unique_ptr<CoordinateReferenceSystem> CoordinateReferenceSystem::TryConvert(Clie
 	if (source_crs.type == target_type && source_crs.IsComplete()) {
 		// No conversion needed
 		return make_uniq<CoordinateReferenceSystem>(source_crs);
+	}
+
+	if (!context.transaction.HasActiveTransaction()) {
+		// an Arrow schema can be exported after the query and its transaction ended, the catalog is read in a
+		// transaction of its own
+		unique_ptr<CoordinateReferenceSystem> result;
+		context.RunFunctionInTransaction([&]() { result = TryConvert(context, source_crs, target_type); });
+		return result;
 	}
 
 	auto &catalog = Catalog::GetSystemCatalog(context);

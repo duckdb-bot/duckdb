@@ -21,8 +21,8 @@ void ReleaseArray(ArrowArray *a) {
 
 const int32_t DICT_VALUES[3] = {10, 20, 30};
 
-// Sparse UNION(d dict-encoded int32, i int32) with the given offset and format - slot j holds type id type_ids[j],
-// the dictionary member holds DICT_VALUES[j % 3] and the plain member holds 100 + j
+// Sparse UNION(d dict-encoded int32, i int32) with the given offset and format, where slot j holds type id
+// type_ids[j], the dictionary member holds DICT_VALUES[j % 3] and the plain member holds 100 + j
 struct UnionColumn {
 	UnionColumn(const std::vector<int8_t> &type_ids_p, int64_t offset, const char *format = "+us:0,1")
 	    : type_ids(type_ids_p) {
@@ -135,14 +135,14 @@ unique_ptr<QueryResult> ScanColumn(Connection &con, ArrowSchema &col_schema, Arr
 	return arrow_scan->Project(projection)->Execute();
 }
 
-// Compares the rows of the scan, projected when a projection is given, with those of the query, in order
+// Compares the names and rows of the scan, projected when a projection is given, with those of the query, in order
 bool ScanMatches(ArrowSchema &col_schema, ArrowArray &col_array, const string &query,
                  const string &projection = string()) {
 	DuckDB db(nullptr);
 	Connection con(db);
 	auto result = ScanColumn(con, col_schema, col_array, projection);
 	auto expected = con.Query(query);
-	return !result->HasError() && result->Equals(*expected, false);
+	return !result->HasError() && result->Equals(*expected);
 }
 
 string ScanError(ArrowSchema &col_schema, ArrowArray &col_array) {
@@ -227,7 +227,7 @@ TEST_CASE("Arrow scan of a sparse union with custom type ids", "[arrow]") {
 	REQUIRE(arrow_union_offset_test::ScanMatches(
 	    many.schema, many.array,
 	    "SELECT CASE WHEN j % 3 = 0 THEN union_value(i := (100 + j)::INT)::UNION(d INT, i INT) ELSE union_value(d := "
-	    "[10, 20, 30][j % 3 + 1])::UNION(d INT, i INT) END FROM range(5000) t(j)"));
+	    "[10, 20, 30][j % 3 + 1])::UNION(d INT, i INT) END AS u FROM range(5000) t(j)"));
 
 	// the largest type id, and type ids with leading zeros
 	arrow_union_offset_test::UnionColumn largest({0, 127}, 0, "+us:127,0");

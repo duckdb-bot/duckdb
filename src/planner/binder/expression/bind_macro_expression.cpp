@@ -80,12 +80,13 @@ void ExpressionBinder::ReplaceMacroParameters(unique_ptr<ParsedExpression> &expr
 
 		if (bind_macro_parameter) {
 			D_ASSERT(macro_binding->HasMatchingBinding(col_ref.GetColumnName()));
-			column_t argument_index;
-			auto has_index = macro_binding->TryGetBindingIndex(col_ref.GetColumnName(), argument_index);
-			expr = macro_binding->ParamToArg(col_ref);
-			if (has_index && references) {
-				references->push_back(MacroParameterReference {*expr, argument_index});
+			if (!references) {
+				expr = macro_binding->ParamToArg(col_ref);
+				return;
 			}
+			auto argument_index = macro_binding->GetBindingIndex(col_ref.GetColumnName());
+			expr = macro_binding->ParamToArg(col_ref);
+			references->push_back(MacroParameterReference {*expr, argument_index});
 		}
 		return;
 	}

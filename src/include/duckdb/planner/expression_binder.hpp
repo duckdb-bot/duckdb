@@ -99,7 +99,7 @@ struct MacroArgumentBinding {
 	unique_ptr<ParsedExpression> argument;
 	//! The argument bound for its first reference, when it is pure
 	unique_ptr<Expression> bound;
-	//! The references that are not bound yet
+	//! The registered references not bound yet, including any that binding discards
 	idx_t unbound_references = 0;
 };
 

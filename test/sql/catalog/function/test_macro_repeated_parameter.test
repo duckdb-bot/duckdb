@@ -290,3 +290,27 @@ statement error
 SELECT twice(typed('oops'));
 ----
 <REGEX>:Binder Error.*Macro typed\(\) does not support the supplied arguments.*
+
+# a macro body that binding never expands is not looked into either
+statement ok
+SET autoload_known_extensions = false;
+
+statement ok
+CREATE MACRO stem(x, y) AS x;
+
+statement ok
+CREATE MACRO hidden_stem() AS stem(1, 2);
+
+statement ok
+DROP MACRO stem;
+
+statement ok
+CREATE MACRO ignore_twice(x) AS discard(x) + discard(x);
+
+statement ok
+SET autoload_known_extensions = true;
+
+query I
+SELECT pair(ignore_twice(hidden_stem()));
+----
+[84, 84]

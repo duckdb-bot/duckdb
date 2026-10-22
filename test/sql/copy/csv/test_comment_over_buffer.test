@@ -68,6 +68,15 @@ SELECT a FROM read_csv('{TEST_DIR}/comment_lines_crlf.csv', header = true, auto_
 5
 3
 
+query I
+SELECT b FROM read_csv('{TEST_DIR}/comment_lines_crlf.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, comment = '#', new_line = '\r\n', buffer_size = {buffer_size}, parallel = {parallel});
+----
+0
+NULL
+q,q
+a"b
+3
+
 endloop
 
 # a comment in the last value of a file without a final newline

@@ -101,6 +101,12 @@ SELECT (SELECT name) AS k, count(*) FROM collated GROUP BY ALL ORDER BY unicode(
 B	1
 a	2
 
+query III
+SELECT name AS n, (SELECT n) AS k, count(*) FROM collated GROUP BY ALL ORDER BY unicode(name);
+----
+B	B	1
+a	a	2
+
 statement ok
 PREPARE p AS SELECT name || $1::VARCHAR AS k, count(*) FROM collated GROUP BY ALL ORDER BY unicode(name || $1::VARCHAR);
 
@@ -110,16 +116,24 @@ EXECUTE p('x');
 Bx	1
 ax	2
 
+query II
+EXECUTE p('y');
+----
+By	1
+ay	2
+
 # a column of HAVING that is not in the SELECT list is a group too, with and without an ORDER BY expression
 query II
-SELECT s, count(*) FROM (VALUES ('a', 'p'), ('a', 'q'), ('b', 'r')) t(s, y) GROUP BY ALL HAVING y > 'a' ORDER BY lower(s), count(*);
+SELECT s, count(*) FROM (VALUES ('a', 'p'), ('a', 'q'), ('b', 'r')) t(s, y)
+GROUP BY ALL HAVING y > 'a' ORDER BY lower(s), count(*);
 ----
 a	1
 a	1
 b	1
 
 query II
-SELECT s, count(*) FROM (VALUES ('a', 'p'), ('a', 'q'), ('b', 'r')) t(s, y) GROUP BY ALL HAVING y > 'a' ORDER BY s;
+SELECT s, count(*) FROM (VALUES ('a', 'p'), ('a', 'q'), ('b', 'r')) t(s, y)
+GROUP BY ALL HAVING y > 'a' ORDER BY s;
 ----
 a	1
 a	1

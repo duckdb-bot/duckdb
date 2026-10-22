@@ -1085,6 +1085,40 @@ static string ExtractCollation(const vector<unique_ptr<Expression>> &children) {
 	return collation;
 }
 
+//! Returns the element type of (nested) LIST and ARRAY types, or the type itself
+static const LogicalType &GetElementType(const LogicalType &type) {
+	if (type.HasAlias()) {
+		return type;
+	}
+	switch (type.id()) {
+	case LogicalTypeId::LIST:
+		return GetElementType(ListType::GetChildType(type));
+	case LogicalTypeId::ARRAY:
+		return GetElementType(ArrayType::GetChildType(type));
+	default:
+		return type;
+	}
+}
+
+//! Pushes the collations that nested element types such as VARIANT define, as their values are otherwise compared by
+//! their stored encoding. Flat types such as VARCHAR or INTERVAL keep their own comparison
+static void PushNestedTypeCollations(ClientContext &context, BoundSimpleFunction &bound_function,
+                                     vector<unique_ptr<Expression>> &children, CollationType type) {
+	auto &argument_types = bound_function.GetArguments();
+	for (idx_t i = 0; i < children.size(); i++) {
+		auto &arg = children[i];
+		auto &arg_type = argument_types[i];
+		auto target_type = arg_type.IsComplete() ? arg_type : arg->GetReturnType();
+		if (!GetElementType(target_type).IsNested()) {
+			continue;
+		}
+		arg = BoundCastExpression::AddCastToType(context, std::move(arg), target_type);
+		if (ExpressionBinder::PushCollation(context, arg, target_type, type)) {
+			arg_type = arg->GetReturnType();
+		}
+	}
+}
+
 //! Pushes the collations of the arguments into the children, returns the collation to propagate to the return type
 static string PushCollations(ClientContext &context, BoundSimpleFunction &bound_function,
                              vector<unique_ptr<Expression>> &children, CollationType type) {
@@ -1096,7 +1130,8 @@ static string PushCollations(ClientContext &context, BoundSimpleFunction &bound_
 		ExtractCollationFromType(source_type, target_type, collations);
 	}
 	if (collations.collation.empty() && collations.fields.empty()) {
-		// no collation to push
+		// no string collation to push
+		PushNestedTypeCollations(context, bound_function, children, type);
 		return string();
 	}
 	// push collations to the children

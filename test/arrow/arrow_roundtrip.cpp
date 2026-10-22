@@ -208,7 +208,19 @@ TEST_CASE("Test arrow roundtrip of ENUM in fixed-size arrays", "[arrow]") {
 	                                    LogicalType::ARRAY(LogicalType::ARRAY(LogicalType::VARCHAR, 1), 2),
 	                                    LogicalType::ARRAY(LogicalType::STRUCT(sa_children), 1)};
 	REQUIRE(arrow_result->GetTypes() == expected_types);
+	REQUIRE(arrow_result->RowCount() == 3000);
 	REQUIRE(ArrowTestHelper::RunArrowComparison(con, query, false));
+}
+
+TEST_CASE("Test arrow roundtrip of empty lists of ENUM fixed-size arrays", "[arrow]") {
+	DuckDB db;
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("CREATE TYPE color AS ENUM ('red', 'green', 'blue')"));
+	// the lists of the first chunk hold no arrays, so their dictionary is scanned for no elements
+	REQUIRE(ArrowTestHelper::RunArrowComparison(
+	    con, "SELECT CASE WHEN i < 2048 THEN [] ELSE [['red', NULL]] END::color[2][] AS l FROM range(3000) t(i)",
+	    false));
+	REQUIRE(ArrowTestHelper::RunArrowComparison(con, "SELECT []::color[2][] AS l FROM range(3) t(i)", false));
 }
 
 TEST_CASE("Test Arrow fixed-size binary format parsing", "[arrow]") {

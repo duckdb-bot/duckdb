@@ -17,14 +17,15 @@ CREATE MACRO deep(x) AS twice(x) + diff(x) + twice(x);
 statement ok
 CREATE TABLE t AS SELECT range AS i, range::VARCHAR AS s FROM range(5);
 
-# nesting that would bind the argument 2^40 times
+# nesting that would bind the argument 2^40 times (no literal, which prepared statement verification would turn into a
+# parameter)
 statement ok
 SET max_execution_time = 30000;
 
 query I
-SELECT twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(1::HUGEINT))))))))))))))))))))))))))))))))))))))));
+SELECT twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(pi()::HUGEINT))))))))))))))))))))))))))))))))))))))));
 ----
-1099511627776
+3298534883328
 
 statement ok
 RESET max_execution_time;
@@ -147,3 +148,78 @@ statement error
 SELECT twice(CASE WHEN i > 2 THEN 'a' ELSE 'bb' END) FROM t;
 ----
 <REGEX>:Binder Error.*No function matches the given name and argument types.*
+
+# an argument bound differently by where it is, or whose binding adds an operator, is bound for every reference
+statement ok
+CREATE MACRO discard(x) AS 42;
+
+statement ok
+CREATE MACRO six() AS 3 + 3;
+
+statement ok
+CREATE MACRO keep_last(x) AS discard(x) + six() + x;
+
+query I
+SELECT keep_last(7);
+----
+55
+
+statement ok
+CREATE MACRO plus_sum(x) AS x + sum(x);
+
+query I
+SELECT plus_sum(i) FROM range(3) t(i) GROUP BY i ORDER BY i;
+----
+0
+2
+4
+
+statement ok
+CREATE MACRO scalar_subquery() AS (SELECT 21);
+
+query I
+SELECT twice(scalar_subquery());
+----
+42
+
+statement ok
+CREATE SEQUENCE window_seq;
+
+query I
+SELECT diff(sum(nextval('window_seq')) OVER ()) FROM range(3);
+----
+-9
+-9
+-9
+
+statement ok
+CREATE SEQUENCE unnest_seq;
+
+statement ok
+CREATE MACRO unnest_next() AS unnest([nextval('unnest_seq')]);
+
+query I
+SELECT diff(unnest_next());
+----
+-1
+
+query I
+SELECT currval('unnest_seq');
+----
+2
+
+statement ok
+CREATE MACRO packs(x) AS [struct_pack(x), struct_pack(x)];
+
+query I
+SELECT packs(i) FROM range(1) t(i);
+----
+[{'i': 0}, {'i': 0}]
+
+statement ok
+CREATE MACRO plus_try(x) AS x + TRY(x);
+
+statement error
+SELECT plus_try(sum(i)) FROM range(3) t(i);
+----
+<REGEX>:Binder Error.*aggregates are not allowed inside the TRY expression.*

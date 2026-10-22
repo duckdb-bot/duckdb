@@ -297,19 +297,46 @@ unique_ptr<Expression> ExpressionBinder::Bind(unique_ptr<ParsedExpression> &expr
 	return result;
 }
 
+//! Whether the bound expression reads nothing from where it was bound (no column, parameter, subquery or lambda), so
+//! that binding the same parsed expression elsewhere gives a copy of it
+static bool IsContextFree(const Expression &expr) {
+	switch (expr.GetExpressionClass()) {
+	case ExpressionClass::BOUND_CONSTANT:
+	case ExpressionClass::BOUND_FUNCTION:
+	case ExpressionClass::BOUND_CASE:
+	case ExpressionClass::BOUND_OPERATOR:
+	case ExpressionClass::BOUND_CONJUNCTION:
+	case ExpressionClass::LEGACY_BOUND_CAST:
+	case ExpressionClass::LEGACY_BOUND_COMPARISON:
+	case ExpressionClass::LEGACY_BOUND_BETWEEN:
+		break;
+	default:
+		return false;
+	}
+	bool result = true;
+	ExpressionIterator::EnumerateChildren(expr,
+	                                      [&](const Expression &child) { result = result && IsContextFree(child); });
+	return result;
+}
+
 BindResult ExpressionBinder::Bind(unique_ptr<ParsedExpression> &expr, idx_t depth, bool root_expression) {
 	auto query_location = expr->GetQueryLocation();
 	auto alias = expr->GetAlias();
 	shared_ptr<MacroArgumentBinding> macro_argument;
 	auto reference = macro_argument_references.find(*expr);
 	if (reference != macro_argument_references.end()) {
-		// a macro parameter replaced by its argument: bind the argument once for all its references
+		// a macro parameter replaced by its argument, unless the replacement was itself replaced since
 		macro_argument = std::move(reference->second);
 		macro_argument_references.erase(reference);
-		if (macro_argument->bound && macro_argument->depth == depth && expr->Equals(*macro_argument->argument)) {
+		macro_argument->unbound_references--;
+		if (!expr->Equals(*macro_argument->argument)) {
+			macro_argument = nullptr;
+		} else if (macro_argument->bound) {
 			auto bound = macro_argument->bound->Copy();
 			bound->SetQueryLocation(query_location);
-			bound->SetAlias(alias);
+			if (!alias.empty()) {
+				bound->SetAlias(alias);
+			}
 			return BindResult(std::move(bound));
 		}
 	}
@@ -317,9 +344,11 @@ BindResult ExpressionBinder::Bind(unique_ptr<ParsedExpression> &expr, idx_t dept
 	if (result.HasError()) {
 		return result;
 	}
-	if (macro_argument && !macro_argument->bound) {
-		macro_argument->bound = result.expression->Copy();
-		macro_argument->depth = depth;
+	if (macro_argument && macro_argument->reusable && macro_argument->unbound_references > 0) {
+		macro_argument->reusable = IsContextFree(*result.expression);
+		if (macro_argument->reusable) {
+			macro_argument->bound = result.expression->Copy();
+		}
 	}
 	// carry the location and alias of the parsed node over to the bound expression
 	result.expression->SetQueryLocation(query_location);

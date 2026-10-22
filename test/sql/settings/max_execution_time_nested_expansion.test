@@ -19,8 +19,8 @@ SELECT d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d((SELECT 1))))))))))))))))
 ----
 Query exceeded maximum execution time
 
-# other arguments are bound once for all references
+# an argument without columns, parameters or subqueries is bound once for all references
 query I
-SELECT d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(1))))))))))))))))))))))));
+SELECT d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(pi()::INTEGER))))))))))))))))))))))));
 ----
-16777216
+50331648

@@ -82,7 +82,9 @@ void ExpressionBinder::ReplaceMacroParameters(unique_ptr<ParsedExpression> &expr
 			auto has_index = macro_binding->TryGetBindingIndex(col_ref.GetColumnName(), argument_index);
 			expr = macro_binding->ParamToArg(col_ref);
 			if (has_index && arguments && (*arguments)[argument_index]) {
-				macro_argument_references[*expr] = (*arguments)[argument_index];
+				auto &argument = (*arguments)[argument_index];
+				argument->unbound_references++;
+				macro_argument_references[*expr] = argument;
 			}
 		}
 		return;
@@ -111,14 +113,16 @@ void ExpressionBinder::ReplaceMacroParameters(unique_ptr<ParsedExpression> &expr
 	    *expr, [&](unique_ptr<ParsedExpression> &child) { ReplaceMacroParameters(child, lambda_params, arguments); });
 }
 
-//! Whether binding the argument has no effect besides its result, so that every reference to its parameter can use
-//! the result of binding the first one
+//! Whether the argument can bind to the same expression wherever it is, which binding it checks
 static bool CanBindArgumentOnce(const ParsedExpression &argument) {
 	switch (argument.GetExpressionClass()) {
+	case ExpressionClass::COLUMN_REF:
+	case ExpressionClass::LAMBDA_REF:
 	case ExpressionClass::SUBQUERY:
 	case ExpressionClass::LAMBDA:
 	case ExpressionClass::PARAMETER:
 	case ExpressionClass::STAR:
+	case ExpressionClass::WINDOW:
 		return false;
 	case ExpressionClass::FUNCTION:
 		if (ExpressionBinder::IsUnnestFunction(argument.Cast<FunctionExpression>().GetQualifiedName().Name())) {

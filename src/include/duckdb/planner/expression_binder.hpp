@@ -84,7 +84,8 @@ struct BindResult {
 	ErrorData error;
 };
 
-//! An argument of a macro, bound once for all references to its parameter
+//! An argument of a macro, bound once for all references to its parameter when it reads nothing from where it is
+//! bound
 struct MacroArgumentBinding {
 	explicit MacroArgumentBinding(unique_ptr<ParsedExpression> argument_p) : argument(std::move(argument_p)) {
 	}
@@ -93,7 +94,10 @@ struct MacroArgumentBinding {
 	unique_ptr<ParsedExpression> argument;
 	//! The argument bound for its first reference
 	unique_ptr<Expression> bound;
-	idx_t depth = 0;
+	//! The references that are not bound yet
+	idx_t unbound_references = 0;
+	//! False once a bound reference turned out to depend on where it is bound
+	bool reusable = true;
 };
 
 class ExpressionBinder {

@@ -96,7 +96,7 @@ public:
 	}
 };
 
-// A remote output sink that counts the existence checks of a COPY and the files it opens, and keeps nothing.
+// A remote output sink that counts the existence checks of a COPY, the files it opens and removes, and keeps nothing.
 class ExistenceCountingFileSystem : public FileSystem {
 public:
 	struct Handle : FileHandle {
@@ -121,7 +121,20 @@ public:
 	}
 	unique_ptr<FileHandle> OpenFile(const string &path, FileOpenFlags flags, optional_ptr<FileOpener>) override {
 		opened_files++;
+		if (flags.ExclusiveCreate()) {
+			exclusive_opens++;
+		}
 		return make_uniq<Handle>(*this, path, flags);
+	}
+	void RemoveFile(const string &, optional_ptr<FileOpener>) override {
+		removed_files++;
+	}
+	bool TryRemoveFile(const string &, optional_ptr<FileOpener>) override {
+		removed_files++;
+		return true;
+	}
+	void RemoveFiles(const vector<string> &paths, optional_ptr<FileOpener>) override {
+		removed_files += paths.size();
 	}
 	int64_t Write(FileHandle &handle, void *, int64_t nr_bytes) override {
 		handle.Cast<Handle>().size += NumericCast<idx_t>(nr_bytes);
@@ -151,6 +164,8 @@ public:
 
 	atomic<idx_t> existence_checks {0};
 	atomic<idx_t> opened_files {0};
+	atomic<idx_t> exclusive_opens {0};
+	atomic<idx_t> removed_files {0};
 };
 
 struct LifecycleCopyGlobalData : GlobalFunctionData {
@@ -565,6 +580,29 @@ TEST_CASE("COPY to remote storage does not check whether each output file exists
 	                                 "' (FORMAT " + format + ")"));
 	REQUIRE(counting.opened_files == 4);
 	REQUIRE(counting.existence_checks == 0);
+	REQUIRE(counting.exclusive_opens == 0);
+}
+
+TEST_CASE("A failed COPY to remote storage keeps its outputs", "[api][copy]") {
+	DuckDB db(nullptr);
+	Connection connection(db);
+	REQUIRE_NO_FAIL(connection.Query("SET threads=1"));
+	REQUIRE_NO_FAIL(connection.Query("SET async_threads=0"));
+	auto &fs = FileSystem::GetFileSystem(*connection.context);
+	auto counting_fs = make_uniq<ExistenceCountingFileSystem>();
+	auto &counting = *counting_fs;
+	fs.RegisterSubSystem(std::move(counting_fs));
+
+	auto info = make_shared_ptr<LifecycleCopyInfo>();
+	info->fail_finalize_after = 1;
+	RegisterLifecycleCopyFunction(db, "copy_remote_failure", info);
+	auto result = connection.Query("COPY (SELECT i AS p, 42 AS v FROM range(4) t(i)) TO "
+	                               "'s3://existence-check-test/failed' (FORMAT copy_remote_failure, PARTITION_BY (p))");
+	REQUIRE_FAIL(result);
+	result.reset();
+	REQUIRE(!info->finalized_paths.empty());
+	// whether a remote output existed before is not checked, so none is removed
+	REQUIRE(counting.removed_files == 0);
 }
 
 TEST_CASE("COPY output lifecycle removes owned files after failure", "[api][copy]") {

@@ -15,6 +15,8 @@
 #include "duckdb/logging/log_manager.hpp"
 #include "duckdb/logging/log_storage.hpp"
 #include "duckdb/logging/log_type.hpp"
+#include "duckdb/main/profiler/metrics.hpp"
+#include "duckdb/storage/buffer_manager.hpp"
 #include "result_wait_helpers.hpp"
 #include "test_result_format.hpp"
 
@@ -1262,6 +1264,84 @@ TEST_CASE("An internal error of the profiler at the end of a query invalidates t
 	auto invalidated = con.Query("SELECT 42");
 	REQUIRE(invalidated->HasError());
 	REQUIRE(StringUtil::Contains(invalidated->GetError(), "database has been invalidated"));
+}
+
+//! Allocates a buffer when a query begins while asked to, and holds it until the query ends
+class AllocatingQueryState : public ClientContextState {
+public:
+	static constexpr idx_t ALLOCATION_SIZE = 1024 * 1024;
+
+	void QueryBegin(ClientContext &context) override {
+		if (allocate) {
+			buffer = BufferManager::GetBufferManager(context).Allocate(MemoryTag::EXTENSION, ALLOCATION_SIZE);
+		}
+	}
+	void QueryEnd(ClientContext &context, optional_ptr<ErrorData> error) override {
+		buffer.Destroy();
+	}
+
+	bool allocate = false;
+	BufferHandle buffer;
+};
+
+TEST_CASE("A query whose begin failed emits its profile and its live metrics", "[api][query_result]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	// reads the profile, so that no query of the connection that failed ends its query
+	Connection reader(db);
+	auto failing = make_shared_ptr<CountingQueryState>();
+	auto allocating = make_shared_ptr<AllocatingQueryState>();
+	con.context->registered_state->Insert("counting_query_state", failing);
+	con.context->registered_state->Insert("allocating_query_state", allocating);
+	auto profile_path = TestCreatePath("begin_failed_profile.json");
+	REQUIRE_NO_FAIL(con.Query("PRAGMA enable_profiling = 'json'"));
+	REQUIRE_NO_FAIL(con.Query("PRAGMA profiling_output = '" + profile_path + "'"));
+	auto read_profile = [&]() {
+		auto profile = reader.Query("SELECT content FROM read_text('" + profile_path + "')");
+		REQUIRE(!profile->HasError());
+		return profile->Collection().GetValue(0, 0).ToString();
+	};
+	auto memory_allocated = [&]() {
+		auto metrics = con.context->GetLiveQueryMetrics();
+		auto entry = metrics.find(MetricSystemTotalMemoryAllocated::Name);
+		REQUIRE(entry != metrics.end());
+		return entry->second.GetValue<idx_t>();
+	};
+	bool submit = false;
+	SECTION("Query") {
+	}
+	SECTION("Submit") {
+		submit = true;
+	}
+	auto run = [&](const string &query) {
+		return submit ? con.Submit(query) : con.Query(query);
+	};
+
+	allocating->allocate = true;
+	REQUIRE_NO_FAIL(con.Query("SELECT 42 AS previous_query"));
+	allocating->allocate = false;
+	REQUIRE(StringUtil::Contains(read_profile(), "previous_query"));
+	REQUIRE(memory_allocated() >= AllocatingQueryState::ALLOCATION_SIZE);
+
+	failing->fail_begin = true;
+	auto failed = run("SELECT 43 AS failed_query");
+	REQUIRE(failed->HasError());
+	REQUIRE(StringUtil::Contains(failed->GetError(), "query begin failed"));
+	REQUIRE(failing->begins == failing->ends);
+	REQUIRE(!con.context->transaction.HasActiveTransaction());
+	// the query failed before it was planned, so its profile has no plan
+	REQUIRE(StringUtil::Contains(read_profile(), "\"result\": \"error\""));
+	// the live metrics are those of the failed query, not of the one before it
+	REQUIRE(memory_allocated() < AllocatingQueryState::ALLOCATION_SIZE);
+
+	// a profile that cannot be written does not replace the error of the begin
+	REQUIRE_NO_FAIL(con.Query("PRAGMA profiling_output = '" + TestCreatePath("missing_directory/profile.json") + "'"));
+	failing->fail_begin = true;
+	auto unwritten_profile = run("SELECT 44");
+	REQUIRE(unwritten_profile->HasError());
+	REQUIRE(StringUtil::Contains(unwritten_profile->GetError(), "query begin failed"));
+	REQUIRE(failing->begins == failing->ends);
+	REQUIRE(!con.context->transaction.HasActiveTransaction());
 }
 
 TEST_CASE("An appender is refused while a result is open", "[api][query_result]") {

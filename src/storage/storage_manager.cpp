@@ -50,7 +50,7 @@ void StorageOptions::SetEncryptionVersion(string &storage_version_user_provided)
 
 	switch (target_encryption_version) {
 	case EncryptionTypes::V0_1:
-		// without an explicit storage version, new files get v1.5.0 on creation and existing files keep theirs
+		// without an explicit storage version, new files get the default on creation and existing files keep theirs
 		if (storage_version == StorageVersion::INVALID && storage_version_user_provided.empty()) {
 			break;
 		}
@@ -74,7 +74,7 @@ void StorageOptions::SetEncryptionVersion(string &storage_version_user_provided)
 		break;
 
 	case EncryptionTypes::V0_0:
-		// without an explicit storage version, new files get v1.5.0 on creation and existing files keep theirs
+		// without an explicit storage version, new files get the default on creation and existing files keep theirs
 		break;
 	default:
 		throw InvalidConfigurationException("Encryption version is not set");
@@ -495,9 +495,13 @@ void SingleFileStorageManager::LoadDatabase(QueryContext context) {
 		}
 
 		if (options.storage_version == StorageVersion::INVALID) {
-			// a new database defaults to the version in the config, an encrypted one to v1.5.0
-			options.storage_version = storage_options.encryption ? StorageVersion::V1_5_0
-			                                                     : config.options.storage_compatibility.storage_version;
+			// when creating a new database we default to the serialization version specified in the config
+			options.storage_version = config.options.storage_compatibility.storage_version;
+			if (storage_options.encryption &&
+			    StorageManager::IsPriorToVersion(StorageVersion::V1_5_0, options.storage_version)) {
+				// the default encryption format needs at least v1.5.0
+				options.storage_version = StorageVersion::V1_5_0;
+			}
 		}
 
 		// Initialize the block manager before creating a new database.

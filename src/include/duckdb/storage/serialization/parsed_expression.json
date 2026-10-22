@@ -100,6 +100,15 @@
         "type": "ParsedExpression*",
         "accessor_mut": "ElseMutable()",
         "accessor": "Else()"
+      },
+      {
+        "id": 202,
+        "name": "simple_case",
+        "type": "bool",
+        "default": "false",
+        "version": "v2.0.0",
+        "accessor_mut": "SimpleCaseMutable()",
+        "accessor": "IsSimpleCase()"
       }
     ]
   },

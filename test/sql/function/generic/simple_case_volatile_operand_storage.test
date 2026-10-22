@@ -1,0 +1,18 @@
+# name: test/sql/function/generic/simple_case_volatile_operand_storage.test
+# description: A stored simple CASE evaluates its operand once per row
+# group: [generic]
+
+load {TEST_DIR}/simple_case_volatile_operand.db
+
+statement ok
+CREATE VIEW v AS SELECT count(*) FILTER (WHERE r = 'other') AS other FROM (
+	SELECT CASE (floor(random() * 3))::INTEGER WHEN 0 THEN 'zero' WHEN 1 THEN 'one' WHEN 2 THEN 'two' ELSE 'other' END AS r
+	FROM range(10000)
+)
+
+restart
+
+query I
+SELECT * FROM v
+----
+0

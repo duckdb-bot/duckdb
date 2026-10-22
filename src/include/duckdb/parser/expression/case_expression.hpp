@@ -42,11 +42,23 @@ public:
 	unique_ptr<ParsedExpression> &ElseMutable() {
 		return else_expr;
 	}
+	//! Whether this is a simple CASE (CASE operand WHEN value ...), whose checks compare copies of the operand
+	bool IsSimpleCase() const {
+		return simple_case;
+	}
+	bool &SimpleCaseMutable() {
+		return simple_case;
+	}
+	//! Whether this is a simple CASE whose checks still all compare its operand, as the parser built them
+	bool HasSimpleCaseChecks() const;
+	//! The operand of a simple CASE, the left side of every check
+	const ParsedExpression &SimpleCaseOperand() const;
 
 public:
 	string ToString() const override;
 
 	bool Equals(const ParsedExpression &other) const override;
+	hash_t Hash() const override;
 
 	unique_ptr<ParsedExpression> Copy() const override;
 
@@ -69,5 +81,6 @@ public:
 private:
 	vector<CaseCheck> case_checks;
 	unique_ptr<ParsedExpression> else_expr;
+	bool simple_case = false;
 };
 } // namespace duckdb

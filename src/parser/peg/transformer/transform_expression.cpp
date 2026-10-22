@@ -2739,6 +2739,8 @@ unique_ptr<ParsedExpression> PEGTransformerFactory::TransformCaseExpression(
 	} else {
 		result->ElseMutable() = ConstantExpression::Null();
 	}
+	// the checks compare copies of the operand, the binder evaluates it once
+	result->SimpleCaseMutable() = expression.has_value() && !result->CaseChecks().empty();
 	return std::move(result);
 }
 

@@ -560,8 +560,11 @@ TEST_CASE("Arrow run-end encoded dictionary column of lists binds as the list ty
 	arrow_run_end_encoded_test::RunEndDictionaryColumn col({1, 2}, {0, 1}, {});
 	col.values_schema.dictionary = &dictionary.schema;
 	col.values_array.dictionary = &dictionary.array;
-	REQUIRE(arrow_run_end_encoded_test::QueryMatches(
-	    col.schema, col.array, "SELECT column_type FROM (DESCRIBE SELECT * FROM arrow_view)", "SELECT 'INTEGER[]'"));
+	DuckDB db(nullptr);
+	Connection con(db);
+	ArrowTableSchema table;
+	table.AddColumn(0, ArrowType::GetArrowLogicalType(*con.context, col.schema), "item");
+	REQUIRE(table.GetTypes()[0] == LogicalType::LIST(LogicalType::INTEGER));
 }
 
 TEST_CASE("Arrow scan of LIST(run-end encoded) whose first chunk holds no list elements", "[arrow]") {

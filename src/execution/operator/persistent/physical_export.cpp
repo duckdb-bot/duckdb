@@ -393,7 +393,15 @@ static void AddViewReads(ViewCatalogEntry &view, const QualifiedName &name, cons
 	}
 }
 
-void PhysicalExport::ReorderViewEntries(catalog_entry_vector_t &entries) {
+//! Moves the views of the export order after the views they read by name (view dependencies are only recorded with
+//! enable_view_dependencies). The order already respects everything else an entry needs on import.
+static void ReorderViewEntries(ClientContext &context, catalog_entry_vector_t &entries) {
+	// on import, a name without a schema refers to a temporary table or view of that name first
+	identifier_set_t temporary_names;
+	for (auto &schema : Catalog::GetCatalog(context, TEMP_CATALOG).GetSchemas(context)) {
+		schema.get().Scan(context, CatalogType::TABLE_ENTRY,
+		                  [&](CatalogEntry &entry) { temporary_names.insert(entry.name); });
+	}
 	identifier_map_t<vector<ExportedRelation>> relations_by_name;
 	for (idx_t i = 0; i < entries.size(); i++) {
 		auto &entry = entries[i].get();
@@ -417,6 +425,9 @@ void PhysicalExport::ReorderViewEntries(catalog_entry_vector_t &entries) {
 		finder.VisitNode(*view.query->node);
 		for (auto &read : finder.reads) {
 			auto &name = read.get();
+			if (name.Path().size() == 1 && temporary_names.count(name.Name())) {
+				continue;
+			}
 			auto relations = relations_by_name.find(name.Name());
 			if (relations != relations_by_name.end()) {
 				AddViewReads(view, name, relations->second, reads[i]);
@@ -427,8 +438,9 @@ void PhysicalExport::ReorderViewEntries(catalog_entry_vector_t &entries) {
 		std::sort(view_reads.begin(), view_reads.end());
 		view_reads.erase(std::unique(view_reads.begin(), view_reads.end()), view_reads.end());
 	}
-	// depth first in the current order: the entries before a view in that order stay before it, so a view only moves
-	// before a view that reads it, together with what it needs
+	// Depth first in the current order: a view only moves before a view that reads it, and what it needs comes before
+	// it in the current order, so it is written first. That keeps an order that works working, as long as every read
+	// found here is one that binding the view on import makes.
 	struct EntryVisit {
 		idx_t entry;
 		idx_t next_read;
@@ -521,7 +533,7 @@ SourceResultType PhysicalExport::GetDataInternal(ExecutionContext &context, Data
 	if (dependency_manager) {
 		dependency_manager->ReorderEntries(catalog_entries, ccontext);
 	}
-	ReorderViewEntries(catalog_entries);
+	ReorderViewEntries(ccontext, catalog_entries);
 
 	// write the schema.sql file
 	stringstream ss;

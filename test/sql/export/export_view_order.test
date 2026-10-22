@@ -178,6 +178,16 @@ CREATE VIEW tz AS SELECT 41 AS x;
 statement ok
 CREATE VIEW sa AS SELECT x + 1 AS x FROM tz;
 
+# a view that reads a temporary table that is still there on import
+statement ok
+CREATE TEMP TABLE tsb AS SELECT 42 AS x;
+
+statement ok
+CREATE VIEW tsa AS SELECT * FROM tsb;
+
+statement ok
+CREATE VIEW tsb AS SELECT * FROM tsa;
+
 # a view with a side effect when it is bound
 statement ok
 CREATE SEQUENCE seq;
@@ -203,6 +213,9 @@ restart
 
 statement ok
 CREATE TEMP VIEW tz AS SELECT 99 AS x;
+
+statement ok
+CREATE TEMP TABLE tsb AS SELECT 42 AS x;
 
 statement ok
 EXPORT DATABASE '{TEST_DIR}/export_view_order';
@@ -238,3 +251,41 @@ query IIIIII
 SELECT (SELECT x FROM ra), (SELECT x FROM mb), (SELECT x FROM cb), (SELECT x FROM recurring.r), (SELECT x FROM ns.lc), (SELECT x FROM imported.zz.ns.lc)
 ----
 42	42	42	3	42	43
+
+query I
+SELECT x FROM imported.main.tsb
+----
+42
+
+# COPY FROM DATABASE does not bind the views, it creates them with their recorded dependencies
+statement ok
+ATTACH ':memory:' AS copy_source;
+
+statement ok
+ATTACH ':memory:' AS copy_target;
+
+statement ok
+USE copy_source;
+
+statement ok
+CREATE VIEW cb AS SELECT 42 AS x;
+
+statement ok
+SET enable_view_dependencies = true;
+
+statement ok
+CREATE VIEW cc AS SELECT * FROM query_table('cb');
+
+statement ok
+SET enable_view_dependencies = false;
+
+statement ok
+CREATE VIEW ca AS SELECT * FROM cc;
+
+statement ok
+COPY FROM DATABASE copy_source TO copy_target;
+
+query I
+SELECT x FROM copy_target.ca
+----
+42

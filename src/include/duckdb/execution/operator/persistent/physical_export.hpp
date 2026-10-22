@@ -58,9 +58,6 @@ public:
 	static void ExtractEntries(ClientContext &context, vector<reference<SchemaCatalogEntry>> &schemas,
 	                           ExportEntries &result);
 	static catalog_entry_vector_t GetNaiveExportOrder(ClientContext &context, Catalog &catalog);
-	//! Moves the views of an otherwise complete order after the views they read by name. View dependencies are only
-	//! recorded with enable_view_dependencies.
-	static void ReorderViewEntries(catalog_entry_vector_t &entries);
 
 public:
 	// Sink interface

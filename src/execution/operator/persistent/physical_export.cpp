@@ -182,11 +182,12 @@ catalog_entry_vector_t PhysicalExport::GetNaiveExportOrder(ClientContext &contex
 
 	ReorderTableEntries(entries.tables);
 
-	// order macro's by timestamp so nested macro's are imported nicely
-	sort(entries.macros.begin(), entries.macros.end(),
-	     [](const reference<CatalogEntry> &lhs, const reference<CatalogEntry> &rhs) {
-		     return lhs.get().oid < rhs.get().oid;
-	     });
+	// order macro's and views by timestamp so nested macro's and views are imported nicely
+	auto by_creation = [](const reference<CatalogEntry> &lhs, const reference<CatalogEntry> &rhs) {
+		return lhs.get().oid < rhs.get().oid;
+	};
+	sort(entries.macros.begin(), entries.macros.end(), by_creation);
+	sort(entries.views.begin(), entries.views.end(), by_creation);
 
 	catalog_entry_vector_t catalog_entries;
 	idx_t size = 0;

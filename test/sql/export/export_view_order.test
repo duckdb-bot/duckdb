@@ -1,0 +1,81 @@
+# name: test/sql/export/export_view_order.test
+# description: EXPORT DATABASE writes a view after the views it reads, in creation order
+# group: [export]
+
+statement ok
+CREATE TABLE t AS SELECT range AS x FROM range(3);
+
+# each view reads a view with a later name, so name order would import them before what they read
+statement ok
+CREATE VIEW b AS SELECT 1 AS x;
+
+statement ok
+CREATE VIEW a AS SELECT * FROM b;
+
+statement ok
+CREATE VIEW z_base AS SELECT x FROM t;
+
+statement ok
+CREATE VIEW y_mid AS SELECT x + 1 AS x FROM z_base;
+
+statement ok
+CREATE VIEW x_top AS SELECT x * 10 AS x FROM y_mid;
+
+statement ok
+CREATE VIEW d AS SELECT max(x) AS m FROM t;
+
+statement ok
+CREATE VIEW c AS SELECT (SELECT m FROM d) AS m;
+
+statement ok
+CREATE SCHEMA zz;
+
+statement ok
+CREATE VIEW zz.base AS SELECT 42 AS v;
+
+statement ok
+CREATE SCHEMA aa;
+
+statement ok
+CREATE VIEW aa.top AS SELECT v FROM zz.base;
+
+statement ok
+EXPORT DATABASE '{TEST_DIR}/export_view_order';
+
+statement ok
+DROP SCHEMA aa CASCADE;
+
+statement ok
+DROP SCHEMA zz CASCADE;
+
+statement ok
+DROP VIEW c;
+
+statement ok
+DROP VIEW d;
+
+statement ok
+DROP VIEW x_top;
+
+statement ok
+DROP VIEW y_mid;
+
+statement ok
+DROP VIEW z_base;
+
+statement ok
+DROP VIEW a;
+
+statement ok
+DROP VIEW b;
+
+statement ok
+DROP TABLE t;
+
+statement ok
+IMPORT DATABASE '{TEST_DIR}/export_view_order';
+
+query IIIII
+SELECT (SELECT x FROM a), (SELECT list(x ORDER BY x) FROM x_top), (SELECT m FROM c), (SELECT v FROM aa.top), (SELECT count(*) FROM t)
+----
+1	[10, 20, 30]	2	42	3

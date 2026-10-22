@@ -449,13 +449,15 @@ class TestReadFromStdin(object):
         assert res.returncode == 0
         assert b'42' in res.stdout
 
-    @pytest.mark.parametrize("compression, expected", [
-        ('', None),
-        (', COMPRESSION uncompressed', b'x\n42\n'),
+    @pytest.mark.parametrize("name, compression, expected", [
+        ('named.csv.gz', '', None),
+        ('named.csv.gz', ', COMPRESSION uncompressed', b'x\n42\n'),
+        # a suffix whose compression has no filesystem is written as is, as for a file
+        ('named.csv.xz', '', b'x\n42\n'),
     ])
-    def test_copy_to_named_compressed_fifo(self, shell, tmp_path, compression, expected):
+    def test_copy_to_named_compressed_fifo(self, shell, tmp_path, name, compression, expected):
         # the suffix of a named pipe selects the compression as it does for a file
-        fifo = tmp_path / 'named.csv.gz'
+        fifo = tmp_path / name
         os.mkfifo(fifo)
         # an open read end lets the shell open the pipe for writing, the small output stays in the pipe buffer
         read_fd = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
@@ -478,8 +480,13 @@ class TestReadFromStdin(object):
         else:
             assert received == expected
 
-    def test_read_named_compressed_fifo(self, shell, tmp_path):
-        fifo = tmp_path / 'named.csv.gz'
+    @pytest.mark.parametrize("name, error", [
+        ('named.csv.gz', b'Cannot read compressed data from the pipe'),
+        # a suffix whose compression has no filesystem is refused, as for a file
+        ('named.csv.bz2', b'compression type is not supported (compression type "bzip2")'),
+    ])
+    def test_read_named_compressed_fifo(self, shell, tmp_path, name, error):
+        fifo = tmp_path / name
         os.mkfifo(fifo)
         # an open write end lets the shell open the pipe for reading, the data waits in the pipe buffer
         read_fd = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
@@ -490,6 +497,6 @@ class TestReadFromStdin(object):
         finally:
             os.close(write_fd)
             os.close(read_fd)
-        assert b'Cannot read compressed data from the pipe' in res.stderr
+        assert error in res.stderr
 
 # fmt: on

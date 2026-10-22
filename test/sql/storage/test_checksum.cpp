@@ -29,6 +29,20 @@ bool ZeroTwoEqualWords(data_ptr_t data, idx_t size, optional_idx value = optiona
 	return false;
 }
 
+//! Swap the first two adjacent words with the values 42 and 43
+bool SwapTwoAdjacentValues(data_ptr_t data, idx_t size) {
+	for (idx_t offset = 0; offset + 2 * sizeof(uint64_t) <= size; offset += sizeof(uint64_t)) {
+		auto first = Load<uint64_t>(data + offset);
+		auto second = Load<uint64_t>(data + offset + sizeof(uint64_t));
+		if (first == 42 && second == 43) {
+			Store<uint64_t>(second, data + offset);
+			Store<uint64_t>(first, data + offset + sizeof(uint64_t));
+			return true;
+		}
+	}
+	return false;
+}
+
 struct ChecksumTestFile {
 	unique_ptr<FileHandle> handle;
 	unsafe_unique_array<data_t> data;
@@ -48,6 +62,48 @@ void WriteChecksumTestFile(ChecksumTestFile &contents) {
 	contents.handle->Write(QueryContext(), contents.data.get(), contents.size, 0);
 	contents.handle->Sync();
 	contents.handle.reset();
+}
+
+//! Write a table of the values 42 and 43, damage the first data block that allows it and check that reading fails
+template <class DAMAGE>
+void TestDataBlockDamageIsDetected(const string &name, DAMAGE damage) {
+	auto fs = FileSystem::CreateLocal();
+	auto storage_database = TestCreatePath(name);
+	auto config = GetTestConfig();
+	config->options.storage_compatibility = StorageCompatibility::FromString("v2.0.0");
+
+	DeleteDatabase(storage_database);
+	idx_t block_alloc_size;
+	{
+		DuckDB db(storage_database, config.get());
+		Connection con(db);
+		REQUIRE_NO_FAIL(con.Query("PRAGMA force_compression='uncompressed'"));
+		REQUIRE_NO_FAIL(con.Query("CREATE TABLE t AS SELECT (42 + range % 2)::BIGINT AS v FROM range(10000)"));
+		REQUIRE_NO_FAIL(con.Query("CHECKPOINT"));
+		auto result = con.Query("SELECT block_size FROM pragma_database_size()");
+		REQUIRE_NO_FAIL(*result);
+		block_alloc_size = result->Collection().GetValue(0, 0).GetValue<idx_t>();
+	}
+
+	auto contents = ReadChecksumTestFile(*fs, storage_database);
+	bool found = false;
+	for (idx_t block_start = Storage::FILE_HEADER_SIZE * 3; !found && block_start < contents.size;
+	     block_start += block_alloc_size) {
+		auto data_start = block_start + Storage::DEFAULT_BLOCK_HEADER_SIZE;
+		auto data_end = MinValue<idx_t>(block_start + block_alloc_size, contents.size);
+		found = damage(contents.data.get() + data_start, data_end - data_start);
+	}
+	REQUIRE(found);
+	WriteChecksumTestFile(contents);
+
+	{
+		DuckDB db(storage_database, config.get());
+		Connection con(db);
+		auto result = con.Query("SELECT sum(v) FROM t");
+		REQUIRE(result->HasError());
+		REQUIRE(StringUtil::Contains(result->GetError(), "Corrupt database file: computed checksum"));
+	}
+	DeleteDatabase(storage_database);
 }
 
 } // namespace
@@ -84,44 +140,14 @@ TEST_CASE("Test functioning of checksum", "[storage]") {
 }
 
 TEST_CASE("Test that the checksum detects two zeroed equal words in a block", "[storage]") {
-	auto fs = FileSystem::CreateLocal();
-	auto storage_database = TestCreatePath("checksum_equal_words_block");
-	auto config = GetTestConfig();
-	config->options.storage_compatibility = StorageCompatibility::FromString("v2.0.0");
+	TestDataBlockDamageIsDetected("checksum_equal_words_block", [](data_ptr_t data, idx_t size) {
+		// two of the stored values are equal words of a data block
+		return ZeroTwoEqualWords(data, size, 42);
+	});
+}
 
-	DeleteDatabase(storage_database);
-	idx_t block_alloc_size;
-	{
-		DuckDB db(storage_database, config.get());
-		Connection con(db);
-		REQUIRE_NO_FAIL(con.Query("PRAGMA force_compression='uncompressed'"));
-		REQUIRE_NO_FAIL(con.Query("CREATE TABLE t AS SELECT (42 + range % 2)::BIGINT AS v FROM range(10000)"));
-		REQUIRE_NO_FAIL(con.Query("CHECKPOINT"));
-		auto result = con.Query("SELECT block_size FROM pragma_database_size()");
-		REQUIRE_NO_FAIL(*result);
-		block_alloc_size = result->Collection().GetValue(0, 0).GetValue<idx_t>();
-	}
-
-	// zero two of the stored values, which are equal words of a data block
-	auto contents = ReadChecksumTestFile(*fs, storage_database);
-	bool found = false;
-	for (idx_t block_start = Storage::FILE_HEADER_SIZE * 3; !found && block_start < contents.size;
-	     block_start += block_alloc_size) {
-		auto data_start = block_start + Storage::DEFAULT_BLOCK_HEADER_SIZE;
-		auto data_end = MinValue<idx_t>(block_start + block_alloc_size, contents.size);
-		found = ZeroTwoEqualWords(contents.data.get() + data_start, data_end - data_start, 42);
-	}
-	REQUIRE(found);
-	WriteChecksumTestFile(contents);
-
-	{
-		DuckDB db(storage_database, config.get());
-		Connection con(db);
-		auto result = con.Query("SELECT sum(v) FROM t");
-		REQUIRE(result->HasError());
-		REQUIRE(StringUtil::Contains(result->GetError(), "Corrupt database file: computed checksum"));
-	}
-	DeleteDatabase(storage_database);
+TEST_CASE("Test that the checksum detects two swapped words in a block", "[storage]") {
+	TestDataBlockDamageIsDetected("checksum_swapped_words_block", SwapTwoAdjacentValues);
 }
 
 TEST_CASE("Test that the file headers keep the word XOR checksum", "[storage]") {

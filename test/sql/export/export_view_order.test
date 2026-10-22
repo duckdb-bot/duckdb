@@ -171,6 +171,22 @@ CREATE VIEW ar.reader AS SELECT x FROM shared;
 statement ok
 CREATE VIEW shared AS SELECT x + 1 AS x FROM ar.reader;
 
+# a name without a schema that binding can also find in the default schema
+statement ok
+CREATE TABLE fbc AS SELECT 7 AS x;
+
+statement ok
+CREATE SCHEMA fs;
+
+statement ok
+CREATE VIEW fs.fbb AS SELECT 42 AS x;
+
+statement ok
+CREATE VIEW fs.fbc AS SELECT * FROM query_table('fbb');
+
+statement ok
+CREATE VIEW fs.fba AS SELECT * FROM fbc;
+
 # a view that reads a temporary view instead after loading
 statement ok
 CREATE VIEW tz AS SELECT 41 AS x;
@@ -264,10 +280,10 @@ SELECT (SELECT x FROM ra), (SELECT x FROM mb), (SELECT x FROM cb), (SELECT x FRO
 ----
 42	42	42	3	42	43
 
-query II
-SELECT (SELECT x FROM imported.main.tsb), (SELECT x FROM imported.main.tqb)
+query III
+SELECT (SELECT x FROM imported.main.tsb), (SELECT x FROM imported.main.tqb), (SELECT x FROM imported.fs.fba)
 ----
-42	42
+42	42	42
 
 # COPY FROM DATABASE does not bind the views, it creates them with their recorded dependencies
 statement ok

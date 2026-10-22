@@ -378,8 +378,18 @@ static void AddViewReads(ViewCatalogEntry &view, const QualifiedName &name,
 			return;
 		}
 		// a name without a schema refers to the schema of the view first, then to the default schema
-		if (!add_schema_reads(view_schema_path) && default_schema) {
-			add_schema_reads(vector<Identifier> {*default_schema});
+		auto in_view_schema = relations.find(RelationKey(view_schema_path, name.Name()));
+		auto in_default_schema = relations.end();
+		if (default_schema && view_schema_path != vector<Identifier> {*default_schema}) {
+			in_default_schema = relations.find(RelationKey(vector<Identifier> {*default_schema}, name.Name()));
+		}
+		if (in_view_schema == relations.end()) {
+			if (in_default_schema != relations.end() && in_default_schema->second.IsValid()) {
+				reads.push_back(in_default_schema->second.GetIndex());
+			}
+		} else if (in_view_schema->second.IsValid() && in_default_schema == relations.end()) {
+			// while a view of the schema of the view does not exist yet, binding falls back to the default schema
+			reads.push_back(in_view_schema->second.GetIndex());
 		}
 		return;
 	}

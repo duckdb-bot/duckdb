@@ -2,8 +2,8 @@
 # description: An encrypted database written by DuckDB 1.4 keeps v1.4.0 when written without STORAGE_VERSION
 # group: [attach]
 
-# the database file was written with the default vector size
-require vector_size 2048
+# the database file was written with vector size 2048
+require exact_vector_size 2048
 
 statement ok
 SET force_mbedtls_unsafe = true

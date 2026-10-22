@@ -12,6 +12,7 @@
 #include "duckdb/common/unordered_map.hpp"
 #include "duckdb/parser/expression_map.hpp"
 #include "duckdb/planner/expression.hpp"
+#include "duckdb/planner/joinside.hpp"
 
 #include "duckdb/storage/data_table.hpp"
 #include <functional>
@@ -60,6 +61,13 @@ public:
 	                                        vector<FilterPushdownResult> &pushdown_results);
 
 	FilterPushdownResult TryPushdownGenericExpression(LogicalGet &get, Expression &expr);
+
+	//! Derives the comparisons with constants that the filters on one side of a join imply for the expressions that
+	//! the conditions compare on the target side
+	static vector<unique_ptr<Expression>> DeriveConditionFilters(ClientContext &context,
+	                                                             const vector<JoinCondition> &conditions,
+	                                                             const vector<reference<const Expression>> &filters,
+	                                                             JoinSide target_side);
 
 private:
 	FilterResult AddFilter(Expression &expr);

@@ -240,6 +240,60 @@ void FilterCombiner::GenerateFilters(const std::function<void(unique_ptr<Express
 	equivalence_map.clear();
 }
 
+vector<unique_ptr<Expression>>
+FilterCombiner::DeriveConditionFilters(ClientContext &context, const vector<JoinCondition> &conditions,
+                                       const vector<reference<const Expression>> &filters, JoinSide target_side) {
+	D_ASSERT(target_side == JoinSide::LEFT || target_side == JoinSide::RIGHT);
+	FilterCombiner combiner(context);
+	vector<reference<const Expression>> compared_expressions;
+	for (auto &cond : conditions) {
+		if (!cond.IsComparison() || cond.GetLHS().IsFoldable() || cond.GetRHS().IsFoldable()) {
+			continue;
+		}
+		// NULL fails a comparison with a constant, so NOT DISTINCT FROM acts as equality for the derived filters
+		auto comparison_type = cond.GetComparisonType() == ExpressionType::COMPARE_NOT_DISTINCT_FROM
+		                           ? ExpressionType::COMPARE_EQUAL
+		                           : cond.GetComparisonType();
+		combiner.AddFilter(
+		    BoundComparisonExpression::Create(comparison_type, cond.GetLHS().Copy(), cond.GetRHS().Copy()));
+		compared_expressions.push_back(target_side == JoinSide::LEFT ? cond.GetLHS() : cond.GetRHS());
+	}
+	for (auto &filter : filters) {
+		combiner.AddFilter(filter.get().Copy());
+	}
+	auto is_compared = [&](const Expression &expr) {
+		for (auto &compared : compared_expressions) {
+			if (compared.get().Equals(expr)) {
+				return true;
+			}
+		}
+		return false;
+	};
+	// only a comparison of a compared expression with constants has the same result for all values equal to it
+	vector<unique_ptr<Expression>> result;
+	combiner.GenerateFilters([&](unique_ptr<Expression> filter) {
+		if (filter->GetExpressionType() == ExpressionType::COMPARE_BETWEEN) {
+			auto &between = filter->Cast<BoundFunctionExpression>();
+			if (BoundBetweenExpression::LowerBound(between).IsFoldable() &&
+			    BoundBetweenExpression::UpperBound(between).IsFoldable() &&
+			    is_compared(BoundBetweenExpression::Input(between))) {
+				result.push_back(std::move(filter));
+			}
+			return;
+		}
+		if (!BoundComparisonExpression::IsComparison(*filter)) {
+			return;
+		}
+		auto &comparison = filter->Cast<BoundFunctionExpression>();
+		auto &left = BoundComparisonExpression::Left(comparison);
+		auto &right = BoundComparisonExpression::Right(comparison);
+		if ((left.IsFoldable() && is_compared(right)) || (right.IsFoldable() && is_compared(left))) {
+			result.push_back(std::move(filter));
+		}
+	});
+	return result;
+}
+
 bool FilterCombiner::HasFilters() {
 	bool has_filters = false;
 	GenerateFilters([&](unique_ptr<Expression> child) { has_filters = true; });

@@ -1,6 +1,8 @@
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/parser/constraints/not_null_constraint.hpp"
 #include "duckdb/parser/expression/case_expression.hpp"
+#include "duckdb/parser/expression/cast_expression.hpp"
+#include "duckdb/parser/expression/collate_expression.hpp"
 #include "duckdb/parser/expression/comparison_expression.hpp"
 #include "duckdb/parser/expression/operator_expression.hpp"
 #include "duckdb/parser/expression/conjunction_expression.hpp"
@@ -549,6 +551,32 @@ unique_ptr<MergeIntoStatement> Binder::GenerateMergeInto(InsertQueryNode &node, 
 			source->column_name_alias.emplace_back(column.Name());
 		}
 	}
+	// cast the conflict columns to the types of the table, so they are compared as they are inserted
+	auto cast_star = make_uniq<StarExpression>();
+	for (auto &distinct_on_columns : all_distinct_on_columns) {
+		for (auto &col : distinct_on_columns) {
+			auto &type = columns.GetColumn(col).Type();
+			if (!TypeExpression::CanRepresent(type) || type.HasAlias() || type.id() == LogicalTypeId::ENUM) {
+				// a parsed cast resolves these types again, by name or from all their values
+				continue;
+			}
+			unique_ptr<ParsedExpression> key = make_uniq<CastExpression>(type, make_uniq<ColumnRefExpression>(col));
+			if (type.id() == LogicalTypeId::VARCHAR) {
+				// a cast from VARCHAR keeps the collation of its source
+				key = make_uniq<CollateExpression>(StringType::GetCollation(type), std::move(key));
+			}
+			cast_star->ReplaceListMutable()[col] = std::move(key);
+		}
+	}
+	if (!cast_star->ReplaceList().empty()) {
+		auto cast_node = make_uniq<SelectNode>();
+		cast_node->select_list.push_back(std::move(cast_star));
+		cast_node->from_table = std::move(source);
+		auto cast_stmt = make_uniq<SelectStatement>();
+		cast_stmt->node = std::move(cast_node);
+		source = make_uniq<SubqueryRef>(std::move(cast_stmt), "excluded");
+	}
+
 	// push DISTINCT ON(unique_columns)
 	for (auto &distinct_on_columns : all_distinct_on_columns) {
 		auto distinct_stmt = make_uniq<SelectStatement>();

@@ -1,0 +1,13 @@
+# name: benchmark/micro/pushdown/in_list_wide_table.benchmark
+# description: A short IN list that keeps seven rows of a wide table with unordered keys
+# group: [pushdown]
+
+name InListWideTable
+group micro
+subgroup pushdown
+
+load
+CREATE TABLE wide AS SELECT (i * 7919) % 10000019 AS key, random() AS c0, random() AS c1, random() AS c2, random() AS c3, random() AS c4, random() AS c5, random() AS c6, random() AS c7, random() AS c8, random() AS c9, random() AS c10, random() AS c11, random() AS c12, random() AS c13, random() AS c14, random() AS c15, random() AS c16, random() AS c17, random() AS c18, random() AS c19, random() AS c20, random() AS c21, random() AS c22, random() AS c23, random() AS c24, random() AS c25, random() AS c26, random() AS c27, random() AS c28, random() AS c29, random() AS c30, random() AS c31, random() AS c32, random() AS c33, random() AS c34, random() AS c35, random() AS c36, random() AS c37, random() AS c38, random() AS c39 FROM range(10000000) t(i);
+
+run
+SELECT * FROM wide WHERE key IN (39595, 974037, 6166016, 4884698, 7418895, 2083884, 9841639);

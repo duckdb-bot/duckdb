@@ -22,6 +22,7 @@
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/planner/column_binding.hpp"
 #include "duckdb/common/enums/collation_type.hpp"
+#include "duckdb/common/reference_map.hpp"
 
 namespace duckdb {
 
@@ -81,6 +82,18 @@ struct BindResult {
 
 	unique_ptr<Expression> expression;
 	ErrorData error;
+};
+
+//! An argument of a macro, bound once for all references to its parameter
+struct MacroArgumentBinding {
+	explicit MacroArgumentBinding(unique_ptr<ParsedExpression> argument_p) : argument(std::move(argument_p)) {
+	}
+
+	//! The argument, to check that a reference is still the argument when it is bound
+	unique_ptr<ParsedExpression> argument;
+	//! The argument bound for its first reference
+	unique_ptr<Expression> bound;
+	idx_t depth = 0;
 };
 
 class ExpressionBinder {
@@ -222,8 +235,10 @@ public:
 	                                  bool root_expression = false);
 
 	//! FIXME: Generalise this for extensibility.
-	//! Recursively replaces macro parameters with the provided input parameters.
-	void ReplaceMacroParameters(unique_ptr<ParsedExpression> &expr, vector<identifier_set_t> &lambda_params);
+	//! Recursively replaces macro parameters with the provided input parameters. With the arguments, a replaced
+	//! parameter is bound like the first reference to its argument (null for an argument that is bound every time).
+	void ReplaceMacroParameters(unique_ptr<ParsedExpression> &expr, vector<identifier_set_t> &lambda_params,
+	                            optional_ptr<vector<shared_ptr<MacroArgumentBinding>>> arguments = nullptr);
 	//! Enables special-handling of lambda parameters during macro replacement by tracking them in the lambda_params
 	//! vector.
 	void ReplaceMacroParametersInLambda(FunctionExpression &function, vector<identifier_set_t> &lambda_params);
@@ -316,6 +331,8 @@ protected:
 	ClientContext &context;
 	vector<BoundColumnReferenceInfo> bound_columns;
 	bool inside_try = false;
+	//! The references to macro parameters replaced by a copy of their argument, which are bound like the first one
+	reference_map_t<ParsedExpression, shared_ptr<MacroArgumentBinding>> macro_argument_references;
 
 	BindResult TryBindLambdaOrJson(FunctionExpression &function, idx_t depth, CatalogEntry &func,
 	                               const LambdaSyntaxType syntax_type);

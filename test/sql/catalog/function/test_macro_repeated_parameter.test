@@ -1,0 +1,149 @@
+# name: test/sql/catalog/function/test_macro_repeated_parameter.test
+# description: A macro that uses a parameter several times binds its argument once
+# group: [function]
+
+statement ok
+CREATE MACRO twice(x) AS x + x;
+
+statement ok
+CREATE MACRO diff(x) AS x - x;
+
+statement ok
+CREATE MACRO quad(x) AS twice(twice(x));
+
+statement ok
+CREATE MACRO deep(x) AS twice(x) + diff(x) + twice(x);
+
+statement ok
+CREATE TABLE t AS SELECT range AS i, range::VARCHAR AS s FROM range(5);
+
+# nesting that would bind the argument 2^40 times
+statement ok
+SET max_execution_time = 30000;
+
+query I
+SELECT twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(1::HUGEINT))))))))))))))))))))))))))))))))))))))));
+----
+1099511627776
+
+statement ok
+RESET max_execution_time;
+
+query II
+SELECT quad(i), deep(deep(deep(i))) FROM t ORDER BY i;
+----
+0	0
+4	64
+8	128
+12	192
+16	256
+
+# every reference still evaluates its argument
+query I
+SELECT bool_or(diff(random()) <> 0) FROM range(100);
+----
+true
+
+statement ok
+CREATE SEQUENCE seq;
+
+query I
+SELECT list(twice(nextval('seq')) ORDER BY ALL) FROM range(3);
+----
+[5, 7, 9]
+
+# arguments with subqueries, aggregates, windows, unnest and parameters
+query I
+SELECT twice((SELECT 21));
+----
+42
+
+query I
+SELECT twice(sum(i)) FROM t;
+----
+20
+
+query II
+SELECT i, twice(row_number() OVER (ORDER BY i)) FROM t ORDER BY i;
+----
+0	2
+1	4
+2	6
+3	8
+4	10
+
+query I
+SELECT twice(unnest([1, 2]));
+----
+2
+4
+
+statement ok
+PREPARE p AS SELECT twice($1);
+
+query I
+EXECUTE p(21);
+----
+42
+
+query I
+EXECUTE p(1.5);
+----
+3.0
+
+# references in a lambda or a subquery of the macro body
+statement ok
+CREATE MACRO in_lambda(x) AS list_transform([10, 20], lambda y: y + x) || [x];
+
+query II
+SELECT y, in_lambda(y) FROM (SELECT range AS y FROM range(3)) ORDER BY y;
+----
+0	[10, 20, 0]
+1	[11, 21, 1]
+2	[12, 22, 2]
+
+statement ok
+CREATE MACRO in_subquery(x) AS (SELECT x + x);
+
+query I
+SELECT in_subquery(i) FROM t ORDER BY i;
+----
+0
+2
+4
+6
+8
+
+# aliases, grouping and a CASE argument
+query II
+SELECT twice(i) AS a, twice(a) FROM t ORDER BY i;
+----
+0	0
+2	4
+4	8
+6	12
+8	16
+
+query I
+SELECT twice(i) FROM t GROUP BY i HAVING twice(i) > 2 ORDER BY 1;
+----
+4
+6
+8
+
+statement ok
+CREATE MACRO exclaim(x, y) AS CASE WHEN x > 2 THEN y || '!' ELSE y END;
+
+query I
+SELECT exclaim(i, s) FROM t ORDER BY i;
+----
+0
+1
+2
+3!
+4!
+
+statement error
+SELECT twice(CASE WHEN i > 2 THEN 'a' ELSE 'bb' END) FROM t;
+----
+<REGEX>:Binder Error.*No function matches the given name and argument types.*

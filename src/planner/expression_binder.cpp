@@ -270,6 +270,7 @@ unique_ptr<Expression> ExpressionBinder::Bind(unique_ptr<ParsedExpression> &expr
                                               bool root_expression) {
 	// bind the main expression - a name that reaches out of this scope is resolved where it occurs
 	auto bind_result = Bind(expr, 0, root_expression);
+	macro_argument_references.clear();
 	if (bind_result.HasError()) {
 		bind_result.error.Throw();
 	}
@@ -299,9 +300,26 @@ unique_ptr<Expression> ExpressionBinder::Bind(unique_ptr<ParsedExpression> &expr
 BindResult ExpressionBinder::Bind(unique_ptr<ParsedExpression> &expr, idx_t depth, bool root_expression) {
 	auto query_location = expr->GetQueryLocation();
 	auto alias = expr->GetAlias();
+	shared_ptr<MacroArgumentBinding> macro_argument;
+	auto reference = macro_argument_references.find(*expr);
+	if (reference != macro_argument_references.end()) {
+		// a macro parameter replaced by its argument: bind the argument once for all its references
+		macro_argument = std::move(reference->second);
+		macro_argument_references.erase(reference);
+		if (macro_argument->bound && macro_argument->depth == depth && expr->Equals(*macro_argument->argument)) {
+			auto bound = macro_argument->bound->Copy();
+			bound->SetQueryLocation(query_location);
+			bound->SetAlias(alias);
+			return BindResult(std::move(bound));
+		}
+	}
 	BindResult result = BindExpression(expr, depth, root_expression);
 	if (result.HasError()) {
 		return result;
+	}
+	if (macro_argument && !macro_argument->bound) {
+		macro_argument->bound = result.expression->Copy();
+		macro_argument->depth = depth;
 	}
 	// carry the location and alias of the parsed node over to the bound expression
 	result.expression->SetQueryLocation(query_location);

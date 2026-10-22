@@ -55,7 +55,8 @@ void ExpressionBinder::ReplaceMacroParametersInLambda(FunctionExpression &functi
 }
 
 void ExpressionBinder::ReplaceMacroParameters(unique_ptr<ParsedExpression> &expr,
-                                              vector<identifier_set_t> &lambda_params) {
+                                              vector<identifier_set_t> &lambda_params,
+                                              optional_ptr<vector<shared_ptr<MacroArgumentBinding>>> arguments) {
 	switch (expr->GetExpressionClass()) {
 	case ExpressionClass::COLUMN_REF: {
 		// If the expression is a column reference, we replace it with its argument.
@@ -77,7 +78,12 @@ void ExpressionBinder::ReplaceMacroParameters(unique_ptr<ParsedExpression> &expr
 
 		if (bind_macro_parameter) {
 			D_ASSERT(macro_binding->HasMatchingBinding(col_ref.GetColumnName()));
+			column_t argument_index;
+			auto has_index = macro_binding->TryGetBindingIndex(col_ref.GetColumnName(), argument_index);
 			expr = macro_binding->ParamToArg(col_ref);
+			if (has_index && arguments && (*arguments)[argument_index]) {
+				macro_argument_references[*expr] = (*arguments)[argument_index];
+			}
 		}
 		return;
 	}
@@ -85,12 +91,14 @@ void ExpressionBinder::ReplaceMacroParameters(unique_ptr<ParsedExpression> &expr
 		// Special-handling for lambdas, which are inside function expressions.
 		auto &function = expr->Cast<FunctionExpression>();
 		if (function.IsLambdaFunction()) {
+			// a reference in a lambda can refer to its parameters
 			return ReplaceMacroParametersInLambda(function, lambda_params);
 		}
 		break;
 	}
 	case ExpressionClass::SUBQUERY: {
 		auto &sq = (expr->Cast<SubqueryExpression>()).Subquery();
+		// a reference in a subquery is bound in another scope
 		ParsedExpressionIterator::EnumerateQueryNodeChildren(
 		    *sq->node, [&](unique_ptr<ParsedExpression> &child) { ReplaceMacroParameters(child, lambda_params); });
 		break;
@@ -100,7 +108,30 @@ void ExpressionBinder::ReplaceMacroParameters(unique_ptr<ParsedExpression> &expr
 	}
 
 	ParsedExpressionIterator::EnumerateChildren(
-	    *expr, [&](unique_ptr<ParsedExpression> &child) { ReplaceMacroParameters(child, lambda_params); });
+	    *expr, [&](unique_ptr<ParsedExpression> &child) { ReplaceMacroParameters(child, lambda_params, arguments); });
+}
+
+//! Whether binding the argument has no effect besides its result, so that every reference to its parameter can use
+//! the result of binding the first one
+static bool CanBindArgumentOnce(const ParsedExpression &argument) {
+	switch (argument.GetExpressionClass()) {
+	case ExpressionClass::SUBQUERY:
+	case ExpressionClass::LAMBDA:
+	case ExpressionClass::PARAMETER:
+	case ExpressionClass::STAR:
+		return false;
+	case ExpressionClass::FUNCTION:
+		if (ExpressionBinder::IsUnnestFunction(argument.Cast<FunctionExpression>().GetQualifiedName().Name())) {
+			return false;
+		}
+		break;
+	default:
+		break;
+	}
+	bool result = true;
+	ParsedExpressionIterator::EnumerateChildren(
+	    argument, [&](const ParsedExpression &child) { result = result && CanBindArgumentOnce(child); });
+	return result;
 }
 
 // Find aggregate expression children
@@ -198,8 +229,13 @@ void ExpressionBinder::UnfoldMacroExpression(FunctionExpression &function, Scala
 	ExpressionBinder::QualifyColumnNames(*dummy_binder, expr);
 
 	// now replace the parameters
+	vector<shared_ptr<MacroArgumentBinding>> arguments;
+	for (auto &argument : *new_macro_binding->arguments) {
+		arguments.push_back(CanBindArgumentOnce(*argument) ? make_shared_ptr<MacroArgumentBinding>(argument->Copy())
+		                                                   : nullptr);
+	}
 	vector<identifier_set_t> lambda_params;
-	ReplaceMacroParameters(expr, lambda_params);
+	ReplaceMacroParameters(expr, lambda_params, arguments);
 }
 
 BindResult ExpressionBinder::BindMacro(FunctionExpression &function, ScalarMacroCatalogEntry &macro_func, idx_t depth,

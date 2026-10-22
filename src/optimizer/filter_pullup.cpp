@@ -142,7 +142,7 @@ unique_ptr<LogicalOperator> FilterPullup::GeneratePullupFilter(unique_ptr<Logica
 unique_ptr<LogicalOperator> FilterPullup::FinishPullup(unique_ptr<LogicalOperator> op) {
 	// unhandled type, first perform filter pushdown in its children
 	for (idx_t i = 0; i < op->children.size(); i++) {
-		FilterPullup pullup;
+		FilterPullup pullup(context);
 		op->children[i] = pullup.Rewrite(std::move(op->children[i]));
 	}
 	// now pull up any existing filters

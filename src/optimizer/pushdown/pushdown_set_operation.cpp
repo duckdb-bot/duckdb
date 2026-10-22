@@ -29,11 +29,18 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownSetOperation(unique_ptr<Logi
 	         op->type == LogicalOperatorType::LOGICAL_INTERSECT);
 	auto &setop = op->Cast<LogicalSetOperation>();
 
-	for (auto &child : op->children) {
+	for (idx_t child_idx = 0; child_idx < op->children.size(); child_idx++) {
+		auto &child = op->children[child_idx];
 		auto child_bindings = child->GetColumnBindings();
 
 		FilterPushdown child_pushdown(optimizer, convert_mark_joins, projection_mode);
 		for (auto &original_filter : filters) {
+			if (child_idx > 0 && op->type != LogicalOperatorType::LOGICAL_UNION &&
+			    setop.FilterTellsApartEqualRows(optimizer.context, *original_filter->filter)) {
+				// EXCEPT and INTERSECT return rows of the left child, so filtering that child is enough. On the right
+				// child this filter could remove a row that is equal to a row of the left child and decides about it.
+				continue;
+			}
 			// first create a copy of the filter
 			auto filter = make_uniq<Filter>();
 			filter->filter = original_filter->filter->Copy();

@@ -1,4 +1,6 @@
 #include "duckdb/storage/data_table.hpp"
+#include "duckdb/planner/constraints/bound_not_null_constraint.hpp"
+#include "duckdb/planner/constraints/bound_unique_constraint.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/storage/table/data_table_info.hpp"
 #include "duckdb/transaction/commit_state.hpp"
@@ -220,6 +222,12 @@ DataTable::DataTable(ClientContext &context, DataTable &parent, BoundConstraint 
 
 	if (constraint.type != ConstraintType::UNIQUE) {
 		VerifyNewConstraint(local_storage, parent, constraint);
+	} else if (constraint.Cast<BoundUniqueConstraint>().is_primary_key) {
+		// the key columns become NOT NULL: verify them under the append lock, including rows committed concurrently
+		for (auto &key : constraint.Cast<BoundUniqueConstraint>().keys) {
+			BoundNotNullConstraint not_null(key);
+			VerifyNewConstraint(local_storage, parent, not_null);
+		}
 	}
 	local_storage.MoveStorage(parent, *this);
 	parent.version = DataTableVersion::ALTERED;
@@ -931,7 +939,7 @@ string DataTable::TableModification() const {
 void DataTable::InitializeLocalAppend(LocalAppendState &state, DuckTableEntry &table, ClientContext &context,
                                       const vector<unique_ptr<BoundConstraint>> &bound_constraints) {
 	if (!IsMainTable()) {
-		throw TransactionException("Transaction conflict: attempting to insert into table \"%s\" but it has been %s by "
+		throw TransactionException("Transaction conflict: attempting to insert into table %s but it has been %s by "
 		                           "a different transaction",
 		                           GetTableName(), TableModification());
 	}
@@ -943,7 +951,7 @@ void DataTable::InitializeLocalAppend(LocalAppendState &state, DuckTableEntry &t
 void DataTable::InitializeLocalStorage(LocalAppendState &state, DuckTableEntry &table, ClientContext &context,
                                        const vector<unique_ptr<BoundConstraint>> &bound_constraints) {
 	if (!IsMainTable()) {
-		throw TransactionException("Transaction conflict: attempting to insert into table \"%s\" but it has been %s by "
+		throw TransactionException("Transaction conflict: attempting to insert into table %s but it has been %s by "
 		                           "a different transaction",
 		                           GetTableName(), TableModification());
 	}
@@ -961,7 +969,7 @@ void DataTable::LocalAppend(LocalAppendState &state, DuckTableEntry &table_entry
 		return;
 	}
 	if (!IsMainTable()) {
-		throw TransactionException("Transaction conflict: attempting to insert into table \"%s\" but it has been %s by "
+		throw TransactionException("Transaction conflict: attempting to insert into table %s but it has been %s by "
 		                           "a different transaction",
 		                           GetTableName(), TableModification());
 	}
@@ -1101,7 +1109,7 @@ void DataTable::LocalAppend(DuckTableEntry &table, ClientContext &context, Colum
 void DataTable::AppendLock(DuckTransaction &transaction, TableAppendState &state) {
 	state.append_lock = unique_lock<mutex>(append_lock);
 	if (!IsMainTable()) {
-		throw TransactionException("Transaction conflict: attempting to insert into table \"%s\" but it has been %s by "
+		throw TransactionException("Transaction conflict: attempting to insert into table %s but it has been %s by "
 		                           "a different transaction",
 		                           GetTableName(), TableModification());
 	}
@@ -1534,7 +1542,7 @@ void DataTable::Update(TableUpdateState &state, ClientContext &context, DuckTabl
 
 	if (!IsMainTable()) {
 		throw TransactionException(
-		    "Transaction conflict: attempting to update table \"%s\" but it has been %s by a different transaction",
+		    "Transaction conflict: attempting to update table %s but it has been %s by a different transaction",
 		    GetTableName(), TableModification());
 	}
 
@@ -1593,7 +1601,7 @@ void DataTable::UpdateColumn(DuckTableEntry &table, ClientContext &context, Vect
 
 	if (!IsMainTable()) {
 		throw TransactionException(
-		    "Transaction conflict: attempting to update table \"%s\" but it has been %s by a different transaction",
+		    "Transaction conflict: attempting to update table %s but it has been %s by a different transaction",
 		    GetTableName(), TableModification());
 	}
 
@@ -1723,7 +1731,7 @@ void DataTable::AddIndex(const ColumnList &columns, const vector<LogicalIndex> &
                          const IndexConstraintType type, IndexStorageInfo index_info, idx_t index_oid,
                          const ConstraintCheckMode check_mode) {
 	if (!IsMainTable()) {
-		throw TransactionException("Transaction conflict: attempting to add an index to table \"%s\" but it has been "
+		throw TransactionException("Transaction conflict: attempting to add an index to table %s but it has been "
 		                           "%s by a different transaction",
 		                           GetTableName(), TableModification());
 	}

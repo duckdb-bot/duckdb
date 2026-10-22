@@ -1,5 +1,5 @@
 # name: test/sql/function/generic/hash_comparison_keys.test
-# description: VARIANT values that compare equal have equal hashes
+# description: values that compare equal have equal hashes
 # group: [generic]
 
 load {TEST_DIR}/hash_comparison_keys.db
@@ -117,26 +117,65 @@ SELECT count(DISTINCT hash(v)) FROM (SELECT a AS v FROM stored UNION ALL SELECT 
 ----
 3
 
-# strings hash their stored value, and TIMETZ, BIT and INTERVAL already hash by value
-query IIIII
-SELECT hash('12:00:00+01'::TIMETZ), hash('0101'::BIT), hash(INTERVAL '1 month 3 days'), hash('A' COLLATE NOCASE), hash({'t': '12:00:00+01'::TIMETZ, 's': 'A' COLLATE NOCASE})
+# collated strings hash their collated value
+query IIII
+SELECT hash('A' COLLATE NOCASE) = hash('a' COLLATE NOCASE), hash('é' COLLATE NOACCENT) = hash('e' COLLATE NOACCENT),
+       hash({'s': 'A' COLLATE NOCASE}) = hash({'s': 'a' COLLATE NOCASE}), hash('A' COLLATE NOCASE) = hash('b' COLLATE NOCASE)
 ----
-13605450143474883824	2527836143571797051	3575937371036775958	7589485043483979011	2894428462036555909
+true	true	true	false
+
+statement ok
+CREATE TABLE collated AS SELECT i, CASE WHEN i % 2 = 0 THEN 'ABC' ELSE 'abc' END::VARCHAR COLLATE NOCASE AS s FROM range(5000) t(i);
 
 query II
-SELECT hash(INTERVAL '-2147483648 months -2147483648 days -9223372036854775807 microseconds'), hash([INTERVAL '2147483647 months 2147483647 days 9223372036854775807 microseconds'])
+SELECT count(DISTINCT s), count(DISTINCT hash(s)) FROM collated
 ----
-10698964209986971760	14945741554909537998
+1	1
 
-# each argument is hashed on its own, so the arguments can have different collations
+# TIMETZ, BIT and INTERVAL hash their comparison keys, also at the limits of the interval fields
+query I
+SELECT count(*) FROM (VALUES
+	(INTERVAL '-2147483648 months -2147483648 days -9223372036854775807 microseconds', INTERVAL '-2147483648 months -2147483648 days -9223372036854775806 microseconds'),
+	(INTERVAL '-2147483648 months -2147483648 days -9223372036854775807 microseconds', INTERVAL '-2147483648 months -2147483647 days -9223372036854775807 microseconds'),
+	(INTERVAL '2147483647 months 2147483647 days 9223372036854775806 microseconds', INTERVAL '2147483647 months 2147483647 days 9223372036854775807 microseconds'),
+	(INTERVAL '1 month', INTERVAL '30 days'),
+	(INTERVAL '1 month', INTERVAL '31 days')
+) t(a, b) WHERE (a = b) IS DISTINCT FROM (hash(a) = hash(b))
+----
+0
+
+query I
+SELECT count(*) FROM (VALUES ('12:00:00+01'::TIMETZ, '11:00:00+00'::TIMETZ), ('12:00:00+01'::TIMETZ, '12:00:00+01'::TIMETZ)) t(a, b)
+WHERE (a = b) IS DISTINCT FROM (hash(a) = hash(b))
+----
+0
+
+query I
+SELECT count(*) FROM (VALUES ('0101'::BIT, '0101'::BIT), ('0101'::BIT, '0110'::BIT)) t(a, b) WHERE (a = b) IS DISTINCT FROM (hash(a) = hash(b))
+----
+0
+
+# the arguments share one string collation, as in other functions that combine their arguments
+statement error
+SELECT hash('a' COLLATE NOCASE, 'b' COLLATE NOACCENT)
+----
+Cannot combine types with different collation
+
+# strings without an explicit collation hash under the default collation
+statement ok
+SET default_collation = 'nocase';
+
 query II
-SELECT hash('a' COLLATE NOCASE, 'b' COLLATE NOACCENT) = hash('a', 'b'), hash('A' COLLATE NOCASE, 'B') = hash('A', 'B')
+SELECT hash('A') = hash('a'), hash({'s': 'A'}) = hash({'s': 'a'})
 ----
 true	true
 
-# an index on hash() finds its rows after a restart with another default collation
 statement ok
-CREATE TABLE names (s VARCHAR);
+RESET default_collation;
+
+# an index on hash() of a collated column finds its rows after a restart
+statement ok
+CREATE TABLE names (s VARCHAR COLLATE NOCASE);
 
 statement ok
 INSERT INTO names VALUES ('A'), ('b');
@@ -149,15 +188,7 @@ CHECKPOINT
 
 restart
 
-statement ok
-SET default_collation = 'nocase';
-
 query T
-SELECT s FROM names WHERE hash(s) = hash('A')
-----
-A
-
-query T
-SELECT s FROM names WHERE hash(s) = hash('A')
+SELECT s FROM names WHERE hash(s) = hash('a')
 ----
 A

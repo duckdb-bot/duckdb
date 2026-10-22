@@ -7,10 +7,10 @@ require parquet
 require json
 
 # A deeply nested array used to make the writer recurse once per level into an equally deep 'typed_value' schema,
-# overflowing the stack. Now the shredded type stops at 32 levels. The JSON -> VARIANT cast itself still recurses once
-# per level, so the depth stays moderate enough for the sanitizer builds (compare test/sql/peg_parser/deep_nesting.test).
+# overflowing the stack. Now the shredded type stops at 32 levels. The JSON -> VARIANT cast refuses more than 128 levels,
+# so the deeper values are built by wrapping a VARIANT in a list once per level.
 statement ok
-COPY (SELECT (repeat('[', 500) || '1' || repeat(']', 500))::JSON::VARIANT AS v FROM range(3)) TO '{TEST_DIR}/variant_deep_array.parquet'
+COPY (WITH RECURSIVE nested(depth, v) AS (SELECT 1, [1]::VARIANT UNION ALL SELECT depth + 1, [v]::VARIANT FROM nested WHERE depth < 500) SELECT v FROM nested, range(3) WHERE depth = 500) TO '{TEST_DIR}/variant_deep_array.parquet'
 
 query I
 SELECT count(*) FROM '{TEST_DIR}/variant_deep_array.parquet'
@@ -54,7 +54,7 @@ SELECT count(*) FILTER (name = 'k'), count(*) FILTER (name = 'typed_value') FROM
 
 # A deep value next to shallow ones does not stop those from being shredded
 statement ok
-COPY (SELECT ('{"a": 1, "b": "x", "c": ' || repeat('[', 200) || '1' || repeat(']', 200) || '}')::JSON::VARIANT AS v FROM range(3)) TO '{TEST_DIR}/variant_deep_field.parquet'
+COPY (WITH RECURSIVE nested(depth, v) AS (SELECT 1, [1]::VARIANT UNION ALL SELECT depth + 1, [v]::VARIANT FROM nested WHERE depth < 200) SELECT {'a': 1, 'b': 'x', 'c': v}::VARIANT AS v FROM nested, range(3) WHERE depth = 200) TO '{TEST_DIR}/variant_deep_field.parquet'
 
 query I
 SELECT DISTINCT (v.a::INTEGER, v.b::VARCHAR) FROM '{TEST_DIR}/variant_deep_field.parquet'

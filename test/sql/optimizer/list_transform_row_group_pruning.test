@@ -84,3 +84,14 @@ query I
 SELECT nextval('lambda_seq')
 ----
 4
+
+# nor a list built by a lower projection with side effects, when the lambda alone bounds the result
+query I
+SELECT coalesce(list_position(list_transform(l, lambda x: 1), 2), 99) FROM (SELECT [nextval('lambda_seq')] AS l) q
+----
+99
+
+query I
+SELECT nextval('lambda_seq')
+----
+6

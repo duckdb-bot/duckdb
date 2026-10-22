@@ -42,8 +42,10 @@ public:
 	unique_ptr<ProducerToken> CreateProducer();
 	//! Returns the number of threads
 	DUCKDB_API idx_t NumberOfThreads();
-	//! Returns the number of async threads
+	//! Returns the number of async threads, launching them on the first call
 	DUCKDB_API idx_t NumberOfAsyncThreads();
+	//! Returns the number of async threads without launching them, zero until their launch has finished
+	idx_t NumberOfLaunchedAsyncThreads();
 
 	idx_t GetNumberOfTasks() const;
 	idx_t GetProducerCount() const;
@@ -96,6 +98,8 @@ private:
 	                              shared_ptr<Task> &task);
 
 	void SetThreadsInternal(TaskSchedulerType pool_type, idx_t n);
+	//! Launches the async threads once, on their first use
+	void LaunchAsyncThreads();
 	void Signal(TaskSchedulerType pool_type, idx_t n);
 	void SignalAllPools(idx_t n);
 	void SignalForTaskType(TaskSchedulerType task_type, idx_t n);
@@ -104,6 +108,10 @@ private:
 	DatabaseInstance &db;
 	//! Lock for modifying the thread count
 	mutex thread_lock;
+	//! Lock for launching the async threads, not thread_lock, which is held while threads that run tasks are joined
+	mutex async_launch_lock;
+	//! Whether the async threads have been launched
+	atomic<bool> async_threads_launched;
 	//! The thread pools
 	array<unique_ptr<TaskSchedulerPool>, TASK_SCHEDULER_TYPE_COUNT> pools;
 	//! The task queues

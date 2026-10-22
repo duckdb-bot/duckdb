@@ -2,12 +2,21 @@
 #include "test_helpers.hpp"
 #include "duckdb/execution/operator/scan/physical_column_data_scan.hpp"
 #include "duckdb/execution/physical_plan_generator.hpp"
+#include "duckdb/parallel/task_executor.hpp"
 #include "duckdb/parallel/task_scheduler.hpp"
+#include "duckdb/common/local_file_system.hpp"
 #include "duckdb/common/virtual_file_system.hpp"
 #include "duckdb/main/settings.hpp"
+#include "duckdb/storage/block_allocator.hpp"
 #include "duckdb/storage/storage_info.hpp"
 
+#include <chrono>
+#include <condition_variable>
 #include <thread>
+#if defined(__GLIBC__)
+#include <pthread.h>
+#include <sched.h>
+#endif
 
 using namespace duckdb;
 
@@ -134,6 +143,256 @@ TEST_CASE("Test async threads", "[api]") {
 
 	con.Query("SET async_threads=2");
 	REQUIRE(scheduler.NumberOfAsyncThreads() == 2);
+}
+
+#ifdef __linux__
+static unordered_set<string> ProcessThreadIds() {
+	LocalFileSystem fs;
+	unordered_set<string> ids;
+	REQUIRE(fs.ListFiles("/proc/self/task", [&](const string &id, bool) { ids.insert(id); }));
+	return ids;
+}
+
+// threads of the process that did not exist yet, so that threads exiting in the meantime do not count
+static idx_t NewThreadCount(const unordered_set<string> &threads_before) {
+	idx_t count = 0;
+	for (auto &id : ProcessThreadIds()) {
+		if (threads_before.find(id) == threads_before.end()) {
+			count++;
+		}
+	}
+	return count;
+}
+
+TEST_CASE("Test async threads are launched on their first use", "[api]") {
+	const auto threads_before = ProcessThreadIds();
+	DBConfig config;
+	config.options.maximum_threads = 1;
+	config.options.async_threads = 16;
+	DuckDB db(nullptr, &config);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE t AS SELECT range AS i FROM range(10000)"));
+	auto result = con.Query("SELECT sum(i) FROM t");
+	REQUIRE(CHECK_COLUMN(result, 0, {Value::HUGEINT(49995000)}));
+	REQUIRE(NewThreadCount(threads_before) < 16);
+
+	auto &scheduler = TaskScheduler::GetScheduler(*con.context);
+	REQUIRE(scheduler.NumberOfAsyncThreads() == 16);
+	REQUIRE(NewThreadCount(threads_before) >= 16);
+}
+
+TEST_CASE("Test idle memory reclamation does not launch the async threads", "[api]") {
+	const auto threads_before = ProcessThreadIds();
+	DBConfig config;
+	config.options.maximum_threads = 1;
+	config.options.async_threads = 16;
+	DuckDB db(nullptr, &config);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE t AS SELECT range AS i FROM range(10000)"));
+	// what a worker runs after it was idle for the decay delay
+	auto &allocator = BlockAllocator::Get(*db.instance);
+	allocator.ThreadIdle();
+	REQUIRE(NewThreadCount(threads_before) < 16);
+	auto result = con.Query("SELECT sum(i) FROM t");
+	REQUIRE(CHECK_COLUMN(result, 0, {Value::HUGEINT(49995000)}));
+
+	REQUIRE(TaskScheduler::GetScheduler(*con.context).NumberOfAsyncThreads() == 16);
+	allocator.ThreadIdle();
+	result = con.Query("SELECT sum(i) FROM t");
+	REQUIRE(CHECK_COLUMN(result, 0, {Value::HUGEINT(49995000)}));
+}
+
+namespace {
+
+class BlockingTask : public BaseExecutorTask {
+public:
+	BlockingTask(TaskExecutor &executor, mutex &lock_p, std::condition_variable &cv_p, bool &blocked_p,
+	             bool &released_p)
+	    : BaseExecutorTask(executor), lock(lock_p), cv(cv_p), blocked(blocked_p), released(released_p) {
+	}
+	void ExecuteTask() override {
+		unique_lock<mutex> guard(lock);
+		blocked = true;
+		cv.notify_all();
+		cv.wait(guard, [&]() { return released; });
+	}
+
+private:
+	mutex &lock;
+	std::condition_variable &cv;
+	bool &blocked;
+	bool &released;
+};
+
+} // namespace
+
+TEST_CASE("Test idle workers reclaim memory without launching the async threads", "[api]") {
+	constexpr idx_t SIZE = 8 * 1024 * 1024;
+	const auto threads_before = ProcessThreadIds();
+	DBConfig config;
+	config.options.maximum_threads = 2;
+	config.options.async_threads = 16;
+	DuckDB db(nullptr, &config);
+	Connection con(db);
+	auto &allocator = BlockAllocator::Get(*db.instance);
+	auto pointer = allocator.AllocateData(SIZE);
+	pointer[0] = 42;
+
+	// the worker runs this task while the memory is freed, so it cannot reclaim it before the check
+	mutex lock;
+	std::condition_variable cv;
+	bool blocked = false;
+	bool released = false;
+	TaskExecutor executor(*con.context);
+	executor.ScheduleTask(make_uniq<BlockingTask>(executor, lock, cv, blocked, released));
+	bool worker_blocked;
+	{
+		unique_lock<mutex> guard(lock);
+		worker_blocked = cv.wait_for(guard, std::chrono::seconds(10), [&]() { return blocked; });
+	}
+	allocator.FreeData(pointer, SIZE);
+	const auto cached = allocator.GetCachedMemory();
+	{
+		lock_guard<mutex> guard(lock);
+		released = true;
+	}
+	cv.notify_all();
+	executor.WorkOnTasks();
+	REQUIRE(worker_blocked);
+	REQUIRE(cached >= SIZE);
+
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+	while (allocator.GetCachedMemory() != 0 && std::chrono::steady_clock::now() < deadline) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	REQUIRE(allocator.GetCachedMemory() == 0);
+	REQUIRE(NewThreadCount(threads_before) < 16);
+}
+
+namespace {
+
+class AsyncCountingTask : public BaseExecutorTask {
+public:
+	AsyncCountingTask(TaskExecutor &executor, atomic<idx_t> &count_p) : BaseExecutorTask(executor), count(count_p) {
+	}
+	void ExecuteTask() override {
+		count++;
+	}
+
+private:
+	atomic<idx_t> &count;
+};
+
+} // namespace
+
+TEST_CASE("Test async threads are launched by the first async task", "[api]") {
+	// one task goes through ScheduleTask, more through ScheduleTasks
+	for (idx_t task_count : {1, 8}) {
+		const auto threads_before = ProcessThreadIds();
+		DBConfig config;
+		config.options.maximum_threads = 1;
+		config.options.async_threads = 16;
+		DuckDB db(nullptr, &config);
+		Connection con(db);
+		REQUIRE(NewThreadCount(threads_before) < 16);
+
+		atomic<idx_t> count {0};
+		TaskExecutor executor(*con.context, TaskSchedulerType::ASYNC);
+		vector<unique_ptr<BaseExecutorTask>> tasks;
+		for (idx_t i = 0; i < task_count; i++) {
+			tasks.push_back(make_uniq<AsyncCountingTask>(executor, count));
+		}
+		executor.ScheduleTasks(std::move(tasks));
+		REQUIRE(NewThreadCount(threads_before) >= 16);
+		executor.WorkOnTasks();
+		REQUIRE(count == task_count);
+	}
+}
+#if defined(__GLIBC__)
+TEST_CASE("Test async threads launched from a pinned thread run on every CPU", "[api]") {
+	cpu_set_t process_cpus;
+	REQUIRE(sched_getaffinity(0, sizeof(process_cpus), &process_cpus) == 0);
+	if (CPU_COUNT(&process_cpus) < 2) {
+		return;
+	}
+	DBConfig config;
+	config.options.maximum_threads = 1;
+	config.options.async_threads = 4;
+	DuckDB db(nullptr, &config);
+	Connection con(db);
+	const auto threads_before = ProcessThreadIds();
+
+	// launch the async threads from a thread that is pinned to one CPU, like a pinned worker
+	int first_cpu = 0;
+	while (!CPU_ISSET(first_cpu, &process_cpus)) {
+		first_cpu++;
+	}
+	cpu_set_t one_cpu;
+	CPU_ZERO(&one_cpu);
+	CPU_SET(first_cpu, &one_cpu);
+	REQUIRE(pthread_setaffinity_np(pthread_self(), sizeof(one_cpu), &one_cpu) == 0);
+	auto async_threads = TaskScheduler::GetScheduler(*con.context).NumberOfAsyncThreads();
+	REQUIRE(pthread_setaffinity_np(pthread_self(), sizeof(process_cpus), &process_cpus) == 0);
+	REQUIRE(async_threads == 4);
+
+	// each async thread sets its CPUs when it starts
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+	idx_t threads_on_every_cpu = 0;
+	while (threads_on_every_cpu < 4 && std::chrono::steady_clock::now() < deadline) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		threads_on_every_cpu = 0;
+		for (auto &id : ProcessThreadIds()) {
+			if (threads_before.find(id) != threads_before.end()) {
+				continue;
+			}
+			cpu_set_t thread_cpus;
+			if (sched_getaffinity(std::stoi(id), sizeof(thread_cpus), &thread_cpus) == 0 &&
+			    CPU_EQUAL(&thread_cpus, &process_cpus)) {
+				threads_on_every_cpu++;
+			}
+		}
+	}
+	REQUIRE(threads_on_every_cpu >= 4);
+}
+#endif
+#endif
+
+TEST_CASE("Test launching async threads while the thread count changes", "[api]") {
+	auto path = TestCreatePath("async_threads_launch.parquet");
+	{
+		DuckDB db(nullptr);
+		Connection con(db);
+		REQUIRE_NO_FAIL(con.Query("COPY (SELECT range AS i FROM range(100000)) TO '" + path + "'"));
+	}
+	for (idx_t i = 0; i < 5; i++) {
+		DBConfig config;
+		config.options.async_threads = 4;
+		DuckDB db(nullptr, &config);
+		std::vector<std::thread> threads;
+		vector<string> results(4);
+		for (idx_t t = 0; t < 4; t++) {
+			threads.emplace_back([&db, &path, &results, t]() {
+				Connection con(db);
+				for (idx_t q = 0; q < 5; q++) {
+					auto result = con.Query("SELECT sum(i)::VARCHAR FROM '" + path + "'");
+					if (result->HasError()) {
+						results[t] += result->GetError();
+						continue;
+					}
+					for (auto &row : *result) {
+						results[t] += row.GetValue<string>(0) + ";";
+					}
+				}
+			});
+		}
+		change_thread_counts(db);
+		for (auto &thread : threads) {
+			thread.join();
+		}
+		for (auto &result : results) {
+			REQUIRE(result == StringUtil::Repeat("4999950000;", 5));
+		}
+	}
 }
 
 static idx_t ColumnDataScanMaxThreads(Connection &con, QueryResult &result,

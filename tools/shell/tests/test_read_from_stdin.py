@@ -429,7 +429,7 @@ class TestReadFromStdin(object):
 
     def run_shell(self, shell, sql):
         return subprocess.run(
-            [shell, '-c', sql],
+            [shell, '--no-init', '-c', sql],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=ShellTest(shell).get_environment(),

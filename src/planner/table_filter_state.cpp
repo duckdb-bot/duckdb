@@ -3,6 +3,7 @@
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/common/vector/constant_vector.hpp"
 #include "duckdb/common/vector/flat_vector.hpp"
+#include "duckdb/common/vector/vector_iterator.hpp"
 #include "duckdb/planner/expression/bound_conjunction_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
@@ -199,10 +200,8 @@ public:
 		}
 		PrepareCapacity(approved_tuple_count);
 		const auto before_count = approved_tuple_count;
-		UnifiedVectorFormat vdata;
-		vector.ToUnifiedFormat(vdata);
 		auto &current_sel = sel.IsSet() ? sel : *FlatVector::IncrementalSelectionVector();
-		approved_tuple_count = Select(vdata, current_sel, approved_tuple_count);
+		approved_tuple_count = Select(vector, current_sel, approved_tuple_count);
 		if (approved_tuple_count != before_count) {
 			sel.Initialize(result_sel);
 		}
@@ -211,69 +210,74 @@ public:
 
 private:
 	template <class T, bool CAN_HAVE_NULL>
-	idx_t TemplatedSelect(const UnifiedVectorFormat &vdata, const SelectionVector &sel, idx_t approved_tuple_count) {
-		auto data = UnifiedVectorFormat::GetData<T>(vdata);
-		auto &mask = vdata.validity;
-		// compare all rows with one value at a time, a loop without branches
+	idx_t TemplatedSelect(const VectorIterator<T> &vector_values, const SelectionVector &sel,
+	                      idx_t approved_tuple_count) {
+		// a NULL row matches no value, and its payload is not compared
 		for (idx_t i = 0; i < approved_tuple_count; i++) {
 			matches[i] = false;
+			valid[i] = !CAN_HAVE_NULL || vector_values[sel.get_index(i)].IsValid();
 		}
+		// compare all rows with one value at a time, a loop without branches when there are no NULL values
 		for (auto &value : values) {
 			auto constant = value.GetValueUnsafe<T>();
 			for (idx_t i = 0; i < approved_tuple_count; i++) {
-				matches[i] |= Equals::Operation(data[vdata.sel->get_index(sel.get_index(i))], constant);
+				auto entry = vector_values[sel.get_index(i)];
+				if (CAN_HAVE_NULL) {
+					matches[i] = matches[i] || (valid[i] && Equals::Operation(entry.GetValueUnsafe(), constant));
+				} else {
+					matches[i] |= Equals::Operation(entry.GetValueUnsafe(), constant);
+				}
 			}
 		}
 		idx_t result_count = 0;
 		for (idx_t i = 0; i < approved_tuple_count; i++) {
-			auto idx = sel.get_index(i);
-			bool found = matches[i] && (!CAN_HAVE_NULL || mask.RowIsValid(vdata.sel->get_index(idx)));
-			result_sel.set_index(result_count, idx);
-			result_count += found;
+			result_sel.set_index(result_count, sel.get_index(i));
+			result_count += matches[i];
 		}
 		return result_count;
 	}
 
 	template <class T>
-	idx_t SelectTyped(const UnifiedVectorFormat &vdata, const SelectionVector &sel, idx_t approved_tuple_count) {
-		if (vdata.validity.CannotHaveNull()) {
-			return TemplatedSelect<T, false>(vdata, sel, approved_tuple_count);
+	idx_t SelectTyped(Vector &vector, const SelectionVector &sel, idx_t approved_tuple_count) {
+		auto vector_values = vector.Values<T>();
+		if (vector_values.CanHaveNull()) {
+			return TemplatedSelect<T, true>(vector_values, sel, approved_tuple_count);
 		}
-		return TemplatedSelect<T, true>(vdata, sel, approved_tuple_count);
+		return TemplatedSelect<T, false>(vector_values, sel, approved_tuple_count);
 	}
 
-	idx_t Select(const UnifiedVectorFormat &vdata, const SelectionVector &sel, idx_t approved_tuple_count) {
+	idx_t Select(Vector &vector, const SelectionVector &sel, idx_t approved_tuple_count) {
 		switch (values[0].type().InternalType()) {
 		case PhysicalType::BOOL:
-			return SelectTyped<bool>(vdata, sel, approved_tuple_count);
+			return SelectTyped<bool>(vector, sel, approved_tuple_count);
 		case PhysicalType::INT8:
-			return SelectTyped<int8_t>(vdata, sel, approved_tuple_count);
+			return SelectTyped<int8_t>(vector, sel, approved_tuple_count);
 		case PhysicalType::INT16:
-			return SelectTyped<int16_t>(vdata, sel, approved_tuple_count);
+			return SelectTyped<int16_t>(vector, sel, approved_tuple_count);
 		case PhysicalType::INT32:
-			return SelectTyped<int32_t>(vdata, sel, approved_tuple_count);
+			return SelectTyped<int32_t>(vector, sel, approved_tuple_count);
 		case PhysicalType::INT64:
-			return SelectTyped<int64_t>(vdata, sel, approved_tuple_count);
+			return SelectTyped<int64_t>(vector, sel, approved_tuple_count);
 		case PhysicalType::INT128:
-			return SelectTyped<hugeint_t>(vdata, sel, approved_tuple_count);
+			return SelectTyped<hugeint_t>(vector, sel, approved_tuple_count);
 		case PhysicalType::UINT8:
-			return SelectTyped<uint8_t>(vdata, sel, approved_tuple_count);
+			return SelectTyped<uint8_t>(vector, sel, approved_tuple_count);
 		case PhysicalType::UINT16:
-			return SelectTyped<uint16_t>(vdata, sel, approved_tuple_count);
+			return SelectTyped<uint16_t>(vector, sel, approved_tuple_count);
 		case PhysicalType::UINT32:
-			return SelectTyped<uint32_t>(vdata, sel, approved_tuple_count);
+			return SelectTyped<uint32_t>(vector, sel, approved_tuple_count);
 		case PhysicalType::UINT64:
-			return SelectTyped<uint64_t>(vdata, sel, approved_tuple_count);
+			return SelectTyped<uint64_t>(vector, sel, approved_tuple_count);
 		case PhysicalType::UINT128:
-			return SelectTyped<uhugeint_t>(vdata, sel, approved_tuple_count);
+			return SelectTyped<uhugeint_t>(vector, sel, approved_tuple_count);
 		case PhysicalType::FLOAT:
-			return SelectTyped<float>(vdata, sel, approved_tuple_count);
+			return SelectTyped<float>(vector, sel, approved_tuple_count);
 		case PhysicalType::DOUBLE:
-			return SelectTyped<double>(vdata, sel, approved_tuple_count);
+			return SelectTyped<double>(vector, sel, approved_tuple_count);
 		case PhysicalType::INTERVAL:
-			return SelectTyped<interval_t>(vdata, sel, approved_tuple_count);
+			return SelectTyped<interval_t>(vector, sel, approved_tuple_count);
 		case PhysicalType::VARCHAR:
-			return SelectTyped<string_t>(vdata, sel, approved_tuple_count);
+			return SelectTyped<string_t>(vector, sel, approved_tuple_count);
 		default:
 			throw InternalException("Unsupported physical type for IN list filter executor");
 		}
@@ -285,6 +289,7 @@ private:
 		}
 		result_sel.Initialize(count);
 		matches = make_unsafe_uniq_array<bool>(count);
+		valid = make_unsafe_uniq_array<bool>(count);
 		current_capacity = count;
 	}
 
@@ -295,6 +300,7 @@ private:
 	vector<Value> values;
 	SelectionVector result_sel;
 	unsafe_unique_array<bool> matches;
+	unsafe_unique_array<bool> valid;
 	idx_t current_capacity = 0;
 };
 

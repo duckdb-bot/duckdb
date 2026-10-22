@@ -3,6 +3,7 @@
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/planner/expression/bound_conjunction_expression.hpp"
+#include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/expression/bound_operator_expression.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
@@ -159,7 +160,18 @@ static unique_ptr<TableFilter> TryCheckInListDuringScan(const TableFilter &filte
 	if (!in_list || in_list->GetExpressionType() != ExpressionType::COMPARE_IN) {
 		return nullptr;
 	}
-	auto value_count = in_list->Cast<BoundOperatorExpression>().GetChildren().size() - 1;
+	// the column itself in a list of constants
+	auto &children = in_list->Cast<BoundOperatorExpression>().GetChildren();
+	if (children[0]->GetExpressionClass() != ExpressionClass::BOUND_REF) {
+		return nullptr;
+	}
+	for (idx_t i = 1; i < children.size(); i++) {
+		if (children[i]->GetExpressionClass() != ExpressionClass::BOUND_CONSTANT ||
+		    children[i]->Cast<BoundConstantExpression>().GetValue().IsNull()) {
+			return nullptr;
+		}
+	}
+	auto value_count = children.size() - 1;
 	if (value_count > MAX_SCAN_IN_FILTER_VALUES ||
 	    static_cast<double>(value_count) > static_cast<double>(stats.GetDistinctCount()) * SCAN_IN_FILTER_SELECTIVITY) {
 		return nullptr;

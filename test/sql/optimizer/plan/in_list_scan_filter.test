@@ -42,6 +42,22 @@ EXPLAIN (ANALYZE, FORMAT JSON) SELECT * FROM in_scan WHERE k IN (5, 7919, 123456
 ----
 analyzed_plan	<REGEX>:.*"intermediate_rows": 7,\s*"intermediate_size_bytes": [0-9]+,\s*"name": "SEQ_SCAN".*
 
+# the longest list that the scan checks, and one value more
+query II
+EXPLAIN (ANALYZE, FORMAT JSON) SELECT * FROM in_scan WHERE k IN (5, 7919, 123456, 999999, 17, 19, 23, 29);
+----
+analyzed_plan	<REGEX>:.*"intermediate_rows": 8,\s*"intermediate_size_bytes": [0-9]+,\s*"name": "SEQ_SCAN".*
+
+query II
+EXPLAIN (ANALYZE, FORMAT JSON) SELECT * FROM in_scan WHERE k IN (5, 7919, 123456, 999999, 17, 19, 23, 29, 31);
+----
+analyzed_plan	<REGEX>:.*"intermediate_rows": 1000000,\s*"intermediate_size_bytes": [0-9]+,\s*"name": "SEQ_SCAN".*
+
+query I
+SELECT count(*) FROM in_scan WHERE k IN (5, 7919, 123456, 999999, 17, 19, 23, 29, 31);
+----
+9
+
 # a column with few distinct values is not filtered during the scan
 query II
 EXPLAIN (ANALYZE, FORMAT JSON) SELECT * FROM in_scan WHERE n IN (1.00, 3.00);

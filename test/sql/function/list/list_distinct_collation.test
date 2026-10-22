@@ -1,0 +1,125 @@
+# name: test/sql/function/list/list_distinct_collation.test
+# description: list_distinct and list_unique compare the elements as DISTINCT does, with the collation of their type
+# group: [list]
+
+# equal VARIANT values stored with different types
+query II
+SELECT list_distinct([1::TINYINT::VARIANT, 1::BIGINT::VARIANT]), list_unique([1::TINYINT::VARIANT, 1::BIGINT::VARIANT])
+----
+[1]	1
+
+query II
+SELECT list_unique([1::DECIMAL(4,1)::VARIANT, 1::INTEGER::VARIANT, 1::UBIGINT::VARIANT, 2::VARIANT]),
+       array_unique([1.5::FLOAT::VARIANT, 1.5::DOUBLE::VARIANT]::VARIANT[2])
+----
+2	1
+
+# string collations, keeping one of the equal strings
+query III
+SELECT list_transform(list_distinct(['A' COLLATE NOCASE, 'a']), lambda x: lower(x)),
+       list_unique(['A' COLLATE NOCASE, 'a']),
+       list_unique(['é' COLLATE NOACCENT, 'e', 'E'])
+----
+[a]	1	2
+
+query I
+SELECT len(array_distinct(['B' COLLATE NOCASE, 'b', 'c']))
+----
+2
+
+# STRUCT fields are compared with their collations too
+query II
+SELECT list_unique([{'a': 1::TINYINT::VARIANT}, {'a': 1::BIGINT::VARIANT}]), list_unique([{'s': 'A' COLLATE NOCASE}, {'s': 'a'}])
+----
+1	1
+
+# intervals compare normalized, as DISTINCT does
+query II
+SELECT list_unique([INTERVAL '1 month', INTERVAL '30 days']), len(list_distinct([INTERVAL '1 month', INTERVAL '30 days']))
+----
+1	1
+
+# NULL elements are dropped and NULL lists stay NULL
+query IIIIII
+SELECT list_distinct([NULL::VARIANT, 1::VARIANT, NULL]), list_unique([NULL::VARIANT, NULL]),
+       list_distinct([]::VARIANT[]), list_unique([]::VARIANT[]),
+       list_distinct(NULL::VARIANT[]), list_unique(NULL::VARIANT[])
+----
+[1]	0	[]	0	NULL	NULL
+
+# types without a collation keep their results
+query II
+SELECT list_sort(list_distinct([3, 1, 3, NULL, 2])), list_unique(['a', 'A', 'a'])
+----
+[1, 2, 3]	2
+
+statement ok
+CREATE TABLE tags (id INTEGER, tag VARCHAR COLLATE NOCASE);
+
+statement ok
+INSERT INTO tags VALUES (1, 'A'), (1, 'a'), (2, 'B');
+
+query III
+SELECT id, list_unique(list(tag)), count(DISTINCT tag) FROM tags GROUP BY id ORDER BY id
+----
+1	1	1
+2	1	1
+
+# the functions agree with count(DISTINCT) on generated data, with lists that span several vectors
+statement ok
+CREATE TABLE elements AS SELECT range AS id, CASE range % 5
+	WHEN 0 THEN (range % 7)::TINYINT::VARIANT
+	WHEN 1 THEN (range % 7)::BIGINT::VARIANT
+	WHEN 2 THEN (range % 7)::DECIMAL(9,2)::VARIANT
+	WHEN 3 THEN (range % 7)::UBIGINT::VARIANT
+	ELSE NULL END AS v,
+	(CASE range % 3 WHEN 0 THEN 'a' WHEN 1 THEN 'A' ELSE 'b' END || (range % 4)::VARCHAR) COLLATE NOCASE AS s,
+	CASE range % 2 WHEN 0 THEN to_days((range % 3) * 30) ELSE to_months(range % 3) END AS i
+FROM range(10000)
+
+foreach groups 3 7 997
+
+query IIIIII
+SELECT count(*) FILTER (list_unique(lv) IS DISTINCT FROM cv),
+       count(*) FILTER (len(list_distinct(lv)) IS DISTINCT FROM cv),
+       count(*) FILTER (list_unique(ls) IS DISTINCT FROM cs),
+       count(*) FILTER (len(list_distinct(ls)) IS DISTINCT FROM cs),
+       count(*) FILTER (list_unique(li) IS DISTINCT FROM ci),
+       count(*) FILTER (len(list_distinct(li)) IS DISTINCT FROM ci)
+FROM (
+	SELECT list(v) AS lv, count(DISTINCT v) AS cv, list(s) AS ls, count(DISTINCT s) AS cs, list(i) AS li,
+	       count(DISTINCT i) AS ci
+	FROM elements GROUP BY id % {groups}
+)
+----
+0	0	0	0	0	0
+
+endloop
+
+# every element is kept as one of the distinct strings
+query I
+SELECT count(*) FROM (SELECT list(s) AS l, list_distinct(list(s)) AS d FROM elements GROUP BY id % 7)
+WHERE len(list_filter(l, lambda e: NOT list_contains(list_transform(d, lambda x: lower(x)), lower(e)))) > 0
+----
+0
+
+# rows of the probe side of a join can share one list entry
+statement ok
+CREATE TABLE shared_lists AS SELECT range % 10 AS k, ['A' COLLATE NOCASE, 'a', 'b' || (range % 3)::VARCHAR] AS l FROM range(1000)
+
+statement ok
+CREATE TABLE duplicate_keys AS SELECT range % 10 AS k FROM range(500)
+
+query III
+SELECT count(*), sum(len(list_distinct(l))), sum(list_unique(l)) FROM shared_lists JOIN duplicate_keys USING (k)
+----
+50000	100000	100000
+
+# the default collation applies, as it does for DISTINCT
+statement ok
+SET default_collation = 'nocase'
+
+query II
+SELECT list_unique(['A', 'a', 'B']), list_transform(list_distinct(['A', 'a']), lambda x: lower(x))
+----
+2	[a]

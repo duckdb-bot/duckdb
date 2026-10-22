@@ -4,6 +4,7 @@
 #include "duckdb/catalog/catalog_entry/aggregate_function_catalog_entry.hpp"
 #include "duckdb/common/owning_string_map.hpp"
 #include "duckdb/common/smaller_binary.hpp"
+#include "duckdb/common/string_map_set.hpp"
 #include "duckdb/common/types/sql_value_map.hpp"
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/function/create_sort_key.hpp"
@@ -31,19 +32,23 @@ unique_ptr<FunctionData> ListAggregatesBindFailure(BoundScalarFunction &bound_fu
 }
 
 struct ListAggregatesBindData : public FunctionData {
-	ListAggregatesBindData(const LogicalType &stype_p, unique_ptr<Expression> aggr_expr_p);
+	ListAggregatesBindData(const LogicalType &stype_p, unique_ptr<Expression> aggr_expr_p,
+	                       unique_ptr<Expression> key_expr_p = nullptr);
 	~ListAggregatesBindData() override;
 
 	LogicalType stype;
 	unique_ptr<Expression> aggr_expr;
+	//! The comparison key of a list element (e.g. its collation) that list_distinct and list_unique compare, if any
+	unique_ptr<Expression> key_expr;
 
 	unique_ptr<FunctionData> Copy() const override {
-		return make_uniq<ListAggregatesBindData>(stype, aggr_expr->Copy());
+		return make_uniq<ListAggregatesBindData>(stype, aggr_expr->Copy(), key_expr ? key_expr->Copy() : nullptr);
 	}
 
 	bool Equals(const FunctionData &other_p) const override {
 		auto &other = other_p.Cast<ListAggregatesBindData>();
-		return stype == other.stype && aggr_expr->Equals(*other.aggr_expr);
+		return stype == other.stype && aggr_expr->Equals(*other.aggr_expr) &&
+		       Expression::Equals(key_expr, other.key_expr);
 	}
 	void Serialize(Serializer &serializer) const {
 		serializer.WriteProperty(1, "stype", stype);
@@ -76,8 +81,9 @@ struct ListAggregatesBindData : public FunctionData {
 	}
 };
 
-ListAggregatesBindData::ListAggregatesBindData(const LogicalType &stype_p, unique_ptr<Expression> aggr_expr_p)
-    : stype(stype_p), aggr_expr(std::move(aggr_expr_p)) {
+ListAggregatesBindData::ListAggregatesBindData(const LogicalType &stype_p, unique_ptr<Expression> aggr_expr_p,
+                                               unique_ptr<Expression> key_expr_p)
+    : stype(stype_p), aggr_expr(std::move(aggr_expr_p)), key_expr(std::move(key_expr_p)) {
 }
 
 ListAggregatesBindData::~ListAggregatesBindData() {
@@ -89,9 +95,13 @@ struct ListAggregatesLocalState : public FunctionLocalState {
 		if (!bind_data) {
 			return;
 		}
+		auto &info = bind_data->Cast<ListAggregatesBindData>();
+		if (info.key_expr) {
+			key_executor = make_uniq<ExpressionExecutor>(context, *info.key_expr);
+		}
 		// arguments that the bind of the aggregate derived from its input (e.g. a collation of the compared value) are
 		// evaluated over the list elements
-		auto &aggr = bind_data->Cast<ListAggregatesBindData>().aggr_expr->Cast<BoundAggregateExpression>();
+		auto &aggr = info.aggr_expr->Cast<BoundAggregateExpression>();
 		auto &children = aggr.GetChildren();
 		for (idx_t child_idx = 1; child_idx < children.size(); child_idx++) {
 			if (children[child_idx]->GetExpressionClass() == ExpressionClass::BOUND_CONSTANT) {
@@ -106,6 +116,8 @@ struct ListAggregatesLocalState : public FunctionLocalState {
 
 	ArenaAllocator arena_allocator;
 	unique_ptr<ExpressionExecutor> derived_executor;
+	//! Computes the comparison keys of the list elements for list_distinct and list_unique
+	unique_ptr<ExpressionExecutor> key_executor;
 };
 
 unique_ptr<FunctionLocalState> ListAggregatesInitLocalState(ExpressionState &state, const BoundFunctionExpression &expr,
@@ -429,6 +441,119 @@ void ListAggregatesFunction(DataChunk &args, ExpressionState &state, Vector &res
 	}
 }
 
+//! Keeps the first element of every group of elements with equal comparison keys, as DISTINCT does, or counts the
+//! groups for list_unique
+template <bool IS_UNIQUE>
+void ListDistinctByKeyFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto count = args.size();
+	Vector &lists = args.data[0];
+	if (lists.GetType().id() == LogicalTypeId::SQLNULL) {
+		ConstantVector::SetNull(result, count_t(count));
+		return;
+	}
+	auto &local_state = ExecuteFunctionState::GetFunctionState(state)->Cast<ListAggregatesLocalState>();
+	auto &key_executor = *local_state.key_executor;
+
+	auto &child_vector = ListVector::GetChild(lists);
+	const auto child_count = ListVector::GetListSize(lists);
+	auto child_validity = child_vector.Validity();
+
+	// the comparison keys of all elements as strings that compare like the keys, NULL elements have none
+	vector<string_t> element_keys(child_count);
+	const auto &key_type = key_executor.expressions[0]->GetReturnType();
+	const bool string_keys = key_type.InternalType() == PhysicalType::VARCHAR;
+	// the key vectors own the strings of the keys
+	vector<unique_ptr<Vector>> key_vectors;
+	DataChunk key_input;
+	key_input.InitializeEmpty({child_vector.GetType()});
+	DataChunk key_output;
+	key_output.Initialize(Allocator::DefaultAllocator(), {key_type});
+	SelectionVector sel(STANDARD_VECTOR_SIZE);
+	for (idx_t offset = 0; offset < child_count; offset += STANDARD_VECTOR_SIZE) {
+		auto batch_count = MinValue<idx_t>(STANDARD_VECTOR_SIZE, child_count - offset);
+		for (idx_t i = 0; i < batch_count; i++) {
+			sel.set_index(i, offset + i);
+		}
+		key_input.data[0].Slice(child_vector, sel, batch_count);
+		key_input.SetChildCardinality(batch_count);
+		key_output.Reset();
+		key_executor.Execute(key_input, key_output);
+		unique_ptr<Vector> key_vector;
+		if (string_keys) {
+			key_vector = make_uniq<Vector>(key_type);
+			key_vector->Reference(key_output.data[0]);
+		} else {
+			key_vector = make_uniq<Vector>(LogicalType::BLOB);
+			CreateSortKeyHelpers::CreateSortKey(key_output.data[0], batch_count,
+			                                    OrderModifiers(OrderType::ASCENDING, OrderByNullType::NULLS_LAST),
+			                                    *key_vector);
+		}
+		auto keys = key_vector->Values<string_t>();
+		for (idx_t i = 0; i < batch_count; i++) {
+			if (!child_validity.IsValid(offset + i)) {
+				continue;
+			}
+			element_keys[offset + i] = keys[i].GetValue();
+		}
+		key_vectors.push_back(std::move(key_vector));
+	}
+
+	auto list_values = lists.Values<list_entry_t>();
+	// rows can share list entries, e.g. in a constant vector, so the distinct elements can exceed the child count
+	idx_t element_count = 0;
+	for (auto list_value : list_values) {
+		if (list_value.IsValid()) {
+			element_count += list_value.GetValue().length;
+		}
+	}
+	string_set_t seen_keys;
+	SelectionVector distinct_sel(MaxValue<idx_t>(element_count, 1));
+	idx_t distinct_count = 0;
+	// the distinct elements of each list, as offset and length in distinct_sel
+	vector<list_entry_t> distinct_entries(count);
+	for (idx_t i = 0; i < count; i++) {
+		auto list_value = list_values[i];
+		if (!list_value.IsValid()) {
+			continue;
+		}
+		auto list_entry = list_value.GetValue();
+		seen_keys.clear();
+		distinct_entries[i].offset = distinct_count;
+		for (idx_t child_idx = list_entry.offset; child_idx < list_entry.offset + list_entry.length; child_idx++) {
+			if (!child_validity.IsValid(child_idx)) {
+				continue;
+			}
+			if (seen_keys.insert(element_keys[child_idx]).second) {
+				distinct_sel.set_index(distinct_count++, child_idx);
+			}
+		}
+		distinct_entries[i].length = distinct_count - distinct_entries[i].offset;
+	}
+
+	if (IS_UNIQUE) {
+		auto writer = FlatVector::Writer<uint64_t>(result, count);
+		for (idx_t i = 0; i < count; i++) {
+			if (!list_values[i].IsValid()) {
+				writer.WriteNull();
+				continue;
+			}
+			writer.WriteValue(distinct_entries[i].length);
+		}
+	} else {
+		const auto result_offset = ListVector::GetListSize(result);
+		ListVector::Append(result, child_vector, distinct_sel, distinct_count);
+		auto writer = FlatVector::Writer<list_entry_t>(result, count);
+		for (idx_t i = 0; i < count; i++) {
+			if (!list_values[i].IsValid()) {
+				writer.WriteNull();
+				continue;
+			}
+			writer.WriteValue(list_entry_t(result_offset + distinct_entries[i].offset, distinct_entries[i].length));
+		}
+	}
+	result.Verify();
+}
+
 void ListAggregateFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	D_ASSERT(args.ColumnCount() >= 2);
 	ListAggregatesFunction<AggregateFunctor, true>(args, state, result);
@@ -436,11 +561,21 @@ void ListAggregateFunction(DataChunk &args, ExpressionState &state, Vector &resu
 
 void ListDistinctFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	D_ASSERT(args.ColumnCount() == 1);
+	auto &local_state = ExecuteFunctionState::GetFunctionState(state)->Cast<ListAggregatesLocalState>();
+	if (local_state.key_executor) {
+		ListDistinctByKeyFunction<false>(args, state, result);
+		return;
+	}
 	ListAggregatesFunction<DistinctFunctor>(args, state, result);
 }
 
 void ListUniqueFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	D_ASSERT(args.ColumnCount() == 1);
+	auto &local_state = ExecuteFunctionState::GetFunctionState(state)->Cast<ListAggregatesLocalState>();
+	if (local_state.key_executor) {
+		ListDistinctByKeyFunction<true>(args, state, result);
+		return;
+	}
 	ListAggregatesFunction<UniqueFunctor>(args, state, result);
 }
 
@@ -580,7 +715,16 @@ unique_ptr<FunctionData> ListAggregatesBind(BindScalarFunctionInput &input) {
 		}
 	}
 
-	return make_uniq<ListAggregatesBindData>(bound_function.GetReturnType(), std::move(bound_aggr_function));
+	// list_distinct and list_unique compare the elements as DISTINCT does, by the collation of their type
+	unique_ptr<Expression> key_expr;
+	if (!IS_AGGR) {
+		key_expr = make_uniq<BoundReferenceExpression>(child_type, idx_t(0));
+		if (!ExpressionBinder::PushCollation(context, key_expr, child_type)) {
+			key_expr.reset();
+		}
+	}
+	return make_uniq<ListAggregatesBindData>(bound_function.GetReturnType(), std::move(bound_aggr_function),
+	                                         std::move(key_expr));
 }
 
 unique_ptr<FunctionData> ListAggregateBind(BindScalarFunctionInput &input) {

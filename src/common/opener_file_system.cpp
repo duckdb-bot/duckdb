@@ -71,15 +71,15 @@ bool OpenerFileSystem::GetRestrictedSearchPaths(const string &path, string &expa
 	if (IsRemoteFile(expanded_path)) {
 		return false;
 	}
-	// a path that normalization turns into one that would expand again (a "~" moved to the front) is refused, since
-	// the glob would resolve it differently from the check
 	auto parsed_path = Path::FromString(expanded_path);
-	auto normalized_path = parsed_path.ToString();
-	if (FileSystem::ExpandPath(normalized_path, opener) != normalized_path) {
-		throw CannotAccessError(path, FileType::FILE_TYPE_REGULAR);
-	}
 	if (parsed_path.IsAbsolute()) {
 		return false;
+	}
+	// a relative path that normalization starts with a "~" segment is refused, since the glob would expand it as the
+	// home directory where the check did not
+	auto &segments = parsed_path.GetPathSegments();
+	if (parsed_path.GetBase().empty() && !segments.empty() && segments[0] == "~") {
+		throw CannotAccessError(path, FileType::FILE_TYPE_REGULAR);
 	}
 	Value search_path_setting;
 	if (!opener->TryGetCurrentSetting("file_search_path", search_path_setting)) {

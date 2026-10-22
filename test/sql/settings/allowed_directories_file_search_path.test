@@ -108,6 +108,12 @@ SELECT * FROM glob('./~/*.csv')
 ----
 Cannot access file "./~/*.csv"
 
+# a name that only starts with "~" is not the home directory
+query I
+SELECT count(*) FROM glob('./~a1/*.csv')
+----
+0
+
 # a search path outside the allowed directory is not searched
 statement ok
 SET file_search_path = '{DATA_DIR}/json'

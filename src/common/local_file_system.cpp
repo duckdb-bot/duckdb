@@ -2329,9 +2329,10 @@ LocalGlobResult::LocalGlobResult(LocalFileSystem &fs, const string &path_p, cons
 				if (!can_access_location) {
 					expand_directories.emplace(search_path, 0);
 				} else if (can_access_location(fs.JoinPath(search_path, path))) {
-					// expand the root in the normalized form that the check saw (an empty entry lists nothing)
-					expand_directories.emplace(
-					    search_path.empty() ? search_path : Path::FromString(search_path).ToString(), 0);
+					// expand the root in the form that the check saw (an empty entry lists nothing)
+					auto root = search_path.empty() ? search_path
+					                                : Path::FromString(fs.ExpandPath(search_path, opener)).ToString();
+					expand_directories.emplace(std::move(root), 0);
 				}
 			}
 		}

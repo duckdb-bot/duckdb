@@ -31,8 +31,8 @@ struct FileGlobInput {
 	FileGlobOptions behavior;
 	bool allow_empty;
 	string extension;
-	//! If set, whether a relative path may be looked up in a location (the path itself, or the path joined with a
-	//! file_search_path entry); a location it refuses is not looked at
+	//! Set by OpenerFileSystem when file access is restricted, whether a relative path may be looked up in a location
+	//! (the path itself, or the path joined with a file_search_path entry). A refused location is not looked at.
 	std::function<bool(const string &location)> can_access_location;
 };
 

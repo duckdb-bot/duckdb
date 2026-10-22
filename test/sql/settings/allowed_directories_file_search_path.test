@@ -68,6 +68,20 @@ SELECT * FROM '~/a1.csv'
 2019-06-15
 2019-06-25
 
+# a search path under the home directory is listed where the check resolved it
+statement ok
+SET home_directory = '{DATA_DIR}/csv'
+
+statement ok
+SET file_search_path = '~/glob'
+
+query I
+SELECT parse_filename(file) FROM glob('*.csv') ORDER BY 1
+----
+f_1.csv
+f_2.csv
+f_3.csv
+
 # a search path outside the allowed directory is not searched
 statement ok
 SET file_search_path = '{DATA_DIR}/json'

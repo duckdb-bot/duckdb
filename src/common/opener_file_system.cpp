@@ -39,8 +39,8 @@ unique_ptr<MultiFileList> OpenerFileSystem::GlobFilesExtended(const string &path
 		VerifyCanAccessFile(path);
 		return GetFileSystem().Glob(path, input, GetOpener());
 	}
-	// the path is checked where file_search_path resolves it, and only the allowed locations are looked at; a glob is
-	// expanded in the search paths only, a name without glob is also looked up in the working directory
+	// the path is checked where file_search_path resolves it, and only the allowed locations are looked at
+	// (a glob only in the search paths, a name without glob also in the working directory)
 	auto &fs = GetFileSystem();
 	bool any_allowed = !HasGlob(expanded_path) && IsAccessAllowed(expanded_path, FileType::FILE_TYPE_REGULAR);
 	for (auto &search_path : search_paths) {

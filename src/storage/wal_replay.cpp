@@ -478,8 +478,8 @@ void WriteAheadLogReplayer::MergeIntoRecoveryWAL(Connection &con, const ReplaySt
 	fs.RemoveFile(checkpoint_wal_path);
 }
 
-//! Whether an entry that does not match its checksum is part of a torn tail: no complete transaction may follow the
-//! transaction it belongs to, so at most one intact WAL_FLUSH (its own) may come after it
+//! Whether an entry that does not match its checksum is part of a torn tail. Its own WAL_FLUSH may follow it, but no
+//! further damaged entry and no other WAL_FLUSH, so at most its transaction and the next one are dropped
 static bool IsTornEntry(const ReplayState &state, BufferedFileReader &reader) {
 	ReplayState scan_state(state.db, state.context, state.replay_state);
 	scan_state.wal_version = state.wal_version;
@@ -495,14 +495,8 @@ static bool IsTornEntry(const ReplayState &state, BufferedFileReader &reader) {
 			}
 		} catch (std::exception &ex) {
 			ErrorData error(ex);
-			if (error.Type() == ExceptionType::SERIALIZATION) {
-				// the rest of the file cannot be read
-				break;
-			}
-			if (!scan_state.checksum_mismatch) {
-				return false;
-			}
-			scan_state.checksum_mismatch = false;
+			// a truncated entry ends the readable rest of the file, any other failure means the WAL is damaged
+			return error.Type() == ExceptionType::SERIALIZATION;
 		}
 	}
 	return true;
@@ -557,9 +551,12 @@ unique_ptr<WriteAheadLog> WriteAheadLogReplayer::ReplayLog(unique_ptr<FileHandle
 		}
 	} catch (std::exception &ex) { // LCOV_EXCL_START
 		ErrorData error(ex);
-		// ignore serialization exceptions and entries with a wrong checksum at the end - they signal a torn WAL
+		// truncated entries and entries with a wrong checksum at the end signal a torn WAL and are ignored
 		bool torn_wal = error.Type() == ExceptionType::SERIALIZATION;
-		if (!torn_wal && checkpoint_state.checksum_mismatch && !config.options.abort_on_wal_failure) {
+		// a checkpoint WAL continues the main WAL, then the end of the main WAL is not the end of the log
+		bool log_continues = replay_state == WALReplayState::MAIN_WAL &&
+		                     FileSystem::Get(database).FileExists(database.GetStorageManager().GetCheckpointWALPath());
+		if (!torn_wal && checkpoint_state.checksum_mismatch && !config.options.abort_on_wal_failure && !log_continues) {
 			torn_wal = IsTornEntry(checkpoint_state, reader);
 		}
 		if (config.options.abort_on_wal_failure || !torn_wal) {

@@ -144,10 +144,11 @@ void BlockMemory::Unload(BlockLock &l, QueryContext context) {
 	block.reset();
 }
 
+// BlockMemory is allocated apart from its control block, which dead eviction queue nodes keep alive
 BlockHandle::BlockHandle(BlockManager &block_manager, block_id_t block_id_p, MemoryTag tag_p)
     : block_manager(block_manager), block_alloc_size(block_manager.GetBlockAllocSize()),
       block_header_size(block_manager.GetBlockHeaderSize()), block_id(block_id_p),
-      memory_p(make_shared_ptr<BlockMemory>(block_manager.GetBufferManager(), block_id_p, tag_p, block_alloc_size)),
+      memory_p(make_uniq<BlockMemory>(block_manager.GetBufferManager(), block_id_p, tag_p, block_alloc_size)),
       memory(*memory_p) {
 }
 
@@ -156,8 +157,8 @@ BlockHandle::BlockHandle(BlockManager &block_manager, block_id_t block_id_p, Mem
                          BufferPoolReservation &&reservation)
     : block_manager(block_manager), block_alloc_size(block_manager.GetBlockAllocSize()),
       block_header_size(block_manager.GetBlockHeaderSize()), block_id(block_id_p),
-      memory_p(make_shared_ptr<BlockMemory>(block_manager.GetBufferManager(), block_id_p, tag_p, std::move(buffer_p),
-                                            destroy_buffer_upon_p, size_p, std::move(reservation))),
+      memory_p(make_uniq<BlockMemory>(block_manager.GetBufferManager(), block_id_p, tag_p, std::move(buffer_p),
+                                      destroy_buffer_upon_p, size_p, std::move(reservation))),
       memory(*memory_p) {
 }
 

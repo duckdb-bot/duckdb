@@ -100,6 +100,12 @@
       "paths": [
         "test/sql/collate/collate_distinct_aggregate_icu.test"
       ]
+    },
+    {
+      "reason": "The verification pass plans and runs each probe again, which allocates logging contexts that the fixture counts",
+      "paths": [
+        "test/sql/table_function/range_lateral_threads.test"
+      ]
     }
   ]
 }

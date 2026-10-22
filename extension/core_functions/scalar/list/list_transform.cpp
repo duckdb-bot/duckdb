@@ -3,7 +3,7 @@
 #include "duckdb/function/lambda_functions.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_lambda_expression.hpp"
-#include "duckdb/planner/expression_iterator.hpp"
+#include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/filter/expression_filter.hpp"
 #include "duckdb/storage/statistics/list_stats.hpp"
 
@@ -33,23 +33,24 @@ static LogicalType ListTransformBindLambda(ClientContext &context, const vector<
 	return LambdaFunctions::BindBinaryChildren(function_child_types, parameter_idx);
 }
 
-//! Whether the expression is computed from the element alone, without constants that bound it on their own
-static bool ComputedFromElementAlone(const Expression &expr) {
-	switch (expr.GetExpressionClass()) {
-	case ExpressionClass::BOUND_REF:
+//! Whether the expression is the element, or a monotone function of it whose bounds come only from those of the element
+static bool IsMonotoneInElement(const Expression &expr) {
+	if (expr.GetExpressionClass() == ExpressionClass::BOUND_REF) {
 		return true;
-	case ExpressionClass::BOUND_CONSTANT:
-		return false;
-	default:
-		break;
 	}
-	bool has_children = false;
-	bool from_element = true;
-	ExpressionIterator::EnumerateChildren(expr, [&](const Expression &child) {
-		has_children = true;
-		from_element = from_element && ComputedFromElementAlone(child);
-	});
-	return has_children && from_element;
+	if (expr.GetExpressionClass() != ExpressionClass::BOUND_FUNCTION) {
+		return false;
+	}
+	auto &func = expr.Cast<BoundFunctionExpression>();
+	auto &children = func.GetChildren();
+	if (children.size() != 1 || func.Function().HasStatisticsCallback()) {
+		return false;
+	}
+	auto monotonicity = func.Function().GetArgProperties(0).monotonicity;
+	if (!IsMonotonicIncreasing(monotonicity) && !IsMonotonicDecreasing(monotonicity)) {
+		return false;
+	}
+	return IsMonotoneInElement(*children[0]);
 }
 
 //! The elements of the result have the statistics of the lambda applied to the elements of the list
@@ -71,7 +72,7 @@ static unique_ptr<BaseStatistics> ListTransformStats(ClientContext &context, Fun
 	}
 	// the statistics of the list argument may not show that its producer has side effects or can throw, so derive
 	// nothing that does not follow from the statistics of the elements
-	if (!ComputedFromElementAlone(*bind_data.lambda_expr)) {
+	if (!IsMonotoneInElement(*bind_data.lambda_expr)) {
 		return nullptr;
 	}
 	auto &element_stats = ListStats::GetChildStats(list_stats);

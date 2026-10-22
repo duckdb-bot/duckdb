@@ -1,5 +1,5 @@
 # name: test/sql/function/generic/hash_comparison_keys.test
-# description: values that compare equal have equal hashes
+# description: VARIANT values that compare equal have equal hashes
 # group: [generic]
 
 load {TEST_DIR}/hash_comparison_keys.db
@@ -62,6 +62,33 @@ SELECT hash(NULL::VARIANT) = hash(NULL), hash({'a': NULL::VARIANT}) = hash({'a':
 ----
 true	true
 
+# nested values in a table, with NULL containers, empty lists and NULL elements
+statement ok
+CREATE TABLE nested AS SELECT * FROM (VALUES
+	(1, [1::TINYINT::VARIANT, NULL], {'a': 1::TINYINT::VARIANT, 'b': [2::SMALLINT::VARIANT]}, (1::TINYINT::VARIANT, 'x')),
+	(2, [1.00::DECIMAL(5,2)::VARIANT, NULL], {'a': 1::BIGINT::VARIANT, 'b': [2.0::DECIMAL(3,1)::VARIANT]}, (1::BIGNUM::VARIANT, 'x')),
+	(3, [], {'a': NULL, 'b': []}, (NULL, NULL)),
+	(4, [], {'a': NULL, 'b': []}, (NULL, NULL)),
+	(5, NULL, NULL, NULL),
+	(6, NULL, NULL, NULL)
+) t(id, l, s, r);
+
+# rows 1 and 2, 3 and 4, and 5 and 6 are equal
+query I
+SELECT count(*) FROM nested a JOIN nested b ON a.l IS NOT DISTINCT FROM b.l AND a.s IS NOT DISTINCT FROM b.s AND a.r IS NOT DISTINCT FROM b.r
+----
+12
+
+query I
+SELECT count(*) FROM nested a JOIN nested b ON a.l IS NOT DISTINCT FROM b.l AND a.s IS NOT DISTINCT FROM b.s AND a.r IS NOT DISTINCT FROM b.r WHERE hash(a.l, a.s, a.r) <> hash(b.l, b.s, b.r)
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT id, hash(l, s, r) AS h FROM nested WHERE id % 2 = 0) even JOIN (SELECT id, hash(l, s, r) AS h FROM nested WHERE id % 2 = 1) odd ON even.id = odd.id + 1 AND even.h = odd.h
+----
+3
+
 # VARIANT values stored as typed (shredded) columns
 statement ok
 SET variant_minimum_shredding_size = 0;
@@ -90,7 +117,7 @@ SELECT count(DISTINCT hash(v)) FROM (SELECT a AS v FROM stored UNION ALL SELECT 
 ----
 3
 
-# string collations and the keys of types that hash by value are not applied, so these hashes stay as they were
+# strings hash their stored value, and TIMETZ, BIT and INTERVAL already hash by value
 query IIIII
 SELECT hash('12:00:00+01'::TIMETZ), hash('0101'::BIT), hash(INTERVAL '1 month 3 days'), hash('A' COLLATE NOCASE), hash({'t': '12:00:00+01'::TIMETZ, 's': 'A' COLLATE NOCASE})
 ----
@@ -102,10 +129,10 @@ SELECT hash(INTERVAL '-2147483648 months -2147483648 days -9223372036854775807 m
 10698964209986971760	14945741554909537998
 
 # each argument is hashed on its own, so the arguments can have different collations
-query I
-SELECT hash('a' COLLATE NOCASE, 'b' COLLATE NOACCENT) = hash('a', 'b')
+query II
+SELECT hash('a' COLLATE NOCASE, 'b' COLLATE NOACCENT) = hash('a', 'b'), hash('A' COLLATE NOCASE, 'B') = hash('A', 'B')
 ----
-true
+true	true
 
 # an index on hash() finds its rows after a restart with another default collation
 statement ok

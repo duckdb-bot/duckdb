@@ -55,6 +55,26 @@ SELECT currval('window_seq');
 ----
 30
 
+# MATCH_RECOGNIZE also runs its DEFINE conditions for the rows of all partitions
+statement ok
+CREATE SEQUENCE mr_seq;
+
+statement ok
+CREATE TABLE mr_input (s VARCHAR);
+
+statement ok
+INSERT INTO mr_input VALUES ('a'), ('b');
+
+query I
+SELECT count(*) FROM mr_input MATCH_RECOGNIZE (PARTITION BY lower(s) ONE ROW PER MATCH PATTERN (A) DEFINE A AS nextval('mr_seq') > 0) AS m(k) WHERE k = 'b';
+----
+1
+
+query I
+SELECT currval('mr_seq');
+----
+2
+
 # with a collation the filter is on the collation key, through the row numbers of EXCEPT ALL and INTERSECT ALL
 statement ok
 CREATE TABLE nocase_a AS SELECT range::VARCHAR COLLATE NOCASE AS s FROM range(100);

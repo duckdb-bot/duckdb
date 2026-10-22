@@ -38,6 +38,9 @@ public:
 	//! Whether the filter compares something that every window expression partitions by with constants, so that it
 	//! keeps or removes whole partitions
 	bool ComparesPartitions(const Expression &filter) const;
+	//! Whether every window expression is a ranking function without arguments, e.g. row_number(), which neither fails
+	//! nor has side effects, so a filter may change the partitions it runs for
+	bool OnlyRanksWithoutArguments() const;
 
 protected:
 	void ResolveTypes() override;

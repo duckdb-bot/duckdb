@@ -1,5 +1,6 @@
 #include "duckdb/planner/operator/logical_window.hpp"
 
+#include "duckdb/function/window_function.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
@@ -56,6 +57,21 @@ bool LogicalWindow::ComparesPartitions(const Expression &filter) const {
 			partitions_by_compared = partitions_by_compared || IsPartition(*partition, *compared);
 		}
 		if (!partitions_by_compared) {
+			return false;
+		}
+	}
+	return true;
+}
+
+bool LogicalWindow::OnlyRanksWithoutArguments() const {
+	for (auto &expr : expressions) {
+		if (expr->GetExpressionClass() != ExpressionClass::BOUND_WINDOW || expr->IsVolatile() || expr->CanThrow()) {
+			return false;
+		}
+		auto &window_expr = expr->Cast<BoundWindowExpression>();
+		if (!window_expr.WindowFunction() || !window_expr.WindowFunction()->IsRanking() ||
+		    window_expr.AggregateFunction() || !window_expr.GetChildren().empty() || window_expr.Filter() ||
+		    window_expr.StartExpr() || window_expr.EndExpr()) {
 			return false;
 		}
 	}

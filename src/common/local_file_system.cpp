@@ -2160,7 +2160,8 @@ vector<OpenFileInfo>
 LocalFileSystem::FetchFileWithoutGlob(const string &path, optional_ptr<FileOpener> opener, bool absolute_path,
                                       const std::function<bool(const string &)> &can_access_location) {
 	auto exists = [&](const string &location) {
-		if (can_access_location && !can_access_location(location)) {
+		// a location that the check would expand again is skipped, so that the check and the lookup see one path
+		if (can_access_location && (ExpandPath(location, opener) != location || !can_access_location(location))) {
 			return false;
 		}
 		return FileExists(location, opener) || IsPipe(location, opener);
@@ -2174,7 +2175,7 @@ LocalFileSystem::FetchFileWithoutGlob(const string &path, optional_ptr<FileOpene
 			auto search_paths_str = value.ToString();
 			vector<std::string> search_paths = StringUtil::Split(search_paths_str, ',');
 			for (const auto &search_path : search_paths) {
-				auto joined_path = JoinPath(search_path, path);
+				auto joined_path = JoinPath(can_access_location ? ExpandPath(search_path, opener) : search_path, path);
 				if (exists(joined_path)) {
 					result.emplace_back(joined_path);
 				}
@@ -2328,10 +2329,13 @@ LocalGlobResult::LocalGlobResult(LocalFileSystem &fs, const string &path_p, cons
 				has_search_path = true;
 				if (!can_access_location) {
 					expand_directories.emplace(search_path, 0);
-				} else if (can_access_location(fs.JoinPath(search_path, path))) {
-					// expand the root in the form that the check saw (an empty entry lists nothing)
-					auto root = search_path.empty() ? search_path
-					                                : Path::FromString(fs.ExpandPath(search_path, opener)).ToString();
+					continue;
+				}
+				// the root is checked and listed in one form, expanded and normalized (an empty entry lists nothing)
+				auto root =
+				    search_path.empty() ? search_path : Path::FromString(fs.ExpandPath(search_path, opener)).ToString();
+				auto location = fs.JoinPath(root, path);
+				if (fs.ExpandPath(location, opener) == location && can_access_location(location)) {
 					expand_directories.emplace(std::move(root), 0);
 				}
 			}

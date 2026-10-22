@@ -44,6 +44,15 @@ void DamageBytes(const string &wal_path, idx_t offset, idx_t count) {
 	handle->Sync();
 }
 
+//! Overwrites bytes of the WAL with zeros up to its end
+void ZeroUntilEnd(const string &wal_path, idx_t offset) {
+	LocalFileSystem fs;
+	auto handle = fs.OpenFile(wal_path, FileFlags::FILE_FLAGS_READ | FileFlags::FILE_FLAGS_WRITE);
+	duckdb::vector<data_t> zeros(handle->GetFileSize() - offset, 0);
+	handle->Write(QueryContext(), zeros.data(), zeros.size(), offset);
+	handle->Sync();
+}
+
 //! Inverts a byte in the middle of a transaction's entries, inside the payload of its insert
 void DamageTransaction(const string &wal_path, idx_t start, idx_t end) {
 	DamageBytes(wal_path, start + (end - start) / 2, 1);
@@ -132,5 +141,51 @@ TEST_CASE("A WAL entry with a wrong checksum is not a torn tail when a checkpoin
 	}
 	REQUIRE_THROWS_WITH(DuckDB(database_path, config.get()), Catch::Contains("does not match stored checksum"));
 	LocalFileSystem().TryRemoveFile(wal_path + ".checkpoint");
+	DeleteDatabase(database_path);
+}
+
+TEST_CASE("A WAL entry with a wrong checksum and a damaged size is not a torn tail", "[storage][wal]") {
+	auto config = TornWALConfig(false);
+	auto database_path = TestCreatePath("wal_torn_checksum_size");
+	auto wal_path = database_path + ".wal";
+	auto ends = WriteTransactions(database_path, *config);
+	// the entry grows over the commits of the second and the third transaction
+	DamageBytes(wal_path, ends[1], 1);
+	REQUIRE_THROWS_WITH(DuckDB(database_path, config.get()), Catch::Contains("does not match stored checksum"));
+	DeleteDatabase(database_path);
+}
+
+TEST_CASE("A WAL whose last transaction is zeroed up to the end is a torn tail", "[storage][wal]") {
+	auto config = TornWALConfig(false);
+	auto database_path = TestCreatePath("wal_torn_checksum_zeroed");
+	auto wal_path = database_path + ".wal";
+	auto ends = WriteTransactions(database_path, *config);
+	ZeroUntilEnd(wal_path, ends[2] + (ends[3] - ends[2]) / 2);
+	{
+		DuckDB db(database_path, config.get());
+		Connection con(db);
+		auto result = con.Query("SELECT k, count(*) FROM t GROUP BY k ORDER BY k");
+		REQUIRE(CHECK_COLUMN(result, 0, {1, 2}));
+		REQUIRE(CHECK_COLUMN(result, 1, {1000, 1000}));
+	}
+	DeleteDatabase(database_path);
+}
+
+TEST_CASE("A WAL entry with a wrong checksum before an empty entry is not a torn tail", "[storage][wal]") {
+	auto config = TornWALConfig(false);
+	auto database_path = TestCreatePath("wal_torn_checksum_empty");
+	auto wal_path = database_path + ".wal";
+	auto ends = WriteTransactions(database_path, *config);
+	DamageTransaction(wal_path, ends[2], ends[3]);
+	// the size of the last WAL_FLUSH becomes zero, while its checksum and payload stay
+	idx_t flush_entry_size = 2 * sizeof(uint64_t) + 5;
+	LocalFileSystem fs;
+	{
+		auto handle = fs.OpenFile(wal_path, FileFlags::FILE_FLAGS_READ | FileFlags::FILE_FLAGS_WRITE);
+		uint64_t zero = 0;
+		handle->Write(QueryContext(), &zero, sizeof(zero), ends[3] - flush_entry_size);
+		handle->Sync();
+	}
+	REQUIRE_THROWS_WITH(DuckDB(database_path, config.get()), Catch::Contains("does not match stored checksum"));
 	DeleteDatabase(database_path);
 }

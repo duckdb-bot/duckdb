@@ -8,6 +8,7 @@
 #include "duckdb/common/encryption_key_manager.hpp"
 #include "duckdb/common/numeric_utils.hpp"
 #include "duckdb/common/serializer/binary_deserializer.hpp"
+#include "duckdb/common/serializer/binary_serializer.hpp"
 #include "duckdb/common/serializer/buffered_file_reader.hpp"
 #include "duckdb/common/serializer/memory_stream.hpp"
 #include "duckdb/common/vector_size.hpp"
@@ -66,6 +67,8 @@ public:
 	optional_idx expected_checkpoint_id;
 	//! Set when the entry just read does not match its checksum
 	bool checksum_mismatch = false;
+	//! Set when the entry just read runs past the end of the file
+	bool entry_past_end = false;
 	WALReplayState replay_state;
 	//! Blocks referenced by ROW_GROUP_DATA entries, collected during the deserialize-only scan. They are marked as used
 	//! only once we have decided to replay the WAL, so if log replay is not needed, these blocks won't be
@@ -127,6 +130,7 @@ public:
 			auto file_size = stream.FileSize();
 
 			if (offset + size > file_size) {
+				state_p.entry_past_end = true;
 				throw SerializationException(
 				    "Corrupt WAL file: entry size exceeded remaining data in file at byte position %llu "
 				    "(found entry with size %llu bytes, file size %llu bytes)",
@@ -478,25 +482,89 @@ void WriteAheadLogReplayer::MergeIntoRecoveryWAL(Connection &con, const ReplaySt
 	fs.RemoveFile(checkpoint_wal_path);
 }
 
-//! Whether an entry that does not match its checksum is part of a torn tail. Its own WAL_FLUSH may follow it, but no
-//! further damaged entry and no other WAL_FLUSH, so at most its transaction and the next one are dropped
-static bool IsTornEntry(const ReplayState &state, BufferedFileReader &reader) {
-	ReplayState scan_state(state.db, state.context, state.replay_state);
-	scan_state.wal_version = state.wal_version;
-	idx_t flush_count = 0;
-	while (!reader.Finished()) {
-		try {
-			auto deserializer = WriteAheadLogDeserializer::GetEntryDeserializer(scan_state, reader, true);
-			if (deserializer.ReplayEntry()) {
-				flush_count++;
-				if (flush_count > 1) {
-					return false;
+//! The bytes of a WAL_FLUSH entry of a WAL v2, which are the same for every commit
+static vector<data_t> GetFlushEntryBytes(AttachedDatabase &db) {
+	MemoryStream payload(Allocator::DefaultAllocator());
+	BinarySerializer serializer(payload, SerializationOptions(db));
+	serializer.Begin();
+	serializer.WriteProperty(100, "wal_type", WALType::WAL_FLUSH);
+	serializer.End();
+	auto size = payload.GetPosition();
+	vector<data_t> result(2 * sizeof(uint64_t) + size);
+	Store<uint64_t>(size, result.data());
+	Store<uint64_t>(Checksum(payload.GetData(), size), result.data() + sizeof(uint64_t));
+	memcpy(result.data() + 2 * sizeof(uint64_t), payload.GetData(), size);
+	return result;
+}
+
+//! Counts the WAL_FLUSH entries in the file after the given position, up to the given maximum. It searches the bytes
+//! instead of following the framing, so it also finds commits that a damaged entry size would hide.
+static idx_t CountFlushEntriesAfter(ReplayState &state, const string &wal_path, idx_t position, idx_t max_count) {
+	auto flush_entry = GetFlushEntryBytes(state.db);
+	auto handle = FileSystem::Get(state.db).OpenFile(wal_path, FileFlags::FILE_FLAGS_READ);
+	auto file_size = handle->GetFileSize();
+	static constexpr idx_t CHUNK_SIZE = 1ULL << 20ULL;
+	vector<data_t> buffer(CHUNK_SIZE + flush_entry.size());
+	idx_t count = 0;
+	for (idx_t chunk_start = position + 1; chunk_start + flush_entry.size() <= file_size; chunk_start += CHUNK_SIZE) {
+		auto read_size = MinValue<idx_t>(CHUNK_SIZE + flush_entry.size() - 1, file_size - chunk_start);
+		handle->Read(QueryContext(state.context), buffer.data(), read_size, chunk_start);
+		for (idx_t i = 0; i + flush_entry.size() <= read_size && i < CHUNK_SIZE; i++) {
+			if (memcmp(buffer.data() + i, flush_entry.data(), flush_entry.size()) == 0) {
+				count++;
+				if (count >= max_count) {
+					return count;
 				}
 			}
+		}
+	}
+	return count;
+}
+
+//! Whether the file only holds zeros from the given position to its end
+static bool IsZeroUntilEnd(ReplayState &state, const string &wal_path, idx_t position) {
+	auto handle = FileSystem::Get(state.db).OpenFile(wal_path, FileFlags::FILE_FLAGS_READ);
+	auto file_size = handle->GetFileSize();
+	static constexpr idx_t CHUNK_SIZE = 1ULL << 20ULL;
+	vector<data_t> buffer(CHUNK_SIZE);
+	for (idx_t chunk_start = position; chunk_start < file_size; chunk_start += CHUNK_SIZE) {
+		auto read_size = MinValue<idx_t>(CHUNK_SIZE, file_size - chunk_start);
+		handle->Read(QueryContext(state.context), buffer.data(), read_size, chunk_start);
+		for (idx_t i = 0; i < read_size; i++) {
+			if (buffer[i] != 0) {
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
+//! Whether an entry of a WAL v2 that does not match its checksum is part of a torn tail. Only its own WAL_FLUSH may
+//! follow it, the entries after it must be intact up to the end of the file, an entry the file cuts off or zeros up to
+//! the end, so at most its transaction and, when the damaged entry was its WAL_FLUSH, the next one are dropped
+static bool IsTornEntry(ReplayState &state, BufferedFileReader &reader, const string &wal_path,
+                        idx_t damaged_entry_start) {
+	if (state.wal_version != 2) {
+		// encrypted WAL entries are verified by their tag before the checksum
+		return false;
+	}
+	if (CountFlushEntriesAfter(state, wal_path, damaged_entry_start, 2) > 1) {
+		return false;
+	}
+	ReplayState scan_state(state.db, state.context, state.replay_state);
+	scan_state.wal_version = state.wal_version;
+	while (!reader.Finished()) {
+		auto entry_start = reader.CurrentOffset();
+		try {
+			auto deserializer = WriteAheadLogDeserializer::GetEntryDeserializer(scan_state, reader, true);
+			deserializer.ReplayEntry();
 		} catch (std::exception &ex) {
+			// an entry the end of the file cuts off, or a zeroed end of the file, is part of a torn tail
 			ErrorData error(ex);
-			// a truncated entry ends the readable rest of the file, any other failure means the WAL is damaged
-			return error.Type() == ExceptionType::SERIALIZATION;
+			if (error.Type() != ExceptionType::SERIALIZATION) {
+				return false;
+			}
+			return scan_state.entry_past_end || IsZeroUntilEnd(state, wal_path, entry_start);
 		}
 	}
 	return true;
@@ -557,7 +625,7 @@ unique_ptr<WriteAheadLog> WriteAheadLogReplayer::ReplayLog(unique_ptr<FileHandle
 		bool log_continues = replay_state == WALReplayState::MAIN_WAL &&
 		                     FileSystem::Get(database).FileExists(database.GetStorageManager().GetCheckpointWALPath());
 		if (!torn_wal && checkpoint_state.checksum_mismatch && !config.options.abort_on_wal_failure && !log_continues) {
-			torn_wal = IsTornEntry(checkpoint_state, reader);
+			torn_wal = IsTornEntry(checkpoint_state, reader, wal_path, checkpoint_state.current_position.GetIndex());
 		}
 		if (config.options.abort_on_wal_failure || !torn_wal) {
 			con.Rollback();

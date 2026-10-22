@@ -459,13 +459,12 @@ void ListDistinctByKeyFunction(DataChunk &args, ExpressionState &state, Vector &
 	auto &child_vector = ListVector::GetChild(lists);
 	auto child_validity = child_vector.Validity();
 
-	// the valid elements to evaluate keys for, once per distinct list entry, as rows can share list entries and a
-	// filter can leave the elements of other lists in the child vector
+	// the valid elements to evaluate keys for, in the order of the list entries, and the index of the first key of
+	// every row in them
 	vector<idx_t> key_elements;
-	// the key of every element of the distinct list entries, INVALID_INDEX for NULL elements
-	vector<idx_t> element_keys;
-	// the offset of the elements of every row in element_keys
 	vector<idx_t> row_key_offsets(count);
+	// rows of a dictionary or constant vector can share list entries, whose keys are then evaluated once
+	const bool can_share_entries = lists.GetVectorType() != VectorType::FLAT_VECTOR;
 	unordered_map<idx_t, list_entry_t> entry_key_offsets;
 	idx_t element_count = 0;
 	for (idx_t i = 0; i < count; i++) {
@@ -475,20 +474,19 @@ void ListDistinctByKeyFunction(DataChunk &args, ExpressionState &state, Vector &
 		}
 		auto list_entry = list_value.GetValue();
 		element_count += list_entry.length;
-		auto entry_keys = entry_key_offsets.find(list_entry.offset);
-		if (entry_keys != entry_key_offsets.end() && entry_keys->second.length == list_entry.length) {
-			row_key_offsets[i] = entry_keys->second.offset;
-			continue;
-		}
-		row_key_offsets[i] = element_keys.size();
-		entry_key_offsets[list_entry.offset] = list_entry_t(element_keys.size(), list_entry.length);
-		for (idx_t child_idx = list_entry.offset; child_idx < list_entry.offset + list_entry.length; child_idx++) {
-			if (!child_validity.IsValid(child_idx)) {
-				element_keys.push_back(DConstants::INVALID_INDEX);
+		if (can_share_entries) {
+			auto entry_keys = entry_key_offsets.find(list_entry.offset);
+			if (entry_keys != entry_key_offsets.end() && entry_keys->second.length == list_entry.length) {
+				row_key_offsets[i] = entry_keys->second.offset;
 				continue;
 			}
-			element_keys.push_back(key_elements.size());
-			key_elements.push_back(child_idx);
+			entry_key_offsets[list_entry.offset] = list_entry_t(key_elements.size(), list_entry.length);
+		}
+		row_key_offsets[i] = key_elements.size();
+		for (idx_t child_idx = list_entry.offset; child_idx < list_entry.offset + list_entry.length; child_idx++) {
+			if (child_validity.IsValid(child_idx)) {
+				key_elements.push_back(child_idx);
+			}
 		}
 	}
 
@@ -542,10 +540,14 @@ void ListDistinctByKeyFunction(DataChunk &args, ExpressionState &state, Vector &
 		auto list_entry = list_value.GetValue();
 		seen_keys.clear();
 		distinct_entries[i].offset = distinct_count;
-		for (idx_t element_idx = 0; element_idx < list_entry.length; element_idx++) {
-			auto child_idx = list_entry.offset + element_idx;
-			auto key_idx = element_keys[row_key_offsets[i] + element_idx];
-			if (key_idx == DConstants::INVALID_INDEX || !has_key[key_idx] || !seen_keys.insert(keys[key_idx]).second) {
+		// the keys of the valid elements of the list follow each other
+		auto key_idx = row_key_offsets[i];
+		for (idx_t child_idx = list_entry.offset; child_idx < list_entry.offset + list_entry.length; child_idx++) {
+			if (!child_validity.IsValid(child_idx)) {
+				continue;
+			}
+			auto element_key = key_idx++;
+			if (!has_key[element_key] || !seen_keys.insert(keys[element_key]).second) {
 				continue;
 			}
 			if (!IS_UNIQUE) {

@@ -49,3 +49,14 @@ query II
 SELECT count(*), count(*) FILTER (i IS NULL) FROM (SELECT * FROM big_with_nulls ANTI JOIN big_no_nulls ON big_with_nulls.i IS NOT DISTINCT FROM big_no_nulls.i) t(i);
 ----
 101	1
+
+# the join keys are compressed, and a right side without NULLs keeps that too
+query II
+EXPLAIN SELECT big_no_nulls.i IS NULL, big_with_nulls.i IS NULL FROM big_with_nulls JOIN big_no_nulls ON big_with_nulls.i IS NOT DISTINCT FROM big_no_nulls.i;
+----
+physical_plan	<REGEX>:.*Projections: false, i IS NULL.*Join Type: INNER.*AS INTEGER.*AS INTEGER.*
+
+query II
+SELECT count(*) FILTER (big_no_nulls.i IS NULL), count(*) FILTER (big_with_nulls.i IS NULL) FROM big_with_nulls JOIN big_no_nulls ON big_with_nulls.i IS NOT DISTINCT FROM big_no_nulls.i;
+----
+0	0

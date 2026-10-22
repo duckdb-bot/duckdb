@@ -193,5 +193,17 @@ SELECT a.rn FROM (SELECT p, row_number() OVER (PARTITION BY p ORDER BY s::INTEGE
 ----
 1
 
+# also when the window function itself fails for those rows
+statement ok
+CREATE TABLE nw (p BIGINT);
+
+statement ok
+INSERT INTO nw VALUES (0), (1);
+
+query I
+SELECT a.n FROM (SELECT p, ntile(p) OVER (PARTITION BY p) AS n FROM nw WHERE p = 1) a SEMI JOIN (VALUES (1::BIGINT)) b(p) ON a.p IS NOT DISTINCT FROM b.p;
+----
+1
+
 statement ok
 RESET disabled_optimizers;

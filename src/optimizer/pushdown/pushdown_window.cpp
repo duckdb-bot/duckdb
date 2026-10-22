@@ -168,14 +168,19 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownWindow(unique_ptr<LogicalOpe
 		return FinishPushdown(std::move(op));
 	}
 
+	bool volatile_window = false;
+	for (auto &expr : window.expressions) {
+		volatile_window = volatile_window || expr->IsVolatile();
+	}
 	vector<unique_ptr<Filter>> leftover_filters;
 	for (idx_t i = 0; i < filters.size(); i++) {
 		// If a filter is on a partition in every window expression it can be pushed down.
 		vector<ColumnBinding> bindings;
 		ExtractFilterBindings(*filters.at(i)->filter, bindings);
-		// Also a filter that compares a partition expression of every window expression with constants.
+		// Also a filter that compares a partition expression of every window expression with constants, unless the
+		// window expressions would then run for fewer rows.
 		if ((CanPushdownFilter(window_exprs_partition_bindings, bindings) ||
-		     window.ComparesPartitions(*filters.at(i)->filter)) &&
+		     (!volatile_window && window.ComparesPartitions(*filters.at(i)->filter))) &&
 		    !filters.at(i)->filter->IsVolatile()) {
 			pushdown.filters.push_back(std::move(filters.at(i)));
 			continue;

@@ -41,6 +41,20 @@ SELECT s, rn, total FROM (SELECT s, i, row_number() OVER (PARTITION BY lower(s) 
 1A	1	435
 1a	2	435
 
+# a volatile window expression still runs for the rows of all partitions
+statement ok
+CREATE SEQUENCE window_seq;
+
+query I
+SELECT count(n) FROM (SELECT s, first_value(nextval('window_seq')) OVER (PARTITION BY lower(s) ORDER BY i) AS n FROM t) WHERE lower(s) = '1a';
+----
+10
+
+query I
+SELECT currval('window_seq');
+----
+30
+
 # with a collation the filter is on the collation key, through the row numbers of EXCEPT ALL and INTERSECT ALL
 statement ok
 CREATE TABLE nocase_a AS SELECT range::VARCHAR COLLATE NOCASE AS s FROM range(100);

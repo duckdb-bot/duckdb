@@ -84,18 +84,24 @@ LogicalComparisonJoin::DeriveConstantFilters(const vector<reference<const Expres
 			if (!compared_child.IsValid()) {
 				continue;
 			}
-			auto derived = filter.get().Copy();
 			bool compares_source = false;
 			idx_t child_idx = 0;
-			ExpressionIterator::EnumerateChildren(*derived, [&](unique_ptr<Expression> &child) {
-				if (child_idx++ == compared_child.GetIndex() && child->Equals(source)) {
-					child = target.Copy();
-					compares_source = true;
+			ExpressionIterator::EnumerateChildren(filter.get(), [&](const Expression &child) {
+				if (child_idx++ == compared_child.GetIndex()) {
+					compares_source = child.Equals(source);
 				}
 			});
-			if (compares_source) {
-				result.push_back(std::move(derived));
+			if (!compares_source) {
+				continue;
 			}
+			auto derived = filter.get().Copy();
+			child_idx = 0;
+			ExpressionIterator::EnumerateChildren(*derived, [&](unique_ptr<Expression> &child) {
+				if (child_idx++ == compared_child.GetIndex()) {
+					child = target.Copy();
+				}
+			});
+			result.push_back(std::move(derived));
 		}
 	}
 	return result;

@@ -2,6 +2,7 @@
 
 #include "duckdb/common/enum_util.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
+#include "duckdb/planner/expression/bound_window_expression.hpp"
 #include "duckdb/planner/operator/logical_any_join.hpp"
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
 #include "duckdb/planner/operator/logical_cross_product.hpp"
@@ -161,13 +162,23 @@ unique_ptr<LogicalOperator> FilterPullup::PullupDistinct(unique_ptr<LogicalOpera
 	return FinishPullup(std::move(op));
 }
 
+//! Whether the expression is a ranking window function without arguments, which cannot fail, e.g. row_number()
+static bool IsRankingWithoutArguments(const Expression &expr) {
+	if (expr.GetExpressionClass() != ExpressionClass::BOUND_WINDOW || expr.IsVolatile() || expr.CanThrow()) {
+		return false;
+	}
+	auto &window_expr = expr.Cast<BoundWindowExpression>();
+	return !window_expr.AggregateFunction() && window_expr.GetChildren().empty() && !window_expr.Filter() &&
+	       !window_expr.StartExpr() && !window_expr.EndExpr();
+}
+
 unique_ptr<LogicalOperator> FilterPullup::PullupWindow(unique_ptr<LogicalOperator> op) {
 	if (!can_pullup) {
 		return FinishPullup(std::move(op));
 	}
-	// above the window, the window expressions run for the rows of the partitions the filters remove
+	// above the window, the window expressions also run for the partitions the filters remove
 	for (auto &expr : op->expressions) {
-		if (expr->IsVolatile() || expr->CanThrow()) {
+		if (!IsRankingWithoutArguments(*expr)) {
 			return FinishPullup(std::move(op));
 		}
 	}

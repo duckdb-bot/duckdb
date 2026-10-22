@@ -118,7 +118,7 @@ CREATE VIEW ra AS SELECT * FROM rc;
 statement ok
 SET enable_view_dependencies = false;
 
-# subqueries that binding drops: a macro argument the macro does not use, a star that expands to nothing
+# subqueries that binding drops, a macro argument the macro does not use and a star that expands to nothing
 statement ok
 CREATE MACRO ignore_arg(x) AS 42;
 
@@ -186,6 +186,28 @@ CREATE VIEW fs.fbc AS SELECT * FROM query_table('fbb');
 
 statement ok
 CREATE VIEW fs.fba AS SELECT * FROM fbc;
+
+statement ok
+CREATE VIEW fvc AS SELECT 7 AS x;
+
+statement ok
+CREATE VIEW zz.fvb AS SELECT 42 AS x;
+
+statement ok
+CREATE VIEW zz.fvc AS SELECT * FROM query_table('fvb');
+
+statement ok
+CREATE VIEW zz.fva AS SELECT * FROM fvc;
+
+# a name that binding can also find among the built in views
+statement ok
+CREATE VIEW pb AS SELECT 42 AS x;
+
+statement ok
+CREATE VIEW pg_am AS SELECT * FROM query_table('pb');
+
+statement ok
+CREATE VIEW pa AS SELECT 42 AS x FROM pg_am;
 
 # a view that reads a temporary view instead after loading
 statement ok
@@ -280,10 +302,10 @@ SELECT (SELECT x FROM ra), (SELECT x FROM mb), (SELECT x FROM cb), (SELECT x FRO
 ----
 42	42	42	3	42	43
 
-query III
-SELECT (SELECT x FROM imported.main.tsb), (SELECT x FROM imported.main.tqb), (SELECT x FROM imported.fs.fba)
+query IIIII
+SELECT (SELECT x FROM imported.main.tsb), (SELECT x FROM imported.main.tqb), (SELECT x FROM imported.fs.fba), (SELECT x FROM imported.zz.fva), (SELECT x FROM imported.main.pg_am)
 ----
-42	42	42
+42	42	42	42	42
 
 # COPY FROM DATABASE does not bind the views, it creates them with their recorded dependencies
 statement ok

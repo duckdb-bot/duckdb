@@ -408,15 +408,18 @@ static void AddViewReads(ViewCatalogEntry &view, const QualifiedName &name,
 //! Moves the views of the export order after the views they read by name (view dependencies are only recorded with
 //! enable_view_dependencies). The order already respects everything else an entry needs on import.
 static void ReorderViewEntries(ClientContext &context, catalog_entry_vector_t &entries) {
-	// on import, a name without a catalog refers to a temporary table or view of that schema and name first
-	identifier_set_t temporary_names;
-	identifier_set_t temporary_relations;
-	for (auto &schema : Catalog::GetCatalog(context, TEMP_CATALOG).GetSchemas(context)) {
-		auto schema_path = schema.get().GetSchemaPath();
-		schema.get().Scan(context, CatalogType::TABLE_ENTRY, [&](CatalogEntry &entry) {
-			temporary_names.insert(entry.name);
-			temporary_relations.insert(RelationKey(schema_path, entry.name));
-		});
+	// On import, a name without a catalog can also refer to a temporary or a built in table or view, first or while
+	// the exported one does not exist yet, so it adds no read
+	identifier_set_t fallback_names;
+	identifier_set_t fallback_relations;
+	for (auto &catalog_name : {TEMP_CATALOG, SYSTEM_CATALOG}) {
+		for (auto &schema : Catalog::GetCatalog(context, catalog_name).GetSchemas(context)) {
+			auto schema_path = schema.get().GetSchemaPath();
+			schema.get().Scan(context, CatalogType::TABLE_ENTRY, [&](CatalogEntry &entry) {
+				fallback_names.insert(entry.name);
+				fallback_relations.insert(RelationKey(schema_path, entry.name));
+			});
+		}
 	}
 	identifier_map_t<optional_idx> relations;
 	for (idx_t i = 0; i < entries.size(); i++) {
@@ -442,8 +445,8 @@ static void ReorderViewEntries(ClientContext &context, catalog_entry_vector_t &e
 		for (auto &read : finder.reads) {
 			auto &name = read.get();
 			vector<Identifier> qualification(name.Path().begin(), name.Path().end() - 1);
-			if (qualification.empty() ? temporary_names.count(name.Name()) > 0
-			                          : temporary_relations.count(RelationKey(qualification, name.Name())) > 0) {
+			if (qualification.empty() ? fallback_names.count(name.Name()) > 0
+			                          : fallback_relations.count(RelationKey(qualification, name.Name())) > 0) {
 				continue;
 			}
 			AddViewReads(view, name, relations, reads[i]);
@@ -453,7 +456,7 @@ static void ReorderViewEntries(ClientContext &context, catalog_entry_vector_t &e
 		std::sort(view_reads.begin(), view_reads.end());
 		view_reads.erase(std::unique(view_reads.begin(), view_reads.end()), view_reads.end());
 	}
-	// Depth first in the current order: a view only moves before a view that reads it, and what it needs comes before
+	// Depth first in the current order. A view only moves before a view that reads it, and what it needs comes before
 	// it in the current order, so it is written first. That keeps an order that works working, as long as every read
 	// found here is one that binding the view on import makes.
 	struct EntryVisit {

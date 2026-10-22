@@ -142,6 +142,7 @@ unique_ptr<LogicalOperator> Binder::PlanVolatileGroups(BoundSelectNode &statemen
 	}
 	ColumnBindingReplacer replacer;
 	replacer.AddReplacements(child_bindings, pass_through_bindings);
+	replacer.BuildIndex();
 	for (auto &group : statement.groups.group_expressions) {
 		replacer.VisitExpression(&group);
 	}

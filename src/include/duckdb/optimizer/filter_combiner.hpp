@@ -56,10 +56,8 @@ public:
 	bool HasFilters();
 	void GenerateEquivalentFilters(const Expression &filter,
 	                               const std::function<void(unique_ptr<Expression> filter)> &callback);
-	//! The scan's statistics, when given, tell whether a filter keeps few enough rows to be checked during the scan
 	TableFilterSet GenerateTableScanFilters(const vector<ColumnIndex> &column_ids,
-	                                        vector<FilterPushdownResult> &pushdown_results,
-	                                        optional_ptr<LogicalGet> get = nullptr);
+	                                        vector<FilterPushdownResult> &pushdown_results);
 
 	FilterPushdownResult TryPushdownGenericExpression(LogicalGet &get, Expression &expr);
 
@@ -75,13 +73,13 @@ private:
 	FilterPushdownResult TryPushdownConstantFilter(TableFilterSet &table_filters, const vector<ColumnIndex> &column_ids,
 	                                               column_t column_id, vector<ExpressionValueInformation> &info_list);
 	FilterPushdownResult TryPushdownExpression(TableFilterSet &table_filters, const vector<ColumnIndex> &column_ids,
-	                                           Expression &expr, optional_ptr<LogicalGet> get);
+	                                           Expression &expr);
 	FilterPushdownResult TryPushdownPrefixFilter(TableFilterSet &table_filters, const vector<ColumnIndex> &column_ids,
 	                                             Expression &expr);
 	FilterPushdownResult TryPushdownLikeFilter(TableFilterSet &table_filters, const vector<ColumnIndex> &column_ids,
 	                                           Expression &expr);
 	FilterPushdownResult TryPushdownInFilter(TableFilterSet &table_filters, const vector<ColumnIndex> &column_ids,
-	                                         Expression &expr, optional_ptr<LogicalGet> get);
+	                                         Expression &expr);
 	FilterPushdownResult TryPushdownOrClause(TableFilterSet &table_filters, const vector<ColumnIndex> &column_ids,
 	                                         Expression &expr);
 	FilterPushdownResult TryPushdownTemporalCastFilter(TableFilterSet &table_filters,

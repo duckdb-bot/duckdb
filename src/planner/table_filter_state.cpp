@@ -214,20 +214,20 @@ private:
 	idx_t TemplatedSelect(const UnifiedVectorFormat &vdata, const SelectionVector &sel, idx_t approved_tuple_count) {
 		auto data = UnifiedVectorFormat::GetData<T>(vdata);
 		auto &mask = vdata.validity;
-		T constants[MAX_VALUES];
-		for (idx_t i = 0; i < values.size(); i++) {
-			constants[i] = values[i].GetValueUnsafe<T>();
+		// compare all rows with one value at a time, a loop without branches
+		for (idx_t i = 0; i < approved_tuple_count; i++) {
+			matches[i] = false;
+		}
+		for (auto &value : values) {
+			auto constant = value.GetValueUnsafe<T>();
+			for (idx_t i = 0; i < approved_tuple_count; i++) {
+				matches[i] |= Equals::Operation(data[vdata.sel->get_index(sel.get_index(i))], constant);
+			}
 		}
 		idx_t result_count = 0;
 		for (idx_t i = 0; i < approved_tuple_count; i++) {
 			auto idx = sel.get_index(i);
-			auto vector_idx = vdata.sel->get_index(idx);
-			bool found = false;
-			if (!CAN_HAVE_NULL || mask.RowIsValid(vector_idx)) {
-				for (idx_t value_idx = 0; value_idx < values.size(); value_idx++) {
-					found = found || Equals::Operation(data[vector_idx], constants[value_idx]);
-				}
-			}
+			bool found = matches[i] && (!CAN_HAVE_NULL || mask.RowIsValid(vdata.sel->get_index(idx)));
 			result_sel.set_index(result_count, idx);
 			result_count += found;
 		}
@@ -284,6 +284,7 @@ private:
 			return;
 		}
 		result_sel.Initialize(count);
+		matches = make_unsafe_uniq_array<bool>(count);
 		current_capacity = count;
 	}
 
@@ -293,6 +294,7 @@ public:
 private:
 	vector<Value> values;
 	SelectionVector result_sel;
+	unsafe_unique_array<bool> matches;
 	idx_t current_capacity = 0;
 };
 

@@ -29,7 +29,6 @@
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "utf8proc_wrapper.hpp"
 #include "duckdb/optimizer/in_clause_rewriter.hpp"
-#include "duckdb/optimizer/relation_statistics/relation_statistics_helper.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
 
 namespace duckdb {
@@ -642,30 +641,8 @@ static bool TryPushdownDenseInFilter(TableFilterSet &table_filters, const BoundC
 	return true;
 }
 
-//! The longest IN list that the scan checks itself, as it compares every row with every value
-static constexpr idx_t MAX_SCAN_IN_FILTER_VALUES = 8;
-//! The scan only checks an IN list that keeps at most this fraction of the rows, as checking costs more than it
-//! saves unless it removes whole vectors
-static constexpr float SCAN_IN_FILTER_SELECTIVITY = 0.001f;
-static constexpr idx_t SCAN_IN_FILTER_VECTORS_TO_CHECK = 1;
-
-//! Whether the column has enough distinct values that an IN list of the given length keeps almost no rows
-static bool InListKeepsFewRows(ClientContext &context, optional_ptr<LogicalGet> get, const ColumnIndex &column,
-                               idx_t value_count) {
-	if (!get) {
-		return false;
-	}
-	auto stats = RelationStatisticsHelper::GetColumnStatistics(*get, context, column);
-	if (!stats) {
-		return false;
-	}
-	auto distinct_count = stats->GetDistinctCount();
-	return static_cast<double>(value_count) <= static_cast<double>(distinct_count) * SCAN_IN_FILTER_SELECTIVITY;
-}
-
 FilterPushdownResult FilterCombiner::TryPushdownInFilter(TableFilterSet &table_filters,
-                                                         const vector<ColumnIndex> &column_ids, Expression &expr,
-                                                         optional_ptr<LogicalGet> get) {
+                                                         const vector<ColumnIndex> &column_ids, Expression &expr) {
 	if (expr.GetExpressionType() != ExpressionType::COMPARE_IN) {
 		return FilterPushdownResult::NO_PUSHDOWN;
 	}
@@ -719,18 +696,8 @@ FilterPushdownResult FilterCombiner::TryPushdownInFilter(TableFilterSet &table_f
 		return FilterPushdownResult::PUSHED_DOWN_FULLY;
 	}
 	// if this is not a dense range we can push an optional filter for zone-map pruning
-	auto value_count = in_list.size();
 	auto in_expr =
 	    ExpressionFilter::CreateInExpression(CreateFilterTargetExpression(*func.GetChildren()[0]), std::move(in_list));
-	if (value_count <= MAX_SCAN_IN_FILTER_VALUES &&
-	    InListKeepsFewRows(context, get, column_ids[proj_index.GetIndex()], value_count)) {
-		// a short list is also checked during the scan while it keeps almost no rows, so that the scan skips the
-		// other columns of the vectors without a match
-		auto filter_expr = CreateSelectivityOptionalFilterExpression(
-		    std::move(in_expr), type, SCAN_IN_FILTER_SELECTIVITY, SCAN_IN_FILTER_VECTORS_TO_CHECK);
-		table_filters.PushFilter(proj_index, make_uniq<ExpressionFilter>(std::move(filter_expr)));
-		return FilterPushdownResult::PUSHED_DOWN_PARTIALLY;
-	}
 	table_filters.PushFilter(proj_index, CreateOptionalExpressionFilter(std::move(in_expr), type));
 	return FilterPushdownResult::PUSHED_DOWN_PARTIALLY;
 }
@@ -1060,8 +1027,7 @@ FilterPushdownResult FilterCombiner::TryPushdownTemporalCastFilter(TableFilterSe
 }
 
 FilterPushdownResult FilterCombiner::TryPushdownExpression(TableFilterSet &table_filters,
-                                                           const vector<ColumnIndex> &column_ids, Expression &expr,
-                                                           optional_ptr<LogicalGet> get) {
+                                                           const vector<ColumnIndex> &column_ids, Expression &expr) {
 	auto pushdown_result = TryPushdownPrefixFilter(table_filters, column_ids, expr);
 	if (pushdown_result != FilterPushdownResult::NO_PUSHDOWN) {
 		return pushdown_result;
@@ -1070,7 +1036,7 @@ FilterPushdownResult FilterCombiner::TryPushdownExpression(TableFilterSet &table
 	if (pushdown_result != FilterPushdownResult::NO_PUSHDOWN) {
 		return pushdown_result;
 	}
-	pushdown_result = TryPushdownInFilter(table_filters, column_ids, expr, get);
+	pushdown_result = TryPushdownInFilter(table_filters, column_ids, expr);
 	if (pushdown_result != FilterPushdownResult::NO_PUSHDOWN) {
 		return pushdown_result;
 	}
@@ -1101,8 +1067,7 @@ void FilterCombiner::TryPushdownRelaxedFilter(TableFilterSet &table_filters, con
 }
 
 TableFilterSet FilterCombiner::GenerateTableScanFilters(const vector<ColumnIndex> &column_ids,
-                                                        vector<FilterPushdownResult> &pushdown_results,
-                                                        optional_ptr<LogicalGet> get) {
+                                                        vector<FilterPushdownResult> &pushdown_results) {
 	TableFilterSet table_filters;
 	//! First, we figure the filters that have constant expressions that we can push down to the table scan
 	for (auto &constant_value : constant_values) {
@@ -1116,7 +1081,7 @@ TableFilterSet FilterCombiner::GenerateTableScanFilters(const vector<ColumnIndex
 	//! Here we look for LIKE or IN filters
 	for (idx_t rem_fil_idx = 0; rem_fil_idx < remaining_filters.size(); rem_fil_idx++) {
 		auto &remaining_filter = remaining_filters[rem_fil_idx];
-		auto pushdown_result = TryPushdownExpression(table_filters, column_ids, *remaining_filter, get);
+		auto pushdown_result = TryPushdownExpression(table_filters, column_ids, *remaining_filter);
 		if (pushdown_result == FilterPushdownResult::PUSHED_DOWN_FULLY) {
 			// the filter has been pushed down entirely - we can prune it
 			remaining_filters.erase_at(rem_fil_idx--);

@@ -342,31 +342,33 @@ private:
 	}
 };
 
-//! An exported table or view, found by its name
-struct ExportedRelation {
-	vector<Identifier> schema_path;
-	//! The index of a view among the exported entries, invalid for a table
-	optional_idx view_index;
-};
+//! The key of a table or view by its schema path and name
+static Identifier RelationKey(const vector<Identifier> &schema_path, const Identifier &name) {
+	string key;
+	for (auto &schema : schema_path) {
+		key += schema.GetIdentifierName();
+		key += '\0';
+	}
+	key += name.GetIdentifierName();
+	return Identifier(std::move(key));
+}
 
-//! Adds the exported views of the given name that a name in a view refers to
-static void AddViewReads(ViewCatalogEntry &view, const QualifiedName &name, const vector<ExportedRelation> &relations,
-                         vector<idx_t> &reads) {
+//! Adds the exported view that a name in a view refers to. The relations map the key of every exported table and
+//! view to the index of the view among the entries, invalid for a table.
+static void AddViewReads(ViewCatalogEntry &view, const QualifiedName &name,
+                         const identifier_map_t<optional_idx> &relations, vector<idx_t> &reads) {
 	auto &catalog = view.ParentCatalog();
 	auto &catalog_name = catalog.GetName();
 	vector<Identifier> qualification(name.Path().begin(), name.Path().end() - 1);
 	auto add_schema_reads = [&](const vector<Identifier> &schema_path) {
-		bool found = false;
-		for (auto &relation : relations) {
-			if (relation.schema_path != schema_path) {
-				continue;
-			}
-			found = true;
-			if (relation.view_index.IsValid()) {
-				reads.push_back(relation.view_index.GetIndex());
-			}
+		auto relation = relations.find(RelationKey(schema_path, name.Name()));
+		if (relation == relations.end()) {
+			return false;
 		}
-		return found;
+		if (relation->second.IsValid()) {
+			reads.push_back(relation->second.GetIndex());
+		}
+		return true;
 	};
 	auto default_schema = catalog.GetDefaultSchema();
 	if (qualification.empty()) {
@@ -396,20 +398,24 @@ static void AddViewReads(ViewCatalogEntry &view, const QualifiedName &name, cons
 //! Moves the views of the export order after the views they read by name (view dependencies are only recorded with
 //! enable_view_dependencies). The order already respects everything else an entry needs on import.
 static void ReorderViewEntries(ClientContext &context, catalog_entry_vector_t &entries) {
-	// on import, a name without a schema refers to a temporary table or view of that name first
+	// on import, a name without a catalog refers to a temporary table or view of that schema and name first
 	identifier_set_t temporary_names;
+	identifier_set_t temporary_relations;
 	for (auto &schema : Catalog::GetCatalog(context, TEMP_CATALOG).GetSchemas(context)) {
-		schema.get().Scan(context, CatalogType::TABLE_ENTRY,
-		                  [&](CatalogEntry &entry) { temporary_names.insert(entry.name); });
+		auto schema_path = schema.get().GetSchemaPath();
+		schema.get().Scan(context, CatalogType::TABLE_ENTRY, [&](CatalogEntry &entry) {
+			temporary_names.insert(entry.name);
+			temporary_relations.insert(RelationKey(schema_path, entry.name));
+		});
 	}
-	identifier_map_t<vector<ExportedRelation>> relations_by_name;
+	identifier_map_t<optional_idx> relations;
 	for (idx_t i = 0; i < entries.size(); i++) {
 		auto &entry = entries[i].get();
 		if (entry.type != CatalogType::TABLE_ENTRY && entry.type != CatalogType::VIEW_ENTRY) {
 			continue;
 		}
 		auto view_index = entry.type == CatalogType::VIEW_ENTRY ? optional_idx(i) : optional_idx();
-		relations_by_name[entry.name].push_back(ExportedRelation {entry.ParentSchema().GetSchemaPath(), view_index});
+		relations.emplace(RelationKey(entry.ParentSchema().GetSchemaPath(), entry.name), view_index);
 	}
 	vector<vector<idx_t>> reads(entries.size());
 	for (idx_t i = 0; i < entries.size(); i++) {
@@ -425,13 +431,12 @@ static void ReorderViewEntries(ClientContext &context, catalog_entry_vector_t &e
 		finder.VisitNode(*view.query->node);
 		for (auto &read : finder.reads) {
 			auto &name = read.get();
-			if (name.Path().size() == 1 && temporary_names.count(name.Name())) {
+			vector<Identifier> qualification(name.Path().begin(), name.Path().end() - 1);
+			if (qualification.empty() ? temporary_names.count(name.Name()) > 0
+			                          : temporary_relations.count(RelationKey(qualification, name.Name())) > 0) {
 				continue;
 			}
-			auto relations = relations_by_name.find(name.Name());
-			if (relations != relations_by_name.end()) {
-				AddViewReads(view, name, relations->second, reads[i]);
-			}
+			AddViewReads(view, name, relations, reads[i]);
 		}
 		auto &view_reads = reads[i];
 		view_reads.erase(std::remove(view_reads.begin(), view_reads.end(), i), view_reads.end());

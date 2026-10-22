@@ -68,3 +68,49 @@ TEST_CASE("Test live query metrics keep the memory a statement allocates before 
 	REQUIRE_NO_FAIL(con.Query("SELECT 42"));
 	REQUIRE(LiveMetric(con, MetricSystemTotalMemoryAllocated::Name) >= AllocateAtQueryBeginState::ALLOCATION_SIZE);
 }
+
+TEST_CASE("Test live query metrics keep the memory a parsed or prepared statement allocates before it is planned",
+          "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	con.context->registered_state->Insert("allocate_at_query_begin", make_shared_ptr<AllocateAtQueryBeginState>());
+	auto prepared = con.Prepare("SELECT 42");
+	REQUIRE(!prepared->HasError());
+
+	SECTION("Query(statement)") {
+		REQUIRE_NO_FAIL(con.Query(std::move(con.ExtractStatements("SELECT 42")[0])));
+	}
+	SECTION("PreparedStatement::Execute") {
+		REQUIRE_NO_FAIL(prepared->Execute());
+	}
+	REQUIRE(LiveMetric(con, MetricSystemTotalMemoryAllocated::Name) >= AllocateAtQueryBeginState::ALLOCATION_SIZE);
+}
+
+TEST_CASE("Test a statement that fails before it is planned replaces the profile and the live query metrics", "[api]") {
+	auto path = TestCreatePath("failed_statement_profile.json");
+	DuckDB db(nullptr);
+	Connection con(db);
+	Connection reader(db);
+	REQUIRE_NO_FAIL(con.Query("PRAGMA enable_profiling = 'json'"));
+	REQUIRE_NO_FAIL(con.Query("PRAGMA profiling_output = '" + path + "'"));
+	REQUIRE_NO_FAIL(con.Query("SELECT count(DISTINCT range) AS previous_query FROM range(1000000)"));
+	auto memory_before = LiveMetric(con, MetricSystemTotalMemoryAllocated::Name);
+	REQUIRE(memory_before > 0);
+
+	// the pragma fails while the statement is preprocessed, before it is planned
+	unique_ptr<QueryResult> failed;
+	SECTION("Query(statement)") {
+		failed = con.Query(std::move(con.ExtractStatements("PRAGMA does_not_exist")[0]));
+	}
+	SECTION("Submit(statement)") {
+		failed = con.Submit(std::move(con.ExtractStatements("PRAGMA does_not_exist")[0]));
+	}
+	REQUIRE(failed->HasError());
+	REQUIRE(LiveMetric(con, MetricSystemTotalMemoryAllocated::Name) < memory_before);
+
+	auto profile = reader.Query("SELECT content FROM read_text('" + path + "')");
+	REQUIRE_NO_FAIL(*profile);
+	auto content = profile->Collection().GetValue(0, 0).ToString();
+	REQUIRE(!StringUtil::Contains(content, "previous_query"));
+	REQUIRE(StringUtil::Contains(content, "\"result\": \"error\""));
+}

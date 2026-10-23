@@ -109,7 +109,8 @@
         "test/optimizer/joins/tpcds_nofail.test",
         "test/sql/limit/test_limit0.test",
         "test/sql/optimizer/plan/test_filter_pushdown_large.test",
-        "test/optimizer/joins/denominator_cardinality_estimation.test"
+        "test/optimizer/joins/denominator_cardinality_estimation.test",
+        "test/optimizer/in_clause_insertion_order_large.test_slow"
       ]
     },
     {

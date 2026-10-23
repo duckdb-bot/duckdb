@@ -194,12 +194,14 @@ public:
 	    : binder(binder), result(result), subquery_result(subquery_result) {
 	}
 
+public:
 	void CollectExpression(ParsedExpression &expr) {
 		if (subquery_depth > 0 && !CanCount(expr)) {
 			subquery_columns_count = false;
 			return;
 		}
-		if (subquery_depth == 0 && expr.GetExpressionClass() != ExpressionClass::COLUMN_REF && !CanCount(expr)) {
+		if (subquery_depth == 0 && !CanCountBeside(expr)) {
+			// the expression is still collected, as it always was
 			subquery_columns_count = false;
 		}
 		switch (expr.GetExpressionClass()) {
@@ -260,14 +262,26 @@ public:
 	}
 
 private:
+	//! Whether a bare name is a function such as current_date, which can be a macro
+	bool IsValueFunction(const ColumnRefExpression &col_ref) {
+		return !col_ref.IsQualified() && binder.GetSQLValueFunction(col_ref.GetColumnName());
+	}
+
+	//! Whether an expression of the aggregate outside the subqueries lets the subquery columns count
+	bool CanCountBeside(ParsedExpression &expr) {
+		if (expr.GetExpressionClass() == ExpressionClass::COLUMN_REF) {
+			return !IsValueFunction(expr.Cast<ColumnRefExpression>());
+		}
+		return CanCount(expr);
+	}
+
 	//! Whether the columns of the expression are all the columns it binds, which a call can hide in a macro body
 	bool CanCount(ParsedExpression &expr) {
 		switch (expr.GetExpressionClass()) {
 		case ExpressionClass::COLUMN_REF: {
-			// a qualified name can be a struct field the binder tries before an outer column, and a bare name can be
-			// a function such as current_date
+			// a qualified name can be a struct field the binder tries before an outer column
 			auto &col_ref = expr.Cast<ColumnRefExpression>();
-			return !col_ref.IsQualified() && !binder.GetSQLValueFunction(col_ref.GetColumnName());
+			return !col_ref.IsQualified() && !IsValueFunction(col_ref);
 		}
 		case ExpressionClass::BETWEEN:
 		case ExpressionClass::CASE:

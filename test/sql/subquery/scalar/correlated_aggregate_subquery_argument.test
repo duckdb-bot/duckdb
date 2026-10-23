@@ -234,3 +234,13 @@ SELECT (SELECT SUM((SELECT x USING SAMPLE 100%))) FROM (VALUES (1), (2)) t(x)
 ----
 1
 2
+
+# a bare name beside the subquery can be a function, which a macro can replace
+statement ok
+CREATE MACRO current_schema(z := 1) AS (SELECT y FROM range(z))
+
+query I rowsort
+SELECT (SELECT SUM(current_schema + (SELECT x)) FROM (VALUES (10)) v(y)) FROM (VALUES (1, 100), (2, 200)) t(x, y)
+----
+11
+12

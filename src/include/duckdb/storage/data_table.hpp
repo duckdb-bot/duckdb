@@ -310,7 +310,7 @@ private:
 	                             const vector<PhysicalIndex> &column_ids);
 	//! Verify constraints with a chunk from the Delete containing all columns of the table
 	void VerifyDeleteConstraints(optional_ptr<LocalTableStorage> storage, TableDeleteState &state,
-	                             ClientContext &context, DataChunk &chunk);
+	                             ClientContext &context, DataChunk &chunk, Vector &row_ids);
 
 	void InitializeScanWithOffset(DuckTransaction &transaction, TableScanState &state,
 	                              const vector<StorageIndex> &column_ids, idx_t start_row, idx_t end_row);
@@ -324,14 +324,15 @@ private:
 	                                const BoundForeignKeyConstraint &bound_foreign_key, ClientContext &context,
 	                                DataChunk &chunk, VerifyExistenceType type,
 	                                optional_ptr<DeferredForeignKeyChecks> deferred = nullptr,
-	                                idx_t constraint_index = 0, bool match_in_chunk = true);
+	                                idx_t constraint_index = 0, bool match_in_chunk = true,
+	                                optional_ptr<Vector> deleted_row_ids = nullptr);
 	void VerifyAppendForeignKeyConstraint(optional_ptr<LocalTableStorage> storage,
 	                                      const BoundForeignKeyConstraint &bound_foreign_key, ClientContext &context,
 	                                      DataChunk &chunk, optional_ptr<DeferredForeignKeyChecks> deferred,
 	                                      idx_t constraint_index);
 	void VerifyDeleteForeignKeyConstraint(optional_ptr<LocalTableStorage> storage,
 	                                      const BoundForeignKeyConstraint &bound_foreign_key, ClientContext &context,
-	                                      DataChunk &chunk);
+	                                      DataChunk &chunk, Vector &row_ids);
 
 private:
 	//! The table info

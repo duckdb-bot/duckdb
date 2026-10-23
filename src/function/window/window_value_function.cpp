@@ -702,6 +702,10 @@ static idx_t ValuesBeforeRow(const WindowLeadLagGlobalState &glstate, const Vali
 	if (!values_before) {
 		return 0;
 	}
+	if (values_before == own_token) {
+		//	Every row before the own row has a value, so the rank of all rows is the one of the values
+		return row_tree.Rank(frame.start, frame.end, row_idx) - 1;
+	}
 	//	A narrow frame is cheaper to count row by row than a longer prefix of the value tree
 	static constexpr idx_t SCAN_LIMIT = 256;
 	const auto frame_width = frame.end - frame.start;

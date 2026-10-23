@@ -244,3 +244,20 @@ SELECT (SELECT SUM(current_schema + (SELECT x)) FROM (VALUES (10)) v(y)) FROM (V
 ----
 11
 12
+
+# the aggregate of the outer query has one row for an empty input
+query I
+SELECT (SELECT SUM((SELECT x))) FROM (SELECT 1 AS x WHERE false) t
+----
+NULL
+
+# CASE and list extraction keep the columns they read
+query I
+SELECT (SELECT SUM((SELECT CASE WHEN x IS NULL THEN 0 ELSE x END))) FROM (VALUES (1), (2), (NULL)) t(x)
+----
+3
+
+query I
+SELECT (SELECT SUM((SELECT x[1]))) FROM (VALUES ([1]), ([2]), (NULL)) t(x)
+----
+3

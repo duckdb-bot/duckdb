@@ -195,3 +195,42 @@ SELECT 10 AS a, (SELECT SUM((SELECT a))) FROM (VALUES (1), (2)) t(x)
 ----
 10	10
 10	10
+
+# a call around the subquery can be a macro that drops its argument
+statement ok
+CREATE MACRO ten(z) AS 10
+
+query I rowsort
+SELECT (SELECT SUM(ten((SELECT x)))) FROM (VALUES (1), (2)) t(x)
+----
+10
+10
+
+query I rowsort
+SELECT (SELECT SUM(ten(1) + (SELECT x)) FROM (VALUES (10)) v(y)) FROM (VALUES (1), (2)) t(x)
+----
+11
+12
+
+# a whole row is a call, which a macro can replace
+statement ok
+CREATE MACRO struct_pack(z) AS 10
+
+query I rowsort
+SELECT (SELECT COUNT((SELECT t))) FROM (VALUES (1), (2)) t(x)
+----
+1
+1
+
+# GROUP BY ALL and SAMPLE make the subquery a query of its own
+query I rowsort
+SELECT (SELECT SUM((SELECT x GROUP BY ALL))) FROM (VALUES (1), (2)) t(x)
+----
+1
+2
+
+query I rowsort
+SELECT (SELECT SUM((SELECT x USING SAMPLE 100%))) FROM (VALUES (1), (2)) t(x)
+----
+1
+2

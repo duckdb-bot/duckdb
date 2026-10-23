@@ -180,8 +180,9 @@ ColumnResolution ExpressionBinder::ResolveColumn(ColumnRefExpression &colref, id
 //! Collect the column references that decide which scope owns an expression.
 //! A subquery that is only a select list of bare columns, constants and operators, without FROM clause and aliases,
 //! binds no column itself, so its columns count as if they were written outside of it. Other subqueries bind in a chain
-//! of their own, and only binding them tells whether a column inside one is theirs, so once there is one, no subquery
-//! counts and the columns outside of them decide, as they always did.
+//! of their own, and only binding them tells whether a column inside one is theirs, and a call around a subquery can be
+//! a macro that drops it or adds columns of its own, so once there is one of these, no subquery counts and the columns
+//! outside of them decide, as they always did.
 //! Lambda parameters are skipped: they are bound by the lambda rather than by any
 //! scope, so a parameter that happens to share a name with an outer column must not pull the
 //! expression out to that scope. The parameter names are read exactly as `ColumnQualifier` reads them,
@@ -194,9 +195,12 @@ public:
 	}
 
 	void CollectExpression(ParsedExpression &expr) {
-		if (subquery_depth > 0 && !CanCountInSubquery(expr)) {
-			all_subqueries_without_from = false;
+		if (subquery_depth > 0 && !CanCount(expr)) {
+			subquery_columns_count = false;
 			return;
+		}
+		if (subquery_depth == 0 && expr.GetExpressionClass() != ExpressionClass::COLUMN_REF && !CanCount(expr)) {
+			subquery_columns_count = false;
 		}
 		switch (expr.GetExpressionClass()) {
 		case ExpressionClass::SUBQUERY: {
@@ -250,14 +254,14 @@ public:
 		ParsedExpressionIterator::EnumerateChildren(expr, [&](ParsedExpression &child) { CollectExpression(child); });
 	}
 
-	//! Whether the columns of the subqueries count, because every subquery is one without a FROM clause
+	//! Whether the columns of the subqueries count
 	bool SubqueryColumnsCount() const {
-		return all_subqueries_without_from;
+		return subquery_columns_count;
 	}
 
 private:
 	//! Whether the columns of the expression are all the columns it binds, which a call can hide in a macro body
-	bool CanCountInSubquery(ParsedExpression &expr) {
+	bool CanCount(ParsedExpression &expr) {
 		switch (expr.GetExpressionClass()) {
 		case ExpressionClass::COLUMN_REF: {
 			// a qualified name can be a struct field the binder tries before an outer column, and a bare name can be
@@ -287,25 +291,25 @@ private:
 
 	void CollectSubquery(QueryNode &node) {
 		if (node.type != QueryNodeType::SELECT_NODE || !node.cte_map.map.empty()) {
-			all_subqueries_without_from = false;
+			subquery_columns_count = false;
 			return;
 		}
 		auto &select = node.Cast<SelectNode>();
 		if (select.from_table && select.from_table->type != TableReferenceType::EMPTY_FROM) {
-			all_subqueries_without_from = false;
+			subquery_columns_count = false;
 			return;
 		}
 		// the other clauses can refer to the select list, also by names it gives its expressions
 		if (select.where_clause || !select.groups.group_expressions.empty() || !select.groups.grouping_sets.empty() ||
 		    select.aggregate_handling != AggregateHandling::STANDARD_HANDLING || select.having || select.qualify ||
 		    select.sample || !node.modifiers.empty()) {
-			all_subqueries_without_from = false;
+			subquery_columns_count = false;
 			return;
 		}
 		for (auto &expr : select.select_list) {
 			if (expr->HasAlias()) {
 				// later expressions and clauses can refer to the alias
-				all_subqueries_without_from = false;
+				subquery_columns_count = false;
 				return;
 			}
 		}
@@ -314,6 +318,7 @@ private:
 		}
 	}
 
+private:
 	Binder &binder;
 	vector<reference<ColumnRefExpression>> &result;
 	//! The columns inside subqueries
@@ -321,7 +326,7 @@ private:
 	vector<identifier_set_t> lambda_params;
 	//! The number of subqueries around the expression that is being collected
 	idx_t subquery_depth = 0;
-	bool all_subqueries_without_from = true;
+	bool subquery_columns_count = true;
 };
 
 optional_idx ExpressionBinder::ResolveAggregateOwner(FunctionExpression &aggregate, idx_t start) {
@@ -356,12 +361,13 @@ optional_idx ExpressionBinder::ResolveAggregateOwner(FunctionExpression &aggrega
 	if (!collector.SubqueryColumnsCount() || subquery_columns.empty()) {
 		return found ? optional_idx(owner) : optional_idx();
 	}
-	// the columns of the subqueries count only if all of them name a column, an alias can stand for an aggregate
+	// the columns of the subqueries count only if all of them name a column, an alias can stand for an aggregate and
+	// a whole row for a call
 	auto subquery_owner = owner;
 	bool subquery_found = found;
 	for (auto &colref : subquery_columns) {
 		auto resolution = ResolveColumn(colref.get(), start);
-		if (!resolution.qualified) {
+		if (!resolution.qualified || resolution.qualified->GetExpressionClass() != ExpressionClass::COLUMN_REF) {
 			return found ? optional_idx(owner) : optional_idx();
 		}
 		if (!subquery_found || resolution.depth < subquery_owner) {

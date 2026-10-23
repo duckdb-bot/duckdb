@@ -1,0 +1,21 @@
+# name: test/sql/function/numeric/test_round_double_exact_midpoint.test
+# description: round and round_even of a DOUBLE with a precision follow the exact stored value near a midpoint
+# group: [numeric]
+
+# the stored 2.675 is 2.67499999999999982236431605997495353221893310546875, below the midpoint
+query IIIIIIIIIIIIII
+SELECT round(2.675::DOUBLE, 2), round(-2.675::DOUBLE, 2), round(1.005::DOUBLE, 2), round(4.025::DOUBLE, 2), round(1.115::DOUBLE, 2), round(0.45::DOUBLE, 1), round(1.0005::DOUBLE, 3), round(-1.0005::DOUBLE, 3), round(123.456785::DOUBLE, 5), round(2.675::FLOAT, 2), round(0.125::DOUBLE, 2), round(0.375::DOUBLE, 2), round(2.5::DOUBLE, 0), round(3.5::DOUBLE, 0)
+----
+2.67	-2.67	1.0	4.03	1.11	0.5	1.0	-1.0	123.45678	2.67	0.13	0.38	3.0	4.0
+
+# exact midpoints such as 0.125 still go to the even neighbour
+query IIIIIIIIIIIIII
+SELECT round_even(2.675::DOUBLE, 2), round_even(-2.675::DOUBLE, 2), round_even(1.005::DOUBLE, 2), round_even(4.025::DOUBLE, 2), round_even(1.115::DOUBLE, 2), round_even(0.45::DOUBLE, 1), round_even(1.0005::DOUBLE, 3), round_even(-1.0005::DOUBLE, 3), round_even(123.456785::DOUBLE, 5), round_even(2.675::FLOAT, 2), round_even(0.125::DOUBLE, 2), round_even(0.375::DOUBLE, 2), round_even(2.5::DOUBLE, 0), round_even(3.5::DOUBLE, 0)
+----
+2.67	-2.67	1.0	4.03	1.11	0.5	1.0	-1.0	123.45678	2.67	0.12	0.38	2.0	4.0
+
+# precisions above 22 and values too large for the product keep their result
+query IIII
+SELECT round(1.5::DOUBLE, 23), round_even(1e300::DOUBLE, 10), round('inf'::DOUBLE, 2), round(NULL::DOUBLE, 2)
+----
+1.5	1e+300	inf	NULL

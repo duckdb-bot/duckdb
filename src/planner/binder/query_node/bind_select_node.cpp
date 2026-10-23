@@ -556,6 +556,10 @@ BoundStatement Binder::BindSelectNode(SelectNode &statement, BoundStatement from
 		result.names.emplace_back(GetExpressionName(*expr));
 		ExpressionBinder::QualifyColumnNames(*this, expr);
 		if (!expr->GetAlias().empty()) {
+			auto entry = bind_state.alias_map.find(expr->GetAlias());
+			if (entry != bind_state.alias_map.end() && !bind_state.original_expressions[entry->second]->Equals(*expr)) {
+				bind_state.ambiguous_aliases.insert(expr->GetAlias());
+			}
 			bind_state.alias_map[expr->GetAlias()] = i;
 			result.names[i] = expr->GetAlias();
 		}

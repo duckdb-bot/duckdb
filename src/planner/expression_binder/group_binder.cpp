@@ -58,6 +58,7 @@ void GroupBinder::ReplaceSelectRef(SelectNode &node, SelectBindState &bind_state
 			// no matching alias found
 			return;
 		}
+		bind_state.VerifyUnambiguousAlias(alias_name, colref, "GROUP BY");
 		select_list_idx = entry->second;
 		bind_state.group_alias_map[alias_name] = group_index;
 		break;

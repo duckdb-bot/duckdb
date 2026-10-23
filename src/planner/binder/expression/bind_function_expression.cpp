@@ -428,7 +428,7 @@ BindResult ExpressionBinder::BindFunction(FunctionExpression &function, ScalarFu
 }
 
 BindResult ExpressionBinder::BindLambdaFunction(FunctionExpression &function, ScalarFunctionCatalogEntry &func,
-                                                idx_t depth, vector<unique_ptr<Expression>> bound_arguments) {
+                                                idx_t depth) {
 	// get the callback function for the lambda parameter types
 	auto &scalar_function = *func.functions.functions.front();
 	auto bind_lambda_function = scalar_function.GetBindLambdaCallback();
@@ -461,13 +461,9 @@ BindResult ExpressionBinder::BindLambdaFunction(FunctionExpression &function, Sc
 			                  "'. You might need to add explicit type casts.");
 		}
 
-		if (i < bound_arguments.size() && bound_arguments[i]) {
-			bound_children[i] = std::move(bound_arguments[i]);
-		} else {
-			bound_children[i] = BindChild(function.GetArgumentsMutable()[i].GetExpressionMutable(), depth, error);
-			if (error.HasError()) {
-				return BindResult(std::move(error));
-			}
+		bound_children[i] = BindChild(function.GetArgumentsMutable()[i].GetExpressionMutable(), depth, error);
+		if (error.HasError()) {
+			return BindResult(std::move(error));
 		}
 
 		function_child_types.push_back(bound_children[i]->GetReturnType());

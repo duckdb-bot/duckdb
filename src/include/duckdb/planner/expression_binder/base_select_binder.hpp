@@ -36,6 +36,9 @@ public:
 	static bool IsFunctionallyDependent(const unique_ptr<Expression> &expr, const vector<reference<Expression>> &deps);
 
 protected:
+	bool CanBindCaseOperandOnce() const override {
+		return true;
+	}
 	BindResult BindExpression(unique_ptr<ParsedExpression> &expr_ptr, idx_t depth,
 	                          bool root_expression = false) override;
 

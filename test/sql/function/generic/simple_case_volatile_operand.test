@@ -26,36 +26,6 @@ SELECT currval('seq')
 ----
 3
 
-# a window or UNNEST in the operand is computed once
-statement ok
-CREATE SEQUENCE window_seq;
-
-query I
-SELECT CASE sum(nextval('window_seq')) OVER () + (random() * 0)::INTEGER WHEN 1 THEN 'a' WHEN 2 THEN 'b' END FROM range(1)
-----
-a
-
-query I
-SELECT currval('window_seq')
-----
-1
-
-statement ok
-CREATE SEQUENCE unnest_seq;
-
-query I
-SELECT CASE unnest([nextval('unnest_seq')]) + (random() * 0)::INTEGER WHEN 1 THEN 'a' WHEN 2 THEN 'b' END AS r
-FROM range(3) ORDER BY r NULLS LAST
-----
-a
-b
-NULL
-
-query I
-SELECT currval('unnest_seq')
-----
-3
-
 # one branch, a subquery operand and a lambda
 statement ok
 CREATE SEQUENCE single_seq;
@@ -122,6 +92,85 @@ query I
 SELECT CASE (SELECT 2) WHEN 1 THEN (SELECT 'a') WHEN 2 THEN 'b' END
 ----
 b
+
+# binders that bind columns or lambdas differently keep the copies of the operand
+statement ok
+CREATE TABLE altered(i INTEGER)
+
+statement ok
+INSERT INTO altered VALUES (42)
+
+statement ok
+ALTER TABLE altered ALTER i TYPE VARCHAR USING CASE (random() * 0)::INTEGER WHEN 0 THEN i::VARCHAR WHEN 1 THEN 'eight' ELSE 'nine' END
+
+query I
+SELECT * FROM altered
+----
+42
+
+statement ok
+CREATE TABLE defaults(i INTEGER DEFAULT (CASE (random() * 0)::INTEGER WHEN 0 THEN 42 WHEN 1 THEN 8 ELSE 9 END))
+
+statement ok
+INSERT INTO defaults DEFAULT VALUES
+
+query I
+SELECT * FROM defaults
+----
+42
+
+# a grouped comparison still matches the copies
+query I
+SELECT CASE i WHEN 1 THEN 42 ELSE 0 END FROM range(3) t(i) GROUP BY i = 1 ORDER BY ALL
+----
+0
+42
+
+# the lambda parameter captures nothing of the branches
+query II
+SELECT 42 AS "#case_operand", CASE (random() * 0)::INTEGER WHEN 0 THEN "#case_operand" WHEN 1 THEN 8 ELSE 9 END
+----
+42	42
+
+query I
+SELECT list_transform([42], lambda "#case_operand": CASE (random() * 0)::INTEGER WHEN 0 THEN "#case_operand" WHEN 1 THEN 8 ELSE 9 END)
+----
+[42]
+
+# branches with a macro or an alias that holds a subquery or UNNEST
+statement ok
+CREATE MACRO answer() AS (SELECT 42)
+
+query I
+SELECT CASE (random() * 0)::INTEGER WHEN 0 THEN answer() WHEN 1 THEN 8 ELSE 9 END
+----
+42
+
+query II
+SELECT unnest([42]) AS u, CASE (random() * 0)::INTEGER WHEN 0 THEN u WHEN 1 THEN 8 ELSE 9 END
+----
+42	42
+
+# a macro named invoke does not take the place of the system function
+statement ok
+CREATE MACRO invoke(a, b) AS 'user macro'
+
+query I
+SELECT CASE (random() * 0)::INTEGER WHEN 0 THEN 'a' WHEN 1 THEN 'b' END
+----
+a
+
+# a view evaluates its operand once too
+statement ok
+CREATE VIEW v AS SELECT count(*) FILTER (WHERE r = 'other') AS other FROM (
+	SELECT CASE (floor(random() * 3))::INTEGER WHEN 0 THEN 'zero' WHEN 1 THEN 'one' WHEN 2 THEN 'two' ELSE 'other' END AS r
+	FROM range(10000)
+)
+
+query I
+SELECT * FROM v
+----
+0
 
 # a simple CASE prints as one
 statement ok

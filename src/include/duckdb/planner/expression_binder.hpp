@@ -26,7 +26,6 @@
 namespace duckdb {
 
 class Binder;
-struct BoundCaseCheck;
 class ClientContext;
 class ColumnQualifier;
 class QueryNode;
@@ -249,12 +248,10 @@ private:
 protected:
 	BindResult BindExpression(BetweenExpression &expr, idx_t depth);
 	BindResult BindExpression(CaseExpression &expr, idx_t depth);
-	//! Bind a simple CASE, evaluating its operand once
-	BindResult BindSimpleCase(CaseExpression &expr, idx_t depth);
-	//! Bind a simple CASE with a volatile operand as a lambda over the bound operand
-	BindResult BindSimpleCaseOnce(CaseExpression &expr, unique_ptr<Expression> operand, idx_t depth);
-	BindResult BindCaseResult(const CaseExpression &expr, vector<BoundCaseCheck> &checks,
-	                          unique_ptr<Expression> else_expr);
+	//! Whether a simple CASE has a volatile operand that a lambda can evaluate once, decided without binding here
+	bool CanEvaluateCaseOperandOnce(CaseExpression &expr, idx_t depth);
+	//! Bind a simple CASE with a volatile operand as invoke(lambda operand_parameter: CASE ..., operand)
+	BindResult BindCaseOperandOnce(CaseExpression &expr, idx_t depth);
 	BindResult BindExpression(CollateExpression &expr, idx_t depth);
 	BindResult BindExpression(CastExpression &expr, idx_t depth);
 	BindResult BindExpression(ColumnRefExpression &expr, idx_t depth, bool root_expression,
@@ -300,9 +297,7 @@ protected:
 protected:
 	virtual BindResult BindGroupingFunction(OperatorExpression &op, idx_t depth);
 	virtual BindResult BindFunction(FunctionExpression &expr, ScalarFunctionCatalogEntry &function, idx_t depth);
-	//! Arguments given in bound_arguments are used as they are, the others are bound
-	virtual BindResult BindLambdaFunction(FunctionExpression &expr, ScalarFunctionCatalogEntry &function, idx_t depth,
-	                                      vector<unique_ptr<Expression>> bound_arguments = {});
+	virtual BindResult BindLambdaFunction(FunctionExpression &expr, ScalarFunctionCatalogEntry &function, idx_t depth);
 	virtual BindResult BindAggregate(FunctionExpression &expr, AggregateFunctionCatalogEntry &function, idx_t depth);
 	virtual BindResult BindWindow(FunctionExpression &expr, WindowFunctionCatalogEntry &function, idx_t depth);
 	virtual BindResult BindUnnest(FunctionExpression &expr, idx_t depth, bool root_expression);
@@ -312,6 +307,11 @@ protected:
 	void UnfoldWindowMacroExpression(unique_ptr<ParsedExpression> &expr, ScalarMacroFunction &macro_def);
 	void UnfoldMacroExpression(FunctionExpression &function, ScalarMacroCatalogEntry &macro_func,
 	                           unique_ptr<ParsedExpression> &expr, idx_t depth);
+
+	//! Whether this binder binds a simple CASE with a volatile operand through a lambda
+	virtual bool CanBindCaseOperandOnce() const {
+		return false;
+	}
 
 	virtual string UnsupportedAggregateMessage();
 	virtual string UnsupportedWindowMessage();

@@ -106,7 +106,9 @@
         "name": "simple_case",
         "type": "bool",
         "default": "false",
-        "version": "v2.0.0",
+        "serialize_skip": true,
+        "equals_skip": true,
+        "hash_skip": true,
         "accessor_mut": "SimpleCaseMutable()",
         "accessor": "IsSimpleCase()"
       }

@@ -409,17 +409,9 @@ bool CaseExpression::Equals(const ParsedExpression &other) const {
 	if (!ParsedExpression::Equals(else_expr, other_p.else_expr)) {
 		return false;
 	}
-	if (simple_case != other_p.simple_case) {
-		return false;
-	}
 	return true;
 }
 
-hash_t CaseExpression::Hash() const {
-	hash_t hash = ParsedExpression::Hash();
-	hash = CombineHash(hash, duckdb::Hash<bool>(simple_case));
-	return hash;
-}
 
 unique_ptr<ParsedExpression> CaseExpression::Copy() const {
 	auto copy = duckdb::unique_ptr<CaseExpression>(new CaseExpression());

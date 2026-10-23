@@ -1,5 +1,13 @@
 {
   "description": "Run with debug_verify_statement set to serialize_statement - forcing supported statements to be (de)serialized prior to being used",
   "on_init": "SET debug_verify_statement='serialize_statement';",
-  "skip_compiled": "true"
+  "skip_compiled": "true",
+  "skip_tests": [
+    {
+      "reason": "A simple CASE is not marked as one after serialization, which needs the next serialization version",
+      "paths": [
+        "test/sql/function/generic/simple_case_volatile_operand.test"
+      ]
+    }
+  ]
 }

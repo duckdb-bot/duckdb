@@ -123,8 +123,11 @@ void ExpressionBinder::FindAggregateExprs(unique_ptr<ParsedExpression> &expr,
 	    *expr, [&](unique_ptr<ParsedExpression> &child_expr) { FindAggregateExprs(child_expr, exprs); });
 }
 
-void ExpressionBinder::UnfoldWindowMacroExpression(unique_ptr<ParsedExpression> &expr, ScalarMacroFunction &macro_def) {
+void ExpressionBinder::UnfoldWindowMacroExpression(unique_ptr<ParsedExpression> &expr,
+                                                   ScalarMacroCatalogEntry &macro_func,
+                                                   ScalarMacroFunction &macro_def) {
 	auto macro_copy = macro_def.expression->Copy();
+	binder.QualifyMacroBody(macro_func, *macro_copy);
 	vector<reference<unique_ptr<ParsedExpression>>> aggregate_exprs;
 	FindAggregateExprs(macro_copy, aggregate_exprs);
 
@@ -187,9 +190,10 @@ void ExpressionBinder::UnfoldMacroExpression(FunctionExpression &function, Scala
 	// replace current expression with stored macro expression
 	// special case: If this is a window function, then we need to return a window expression
 	if (expr->GetExpressionClass() == ExpressionClass::WINDOW) {
-		UnfoldWindowMacroExpression(expr, macro_def);
+		UnfoldWindowMacroExpression(expr, macro_func, macro_def);
 	} else {
 		expr = macro_def.expression->Copy();
+		binder.QualifyMacroBody(macro_func, *expr);
 	}
 
 	// qualify only the macro parameters with a new empty binder that only knows the macro binding

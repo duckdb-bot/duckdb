@@ -533,6 +533,11 @@ private:
 	                             virtual_column_map_t virtual_columns = virtual_column_map_t());
 
 	unique_ptr<QueryNode> BindTableMacro(FunctionExpression &function, TableMacroCatalogEntry &macro_func, idx_t depth);
+	//! Qualify the names in a macro body that its search path resolves to another entry than the caller's
+	void QualifyMacroBody(StandardEntry &macro, ParsedExpression &body);
+	void QualifyMacroBody(StandardEntry &macro, QueryNode &body);
+	//! The search path of a macro body, which starts with the macro's own schema as for a view
+	vector<CatalogSearchEntry> GetMacroSearchPath(StandardEntry &macro);
 
 	BoundStatement BindCTE(const Identifier &ctename, CommonTableExpressionInfo &info);
 

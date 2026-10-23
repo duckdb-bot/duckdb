@@ -1,0 +1,185 @@
+# name: test/sql/catalog/function/test_macro_own_schema.test
+# description: The body of a macro looks names up in the schema of the macro first, as a view does
+# group: [function]
+
+statement ok
+ATTACH '{TEST_DIR}/macro_own_schema.db' AS db;
+
+statement ok
+CREATE MACRO db.foo() AS TABLE SELECT 'db.foo' AS text;
+
+statement ok
+CREATE MACRO db.bar() AS TABLE SELECT * FROM foo();
+
+statement ok
+CREATE MACRO db.baz() AS (SELECT text FROM foo());
+
+statement ok
+CREATE MACRO db.s1(x) AS x + 1;
+
+statement ok
+CREATE MACRO db.s2(x) AS s1(x) * 2;
+
+statement ok
+CREATE TABLE db.t AS SELECT 42 AS v;
+
+statement ok
+CREATE MACRO db.from_t() AS TABLE SELECT * FROM t;
+
+statement ok
+CREATE MACRO db.sum_t() AS (SELECT sum(v) FROM t);
+
+statement ok
+CREATE TYPE db.mood AS ENUM ('db');
+
+statement ok
+CREATE MACRO db.cast_mood() AS 'db'::mood;
+
+statement ok
+CREATE MACRO db.with_cte() AS TABLE WITH t AS (SELECT 1 AS v) SELECT * FROM t;
+
+statement ok
+CREATE MACRO db.uses_builtin(x) AS abs(x);
+
+statement ok
+CREATE MACRO db.add_one(x) AS x + 1;
+
+statement ok
+CREATE MACRO db.echo(x) AS TABLE SELECT x AS v;
+
+statement ok
+DETACH db;
+
+statement ok
+ATTACH '{TEST_DIR}/macro_own_schema.db' AS db;
+
+query T
+SELECT * FROM db.bar()
+----
+db.foo
+
+query T
+SELECT db.baz()
+----
+db.foo
+
+query I
+SELECT db.s2(1)
+----
+4
+
+query I
+SELECT * FROM db.from_t()
+----
+42
+
+query I
+SELECT db.sum_t()
+----
+42
+
+query TT
+SELECT db.cast_mood()::VARCHAR, typeof(db.cast_mood())
+----
+db	ENUM('db')
+
+# names of the calling database do not shadow the ones of the macro
+statement ok
+CREATE MACRO foo() AS TABLE SELECT 'memory.foo' AS text;
+
+statement ok
+CREATE TABLE t AS SELECT -1 AS v;
+
+statement ok
+CREATE MACRO s1(x) AS x + 100;
+
+statement ok
+CREATE TYPE mood AS ENUM ('memory');
+
+query T
+SELECT * FROM db.bar()
+----
+db.foo
+
+query T
+SELECT db.baz()
+----
+db.foo
+
+query I
+SELECT db.s2(1)
+----
+4
+
+query I
+SELECT * FROM db.from_t()
+----
+42
+
+query T
+SELECT db.cast_mood()::VARCHAR
+----
+db
+
+# the arguments still resolve where the macro is called
+query I
+SELECT db.add_one(s1(0))
+----
+101
+
+query I
+SELECT * FROM db.echo(s1(0))
+----
+100
+
+# a CTE of the body is the body's, a CTE of the calling query is visible in the body as before
+query I
+SELECT * FROM db.with_cte()
+----
+1
+
+query I
+WITH t AS (SELECT 7 AS v) SELECT * FROM db.from_t()
+----
+7
+
+# names the schema of the macro does not have resolve where the macro is called, as before
+query I
+SELECT db.uses_builtin(-3)
+----
+3
+
+statement ok
+CREATE MACRO only_memory(x) AS x * 10;
+
+statement ok
+CREATE MACRO db.calls_only_memory(x) AS only_memory(x);
+
+query I
+SELECT db.calls_only_memory(2)
+----
+20
+
+# a column named after an expression keeps its name
+statement ok
+CREATE MACRO db.named() AS TABLE SELECT s1(1), s1(2) AS two;
+
+query II
+SELECT * FROM db.named()
+----
+2	3
+
+query TT
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM db.named())
+----
+s1(1)	INTEGER
+two	INTEGER
+
+# a macro of the calling database is unchanged
+statement ok
+CREATE MACRO uses_s1() AS s1(1);
+
+query I
+SELECT uses_s1()
+----
+101

@@ -300,7 +300,8 @@ protected:
 	virtual BindResult BindMacro(FunctionExpression &expr, ScalarMacroCatalogEntry &macro, idx_t depth,
 	                             unique_ptr<ParsedExpression> &expr_ptr);
 	void FindAggregateExprs(unique_ptr<ParsedExpression> &expr, vector<reference<unique_ptr<ParsedExpression>>> &exprs);
-	void UnfoldWindowMacroExpression(unique_ptr<ParsedExpression> &expr, ScalarMacroFunction &macro_def);
+	void UnfoldWindowMacroExpression(unique_ptr<ParsedExpression> &expr, ScalarMacroCatalogEntry &macro_func,
+	                                 ScalarMacroFunction &macro_def);
 	void UnfoldMacroExpression(FunctionExpression &function, ScalarMacroCatalogEntry &macro_func,
 	                           unique_ptr<ParsedExpression> &expr, idx_t depth);
 

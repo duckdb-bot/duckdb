@@ -73,6 +73,15 @@ statement ok
 CREATE MACRO db.param_name(x := 2) AS TABLE SELECT s1(x);
 
 statement ok
+CREATE MACRO db.arg_columns(x) AS TABLE SELECT s1(x) FROM (VALUES (1, 2)) t(a, b);
+
+statement ok
+CREATE MACRO db.pivot_in() AS TABLE PIVOT (SELECT 2 AS k, 42 AS v) ON k IN (s1(1)) USING sum(v);
+
+statement ok
+CREATE MACRO db.unpivot_on() AS TABLE UNPIVOT (SELECT 1 AS a) ON (s1(a)) INTO NAME k VALUE v;
+
+statement ok
 DETACH db;
 
 statement ok
@@ -195,6 +204,21 @@ query I
 SELECT * FROM db.param_name()
 ----
 3
+
+query II
+SELECT a, b FROM db.arg_columns(COLUMNS(*))
+----
+2	3
+
+query I
+SELECT "2" FROM db.pivot_in()
+----
+42
+
+query TI
+SELECT * FROM db.unpivot_on()
+----
+a	2
 
 # the arguments still resolve where the macro is called
 query I

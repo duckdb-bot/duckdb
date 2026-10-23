@@ -89,7 +89,7 @@ public:
 			for (auto &expr : select.select_list) {
 				const auto changes_before = changes.size();
 				QualifyExpression(*expr);
-				if (changes.size() != changes_before && !expr->HasAlias() && !ContainsStar(*expr)) {
+				if (changes.size() != changes_before && !expr->HasAlias()) {
 					unnamed_expressions.push_back(expr);
 				}
 			}
@@ -131,10 +131,13 @@ public:
 
 	//! Set the qualified names, after the arguments are substituted
 	void Apply() {
-		// a column without alias keeps the name it has without the qualification, outer expressions first
+		// a column without alias keeps the name it has without the qualification, outer expressions first, and a star
+		// that an argument can also bring in names its columns itself
 		for (auto it = unnamed_expressions.rbegin(); it != unnamed_expressions.rend(); ++it) {
 			auto &expr = it->get();
-			expr->SetAlias(expr->GetName());
+			if (!expr->HasAlias() && !ContainsStar(*expr)) {
+				expr->SetAlias(expr->GetName());
+			}
 		}
 		for (auto &change : changes) {
 			change.name.get() = std::move(change.qualified);
@@ -194,6 +197,11 @@ private:
 			for (auto &column : pivot.pivots) {
 				for (auto &expr : column.pivot_expressions) {
 					QualifyExpression(*expr);
+				}
+				for (auto &entry : column.entries) {
+					if (entry.expr) {
+						QualifyExpression(*entry.expr);
+					}
 				}
 				if (column.subquery) {
 					QualifyNode(*column.subquery);

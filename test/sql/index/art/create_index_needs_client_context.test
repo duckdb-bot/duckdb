@@ -2,8 +2,6 @@
 # description: Appends and deletes compute index keys without a client context, so keys that need one are rejected
 # group: [art]
 
-require icu
-
 statement ok
 CREATE TABLE t (id INTEGER, l INTEGER[], s VARCHAR);
 
@@ -43,11 +41,6 @@ Index keys cannot contain "can_cast_implicitly", which needs a client context to
 # the age of a single timestamp is taken at the start of the transaction
 statement error
 CREATE INDEX i ON t ((age(TIMESTAMP '2026-01-01' + id * INTERVAL 1 DAY)::VARCHAR));
-----
-Index keys cannot contain expressions with side effects
-
-statement error
-CREATE INDEX i ON t ((age(TIMESTAMPTZ '2026-01-01 00:00:00+00' + id * INTERVAL 1 DAY)::VARCHAR));
 ----
 Index keys cannot contain expressions with side effects
 
@@ -93,23 +86,28 @@ statement ok
 CREATE TABLE v (id INTEGER, x VARIANT);
 
 statement ok
-INSERT INTO v VALUES (1, {'a': 'one'}::VARIANT);
+INSERT INTO v VALUES (1, {'a': 'one'}::VARIANT), (2, {'a': {'b': [1, 2, 3], 'c': 'a string longer than the inline size'}}::VARIANT);
 
 statement ok
 CREATE UNIQUE INDEX i_var ON v ((variant_extract_string(x, 'a')));
 
 statement ok
-INSERT INTO v VALUES (2, {'a': 'two'}::VARIANT);
+INSERT INTO v VALUES (3, {'a': 'two'}::VARIANT), (4, {'a': {'b': [4], 'c': 'another string longer than the inline size'}}::VARIANT);
 
 statement error
-INSERT INTO v VALUES (3, {'a': 'one'}::VARIANT);
+INSERT INTO v VALUES (5, {'a': {'b': [1, 2, 3], 'c': 'a string longer than the inline size'}}::VARIANT);
 ----
 Duplicate key
 
 statement ok
-DELETE FROM v WHERE id = 1;
+DELETE FROM v WHERE id IN (1, 2);
+
+statement ok
+INSERT INTO v VALUES (5, {'a': {'b': [1, 2, 3], 'c': 'a string longer than the inline size'}}::VARIANT);
 
 query II
-SELECT id, variant_extract_string(x, 'a') FROM v;
+SELECT id, variant_extract_string(x, 'a') FROM v ORDER BY id;
 ----
-2	two
+3	two
+4	{"b":[4],"c":"another string longer than the inline size"}
+5	{"b":[1,2,3],"c":"a string longer than the inline size"}

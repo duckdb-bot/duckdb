@@ -1,0 +1,13 @@
+# name: test/sql/index/art/create_index_needs_client_context_icu.test
+# description: The age of a single TIMESTAMPTZ is taken at the start of the transaction, so it cannot be an index key
+# group: [art]
+
+require icu
+
+statement ok
+CREATE TABLE t (id INTEGER, ts TIMESTAMPTZ);
+
+statement error
+CREATE INDEX i ON t ((age(ts)::VARCHAR));
+----
+Index keys cannot contain expressions with side effects

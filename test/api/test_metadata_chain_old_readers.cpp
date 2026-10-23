@@ -47,7 +47,10 @@ idx_t CountNextPointersToFreeBlocks(Connection &con, idx_t table_count) {
 	for (idx_t t = 0; t < table_count; t++) {
 		auto &table = Catalog::GetEntry<TableCatalogEntry>(
 		    *con.context, QualifiedName(INVALID_CATALOG, DEFAULT_SCHEMA, Identifier("candles_" + std::to_string(t))));
-		auto &pointers = table.GetStorage().GetRowGroupCollection()->GetMetadataPointers();
+		auto &collection = *table.GetStorage().GetRowGroupCollection();
+		// loading every row group adds the rest of the table metadata to the pointers
+		REQUIRE(collection.GetRowGroupCount() > 0);
+		auto &pointers = collection.GetMetadataPointers();
 		REQUIRE(!pointers.empty());
 		for (auto &pointer : pointers) {
 			auto next_block = metadata_manager.GetNextBlock(pointer);

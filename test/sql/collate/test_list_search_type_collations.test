@@ -1,0 +1,106 @@
+# name: test/sql/collate/test_list_search_type_collations.test
+# description: List searches compare VARIANT values by equality
+# group: [collate]
+
+# equal VARIANT values stored with different types, e.g. JSON numbers are parsed as UBIGINT
+query IIIII
+SELECT list_contains([1::TINYINT::VARIANT], 1::BIGINT::VARIANT),
+       list_position([1::TINYINT::VARIANT], 1::BIGINT::VARIANT),
+       list_contains([1::DECIMAL(4,1)::VARIANT], 1::INTEGER::VARIANT),
+       list_contains([1.5::FLOAT::VARIANT], 1.5::DOUBLE::VARIANT),
+       list_contains([1::UBIGINT::VARIANT], 1::BIGINT::VARIANT)
+----
+true	1	true	true	true
+
+# aliases, the list overload of contains, fixed-size arrays and nested lists
+query IIIII
+SELECT array_has([1::TINYINT::VARIANT], 1::BIGINT::VARIANT),
+       array_indexof([2::VARIANT, 1::TINYINT::VARIANT], 1::BIGINT::VARIANT),
+       contains([1::TINYINT::VARIANT], 1::BIGINT::VARIANT),
+       list_contains([1::TINYINT::VARIANT]::VARIANT[1], 1::BIGINT::VARIANT),
+       list_contains([[1::TINYINT::VARIANT]], [1::BIGINT::VARIANT])
+----
+true	2	true	true	true
+
+# values that are not equal still do not match, and NULLs keep their positions
+query IIIII
+SELECT list_contains([1::TINYINT::VARIANT, 'a'::VARIANT], 2::VARIANT),
+       list_contains(['1'::VARIANT], 1::VARIANT),
+       list_position([NULL::VARIANT, 1::TINYINT::VARIANT], 1::BIGINT::VARIANT),
+       list_position([1::VARIANT, NULL], NULL::VARIANT),
+       list_contains(NULL::VARIANT[], 1::VARIANT)
+----
+false	false	2	2	NULL
+
+# a needle of another type is cast to VARIANT first
+query I
+SELECT list_contains([1::TINYINT::VARIANT], 1)
+----
+true
+
+statement ok
+CREATE TABLE variants AS SELECT range AS id, CASE range % 5
+	WHEN 0 THEN (range % 7)::TINYINT::VARIANT
+	WHEN 1 THEN (range % 7)::BIGINT::VARIANT
+	WHEN 2 THEN (range % 7)::DECIMAL(9,2)::VARIANT
+	WHEN 3 THEN (range % 7)::UBIGINT::VARIANT
+	ELSE NULL END AS x
+FROM range(100)
+
+statement ok
+CREATE TABLE lists AS SELECT id % 10 AS id, list(x) AS l FROM variants GROUP BY id % 10
+
+# the searches agree with equality for every list and needle
+query III
+SELECT count(*),
+       count(*) FILTER (list_contains(l, n) IS DISTINCT FROM (len(list_filter(l, lambda e: e = n)) > 0)),
+       count(*) FILTER (list_position(l, n) IS DISTINCT FROM list_position(list_transform(l, lambda e: {'v': e}), {'v': n}))
+FROM lists, (SELECT DISTINCT x AS n FROM variants WHERE x IS NOT NULL)
+----
+70	0	0
+
+# every list that is not all NULL holds a 6, stored with one of four types
+query I
+SELECT id FROM lists WHERE list_contains(l, 6::UBIGINT::VARIANT) ORDER BY id
+----
+0
+1
+2
+3
+5
+6
+7
+8
+
+# both sides are compared by their comparison keys
+statement ok
+SET explain_output = 'optimized_only'
+
+query II
+EXPLAIN SELECT id FROM lists WHERE list_contains(l, 6::UBIGINT::VARIANT)
+----
+logical_opt	<REGEX>:.*list_contains\(list_transform\(l, lambda x: variant_comparator\(x\)\).*BLOB.*
+
+# lists of flat types keep their own comparison
+statement ok
+CREATE TABLE intervals AS SELECT [to_days(range)] AS l FROM range(40)
+
+query II
+EXPLAIN SELECT count(*) FROM intervals WHERE list_contains(l, INTERVAL '1 month')
+----
+logical_opt	<!REGEX>:.*normalized_interval.*
+
+# 30 days still equals 1 month
+query I
+SELECT count(*) FROM intervals WHERE list_contains(l, INTERVAL '1 month')
+----
+1
+
+# the default collation is still not applied to string arguments
+statement ok
+SET default_collation = 'nocase'
+
+query III
+SELECT list_contains(['A'], 'a'), contains('ABC', 'b'), 'ABC' LIKE '%b%'
+----
+false	false	false

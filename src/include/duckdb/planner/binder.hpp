@@ -401,6 +401,7 @@ public:
 	void SetCanContainNulls(bool can_contain_nulls);
 	bool CanContainNulls() const;
 	void SetAlwaysRequireRebind();
+	void SetDependsOnSessionSettings();
 	void SetInsideSubquery();
 	bool IsInsideSubquery() const;
 

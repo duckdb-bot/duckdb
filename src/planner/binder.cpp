@@ -409,6 +409,11 @@ void Binder::SetAlwaysRequireRebind() {
 	properties.always_require_rebind = true;
 }
 
+void Binder::SetDependsOnSessionSettings() {
+	auto &properties = GetStatementProperties();
+	properties.depends_on_session_settings = true;
+}
+
 void Binder::AddTableName(string table_name) {
 	global_binder_state->table_names.insert(std::move(table_name));
 }

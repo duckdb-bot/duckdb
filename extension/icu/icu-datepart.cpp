@@ -385,6 +385,16 @@ struct ICUDatePart : public ICUDateFunc {
 			return BindData::Equals(other_p) && part_codes == other.part_codes;
 		}
 
+		//! As for BindAdapterData, only the epoch is read from the instant itself
+		bool DependsOnSessionSettings() const override {
+			for (auto part_code : part_codes) {
+				if (part_code != DatePartSpecifier::EPOCH) {
+					return true;
+				}
+			}
+			return false;
+		}
+
 		duckdb::unique_ptr<FunctionData> Copy() const override {
 			return make_uniq<BindStructData>(*this);
 		}

@@ -33,6 +33,28 @@ CREATE INDEX i ON t ((id + hour(TIMESTAMPTZ '2026-01-01 00:00:00+00')));
 ----
 Index keys cannot depend on session settings such as TimeZone or Calendar
 
+# nor when it is folded away to NULL or evaluated by the bind of switch or date_part
+statement error
+CREATE INDEX i ON t ((coalesce(id + CASE WHEN hour(TIMESTAMPTZ '2026-01-01 00:00:00+00') = 0 THEN NULL ELSE 1 END, id)));
+----
+Index keys cannot depend on session settings such as TimeZone or Calendar
+
+statement error
+CREATE INDEX i ON t ((switch(id, MAP {1: hour(TIMESTAMPTZ '2026-01-01 00:00:00+00')}, 99)));
+----
+Index keys cannot depend on session settings such as TimeZone or Calendar
+
+statement error
+CREATE INDEX i ON t ((date_part(CASE WHEN hour(TIMESTAMPTZ '2026-01-01 00:00:00+00') = 0 THEN 'day' ELSE 'year' END, naive)));
+----
+Index keys cannot depend on session settings such as TimeZone or Calendar
+
+# a cast folded into a constant argument
+statement error
+CREATE INDEX i ON t ((id + epoch_us(TIMESTAMPTZ '2026-01-01 00:00:00')));
+----
+Index keys cannot depend on session settings such as TimeZone or Calendar
+
 # nor is a lambda body skipped
 statement error
 CREATE INDEX i ON t ((list_transform([ts], lambda x: hour(x))[1]));
@@ -54,6 +76,17 @@ CREATE INDEX i_epoch_seconds ON t ((epoch(ts)));
 
 statement ok
 CREATE INDEX i_date_part_epoch ON t ((date_part('epoch', ts)));
+
+statement ok
+CREATE INDEX i_date_part_struct_epoch ON t ((date_part(['epoch'], ts).epoch));
+
+statement ok
+CREATE INDEX i_epoch_ns ON t ((epoch(ts::TIMESTAMPTZ_NS)));
+
+statement error
+CREATE INDEX i ON t ((date_part(['epoch', 'hour'], ts).epoch));
+----
+Index keys cannot depend on session settings such as TimeZone or Calendar
 
 statement ok
 SET TimeZone = 'Europe/Amsterdam';

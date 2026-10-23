@@ -43,6 +43,8 @@ struct BoundCastData {
 	DUCKDB_API virtual ~BoundCastData();
 
 	DUCKDB_API virtual unique_ptr<BoundCastData> Copy() const = 0;
+	//! Whether the bind read session settings such as TimeZone, so that binding again elsewhere can change the result
+	DUCKDB_API virtual bool DependsOnSessionSettings() const;
 
 	template <class TARGET>
 	TARGET &Cast() {

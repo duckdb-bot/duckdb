@@ -29,6 +29,10 @@ struct ICUDateFunc {
 
 		bool Equals(const FunctionData &other_p) const override;
 		duckdb::unique_ptr<FunctionData> Copy() const override;
+		//! The calendar is made from the TimeZone and Calendar settings
+		bool DependsOnSessionSettings() const override {
+			return true;
+		}
 
 		void InitCalendar();
 	};
@@ -39,6 +43,10 @@ struct ICUDateFunc {
 
 		duckdb::unique_ptr<BoundCastData> Copy() const override {
 			return make_uniq<CastData>(info->Copy());
+		}
+
+		bool DependsOnSessionSettings() const override {
+			return info->DependsOnSessionSettings();
 		}
 
 		duckdb::unique_ptr<FunctionData> info;

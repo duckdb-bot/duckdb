@@ -73,6 +73,11 @@ public:
 		return source_type == other.source_type && target_type == other.target_type && try_cast == other.try_cast &&
 		       is_default_cast == other.is_default_cast && bound_cast.Equals(other.bound_cast);
 	}
+
+	bool DependsOnSessionSettings() const override {
+		auto cast_data = bound_cast.GetCastData();
+		return cast_data && cast_data->DependsOnSessionSettings();
+	}
 };
 
 void CastFunction(DataChunk &args, ExpressionState &state, Vector &result) {

@@ -15,6 +15,8 @@
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/function/table/table_scan.hpp"
 #include "duckdb/planner/operator/logical_create_index.hpp"
+#include "duckdb/planner/expression/bound_function_expression.hpp"
+#include "duckdb/planner/expression_iterator.hpp"
 
 namespace duckdb {
 
@@ -75,6 +77,22 @@ void IndexBinder::InitCreateIndexInfo(LogicalGet &get, CreateIndexInfo &info) {
 	get.AddColumnId(COLUMN_IDENTIFIER_ROW_ID);
 }
 
+static bool DependsOnSessionSettings(const Expression &expr) {
+	if (expr.GetExpressionClass() == ExpressionClass::BOUND_FUNCTION) {
+		auto &bind_info = expr.Cast<BoundFunctionExpression>().BindInfo();
+		if (bind_info && bind_info->DependsOnSessionSettings()) {
+			return true;
+		}
+	}
+	bool result = false;
+	ExpressionIterator::EnumerateChildren(expr, [&](const Expression &child) {
+		if (!result) {
+			result = DependsOnSessionSettings(child);
+		}
+	});
+	return result;
+}
+
 unique_ptr<LogicalOperator> IndexBinder::BindCreateIndex(ClientContext &context,
                                                          unique_ptr<CreateIndexInfo> create_index_info,
                                                          TableCatalogEntry &table_entry,
@@ -108,6 +126,10 @@ unique_ptr<LogicalOperator> IndexBinder::BindCreateIndex(ClientContext &context,
 		expressions.push_back(Bind(expr));
 		if (properties.always_require_rebind) {
 			throw BinderException("Index keys cannot contain expressions with side effects.");
+		}
+		// other sessions bind the keys again under their own settings, e.g. another TimeZone
+		if (DependsOnSessionSettings(*expressions.back())) {
+			throw BinderException("Index keys cannot depend on session settings such as TimeZone or Calendar.");
 		}
 	}
 	properties.always_require_rebind = statement_requires_rebind;

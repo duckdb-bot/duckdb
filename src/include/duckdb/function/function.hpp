@@ -74,6 +74,8 @@ public:
 	DUCKDB_API virtual bool Equals(const FunctionData &other) const = 0;
 	DUCKDB_API static bool Equals(const FunctionData *left, const FunctionData *right);
 	DUCKDB_API virtual bool SupportStatementCache() const;
+	//! Whether the bind read session settings such as TimeZone, so that binding again elsewhere can change the result
+	DUCKDB_API virtual bool DependsOnSessionSettings() const;
 
 	template <class TARGET>
 	TARGET &Cast() {

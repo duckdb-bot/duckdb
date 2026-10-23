@@ -24,6 +24,10 @@ BindCastInfo::~BindCastInfo() {
 BoundCastData::~BoundCastData() {
 }
 
+bool BoundCastData::DependsOnSessionSettings() const {
+	return false;
+}
+
 CastStatisticsInput::CastStatisticsInput(BoundCastInfo &bound_cast_p, const LogicalType &source_type_p,
                                          const LogicalType &target_type_p, const BaseStatistics &child_stats_p,
                                          optional_ptr<ClientContext> context_p)

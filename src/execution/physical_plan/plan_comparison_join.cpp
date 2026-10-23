@@ -176,7 +176,7 @@ CreateRecursiveKeyProbeNormalizers(ClientContext &context, const PhysicalRecursi
 	return normalizers;
 }
 
-//! The size of the hash table of a join over a constant collection whose keys are its columns, if it has one
+//! The size of the hash table of a join over a constant collection whose key is one of its columns, if it has one
 static optional_idx ConstantBuildSize(const PhysicalHashJoin &join, PhysicalOperator &right) {
 	if (right.type != PhysicalOperatorType::COLUMN_DATA_SCAN) {
 		return optional_idx();
@@ -185,11 +185,11 @@ static optional_idx ConstantBuildSize(const PhysicalHashJoin &join, PhysicalOper
 	if (!scan.collection) {
 		return optional_idx();
 	}
-	for (auto &condition : join.conditions) {
-		if (!condition.IsComparison() || condition.GetRHS().GetExpressionType() != ExpressionType::BOUND_REF) {
-			// computed keys and residual predicates can take far more memory than the collection
-			return optional_idx();
-		}
+	// the hash table stores the key of each condition and the columns of a residual predicate, so only a single key
+	// that is a column of the collection keeps it within the size of the collection
+	if (join.conditions.size() != 1 || join.predicate || !join.conditions[0].IsComparison() ||
+	    join.conditions[0].GetRHS().GetExpressionType() != ExpressionType::BOUND_REF) {
+		return optional_idx();
 	}
 	// the pointer table and the hashes come on top of the rows
 	return scan.collection->SizeInBytes() + scan.collection->Count() * (sizeof(data_ptr_t) + sizeof(hash_t));

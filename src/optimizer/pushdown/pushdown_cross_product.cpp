@@ -64,16 +64,27 @@ static optional_ptr<const BoundColumnRefExpression> AsColumnRef(const Expression
 
 static JoinSide GetColumnSide(const BoundColumnRefExpression &column, const unordered_set<TableIndex> &left_bindings,
                               const unordered_set<TableIndex> &right_bindings) {
-	unordered_set<TableIndex> bindings {column.Binding().table_index};
-	return JoinSide::GetJoinSide(bindings, left_bindings, right_bindings);
+	return JoinSide::GetJoinSide(column.Binding().table_index, left_bindings, right_bindings);
+}
+
+static bool IsUsed(const vector<reference<const BoundColumnRefExpression>> &used,
+                   const BoundColumnRefExpression &column) {
+	for (auto &entry : used) {
+		if (entry.get().Equals(column)) {
+			return true;
+		}
+	}
+	return false;
 }
 
 //! A row that passes `l IS NOT DISTINCT FROM r` and `l = c` has a non-NULL l, so it also passes `r = c`. With r and c
-//! on the same side of the join, that equality filters the side before the join.
+//! on the same side of the join, that equality filters the side before the join. Each column is in one such filter at
+//! most, as the side combines its equalities with each other.
 static vector<unique_ptr<Expression>> GetImpliedSideFilters(const vector<unique_ptr<Expression>> &join_expressions,
                                                             const unordered_set<TableIndex> &left_bindings,
                                                             const unordered_set<TableIndex> &right_bindings) {
 	vector<unique_ptr<Expression>> result;
+	vector<reference<const BoundColumnRefExpression>> used;
 	for (auto &null_safe : join_expressions) {
 		if (null_safe->GetExpressionType() != ExpressionType::COMPARE_NOT_DISTINCT_FROM ||
 		    !BoundComparisonExpression::IsComparison(*null_safe)) {
@@ -111,15 +122,13 @@ static vector<unique_ptr<Expression>> GetImpliedSideFilters(const vector<unique_
 					    GetColumnSide(partner, left_bindings, right_bindings) != side) {
 						continue;
 					}
-					auto implied =
-					    BoundComparisonExpression::Create(ExpressionType::COMPARE_EQUAL, other.Copy(), partner.Copy());
-					bool duplicate = false;
-					for (auto &existing : result) {
-						duplicate = duplicate || existing->Equals(*implied);
+					if (IsUsed(used, other) || IsUsed(used, partner)) {
+						continue;
 					}
-					if (!duplicate) {
-						result.push_back(std::move(implied));
-					}
+					used.push_back(other);
+					used.push_back(partner);
+					result.push_back(
+					    BoundComparisonExpression::Create(ExpressionType::COMPARE_EQUAL, other.Copy(), partner.Copy()));
 				}
 			}
 		}

@@ -48,6 +48,42 @@ SELECT c.x, b.x FROM c JOIN b ON b.x IS NOT DISTINCT FROM c.x WHERE b.x = c.y OR
 ----
 1	1
 
+# a column is in one derived filter at most, so many null-safe comparisons on one column do not multiply
+statement ok
+CREATE TABLE wide AS SELECT i AS k0, i AS k1, i AS k2, i AS k3, i AS k4 FROM range(10) r(i);
+
+statement ok
+CREATE TABLE keys AS SELECT i AS k FROM range(10) r(i);
+
+query II
+EXPLAIN SELECT count(*) FROM keys JOIN wide ON keys.k = wide.k0 AND keys.k IS NOT DISTINCT FROM wide.k1 AND keys.k IS NOT DISTINCT FROM wide.k2 AND keys.k IS NOT DISTINCT FROM wide.k3 AND keys.k IS NOT DISTINCT FROM wide.k4
+----
+physical_plan	<REGEX>:.*Filter.*Expression: k1 = k0.*
+
+query II
+EXPLAIN SELECT count(*) FROM keys JOIN wide ON keys.k = wide.k0 AND keys.k IS NOT DISTINCT FROM wide.k1 AND keys.k IS NOT DISTINCT FROM wide.k2 AND keys.k IS NOT DISTINCT FROM wide.k3 AND keys.k IS NOT DISTINCT FROM wide.k4
+----
+physical_plan	<!REGEX>:.*(k2 =|= k2).*
+
+query I
+SELECT count(*) FROM keys JOIN wide ON keys.k = wide.k0 AND keys.k IS NOT DISTINCT FROM wide.k1 AND keys.k IS NOT DISTINCT FROM wide.k2 AND keys.k IS NOT DISTINCT FROM wide.k3 AND keys.k IS NOT DISTINCT FROM wide.k4
+----
+10
+
+# volatile expressions are not copied, also in a join
+statement ok
+CREATE SEQUENCE s3;
+
+query I
+SELECT count(*) FROM keys JOIN wide ON keys.k IS NOT DISTINCT FROM wide.k0 + 0 AND keys.k = wide.k1 WHERE nextval('s3') > 0
+----
+10
+
+query I
+SELECT currval('s3')
+----
+10
+
 # volatile expressions are not copied
 statement ok
 CREATE SEQUENCE s1;

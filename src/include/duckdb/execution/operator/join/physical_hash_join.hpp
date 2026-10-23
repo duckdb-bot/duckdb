@@ -51,6 +51,8 @@ public:
 
 	//! Initialize HT for this operator
 	unique_ptr<JoinHashTable> InitializeHashTable(ClientContext &context, idx_t initial_radix_bits) const;
+	//! Whether the estimated build side exceeds the share of the memory limit that a join expects to keep in memory
+	bool BuildIsLikelyLarge(ClientContext &context) const;
 
 	//! The types of the join keys
 	vector<LogicalType> condition_types;
@@ -65,8 +67,8 @@ public:
 	//! Duplicate eliminated types; only used for delim_joins (i.e. correlated subqueries)
 	vector<LogicalType> delim_types;
 
-	//! Whether the join stays in memory and keeps the order of the probe side, which needs a constant build side and
-	//! a join type that emits each probe row once at most
+	//! Whether the join stays in memory and keeps the order of the probe side, which needs a small constant build side
+	//! and a join type that emits each probe row once at most
 	bool preserves_probe_order = false;
 
 	unique_ptr<ResidualPredicateInfo> residual_info;
@@ -109,10 +111,17 @@ protected:
 
 	//! Becomes a source when it is an external join
 	bool IsSource() const override {
-		return !preserves_probe_order;
+		return true;
 	}
 	OrderPreservationType OperatorOrder() const override {
 		return preserves_probe_order ? OrderPreservationType::INSERTION_ORDER : PhysicalComparisonJoin::OperatorOrder();
+	}
+	//! A join that keeps the probe order never goes external, so as a source it emits no rows
+	OrderPreservationType SourceOrder() const override {
+		return preserves_probe_order ? OrderPreservationType::INSERTION_ORDER : PhysicalComparisonJoin::SourceOrder();
+	}
+	bool SupportsPartitioning(const OperatorPartitionInfo &partition_info) const override {
+		return preserves_probe_order || PhysicalComparisonJoin::SupportsPartitioning(partition_info);
 	}
 
 	bool ParallelSource() const override {

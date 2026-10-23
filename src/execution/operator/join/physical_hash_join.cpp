@@ -385,18 +385,22 @@ static constexpr idx_t NON_FILTERING_BUILD_SIDE_THRESHOLD = 4194304;
 //! A join is expected to stay in memory while its estimated build side is below this share of the memory budget
 static constexpr idx_t LIKELY_IN_MEMORY_BUILD_MEMORY_FRACTION = 4;
 
+bool PhysicalHashJoin::BuildIsLikelyLarge(ClientContext &context) const {
+	idx_t row_width = sizeof(data_ptr_t) + sizeof(hash_t); // per-row pointer table and hash overhead
+	for (auto &type : children[1].get().GetTypes()) {
+		row_width += GetTypeIdSize(type.InternalType());
+	}
+	const auto build_size = children[1].get().estimated_cardinality * row_width;
+	const auto memory_budget = BufferManager::GetBufferManager(context).GetMaxMemory();
+	return build_size > memory_budget / LIKELY_IN_MEMORY_BUILD_MEMORY_FRACTION;
+}
+
 //! Whether the build side is expected to exceed the memory budget and spill
 static bool JoinIsLikelyExternal(ClientContext &context, const PhysicalHashJoin &op) {
 	if (Settings::Get<DebugForceExternalSetting>(context)) {
 		return true;
 	}
-	idx_t row_width = sizeof(data_ptr_t) + sizeof(hash_t); // per-row pointer table and hash overhead
-	for (auto &type : op.children[1].get().GetTypes()) {
-		row_width += GetTypeIdSize(type.InternalType());
-	}
-	const auto build_size = op.children[1].get().estimated_cardinality * row_width;
-	const auto memory_budget = BufferManager::GetBufferManager(context).GetMaxMemory();
-	return build_size > memory_budget / LIKELY_IN_MEMORY_BUILD_MEMORY_FRACTION;
+	return op.BuildIsLikelyLarge(context);
 }
 
 //! Whether to accumulate a bloom filter during Sink. Only an external join needs that: its finalize only ever

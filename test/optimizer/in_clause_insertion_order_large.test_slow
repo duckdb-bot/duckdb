@@ -1,0 +1,21 @@
+# name: test/optimizer/in_clause_insertion_order_large.test_slow
+# description: A long IN list keeps the insertion order when joins are forced to go external (duckdb/duckdb#24398)
+# group: [optimizer]
+
+statement ok
+SET threads = 1;
+
+statement ok
+CREATE TABLE t AS SELECT i AS ts FROM range(1500000) r(i);
+
+# forcing external joins does not move the rows of a constant list that fits in memory
+statement ok
+SET debug_force_external = true;
+
+statement ok
+CREATE TABLE r AS SELECT ts FROM t WHERE list_contains(range(0, 1500000, 3), ts);
+
+query II
+SELECT count(*) FILTER (WHERE ts < prev), count(*) FROM (SELECT ts, lag(ts) OVER (ORDER BY rowid) AS prev FROM r)
+----
+0	500000

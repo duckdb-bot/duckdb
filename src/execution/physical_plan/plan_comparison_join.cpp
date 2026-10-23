@@ -248,7 +248,8 @@ PhysicalOperator &PhysicalPlanGenerator::PlanComparisonJoin(LogicalComparisonJoi
 		auto &hash_join = join.Cast<PhysicalHashJoin>();
 		hash_join.preserves_probe_order =
 		    op.children[1]->type == LogicalOperatorType::LOGICAL_CHUNK_GET &&
-		    (op.join_type == JoinType::MARK || op.join_type == JoinType::SEMI || op.join_type == JoinType::ANTI);
+		    (op.join_type == JoinType::MARK || op.join_type == JoinType::SEMI || op.join_type == JoinType::ANTI) &&
+		    Settings::Get<PreserveInsertionOrderSetting>(context) && !hash_join.BuildIsLikelyLarge(context);
 		return join;
 	}
 

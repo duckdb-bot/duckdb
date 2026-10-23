@@ -10,4 +10,7 @@ load
 CREATE TABLE df AS SELECT list(loading) AS loadings FROM (SELECT random() AS loading, b.range AS row FROM range(20000) a, range(3000) b) GROUP BY row;
 
 run
-SELECT loadings[1] FROM df LIMIT 1
+SELECT len(loadings) FROM df LIMIT 1
+
+result I
+20000

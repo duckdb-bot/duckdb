@@ -189,17 +189,23 @@ void ListColumnData::Select(TransactionData transaction, idx_t vector_index, Col
 	auto last_offset = offsets[scan_count - 1].GetValueUnsafe();
 	auto total_children = GetListLength(first_offset, last_offset, child_count);
 
-	// count the consecutive ranges of selected rows, each costs a skip and a scan
+	auto list_start = [&](idx_t row) {
+		return row == 0 ? first_offset : offsets[row - 1].GetValueUnsafe();
+	};
+	// count the consecutive ranges of selected rows, each costs a skip and a scan, and the children they hold
 	idx_t consecutive_ranges = 0;
+	idx_t range_children = 0;
 	for (idx_t i = 0; i < sel_count; i++) {
-		idx_t end_idx = sel.get_index(i) + 1;
+		idx_t start_idx = sel.get_index(i);
+		idx_t end_idx = start_idx + 1;
 		for (; i + 1 < sel_count && sel.get_index(i + 1) <= end_idx; i++) {
 			end_idx = sel.get_index(i + 1) + 1;
 		}
 		consecutive_ranges++;
+		range_children += offsets[end_idx - 1].GetValueUnsafe() - list_start(start_idx);
 	}
-	// as for arrays, allow around one range every two children of an average list
-	if (consecutive_ranges * 2 * scan_count > total_children) {
+	// as for arrays, allow around one range every two children of an average list, and skip at least half the children
+	if (consecutive_ranges * 2 * scan_count > total_children || range_children * 2 > total_children) {
 		validity->ScanCount(state.child_states[0], result, scan_count);
 		ScanLists(state, result, offset_vector, scan_count);
 		FlatVector::SetSize(result, count_t(scan_count));
@@ -207,9 +213,6 @@ void ListColumnData::Select(TransactionData transaction, idx_t vector_index, Col
 		return;
 	}
 
-	auto list_start = [&](idx_t row) {
-		return row == 0 ? first_offset : offsets[row - 1].GetValueUnsafe();
-	};
 	vector<list_entry_t> entries;
 	entries.reserve(sel_count);
 	idx_t selected_children = 0;

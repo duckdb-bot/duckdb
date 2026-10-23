@@ -13,7 +13,7 @@ CREATE TABLE t (id INTEGER, ts TIMESTAMPTZ, s VARCHAR, naive TIMESTAMP);
 statement ok
 INSERT INTO t VALUES (1, '2026-01-01 00:00:00+00', '2026-01-01 00:00:00', '2026-01-01 00:00:00');
 
-foreach expression ts::VARCHAR date_part('hour',ts) strftime(ts,'%H') ts::DATE s::TIMESTAMPTZ ts+INTERVAL'1day' timezone('UTC',ts)::VARCHAR
+foreach expression ts::VARCHAR date_part('hour',ts) strftime(ts,'%H') ts::DATE s::TIMESTAMPTZ ts+INTERVAL'1day' timezone('UTC',ts)::VARCHAR [ts]::VARCHAR [ts]::VARCHAR[] row(ts)::VARCHAR coalesce(ts::VARCHAR,s)
 
 statement error
 CREATE INDEX i ON t (({expression}));
@@ -27,6 +27,18 @@ Index keys cannot depend on session settings such as TimeZone or Calendar
 
 endloop
 
+# a constant argument is not folded into a value that hides the dependency
+statement error
+CREATE INDEX i ON t ((id + hour(TIMESTAMPTZ '2026-01-01 00:00:00+00')));
+----
+Index keys cannot depend on session settings such as TimeZone or Calendar
+
+# nor is a lambda body skipped
+statement error
+CREATE INDEX i ON t ((list_transform([ts], lambda x: hour(x))[1]));
+----
+Index keys cannot depend on session settings such as TimeZone or Calendar
+
 # keys that do not depend on the session are still allowed
 statement ok
 CREATE INDEX i_ts ON t (ts);
@@ -36,6 +48,12 @@ CREATE INDEX i_epoch ON t ((epoch_us(ts)));
 
 statement ok
 CREATE INDEX i_naive ON t ((naive::VARCHAR));
+
+statement ok
+CREATE INDEX i_epoch_seconds ON t ((epoch(ts)));
+
+statement ok
+CREATE INDEX i_date_part_epoch ON t ((date_part('epoch', ts)));
 
 statement ok
 SET TimeZone = 'Europe/Amsterdam';

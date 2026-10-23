@@ -78,6 +78,12 @@ bool BoundFunctionExpression::CanThrow() const {
 	       (lambda_expr && lambda_expr->CanThrow()) || Expression::CanThrow();
 }
 
+bool BoundFunctionExpression::DependsOnSessionSettings() const {
+	auto lambda_expr = GetLambdaExpression(*this);
+	return (bind_info && bind_info->DependsOnSessionSettings()) ||
+	       (lambda_expr && lambda_expr->DependsOnSessionSettings()) || Expression::DependsOnSessionSettings();
+}
+
 string BoundFunctionExpression::ToString() const {
 	if (function.HasToStringCallback()) {
 		FunctionToStringInput input(function, bind_info.get(), children);

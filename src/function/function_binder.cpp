@@ -873,6 +873,10 @@ static bool FoldConstantArgument(ClientContext &context, unique_ptr<Expression> 
 	if (result.IsNull()) {
 		return true;
 	}
+	if (child->DependsOnSessionSettings()) {
+		// a constant would hide the dependency from index keys, which other sessions bind again
+		return false;
+	}
 	auto constant = make_uniq<BoundConstantExpression>(std::move(result));
 	constant->SetAlias(child->GetAlias());
 	constant->SetQueryLocation(child->GetQueryLocation());

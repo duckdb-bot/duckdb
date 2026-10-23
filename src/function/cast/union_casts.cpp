@@ -50,6 +50,9 @@ public:
 		}
 		return make_uniq<UnionMemberBoundCastData>(tag_map, std::move(member_casts_copy), type, is_member_to_member);
 	}
+	bool DependsOnSessionSettings() const override {
+		return BoundCastInfo::AnyDependsOnSessionSettings(member_casts);
+	}
 };
 
 //--------------------------------------------------------------------------------------------------

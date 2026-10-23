@@ -58,6 +58,9 @@ public:
 	unique_ptr<BoundCastData> Copy() const override {
 		return make_uniq<QuotedChildCastData>(child_cast.Copy(), child_type);
 	}
+	bool DependsOnSessionSettings() const override {
+		return child_cast.DependsOnSessionSettings();
+	}
 };
 
 unique_ptr<FunctionLocalState> InitQuotedChildLocalState(CastLocalStateParameters &parameters) {

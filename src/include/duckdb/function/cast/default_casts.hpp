@@ -149,6 +149,11 @@ public:
 	optional_ptr<BoundCastData> GetCastData() const {
 		return cast_data;
 	}
+	//! Whether the cast, or a cast it applies to child values, read session settings such as TimeZone
+	bool DependsOnSessionSettings() const {
+		return cast_data && cast_data->DependsOnSessionSettings();
+	}
+	static bool AnyDependsOnSessionSettings(const vector<BoundCastInfo> &casts);
 	bool HasInitLocalState() const {
 		return init_local_state;
 	}

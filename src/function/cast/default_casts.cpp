@@ -100,6 +100,15 @@ bool DefaultCasts::ReinterpretCast(Vector &source, Vector &result, idx_t count, 
 	return true;
 }
 
+bool BoundCastInfo::AnyDependsOnSessionSettings(const vector<BoundCastInfo> &casts) {
+	for (auto &cast : casts) {
+		if (cast.DependsOnSessionSettings()) {
+			return true;
+		}
+	}
+	return false;
+}
+
 bool BoundCastInfo::IsNopCast() const {
 	return function == DefaultCasts::NopCast;
 }

@@ -75,8 +75,7 @@ public:
 	}
 
 	bool DependsOnSessionSettings() const override {
-		auto cast_data = bound_cast.GetCastData();
-		return cast_data && cast_data->DependsOnSessionSettings();
+		return bound_cast.DependsOnSessionSettings();
 	}
 };
 

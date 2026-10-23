@@ -289,6 +289,19 @@ struct ICUDatePart : public ICUDateFunc {
 			return BindData::Equals(other_p) && adapters == other.adapters;
 		}
 
+		//! The epoch is read from the instant itself, every other part from the calendar of the settings
+		bool DependsOnSessionSettings() const override {
+			if constexpr (std::is_same<RESULT_TYPE, double>::value) {
+				for (auto adapter : adapters) {
+					if (adapter != ExtractEpoch) {
+						return true;
+					}
+				}
+				return false;
+			}
+			return true;
+		}
+
 		duckdb::unique_ptr<FunctionData> Copy() const override {
 			return make_uniq<BindAdapterData>(*this);
 		}

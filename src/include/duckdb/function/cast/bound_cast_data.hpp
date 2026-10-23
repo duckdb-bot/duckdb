@@ -25,6 +25,9 @@ public:
 	unique_ptr<BoundCastData> Copy() const override {
 		return make_uniq<ListBoundCastData>(child_cast_info.Copy());
 	}
+	bool DependsOnSessionSettings() const override {
+		return child_cast_info.DependsOnSessionSettings();
+	}
 };
 
 struct ArrayBoundCastData : public BoundCastData {
@@ -40,6 +43,9 @@ struct ArrayBoundCastData : public BoundCastData {
 public:
 	unique_ptr<BoundCastData> Copy() const override {
 		return make_uniq<ArrayBoundCastData>(child_cast_info.Copy());
+	}
+	bool DependsOnSessionSettings() const override {
+		return child_cast_info.DependsOnSessionSettings();
 	}
 };
 
@@ -85,6 +91,9 @@ public:
 		return make_uniq<StructBoundCastData>(std::move(copy_info), target, source_indexes, target_indexes,
 		                                      target_null_indexes);
 	}
+	bool DependsOnSessionSettings() const override {
+		return BoundCastInfo::AnyDependsOnSessionSettings(child_cast_info);
+	}
 };
 
 struct StructCastLocalState : public FunctionLocalState {
@@ -106,6 +115,9 @@ struct MapBoundCastData : public BoundCastData {
 public:
 	unique_ptr<BoundCastData> Copy() const override {
 		return make_uniq<MapBoundCastData>(key_cast.Copy(), value_cast.Copy());
+	}
+	bool DependsOnSessionSettings() const override {
+		return key_cast.DependsOnSessionSettings() || value_cast.DependsOnSessionSettings();
 	}
 };
 
@@ -134,6 +146,9 @@ public:
 			copy_value_casts.push_back(value_cast.Copy());
 		}
 		return make_uniq<StructToMapBoundCastData>(key_cast.Copy(), std::move(copy_value_casts));
+	}
+	bool DependsOnSessionSettings() const override {
+		return key_cast.DependsOnSessionSettings() || BoundCastInfo::AnyDependsOnSessionSettings(value_casts);
 	}
 };
 

@@ -675,19 +675,17 @@ static vector<idx_t> RemoveMatchesInChunk(DataChunk &chunk, const ForeignKeyInfo
 	Vector fk_hashes(LogicalType::HASH, chunk.size());
 	HashKeys(chunk, info.pk_keys, pk_hashes);
 	HashKeys(chunk, info.fk_keys, fk_hashes);
-	pk_hashes.Flatten(chunk.size());
-	fk_hashes.Flatten(chunk.size());
-	auto pk_hash_data = FlatVector::GetData<hash_t>(pk_hashes);
-	auto fk_hash_data = FlatVector::GetData<hash_t>(fk_hashes);
+	auto pk_hash_values = pk_hashes.Values<hash_t>();
+	auto fk_hash_values = fk_hashes.Values<hash_t>();
 
 	unordered_map<hash_t, vector<idx_t>> rows_by_key;
 	for (idx_t row = 0; row < chunk.size(); row++) {
-		rows_by_key[pk_hash_data[row]].push_back(row);
+		rows_by_key[pk_hash_values[row].GetValue()].push_back(row);
 	}
 	vector<idx_t> result;
 	for (auto row : missing) {
 		bool found = false;
-		auto entry = rows_by_key.find(fk_hash_data[row]);
+		auto entry = rows_by_key.find(fk_hash_values[row].GetValue());
 		if (entry != rows_by_key.end()) {
 			for (auto pk_row : entry->second) {
 				found = true;
@@ -822,7 +820,7 @@ void DataTable::VerifyForeignKeyConstraint(optional_ptr<LocalTableStorage> stora
 				missing.push_back(row);
 			}
 		}
-		if (match_in_chunk) {
+		if (match_in_chunk && !missing.empty()) {
 			missing = RemoveMatchesInChunk(chunk, bound_foreign_key.info, missing);
 		}
 		if (missing.empty()) {

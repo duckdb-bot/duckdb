@@ -76,6 +76,21 @@ INSERT INTO t VALUES (46, 47) ON CONFLICT DO NOTHING
 ----
 Violates foreign key constraint because key "id: 47" does not exist in the referenced table
 
+statement error
+INSERT INTO t VALUES (46, 47) RETURNING id
+----
+Violates foreign key constraint because key "id: 47" does not exist in the referenced table
+
+# a conflicting row becomes an update, which references a row that exists
+statement ok
+INSERT INTO t VALUES (42, 1), (48, 42) ON CONFLICT (id) DO UPDATE SET parent_id = excluded.parent_id
+
+query II
+SELECT * FROM t WHERE id IN (42, 48) ORDER BY id
+----
+42	1
+48	42
+
 # composite keys and a referenced unique column
 statement ok
 CREATE TABLE c (a INTEGER, b VARCHAR, pa INTEGER, pb VARCHAR, PRIMARY KEY (a, b), FOREIGN KEY (pa, pb) REFERENCES c (a, b));

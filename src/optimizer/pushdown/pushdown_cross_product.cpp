@@ -55,6 +55,78 @@ static bool HasTransitiveJoinBounds(const vector<unique_ptr<Filter>> &filters) {
 	return false;
 }
 
+static optional_ptr<const BoundColumnRefExpression> AsColumnRef(const Expression &expr) {
+	if (expr.GetExpressionType() != ExpressionType::BOUND_COLUMN_REF) {
+		return nullptr;
+	}
+	return &expr.Cast<BoundColumnRefExpression>();
+}
+
+static JoinSide GetColumnSide(const BoundColumnRefExpression &column, const unordered_set<TableIndex> &left_bindings,
+                              const unordered_set<TableIndex> &right_bindings) {
+	unordered_set<TableIndex> bindings {column.Binding().table_index};
+	return JoinSide::GetJoinSide(bindings, left_bindings, right_bindings);
+}
+
+//! A row that passes `l IS NOT DISTINCT FROM r` and `l = c` has a non-NULL l, so it also passes `r = c`. With r and c
+//! on the same side of the join, that equality filters the side before the join.
+static vector<unique_ptr<Expression>> GetImpliedSideFilters(const vector<unique_ptr<Expression>> &join_expressions,
+                                                            const unordered_set<TableIndex> &left_bindings,
+                                                            const unordered_set<TableIndex> &right_bindings) {
+	vector<unique_ptr<Expression>> result;
+	for (auto &null_safe : join_expressions) {
+		if (null_safe->GetExpressionType() != ExpressionType::COMPARE_NOT_DISTINCT_FROM ||
+		    !BoundComparisonExpression::IsComparison(*null_safe)) {
+			continue;
+		}
+		auto &null_safe_comparison = null_safe->Cast<BoundFunctionExpression>();
+		auto null_safe_left = AsColumnRef(BoundComparisonExpression::Left(null_safe_comparison));
+		auto null_safe_right = AsColumnRef(BoundComparisonExpression::Right(null_safe_comparison));
+		if (!null_safe_left || !null_safe_right) {
+			continue;
+		}
+		for (auto &equality : join_expressions) {
+			if (equality->GetExpressionType() != ExpressionType::COMPARE_EQUAL ||
+			    !BoundComparisonExpression::IsComparison(*equality)) {
+				continue;
+			}
+			auto &equality_comparison = equality->Cast<BoundFunctionExpression>();
+			auto equality_left = AsColumnRef(BoundComparisonExpression::Left(equality_comparison));
+			auto equality_right = AsColumnRef(BoundComparisonExpression::Right(equality_comparison));
+			if (!equality_left || !equality_right) {
+				continue;
+			}
+			reference<const BoundColumnRefExpression> null_safe_sides[] = {*null_safe_left, *null_safe_right};
+			reference<const BoundColumnRefExpression> equality_sides[] = {*equality_left, *equality_right};
+			for (idx_t n = 0; n < 2; n++) {
+				auto &shared = null_safe_sides[n].get();
+				auto &other = null_safe_sides[1 - n].get();
+				for (idx_t e = 0; e < 2; e++) {
+					auto &partner = equality_sides[1 - e].get();
+					if (!equality_sides[e].get().Equals(shared) || partner.Equals(other)) {
+						continue;
+					}
+					auto side = GetColumnSide(other, left_bindings, right_bindings);
+					if ((side != JoinSide::LEFT && side != JoinSide::RIGHT) ||
+					    GetColumnSide(partner, left_bindings, right_bindings) != side) {
+						continue;
+					}
+					auto implied =
+					    BoundComparisonExpression::Create(ExpressionType::COMPARE_EQUAL, other.Copy(), partner.Copy());
+					bool duplicate = false;
+					for (auto &existing : result) {
+						duplicate = duplicate || existing->Equals(*implied);
+					}
+					if (!duplicate) {
+						result.push_back(std::move(implied));
+					}
+				}
+			}
+		}
+	}
+	return result;
+}
+
 unique_ptr<LogicalOperator> FilterPushdown::PushdownCrossProduct(unique_ptr<LogicalOperator> op) {
 	D_ASSERT(op->children.size() > 1);
 	FilterPushdown left_pushdown(optimizer, convert_mark_joins, projection_mode);
@@ -97,6 +169,17 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownCrossProduct(unique_ptr<Logi
 					// bindings match both: turn into join condition
 					join_expressions.push_back(std::move(f->filter));
 				}
+			}
+		}
+		for (auto &implied : GetImpliedSideFilters(join_expressions, left_bindings, right_bindings)) {
+			auto f = make_uniq<Filter>(std::move(implied));
+			f->ExtractBindings();
+			auto side = JoinSide::GetJoinSide(f->bindings, left_bindings, right_bindings);
+			if (side == JoinSide::LEFT) {
+				left_pushdown.filters.push_back(std::move(f));
+			} else {
+				D_ASSERT(side == JoinSide::RIGHT);
+				right_pushdown.filters.push_back(std::move(f));
 			}
 		}
 	}

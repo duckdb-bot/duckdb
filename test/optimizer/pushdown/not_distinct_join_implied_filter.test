@@ -34,6 +34,40 @@ SELECT a.x, b.y FROM a JOIN b ON a.x IS NOT DISTINCT FROM b.x ORDER BY ALL
 NULL	3
 NULL	NULL
 
+# the derived filter can be on either side, with the comparisons written either way around
+statement ok
+CREATE TABLE c AS SELECT * FROM (VALUES (1, 1), (2, 7), (NULL, 2)) t(x, y);
+
+query II
+EXPLAIN SELECT c.x, b.x FROM c JOIN b ON b.x IS NOT DISTINCT FROM c.x WHERE b.x = c.y
+----
+physical_plan	<REGEX>:.*Hash Join.*Filter.*Expression: x = y.*Table: memory.main.c.*
+
+query II
+SELECT c.x, b.x FROM c JOIN b ON b.x IS NOT DISTINCT FROM c.x WHERE b.x = c.y ORDER BY ALL
+----
+1	1
+
+# volatile expressions are not copied
+statement ok
+CREATE SEQUENCE s1;
+
+statement ok
+CREATE SEQUENCE s2;
+
+statement ok
+CREATE TABLE v AS SELECT 1 AS a, 1 AS b;
+
+query II
+SELECT * FROM v WHERE a IS NOT DISTINCT FROM nextval('s1') AND a = b
+----
+1	1
+
+query II
+SELECT * FROM v WHERE a IS NOT DISTINCT FROM b AND a = nextval('s2')
+----
+1	1
+
 # a correlated table function sees the filter on the column it repeats
 statement ok
 CREATE TABLE tbl AS SELECT range AS x FROM range(10000);

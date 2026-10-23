@@ -244,6 +244,11 @@ PhysicalOperator &PhysicalPlanGenerator::PlanComparisonJoin(LogicalComparisonJoi
 		auto &join = Make<PhysicalHashJoin>(op, left, right, std::move(op.conditions), op.join_type,
 		                                    op.left_projection_map, op.right_projection_map, std::move(op.mark_types),
 		                                    op.estimated_cardinality, std::move(op.filter_pushdown));
+		// an IN list of constants becomes such a join, which has to keep the order of the filter it replaces
+		auto &hash_join = join.Cast<PhysicalHashJoin>();
+		hash_join.preserves_probe_order =
+		    op.children[1]->type == LogicalOperatorType::LOGICAL_CHUNK_GET &&
+		    (op.join_type == JoinType::MARK || op.join_type == JoinType::SEMI || op.join_type == JoinType::ANTI);
 		return join;
 	}
 

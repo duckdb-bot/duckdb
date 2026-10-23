@@ -65,6 +65,10 @@ public:
 	//! Duplicate eliminated types; only used for delim_joins (i.e. correlated subqueries)
 	vector<LogicalType> delim_types;
 
+	//! Whether the join stays in memory and keeps the order of the probe side, which needs a constant build side and
+	//! a join type that emits each probe row once at most
+	bool preserves_probe_order = false;
+
 	unique_ptr<ResidualPredicateInfo> residual_info;
 	//! For probe phase (includes predicate columns)
 	JoinProjectionColumns lhs_probe_columns;
@@ -105,7 +109,10 @@ protected:
 
 	//! Becomes a source when it is an external join
 	bool IsSource() const override {
-		return true;
+		return !preserves_probe_order;
+	}
+	OrderPreservationType OperatorOrder() const override {
+		return preserves_probe_order ? OrderPreservationType::INSERTION_ORDER : PhysicalComparisonJoin::OperatorOrder();
 	}
 
 	bool ParallelSource() const override {

@@ -1,0 +1,80 @@
+# name: test/optimizer/in_clause_insertion_order.test
+# description: A long IN list keeps the insertion order like a short one (duckdb/duckdb#24398)
+# group: [optimizer]
+
+statement ok
+SET threads = 1;
+
+statement ok
+CREATE TABLE t AS SELECT i AS ts, CASE WHEN i < 10 THEN 'a' WHEN i >= 2048 THEN 'b' ELSE 'z' END AS symbol FROM range(4096) r(i);
+
+# five values are rewritten into a join, four stay a filter
+statement ok
+CREATE TABLE r5 AS SELECT ts FROM t WHERE symbol IN ('a', 'b', 'c', 'd', 'e');
+
+statement ok
+CREATE TABLE r4 AS SELECT ts FROM t WHERE symbol IN ('a', 'b', 'c', 'd');
+
+query II
+SELECT list(ts ORDER BY rowid)[2046:2052], count(*) FROM r5
+----
+[4083, 4084, 4085, 4086, 4087, 4088, 4089]	2058
+
+query II
+SELECT list(ts ORDER BY rowid)[2046:2052], count(*) FROM r4
+----
+[4083, 4084, 4085, 4086, 4087, 4088, 4089]	2058
+
+query I
+SELECT list(ts) FROM (SELECT ts FROM t WHERE list_contains(['a', 'b', 'c', 'd', 'e'], symbol) LIMIT 12)
+----
+[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 2048, 2049]
+
+query I
+SELECT list(ts) FROM (SELECT ts FROM t WHERE symbol NOT IN ('z', 'c', 'd', 'e', 'f') LIMIT 12)
+----
+[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 2048, 2049]
+
+# the mark of a NULL in the list stays NULL
+query III
+SELECT count(*), count(m), count(*) FILTER (WHERE m) FROM (SELECT symbol IN ('a', 'b', 'c', 'd', NULL) AS m FROM t)
+----
+4096	2058	2058
+
+# the join stays in memory, so forcing external joins keeps the order too
+statement ok
+SET debug_force_external = true;
+
+statement ok
+CREATE TABLE r5_external AS SELECT ts FROM t WHERE symbol IN ('a', 'b', 'c', 'd', 'e');
+
+query II
+SELECT list(ts ORDER BY rowid)[2046:2052], count(*) FROM r5_external
+----
+[4083, 4084, 4085, 4086, 4087, 4088, 4089]	2058
+
+statement ok
+SET debug_force_external = false;
+
+# with several threads the batch index keeps the order
+statement ok
+SET threads = 4;
+
+statement ok
+CREATE TABLE big AS SELECT i AS ts, 's' || (i % 37) AS symbol FROM range(1000000) r(i);
+
+statement ok
+CREATE TABLE big_r AS SELECT ts FROM big WHERE symbol IN ('s1', 's2', 's3', 's4', 's5', 's6', 's7', 's8', 's9', 's10');
+
+query II
+SELECT count(*) FILTER (WHERE ts < prev), count(*) FROM (SELECT ts, lag(ts) OVER (ORDER BY rowid) AS prev FROM big_r)
+----
+0	270270
+
+statement ok
+COPY (SELECT ts FROM big WHERE symbol IN ('s1', 's2', 's3', 's4', 's5', 's6', 's7', 's8', 's9', 's10')) TO '{TEST_DIR}/in_clause_insertion_order.csv'
+
+query II
+SELECT count(*) FILTER (WHERE ts < prev), count(*) FROM (SELECT ts, lag(ts) OVER (ORDER BY rn) AS prev FROM (SELECT ts, row_number() OVER () AS rn FROM read_csv('{TEST_DIR}/in_clause_insertion_order.csv')))
+----
+0	270270

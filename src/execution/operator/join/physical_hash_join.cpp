@@ -2025,6 +2025,12 @@ SinkFinalizeType PhysicalHashJoin::Finalize(Pipeline &pipeline, Event &event, Cl
 
 	sink.temporary_memory_state->UpdateReservation(context);
 	sink.external = sink.temporary_memory_state->GetReservation() < sink.total_size;
+	if (sink.external && preserves_probe_order) {
+		// the constant build side is small, and only an in-memory join keeps the order of the probe side
+		sink.temporary_memory_state->SetMinimumReservation(sink.total_size);
+		sink.temporary_memory_state->SetRemainingSizeAndUpdateReservation(context, sink.total_size);
+		sink.external = false;
+	}
 	if (sink.external) {
 		// For external join we reduce the load factor, this may even prevent the external join altogether
 		ht.load_factor = JoinHashTable::EXTERNAL_LOAD_FACTOR;

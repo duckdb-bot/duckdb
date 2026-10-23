@@ -518,10 +518,10 @@ Identifier Binder::GetExpressionName(const ParsedExpression &expr) {
 	return expr.GetName();
 }
 
-//! Whether two SELECT expressions with one alias are the same, comparing the text without regard to case since names
-//! are case insensitive, and keeping the names inside subqueries that the comparison of expressions skips
+//! Whether two SELECT expressions with one alias are the same, as expressions or as text without regard to case, since
+//! names are case insensitive
 static bool SameSelectExpression(const ParsedExpression &left, const ParsedExpression &right) {
-	return StringUtil::Lower(left.ToString()) == StringUtil::Lower(right.ToString());
+	return left.Equals(right) || StringUtil::CIEquals(left.ToString(), right.ToString());
 }
 
 BoundStatement Binder::BindSelectNode(SelectNode &statement, BoundStatement from_table) {

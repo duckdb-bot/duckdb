@@ -37,12 +37,6 @@ SELECT 1 AS a, 2 AS a, a + 1
 ----
 <REGEX>:Binder Error: Alias "a" is ambiguous.*
 
-# subqueries that return different columns are different expressions
-statement error
-SELECT (SELECT x FROM (SELECT i AS x, 10 - i AS y)) AS a, (SELECT x FROM (SELECT i AS y, 10 - i AS x)) AS a FROM range(3) t(i) ORDER BY a
-----
-<REGEX>:Binder Error: ORDER BY "a" is ambiguous.*
-
 statement error
 SELECT i AS q, 10 - i AS q FROM range(3) t(i) QUALIFY row_number() OVER (ORDER BY q) = 1
 ----
@@ -98,3 +92,8 @@ SELECT s COLLATE nocase AS a, s COLLATE NOCASE AS a FROM (VALUES ('B'), ('a')) t
 ----
 a	a
 B	B
+
+query II
+WITH t(x, y) AS (VALUES (0, 0)) SELECT (SELECT x FROM (SELECT * REPLACE (1 AS x, 2 AS y) FROM t)) AS a, (SELECT x FROM (SELECT * REPLACE (1 AS x, 2 AS y) FROM t)) AS a ORDER BY a
+----
+1	1

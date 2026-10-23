@@ -92,6 +92,12 @@ static bool IsColumnComparison(const Expression &expr, ExpressionType type,
 	return left && right;
 }
 
+//! A column of an equality and the column it is compared with
+struct EqualityPartner {
+	reference<const BoundColumnRefExpression> column;
+	reference<const BoundColumnRefExpression> partner;
+};
+
 //! A row that passes `l IS NOT DISTINCT FROM r` and `l = c` has a non-NULL l, so it also passes `r = c`. With r and c
 //! on the same side of the join, that equality filters the side before the join. Each column is in one such filter at
 //! most, and the budget of the optimizer limits them, as each can connect equalities that the side combines.
@@ -103,13 +109,12 @@ static vector<unique_ptr<Expression>> GetImpliedSideFilters(const vector<unique_
 	if (budget == 0) {
 		return result;
 	}
-	using ColumnPair = pair<reference<const BoundColumnRefExpression>, reference<const BoundColumnRefExpression>>;
-	column_binding_map_t<vector<ColumnPair>> partners;
+	column_binding_map_t<vector<EqualityPartner>> partners;
 	for (auto &equality : join_expressions) {
 		optional_ptr<const BoundColumnRefExpression> left, right;
 		if (IsColumnComparison(*equality, ExpressionType::COMPARE_EQUAL, left, right)) {
-			partners[left->Binding()].emplace_back(*left, *right);
-			partners[right->Binding()].emplace_back(*right, *left);
+			partners[left->Binding()].push_back(EqualityPartner {*left, *right});
+			partners[right->Binding()].push_back(EqualityPartner {*right, *left});
 		}
 	}
 	if (partners.empty()) {
@@ -133,12 +138,12 @@ static vector<unique_ptr<Expression>> GetImpliedSideFilters(const vector<unique_
 			if (side != JoinSide::LEFT && side != JoinSide::RIGHT) {
 				continue;
 			}
-			for (auto &column_pair : entry->second) {
+			for (auto &equality : entry->second) {
 				if (IsUsed(used, other)) {
 					break;
 				}
-				auto &partner = column_pair.second.get();
-				if (!column_pair.first.get().Equals(shared) || partner.Equals(other) ||
+				auto &partner = equality.partner.get();
+				if (!equality.column.get().Equals(shared) || partner.Equals(other) ||
 				    GetColumnSide(partner, left_bindings, right_bindings) != side || IsUsed(used, partner)) {
 					continue;
 				}

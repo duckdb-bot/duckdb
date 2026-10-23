@@ -134,7 +134,36 @@ idx_t ListColumnData::ScanCount(ColumnScanState &state, Vector &result, idx_t co
 	idx_t scan_count = ScanVector(state, offset_vector, count, ScanVectorType::SCAN_FLAT_VECTOR);
 	D_ASSERT(scan_count > 0);
 	validity->ScanCount(state.child_states[0], result, count);
-	ScanLists(state, result, offset_vector, scan_count);
+
+	auto data = offset_vector.Values<uint64_t>();
+	// shift all offsets so they are 0 at the first entry
+	auto result_data = FlatVector::Writer<list_entry_t>(result, scan_count);
+	auto previous_offset = state.last_offset;
+	idx_t current_offset = 0;
+	auto child_count = child_column->GetMaxEntry();
+	for (idx_t i = 0; i < scan_count; i++) {
+		auto offset = data[i].GetValueUnsafe();
+		auto length = GetListLength(previous_offset, offset, child_count);
+		result_data.WriteValue(list_entry_t(current_offset, length));
+		current_offset += length;
+		previous_offset = offset;
+	}
+
+	idx_t child_scan_count = current_offset;
+	ListVector::Reserve(result, child_scan_count);
+
+	if (child_scan_count > 0) {
+		auto &child_entry = ListVector::GetChildMutable(result);
+		if (child_entry.GetType().InternalType() != PhysicalType::STRUCT &&
+		    child_entry.GetType().InternalType() != PhysicalType::ARRAY &&
+		    state.child_states[1].offset_in_column + child_scan_count > child_column->GetMaxEntry()) {
+			throw InternalException("ListColumnData::ScanCount - internal list scan offset is out of range");
+		}
+		child_column->ScanCount(state.child_states[1], child_entry, child_scan_count);
+	}
+	state.last_offset = previous_offset;
+
+	ListVector::SetListSize(result, child_scan_count);
 	return scan_count;
 }
 
@@ -174,12 +203,14 @@ void ListColumnData::Select(TransactionData transaction, idx_t vector_index, Col
                             SelectionVector &sel, idx_t sel_count) {
 	// like ArrayColumnData::Select, read only the children of the selected lists when that is worth it
 	auto &child_type = child_column->type;
-	if (child_type.IsNested() || child_type.InternalType() == PhysicalType::VARCHAR || sel_count == 0) {
+	auto target_count = GetVectorCount(vector_index);
+	// a selection of most rows skips few children
+	if (child_type.IsNested() || child_type.InternalType() == PhysicalType::VARCHAR || sel_count == 0 ||
+	    sel_count * 2 > target_count) {
 		ColumnData::Select(transaction, vector_index, state, result, sel, sel_count);
 		return;
 	}
 	D_ASSERT(!updates);
-	auto target_count = GetVectorCount(vector_index);
 	Vector offset_vector(LogicalType::UBIGINT, target_count);
 	idx_t scan_count = ScanVector(state, offset_vector, target_count, ScanVectorType::SCAN_FLAT_VECTOR);
 	D_ASSERT(scan_count > 0);
@@ -195,8 +226,8 @@ void ListColumnData::Select(TransactionData transaction, idx_t vector_index, Col
 		FlatVector::SetSize(result, count_t(scan_count));
 		result.Slice(sel, sel_count);
 	};
-	if (total_children < 2 * scan_count || sel_count * 2 > scan_count) {
-		// lists this short cannot leave enough children per range, and a selection of most rows skips few children
+	if (total_children < 2 * scan_count) {
+		// lists this short cannot leave enough children per range
 		read_whole_lists();
 		return;
 	}

@@ -60,6 +60,9 @@ void SetCommonProperty(FunctionProperties &props, DUCKDB_V2_FUNCTION_PROPERTY_KE
 		case DUCKDB_V2_FUNCTION_PROPERTY_STABILITY_CONSISTENT_WITHIN_QUERY:
 			props.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 			return;
+		case DUCKDB_V2_FUNCTION_PROPERTY_STABILITY_CONSISTENT_WITHIN_SETTINGS:
+			props.SetStability(FunctionStability::CONSISTENT_WITHIN_SETTINGS);
+			return;
 		default:
 			ThrowUnknownValue(key, value);
 		}

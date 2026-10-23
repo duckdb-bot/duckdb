@@ -74,6 +74,9 @@ enums:
       FUNCTION_PROPERTY_STABILITY_CONSISTENT_WITHIN_QUERY:
         value: 0x010002
         description: "The result is stable within a single query/transaction but may change across queries (e.g. now())."
+      FUNCTION_PROPERTY_STABILITY_CONSISTENT_WITHIN_SETTINGS:
+        value: 0x010003
+        description: "The result is the same for the same input and the same settings, such as the TimeZone that the bind reads (e.g. strftime() of a TIMESTAMPTZ). Statements that call the function are bound again before every execution, and index keys cannot contain it."
       # FUNCTION_PROPERTY_NULL_HANDLING (0x010100)
       FUNCTION_PROPERTY_NULL_HANDLING_DEFAULT:
         value: 0x010100

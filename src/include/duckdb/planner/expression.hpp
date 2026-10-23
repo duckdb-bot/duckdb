@@ -56,6 +56,8 @@ public:
 	virtual bool PropagatesNullValues() const;
 	virtual bool IsFoldable() const;
 	virtual bool CanThrow() const;
+	//! Whether a function or a cast of the expression depends on the query or on settings, so it must be bound again
+	virtual bool RequiresRebind() const;
 
 	hash_t Hash() const override;
 

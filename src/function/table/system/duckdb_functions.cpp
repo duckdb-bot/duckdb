@@ -135,6 +135,8 @@ Value FunctionStabilityToValue(FunctionStability stability) {
 		return Value("CONSISTENT");
 	case FunctionStability::CONSISTENT_WITHIN_QUERY:
 		return Value("CONSISTENT_WITHIN_QUERY");
+	case FunctionStability::CONSISTENT_WITHIN_SETTINGS:
+		return Value("CONSISTENT_WITHIN_SETTINGS");
 	default:
 		throw InternalException("Unsupported FunctionStability");
 	}

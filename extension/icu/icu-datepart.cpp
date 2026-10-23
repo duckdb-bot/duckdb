@@ -290,16 +290,16 @@ struct ICUDatePart : public ICUDateFunc {
 		}
 
 		//! The epoch is read from the instant itself, every other part from the calendar of the settings
-		bool DependsOnSessionSettings() const override {
+		bool SupportStatementCache() const override {
 			if constexpr (std::is_same<RESULT_TYPE, double>::value) {
 				for (auto adapter : adapters) {
 					if (adapter != ExtractEpoch) {
-						return true;
+						return false;
 					}
 				}
-				return false;
+				return true;
 			}
-			return true;
+			return false;
 		}
 
 		duckdb::unique_ptr<FunctionData> Copy() const override {
@@ -386,13 +386,13 @@ struct ICUDatePart : public ICUDateFunc {
 		}
 
 		//! As for BindAdapterData, only the epoch is read from the instant itself
-		bool DependsOnSessionSettings() const override {
+		bool SupportStatementCache() const override {
 			for (auto part_code : part_codes) {
 				if (part_code != DatePartSpecifier::EPOCH) {
-					return true;
+					return false;
 				}
 			}
-			return false;
+			return true;
 		}
 
 		duckdb::unique_ptr<FunctionData> Copy() const override {

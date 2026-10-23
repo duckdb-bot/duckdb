@@ -54,7 +54,7 @@ public:
 	bool IsConsistent() const override;
 	bool IsFoldable() const override;
 	bool CanThrow() const override;
-	bool DependsOnSessionSettings() const override;
+	bool SupportStatementCache() const override;
 	string ToString() const override;
 	bool PropagatesNullValues() const override;
 	hash_t Hash() const override;

@@ -71,11 +71,14 @@ bool Expression::CanThrow() const {
 	return can_throw;
 }
 
-bool Expression::DependsOnSessionSettings() const {
-	bool depends = false;
-	ExpressionIterator::EnumerateChildren(
-	    *this, [&](const Expression &child) { depends |= child.DependsOnSessionSettings(); });
-	return depends;
+bool Expression::SupportStatementCache() const {
+	bool support_statement_cache = true;
+	ExpressionIterator::EnumerateChildren(*this, [&](const Expression &child) {
+		if (!child.SupportStatementCache()) {
+			support_statement_cache = false;
+		}
+	});
+	return support_statement_cache;
 }
 
 bool Expression::PropagatesNullValues() const {

@@ -43,8 +43,8 @@ struct BoundCastData {
 	DUCKDB_API virtual ~BoundCastData();
 
 	DUCKDB_API virtual unique_ptr<BoundCastData> Copy() const = 0;
-	//! Whether the bind read session settings such as TimeZone, so that binding again elsewhere can change the result
-	DUCKDB_API virtual bool DependsOnSessionSettings() const;
+	//! Whether a cached statement can reuse the cast, which it cannot when the bind read settings such as TimeZone
+	DUCKDB_API virtual bool SupportStatementCache() const;
 
 	template <class TARGET>
 	TARGET &Cast() {
@@ -149,11 +149,11 @@ public:
 	optional_ptr<BoundCastData> GetCastData() const {
 		return cast_data;
 	}
-	//! Whether the cast, or a cast it applies to child values, read session settings such as TimeZone
-	bool DependsOnSessionSettings() const {
-		return cast_data && cast_data->DependsOnSessionSettings();
+	//! Whether a cached statement can reuse the cast and the casts it applies to child values
+	bool SupportStatementCache() const {
+		return !cast_data || cast_data->SupportStatementCache();
 	}
-	static bool AnyDependsOnSessionSettings(const vector<BoundCastInfo> &casts);
+	static bool AllSupportStatementCache(const vector<BoundCastInfo> &casts);
 	bool HasInitLocalState() const {
 		return init_local_state;
 	}

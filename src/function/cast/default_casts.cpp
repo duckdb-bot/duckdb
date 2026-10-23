@@ -24,8 +24,8 @@ BindCastInfo::~BindCastInfo() {
 BoundCastData::~BoundCastData() {
 }
 
-bool BoundCastData::DependsOnSessionSettings() const {
-	return false;
+bool BoundCastData::SupportStatementCache() const {
+	return true;
 }
 
 CastStatisticsInput::CastStatisticsInput(BoundCastInfo &bound_cast_p, const LogicalType &source_type_p,
@@ -100,13 +100,13 @@ bool DefaultCasts::ReinterpretCast(Vector &source, Vector &result, idx_t count, 
 	return true;
 }
 
-bool BoundCastInfo::AnyDependsOnSessionSettings(const vector<BoundCastInfo> &casts) {
+bool BoundCastInfo::AllSupportStatementCache(const vector<BoundCastInfo> &casts) {
 	for (auto &cast : casts) {
-		if (cast.DependsOnSessionSettings()) {
-			return true;
+		if (!cast.SupportStatementCache()) {
+			return false;
 		}
 	}
-	return false;
+	return true;
 }
 
 bool BoundCastInfo::IsNopCast() const {

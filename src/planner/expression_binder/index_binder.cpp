@@ -105,17 +105,13 @@ unique_ptr<LogicalOperator> IndexBinder::BindCreateIndex(ClientContext &context,
 	vector<unique_ptr<Expression>> expressions;
 	for (auto &expr : create_index_info->expressions) {
 		properties.always_require_rebind = false;
-		binder.SetTrackSessionSettings(true);
 		expressions.push_back(Bind(expr));
-		if (properties.always_require_rebind) {
-			throw BinderException("Index keys cannot contain expressions with side effects.");
-		}
-		// other sessions bind the keys again under their own settings, e.g. another TimeZone
-		if (binder.DependsOnSessionSettings() || expressions.back()->DependsOnSessionSettings()) {
-			throw BinderException("Index keys cannot depend on session settings such as TimeZone or Calendar.");
+		// casts are bound without the binder, so a cast that reads settings such as TimeZone is found in the key
+		if (properties.always_require_rebind || !expressions.back()->SupportStatementCache()) {
+			throw BinderException(
+			    "Index keys cannot contain expressions with side effects or that depend on settings such as TimeZone.");
 		}
 	}
-	binder.SetTrackSessionSettings(false);
 	properties.always_require_rebind = statement_requires_rebind;
 
 	auto &get = plan->Cast<LogicalGet>();

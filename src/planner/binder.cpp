@@ -409,23 +409,6 @@ void Binder::SetAlwaysRequireRebind() {
 	properties.always_require_rebind = true;
 }
 
-void Binder::SetTrackSessionSettings(bool track) {
-	global_binder_state->track_session_settings = track;
-	global_binder_state->depends_on_session_settings = false;
-}
-
-bool Binder::TracksSessionSettings() const {
-	return global_binder_state->track_session_settings;
-}
-
-void Binder::SetDependsOnSessionSettings() {
-	global_binder_state->depends_on_session_settings = true;
-}
-
-bool Binder::DependsOnSessionSettings() const {
-	return global_binder_state->depends_on_session_settings;
-}
-
 void Binder::AddTableName(string table_name) {
 	global_binder_state->table_names.insert(std::move(table_name));
 }

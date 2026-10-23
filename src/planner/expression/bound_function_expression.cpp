@@ -78,10 +78,10 @@ bool BoundFunctionExpression::CanThrow() const {
 	       (lambda_expr && lambda_expr->CanThrow()) || Expression::CanThrow();
 }
 
-bool BoundFunctionExpression::DependsOnSessionSettings() const {
+bool BoundFunctionExpression::SupportStatementCache() const {
 	auto lambda_expr = GetLambdaExpression(*this);
-	return (bind_info && bind_info->DependsOnSessionSettings()) ||
-	       (lambda_expr && lambda_expr->DependsOnSessionSettings()) || Expression::DependsOnSessionSettings();
+	return (!bind_info || bind_info->SupportStatementCache()) &&
+	       (!lambda_expr || lambda_expr->SupportStatementCache()) && Expression::SupportStatementCache();
 }
 
 string BoundFunctionExpression::ToString() const {

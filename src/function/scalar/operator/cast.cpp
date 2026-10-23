@@ -74,8 +74,8 @@ public:
 		       is_default_cast == other.is_default_cast && bound_cast.Equals(other.bound_cast);
 	}
 
-	bool DependsOnSessionSettings() const override {
-		return bound_cast.DependsOnSessionSettings();
+	bool SupportStatementCache() const override {
+		return bound_cast.SupportStatementCache();
 	}
 };
 

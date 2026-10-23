@@ -865,9 +865,9 @@ static bool FoldConstantArgument(ClientContext &context, unique_ptr<Expression> 
 	if (child->GetExpressionClass() == ExpressionClass::BOUND_LAMBDA || !child->IsFoldable()) {
 		return false;
 	}
-	if (binder && binder->TracksSessionSettings() && child->DependsOnSessionSettings()) {
-		// the constant no longer shows that the value came from the session settings
-		binder->SetDependsOnSessionSettings();
+	if (binder && !child->SupportStatementCache()) {
+		// the constant no longer shows that its value was computed from settings such as TimeZone
+		binder->SetAlwaysRequireRebind();
 	}
 	Value result;
 	if (!ExpressionExecutor::TryEvaluateScalar(context, *child, result)) {
@@ -1582,12 +1582,12 @@ FunctionBinder::ResolveFunction(shared_ptr<const ScalarFunction> function_p, vec
 
 	// The bind callback is called with arguments that are cast to the argument types of the bound function
 	unique_ptr<FunctionData> bind_info;
-	if (binder && binder->TracksSessionSettings() &&
-	    (bound_function.HasBindCallback() || bound_function.HasBindExpressionCallback())) {
-		// the callbacks can evaluate constant arguments and drop them, which hides that they read the settings
+	if (binder && (bound_function.HasBindCallback() || bound_function.HasBindExpressionCallback())) {
+		// the callbacks can evaluate constant arguments and drop them, which hides casts that read settings
 		for (auto &argument : arguments) {
-			if (argument->DependsOnSessionSettings()) {
-				binder->SetDependsOnSessionSettings();
+			if (!argument->SupportStatementCache() && argument->IsFoldable()) {
+				binder->SetAlwaysRequireRebind();
+				break;
 			}
 		}
 	}
@@ -1646,10 +1646,9 @@ unique_ptr<Expression> FunctionBinder::BindScalarFunction(shared_ptr<const Scala
 		// the result depends on the query it is bound in, also when the bind_expression callback folds it
 		binder->SetAlwaysRequireRebind();
 	}
-	if (binder && binder->TracksSessionSettings() && result_func->BindInfo() &&
-	    result_func->BindInfo()->DependsOnSessionSettings()) {
-		// the same holds for the session settings the bind read, such as TimeZone
-		binder->SetDependsOnSessionSettings();
+	if (binder && result_func->BindInfo() && !result_func->BindInfo()->SupportStatementCache()) {
+		// the same holds when the bind read settings such as TimeZone, which can change before the next execution
+		binder->SetAlwaysRequireRebind();
 	}
 	if (result_func->Function().HasBindExpressionCallback()) {
 		// if a bind_expression callback is registered - call it and emit the resulting expression

@@ -18,12 +18,12 @@ foreach expression ts::VARCHAR date_part('hour',ts) strftime(ts,'%H') ts::DATE s
 statement error
 CREATE INDEX i ON t (({expression}));
 ----
-Index keys cannot depend on session settings such as TimeZone or Calendar
+Index keys cannot contain expressions with side effects or that depend on settings such as TimeZone
 
 statement error
 CREATE UNIQUE INDEX i ON t (({expression}));
 ----
-Index keys cannot depend on session settings such as TimeZone or Calendar
+Index keys cannot contain expressions with side effects or that depend on settings such as TimeZone
 
 endloop
 
@@ -31,46 +31,46 @@ endloop
 statement error
 CREATE INDEX i ON t ((id + hour(TIMESTAMPTZ '2026-01-01 00:00:00+00')));
 ----
-Index keys cannot depend on session settings such as TimeZone or Calendar
+Index keys cannot contain expressions with side effects or that depend on settings such as TimeZone
 
 # nor when it is folded away to NULL or evaluated by the bind of switch or date_part
 statement error
 CREATE INDEX i ON t ((coalesce(id + CASE WHEN hour(TIMESTAMPTZ '2026-01-01 00:00:00+00') = 0 THEN NULL ELSE 1 END, id)));
 ----
-Index keys cannot depend on session settings such as TimeZone or Calendar
+Index keys cannot contain expressions with side effects or that depend on settings such as TimeZone
 
 statement error
 CREATE INDEX i ON t ((switch(id, MAP {1: hour(TIMESTAMPTZ '2026-01-01 00:00:00+00')}, 99)));
 ----
-Index keys cannot depend on session settings such as TimeZone or Calendar
+Index keys cannot contain expressions with side effects or that depend on settings such as TimeZone
 
 statement error
 CREATE INDEX i ON t ((date_part(CASE WHEN hour(TIMESTAMPTZ '2026-01-01 00:00:00+00') = 0 THEN 'day' ELSE 'year' END, naive)));
 ----
-Index keys cannot depend on session settings such as TimeZone or Calendar
+Index keys cannot contain expressions with side effects or that depend on settings such as TimeZone
 
 # a cast that resolving the argument types adds, which the bind of switch evaluates
 statement error
 CREATE INDEX i ON t ((switch(ts, MAP {TIMESTAMP '2026-01-01 00:00:00': 1}, 0)));
 ----
-Index keys cannot depend on session settings such as TimeZone or Calendar
+Index keys cannot contain expressions with side effects or that depend on settings such as TimeZone
 
 # a cast folded into a constant argument
 statement error
 CREATE INDEX i ON t ((id + epoch_us(TIMESTAMPTZ '2026-01-01 00:00:00')));
 ----
-Index keys cannot depend on session settings such as TimeZone or Calendar
+Index keys cannot contain expressions with side effects or that depend on settings such as TimeZone
 
 # nor is a lambda body skipped
 statement error
 CREATE INDEX i ON t ((list_transform([ts], lambda x: hour(x))[1]));
 ----
-Index keys cannot depend on session settings such as TimeZone or Calendar
+Index keys cannot contain expressions with side effects or that depend on settings such as TimeZone
 
 statement error
 CREATE INDEX i ON t ((list_transform([ts], lambda x: x::VARCHAR)[1]));
 ----
-Index keys cannot depend on session settings such as TimeZone or Calendar
+Index keys cannot contain expressions with side effects or that depend on settings such as TimeZone
 
 # keys that do not depend on the session are still allowed
 statement ok
@@ -97,7 +97,7 @@ CREATE INDEX i_epoch_ns ON t ((epoch(ts::TIMESTAMPTZ_NS)));
 statement error
 CREATE INDEX i ON t ((date_part(['epoch', 'hour'], ts).epoch));
 ----
-Index keys cannot depend on session settings such as TimeZone or Calendar
+Index keys cannot contain expressions with side effects or that depend on settings such as TimeZone
 
 statement ok
 SET TimeZone = 'Europe/Amsterdam';
@@ -114,3 +114,25 @@ query I
 SELECT count(*) FROM t;
 ----
 0
+
+# the functions stay consistent within a query, so the optimizer keeps rewriting and pruning their filters
+statement ok
+PRAGMA explain_output = OPTIMIZED_ONLY;
+
+statement ok
+CREATE TABLE days AS SELECT TIMESTAMPTZ '2000-01-01 00:00:00+00' + i * INTERVAL '1 day' AS ts FROM range(10000) r(i);
+
+query II
+EXPLAIN SELECT count(*) FROM days WHERE isoyear(ts) = 2010;
+----
+logical_opt	<REGEX>:.*ts >= .*ts <= .*
+
+query II
+EXPLAIN SELECT count(*) FROM days WHERE isoyear(ts) = 2010;
+----
+logical_opt	<!REGEX>:.*isoyear.*
+
+query II
+EXPLAIN SELECT count(*) FROM days WHERE era(ts) = 0;
+----
+logical_opt	<REGEX>:.*Empty Result.*

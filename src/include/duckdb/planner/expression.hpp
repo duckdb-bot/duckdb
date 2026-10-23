@@ -56,8 +56,8 @@ public:
 	virtual bool PropagatesNullValues() const;
 	virtual bool IsFoldable() const;
 	virtual bool CanThrow() const;
-	//! Whether binding the expression again under other session settings, such as TimeZone, can change its result
-	virtual bool DependsOnSessionSettings() const;
+	//! Whether a cached statement can reuse the bind data of the expression and of its children
+	virtual bool SupportStatementCache() const;
 
 	hash_t Hash() const override;
 

@@ -25,8 +25,8 @@ public:
 	unique_ptr<BoundCastData> Copy() const override {
 		return make_uniq<ListBoundCastData>(child_cast_info.Copy());
 	}
-	bool DependsOnSessionSettings() const override {
-		return child_cast_info.DependsOnSessionSettings();
+	bool SupportStatementCache() const override {
+		return child_cast_info.SupportStatementCache();
 	}
 };
 
@@ -44,8 +44,8 @@ public:
 	unique_ptr<BoundCastData> Copy() const override {
 		return make_uniq<ArrayBoundCastData>(child_cast_info.Copy());
 	}
-	bool DependsOnSessionSettings() const override {
-		return child_cast_info.DependsOnSessionSettings();
+	bool SupportStatementCache() const override {
+		return child_cast_info.SupportStatementCache();
 	}
 };
 
@@ -91,8 +91,8 @@ public:
 		return make_uniq<StructBoundCastData>(std::move(copy_info), target, source_indexes, target_indexes,
 		                                      target_null_indexes);
 	}
-	bool DependsOnSessionSettings() const override {
-		return BoundCastInfo::AnyDependsOnSessionSettings(child_cast_info);
+	bool SupportStatementCache() const override {
+		return BoundCastInfo::AllSupportStatementCache(child_cast_info);
 	}
 };
 
@@ -116,8 +116,8 @@ public:
 	unique_ptr<BoundCastData> Copy() const override {
 		return make_uniq<MapBoundCastData>(key_cast.Copy(), value_cast.Copy());
 	}
-	bool DependsOnSessionSettings() const override {
-		return key_cast.DependsOnSessionSettings() || value_cast.DependsOnSessionSettings();
+	bool SupportStatementCache() const override {
+		return key_cast.SupportStatementCache() && value_cast.SupportStatementCache();
 	}
 };
 
@@ -147,8 +147,8 @@ public:
 		}
 		return make_uniq<StructToMapBoundCastData>(key_cast.Copy(), std::move(copy_value_casts));
 	}
-	bool DependsOnSessionSettings() const override {
-		return key_cast.DependsOnSessionSettings() || BoundCastInfo::AnyDependsOnSessionSettings(value_casts);
+	bool SupportStatementCache() const override {
+		return key_cast.SupportStatementCache() && BoundCastInfo::AllSupportStatementCache(value_casts);
 	}
 };
 

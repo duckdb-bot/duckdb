@@ -63,8 +63,8 @@ public:
 	unique_ptr<BoundCastData> Copy() const override {
 		return make_uniq<EnumBoundCastData>(to_varchar_cast.Copy(), from_varchar_cast.Copy());
 	}
-	bool DependsOnSessionSettings() const override {
-		return to_varchar_cast.DependsOnSessionSettings() || from_varchar_cast.DependsOnSessionSettings();
+	bool SupportStatementCache() const override {
+		return to_varchar_cast.SupportStatementCache() && from_varchar_cast.SupportStatementCache();
 	}
 };
 

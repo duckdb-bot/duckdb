@@ -47,6 +47,31 @@ SELECT * FROM r ORDER BY k;
 ----
 Subqueries are not yet supported for aggregates in USING KEY
 
+# nor one that a macro expands to
+statement ok
+CREATE MACRO sq() AS (SELECT 1);
+
+statement ok
+CREATE MACRO plus_sq(x) AS x + (SELECT 1);
+
+statement error
+WITH RECURSIVE r(k, v) USING KEY (k, max(sq()) AS v) AS (
+	VALUES (1, 10)
+	UNION ALL
+	SELECT k + 1, v + 1 FROM r WHERE k < 2)
+SELECT * FROM r ORDER BY k;
+----
+Subqueries are not yet supported for aggregates in USING KEY
+
+statement error
+WITH RECURSIVE r(k, v) USING KEY (k, max(plus_sq(v)) AS v) AS (
+	VALUES (1, 10)
+	UNION ALL
+	SELECT k + 1, v + 1 FROM r WHERE k < 2)
+SELECT * FROM r ORDER BY k;
+----
+Subqueries are not yet supported for aggregates in USING KEY
+
 # the database is still usable
 query II
 WITH RECURSIVE r(k, v) USING KEY (k, max(v + 1) AS v) AS (

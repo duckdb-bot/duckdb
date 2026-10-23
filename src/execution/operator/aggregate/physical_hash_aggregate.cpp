@@ -974,6 +974,21 @@ unique_ptr<LocalSourceState> PhysicalHashAggregate::GetLocalSourceState(Executio
 	return make_uniq<HashAggregateLocalSourceState>(context, *this, gstate);
 }
 
+void PhysicalHashAggregate::InitializeOutputChunk(Allocator &allocator, DataChunk &chunk) const {
+	// the scan references the groups and aggregates it reads, only an empty input writes the aggregates of a
+	// grouping without groups
+	vector<bool> initialize(types.size(), false);
+	for (auto &grouping : groupings) {
+		if (!grouping.table_data.grouping_set.empty()) {
+			continue;
+		}
+		for (idx_t i = 0; i < grouped_aggregate_data.aggregates.size(); i++) {
+			initialize[grouped_aggregate_data.GroupCount() + i] = true;
+		}
+	}
+	chunk.Initialize(allocator, types, initialize);
+}
+
 SourceResultType PhysicalHashAggregate::GetDataInternal(ExecutionContext &context, DataChunk &chunk,
                                                         OperatorSourceInput &input) const {
 	auto &sink_gstate = sink_state->Cast<HashAggregateGlobalSinkState>();

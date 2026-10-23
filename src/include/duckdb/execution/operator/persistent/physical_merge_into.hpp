@@ -64,6 +64,7 @@ public:
 	}
 
 	InsertionOrderPreservingMap<string> ParamsToString() const override;
+	void InitializeOutputChunk(Allocator &allocator, DataChunk &chunk) const override;
 };
 
 class MergeIntoOperator {

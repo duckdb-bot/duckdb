@@ -1008,8 +1008,10 @@ private:
 	ArenaAllocator aggregate_allocator;
 	RowOperationsState row_state;
 
-	//! State and chunk for scanning
+	//! State and chunk for scanning, the chunk is initialized at the first scan
 	TupleDataScanState scan_state;
+	Allocator &scan_allocator;
+	vector<LogicalType> scan_chunk_types;
 	DataChunk scan_chunk;
 };
 
@@ -1072,13 +1074,11 @@ SourceResultType RadixHTGlobalSourceState::AssignTask(RadixHTGlobalSinkState &si
 
 RadixHTLocalSourceState::RadixHTLocalSourceState(ExecutionContext &context, const RadixPartitionedHashTable &radix_ht)
     : layout(radix_ht.GetLayout().Copy()), aggregate_allocator(BufferAllocator::Get(context.client)),
-      row_state(aggregate_allocator) {
-	auto &allocator = BufferAllocator::Get(context.client);
-	auto scan_chunk_types = radix_ht.group_types;
+      row_state(aggregate_allocator), scan_allocator(BufferAllocator::Get(context.client)),
+      scan_chunk_types(radix_ht.group_types) {
 	for (auto &aggr_type : radix_ht.op.aggregate_return_types) {
 		scan_chunk_types.push_back(aggr_type);
 	}
-	scan_chunk.Initialize(allocator, scan_chunk_types);
 	ResetForReuse();
 }
 
@@ -1207,6 +1207,10 @@ void RadixHTLocalSourceState::Scan(RadixHTGlobalSinkState &sink, RadixHTGlobalSo
 		gstate.started_partitions.fetch_add(1, std::memory_order_relaxed);
 	}
 
+	if (scan_chunk.ColumnCount() == 0 && data_collection.Count() != 0) {
+		// a thread that never scans any rows does not hold a chunk
+		scan_chunk.Initialize(scan_allocator, scan_chunk_types);
+	}
 	if (!data_collection.Scan(scan_state, scan_chunk)) {
 		if (sink.scan_pin_properties == TupleDataPinProperties::DESTROY_AFTER_DONE) {
 			data_collection.Reset();

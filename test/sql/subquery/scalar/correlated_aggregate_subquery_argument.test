@@ -49,12 +49,6 @@ SELECT (SELECT COUNT(*) FILTER (WHERE (SELECT o.i) > 1)) FROM t o
 ----
 2
 
-# a lambda parameter is not a column
-query I
-SELECT (SELECT SUM((SELECT list_sum(list_transform([1, 2], lambda i: i + o.i))))) FROM t o
-----
-21
-
 # the operand of IN belongs to the query of the IN
 query I
 SELECT (SELECT SUM(y IN (SELECT x)) FROM (VALUES (1), (2)) v(y)) FROM (VALUES (1), (2)) o(x)
@@ -68,11 +62,16 @@ SELECT 1 FROM (VALUES (1), (2)) t(x) HAVING (SELECT SUM((SELECT x))) = 3
 ----
 1
 
-# both aggregates belong to the outer query, one inside the other
-statement error
+# the inner aggregate belongs to the outer query, the call keeps the other one in the subquery, as with a column
+query I
 SELECT (SELECT SUM((SELECT SUM((SELECT x))))) FROM (VALUES (1), (2)) t(x)
 ----
-aggregate function calls cannot be nested
+3
+
+query I
+SELECT (SELECT SUM((SELECT SUM(x)))) FROM (VALUES (1), (2)) t(x)
+----
+3
 
 # a parameter inside the subquery
 statement ok
@@ -89,8 +88,8 @@ SELECT (SELECT SUM((SELECT nonexistent))) FROM generate_series(1, 2) _(x)
 ----
 nonexistent
 
-# a subquery with a FROM clause, an alias, a star or a CTE can bind the columns itself, which only binding tells, so
-# no subquery counts and the aggregate stays where the other arguments put it
+# a subquery with a FROM clause, an alias, a star, a CTE or a call can bind columns itself, which only binding tells,
+# so no subquery counts and the aggregate stays where the other arguments put it
 query I rowsort
 SELECT (SELECT SUM((SELECT x + 0 FROM (VALUES (1)) a(y)))) FROM (VALUES (1), (2)) t(x)
 ----
@@ -148,3 +147,20 @@ SELECT (SELECT SUM((SELECT y.abs()) + (SELECT t.x)) FROM (VALUES (-1), (-2)) v(y
 ----
 5
 7
+
+# a macro body can bind columns of the query between the two
+statement ok
+CREATE MACRO m(z) AS (SELECT y FROM range(z))
+
+query I rowsort
+SELECT (SELECT SUM((SELECT m(1)) + (SELECT t.x)) FROM (VALUES (10)) v(y)) FROM (VALUES (1, 100), (2, 200)) t(x, y)
+----
+11
+12
+
+# a lambda in the subquery binds its own parameters
+query I rowsort
+SELECT (SELECT SUM((SELECT list_transform([{'a': 10}], lambda x: x.a)[1]))) FROM (VALUES (1), (2)) t(x)
+----
+10
+10

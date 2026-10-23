@@ -178,10 +178,10 @@ ColumnResolution ExpressionBinder::ResolveColumn(ColumnRefExpression &colref, id
 }
 
 //! Collect the column references that decide which scope owns an expression.
-//! A subquery that is only a select list, without FROM clause and aliases, binds no column itself, so its columns count
-//! as if they were written outside of it. Other subqueries bind in a chain of their own, and only binding them tells
-//! whether a column inside one is theirs, so once there is one, no subquery counts and the columns outside of them
-//! decide, as they always did.
+//! A subquery that is only a select list of columns, constants and operators, without FROM clause and aliases, binds
+//! no column itself, so its columns count as if they were written outside of it. Other subqueries bind in a chain of
+//! their own, and only binding them tells whether a column inside one is theirs, so once there is one, no subquery
+//! counts and the columns outside of them decide, as they always did.
 //! Lambda parameters are skipped: they are bound by the lambda rather than by any
 //! scope, so a parameter that happens to share a name with an outer column must not pull the
 //! expression out to that scope. The parameter names are read exactly as `ColumnQualifier` reads them,
@@ -192,6 +192,10 @@ public:
 	}
 
 	void CollectExpression(ParsedExpression &expr) {
+		if (subquery_depth > 0 && !CanCountInSubquery(expr)) {
+			all_subqueries_without_from = false;
+			return;
+		}
 		switch (expr.GetExpressionClass()) {
 		case ExpressionClass::SUBQUERY: {
 			auto &subquery = expr.Cast<SubqueryExpression>();
@@ -218,20 +222,6 @@ public:
 			}
 			return;
 		}
-		case ExpressionClass::STAR:
-			if (subquery_depth > 0) {
-				// a star stands for columns that only binding knows
-				all_subqueries_without_from = false;
-				return;
-			}
-			break;
-		case ExpressionClass::FUNCTION:
-			if (subquery_depth > 0 && expr.Cast<FunctionExpression>().GetQualifiedName().Path().size() > 1) {
-				// the qualification can be a column that the call is made on, as in `x.abs()`
-				all_subqueries_without_from = false;
-				return;
-			}
-			break;
 		case ExpressionClass::LAMBDA: {
 			auto &lambda = expr.Cast<LambdaExpression>();
 			string error_message;
@@ -266,6 +256,30 @@ public:
 	}
 
 private:
+	//! Whether the columns of the expression are all the columns it binds, which a call can hide in a macro body
+	static bool CanCountInSubquery(ParsedExpression &expr) {
+		switch (expr.GetExpressionClass()) {
+		case ExpressionClass::BETWEEN:
+		case ExpressionClass::CASE:
+		case ExpressionClass::CAST:
+		case ExpressionClass::COLLATE:
+		case ExpressionClass::COLUMN_REF:
+		case ExpressionClass::COMPARISON:
+		case ExpressionClass::CONJUNCTION:
+		case ExpressionClass::CONSTANT:
+		case ExpressionClass::OPERATOR:
+		case ExpressionClass::PARAMETER:
+		case ExpressionClass::SUBQUERY:
+			return true;
+		case ExpressionClass::FUNCTION: {
+			auto &function = expr.Cast<FunctionExpression>();
+			return function.IsOperator() && function.GetQualifiedName().Path().size() == 1;
+		}
+		default:
+			return false;
+		}
+	}
+
 	void CollectSubquery(QueryNode &node) {
 		if (node.type != QueryNodeType::SELECT_NODE || !node.cte_map.map.empty()) {
 			all_subqueries_without_from = false;

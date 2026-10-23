@@ -279,6 +279,9 @@ public:
 				// 	Note: If the user specifies an partial secondary sort, the disambiguation will use the
 				//	partition's row numbers, not the secondary sort's row numbers.
 				row_tree = make_uniq<WindowTokenTree>(client, arg_orders, executor.arg_order_idx, payload_count, true);
+				//	The value tree breaks ties the same way, so that both trees put the rows in one order
+				value_tree =
+				    make_uniq<WindowIndexTree>(client, arg_orders, executor.arg_order_idx, payload_count, true);
 			} else {
 				// The value_tree is cheap to construct, so we just get rid of it if we now discover we don't need it.
 				value_tree.reset();
@@ -642,6 +645,24 @@ static int64_t LeadLagIndex(ExpressionType type, int64_t row_idx, int64_t offset
 	return result;
 }
 
+//! The number of rows of the value tree in the frame that come before the own row in the argument order
+static idx_t ValuesBeforeRow(const WindowTokenTree &row_tree, const WindowIndexTree &value_tree,
+                             const FrameBounds &frame, idx_t row_idx) {
+	//	The tokens grow along the value tree, as both trees use the same order
+	const auto own_token = row_tree.Token(row_idx);
+	idx_t lo = 0;
+	idx_t hi = value_tree.RowCount();
+	while (lo < hi) {
+		const auto mid = lo + (hi - lo) / 2;
+		if (row_tree.Token(value_tree.NthRow(mid)) < own_token) {
+			lo = mid + 1;
+		} else {
+			hi = mid;
+		}
+	}
+	return value_tree.CountInFrame(lo, frame);
+}
+
 void WindowLeadLagExecutor::GetData(ExecutionContext &context, DataChunk &eval_chunk, DataChunk &bounds, Vector &result,
                                     idx_t row_idx, OperatorSinkInput &sink) {
 	auto &glstate = sink.global_state.Cast<WindowLeadLagGlobalState>();
@@ -665,6 +686,7 @@ void WindowLeadLagExecutor::GetData(ExecutionContext &context, DataChunk &eval_c
 
 	if (glstate.row_tree) {
 		// TODO: Handle subframes (SelectNth can handle it but Rank can't)
+		auto &ignore_nulls = *llstate.ignore_nulls;
 		auto &frames = llstate.frames;
 		frames.resize(1);
 		auto &frame = frames[0];
@@ -680,13 +702,22 @@ void WindowLeadLagExecutor::GetData(ExecutionContext &context, DataChunk &eval_c
 
 			// (1) compute the ROW_NUMBER of the own row
 			frame = FrameBounds(frame_begin[i], MaxValue(frame_end[i], frame_begin[i]));
-			const auto own_row = glstate.row_tree->Rank(frame.start, frame.end, row_idx) - 1;
+			idx_t own_row;
+			bool own_value = true;
+			if (ignore_nulls.CannotHaveNull()) {
+				own_row = glstate.row_tree->Rank(frame.start, frame.end, row_idx) - 1;
+			} else {
+				//	The value tree only holds the rows with a value, so only those count
+				own_row = ValuesBeforeRow(*glstate.row_tree, *glstate.value_tree, frame, row_idx);
+				own_value = ignore_nulls.RowIsValid(row_idx);
+			}
 			// (2) adjust the row number by adding or subtracting an offset
 			auto val_idx = LeadLagIndex(wexpr.GetExpressionType(), NumericCast<int64_t>(own_row), offset);
 			const auto is_lead = (wexpr.GetExpressionType() == ExpressionType::WINDOW_LEAD);
-			if (row_idx < frame.start || frame.end <= row_idx) {
-				//	An own row outside the frame ranks just before own_row instead of at it,
-				//	so a zero shift is the own row itself and a forward shift lands one row earlier.
+			if (row_idx < frame.start || frame.end <= row_idx || !own_value) {
+				//	An own row outside the value tree (outside the frame, or NULL under IGNORE NULLS) ranks just
+				//	before own_row instead of at it, so a zero shift is the own row itself and a forward shift lands
+				//	one row earlier.
 				if (!offset) {
 					cursor.CopyCell(0, row_idx, result, i);
 					continue;

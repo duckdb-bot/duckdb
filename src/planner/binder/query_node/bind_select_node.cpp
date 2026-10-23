@@ -518,6 +518,12 @@ Identifier Binder::GetExpressionName(const ParsedExpression &expr) {
 	return expr.GetName();
 }
 
+//! Whether two SELECT expressions with one alias are the same, comparing the text without regard to case since names
+//! are case insensitive, and keeping the names inside subqueries that the comparison of expressions skips
+static bool SameSelectExpression(const ParsedExpression &left, const ParsedExpression &right) {
+	return StringUtil::Lower(left.ToString()) == StringUtil::Lower(right.ToString());
+}
+
 BoundStatement Binder::BindSelectNode(SelectNode &statement, BoundStatement from_table) {
 	D_ASSERT(from_table.plan);
 	D_ASSERT(!statement.from_table);
@@ -557,7 +563,8 @@ BoundStatement Binder::BindSelectNode(SelectNode &statement, BoundStatement from
 		ExpressionBinder::QualifyColumnNames(*this, expr);
 		if (!expr->GetAlias().empty()) {
 			auto entry = bind_state.alias_map.find(expr->GetAlias());
-			if (entry != bind_state.alias_map.end() && !bind_state.original_expressions[entry->second]->Equals(*expr)) {
+			if (entry != bind_state.alias_map.end() &&
+			    !SameSelectExpression(*bind_state.original_expressions[entry->second], *expr)) {
 				bind_state.ambiguous_aliases.insert(expr->GetAlias());
 			}
 			bind_state.alias_map[expr->GetAlias()] = i;

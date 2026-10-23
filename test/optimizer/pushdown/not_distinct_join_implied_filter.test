@@ -87,6 +87,22 @@ SELECT count(*) FROM many_keys a JOIN many b ON a.k0 IS NOT DISTINCT FROM b.x0 A
 ----
 10
 
+# the four filters are for the whole query, also when each join derives one
+query II
+EXPLAIN SELECT count(*) FROM many m JOIN many_keys k0 ON k0.k0 IS NOT DISTINCT FROM m.x0 AND k0.k0 = m.c0 JOIN many_keys k1 ON k1.k0 IS NOT DISTINCT FROM m.x1 AND k1.k0 = m.c1 JOIN many_keys k2 ON k2.k0 IS NOT DISTINCT FROM m.x2 AND k2.k0 = m.c2 JOIN many_keys k3 ON k3.k0 IS NOT DISTINCT FROM m.x3 AND k3.k0 = m.c3 JOIN many_keys k4 ON k4.k0 IS NOT DISTINCT FROM m.x4 AND k4.k0 = m.c4
+----
+physical_plan	<REGEX>:.*(x4 = c4|c4 = x4).*
+
+query II
+EXPLAIN SELECT count(*) FROM many m JOIN many_keys k0 ON k0.k0 IS NOT DISTINCT FROM m.x0 AND k0.k0 = m.c0 JOIN many_keys k1 ON k1.k0 IS NOT DISTINCT FROM m.x1 AND k1.k0 = m.c1 JOIN many_keys k2 ON k2.k0 IS NOT DISTINCT FROM m.x2 AND k2.k0 = m.c2 JOIN many_keys k3 ON k3.k0 IS NOT DISTINCT FROM m.x3 AND k3.k0 = m.c3 JOIN many_keys k4 ON k4.k0 IS NOT DISTINCT FROM m.x4 AND k4.k0 = m.c4
+----
+physical_plan	<!REGEX>:.*(x0 = c0|c0 = x0).*
+
+query I
+SELECT count(*) FROM many m JOIN many_keys k0 ON k0.k0 IS NOT DISTINCT FROM m.x0 AND k0.k0 = m.c0 JOIN many_keys k1 ON k1.k0 IS NOT DISTINCT FROM m.x1 AND k1.k0 = m.c1 JOIN many_keys k2 ON k2.k0 IS NOT DISTINCT FROM m.x2 AND k2.k0 = m.c2 JOIN many_keys k3 ON k3.k0 IS NOT DISTINCT FROM m.x3 AND k3.k0 = m.c3 JOIN many_keys k4 ON k4.k0 IS NOT DISTINCT FROM m.x4 AND k4.k0 = m.c4
+----
+10
+
 # volatile operands are not copied, also in a join
 statement ok
 CREATE SEQUENCE s3;

@@ -697,6 +697,11 @@ static idx_t ValuesBeforeRow(const WindowLeadLagGlobalState &glstate, const Vali
                              const FrameBounds &frame, idx_t row_idx) {
 	auto &row_tree = *glstate.row_tree;
 	const auto own_token = row_tree.Token(row_idx);
+	//	Both trees use the same order, so the value tree starts with the rows whose token is smaller
+	const auto values_before = glstate.ValuesBeforeToken(own_token);
+	if (!values_before) {
+		return 0;
+	}
 	//	A narrow frame is cheaper to count row by row than to search the whole value tree
 	static constexpr idx_t SCAN_LIMIT = 256;
 	if (frame.end - frame.start <= SCAN_LIMIT) {
@@ -708,8 +713,7 @@ static idx_t ValuesBeforeRow(const WindowLeadLagGlobalState &glstate, const Vali
 		}
 		return result;
 	}
-	//	Both trees use the same order, so the value tree starts with the rows whose token is smaller
-	return glstate.value_tree->CountInFrame(glstate.ValuesBeforeToken(own_token), frame);
+	return glstate.value_tree->CountInFrame(values_before, frame);
 }
 
 void WindowLeadLagExecutor::GetData(ExecutionContext &context, DataChunk &eval_chunk, DataChunk &bounds, Vector &result,

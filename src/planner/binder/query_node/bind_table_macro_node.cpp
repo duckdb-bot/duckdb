@@ -22,6 +22,8 @@
 #include "duckdb/parser/query_node/recursive_cte_node.hpp"
 #include "duckdb/parser/query_node/set_operation_node.hpp"
 #include "duckdb/parser/tableref/basetableref.hpp"
+#include "duckdb/parser/tableref/pivotref.hpp"
+#include "duckdb/parser/tableref/showref.hpp"
 #include "duckdb/parser/tableref/subqueryref.hpp"
 #include "duckdb/parser/tableref/table_function_ref.hpp"
 
@@ -30,8 +32,9 @@ namespace duckdb {
 namespace {
 
 //! Qualifies the names in the body of a macro that the macro's search path, which starts with its own schema as for a
-//! view, resolves to another entry than the caller's search path. The arguments are substituted afterwards, so their
-//! names still resolve where the macro is called.
+//! view, resolves to another entry than the caller's search path. The new names are set once the arguments are
+//! substituted, so the names of the arguments still resolve where the macro is called and a column keeps the name it
+//! has without them.
 class MacroBodyQualifier {
 public:
 	MacroBodyQualifier(Binder &binder, const CatalogEntryRetriever &binder_retriever,
@@ -47,33 +50,18 @@ public:
 
 	void QualifyExpression(ParsedExpression &expr) {
 		switch (expr.GetExpressionClass()) {
-		case ExpressionClass::FUNCTION: {
-			auto &function = expr.Cast<FunctionExpression>();
-			auto qualified = Qualify(CatalogType::SCALAR_FUNCTION_ENTRY, function.GetQualifiedName());
-			if (qualified) {
-				function.SetQualifiedName(std::move(*qualified));
-			}
+		case ExpressionClass::FUNCTION:
+			Qualify(CatalogType::SCALAR_FUNCTION_ENTRY, expr.Cast<FunctionExpression>().GetQualifiedNameMutable());
 			break;
-		}
-		case ExpressionClass::WINDOW: {
-			auto &window = expr.Cast<WindowExpression>();
-			auto qualified = Qualify(CatalogType::AGGREGATE_FUNCTION_ENTRY, window.GetQualifiedName());
-			if (qualified) {
-				window.SetQualifiedName(std::move(*qualified));
-			}
+		case ExpressionClass::WINDOW:
+			Qualify(CatalogType::AGGREGATE_FUNCTION_ENTRY, expr.Cast<WindowExpression>().GetQualifiedNameMutable());
 			break;
-		}
 		case ExpressionClass::CAST:
 			QualifyExpression(expr.Cast<CastExpression>().TargetTypeMutable());
 			break;
-		case ExpressionClass::TYPE: {
-			auto &type = expr.Cast<TypeExpression>();
-			auto qualified = Qualify(CatalogType::TYPE_ENTRY, type.GetQualifiedName());
-			if (qualified) {
-				type.SetQualifiedName(std::move(*qualified));
-			}
+		case ExpressionClass::TYPE:
+			Qualify(CatalogType::TYPE_ENTRY, expr.Cast<TypeExpression>().GetQualifiedNameMutable());
 			break;
-		}
 		case ExpressionClass::SUBQUERY:
 			QualifyNode(*expr.Cast<SubqueryExpression>().Subquery()->node);
 			break;
@@ -84,15 +72,13 @@ public:
 	}
 
 	void QualifyNode(QueryNode &node) {
-		identifier_set_t names;
-		for (auto &entry : node.cte_map.map) {
-			names.insert(entry.first);
-		}
-		cte_names.push_back(std::move(names));
+		// a CTE sees the CTEs before it
+		cte_names.emplace_back();
 		for (auto &entry : node.cte_map.map) {
 			if (entry.second->query_node) {
 				QualifyNode(*entry.second->query_node);
 			}
+			cte_names.back().insert(entry.first);
 		}
 		switch (node.type) {
 		case QueryNodeType::SELECT_NODE: {
@@ -101,12 +87,10 @@ public:
 				QualifyTableRef(*select.from_table);
 			}
 			for (auto &expr : select.select_list) {
-				// a qualified name changes the name of an unnamed column, which keeps the one it had
-				auto name = expr->HasAlias() ? Identifier() : expr->GetName();
-				const auto qualified_before = qualified_count;
+				const auto changes_before = changes.size();
 				QualifyExpression(*expr);
-				if (qualified_count != qualified_before && !name.empty()) {
-					expr->SetAlias(std::move(name));
+				if (changes.size() != changes_before && !expr->HasAlias() && !ContainsStar(*expr)) {
+					unnamed_expressions.push_back(expr);
 				}
 			}
 			if (select.where_clause) {
@@ -131,7 +115,10 @@ public:
 		case QueryNodeType::RECURSIVE_CTE_NODE: {
 			auto &recursive = node.Cast<RecursiveCTENode>();
 			QualifyNode(*recursive.left);
+			// the recursive part sees the CTE itself
+			cte_names.push_back(identifier_set_t {recursive.ctename});
 			QualifyNode(*recursive.right);
+			cte_names.pop_back();
 			break;
 		}
 		default:
@@ -142,17 +129,35 @@ public:
 		cte_names.pop_back();
 	}
 
+	//! Set the qualified names, after the arguments are substituted
+	void Apply() {
+		// a column without alias keeps the name it has without the qualification, outer expressions first
+		for (auto it = unnamed_expressions.rbegin(); it != unnamed_expressions.rend(); ++it) {
+			auto &expr = it->get();
+			expr->SetAlias(expr->GetName());
+		}
+		for (auto &change : changes) {
+			change.name.get() = std::move(change.qualified);
+		}
+		unnamed_expressions.clear();
+		changes.clear();
+	}
+
 private:
+	struct NameChange {
+		NameChange(QualifiedName &name, QualifiedName qualified) : name(name), qualified(std::move(qualified)) {
+		}
+
+		reference<QualifiedName> name;
+		QualifiedName qualified;
+	};
+
 	void QualifyTableRef(TableRef &ref) {
 		switch (ref.type) {
 		case TableReferenceType::BASE_TABLE: {
 			auto &table = ref.Cast<BaseTableRef>();
-			if (IsVisibleCTE(table.Table())) {
-				break;
-			}
-			auto qualified = Qualify(CatalogType::TABLE_ENTRY, table.GetQualifiedName());
-			if (qualified) {
-				table.GetQualifiedNameMutable() = std::move(*qualified);
+			if (!IsVisibleCTE(table.Table())) {
+				Qualify(CatalogType::TABLE_ENTRY, table.GetQualifiedNameMutable());
 			}
 			break;
 		}
@@ -160,10 +165,7 @@ private:
 			auto &function = ref.Cast<TableFunctionRef>().function;
 			if (function->GetExpressionClass() == ExpressionClass::FUNCTION) {
 				auto &function_expr = function->Cast<FunctionExpression>();
-				auto qualified = Qualify(CatalogType::TABLE_FUNCTION_ENTRY, function_expr.GetQualifiedName());
-				if (qualified) {
-					function_expr.SetQualifiedName(std::move(*qualified));
-				}
+				Qualify(CatalogType::TABLE_FUNCTION_ENTRY, function_expr.GetQualifiedNameMutable());
 				// the arguments are expressions of the body as well
 				for (auto &argument : function_expr.GetArgumentsMutable()) {
 					QualifyExpression(*argument.GetExpressionMutable());
@@ -183,6 +185,29 @@ private:
 			}
 			break;
 		}
+		case TableReferenceType::PIVOT: {
+			auto &pivot = ref.Cast<PivotRef>();
+			QualifyTableRef(*pivot.source);
+			for (auto &aggregate : pivot.aggregates) {
+				QualifyExpression(*aggregate);
+			}
+			for (auto &column : pivot.pivots) {
+				for (auto &expr : column.pivot_expressions) {
+					QualifyExpression(*expr);
+				}
+				if (column.subquery) {
+					QualifyNode(*column.subquery);
+				}
+			}
+			break;
+		}
+		case TableReferenceType::SHOW_REF: {
+			auto &show = ref.Cast<ShowRef>();
+			if (show.query) {
+				QualifyNode(*show.query);
+			}
+			break;
+		}
 		default:
 			// the iterator also hands over the reference itself, which is not walked again
 			ParsedExpressionIterator::EnumerateTableRefChildren(
@@ -196,6 +221,16 @@ private:
 		}
 	}
 
+	static bool ContainsStar(ParsedExpression &expr) {
+		if (expr.GetExpressionClass() == ExpressionClass::STAR) {
+			return true;
+		}
+		bool result = false;
+		ParsedExpressionIterator::EnumerateChildren(
+		    expr, [&](ParsedExpression &child) { result = result || ContainsStar(child); });
+		return result;
+	}
+
 	bool IsVisibleCTE(const Identifier &name) {
 		for (auto &names : cte_names) {
 			if (names.count(name)) {
@@ -203,26 +238,26 @@ private:
 			}
 		}
 		// the query that calls the macro can have a CTE of that name
-		return binder.GetCTEBinding(BindingAlias(name)) != nullptr;
+		auto cte = binder.GetCTEBinding(BindingAlias(name));
+		return cte && cte->CanBeReferenced();
 	}
 
-	//! The full name of the entry the macro's search path finds, if the caller's search path finds another one
-	unique_ptr<QualifiedName> Qualify(CatalogType type, const QualifiedName &name) {
+	//! Qualify the name with the schema of the entry the macro's search path finds, if the caller's finds another one
+	void Qualify(CatalogType type, QualifiedName &name) {
 		if (name.Path().size() != 1) {
-			return nullptr;
+			return;
 		}
 		auto macro_entry = LookUp(macro_retriever, type, name);
 		if (!macro_entry) {
-			return nullptr;
+			return;
 		}
 		auto caller_entry = LookUp(caller_retriever, type, name);
 		if (caller_entry.get() == macro_entry.get()) {
-			return nullptr;
+			return;
 		}
 		auto &schema = macro_entry->ParentSchema();
-		qualified_count++;
-		return make_uniq<QualifiedName>(
-		    QualifiedName::FromCatalogSchema(schema.ParentCatalog().GetName(), schema.GetSchemaPath(), name.Name()));
+		changes.emplace_back(name, QualifiedName::FromCatalogSchema(schema.ParentCatalog().GetName(),
+		                                                            schema.GetSchemaPath(), name.Name()));
 	}
 
 	static optional_ptr<CatalogEntry> LookUp(CatalogEntryRetriever &retriever, CatalogType type,
@@ -244,26 +279,38 @@ private:
 	Binder &binder;
 	CatalogEntryRetriever caller_retriever;
 	CatalogEntryRetriever macro_retriever;
-	//! The number of names qualified so far
-	idx_t qualified_count = 0;
+	//! The names to qualify
+	vector<NameChange> changes;
+	//! The select list expressions without alias that have a name to qualify, inner ones first
+	vector<reference<unique_ptr<ParsedExpression>>> unnamed_expressions;
 	//! The CTEs of the body that are visible where the walk is, innermost last
 	vector<identifier_set_t> cte_names;
 };
 
 } // namespace
 
-void Binder::QualifyMacroBody(StandardEntry &macro, ParsedExpression &body) {
+void Binder::QualifyMacroBody(StandardEntry &macro, ParsedExpression &body,
+                              const std::function<void()> &replace_parameters) {
 	MacroBodyQualifier qualifier(*this, entry_retriever, GetMacroSearchPath(macro));
 	qualifier.QualifyExpression(body);
+	replace_parameters();
+	qualifier.Apply();
 }
 
-void Binder::QualifyMacroBody(StandardEntry &macro, QueryNode &body) {
+void Binder::QualifyMacroBody(StandardEntry &macro, QueryNode &body, const std::function<void()> &replace_parameters) {
 	MacroBodyQualifier qualifier(*this, entry_retriever, GetMacroSearchPath(macro));
 	qualifier.QualifyNode(body);
+	replace_parameters();
+	qualifier.Apply();
 }
 
 vector<CatalogSearchEntry> Binder::GetMacroSearchPath(StandardEntry &macro) {
-	return GetSearchPath(macro.ParentCatalog(), macro.ParentSchema().name, true);
+	return GetMacroSearchPath(macro.ParentCatalog(), macro.ParentSchema().GetSchemaPath());
+}
+
+vector<CatalogSearchEntry> Binder::GetMacroSearchPath(Catalog &catalog, const vector<Identifier> &schema_path) {
+	// a nested schema cannot be in a search path, so the macro's catalog is looked in first
+	return GetSearchPath(catalog, schema_path.size() == 1 ? schema_path[0] : Identifier(), true);
 }
 
 unique_ptr<QueryNode> Binder::BindTableMacro(FunctionExpression &function, TableMacroCatalogEntry &macro_func,
@@ -292,9 +339,10 @@ unique_ptr<QueryNode> Binder::BindTableMacro(FunctionExpression &function, Table
 	vector<identifier_set_t> lambda_params;
 
 	auto node = macro_def.Cast<TableMacroFunction>().query_node->Copy();
-	QualifyMacroBody(macro_func, *node);
-	ParsedExpressionIterator::EnumerateQueryNodeChildren(
-	    *node, [&](unique_ptr<ParsedExpression> &child) { eb.ReplaceMacroParameters(child, lambda_params); });
+	QualifyMacroBody(macro_func, *node, [&]() {
+		ParsedExpressionIterator::EnumerateQueryNodeChildren(
+		    *node, [&](unique_ptr<ParsedExpression> &child) { eb.ReplaceMacroParameters(child, lambda_params); });
+	});
 
 	return node;
 }

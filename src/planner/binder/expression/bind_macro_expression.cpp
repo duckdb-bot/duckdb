@@ -127,7 +127,8 @@ void ExpressionBinder::UnfoldWindowMacroExpression(unique_ptr<ParsedExpression> 
                                                    ScalarMacroCatalogEntry &macro_func,
                                                    ScalarMacroFunction &macro_def) {
 	auto macro_copy = macro_def.expression->Copy();
-	binder.QualifyMacroBody(macro_func, *macro_copy);
+	// the aggregate is replaced below, so its name is qualified first
+	binder.QualifyMacroBody(macro_func, *macro_copy, []() {});
 	vector<reference<unique_ptr<ParsedExpression>>> aggregate_exprs;
 	FindAggregateExprs(macro_copy, aggregate_exprs);
 
@@ -187,23 +188,26 @@ void ExpressionBinder::UnfoldMacroExpression(FunctionExpression &function, Scala
 	    MacroFunction::CreateDummyBinding(macro_def, macro_func.name, positional_arguments, named_arguments);
 	macro_binding = new_macro_binding.get();
 
+	auto replace_parameters = [&]() {
+		// qualify only the macro parameters with a new empty binder that only knows the macro binding
+		auto dummy_binder = Binder::CreateBinder(context);
+		dummy_binder->macro_binding = new_macro_binding.get();
+		ExpressionBinder::QualifyColumnNames(*dummy_binder, expr);
+
+		// now replace the parameters
+		vector<identifier_set_t> lambda_params;
+		ReplaceMacroParameters(expr, lambda_params);
+	};
+
 	// replace current expression with stored macro expression
 	// special case: If this is a window function, then we need to return a window expression
 	if (expr->GetExpressionClass() == ExpressionClass::WINDOW) {
 		UnfoldWindowMacroExpression(expr, macro_func, macro_def);
+		replace_parameters();
 	} else {
 		expr = macro_def.expression->Copy();
-		binder.QualifyMacroBody(macro_func, *expr);
+		binder.QualifyMacroBody(macro_func, *expr, replace_parameters);
 	}
-
-	// qualify only the macro parameters with a new empty binder that only knows the macro binding
-	auto dummy_binder = Binder::CreateBinder(context);
-	dummy_binder->macro_binding = new_macro_binding.get();
-	ExpressionBinder::QualifyColumnNames(*dummy_binder, expr);
-
-	// now replace the parameters
-	vector<identifier_set_t> lambda_params;
-	ReplaceMacroParameters(expr, lambda_params);
 }
 
 BindResult ExpressionBinder::BindMacro(FunctionExpression &function, ScalarMacroCatalogEntry &macro_func, idx_t depth,

@@ -48,6 +48,31 @@ statement ok
 CREATE MACRO db.echo(x) AS TABLE SELECT x AS v;
 
 statement ok
+CREATE MACRO db.self_cte() AS TABLE WITH t AS (SELECT * FROM t) SELECT * FROM t;
+
+statement ok
+CREATE MACRO db.later_cte() AS TABLE WITH a AS (SELECT * FROM t), t AS (SELECT 5 AS v) SELECT * FROM a;
+
+statement ok
+CREATE TABLE db.r AS SELECT 100 AS v;
+
+statement ok
+CREATE MACRO db.recursive_cte() AS TABLE
+WITH RECURSIVE r AS (SELECT v FROM r UNION ALL SELECT v + 1 FROM r WHERE v < 102) SELECT sum(v) FROM r;
+
+statement ok
+CREATE MACRO db.pivot_cte() AS TABLE PIVOT (WITH t AS (SELECT 'a' AS k, 7 AS v) SELECT * FROM t) ON k IN ('a') USING sum(v);
+
+statement ok
+CREATE MACRO db.star_replace() AS TABLE SELECT * REPLACE (s1(a) AS a) FROM (VALUES (1, 2)) t(a, b);
+
+statement ok
+CREATE MACRO db.columns_s1() AS TABLE SELECT s1(COLUMNS(*)) FROM (VALUES (1, 2)) t(a, b);
+
+statement ok
+CREATE MACRO db.param_name(x := 2) AS TABLE SELECT s1(x);
+
+statement ok
 DETACH db;
 
 statement ok
@@ -121,6 +146,56 @@ SELECT db.cast_mood()::VARCHAR
 ----
 db
 
+statement ok
+CREATE TABLE r AS SELECT -100 AS v;
+
+# a CTE sees the table of its own name and the CTEs before it, the recursive part of a recursive CTE sees itself
+query I
+SELECT * FROM db.self_cte()
+----
+42
+
+query I
+SELECT * FROM db.later_cte()
+----
+42
+
+query I
+SELECT * FROM db.recursive_cte()
+----
+303
+
+query I
+WITH t AS (SELECT * FROM db.from_t()) SELECT * FROM t
+----
+42
+
+query I
+SELECT * FROM db.pivot_cte()
+----
+7
+
+# a column keeps the name it has without the qualification
+query II
+SELECT a, b FROM db.star_replace()
+----
+2	2
+
+query II
+SELECT a, b FROM db.columns_s1()
+----
+2	3
+
+query TT
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM db.param_name())
+----
+s1(2)	INTEGER
+
+query I
+SELECT * FROM db.param_name()
+----
+3
+
 # the arguments still resolve where the macro is called
 query I
 SELECT db.add_one(s1(0))
@@ -183,3 +258,27 @@ query I
 SELECT uses_s1()
 ----
 101
+
+# a nested schema cannot be in a search path, so a macro in one looks in the default schema of its catalog
+statement ok
+CREATE SCHEMA a;
+
+statement ok
+CREATE SCHEMA a.b;
+
+statement ok
+CREATE SCHEMA b;
+
+statement ok
+CREATE MACRO f() AS 1;
+
+statement ok
+CREATE MACRO b.f() AS 2;
+
+statement ok
+CREATE MACRO a.b.g() AS f();
+
+query I
+SELECT a.b.g()
+----
+1

@@ -562,10 +562,11 @@ SchemaCatalogEntry &Binder::BindCreateFunctionInfo(CreateInfo &info) {
 		};
 
 		// bind it to verify the function was defined correctly, with the macro's schema first as when it is called
-		auto &schema_name = info.GetQualifiedName().Schema();
+		auto &path = info.GetQualifiedName().Path();
+		vector<Identifier> schema_path(path.begin() + 1, path.end() - 1);
 		auto macro_binder = CreateBinder(context, this);
 		macro_binder->macro_binding = this_macro_binding.get();
-		macro_binder->entry_retriever.SetSearchPath(GetSearchPath(catalog, schema_name, true));
+		macro_binder->entry_retriever.SetSearchPath(GetMacroSearchPath(catalog, schema_path));
 		ErrorData error;
 		if (info.type == CatalogType::MACRO_ENTRY) {
 			BoundSelectNode sel_node;

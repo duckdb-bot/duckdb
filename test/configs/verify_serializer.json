@@ -11,6 +11,12 @@
       ]
     },
     {
+      "reason": "A simple CASE is not marked as one after serialization, which needs the next serialization version",
+      "paths": [
+        "test/sql/function/generic/simple_case_volatile_operand_view.test"
+      ]
+    },
+    {
       "reason": "Extension optimizer pass breaks logical plan serialization",
       "paths": [
         "test/extension/test_extensible_filter.test"

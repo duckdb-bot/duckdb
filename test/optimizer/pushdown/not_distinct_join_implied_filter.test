@@ -70,17 +70,47 @@ SELECT count(*) FROM keys JOIN wide ON keys.k = wide.k0 AND keys.k IS NOT DISTIN
 ----
 10
 
-# volatile expressions are not copied, also in a join
+# at most four filters are derived for a join, as each can connect equalities of its side
+statement ok
+CREATE TABLE many AS SELECT i AS c0, i AS c1, i AS c2, i AS c3, i AS c4, i AS x0, i AS x1, i AS x2, i AS x3, i AS x4 FROM range(10) r(i);
+
+statement ok
+CREATE TABLE many_keys AS SELECT i AS k0, i AS k1, i AS k2, i AS k3, i AS k4 FROM range(10) r(i);
+
+query II
+EXPLAIN SELECT count(*) FROM many_keys a JOIN many b ON a.k0 IS NOT DISTINCT FROM b.x0 AND a.k0 = b.c0 AND a.k1 IS NOT DISTINCT FROM b.x1 AND a.k1 = b.c1 AND a.k2 IS NOT DISTINCT FROM b.x2 AND a.k2 = b.c2 AND a.k3 IS NOT DISTINCT FROM b.x3 AND a.k3 = b.c3 AND a.k4 IS NOT DISTINCT FROM b.x4 AND a.k4 = b.c4
+----
+physical_plan	<!REGEX>:.*(x4 = c4|c4 = x4).*
+
+query I
+SELECT count(*) FROM many_keys a JOIN many b ON a.k0 IS NOT DISTINCT FROM b.x0 AND a.k0 = b.c0 AND a.k1 IS NOT DISTINCT FROM b.x1 AND a.k1 = b.c1 AND a.k2 IS NOT DISTINCT FROM b.x2 AND a.k2 = b.c2 AND a.k3 IS NOT DISTINCT FROM b.x3 AND a.k3 = b.c3 AND a.k4 IS NOT DISTINCT FROM b.x4 AND a.k4 = b.c4
+----
+10
+
+# volatile operands are not copied, also in a join
 statement ok
 CREATE SEQUENCE s3;
 
+statement ok
+CREATE SEQUENCE s4;
+
 query I
-SELECT count(*) FROM keys JOIN wide ON keys.k IS NOT DISTINCT FROM wide.k0 + 0 AND keys.k = wide.k1 WHERE nextval('s3') > 0
+SELECT count(*) FROM keys JOIN wide ON keys.k IS NOT DISTINCT FROM wide.k0 + nextval('s3') * 0 AND keys.k = wide.k1
 ----
 10
 
 query I
 SELECT currval('s3')
+----
+10
+
+query I
+SELECT count(*) FROM keys JOIN wide ON keys.k IS NOT DISTINCT FROM wide.k0 AND keys.k = wide.k1 + nextval('s4') * 0
+----
+10
+
+query I
+SELECT currval('s4')
 ----
 10
 

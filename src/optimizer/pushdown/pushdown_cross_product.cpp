@@ -77,9 +77,12 @@ static bool IsUsed(const vector<reference<const BoundColumnRefExpression>> &used
 	return false;
 }
 
+//! The side combines its equalities with each other, so a few derived filters bound the work they add
+static constexpr idx_t MAX_IMPLIED_SIDE_FILTERS = 4;
+
 //! A row that passes `l IS NOT DISTINCT FROM r` and `l = c` has a non-NULL l, so it also passes `r = c`. With r and c
 //! on the same side of the join, that equality filters the side before the join. Each column is in one such filter at
-//! most, as the side combines its equalities with each other.
+//! most.
 static vector<unique_ptr<Expression>> GetImpliedSideFilters(const vector<unique_ptr<Expression>> &join_expressions,
                                                             const unordered_set<TableIndex> &left_bindings,
                                                             const unordered_set<TableIndex> &right_bindings) {
@@ -122,7 +125,7 @@ static vector<unique_ptr<Expression>> GetImpliedSideFilters(const vector<unique_
 					    GetColumnSide(partner, left_bindings, right_bindings) != side) {
 						continue;
 					}
-					if (IsUsed(used, other) || IsUsed(used, partner)) {
+					if (result.size() >= MAX_IMPLIED_SIDE_FILTERS || IsUsed(used, other) || IsUsed(used, partner)) {
 						continue;
 					}
 					used.push_back(other);

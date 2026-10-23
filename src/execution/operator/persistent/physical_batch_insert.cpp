@@ -99,6 +99,8 @@ public:
 		// cap the concurrent threads working on this task based on the amount of available memory
 		return MinValue<idx_t>(source_max_threads, memory_manager.AvailableMemory() / minimum_memory_per_thread + 1);
 	}
+	//! The keys of foreign keys referencing the table itself, checked in Finalize
+	unique_ptr<DeferredForeignKeyChecks> deferred_foreign_keys;
 };
 
 class BatchInsertLocalState : public LocalSinkState {
@@ -346,6 +348,9 @@ unique_ptr<GlobalSinkState> PhysicalBatchInsert::GetGlobalSinkState(ClientContex
 	static constexpr const idx_t MINIMUM_MEMORY_PER_COLUMN = 4ULL * 1024ULL * 1024ULL;
 	auto minimum_memory_per_thread = table->GetColumns().PhysicalColumnCount() * MINIMUM_MEMORY_PER_COLUMN;
 	auto result = make_uniq<BatchInsertGlobalState>(context, *table, minimum_memory_per_thread);
+	if (DataTable::HasSelfReferencingForeignKey(bound_constraints)) {
+		result->deferred_foreign_keys = make_uniq<DeferredForeignKeyChecks>();
+	}
 	return std::move(result);
 }
 
@@ -465,6 +470,7 @@ SinkResultType PhysicalBatchInsert::Sink(ExecutionContext &context, DataChunk &i
 
 	if (!lstate.constraint_state) {
 		lstate.constraint_state = table.GetStorage().InitializeConstraintState(table, bound_constraints);
+		lstate.constraint_state->deferred_foreign_keys = gstate.deferred_foreign_keys.get();
 	}
 
 	auto &storage = table.GetStorage();
@@ -584,6 +590,10 @@ SinkFinalizeType PhysicalBatchInsert::Finalize(Pipeline &pipeline, Event &event,
 		optimistic_writer.Merge(*writer);
 		optimistic_writer.FinalFlush();
 		memory_manager.FinalCheck();
+		if (g_state.deferred_foreign_keys) {
+			// every row of the statement is in the transaction-local storage now
+			data_table.VerifyDeferredForeignKeys(context, table, bound_constraints, *g_state.deferred_foreign_keys);
+		}
 		return SinkFinalizeType::READY;
 	}
 
@@ -591,6 +601,11 @@ SinkFinalizeType PhysicalBatchInsert::Finalize(Pipeline &pipeline, Event &event,
 	// Thus, we append directly to the transaction local storage.
 	LocalAppendState append_state;
 	data_table.InitializeLocalAppend(append_state, table, context, bound_constraints);
+	if (g_state.deferred_foreign_keys) {
+		// the append verifies every row again
+		g_state.deferred_foreign_keys->keys.clear();
+		append_state.constraint_state->deferred_foreign_keys = g_state.deferred_foreign_keys.get();
+	}
 	auto &transaction = DuckTransaction::Get(context, table.catalog);
 	for (auto &entry : g_state.collections) {
 		if (entry.type != RowGroupBatchType::NOT_FLUSHED) {
@@ -609,6 +624,9 @@ SinkFinalizeType PhysicalBatchInsert::Finalize(Pipeline &pipeline, Event &event,
 	g_state.collections.clear();
 	data_table.FinalizeLocalAppend(append_state);
 	memory_manager.FinalCheck();
+	if (g_state.deferred_foreign_keys) {
+		data_table.VerifyDeferredForeignKeys(context, table, bound_constraints, *g_state.deferred_foreign_keys);
+	}
 	return SinkFinalizeType::READY;
 }
 

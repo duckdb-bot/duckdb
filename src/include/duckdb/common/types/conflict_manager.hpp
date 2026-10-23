@@ -180,6 +180,12 @@ private:
 			return row_ids_data[idx];
 		}
 
+		//! Replaces the row ID matching the index in the chunk.
+		void SetRowId(const idx_t index_in_chunk, const row_t row_id) {
+			D_ASSERT(validity.RowIsValid(index_in_chunk));
+			row_ids_data[sel->get_index(index_in_chunk)] = row_id;
+		}
+
 		//! Resets the conflict data.
 		void Reset() {
 			count = 0;

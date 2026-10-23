@@ -45,6 +45,7 @@ class ConflictManager;
 class TableScanState;
 struct TableDeleteState;
 struct ConstraintState;
+struct DeferredForeignKeyChecks;
 struct TableUpdateState;
 struct OptimisticWriteCollection;
 struct ColumnFetchState;
@@ -134,7 +135,8 @@ public:
 	                 DataChunk &delete_chunk);
 	//! Appends to the transaction-local storage of this table
 	void LocalAppend(DuckTableEntry &table, ClientContext &context, DataChunk &chunk,
-	                 const vector<unique_ptr<BoundConstraint>> &bound_constraints, bool unsafe = false);
+	                 const vector<unique_ptr<BoundConstraint>> &bound_constraints, bool unsafe = false,
+	                 optional_ptr<DeferredForeignKeyChecks> deferred_foreign_keys = nullptr);
 	//! Append a chunk to the transaction-local storage of this table.
 	void LocalWALAppend(DuckTableEntry &table, ClientContext &context, DataChunk &chunk,
 	                    const vector<unique_ptr<BoundConstraint>> &bound_constraints);
@@ -257,6 +259,12 @@ public:
 	//! Verify constraints with a chunk from the Append containing all columns of the table
 	void VerifyAppendConstraints(ConstraintState &constraint_state, ClientContext &context, DataChunk &chunk,
 	                             optional_ptr<LocalTableStorage> local_storage, optional_ptr<ConflictManager> manager);
+	//! Whether one of the foreign keys references the table itself
+	static bool HasSelfReferencingForeignKey(const vector<unique_ptr<BoundConstraint>> &bound_constraints);
+	//! Verify the keys of foreign keys referencing the table itself that an insert left for its end
+	void VerifyDeferredForeignKeys(ClientContext &context, TableCatalogEntry &table,
+	                               const vector<unique_ptr<BoundConstraint>> &bound_constraints,
+	                               DeferredForeignKeyChecks &checks);
 
 	shared_ptr<DataTableInfo> &GetDataTableInfo();
 
@@ -302,7 +310,7 @@ private:
 	                             const vector<PhysicalIndex> &column_ids);
 	//! Verify constraints with a chunk from the Delete containing all columns of the table
 	void VerifyDeleteConstraints(optional_ptr<LocalTableStorage> storage, TableDeleteState &state,
-	                             ClientContext &context, DataChunk &chunk);
+	                             ClientContext &context, DataChunk &chunk, Vector &row_ids);
 
 	void InitializeScanWithOffset(DuckTransaction &transaction, TableScanState &state,
 	                              const vector<StorageIndex> &column_ids, idx_t start_row, idx_t end_row);
@@ -310,15 +318,21 @@ private:
 	//! Rebuild all indexes after vacuuming changed rowid's (used with vacuum_rebuild_indexes setting).
 	void RebuildIndexes();
 
+	//! A foreign key referencing the table itself also finds the keys of the chunk, if match_in_chunk, and leaves the
+	//! missing ones to the end of the insert, if it defers them
 	void VerifyForeignKeyConstraint(optional_ptr<LocalTableStorage> storage,
 	                                const BoundForeignKeyConstraint &bound_foreign_key, ClientContext &context,
-	                                DataChunk &chunk, VerifyExistenceType type);
+	                                DataChunk &chunk, VerifyExistenceType type,
+	                                optional_ptr<DeferredForeignKeyChecks> deferred = nullptr,
+	                                idx_t constraint_index = 0, bool match_in_chunk = true,
+	                                optional_ptr<Vector> deleted_row_ids = nullptr);
 	void VerifyAppendForeignKeyConstraint(optional_ptr<LocalTableStorage> storage,
 	                                      const BoundForeignKeyConstraint &bound_foreign_key, ClientContext &context,
-	                                      DataChunk &chunk);
+	                                      DataChunk &chunk, optional_ptr<DeferredForeignKeyChecks> deferred,
+	                                      idx_t constraint_index);
 	void VerifyDeleteForeignKeyConstraint(optional_ptr<LocalTableStorage> storage,
 	                                      const BoundForeignKeyConstraint &bound_foreign_key, ClientContext &context,
-	                                      DataChunk &chunk);
+	                                      DataChunk &chunk, Vector &row_ids);
 
 private:
 	//! The table info

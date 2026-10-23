@@ -250,8 +250,6 @@ void SingleFileCheckpointWriter::CreateCheckpoint() {
 
 	auto &block_manager = GetBlockManager();
 	auto &metadata_manager = GetMetadataManager();
-	// files that readers before v1.4.2 can open keep the blocks that the metadata they re-use points to
-	metadata_manager.SetKeepNextBlocks(StorageCompatibility::FromDatabase(db).storage_version < StorageVersion::V1_5_0);
 
 	//! Set up the writers for the checkpoints
 	metadata_writer = make_uniq<MetadataWriter>(metadata_manager);

@@ -475,8 +475,8 @@ void MetadataManager::ClearModifiedBlocks(const vector<MetaBlockPointer> &pointe
 	}
 }
 
-void MetadataManager::SetKeepNextBlocks(bool keep) {
-	keep_next_blocks = keep;
+void MetadataManager::SetStorageVersion(StorageVersion storage_version) {
+	keep_next_blocks = storage_version < StorageVersion::V1_5_0;
 }
 
 bool MetadataManager::BlockIsModified(const MetaBlockPointer &pointer) {

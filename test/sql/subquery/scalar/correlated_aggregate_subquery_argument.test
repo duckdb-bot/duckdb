@@ -1,0 +1,263 @@
+# name: test/sql/subquery/scalar/correlated_aggregate_subquery_argument.test
+# description: An aggregate whose arguments reach a query only through a subquery without a FROM clause belongs to that query
+# group: [scalar]
+
+# the subquery in the argument only refers to the outer query, so the outer query computes the aggregate
+query I
+SELECT (SELECT SUM((SELECT x))) AS s FROM generate_series(1, 2) _(x)
+----
+3
+
+query I
+SELECT (SELECT SUM((SELECT x + 0))) AS s FROM generate_series(1, 2) _(x)
+----
+3
+
+query I
+SELECT (SELECT SUM(x)) AS s FROM generate_series(1, 2) _(x)
+----
+3
+
+# two levels out, and a subquery inside the subquery
+query I
+SELECT (SELECT (SELECT SUM((SELECT x)))) FROM generate_series(1, 3) _(x)
+----
+6
+
+query I
+SELECT (SELECT SUM((SELECT (SELECT x) * 2))) FROM generate_series(1, 3) _(x)
+----
+12
+
+statement ok
+CREATE TABLE t(i INTEGER);
+
+statement ok
+INSERT INTO t VALUES (1), (2), (3);
+
+# a subquery that refers to the level of the aggregate keeps the aggregate there
+query I rowsort
+SELECT (SELECT SUM((SELECT x + y)) FROM (VALUES (10), (20)) v(y)) FROM (VALUES (1), (2), (3)) t(x)
+----
+32
+34
+36
+
+# the ORDER BY of the aggregate counts as well
+query I
+SELECT (SELECT list(1 ORDER BY (SELECT x))) FROM (VALUES (1), (2)) t(x)
+----
+[1, 1]
+
+# the FILTER clause counts as well
+query I
+SELECT (SELECT COUNT(*) FILTER (WHERE (SELECT i) > 1)) FROM t o
+----
+2
+
+# the operand of IN belongs to the query of the IN
+query I
+SELECT (SELECT SUM(y IN (SELECT x)) FROM (VALUES (1), (2)) v(y)) FROM (VALUES (1), (2)) o(x)
+----
+1
+1
+
+# the aggregate in HAVING belongs to the query of the HAVING
+query I
+SELECT 1 FROM (VALUES (1), (2)) t(x) HAVING (SELECT SUM((SELECT x))) = 3
+----
+1
+
+# the inner aggregate belongs to the outer query, the call keeps the other one in the subquery, as with a column
+query I
+SELECT (SELECT SUM((SELECT SUM((SELECT x))))) FROM (VALUES (1), (2)) t(x)
+----
+3
+
+query I
+SELECT (SELECT SUM((SELECT SUM(x)))) FROM (VALUES (1), (2)) t(x)
+----
+3
+
+# a parameter inside the subquery
+statement ok
+PREPARE p AS SELECT (SELECT SUM((SELECT x + $1))) FROM generate_series(1, 2) _(x)
+
+query I
+EXECUTE p(10)
+----
+23
+
+# a subquery that does not bind reports its own error
+statement error
+SELECT (SELECT SUM((SELECT nonexistent))) FROM generate_series(1, 2) _(x)
+----
+nonexistent
+
+# a subquery with a FROM clause, an alias, a star, a CTE, a call or a qualified column can bind columns itself, which
+# only binding tells, so no subquery counts and the aggregate stays where the other arguments put it
+query I rowsort
+SELECT (SELECT SUM((SELECT x + 0 FROM (VALUES (1)) a(y)))) FROM (VALUES (1), (2)) t(x)
+----
+1
+2
+
+query I rowsort
+SELECT (SELECT SUM((SELECT x AS y))) FROM (VALUES (1), (2)) t(x)
+----
+1
+2
+
+query I rowsort
+SELECT (SELECT SUM((SELECT v.*) + (SELECT x)) FROM (VALUES (1), (2)) v(y)) FROM (VALUES (1), (2)) t(x)
+----
+5
+7
+
+query I rowsort
+SELECT (SELECT SUM((WITH c AS (SELECT 1) SELECT x))) FROM (VALUES (1), (2)) t(x)
+----
+1
+2
+
+query I rowsort
+SELECT (SELECT SUM((SELECT DISTINCT v.y FROM duckdb_types()) + (SELECT x)) FROM (VALUES (1), (2)) v(y)) FROM (VALUES (1), (2)) t(x)
+----
+5
+7
+
+# a nested subquery with a FROM clause counts the same
+query I rowsort
+SELECT (SELECT SUM((SELECT (SELECT x FROM (VALUES (1)) a(y))))) FROM (VALUES (1), (2)) t(x)
+----
+1
+2
+
+# other clauses of the subquery can name its select list
+query I
+SELECT (SELECT SUM((SELECT 10 GROUP BY 1 HAVING "0" = 10))) FROM (VALUES (1), (2)) t("0")
+----
+10
+10
+
+# the operand of IN counts with the subquery
+query I
+SELECT (SELECT SUM(t.x IN (SELECT v.y FROM (VALUES (0)) a(z))) FROM (VALUES (1), (2)) v(y)) FROM (VALUES (1), (2)) t(x)
+----
+1
+1
+
+# the qualification of a call can be the column it is made on
+query I rowsort
+SELECT (SELECT SUM((SELECT y.abs()) + (SELECT x)) FROM (VALUES (-1), (-2)) v(y)) FROM (VALUES (1), (2)) t(x)
+----
+5
+7
+
+# a macro body can bind columns of the query between the two
+statement ok
+CREATE MACRO m(z) AS (SELECT y FROM range(z))
+
+query I rowsort
+SELECT (SELECT SUM((SELECT m(1)) + (SELECT x)) FROM (VALUES (10)) v(y)) FROM (VALUES (1, 100), (2, 200)) t(x, y)
+----
+11
+12
+
+# a lambda in the subquery binds its own parameters
+query I rowsort
+SELECT (SELECT SUM((SELECT list_transform([{'a': 10}], lambda x: x.a)[1]))) FROM (VALUES (1), (2)) t(x)
+----
+10
+10
+
+# a qualified column can be a field of a struct column, which the binder rejects for an integer
+statement error
+SELECT (SELECT (SELECT SUM((SELECT t.x))) FROM (VALUES (0), (0)) v(t)) FROM (VALUES (1), (2)) t(x)
+----
+More than one row returned by a subquery
+
+# a bare name can be a function
+query I rowsort
+SELECT (SELECT COUNT((SELECT current_schema))) FROM (VALUES (1), (2)) t("current_schema")
+----
+1
+1
+
+# a name can be an alias of the query, which can stand for an aggregate or a constant
+query II
+SELECT SUM(x) AS a, (SELECT SUM((SELECT a))) FROM (VALUES (1), (2)) t(x)
+----
+3	3
+
+query II rowsort
+SELECT 10 AS a, (SELECT SUM((SELECT a))) FROM (VALUES (1), (2)) t(x)
+----
+10	10
+10	10
+
+# a call around the subquery can be a macro that drops its argument
+statement ok
+CREATE MACRO ten(z) AS 10
+
+query I rowsort
+SELECT (SELECT SUM(ten((SELECT x)))) FROM (VALUES (1), (2)) t(x)
+----
+10
+10
+
+query I rowsort
+SELECT (SELECT SUM(ten(1) + (SELECT x)) FROM (VALUES (10)) v(y)) FROM (VALUES (1), (2)) t(x)
+----
+11
+12
+
+# a whole row is a call, which a macro can replace
+statement ok
+CREATE MACRO struct_pack(z) AS 10
+
+query I rowsort
+SELECT (SELECT COUNT((SELECT t))) FROM (VALUES (1), (2)) t(x)
+----
+1
+1
+
+# GROUP BY ALL and SAMPLE make the subquery a query of its own
+query I rowsort
+SELECT (SELECT SUM((SELECT x GROUP BY ALL))) FROM (VALUES (1), (2)) t(x)
+----
+1
+2
+
+query I rowsort
+SELECT (SELECT SUM((SELECT x USING SAMPLE 100%))) FROM (VALUES (1), (2)) t(x)
+----
+1
+2
+
+# a bare name beside the subquery can be a function, which a macro can replace
+statement ok
+CREATE MACRO current_schema(z := 1) AS (SELECT y FROM range(z))
+
+query I rowsort
+SELECT (SELECT SUM(current_schema + (SELECT x)) FROM (VALUES (10)) v(y)) FROM (VALUES (1, 100), (2, 200)) t(x, y)
+----
+11
+12
+
+# the aggregate of the outer query has one row for an empty input
+query I
+SELECT (SELECT SUM((SELECT x))) FROM (SELECT 1 AS x WHERE false) t
+----
+NULL
+
+# CASE and list extraction keep the columns they read
+query I
+SELECT (SELECT SUM((SELECT CASE WHEN x IS NULL THEN 0 ELSE x END))) FROM (VALUES (1), (2), (NULL)) t(x)
+----
+3
+
+query I
+SELECT (SELECT SUM((SELECT x[1]))) FROM (VALUES ([1]), ([2]), (NULL)) t(x)
+----
+3

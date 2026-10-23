@@ -74,12 +74,6 @@ public:
 	unique_ptr<GlobalSinkState> GetGlobalSinkState(ClientContext &context) const override;
 	SinkResultType Sink(ExecutionContext &context, DataChunk &chunk, OperatorSinkInput &input) const override;
 	SinkCombineResultType Combine(ExecutionContext &context, OperatorSinkCombineInput &input) const override;
-
-private:
-	//! Adds the rows appended to the table after the scan started to the index
-	void AppendRowsAfterScan(ClientContext &context, DataTable &storage, BoundIndex &index) const;
-
-public:
 	SinkFinalizeType Finalize(Pipeline &pipeline, Event &event, ClientContext &context,
 	                          OperatorSinkFinalizeInput &input) const override;
 
@@ -89,5 +83,9 @@ public:
 	bool ParallelSink() const override {
 		return true;
 	}
+
+private:
+	//! Adds the rows appended to the table after the scan started to the index
+	void AppendRowsAfterScan(ClientContext &context, DataTable &storage, BoundIndex &index) const;
 };
 } // namespace duckdb

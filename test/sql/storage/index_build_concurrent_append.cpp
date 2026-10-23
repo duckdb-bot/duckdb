@@ -9,10 +9,10 @@ using namespace duckdb;
 
 namespace {
 
-//! Runs the index statement and, after a delay, the insert on another connection, and returns their errors
-void RunConcurrently(DuckDB &db, const string &index_sql, const string &insert_sql, idx_t delay_ms, string &index_error,
-                     string &insert_error) {
-	Connection index_con(db);
+//! Runs the index statement on index_con and, after a delay, the insert on another connection, and returns their
+//! errors
+void RunConcurrently(DuckDB &db, Connection &index_con, const string &index_sql, const string &insert_sql,
+                     idx_t delay_ms, string &index_error, string &insert_error) {
 	Connection insert_con(db);
 	std::atomic<bool> started {false};
 	std::thread index_thread([&]() {
@@ -63,8 +63,10 @@ TEST_CASE("Rows appended while an index is built are not missing from it", "[sto
 		auto delay_ms = attempt * 5;
 		for (auto &scenario : scenarios) {
 			CreateTable(con);
+			Connection index_con(db);
 			string index_error, insert_error;
-			RunConcurrently(db, scenario.index_sql, scenario.insert_sql, delay_ms, index_error, insert_error);
+			RunConcurrently(db, index_con, scenario.index_sql, scenario.insert_sql, delay_ms, index_error,
+			                insert_error);
 			INFO(scenario.index_sql << " | " << scenario.insert_sql << " | delay " << delay_ms
 			                        << " | index error: " << index_error << " | insert error: " << insert_error);
 			REQUIRE(IsExpectedError(index_error));
@@ -76,8 +78,10 @@ TEST_CASE("Rows appended while an index is built are not missing from it", "[sto
 		// a row that an index lookup has to find
 		for (auto &insert_sql : {"INSERT INTO t VALUES ('x', 3000000)"}) {
 			CreateTable(con);
+			Connection index_con(db);
 			string index_error, insert_error;
-			RunConcurrently(db, "CREATE INDEX idx ON t (id)", insert_sql, delay_ms, index_error, insert_error);
+			RunConcurrently(db, index_con, "CREATE INDEX idx ON t (id)", insert_sql, delay_ms, index_error,
+			                insert_error);
 			INFO(insert_sql << " | delay " << delay_ms << " | index error: " << index_error
 			                << " | insert error: " << insert_error);
 			REQUIRE(IsExpectedError(index_error));
@@ -90,18 +94,21 @@ TEST_CASE("Rows appended while an index is built are not missing from it", "[sto
 
 		// a commit that fails after its append reverts the appended rows
 		CreateTable(con);
+		Connection index_con(db);
+		// the index commits once commits no longer fail
+		REQUIRE_NO_FAIL(index_con.Query("BEGIN"));
 		string index_error, insert_error;
 		RunConcurrently(
-		    db, "CREATE INDEX idx ON t (id)",
+		    db, index_con, "CREATE INDEX idx ON t (id)",
 		    "BEGIN; INSERT INTO t VALUES ('x', 3000000); SET GLOBAL debug_force_commit_failure = true; COMMIT",
 		    delay_ms, index_error, insert_error);
 		REQUIRE_NO_FAIL(con.Query("SET GLOBAL debug_force_commit_failure = false"));
 		INFO("reverted append | delay " << delay_ms << " | index error: " << index_error
 		                                << " | insert error: " << insert_error);
 		REQUIRE(StringUtil::Contains(insert_error, "Forced commit failure"));
-		// the index commits while the commit failure is still forced
-		REQUIRE((IsExpectedError(index_error) || StringUtil::Contains(index_error, "Forced commit failure")));
+		REQUIRE(IsExpectedError(index_error));
 		if (index_error.empty()) {
+			REQUIRE_NO_FAIL(index_con.Query("COMMIT"));
 			// the next append reuses the row ids of the reverted rows
 			REQUIRE_NO_FAIL(con.Query("INSERT INTO t VALUES ('x', 5)"));
 			auto result = con.Query("SELECT count(*) FROM t WHERE id = 3000000");

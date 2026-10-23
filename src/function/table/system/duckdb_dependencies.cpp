@@ -61,6 +61,10 @@ unique_ptr<GlobalTableFunctionState> DuckDBDependenciesInit(ClientContext &conte
 	if (dependency_manager) {
 		dependency_manager->Scan(
 		    context, [&](CatalogEntry &obj, CatalogEntry &dependent, const DependencyDependentFlags &flags) {
+			    if (flags.IsWeak()) {
+				    // a weak dependency restricts no DROP or ALTER
+				    return;
+			    }
 			    result->entries.emplace_back(obj, dependent, flags);
 		    });
 	}

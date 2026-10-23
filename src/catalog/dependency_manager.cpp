@@ -256,7 +256,7 @@ static string CatalogEntryInfoToString(const CatalogEntryInfo &entry) {
 void DependencyManager::CreateDependency(CatalogTransaction transaction, DependencyInfo &info) {
 	auto subject_entry = LookupEntry(transaction, info.subject.entry);
 	info.subject.oid = subject_entry ? subject_entry->oid : optional_idx();
-	if (!subject_entry) {
+	if (!subject_entry && !info.dependent.flags.IsWeak()) {
 		throw InternalException("Couldn't locate entry: '%s'", CatalogEntryInfoToString(info.subject.entry));
 	}
 
@@ -319,6 +319,10 @@ void DependencyManager::CreateDependencies(CatalogTransaction transaction, const
 		if (object.type == CatalogType::INDEX_ENTRY && flags == legacy_marker) {
 			// the legacy flags used to be for INDEX_ENTRY before we started serializing flags into the storage
 			flags = DependencyDependentFlags();
+		}
+		if (flags.IsWeak() && dependency.entry == object_info) {
+			// a view or a macro that reads the entry it replaces
+			continue;
 		}
 		DependencyInfo info {
 		    /*dependent = */ DependencyDependent {object_info, flags},
@@ -418,8 +422,13 @@ void DependencyManager::CleanupDependencies(CatalogTransaction transaction, Cata
 	auto info = GetLookupProperties(object);
 	ScanSubjects(transaction, info,
 	             [&](DependencyEntry &dep) { to_remove.push_back(DependencyInfo::FromSubject(dep)); });
-	ScanDependents(transaction, info,
-	               [&](DependencyEntry &dep) { to_remove.push_back(DependencyInfo::FromDependent(dep)); });
+	ScanDependents(transaction, info, [&](DependencyEntry &dep) {
+		if (dep.Dependent().flags.IsWeak()) {
+			// the dependent reads the entry by name, so it applies to a later entry of the same name
+			return;
+		}
+		to_remove.push_back(DependencyInfo::FromDependent(dep));
+	});
 
 	// Remove the dependency entries
 	for (auto &dep : to_remove) {
@@ -526,7 +535,8 @@ string DependencyManager::CollectDependents(CatalogTransaction transaction, cata
 			if (!child) {
 				return;
 			}
-			if (!CascadeDrop(false, dep.Dependent().flags)) {
+			auto &flags = dep.Dependent().flags;
+			if (!flags.IsWeak() && !CascadeDrop(false, flags)) {
 				entry_dependents.insert(*child);
 			}
 		});
@@ -538,6 +548,9 @@ string DependencyManager::CollectDependents(CatalogTransaction transaction, cata
 }
 
 void DependencyManager::VerifyExistence(CatalogTransaction transaction, DependencyEntry &object) {
+	if (object.Dependent().flags.IsWeak()) {
+		return;
+	}
 	auto &subject = object.Subject();
 
 	CatalogEntryInfo info;
@@ -584,7 +597,7 @@ void DependencyManager::VerifyCommitDrop(CatalogTransaction transaction, Visibil
 	auto info = GetLookupProperties(object);
 	ScanDependents(transaction, info, [&](DependencyEntry &dep) {
 		auto dep_committed_at = dep.timestamp.load();
-		if (dep_committed_at >= visibility_bound) {
+		if (dep_committed_at >= visibility_bound && !dep.Dependent().flags.IsWeak()) {
 			// In the event of a CASCADE, the dependency drop has not committed yet
 			// so we would be halted by the existence of a dependency we are already dropping unless we check the
 			// timestamp
@@ -628,7 +641,7 @@ catalog_entry_set_t DependencyManager::CheckDropDependencies(CatalogTransaction 
 	ScanDependents(transaction, info, [&](DependencyEntry &dep) {
 		// a nested schema depends on its parent schema; other schemas have no dependencies
 		auto entry = LookupEntry(transaction, dep);
-		if (!entry) {
+		if (!entry || dep.Dependent().flags.IsWeak()) {
 			return;
 		}
 
@@ -687,22 +700,29 @@ void DependencyManager::ReorderEntries(catalog_entry_vector_t &entries, Visibili
 
 void DependencyManager::ReorderEntry(CatalogTransaction transaction, CatalogEntry &entry, catalog_entry_set_t &visited,
                                      catalog_entry_vector_t &order, bool allow_internal) {
-	auto &catalog_entry = *LookupEntry(transaction, entry);
+	auto catalog_entry_p = LookupEntry(transaction, entry);
+	if (!catalog_entry_p) {
+		// A weak dependency on an entry that does not exist
+		return;
+	}
+	auto &catalog_entry = *catalog_entry_p;
 	if (visited.count(catalog_entry) || (!allow_internal && catalog_entry.internal)) {
 		// Already seen and ordered appropriately
 		return;
 	}
+	// Weak dependencies can form a cycle, which ends here
+	visited.insert(catalog_entry);
 
 	// Check if there are any entries that this entry depends on, those are written first
 	catalog_entry_vector_t dependents;
-	auto info = GetLookupProperties(entry);
+	// a weak dependency on a table can find a view with that name, whose own dependencies count
+	auto info = GetLookupProperties(catalog_entry);
 	ScanSubjects(transaction, info, [&](DependencyEntry &dep) { dependents.push_back(dep); });
 	for (auto &dep : dependents) {
 		ReorderEntry(transaction, dep, visited, order, allow_internal);
 	}
 
 	// Then write the entry
-	visited.insert(catalog_entry);
 	order.push_back(catalog_entry);
 }
 
@@ -736,6 +756,10 @@ void DependencyManager::AlterObject(CatalogTransaction transaction, CatalogEntry
 	ScanDependents(transaction, old_info, [&](DependencyEntry &dep) {
 		// It makes no sense to have a schema depend on anything
 		D_ASSERT(dep.EntryInfo().type != CatalogType::SCHEMA_ENTRY);
+		if (dep.Dependent().flags.IsWeak()) {
+			// a weak dependent reads the entry by name, CleanupDependencies keeps it under the old name
+			return;
+		}
 
 		bool disallow_alter = true;
 		switch (alter_info.type) {
@@ -795,7 +819,7 @@ void DependencyManager::AlterObject(CatalogTransaction transaction, CatalogEntry
 			return;
 		}
 		auto entry = LookupEntry(transaction, dep);
-		if (!entry) {
+		if (!entry && !dep.Dependent().flags.IsWeak()) {
 			return;
 		}
 

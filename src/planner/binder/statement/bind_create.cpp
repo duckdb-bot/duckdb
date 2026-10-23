@@ -335,21 +335,40 @@ void Binder::SetCatalogLookupCallback(catalog_entry_callback_t callback) {
 	entry_retriever.SetCallback(std::move(callback));
 }
 
+//! The dependencies of a view or a macro on what it reads only restrict DROP and ALTER when they are tracked
+static DependencyDependentFlags GetReadDependencyFlags(bool tracked) {
+	if (tracked) {
+		return DependencyDependentFlags().SetBlocking();
+	}
+	return DependencyDependentFlags().SetWeak();
+}
+
+//! Weak dependencies only order entries, which needs what a query reads but not what the views it reads read
+static void SetReadDependencyCallback(CatalogEntryRetriever &retriever, catalog_entry_callback_t callback,
+                                      const DependencyDependentFlags &dependency_flags) {
+	if (dependency_flags.IsWeak()) {
+		retriever.SetDirectReadCallback(std::move(callback));
+	} else {
+		retriever.SetCallback(std::move(callback));
+	}
+}
+
 void Binder::BindView(ClientContext &context, const SelectStatement &stmt, const Identifier &catalog_name,
                       const Identifier &schema_name, optional_ptr<LogicalDependencyList> dependencies,
-                      const vector<Identifier> &aliases, vector<LogicalType> &result_types,
-                      vector<Identifier> &result_names) {
+                      const DependencyDependentFlags &dependency_flags, const vector<Identifier> &aliases,
+                      vector<LogicalType> &result_types, vector<Identifier> &result_names) {
 	auto view_binder = Binder::CreateBinder(context);
 	auto &catalog = Catalog::GetCatalog(context, catalog_name);
 
 	if (dependencies) {
-		view_binder->SetCatalogLookupCallback([&dependencies, &catalog](CatalogEntry &entry) {
-			if (&catalog != &entry.ParentCatalog()) {
-				// Don't register dependencies between catalogs
+		auto callback = [&dependencies, dependency_flags, &catalog](CatalogEntry &entry) {
+			if (&catalog != &entry.ParentCatalog() || entry.internal) {
+				// Don't register dependencies between catalogs, or on internal entries, which no import or load creates
 				return;
 			}
-			dependencies->AddDependency(entry);
-		});
+			dependencies->AddDependency(entry, dependency_flags);
+		};
+		SetReadDependencyCallback(view_binder->entry_retriever, std::move(callback), dependency_flags);
 	}
 	view_binder->SetCanContainNulls(true);
 
@@ -391,11 +410,8 @@ void Binder::BindCreateViewInfo(CreateViewInfo &base) {
 			throw BinderException("COPY statements are not allowed as CTE bodies inside a VIEW");
 		}
 	}
-	optional_ptr<LogicalDependencyList> dependencies;
-	if (Settings::Get<EnableViewDependenciesSetting>(context)) {
-		dependencies = base.dependencies;
-	}
-	BindView(context, *base.query, base.GetQualifiedName().Catalog(), base.GetQualifiedName().Schema(), dependencies,
+	BindView(context, *base.query, base.GetQualifiedName().Catalog(), base.GetQualifiedName().Schema(),
+	         base.dependencies, GetReadDependencyFlags(Settings::Get<EnableViewDependenciesSetting>(context)),
 	         base.aliases, base.types, base.names);
 }
 
@@ -551,14 +567,14 @@ SchemaCatalogEntry &Binder::BindCreateFunctionInfo(CreateInfo &info) {
 		macro_binding = this_macro_binding.get();
 
 		auto &dependencies = base.dependencies;
-		const auto should_create_dependencies = Settings::Get<EnableMacroDependenciesSetting>(context);
-		const auto binder_callback = [&dependencies, &catalog](CatalogEntry &entry) {
-			if (&catalog != &entry.ParentCatalog()) {
-				// Don't register any cross-catalog dependencies
+		const auto dependency_flags = GetReadDependencyFlags(Settings::Get<EnableMacroDependenciesSetting>(context));
+		const auto binder_callback = [&dependencies, dependency_flags, &catalog](CatalogEntry &entry) {
+			if (&catalog != &entry.ParentCatalog() || entry.internal) {
+				// Don't register cross-catalog dependencies, or dependencies on internal entries
 				return;
 			}
 			// Register any catalog entry required to bind the macro function
-			dependencies.AddDependency(entry);
+			dependencies.AddDependency(entry, dependency_flags);
 		};
 
 		// bind it to verify the function was defined correctly
@@ -566,9 +582,7 @@ SchemaCatalogEntry &Binder::BindCreateFunctionInfo(CreateInfo &info) {
 		if (info.type == CatalogType::MACRO_ENTRY) {
 			BoundSelectNode sel_node;
 			SelectBinder binder(*this, context, sel_node);
-			if (should_create_dependencies) {
-				binder.SetCatalogLookupCallback(binder_callback);
-			}
+			SetReadDependencyCallback(entry_retriever, binder_callback, dependency_flags);
 
 			// create a copy of the expression because we do not want to alter the original
 			auto expression = function->Cast<ScalarMacroFunction>().expression->Copy();
@@ -585,9 +599,7 @@ SchemaCatalogEntry &Binder::BindCreateFunctionInfo(CreateInfo &info) {
 		} else {
 			D_ASSERT(info.type == CatalogType::TABLE_MACRO_ENTRY);
 			auto dummy_binder = CreateBinder(context, this);
-			if (should_create_dependencies) {
-				dummy_binder->SetCatalogLookupCallback(binder_callback);
-			}
+			SetReadDependencyCallback(dummy_binder->entry_retriever, binder_callback, dependency_flags);
 
 			// create a copy of the query node because we do not want to alter the original
 			auto query_node = function->Cast<TableMacroFunction>().query_node->Copy();

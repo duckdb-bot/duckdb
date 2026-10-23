@@ -125,6 +125,9 @@ unique_ptr<GlobalSinkState> PhysicalInsert::GetGlobalSinkState(ClientContext &co
 		table = insert_table;
 	}
 	auto result = make_uniq<InsertGlobalState>(context, GetTypes(), *table);
+	if (DataTable::HasSelfReferencingForeignKey(bound_constraints)) {
+		result->deferred_foreign_keys = make_uniq<DeferredForeignKeyChecks>();
+	}
 	return std::move(result);
 }
 
@@ -604,6 +607,9 @@ SinkResultType PhysicalInsert::Sink(ExecutionContext &context, DataChunk &insert
 	auto &table = gstate.table;
 	auto &storage = table.GetStorage();
 	insert_chunk.Flatten();
+	if (gstate.deferred_foreign_keys) {
+		lstate.GetConstraintState(storage, table).deferred_foreign_keys = gstate.deferred_foreign_keys.get();
+	}
 
 	if (!parallel) {
 		idx_t updated_tuples = OnConflictHandling(table, context, gstate, lstate, insert_chunk);
@@ -615,7 +621,7 @@ SinkResultType PhysicalInsert::Sink(ExecutionContext &context, DataChunk &insert
 		}
 		// When action_type is throw, we already verify constraints in `OnConflictHandling`
 		storage.LocalAppend(table, context.client, insert_chunk, bound_constraints,
-		                    action_type == OnConflictAction::THROW);
+		                    action_type == OnConflictAction::THROW, gstate.deferred_foreign_keys.get());
 		if (action_type == OnConflictAction::UPDATE && lstate.update_chunk.size() != 0) {
 			(void)HandleInsertConflicts<true>(table, context, lstate, gstate, lstate.update_chunk, *this);
 			(void)HandleInsertConflicts<false>(table, context, lstate, gstate, lstate.update_chunk, *this);
@@ -724,9 +730,11 @@ private:
 class MergeCollectionsEvent : public BasePipelineEvent {
 public:
 	MergeCollectionsEvent(Pipeline &pipeline_p, ClientContext &context, const PhysicalInsert &op, DuckTableEntry &table,
-	                      vector<unique_ptr<CollectionMerger>> mergers_p)
+	                      vector<unique_ptr<CollectionMerger>> mergers_p,
+	                      optional_ptr<DeferredForeignKeyChecks> deferred_foreign_keys)
 	    : BasePipelineEvent(pipeline_p), context(context), op(op), table(table), mergers(std::move(mergers_p)),
-	      merged_collections(mergers.size(), PhysicalIndex(DConstants::INVALID_INDEX)) {
+	      merged_collections(mergers.size(), PhysicalIndex(DConstants::INVALID_INDEX)),
+	      deferred_foreign_keys(deferred_foreign_keys) {
 	}
 
 public:
@@ -752,6 +760,10 @@ public:
 			optimistic_writer.Merge(*writers[i]);
 		}
 		optimistic_writer.FinalFlush();
+		if (deferred_foreign_keys) {
+			// every row of the statement is in the transaction-local storage now
+			data_table.VerifyDeferredForeignKeys(context, table, op.bound_constraints, *deferred_foreign_keys);
+		}
 	}
 
 private:
@@ -761,22 +773,32 @@ private:
 	vector<unique_ptr<CollectionMerger>> mergers;
 	vector<unique_ptr<OptimisticDataWriter>> writers;
 	vector<PhysicalIndex> merged_collections;
+	optional_ptr<DeferredForeignKeyChecks> deferred_foreign_keys;
 };
 
 SinkFinalizeType PhysicalInsert::Finalize(Pipeline &pipeline, Event &event, ClientContext &context,
                                           OperatorSinkFinalizeInput &input) const {
 	auto &gstate = input.global_state.Cast<InsertGlobalState>();
-	if (gstate.unmerged_collections.empty()) {
-		return SinkFinalizeType::READY;
-	}
 	auto &table = gstate.table;
 	auto &data_table = table.GetStorage();
+	if (gstate.unmerged_collections.empty()) {
+		if (gstate.deferred_foreign_keys) {
+			// every row of the statement is in the transaction-local storage now
+			data_table.VerifyDeferredForeignKeys(context, table, bound_constraints, *gstate.deferred_foreign_keys);
+		}
+		return SinkFinalizeType::READY;
+	}
 	const idx_t row_group_size = data_table.GetRowGroupSize();
 
 	if (gstate.insert_count < row_group_size) {
 		// we are inserting a small amount of data - append directly to the transaction-local storage
 		LocalAppendState append_state;
 		data_table.InitializeLocalAppend(append_state, table, context, bound_constraints);
+		if (gstate.deferred_foreign_keys) {
+			// the append verifies every row again
+			gstate.deferred_foreign_keys->keys.clear();
+			append_state.constraint_state->deferred_foreign_keys = gstate.deferred_foreign_keys.get();
+		}
 		auto &transaction = DuckTransaction::Get(context, table.catalog);
 		for (auto &collection_index : gstate.unmerged_collections) {
 			auto &optimistic_collection = data_table.GetOptimisticCollection(context, collection_index);
@@ -787,6 +809,9 @@ SinkFinalizeType PhysicalInsert::Finalize(Pipeline &pipeline, Event &event, Clie
 		}
 		data_table.FinalizeLocalAppend(append_state);
 		gstate.unmerged_collections.clear();
+		if (gstate.deferred_foreign_keys) {
+			data_table.VerifyDeferredForeignKeys(context, table, bound_constraints, *gstate.deferred_foreign_keys);
+		}
 		return SinkFinalizeType::READY;
 	}
 
@@ -812,7 +837,8 @@ SinkFinalizeType PhysicalInsert::Finalize(Pipeline &pipeline, Event &event, Clie
 	gstate.unmerged_collections.clear();
 
 	// compact the merge sets in parallel through a new pipeline event
-	auto merge_event = make_shared_ptr<MergeCollectionsEvent>(pipeline, context, *this, table, std::move(mergers));
+	auto merge_event = make_shared_ptr<MergeCollectionsEvent>(pipeline, context, *this, table, std::move(mergers),
+	                                                          gstate.deferred_foreign_keys.get());
 	event.InsertEvent(std::move(merge_event));
 	return SinkFinalizeType::READY;
 }

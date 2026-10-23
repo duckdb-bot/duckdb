@@ -19,6 +19,15 @@ using namespace duckdb;
 
 namespace {
 
+struct MetadataBlock {
+	block_id_t block_id;
+	idx_t index;
+
+	bool operator<(const MetadataBlock &other) const {
+		return block_id < other.block_id || (block_id == other.block_id && index < other.index);
+	}
+};
+
 //! The blocks of the table data that readers before v1.4.2 enter and whose next pointer leads to a block that is
 //! not in use. Those readers resolve the next pointer of a block as soon as they enter it, so such a pointer makes
 //! them fail to open the file.
@@ -26,12 +35,12 @@ idx_t CountNextPointersToFreeBlocks(Connection &con, idx_t table_count) {
 	con.BeginTransaction();
 	auto &catalog = Catalog::GetCatalog(*con.context, "");
 	auto &metadata_manager = StorageManager::Get(catalog).GetBlockManager().GetMetadataManager();
-	std::set<std::pair<block_id_t, idx_t>> in_use;
+	std::set<MetadataBlock> in_use;
 	for (auto &info : metadata_manager.GetMetadataInfo()) {
 		std::set<idx_t> free_blocks(info.free_list.begin(), info.free_list.end());
 		for (idx_t i = 0; i < info.total_blocks; i++) {
 			if (free_blocks.find(i) == free_blocks.end()) {
-				in_use.emplace(info.block_id, i);
+				in_use.insert(MetadataBlock {info.block_id, i});
 			}
 		}
 	}
@@ -50,8 +59,7 @@ idx_t CountNextPointersToFreeBlocks(Connection &con, idx_t table_count) {
 				continue;
 			}
 			MetaBlockPointer next_pointer(next, 0);
-			if (in_use.find(std::make_pair(next_pointer.GetBlockId(), idx_t(next_pointer.GetBlockIndex()))) ==
-			    in_use.end()) {
+			if (in_use.find(MetadataBlock {next_pointer.GetBlockId(), next_pointer.GetBlockIndex()}) == in_use.end()) {
 				result++;
 			}
 		}

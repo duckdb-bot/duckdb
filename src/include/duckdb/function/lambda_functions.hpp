@@ -24,6 +24,10 @@ struct LambdaFunctionData : public FunctionData {
 	//! kept in the children do not contain it, so it has to be recovered when they are deserialized.
 	//! Returns nullptr if this bind data carries no lambda (e.g. a NULL list argument).
 	DUCKDB_API virtual unique_ptr<Expression> RecoverLambdaChild() const = 0;
+	//! The lambda is executed by an ExpressionExecutor of the ClientContext
+	bool NeedsClientContext() const override {
+		return true;
+	}
 };
 
 struct ListLambdaBindData final : public LambdaFunctionData {

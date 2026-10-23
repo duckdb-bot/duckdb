@@ -663,17 +663,24 @@ static bool HasMatch(ConflictManager &manager, idx_t row) {
 }
 
 //! The first row of a delete whose key is referenced by a row that the delete keeps, if any
-static optional_idx FirstReferenceOutside(ConflictManager &manager, const unordered_set<row_t> &deleted) {
+static optional_idx FirstReferenceOutside(ConflictManager &manager, const unordered_set<row_t> &deleted,
+                                          DataTable &table, DuckTransaction &transaction) {
 	if (!manager.HasConflicts()) {
 		return optional_idx();
 	}
 	// the index records one referencing row, or an invalid row ID when several rows reference the key
-	auto row_ids = FlatVector::GetData<row_t>(manager.GetRowIds());
+	auto row_ids = manager.GetRowIds().Values<row_t>();
 	auto &sel = manager.GetInvertedSel();
 	for (idx_t i = 0; i < manager.ConflictCount(); i++) {
-		if (deleted.find(row_ids[i]) == deleted.end()) {
-			return sel.get_index(i);
+		auto row_id = row_ids[i].GetValue();
+		if (deleted.find(row_id) != deleted.end()) {
+			continue;
 		}
+		// the index still holds rows that this transaction deleted before
+		if (row_id >= 0 && row_id < MAX_ROW_ID && !table.CanFetch(transaction, row_id)) {
+			continue;
+		}
+		return sel.get_index(i);
 	}
 	return optional_idx();
 }
@@ -851,16 +858,17 @@ void DataTable::VerifyForeignKeyConstraint(optional_ptr<LocalTableStorage> stora
 	}
 	if (!is_append && bound_foreign_key.info.type == ForeignKeyType::FK_TYPE_SELF_REFERENCE_TABLE && deleted_row_ids) {
 		// A row of a table that references itself is not referenced anymore by a row deleted with it
+		auto &transaction = DuckTransaction::Get(context, db);
 		unordered_set<row_t> deleted;
 		for (auto row_id : deleted_row_ids->Values<row_t>()) {
 			deleted.insert(row_id.GetValue());
 		}
-		auto conflict = FirstReferenceOutside(global_conflict_manager, deleted);
+		auto conflict = FirstReferenceOutside(global_conflict_manager, deleted, data_table, transaction);
 		if (conflict.IsValid()) {
 			throw ConstraintException(ConstructForeignKeyError(conflict, false, index_entry, dst_chunk));
 		}
 		if (local_verification) {
-			conflict = FirstReferenceOutside(local_conflict_manager, deleted);
+			conflict = FirstReferenceOutside(local_conflict_manager, deleted, data_table, transaction);
 			if (conflict.IsValid()) {
 				auto local_entry =
 				    local_storage.GetIndexes(context, data_table).FindForeignKeyIndex(dst_keys_ptr, fk_type);

@@ -36,7 +36,7 @@ statement ok
 SET TimeZone = 'Asia/Tokyo';
 
 query III
-SELECT k, ts::VARCHAR, ts::TIMESTAMP::VARCHAR FROM t ORDER BY ts LIMIT 1;
+SELECT k, ts::VARCHAR, ts::TIMESTAMP::VARCHAR FROM t WHERE k = 'int64_min';
 ----
 int64_min	290309-12-22 (BC) 05:18:04.224192+09:18:59	290309-12-22 (BC) 05:18:04.224192
 

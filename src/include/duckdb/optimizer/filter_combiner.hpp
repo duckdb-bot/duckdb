@@ -69,6 +69,8 @@ private:
 	Expression &GetNode(Expression &expr);
 	idx_t GetEquivalenceSet(Expression &expr);
 	FilterResult AddConstantComparison(vector<ExpressionValueInformation> &info_list, ExpressionValueInformation info);
+	//! The equalities that a filter `a IS NOT DISTINCT FROM b` implies with the equivalence set of a or b
+	void GenerateImpliedEqualities(const Expression &filter, vector<unique_ptr<Expression>> &result);
 
 	FilterPushdownResult TryPushdownConstantFilter(TableFilterSet &table_filters, const vector<ColumnIndex> &column_ids,
 	                                               column_t column_id, vector<ExpressionValueInformation> &info_list);

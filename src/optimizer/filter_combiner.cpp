@@ -156,12 +156,52 @@ void FilterCombiner::GenerateEquivalentFilters(const Expression &filter,
 	}
 }
 
+void FilterCombiner::GenerateImpliedEqualities(const Expression &filter, vector<unique_ptr<Expression>> &result) {
+	if (filter.GetExpressionType() != ExpressionType::COMPARE_NOT_DISTINCT_FROM ||
+	    !BoundComparisonExpression::IsComparison(filter)) {
+		return;
+	}
+	// a row that passes `a IS NOT DISTINCT FROM b` and `a = c` has a non-NULL a, so it also passes `b = c`
+	auto &comparison = filter.Cast<BoundFunctionExpression>();
+	auto &left = BoundComparisonExpression::Left(comparison);
+	auto &right = BoundComparisonExpression::Right(comparison);
+	auto left_set = equivalence_set_map.find(left);
+	auto right_set = equivalence_set_map.find(right);
+	if (left_set != equivalence_set_map.end() && right_set != equivalence_set_map.end() &&
+	    left_set->second == right_set->second) {
+		return;
+	}
+	if (left_set != equivalence_set_map.end()) {
+		for (auto &member : equivalence_map[left_set->second]) {
+			if (!member.get().Equals(left)) {
+				result.push_back(BoundComparisonExpression::Create(ExpressionType::COMPARE_EQUAL, right.Copy(),
+				                                                   member.get().Copy()));
+			}
+		}
+	}
+	if (right_set != equivalence_set_map.end()) {
+		for (auto &member : equivalence_map[right_set->second]) {
+			if (!member.get().Equals(right)) {
+				result.push_back(
+				    BoundComparisonExpression::Create(ExpressionType::COMPARE_EQUAL, left.Copy(), member.get().Copy()));
+			}
+		}
+	}
+}
+
 void FilterCombiner::GenerateFilters(const std::function<void(unique_ptr<Expression> filter)> &callback) {
+	vector<unique_ptr<Expression>> implied_filters;
+	for (auto &filter : remaining_filters) {
+		GenerateImpliedEqualities(*filter, implied_filters);
+	}
 	// first loop over the remaining filters
 	for (auto &filter : remaining_filters) {
 		callback(std::move(filter));
 	}
 	remaining_filters.clear();
+	for (auto &filter : implied_filters) {
+		callback(std::move(filter));
+	}
 	// now loop over the equivalence sets
 	for (auto &entry : equivalence_map) {
 		auto equivalence_set = entry.first;

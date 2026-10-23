@@ -1,0 +1,57 @@
+# name: test/optimizer/pushdown/not_distinct_join_implied_filter.test
+# description: An equality and a null-safe equality on the same column imply an equality filter on one side of a join
+# group: [pushdown]
+
+statement ok
+CREATE TABLE a AS SELECT * FROM (VALUES (1), (2), (3), (NULL)) t(x);
+
+statement ok
+CREATE TABLE b AS SELECT * FROM (VALUES (1, 1), (2, 5), (NULL, NULL), (NULL, 3), (3, NULL)) t(x, y);
+
+# a.x IS NOT DISTINCT FROM b.x and a.x = b.y imply b.x = b.y, which is a filter on b
+query II
+EXPLAIN SELECT a.x, b.y FROM a JOIN b ON a.x IS NOT DISTINCT FROM b.x WHERE a.x = b.y
+----
+physical_plan	<REGEX>:.*Hash Join.*Filter.*Expression: x = y.*Table: memory.main.b.*
+
+query II
+SELECT a.x, b.y FROM a JOIN b ON a.x IS NOT DISTINCT FROM b.x WHERE a.x = b.y ORDER BY ALL
+----
+1	1
+
+query II
+SELECT a.x, b.y FROM a JOIN b ON a.x IS NOT DISTINCT FROM b.x WHERE b.y = a.x ORDER BY ALL
+----
+1	1
+
+# without the equality, NULL keys still match
+query II
+SELECT a.x, b.y FROM a JOIN b ON a.x IS NOT DISTINCT FROM b.x ORDER BY ALL
+----
+1	1
+2	5
+3	NULL
+NULL	3
+NULL	NULL
+
+# a correlated table function sees the filter on the column it repeats
+statement ok
+CREATE TABLE tbl AS SELECT range AS x FROM range(10000);
+
+statement ok
+CREATE MACRO my_table(x) AS TABLE FROM range((x * 0.1)::INTEGER, 100 + (x * 0.1)::INTEGER);
+
+query II
+EXPLAIN SELECT count(*) FROM tbl, my_table(x) _(y) WHERE x = y
+----
+physical_plan	<REGEX>:.*Hash Join.*Filter.*Expression: x = range.*Name: range.*
+
+query I
+SELECT count(*) FROM tbl, my_table(x) _(y) WHERE x = y
+----
+111
+
+query I
+SELECT count(*) FROM tbl, LATERAL (SELECT y FROM my_table(x) _(y) WHERE y = x)
+----
+111

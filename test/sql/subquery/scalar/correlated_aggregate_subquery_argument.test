@@ -37,15 +37,15 @@ INSERT INTO t VALUES (1), (2), (3);
 
 # a subquery that refers to the level of the aggregate keeps the aggregate there
 query I rowsort
-SELECT (SELECT SUM((SELECT o.i + i2.i)) FROM t i2) FROM t o
+SELECT (SELECT SUM((SELECT x + y)) FROM (VALUES (10), (20)) v(y)) FROM (VALUES (1), (2), (3)) t(x)
 ----
-12
-15
-9
+32
+34
+36
 
 # the FILTER clause counts as well
 query I
-SELECT (SELECT COUNT(*) FILTER (WHERE (SELECT o.i) > 1)) FROM t o
+SELECT (SELECT COUNT(*) FILTER (WHERE (SELECT i) > 1)) FROM t o
 ----
 2
 
@@ -88,8 +88,8 @@ SELECT (SELECT SUM((SELECT nonexistent))) FROM generate_series(1, 2) _(x)
 ----
 nonexistent
 
-# a subquery with a FROM clause, an alias, a star, a CTE or a call can bind columns itself, which only binding tells,
-# so no subquery counts and the aggregate stays where the other arguments put it
+# a subquery with a FROM clause, an alias, a star, a CTE, a call or a qualified column can bind columns itself, which
+# only binding tells, so no subquery counts and the aggregate stays where the other arguments put it
 query I rowsort
 SELECT (SELECT SUM((SELECT x + 0 FROM (VALUES (1)) a(y)))) FROM (VALUES (1), (2)) t(x)
 ----
@@ -164,3 +164,16 @@ SELECT (SELECT SUM((SELECT list_transform([{'a': 10}], lambda x: x.a)[1]))) FROM
 ----
 10
 10
+
+# a qualified column can be a field of a struct column, which the binder rejects for an integer
+statement error
+SELECT (SELECT (SELECT SUM((SELECT t.x))) FROM (VALUES (0), (0)) v(t)) FROM (VALUES (1), (2)) t(x)
+----
+More than one row returned by a subquery
+
+# a bare name can be a function
+query I rowsort
+SELECT (SELECT COUNT((SELECT current_schema))) FROM (VALUES (1), (2)) t("current_schema")
+----
+1
+1

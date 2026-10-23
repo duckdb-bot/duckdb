@@ -178,9 +178,9 @@ ColumnResolution ExpressionBinder::ResolveColumn(ColumnRefExpression &colref, id
 }
 
 //! Collect the column references that decide which scope owns an expression.
-//! A subquery that is only a select list of columns, constants and operators, without FROM clause and aliases, binds
-//! no column itself, so its columns count as if they were written outside of it. Other subqueries bind in a chain of
-//! their own, and only binding them tells whether a column inside one is theirs, so once there is one, no subquery
+//! A subquery that is only a select list of bare columns, constants and operators, without FROM clause and aliases,
+//! binds no column itself, so its columns count as if they were written outside of it. Other subqueries bind in a chain
+//! of their own, and only binding them tells whether a column inside one is theirs, so once there is one, no subquery
 //! counts and the columns outside of them decide, as they always did.
 //! Lambda parameters are skipped: they are bound by the lambda rather than by any
 //! scope, so a parameter that happens to share a name with an outer column must not pull the
@@ -188,7 +188,8 @@ ColumnResolution ExpressionBinder::ResolveColumn(ColumnRefExpression &colref, id
 //! so the resolver sees the same names a real bind would.
 class ResolvableColumnCollector {
 public:
-	explicit ResolvableColumnCollector(vector<reference<ColumnRefExpression>> &result) : result(result) {
+	ResolvableColumnCollector(Binder &binder, vector<reference<ColumnRefExpression>> &result)
+	    : binder(binder), result(result) {
 	}
 
 	void CollectExpression(ParsedExpression &expr) {
@@ -257,13 +258,18 @@ public:
 
 private:
 	//! Whether the columns of the expression are all the columns it binds, which a call can hide in a macro body
-	static bool CanCountInSubquery(ParsedExpression &expr) {
+	bool CanCountInSubquery(ParsedExpression &expr) {
 		switch (expr.GetExpressionClass()) {
+		case ExpressionClass::COLUMN_REF: {
+			// a qualified name can be a struct field the binder tries before an outer column, and a bare name can be
+			// a function such as current_date
+			auto &col_ref = expr.Cast<ColumnRefExpression>();
+			return !col_ref.IsQualified() && !binder.GetSQLValueFunction(col_ref.GetColumnName());
+		}
 		case ExpressionClass::BETWEEN:
 		case ExpressionClass::CASE:
 		case ExpressionClass::CAST:
 		case ExpressionClass::COLLATE:
-		case ExpressionClass::COLUMN_REF:
 		case ExpressionClass::COMPARISON:
 		case ExpressionClass::CONJUNCTION:
 		case ExpressionClass::CONSTANT:
@@ -308,6 +314,7 @@ private:
 		}
 	}
 
+	Binder &binder;
 	vector<reference<ColumnRefExpression>> &result;
 	vector<identifier_set_t> lambda_params;
 	//! The number of subqueries around the expression that is being collected
@@ -319,7 +326,7 @@ private:
 
 optional_idx ExpressionBinder::ResolveAggregateOwner(FunctionExpression &aggregate, idx_t start) {
 	vector<reference<ColumnRefExpression>> columns;
-	ResolvableColumnCollector collector(columns);
+	ResolvableColumnCollector collector(binder, columns);
 	for (auto &child : aggregate.GetArgumentsMutable()) {
 		collector.CollectExpression(*child.GetExpressionMutable());
 	}

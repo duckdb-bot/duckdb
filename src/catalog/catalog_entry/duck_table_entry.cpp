@@ -175,6 +175,7 @@ DuckTableEntry::DuckTableEntry(Catalog &catalog, SchemaCatalogEntry &schema, Bou
 
 	// create the physical storage
 	vector<ColumnDefinition> column_defs;
+	column_defs.reserve(columns.PhysicalColumnCount());
 	for (auto &col_def : columns.Physical()) {
 		CheckTypeIsSupported(col_def.Type(), catalog.GetAttached());
 

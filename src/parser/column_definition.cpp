@@ -25,8 +25,9 @@ ColumnDefinition ColumnDefinition::Copy() const {
 	copy.expression = expression ? expression->Copy() : nullptr;
 	copy.compression_type = compression_type;
 	copy.category = category;
-	copy.comment = comment;
-	copy.tags = tags;
+	if (annotations) {
+		copy.annotations = make_uniq<ColumnAnnotations>(*annotations);
+	}
 	return copy;
 }
 
@@ -74,19 +75,39 @@ void ColumnDefinition::SetName(const Identifier &name) {
 }
 
 const Value &ColumnDefinition::Comment() const {
-	return comment;
+	if (!annotations) {
+		static const Value NO_COMMENT;
+		return NO_COMMENT;
+	}
+	return annotations->comment;
 }
 
 void ColumnDefinition::SetComment(const Value &comment) {
-	this->comment = comment;
+	if (!annotations) {
+		if (comment.IsNull() && comment.type().id() == LogicalTypeId::SQLNULL) {
+			return;
+		}
+		annotations = make_uniq<ColumnAnnotations>();
+	}
+	annotations->comment = comment;
 }
 
 const InsertionOrderPreservingMap<string> &ColumnDefinition::Tags() const {
-	return tags;
+	if (!annotations) {
+		static const InsertionOrderPreservingMap<string> NO_TAGS;
+		return NO_TAGS;
+	}
+	return annotations->tags;
 }
 
 void ColumnDefinition::SetTags(InsertionOrderPreservingMap<string> new_tags) {
-	this->tags = std::move(new_tags);
+	if (!annotations) {
+		if (new_tags.empty()) {
+			return;
+		}
+		annotations = make_uniq<ColumnAnnotations>();
+	}
+	annotations->tags = std::move(new_tags);
 }
 
 const duckdb::CompressionType &ColumnDefinition::CompressionType() const {

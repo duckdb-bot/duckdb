@@ -612,13 +612,15 @@
         "id": 105,
         "name": "comment",
         "type": "Value",
-        "default": "Value()"
+        "default": "Value()",
+        "serialize_property": "Comment()"
       },
       {
         "id": 106,
         "name": "tags",
         "type": "InsertionOrderPreservingMap<string>",
-        "default": "InsertionOrderPreservingMap<string>()"
+        "default": "InsertionOrderPreservingMap<string>()",
+        "serialize_property": "Tags()"
       }
     ],
     "constructor": [
@@ -627,6 +629,14 @@
       "expression",
       "category"
     ],
+    "methods": {
+      "SetComment": [
+        "comment"
+      ],
+      "SetTags": [
+        "tags"
+      ]
+    },
     "pointer_type": "none"
   },
   {

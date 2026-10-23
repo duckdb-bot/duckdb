@@ -10,6 +10,9 @@ ColumnList::ColumnList(bool allow_duplicate_names) : allow_duplicate_names(allow
 
 ColumnList::ColumnList(vector<ColumnDefinition> columns, bool allow_duplicate_names)
     : allow_duplicate_names(allow_duplicate_names) {
+	// a table keeps its columns for as long as it exists, so they take no more room than they need
+	this->columns.reserve(columns.size());
+	physical_columns.reserve(columns.size());
 	for (auto &col : columns) {
 		AddColumn(std::move(col));
 	}

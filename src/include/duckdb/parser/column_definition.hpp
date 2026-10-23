@@ -21,6 +21,14 @@ struct RenameTableInfo;
 
 class ColumnDefinition;
 
+//! The comment and tags of a column, which most columns do not have
+struct ColumnAnnotations {
+	//! Comment on this column
+	Value comment;
+	//! Tags on this column
+	InsertionOrderPreservingMap<string> tags;
+};
+
 //! A column of a table.
 class ColumnDefinition {
 public:
@@ -107,10 +115,8 @@ private:
 	//! The default value of the column (for non-generated columns)
 	//! The generated column expression (for generated columns)
 	unique_ptr<ParsedExpression> expression;
-	//! Comment on this column
-	Value comment;
-	//! Tags on this column
-	InsertionOrderPreservingMap<string> tags;
+	//! The comment and tags of this column, only allocated when the column has one of them
+	unique_ptr<ColumnAnnotations> annotations;
 };
 
 } // namespace duckdb

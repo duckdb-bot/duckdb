@@ -245,6 +245,7 @@ void TableStatistics::Serialize(Serializer &serializer) const {
 
 void TableStatistics::Deserialize(Deserializer &deserializer, ColumnList &columns) {
 	auto physical_columns = columns.Physical();
+	column_stats.reserve(columns.PhysicalColumnCount());
 
 	auto iter = physical_columns.begin();
 	deserializer.ReadList(100, "column_stats", [&](Deserializer::List &list, idx_t i) {

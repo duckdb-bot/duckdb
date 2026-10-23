@@ -124,6 +124,11 @@ BoundStatement Binder::BindNode(RecursiveCTENode &statement) {
 
 			// Bind the children of the aggregate function
 			for (auto &child : func_expr.GetArgumentsMutable()) {
+				// the aggregates are evaluated on the rows of the CTE, where nothing plans a subquery
+				if (child.GetExpression().HasSubquery()) {
+					throw BinderException(child.GetExpression().GetQueryLocation(),
+					                      "Subqueries are not yet supported for aggregates in USING KEY");
+				}
 				auto bound_child = expression_binder.Bind(child.GetExpressionMutable());
 				aggregation_input_types.push_back(bound_child->GetReturnType());
 				bound_children.push_back(std::move(bound_child));

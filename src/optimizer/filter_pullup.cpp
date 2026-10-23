@@ -1,6 +1,7 @@
 #include "duckdb/optimizer/filter_pullup.hpp"
 
 #include "duckdb/common/enum_util.hpp"
+#include "duckdb/optimizer/filter_pushdown.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/planner/operator/logical_any_join.hpp"
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
@@ -72,8 +73,8 @@ unique_ptr<LogicalOperator> FilterPullup::PullupJoin(unique_ptr<LogicalOperator>
 unique_ptr<LogicalOperator> FilterPullup::PullupSemiJoin(unique_ptr<LogicalOperator> op) {
 	auto &join = op->Cast<LogicalComparisonJoin>();
 	D_ASSERT(join.join_type == JoinType::SEMI);
-	FilterPullup left_pullup(context, true, can_add_column);
-	FilterPullup right_pullup(context, true, can_add_column);
+	FilterPullup left_pullup(true, can_add_column);
+	FilterPullup right_pullup(true, can_add_column);
 	op->children[0] = left_pullup.Rewrite(std::move(op->children[0]));
 	op->children[1] = right_pullup.Rewrite(std::move(op->children[1]));
 
@@ -84,10 +85,9 @@ unique_ptr<LogicalOperator> FilterPullup::PullupSemiJoin(unique_ptr<LogicalOpera
 		for (auto &filter : right_pullup.filters_expr_pullup) {
 			right_filters.push_back(*filter);
 		}
-		auto implied_filters = join.DeriveConstantFilters(right_filters, JoinSide::LEFT);
-		for (auto &filter : implied_filters) {
-			left_filters.push_back(std::move(filter));
-		}
+		FilterCombiner::GenerateJoinFilters(
+		    join.conditions, right_filters, JoinSide::LEFT,
+		    [&](unique_ptr<Expression> left_filter) { left_filters.push_back(std::move(left_filter)); });
 		op->children[1] = GeneratePullupFilter(std::move(op->children[1]), right_pullup.filters_expr_pullup);
 	}
 	if (left_filters.empty()) {
@@ -167,7 +167,7 @@ unique_ptr<LogicalOperator> FilterPullup::PullupWindow(unique_ptr<LogicalOperato
 	}
 	// above the window, the window expressions also run for the partitions the filters remove
 	auto &window = op->Cast<LogicalWindow>();
-	if (!window.OnlyRanksWithoutArguments()) {
+	if (!FilterPushdown::OnlyRanksWithoutArguments(window)) {
 		return FinishPullup(std::move(op));
 	}
 	const auto pulled_before_child = filters_expr_pullup.size();
@@ -177,12 +177,12 @@ unique_ptr<LogicalOperator> FilterPullup::PullupWindow(unique_ptr<LogicalOperato
 	// a filter that stays below the window and can throw keeps the filters that guard it there
 	bool keep_all = false;
 	for (idx_t i = pulled_before_child; i < filters_expr_pullup.size(); i++) {
-		keep_all =
-		    keep_all || (filters_expr_pullup[i]->CanThrow() && !window.ComparesPartitions(*filters_expr_pullup[i]));
+		keep_all = keep_all || (filters_expr_pullup[i]->CanThrow() &&
+		                        !FilterPushdown::ComparesWindowPartitions(window, *filters_expr_pullup[i]));
 	}
 	vector<unique_ptr<Expression>> kept_filters;
 	for (idx_t i = pulled_before_child; i < filters_expr_pullup.size(); i++) {
-		if (keep_all || !window.ComparesPartitions(*filters_expr_pullup[i])) {
+		if (keep_all || !FilterPushdown::ComparesWindowPartitions(window, *filters_expr_pullup[i])) {
 			kept_filters.push_back(std::move(filters_expr_pullup[i]));
 			filters_expr_pullup.erase_at(i);
 			i--;
@@ -208,7 +208,7 @@ unique_ptr<LogicalOperator> FilterPullup::GeneratePullupFilter(unique_ptr<Logica
 unique_ptr<LogicalOperator> FilterPullup::FinishPullup(unique_ptr<LogicalOperator> op) {
 	// unhandled type, first perform filter pushdown in its children
 	for (idx_t i = 0; i < op->children.size(); i++) {
-		FilterPullup pullup(context);
+		FilterPullup pullup;
 		op->children[i] = pullup.Rewrite(std::move(op->children[i]));
 	}
 	// now pull up any existing filters

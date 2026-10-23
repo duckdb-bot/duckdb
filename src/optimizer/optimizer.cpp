@@ -231,7 +231,7 @@ void Optimizer::RunBuiltInOptimizers() {
 
 	// perform filter pullup
 	RunOptimizer(OptimizerType::FILTER_PULLUP, [&]() {
-		FilterPullup filter_pullup(context);
+		FilterPullup filter_pullup;
 		plan = filter_pullup.Rewrite(std::move(plan));
 	});
 

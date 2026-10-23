@@ -8,7 +8,6 @@
 
 #pragma once
 
-#include "duckdb/common/optional_idx.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 
 namespace duckdb {
@@ -17,9 +16,6 @@ namespace duckdb {
 struct BoundComparisonExpression {
 	static bool IsComparison(ExpressionType type);
 	static bool IsComparison(const Expression &expr);
-	//! The child that a comparison, BETWEEN or IN compares with constants, invalid for other expressions. Such a filter
-	//! is false for NULL and has the same result for all values equal to that child.
-	static optional_idx ConstantComparisonChild(const Expression &expr);
 
 	static const Expression &Left(const BoundFunctionExpression &comparison_expr);
 	static const Expression &Right(const BoundFunctionExpression &comparison_expr);

@@ -14,16 +14,14 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownSemiAntiJoin(unique_ptr<Logi
 
 	FilterPushdown right_pushdown(optimizer, convert_mark_joins, projection_mode);
 	if (op->type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN && !filters.empty()) {
-		// a right row that matches a left row passes what the filters imply for the right side, e.g. a = 500 with the
-		// condition i = a and the filter i = 500
+		// a right row that matches a left row passes what the filters imply for the right side
 		vector<reference<const Expression>> left_filters;
 		for (auto &filter : filters) {
 			left_filters.push_back(*filter->filter);
 		}
-		auto right_filters = op->Cast<LogicalComparisonJoin>().DeriveConstantFilters(left_filters, JoinSide::RIGHT);
-		for (auto &filter : right_filters) {
-			right_pushdown.AddFilter(std::move(filter));
-		}
+		FilterCombiner::GenerateJoinFilters(
+		    op->Cast<LogicalComparisonJoin>().conditions, left_filters, JoinSide::RIGHT,
+		    [&](unique_ptr<Expression> right_filter) { right_pushdown.AddFilter(std::move(right_filter)); });
 		right_pushdown.GenerateFilters();
 	}
 	// push all current filters down the left side

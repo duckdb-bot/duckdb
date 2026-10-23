@@ -14,19 +14,17 @@
 #include "duckdb/common/vector.hpp"
 
 namespace duckdb {
-class ClientContext;
 
 class FilterPullup {
 public:
-	explicit FilterPullup(ClientContext &context, bool pullup = false, bool add_column = false)
-	    : context(context), can_pullup(pullup), can_add_column(add_column) {
+	explicit FilterPullup(bool pullup = false, bool add_column = false)
+	    : can_pullup(pullup), can_add_column(add_column) {
 	}
 
 	//! Perform filter pullup
 	unique_ptr<LogicalOperator> Rewrite(unique_ptr<LogicalOperator> op);
 
 private:
-	ClientContext &context;
 	vector<unique_ptr<Expression>> filters_expr_pullup;
 
 	// only pull up filters when there is a fork

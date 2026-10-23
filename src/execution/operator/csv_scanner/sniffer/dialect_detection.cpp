@@ -213,6 +213,21 @@ bool AreCommentsAcceptable(const ColumnCountResult &result, idx_t num_cols, cons
 	return valid_comments / detected_comments >= min_majority;
 }
 
+//! Whether the candidate reads apostrophes as quotes around new lines, which is more likely an apostrophe at the start
+//! of one value and another at the end of a later one
+static bool QuotesApostrophesAcrossLines(const ColumnCountScanner &scanner) {
+	return scanner.ever_quoted_new_line && scanner.GetStateMachine().state_machine_options.quote.GetValue() == '\'';
+}
+
+static bool HasCandidateWithOtherQuote(const vector<unique_ptr<ColumnCountScanner>> &candidates, char quote) {
+	for (auto &candidate : candidates) {
+		if (candidate->GetStateMachine().state_machine_options.quote.GetValue() != quote) {
+			return true;
+		}
+	}
+	return false;
+}
+
 void CSVSniffer::AnalyzeDialectCandidate(unique_ptr<ColumnCountScanner> scanner, CandidateStats &stats,
                                          vector<unique_ptr<ColumnCountScanner>> &successful_candidates) {
 	// The sniffed_column_counts variable keeps track of the number of columns found for each row
@@ -312,6 +327,12 @@ void CSVSniffer::AnalyzeDialectCandidate(unique_ptr<ColumnCountScanner> scanner,
 	}
 	// Calculate the total number of consistent rows after adding padding.
 	consistent_rows += padding_count;
+
+	// The lines the apostrophes join are rows of their own if a candidate with another quote reads as many columns
+	if (QuotesApostrophesAcrossLines(*scanner) && num_cols == max_columns_found &&
+	    HasCandidateWithOtherQuote(successful_candidates, '\'')) {
+		return;
+	}
 
 	// Whether there are more values (rows) available that are consistent, exceeding the current best.
 	const bool more_values = consistent_rows > stats.best_consistent_rows && num_cols >= max_columns_found;
@@ -537,6 +558,16 @@ void CSVSniffer::RefineCandidates() {
 		if (done) {
 			break;
 		}
+	}
+	// A candidate that joins lines with apostrophes gives way to one with another quote, which reads them as rows
+	if (HasCandidateWithOtherQuote(candidates, '\'')) {
+		vector<unique_ptr<ColumnCountScanner>> remaining_candidates;
+		for (auto &candidate : candidates) {
+			if (!QuotesApostrophesAcrossLines(*candidate)) {
+				remaining_candidates.push_back(std::move(candidate));
+			}
+		}
+		candidates = std::move(remaining_candidates);
 	}
 	// If we have multiple candidates with quotes set, we will give the preference to ones
 	// that have actually quoted values, otherwise we will choose quotes = \0

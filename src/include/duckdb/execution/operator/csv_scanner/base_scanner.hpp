@@ -173,6 +173,9 @@ public:
 	//! If the scanner ever entered an escaped state.
 	bool ever_escaped = false;
 
+	//! If the scanner ever read a new line inside a quoted value
+	bool ever_quoted_new_line = false;
+
 	//! If the scanner ever used advantage of the non-strict mode.
 	bool used_unstrictness = false;
 
@@ -343,6 +346,7 @@ protected:
 				skipper.SkipToStop(state_machine->transition_array.skip_standard, to_pos, iterator.pos.buffer_pos);
 				break;
 			case CSVState::QUOTED_NEW_LINE:
+				ever_quoted_new_line = true;
 				T::QuotedNewLine(result);
 				iterator.pos.buffer_pos++;
 				break;

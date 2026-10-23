@@ -1,0 +1,64 @@
+# name: test/sql/copy/csv/auto/test_sniffer_apostrophe_quote.test
+# description: An apostrophe at the start of one value and another at the end of a later one do not quote the lines between them
+# group: [auto]
+
+statement ok
+COPY (SELECT * FROM (VALUES ('c1,c2,c3'), ('a,''xxx,1'), ('b,yyy,2'), ('c,zzz'',3')) t(line)) TO '{TEST_DIR}/apostrophes.csv' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '', DELIMITER E'\t')
+
+query III
+SELECT * FROM read_csv('{TEST_DIR}/apostrophes.csv')
+----
+a	'xxx	1
+b	yyy	2
+c	zzz'	3
+
+query T
+SELECT Quote FROM sniff_csv('{TEST_DIR}/apostrophes.csv')
+----
+(empty)
+
+# the apostrophes in the first chunk of the sample, or in a later one
+foreach first 10 3000
+
+statement ok
+COPY (SELECT i || ',' || CASE WHEN i = {first} THEN '''starts' WHEN i = {first} + 10 THEN 'ends''' ELSE 'plain' END || ',' || i * 2 FROM range(1, 5001) t(i) ORDER BY i) TO '{TEST_DIR}/apostrophes_{first}.csv' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '', DELIMITER E'\t')
+
+query III
+SELECT count(*), count(*) FILTER (column1 LIKE '%''%'), sum(column2) FROM read_csv('{TEST_DIR}/apostrophes_{first}.csv')
+----
+5000	2	25005000
+
+endloop
+
+# a quoted value that the lines of a file only make sense with keeps its quote
+statement ok
+COPY (SELECT * FROM (VALUES ('a,b,c'), ('1,''x'), ('y'',2'))) TO '{TEST_DIR}/apostrophes_quoted_lines.csv' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '', DELIMITER E'\t')
+
+query III
+SELECT a, replace(b, chr(10), ' '), c FROM read_csv('{TEST_DIR}/apostrophes_quoted_lines.csv')
+----
+1	x y	2
+
+statement ok
+COPY (SELECT * FROM (VALUES ('a,b,c'), ('1,''x,y'',2'), ('2,''z'',3'))) TO '{TEST_DIR}/apostrophes_quoted.csv' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '', DELIMITER E'\t')
+
+query III
+SELECT * FROM read_csv('{TEST_DIR}/apostrophes_quoted.csv')
+----
+1	x,y	2
+2	z	3
+
+# double quotes around lines are quotes
+statement ok
+COPY (SELECT * FROM (VALUES ('a,b'), ('1,"x'), ('y,z"'))) TO '{TEST_DIR}/double_quoted_lines.csv' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '', DELIMITER E'\t')
+
+query II
+SELECT a, replace(b, chr(10), ' ') FROM read_csv('{TEST_DIR}/double_quoted_lines.csv')
+----
+1	x y,z
+
+# a quote given by the user is used
+query III
+SELECT c1, replace(c2, chr(10), ' '), c3 FROM read_csv('{TEST_DIR}/apostrophes.csv', quote = '''')
+----
+a	xxx,1 b,yyy,2 c,zzz	3

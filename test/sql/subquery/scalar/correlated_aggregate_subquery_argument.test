@@ -1,0 +1,150 @@
+# name: test/sql/subquery/scalar/correlated_aggregate_subquery_argument.test
+# description: An aggregate whose arguments reach a query only through a subquery without a FROM clause belongs to that query
+# group: [scalar]
+
+# the subquery in the argument only refers to the outer query, so the outer query computes the aggregate
+query I
+SELECT (SELECT SUM((SELECT x))) AS s FROM generate_series(1, 2) _(x)
+----
+3
+
+query I
+SELECT (SELECT SUM((SELECT x + 0))) AS s FROM generate_series(1, 2) _(x)
+----
+3
+
+query I
+SELECT (SELECT SUM(x)) AS s FROM generate_series(1, 2) _(x)
+----
+3
+
+# two levels out, and a subquery inside the subquery
+query I
+SELECT (SELECT (SELECT SUM((SELECT x)))) FROM generate_series(1, 3) _(x)
+----
+6
+
+query I
+SELECT (SELECT SUM((SELECT (SELECT x) * 2))) FROM generate_series(1, 3) _(x)
+----
+12
+
+statement ok
+CREATE TABLE t(i INTEGER);
+
+statement ok
+INSERT INTO t VALUES (1), (2), (3);
+
+# a subquery that refers to the level of the aggregate keeps the aggregate there
+query I rowsort
+SELECT (SELECT SUM((SELECT o.i + i2.i)) FROM t i2) FROM t o
+----
+12
+15
+9
+
+# the FILTER clause counts as well
+query I
+SELECT (SELECT COUNT(*) FILTER (WHERE (SELECT o.i) > 1)) FROM t o
+----
+2
+
+# a lambda parameter is not a column
+query I
+SELECT (SELECT SUM((SELECT list_sum(list_transform([1, 2], lambda i: i + o.i))))) FROM t o
+----
+21
+
+# the operand of IN belongs to the query of the IN
+query I
+SELECT (SELECT SUM(y IN (SELECT x)) FROM (VALUES (1), (2)) v(y)) FROM (VALUES (1), (2)) o(x)
+----
+1
+1
+
+# the aggregate in HAVING belongs to the query of the HAVING
+query I
+SELECT 1 FROM (VALUES (1), (2)) t(x) HAVING (SELECT SUM((SELECT x))) = 3
+----
+1
+
+# both aggregates belong to the outer query, one inside the other
+statement error
+SELECT (SELECT SUM((SELECT SUM((SELECT x))))) FROM (VALUES (1), (2)) t(x)
+----
+aggregate function calls cannot be nested
+
+# a parameter inside the subquery
+statement ok
+PREPARE p AS SELECT (SELECT SUM((SELECT x + $1))) FROM generate_series(1, 2) _(x)
+
+query I
+EXECUTE p(10)
+----
+23
+
+# a subquery that does not bind reports its own error
+statement error
+SELECT (SELECT SUM((SELECT nonexistent))) FROM generate_series(1, 2) _(x)
+----
+nonexistent
+
+# a subquery with a FROM clause, an alias, a star or a CTE can bind the columns itself, which only binding tells, so
+# no subquery counts and the aggregate stays where the other arguments put it
+query I rowsort
+SELECT (SELECT SUM((SELECT x + 0 FROM (VALUES (1)) a(y)))) FROM (VALUES (1), (2)) t(x)
+----
+1
+2
+
+query I rowsort
+SELECT (SELECT SUM((SELECT x AS y))) FROM (VALUES (1), (2)) t(x)
+----
+1
+2
+
+query I rowsort
+SELECT (SELECT SUM((SELECT v.*) + (SELECT t.x)) FROM (VALUES (1), (2)) v(y)) FROM (VALUES (1), (2)) t(x)
+----
+5
+7
+
+query I rowsort
+SELECT (SELECT SUM((WITH c AS (SELECT 1) SELECT x))) FROM (VALUES (1), (2)) t(x)
+----
+1
+2
+
+query I rowsort
+SELECT (SELECT SUM((SELECT DISTINCT v.y FROM duckdb_types()) + (SELECT t.x)) FROM (VALUES (1), (2)) v(y)) FROM (VALUES (1), (2)) t(x)
+----
+5
+7
+
+# a nested subquery with a FROM clause counts the same
+query I rowsort
+SELECT (SELECT SUM((SELECT (SELECT x FROM (VALUES (1)) a(y))))) FROM (VALUES (1), (2)) t(x)
+----
+1
+2
+
+# other clauses of the subquery can name its select list
+query I
+SELECT (SELECT SUM((SELECT 10 GROUP BY 1 HAVING "0" = 10))) FROM (VALUES (1), (2)) t("0")
+----
+10
+10
+
+# the operand of IN counts with the subquery
+query I
+SELECT (SELECT SUM(t.x IN (SELECT v.y FROM (VALUES (0)) a(z))) FROM (VALUES (1), (2)) v(y)) FROM (VALUES (1), (2)) t(x)
+----
+1
+1
+
+# the qualification of a call can be the column it is made on
+query I rowsort
+SELECT (SELECT SUM((SELECT y.abs()) + (SELECT t.x)) FROM (VALUES (-1), (-2)) v(y)) FROM (VALUES (1), (2)) t(x)
+----
+5
+7

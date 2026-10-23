@@ -179,6 +179,14 @@ public:
 
 	//! Fetches an append lock
 	void AppendLock(DuckTransaction &transaction, TableAppendState &state);
+	//! Counts the reverted appends to the rows of the table
+	idx_t GetRevertCount() const;
+	//! Fetches the append lock to add an index, and throws if a different transaction replaced the table
+	unique_lock<mutex> IndexAppendLock(bool replaced_by_this_transaction);
+	//! Scans the indexed columns of the rows from row_start to row_end like the scan that builds an index, the
+	//! caller holds the append lock
+	void ScanForIndexCreation(DuckTransaction &transaction, const vector<column_t> &indexed_columns, idx_t row_start,
+	                          idx_t row_end, const std::function<void(DataChunk &chunk, Vector &row_ids)> &function);
 	//! Begin appending structs to this table, obtaining necessary locks, etc
 	void InitializeAppend(DuckTransaction &transaction, TableAppendState &state);
 	//! Append a chunk to the table using the AppendState obtained from InitializeAppend

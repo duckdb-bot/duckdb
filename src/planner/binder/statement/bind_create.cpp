@@ -561,18 +561,23 @@ SchemaCatalogEntry &Binder::BindCreateFunctionInfo(CreateInfo &info) {
 			dependencies.AddDependency(entry);
 		};
 
-		// bind it to verify the function was defined correctly
+		// bind it to verify the function was defined correctly, with the macro's schema first as when it is called
+		auto &path = info.GetQualifiedName().Path();
+		vector<Identifier> schema_path(path.begin() + 1, path.end() - 1);
+		auto macro_binder = CreateBinder(context, this);
+		macro_binder->macro_binding = this_macro_binding.get();
+		macro_binder->entry_retriever.SetSearchPath(GetMacroSearchPath(catalog, schema_path));
 		ErrorData error;
 		if (info.type == CatalogType::MACRO_ENTRY) {
 			BoundSelectNode sel_node;
-			SelectBinder binder(*this, context, sel_node);
+			SelectBinder binder(*macro_binder, context, sel_node);
 			if (should_create_dependencies) {
 				binder.SetCatalogLookupCallback(binder_callback);
 			}
 
 			// create a copy of the expression because we do not want to alter the original
 			auto expression = function->Cast<ScalarMacroFunction>().expression->Copy();
-			ExpressionBinder::QualifyColumnNames(*this, expression);
+			ExpressionBinder::QualifyColumnNames(*macro_binder, expression);
 			try {
 				auto bind_result = binder.Bind(expression, 0, false);
 				if (bind_result.HasError()) {
@@ -584,7 +589,7 @@ SchemaCatalogEntry &Binder::BindCreateFunctionInfo(CreateInfo &info) {
 			}
 		} else {
 			D_ASSERT(info.type == CatalogType::TABLE_MACRO_ENTRY);
-			auto dummy_binder = CreateBinder(context, this);
+			auto dummy_binder = CreateBinder(context, macro_binder.get());
 			if (should_create_dependencies) {
 				dummy_binder->SetCatalogLookupCallback(binder_callback);
 			}

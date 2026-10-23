@@ -318,6 +318,8 @@ struct ICUDateAdd : public ICUDateFunc {
 		set.AddFunction(binary_fun);
 		auto unary_fun = GetUnaryAgeFunction<timestamp_tz_t, ICUCalendarAge>(LogicalType::TIMESTAMP_TZ);
 		unary_fun.GetSignature().GetParameter(0).SetName("timestamp");
+		// the age is taken at the start of the transaction
+		unary_fun.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 		set.AddFunction(unary_fun);
 		// throws for dates that overflow the timestamp range
 		set.SetFallible();

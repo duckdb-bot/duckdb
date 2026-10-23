@@ -44,6 +44,10 @@ struct ListSortBindData : public FunctionData {
 public:
 	bool Equals(const FunctionData &other_p) const override;
 	unique_ptr<FunctionData> Copy() const override;
+	//! The sort runs with the ClientContext of the bind
+	bool NeedsClientContext() const override {
+		return true;
+	}
 	static void Serialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data,
 	                      const BoundScalarFunction &);
 	static unique_ptr<FunctionData> Deserialize(Deserializer &deserializer, BoundScalarFunction &);

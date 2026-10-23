@@ -8,6 +8,23 @@ namespace duckdb {
 
 namespace {
 
+//! The casts are looked up in the ClientContext when the types are only known at execution
+struct CanCastImplicitlyBindData : public FunctionData {
+	unique_ptr<FunctionData> Copy() const override {
+		return make_uniq<CanCastImplicitlyBindData>();
+	}
+	bool Equals(const FunctionData &other) const override {
+		return true;
+	}
+	bool NeedsClientContext() const override {
+		return true;
+	}
+};
+
+unique_ptr<FunctionData> BindCanCastImplicitly(BindScalarFunctionInput &input) {
+	return make_uniq<CanCastImplicitlyBindData>();
+}
+
 bool CanCastImplicitly(ClientContext &context, const LogicalType &source, const LogicalType &target) {
 	return CastFunctionSet::ImplicitCastCost(context, source, target) >= 0;
 }
@@ -38,6 +55,7 @@ ScalarFunction CanCastImplicitlyFun::GetFunction() {
 	auto fun = ScalarFunction({}, LogicalType::BOOLEAN, CanCastImplicitlyFunction);
 	fun.GetSignature().AddParameter("source_type", LogicalType::ANY).AddParameter("target_type", LogicalType::ANY);
 	fun.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
+	fun.SetBindCallback(BindCanCastImplicitly);
 	fun.SetBindExpressionCallback(BindCanCastImplicitlyExpression);
 	return fun;
 }

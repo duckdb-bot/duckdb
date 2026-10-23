@@ -117,7 +117,8 @@ public:
 	//! Checks a file is private (checks for 600 on linux/macos, TODO: currently always returns true on windows)
 	static bool IsPrivateFile(const string &path_p, FileOpener *opener);
 
-	vector<OpenFileInfo> FetchFileWithoutGlob(const string &path, optional_ptr<FileOpener> opener, bool absolute_path);
+	vector<OpenFileInfo> FetchFileWithoutGlob(const string &path, optional_ptr<FileOpener> opener, bool absolute_path,
+	                                          const std::function<bool(const string &)> &can_access_location = nullptr);
 
 	string CanonicalizePath(const string &path_p, optional_ptr<FileOpener> opener) override;
 

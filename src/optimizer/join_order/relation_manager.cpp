@@ -414,6 +414,7 @@ bool RelationManager::ExtractJoinRelations(JoinOrderOptimizer &optimizer, Logica
                                            optional_ptr<LogicalOperator> parent) {
 	optional_ptr<LogicalOperator> op = &input_op;
 	vector<reference<LogicalOperator>> datasource_filters;
+	vector<reference<LogicalOperator>> stacked_filters;
 	optional_ptr<LogicalOperator> limit_op = nullptr;
 	// pass through single child operators (but never past a non-reorderable op such as a DML node, which
 	// must be preserved as its own relation rather than skipped over and dropped during reconstruction)
@@ -422,13 +423,15 @@ bool RelationManager::ExtractJoinRelations(JoinOrderOptimizer &optimizer, Logica
 			if (HasNonReorderableChild(*op)) {
 				datasource_filters.push_back(*op);
 			}
-			filter_operators.push_back(*op);
+			stacked_filters.push_back(*op);
 		}
 		if (op->type == LogicalOperatorType::LOGICAL_LIMIT) {
 			limit_op = op;
 		}
 		op = op->children[0].get();
 	}
+	// a lower filter ran first, which keeps a guard before a filter that can throw when the filters are combined
+	filter_operators.insert(filter_operators.end(), stacked_filters.rbegin(), stacked_filters.rend());
 	bool non_reorderable_operation = false;
 	if (OperatorIsNonReorderable(*op)) {
 		// set operation, optimize separately in children

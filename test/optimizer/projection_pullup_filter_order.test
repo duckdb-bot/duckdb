@@ -1,0 +1,31 @@
+# name: test/optimizer/projection_pullup_filter_order.test
+# description: A filter that can throw stays after the filter below it when the join order combines them
+# group: [optimizer]
+
+query II
+SELECT * FROM (VALUES (0)) x(a), (VALUES (2)) y(b) WHERE b < 1 AND get_bit('1'::BIT, b) = 1
+----
+
+query II
+SELECT * FROM (VALUES (0)) x(a), (SELECT s FROM (VALUES ('x'), ('1')) v(s) WHERE s <> 'x') sub WHERE sub.s::INT = 1
+----
+0	1
+
+query II
+SELECT * FROM (VALUES (0)) x(a), (SELECT d FROM (VALUES (0), (2)) v(d) WHERE d <> 0) sub WHERE 10 // sub.d = 5
+----
+0	2
+
+statement ok
+COPY (SELECT * FROM (VALUES (2, 'x'), (0, '1')) t(i, s)) TO '{TEST_DIR}/guarded.csv' (HEADER)
+
+query III
+SELECT * FROM (VALUES (0)) x(a), (SELECT * FROM '{TEST_DIR}/guarded.csv' WHERE s <> 'x') sub WHERE sub.s::INT = 1
+----
+0	0	1
+
+# three nested guards
+query II
+SELECT * FROM (VALUES (0)) x(a), (SELECT s FROM (SELECT s FROM (VALUES ('x'), ('1'), ('2')) v(s) WHERE s <> 'x') WHERE s::INT < 2) sub WHERE get_bit('01'::BIT, sub.s::INT) = 1
+----
+0	1

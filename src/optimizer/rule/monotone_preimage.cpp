@@ -148,7 +148,7 @@ static int64_t LastTruePrefix(PRED pred, int64_t lo, int64_t hi, bool &ok) {
 
 //! Emit `col >= bound` (lower) or `col <= bound` (upper). On types with ±infinity a bound on the edge of the
 //! finite domain is written as a strict comparison against the adjacent sentinel instead (`col > -infinity`,
-//! `col < infinity`): nothing lies between the two.
+//! `col < infinity`), as nothing lies between the two.
 static unique_ptr<Expression> MakeColBound(bool lower, const BoundColumnRefExpression &col, const LogicalType &col_type,
                                            int64_t bound, int64_t dom_edge, bool has_infinity) {
 	if (has_infinity && bound == dom_edge) {

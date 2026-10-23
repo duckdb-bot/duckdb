@@ -230,9 +230,10 @@ static bool HasCandidateWithOtherQuote(const vector<unique_ptr<ColumnCountScanne
 
 //! Drop the candidates that join lines with apostrophes, if a candidate with another quote read the sample as rows
 static void DropApostrophesAcrossLines(vector<unique_ptr<ColumnCountScanner>> &candidates,
-                                       const CSVReaderOptions &options) {
-	// with padding or ignored errors the rows of the other candidate need not be complete
-	if (options.null_padding || options.ignore_errors.GetValue() || !HasCandidateWithOtherQuote(candidates, '\'')) {
+                                       const CSVReaderOptions &options, const SetColumns &set_columns) {
+	// with padding, ignored errors or given columns the rows of the other candidate need not all have been checked
+	if (options.null_padding || options.ignore_errors.GetValue() || set_columns.IsSet() ||
+	    !HasCandidateWithOtherQuote(candidates, '\'')) {
 		return;
 	}
 	vector<unique_ptr<ColumnCountScanner>> remaining_candidates;
@@ -343,6 +344,7 @@ void CSVSniffer::AnalyzeDialectCandidate(unique_ptr<ColumnCountScanner> scanner,
 	}
 	// Calculate the total number of consistent rows after adding padding.
 	consistent_rows += padding_count;
+	const idx_t discarded_lines = comment_rows + sniffed_column_counts.empty_lines;
 
 	// Whether there are more values (rows) available that are consistent, exceeding the current best.
 	const bool more_values = consistent_rows > stats.best_consistent_rows && num_cols >= max_columns_found;
@@ -471,13 +473,16 @@ void CSVSniffer::AnalyzeDialectCandidate(unique_ptr<ColumnCountScanner> scanner,
 				}
 			}
 		}
-		if (QuotesApostrophesAcrossLines(*scanner) && !options.null_padding && !ignore_errors &&
+		const idx_t skip_rows = options.dialect_options.skip_rows.IsSetByUser()
+		                            ? options.dialect_options.skip_rows.GetValue()
+		                            : dirty_notes_minus_comments;
+		if (QuotesApostrophesAcrossLines(*scanner) && !options.null_padding && !ignore_errors && !set_columns.IsSet() &&
 		    !successful_candidates.empty() &&
 		    successful_candidates.front()->GetStateMachine().state_machine_options.quote.GetValue() != '\'' &&
 		    num_cols == max_columns_found && consistent_rows <= stats.best_consistent_rows &&
 		    stats.prev_padding_count == 0 && stats.min_ignored_rows == 0 &&
-		    successful_candidates.front()->GetStateMachine().dialect_options.skip_rows.GetValue() <=
-		        dirty_notes_minus_comments) {
+		    stats.best_discarded_lines <= discarded_lines &&
+		    successful_candidates.front()->GetStateMachine().dialect_options.skip_rows.GetValue() <= skip_rows) {
 			// The best candidate reads the lines the apostrophes join as complete rows, so this one only stays as
 			// a fallback in case the rest of the sample needs its quote
 			if (options.dialect_options.skip_rows.IsSetByUser()) {
@@ -496,6 +501,7 @@ void CSVSniffer::AnalyzeDialectCandidate(unique_ptr<ColumnCountScanner> scanner,
 		max_columns_found = num_cols;
 		stats.prev_padding_count = padding_count;
 		stats.min_ignored_rows = ignored_rows;
+		stats.best_discarded_lines = discarded_lines;
 
 		if (options.dialect_options.skip_rows.IsSetByUser()) {
 			// If skip rows are set by the user, and we found dirty notes, we only accept it if either null_padding or
@@ -562,13 +568,14 @@ void CSVSniffer::RefineCandidates() {
 	}
 	if (candidates.size() == 1 || candidates[0]->FinishedFile()) {
 		// Only one candidate nothing to refine, or all candidates already checked
-		DropApostrophesAcrossLines(candidates, options);
+		DropApostrophesAcrossLines(candidates, options, set_columns);
 		return;
 	}
 
 	for (idx_t i = 1; i <= options.sample_size_chunks; i++) {
 		vector<unique_ptr<ColumnCountScanner>> successful_candidates;
 		bool done = candidates.empty();
+		const bool other_quote = HasCandidateWithOtherQuote(candidates, '\'');
 		for (auto &cur_candidate : candidates) {
 			const bool finished_file = cur_candidate->FinishedFile();
 			if (successful_candidates.empty()) {
@@ -576,10 +583,13 @@ void CSVSniffer::RefineCandidates() {
 			}
 			if (finished_file || i == options.sample_size_chunks) {
 				// we finished the file or our chunk sample successfully
+				// a candidate that joined lines with apostrophes waits for the candidates with another quote
+				if (i == options.sample_size_chunks || !other_quote || !QuotesApostrophesAcrossLines(*cur_candidate)) {
+					done = true;
+				}
 				if (!cur_candidate->GetResult().error) {
 					successful_candidates.push_back(std::move(cur_candidate));
 				}
-				done = true;
 				continue;
 			}
 			if (RefineCandidateNextChunk(*cur_candidate) && !cur_candidate->GetResult().error) {
@@ -591,7 +601,7 @@ void CSVSniffer::RefineCandidates() {
 			break;
 		}
 	}
-	DropApostrophesAcrossLines(candidates, options);
+	DropApostrophesAcrossLines(candidates, options, set_columns);
 	// If we have multiple candidates with quotes set, we will give the preference to ones
 	// that have actually quoted values, otherwise we will choose quotes = \0
 	vector<unique_ptr<ColumnCountScanner>> successful_candidates = std::move(candidates);

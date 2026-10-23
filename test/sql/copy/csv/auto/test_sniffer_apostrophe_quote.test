@@ -101,3 +101,32 @@ SELECT * FROM read_csv('{TEST_DIR}/apostrophes_escaped.csv')
 a	'xxx	1\
 b	yyy	2\
 c	zzz'	3
+
+# another quote that reads a line between the apostrophes as a comment does not read the lines as rows
+statement ok
+COPY (SELECT * FROM (VALUES ('a,b,c'), ('1,''x,1'), ('#inner'), ('2,y'',2'))) TO '{TEST_DIR}/apostrophes_comment.csv' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '', DELIMITER E'\t')
+
+query III
+SELECT a, replace(b, chr(10), ' '), c FROM read_csv('{TEST_DIR}/apostrophes_comment.csv', comment = '#')
+----
+1	x,1 #inner 2,y	2
+
+# the apostrophe candidate that read the whole file waits until another quote has read its sample
+statement ok
+COPY (SELECT i || ',' || CASE WHEN i = 1 THEN '''starts' WHEN i = 2051 THEN 'ends''' WHEN i = 4096 THEN '''x,y''' ELSE 'plain' END || ',' || i FROM range(1, 4097) t(i) ORDER BY i) TO '{TEST_DIR}/apostrophes_long.csv' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '', DELIMITER E'\t')
+
+query II
+SELECT count(*), sum(column2) FROM read_csv('{TEST_DIR}/apostrophes_long.csv', sample_size = -1)
+----
+2046	6288381
+
+# rows skipped by the user count the same for both candidates
+statement ok
+COPY (SELECT * FROM (VALUES ('note'), ('c1,c2,c3'), ('a,''xxx,1'), ('b,yyy,2'), ('c,zzz'',3'))) TO '{TEST_DIR}/apostrophes_skip.csv' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '', DELIMITER E'\t')
+
+query III
+SELECT * FROM read_csv('{TEST_DIR}/apostrophes_skip.csv', skip = 1)
+----
+a	'xxx	1
+b	yyy	2
+c	zzz'	3

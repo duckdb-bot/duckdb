@@ -91,6 +91,33 @@ string DatePartUnaryFunctionName(DatePartSpecifier part) {
 	}
 }
 
+//! Whether [min, max] holds an infinity, which produces a NULL date part although the input is not NULL
+template <class T>
+static bool RangeHasInfinity(T min, T max) {
+	return !Value::IsFinite(min) || !Value::IsFinite(max);
+}
+
+//! The smallest finite value sorts below -infinity, so -infinity can also lie between finite bounds
+template <class T>
+static bool DateRangeHasInfinity(T min, T max) {
+	return !min.IsFinite() || !max.IsFinite() || (min < T::ninfinity() && max > T::ninfinity());
+}
+
+template <>
+bool RangeHasInfinity(date_t min, date_t max) {
+	return DateRangeHasInfinity(min, max);
+}
+
+template <>
+bool RangeHasInfinity(timestamp_t min, timestamp_t max) {
+	return DateRangeHasInfinity(min, max);
+}
+
+template <>
+bool RangeHasInfinity(timestamp_ns_t min, timestamp_ns_t max) {
+	return DateRangeHasInfinity(min, max);
+}
+
 template <int64_t MIN, int64_t MAX, class T>
 unique_ptr<BaseStatistics> PropagateSimpleDatePartStatistics(vector<BaseStatistics> &child_stats) {
 	// we can only propagate simple date part statistics if the child has stats
@@ -105,7 +132,7 @@ unique_ptr<BaseStatistics> PropagateSimpleDatePartStatistics(vector<BaseStatisti
 	}
 	// Infinities produce a NULL date part even though the input is not NULL,
 	// so we cannot propagate the validity (and thus the stats) in that case
-	if (!Value::IsFinite(min) || !Value::IsFinite(max)) {
+	if (RangeHasInfinity(min, max)) {
 		return nullptr;
 	}
 	// the min and max can never exceed these bounds
@@ -159,7 +186,7 @@ struct DatePart {
 			return nullptr;
 		}
 		// Infinities prevent us from computing generic ranges
-		if (!min.IsFinite() || !max.IsFinite()) {
+		if (RangeHasInfinity(min, max)) {
 			return nullptr;
 		}
 		TR min_part = OP::template Operation<T, TR>(min);
@@ -187,7 +214,7 @@ struct DatePart {
 		}
 		// Infinities produce a NULL date part even though the input is not NULL,
 		// so we cannot propagate the validity (and thus the stats) in that case
-		if (!Value::IsFinite(min) || !Value::IsFinite(max)) {
+		if (RangeHasInfinity(min, max)) {
 			return nullptr;
 		}
 		int64_t part_min = MIN;

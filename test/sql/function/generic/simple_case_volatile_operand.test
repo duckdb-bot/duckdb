@@ -168,6 +168,14 @@ SELECT parse_filename(parse_dirpath(file)) FROM glob('{TEST_DIR}/simple_case_par
 ----
 zero_1
 
+# a simple CASE matches the same CASE written with searched comparisons, as before
+query II
+SELECT CASE x WHEN 1 THEN 'a' ELSE 'b' END AS k, count(*) FROM range(3) t(x) GROUP BY CASE WHEN x = 1 THEN 'a' ELSE 'b' END
+ORDER BY k
+----
+a	1
+b	2
+
 # groups match the comparisons of the copies, so a select with groups keeps them
 query I
 SELECT CASE i + (random() * 0)::INTEGER WHEN 0 THEN 42 WHEN 1 THEN 8 ELSE 9 END AS r FROM range(3) t(i)

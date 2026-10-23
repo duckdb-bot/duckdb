@@ -26,8 +26,8 @@ static optional_ptr<ScalarFunctionCatalogEntry> TryGetScalarFunction(ExpressionB
 	return entry->Cast<ScalarFunctionCatalogEntry>();
 }
 
-//! Whether a parsed expression holds what a lambda body cannot hold or what this cannot see into: a subquery, an
-//! UNNEST, a macro call or a qualified function name
+//! Whether a parsed expression holds what a lambda body cannot hold or what this cannot see into, such as a
+//! subquery, an UNNEST, a macro call or a qualified function name
 static bool ContainsUnsupported(ExpressionBinder &binder, const ParsedExpression &expr) {
 	if (expr.GetExpressionClass() == ExpressionClass::SUBQUERY) {
 		return true;

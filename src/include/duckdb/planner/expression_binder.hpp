@@ -250,7 +250,7 @@ protected:
 	BindResult BindExpression(CaseExpression &expr, idx_t depth);
 	//! Whether a simple CASE has a volatile operand that a lambda can evaluate once, decided without binding here
 	bool CanEvaluateCaseOperandOnce(CaseExpression &expr);
-	//! Bind a simple CASE with a volatile operand as invoke(lambda operand_parameter: CASE ..., operand)
+	//! Bind a simple CASE with a volatile operand as a lambda that invoke applies to the operand
 	BindResult BindCaseOperandOnce(CaseExpression &expr, idx_t depth);
 	BindResult BindExpression(CollateExpression &expr, idx_t depth);
 	BindResult BindExpression(CastExpression &expr, idx_t depth);

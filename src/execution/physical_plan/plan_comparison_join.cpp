@@ -191,6 +191,10 @@ static optional_idx ConstantBuildSize(const PhysicalHashJoin &join, PhysicalOper
 	    join.conditions[0].GetRHS().GetExpressionType() != ExpressionType::BOUND_REF) {
 		return optional_idx();
 	}
+	if (join.conditions[0].GetRHS().GetReturnType().IsNested()) {
+		// the hash table lays out nested keys with more validity than the collection
+		return optional_idx();
+	}
 	// the pointer table and the hashes come on top of the rows
 	return scan.collection->SizeInBytes() + scan.collection->Count() * (sizeof(data_ptr_t) + sizeof(hash_t));
 }

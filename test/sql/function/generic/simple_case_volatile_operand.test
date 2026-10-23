@@ -200,12 +200,25 @@ SELECT list_transform([42], lambda "#case_operand": CASE (random() * 0)::INTEGER
 ----
 [42]
 
+query I
+SELECT list_transform([{'x': 42}], lambda "#case_operand": CASE {'x': (random() * 0)::INTEGER} WHEN {'x': 0} THEN "#case_operand".x WHEN {'x': 1} THEN 8 END)
+----
+[42]
+
 # branches with a macro or an alias that holds a subquery or UNNEST
 statement ok
 CREATE MACRO answer() AS (SELECT 42)
 
 query I
 SELECT CASE (random() * 0)::INTEGER WHEN 0 THEN answer() WHEN 1 THEN 8 ELSE 9 END
+----
+42
+
+statement ok
+CREATE MACRO window_answer() AS sum(1) + (SELECT 41)
+
+query I
+SELECT CASE (random() * 0)::INTEGER WHEN 0 THEN window_answer() OVER () WHEN 1 THEN 8 END
 ----
 42
 

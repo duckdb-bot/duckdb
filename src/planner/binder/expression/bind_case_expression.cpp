@@ -6,6 +6,7 @@
 #include "duckdb/parser/expression/comparison_expression.hpp"
 #include "duckdb/parser/expression/function_expression.hpp"
 #include "duckdb/parser/expression/lambda_expression.hpp"
+#include "duckdb/parser/expression/window_expression.hpp"
 #include "duckdb/parser/parsed_expression_iterator.hpp"
 #include "duckdb/planner/expression/bound_case_expression.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
@@ -31,14 +32,18 @@ static bool ContainsUnsupported(ExpressionBinder &binder, const ParsedExpression
 	if (expr.GetExpressionClass() == ExpressionClass::SUBQUERY) {
 		return true;
 	}
+	optional_ptr<const QualifiedName> name;
 	if (expr.GetExpressionClass() == ExpressionClass::FUNCTION) {
-		auto &function = expr.Cast<FunctionExpression>();
-		auto &name = function.GetQualifiedName();
-		if (ExpressionBinder::IsUnnestFunction(function.FunctionName()) || !name.Catalog().empty() ||
-		    !name.Schema().empty()) {
+		name = expr.Cast<FunctionExpression>().GetQualifiedName();
+	} else if (expr.GetExpressionClass() == ExpressionClass::WINDOW) {
+		// a macro can also be called as a window
+		name = expr.Cast<WindowExpression>().GetQualifiedName();
+	}
+	if (name) {
+		if (ExpressionBinder::IsUnnestFunction(name->Name()) || !name->Catalog().empty() || !name->Schema().empty()) {
 			return true;
 		}
-		EntryLookupInfo lookup(CatalogType::SCALAR_FUNCTION_ENTRY, name);
+		EntryLookupInfo lookup(CatalogType::SCALAR_FUNCTION_ENTRY, *name);
 		auto entry = binder.GetBinder().GetCatalogEntry(lookup, OnEntryNotFound::RETURN_NULL);
 		if (entry && entry->type == CatalogType::MACRO_ENTRY) {
 			return true;
@@ -82,14 +87,18 @@ static bool RefersToAlias(ExpressionBinder &binder, ParsedExpression &expr) {
 
 static void CollectColumnNames(const ParsedExpression &expr, case_insensitive_set_t &names) {
 	if (expr.GetExpressionClass() == ExpressionClass::COLUMN_REF) {
-		names.insert(expr.Cast<ColumnRefExpression>().GetColumnName().GetIdentifierName());
+		// every part, since the first one can name the parameter, as in parameter.field
+		for (auto &part : expr.Cast<ColumnRefExpression>().ColumnNames()) {
+			names.insert(part.GetIdentifierName());
+		}
 	}
 	ParsedExpressionIterator::EnumerateChildren(
 	    expr, [&](const ParsedExpression &child) { CollectColumnNames(child, names); });
 }
 
 bool ExpressionBinder::CanEvaluateCaseOperandOnce(CaseExpression &expr) {
-	if (!CanBindCaseOperandOnce() || expr.CaseChecks().size() < 2 || !expr.HasSimpleCaseChecks()) {
+	if (!CanBindCaseOperandOnce() || expr.CaseChecks().size() < 2 || !expr.HasSimpleCaseChecks() ||
+	    !CallsVolatileFunction(*this, expr.SimpleCaseOperand())) {
 		return false;
 	}
 	vector<reference<const ParsedExpression>> parts;
@@ -113,8 +122,7 @@ bool ExpressionBinder::CanEvaluateCaseOperandOnce(CaseExpression &expr) {
 	if (RefersToAlias(*this, *expr.ElseMutable())) {
 		return false;
 	}
-	// decided on the parsed operand, since binding it here would register what it holds
-	return CallsVolatileFunction(*this, expr.SimpleCaseOperand());
+	return true;
 }
 
 BindResult ExpressionBinder::BindCaseOperandOnce(CaseExpression &expr, idx_t depth) {

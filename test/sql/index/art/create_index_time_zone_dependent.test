@@ -77,9 +77,9 @@ statement ok
 CREATE TYPE ts_enum AS ENUM ('2026-01-01 00:00:00');
 
 statement ok
-CREATE TABLE nested (ts TIMESTAMPTZ, e ts_enum);
+CREATE TABLE nested (ts TIMESTAMPTZ, e ts_enum, s VARCHAR);
 
-foreach expression e::TIMESTAMPTZ union_value(v:=ts)::VARCHAR (map(['k'],[ts])::MAP(VARCHAR,VARCHAR))['k'] map_keys(map([ts],['k'])::MAP(VARCHAR,VARCHAR))[1] ({'k':ts}::MAP(VARCHAR,VARCHAR))['k']
+foreach expression e::TIMESTAMPTZ union_value(v:=ts)::VARCHAR [union_value(v:=ts)]::VARCHAR (map(['k'],[ts])::MAP(VARCHAR,VARCHAR))['k'] map_keys(map([ts],['k'])::MAP(VARCHAR,VARCHAR))[1] ({'k':ts}::MAP(VARCHAR,VARCHAR))['k'] (s::MAP(VARCHAR,TIMESTAMPTZ))['k'] map_keys(s::MAP(TIMESTAMPTZ,VARCHAR))[1]
 
 statement error
 CREATE INDEX i ON nested (({expression}));
@@ -95,6 +95,9 @@ Index keys cannot contain expressions with side effects. They also cannot depend
 
 statement ok
 CREATE INDEX i_enum_text ON nested ((e::VARCHAR));
+
+statement ok
+CREATE INDEX i_map_text ON nested (((s::MAP(VARCHAR,VARCHAR))['k']));
 
 # keys that do not depend on the session are still allowed
 statement ok

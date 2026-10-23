@@ -19,3 +19,15 @@ query II
 SELECT count(*) FILTER (WHERE ts < prev), count(*) FROM (SELECT ts, lag(ts) OVER (ORDER BY rowid) AS prev FROM r)
 ----
 0	500000
+
+statement ok
+SET debug_force_external = false;
+
+# the lists that stay in memory share a quarter of the memory limit, the others can spill
+statement ok
+SET memory_limit = '32MB';
+
+query I
+SELECT count(*) FROM range(1000000) t(i) WHERE list_contains(range(0, 500000, 2), i) AND list_contains(range(1, 500001, 2), i + 1) AND list_contains(range(2, 500002, 2), i + 2) AND list_contains(range(3, 500003, 2), i + 3)
+----
+250000

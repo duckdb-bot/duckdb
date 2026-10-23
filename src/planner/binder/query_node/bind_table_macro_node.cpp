@@ -134,8 +134,8 @@ public:
 		// a column without alias keeps the name it has without the qualification, outer expressions first, and a star
 		// that an argument can also bring in names its columns itself
 		for (auto it = unnamed_expressions.rbegin(); it != unnamed_expressions.rend(); ++it) {
-			auto &expr = it->get();
-			if (!expr->HasAlias() && !ContainsStar(*expr)) {
+			auto &expr = it->expr.get();
+			if (!expr->HasAlias() && (it->name_as_written || !ContainsStar(*expr))) {
 				expr->SetAlias(expr->GetName());
 			}
 		}
@@ -147,6 +147,15 @@ public:
 	}
 
 private:
+	struct UnnamedExpression {
+		UnnamedExpression(unique_ptr<ParsedExpression> &expr, bool name_as_written)
+		    : expr(expr), name_as_written(name_as_written) {
+		}
+
+		reference<unique_ptr<ParsedExpression>> expr;
+		bool name_as_written;
+	};
+
 	struct NameChange {
 		NameChange(QualifiedName &name, QualifiedName qualified) : name(name), qualified(std::move(qualified)) {
 		}
@@ -155,12 +164,13 @@ private:
 		QualifiedName qualified;
 	};
 
-	//! Qualify an expression whose name can name a column
-	void QualifyColumn(unique_ptr<ParsedExpression> &expr) {
+	//! Qualify an expression whose name can name a column, a star in which names its columns itself unless the name is
+	//! taken as it is written
+	void QualifyColumn(unique_ptr<ParsedExpression> &expr, bool name_as_written = false) {
 		const auto changes_before = changes.size();
 		QualifyExpression(*expr);
 		if (changes.size() != changes_before && !expr->HasAlias()) {
-			unnamed_expressions.push_back(expr);
+			unnamed_expressions.emplace_back(expr, name_as_written);
 		}
 	}
 
@@ -203,7 +213,7 @@ private:
 			for (auto &aggregate : pivot.aggregates) {
 				// the columns are named after the aggregates only if there are several
 				if (pivot.aggregates.size() > 1) {
-					QualifyColumn(aggregate);
+					QualifyColumn(aggregate, true);
 				} else {
 					QualifyExpression(*aggregate);
 				}
@@ -292,8 +302,7 @@ private:
 		if (name.Path().size() != 1) {
 			return;
 		}
-		// the macro's search path is the one the name is meant for, so its errors are the macro's, as for a view
-		auto macro_entry = macro_retriever.GetEntry(EntryLookupInfo(type, name), OnEntryNotFound::RETURN_NULL);
+		auto macro_entry = LookUp(macro_retriever, type, name);
 		if (!macro_entry) {
 			return;
 		}
@@ -328,7 +337,7 @@ private:
 	//! The names to qualify
 	vector<NameChange> changes;
 	//! The select list expressions without alias that have a name to qualify, inner ones first
-	vector<reference<unique_ptr<ParsedExpression>>> unnamed_expressions;
+	vector<UnnamedExpression> unnamed_expressions;
 	//! The CTEs of the body that are visible where the walk is, innermost last
 	vector<identifier_set_t> cte_names;
 };

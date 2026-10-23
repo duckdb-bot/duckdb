@@ -104,7 +104,10 @@ statement ok
 CREATE TABLE db.dt AS SELECT -1 AS v;
 
 statement ok
-CREATE MACRO db.from_dt() AS TABLE SELECT * FROM dt;
+CREATE MACRO db.unused_dt() AS TABLE WITH unused AS (SELECT * FROM dt) SELECT 1 AS v;
+
+statement ok
+CREATE MACRO db.pivot_columns() AS TABLE PIVOT (SELECT 'a' AS k, 5 AS v) ON k IN ('a') USING sum(s1(COLUMNS('v'))), max(v);
 
 statement ok
 DETACH db;
@@ -262,25 +265,25 @@ SELECT "s1(i)", n FROM db.match_names() ORDER BY 1
 2	2
 3	1
 
-# a name the search path of the macro finds twice is an error, as in a view
+query I
+SELECT "a_sum(s1(COLUMNS('v')))" FROM db.pivot_columns()
+----
+6
+
+# a name the body does not bind is not looked up as an error
 statement ok
 ATTACH ':memory:' AS dt (DEFAULT_TABLE 'real_t');
 
 statement ok
 CREATE TABLE dt.real_t AS SELECT 42 AS v;
 
-statement error
-SELECT * FROM db.from_dt()
+query I
+SELECT * FROM db.unused_dt()
 ----
-Ambiguity detected for 'dt'
+1
 
 statement ok
 DETACH dt;
-
-query I
-SELECT * FROM db.from_dt()
-----
--1
 
 # the arguments still resolve where the macro is called
 query I

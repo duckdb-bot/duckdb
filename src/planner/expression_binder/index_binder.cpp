@@ -108,8 +108,8 @@ unique_ptr<LogicalOperator> IndexBinder::BindCreateIndex(ClientContext &context,
 		expressions.push_back(Bind(expr));
 		// casts are bound without the binder, so a cast that reads settings such as TimeZone is found in the key
 		if (properties.always_require_rebind || !expressions.back()->SupportStatementCache()) {
-			throw BinderException(
-			    "Index keys cannot contain expressions with side effects or that depend on settings such as TimeZone.");
+			throw BinderException("Index keys cannot contain expressions with side effects. They also cannot depend on "
+			                      "settings such as TimeZone.");
 		}
 	}
 	properties.always_require_rebind = statement_requires_rebind;

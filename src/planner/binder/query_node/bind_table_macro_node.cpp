@@ -22,6 +22,7 @@
 #include "duckdb/parser/query_node/recursive_cte_node.hpp"
 #include "duckdb/parser/query_node/set_operation_node.hpp"
 #include "duckdb/parser/tableref/basetableref.hpp"
+#include "duckdb/parser/tableref/match_recognize_ref.hpp"
 #include "duckdb/parser/tableref/pivotref.hpp"
 #include "duckdb/parser/tableref/showref.hpp"
 #include "duckdb/parser/tableref/subqueryref.hpp"
@@ -87,11 +88,7 @@ public:
 				QualifyTableRef(*select.from_table);
 			}
 			for (auto &expr : select.select_list) {
-				const auto changes_before = changes.size();
-				QualifyExpression(*expr);
-				if (changes.size() != changes_before && !expr->HasAlias()) {
-					unnamed_expressions.push_back(expr);
-				}
+				QualifyColumn(expr);
 			}
 			if (select.where_clause) {
 				QualifyExpression(*select.where_clause);
@@ -158,6 +155,15 @@ private:
 		QualifiedName qualified;
 	};
 
+	//! Qualify an expression whose name can name a column
+	void QualifyColumn(unique_ptr<ParsedExpression> &expr) {
+		const auto changes_before = changes.size();
+		QualifyExpression(*expr);
+		if (changes.size() != changes_before && !expr->HasAlias()) {
+			unnamed_expressions.push_back(expr);
+		}
+	}
+
 	void QualifyTableRef(TableRef &ref) {
 		switch (ref.type) {
 		case TableReferenceType::BASE_TABLE: {
@@ -195,7 +201,12 @@ private:
 			auto &pivot = ref.Cast<PivotRef>();
 			QualifyTableRef(*pivot.source);
 			for (auto &aggregate : pivot.aggregates) {
-				QualifyExpression(*aggregate);
+				// the columns are named after the aggregates only if there are several
+				if (pivot.aggregates.size() > 1) {
+					QualifyColumn(aggregate);
+				} else {
+					QualifyExpression(*aggregate);
+				}
 			}
 			for (auto &column : pivot.pivots) {
 				for (auto &expr : column.pivot_expressions) {
@@ -209,6 +220,29 @@ private:
 				if (column.subquery) {
 					QualifyNode(*column.subquery);
 				}
+			}
+			break;
+		}
+		case TableReferenceType::MATCH_RECOGNIZE: {
+			auto &match = ref.Cast<MatchRecognizeRef>();
+			if (match.input) {
+				QualifyTableRef(*match.input);
+			}
+			auto &config = *match.config;
+			for (auto &expr : config.partition_expressions) {
+				QualifyColumn(expr);
+			}
+			for (auto &order : config.order_by_expressions) {
+				QualifyExpression(*order.expression);
+			}
+			for (auto &expr : config.measures_expression_list) {
+				QualifyColumn(expr);
+			}
+			for (auto &expr : config.defines_expression_list) {
+				QualifyExpression(*expr);
+			}
+			if (config.pattern) {
+				QualifyExpression(*config.pattern);
 			}
 			break;
 		}
@@ -258,7 +292,8 @@ private:
 		if (name.Path().size() != 1) {
 			return;
 		}
-		auto macro_entry = LookUp(macro_retriever, type, name);
+		// the macro's search path is the one the name is meant for, so its errors are the macro's, as for a view
+		auto macro_entry = macro_retriever.GetEntry(EntryLookupInfo(type, name), OnEntryNotFound::RETURN_NULL);
 		if (!macro_entry) {
 			return;
 		}

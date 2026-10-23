@@ -94,6 +94,19 @@ statement ok
 CREATE MACRO db.unpivot_on() AS TABLE UNPIVOT (SELECT 1 AS a) ON (s1(a)) INTO NAME k VALUE v;
 
 statement ok
+CREATE MACRO db.pivot_names() AS TABLE PIVOT (SELECT 'a' AS k, 5 AS v) ON k IN ('a') USING sum(s1(v)), max(v);
+
+statement ok
+CREATE MACRO db.match_names() AS TABLE SELECT * FROM (VALUES (1), (1), (2)) t(i)
+MATCH_RECOGNIZE (PARTITION BY s1(i) ORDER BY i MEASURES count(*) AS n ONE ROW PER MATCH PATTERN (A+) DEFINE A AS true);
+
+statement ok
+CREATE TABLE db.dt AS SELECT -1 AS v;
+
+statement ok
+CREATE MACRO db.from_dt() AS TABLE SELECT * FROM dt;
+
+statement ok
 DETACH db;
 
 statement ok
@@ -237,6 +250,37 @@ query TI
 SELECT * FROM db.unpivot_on()
 ----
 a	2
+
+query I
+SELECT "a_sum(s1(v))" FROM db.pivot_names()
+----
+6
+
+query II
+SELECT "s1(i)", n FROM db.match_names() ORDER BY 1
+----
+2	2
+3	1
+
+# a name the search path of the macro finds twice is an error, as in a view
+statement ok
+ATTACH ':memory:' AS dt (DEFAULT_TABLE 'real_t');
+
+statement ok
+CREATE TABLE dt.real_t AS SELECT 42 AS v;
+
+statement error
+SELECT * FROM db.from_dt()
+----
+Ambiguity detected for 'dt'
+
+statement ok
+DETACH dt;
+
+query I
+SELECT * FROM db.from_dt()
+----
+-1
 
 # the arguments still resolve where the macro is called
 query I

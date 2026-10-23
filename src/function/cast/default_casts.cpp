@@ -24,10 +24,6 @@ BindCastInfo::~BindCastInfo() {
 BoundCastData::~BoundCastData() {
 }
 
-bool BoundCastData::SupportStatementCache() const {
-	return true;
-}
-
 CastStatisticsInput::CastStatisticsInput(BoundCastInfo &bound_cast_p, const LogicalType &source_type_p,
                                          const LogicalType &target_type_p, const BaseStatistics &child_stats_p,
                                          optional_ptr<ClientContext> context_p)
@@ -47,6 +43,7 @@ BoundCastInfo::BoundCastInfo(cast_function_t function_p, unique_ptr<BoundCastDat
 BoundCastInfo BoundCastInfo::Copy() const {
 	auto result = BoundCastInfo(function, cast_data ? cast_data->Copy() : nullptr, init_local_state);
 	result.statistics = statistics;
+	result.stability = stability;
 	return result;
 }
 
@@ -97,15 +94,6 @@ bool DefaultCasts::TryVectorNullCast(Vector &source, Vector &result, idx_t count
 
 bool DefaultCasts::ReinterpretCast(Vector &source, Vector &result, idx_t count, CastParameters &parameters) {
 	result.Reinterpret(source);
-	return true;
-}
-
-bool BoundCastInfo::AllSupportStatementCache(const vector<BoundCastInfo> &casts) {
-	for (auto &cast : casts) {
-		if (!cast.SupportStatementCache()) {
-			return false;
-		}
-	}
 	return true;
 }
 

@@ -43,8 +43,6 @@ struct BoundCastData {
 	DUCKDB_API virtual ~BoundCastData();
 
 	DUCKDB_API virtual unique_ptr<BoundCastData> Copy() const = 0;
-	//! Whether a cached statement can reuse the cast, which it cannot when the bind read settings such as TimeZone
-	DUCKDB_API virtual bool SupportStatementCache() const;
 
 	template <class TARGET>
 	TARGET &Cast() {
@@ -149,11 +147,13 @@ public:
 	optional_ptr<BoundCastData> GetCastData() const {
 		return cast_data;
 	}
-	//! Whether a cached statement can reuse the cast and the casts it applies to child values
-	bool SupportStatementCache() const {
-		return !cast_data || cast_data->SupportStatementCache();
+	//! The stability of the cast and of the casts it applies to child values
+	FunctionStability GetStability() const {
+		return stability;
 	}
-	static bool AllSupportStatementCache(const vector<BoundCastInfo> &casts);
+	void SetStability(FunctionStability stability_p) {
+		stability = stability_p;
+	}
 	bool HasInitLocalState() const {
 		return init_local_state;
 	}
@@ -191,6 +191,7 @@ private:
 	init_cast_local_state_t init_local_state;
 	unique_ptr<BoundCastData> cast_data;
 	cast_statistics_t statistics = nullptr;
+	FunctionStability stability = FunctionStability::CONSISTENT;
 };
 
 struct BindCastInput {
@@ -201,6 +202,8 @@ struct BindCastInput {
 	optional_ptr<BindCastInfo> info;
 	optional_ptr<ClientContext> context;
 	QueryLocation query_location;
+	//! The stability of the bound cast, lowered by a bind that reads settings such as TimeZone and by child casts
+	FunctionStability stability = FunctionStability::CONSISTENT;
 
 public:
 	DUCKDB_API BoundCastInfo GetCastFunction(const LogicalType &source, const LogicalType &target);

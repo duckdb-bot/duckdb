@@ -50,9 +50,6 @@ public:
 		}
 		return make_uniq<UnionMemberBoundCastData>(tag_map, std::move(member_casts_copy), type, is_member_to_member);
 	}
-	bool SupportStatementCache() const override {
-		return BoundCastInfo::AllSupportStatementCache(member_casts);
-	}
 };
 
 //--------------------------------------------------------------------------------------------------
@@ -119,7 +116,8 @@ static unique_ptr<BoundCastData> BindToUnionMemberCast(BindCastInput &input, con
 		throw ConversionException(message);
 	}
 
-	// otherwise, return the selected cast
+	// otherwise, return the selected cast, which is the only member cast that is applied
+	input.stability = candidates[0].member_casts[0].GetStability();
 	return make_uniq<UnionMemberBoundCastData>(std::move(candidates[0]));
 }
 

@@ -865,8 +865,8 @@ static bool FoldConstantArgument(ClientContext &context, unique_ptr<Expression> 
 	if (child->GetExpressionClass() == ExpressionClass::BOUND_LAMBDA || !child->IsFoldable()) {
 		return false;
 	}
-	if (binder && !child->SupportStatementCache()) {
-		// the constant no longer shows that its value was computed from settings such as TimeZone
+	if (binder && child->RequiresRebind()) {
+		// the constant no longer shows that its value depends on the query or on settings such as TimeZone
 		binder->SetAlwaysRequireRebind();
 	}
 	Value result;
@@ -1585,7 +1585,7 @@ FunctionBinder::ResolveFunction(shared_ptr<const ScalarFunction> function_p, vec
 	if (binder && (bound_function.HasBindCallback() || bound_function.HasBindExpressionCallback())) {
 		// the callbacks can evaluate constant arguments and drop them, which hides casts that read settings
 		for (auto &argument : arguments) {
-			if (!argument->SupportStatementCache() && argument->IsFoldable()) {
+			if (argument->IsFoldable() && argument->RequiresRebind()) {
 				binder->SetAlwaysRequireRebind();
 				break;
 			}
@@ -1642,12 +1642,8 @@ unique_ptr<Expression> FunctionBinder::BindScalarFunction(shared_ptr<const Scala
 	auto result_func = make_uniq<BoundFunctionExpression>(std::move(bound_function), std::move(children),
 	                                                      std::move(bind_info), is_operator);
 
-	if (binder && result_func->Function().GetStability() == FunctionStability::CONSISTENT_WITHIN_QUERY) {
-		// the result depends on the query it is bound in, also when the bind_expression callback folds it
-		binder->SetAlwaysRequireRebind();
-	}
-	if (binder && result_func->BindInfo() && !result_func->BindInfo()->SupportStatementCache()) {
-		// the same holds when the bind read settings such as TimeZone, which can change before the next execution
+	if (binder && FunctionStabilityRequiresRebind(result_func->Function().GetStability())) {
+		// the result depends on the query or on settings, also when the bind_expression callback folds it
 		binder->SetAlwaysRequireRebind();
 	}
 	if (result_func->Function().HasBindExpressionCallback()) {

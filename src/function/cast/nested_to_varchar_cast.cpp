@@ -58,9 +58,6 @@ public:
 	unique_ptr<BoundCastData> Copy() const override {
 		return make_uniq<QuotedChildCastData>(child_cast.Copy(), child_type);
 	}
-	bool SupportStatementCache() const override {
-		return child_cast.SupportStatementCache();
-	}
 };
 
 unique_ptr<FunctionLocalState> InitQuotedChildLocalState(CastLocalStateParameters &parameters) {
@@ -146,8 +143,10 @@ void NestedToVarcharCast::WrapChildCast(BoundCastInfo &child_cast, const Logical
 	if (child_type.id() != LogicalTypeId::UNION && child_type.id() != LogicalTypeId::VARIANT) {
 		return;
 	}
+	auto stability = child_cast.GetStability();
 	child_cast = BoundCastInfo(QuotedChildCast, make_uniq<QuotedChildCastData>(std::move(child_cast), child_type),
 	                           InitQuotedChildLocalState);
+	child_cast.SetStability(stability);
 }
 
 } // namespace duckdb

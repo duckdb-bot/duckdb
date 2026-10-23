@@ -56,3 +56,33 @@ query III
 SELECT hour(to_timestamp(1767225600)), epoch_us(TIMESTAMPTZ '2026-01-01 00:00:00'), switch(to_timestamp(1767225600), MAP {TIMESTAMP '2026-01-01 00:00:00': 'hit'}, 'miss');
 ----
 1	1767222000000000	miss
+
+# current_localtimestamp reads the start of the transaction and the TimeZone when it is bound
+statement ok
+CREATE TABLE local_times (ts TIMESTAMP);
+
+statement ok
+SET TimeZone = 'UTC';
+
+statement ok
+PREPARE local_time AS INSERT INTO local_times SELECT current_localtimestamp();
+
+statement ok
+BEGIN;
+
+statement ok
+EXECUTE local_time;
+
+statement ok
+SET TimeZone = 'Asia/Kolkata';
+
+statement ok
+EXECUTE local_time;
+
+query I
+SELECT max(ts) - min(ts) FROM local_times;
+----
+05:30:00
+
+statement ok
+COMMIT;

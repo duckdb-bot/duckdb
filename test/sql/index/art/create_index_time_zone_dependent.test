@@ -96,6 +96,10 @@ Index keys cannot contain expressions with side effects. They also cannot depend
 statement ok
 CREATE INDEX i_enum_text ON nested ((e::VARCHAR));
 
+# a cast to a union applies only the cast to the member it selects
+statement ok
+CREATE INDEX i_union_member ON t (((naive::UNION(a TIMESTAMPTZ, b TIMESTAMP)).b));
+
 statement ok
 CREATE INDEX i_map_text ON nested (((s::MAP(VARCHAR,VARCHAR))['k']));
 
@@ -125,6 +129,40 @@ statement error
 CREATE INDEX i ON t ((date_part(['epoch', 'hour'], ts).epoch));
 ----
 Index keys cannot contain expressions with side effects. They also cannot depend on settings such as TimeZone
+
+# a part that is not a constant can be any part
+statement error
+CREATE INDEX i ON t ((date_part(s, ts)));
+----
+Index keys cannot contain expressions with side effects. They also cannot depend on settings such as TimeZone
+
+# strptime reads the settings only for a format with a time zone
+statement error
+CREATE INDEX i ON t ((strptime(s, '%Y-%m-%d %H:%M:%S %Z')));
+----
+Index keys cannot contain expressions with side effects. They also cannot depend on settings such as TimeZone
+
+statement ok
+CREATE INDEX i_strptime ON t ((strptime(s, '%Y-%m-%d %H:%M:%S')));
+
+# make_timestamptz reads them only for its parts, not for microseconds
+statement error
+CREATE INDEX i ON t ((make_timestamptz(2026, 1, 1, id, 0, 0)));
+----
+Index keys cannot contain expressions with side effects. They also cannot depend on settings such as TimeZone
+
+statement ok
+CREATE INDEX i_make_timestamptz ON t ((make_timestamptz(epoch_us(ts))));
+
+# the age of one timestamp and the local time also depend on the start of the transaction
+foreach expression epoch(age(ts,ts)) epoch(age(ts)) naive<current_localtimestamp() current_localtime()::VARCHAR||s
+
+statement error
+CREATE INDEX i ON t (({expression}));
+----
+Index keys cannot contain expressions with side effects. They also cannot depend on settings such as TimeZone
+
+endloop
 
 statement ok
 SET TimeZone = 'Europe/Amsterdam';
@@ -163,3 +201,19 @@ query II
 EXPLAIN SELECT count(*) FROM days WHERE era(ts) = 0;
 ----
 logical_opt	<REGEX>:.*Empty Result.*
+
+statement ok
+ATTACH '{TEST_DIR}/create_index_time_zone_pruning.duckdb' AS pruning (ROW_GROUP_SIZE 2048);
+
+statement ok
+CREATE TABLE pruning.days AS SELECT TIMESTAMPTZ '2000-01-01 00:00:00+00' + i * INTERVAL '1 day' AS ts FROM range(8192) r(i);
+
+query I
+SELECT count(*) FROM pruning.days WHERE date_diff('day', TIMESTAMPTZ '2000-01-01 00:00:00+00', ts) = 3000;
+----
+1
+
+query II
+EXPLAIN ANALYZE SELECT ts FROM pruning.days WHERE date_diff('day', TIMESTAMPTZ '2000-01-01 00:00:00+00', ts) = 3000;
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 4.*

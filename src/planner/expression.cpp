@@ -71,14 +71,14 @@ bool Expression::CanThrow() const {
 	return can_throw;
 }
 
-bool Expression::SupportStatementCache() const {
-	bool support_statement_cache = true;
+bool Expression::RequiresRebind() const {
+	bool requires_rebind = false;
 	ExpressionIterator::EnumerateChildren(*this, [&](const Expression &child) {
-		if (!child.SupportStatementCache()) {
-			support_statement_cache = false;
+		if (child.RequiresRebind()) {
+			requires_rebind = true;
 		}
 	});
-	return support_statement_cache;
+	return requires_rebind;
 }
 
 bool Expression::PropagatesNullValues() const {

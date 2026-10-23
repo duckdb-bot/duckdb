@@ -3528,6 +3528,8 @@ enum class FunctionStability : uint8_t {
 	VOLATILE = 1,
 	/// Stable within a single query/transaction but may change across queries (e.g. now()).
 	CONSISTENT_WITHIN_QUERY = 2,
+	/// The same result for the same input and the same settings, such as the TimeZone that the bind reads.
+	CONSISTENT_WITHIN_SETTINGS = 3,
 };
 
 /// Whether a function handles NULL inputs itself.

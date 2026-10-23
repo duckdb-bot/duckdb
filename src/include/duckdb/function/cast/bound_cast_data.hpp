@@ -25,9 +25,6 @@ public:
 	unique_ptr<BoundCastData> Copy() const override {
 		return make_uniq<ListBoundCastData>(child_cast_info.Copy());
 	}
-	bool SupportStatementCache() const override {
-		return child_cast_info.SupportStatementCache();
-	}
 };
 
 struct ArrayBoundCastData : public BoundCastData {
@@ -43,9 +40,6 @@ struct ArrayBoundCastData : public BoundCastData {
 public:
 	unique_ptr<BoundCastData> Copy() const override {
 		return make_uniq<ArrayBoundCastData>(child_cast_info.Copy());
-	}
-	bool SupportStatementCache() const override {
-		return child_cast_info.SupportStatementCache();
 	}
 };
 
@@ -91,9 +85,6 @@ public:
 		return make_uniq<StructBoundCastData>(std::move(copy_info), target, source_indexes, target_indexes,
 		                                      target_null_indexes);
 	}
-	bool SupportStatementCache() const override {
-		return BoundCastInfo::AllSupportStatementCache(child_cast_info);
-	}
 };
 
 struct StructCastLocalState : public FunctionLocalState {
@@ -115,9 +106,6 @@ struct MapBoundCastData : public BoundCastData {
 public:
 	unique_ptr<BoundCastData> Copy() const override {
 		return make_uniq<MapBoundCastData>(key_cast.Copy(), value_cast.Copy());
-	}
-	bool SupportStatementCache() const override {
-		return key_cast.SupportStatementCache() && value_cast.SupportStatementCache();
 	}
 };
 
@@ -146,9 +134,6 @@ public:
 			copy_value_casts.push_back(value_cast.Copy());
 		}
 		return make_uniq<StructToMapBoundCastData>(key_cast.Copy(), std::move(copy_value_casts));
-	}
-	bool SupportStatementCache() const override {
-		return key_cast.SupportStatementCache() && BoundCastInfo::AllSupportStatementCache(value_casts);
 	}
 };
 

@@ -124,7 +124,7 @@ BindResult ExpressionBinder::BindOperatorAsFunction(OperatorExpression &op, cons
 	}
 	if (result->GetExpressionClass() == ExpressionClass::BOUND_FUNCTION) {
 		auto &bound_function = result->Cast<BoundFunctionExpression>();
-		if (bound_function.Function().GetStability() == FunctionStability::CONSISTENT_WITHIN_QUERY) {
+		if (FunctionStabilityRequiresRebind(bound_function.Function().GetStability())) {
 			binder.SetAlwaysRequireRebind();
 		}
 	}

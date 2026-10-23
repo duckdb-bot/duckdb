@@ -63,9 +63,6 @@ public:
 	unique_ptr<BoundCastData> Copy() const override {
 		return make_uniq<EnumBoundCastData>(to_varchar_cast.Copy(), from_varchar_cast.Copy());
 	}
-	bool SupportStatementCache() const override {
-		return to_varchar_cast.SupportStatementCache() && from_varchar_cast.SupportStatementCache();
-	}
 };
 
 static unique_ptr<BoundCastData> BindEnumCast(BindCastInput &input, const LogicalType &source,

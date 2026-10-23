@@ -46,11 +46,22 @@ struct PragmaInfo;
 //! The default null handling is NULL in, NULL out
 enum class FunctionNullHandling : uint8_t { DEFAULT_NULL_HANDLING = 0, SPECIAL_HANDLING = 1 };
 //! The stability of the function, used by the optimizer
-//! CONSISTENT              -> this function always returns the same result when given the same input, no variance
-//! CONSISTENT_WITHIN_QUERY -> this function returns the same result WITHIN the same query/transaction
-//!                            but the result might change across queries (e.g. NOW(), CURRENT_TIME)
-//! VOLATILE                -> the result of this function might change per row (e.g. RANDOM())
-enum class FunctionStability : uint8_t { CONSISTENT = 0, VOLATILE = 1, CONSISTENT_WITHIN_QUERY = 2 };
+//! CONSISTENT                 -> this function always returns the same result when given the same input, no variance
+//! CONSISTENT_WITHIN_SETTINGS -> this function returns the same result when given the same input and the same
+//!                               settings, which its bind reads (e.g. TimeZone for STRFTIME, PostgreSQL's STABLE)
+//! CONSISTENT_WITHIN_QUERY    -> this function returns the same result WITHIN the same query/transaction
+//!                               but the result might change across queries (e.g. NOW(), CURRENT_TIME)
+//! VOLATILE                   -> the result of this function might change per row (e.g. RANDOM())
+enum class FunctionStability : uint8_t {
+	CONSISTENT = 0,
+	VOLATILE = 1,
+	CONSISTENT_WITHIN_QUERY = 2,
+	CONSISTENT_WITHIN_SETTINGS = 3
+};
+//! Whether the function returns the same result for the same input throughout a query, as the optimizer requires
+DUCKDB_API bool FunctionStabilityIsConsistent(FunctionStability stability);
+//! Whether a statement that calls the function has to be bound again before every execution
+DUCKDB_API bool FunctionStabilityRequiresRebind(FunctionStability stability);
 
 //! How to handle collations
 //! PROPAGATE_COLLATIONS        -> this function combines collation from its inputs and emits them again (default)

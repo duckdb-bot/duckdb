@@ -59,7 +59,7 @@ bool BoundFunctionExpression::IsVolatile() const {
 
 bool BoundFunctionExpression::IsConsistent() const {
 	auto lambda_expr = GetLambdaExpression(*this);
-	return function.GetStability() == FunctionStability::CONSISTENT && (!lambda_expr || lambda_expr->IsConsistent()) &&
+	return FunctionStabilityIsConsistent(function.GetStability()) && (!lambda_expr || lambda_expr->IsConsistent()) &&
 	       Expression::IsConsistent();
 }
 
@@ -78,10 +78,10 @@ bool BoundFunctionExpression::CanThrow() const {
 	       (lambda_expr && lambda_expr->CanThrow()) || Expression::CanThrow();
 }
 
-bool BoundFunctionExpression::SupportStatementCache() const {
+bool BoundFunctionExpression::RequiresRebind() const {
 	auto lambda_expr = GetLambdaExpression(*this);
-	return (!bind_info || bind_info->SupportStatementCache()) &&
-	       (!lambda_expr || lambda_expr->SupportStatementCache()) && Expression::SupportStatementCache();
+	return FunctionStabilityRequiresRebind(function.GetStability()) || (lambda_expr && lambda_expr->RequiresRebind()) ||
+	       Expression::RequiresRebind();
 }
 
 string BoundFunctionExpression::ToString() const {

@@ -29,10 +29,6 @@ struct ICUDateFunc {
 
 		bool Equals(const FunctionData &other_p) const override;
 		duckdb::unique_ptr<FunctionData> Copy() const override;
-		//! The calendar is made from the TimeZone and Calendar settings, which can change between executions
-		bool SupportStatementCache() const override {
-			return false;
-		}
 
 		void InitCalendar();
 	};
@@ -43,10 +39,6 @@ struct ICUDateFunc {
 
 		duckdb::unique_ptr<BoundCastData> Copy() const override {
 			return make_uniq<CastData>(info->Copy());
-		}
-
-		bool SupportStatementCache() const override {
-			return info->SupportStatementCache();
 		}
 
 		duckdb::unique_ptr<FunctionData> info;
@@ -108,6 +100,8 @@ struct ICUDateFunc {
 
 	//! Binds a default calendar object for use by the function
 	static duckdb::unique_ptr<FunctionData> Bind(BindScalarFunctionInput &input);
+	//! Binds the calendar of the TimeZone and Calendar settings for a cast, whose result then depends on them
+	static duckdb::unique_ptr<CastData> BindCastData(BindCastInput &input);
 	//! Initializes a CalendarCacheState from the function's BindData
 	static duckdb::unique_ptr<FunctionLocalState>
 	InitCalendarCache(ExpressionState &state, const BoundFunctionExpression &expr, FunctionData *bind_data);

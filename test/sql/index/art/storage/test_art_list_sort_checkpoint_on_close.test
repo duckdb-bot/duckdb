@@ -2,7 +2,9 @@
 # description: The checkpoint on close copies an index whose key uses list_sort, after the connection that bound it is gone
 # group: [storage]
 
-load __TEST_DIR__/art_list_sort_checkpoint_on_close.db
+require skip_reload
+
+load {TEST_DIR}/art_list_sort_checkpoint_on_close.db
 
 # keep the changes in the WAL, so that the checkpoint on close has to write them
 statement ok

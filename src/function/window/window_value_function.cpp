@@ -702,9 +702,10 @@ static idx_t ValuesBeforeRow(const WindowLeadLagGlobalState &glstate, const Vali
 	if (!values_before) {
 		return 0;
 	}
-	//	A narrow frame is cheaper to count row by row than to search the whole value tree
+	//	A narrow frame is cheaper to count row by row than a longer prefix of the value tree
 	static constexpr idx_t SCAN_LIMIT = 256;
-	if (frame.end - frame.start <= SCAN_LIMIT) {
+	const auto frame_width = frame.end - frame.start;
+	if (frame_width <= SCAN_LIMIT && frame_width <= values_before) {
 		idx_t result = 0;
 		for (auto frame_row = frame.start; frame_row < frame.end; ++frame_row) {
 			if (values.RowIsValid(frame_row) && row_tree.Token(frame_row) < own_token) {
@@ -755,14 +756,18 @@ void WindowLeadLagExecutor::GetData(ExecutionContext &context, DataChunk &eval_c
 
 			// (1) compute the ROW_NUMBER of the own row
 			frame = FrameBounds(frame_begin[i], MaxValue(frame_end[i], frame_begin[i]));
-			idx_t own_row;
+			const auto frame_width = NumericCast<int64_t>(frame.end - frame.start);
+			idx_t own_row = 0;
 			bool own_value = true;
 			if (ignore_nulls.CannotHaveNull()) {
 				own_row = glstate.row_tree->Rank(frame.start, frame.end, row_idx) - 1;
 			} else {
-				//	The value tree only holds the rows with a value, so only those count
-				own_row = ValuesBeforeRow(glstate, ignore_nulls, frame, row_idx);
 				own_value = ignore_nulls.RowIsValid(row_idx);
+				//	An offset beyond the frame width leaves the frame from any row, so the row number does not matter
+				if (offset <= frame_width && offset >= -frame_width) {
+					//	The value tree only holds the rows with a value, so only those count
+					own_row = ValuesBeforeRow(glstate, ignore_nulls, frame, row_idx);
+				}
 			}
 			// (2) adjust the row number by adding or subtracting an offset
 			auto val_idx = LeadLagIndex(wexpr.GetExpressionType(), NumericCast<int64_t>(own_row), offset);
@@ -779,7 +784,6 @@ void WindowLeadLagExecutor::GetData(ExecutionContext &context, DataChunk &eval_c
 					--val_idx;
 				}
 			}
-			const auto frame_width = NumericCast<int64_t>(frame.end - frame.start);
 			if (val_idx >= 0 && val_idx < frame_width) {
 				// (3) find the row at that offset
 				const auto n = NumericCast<idx_t>(val_idx);

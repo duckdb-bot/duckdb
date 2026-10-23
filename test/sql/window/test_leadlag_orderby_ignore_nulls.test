@@ -62,6 +62,17 @@ WHERE a1 IS DISTINCT FROM b1 OR a2 IS DISTINCT FROM b2 OR a3 IS DISTINCT FROM b3
 ----
 0
 
+# an offset beyond the frame gives the default from every row
+query II
+SELECT count(*) FILTER (WHERE a = -1), count(*) FILTER (WHERE b = -1) FROM (
+	SELECT
+		LEAD(v, 4, -1 ORDER BY k DESC IGNORE NULLS) OVER (ORDER BY k ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) AS a,
+		LAG(v, -4, -1 ORDER BY k DESC IGNORE NULLS) OVER (ORDER BY k ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) AS b
+	FROM t
+)
+----
+100	100
+
 # frames wider than a few hundred rows count through the value tree
 statement ok
 CREATE TABLE t2 AS

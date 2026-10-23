@@ -1,4 +1,5 @@
 #include "duckdb/catalog/catalog_entry.hpp"
+#include "duckdb/catalog/catalog_entry/scalar_function_catalog_entry.hpp"
 #include "duckdb/catalog/entry_lookup_info.hpp"
 #include "duckdb/parser/expression/case_expression.hpp"
 #include "duckdb/parser/expression/columnref_expression.hpp"
@@ -13,20 +14,28 @@
 
 namespace duckdb {
 
-//! Whether a parsed expression holds a subquery, an UNNEST or a macro call, which a lambda body cannot hold or which
-//! would be bound with effects
-static bool ContainsSubqueryUnnestOrMacro(ExpressionBinder &binder, const ParsedExpression &expr) {
+//! The scalar function an unqualified call resolves to, if it resolves to one
+static optional_ptr<ScalarFunctionCatalogEntry> TryGetScalarFunction(ExpressionBinder &binder,
+                                                                     const FunctionExpression &function) {
+	EntryLookupInfo lookup(CatalogType::SCALAR_FUNCTION_ENTRY, function.GetQualifiedName());
+	auto entry = binder.GetBinder().GetCatalogEntry(lookup, OnEntryNotFound::RETURN_NULL);
+	if (!entry || entry->type != CatalogType::SCALAR_FUNCTION_ENTRY) {
+		return nullptr;
+	}
+	return entry->Cast<ScalarFunctionCatalogEntry>();
+}
+
+//! Whether a parsed expression holds what a lambda body cannot hold or what this cannot see into: a subquery, an
+//! UNNEST, a macro call or a qualified function name
+static bool ContainsUnsupported(ExpressionBinder &binder, const ParsedExpression &expr) {
 	if (expr.GetExpressionClass() == ExpressionClass::SUBQUERY) {
 		return true;
 	}
 	if (expr.GetExpressionClass() == ExpressionClass::FUNCTION) {
 		auto &function = expr.Cast<FunctionExpression>();
-		if (ExpressionBinder::IsUnnestFunction(function.FunctionName())) {
-			return true;
-		}
 		auto &name = function.GetQualifiedName();
-		if (!name.Catalog().empty() || !name.Schema().empty()) {
-			// a qualified name may also be a macro, or a call on a column
+		if (ExpressionBinder::IsUnnestFunction(function.FunctionName()) || !name.Catalog().empty() ||
+		    !name.Schema().empty()) {
 			return true;
 		}
 		EntryLookupInfo lookup(CatalogType::SCALAR_FUNCTION_ENTRY, name);
@@ -37,7 +46,37 @@ static bool ContainsSubqueryUnnestOrMacro(ExpressionBinder &binder, const Parsed
 	}
 	bool result = false;
 	ParsedExpressionIterator::EnumerateChildren(
-	    expr, [&](const ParsedExpression &child) { result = result || ContainsSubqueryUnnestOrMacro(binder, child); });
+	    expr, [&](const ParsedExpression &child) { result = result || ContainsUnsupported(binder, child); });
+	return result;
+}
+
+//! Whether a parsed expression calls a scalar function with a volatile overload
+static bool CallsVolatileFunction(ExpressionBinder &binder, const ParsedExpression &expr) {
+	if (expr.GetExpressionClass() == ExpressionClass::FUNCTION) {
+		auto function = TryGetScalarFunction(binder, expr.Cast<FunctionExpression>());
+		if (function) {
+			for (auto &overload : function->functions.functions) {
+				if (overload->GetStability() == FunctionStability::VOLATILE) {
+					return true;
+				}
+			}
+		}
+	}
+	bool result = false;
+	ParsedExpressionIterator::EnumerateChildren(
+	    expr, [&](const ParsedExpression &child) { result = result || CallsVolatileFunction(binder, child); });
+	return result;
+}
+
+//! Whether a column reference of the expression may name an alias, which can hold what a lambda body cannot hold
+static bool RefersToAlias(ExpressionBinder &binder, ParsedExpression &expr) {
+	if (expr.GetExpressionClass() == ExpressionClass::COLUMN_REF &&
+	    binder.ClaimsAlias(expr.Cast<ColumnRefExpression>())) {
+		return true;
+	}
+	bool result = false;
+	ParsedExpressionIterator::EnumerateChildren(
+	    expr, [&](unique_ptr<ParsedExpression> &child) { result = result || RefersToAlias(binder, *child); });
 	return result;
 }
 
@@ -49,7 +88,7 @@ static void CollectColumnNames(const ParsedExpression &expr, case_insensitive_se
 	    expr, [&](const ParsedExpression &child) { CollectColumnNames(child, names); });
 }
 
-bool ExpressionBinder::CanEvaluateCaseOperandOnce(CaseExpression &expr, idx_t depth) {
+bool ExpressionBinder::CanEvaluateCaseOperandOnce(CaseExpression &expr) {
 	if (!CanBindCaseOperandOnce() || expr.CaseChecks().size() < 2 || !expr.HasSimpleCaseChecks()) {
 		return false;
 	}
@@ -61,23 +100,21 @@ bool ExpressionBinder::CanEvaluateCaseOperandOnce(CaseExpression &expr, idx_t de
 	}
 	parts.push_back(expr.Else());
 	for (auto &part : parts) {
-		if (ContainsSubqueryUnnestOrMacro(*this, part.get())) {
+		if (ContainsUnsupported(*this, part.get())) {
 			return false;
 		}
 	}
-	// a binder without a select node registers nothing, it tells whether the operand is volatile and whether a lambda
-	// body can hold every branch (it refuses aliases, aggregates and windows as well, which keep the copies)
-	ExpressionBinder probe(binder, context);
-	probe.lambda_bindings = lambda_bindings;
-	probe.inaccessible_lambda_binding_count = inaccessible_lambda_binding_count;
-	for (idx_t i = 0; i < parts.size(); i++) {
-		auto part = parts[i].get().Copy();
-		auto result = probe.Bind(part, depth);
-		if (result.HasError() || (i == 0 && !result.expression->IsVolatile())) {
+	for (auto &check : expr.CaseChecksMutable()) {
+		if (RefersToAlias(*this, *check.when_expr->Cast<ComparisonExpression>().RightMutable()) ||
+		    RefersToAlias(*this, *check.then_expr)) {
 			return false;
 		}
 	}
-	return true;
+	if (RefersToAlias(*this, *expr.ElseMutable())) {
+		return false;
+	}
+	// decided on the parsed operand, since binding it here would register what it holds
+	return CallsVolatileFunction(*this, expr.SimpleCaseOperand());
 }
 
 BindResult ExpressionBinder::BindCaseOperandOnce(CaseExpression &expr, idx_t depth) {
@@ -119,7 +156,7 @@ BindResult ExpressionBinder::BindCaseOperandOnce(CaseExpression &expr, idx_t dep
 
 BindResult ExpressionBinder::BindExpression(CaseExpression &expr, idx_t depth) {
 	// copies of a volatile operand would each be evaluated, so it is evaluated once as the argument of a lambda
-	if (CanEvaluateCaseOperandOnce(expr, depth)) {
+	if (CanEvaluateCaseOperandOnce(expr)) {
 		return BindCaseOperandOnce(expr, depth);
 	}
 	// first try to bind the children of the case expression

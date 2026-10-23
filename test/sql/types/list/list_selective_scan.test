@@ -76,6 +76,17 @@ restart
 
 endloop
 
+# a row ID filter below a small limit, with and without an offset
+query I
+SELECT l = expected(id) FROM t WHERE rowid = 4321 LIMIT 1
+----
+true
+
+query I
+SELECT l = expected(id) FROM t WHERE rowid = 4321 LIMIT 1 OFFSET 0
+----
+true
+
 # deleted rows are not selected either
 statement ok
 DELETE FROM t WHERE id % 3 = 0;

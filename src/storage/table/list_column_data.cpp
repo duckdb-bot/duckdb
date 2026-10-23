@@ -189,6 +189,17 @@ void ListColumnData::Select(TransactionData transaction, idx_t vector_index, Col
 	auto last_offset = offsets[scan_count - 1].GetValueUnsafe();
 	auto total_children = GetListLength(first_offset, last_offset, child_count);
 
+	auto read_whole_lists = [&]() {
+		validity->ScanCount(state.child_states[0], result, scan_count);
+		ScanLists(state, result, offset_vector, scan_count);
+		FlatVector::SetSize(result, count_t(scan_count));
+		result.Slice(sel, sel_count);
+	};
+	if (total_children < 2 * scan_count || sel_count * 2 > scan_count) {
+		// lists this short cannot leave enough children per range, and a selection of most rows skips few children
+		read_whole_lists();
+		return;
+	}
 	auto list_start = [&](idx_t row) {
 		return row == 0 ? first_offset : offsets[row - 1].GetValueUnsafe();
 	};
@@ -206,10 +217,7 @@ void ListColumnData::Select(TransactionData transaction, idx_t vector_index, Col
 	}
 	// as for arrays, allow around one range every two children of an average list, and skip at least half the children
 	if (consecutive_ranges * 2 * scan_count > total_children || range_children * 2 > total_children) {
-		validity->ScanCount(state.child_states[0], result, scan_count);
-		ScanLists(state, result, offset_vector, scan_count);
-		FlatVector::SetSize(result, count_t(scan_count));
-		result.Slice(sel, sel_count);
+		read_whole_lists();
 		return;
 	}
 

@@ -1,0 +1,14 @@
+# name: test/sql/cte/materialized/materialized_cte_spool_spanning_chunks.test
+# description: A materialized CTE read from its spool returns rows that span several spool chunks exactly
+# group: [materialized]
+
+statement ok
+SET threads = 1;
+
+statement ok
+CREATE TABLE result AS WITH c AS MATERIALIZED (SELECT i, list_transform(range(16), lambda x: (x + i)::DOUBLE)::DOUBLE[16] a FROM range(150000) t(i) WHERE i % 2048 >= 64 OR i = 0) SELECT i, a, (SELECT count(*) FROM c) total FROM c LIMIT 90000;
+
+query IIIII
+SELECT count(*), sum(i), min(total), max(total), count(*) FILTER (WHERE a[1] IS DISTINCT FROM i OR a[16] IS DISTINCT FROM i + 15) FROM result
+----
+90000	4183401897	145265	145265	0

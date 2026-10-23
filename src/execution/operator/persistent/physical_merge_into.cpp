@@ -108,6 +108,11 @@ SourceResultType PhysicalMergeActionSource::GetDataInternal(ExecutionContext &co
 	                             input.batch_index_state, input.interrupt_state);
 }
 
+void PhysicalMergeActionSource::InitializeOutputChunk(Allocator &allocator, DataChunk &chunk) const {
+	// the exchange hands out its rows by reference or as a slice, so the output needs no buffers of its own
+	chunk.Initialize(allocator, types, vector<bool>(types.size(), false));
+}
+
 ProgressData PhysicalMergeActionSource::GetProgress(ClientContext &context, GlobalSourceState &gstate_p) const {
 	auto &gstate = gstate_p.Cast<MergeActionGlobalSourceState>();
 	// we do not know how many rows the merge into will push into this action - the exchange reports the rows we have

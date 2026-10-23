@@ -18,7 +18,6 @@
 #include "duckdb/transaction/duck_transaction.hpp"
 #include "duckdb/transaction/local_storage.hpp"
 #include "duckdb/function/table/table_scan.hpp"
-#include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/execution/index/index_type.hpp"
 
 namespace duckdb {
@@ -136,18 +135,10 @@ void PhysicalCreateIndex::AppendRowsAfterScan(ClientContext &context, DataTable 
 	if (row_start >= row_end) {
 		return;
 	}
-	auto is_primary_key = alter_table_info && info->constraint_type == IndexConstraintType::PRIMARY;
 	auto &transaction = DuckTransaction::Get(context, storage.db);
 	storage.ScanForIndexCreation(transaction, storage_ids, row_start, row_end, [&](DataChunk &chunk, Vector &row_ids) {
 		// the append lock is held, so an interrupted creation releases it early
 		context.InterruptCheck();
-		if (is_primary_key) {
-			for (auto column_id : storage_ids) {
-				if (VectorOperations::HasNull(chunk.data[column_id])) {
-					throw ConstraintException("NOT NULL constraint failed: %s", info->GetIndexName());
-				}
-			}
-		}
 		auto error = index.Append(chunk, row_ids);
 		if (error.HasError()) {
 			error.Throw();

@@ -6,6 +6,7 @@
         "test/optimizer/statistics/statistics_numeric.test",
         "test/optimizer/statistics/statistics_monotone_infinity.test",
         "test/optimizer/statistics/statistics_additive_duplication.test",
+        "test/optimizer/statistics/statistics_lambda.test",
         "test/optimizer/joins/always_true_scan_filter_estimate.test",
         "test/sql/optimizer/power_zonemap_pruning.test",
         "test/sql/optimizer/modulo_zonemap_pruning.test",

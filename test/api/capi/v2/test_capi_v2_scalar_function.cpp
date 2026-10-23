@@ -789,7 +789,7 @@ TEST_CASE("V2 scalar: function properties", "[capi_v2][scalar_function]") {
 	// With default null handling this would be NULL without invoking the callback.
 	REQUIRE(QueryI32(fx.conn, "SELECT COALESCE(always42(NULL::INTEGER), -1)") == 42);
 
-	// CONSISTENT_WITHIN_SETTINGS: the catalog reports it, and index keys cannot contain the function.
+	// The catalog reports CONSISTENT_WITHIN_SETTINGS, and index keys cannot contain the function.
 	function = MakeScalar(fx.conn, "prop_settings");
 	sig = SigOf(function);
 	SigParam(sig, "a", integer);

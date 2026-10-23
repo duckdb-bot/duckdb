@@ -733,7 +733,7 @@ TEST_CASE("Stable C++API: scalar function properties", "[cpp_api]") {
 	REQUIRE(volatile_rows >= 1000);
 	REQUIRE(consistent_rows < volatile_rows);
 
-	// CONSISTENT_WITHIN_SETTINGS: the catalog reports it, and index keys cannot contain the function.
+	// The catalog reports CONSISTENT_WITHIN_SETTINGS, and index keys cannot contain the function.
 	auto settings = ScalarFunction::Create(conn.GetFactory());
 	settings.SetName("prop_settings")
 	    .SetExecCallback(CountingOneExec)

@@ -16,14 +16,31 @@ BindCastInput::BindCastInput(CastFunctionSet &function_set, optional_ptr<BindCas
     : function_set(function_set), info(info), context(context) {
 }
 
+//! Orders the stabilities from the most to the least stable
+static idx_t StabilityRank(FunctionStability stability) {
+	switch (stability) {
+	case FunctionStability::CONSISTENT:
+		return 0;
+	case FunctionStability::CONSISTENT_WITHIN_SETTINGS:
+		return 1;
+	case FunctionStability::CONSISTENT_WITHIN_QUERY:
+		return 2;
+	case FunctionStability::VOLATILE:
+		return 3;
+	}
+	throw InternalException("Unsupported FunctionStability");
+}
+
+//! A cast that applies other casts is as stable as the least stable of them
+static FunctionStability LeastStable(FunctionStability left, FunctionStability right) {
+	return StabilityRank(left) >= StabilityRank(right) ? left : right;
+}
+
 BoundCastInfo BindCastInput::GetCastFunction(const LogicalType &source, const LogicalType &target) {
 	GetCastFunctionInput input(context);
 	input.query_location = query_location;
 	auto result = function_set.GetCastFunction(source, target, input);
-	if (result.GetStability() != FunctionStability::CONSISTENT) {
-		// a cast that applies this cast to its child values is not more stable than it
-		stability = result.GetStability();
-	}
+	stability = LeastStable(stability, result.GetStability());
 	return result;
 }
 
@@ -76,9 +93,7 @@ BoundCastInfo CastFunctionSet::GetCastFunction(const LogicalType &source, const 
 		BindCastInput input(*this, bind_function.info.get(), get_input.context);
 		input.query_location = get_input.query_location;
 		auto result = bind_function.function(input, source, target);
-		if (result.GetStability() == FunctionStability::CONSISTENT) {
-			result.SetStability(input.stability);
-		}
+		result.SetStability(LeastStable(result.GetStability(), input.stability));
 		return result;
 	};
 

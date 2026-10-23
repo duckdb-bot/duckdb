@@ -202,6 +202,12 @@ EXPLAIN SELECT count(*) FROM days WHERE era(ts) = 0;
 ----
 logical_opt	<REGEX>:.*Empty Result.*
 
+# a cast that reads TimeZone stays consistent, so it is computed after grouping by its input
+query II
+EXPLAIN SELECT ts, ts::VARCHAR FROM days GROUP BY ts, ts::VARCHAR;
+----
+logical_opt	<REGEX>:.*Groups: ts .*
+
 statement ok
 ATTACH '{TEST_DIR}/create_index_time_zone_pruning.duckdb' AS pruning (ROW_GROUP_SIZE 2048);
 

@@ -47,8 +47,8 @@ struct PragmaInfo;
 enum class FunctionNullHandling : uint8_t { DEFAULT_NULL_HANDLING = 0, SPECIAL_HANDLING = 1 };
 //! The stability of the function, used by the optimizer
 //! CONSISTENT                 -> this function always returns the same result when given the same input, no variance
-//! CONSISTENT_WITHIN_SETTINGS -> this function returns the same result when given the same input and the same
-//!                               settings, which its bind reads (e.g. TimeZone for STRFTIME, PostgreSQL's STABLE)
+//! CONSISTENT_WITHIN_SETTINGS -> this function returns the same result when given the same input, but its bind reads
+//!                               settings such as TimeZone, so a new bind can change it (PostgreSQL's STABLE)
 //! CONSISTENT_WITHIN_QUERY    -> this function returns the same result WITHIN the same query/transaction
 //!                               but the result might change across queries (e.g. NOW(), CURRENT_TIME)
 //! VOLATILE                   -> the result of this function might change per row (e.g. RANDOM())

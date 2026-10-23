@@ -118,6 +118,9 @@ public:
 			// the recursive part sees the CTE itself
 			cte_names.push_back(identifier_set_t {recursive.ctename});
 			QualifyNode(*recursive.right);
+			for (auto &key : recursive.key_targets) {
+				QualifyExpression(*key);
+			}
 			cte_names.pop_back();
 			break;
 		}

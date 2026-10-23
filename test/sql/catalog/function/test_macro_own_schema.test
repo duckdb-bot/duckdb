@@ -60,6 +60,18 @@ statement ok
 CREATE MACRO db.recursive_cte() AS TABLE
 WITH RECURSIVE r AS (SELECT v FROM r UNION ALL SELECT v + 1 FROM r WHERE v < 102) SELECT sum(v) FROM r;
 
+# the aggregates of USING KEY are bound with the search path of the session at CREATE
+statement ok
+USE db;
+
+statement ok
+CREATE MACRO recursive_key() AS TABLE
+WITH RECURSIVE r(k, v) USING KEY (k, max(s1(v)) AS v) AS (VALUES (1, 10) UNION ALL SELECT k + 1, v + 1 FROM r WHERE k < 2)
+SELECT * FROM r ORDER BY k;
+
+statement ok
+USE memory;
+
 statement ok
 CREATE MACRO db.pivot_cte() AS TABLE PIVOT (WITH t AS (SELECT 'a' AS k, 7 AS v) SELECT * FROM t) ON k IN ('a') USING sum(v);
 
@@ -173,6 +185,12 @@ query I
 SELECT * FROM db.recursive_cte()
 ----
 303
+
+query II
+SELECT * FROM db.recursive_key()
+----
+1	11
+2	12
 
 query I
 WITH t AS (SELECT * FROM db.from_t()) SELECT * FROM t

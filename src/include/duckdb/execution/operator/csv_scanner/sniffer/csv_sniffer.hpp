@@ -40,6 +40,8 @@ struct CandidateStats {
 	idx_t prev_padding_count = 0;
 	//! Min number of ignored rows
 	idx_t min_ignored_rows = 0;
+	//! Number of lines the best candidate reads as comments or empty lines
+	idx_t best_discarded_lines = 0;
 };
 
 //! All the options that will be used to sniff the dialect of the CSV file

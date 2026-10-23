@@ -385,22 +385,18 @@ static constexpr idx_t NON_FILTERING_BUILD_SIDE_THRESHOLD = 4194304;
 //! A join is expected to stay in memory while its estimated build side is below this share of the memory budget
 static constexpr idx_t LIKELY_IN_MEMORY_BUILD_MEMORY_FRACTION = 4;
 
-bool PhysicalHashJoin::BuildIsLikelyLarge(ClientContext &context) const {
-	idx_t row_width = sizeof(data_ptr_t) + sizeof(hash_t); // per-row pointer table and hash overhead
-	for (auto &type : children[1].get().GetTypes()) {
-		row_width += GetTypeIdSize(type.InternalType());
-	}
-	const auto build_size = children[1].get().estimated_cardinality * row_width;
-	const auto memory_budget = BufferManager::GetBufferManager(context).GetMaxMemory();
-	return build_size > memory_budget / LIKELY_IN_MEMORY_BUILD_MEMORY_FRACTION;
-}
-
 //! Whether the build side is expected to exceed the memory budget and spill
 static bool JoinIsLikelyExternal(ClientContext &context, const PhysicalHashJoin &op) {
 	if (Settings::Get<DebugForceExternalSetting>(context)) {
 		return true;
 	}
-	return op.BuildIsLikelyLarge(context);
+	idx_t row_width = sizeof(data_ptr_t) + sizeof(hash_t); // per-row pointer table and hash overhead
+	for (auto &type : op.children[1].get().GetTypes()) {
+		row_width += GetTypeIdSize(type.InternalType());
+	}
+	const auto build_size = op.children[1].get().estimated_cardinality * row_width;
+	const auto memory_budget = BufferManager::GetBufferManager(context).GetMaxMemory();
+	return build_size > memory_budget / LIKELY_IN_MEMORY_BUILD_MEMORY_FRACTION;
 }
 
 //! Whether to accumulate a bloom filter during Sink. Only an external join needs that: its finalize only ever
@@ -2029,12 +2025,6 @@ SinkFinalizeType PhysicalHashJoin::Finalize(Pipeline &pipeline, Event &event, Cl
 
 	sink.temporary_memory_state->UpdateReservation(context);
 	sink.external = sink.temporary_memory_state->GetReservation() < sink.total_size;
-	if (sink.external && preserves_probe_order) {
-		// the constant build side is small, and only an in-memory join keeps the order of the probe side
-		sink.temporary_memory_state->SetMinimumReservation(sink.total_size);
-		sink.temporary_memory_state->SetRemainingSizeAndUpdateReservation(context, sink.total_size);
-		sink.external = false;
-	}
 	if (sink.external) {
 		// For external join we reduce the load factor, this may even prevent the external join altogether
 		ht.load_factor = JoinHashTable::EXTERNAL_LOAD_FACTOR;
@@ -2044,7 +2034,8 @@ SinkFinalizeType PhysicalHashJoin::Finalize(Pipeline &pipeline, Event &event, Cl
 		idx_t temp_total_size =
 		    ht.GetTotalSize(sink.local_hash_tables, temp_max_partition_size, temp_max_partition_count);
 
-		if (temp_total_size < sink.temporary_memory_state->GetReservation()) {
+		// a join that keeps the order of the probe side stays in memory, its constant build side was planned to fit
+		if (temp_total_size < sink.temporary_memory_state->GetReservation() || preserves_probe_order) {
 			// We prevented the external join by reducing the load factor. Update the state accordingly
 			sink.temporary_memory_state->SetMinimumReservation(temp_total_size);
 			sink.temporary_memory_state->SetRemainingSizeAndUpdateReservation(context, temp_total_size);

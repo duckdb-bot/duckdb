@@ -7,7 +7,9 @@
 #include "duckdb/execution/operator/join/physical_nested_loop_join.hpp"
 #include "duckdb/execution/operator/join/physical_piecewise_merge_join.hpp"
 #include "duckdb/execution/operator/join/physical_recursive_cte_key_join.hpp"
+#include "duckdb/execution/operator/scan/physical_column_data_scan.hpp"
 #include "duckdb/execution/operator/set/physical_recursive_cte.hpp"
+#include "duckdb/storage/buffer_manager.hpp"
 #include "duckdb/execution/physical_plan_generator.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
@@ -174,6 +176,18 @@ CreateRecursiveKeyProbeNormalizers(ClientContext &context, const PhysicalRecursi
 	return normalizers;
 }
 
+//! Whether the hash table of a constant collection takes at most the share of the memory limit that a join expects
+//! to keep in memory
+static bool ConstantBuildFitsInMemory(ClientContext &context, PhysicalColumnDataScan &scan) {
+	if (!scan.collection) {
+		return false;
+	}
+	// the pointer table and the hashes come on top of the rows
+	const auto build_size =
+	    scan.collection->SizeInBytes() + scan.collection->Count() * (sizeof(data_ptr_t) + sizeof(hash_t));
+	return build_size <= BufferManager::GetBufferManager(context).GetMaxMemory() / 4;
+}
+
 PhysicalOperator &PhysicalPlanGenerator::PlanComparisonJoin(LogicalComparisonJoin &op) {
 	// now visit the children
 	D_ASSERT(op.children.size() == 2);
@@ -247,9 +261,10 @@ PhysicalOperator &PhysicalPlanGenerator::PlanComparisonJoin(LogicalComparisonJoi
 		// an IN list of constants becomes such a join, which has to keep the order of the filter it replaces
 		auto &hash_join = join.Cast<PhysicalHashJoin>();
 		hash_join.preserves_probe_order =
-		    op.children[1]->type == LogicalOperatorType::LOGICAL_CHUNK_GET &&
+		    right.type == PhysicalOperatorType::COLUMN_DATA_SCAN &&
 		    (op.join_type == JoinType::MARK || op.join_type == JoinType::SEMI || op.join_type == JoinType::ANTI) &&
-		    Settings::Get<PreserveInsertionOrderSetting>(context) && !hash_join.BuildIsLikelyLarge(context);
+		    Settings::Get<PreserveInsertionOrderSetting>(context) &&
+		    ConstantBuildFitsInMemory(context, right.Cast<PhysicalColumnDataScan>());
 		return join;
 	}
 

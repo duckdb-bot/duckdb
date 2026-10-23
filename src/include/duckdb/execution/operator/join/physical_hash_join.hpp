@@ -51,8 +51,6 @@ public:
 
 	//! Initialize HT for this operator
 	unique_ptr<JoinHashTable> InitializeHashTable(ClientContext &context, idx_t initial_radix_bits) const;
-	//! Whether the estimated build side exceeds the share of the memory limit that a join expects to keep in memory
-	bool BuildIsLikelyLarge(ClientContext &context) const;
 
 	//! The types of the join keys
 	vector<LogicalType> condition_types;

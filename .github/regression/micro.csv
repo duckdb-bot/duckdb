@@ -46,3 +46,4 @@ benchmark/micro/update/upsert_enum_key.benchmark
 benchmark/micro/list/wide_list_limit.benchmark
 benchmark/micro/list/short_list_filter.benchmark
 benchmark/micro/list/short_list_scan.benchmark
+benchmark/micro/list/short_list_sparse_filter.benchmark

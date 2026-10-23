@@ -1,0 +1,16 @@
+# name: benchmark/micro/list/short_list_sparse_filter.benchmark
+# description: Filter a table of one-element lists that keeps few rows
+# group: [list]
+
+name Short List Sparse Filter
+group micro
+subgroup list
+
+load
+CREATE TABLE t AS SELECT i AS id, i % 1000 AS k, [i] AS l1 FROM range(5000000) r(i);
+
+run
+SELECT sum(len(l1)) FROM t WHERE k = 1
+
+result I
+5000

@@ -176,16 +176,23 @@ CreateRecursiveKeyProbeNormalizers(ClientContext &context, const PhysicalRecursi
 	return normalizers;
 }
 
-//! Whether the hash table of a constant collection takes at most the share of the memory limit that a join expects
-//! to keep in memory
-static bool ConstantBuildFitsInMemory(ClientContext &context, PhysicalColumnDataScan &scan) {
+//! The size of the hash table of a join over a constant collection whose keys are its columns, if it has one
+static optional_idx ConstantBuildSize(const PhysicalHashJoin &join, PhysicalOperator &right) {
+	if (right.type != PhysicalOperatorType::COLUMN_DATA_SCAN) {
+		return optional_idx();
+	}
+	auto &scan = right.Cast<PhysicalColumnDataScan>();
 	if (!scan.collection) {
-		return false;
+		return optional_idx();
+	}
+	for (auto &condition : join.conditions) {
+		if (!condition.IsComparison() || condition.GetRHS().GetExpressionType() != ExpressionType::BOUND_REF) {
+			// computed keys and residual predicates can take far more memory than the collection
+			return optional_idx();
+		}
 	}
 	// the pointer table and the hashes come on top of the rows
-	const auto build_size =
-	    scan.collection->SizeInBytes() + scan.collection->Count() * (sizeof(data_ptr_t) + sizeof(hash_t));
-	return build_size <= BufferManager::GetBufferManager(context).GetMaxMemory() / 4;
+	return scan.collection->SizeInBytes() + scan.collection->Count() * (sizeof(data_ptr_t) + sizeof(hash_t));
 }
 
 PhysicalOperator &PhysicalPlanGenerator::PlanComparisonJoin(LogicalComparisonJoin &op) {
@@ -260,11 +267,17 @@ PhysicalOperator &PhysicalPlanGenerator::PlanComparisonJoin(LogicalComparisonJoi
 		                                    op.estimated_cardinality, std::move(op.filter_pushdown));
 		// an IN list of constants becomes such a join, which has to keep the order of the filter it replaces
 		auto &hash_join = join.Cast<PhysicalHashJoin>();
-		hash_join.preserves_probe_order =
-		    right.type == PhysicalOperatorType::COLUMN_DATA_SCAN &&
+		auto build_size = ConstantBuildSize(hash_join, right);
+		if (build_size.IsValid() &&
 		    (op.join_type == JoinType::MARK || op.join_type == JoinType::SEMI || op.join_type == JoinType::ANTI) &&
-		    Settings::Get<PreserveInsertionOrderSetting>(context) &&
-		    ConstantBuildFitsInMemory(context, right.Cast<PhysicalColumnDataScan>());
+		    Settings::Get<PreserveInsertionOrderSetting>(context)) {
+			// such joins stay in memory together, so they may take a quarter of the memory limit
+			auto total_size = ordered_constant_build_size + build_size.GetIndex();
+			if (total_size <= BufferManager::GetBufferManager(context).GetMaxMemory() / 4) {
+				hash_join.preserves_probe_order = true;
+				ordered_constant_build_size = total_size;
+			}
+		}
 		return join;
 	}
 

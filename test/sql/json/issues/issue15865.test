@@ -1,0 +1,35 @@
+# name: test/sql/json/issues/issue15865.test
+# description: Test that reading many JSON files with union_by_name stays within the memory limit (duckdb/duckdb#15865)
+# group: [issues]
+
+require json
+
+statement ok
+COPY (SELECT i % 50 AS part, i AS id, 'name ' || i AS name FROM range(500) t(i)) TO '{TEST_DIR}/issue15865' (FORMAT json, PARTITION_BY (part), WRITE_PARTITION_COLUMNS false);
+
+statement ok
+COPY (SELECT 50 AS part, 500 AS id, 'extra' AS extra) TO '{TEST_DIR}/issue15865' (FORMAT json, PARTITION_BY (part), WRITE_PARTITION_COLUMNS false, APPEND);
+
+statement ok
+SET threads = 2;
+
+statement ok
+SET memory_limit = '256MiB';
+
+# each file kept the last buffer of its schema detection, 32 MiB, until the scan
+query II
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM read_ndjson('{TEST_DIR}/issue15865/*/*.json', union_by_name = true, hive_partitioning = false));
+----
+id	BIGINT
+name	VARCHAR
+extra	VARCHAR
+
+query IIII
+SELECT count(*), count(name), count(extra), sum(id) FROM read_ndjson('{TEST_DIR}/issue15865/*/*.json', union_by_name = true, hive_partitioning = false);
+----
+501	500	1	125250
+
+query I
+SELECT count(*) FROM read_json('{TEST_DIR}/issue15865/*/*.json', union_by_name = true, hive_partitioning = false) WHERE extra = 'extra';
+----
+1

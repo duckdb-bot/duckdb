@@ -119,6 +119,8 @@ public:
 			node.RefineCandidateTypes(scan_state.values, next, string_vector, allocator,
 			                          auto_detect_state.date_format_map, user_specified_timestamp_format);
 		}
+		// the reader keeps the buffer it read last until it is reset, which the scan does, so free it now
+		scan_state.ClearBufferHandle();
 		auto_detect_state.total_file_size += file_size;
 		auto_detect_state.bytes_scanned += total_read_size;
 		auto_detect_state.tuples_scanned += total_tuple_count;

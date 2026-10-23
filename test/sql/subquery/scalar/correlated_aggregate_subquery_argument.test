@@ -43,6 +43,12 @@ SELECT (SELECT SUM((SELECT x + y)) FROM (VALUES (10), (20)) v(y)) FROM (VALUES (
 34
 36
 
+# the ORDER BY of the aggregate counts as well
+query I
+SELECT (SELECT list(1 ORDER BY (SELECT x))) FROM (VALUES (1), (2)) t(x)
+----
+[1, 1]
+
 # the FILTER clause counts as well
 query I
 SELECT (SELECT COUNT(*) FILTER (WHERE (SELECT i) > 1)) FROM t o
@@ -103,7 +109,7 @@ SELECT (SELECT SUM((SELECT x AS y))) FROM (VALUES (1), (2)) t(x)
 2
 
 query I rowsort
-SELECT (SELECT SUM((SELECT v.*) + (SELECT t.x)) FROM (VALUES (1), (2)) v(y)) FROM (VALUES (1), (2)) t(x)
+SELECT (SELECT SUM((SELECT v.*) + (SELECT x)) FROM (VALUES (1), (2)) v(y)) FROM (VALUES (1), (2)) t(x)
 ----
 5
 7
@@ -115,7 +121,7 @@ SELECT (SELECT SUM((WITH c AS (SELECT 1) SELECT x))) FROM (VALUES (1), (2)) t(x)
 2
 
 query I rowsort
-SELECT (SELECT SUM((SELECT DISTINCT v.y FROM duckdb_types()) + (SELECT t.x)) FROM (VALUES (1), (2)) v(y)) FROM (VALUES (1), (2)) t(x)
+SELECT (SELECT SUM((SELECT DISTINCT v.y FROM duckdb_types()) + (SELECT x)) FROM (VALUES (1), (2)) v(y)) FROM (VALUES (1), (2)) t(x)
 ----
 5
 7
@@ -143,7 +149,7 @@ SELECT (SELECT SUM(t.x IN (SELECT v.y FROM (VALUES (0)) a(z))) FROM (VALUES (1),
 
 # the qualification of a call can be the column it is made on
 query I rowsort
-SELECT (SELECT SUM((SELECT y.abs()) + (SELECT t.x)) FROM (VALUES (-1), (-2)) v(y)) FROM (VALUES (1), (2)) t(x)
+SELECT (SELECT SUM((SELECT y.abs()) + (SELECT x)) FROM (VALUES (-1), (-2)) v(y)) FROM (VALUES (1), (2)) t(x)
 ----
 5
 7
@@ -153,7 +159,7 @@ statement ok
 CREATE MACRO m(z) AS (SELECT y FROM range(z))
 
 query I rowsort
-SELECT (SELECT SUM((SELECT m(1)) + (SELECT t.x)) FROM (VALUES (10)) v(y)) FROM (VALUES (1, 100), (2, 200)) t(x, y)
+SELECT (SELECT SUM((SELECT m(1)) + (SELECT x)) FROM (VALUES (10)) v(y)) FROM (VALUES (1, 100), (2, 200)) t(x, y)
 ----
 11
 12
@@ -177,3 +183,15 @@ SELECT (SELECT COUNT((SELECT current_schema))) FROM (VALUES (1), (2)) t("current
 ----
 1
 1
+
+# a name can be an alias of the query, which can stand for an aggregate or a constant
+query II
+SELECT SUM(x) AS a, (SELECT SUM((SELECT a))) FROM (VALUES (1), (2)) t(x)
+----
+3	3
+
+query II rowsort
+SELECT 10 AS a, (SELECT SUM((SELECT a))) FROM (VALUES (1), (2)) t(x)
+----
+10	10
+10	10

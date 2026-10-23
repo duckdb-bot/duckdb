@@ -188,8 +188,9 @@ ColumnResolution ExpressionBinder::ResolveColumn(ColumnRefExpression &colref, id
 //! so the resolver sees the same names a real bind would.
 class ResolvableColumnCollector {
 public:
-	ResolvableColumnCollector(Binder &binder, vector<reference<ColumnRefExpression>> &result)
-	    : binder(binder), result(result) {
+	ResolvableColumnCollector(Binder &binder, vector<reference<ColumnRefExpression>> &result,
+	                          vector<reference<ColumnRefExpression>> &subquery_result)
+	    : binder(binder), result(result), subquery_result(subquery_result) {
 	}
 
 	void CollectExpression(ParsedExpression &expr) {
@@ -219,7 +220,7 @@ public:
 			if (subquery_depth == 0) {
 				result.push_back(col_ref);
 			} else {
-				subquery_columns.push_back(col_ref);
+				subquery_result.push_back(col_ref);
 			}
 			return;
 		}
@@ -249,11 +250,9 @@ public:
 		ParsedExpressionIterator::EnumerateChildren(expr, [&](ParsedExpression &child) { CollectExpression(child); });
 	}
 
-	//! Add the columns of the subqueries, if every subquery is one without a FROM clause
-	void Finish() {
-		if (all_subqueries_without_from) {
-			result.insert(result.end(), subquery_columns.begin(), subquery_columns.end());
-		}
+	//! Whether the columns of the subqueries count, because every subquery is one without a FROM clause
+	bool SubqueryColumnsCount() const {
+		return all_subqueries_without_from;
 	}
 
 private:
@@ -298,7 +297,8 @@ private:
 		}
 		// the other clauses can refer to the select list, also by names it gives its expressions
 		if (select.where_clause || !select.groups.group_expressions.empty() || !select.groups.grouping_sets.empty() ||
-		    select.having || select.qualify || !node.modifiers.empty()) {
+		    select.aggregate_handling != AggregateHandling::STANDARD_HANDLING || select.having || select.qualify ||
+		    select.sample || !node.modifiers.empty()) {
 			all_subqueries_without_from = false;
 			return;
 		}
@@ -316,17 +316,18 @@ private:
 
 	Binder &binder;
 	vector<reference<ColumnRefExpression>> &result;
+	//! The columns inside subqueries
+	vector<reference<ColumnRefExpression>> &subquery_result;
 	vector<identifier_set_t> lambda_params;
 	//! The number of subqueries around the expression that is being collected
 	idx_t subquery_depth = 0;
-	//! The columns inside subqueries
-	vector<reference<ColumnRefExpression>> subquery_columns;
 	bool all_subqueries_without_from = true;
 };
 
 optional_idx ExpressionBinder::ResolveAggregateOwner(FunctionExpression &aggregate, idx_t start) {
 	vector<reference<ColumnRefExpression>> columns;
-	ResolvableColumnCollector collector(binder, columns);
+	vector<reference<ColumnRefExpression>> subquery_columns;
+	ResolvableColumnCollector collector(binder, columns, subquery_columns);
 	for (auto &child : aggregate.GetArgumentsMutable()) {
 		collector.CollectExpression(*child.GetExpressionMutable());
 	}
@@ -338,7 +339,6 @@ optional_idx ExpressionBinder::ResolveAggregateOwner(FunctionExpression &aggrega
 			collector.CollectExpression(*order.expression);
 		}
 	}
-	collector.Finish();
 	auto owner = start;
 	bool found = false;
 	for (auto &colref : columns) {
@@ -353,7 +353,23 @@ optional_idx ExpressionBinder::ResolveAggregateOwner(FunctionExpression &aggrega
 			found = true;
 		}
 	}
-	return found ? optional_idx(owner) : optional_idx();
+	if (!collector.SubqueryColumnsCount() || subquery_columns.empty()) {
+		return found ? optional_idx(owner) : optional_idx();
+	}
+	// the columns of the subqueries count only if all of them name a column, an alias can stand for an aggregate
+	auto subquery_owner = owner;
+	bool subquery_found = found;
+	for (auto &colref : subquery_columns) {
+		auto resolution = ResolveColumn(colref.get(), start);
+		if (!resolution.qualified) {
+			return found ? optional_idx(owner) : optional_idx();
+		}
+		if (!subquery_found || resolution.depth < subquery_owner) {
+			subquery_owner = resolution.depth;
+			subquery_found = true;
+		}
+	}
+	return optional_idx(subquery_owner);
 }
 
 optional_idx ExpressionBinder::ResolveOuterGroup(vector<reference<ParsedExpression>> &expressions, idx_t start) {

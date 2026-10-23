@@ -156,3 +156,12 @@ query II
 SELECT count(*), sum(c) FROM read_csv('{TEST_DIR}/apostrophes_columns.csv', sample_size = -1, columns = {'a': 'BIGINT', 'b': 'VARCHAR', 'c': 'BIGINT'})
 ----
 2048	2100224
+
+# an empty line elsewhere in the sample keeps the apostrophe quote, as the empty lines may be inside the quotes
+statement ok
+COPY (SELECT line FROM (SELECT 0 AS pos, 'a,b,c' AS line UNION ALL SELECT i * 2, i || ',' || CASE WHEN i = 1 THEN '''starts' WHEN i = 2 THEN 'ends''' ELSE 'plain' END || ',' || i FROM range(1, 2049) t(i) UNION ALL SELECT i * 2 - 1, '' FROM (VALUES (2), (2048)) t(i)) ORDER BY pos) TO '{TEST_DIR}/apostrophes_empty_prefix.csv' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '', DELIMITER E'\t')
+
+query II
+SELECT count(*), count(*) FILTER (contains(b, chr(10) || chr(10))) FROM read_csv('{TEST_DIR}/apostrophes_empty_prefix.csv', sample_size = 2048)
+----
+2047	1

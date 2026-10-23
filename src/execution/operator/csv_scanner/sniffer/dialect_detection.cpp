@@ -245,20 +245,19 @@ static void DropApostrophesAcrossLines(vector<unique_ptr<ColumnCountScanner>> &c
 	if (options.null_padding || options.ignore_errors.GetValue() || set_columns.IsSet()) {
 		return;
 	}
-	// the other candidate must not skip an empty line the apostrophes keep in a value
-	optional_idx empty_lines;
+	// the other candidate must not have skipped an empty line, which the apostrophes can keep in a value
+	bool reads_all_lines = false;
 	for (auto &candidate : candidates) {
-		if (CanReadApostrophesAsRows(*candidate) &&
-		    (!empty_lines.IsValid() || candidate->GetResult().empty_lines < empty_lines.GetIndex())) {
-			empty_lines = candidate->GetResult().empty_lines;
+		if (CanReadApostrophesAsRows(*candidate) && candidate->GetResult().empty_lines == 0) {
+			reads_all_lines = true;
 		}
 	}
-	if (!empty_lines.IsValid()) {
+	if (!reads_all_lines) {
 		return;
 	}
 	vector<unique_ptr<ColumnCountScanner>> remaining_candidates;
 	for (auto &candidate : candidates) {
-		if (!QuotesApostrophesAcrossLines(*candidate) || candidate->GetResult().empty_lines < empty_lines.GetIndex()) {
+		if (!QuotesApostrophesAcrossLines(*candidate)) {
 			remaining_candidates.push_back(std::move(candidate));
 		}
 	}
@@ -499,8 +498,7 @@ void CSVSniffer::AnalyzeDialectCandidate(unique_ptr<ColumnCountScanner> scanner,
 		if (QuotesApostrophesAcrossLines(*scanner) && !options.null_padding && !ignore_errors && !set_columns.IsSet() &&
 		    !successful_candidates.empty() && CanReadApostrophesAsRows(*successful_candidates.front()) &&
 		    num_cols == max_columns_found && consistent_rows <= stats.best_consistent_rows &&
-		    stats.prev_padding_count == 0 && stats.min_ignored_rows == 0 &&
-		    stats.best_discarded_lines <= discarded_lines &&
+		    stats.prev_padding_count == 0 && stats.min_ignored_rows == 0 && stats.best_discarded_lines == 0 &&
 		    successful_candidates.front()->GetStateMachine().dialect_options.skip_rows.GetValue() <= skip_rows) {
 			// The best candidate reads the lines the apostrophes join as complete rows, so this one only stays as
 			// a fallback in case the rest of the sample needs its quote

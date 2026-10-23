@@ -213,15 +213,25 @@ bool AreCommentsAcceptable(const ColumnCountResult &result, idx_t num_cols, cons
 	return valid_comments / detected_comments >= min_majority;
 }
 
+static bool HasComments(const ColumnCountScanner &scanner) {
+	return scanner.GetStateMachine().state_machine_options.comment.GetValue() != '\0';
+}
+
 //! Whether the candidate reads apostrophes as quotes around new lines, which is more likely an apostrophe at the start
 //! of one value and another at the end of a later one
 static bool QuotesApostrophesAcrossLines(const ColumnCountScanner &scanner) {
-	return scanner.ever_quoted_new_line && scanner.GetStateMachine().state_machine_options.quote.GetValue() == '\'';
+	return scanner.ever_quoted_new_line && scanner.GetStateMachine().state_machine_options.quote.GetValue() == '\'' &&
+	       !HasComments(scanner);
 }
 
-static bool HasCandidateWithOtherQuote(const vector<unique_ptr<ColumnCountScanner>> &candidates, char quote) {
+//! Whether the candidate can read the lines that apostrophes join as rows, without comments that could hide some
+static bool CanReadApostrophesAsRows(const ColumnCountScanner &scanner) {
+	return scanner.GetStateMachine().state_machine_options.quote.GetValue() != '\'' && !HasComments(scanner);
+}
+
+static bool HasCandidateReadingApostrophesAsRows(const vector<unique_ptr<ColumnCountScanner>> &candidates) {
 	for (auto &candidate : candidates) {
-		if (candidate->GetStateMachine().state_machine_options.quote.GetValue() != quote) {
+		if (CanReadApostrophesAsRows(*candidate)) {
 			return true;
 		}
 	}
@@ -232,13 +242,23 @@ static bool HasCandidateWithOtherQuote(const vector<unique_ptr<ColumnCountScanne
 static void DropApostrophesAcrossLines(vector<unique_ptr<ColumnCountScanner>> &candidates,
                                        const CSVReaderOptions &options, const SetColumns &set_columns) {
 	// with padding, ignored errors or given columns the rows of the other candidate need not all have been checked
-	if (options.null_padding || options.ignore_errors.GetValue() || set_columns.IsSet() ||
-	    !HasCandidateWithOtherQuote(candidates, '\'')) {
+	if (options.null_padding || options.ignore_errors.GetValue() || set_columns.IsSet()) {
+		return;
+	}
+	// the other candidate must not skip an empty line the apostrophes keep in a value
+	optional_idx empty_lines;
+	for (auto &candidate : candidates) {
+		if (CanReadApostrophesAsRows(*candidate) &&
+		    (!empty_lines.IsValid() || candidate->GetResult().empty_lines < empty_lines.GetIndex())) {
+			empty_lines = candidate->GetResult().empty_lines;
+		}
+	}
+	if (!empty_lines.IsValid()) {
 		return;
 	}
 	vector<unique_ptr<ColumnCountScanner>> remaining_candidates;
 	for (auto &candidate : candidates) {
-		if (!QuotesApostrophesAcrossLines(*candidate)) {
+		if (!QuotesApostrophesAcrossLines(*candidate) || candidate->GetResult().empty_lines < empty_lines.GetIndex()) {
 			remaining_candidates.push_back(std::move(candidate));
 		}
 	}
@@ -477,8 +497,7 @@ void CSVSniffer::AnalyzeDialectCandidate(unique_ptr<ColumnCountScanner> scanner,
 		                            ? options.dialect_options.skip_rows.GetValue()
 		                            : dirty_notes_minus_comments;
 		if (QuotesApostrophesAcrossLines(*scanner) && !options.null_padding && !ignore_errors && !set_columns.IsSet() &&
-		    !successful_candidates.empty() &&
-		    successful_candidates.front()->GetStateMachine().state_machine_options.quote.GetValue() != '\'' &&
+		    !successful_candidates.empty() && CanReadApostrophesAsRows(*successful_candidates.front()) &&
 		    num_cols == max_columns_found && consistent_rows <= stats.best_consistent_rows &&
 		    stats.prev_padding_count == 0 && stats.min_ignored_rows == 0 &&
 		    stats.best_discarded_lines <= discarded_lines &&
@@ -575,7 +594,7 @@ void CSVSniffer::RefineCandidates() {
 	for (idx_t i = 1; i <= options.sample_size_chunks; i++) {
 		vector<unique_ptr<ColumnCountScanner>> successful_candidates;
 		bool done = candidates.empty();
-		const bool other_quote = HasCandidateWithOtherQuote(candidates, '\'');
+		const bool other_quote = HasCandidateReadingApostrophesAsRows(candidates);
 		for (auto &cur_candidate : candidates) {
 			const bool finished_file = cur_candidate->FinishedFile();
 			if (successful_candidates.empty()) {

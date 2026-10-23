@@ -102,22 +102,21 @@ unique_ptr<LogicalOperator> IndexBinder::BindCreateIndex(ClientContext &context,
 	// they are bound in (e.g. now(), getvariable()) - such functions are folded to constants while binding.
 	auto &properties = binder.GetStatementProperties();
 	const auto statement_requires_rebind = properties.always_require_rebind;
-	const auto statement_depends_on_settings = properties.depends_on_session_settings;
 	vector<unique_ptr<Expression>> expressions;
 	for (auto &expr : create_index_info->expressions) {
 		properties.always_require_rebind = false;
-		properties.depends_on_session_settings = false;
+		binder.SetTrackSessionSettings(true);
 		expressions.push_back(Bind(expr));
 		if (properties.always_require_rebind) {
 			throw BinderException("Index keys cannot contain expressions with side effects.");
 		}
 		// other sessions bind the keys again under their own settings, e.g. another TimeZone
-		if (properties.depends_on_session_settings || expressions.back()->DependsOnSessionSettings()) {
+		if (binder.DependsOnSessionSettings() || expressions.back()->DependsOnSessionSettings()) {
 			throw BinderException("Index keys cannot depend on session settings such as TimeZone or Calendar.");
 		}
 	}
+	binder.SetTrackSessionSettings(false);
 	properties.always_require_rebind = statement_requires_rebind;
-	properties.depends_on_session_settings = statement_depends_on_settings;
 
 	auto &get = plan->Cast<LogicalGet>();
 	InitCreateIndexInfo(get, *create_index_info);

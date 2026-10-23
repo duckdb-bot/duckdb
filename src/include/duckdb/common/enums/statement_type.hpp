@@ -75,7 +75,7 @@ class ClientContext;
 struct StatementProperties {
 	StatementProperties()
 	    : requires_valid_transaction(true), bound_all_parameters(true), return_type(StatementReturnType::QUERY_RESULT),
-	      parameter_count(0), always_require_rebind(false), depends_on_session_settings(false) {
+	      parameter_count(0), always_require_rebind(false) {
 	}
 
 	struct CatalogIdentity {
@@ -111,8 +111,6 @@ struct StatementProperties {
 	idx_t parameter_count;
 	//! Whether or not the statement ALWAYS requires a rebind
 	bool always_require_rebind;
-	//! Whether the statement bound a function or cast that read session settings such as TimeZone
-	bool depends_on_session_settings;
 
 	bool IsReadOnly() const {
 		return modified_databases.empty();

@@ -865,7 +865,7 @@ static bool FoldConstantArgument(ClientContext &context, unique_ptr<Expression> 
 	if (child->GetExpressionClass() == ExpressionClass::BOUND_LAMBDA || !child->IsFoldable()) {
 		return false;
 	}
-	if (binder && child->DependsOnSessionSettings()) {
+	if (binder && binder->TracksSessionSettings() && child->DependsOnSessionSettings()) {
 		// the constant no longer shows that the value came from the session settings
 		binder->SetDependsOnSessionSettings();
 	}
@@ -1582,7 +1582,8 @@ FunctionBinder::ResolveFunction(shared_ptr<const ScalarFunction> function_p, vec
 
 	// The bind callback is called with arguments that are cast to the argument types of the bound function
 	unique_ptr<FunctionData> bind_info;
-	if (binder && (bound_function.HasBindCallback() || bound_function.HasBindExpressionCallback())) {
+	if (binder && binder->TracksSessionSettings() &&
+	    (bound_function.HasBindCallback() || bound_function.HasBindExpressionCallback())) {
 		// the callbacks can evaluate constant arguments and drop them, which hides that they read the settings
 		for (auto &argument : arguments) {
 			if (argument->DependsOnSessionSettings()) {
@@ -1645,7 +1646,8 @@ unique_ptr<Expression> FunctionBinder::BindScalarFunction(shared_ptr<const Scala
 		// the result depends on the query it is bound in, also when the bind_expression callback folds it
 		binder->SetAlwaysRequireRebind();
 	}
-	if (binder && result_func->BindInfo() && result_func->BindInfo()->DependsOnSessionSettings()) {
+	if (binder && binder->TracksSessionSettings() && result_func->BindInfo() &&
+	    result_func->BindInfo()->DependsOnSessionSettings()) {
 		// the same holds for the session settings the bind read, such as TimeZone
 		binder->SetDependsOnSessionSettings();
 	}

@@ -210,6 +210,10 @@ struct GlobalBinderState {
 	optional_ptr<TableCatalogEntry> trigger_creation_table;
 	//! Name of the trigger being created (for error messages)
 	Identifier trigger_creation_name;
+	//! Set while binding index keys, which other sessions bind again, to record binds that read session settings
+	bool track_session_settings = false;
+	//! Whether a bind read session settings such as TimeZone while track_session_settings was set
+	bool depends_on_session_settings = false;
 };
 
 //! Bind the parsed query tree to the actual columns present in the catalog.
@@ -401,7 +405,10 @@ public:
 	void SetCanContainNulls(bool can_contain_nulls);
 	bool CanContainNulls() const;
 	void SetAlwaysRequireRebind();
+	void SetTrackSessionSettings(bool track);
+	bool TracksSessionSettings() const;
 	void SetDependsOnSessionSettings();
+	bool DependsOnSessionSettings() const;
 	void SetInsideSubquery();
 	bool IsInsideSubquery() const;
 

@@ -13,7 +13,7 @@ CREATE TABLE t (id INTEGER, ts TIMESTAMPTZ, s VARCHAR, naive TIMESTAMP);
 statement ok
 INSERT INTO t VALUES (1, '2026-01-01 00:00:00+00', '2026-01-01 00:00:00', '2026-01-01 00:00:00');
 
-foreach expression ts::VARCHAR date_part('hour',ts) strftime(ts,'%H') ts::DATE s::TIMESTAMPTZ ts+INTERVAL'1day' timezone('UTC',ts)::VARCHAR [ts]::VARCHAR [ts]::VARCHAR[] row(ts)::VARCHAR coalesce(ts::VARCHAR,s)
+foreach expression ts::VARCHAR date_part('hour',ts) strftime(ts,'%H') ts::DATE s::TIMESTAMPTZ ts+INTERVAL'1day' timezone('UTC',ts)::VARCHAR [ts]::VARCHAR [ts]::VARCHAR[] [ts]::TIMESTAMPTZ[1]::VARCHAR[1] row(ts)::VARCHAR map([ts],[1])::MAP(VARCHAR,INTEGER) coalesce(ts::VARCHAR,s)
 
 statement error
 CREATE INDEX i ON t (({expression}));
@@ -49,6 +49,12 @@ CREATE INDEX i ON t ((date_part(CASE WHEN hour(TIMESTAMPTZ '2026-01-01 00:00:00+
 ----
 Index keys cannot depend on session settings such as TimeZone or Calendar
 
+# a cast that resolving the argument types adds, which the bind of switch evaluates
+statement error
+CREATE INDEX i ON t ((switch(ts, MAP {TIMESTAMP '2026-01-01 00:00:00': 1}, 0)));
+----
+Index keys cannot depend on session settings such as TimeZone or Calendar
+
 # a cast folded into a constant argument
 statement error
 CREATE INDEX i ON t ((id + epoch_us(TIMESTAMPTZ '2026-01-01 00:00:00')));
@@ -58,6 +64,11 @@ Index keys cannot depend on session settings such as TimeZone or Calendar
 # nor is a lambda body skipped
 statement error
 CREATE INDEX i ON t ((list_transform([ts], lambda x: hour(x))[1]));
+----
+Index keys cannot depend on session settings such as TimeZone or Calendar
+
+statement error
+CREATE INDEX i ON t ((list_transform([ts], lambda x: x::VARCHAR)[1]));
 ----
 Index keys cannot depend on session settings such as TimeZone or Calendar
 

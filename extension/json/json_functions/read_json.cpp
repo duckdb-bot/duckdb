@@ -77,7 +77,7 @@ public:
 		auto &reader = *json_reader;
 		auto_detect_state.sampled_readers[file_idx] = std::move(json_reader);
 
-		// the sampled readers keep their first buffer for the scan, so it has to count against the memory limit
+		// the buffers of the sample count against the memory limit
 		auto &global_allocator = BufferAllocator::Get(context);
 		idx_t buffer_capacity = json_data.options.maximum_object_size * 2;
 		JSONReaderScanState scan_state(context, global_allocator, buffer_capacity);
@@ -119,6 +119,8 @@ public:
 			node.RefineCandidateTypes(scan_state.values, next, string_vector, allocator,
 			                          auto_detect_state.date_format_map, user_specified_timestamp_format);
 		}
+		// the reader keeps the buffer it read last until it is reset, which the scan does, so free it now
+		scan_state.ClearBufferHandle();
 		auto_detect_state.total_file_size += file_size;
 		auto_detect_state.bytes_scanned += total_read_size;
 		auto_detect_state.tuples_scanned += total_tuple_count;

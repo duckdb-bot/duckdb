@@ -94,6 +94,9 @@ statement ok
 CREATE MACRO db.unpivot_on() AS TABLE UNPIVOT (SELECT 1 AS a) ON (s1(a)) INTO NAME k VALUE v;
 
 statement ok
+CREATE MACRO db.window_s1(x) AS sum(s1(x));
+
+statement ok
 CREATE MACRO db.pivot_names() AS TABLE PIVOT (SELECT 'a' AS k, 5 AS v) ON k IN ('a') USING sum(s1(v)), max(v);
 
 statement ok
@@ -253,6 +256,21 @@ query TI
 SELECT * FROM db.unpivot_on()
 ----
 a	2
+
+# a window macro looks the names of its body up in its schema, and those of its arguments where it is called
+query I
+SELECT db.main.window_s1(i) OVER (ORDER BY i) FROM range(3) r(i)
+----
+1
+3
+6
+
+query I
+SELECT db.main.window_s1(s1(i)) OVER (ORDER BY i) FROM range(3) r(i)
+----
+101
+203
+306
 
 query I
 SELECT "a_sum(s1(v))" FROM db.pivot_names()

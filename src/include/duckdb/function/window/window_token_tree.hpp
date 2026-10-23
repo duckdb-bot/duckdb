@@ -31,7 +31,7 @@ public:
 
 	//! Find the rank of the row within the range
 	idx_t Rank(const idx_t lower, const idx_t upper, const idx_t row_idx) const;
-	//! The position of the row in the sort order of all rows
+	//! The token of the row, which is its position in the sort order when the tree is unique
 	idx_t Token(const idx_t row_idx) const;
 
 	//! Find the next peer after the row and within the range

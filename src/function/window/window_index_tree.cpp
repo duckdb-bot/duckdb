@@ -79,14 +79,6 @@ pair<idx_t, idx_t> WindowIndexTree::SelectNth(const SubFrames &frames, idx_t n) 
 	}
 }
 
-idx_t WindowIndexTree::RowCount() const {
-	return mst32 ? mst32->LowestLevel().size() : mst64->LowestLevel().size();
-}
-
-idx_t WindowIndexTree::NthRow(idx_t n) const {
-	return mst32 ? mst32->NthElement(n) : mst64->NthElement(n);
-}
-
 template <typename TREE>
 static idx_t CountBelow(const TREE &tree, idx_t first_rows, idx_t row_idx) {
 	idx_t result = 0;

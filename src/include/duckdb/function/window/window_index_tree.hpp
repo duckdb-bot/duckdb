@@ -38,10 +38,6 @@ public:
 	//! Find the Nth index in the set of subframes
 	//! Returns {nth index, 0} or {nth offset, overflow}
 	pair<idx_t, idx_t> SelectNth(const SubFrames &frames, idx_t n) const;
-	//! The number of rows in the tree
-	idx_t RowCount() const;
-	//! The index of the row at the position in sort order
-	idx_t NthRow(idx_t n) const;
 	//! The number of the first rows in sort order that lie in the frame
 	idx_t CountInFrame(idx_t first_rows, const FrameBounds &frame) const;
 };

@@ -87,5 +87,27 @@ TEST_CASE("Rows appended while an index is built are not missing from it", "[sto
 				REQUIRE(CHECK_COLUMN(result, 0, {1}));
 			}
 		}
+
+		// a commit that fails after its append reverts the appended rows
+		CreateTable(con);
+		string index_error, insert_error;
+		RunConcurrently(
+		    db, "CREATE INDEX idx ON t (id)",
+		    "BEGIN; INSERT INTO t VALUES ('x', 3000000); SET GLOBAL debug_force_commit_failure = true; COMMIT",
+		    delay_ms, index_error, insert_error);
+		REQUIRE_NO_FAIL(con.Query("SET GLOBAL debug_force_commit_failure = false"));
+		INFO("reverted append | delay " << delay_ms << " | index error: " << index_error
+		                                << " | insert error: " << insert_error);
+		REQUIRE(StringUtil::Contains(insert_error, "Forced commit failure"));
+		// the index commits while the commit failure is still forced
+		REQUIRE((IsExpectedError(index_error) || StringUtil::Contains(index_error, "Forced commit failure")));
+		if (index_error.empty()) {
+			// the next append reuses the row ids of the reverted rows
+			REQUIRE_NO_FAIL(con.Query("INSERT INTO t VALUES ('x', 5)"));
+			auto result = con.Query("SELECT count(*) FROM t WHERE id = 3000000");
+			REQUIRE(CHECK_COLUMN(result, 0, {0}));
+			result = con.Query("SELECT count(*) FROM t WHERE id = 5");
+			REQUIRE(CHECK_COLUMN(result, 0, {2}));
+		}
 	}
 }

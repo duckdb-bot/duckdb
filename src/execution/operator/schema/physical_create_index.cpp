@@ -127,7 +127,7 @@ SinkCombineResultType PhysicalCreateIndex::Combine(ExecutionContext &context, Op
 void PhysicalCreateIndex::AppendRowsAfterScan(ClientContext &context, DataTable &storage, BoundIndex &index) const {
 	D_ASSERT(scan_boundary && scan_boundary->row_end.IsValid());
 	if (storage.GetRevertCount() != scan_boundary->revert_count) {
-		throw TransactionException("Transaction conflict: cannot create an index on table \"%s\" because a different "
+		throw TransactionException("Transaction conflict: cannot create an index on table %s because a different "
 		                           "transaction reverted an append to it while the index was built",
 		                           storage.GetTableName());
 	}

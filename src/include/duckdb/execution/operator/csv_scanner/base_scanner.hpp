@@ -318,6 +318,11 @@ protected:
 					}
 				}
 				ever_quoted = true;
+				if (buffer_handle_ptr[iterator.pos.buffer_pos] == '\n' ||
+				    buffer_handle_ptr[iterator.pos.buffer_pos] == '\r') {
+					// an escaped new line
+					ever_quoted_new_line = true;
+				}
 				T::SetQuoted(result, iterator.pos.buffer_pos);
 				iterator.pos.buffer_pos++;
 				skipper.SkipToStop(state_machine->transition_array.skip_quoted, to_pos, iterator.pos.buffer_pos);

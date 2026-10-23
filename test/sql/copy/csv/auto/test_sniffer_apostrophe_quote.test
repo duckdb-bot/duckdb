@@ -62,3 +62,42 @@ query III
 SELECT c1, replace(c2, chr(10), ' '), c3 FROM read_csv('{TEST_DIR}/apostrophes.csv', quote = '''')
 ----
 a	xxx,1 b,yyy,2 c,zzz	3
+
+# another quote that only reads the lines by skipping or padding them does not read them as rows
+statement ok
+COPY (SELECT * FROM (VALUES ('1,''x'), ('y'',2'), ('3,z,4'))) TO '{TEST_DIR}/apostrophes_leading.csv' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '', DELIMITER E'\t')
+
+query III
+SELECT column0, replace(column1, chr(10), ' '), column2 FROM read_csv('{TEST_DIR}/apostrophes_leading.csv', header = false)
+----
+1	x y	2
+3	z	4
+
+statement ok
+COPY (SELECT * FROM (VALUES ('a,b,c'), ('1,''x'), ('y'',2'), ('3,z,4'))) TO '{TEST_DIR}/apostrophes_padded.csv' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '', DELIMITER E'\t')
+
+query III
+SELECT a, replace(b, chr(10), ' '), c FROM read_csv('{TEST_DIR}/apostrophes_padded.csv', null_padding = true, parallel = false)
+----
+1	x y	2
+3	z	4
+
+# a value later in the sample that needs the apostrophe as quote keeps it
+statement ok
+COPY (SELECT * FROM (SELECT 0 AS i, 'a,b,c' AS line UNION ALL SELECT 1, '1,''x,1' UNION ALL SELECT 2, '2,y'',2' UNION ALL SELECT i, i || ',plain,' || i FROM range(3, 2048) t(i) UNION ALL SELECT 2048, '2048,''x,y'',2048') ORDER BY i) TO '{TEST_DIR}/apostrophes_needed_later.csv' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '', DELIMITER E'\t')
+
+query II
+SELECT count(*), sum(c) FROM read_csv('{TEST_DIR}/apostrophes_needed_later.csv', sample_size = -1)
+----
+2047	2098175
+
+# a new line after an escape is inside the quotes too
+statement ok
+COPY (SELECT * FROM (VALUES ('c1,c2,c3'), ('a,''xxx,1\'), ('b,yyy,2\'), ('c,zzz'',3'))) TO '{TEST_DIR}/apostrophes_escaped.csv' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '', DELIMITER E'\t')
+
+query III
+SELECT * FROM read_csv('{TEST_DIR}/apostrophes_escaped.csv')
+----
+a	'xxx	1\
+b	yyy	2\
+c	zzz'	3

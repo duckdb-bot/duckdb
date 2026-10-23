@@ -1,0 +1,20 @@
+# name: test/sql/function/timestamp/current_timestamp_function.test
+# description: current_timestamp is a function of the catalog, as current_date is
+# group: [timestamp]
+
+query II
+SELECT function_name, function_type FROM duckdb_functions() WHERE function_name IN ('current_timestamp', 'get_current_timestamp', 'now') ORDER BY ALL;
+----
+current_timestamp	scalar
+get_current_timestamp	scalar
+now	scalar
+
+query II
+SELECT current_timestamp() = get_current_timestamp(), current_timestamp = current_timestamp();
+----
+true	true
+
+query I
+SELECT typeof(current_timestamp());
+----
+TIMESTAMP WITH TIME ZONE

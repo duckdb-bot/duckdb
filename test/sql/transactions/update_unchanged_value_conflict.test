@@ -1,0 +1,346 @@
+# name: test/sql/transactions/update_unchanged_value_conflict.test
+# description: An UPDATE that writes the current value of a cell conflicts with a concurrent UPDATE of that cell
+# group: [transactions]
+
+load {TEST_DIR}/update_unchanged_value_conflict.db
+
+statement ok
+SET immediate_transaction_mode = true
+
+# a write of the current value, then a write of the cell by a concurrent transaction
+statement ok
+CREATE TABLE t (i INTEGER, j INTEGER);
+
+statement ok
+INSERT INTO t VALUES (3, 0)
+
+statement ok con1
+BEGIN
+
+statement ok con2
+BEGIN
+
+statement ok con1
+UPDATE t SET i = 3, j = 1
+
+statement error con2
+UPDATE t SET i = j + 5
+----
+<REGEX>:TransactionContext Error.*Conflict on update.*
+
+statement ok con1
+COMMIT
+
+statement ok con2
+ROLLBACK
+
+query II
+SELECT i, j FROM t
+----
+3	1
+
+# the same with NULL
+statement ok
+CREATE OR REPLACE TABLE t (i INTEGER, j INTEGER);
+
+statement ok
+INSERT INTO t VALUES (NULL, 0)
+
+statement ok con1
+BEGIN
+
+statement ok con2
+BEGIN
+
+statement ok con1
+UPDATE t SET i = NULL, j = 1
+
+statement error con2
+UPDATE t SET i = j + 5
+----
+<REGEX>:TransactionContext Error.*Conflict on update.*
+
+statement ok con1
+COMMIT
+
+statement ok con2
+ROLLBACK
+
+query II
+SELECT i, j FROM t
+----
+NULL	1
+
+# the same with strings, in the other order of the transactions
+statement ok
+CREATE OR REPLACE TABLE s (v VARCHAR);
+
+statement ok
+INSERT INTO s VALUES ('a long string that is not inlined')
+
+statement ok con1
+BEGIN
+
+statement ok con2
+BEGIN
+
+statement ok con2
+UPDATE s SET v = 'a long string that is not inlined'
+
+statement error con1
+UPDATE s SET v = 'other'
+----
+<REGEX>:TransactionContext Error.*Conflict on update.*
+
+statement ok con1
+ROLLBACK
+
+statement ok con2
+COMMIT
+
+query I
+SELECT v FROM s
+----
+a long string that is not inlined
+
+# two writes of the current value conflict
+statement ok con1
+BEGIN
+
+statement ok con2
+BEGIN
+
+statement ok con1
+UPDATE t SET i = NULL
+
+statement error con2
+UPDATE t SET i = NULL
+----
+<REGEX>:TransactionContext Error.*Conflict on update.*
+
+statement ok con1
+COMMIT
+
+statement ok con2
+ROLLBACK
+
+# a write of the current value that commits before a concurrent write of the cell
+statement ok
+CREATE OR REPLACE TABLE t AS SELECT range id, range % 7 i FROM range(5000);
+
+statement ok con2
+BEGIN
+
+statement ok con1
+UPDATE t SET i = i
+
+statement error con2
+UPDATE t SET i = 42 WHERE id = 4000
+----
+<REGEX>:TransactionContext Error.*Conflict on update.*
+
+statement ok con2
+ROLLBACK
+
+# a transaction that starts after the commit does not conflict
+statement ok con2
+UPDATE t SET i = 42 WHERE id = 4000
+
+query II
+SELECT count(*), sum(i) FROM t
+----
+5000	15034
+
+# other tuples of the vector can still be updated concurrently
+statement ok con1
+BEGIN
+
+statement ok con2
+BEGIN
+
+statement ok con1
+UPDATE t SET i = i WHERE id < 100
+
+statement ok con2
+UPDATE t SET i = i + 1 WHERE id BETWEEN 100 AND 199
+
+statement ok con2
+SELECT i FROM t WHERE id = 50
+
+statement ok con1
+COMMIT
+
+statement ok con2
+COMMIT
+
+query II
+SELECT count(*), sum(i) FROM t
+----
+5000	15134
+
+# a rolled back write of the current value leaves no trace
+statement ok con1
+BEGIN
+
+statement ok con1
+UPDATE t SET i = i
+
+statement ok con1
+ROLLBACK
+
+statement ok con2
+UPDATE t SET i = i + 1 WHERE id = 7
+
+query I
+SELECT i FROM t WHERE id = 7
+----
+1
+
+# a write of the current value, then a write of another value in the same transaction
+statement ok con1
+BEGIN
+
+statement ok con1
+UPDATE t SET i = i WHERE id < 2048
+
+statement ok con1
+UPDATE t SET i = 100 WHERE id = 10
+
+statement ok con1
+UPDATE t SET i = i WHERE id < 4096
+
+statement ok con1
+COMMIT
+
+query II
+SELECT i, (SELECT sum(i) FROM t) FROM t WHERE id = 10
+----
+100	15232
+
+# the writes of the current value are not logged, the others are
+restart
+
+query II
+SELECT i, (SELECT sum(i) FROM t) FROM t WHERE id = 10
+----
+100	15232
+
+query II
+SELECT count(*), sum(i) FROM t
+----
+5000	15232
+
+# a concurrent reader keeps the values from before the update
+statement ok con1
+BEGIN
+
+statement ok con2
+BEGIN
+
+statement ok con1
+UPDATE t SET i = CASE WHEN id = 20 THEN 1000 ELSE i END
+
+query II con2
+SELECT sum(i), (SELECT i FROM t WHERE id = 20) FROM t
+----
+15232	6
+
+query II con1
+SELECT sum(i), (SELECT i FROM t WHERE id = 20) FROM t
+----
+16226	1000
+
+statement ok con1
+COMMIT
+
+statement ok con2
+COMMIT
+
+# an index can be created after a write of the current value
+statement ok
+CREATE TABLE u AS SELECT range i FROM range(5000);
+
+statement ok
+BEGIN
+
+statement ok
+UPDATE u SET i = i
+
+statement ok
+CREATE INDEX u_i ON u (i)
+
+statement ok
+COMMIT
+
+query I
+SELECT count(*) FROM u WHERE i = 1000
+----
+1
+
+# the statistics include the values of a rolled back update, a later write of the current values keeps them unused
+statement ok
+CREATE TABLE w AS SELECT range i FROM range(5000);
+
+statement ok
+BEGIN
+
+statement ok
+UPDATE w SET i = i + 100000
+
+statement ok
+ROLLBACK
+
+statement ok
+UPDATE w SET i = i
+
+query III
+SELECT min(i), max(i), count(*) FROM w
+----
+0	4999	5000
+
+# a table with only writes of the current values answers from its statistics
+statement ok
+CREATE TABLE x AS SELECT range i FROM range(5000);
+
+statement ok
+UPDATE x SET i = i
+
+query III
+SELECT min(i), max(i), count(*) FROM x
+----
+0	4999	5000
+
+# the statistics include the value of an update that failed with a conflict, the root of the vector is kept
+statement ok
+CREATE TABLE y AS SELECT range i FROM range(1);
+
+statement ok
+CHECKPOINT
+
+statement ok con1
+BEGIN
+
+statement ok con2
+BEGIN
+
+statement ok con1
+UPDATE y SET i = i
+
+statement error con2
+UPDATE y SET i = 100000
+----
+<REGEX>:TransactionContext Error.*Conflict on update.*
+
+statement ok con2
+ROLLBACK
+
+statement ok con1
+COMMIT
+
+statement ok
+UPDATE y SET i = i
+
+query III
+SELECT min(i), max(i), count(*) FROM y
+----
+0	0	1

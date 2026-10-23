@@ -219,7 +219,7 @@ public:
 			if (!reader->can_use_metadata_statistics || !bind_data.HasIdentityMapping(reader->GetColumns())) {
 				return;
 			}
-			ParquetReader::GetPartitionStats(*metadata->metadata, row_groups, *reader->root_schema,
+			ParquetReader::GetPartitionStats(metadata->metadata->file_metadata, row_groups, *reader->root_schema,
 			                                 reader->parquet_options, reader);
 		});
 		if (row_group_idx >= row_groups.size()) {
@@ -317,7 +317,7 @@ static vector<PartitionStatistics> GetCachedPartitionStats(ClientContext &contex
 		shared_options = make_shared_ptr<ParquetOptions>(*parquet_options);
 	}
 	for (auto &cache : cached_metadata) {
-		if (cache.metadata->metadata->row_groups.empty()) {
+		if (cache.metadata->metadata->file_metadata.row_groups.empty()) {
 			// the columns of a file are checked when the statistics of its row groups are first asked for, which never
 			// happens for a file without row groups, so then the scan reads the files
 			shared_options.reset();
@@ -325,7 +325,7 @@ static vector<PartitionStatistics> GetCachedPartitionStats(ClientContext &contex
 	}
 	for (auto &cache : cached_metadata) {
 		const auto file_start = result.size();
-		ParquetReader::GetPartitionStats(*cache.metadata->metadata, result);
+		ParquetReader::GetPartitionStats(cache.metadata->metadata->file_metadata, result);
 		if (!shared_options || cache.has_reader_options) {
 			// the reader checks and applies the options of the file itself, which the metadata alone cannot do
 			continue;
@@ -602,7 +602,7 @@ unique_ptr<NodeStatistics> ParquetMultiFileInfo::GetCardinality(ClientContext &c
 		idx_t cardinality = 0;
 		for (auto &cache : caches) {
 			// note: since this is just an estimate we don't need to look at whether or not the cache is valid
-			cardinality += cache.metadata->metadata->num_rows;
+			cardinality += cache.metadata->metadata->file_metadata.num_rows;
 		}
 		return make_uniq<NodeStatistics>(cardinality);
 	}
@@ -777,8 +777,13 @@ AsyncResult ParquetReader::Scan(ClientContext &context, GlobalTableFunctionState
 		}
 	}
 #endif
+	auto &gstate = gstate_p.Cast<ParquetReadGlobalState>();
 	auto &local_state = local_state_p.Cast<ParquetReadLocalState>();
-	return Process(context, local_state.scan_state, chunk);
+	// a row group's bytes are counted when its scan starts, in Process
+	auto bytes_before = local_state.scan_state.bytes_scanned;
+	auto result = Process(context, local_state.scan_state, chunk);
+	gstate.bytes_scanned_unreported += local_state.scan_state.bytes_scanned - bytes_before;
+	return result;
 }
 
 unique_ptr<MultiFileReaderInterface> ParquetMultiFileInfo::Copy() {

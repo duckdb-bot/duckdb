@@ -95,9 +95,22 @@ public:
 
 	//! Whether any UBIGINT value exceeds the BIGINT range (i.e., >= 2^63)
 	bool has_large_ubigint = false;
+	//! Whether any integer value is one that a DOUBLE can't hold exactly
+	bool has_inexact_double_integer = false;
 
 	//! MIXED clears the timestamp candidates (VARCHAR): neither TIMESTAMPTZ nor TIMESTAMP is safe
 	TimestampOffsetState timestamp_offset_state = TimestampOffsetState::UNKNOWN;
+};
+
+//! What the inference of a type found in its subtree, passed up to the parent
+struct JSONInferredTypeInfo {
+	//! The type holds an integer type with a value that a DOUBLE can't hold exactly
+	bool has_inexact_double_integers = false;
+	//! A STRUCT was kept so that integers stay exact where a MAP would round them
+	bool kept_exact_integers = false;
+	//! The type holds a STRUCT with two field names that differ only in case, which can't be built (only set when
+	//! kept_exact_integers is)
+	bool has_case_duplicate_fields = false;
 };
 
 struct JSONStructure {
@@ -107,7 +120,9 @@ public:
 	static void MergeNodes(JSONStructureNode &merged, const JSONStructureNode &node);
 	static LogicalType StructureToType(ClientContext &context, const JSONStructureNode &node, idx_t max_depth,
 	                                   double field_appearance_threshold, idx_t map_inference_threshold,
-	                                   idx_t depth = 0, const LogicalType &null_type = LogicalType::JSON());
+	                                   idx_t depth = 0, const LogicalType &null_type = LogicalType::JSON(),
+	                                   bool keep_exact_integers = true,
+	                                   optional_ptr<JSONInferredTypeInfo> info = nullptr);
 };
 
 } // namespace duckdb

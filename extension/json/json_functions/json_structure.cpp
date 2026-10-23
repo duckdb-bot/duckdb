@@ -7,6 +7,7 @@
 #include "json_scan.hpp"
 #include "json_transform.hpp"
 #include "duckdb/common/types/timestamp.hpp"
+#include "duckdb/common/reference_map.hpp"
 
 namespace duckdb {
 
@@ -484,6 +485,7 @@ static void SwapJSONStructureDescription(JSONStructureDescription &a, JSONStruct
 	std::swap(a.children, b.children);
 	std::swap(a.candidate_types, b.candidate_types);
 	std::swap(a.has_large_ubigint, b.has_large_ubigint);
+	std::swap(a.has_inexact_double_integer, b.has_inexact_double_integer);
 	std::swap(a.timestamp_offset_state, b.timestamp_offset_state);
 }
 
@@ -570,6 +572,16 @@ static void ExtractStructureObject(yyjson_val *obj, JSONStructureNode &node, con
 	}
 }
 
+//! Whether a DOUBLE holds an integer of this magnitude exactly, which needs at most 53 bits between its highest bit
+//! and its lowest set bit
+static bool DoubleHoldsExactly(uint64_t magnitude) {
+	static constexpr uint64_t MAX_SIGNIFICAND = 1ULL << 53;
+	while (magnitude > MAX_SIGNIFICAND && (magnitude & 1) == 0) {
+		magnitude >>= 1;
+	}
+	return magnitude <= MAX_SIGNIFICAND;
+}
+
 static void ExtractStructureVal(yyjson_val *val, JSONStructureNode &node) {
 	D_ASSERT(!yyjson_is_arr(val) && !yyjson_is_obj(val));
 	const auto val_type = JSONCommon::ValTypeToLogicalTypeId(val);
@@ -577,6 +589,16 @@ static void ExtractStructureVal(yyjson_val *val, JSONStructureNode &node) {
 	if (val_type == LogicalTypeId::UBIGINT &&
 	    unsafe_yyjson_get_uint(val) > static_cast<uint64_t>(NumericLimits<int64_t>::Maximum())) {
 		desc.has_large_ubigint = true;
+	}
+	if (val_type == LogicalTypeId::UBIGINT && !DoubleHoldsExactly(unsafe_yyjson_get_uint(val))) {
+		desc.has_inexact_double_integer = true;
+	}
+	if (val_type == LogicalTypeId::BIGINT) {
+		const auto value = unsafe_yyjson_get_sint(val);
+		const auto magnitude = value < 0 ? 0 - static_cast<uint64_t>(value) : static_cast<uint64_t>(value);
+		if (!DoubleHoldsExactly(magnitude)) {
+			desc.has_inexact_double_integer = true;
+		}
 	}
 }
 
@@ -687,14 +709,15 @@ ScalarFunctionSet JSONFunctions::GetStructureFunction() {
 
 static LogicalType StructureToTypeArray(ClientContext &context, const JSONStructureNode &node, const idx_t max_depth,
                                         const double field_appearance_threshold, const idx_t map_inference_threshold,
-                                        const idx_t depth, const LogicalType &null_type) {
+                                        const idx_t depth, const LogicalType &null_type, const bool keep_exact_integers,
+                                        JSONInferredTypeInfo &info) {
 	D_ASSERT(node.descriptions.size() == 1 && node.descriptions[0].type == LogicalTypeId::LIST);
 	const auto &desc = node.descriptions[0];
 	D_ASSERT(desc.children.size() == 1);
 
 	return LogicalType::LIST(JSONStructure::StructureToType(context, desc.children[0], max_depth,
 	                                                        field_appearance_threshold, map_inference_threshold,
-	                                                        depth + 1, null_type));
+	                                                        depth + 1, null_type, keep_exact_integers, &info));
 }
 
 static void MergeNodeArray(JSONStructureNode &merged, const JSONStructureDescription &child_desc) {
@@ -722,6 +745,9 @@ static void MergeNodeVal(JSONStructureNode &merged, const JSONStructureDescripti
 	auto &merged_desc = merged.GetOrCreateDescription(child_desc.type);
 	if (child_desc.has_large_ubigint) {
 		merged_desc.has_large_ubigint = true;
+	}
+	if (child_desc.has_inexact_double_integer) {
+		merged_desc.has_inexact_double_integer = true;
 	}
 	if (merged_desc.type != LogicalTypeId::VARCHAR || !node_initialized || merged.descriptions.size() != 1) {
 		return;
@@ -857,6 +883,120 @@ static double CalculateTypeSimilarity(const LogicalType &merged, const LogicalTy
 	}
 }
 
+//! The value types under the keys of an object type, which is a STRUCT or a MAP
+struct ObjectValueTypes {
+	explicit ObjectValueTypes(const LogicalType &type_p) : type(type_p) {
+		if (type.id() == LogicalTypeId::STRUCT) {
+			auto &fields = StructType::GetChildTypes(type);
+			for (idx_t i = 0; i < fields.size(); i++) {
+				field_index.emplace(fields[i].first.GetIdentifierName(), i);
+			}
+		}
+	}
+
+	optional_ptr<const LogicalType> Get(const string &key) const {
+		if (type.id() == LogicalTypeId::MAP) {
+			return &MapType::ValueType(type);
+		}
+		const auto it = field_index.find(key);
+		if (it == field_index.end()) {
+			return nullptr;
+		}
+		return &StructType::GetChildTypes(type)[it->second].second;
+	}
+
+	const LogicalType &type;
+	case_insensitive_map_t<idx_t> field_index;
+};
+
+//! The field indexes of the object types that one check walks, each built once
+struct ObjectValueTypesCache {
+	const ObjectValueTypes &Get(const LogicalType &type) {
+		auto &entry = entries[type];
+		if (!entry) {
+			entry = make_uniq<ObjectValueTypes>(type);
+		}
+		return *entry;
+	}
+
+	reference_map_t<const LogicalType, unique_ptr<ObjectValueTypes>> entries;
+};
+
+//! Whether a value of the node, of type, becomes a DOUBLE in map_type that can't hold one of its integers
+static bool MapValueRoundsIntegers(const LogicalType &map_type, const LogicalType &type, const JSONStructureNode &node,
+                                   ObjectValueTypesCache &cache) {
+	if (node.descriptions.size() != 1 || map_type == type) {
+		return false;
+	}
+	auto &desc = node.descriptions[0];
+	switch (type.id()) {
+	case LogicalTypeId::BIGINT:
+	case LogicalTypeId::UBIGINT:
+	case LogicalTypeId::HUGEINT:
+		return map_type.id() == LogicalTypeId::DOUBLE && desc.has_inexact_double_integer;
+	case LogicalTypeId::LIST:
+		return map_type.id() == LogicalTypeId::LIST && desc.type == LogicalTypeId::LIST && desc.children.size() == 1 &&
+		       MapValueRoundsIntegers(ListType::GetChildType(map_type), ListType::GetChildType(type), desc.children[0],
+		                              cache);
+	case LogicalTypeId::STRUCT:
+	case LogicalTypeId::MAP: {
+		if (desc.type != LogicalTypeId::STRUCT ||
+		    (map_type.id() != LogicalTypeId::STRUCT && map_type.id() != LogicalTypeId::MAP)) {
+			return false;
+		}
+		// the types can be merged over other objects, so the fields are found by key, and some can be missing
+		auto &from = cache.Get(type);
+		auto &to = cache.Get(map_type);
+		for (auto &child : desc.children) {
+			const auto from_type = from.Get(*child.key);
+			const auto to_type = to.Get(*child.key);
+			if (from_type && to_type && MapValueRoundsIntegers(*to_type, *from_type, child, cache)) {
+				return true;
+			}
+		}
+		return false;
+	}
+	default:
+		return false;
+	}
+}
+
+//! Whether two of the fields have names that differ only in case, which a STRUCT can't hold
+static bool HasCaseInsensitiveDuplicateKeys(const child_list_t<LogicalType> &fields) {
+	case_insensitive_set_t names;
+	for (auto &field : fields) {
+		if (!names.insert(field.first.GetIdentifierName()).second) {
+			return true;
+		}
+	}
+	return false;
+}
+
+//! Whether a STRUCT in the type has two fields whose names differ only in case
+static bool HasCaseInsensitiveDuplicateFields(const LogicalType &type) {
+	switch (type.id()) {
+	case LogicalTypeId::STRUCT: {
+		auto &fields = StructType::GetChildTypes(type);
+		if (HasCaseInsensitiveDuplicateKeys(fields)) {
+			return true;
+		}
+		for (auto &field : fields) {
+			if (HasCaseInsensitiveDuplicateFields(field.second)) {
+				return true;
+			}
+		}
+		return false;
+	}
+	case LogicalTypeId::LIST:
+		return HasCaseInsensitiveDuplicateFields(ListType::GetChildType(type));
+	case LogicalTypeId::MAP:
+		return HasCaseInsensitiveDuplicateFields(MapType::KeyType(type)) ||
+		       HasCaseInsensitiveDuplicateFields(MapType::ValueType(type));
+	default:
+		return false;
+	}
+}
+
 static bool IsStructureInconsistent(const JSONStructureDescription &desc, const idx_t sample_count,
                                     const idx_t null_count, const double field_appearance_threshold) {
 	D_ASSERT(sample_count > null_count);
@@ -870,7 +1010,8 @@ static bool IsStructureInconsistent(const JSONStructureDescription &desc, const 
 
 static LogicalType GetMergedType(ClientContext &context, const JSONStructureNode &node, const idx_t max_depth,
                                  const double field_appearance_threshold, const idx_t map_inference_threshold,
-                                 const idx_t depth, const LogicalType &null_type) {
+                                 const idx_t depth, const LogicalType &null_type, const bool keep_exact_integers,
+                                 JSONInferredTypeInfo &info) {
 	D_ASSERT(node.descriptions.size() == 1);
 	auto &desc = node.descriptions[0];
 	auto merged = JSONStructureNode::EmptyLike(node);
@@ -878,12 +1019,25 @@ static LogicalType GetMergedType(ClientContext &context, const JSONStructureNode
 		JSONStructure::MergeNodes(merged, child);
 	}
 	return JSONStructure::StructureToType(context, merged, max_depth, field_appearance_threshold,
-	                                      map_inference_threshold, depth + 1, null_type);
+	                                      map_inference_threshold, depth + 1, null_type, keep_exact_integers, &info);
 }
 
-static LogicalType StructureToTypeObject(ClientContext &context, const JSONStructureNode &node, const idx_t max_depth,
-                                         const double field_appearance_threshold, const idx_t map_inference_threshold,
-                                         const idx_t depth, const LogicalType &null_type) {
+//! A MAP has one value type for all keys, which must not round the integers that a STRUCT keeps exact
+static bool MapRoundsIntegers(const JSONStructureDescription &desc, const child_list_t<LogicalType> &child_types,
+                              const LogicalType &map_value_type) {
+	ObjectValueTypesCache cache;
+	bool rounds = false;
+	for (idx_t i = 0; i < child_types.size() && !rounds; i++) {
+		rounds = MapValueRoundsIntegers(map_value_type, child_types[i].second, desc.children[i], cache);
+	}
+	return rounds;
+}
+
+static LogicalType StructureToTypeObjectInternal(ClientContext &context, const JSONStructureNode &node,
+                                                 const idx_t max_depth, const double field_appearance_threshold,
+                                                 const idx_t map_inference_threshold, const idx_t depth,
+                                                 const LogicalType &null_type, const bool keep_exact_integers,
+                                                 JSONInferredTypeInfo &info) {
 	D_ASSERT(node.descriptions.size() == 1 && node.descriptions[0].type == LogicalTypeId::STRUCT);
 	auto &desc = node.descriptions[0];
 
@@ -910,25 +1064,34 @@ static LogicalType StructureToTypeObject(ClientContext &context, const JSONStruc
 	// If it's an inconsistent object we also just do MAP with the best-possible, recursively-merged value type
 	if (has_empty_key || (map_inference_threshold != DConstants::INVALID_INDEX &&
 	                      IsStructureInconsistent(desc, node.count, node.null_count, field_appearance_threshold))) {
-		return LogicalType::MAP(LogicalType::VARCHAR,
-		                        GetMergedType(context, node, max_depth, field_appearance_threshold,
-		                                      map_inference_threshold, depth + 1, null_type));
+		return LogicalType::MAP(LogicalType::VARCHAR, GetMergedType(context, node, max_depth,
+		                                                            field_appearance_threshold, map_inference_threshold,
+		                                                            depth + 1, null_type, keep_exact_integers, info));
 	}
 
 	// We have a consistent object
 	child_list_t<LogicalType> child_types;
 	child_types.reserve(desc.children.size());
-	for (auto &child : desc.children) {
+	vector<JSONInferredTypeInfo> child_infos(desc.children.size());
+	JSONInferredTypeInfo struct_info;
+	for (idx_t i = 0; i < desc.children.size(); i++) {
+		auto &child = desc.children[i];
 		D_ASSERT(child.key);
 		child_types.emplace_back(*child.key,
 		                         JSONStructure::StructureToType(context, child, max_depth, field_appearance_threshold,
-		                                                        map_inference_threshold, depth + 1, null_type));
+		                                                        map_inference_threshold, depth + 1, null_type,
+		                                                        keep_exact_integers, &child_infos[i]));
+		struct_info.kept_exact_integers = struct_info.kept_exact_integers || child_infos[i].kept_exact_integers;
+		struct_info.has_inexact_double_integers =
+		    struct_info.has_inexact_double_integers || child_infos[i].has_inexact_double_integers;
 	}
 
 	// If we have many children and all children have similar-enough types we infer map
 	if (desc.children.size() >= map_inference_threshold) {
-		LogicalType map_value_type = GetMergedType(context, node, max_depth, field_appearance_threshold,
-		                                           map_inference_threshold, depth + 1, LogicalTypeId::SQLNULL);
+		JSONInferredTypeInfo map_info;
+		LogicalType map_value_type =
+		    GetMergedType(context, node, max_depth, field_appearance_threshold, map_inference_threshold, depth + 1,
+		                  LogicalTypeId::SQLNULL, keep_exact_integers, map_info);
 
 		double total_similarity = 0;
 		for (const auto &child_type : child_types) {
@@ -941,15 +1104,48 @@ static LogicalType StructureToTypeObject(ClientContext &context, const JSONStruc
 		}
 		const auto avg_similarity = total_similarity / static_cast<double>(child_types.size());
 		if (avg_similarity >= 0.8) {
-			if (null_type != LogicalTypeId::SQLNULL) {
-				map_value_type = GetMergedType(context, node, max_depth, field_appearance_threshold,
-				                               map_inference_threshold, depth + 1, null_type);
+			if (!keep_exact_integers || !struct_info.has_inexact_double_integers ||
+			    !MapRoundsIntegers(desc, child_types, map_value_type)) {
+				if (null_type != LogicalTypeId::SQLNULL) {
+					map_info = JSONInferredTypeInfo();
+					map_value_type =
+					    GetMergedType(context, node, max_depth, field_appearance_threshold, map_inference_threshold,
+					                  depth + 1, null_type, keep_exact_integers, map_info);
+				}
+				info = map_info;
+				return LogicalType::MAP(LogicalType::VARCHAR, map_value_type);
 			}
-			return LogicalType::MAP(LogicalType::VARCHAR, map_value_type);
+			// the STRUCT keeps the integers exact
+			struct_info.kept_exact_integers = true;
 		}
 	}
 
+	if (struct_info.kept_exact_integers) {
+		// only a subtree that kept integers exact needs to know whether its STRUCT can be built
+		struct_info.has_case_duplicate_fields = HasCaseInsensitiveDuplicateKeys(child_types);
+		for (idx_t i = 0; i < child_types.size() && !struct_info.has_case_duplicate_fields; i++) {
+			struct_info.has_case_duplicate_fields = child_infos[i].kept_exact_integers
+			                                            ? child_infos[i].has_case_duplicate_fields
+			                                            : HasCaseInsensitiveDuplicateFields(child_types[i].second);
+		}
+	}
+	info = struct_info;
 	return LogicalType::STRUCT(child_types);
+}
+
+static LogicalType StructureToTypeObject(ClientContext &context, const JSONStructureNode &node, const idx_t max_depth,
+                                         const double field_appearance_threshold, const idx_t map_inference_threshold,
+                                         const idx_t depth, const LogicalType &null_type,
+                                         const bool keep_exact_integers, JSONInferredTypeInfo &info) {
+	auto result = StructureToTypeObjectInternal(context, node, max_depth, field_appearance_threshold,
+	                                            map_inference_threshold, depth, null_type, keep_exact_integers, info);
+	// keeping integers exact must not make a STRUCT that can't be built, so the object is then inferred as before
+	if (info.kept_exact_integers && info.has_case_duplicate_fields) {
+		info = JSONInferredTypeInfo();
+		return StructureToTypeObjectInternal(context, node, max_depth, field_appearance_threshold,
+		                                     map_inference_threshold, depth, null_type, false, info);
+	}
+	return result;
 }
 
 static LogicalType StructureToTypeString(const JSONStructureNode &node) {
@@ -963,7 +1159,10 @@ static LogicalType StructureToTypeString(const JSONStructureNode &node) {
 
 LogicalType JSONStructure::StructureToType(ClientContext &context, const JSONStructureNode &node, const idx_t max_depth,
                                            const double field_appearance_threshold, const idx_t map_inference_threshold,
-                                           const idx_t depth, const LogicalType &null_type) {
+                                           const idx_t depth, const LogicalType &null_type,
+                                           const bool keep_exact_integers, optional_ptr<JSONInferredTypeInfo> info) {
+	JSONInferredTypeInfo local_info;
+	auto &type_info = info ? *info : local_info;
 	if (depth >= max_depth) {
 		return LogicalType::JSON();
 	}
@@ -978,17 +1177,22 @@ LogicalType JSONStructure::StructureToType(ClientContext &context, const JSONStr
 	switch (desc.type) {
 	case LogicalTypeId::LIST:
 		return StructureToTypeArray(context, node, max_depth, field_appearance_threshold, map_inference_threshold,
-		                            depth, null_type);
+		                            depth, null_type, keep_exact_integers, type_info);
 	case LogicalTypeId::STRUCT:
 		return StructureToTypeObject(context, node, max_depth, field_appearance_threshold, map_inference_threshold,
-		                             depth, null_type);
+		                             depth, null_type, keep_exact_integers, type_info);
 	case LogicalTypeId::VARCHAR:
 		return StructureToTypeString(node);
 	case LogicalTypeId::UBIGINT:
+		type_info.has_inexact_double_integers = desc.has_inexact_double_integer;
 		if (desc.has_large_ubigint) {
 			return LogicalTypeId::HUGEINT;
 		}
 		return LogicalTypeId::BIGINT;
+	case LogicalTypeId::BIGINT:
+	case LogicalTypeId::HUGEINT:
+		type_info.has_inexact_double_integers = desc.has_inexact_double_integer;
+		return desc.type;
 	case LogicalTypeId::SQLNULL:
 		return LogicalType::SQLNULL;
 	case LogicalTypeId::GEOMETRY:

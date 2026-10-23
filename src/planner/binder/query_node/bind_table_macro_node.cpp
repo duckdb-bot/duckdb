@@ -310,9 +310,10 @@ private:
 		if (caller_entry.get() == macro_entry.get()) {
 			return;
 		}
+		// the entry can have another name than the one written, as the default table of a catalog
 		auto &schema = macro_entry->ParentSchema();
 		changes.emplace_back(name, QualifiedName::FromCatalogSchema(schema.ParentCatalog().GetName(),
-		                                                            schema.GetSchemaPath(), name.Name()));
+		                                                            schema.GetSchemaPath(), macro_entry->name));
 	}
 
 	static optional_ptr<CatalogEntry> LookUp(CatalogEntryRetriever &retriever, CatalogType type,
@@ -336,7 +337,7 @@ private:
 	CatalogEntryRetriever macro_retriever;
 	//! The names to qualify
 	vector<NameChange> changes;
-	//! The select list expressions without alias that have a name to qualify, inner ones first
+	//! The expressions without alias that name a column and have a name to qualify, inner ones first
 	vector<UnnamedExpression> unnamed_expressions;
 	//! The CTEs of the body that are visible where the walk is, innermost last
 	vector<identifier_set_t> cte_names;

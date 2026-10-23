@@ -371,3 +371,35 @@ query I
 SELECT a.b.g()
 ----
 1
+
+# the default table of a catalog is qualified with its own name
+statement ok
+ATTACH ':memory:' AS dt (DEFAULT_TABLE 'real_t');
+
+statement ok
+CREATE TABLE dt.real_t AS SELECT 42 AS v;
+
+statement ok
+CREATE TABLE dt.dt AS SELECT 99 AS v;
+
+statement ok
+CREATE MACRO from_default_table() AS TABLE SELECT * FROM dt;
+
+statement ok
+ATTACH ':memory:' AS caller;
+
+statement ok
+CREATE VIEW caller.macro_view AS SELECT * FROM memory.from_default_table();
+
+statement ok
+CREATE TABLE caller.dt AS SELECT -1 AS v;
+
+query I
+SELECT * FROM memory.from_default_table();
+----
+42
+
+query I
+SELECT * FROM caller.macro_view;
+----
+42

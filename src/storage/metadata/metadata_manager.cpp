@@ -445,12 +445,9 @@ void MetadataManager::ClearModifiedBlocks(const vector<MetaBlockPointer> &pointe
 			if (!kept_blocks.insert(pointer.block_pointer).second) {
 				continue;
 			}
-			auto metadata_pointer = FromDiskPointer(pointer);
-			auto handle = Pin(metadata_pointer);
-			auto next_block =
-			    Load<idx_t>(handle.handle.GetDataMutable() + metadata_pointer.index * GetMetadataBlockSize());
-			if (next_block != idx_t(-1)) {
-				next_pointers.emplace_back(next_block, 0);
+			auto next_block = GetNextBlock(pointer);
+			if (next_block.IsValid()) {
+				next_pointers.push_back(next_block);
 			}
 		}
 	}
@@ -477,6 +474,13 @@ void MetadataManager::ClearModifiedBlocks(const vector<MetaBlockPointer> &pointe
 
 void MetadataManager::SetStorageVersion(StorageVersion storage_version) {
 	keep_next_blocks = storage_version < StorageVersion::V1_5_0;
+}
+
+MetaBlockPointer MetadataManager::GetNextBlock(MetaBlockPointer pointer) {
+	auto metadata_pointer = FromDiskPointer(pointer);
+	auto handle = Pin(metadata_pointer);
+	auto next_block = Load<idx_t>(handle.handle.Ptr() + metadata_pointer.index * GetMetadataBlockSize());
+	return MetaBlockPointer(next_block, 0);
 }
 
 bool MetadataManager::BlockIsModified(const MetaBlockPointer &pointer) {

@@ -13,7 +13,6 @@
 #include "test_helpers.hpp"
 
 #include <set>
-#include <utility>
 
 using namespace duckdb;
 
@@ -51,15 +50,11 @@ idx_t CountNextPointersToFreeBlocks(Connection &con, idx_t table_count) {
 		auto &pointers = table.GetStorage().GetRowGroupCollection()->GetMetadataPointers();
 		REQUIRE(!pointers.empty());
 		for (auto &pointer : pointers) {
-			auto metadata_pointer = metadata_manager.FromDiskPointer(pointer);
-			auto handle = metadata_manager.Pin(metadata_pointer);
-			auto next = Load<idx_t>(handle.handle.GetDataMutable() +
-			                        metadata_pointer.index * metadata_manager.GetMetadataBlockSize());
-			if (next == idx_t(-1)) {
+			auto next_block = metadata_manager.GetNextBlock(pointer);
+			if (!next_block.IsValid()) {
 				continue;
 			}
-			MetaBlockPointer next_pointer(next, 0);
-			if (in_use.find(MetadataBlock {next_pointer.GetBlockId(), next_pointer.GetBlockIndex()}) == in_use.end()) {
+			if (in_use.find(MetadataBlock {next_block.GetBlockId(), next_block.GetBlockIndex()}) == in_use.end()) {
 				result++;
 			}
 		}
@@ -71,13 +66,19 @@ idx_t CountNextPointersToFreeBlocks(Connection &con, idx_t table_count) {
 } // namespace
 
 TEST_CASE("Metadata of a file for older versions has no next pointers into free blocks", "[storage]") {
+	// every storage format below v1.5.0
+	auto storage_version = GENERATE(as<string> {}, "v1.0.0", "v1.2.0", "v1.3.0", "v1.4.0");
+	INFO("storage version " << storage_version);
 	auto path = TestCreatePath("metadata_chain_old_readers.db");
 	DeleteDatabase(path);
 	auto config = GetTestConfig();
-	config->SetOptionByName("storage_compatibility_version", Value("v1.0.0"));
+	config->SetOptionByName("storage_compatibility_version", Value(storage_version));
 	// only the explicit checkpoints below write the file, automatic ones would rewrite the tables this relies on
 	config->options.checkpoint_wal_size = idx_t(1) << 40;
 	config->options.checkpoint_on_shutdown = false;
+	const idx_t table_count = 9;
+	// the database that creates the file drops the first tables, the database that opens it again drops the others
+	const idx_t dropped_before_reopen = 4;
 	{
 		DuckDB db(path, config.get());
 		Connection con(db);
@@ -85,13 +86,21 @@ TEST_CASE("Metadata of a file for older versions has no next pointers into free 
 		                          "range(100) s(j)) ON j USING first(v) ORDER BY i"));
 		REQUIRE_NO_FAIL(con.Query("CREATE TEMP TABLE narrow AS SELECT i, i * 2 AS b, i * 3 AS c, i * 4 AS d, i * 5 AS "
 		                          "e FROM range(1000) t(i)"));
-		for (idx_t i = 0; i < 9; i++) {
+		for (idx_t i = 0; i < table_count; i++) {
 			auto suffix = std::to_string(i);
 			REQUIRE_NO_FAIL(con.Query("CREATE TABLE candles_" + suffix + " AS FROM narrow"));
 			REQUIRE_NO_FAIL(con.Query("CREATE TABLE other_" + suffix + " AS FROM wide"));
 			REQUIRE_NO_FAIL(con.Query("CHECKPOINT"));
 		}
-		for (idx_t i = 0; i < 9; i++) {
+		for (idx_t i = 0; i < dropped_before_reopen; i++) {
+			REQUIRE_NO_FAIL(con.Query("DROP TABLE other_" + std::to_string(i)));
+		}
+		REQUIRE_NO_FAIL(con.Query("CHECKPOINT"));
+	}
+	{
+		DuckDB db(path, config.get());
+		Connection con(db);
+		for (idx_t i = dropped_before_reopen; i < table_count; i++) {
 			REQUIRE_NO_FAIL(con.Query("DROP TABLE other_" + std::to_string(i)));
 		}
 		REQUIRE_NO_FAIL(con.Query("CHECKPOINT"));
@@ -99,7 +108,7 @@ TEST_CASE("Metadata of a file for older versions has no next pointers into free 
 	DuckDB db(path, config.get());
 	Connection con(db);
 	auto result = con.Query("SELECT count(*) FROM duckdb_tables()");
-	REQUIRE(CHECK_COLUMN(result, 0, {9}));
-	REQUIRE(CountNextPointersToFreeBlocks(con, 9) == 0);
+	REQUIRE(CHECK_COLUMN(result, 0, {Value::UBIGINT(table_count)}));
+	REQUIRE(CountNextPointersToFreeBlocks(con, table_count) == 0);
 	DeleteDatabase(path);
 }

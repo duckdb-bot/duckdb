@@ -87,6 +87,8 @@ public:
 	void ClearModifiedBlocks(const vector<MetaBlockPointer> &pointers);
 	//! Sets the storage version of the file, which decides whether keeping a block also keeps its next block
 	void SetStorageVersion(StorageVersion storage_version);
+	//! The block that the next pointer of a block in use refers to, invalid at the end of its chain
+	MetaBlockPointer GetNextBlock(MetaBlockPointer pointer);
 
 	vector<MetadataBlockInfo> GetMetadataInfo() const;
 	vector<shared_ptr<BlockHandle>> GetBlocks() const;

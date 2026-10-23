@@ -422,6 +422,12 @@ struct CatalogLookup {
 	//! paths, which cannot be expressed as a single (catalog, schema) pair.
 	CatalogLookup(Catalog &catalog, const EntryLookupInfo &lookup_p) : catalog(catalog), lookup_info(lookup_p) {
 	}
+	//! Look the entry up in the schema of a search path entry, which can be nested
+	CatalogLookup(Catalog &catalog, const CatalogSearchEntry &entry, const EntryLookupInfo &lookup_p)
+	    : catalog(catalog),
+	      lookup_info(lookup_p, QualifiedName::FromCatalogSchema(catalog.GetName(), entry.GetSchemaPath(),
+	                                                             lookup_p.GetEntryIdentifier())) {
+	}
 
 	Catalog &catalog;
 	//! The lookup, with its catalog/schema qualification set to the resolved (catalog, schema) pair
@@ -706,10 +712,7 @@ vector<CatalogSearchEntry> GetCatalogEntries(CatalogEntryRetriever &retriever, c
 			}
 		}
 	} else if (IsInvalidSchema(schema)) {
-		auto schemas = search_path.GetSchemasForCatalog(catalog);
-		for (auto &schema_name : schemas) {
-			entries.emplace_back(catalog, schema_name);
-		}
+		entries = search_path.GetEntriesForCatalog(catalog);
 		if (entries.empty()) {
 			auto catalog_entry = Catalog::GetCatalogEntry(context, catalog);
 			if (!catalog_entry) {
@@ -749,7 +752,7 @@ void FindMinimalQualification(CatalogEntryRetriever &retriever, const Identifier
 	found = false;
 	entries = GetCatalogEntries(retriever, catalog_name, Identifier::InvalidSchema());
 	for (auto &entry : entries) {
-		if (entry.GetCatalog() == catalog_name && entry.GetSchema() == schema_name) {
+		if (entry.GetCatalog() == catalog_name && entry.GetSchema() == schema_name && !entry.IsNested()) {
 			found = true;
 			break;
 		}
@@ -1041,11 +1044,11 @@ CatalogEntryLookup Catalog::TryLookupEntry(CatalogEntryRetriever &retriever, con
 		// try all schemas for this catalog
 		auto entries = GetCatalogEntries(retriever, GetName(), Identifier::InvalidSchema());
 		for (auto &entry : entries) {
-			auto &candidate_schema = entry.GetSchema();
 			auto transaction = GetCatalogTransaction(context);
 			auto result = TryLookupEntryInternal(
-			    transaction, EntryLookupInfo(lookup_info, QualifiedName(GetName(), candidate_schema,
-			                                                            lookup_info.GetEntryIdentifier())));
+			    transaction,
+			    EntryLookupInfo(lookup_info, QualifiedName::FromCatalogSchema(GetName(), entry.GetSchemaPath(),
+			                                                                  lookup_info.GetEntryIdentifier())));
 			if (result.Found()) {
 				return result;
 			}
@@ -1121,9 +1124,9 @@ CatalogEntryLookup Catalog::TryLookupEntryAcrossCatalogs(CatalogEntryRetriever &
 		D_ASSERT(catalog_entry);
 		auto lookup_behavior = catalog_entry->CatalogTypeLookupRule(lookup_info.GetCatalogType());
 		if (lookup_behavior == CatalogLookupBehavior::STANDARD) {
-			lookups.emplace_back(*catalog_entry, entry.GetSchema(), lookup_info);
+			lookups.emplace_back(*catalog_entry, entry, lookup_info);
 		} else if (lookup_behavior == CatalogLookupBehavior::LOWER_PRIORITY) {
-			final_lookups.emplace_back(*catalog_entry, entry.GetSchema(), lookup_info);
+			final_lookups.emplace_back(*catalog_entry, entry, lookup_info);
 		}
 	}
 

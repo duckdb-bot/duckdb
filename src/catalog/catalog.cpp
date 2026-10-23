@@ -414,10 +414,6 @@ struct CatalogLookup {
 	    : catalog(catalog),
 	      lookup_info(catalog_type, QualifiedName(catalog.GetName(), std::move(schema_p), std::move(name_p))) {
 	}
-	CatalogLookup(Catalog &catalog, Identifier schema_p, const EntryLookupInfo &lookup_p)
-	    : catalog(catalog),
-	      lookup_info(lookup_p, QualifiedName(catalog.GetName(), std::move(schema_p), lookup_p.GetEntryIdentifier())) {
-	}
 	//! Look the entry up in the given catalog, keeping the lookup's qualification as-is. Used for nested schema
 	//! paths, which cannot be expressed as a single (catalog, schema) pair.
 	CatalogLookup(Catalog &catalog, const EntryLookupInfo &lookup_p) : catalog(catalog), lookup_info(lookup_p) {
@@ -1164,12 +1160,10 @@ static void ThrowDefaultTableAmbiguityException(CatalogEntryLookup &base_lookup,
 	string fully_qualified_name_hint;
 	if (base_lookup.schema) {
 		fully_qualified_name_hint =
-		    StringUtil::Format(": '%s.%s.%s'", SQLIdentifier(base_lookup.schema->catalog.GetName()),
-		                       SQLIdentifier(base_lookup.schema->name), SQLIdentifier(base_lookup.entry->name));
+		    StringUtil::Format(": '%s'", base_lookup.schema->GetQualifiedName(base_lookup.entry->name).ToString());
 	}
 	string fully_qualified_catalog_name_hint =
-	    StringUtil::Format(": '%s.%s.%s'", SQLIdentifier(default_table.schema->catalog.GetName()),
-	                       SQLIdentifier(default_table.schema->name), SQLIdentifier(default_table.entry->name));
+	    StringUtil::Format(": '%s'", default_table.schema->GetQualifiedName(default_table.entry->name).ToString());
 	throw CatalogException(
 	    "Ambiguity detected for '%s': this could either refer to the '%s' '%s', or the "
 	    "attached catalog '%s' which has a default table. To avoid this error, either detach the catalog and "

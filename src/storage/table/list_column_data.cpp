@@ -134,7 +134,11 @@ idx_t ListColumnData::ScanCount(ColumnScanState &state, Vector &result, idx_t co
 	idx_t scan_count = ScanVector(state, offset_vector, count, ScanVectorType::SCAN_FLAT_VECTOR);
 	D_ASSERT(scan_count > 0);
 	validity->ScanCount(state.child_states[0], result, count);
+	ScanLists(state, result, offset_vector, scan_count);
+	return scan_count;
+}
 
+void ListColumnData::ScanLists(ColumnScanState &state, Vector &result, Vector &offset_vector, idx_t scan_count) {
 	auto data = offset_vector.Values<uint64_t>();
 	// shift all offsets so they are 0 at the first entry
 	auto result_data = FlatVector::Writer<list_entry_t>(result, scan_count);
@@ -164,7 +168,100 @@ idx_t ListColumnData::ScanCount(ColumnScanState &state, Vector &result, idx_t co
 	state.last_offset = previous_offset;
 
 	ListVector::SetListSize(result, child_scan_count);
-	return scan_count;
+}
+
+void ListColumnData::Select(TransactionData transaction, idx_t vector_index, ColumnScanState &state, Vector &result,
+                            SelectionVector &sel, idx_t sel_count) {
+	// like ArrayColumnData::Select, read only the children of the selected lists when that is worth it
+	auto &child_type = child_column->type;
+	if (child_type.IsNested() || child_type.InternalType() == PhysicalType::VARCHAR || sel_count == 0) {
+		ColumnData::Select(transaction, vector_index, state, result, sel, sel_count);
+		return;
+	}
+	D_ASSERT(!updates);
+	auto target_count = GetVectorCount(vector_index);
+	Vector offset_vector(LogicalType::UBIGINT, target_count);
+	idx_t scan_count = ScanVector(state, offset_vector, target_count, ScanVectorType::SCAN_FLAT_VECTOR);
+	D_ASSERT(scan_count > 0);
+	auto offsets = offset_vector.Values<uint64_t>();
+	auto child_count = child_column->GetMaxEntry();
+	auto first_offset = state.last_offset;
+	auto last_offset = offsets[scan_count - 1].GetValueUnsafe();
+	auto total_children = GetListLength(first_offset, last_offset, child_count);
+
+	// count the consecutive ranges of selected rows, each costs a skip and a scan
+	idx_t consecutive_ranges = 0;
+	for (idx_t i = 0; i < sel_count; i++) {
+		idx_t end_idx = sel.get_index(i) + 1;
+		for (; i + 1 < sel_count && sel.get_index(i + 1) <= end_idx; i++) {
+			end_idx = sel.get_index(i + 1) + 1;
+		}
+		consecutive_ranges++;
+	}
+	// as for arrays, allow around one range every two children of an average list
+	if (consecutive_ranges * 2 * scan_count > total_children) {
+		validity->ScanCount(state.child_states[0], result, scan_count);
+		ScanLists(state, result, offset_vector, scan_count);
+		FlatVector::SetSize(result, count_t(scan_count));
+		result.Slice(sel, sel_count);
+		return;
+	}
+
+	auto list_start = [&](idx_t row) {
+		return row == 0 ? first_offset : offsets[row - 1].GetValueUnsafe();
+	};
+	vector<list_entry_t> entries;
+	entries.reserve(sel_count);
+	idx_t selected_children = 0;
+	for (idx_t i = 0; i < sel_count; i++) {
+		auto row = sel.get_index(i);
+		auto length = GetListLength(list_start(row), offsets[row].GetValueUnsafe(), child_count);
+		entries.emplace_back(selected_children, length);
+		selected_children += length;
+	}
+	ListVector::Reserve(result, selected_children);
+	auto &child_vector = ListVector::GetChildMutable(result);
+
+	idx_t current_row = 0;
+	idx_t current_child = first_offset;
+	idx_t result_row = 0;
+	idx_t result_child = 0;
+	for (idx_t i = 0; i < sel_count; i++) {
+		idx_t start_idx = sel.get_index(i);
+		idx_t end_idx = start_idx + 1;
+		for (; i + 1 < sel_count && sel.get_index(i + 1) <= end_idx; i++) {
+			end_idx = sel.get_index(i + 1) + 1;
+		}
+		auto start_child = list_start(start_idx);
+		auto end_child = offsets[end_idx - 1].GetValueUnsafe();
+		if (start_idx > current_row) {
+			validity->Skip(state.child_states[0], start_idx - current_row);
+			if (start_child > current_child) {
+				child_column->Skip(state.child_states[1], start_child - current_child);
+			}
+		}
+		validity->ScanCount(state.child_states[0], result, end_idx - start_idx, result_row);
+		if (end_child > start_child) {
+			child_column->ScanCount(state.child_states[1], child_vector, end_child - start_child, result_child);
+		}
+		result_row += end_idx - start_idx;
+		result_child += end_child - start_child;
+		current_row = end_idx;
+		current_child = end_child;
+	}
+	if (current_row < scan_count) {
+		validity->Skip(state.child_states[0], scan_count - current_row);
+		if (last_offset > current_child) {
+			child_column->Skip(state.child_states[1], last_offset - current_child);
+		}
+	}
+	state.last_offset = last_offset;
+
+	auto result_data = FlatVector::Writer<list_entry_t>(result, sel_count);
+	for (auto &entry : entries) {
+		result_data.WriteValue(entry);
+	}
+	ListVector::SetListSize(result, selected_children);
 }
 
 void ListColumnData::Skip(ColumnScanState &state, idx_t count) {

@@ -388,6 +388,35 @@ bool LateMaterialization::TryLateMaterialization(unique_ptr<LogicalOperator> &op
 	return true;
 }
 
+//! Whether the type holds lists or arrays whose scan can skip the children of rows that are not selected
+static bool HasSelectableChildren(const LogicalType &type) {
+	if (type.id() != LogicalTypeId::LIST && type.id() != LogicalTypeId::ARRAY) {
+		return false;
+	}
+	auto &child_type = type.id() == LogicalTypeId::LIST ? ListType::GetChildType(type) : ArrayType::GetChildType(type);
+	return !child_type.IsNested() && child_type.InternalType() != PhysicalType::VARCHAR;
+}
+
+//! Whether the scan below the operator reads such a column, of which a scan otherwise reads a whole vector
+static bool ScansSelectableChildren(LogicalOperator &op) {
+	reference<LogicalOperator> current = op;
+	while (current.get().type != LogicalOperatorType::LOGICAL_GET) {
+		if ((current.get().type != LogicalOperatorType::LOGICAL_PROJECTION &&
+		     current.get().type != LogicalOperatorType::LOGICAL_FILTER) ||
+		    current.get().children.empty()) {
+			return false;
+		}
+		current = *current.get().children[0];
+	}
+	auto &get = current.get().Cast<LogicalGet>();
+	for (auto &column_index : get.GetColumnIds()) {
+		if (!column_index.IsVirtualColumn() && HasSelectableChildren(get.GetColumnType(column_index))) {
+			return true;
+		}
+	}
+	return false;
+}
+
 bool LateMaterialization::OptimizeLargeLimit(LogicalLimit &limit, idx_t limit_val, bool has_offset) {
 	if (!has_offset && !Settings::Get<PreserveInsertionOrderSetting>(optimizer.context)) {
 		// we avoid optimizing large limits if preserve insertion order is false
@@ -434,8 +463,8 @@ unique_ptr<LogicalOperator> LateMaterialization::Optimize(unique_ptr<LogicalOper
 				break;
 			}
 		} else {
-			// optimizing small limits really only makes sense if we have an offset
-			if (!has_offset) {
+			// optimizing small limits really only makes sense if we have an offset, or if the scan reads lists
+			if (!has_offset && !ScansSelectableChildren(*limit.children[0])) {
 				break;
 			}
 		}

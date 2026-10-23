@@ -1,0 +1,173 @@
+# name: test/optimizer/pushdown/not_distinct_join_implied_filter.test
+# description: An equality and a null-safe equality on the same column imply an equality filter on one side of a join
+# group: [pushdown]
+
+statement ok
+CREATE TABLE a AS SELECT * FROM (VALUES (1), (2), (3), (NULL)) t(x);
+
+statement ok
+CREATE TABLE b AS SELECT * FROM (VALUES (1, 1), (2, 5), (NULL, NULL), (NULL, 3), (3, NULL)) t(x, y);
+
+# a.x IS NOT DISTINCT FROM b.x and a.x = b.y imply b.x = b.y, which is a filter on b
+query II
+EXPLAIN SELECT a.x, b.y FROM a JOIN b ON a.x IS NOT DISTINCT FROM b.x WHERE a.x = b.y
+----
+physical_plan	<REGEX>:.*Hash Join.*Filter.*Expression: x = y.*Table: memory.main.b.*
+
+query II
+SELECT a.x, b.y FROM a JOIN b ON a.x IS NOT DISTINCT FROM b.x WHERE a.x = b.y ORDER BY ALL
+----
+1	1
+
+query II
+SELECT a.x, b.y FROM a JOIN b ON a.x IS NOT DISTINCT FROM b.x WHERE b.y = a.x ORDER BY ALL
+----
+1	1
+
+# without the equality, NULL keys still match
+query II
+SELECT a.x, b.y FROM a JOIN b ON a.x IS NOT DISTINCT FROM b.x ORDER BY ALL
+----
+1	1
+2	5
+3	NULL
+NULL	3
+NULL	NULL
+
+# the derived filter can be on either side, with the comparisons written either way around
+statement ok
+CREATE TABLE c AS SELECT * FROM (VALUES (1, 1), (2, 7), (NULL, 2)) t(x, y);
+
+query II
+EXPLAIN SELECT c.x, b.x FROM c JOIN b ON b.x IS NOT DISTINCT FROM c.x WHERE b.x = c.y
+----
+physical_plan	<REGEX>:.*Hash Join.*Filter.*Expression: x = y.*Table: memory.main.c.*
+
+query II
+SELECT c.x, b.x FROM c JOIN b ON b.x IS NOT DISTINCT FROM c.x WHERE b.x = c.y ORDER BY ALL
+----
+1	1
+
+# a column is in one derived filter at most, so many null-safe comparisons on one column do not multiply
+statement ok
+CREATE TABLE wide AS SELECT i AS k0, i AS k1, i AS k2, i AS k3, i AS k4 FROM range(10) r(i);
+
+statement ok
+CREATE TABLE keys AS SELECT i AS k FROM range(10) r(i);
+
+query II
+EXPLAIN SELECT count(*) FROM keys JOIN wide ON keys.k = wide.k0 AND keys.k IS NOT DISTINCT FROM wide.k1 AND keys.k IS NOT DISTINCT FROM wide.k2 AND keys.k IS NOT DISTINCT FROM wide.k3 AND keys.k IS NOT DISTINCT FROM wide.k4
+----
+physical_plan	<REGEX>:.*Filter.*Expression: k1 = k0.*
+
+query II
+EXPLAIN SELECT count(*) FROM keys JOIN wide ON keys.k = wide.k0 AND keys.k IS NOT DISTINCT FROM wide.k1 AND keys.k IS NOT DISTINCT FROM wide.k2 AND keys.k IS NOT DISTINCT FROM wide.k3 AND keys.k IS NOT DISTINCT FROM wide.k4
+----
+physical_plan	<!REGEX>:.*(k2 =|= k2).*
+
+query I
+SELECT count(*) FROM keys JOIN wide ON keys.k = wide.k0 AND keys.k IS NOT DISTINCT FROM wide.k1 AND keys.k IS NOT DISTINCT FROM wide.k2 AND keys.k IS NOT DISTINCT FROM wide.k3 AND keys.k IS NOT DISTINCT FROM wide.k4
+----
+10
+
+# at most four filters are derived for a join, as each can connect equalities of its side
+statement ok
+CREATE TABLE many AS SELECT i AS c0, i AS c1, i AS c2, i AS c3, i AS c4, i AS x0, i AS x1, i AS x2, i AS x3, i AS x4 FROM range(10) r(i);
+
+statement ok
+CREATE TABLE many_keys AS SELECT i AS k0, i AS k1, i AS k2, i AS k3, i AS k4 FROM range(10) r(i);
+
+query II
+EXPLAIN SELECT count(*) FROM many_keys a JOIN many b ON a.k0 IS NOT DISTINCT FROM b.x0 AND a.k0 = b.c0 AND a.k1 IS NOT DISTINCT FROM b.x1 AND a.k1 = b.c1 AND a.k2 IS NOT DISTINCT FROM b.x2 AND a.k2 = b.c2 AND a.k3 IS NOT DISTINCT FROM b.x3 AND a.k3 = b.c3 AND a.k4 IS NOT DISTINCT FROM b.x4 AND a.k4 = b.c4
+----
+physical_plan	<!REGEX>:.*(x4 = c4|c4 = x4).*
+
+query I
+SELECT count(*) FROM many_keys a JOIN many b ON a.k0 IS NOT DISTINCT FROM b.x0 AND a.k0 = b.c0 AND a.k1 IS NOT DISTINCT FROM b.x1 AND a.k1 = b.c1 AND a.k2 IS NOT DISTINCT FROM b.x2 AND a.k2 = b.c2 AND a.k3 IS NOT DISTINCT FROM b.x3 AND a.k3 = b.c3 AND a.k4 IS NOT DISTINCT FROM b.x4 AND a.k4 = b.c4
+----
+10
+
+# the four filters are for the whole query, also when each join derives one
+query II
+EXPLAIN SELECT count(*) FROM many m JOIN many_keys k0 ON k0.k0 IS NOT DISTINCT FROM m.x0 AND k0.k0 = m.c0 JOIN many_keys k1 ON k1.k0 IS NOT DISTINCT FROM m.x1 AND k1.k0 = m.c1 JOIN many_keys k2 ON k2.k0 IS NOT DISTINCT FROM m.x2 AND k2.k0 = m.c2 JOIN many_keys k3 ON k3.k0 IS NOT DISTINCT FROM m.x3 AND k3.k0 = m.c3 JOIN many_keys k4 ON k4.k0 IS NOT DISTINCT FROM m.x4 AND k4.k0 = m.c4
+----
+physical_plan	<REGEX>:.*(x4 = c4|c4 = x4).*
+
+query II
+EXPLAIN SELECT count(*) FROM many m JOIN many_keys k0 ON k0.k0 IS NOT DISTINCT FROM m.x0 AND k0.k0 = m.c0 JOIN many_keys k1 ON k1.k0 IS NOT DISTINCT FROM m.x1 AND k1.k0 = m.c1 JOIN many_keys k2 ON k2.k0 IS NOT DISTINCT FROM m.x2 AND k2.k0 = m.c2 JOIN many_keys k3 ON k3.k0 IS NOT DISTINCT FROM m.x3 AND k3.k0 = m.c3 JOIN many_keys k4 ON k4.k0 IS NOT DISTINCT FROM m.x4 AND k4.k0 = m.c4
+----
+physical_plan	<!REGEX>:.*(x0 = c0|c0 = x0).*
+
+query I
+SELECT count(*) FROM many m JOIN many_keys k0 ON k0.k0 IS NOT DISTINCT FROM m.x0 AND k0.k0 = m.c0 JOIN many_keys k1 ON k1.k0 IS NOT DISTINCT FROM m.x1 AND k1.k0 = m.c1 JOIN many_keys k2 ON k2.k0 IS NOT DISTINCT FROM m.x2 AND k2.k0 = m.c2 JOIN many_keys k3 ON k3.k0 IS NOT DISTINCT FROM m.x3 AND k3.k0 = m.c3 JOIN many_keys k4 ON k4.k0 IS NOT DISTINCT FROM m.x4 AND k4.k0 = m.c4
+----
+10
+
+# volatile operands are not copied, also in a join
+statement ok
+CREATE SEQUENCE s3;
+
+statement ok
+CREATE SEQUENCE s4;
+
+query I
+SELECT count(*) FROM keys JOIN wide ON keys.k IS NOT DISTINCT FROM wide.k0 + nextval('s3') * 0 AND keys.k = wide.k1
+----
+10
+
+query I
+SELECT currval('s3')
+----
+10
+
+query I
+SELECT count(*) FROM keys JOIN wide ON keys.k IS NOT DISTINCT FROM wide.k0 AND keys.k = wide.k1 + nextval('s4') * 0
+----
+10
+
+query I
+SELECT currval('s4')
+----
+10
+
+# volatile expressions are not copied
+statement ok
+CREATE SEQUENCE s1;
+
+statement ok
+CREATE SEQUENCE s2;
+
+statement ok
+CREATE TABLE v AS SELECT 1 AS a, 1 AS b;
+
+query II
+SELECT * FROM v WHERE a IS NOT DISTINCT FROM nextval('s1') AND a = b
+----
+1	1
+
+query II
+SELECT * FROM v WHERE a IS NOT DISTINCT FROM b AND a = nextval('s2')
+----
+1	1
+
+# a correlated table function sees the filter on the column it repeats
+statement ok
+CREATE TABLE tbl AS SELECT range AS x FROM range(10000);
+
+statement ok
+CREATE MACRO my_table(x) AS TABLE FROM range((x * 0.1)::INTEGER, 100 + (x * 0.1)::INTEGER);
+
+query II
+EXPLAIN SELECT count(*) FROM tbl, my_table(x) _(y) WHERE x = y
+----
+physical_plan	<REGEX>:.*Hash Join.*Filter.*Expression: x = range.*Name: range.*
+
+query I
+SELECT count(*) FROM tbl, my_table(x) _(y) WHERE x = y
+----
+111
+
+query I
+SELECT count(*) FROM tbl, LATERAL (SELECT y FROM my_table(x) _(y) WHERE y = x)
+----
+111

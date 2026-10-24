@@ -253,8 +253,10 @@ void ConstantVector::Reference(Vector &vector, count_t count, const Vector &sour
 		reinterpret_cast<string_t *>(buffer->GetData())[0] = entry.GetValue();
 		buffer->SetVectorType(VectorType::CONSTANT_VECTOR);
 		buffer->SetVectorSize(count);
+		// the vector can be the source itself, so the source is held until its heap is shared
+		auto source_reference = Vector::Ref(source);
 		vector.SetBuffer(std::move(buffer));
-		StringVector::AddHeapReference(vector, source);
+		StringVector::AddHeapReference(vector, source_reference);
 		break;
 	}
 	default:

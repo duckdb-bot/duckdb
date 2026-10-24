@@ -44,3 +44,4 @@ benchmark/parquet/dlba_read-long-1000000.benchmark
 benchmark/micro/update/upsert_select_cast_key.benchmark
 benchmark/micro/update/upsert_enum_key.benchmark
 benchmark/micro/cte/materialized_cte_small_producer.benchmark
+benchmark/micro/cte/materialized_cte_small_producer_count.benchmark

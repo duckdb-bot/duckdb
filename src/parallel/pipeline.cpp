@@ -906,6 +906,12 @@ static idx_t EstimateChunkCount(idx_t cardinality) {
 //! Direct consumers run on the threads of the producer pipelines, and a source feeds at most one thread per chunk
 static bool ProducerLimitsParallelism(const PhysicalCTE &cte, idx_t thread_count) {
 	D_ASSERT(!cte.children.empty());
+	// The materialization estimate does not cover variable-size payloads
+	for (auto &type : cte.children[0].get().GetTypes()) {
+		if (!TypeIsConstantSize(type.InternalType())) {
+			return false;
+		}
+	}
 	idx_t producer_threads = 0;
 	for (auto &pipeline : cte.GetProducerPipelines()) {
 		auto source = pipeline.get().GetSource();
@@ -941,8 +947,8 @@ static void SelectExternalInputCandidates(PipelineBuildStateData &data) {
 		D_ASSERT(cte.exchange);
 		auto consumer_summary = cte.exchange->GetConsumerSummary();
 		D_ASSERT(consumer_summary.unresolved == selection.candidate_count);
-		// A parallel scan of the materialized CTE can use more threads than a producer with few source chunks.
-		if (ProducerLimitsParallelism(cte, thread_count)) {
+		// A hash join probe can run on more threads with a parallel scan of the materialized CTE.
+		if (selection.serialized_fanout_candidate_count > 0 && ProducerLimitsParallelism(cte, thread_count)) {
 			selection.materialize_candidates = true;
 			selection.estimated_materialization_size =
 			    consumer_summary.materialized > 0 ? 0 : EstimateMaterializationSize(cte);

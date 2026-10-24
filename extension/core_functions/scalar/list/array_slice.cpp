@@ -72,13 +72,40 @@ struct BlobSliceOperations {
 };
 
 struct StringSliceOperations {
-	static int64_t ValueLength(const string_t &value) {
-		return Length<string_t, int64_t>(value);
+	int64_t ValueLength(const string_t &value) {
+		if (value.IsInlined()) {
+			return Length<string_t, int64_t>(value);
+		}
+		Analyze(value);
+		return last_length;
 	}
 
-	static string_t SliceValue(Vector &result, string_t input, int64_t begin, int64_t end) {
+	string_t SliceValue(Vector &result, string_t input, int64_t begin, int64_t end) {
+		if (!input.IsInlined()) {
+			Analyze(input);
+			if (last_is_ascii) {
+				return SubstringASCII(result, input, begin + 1, end - begin);
+			}
+		}
 		return SubstringUnicode(result, input, begin + 1, end - begin);
 	}
+
+	//! A string that a lambda captures is the same in every row, so the last string is only checked again when
+	//! another one comes. Inlined strings are short and are copied out of the vector, so they are not remembered
+	void Analyze(const string_t &value) {
+		if (value.GetData() == last_data && value.GetSize() == last_size) {
+			return;
+		}
+		last_data = value.GetData();
+		last_size = value.GetSize();
+		last_is_ascii = IsAscii(last_data, last_size);
+		last_length = last_is_ascii ? UnsafeNumericCast<int64_t>(last_size) : Length<string_t, int64_t>(value);
+	}
+
+	const char *last_data = nullptr;
+	idx_t last_size = 0;
+	bool last_is_ascii = false;
+	int64_t last_length = 0;
 
 	static string_t SliceValueWithSteps(Vector &result, SelectionVector &sel, string_t input, int64_t begin,
 	                                    int64_t end, int64_t step, idx_t &sel_idx) {
@@ -132,7 +159,7 @@ void ClampIndex(INDEX_TYPE &index, const INPUT_TYPE &value, const INDEX_TYPE len
 }
 
 template <typename INPUT_TYPE, typename INDEX_TYPE, typename OP>
-bool ClampSlice(const INPUT_TYPE &value, INDEX_TYPE &begin, INDEX_TYPE &end) {
+bool ClampSlice(OP &op, const INPUT_TYPE &value, INDEX_TYPE &begin, INDEX_TYPE &end) {
 	// Clamp offsets
 	begin = (begin != 0 && begin != (INDEX_TYPE)NumericLimits<int64_t>::Minimum()) ? begin - 1 : begin;
 
@@ -142,7 +169,7 @@ bool ClampSlice(const INPUT_TYPE &value, INDEX_TYPE &begin, INDEX_TYPE &end) {
 		is_min = true;
 	}
 
-	const auto length = OP::ValueLength(value);
+	const auto length = op.ValueLength(value);
 	if (begin < 0 && -begin > length && end < 0 && end < -length) {
 		begin = 0;
 		end = 0;
@@ -173,6 +200,7 @@ void ExecuteFlatSlice(Vector &result, Vector &list_vector, Vector &begin_vector,
 		sel.Initialize(ListVector::GetListSize(list_vector));
 	}
 
+	OP op;
 	auto result_data = FlatVector::Writer<INPUT_TYPE>(result, count);
 	for (idx_t i = 0; i < count; ++i) {
 		auto list_idx = list_data.sel->get_index(i);
@@ -192,7 +220,7 @@ void ExecuteFlatSlice(Vector &result, Vector &list_vector, Vector &begin_vector,
 
 		auto sliced = UnifiedVectorFormat::GetData<INPUT_TYPE>(list_data)[list_idx];
 		auto begin = begin_is_empty ? 0 : UnifiedVectorFormat::GetData<INDEX_TYPE>(begin_data)[begin_idx];
-		auto end = end_is_empty ? OP::ValueLength(sliced) : UnifiedVectorFormat::GetData<INDEX_TYPE>(end_data)[end_idx];
+		auto end = end_is_empty ? op.ValueLength(sliced) : UnifiedVectorFormat::GetData<INDEX_TYPE>(end_data)[end_idx];
 		auto step = step_vector ? UnifiedVectorFormat::GetData<INDEX_TYPE>(step_data)[step_idx] : 1;
 		if (step == NumericLimits<INDEX_TYPE>::Minimum()) {
 			// the minimum cannot be negated - any step that is at least as large as the list selects the same entry
@@ -202,12 +230,12 @@ void ExecuteFlatSlice(Vector &result, Vector &list_vector, Vector &begin_vector,
 		if (step < 0) {
 			swap(begin, end);
 			begin = end_is_empty ? 0 : begin;
-			end = begin_is_empty ? OP::ValueLength(sliced) : end;
+			end = begin_is_empty ? op.ValueLength(sliced) : end;
 		}
 
 		bool clamp_result = false;
 		if (step_valid || step == 1) {
-			clamp_result = ClampSlice<INPUT_TYPE, INDEX_TYPE, OP>(sliced, begin, end);
+			clamp_result = ClampSlice<INPUT_TYPE, INDEX_TYPE, OP>(op, sliced, begin, end);
 		}
 
 		idx_t length = 0;
@@ -220,9 +248,9 @@ void ExecuteFlatSlice(Vector &result, Vector &list_vector, Vector &begin_vector,
 		if (!clamp_result) {
 			result_data.WriteNull();
 		} else if (!step_vector) {
-			result_data.WriteValue(OP::SliceValue(result, sliced, begin, end));
+			result_data.WriteValue(op.SliceValue(result, sliced, begin, end));
 		} else {
-			result_data.WriteValue(OP::SliceValueWithSteps(result, sel, sliced, begin, end, step, sel_idx));
+			result_data.WriteValue(op.SliceValueWithSteps(result, sel, sliced, begin, end, step, sel_idx));
 		}
 	}
 	if (step_vector) {
@@ -258,11 +286,7 @@ void ArraySliceFunction(DataChunk &args, ExpressionState &state, Vector &result)
 	D_ASSERT(args.data.size() == 3 || args.data.size() == 4);
 	auto count = args.size();
 
-	Vector &list_or_str_vector = result;
-	// this ensures that we do not change the input chunk
-	VectorOperations::Copy(args.data[0], list_or_str_vector, count, 0, 0);
-
-	if (list_or_str_vector.GetType().id() == LogicalTypeId::SQLNULL) {
+	if (result.GetType().id() == LogicalTypeId::SQLNULL) {
 		ConstantVector::SetNull(result, count_t(count));
 		return;
 	}
@@ -281,6 +305,9 @@ void ArraySliceFunction(DataChunk &args, ExpressionState &state, Vector &result)
 	auto end_is_empty = info.end_is_empty;
 	switch (result.GetType().id()) {
 	case LogicalTypeId::LIST: {
+		Vector &list_or_str_vector = result;
+		// this ensures that we do not change the input chunk
+		VectorOperations::Copy(args.data[0], list_or_str_vector, count, 0, 0);
 		// Share the value dictionary as we are just going to slice it
 		if (list_or_str_vector.GetVectorType() != VectorType::FLAT_VECTOR &&
 		    list_or_str_vector.GetVectorType() != VectorType::CONSTANT_VECTOR) {
@@ -291,11 +318,12 @@ void ArraySliceFunction(DataChunk &args, ExpressionState &state, Vector &result)
 		break;
 	}
 	case LogicalTypeId::BLOB:
-		ExecuteSlice<string_t, int64_t, BlobSliceOperations>(result, list_or_str_vector, begin_vector, end_vector,
+		// the slices are copied into the result, so the strings are read from the input instead of copying them first
+		ExecuteSlice<string_t, int64_t, BlobSliceOperations>(result, args.data[0], begin_vector, end_vector,
 		                                                     step_vector, count, begin_is_empty, end_is_empty);
 		break;
 	case LogicalTypeId::VARCHAR:
-		ExecuteSlice<string_t, int64_t, StringSliceOperations>(result, list_or_str_vector, begin_vector, end_vector,
+		ExecuteSlice<string_t, int64_t, StringSliceOperations>(result, args.data[0], begin_vector, end_vector,
 		                                                       step_vector, count, begin_is_empty, end_is_empty);
 		break;
 	default:

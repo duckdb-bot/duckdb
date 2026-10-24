@@ -1,0 +1,78 @@
+# name: test/sql/subquery/any_all/test_correlated_select_list_only.test
+# description: IN, NOT IN and EXISTS subqueries whose only outer reference is in their select list read one row of their input (duckdblabs/bot-issue-tracker#522)
+# group: [any_all]
+
+statement ok
+CREATE TABLE main AS SELECT i::DOUBLE AS xid FROM range(1000) t(i) UNION ALL SELECT NULL;
+
+statement ok
+CREATE TABLE links AS SELECT (i % 2000)::DOUBLE AS yid FROM range(500000) t(i);
+
+statement ok
+CREATE TABLE empty_links AS SELECT * FROM links LIMIT 0;
+
+query II
+EXPLAIN SELECT count(xid) FROM main WHERE xid NOT IN (SELECT xid FROM links);
+----
+physical_plan	<REGEX>:.*MARK.*Streaming Limit.*Limit: 1.*Table: [a-z_]*\.main\.links.*
+
+query I
+SELECT count(xid) FROM main WHERE xid NOT IN (SELECT xid FROM links);
+----
+0
+
+query I
+SELECT count(*) FROM main WHERE xid IN (SELECT xid FROM links);
+----
+1000
+
+query II
+SELECT count(*), count(*) FILTER (x IS NULL) FROM (SELECT xid NOT IN (SELECT xid FROM links) AS x FROM main);
+----
+1001	1
+
+query II
+SELECT count(*) FILTER (x), count(*) FILTER (x IS NULL) FROM (SELECT xid NOT IN (SELECT xid FROM empty_links) AS x FROM main);
+----
+1001	0
+
+query I
+SELECT count(*) FROM main WHERE EXISTS (SELECT xid FROM links);
+----
+1001
+
+query I
+SELECT count(*) FROM main WHERE NOT EXISTS (SELECT xid FROM empty_links);
+----
+1001
+
+query I
+SELECT count(*) FROM main WHERE xid IN (SELECT xid + 1 FROM links WHERE yid > 100);
+----
+0
+
+query I
+SELECT count(*) FROM main WHERE xid * 2 = ANY (SELECT xid + xid FROM links);
+----
+1000
+
+query I
+SELECT count(*) FROM main WHERE xid < ANY (SELECT xid + 1 FROM links);
+----
+1000
+
+# a select list that reads the input, or an input that reads the outer query, keeps every input row
+query I
+SELECT count(*) FROM main WHERE xid IN (SELECT yid FROM links);
+----
+1000
+
+query I
+SELECT count(*) FROM main WHERE xid IN (SELECT xid FROM links WHERE yid = xid + 1000);
+----
+1000
+
+query I
+SELECT count(*) FROM main WHERE xid IN (SELECT xid FROM links WHERE yid = xid + 1500);
+----
+500

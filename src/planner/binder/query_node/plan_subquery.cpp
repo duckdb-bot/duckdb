@@ -472,10 +472,81 @@ static bool PerformDuplicateElimination(Binder &binder, CorrelatedColumns &corre
 	return false;
 }
 
+//! Whether the expression reads a column of an outer query, or holds a subquery, which may
+static bool ReadsOuterColumns(const Expression &expr) {
+	if (expr.GetExpressionClass() == ExpressionClass::BOUND_SUBQUERY) {
+		return true;
+	}
+	if (expr.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF &&
+	    expr.Cast<BoundColumnRefExpression>().Depth() > 0) {
+		return true;
+	}
+	bool result = false;
+	ExpressionIterator::EnumerateChildren(
+	    expr, [&](const Expression &child) { result = result || ReadsOuterColumns(child); });
+	return result;
+}
+
+static bool IsIndependentPlan(const LogicalOperator &op) {
+	if (op.type == LogicalOperatorType::LOGICAL_DEPENDENT_JOIN || op.type == LogicalOperatorType::LOGICAL_DELIM_GET) {
+		return false;
+	}
+	bool independent = true;
+	LogicalOperatorVisitor::EnumerateExpressions(
+	    op, [&](const unique_ptr<Expression> *child) { independent = independent && !ReadsOuterColumns(**child); });
+	for (auto &child : op.children) {
+		independent = independent && IsIndependentPlan(*child);
+	}
+	return independent;
+}
+
+//! Whether the expression reads only outer columns and constants, so it has the same value for every input row
+static bool ReadsOnlyOuterColumns(const Expression &expr) {
+	if (expr.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
+		return expr.Cast<BoundColumnRefExpression>().Depth() > 0;
+	}
+	if (expr.GetExpressionClass() == ExpressionClass::BOUND_SUBQUERY ||
+	    expr.GetExpressionClass() == ExpressionClass::BOUND_REF) {
+		return false;
+	}
+	bool result = true;
+	ExpressionIterator::EnumerateChildren(
+	    expr, [&](const Expression &child) { result = result && ReadsOnlyOuterColumns(child); });
+	return result;
+}
+
+//! EXISTS and ANY depend only on which rows a subquery returns, not on how many. When the input of its projection is
+//! independent of the outer query, and the projection of an ANY subquery reads only outer columns, every input row
+//! gives the same result row, so a single input row is enough. Otherwise the outer domain is joined with the whole
+//! input.
+static void LimitIndependentProjectionInput(BoundSubqueryExpression &expr, LogicalOperator &plan) {
+	if (plan.type != LogicalOperatorType::LOGICAL_PROJECTION || plan.children.size() != 1 ||
+	    plan.HasVolatileExpressions()) {
+		return;
+	}
+	if (expr.GetSubqueryType() == SubqueryType::ANY) {
+		for (auto &projection : plan.expressions) {
+			if (!ReadsOnlyOuterColumns(*projection)) {
+				return;
+			}
+		}
+	}
+	auto &input = plan.children[0];
+	if (input->type == LogicalOperatorType::LOGICAL_LIMIT || !IsIndependentPlan(*input)) {
+		return;
+	}
+	auto limit = make_uniq<LogicalLimit>(BoundLimitNode::ConstantValue(1), BoundLimitNode());
+	limit->AddChild(std::move(input));
+	input = std::move(limit);
+}
+
 static unique_ptr<Expression> PlanCorrelatedSubquery(Binder &binder, BoundSubqueryExpression &expr,
                                                      unique_ptr<LogicalOperator> &root,
                                                      unique_ptr<LogicalOperator> plan) {
 	auto &correlated_columns = expr.GetBinder()->correlated_columns;
+	if (expr.GetSubqueryType() == SubqueryType::EXISTS || expr.GetSubqueryType() == SubqueryType::ANY) {
+		LimitIndependentProjectionInput(expr, *plan);
+	}
 	// Preserve the existing duplicate-elimination path for deterministic ANY queries. Volatile ANY queries require
 	// row identity for the same reason as other correlated subqueries: sharing one result between equal outer values
 	// changes their evaluation cardinality.

@@ -83,6 +83,7 @@ struct StringSliceOperations {
 		last_size = value.GetSize();
 		last_length = Length<string_t, int64_t>(value);
 		last_ascii = AsciiCheck::NOT_CHECKED;
+		ascii_prefix = 0;
 		known_character = 0;
 		known_byte = 0;
 		return last_length;
@@ -99,7 +100,8 @@ struct StringSliceOperations {
 		// a repeated string is checked for ASCII once, and a string that is not ASCII is searched for the start of
 		// a slice from where the previous slice ended instead of from its start
 		if (last_ascii == AsciiCheck::NOT_CHECKED) {
-			last_ascii = IsAscii(last_data, last_size) ? AsciiCheck::ASCII : AsciiCheck::NOT_ASCII;
+			ascii_prefix = FirstNonAscii(last_data, last_size);
+			last_ascii = ascii_prefix == last_size ? AsciiCheck::ASCII : AsciiCheck::NOT_ASCII;
 		}
 		if (last_ascii == AsciiCheck::ASCII) {
 			return SubstringASCII(result, input, begin + 1, end - begin);
@@ -109,12 +111,15 @@ struct StringSliceOperations {
 		return StringVector::AddString(result, last_data + start_byte, end_byte - start_byte);
 	}
 
-	//! The byte at which a character of the last string starts, or its size past its last character. A character
-	//! after the one found before is searched from there
+	//! The byte at which a character of the last string starts, or its size past its last character. In the ASCII
+	//! prefix of the string a character is its byte, and a character after the one found before is searched from there
 	idx_t BytePosition(int64_t character) {
-		if (character < known_character) {
-			known_character = 0;
-			known_byte = 0;
+		if (UnsafeNumericCast<idx_t>(character) <= ascii_prefix) {
+			return UnsafeNumericCast<idx_t>(character);
+		}
+		if (character < known_character || known_byte < ascii_prefix) {
+			known_character = UnsafeNumericCast<int64_t>(ascii_prefix);
+			known_byte = ascii_prefix;
 		}
 		while (known_character < character && known_byte < last_size) {
 			known_byte++;
@@ -136,6 +141,8 @@ struct StringSliceOperations {
 	const char *previous_data = nullptr;
 	idx_t previous_size = 0;
 	AsciiCheck last_ascii = AsciiCheck::NOT_CHECKED;
+	//! The bytes at the start of the last string that are ASCII, once it was checked
+	idx_t ascii_prefix = 0;
 	//! A character of the last string and the byte at which it starts
 	int64_t known_character = 0;
 	idx_t known_byte = 0;

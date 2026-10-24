@@ -42,4 +42,6 @@ benchmark/micro/result_collection/stream_drop.benchmark
 benchmark/micro/result_collection/stream_materialize.benchmark
 benchmark/parquet/dlba_read-long-1000000.benchmark
 benchmark/micro/update/upsert_select_cast_key.benchmark
-benchmark/micro/update/upsert_enum_key.benchmark
+benchmark/micro/update/upsert_enum_key.benchmarkbenchmark/micro/string/slice_captured_string_ascii.benchmark
+benchmark/micro/string/slice_captured_string_unicode.benchmark
+benchmark/micro/string/slice_captured_string_backwards.benchmark

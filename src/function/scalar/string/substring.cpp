@@ -213,16 +213,8 @@ string_t SubstringGrapheme(Vector &result, string_t input, int64_t offset, int64
 	// now check if all the characters between 0 and end are ascii characters
 	// note that we scan one further to check for a potential combining diacritics (e.g. i + diacritic is ï)
 	// a negative offset counts from the end of the string, so then every character after the window counts as well
-	bool is_ascii = true;
 	idx_t ascii_end = offset < 0 ? input_size : MinValue<idx_t>(UnsafeNumericCast<idx_t>(end + 1), input_size);
-	for (idx_t i = 0; i < ascii_end; i++) {
-		if (input_data[i] & 0x80) {
-			// found a non-ascii character: eek
-			is_ascii = false;
-			break;
-		}
-	}
-	if (is_ascii) {
+	if (IsAscii(input_data, ascii_end)) {
 		// all characters are ascii, we can just slice the substring
 		return SubstringSlice(result, input_data, start, end - start);
 	}

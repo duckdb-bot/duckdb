@@ -18,6 +18,23 @@ SELECT TIMESTAMPTZ '294247-01-10 05:00:54.775806+00';
 ----
 out of range
 
+# before the first midnight of the range a timestamp has no date that is a timestamp, so a local time there is only
+# kept when its offset gives an instant after it, or when it lies after it while its instant does not, as on main
+query IIII
+SELECT TRY_CAST('290309-12-21 (BC) 23:00:00' AS TIMESTAMP), epoch_us(TRY_CAST('290309-12-21 (BC) 23:30:00-01' AS TIMESTAMPTZ)), TRY_CAST('290309-12-21 (BC) 23:30:00+01' AS TIMESTAMPTZ), epoch_us(TRY_CAST('290309-12-22 (BC) 00:30:00+01' AS TIMESTAMPTZ));
+----
+NULL	-9223372020600000000	NULL	-9223372024200000000
+
+query II
+SELECT epoch_us(DATE '290309-12-21 (BC)' + TIMETZ '23:00:00-02'), epoch_us(DATE '290309-12-22 (BC)' + TIMETZ '00:30:00+01');
+----
+-9223372018800000000	-9223372024200000000
+
+statement error
+SELECT DATE '290309-12-21 (BC)' + TIMETZ '23:00:00+00';
+----
+out of range
+
 # the date comparison rewrite keeps the comparison when a midnight of it does not exist
 statement ok
 CREATE TABLE ends AS SELECT * FROM (VALUES (make_timestamp(-9223372036854775806)), (make_timestamp(9223372036854775806))) t(ts);
@@ -42,6 +59,11 @@ query I
 SELECT time_bucket(INTERVAL '7 microseconds', make_timestamp(9223372036854775806), make_timestamp(-5));
 ----
 294247-01-10 04:00:54.775802
+
+query I
+SELECT epoch_us(time_bucket(INTERVAL '9223372036854775807 microseconds', make_timestamp(9223372036854775806), make_timestamp(-4)));
+----
+9223372036854775803
 
 # milliseconds since the epoch are rounded as the cast to TIMESTAMP_MS rounds, also next to the ends
 query III

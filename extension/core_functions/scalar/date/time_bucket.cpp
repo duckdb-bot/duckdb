@@ -100,14 +100,18 @@ struct TimeBucket {
 	//! The first midnight of Timestamp::MIN_YEAR - smaller values are not valid timestamps
 	static constexpr int64_t MIN_TIMESTAMP_MICROS = -9223372022400000000LL;
 
+	static inline int64_t PositiveRemainder(int64_t value, int64_t width) {
+		auto remainder = value % width;
+		return remainder < 0 ? remainder + width : remainder;
+	}
+
 	static inline timestamp_t WidthConvertibleToMicrosCommon(int64_t bucket_width_micros, int64_t ts_micros,
 	                                                         int64_t origin_micros) {
-		origin_micros %= bucket_width_micros;
-		// the distance past the start of the bucket, computed without the timestamp minus the origin, which can
-		// overflow next to the ends of the range although the bucket fits
-		auto remainder = SubtractOperatorOverflowCheck::Operation<int64_t, int64_t, int64_t>(
-		    ts_micros % bucket_width_micros, origin_micros);
-		remainder %= bucket_width_micros;
+		// the distance past the start of the bucket, computed from the remainders of the timestamp and the origin
+		// instead of the timestamp minus the origin, which can overflow next to the ends of the range although the
+		// bucket fits. Both remainders lie in [0, width), so their difference cannot overflow either
+		auto remainder =
+		    PositiveRemainder(ts_micros, bucket_width_micros) - PositiveRemainder(origin_micros, bucket_width_micros);
 		if (remainder < 0) {
 			remainder += bucket_width_micros;
 		}

@@ -1249,10 +1249,7 @@ int64_t DatePart::EpochMillisOperator::Operation(timestamp_t input) {
 	D_ASSERT(input.IsFinite());
 	// rounded away from the epoch as the cast to TIMESTAMP_MS rounds, but a count of milliseconds next to the ends
 	// of the range is not a timestamp, so it is not checked as one
-	const int64_t half_millisecond = Interval::MICROS_PER_MSEC / 2;
-	auto result = input.value / half_millisecond;
-	result += result < 0 ? -1 : 1;
-	return result / 2;
+	return Timestamp::GetEpochRounded(input, Interval::MICROS_PER_MSEC);
 }
 
 template <>

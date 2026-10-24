@@ -35,6 +35,19 @@ SELECT DATE '290309-12-21 (BC)' + TIMETZ '23:00:00+00';
 ----
 out of range
 
+# a local time after the first midnight whose instant lies before it stays accepted, as on main. It is read from a
+# table, as a constant there cannot be shown
+statement ok
+CREATE TABLE lower_offsets(d DATE, t TIMETZ, s VARCHAR);
+
+statement ok
+INSERT INTO lower_offsets VALUES (DATE '290309-12-22 (BC)', TIMETZ '00:30:00+01', '290309-12-22 (BC) 00:30:00+01');
+
+query II
+SELECT epoch_us(s::TIMESTAMPTZ), epoch_us(d + t) FROM lower_offsets;
+----
+-9223372024200000000	-9223372024200000000
+
 # the date comparison rewrite keeps the comparison when a midnight of it does not exist
 statement ok
 CREATE TABLE ends AS SELECT * FROM (VALUES (make_timestamp(-9223372036854775806)), (make_timestamp(9223372036854775806))) t(ts);

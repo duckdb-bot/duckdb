@@ -72,3 +72,20 @@ SELECT * FROM plain WHERE risk = 3 ORDER BY score DESC LIMIT 2 OFFSET 1
 ----
 204972	geom 299988	3	zone 0	149994.0
 149539	geom 299981	3	zone 6	149990.5
+
+# a cast that fails on a fetched row raises the error of a scan
+statement ok
+CREATE TABLE unconvertible AS SELECT k, {'id': k + 1000, 'ms': {'a': 'xyz', 'b': k + 30}} AS v FROM range(3) t(k);
+
+statement ok
+ALTER TABLE unconvertible ADD PRIMARY KEY (k);
+
+statement error
+SELECT (v.ms::STRUCT(a INTEGER, b VARCHAR)).b FROM unconvertible WHERE k = 1
+----
+Conversion Error
+
+statement error
+SELECT (v.ms::STRUCT(a INTEGER, b VARCHAR)).b FROM unconvertible WHERE k >= 1 ORDER BY v.id LIMIT 1
+----
+Conversion Error

@@ -2,6 +2,7 @@
 #include "duckdb/common/vector/map_vector.hpp"
 #include "duckdb/common/vector/struct_vector.hpp"
 #include "duckdb/storage/table/variant_column_data.hpp"
+#include "duckdb/common/vector_operations/vector_operations.hpp"
 
 #include "duckdb/common/serializer/deserializer.hpp"
 #include "duckdb/function/variant/variant_shredding.hpp"
@@ -506,10 +507,11 @@ void VariantColumnData::FetchRows(TransactionData transaction, ColumnFetchState 
 			continue;
 		}
 
-		//! Need to perform the cast here as well
+		//! Need to perform the cast here as well, as a scan does, so that a failing cast raises the same error
 		auto context = transaction.transaction->context.lock();
-		auto fetched_row = extracted_variant.GetValue(0).CastAs(*context, result.GetType());
-		result.SetValue(result_idx, fetched_row);
+		Vector cast_row(result.GetType(), 1);
+		VectorOperations::Cast(*context, extracted_variant, cast_row, 1);
+		result.SetValue(result_idx, cast_row.GetValue(0));
 	}
 }
 

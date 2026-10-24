@@ -15,7 +15,7 @@
 
 using namespace duckdb;
 
-// A client thread whose query has no task left for it waits instead of polling (duckdb/duckdb#22178)
+// A client thread whose query has no task left for it waits instead of polling
 
 #if defined(__linux__) && !defined(DUCKDB_NO_THREADS)
 namespace {
@@ -32,8 +32,7 @@ bool ThreadIsSleeping(pid_t tid) {
 	return end_of_name != string::npos && end_of_name + 2 < line.size() && line[end_of_name + 2] == 'S';
 }
 
-//! The only task of the query waits until the client lets it go on, and then watches the client while it holds the
-//! task
+//! The only task of the query waits for the client to release it, then watches the client while holding the task
 struct HandoffState {
 	mutex lock;
 	std::condition_variable cv;
@@ -133,7 +132,6 @@ TEST_CASE("Test that the client thread does not poll while a worker runs the onl
 		    state.WatchClient();
 		    auto writer = FlatVector::Writer<int64_t>(output.data[0], 1);
 		    writer.WriteValue(42);
-		    output.SetChildCardinality(1);
 	    },
 	    [](ClientContext &, TableFunctionBindInput &input, vector<LogicalType> &return_types,
 	       vector<Identifier> &names) -> unique_ptr<FunctionData> {
@@ -145,9 +143,7 @@ TEST_CASE("Test that the client thread does not poll while a worker runs the onl
 		    return make_uniq<HandoffGlobalState>();
 	    });
 	handoff.function_info = make_shared_ptr<HandoffInfo>(state);
-	ExtensionInfo extension_info {};
-	ExtensionActiveLoad load_info {*db.instance, extension_info, "test_extension", ""};
-	ExtensionLoader loader {load_info};
+	ExtensionLoader loader(*db.instance, "test_extension");
 	loader.RegisterFunction(handoff);
 
 	for (idx_t run = 0; run < 3; run++) {
@@ -160,6 +156,7 @@ TEST_CASE("Test that the client thread does not poll while a worker runs the onl
 		REQUIRE(started);
 		REQUIRE(state->scan_thread != std::this_thread::get_id());
 		REQUIRE_NO_FAIL(*result);
+		REQUIRE(result->RowCount() == 1);
 		REQUIRE(CHECK_COLUMN(result, 0, {42}));
 		// this thread sleeps while the worker holds the task, instead of polling
 		REQUIRE(state->client_slept);

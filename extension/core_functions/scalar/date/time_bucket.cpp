@@ -111,7 +111,7 @@ struct TimeBucket {
 		if (remainder < 0) {
 			remainder += bucket_width_micros;
 		}
-		auto result_micros = SubtractOperatorOverflowCheck::Operation<int64_t, int64_t, int64_t>(ts_micros, remainder);
+		auto result_micros = AddOperatorOverflowCheck::Operation<int64_t, int64_t, int64_t>(ts_micros, -remainder);
 		if (result_micros < MIN_TIMESTAMP_MICROS) {
 			throw OutOfRangeException("Overflow in TIME_BUCKET: the result is below the minimum TIMESTAMP");
 		}

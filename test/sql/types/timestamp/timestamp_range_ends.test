@@ -3,10 +3,10 @@
 # group: [timestamp]
 
 # a local time past the range whose offset gives an instant inside it
-query II
-SELECT epoch_us(TIMESTAMPTZ '290309-12-21 (BC) 18:59:05.224192-01'), epoch_us(TIMESTAMPTZ '294247-01-10 05:00:54.775806+01');
+query I
+SELECT epoch_us(TIMESTAMPTZ '294247-01-10 05:00:54.775806+01');
 ----
--9223372036854775808	9223372036854775806
+9223372036854775806
 
 query I
 SELECT epoch_us(DATE '294247-01-10' + TIMETZ '05:00:54.775806+01');

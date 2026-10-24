@@ -366,16 +366,17 @@ class AllocationCache {
 	static constexpr idx_t MAX_CACHED_BYTES_PER_BUCKET = 1024ULL * 1024 * 1024;
 
 	struct alignas(64) Bucket {
+		//! Created when the first buffer of the size comes back, so that a database that caches none does not pay
+		//! for them
 		vector<Queue> queues;
+		atomic<bool> has_queues {false};
+		mutex queues_lock;
 		alignas(64) atomic<idx_t> count {0};
 		atomic<idx_t> last_return_ms {0};
 	};
 
 public:
 	explicit AllocationCache(Allocator &allocator) : allocator(allocator), shard_count(GetShardCount()) {
-		for (auto &bucket : buckets) {
-			bucket.queues.resize(shard_count);
-		}
 	}
 	~AllocationCache() {
 		Flush(NumericLimits<idx_t>::Maximum());
@@ -389,6 +390,9 @@ public:
 		D_ASSERT(SupportsSize(size));
 		const auto shard = LocalShard();
 		auto &bucket = buckets[CountZeros<idx_t>::Trailing(size) - MIN_SHIFT];
+		if (!bucket.has_queues.load(std::memory_order_acquire)) {
+			return nullptr;
+		}
 		data_ptr_t pointer;
 		if (bucket.queues[shard].try_dequeue(pointer)) {
 			bucket.count.fetch_sub(1, std::memory_order_relaxed);
@@ -419,6 +423,13 @@ public:
 				while (last_return < now &&
 				       !bucket.last_return_ms.compare_exchange_weak(last_return, now, std::memory_order_relaxed)) {
 				}
+				if (!bucket.has_queues.load(std::memory_order_acquire)) {
+					lock_guard<mutex> guard(bucket.queues_lock);
+					if (!bucket.has_queues.load(std::memory_order_relaxed)) {
+						bucket.queues.resize(shard_count);
+						bucket.has_queues.store(true, std::memory_order_release);
+					}
+				}
 				if (bucket.queues[shard].enqueue(pointer)) {
 					return true;
 				}
@@ -448,6 +459,9 @@ public:
 		for (idx_t i = buckets.size(); i > 0 && freed < byte_limit; i--) {
 			auto &bucket = buckets[i - 1];
 			const idx_t size = static_cast<idx_t>(1) << (MIN_SHIFT + i - 1);
+			if (!bucket.has_queues.load(std::memory_order_acquire)) {
+				continue;
+			}
 			// A snapshot bounds the work even if producers continue returning buffers.
 			auto remaining = bucket.count.load(std::memory_order_relaxed);
 			for (auto &queue : bucket.queues) {
@@ -470,6 +484,17 @@ public:
 		return freed;
 	}
 
+	//! The queues created so far, over all sizes
+	idx_t QueueCount() const {
+		idx_t queues = 0;
+		for (auto &bucket : buckets) {
+			if (bucket.has_queues.load(std::memory_order_acquire)) {
+				queues += bucket.queues.size();
+			}
+		}
+		return queues;
+	}
+
 private:
 	static idx_t GetShardCount() {
 #ifndef DUCKDB_NO_THREADS
@@ -489,6 +514,10 @@ private:
 	const idx_t shard_count;
 	array<Bucket, MAX_SHIFT - MIN_SHIFT + 1> buckets;
 };
+
+idx_t BlockAllocator::AllocationCacheQueueCount() const {
+	return allocation_cache->QueueCount();
+}
 
 BlockAllocator::BlockAllocator(Allocator &allocator_p, const idx_t block_size_p, const idx_t pool_size_p)
     : uuid(UUID::GenerateRandomUUID()), allocator(allocator_p), allocation_cache(make_uniq<AllocationCache>(allocator)),

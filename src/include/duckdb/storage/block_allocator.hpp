@@ -108,6 +108,8 @@ private:
 	    DUCKDB_EXCLUDES(flush_lock);
 	idx_t FlushAllocationCache(idx_t byte_limit, ReclaimMode mode = ReclaimMode::FORCE) const noexcept
 	    DUCKDB_EXCLUDES(flush_lock);
+	//! The queues that the allocation cache has created, which it does for a size when a buffer of it comes back
+	idx_t AllocationCacheQueueCount() const;
 	bool HasReclaimableMemory() const DUCKDB_REQUIRES(flush_lock);
 	bool HasPendingCacheDecay() const;
 

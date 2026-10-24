@@ -51,6 +51,9 @@ public:
 		}
 		return true;
 	}
+	static idx_t AllocationCacheQueues(const BlockAllocator &allocator) {
+		return allocator.AllocationCacheQueueCount();
+	}
 	annotated_mutex &MaintenanceLock() {
 		return allocator.flush_lock;
 	}
@@ -421,6 +424,30 @@ TEST_CASE("Allocation cache reuses compatible allocations and releases retained 
 			CHECK(live_bytes.load() == 0);
 		}
 	}
+	REQUIRE(live_bytes.load() == 0);
+}
+
+TEST_CASE("Allocation cache creates the queues of a size when a buffer of it comes back", "[api][allocation_cache]") {
+	constexpr idx_t SIZE = 512 * 1024;
+	atomic<idx_t> live_bytes {0};
+	Allocator fallback(CacheTestAllocate, CacheTestFree, CacheTestReallocate,
+	                   make_uniq<AllocationCacheTestData>(live_bytes));
+	BlockAllocator allocator(fallback, 256 * 1024, 0);
+	REQUIRE(BlockAllocatorTestHelper::AllocationCacheQueues(allocator) == 0);
+	auto first = allocator.AllocateData(SIZE);
+	REQUIRE(BlockAllocatorTestHelper::AllocationCacheQueues(allocator) == 0);
+	allocator.FreeData(first, SIZE);
+	const auto queues = BlockAllocatorTestHelper::AllocationCacheQueues(allocator);
+	REQUIRE(queues > 0);
+
+	// the next buffer of the size is reused, and a buffer of another size creates the queues of that size
+	auto reused = allocator.AllocateData(SIZE);
+	allocator.FreeData(reused, SIZE);
+	REQUIRE(BlockAllocatorTestHelper::AllocationCacheQueues(allocator) == queues);
+	auto larger = allocator.AllocateData(2 * SIZE);
+	allocator.FreeData(larger, 2 * SIZE);
+	REQUIRE(BlockAllocatorTestHelper::AllocationCacheQueues(allocator) == 2 * queues);
+	allocator.FlushAll();
 	REQUIRE(live_bytes.load() == 0);
 }
 

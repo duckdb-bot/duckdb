@@ -112,6 +112,19 @@ SELECT count(*) FROM a JOIN e USING (match);
 ----
 0
 
+# a CTE on the build side, where the rows multiply in the probe pipeline
+query II
+EXPLAIN ANALYZE WITH a AS MATERIALIZED (SELECT key, match FROM range(300) t(key) CROSS JOIN range(1000) c(match))
+SELECT count(*) FROM range(3000000) b(match) JOIN a USING (match);
+----
+analyzed_plan	<REGEX>:.*Fanout Mode: DIRECT.*
+
+query I
+WITH a AS MATERIALIZED (SELECT key, match FROM range(300) t(key) CROSS JOIN range(1000) c(match))
+SELECT count(*) FROM range(3000000) b(match) JOIN a USING (match);
+----
+300000
+
 # so is a CTE of strings, whose size is not known in advance
 query II
 EXPLAIN ANALYZE WITH a AS MATERIALIZED (SELECT repeat(key::VARCHAR, 20) AS s, match FROM range(300) t(key) CROSS JOIN range(1000) c(match))

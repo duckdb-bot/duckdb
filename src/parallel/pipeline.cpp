@@ -927,11 +927,11 @@ static bool ProducerLimitsParallelism(const PhysicalCTE &cte, idx_t thread_count
 	return EstimateChunkCount(cte.children[0].get().estimated_cardinality) > producer_threads;
 }
 
-//! Whether an operator of the consumer produces at least twice the rows of the CTE
+//! Whether an operator between the source and the sink of the consumer produces at least twice the rows of the CTE
 static bool ConsumerMultipliesRows(const Pipeline &pipeline, const PhysicalCTE &cte) {
 	D_ASSERT(!cte.children.empty());
 	auto cte_cardinality = cte.children[0].get().estimated_cardinality;
-	for (auto &op : pipeline.GetOperators()) {
+	for (auto &op : pipeline.GetIntermediateOperators()) {
 		if (op.get().estimated_cardinality / 2 >= MaxValue<idx_t>(cte_cardinality, 1)) {
 			return true;
 		}

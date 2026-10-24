@@ -98,7 +98,7 @@ private:
 	reference_map_t<AttachedDatabase, thread_id> starting_transactions;
 	//! Signalled when a transaction is no longer being started
 	condition_variable transaction_started;
-	//! The set of referenced databases in invocation order.
+	//! The set of referenced databases in the order their transactions finished starting.
 	vector<reference<AttachedDatabase>> all_transactions;
 	//! The database we are modifying. We can only modify one database per meta transaction.
 	optional_ptr<AttachedDatabase> modified_database;

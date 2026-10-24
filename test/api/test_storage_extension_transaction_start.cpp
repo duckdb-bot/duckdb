@@ -81,6 +81,8 @@ struct ConcurrentStartState {
 	mutex gate_lock;
 	std::condition_variable gate;
 	idx_t gate_arrivals = 0;
+	bool both_workers_arrived = false;
+	bool other_worker_started = false;
 
 	void Reset(bool fail_first) {
 		fail_first_start = fail_first;
@@ -88,6 +90,8 @@ struct ConcurrentStartState {
 		commits = 0;
 		next_slot = 0;
 		gate_arrivals = 0;
+		both_workers_arrived = false;
+		other_worker_started = false;
 	}
 
 	//! Lets two workers ask for the transaction at the same time, if the scheduler runs two
@@ -95,7 +99,24 @@ struct ConcurrentStartState {
 		unique_lock<mutex> guard(gate_lock);
 		gate_arrivals++;
 		gate.notify_all();
-		gate.wait_for(guard, std::chrono::seconds(2), [&]() { return gate_arrivals >= 2; });
+		if (gate.wait_for(guard, std::chrono::seconds(2), [&]() { return gate_arrivals >= 2; })) {
+			both_workers_arrived = true;
+		}
+	}
+
+	idx_t StartAttempt() {
+		lock_guard<mutex> guard(gate_lock);
+		auto attempt = ++starts;
+		gate.notify_all();
+		return attempt;
+	}
+
+	//! The worker whose start failed waits until the other worker starts again, which needs the failure to wake it
+	void WaitForOtherStart() {
+		unique_lock<mutex> guard(gate_lock);
+		if (gate.wait_for(guard, std::chrono::seconds(10), [&]() { return starts >= 2; })) {
+			other_worker_started = true;
+		}
 	}
 };
 
@@ -107,7 +128,7 @@ public:
 
 public:
 	Transaction &StartTransaction(ClientContext &context) override {
-		auto attempt = ++state->starts;
+		auto attempt = state->StartAttempt();
 		std::this_thread::sleep_for(std::chrono::milliseconds(100));
 		if (state->fail_first_start && attempt == 1) {
 			throw IOException("first start fails");
@@ -228,6 +249,7 @@ TEST_CASE("Test two workers of a query that start the transaction of a database 
 			    if (!state.fail_first_start) {
 				    throw;
 			    }
+			    state.WaitForOtherStart();
 			    transaction = Transaction::Get(context, *target);
 		    }
 		    auto writer = FlatVector::Writer<uint64_t>(output.data[0], 1);
@@ -260,5 +282,8 @@ TEST_CASE("Test two workers of a query that start the transaction of a database 
 		REQUIRE(CHECK_COLUMN(result, 1, {true}));
 		REQUIRE(state->starts == (fail_first ? 2 : 1));
 		REQUIRE(state->commits == 1);
+		if (fail_first && state->both_workers_arrived) {
+			REQUIRE(state->other_worker_started);
+		}
 	}
 }

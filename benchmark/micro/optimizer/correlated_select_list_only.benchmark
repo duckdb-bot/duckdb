@@ -1,0 +1,17 @@
+# name: benchmark/micro/optimizer/correlated_select_list_only.benchmark
+# description: NOT IN with a subquery whose only outer reference is in its select list
+# group: [optimizer]
+
+name Correlated Select List Only
+group micro
+subgroup optimizer
+
+load
+CREATE TABLE main AS SELECT i::DOUBLE AS xid FROM range(1000) t(i);
+CREATE TABLE links AS SELECT (i % 10000)::DOUBLE AS yid FROM range(500000) t(i);
+
+run
+SELECT count(xid) FROM main WHERE xid NOT IN (SELECT xid FROM links);
+
+result I
+0

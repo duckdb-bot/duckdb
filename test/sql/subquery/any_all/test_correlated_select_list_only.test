@@ -1,0 +1,138 @@
+# name: test/sql/subquery/any_all/test_correlated_select_list_only.test
+# description: IN, NOT IN and EXISTS subqueries whose only outer reference is in their select list read one row of their input (duckdblabs/bot-issue-tracker#522)
+# group: [any_all]
+
+statement ok
+CREATE TABLE main AS SELECT i::DOUBLE AS xid FROM range(1000) t(i) UNION ALL SELECT NULL;
+
+statement ok
+CREATE TABLE links AS SELECT (i % 2000)::DOUBLE AS yid FROM range(500000) t(i);
+
+statement ok
+CREATE TABLE empty_links AS SELECT * FROM links LIMIT 0;
+
+query II
+EXPLAIN SELECT count(xid) FROM main WHERE xid NOT IN (SELECT xid FROM links);
+----
+physical_plan	<REGEX>:.*MARK.*Streaming Limit.*Limit: 1.*Table: [a-z_]*\.main\.links.*
+
+query I
+SELECT count(xid) FROM main WHERE xid NOT IN (SELECT xid FROM links);
+----
+0
+
+query I
+SELECT count(*) FROM main WHERE xid IN (SELECT xid FROM links);
+----
+1000
+
+query II
+SELECT count(*), count(*) FILTER (x IS NULL) FROM (SELECT xid NOT IN (SELECT xid FROM links) AS x FROM main);
+----
+1001	1
+
+query II
+SELECT count(*) FILTER (x), count(*) FILTER (x IS NULL) FROM (SELECT xid NOT IN (SELECT xid FROM empty_links) AS x FROM main);
+----
+1001	0
+
+query I
+SELECT count(*) FROM main WHERE EXISTS (SELECT xid FROM links);
+----
+1001
+
+query I
+SELECT count(*) FROM main WHERE NOT EXISTS (SELECT xid FROM empty_links);
+----
+1001
+
+query I
+SELECT count(*) FROM main WHERE xid IN (SELECT xid + 1 FROM links WHERE yid > 100);
+----
+0
+
+query I
+SELECT count(*) FROM main WHERE xid * 2 = ANY (SELECT xid + xid FROM links);
+----
+1000
+
+query I
+SELECT count(*) FROM main WHERE xid < ANY (SELECT xid + 1 FROM links);
+----
+1000
+
+# a select list that reads the input, or an input that reads the outer query, keeps every input row
+query I
+SELECT count(*) FROM main WHERE xid IN (SELECT yid FROM links);
+----
+1000
+
+query I
+SELECT count(*) FROM main WHERE xid IN (SELECT xid FROM links WHERE yid = xid + 1000);
+----
+1000
+
+query I
+SELECT count(*) FROM main WHERE xid IN (SELECT xid FROM links WHERE yid = xid + 1500);
+----
+500
+
+query I
+SELECT count(*) FROM main WHERE xid + 1 IN (SELECT xid + yid FROM links WHERE yid = 1);
+----
+1000
+
+query I
+SELECT x + 1 IN (SELECT x + i FROM range(2) r(i)) FROM (VALUES (1)) o(x);
+----
+true
+
+# the filters below the limit stay below it when the joins are reordered
+query IIII
+SELECT EXISTS (SELECT x FROM range(2) r(i) WHERE i > 0), EXISTS (SELECT x FROM range(2) r(i) QUALIFY row_number() OVER () > 1),
+	x IN (SELECT x FROM range(2) r(i) WHERE i > 0), x NOT IN (SELECT x FROM range(2) r(i) WHERE i > 1)
+FROM (VALUES (1)) o(x);
+----
+true	true	true	true
+
+query II
+SELECT x, i FROM range(1) o(x), (SELECT i FROM range(2) r(i) WHERE i > 0 LIMIT 1) ORDER BY ALL;
+----
+0	1
+
+# the producer of a CTE can have side effects, so it runs to the end
+statement ok
+CREATE SEQUENCE seq;
+
+query I
+WITH c AS MATERIALIZED (SELECT nextval('seq') AS v FROM range(100000)) SELECT x IN (SELECT x FROM c WHERE v > 0) FROM (VALUES (1)) o(x);
+----
+true
+
+query I
+SELECT currval('seq');
+----
+100000
+
+# a limit over the recursive reference keeps it next to the equality join
+query IIII
+WITH RECURSIVE nodes(i, h) AS MATERIALIZED (SELECT i, i % 3 FROM range(256) t(i)), walks(i, h, step) AS (
+	SELECT i, h, 0 FROM nodes WHERE i = 128
+	UNION ALL
+	SELECT n.i, n.h, w.step + 1
+	FROM (VALUES (-1), (1)) d(delta) JOIN (SELECT * FROM walks LIMIT 1000000) w ON true
+	JOIN nodes n ON w.i + d.delta = n.i AND w.h <= n.h + 1 WHERE w.step < 6)
+SELECT count(*), sum(i), sum(h), max(step) FROM walks;
+----
+33	4160	38	6
+
+query II
+EXPLAIN WITH RECURSIVE nodes(i, h) AS MATERIALIZED (SELECT i, i % 3 FROM range(256) t(i)), walks(i, h, step) AS (
+	SELECT i, h, 0 FROM nodes WHERE i = 128
+	UNION ALL
+	SELECT n.i, n.h, w.step + 1
+	FROM (VALUES (-1), (1)) d(delta) JOIN (SELECT * FROM walks LIMIT 1000000) w ON true
+	JOIN nodes n ON w.i + d.delta = n.i AND w.h <= n.h + 1 WHERE w.step < 6)
+SELECT count(*), sum(i), sum(h), max(step) FROM walks;
+----
+physical_plan	<REGEX>:.*Hash Join.*

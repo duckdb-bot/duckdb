@@ -4,6 +4,7 @@
 #include "duckdb/function/function_binder.hpp"
 #include "duckdb/function/scalar/list/contains_or_position.hpp"
 #include "duckdb/function/scalar/nested_functions.hpp"
+#include "duckdb/planner/expression/bound_case_expression.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
@@ -161,8 +162,10 @@ static unique_ptr<Expression> BindCollatedMapExtract(FunctionBindExpressionInput
 	auto &context = input.context;
 	const Identifier map_name("map");
 	const Identifier key_name("key");
-	// The map is used twice, so other maps are evaluated once by invoke, which hides the statistics of their values
-	const bool use_invoke = !CanEvaluateTwice(*input.children[0]);
+	// The map is used twice, so other maps are evaluated once by invoke, which hides the statistics of their values.
+	// Invoke also evaluates a volatile or throwing key when the map is NULL.
+	const auto &key = *input.children[1];
+	const bool use_invoke = !CanEvaluateTwice(*input.children[0]) || key.IsVolatile() || key.CanThrow();
 	unique_ptr<Expression> map_expr;
 	unique_ptr<Expression> key_expr;
 	if (use_invoke) {
@@ -186,27 +189,28 @@ static unique_ptr<Expression> BindCollatedMapExtract(FunctionBindExpressionInput
 
 	unique_ptr<Expression> body;
 	if (extract_list) {
-		// A missing key gives position 0, whose slice is empty
-		auto first_position =
-		    make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_COALESCE, position->GetReturnType());
-		first_position->GetChildrenMutable().push_back(std::move(position));
-		first_position->GetChildrenMutable().push_back(
-		    make_uniq<BoundConstantExpression>(Value::INTEGER(0).DefaultCastAs(first_position->GetReturnType())));
-
+		// Select the value at the position, or no value for a missing key
 		const Identifier values_name("values");
 		const Identifier position_name("position");
-		auto position_ref =
-		    make_uniq<BoundReferenceExpression>(position_name, first_position->GetReturnType(), idx_t(0));
+		const auto &position_type = position->GetReturnType();
+		auto position_ref = make_uniq<BoundReferenceExpression>(position_name, position_type, idx_t(0));
+		auto is_missing = make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_IS_NULL, LogicalType::BOOLEAN);
+		is_missing->GetChildrenMutable().push_back(position_ref->Copy());
+		children.clear();
+		children.push_back(std::move(position_ref));
+		auto single_index = BindFunction(context, "list_value", std::move(children));
+		auto no_index = make_uniq<BoundConstantExpression>(Value::LIST(position_type, vector<Value>()));
+		auto indexes =
+		    make_uniq<BoundCaseExpression>(std::move(is_missing), std::move(no_index), std::move(single_index));
 		children.clear();
 		children.push_back(make_uniq<BoundReferenceExpression>(values_name, values->GetReturnType(), idx_t(1)));
-		children.push_back(position_ref->Copy());
-		children.push_back(std::move(position_ref));
-		auto slice = BindFunction(context, "list_slice", std::move(children));
+		children.push_back(std::move(indexes));
+		auto selection = BindFunction(context, "list_select", std::move(children));
 
 		vector<unique_ptr<Expression>> arguments;
 		arguments.push_back(std::move(values));
-		arguments.push_back(std::move(first_position));
-		body = BindInvoke(context, std::move(slice), std::move(arguments), {values_name, position_name});
+		arguments.push_back(std::move(position));
+		body = BindInvoke(context, std::move(selection), std::move(arguments), {values_name, position_name});
 	} else {
 		children.clear();
 		children.push_back(std::move(values));

@@ -113,6 +113,50 @@ SELECT currval('map_seq'), currval('key_seq');
 ----
 2	2
 
+# a key with side effects is evaluated for NULL maps as well
+statement ok
+CREATE SEQUENCE null_seq;
+
+statement ok
+CREATE TABLE nm (m MAP(VARCHAR, VARCHAR));
+
+statement ok
+INSERT INTO nm VALUES (NULL), (NULL);
+
+query II
+SELECT m[nextval('null_seq')::VARCHAR COLLATE NOCASE], map_extract(m, nextval('null_seq')::VARCHAR COLLATE NOCASE) FROM nm;
+----
+NULL	NULL
+NULL	NULL
+
+query I
+SELECT currval('null_seq');
+----
+4
+
+statement error
+SELECT m[error('bad key')::VARCHAR COLLATE NOCASE] FROM nm;
+----
+bad key
+
+statement error
+SELECT map_extract(m, error('bad key')::VARCHAR COLLATE NOCASE) FROM nm;
+----
+bad key
+
+statement ok
+PREPARE q AS SELECT map_extract($1::MAP(VARCHAR, VARCHAR), nextval('null_seq')::VARCHAR COLLATE NOCASE);
+
+query I
+EXECUTE q(NULL);
+----
+NULL
+
+query I
+SELECT currval('null_seq');
+----
+5
+
 statement ok
 CREATE TABLE s AS SELECT MAP {'Apple': i % 5} AS m FROM range(1000) r(i);
 

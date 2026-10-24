@@ -137,6 +137,20 @@ static unique_ptr<Expression> BindInvoke(ClientContext &context, unique_ptr<Expr
 	return BindFunction(context, "invoke", std::move(children));
 }
 
+//! Whether evaluating the expression twice is cheap and gives the same result
+static bool CanEvaluateTwice(const Expression &expr) {
+	switch (expr.GetExpressionClass()) {
+	case ExpressionClass::BOUND_COLUMN_REF:
+	case ExpressionClass::BOUND_REF:
+	case ExpressionClass::BOUND_LAMBDA_REF:
+	case ExpressionClass::BOUND_CONSTANT:
+	case ExpressionClass::BOUND_PARAMETER:
+		return true;
+	default:
+		return false;
+	}
+}
+
 //! Rebinds a lookup with a collated key as a lookup of the position in the keys, as list_position applies collations
 static unique_ptr<Expression> BindCollatedMapExtract(FunctionBindExpressionInput &input, bool extract_list) {
 	const auto &map_type = input.children[0]->GetReturnType();
@@ -147,18 +161,27 @@ static unique_ptr<Expression> BindCollatedMapExtract(FunctionBindExpressionInput
 	auto &context = input.context;
 	const Identifier map_name("map");
 	const Identifier key_name("key");
-	auto map_ref = make_uniq<BoundReferenceExpression>(map_name, map_type, idx_t(1));
-	auto key_ref = make_uniq<BoundReferenceExpression>(key_name, key_type, idx_t(0));
+	// Other expressions are evaluated once by invoke, which hides the statistics of the map values
+	const bool use_invoke = !CanEvaluateTwice(*input.children[0]) || !CanEvaluateTwice(*input.children[1]);
+	unique_ptr<Expression> map_expr;
+	unique_ptr<Expression> key_expr;
+	if (use_invoke) {
+		map_expr = make_uniq<BoundReferenceExpression>(map_name, map_type, idx_t(1));
+		key_expr = make_uniq<BoundReferenceExpression>(key_name, key_type, idx_t(0));
+	} else {
+		map_expr = std::move(input.children[0]);
+		key_expr = std::move(input.children[1]);
+	}
 
 	vector<unique_ptr<Expression>> children;
-	children.push_back(map_ref->Copy());
+	children.push_back(map_expr->Copy());
 	auto keys = BindFunction(context, "map_keys", std::move(children));
 	children.clear();
 	children.push_back(std::move(keys));
-	children.push_back(std::move(key_ref));
+	children.push_back(std::move(key_expr));
 	auto position = BindFunction(context, "list_position", std::move(children));
 	children.clear();
-	children.push_back(std::move(map_ref));
+	children.push_back(std::move(map_expr));
 	auto values = BindFunction(context, "map_values", std::move(children));
 
 	unique_ptr<Expression> body;
@@ -191,11 +214,13 @@ static unique_ptr<Expression> BindCollatedMapExtract(FunctionBindExpressionInput
 		body = BindFunction(context, "list_extract", std::move(children));
 	}
 
-	vector<unique_ptr<Expression>> arguments;
-	arguments.push_back(std::move(input.children[0]));
-	arguments.push_back(std::move(input.children[1]));
-	auto result = BindInvoke(context, std::move(body), std::move(arguments), {map_name, key_name});
-	return BoundCastExpression::AddCastToType(context, std::move(result), input.bound_function.GetReturnType());
+	if (use_invoke) {
+		vector<unique_ptr<Expression>> arguments;
+		arguments.push_back(std::move(input.children[0]));
+		arguments.push_back(std::move(input.children[1]));
+		body = BindInvoke(context, std::move(body), std::move(arguments), {map_name, key_name});
+	}
+	return BoundCastExpression::AddCastToType(context, std::move(body), input.bound_function.GetReturnType());
 }
 
 static unique_ptr<Expression> BindMapExtractValueExpression(FunctionBindExpressionInput &input) {

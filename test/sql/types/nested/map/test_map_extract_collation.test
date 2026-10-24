@@ -85,10 +85,41 @@ SELECT id, [z FOR z IN [m] IF z[k COLLATE NOCASE] IS NOT NULL] FROM m WHERE id <
 2	[]
 
 # the map and the key are evaluated once
-query I
-SELECT MAP {'Apple': 1}[(CASE WHEN random() < 2 THEN 'apple' END) COLLATE NOCASE];
+statement ok
+CREATE SEQUENCE map_seq;
+
+statement ok
+CREATE SEQUENCE key_seq;
+
+query II
+SELECT map([nextval('map_seq')::VARCHAR], ['a'])['1' COLLATE NOCASE],
+       map_extract(MAP {'1': 'b', '2': 'c'}, nextval('key_seq')::VARCHAR COLLATE NOCASE);
 ----
-1
+a	[b]
+
+query II
+SELECT currval('map_seq'), currval('key_seq');
+----
+1	1
+
+query II
+SELECT map_extract(map([nextval('map_seq')::VARCHAR], ['a']), '2' COLLATE NOCASE),
+       MAP {'1': 'b', '2': 'c'}[nextval('key_seq')::VARCHAR COLLATE NOCASE];
+----
+[a]	c
+
+query II
+SELECT currval('map_seq'), currval('key_seq');
+----
+2	2
+
+statement ok
+CREATE TABLE s AS SELECT MAP {'Apple': i % 5} AS m FROM range(1000) r(i);
+
+query II
+SELECT count(*) FILTER (m['apple' COLLATE NOCASE] > 10), count(*) FILTER (m['apple' COLLATE NOCASE] = 3) FROM s;
+----
+0	200
 
 statement ok
 CREATE VIEW v AS SELECT id, m['APPLE' COLLATE NOCASE] AS x FROM m;

@@ -165,6 +165,40 @@ struct ListViewStructColumn {
 	ArrowArray array {};
 };
 
+//! A list view of the list views of an inner column
+struct NestedListViewColumn {
+	NestedListViewColumn(std::vector<int32_t> offsets_p, std::vector<int32_t> sizes_p, ListViewColumn<int32_t> &inner)
+	    : offsets(std::move(offsets_p)), sizes(std::move(sizes_p)) {
+		inner.schema.name = "item";
+		schema.format = "+vl";
+		schema.name = "a";
+		schema.flags = 2;
+		schema.n_children = 1;
+		schema.children = schema_children;
+		schema.release = ListViewReleaseSchema;
+		schema_children[0] = &inner.schema;
+		buffers[0] = nullptr;
+		buffers[1] = offsets.data();
+		buffers[2] = sizes.data();
+		array.length = int64_t(offsets.size());
+		array.n_buffers = 3;
+		array.buffers = buffers;
+		array.n_children = 1;
+		array.children = array_children;
+		array.release = ListViewReleaseArray;
+		array_children[0] = &inner.array;
+	}
+	NestedListViewColumn(const NestedListViewColumn &) = delete;
+
+	std::vector<int32_t> offsets;
+	std::vector<int32_t> sizes;
+	const void *buffers[3];
+	ArrowSchema *schema_children[1];
+	ArrowArray *array_children[1];
+	ArrowSchema schema {};
+	ArrowArray array {};
+};
+
 //! A list view of strings
 struct ListViewStringColumn {
 	ListViewStringColumn(std::vector<int32_t> offsets_p, std::vector<int32_t> sizes_p,
@@ -299,4 +333,10 @@ TEST_CASE("to_json of ListView entries that share child values", "[arrow]") {
 	values = ListViewExpressionValues(string_column.schema, string_column.array, "to_json(a)::VARCHAR");
 	REQUIRE(values == vector<string> {"[\"d\",\"e\"]", "[\"a\",\"b\",\"" + long_string + "\"]",
 	                                  "[\"" + long_string + "\",\"d\"]", "[\"b\",\"" + long_string + "\",\"d\"]"});
+
+	// inner rows 1 and 2 have the same bounds and share a child with row 0, and the outer rows overlap too
+	ListViewColumn<int32_t> inner({1, 0, 0}, {1, 2, 2}, {7, 7});
+	NestedListViewColumn outer({1, 0}, {1, 3}, inner);
+	values = ListViewExpressionValues(outer.schema, outer.array, "to_json(a)::VARCHAR");
+	REQUIRE(values == vector<string> {"[[7,7]]", "[[7],[7,7],[7,7]]"});
 }

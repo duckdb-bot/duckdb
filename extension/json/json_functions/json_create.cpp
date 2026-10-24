@@ -675,49 +675,135 @@ static void CreateValuesMapKeys(yyjson_mut_doc *doc, yyjson_mut_val *vals[], Vec
 //! Arrow list views.
 class SharedChildValues {
 public:
-	SharedChildValues(const UnifiedVectorFormat &list_data, const list_entry_t *entries, idx_t count,
-	                  idx_t child_count) {
-		if (EntriesOverlap(list_data, entries, count)) {
-			owners.resize(child_count, list_entry_t(0, 0));
-		}
+	SharedChildValues(const UnifiedVectorFormat &list_data, const list_entry_t *entries, idx_t count, idx_t child_count)
+	    : list_data(list_data), entries(entries), count(count), child_count(child_count) {
 	}
 
-	//! Whether a list entry with other bounds holds the child already, so the list entry needs a copy of it
-	bool MustCopy(const list_entry_t &entry, idx_t child_idx) {
-		if (owners.empty()) {
+	//! Whether the list entry of a row, asked for in row order, needs copies of its children. It does when a list
+	//! entry with other bounds holds one of them already, and then copies all, as another row with its bounds would
+	//! otherwise relink the ones it shares.
+	bool MustCopy(idx_t row, const list_entry_t &entry) {
+		if (state == State::DISJOINT || entry.length == 0) {
 			return false;
 		}
-		auto &owner = owners[child_idx];
-		if (owner.length == 0) {
-			owner = entry;
-			return false;
+		if (state == State::IN_RUNS) {
+			if (FollowsRuns(entry)) {
+				return false;
+			}
+			if (!EntriesOverlap()) {
+				state = State::DISJOINT;
+				return false;
+			}
+			// the rows before took their children as they are
+			state = State::TRACKING;
+			owners.resize(child_count, list_entry_t(0, 0));
+			for (idx_t i = 0; i < row; i++) {
+				auto idx = list_data.sel->get_index(i);
+				if (list_data.validity.RowIsValid(idx)) {
+					TakeChildren(entries[idx]);
+				}
+			}
 		}
-		return owner.offset != entry.offset || owner.length != entry.length;
+		return TakeChildren(entry);
 	}
 
 private:
+	enum class State { IN_RUNS, DISJOINT, TRACKING };
+
+	static bool SameBounds(const list_entry_t &a, const list_entry_t &b) {
+		return a.offset == b.offset && a.length == b.length;
+	}
+
+	//! Records the entry as the owner of the children nobody holds, and returns whether others hold any
+	bool TakeChildren(const list_entry_t &entry) {
+		bool held_by_others = false;
+		for (idx_t child_idx = entry.offset; child_idx < entry.offset + entry.length; child_idx++) {
+			auto &owner = owners[child_idx];
+			if (owner.length == 0) {
+				owner = entry;
+			} else if (!SameBounds(owner, entry)) {
+				held_by_others = true;
+			}
+		}
+		return held_by_others;
+	}
+
+	//! Whether the entry continues the entries so far without sharing children: entries go up or down without
+	//! overlap, or repeat the previous one, in runs that each start after the ones before
+	bool FollowsRuns(const list_entry_t &entry) {
+		const auto entry_end = entry.offset + entry.length;
+		if (entry.offset >= previous_end && !run_down) {
+			// entries that go up, the common case
+			run_up = has_previous;
+			has_previous = true;
+			previous_offset = entry.offset;
+			previous_end = entry_end;
+			run_end = entry_end;
+			return true;
+		}
+		if (entry_end <= previous_offset && has_previous && !run_up) {
+			// entries that go down, as from list_reverse
+			run_down = true;
+			run_start = entry.offset;
+			previous_offset = entry.offset;
+			previous_end = entry_end;
+			return run_start >= previous_runs_end;
+		}
+		if (entry.offset == previous_offset && entry_end == previous_end) {
+			return true;
+		}
+		const bool up = entry.offset >= previous_end;
+		const bool down = entry_end <= previous_offset;
+		if (!up && !down) {
+			return false;
+		}
+		if (down && !run_up) {
+			run_down = true;
+			run_start = MinValue(run_start, entry.offset);
+		} else {
+			// the run turns, and the entry starts the next one
+			previous_runs_end = run_end;
+			run_up = false;
+			run_down = false;
+			run_start = entry.offset;
+			run_end = entry_end;
+		}
+		if (run_start < previous_runs_end) {
+			return false;
+		}
+		previous_offset = entry.offset;
+		previous_end = entry_end;
+		return true;
+	}
+
 	//! Whether two list entries with other bounds share children
-	static bool EntriesOverlap(const UnifiedVectorFormat &list_data, const list_entry_t *entries, idx_t count) {
-		// entries that each start after the previous one, or repeat it, share nothing
-		bool sequential = true;
-		optional_ptr<const list_entry_t> previous;
-		idx_t end = 0;
-		for (idx_t i = 0; i < count && sequential; i++) {
+	bool EntriesOverlap() const {
+		// entries in any order share nothing when no child is taken twice
+		vector<bool> taken(child_count, false);
+		bool taken_twice = false;
+		optional_ptr<const list_entry_t> last;
+		for (idx_t i = 0; i < count && !taken_twice; i++) {
 			auto idx = list_data.sel->get_index(i);
 			if (!list_data.validity.RowIsValid(idx) || entries[idx].length == 0) {
 				continue;
 			}
 			auto &entry = entries[idx];
-			if (previous && previous->offset == entry.offset && previous->length == entry.length) {
+			if (last && SameBounds(*last, entry)) {
 				continue;
 			}
-			sequential = entry.offset >= end;
-			end = entry.offset + entry.length;
-			previous = &entry;
+			for (idx_t child_idx = entry.offset; child_idx < entry.offset + entry.length; child_idx++) {
+				if (taken[child_idx]) {
+					taken_twice = true;
+					break;
+				}
+				taken[child_idx] = true;
+			}
+			last = &entry;
 		}
-		if (sequential) {
+		if (!taken_twice) {
 			return false;
 		}
+		// a child taken twice comes from entries with the same bounds, or from entries that overlap
 		vector<list_entry_t> sorted;
 		for (idx_t i = 0; i < count; i++) {
 			auto idx = list_data.sel->get_index(i);
@@ -728,9 +814,9 @@ private:
 		std::sort(sorted.begin(), sorted.end(), [](const list_entry_t &a, const list_entry_t &b) {
 			return a.offset < b.offset || (a.offset == b.offset && a.length < b.length);
 		});
-		end = 0;
+		idx_t end = 0;
 		for (idx_t i = 0; i < sorted.size(); i++) {
-			if (i > 0 && sorted[i].offset == sorted[i - 1].offset && sorted[i].length == sorted[i - 1].length) {
+			if (i > 0 && SameBounds(sorted[i], sorted[i - 1])) {
 				continue;
 			}
 			if (sorted[i].offset < end) {
@@ -741,6 +827,19 @@ private:
 		return false;
 	}
 
+	const UnifiedVectorFormat &list_data;
+	const list_entry_t *entries;
+	idx_t count;
+	idx_t child_count;
+	State state = State::IN_RUNS;
+	bool has_previous = false;
+	idx_t previous_offset = 0;
+	idx_t previous_end = 0;
+	bool run_up = false;
+	bool run_down = false;
+	idx_t run_start = 0;
+	idx_t run_end = 0;
+	idx_t previous_runs_end = 0;
 	vector<list_entry_t> owners;
 };
 
@@ -769,12 +868,13 @@ static void CreateValuesMap(const StructNames &names, yyjson_mut_doc *doc, yyjso
 		} else {
 			vals[i] = yyjson_mut_obj(doc);
 			const auto &key_list_entry = map_key_list_entries[idx];
+			const auto must_copy = shared_entries.MustCopy(i, key_list_entry);
 			for (idx_t child_i = key_list_entry.offset; child_i < key_list_entry.offset + key_list_entry.length;
 			     child_i++) {
 				if (!unsafe_yyjson_is_null(nested_keys[child_i])) {
 					auto key = nested_keys[child_i];
 					auto value = nested_vals[child_i];
-					if (shared_entries.MustCopy(key_list_entry, child_i)) {
+					if (must_copy) {
 						key = JSONCommon::MutValMutCopy(doc, key, true);
 						value = JSONCommon::MutValMutCopy(doc, value, true);
 					}
@@ -874,9 +974,10 @@ static void CreateValuesList(const StructNames &names, yyjson_mut_doc *doc, yyjs
 		} else {
 			vals[i] = yyjson_mut_arr(doc);
 			const auto &entry = list_entries[idx];
+			const auto must_copy = shared_values.MustCopy(i, entry);
 			for (idx_t child_i = entry.offset; child_i < entry.offset + entry.length; child_i++) {
 				auto value = nested_vals[child_i];
-				if (shared_values.MustCopy(entry, child_i)) {
+				if (must_copy) {
 					value = JSONCommon::MutValMutCopy(doc, value, true);
 				}
 				yyjson_mut_arr_append(vals[i], value);

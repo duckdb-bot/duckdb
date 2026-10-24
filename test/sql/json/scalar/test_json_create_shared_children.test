@@ -28,3 +28,10 @@ query I
 SELECT sum(length(to_json({'i': i, 'l': [repeat('x', 65536)]}))) FROM range(2048) t(i);
 ----
 134255530
+
+# list_reverse gives inner lists in reverse order
+query I
+SELECT to_json(list_reverse(l)) FROM (VALUES ([[1], [2, 3], [4]]), ([[5, 6], [], [7]])) t(l)
+----
+[[4],[2,3],[1]]
+[[7],[],[5,6]]

@@ -1,0 +1,53 @@
+# name: test/sql/attach/attach_or_replace_same_path.test
+# description: ATTACH OR REPLACE of the attached path keeps the database while the file is the same one (duckdblabs/bot-issue-tracker#540)
+# group: [attach]
+
+statement ok
+ATTACH '{TEST_DIR}/or_replace_same_path.db' AS db1;
+
+statement ok
+CREATE TABLE db1.t AS SELECT 1 AS i;
+
+statement ok
+CREATE TABLE oids AS SELECT database_oid AS oid FROM duckdb_databases() WHERE database_name = 'db1';
+
+# a database attached for writing stays attached
+statement ok
+ATTACH OR REPLACE '{TEST_DIR}/or_replace_same_path.db' AS db1;
+
+query II
+SELECT i, (SELECT database_oid FROM duckdb_databases() WHERE database_name = 'db1') IN (SELECT oid FROM oids) FROM db1.t;
+----
+1	true
+
+statement ok
+DETACH db1;
+
+# so does one attached for reading, while the path names the file it has open
+statement ok
+ATTACH '{TEST_DIR}/or_replace_same_path.db' AS db1 (READ_ONLY);
+
+statement ok
+INSERT INTO oids SELECT database_oid FROM duckdb_databases() WHERE database_name = 'db1';
+
+statement ok
+ATTACH OR REPLACE '{TEST_DIR}/or_replace_same_path.db' AS db1 (READ_ONLY);
+
+statement ok
+ATTACH OR REPLACE '{TEST_DIR}/or_replace_same_path.db' AS db1;
+
+query II
+SELECT sum(i), (SELECT database_oid FROM duckdb_databases() WHERE database_name = 'db1') IN (SELECT oid FROM oids) FROM db1.t;
+----
+1	true
+
+statement error
+INSERT INTO db1.t VALUES (2);
+----
+read-only
+
+# a different access mode is still an error
+statement error
+ATTACH OR REPLACE '{TEST_DIR}/or_replace_same_path.db' AS db1 (READ_WRITE);
+----
+already attached in READ_ONLY mode

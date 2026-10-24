@@ -39,6 +39,8 @@ struct DatabaseHandle {
 	idx_t GetFileSize();
 
 	FileHandle &GetFileHandle();
+	//! Whether the path names another file than the open one, as when a writer replaced the file
+	bool PathNamesOtherFile(const string &path);
 
 private:
 	//! Throws if a write at [required_size] would exceed the mmap reserve. No-op otherwise.

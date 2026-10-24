@@ -1127,6 +1127,13 @@ idx_t SingleFileBlockManager::FreeBlocks() {
 	return free_list.size();
 }
 
+bool SingleFileBlockManager::PathNamesOtherFile(const string &path) {
+	if (!handle) {
+		return false;
+	}
+	return handle->PathNamesOtherFile(path);
+}
+
 bool SingleFileBlockManager::IsRemote() {
 	return !handle->OnDiskFile();
 }

@@ -11,6 +11,8 @@
 #include "duckdb/main/extension_helper.hpp"
 #include "duckdb/parser/parsed_data/alter_database_info.hpp"
 #include "duckdb/storage/storage_extension.hpp"
+#include "duckdb/storage/single_file_block_manager.hpp"
+#include "duckdb/common/types/hash.hpp"
 #include "duckdb/storage/storage_manager.hpp"
 #include "duckdb/transaction/duck_transaction.hpp"
 #include "duckdb/transaction/duck_transaction_manager.hpp"
@@ -103,6 +105,15 @@ bool RequiresTrackingAttaches(const string &path, const string &db_type) {
 	return true;
 }
 
+//! Whether the path no longer names the local file that the database has open, as when a writer replaced the file
+static bool FileWasReplaced(AttachedDatabase &db, const string &path) {
+	auto &block_manager = db.GetStorageManager().GetBlockManager();
+	if (block_manager.InMemory()) {
+		return false;
+	}
+	return block_manager.Cast<SingleFileBlockManager>().PathNamesOtherFile(path);
+}
+
 shared_ptr<AttachedDatabase> DatabaseManager::AttachDatabase(ClientContext &context, AttachInfo &info,
                                                              AttachOptions &options) {
 	string extension = "";
@@ -118,6 +129,8 @@ shared_ptr<AttachedDatabase> DatabaseManager::AttachDatabase(ClientContext &cont
 		}
 	}
 	bool requires_tracking_attaches = RequiresTrackingAttaches(info.path, options.db_type);
+	// held until the database that replaces a read-only one is attached
+	unique_lock<mutex> reopen_guard;
 	if (requires_tracking_attaches) {
 		// canonicalize the path to the database
 		auto &fs = FileSystem::GetFileSystem(context);
@@ -154,7 +167,32 @@ shared_ptr<AttachedDatabase> DatabaseManager::AttachDatabase(ClientContext &cont
 				}
 				// allow custom catalogs to override this behavior
 				if (!existing_db->GetCatalog().HasConflictingAttachOptions(info.path, options)) {
-					return existing_db;
+					// a DuckDB file attached for reading that a writer replaced is opened again next to it
+					if (!existing_db->IsReadOnly() || existing_db->StoredPath().empty()) {
+						return existing_db;
+					}
+					string remote_extension;
+					if (FileSystem::IsRemoteFile(info.path, remote_extension)) {
+						// a remote file has no identity to compare and holds no locks, so it is read again if it
+						// exists
+						if (!FileSystem::GetFileSystem(context).GetStatsIfExists(OpenFileInfo(info.path))) {
+							return existing_db;
+						}
+					} else {
+						// one connection at a time checks and opens a local file, as closing either of two handles
+						// of the new file would release the locks of the other
+						auto &reopen_lock = reopen_locks[Hash(info.path.c_str()) % REOPEN_LOCK_COUNT];
+						reopen_guard = unique_lock<mutex>(reopen_lock);
+						if (GetDatabase(info.name) != existing_db) {
+							// another connection replaced the database while this one waited
+							reopen_guard.unlock();
+							return AttachDatabase(context, info, options);
+						}
+						if (!FileWasReplaced(*existing_db, info.path)) {
+							return existing_db;
+						}
+					}
+					options.access_mode = AccessMode::READ_ONLY;
 				}
 			} else {
 				return existing_db;

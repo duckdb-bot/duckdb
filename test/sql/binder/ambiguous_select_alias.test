@@ -64,13 +64,17 @@ SELECT i AS r, 10 - i AS r FROM range(3) t(i) WHERE i > 1
 ----
 2	8
 
-# the same expression under one alias is not ambiguous
-query II
+# the same expression twice under one alias is ambiguous as well
+statement error
 SELECT i AS a, i AS a FROM range(3) t(i) ORDER BY a DESC
 ----
-2	2
-1	1
-0	0
+<REGEX>:Binder Error: ORDER BY "a" is ambiguous.*
+
+# a numeric alias does not reach the positional group of that name
+statement error
+SELECT i AS "0", 10 - i AS "0" FROM range(3) t(i) GROUP BY 1 ORDER BY "0" + 1
+----
+<REGEX>:Binder Error: Alias "0" is ambiguous.*
 
 # an alias that has the name of a column of the SELECT list is used as before
 query II
@@ -80,20 +84,8 @@ SELECT i, 10 - i AS i FROM range(3) t(i) ORDER BY i
 1	9
 0	10
 
-# names and collations that differ only in case are the same expression
-query II
-SELECT s.x AS a, s.X AS a FROM (VALUES ({x: 1}), ({x: 2})) t(s) ORDER BY a
+# names that differ only in case are one alias
+statement error
+SELECT s.x AS a, s.X AS A FROM (VALUES ({x: 1}), ({x: 2})) t(s) ORDER BY a
 ----
-1	1
-2	2
-
-query II
-SELECT s COLLATE nocase AS a, s COLLATE NOCASE AS a FROM (VALUES ('B'), ('a')) t(s) ORDER BY a
-----
-a	a
-B	B
-
-query II
-WITH t(x, y) AS (VALUES (0, 0)) SELECT (SELECT x FROM (SELECT * REPLACE (1 AS x, 2 AS y) FROM t)) AS a, (SELECT x FROM (SELECT * REPLACE (1 AS x, 2 AS y) FROM t)) AS a ORDER BY a
-----
-1	1
+<REGEX>:Binder Error: ORDER BY "a" is ambiguous.*

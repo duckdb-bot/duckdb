@@ -72,3 +72,21 @@ query II
 SELECT (SELECT count(*) FROM read_ndjson('{TEST_DIR}/only_bom.jsonl', columns = {a: 'INTEGER'})), (SELECT count(*) FROM read_ndjson('{TEST_DIR}/bom_newline.jsonl', columns = {a: 'INTEGER'}));
 ----
 0	0
+
+# a value of one byte without a newline after it, with and without a BOM, plain and compressed
+statement ok
+COPY (SELECT from_hex('EFBBBF31')) TO '{TEST_DIR}/bom_one_byte.jsonl' (FORMAT BLOB);
+
+statement ok
+COPY (SELECT from_hex('EFBBBF31')) TO '{TEST_DIR}/bom_one_byte.jsonl.gz' (FORMAT BLOB, COMPRESSION 'gzip');
+
+statement ok
+COPY (SELECT from_hex('31')) TO '{TEST_DIR}/one_byte.jsonl' (FORMAT BLOB);
+
+query IIII
+SELECT (SELECT list(json) FROM read_json_objects('{TEST_DIR}/bom_one_byte.jsonl', format = 'newline_delimited')),
+	(SELECT list(json) FROM read_json_objects('{TEST_DIR}/bom_one_byte.jsonl.gz', format = 'newline_delimited')),
+	(SELECT list(json) FROM read_json_objects('{TEST_DIR}/one_byte.jsonl', format = 'newline_delimited')),
+	(SELECT list(a) FROM read_ndjson('{TEST_DIR}/bom_one_byte.jsonl', records = false, columns = {a: 'INTEGER'}));
+----
+[1]	[1]	[1]	[1]

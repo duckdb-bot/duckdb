@@ -942,8 +942,9 @@ bool JSONReader::CopyRemainderFromPreviousBuffer(JSONReaderScanState &scan_state
 		RemoveBuffer(*previous_buffer_handle);
 	}
 
-	if (prev_object_size <= 1) {
-		// Just a newline, or nothing
+	if (prev_object_size == 0 || (prev_object_size == 1 && *prev_object_start == '\n')) {
+		// Just a newline, or nothing. A single byte without a newline before it is a value, such as a 1 at the end of
+		// a file
 		return false;
 	}
 	scan_state.buffer_offset -= prev_object_size;

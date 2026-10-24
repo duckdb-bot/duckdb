@@ -518,6 +518,20 @@ Identifier Binder::GetExpressionName(const ParsedExpression &expr) {
 	return expr.GetName();
 }
 
+//! Whether the expression contains a star, whose expansion names its columns itself
+static bool ContainsStar(const ParsedExpression &expr) {
+	if (expr.GetExpressionClass() == ExpressionClass::STAR) {
+		return true;
+	}
+	bool result = false;
+	ParsedExpressionIterator::EnumerateChildren(expr, [&](const ParsedExpression &child) {
+		if (!result) {
+			result = ContainsStar(child);
+		}
+	});
+	return result;
+}
+
 BoundStatement Binder::BindSelectNode(SelectNode &statement, BoundStatement from_table) {
 	D_ASSERT(from_table.plan);
 	D_ASSERT(!statement.from_table);
@@ -541,6 +555,15 @@ BoundStatement Binder::BindSelectNode(SelectNode &statement, BoundStatement from
 	// without normalization the enclosing expression would be duplicated once per column
 	NormalizeFilterStarExpressions(statement);
 
+	// the aliases written in the query, expansion and qualification add others to keep the names of columns
+	identifier_set_t written_aliases;
+	identifier_set_t ambiguous_aliases;
+	for (auto &expr : statement.select_list) {
+		if (!expr->GetAlias().empty() && !ContainsStar(*expr) && !written_aliases.insert(expr->GetAlias()).second) {
+			ambiguous_aliases.insert(expr->GetAlias());
+		}
+	}
+
 	// visit the select list and expand any "*" statements
 	vector<unique_ptr<ParsedExpression>> new_select_list;
 	ExpandStarExpressions(statement.select_list, new_select_list);
@@ -551,6 +574,7 @@ BoundStatement Binder::BindSelectNode(SelectNode &statement, BoundStatement from
 	statement.select_list = std::move(new_select_list);
 
 	auto &bind_state = result.bind_state;
+	bind_state.ambiguous_aliases = std::move(ambiguous_aliases);
 	for (idx_t i = 0; i < statement.select_list.size(); i++) {
 		auto &expr = statement.select_list[i];
 		result.names.emplace_back(GetExpressionName(*expr));

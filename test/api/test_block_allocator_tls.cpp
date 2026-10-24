@@ -763,6 +763,23 @@ TEST_CASE("BlockAllocator purges fallback frees for a large allocation only when
 	allocator.FreeData(reused, BLOCK_SIZE);
 }
 
+TEST_CASE("BlockAllocator counts the memory that a fallback reallocation gives back", "[api][block_allocator]") {
+	constexpr idx_t BLOCK_SIZE = 65536;
+	Allocator fallback;
+	BlockAllocator allocator(fallback, BLOCK_SIZE, 0);
+	auto pointer = allocator.AllocateData(4 * BLOCK_SIZE);
+	pointer[0] = 42;
+	auto shrunk = allocator.ReallocateData(pointer, 4 * BLOCK_SIZE, 1024);
+	CHECK(shrunk[0] == 42);
+	const auto given_back = BlockAllocatorTestHelper::Deallocated(allocator);
+	CHECK(given_back == (shrunk == pointer ? 4 * BLOCK_SIZE - 1024 : 4 * BLOCK_SIZE));
+
+	// the memory given back does not fit next to a large allocation, so it is purged
+	allocator.FlushForAllocation(NumericLimits<idx_t>::Maximum(), given_back - 1);
+	CHECK(BlockAllocatorTestHelper::Deallocated(allocator) == 0);
+	allocator.FreeData(shrunk, 1024);
+}
+
 TEST_CASE("BlockAllocator bounds fallback pressure using available footprint statistics", "[api][block_allocator]") {
 	constexpr idx_t BLOCK_SIZE = 65536;
 	// Keep this test on jemalloc rather than the power-of-two allocation cache.

@@ -1,0 +1,46 @@
+# name: test/sql/json/issues/ndjson_parallel_bom.test
+# description: A newline-delimited file with a UTF-8 BOM read in parallel parts (duckdblabs/bot-issue-tracker#586)
+# group: [issues]
+
+require json
+
+statement ok
+SET threads = 4;
+
+query II
+SELECT count(*), sum(a) FROM read_ndjson('{DATA_DIR}/json/sample_utf8_bom.jsonl');
+----
+1000	499500
+
+# small buffers split the file into many parts, of which only the first starts with the BOM
+query II
+SELECT count(*), sum(a) FROM read_ndjson('{DATA_DIR}/json/sample_utf8_bom.jsonl', maximum_object_size = 64);
+----
+1000	499500
+
+query II
+SELECT count(*), sum(a) FROM read_json('{DATA_DIR}/json/sample_utf8_bom.jsonl', format = 'newline_delimited', columns = {a: 'INTEGER'});
+----
+1000	499500
+
+query I
+SELECT count(*) FROM read_json_objects('{DATA_DIR}/json/sample_utf8_bom.jsonl', format = 'newline_delimited');
+----
+1000
+
+statement ok
+SET threads = 1;
+
+query II
+SELECT count(*), sum(a) FROM read_ndjson('{DATA_DIR}/json/sample_utf8_bom.jsonl');
+----
+1000	499500
+
+# a compressed file, which is read in parts without seeking
+statement ok
+SET threads = 4;
+
+query II
+SELECT count(*), sum(a) FROM read_ndjson('{DATA_DIR}/json/sample_utf8_bom.jsonl.gz', maximum_object_size = 64);
+----
+1000	499500

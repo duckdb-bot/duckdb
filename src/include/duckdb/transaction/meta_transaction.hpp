@@ -9,6 +9,8 @@
 #pragma once
 
 #include "duckdb/common/common.hpp"
+#include "duckdb/common/condition_variable.hpp"
+#include "duckdb/common/thread.hpp"
 #include "duckdb/main/valid_checker.hpp"
 #include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/common/optional_ptr.hpp"
@@ -92,7 +94,11 @@ private:
 	mutex lock;
 	//! The set of active transactions for each database.
 	reference_map_t<AttachedDatabase, TransactionReference> transactions;
-	//! The set of referenced databases in invocation order.
+	//! The databases whose transaction is being started, without holding the lock, and the threads starting them
+	reference_map_t<AttachedDatabase, thread_id> starting_transactions;
+	//! Signalled when a transaction is no longer being started
+	condition_variable transaction_started;
+	//! The set of referenced databases in the order their transactions finished starting.
 	vector<reference<AttachedDatabase>> all_transactions;
 	//! The database we are modifying. We can only modify one database per meta transaction.
 	optional_ptr<AttachedDatabase> modified_database;

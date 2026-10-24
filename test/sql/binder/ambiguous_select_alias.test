@@ -112,3 +112,17 @@ SELECT j, 10 - i AS j FROM gen ORDER BY j
 3	8
 2	9
 1	10
+
+# names that a star expansion gives its columns are not written aliases
+query II
+SELECT COLUMNS(*), 10 - i AS i FROM range(3) t(i) ORDER BY i
+----
+2	8
+1	9
+0	10
+
+query II
+SELECT *, 10 - i AS i FROM range(2) a(i) FULL JOIN range(2) b(i) USING (i) ORDER BY i
+----
+1	9
+0	10

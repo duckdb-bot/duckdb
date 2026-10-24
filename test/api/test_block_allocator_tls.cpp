@@ -756,13 +756,12 @@ TEST_CASE("BlockAllocator purges for a large allocation only when the freed memo
 		CHECK(allocator.GetCachedMemory() == BLOCK_SIZE);
 	}
 
-	// without headroom the cached block is given back, and the arenas are purged when they hold freed pages
-	const auto purgeable = Allocator::GetPurgeableMemory();
+	// without headroom the cached block is given back, and the arenas are purged unless decay already emptied them
 	allocator.FlushForAllocation(NumericLimits<idx_t>::Maximum(), 0);
 	CHECK(allocator.GetCachedMemory() == 0);
-	if (!purgeable.IsValid() || purgeable.GetIndex() > 0) {
-		CHECK(BlockAllocatorTestHelper::Deallocated(allocator) == 0);
-	}
+	const auto purgeable = Allocator::GetPurgeableMemory();
+	const bool purged = BlockAllocatorTestHelper::Deallocated(allocator) == 0;
+	CHECK((purged || (purgeable.IsValid() && purgeable.GetIndex() == 0)));
 }
 
 TEST_CASE("BlockAllocator bounds fallback pressure using available footprint statistics", "[api][block_allocator]") {

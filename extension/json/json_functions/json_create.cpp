@@ -669,6 +669,17 @@ static void CreateValuesTuple(const StructNames &names, yyjson_mut_doc *doc, yyj
 static void CreateValuesMapKeys(yyjson_mut_doc *doc, yyjson_mut_val *vals[], Vector &value_v, idx_t count,
                                 const JSONCopyFormatOptions &options);
 
+//! Returns the value of a child entry, or a copy of it when another array or object holds it already, since yyjson
+//! links the values of an array or object. Lists may share child entries, as overlapping Arrow list views do.
+static yyjson_mut_val *TakeChildValue(yyjson_mut_doc *doc, yyjson_mut_val *child_vals[], vector<bool> &taken,
+                                      idx_t child_idx) {
+	if (!taken[child_idx]) {
+		taken[child_idx] = true;
+		return child_vals[child_idx];
+	}
+	return yyjson_mut_val_mut_copy(doc, child_vals[child_idx]);
+}
+
 static void CreateValuesMap(const StructNames &names, yyjson_mut_doc *doc, yyjson_mut_val *vals[], Vector &value_v,
                             idx_t count, const JSONCopyFormatOptions &options) {
 	// Create nested keys
@@ -685,6 +696,7 @@ static void CreateValuesMap(const StructNames &names, yyjson_mut_doc *doc, yyjso
 	UnifiedVectorFormat map_data;
 	value_v.ToUnifiedFormat(map_data);
 	auto map_key_list_entries = UnifiedVectorFormat::GetData<list_entry_t>(map_data);
+	vector<bool> taken(map_key_count, false);
 	for (idx_t i = 0; i < count; i++) {
 		idx_t idx = map_data.sel->get_index(i);
 		if (!map_data.validity.RowIsValid(idx)) {
@@ -696,7 +708,14 @@ static void CreateValuesMap(const StructNames &names, yyjson_mut_doc *doc, yyjso
 			for (idx_t child_i = key_list_entry.offset; child_i < key_list_entry.offset + key_list_entry.length;
 			     child_i++) {
 				if (!unsafe_yyjson_is_null(nested_keys[child_i])) {
-					yyjson_mut_obj_add(vals[i], nested_keys[child_i], nested_vals[child_i]);
+					auto key = nested_keys[child_i];
+					auto value = nested_vals[child_i];
+					if (taken[child_i]) {
+						key = yyjson_mut_val_mut_copy(doc, key);
+						value = yyjson_mut_val_mut_copy(doc, value);
+					}
+					taken[child_i] = true;
+					yyjson_mut_obj_add(vals[i], key, value);
 				}
 			}
 		}
@@ -784,6 +803,7 @@ static void CreateValuesList(const StructNames &names, yyjson_mut_doc *doc, yyjs
 	UnifiedVectorFormat list_data;
 	value_v.ToUnifiedFormat(list_data);
 	auto list_entries = UnifiedVectorFormat::GetData<list_entry_t>(list_data);
+	vector<bool> taken(child_count, false);
 	for (idx_t i = 0; i < count; i++) {
 		idx_t idx = list_data.sel->get_index(i);
 		if (!list_data.validity.RowIsValid(idx)) {
@@ -792,7 +812,7 @@ static void CreateValuesList(const StructNames &names, yyjson_mut_doc *doc, yyjs
 			vals[i] = yyjson_mut_arr(doc);
 			const auto &entry = list_entries[idx];
 			for (idx_t child_i = entry.offset; child_i < entry.offset + entry.length; child_i++) {
-				yyjson_mut_arr_append(vals[i], nested_vals[child_i]);
+				yyjson_mut_arr_append(vals[i], TakeChildValue(doc, nested_vals, taken, child_i));
 			}
 		}
 	}

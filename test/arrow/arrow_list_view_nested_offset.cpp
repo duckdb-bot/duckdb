@@ -96,6 +96,41 @@ bool ListViewScanMatches(ArrowSchema &column_schema, ArrowArray &column_array, c
 	return ArrowTestHelper::RunArrowComparison(con, query, stream);
 }
 
+//! Scans the column through arrow_scan and returns the rows of the expression as strings
+vector<string> ListViewExpressionValues(ArrowSchema &column_schema, ArrowArray &column_array,
+                                        const string &expression) {
+	ArrowSchema *schema_children[1] = {&column_schema};
+	ArrowSchema record_schema {};
+	record_schema.format = "+s";
+	record_schema.n_children = 1;
+	record_schema.children = schema_children;
+	record_schema.release = ListViewReleaseSchema;
+
+	ArrowArray *array_children[1] = {&column_array};
+	const void *buffers[1] = {nullptr};
+	ArrowArray record_array {};
+	record_array.length = column_array.length;
+	record_array.n_buffers = 1;
+	record_array.buffers = buffers;
+	record_array.n_children = 1;
+	record_array.children = array_children;
+	record_array.release = ListViewReleaseArray;
+
+	ArrowArrayStream stream {};
+	AdbcError error {};
+	REQUIRE(duckdb_adbc::BatchToArrayStream(&record_array, &record_schema, &stream, &error) == ADBC_STATUS_OK);
+	DuckDB db(nullptr);
+	Connection con(db);
+	auto relation = con.TableFunction("arrow_scan", {}, {}, ArrowTestHelper::ConstructArrowScan(stream));
+	auto result = relation->Project(expression)->Execute();
+	REQUIRE(!result->HasError());
+	vector<string> values;
+	for (auto &row : *result) {
+		values.push_back(row.GetValue<string>(0));
+	}
+	return values;
+}
+
 } // namespace
 
 TEST_CASE("Arrow scan of ListView with disjoint child ranges", "[arrow]") {
@@ -108,4 +143,15 @@ TEST_CASE("Arrow scan of ListView with disjoint child ranges", "[arrow]") {
 TEST_CASE("Arrow scan of ListView with overlapping child ranges", "[arrow]") {
 	ListViewColumn<int64_t> column({0, 0}, {3, 3}, {10, 20, 30});
 	REQUIRE(ListViewScanMatches(column.schema, column.array, "SELECT [10, 20, 30]::INT[] FROM range(2)"));
+}
+
+TEST_CASE("to_json of ListView entries that share child values", "[arrow]") {
+	// rows 0 and 2 share the value 3, rows 1 and 3 share the values 1 and 2 (duckdblabs/bot-issue-tracker#506)
+	ListViewColumn<int32_t> column({3, 0, 2, 1}, {2, 3, 2, 3}, {0, 1, 2, 3, 4});
+	auto values = ListViewExpressionValues(column.schema, column.array, "to_json(a)::VARCHAR");
+	REQUIRE(values == vector<string> {"[3,4]", "[0,1,2]", "[2,3]", "[1,2,3]"});
+
+	ListViewColumn<int32_t> nested_column({3, 0, 2, 1}, {2, 3, 2, 3}, {0, 1, 2, 3, 4});
+	values = ListViewExpressionValues(nested_column.schema, nested_column.array, "to_json({'l': a})::VARCHAR");
+	REQUIRE(values == vector<string> {"{\"l\":[3,4]}", "{\"l\":[0,1,2]}", "{\"l\":[2,3]}", "{\"l\":[1,2,3]}"});
 }

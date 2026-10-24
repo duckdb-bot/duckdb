@@ -1,0 +1,29 @@
+# name: test/sql/copy/csv/csv_cardinality_without_auto_detect.test
+# description: A CSV file read without auto-detection is estimated from its size, as with it (duckdblabs/bot-issue-tracker#640)
+# group: [csv]
+
+statement ok
+COPY (SELECT i AS id, repeat('x', 100) AS payload FROM range(20000) t(i)) TO '{TEST_DIR}/sized.csv';
+
+statement ok
+PRAGMA explain_output = 'OPTIMIZED_ONLY';
+
+foreach auto_detect true false
+
+query II
+EXPLAIN SELECT count(*) FROM read_csv('{TEST_DIR}/sized.csv', auto_detect = {auto_detect}, header = true, columns = {'id': 'BIGINT', 'payload': 'VARCHAR'});
+----
+logical_opt	<REGEX>:.*~212,890 rows.*
+
+query II
+SELECT count(*), sum(id) FROM read_csv('{TEST_DIR}/sized.csv', auto_detect = {auto_detect}, header = true, columns = {'id': 'BIGINT', 'payload': 'VARCHAR'});
+----
+20000	199990000
+
+endloop
+
+# a glob, whose files are estimated from the first one
+query II
+EXPLAIN SELECT count(*) FROM read_csv('{TEST_DIR}/sized*.csv', auto_detect = false, header = true, columns = {'id': 'BIGINT', 'payload': 'VARCHAR'});
+----
+logical_opt	<REGEX>:.*~212,890 rows.*

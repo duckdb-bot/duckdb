@@ -468,15 +468,30 @@ static unique_ptr<NodeStatistics> ReadSingleCSVFileCardinality(ClientContext &co
 	auto &csv_data = bind_data->Cast<ReadSingleCSVFileData>();
 	// determined through the scientific method as the average amount of rows in a CSV file
 	idx_t per_file_cardinality = 42;
+	auto estimated_row_width = csv_data.csv_types.size() * 5;
 	if (csv_data.buffer_manager && csv_data.buffer_manager->file_handle) {
 		auto &file_handle = *csv_data.buffer_manager->file_handle;
-		auto estimated_row_width = csv_data.csv_types.size() * 5;
 		auto file_size = file_handle.FileSize();
 		if (file_handle.IsPipe()) {
 			// a pipe has no size, the bytes the sniffer read are a lower bound for it
 			file_size = MaxValue<idx_t>(file_size, file_handle.UncompressedBytesRead());
 		}
 		per_file_cardinality = file_size / estimated_row_width;
+	} else if (estimated_row_width > 0) {
+		// without sniffing the file was not opened, so its size comes from the file list or from the local file system
+		idx_t file_size = 0;
+		auto &file = csv_data.file;
+		if (!file.extended_info || !file.extended_info->TryGetOption("file_size", file_size)) {
+			if (!FileSystem::IsRemoteFile(file.path)) {
+				auto stats = FileSystem::GetFileSystem(context).GetStatsIfExists(file);
+				if (stats && stats->file_type == FileType::FILE_TYPE_REGULAR && stats->file_size > 0) {
+					file_size = UnsafeNumericCast<idx_t>(stats->file_size);
+				}
+			}
+		}
+		if (file_size > 0) {
+			per_file_cardinality = file_size / estimated_row_width;
+		}
 	}
 	return make_uniq<NodeStatistics>(per_file_cardinality);
 }

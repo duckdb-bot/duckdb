@@ -61,28 +61,53 @@ Transaction &MetaTransaction::GetTransaction(AttachedDatabase &db) {
 	if (ValidChecker::IsInvalidated(db)) {
 		throw IOException("%s", ValidChecker::InvalidatedMessage(db));
 	}
-	lock_guard<mutex> guard(lock);
-	auto entry = transactions.find(db);
-	if (entry == transactions.end()) {
-		auto &new_transaction = db.GetTransactionManager().StartTransaction(context);
-		new_transaction.active_query = active_query.load();
-#ifdef DEBUG
-		VerifyAllTransactionsUnique(db, all_transactions);
-#endif
-		// Rollback looks every entry of all_transactions up in transactions, so the two must not get out of sync:
-		// reserve first, then insert, so that a failing allocation happens before either is modified and the
-		// push_back that follows cannot allocate.
-		all_transactions.reserve(all_transactions.size() + 1);
-		transactions.insert(make_pair(reference<AttachedDatabase>(db), TransactionReference(new_transaction)));
-		all_transactions.push_back(db);
-		auto shared_db = db.shared_from_this();
-		UseDatabase(shared_db);
-
-		return new_transaction;
-	} else {
-		D_ASSERT(entry->second.transaction.active_query == active_query);
-		return entry->second.transaction;
+	unique_lock<mutex> guard(lock);
+	while (true) {
+		auto entry = transactions.find(db);
+		if (entry != transactions.end()) {
+			D_ASSERT(entry->second.transaction.active_query == active_query);
+			return entry->second.transaction;
+		}
+		auto starting = starting_transactions.find(db);
+		if (starting == starting_transactions.end()) {
+			break;
+		}
+		if (starting->second == std::this_thread::get_id()) {
+			throw TransactionException("Cannot use the transaction of database \"%s\" while it is being started",
+			                           db.GetName());
+		}
+		// another thread of the query is starting it
+		transaction_started.wait(guard);
 	}
+	// The transaction manager can run extension code that needs the transactions of other databases, such as the
+	// system catalog for a secret lookup, so it is called without the lock
+	starting_transactions.insert(make_pair(reference<AttachedDatabase>(db), std::this_thread::get_id()));
+	guard.unlock();
+	optional_ptr<Transaction> new_transaction;
+	try {
+		new_transaction = db.GetTransactionManager().StartTransaction(context);
+	} catch (...) {
+		guard.lock();
+		starting_transactions.erase(db);
+		transaction_started.notify_all();
+		throw;
+	}
+	guard.lock();
+	starting_transactions.erase(db);
+	transaction_started.notify_all();
+	new_transaction->active_query = active_query.load();
+#ifdef DEBUG
+	VerifyAllTransactionsUnique(db, all_transactions);
+#endif
+	// Rollback looks every entry of all_transactions up in transactions, so the two must not get out of sync:
+	// reserve first, then insert, so that a failing allocation happens before either is modified and the
+	// push_back that follows cannot allocate.
+	all_transactions.reserve(all_transactions.size() + 1);
+	transactions.insert(make_pair(reference<AttachedDatabase>(db), TransactionReference(*new_transaction)));
+	all_transactions.push_back(db);
+	auto shared_db = db.shared_from_this();
+	UseDatabase(shared_db);
+	return *new_transaction;
 }
 
 void MetaTransaction::RemoveTransaction(AttachedDatabase &db) {

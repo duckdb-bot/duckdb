@@ -104,6 +104,15 @@ static void ApplyForceNotNull(CSVReaderOptions &options, const vector<Identifier
 	}
 }
 
+//! Whether the file has no data. A pipe has no size, so for a pipe this is whether its first buffer is empty
+static bool CSVFileIsEmpty(CSVBufferManager &buffer_manager) {
+	if (!buffer_manager.file_handle->IsPipe()) {
+		return buffer_manager.file_handle->FileSize() == 0;
+	}
+	auto first_buffer = buffer_manager.GetBuffer(0);
+	return !first_buffer || first_buffer->actual_size == 0;
+}
+
 //! Sniff this file - the dialect that is detected is stored in the options of the bind data. When a schema is given
 //! the sniffed schema is reconciled with it, and files whose schema does not match it are reported
 static void SniffCSVFile(ClientContext &context, ReadSingleCSVFileData &result, const CSVSchema &file_schema,
@@ -120,7 +129,7 @@ static void SniffCSVFile(ClientContext &context, ReadSingleCSVFileData &result, 
 		sniffer.SniffCSV();
 		return;
 	}
-	if (result.buffer_manager->file_handle->FileSize() == 0) {
+	if (CSVFileIsEmpty(*result.buffer_manager)) {
 		// an empty file has no dialect for us to reconcile with the schema of the scan
 		return;
 	}

@@ -1,5 +1,6 @@
 #include "duckdb/common/vector/constant_vector.hpp"
 #include "duckdb/common/vector/array_vector.hpp"
+#include "duckdb/common/vector/dictionary_vector.hpp"
 #include "duckdb/common/vector/flat_vector.hpp"
 #include "duckdb/common/vector/list_vector.hpp"
 #include "duckdb/common/vector/string_vector.hpp"
@@ -135,6 +136,19 @@ const SelectionVector *ConstantVector::ZeroSelectionVector(idx_t count, Selectio
 	return &owned_sel;
 }
 
+//! Whether the vector holds its strings uncompressed, in its own buffers or in those of its dictionary
+static bool HoldsUncompressedStrings(const Vector &vector) {
+	switch (vector.GetVectorType()) {
+	case VectorType::FLAT_VECTOR:
+	case VectorType::CONSTANT_VECTOR:
+		return true;
+	case VectorType::DICTIONARY_VECTOR:
+		return HoldsUncompressedStrings(DictionaryVector::Child(vector));
+	default:
+		return false;
+	}
+}
+
 void ConstantVector::Reference(Vector &vector, count_t count, const Vector &source, idx_t position,
                                idx_t source_count) {
 	auto &source_type = source.GetType();
@@ -219,6 +233,28 @@ void ConstantVector::Reference(Vector &vector, count_t count, const Vector &sour
 		auto &validity = vector.BufferMutable().GetValidityMask();
 		validity.Set(0, true);
 		FlatVector::SetSize(vector, count);
+		break;
+	}
+	case PhysicalType::VARCHAR: {
+		if (!HoldsUncompressedStrings(source)) {
+			// an FSST vector decompresses its strings into memory of its own, so the string is copied
+			vector.Reference(source.GetValue(position), count);
+			break;
+		}
+		auto entries = source.Values<string_t>();
+		auto entry = entries[position];
+		if (!entry.IsValid()) {
+			SetNull(vector, count);
+			break;
+		}
+		// share the heap that holds the string instead of copying it, which for a long string referenced for each
+		// output chunk costs the string's size every time
+		auto buffer = make_buffer<VectorStringBuffer>(capacity_t(1ULL));
+		reinterpret_cast<string_t *>(buffer->GetData())[0] = entry.GetValue();
+		buffer->SetVectorType(VectorType::CONSTANT_VECTOR);
+		buffer->SetVectorSize(count);
+		vector.SetBuffer(std::move(buffer));
+		StringVector::AddHeapReference(vector, source);
 		break;
 	}
 	default:

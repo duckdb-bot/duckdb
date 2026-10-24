@@ -56,13 +56,14 @@ struct ParquetStatisticsUtils {
 	static constexpr const char *INTERVAL_BLOOM_FILTER_KEY = "duckdb.interval_bloom_filter";
 	static constexpr const char *INTERVAL_BLOOM_FILTER_VALUE = "normalized-v1";
 
+	//! With repairs_invalid_utf8 VARCHAR columns get no minimum and maximum, as invalid UTF-8 is changed when read
 	static unique_ptr<BaseStatistics> TransformColumnStatistics(const ParquetColumnSchema &reader,
-	                                                            const vector<ColumnChunk> &columns, bool can_have_nan);
+	                                                            const vector<ColumnChunk> &columns, bool can_have_nan,
+	                                                            bool repairs_invalid_utf8 = false);
 
-	static unique_ptr<BaseStatistics>
-	TransformParquetStatistics(const LogicalType &type, const ParquetColumnSchema &schema,
-	                           const duckdb_parquet::Statistics &parquet_stats, bool can_have_nan,
-	                           optional_ptr<const ColumnChunk> column_chunk = nullptr);
+	static unique_ptr<BaseStatistics> TransformParquetStatistics(
+	    const LogicalType &type, const ParquetColumnSchema &schema, const duckdb_parquet::Statistics &parquet_stats,
+	    bool can_have_nan, optional_ptr<const ColumnChunk> column_chunk = nullptr, bool repairs_invalid_utf8 = false);
 
 	//! Whether the column can contain NaN values - uses nan_count if present, otherwise the can_have_nan option
 	static bool CanHaveNaN(const duckdb_parquet::Statistics &parquet_stats, bool can_have_nan);

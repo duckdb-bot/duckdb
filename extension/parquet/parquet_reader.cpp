@@ -1943,6 +1943,11 @@ void ParquetReader::PrepareRowGroupBuffer(ClientContext &context, ParquetReaderS
 						check_bloom_filter = prune_result != FilterPropagateResult::FILTER_ALWAYS_FALSE;
 					}
 				}
+				if (bloom_reader && bloom_reader->Type().id() == LogicalTypeId::VARCHAR &&
+				    parquet_options.RepairsInvalidUTF8()) {
+					// the bloom filter holds the stored bytes, which repairing invalid UTF-8 changes
+					bloom_reader = nullptr;
+				}
 				auto hash_strategy = bloom_reader ? ParquetStatisticsUtils::GetBloomFilterHashStrategy(
 				                                        bloom_reader->Schema(), interval_bloom_filter_version)
 				                                  : nullopt;

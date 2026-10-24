@@ -114,6 +114,11 @@ TEST_CASE("Test that the client thread does not poll while a worker runs the onl
 	REQUIRE_NO_FAIL(con.Query("SET threads = 4"));
 	auto state = make_shared_ptr<HandoffState>();
 	state->client_tid = static_cast<pid_t>(syscall(SYS_gettid));
+	if (!std::ifstream("/proc/self/task/" + to_string(state->client_tid) + "/stat")) {
+		// the state of the client thread is read from procfs
+		WARN("Skipping the test, as /proc/self/task is not readable");
+		return;
+	}
 	TableFunction handoff(
 	    "handoff", {},
 	    [](ClientContext &, TableFunctionInput &input, DataChunk &output) {

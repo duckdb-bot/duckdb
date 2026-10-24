@@ -183,8 +183,8 @@ void HTTPRetryBudget::Settle(bool success) {
 		} else if (quota) {
 			quota->Release(HTTPRetryQuota::NO_RETRY_REFUND);
 		}
-		for (auto &throttled_retry : earlier_throttled_retries) {
-			throttled_retry.first->Release(throttled_retry.second);
+		for (auto &charge : earlier_throttled_retries) {
+			charge.quota->Release(charge.cost);
 		}
 	}
 	ForgetLastRetry();
@@ -341,7 +341,7 @@ bool HTTPRetryBudget::ConsumeAndWait(const HTTPRetryDecision &decision) {
 	}
 	// The admitted retry is the one a later success refunds; its outcome is still open.
 	if (last_retry_quota && last_retry_throttled) {
-		earlier_throttled_retries.emplace_back(std::move(last_retry_quota), last_retry_cost);
+		earlier_throttled_retries.push_back(HTTPThrottledRetryCharge {std::move(last_retry_quota), last_retry_cost});
 	}
 	last_retry_quota = quota;
 	last_retry_cost = cost;

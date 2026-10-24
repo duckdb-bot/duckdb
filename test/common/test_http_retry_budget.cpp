@@ -259,6 +259,19 @@ TEST_CASE("HTTP retry quota is not drained by requests that get through after be
 	REQUIRE(quota->Available() == available - HTTPRetryQuota::RETRY_COST -
 	                                  static_cast<int64_t>(throttled.RetriesUsed()) * HTTPRetryQuota::RETRY_COST);
 
+	// a failure after throttles refunds nothing, and a later clean run of the same budget refunds a single token
+	const auto before_failure = quota->Available();
+	HTTPRetryBudget failed(params, HTTPRetryOutcomeOwner::COORDINATOR);
+	failed.BindQuota(quota);
+	attempts = 0;
+	failed.Run([&]() {
+		attempts++;
+		return attempts <= 2 ? HTTPRetryDecision::Throttled("0") : HTTPRetryDecision::Failure();
+	});
+	REQUIRE(quota->Available() == before_failure - 2 * HTTPRetryQuota::RETRY_COST);
+	failed.Run([&]() { return HTTPRetryDecision::Success(); });
+	REQUIRE(quota->Available() == before_failure - 2 * HTTPRetryQuota::RETRY_COST + HTTPRetryQuota::NO_RETRY_REFUND);
+
 	// throttles charged to another host are refunded to that host
 	auto other_quota = make_shared_ptr<HTTPRetryQuota>();
 	HTTPRetryBudget redirected(params, HTTPRetryOutcomeOwner::COORDINATOR);

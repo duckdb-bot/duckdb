@@ -41,6 +41,7 @@
         "test/sql/optimizer/nested_null_segment_pruning.test",
         "test/sql/optimizer/false_or_null_segment_pruning.test",
         "test/sql/optimizer/struct_segment_pruning.test",
+        "test/sql/optimizer/expression/test_row_comparison_constant.test",
         "test/sql/optimizer/list_contains_row_group_pruning.test",
         "test/sql/copy/parquet/list_contains_row_group_pruning.test",
         "test/sql/optimizer/map_extract_row_group_pruning.test",

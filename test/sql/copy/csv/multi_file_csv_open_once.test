@@ -46,3 +46,28 @@ query II
 SELECT count(*), sum(c1) FROM read_csv(['{TEST_DIR}/open_once_2.csv', '{TEST_DIR}/open_once_1.csv'], files_to_sniff = 1);
 ----
 2	3
+
+# compressed files are opened again, as their buffers could not be read again once evicted
+statement ok
+COPY (SELECT 1 AS c1, 'a' AS c2) TO '{TEST_DIR}/open_once_gz_1.csv.gz';
+
+statement ok
+COPY (SELECT 2 AS c1, 'b' AS c2) TO '{TEST_DIR}/open_once_gz_2.csv.gz';
+
+statement ok
+CALL enable_logging('FileSystem');
+
+query II
+SELECT count(*), sum(c1) FROM read_csv(['{TEST_DIR}/open_once_gz_1.csv.gz', '{TEST_DIR}/open_once_gz_2.csv.gz']);
+----
+2	3
+
+statement ok
+CALL disable_logging();
+
+query II
+SELECT parse_filename(path), count(*) FROM duckdb_logs_parsed('FileSystem')
+WHERE op = 'OPEN' AND path LIKE '%open_once_gz_%' GROUP BY ALL ORDER BY ALL;
+----
+open_once_gz_1.csv.gz	2
+open_once_gz_2.csv.gz	2

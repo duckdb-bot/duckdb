@@ -242,6 +242,16 @@ static unique_ptr<FunctionData> ReadSingleCSVFileBind(ClientContext &context, Ta
 	return std::move(result);
 }
 
+//! Whether the scan reads a sniffed file on from its buffers. A pipe cannot be opened again, and the buffers of an
+//! uncompressed UTF-8 file are read again from the file once evicted. Other files are opened again, as their buffers
+//! could not be read again, and would take memory until the scan reaches the file or the query ends
+static bool ReadsOnFromSniffedBuffers(const shared_ptr<CSVBufferManager> &buffer_manager) {
+	if (!buffer_manager || !buffer_manager->file_handle) {
+		return false;
+	}
+	return buffer_manager->file_handle->IsPipe() || buffer_manager->HasKnownBufferRanges();
+}
+
 //! Combine the schemas of several CSV files the way the multi-file sniffer does - the resulting CSV schema is
 //! handed to the bind of every file, whose dialect is then sniffed and reconciled with it
 static unique_ptr<FunctionData> ReadSingleCSVFileCombineSchema(ClientContext &context,
@@ -282,7 +292,7 @@ static unique_ptr<FunctionData> ReadSingleCSVFileCombineSchema(ClientContext &co
 			// the schema of this file was not sniffed - fall back to combining the types
 			return nullptr;
 		}
-		if (csv_data.buffer_manager) {
+		if (ReadsOnFromSniffedBuffers(csv_data.buffer_manager)) {
 			sniffed_buffers[csv_data.file.path] = csv_data.buffer_manager;
 		}
 		auto schema = csv_data.csv_schema;

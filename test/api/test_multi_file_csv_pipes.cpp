@@ -30,5 +30,6 @@ TEST_CASE("Test read_csv of several pipes", "[api]") {
 		close(fd);
 	}
 	REQUIRE(CHECK_COLUMN(result, 0, {1, 2}));
+	REQUIRE(result->RowCount() == 2);
 }
 #endif

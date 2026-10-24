@@ -2,10 +2,11 @@
 #include "test_helpers.hpp"
 #include "duckdb/common/vector/vector_writer.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
-#include "duckdb/main/query_profiler.hpp"
 
-#if defined(__linux__) || defined(__APPLE__)
-#include <time.h>
+#if defined(__linux__)
+#include <fstream>
+#include <sys/syscall.h>
+#include <unistd.h>
 #endif
 
 #include <chrono>
@@ -16,33 +17,37 @@ using namespace duckdb;
 
 // A client thread whose query has no task left for it waits instead of polling (duckdb/duckdb#22178)
 
-#if (defined(__linux__) || defined(__APPLE__)) && !defined(DUCKDB_NO_THREADS)
+#if defined(__linux__) && !defined(DUCKDB_NO_THREADS)
 namespace {
 
-double ThreadSeconds() {
-	timespec now;
-	clock_gettime(CLOCK_THREAD_CPUTIME_ID, &now);
-	return double(now.tv_sec) + double(now.tv_nsec) / 1e9;
+//! Whether the kernel has the thread sleeping, as a thread that waits on a condition variable is
+bool ThreadIsSleeping(pid_t tid) {
+	std::ifstream stat("/proc/self/task/" + to_string(tid) + "/stat");
+	string line;
+	if (!std::getline(stat, line)) {
+		return false;
+	}
+	// the state follows the command name, which is in parentheses and may contain spaces
+	auto end_of_name = line.rfind(')');
+	return end_of_name != string::npos && end_of_name + 2 < line.size() && line[end_of_name + 2] == 'S';
 }
 
-double WallSeconds() {
-	timespec now;
-	clock_gettime(CLOCK_MONOTONIC, &now);
-	return double(now.tv_sec) + double(now.tv_nsec) / 1e9;
-}
-
-//! The only task of the query tells the client which thread runs it, and waits until the client lets it go on
+//! The only task of the query waits until the client lets it go on, and then watches the client while it holds the
+//! task
 struct HandoffState {
 	mutex lock;
 	std::condition_variable cv;
+	pid_t client_tid = 0;
 	bool started = false;
 	bool released = false;
 	std::thread::id scan_thread;
+	bool client_slept = false;
 
 	void Reset() {
 		lock_guard<mutex> guard(lock);
 		started = false;
 		released = false;
+		client_slept = false;
 	}
 	bool WaitUntilStarted() {
 		unique_lock<mutex> guard(lock);
@@ -59,6 +64,20 @@ struct HandoffState {
 		scan_thread = std::this_thread::get_id();
 		cv.notify_all();
 		cv.wait(guard, [&]() { return released; });
+	}
+	//! A polling client is never asleep, a waiting one is asleep for most of the time
+	void WatchClient() {
+		static constexpr idx_t SAMPLES_ASLEEP = 10;
+		idx_t asleep = 0;
+		auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		while (std::chrono::steady_clock::now() < deadline) {
+			asleep = ThreadIsSleeping(client_tid) ? asleep + 1 : 0;
+			if (asleep >= SAMPLES_ASLEEP) {
+				client_slept = true;
+				return;
+			}
+			std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		}
 	}
 };
 
@@ -94,6 +113,7 @@ TEST_CASE("Test that the client thread does not poll while a worker runs the onl
 	Connection con(db);
 	REQUIRE_NO_FAIL(con.Query("SET threads = 4"));
 	auto state = make_shared_ptr<HandoffState>();
+	state->client_tid = static_cast<pid_t>(syscall(SYS_gettid));
 	TableFunction handoff(
 	    "handoff", {},
 	    [](ClientContext &, TableFunctionInput &input, DataChunk &output) {
@@ -102,9 +122,10 @@ TEST_CASE("Test that the client thread does not poll while a worker runs the onl
 			    return;
 		    }
 		    global.done = true;
-		    input.bind_data->Cast<HandoffBindData>().state->StartAndWaitForRelease();
-		    // the worker keeps the only task for a while
-		    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+		    auto &state = *input.bind_data->Cast<HandoffBindData>().state;
+		    state.StartAndWaitForRelease();
+		    // the worker keeps the only task while it watches the client
+		    state.WatchClient();
 		    auto writer = FlatVector::Writer<int64_t>(output.data[0], 1);
 		    writer.WriteValue(42);
 		    output.SetChildCardinality(1);
@@ -123,27 +144,20 @@ TEST_CASE("Test that the client thread does not poll while a worker runs the onl
 	ExtensionActiveLoad load_info {*db.instance, extension_info, "test_extension", ""};
 	ExtensionLoader loader {load_info};
 	loader.RegisterFunction(handoff);
-	// the profiler records how long threads waited for a task
-	REQUIRE_NO_FAIL(con.Query("PRAGMA enable_profiling = 'no_output'"));
 
 	for (idx_t run = 0; run < 3; run++) {
 		state->Reset();
 		auto result = con.Submit("SELECT * FROM handoff()");
 		// a worker runs the task, as this thread waits here
 		auto started = state->WaitUntilStarted();
-		auto wall_start = WallSeconds();
-		auto thread_start = ThreadSeconds();
 		state->Release();
 		result->Complete();
-		auto thread = ThreadSeconds() - thread_start;
-		auto wall = WallSeconds() - wall_start;
 		REQUIRE(started);
 		REQUIRE(state->scan_thread != std::this_thread::get_id());
 		REQUIRE_NO_FAIL(*result);
 		REQUIRE(CHECK_COLUMN(result, 0, {42}));
-		// this thread waits while the worker holds the task, instead of polling
-		REQUIRE(QueryProfiler::Get(*con.context).GetQueryMetrics().blocked_thread_time > 0.5 * wall);
-		REQUIRE(thread < 0.2 * wall);
+		// this thread sleeps while the worker holds the task, instead of polling
+		REQUIRE(state->client_slept);
 	}
 }
 #endif

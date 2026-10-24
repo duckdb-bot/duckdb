@@ -528,7 +528,8 @@ unique_ptr<BaseStatistics> ParquetStatisticsUtils::TransformParquetStatistics(
 	case LogicalTypeId::BLOB:
 	case LogicalTypeId::VARCHAR: {
 		const bool is_varchar = type.id() == LogicalTypeId::VARCHAR;
-		if (is_varchar && repairs_invalid_utf8) {
+		if (repairs_invalid_utf8 &&
+		    StringColumnReader::GetStringColumnType(type) == StringColumnReader::StringColumnType::VARCHAR) {
 			// a repaired value can lie below the minimum or above the maximum of the stored bytes
 			return StringStats::CreateUnknown(type).ToUnique();
 		}

@@ -60,3 +60,12 @@ statement error
 SELECT count(*) FROM read_parquet('{TEST_DIR}/repaired_bloom.parquet', binary_as_string = true) WHERE x = 'k1';
 ----
 is not valid UTF8
+
+# JSON is validated but not repaired, so it keeps its statistics, while a repaired VARCHAR has no minimum
+statement ok
+COPY (SELECT ('{"a": ' || i || '}')::JSON AS j, ('k' || i)::BLOB AS x FROM range(1000) t(i)) TO '{TEST_DIR}/repaired_json.parquet';
+
+query II
+SELECT stats(j)::VARCHAR LIKE '%''min''%', stats(x)::VARCHAR LIKE '%''min''%' FROM read_parquet('{TEST_DIR}/repaired_json.parquet', binary_as_string = true, utf8_validation = 'ignore') LIMIT 1;
+----
+true	false

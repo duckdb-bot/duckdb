@@ -309,8 +309,8 @@ struct ParquetOptions {
 	    StringColumnReader::Utf8ValidationOption::STRICT_UTF8;
 	ParquetInt96AsOption int96_as = ParquetInt96AsOption::TIMESTAMP;
 
-	//! Whether invalid UTF-8 in a VARCHAR column is changed as it is read, so that the values no longer lie within the
-	//! statistics and bloom filters of the stored bytes
+	//! Whether invalid UTF-8 in a VARCHAR column (not JSON) is changed as it is read, so that the values no longer lie
+	//! within the statistics and bloom filters of the stored bytes
 	bool RepairsInvalidUTF8() const {
 		return utf8_validation_option != StringColumnReader::Utf8ValidationOption::STRICT_UTF8;
 	}

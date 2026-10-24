@@ -1943,8 +1943,9 @@ void ParquetReader::PrepareRowGroupBuffer(ClientContext &context, ParquetReaderS
 						check_bloom_filter = prune_result != FilterPropagateResult::FILTER_ALWAYS_FALSE;
 					}
 				}
-				if (bloom_reader && bloom_reader->Type().id() == LogicalTypeId::VARCHAR &&
-				    parquet_options.RepairsInvalidUTF8()) {
+				if (bloom_reader && parquet_options.RepairsInvalidUTF8() &&
+				    StringColumnReader::GetStringColumnType(bloom_reader->Type()) ==
+				        StringColumnReader::StringColumnType::VARCHAR) {
 					// the bloom filter holds the stored bytes, which repairing invalid UTF-8 changes
 					bloom_reader = nullptr;
 				}

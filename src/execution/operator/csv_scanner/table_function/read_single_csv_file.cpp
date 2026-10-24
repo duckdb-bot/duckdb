@@ -302,7 +302,8 @@ static unique_ptr<FunctionData> ReadSingleCSVFileCombineSchema(ClientContext &co
 			return nullptr;
 		}
 		if (ReadsOnFromSniffedBuffers(csv_data.buffer_manager)) {
-			sniffed_buffers[csv_data.file.path] = csv_data.buffer_manager;
+			// a path listed twice keeps the buffers of its first reader, which for a pipe are the ones with its data
+			sniffed_buffers.emplace(csv_data.file.path, csv_data.buffer_manager);
 		}
 		auto schema = csv_data.csv_schema;
 		if (first_file && schema.IsEmptyFile()) {

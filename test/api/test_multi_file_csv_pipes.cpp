@@ -57,5 +57,16 @@ TEST_CASE("Test read_csv of several pipes", "[api]") {
 	result = QueryPipes(con, {"c1\n1\n", ""}, "SELECT c1 FROM PIPES");
 	REQUIRE(CHECK_COLUMN(result, 0, {1}));
 	REQUIRE(result->RowCount() == 1);
+
+	// a pipe listed twice gives its data once, as the second reader finds it drained
+	int fds[2];
+	REQUIRE(pipe(fds) == 0);
+	REQUIRE(write(fds[1], "c1\n1\n", 5) == 5);
+	close(fds[1]);
+	auto path = "'/dev/fd/" + to_string(fds[0]) + "'";
+	result = con.Query("SELECT count(*), sum(c1) FROM read_csv([" + path + ", " + path + "], header = true)");
+	close(fds[0]);
+	REQUIRE(CHECK_COLUMN(result, 0, {1}));
+	REQUIRE(CHECK_COLUMN(result, 1, {1}));
 }
 #endif

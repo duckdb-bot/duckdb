@@ -204,9 +204,10 @@ void ListColumnData::Select(TransactionData transaction, idx_t vector_index, Col
 	// like ArrayColumnData::Select, read only the children of the selected lists when that is worth it
 	auto &child_type = child_column->type;
 	auto target_count = GetVectorCount(vector_index);
-	// a selection of most rows skips few children, and short lists leave little to skip
+	// a selection of most rows skips few children, and lists that are short on average are cheap to read whole
+	static constexpr idx_t MIN_AVERAGE_LIST_SIZE = 64;
 	if (child_type.IsNested() || child_type.InternalType() == PhysicalType::VARCHAR || sel_count == 0 ||
-	    sel_count * 2 > target_count || child_column->GetMaxEntry() < 2 * GetMaxEntry()) {
+	    sel_count * 2 > target_count || child_column->GetMaxEntry() < MIN_AVERAGE_LIST_SIZE * GetMaxEntry()) {
 		ColumnData::Select(transaction, vector_index, state, result, sel, sel_count);
 		return;
 	}

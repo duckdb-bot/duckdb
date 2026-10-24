@@ -10,6 +10,9 @@ CREATE TABLE t AS SELECT i AS id, CASE WHEN i % 7 = 0 THEN NULL WHEN i % 11 = 0 
 statement ok
 CREATE TABLE s AS SELECT i AS id, CASE WHEN i % 7 = 0 THEN NULL ELSE [(x + i)::VARCHAR FOR x IN range(i % 30)] END AS l, [[x, i] FOR x IN range(i % 30)] AS n FROM range(5000) r(i);
 
+statement ok
+CREATE TABLE m AS SELECT i AS id, [x + i * 1000 FOR x IN range(CASE WHEN i < 2048 THEN 200 ELSE 1 END)] AS l FROM range(4096) r(i);
+
 # the expected lists are computed from the id, not read from the table
 statement ok
 CREATE MACRO expected(i) AS CASE WHEN i % 7 = 0 THEN NULL WHEN i % 11 = 0 THEN [] ELSE [x + i * 1000 FOR x IN range((i % 50) * 20)] END;
@@ -47,6 +50,12 @@ query I
 SELECT l = expected(id) FROM t WHERE rowid = 4321
 ----
 true
+
+# a vector of short lists in a column of long lists is read whole
+query III
+SELECT count(*), sum(len(l)), count(*) FILTER (WHERE l = [x + id * 1000 FOR x IN range(CASE WHEN id < 2048 THEN 200 ELSE 1 END)]) FROM m WHERE id % 97 = 3
+----
+43	4421	43
 
 # lists of strings and nested lists are read the usual way
 query II

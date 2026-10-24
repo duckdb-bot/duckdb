@@ -327,9 +327,13 @@ bool HTTPRetryBudget::ConsumeAndWait(const HTTPRetryDecision &decision) {
 		ForgetLastRetry();
 		return false;
 	}
-	const auto cost = decision.type == HTTPRetryDecision::Type::TRANSIENT ? HTTPRetryQuota::TRANSIENT_RETRY_COST
-	                                                                      : HTTPRetryQuota::RETRY_COST;
-	if (quota && !quota->TryAcquire(cost)) {
+	auto cost = HTTPRetryQuota::RETRY_COST;
+	if (decision.type == HTTPRetryDecision::Type::TRANSIENT) {
+		cost = HTTPRetryQuota::TRANSIENT_RETRY_COST;
+	} else if (throttled) {
+		cost = HTTPRetryQuota::THROTTLED_RETRY_COST;
+	}
+	if (quota && cost > 0 && !quota->TryAcquire(cost)) {
 		quota_exhausted = true;
 		ForgetLastRetry();
 		return false;

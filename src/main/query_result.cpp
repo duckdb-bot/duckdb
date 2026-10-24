@@ -424,7 +424,9 @@ void QueryResult::CompleteInternal(ClientContextLock &lock) {
 	try {
 		QueryResultState state;
 		while (!IsTerminal(state = context->ExecuteTaskInternal(lock, *this))) {
-			if (state == QueryResultState::BLOCKED || state == QueryResultState::READY) {
+			// NO_TASKS_AVAILABLE means the remaining tasks run on other threads
+			if (state == QueryResultState::BLOCKED || state == QueryResultState::READY ||
+			    state == QueryResultState::NO_TASKS_AVAILABLE) {
 				context->WaitForTask(lock, *this);
 			}
 		}

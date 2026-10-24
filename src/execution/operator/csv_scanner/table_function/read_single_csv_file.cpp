@@ -340,7 +340,7 @@ static unique_ptr<FunctionData> ReadSingleCSVFileCombineSchema(ClientContext &co
 	// the buffer manager of the first file is kept, like the multi-file sniffer does - it tells the scan whether
 	// the files can be read ahead, and the first file does not need to be opened again
 	result->buffer_manager = first_file->buffer_manager;
-	// every file that was sniffed is read on from its buffers, which pipes cannot give a second time
+	// the sniffed pipes and plain files kept above are read on from their buffers, which pipes cannot give twice
 	result->sniffed_buffers = std::move(sniffed_buffers);
 	result->csv_schema = best_schema;
 	result->csv_names = names;

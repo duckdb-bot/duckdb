@@ -60,6 +60,9 @@ true
 
 # the default database can be replaced, for reading and for writing
 statement ok
+ATTACH ':memory:' AS other_db;
+
+statement ok
 USE db1;
 
 statement ok
@@ -71,7 +74,7 @@ SELECT sum(i) FROM t;
 3
 
 statement ok
-USE memory;
+USE other_db;
 
 statement ok
 DETACH db1;
@@ -94,7 +97,7 @@ SELECT sum(i) FROM t;
 6
 
 statement ok
-USE memory;
+USE other_db;
 
 # a different access mode is still an error
 statement error

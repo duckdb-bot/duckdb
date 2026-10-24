@@ -61,13 +61,14 @@ SELECT count(*) FROM read_parquet('{TEST_DIR}/repaired_bloom.parquet', binary_as
 ----
 is not valid UTF8
 
-# JSON is validated but not repaired, so it keeps its statistics, while a repaired VARCHAR has no minimum
+# JSON is validated but not repaired, so it keeps its statistics, while a repaired VARCHAR has no minimum. Without the
+# optimizer no statistics are propagated
 require json
 
 statement ok
 COPY (SELECT ('{"a": ' || i || '}')::JSON AS j, ('k' || i)::BLOB AS x FROM range(1000) t(i)) TO '{TEST_DIR}/repaired_json.parquet';
 
 query II
-SELECT stats(j)::VARCHAR LIKE '%''min''%', stats(x)::VARCHAR LIKE '%''min''%' FROM read_parquet('{TEST_DIR}/repaired_json.parquet', binary_as_string = true, utf8_validation = 'ignore') LIMIT 1;
+SELECT coalesce(stats(j)::VARCHAR LIKE '%''min''%', stats(j) IS NULL), coalesce(stats(x)::VARCHAR LIKE '%''min''%', false) FROM read_parquet('{TEST_DIR}/repaired_json.parquet', binary_as_string = true, utf8_validation = 'ignore') LIMIT 1;
 ----
 true	false

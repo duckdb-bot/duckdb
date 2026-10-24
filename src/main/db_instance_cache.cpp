@@ -146,7 +146,22 @@ shared_ptr<DuckDB> DBInstanceCache::CreateInstanceInternal(const string &databas
 
 shared_ptr<DuckDB> DBInstanceCache::CreateInstance(const string &database, DBConfig &config, bool cache_instance,
                                                    const std::function<void(DuckDB &)> &on_create) {
-	return CreateInstanceInternal(database, config, cache_instance, unique_lock<mutex>(cache_lock), on_create);
+	unique_lock<mutex> lock(cache_lock, std::defer_lock);
+	if (cache_instance) {
+		// the entry of a closed instance stays until it is looked up, which also waits for an instance that is closing
+		while (!lock.owns_lock()) {
+			lock.lock();
+			if (GetInstanceInternal(database, config, lock)) {
+				throw InvalidInputException(
+				    "Cannot create a database instance for \"%s\": an instance of it is already "
+				    "cached",
+				    database);
+			}
+		}
+	} else {
+		lock.lock();
+	}
+	return CreateInstanceInternal(database, config, cache_instance, std::move(lock), on_create);
 }
 
 shared_ptr<DuckDB> DBInstanceCache::CreateEmptyInstance(DBConfig &config) {

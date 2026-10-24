@@ -301,3 +301,41 @@ TEST_CASE("Test automatic DB instance caching", "[api][.]") {
 		REQUIRE_NO_FAIL(con2.Query("SELECT * FROM t"));
 	}
 }
+
+TEST_CASE("Test CreateInstance of a database that the instance cache holds", "[api]") {
+	DBInstanceCache instance_cache;
+	auto path = TestCreatePath("create_instance_cached.db");
+	DeleteDatabase(path);
+
+	// the entry of a closed instance does not keep the database from being opened again
+	{
+		DBConfig config;
+		auto db = instance_cache.CreateInstance(path, config);
+	}
+	DBConfig config;
+	auto db = instance_cache.CreateInstance(path, config);
+	REQUIRE(db);
+
+	// an open instance stays cached, also when creating another one fails
+	DBConfig second_config;
+	REQUIRE_THROWS_WITH(instance_cache.CreateInstance(path, second_config), Catch::Contains("already cached"));
+	DBConfig lookup_config;
+	REQUIRE(instance_cache.GetOrCreateInstance(path, lookup_config, true)->instance == db->instance);
+
+	DBConfig memory_config;
+	auto memory_db = instance_cache.CreateInstance(":memory:create_instance_cached", memory_config);
+	REQUIRE_NO_FAIL(Connection(*memory_db).Query("CREATE TABLE t AS SELECT 42 AS i"));
+	DBConfig second_memory_config;
+	REQUIRE_THROWS_WITH(instance_cache.CreateInstance(":memory:create_instance_cached", second_memory_config),
+	                    Catch::Contains("already cached"));
+	DBConfig memory_lookup_config;
+	auto lookup = instance_cache.GetOrCreateInstance(":memory:create_instance_cached", memory_lookup_config, true);
+	REQUIRE(lookup->instance == memory_db->instance);
+	auto result = Connection(*lookup).Query("SELECT i FROM t");
+	REQUIRE(CHECK_COLUMN(result, 0, {42}));
+
+	// an instance that is not cached is created next to a cached one
+	DBConfig uncached_config;
+	auto uncached = instance_cache.CreateInstance(":memory:create_instance_cached", uncached_config, false);
+	REQUIRE(uncached->instance != memory_db->instance);
+}

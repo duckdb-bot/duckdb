@@ -1,6 +1,7 @@
 #include "duckdb/storage/database_handle.hpp"
 #include "duckdb/storage/single_file_block_manager.hpp"
 #include "duckdb/common/query_context.hpp"
+#include "duckdb/common/local_file_system.hpp"
 
 #include <cstring>
 
@@ -181,11 +182,13 @@ FileHandle &DatabaseHandle::GetFileHandle() {
 }
 
 bool DatabaseHandle::PathNamesOtherFile(const string &path) {
-	// other file systems may open and close the file to read its metadata, which releases the locks of this handle
-	if (!handle || handle->file_system.GetName() != "LocalFileSystem") {
+	if (!handle || !handle->file_system.IsLocalFileSystem()) {
 		return false;
 	}
-	auto current = handle->file_system.GetStatsIfExists(OpenFileInfo(path));
+	// the path is read with stat, as a file system that opens and closes the file to read its metadata would release
+	// the locks of this handle
+	LocalFileSystem local_fs;
+	auto current = local_fs.GetStatsIfExists(OpenFileInfo(path));
 	if (!current || !current->device_id.IsValid() || !current->file_id.IsValid()) {
 		return false;
 	}

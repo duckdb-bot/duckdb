@@ -158,8 +158,9 @@ private:
 	atomic<transaction_t> current_transaction_id;
 	//! Count of remote catalogs currently attached; used to skip the remote pushdown optimizer when zero
 	atomic<CheckedInteger<idx_t, InternalException>> remote_catalog_count;
-	//! Held while a read-only database whose file was replaced is opened again
-	mutex reopen_lock;
+	//! Held while a read-only database whose local file was replaced is opened again, one for each group of paths
+	static constexpr idx_t REOPEN_LOCK_COUNT = 16;
+	mutex reopen_locks[REOPEN_LOCK_COUNT];
 	//! Lock for pending_teardowns
 	mutex pending_teardowns_lock;
 	//! External-resource teardowns queued from contexts that cannot run SQL (see AddPendingTeardown);

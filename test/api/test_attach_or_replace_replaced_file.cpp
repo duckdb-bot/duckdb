@@ -46,8 +46,8 @@ void CreateTable(Connection &con, const string &path, const string &select) {
 	REQUIRE_NO_FAIL(con.Query("DETACH w"));
 }
 
-//! Holds a metadata read of the database path until a second one arrives or a second passes, so that two
-//! connections that check the file at the same time both see it replaced
+//! Holds an open of the database path until a second one arrives or a second passes, so that two connections that
+//! found the file replaced at the same time both open it
 class GateFileSystem : public LocalFileSystem {
 public:
 	explicit GateFileSystem(string path_p) : path(std::move(path_p)) {
@@ -56,15 +56,15 @@ public:
 	bool CanHandleFile(const string &fpath) override {
 		return StringUtil::StartsWith(fpath, path);
 	}
-	optional<FileMetadata> GetStatsIfExists(const OpenFileInfo &file, optional_ptr<FileOpener> opener) override {
-		auto result = LocalFileSystem::GetStatsIfExists(file, opener);
-		if (gate && file.path == path) {
+	unique_ptr<FileHandle> OpenFile(const string &fpath, FileOpenFlags flags,
+	                                optional_ptr<FileOpener> opener = nullptr) override {
+		if (gate && fpath == path) {
 			std::unique_lock<std::mutex> guard(lock);
 			arrivals++;
 			arrived.notify_all();
 			arrived.wait_for(guard, std::chrono::seconds(1), [&]() { return arrivals >= 2; });
 		}
-		return result;
+		return LocalFileSystem::OpenFile(fpath, flags, opener);
 	}
 
 	string path;
@@ -72,6 +72,22 @@ public:
 	std::mutex lock;
 	std::condition_variable arrived;
 	idx_t arrivals = 0;
+};
+
+//! A local file system that reads metadata by opening the file, as the FileSystem default does
+class OpeningStatsFileSystem : public LocalFileSystem {
+public:
+	explicit OpeningStatsFileSystem(string path_p) : path(std::move(path_p)) {
+	}
+
+	bool CanHandleFile(const string &fpath) override {
+		return StringUtil::StartsWith(fpath, path);
+	}
+	optional<FileMetadata> GetStatsIfExists(const OpenFileInfo &file, optional_ptr<FileOpener> opener) override {
+		return FileSystem::GetStatsIfExists(file, opener);
+	}
+
+	string path;
 };
 
 //! Forwards to a local file system, but reads metadata by opening the file as the FileSystem default does
@@ -148,6 +164,17 @@ TEST_CASE("Test ATTACH OR REPLACE of a database file that was replaced", "[api]"
 	REQUIRE(CHECK_COLUMN(result, 0, {2}));
 	REQUIRE(CHECK_COLUMN(result, 1, {"new"}));
 	REQUIRE(!OtherProcessCanLockForWriting(path));
+
+	// without an access mode the new version is attached for reading as well
+	oid = DatabaseOid(con);
+	CreateTable(con, new_path, "SELECT 3 AS i");
+	fs.MoveFile(new_path, path);
+	REQUIRE_NO_FAIL(con.Query("ATTACH OR REPLACE '" + path + "' AS r"));
+	REQUIRE(DatabaseOid(con) != oid);
+	result = con.Query("SELECT i FROM r.t");
+	REQUIRE(CHECK_COLUMN(result, 0, {3}));
+	REQUIRE_FAIL(con.Query("CREATE TABLE r.u (i INTEGER)"));
+	REQUIRE(!OtherProcessCanLockForWriting(path));
 	REQUIRE_NO_FAIL(con.Query("DETACH r"));
 	REQUIRE(OtherProcessCanLockForWriting(path));
 }
@@ -204,6 +231,35 @@ TEST_CASE("Test ATTACH OR REPLACE of a database file of a file system that opens
 	auto oid = DatabaseOid(con);
 
 	// the file is checked without opening it, as closing it would release the lock of the attached database
+	REQUIRE_NO_FAIL(con.Query("ATTACH OR REPLACE '" + path + "' AS r (READ_ONLY)"));
+	REQUIRE(DatabaseOid(con) == oid);
+	REQUIRE(!OtherProcessCanLockForWriting(path));
+
+	CreateTable(con, new_path, "SELECT 2 AS i");
+	fs.MoveFile(new_path, path);
+	REQUIRE_NO_FAIL(con.Query("ATTACH OR REPLACE '" + path + "' AS r (READ_ONLY)"));
+	REQUIRE(DatabaseOid(con) != oid);
+	auto result = con.Query("SELECT i FROM r.t");
+	REQUIRE(CHECK_COLUMN(result, 0, {2}));
+	REQUIRE(!OtherProcessCanLockForWriting(path));
+	REQUIRE_NO_FAIL(con.Query("DETACH r"));
+	REQUIRE(OtherProcessCanLockForWriting(path));
+}
+
+TEST_CASE("Test ATTACH OR REPLACE of a database file of a local file system that opens files to read metadata",
+          "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	auto &fs = FileSystem::GetFileSystem(*con.context);
+	auto path = fs.CanonicalizePath(TestCreatePath("or_replace_opening_stats.db"));
+	auto new_path = TestCreatePath("or_replace_opening_stats_new.db");
+	DeleteDatabase(path);
+	DeleteDatabase(new_path);
+	CreateTable(con, path, "SELECT 1 AS i");
+	fs.RegisterSubSystem(make_uniq<OpeningStatsFileSystem>(path));
+	REQUIRE_NO_FAIL(con.Query("ATTACH '" + path + "' AS r (READ_ONLY)"));
+	auto oid = DatabaseOid(con);
+
 	REQUIRE_NO_FAIL(con.Query("ATTACH OR REPLACE '" + path + "' AS r (READ_ONLY)"));
 	REQUIRE(DatabaseOid(con) == oid);
 	REQUIRE(!OtherProcessCanLockForWriting(path));

@@ -97,10 +97,23 @@ COPY (SELECT sp.field_number, substr(md5(sp.sample_id::VARCHAR), 1, 10), substr(
 statement ok
 SET memory_limit = '8GB'
 
-query I
-SELECT count(*) FROM read_csv('{TEST_DIR}/sort_external_after_early_finish_1280MB.csv', header = false)
+# every row once, in the order of the sort keys
+query II
+SELECT count(*), count(*) FILTER (WHERE field_number < previous)
+FROM (SELECT field_number, lag(field_number) OVER (ORDER BY rn) AS previous
+      FROM (SELECT field_number, row_number() OVER () AS rn
+            FROM read_csv('{TEST_DIR}/sort_external_after_early_finish_1280MB.csv', header = true, all_varchar = true)))
 ----
-2239424
+2239423	0
+
+query I
+SELECT count(*) FROM (
+	SELECT * FROM read_csv('{TEST_DIR}/sort_external_after_early_finish_1280MB.csv', header = true, all_varchar = true)
+	EXCEPT ALL
+	SELECT * FROM (SELECT sp.field_number, substr(md5(sp.sample_id::VARCHAR), 1, 10), substr(md5(sp.sample_id::VARCHAR || 'x'), 1, 10), CAST(sp.sample_id % 500 AS VARCHAR), CAST(sp.sample_id % 12 AS VARCHAR), CAST(sp.sample_id % 28 AS VARCHAR), CAST(sp.sample_id % 300 AS VARCHAR), CAST(sp.n AS VARCHAR), w.c0, w.c1, w.c2, w.c3, w.c4, w.c5, w.c6, w.c7, w.c8, w.c9, w.c10, w.c11, w.c12, w.c13, w.c14, w.c15, w.c16, w.c17, w.c18, w.c19, w.c20, w.c21, w.c22, w.c23, w.c24, w.c25, w.c26, w.c27, w.c28, w.c29, w.c30, w.c31, w.c32, w.c33, w.c34, w.c35, w.c36, w.c37, w.c38, w.c39, w.c40, w.c41, w.c42, w.c43 FROM specimen sp   LEFT JOIN link l ON l.sample_id = sp.sample_id AND l.n = sp.n   LEFT JOIN wide w ON w.id = l.wide_id)
+)
+----
+0
 
 statement ok
 USE memory
@@ -123,10 +136,23 @@ COPY (SELECT sp.field_number, substr(md5(sp.sample_id::VARCHAR), 1, 10), substr(
 statement ok
 SET memory_limit = '8GB'
 
-query I
-SELECT count(*) FROM read_csv('{TEST_DIR}/sort_external_after_early_finish_1536MB.csv', header = false)
+# every row once, in the order of the sort keys
+query II
+SELECT count(*), count(*) FILTER (WHERE field_number < previous)
+FROM (SELECT field_number, lag(field_number) OVER (ORDER BY rn) AS previous
+      FROM (SELECT field_number, row_number() OVER () AS rn
+            FROM read_csv('{TEST_DIR}/sort_external_after_early_finish_1536MB.csv', header = true, all_varchar = true)))
 ----
-2239424
+2239423	0
+
+query I
+SELECT count(*) FROM (
+	SELECT * FROM read_csv('{TEST_DIR}/sort_external_after_early_finish_1536MB.csv', header = true, all_varchar = true)
+	EXCEPT ALL
+	SELECT * FROM (SELECT sp.field_number, substr(md5(sp.sample_id::VARCHAR), 1, 10), substr(md5(sp.sample_id::VARCHAR || 'x'), 1, 10), CAST(sp.sample_id % 500 AS VARCHAR), CAST(sp.sample_id % 12 AS VARCHAR), CAST(sp.sample_id % 28 AS VARCHAR), CAST(sp.sample_id % 300 AS VARCHAR), CAST(sp.n AS VARCHAR), w.c0, w.c1, w.c2, w.c3, w.c4, w.c5, w.c6, w.c7, w.c8, w.c9, w.c10, w.c11, w.c12, w.c13, w.c14, w.c15, w.c16, w.c17, w.c18, w.c19, w.c20, w.c21, w.c22, w.c23, w.c24, w.c25, w.c26, w.c27, w.c28, w.c29, w.c30, w.c31, w.c32, w.c33, w.c34, w.c35, w.c36, w.c37, w.c38, w.c39, w.c40, w.c41, w.c42, w.c43 FROM specimen sp   LEFT JOIN link l ON l.sample_id = sp.sample_id AND l.n = sp.n   LEFT JOIN wide w ON w.id = l.wide_id)
+)
+----
+0
 
 statement ok
 USE memory

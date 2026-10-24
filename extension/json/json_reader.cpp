@@ -937,14 +937,16 @@ bool JSONReader::CopyRemainderFromPreviousBuffer(JSONReaderScanState &scan_state
 	// Now copy the data to our reconstruct buffer
 	memcpy(scan_state.buffer_ptr + scan_state.buffer_offset - prev_object_size, prev_object_start, prev_object_size);
 
+	// Just a newline, or nothing. A single byte without a newline before it is a value, such as a 1 at the end of a
+	// file. This is checked before the previous buffer is released
+	const bool no_remainder = prev_object_size == 0 || (prev_object_size == 1 && *prev_object_start == '\n');
+
 	// We copied the object, so we are no longer reading the previous buffer
 	if (--previous_buffer_handle->readers == 0) {
 		RemoveBuffer(*previous_buffer_handle);
 	}
 
-	if (prev_object_size == 0 || (prev_object_size == 1 && *prev_object_start == '\n')) {
-		// Just a newline, or nothing. A single byte without a newline before it is a value, such as a 1 at the end of
-		// a file
+	if (no_remainder) {
 		return false;
 	}
 	scan_state.buffer_offset -= prev_object_size;

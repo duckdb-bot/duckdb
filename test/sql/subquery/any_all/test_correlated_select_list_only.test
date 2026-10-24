@@ -82,6 +82,11 @@ SELECT count(*) FROM main WHERE xid + 1 IN (SELECT xid + yid FROM links WHERE yi
 ----
 1000
 
+query I
+SELECT x + 1 IN (SELECT x + i FROM range(2) r(i)) FROM (VALUES (1)) o(x);
+----
+true
+
 # the filters below the limit stay below it when the joins are reordered
 query IIII
 SELECT EXISTS (SELECT x FROM range(2) r(i) WHERE i > 0), EXISTS (SELECT x FROM range(2) r(i) QUALIFY row_number() OVER () > 1),
@@ -108,3 +113,26 @@ query I
 SELECT currval('seq');
 ----
 100000
+
+# a limit over the recursive reference keeps it next to the equality join
+query IIII
+WITH RECURSIVE nodes(i, h) AS MATERIALIZED (SELECT i, i % 3 FROM range(256) t(i)), walks(i, h, step) AS (
+	SELECT i, h, 0 FROM nodes WHERE i = 128
+	UNION ALL
+	SELECT n.i, n.h, w.step + 1
+	FROM (VALUES (-1), (1)) d(delta) JOIN (SELECT * FROM walks LIMIT 1000000) w ON true
+	JOIN nodes n ON w.i + d.delta = n.i AND w.h <= n.h + 1 WHERE w.step < 6)
+SELECT count(*), sum(i), sum(h), max(step) FROM walks;
+----
+33	4160	38	6
+
+query II
+EXPLAIN WITH RECURSIVE nodes(i, h) AS MATERIALIZED (SELECT i, i % 3 FROM range(256) t(i)), walks(i, h, step) AS (
+	SELECT i, h, 0 FROM nodes WHERE i = 128
+	UNION ALL
+	SELECT n.i, n.h, w.step + 1
+	FROM (VALUES (-1), (1)) d(delta) JOIN (SELECT * FROM walks LIMIT 1000000) w ON true
+	JOIN nodes n ON w.i + d.delta = n.i AND w.h <= n.h + 1 WHERE w.step < 6)
+SELECT count(*), sum(i), sum(h), max(step) FROM walks;
+----
+physical_plan	<REGEX>:.*Hash Join.*

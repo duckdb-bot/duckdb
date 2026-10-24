@@ -472,7 +472,7 @@ static bool PerformDuplicateElimination(Binder &binder, CorrelatedColumns &corre
 	return false;
 }
 
-//! Whether the expression reads a column of an outer query, or holds a subquery, which may
+//! Whether the expression reads a column of an outer query, or holds a subquery that may read one
 static bool ReadsOuterColumns(const Expression &expr) {
 	if (expr.GetExpressionClass() == ExpressionClass::BOUND_SUBQUERY) {
 		return true;

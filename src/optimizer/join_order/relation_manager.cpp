@@ -491,7 +491,10 @@ bool RelationManager::ExtractJoinRelations(JoinOrderOptimizer &optimizer, Logica
 			                                                  RelationStatisticsHelper::DEFAULT_SELECTIVITY);
 		}
 		ModifyStatsIfLimit(op.get(), child_stats);
-		return AddRelation(input_op, parent, child_stats);
+		if (!AddRelation(input_op, parent, child_stats)) {
+			return false;
+		}
+		return !IsProjectedRecursiveCTERef(*op, optimizer) || RecursiveCTERefCanReorder(parent);
 	}
 	case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY: {
 		// optimize children

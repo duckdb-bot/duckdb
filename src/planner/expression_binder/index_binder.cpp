@@ -50,7 +50,7 @@ unique_ptr<BoundIndex> IndexBinder::BindIndex(UnboundIndex &unbound_index) {
 	                       create_info.options);
 
 	// A partially created index releases the blocks it loaded, so the storage cannot be bound again.
-	unbound_index.HandOffStorage();
+	unbound_index.BeginStorageLoad();
 	return index_type->create_instance(input);
 }
 

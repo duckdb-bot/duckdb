@@ -1,0 +1,148 @@
+# name: test/sql/index/art/storage/test_art_bind_failure_storage.test
+# description: A bind that fails after loading the storage of an index is not retried, and dropping the index frees its blocks (duckdblabs/bot-issue-tracker#486)
+# group: [storage]
+
+require skip_reload
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown;
+
+statement ok
+SET checkpoint_threshold='999999GB';
+
+# creating the index fails as its key is now a list
+statement ok
+ATTACH '{TEST_DIR}/art_bind_failure_construct.db' AS db;
+
+statement ok
+CREATE TEMP MACRO keymacro(x) AS x;
+
+statement ok
+CREATE TABLE db.t AS SELECT i FROM range(100000) t(i);
+
+statement ok
+CREATE UNIQUE INDEX idx ON db.t(keymacro(i));
+
+statement ok
+CHECKPOINT db;
+
+statement ok
+DETACH db;
+
+statement ok
+DROP MACRO keymacro;
+
+statement ok
+CREATE TEMP MACRO keymacro(x) AS [x];
+
+statement ok
+ATTACH '{TEST_DIR}/art_bind_failure_construct.db' AS db;
+
+statement error
+INSERT INTO db.t VALUES (100001);
+----
+Invalid type for index key
+
+statement error
+INSERT INTO db.t VALUES (100001);
+----
+an earlier attempt to bind it failed after loading its storage
+
+statement ok
+DROP INDEX db.idx;
+
+statement ok
+CHECKPOINT db;
+
+statement ok
+DETACH db;
+
+statement ok
+ATTACH '{TEST_DIR}/art_bind_failure_construct.db' AS db;
+
+query I
+SELECT free_blocks > 0 FROM pragma_database_size() WHERE database_name = 'db';
+----
+true
+
+statement ok
+INSERT INTO db.t VALUES (100001);
+
+query I
+SELECT count(*) FROM db.t;
+----
+100001
+
+statement ok
+DETACH db;
+
+statement ok
+DROP MACRO keymacro;
+
+# replaying the row of the WAL into the index fails
+statement ok
+ATTACH '{TEST_DIR}/art_bind_failure_replay.db' AS db;
+
+statement ok
+CREATE TEMP MACRO tcheck(s) AS lower(s);
+
+statement ok
+CREATE TABLE db.t(k VARCHAR);
+
+statement ok
+CREATE UNIQUE INDEX idx ON db.t((tcheck(k)));
+
+statement ok
+INSERT INTO db.t VALUES ('a'), ('b');
+
+statement ok
+CHECKPOINT db;
+
+statement ok
+INSERT INTO db.t VALUES ('c');
+
+statement ok
+DETACH db;
+
+statement ok
+DROP MACRO tcheck;
+
+statement ok
+CREATE TEMP MACRO tcheck(s) AS CASE WHEN s = 'c' THEN error('cannot index c') ELSE lower(s) END;
+
+statement ok
+ATTACH '{TEST_DIR}/art_bind_failure_replay.db' AS db;
+
+statement error
+INSERT INTO db.t VALUES ('d');
+----
+cannot index c
+
+statement error
+INSERT INTO db.t VALUES ('d');
+----
+an earlier attempt to bind it failed after loading its storage
+
+statement ok
+DROP INDEX db.idx;
+
+statement ok
+DROP MACRO tcheck;
+
+statement ok
+CREATE TEMP MACRO tcheck(s) AS lower(s);
+
+statement ok
+CREATE UNIQUE INDEX idx ON db.t((tcheck(k)));
+
+statement error
+INSERT INTO db.t VALUES ('C');
+----
+<REGEX>:Constraint Error.*Duplicate key.*
+
+query I
+SELECT k FROM db.t ORDER BY k;
+----
+a
+b
+c

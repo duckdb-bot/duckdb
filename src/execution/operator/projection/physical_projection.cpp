@@ -1,19 +1,65 @@
 #include "duckdb/execution/operator/projection/physical_projection.hpp"
 #include "duckdb/parallel/thread_context.hpp"
 #include "duckdb/execution/expression_executor.hpp"
+#include "duckdb/function/scalar/sequence_functions.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
 
 namespace duckdb {
 
+//! Whether the select list calls sequence functions that see what the others do, which must then happen in the order
+//! of the rows, as when a currval follows the nextval of an earlier row
+static bool CallsDependentSequenceFunctions(const vector<unique_ptr<Expression>> &expressions) {
+	idx_t sequence_calls = 0;
+	bool changes_sequence = false;
+	for (auto &expression : expressions) {
+		ExpressionIterator::VisitExpression<BoundFunctionExpression>(*expression, [&](const auto &function) {
+			if (function.RequiresOrderedExecution()) {
+				changes_sequence = true;
+				sequence_calls++;
+			} else if (function.Function().GetName() == CurrvalFun::Name) {
+				sequence_calls++;
+			}
+		});
+	}
+	return changes_sequence && sequence_calls > 1;
+}
+
 class ProjectionState : public OperatorState {
 public:
 	explicit ProjectionState(ExecutionContext &context, const vector<unique_ptr<Expression>> &expressions)
-	    : executor(context.client, expressions) {
+	    : executor(context.client, expressions), row_by_row(CallsDependentSequenceFunctions(expressions)),
+	      allocator(Allocator::Get(context.client)) {
 	}
 
 	ExpressionExecutor executor;
+	//! Whether the rows are evaluated one after another
+	bool row_by_row;
+
+	void ExecuteRowByRow(DataChunk &input, DataChunk &chunk) {
+		if (rows.ColumnCount() == 0) {
+			row.InitializeEmpty(input.GetTypes());
+			row_result.Initialize(allocator, chunk.GetTypes(), 1);
+			rows.Initialize(allocator, chunk.GetTypes());
+		}
+		rows.Reset();
+		SelectionVector sel(1);
+		for (idx_t i = 0; i < input.size(); i++) {
+			sel.set_index(0, i);
+			row.Slice(input, sel, 1);
+			row_result.Reset();
+			executor.Execute(row, row_result);
+			rows.Append(row_result);
+		}
+		chunk.Reference(rows);
+	}
+
+private:
+	Allocator &allocator;
+	DataChunk row;
+	DataChunk row_result;
+	DataChunk rows;
 
 public:
 	void Finalize(const PhysicalOperator &op, ExecutionContext &context) override {
@@ -50,6 +96,10 @@ void PhysicalProjection::InitializeOutputChunk(Allocator &allocator, DataChunk &
 OperatorResultType PhysicalProjection::Execute(ExecutionContext &context, DataChunk &input, DataChunk &chunk,
                                                GlobalOperatorState &gstate, OperatorState &state_p) const {
 	auto &state = state_p.Cast<ProjectionState>();
+	if (state.row_by_row) {
+		state.ExecuteRowByRow(input, chunk);
+		return OperatorResultType::NEED_MORE_INPUT;
+	}
 	state.executor.Execute(input, chunk);
 	return OperatorResultType::NEED_MORE_INPUT;
 }

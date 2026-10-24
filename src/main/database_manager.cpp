@@ -154,7 +154,15 @@ shared_ptr<AttachedDatabase> DatabaseManager::AttachDatabase(ClientContext &cont
 				}
 				// allow custom catalogs to override this behavior
 				if (!existing_db->GetCatalog().HasConflictingAttachOptions(info.path, options)) {
-					return existing_db;
+					if (!requires_tracking_attaches) {
+						return existing_db;
+					}
+					// the file may have been replaced, so it is opened again
+					if (!existing_db->IsReadOnly()) {
+						// a file can be attached for writing only once
+						existing_db.reset();
+						DetachDatabase(context, info.name, OnEntryNotFound::RETURN_NULL, true);
+					}
 				}
 			} else {
 				return existing_db;

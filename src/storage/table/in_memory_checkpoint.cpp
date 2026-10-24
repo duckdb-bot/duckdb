@@ -52,8 +52,13 @@ void InMemoryCheckpointer::CreateCheckpoint() {
 	for (const auto &schema_ref : schemas) {
 		auto &schema = schema_ref.get();
 		schema.Scan(CatalogType::TABLE_ENTRY, options.visibility_bound, [&](CatalogEntry &entry) {
-			if (entry.type == CatalogType::TABLE_ENTRY) {
-				tables.push_back(entry.Cast<TableCatalogEntry>());
+			if (entry.type != CatalogType::TABLE_ENTRY) {
+				return;
+			}
+			auto &table = entry.Cast<TableCatalogEntry>();
+			// a table that an extension owns has no storage to checkpoint
+			if (table.IsDuckTable()) {
+				tables.push_back(table);
 			}
 		});
 	}

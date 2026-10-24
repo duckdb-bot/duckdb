@@ -62,10 +62,13 @@ SELECT col.coalesce('b') FILTER (WHERE true) FROM t;
 FILTER is not supported in COALESCE expressions
 
 # after a schema or a database the qualification is dropped, as before
-query III
-SELECT main.ifnull(NULL, 'z'), system.main.date('2020-01-01'), memory.main.try('x'::INTEGER);
+statement ok
+ATTACH ':memory:' AS mem_db;
+
+query IIII
+SELECT main.ifnull(NULL, 'z'), system.main.date('2020-01-01'), mem_db.main.try('x'::INTEGER), mem_db.ifnull(NULL, 'y');
 ----
-z	2020-01-01	NULL
+z	2020-01-01	NULL	y
 
 statement ok
 CREATE SCHEMA s;

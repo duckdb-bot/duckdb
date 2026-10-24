@@ -166,3 +166,37 @@ query II
 SELECT clash.ifnull(NULL, 7), clash.date('2020-01-01');
 ----
 7	2020-01-01
+
+# a table column named like one of DuckDB's own schemas is still a column
+query II
+SELECT t.main.ifnull(7), t.information_schema.construct_array(3) FROM (SELECT NULL::INT AS main, 1 AS information_schema) t;
+----
+7	[1, 3]
+
+# a view resolves the qualification with the search path it was created with
+statement ok
+ATTACH ':memory:' AS other_db;
+
+statement ok
+CREATE SCHEMA other_db.s2;
+
+statement ok
+CREATE MACRO other_db.s2.coalesce(a, b) AS 777;
+
+statement ok
+USE other_db;
+
+statement ok
+CREATE VIEW v2 AS SELECT s2.coalesce(NULL, 5) AS r FROM (SELECT 42 AS s2);
+
+statement ok
+ATTACH ':memory:' AS third_db;
+
+statement ok
+USE third_db;
+
+query I
+SELECT * FROM other_db.main.v2;
+----
+777
+

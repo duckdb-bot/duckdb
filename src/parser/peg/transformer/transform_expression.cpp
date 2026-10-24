@@ -308,9 +308,10 @@ unique_ptr<ParsedExpression> PEGTransformerFactory::TransformFunctionExpression(
 	// a call qualified with anything but a schema of DuckDB's own may be a call on a column, as x.ifnull(y), which only
 	// the binder can tell
 	const auto &qualifier = qualified_function.Schema().GetIdentifierName();
-	const bool qualified_with_own_schema = StringUtil::CIEquals(qualifier, DEFAULT_SCHEMA) ||
-	                                       StringUtil::CIEquals(qualifier, "pg_catalog") ||
-	                                       StringUtil::CIEquals(qualifier, "information_schema");
+	const bool qualified_with_own_schema =
+	    qualified_function.Path().size() == 2 &&
+	    (StringUtil::CIEquals(qualifier, DEFAULT_SCHEMA) || StringUtil::CIEquals(qualifier, "pg_catalog") ||
+	     StringUtil::CIEquals(qualifier, "information_schema"));
 	if (qualified_function.Path().size() < 2 || qualified_with_own_schema ||
 	    !ParserFunctionRewrite::BinderRewritesQualifiedCall(lowercase_name)) {
 		if (auto rewritten =

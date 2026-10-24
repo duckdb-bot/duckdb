@@ -18,7 +18,9 @@ integers	i	1
 
 # atttypid is the oid that pg_type gives the column type, and format_type reads it (duckdblabs/bot-issue-tracker#559)
 statement ok
-CREATE TABLE typed (v VARCHAR, i INTEGER, d DOUBLE, n DECIMAL(10, 2), tm TIME, ts TIMESTAMP_S, tn TIMESTAMP_NS, l DATE[]);
+CREATE TABLE typed (
+	v VARCHAR, i INTEGER, d DOUBLE, n DECIMAL(10, 2), tm TIME, ts TIMESTAMP_S, tn TIMESTAMP_NS, l DATE[]
+);
 
 query IIII
 SELECT a.attname, a.atttypid, t.typname, format_type(a.atttypid, a.atttypmod)

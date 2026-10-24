@@ -23,7 +23,7 @@ IndexBinder::IndexBinder(Binder &binder, ClientContext &context, optional_ptr<Ta
     : ExpressionBinder(binder, context), table(table), info(info) {
 }
 
-unique_ptr<BoundIndex> IndexBinder::BindIndex(const UnboundIndex &unbound_index) {
+unique_ptr<BoundIndex> IndexBinder::BindIndex(UnboundIndex &unbound_index) {
 	auto &index_type_name = unbound_index.GetIndexType();
 	// Do we know the type of this index now?
 	auto index_type = context.db->config.GetIndexTypes().FindByName(index_type_name);
@@ -49,6 +49,8 @@ unique_ptr<BoundIndex> IndexBinder::BindIndex(const UnboundIndex &unbound_index)
 	                       create_info.GetIndexName(), create_info.column_ids, unbound_expressions, storage_info,
 	                       create_info.options);
 
+	// A partially created index releases the blocks it loaded, so the storage cannot be bound again.
+	unbound_index.HandOffStorage();
 	return index_type->create_instance(input);
 }
 

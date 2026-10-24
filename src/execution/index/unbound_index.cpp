@@ -60,8 +60,12 @@ IndexCheckpointResult UnboundIndex::Checkpoint(PartialBlockManager &, StorageVer
 }
 
 unique_ptr<BoundIndex> UnboundIndex::Bind(IndexBinder &binder, const vector<LogicalType> &physical_column_types) {
+	if (storage_reclaimed) {
+		throw IOException("Cannot bind index %s, as an earlier attempt to bind it failed after loading its storage",
+		                  GetIndexName());
+	}
 	auto bound_index = binder.BindIndex(*this);
-	storage_reclaimed = true;
+	D_ASSERT(storage_reclaimed);
 	if (HasBufferedReplays()) {
 		bound_index->ApplyBufferedReplays(physical_column_types, buffered_replays, mapped_column_ids);
 	}

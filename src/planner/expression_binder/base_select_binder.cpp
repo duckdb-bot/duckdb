@@ -66,8 +66,7 @@ ProjectionIndex BaseSelectBinder::TryBindGroup(ParsedExpression &expr) {
 		if (!colref.IsQualified()) {
 			auto alias_entry = alias_map.find(colref.ColumnNames()[0]);
 			if (alias_entry != alias_map.end()) {
-				// the group alias map also names positional groups, which an alias can shadow
-				node.bind_state.VerifyUnambiguousAlias(colref.ColumnNames()[0], colref, "Alias");
+				// found entry!
 				return alias_entry->second;
 			}
 		}

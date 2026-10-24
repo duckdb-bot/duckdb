@@ -51,3 +51,21 @@ query I
 SELECT format_type(oid, -1) FROM pg_type WHERE typname = 'mood';
 ----
 mood
+
+# a type defined with the name of a built-in one does not take its oid
+statement ok
+CREATE SCHEMA s;
+
+statement ok
+CREATE TYPE s.int AS VARCHAR;
+
+query II
+SELECT count(*), min(typname) FROM pg_type WHERE oid = 23;
+----
+1	int4
+
+query I
+SELECT t.typname FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid JOIN pg_type t ON t.oid = a.atttypid
+WHERE c.relname = 'typed' AND a.attname = 'i';
+----
+int4

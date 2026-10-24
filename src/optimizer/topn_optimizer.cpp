@@ -46,9 +46,11 @@ bool TopN::CanOptimize(LogicalOperator &op, optional_ptr<ClientContext> context)
 			}
 			auto child_card = static_cast<double>(child_op->estimated_cardinality);
 
-			// if the limit is > 0.7% of the child cardinality, sorting the whole table is faster
+			// if the limit is > 0.7% of the child cardinality, sorting the whole table is faster. An estimate below the
+			// limit says nothing about how many rows a full sort would sort, as a source without an estimate gets
+			// one row, so top-n is kept then
 			bool limit_is_large = constant_limit > 5000;
-			if (constant_limit > child_card * 0.007 && limit_is_large) {
+			if (constant_limit > child_card * 0.007 && limit_is_large && constant_limit <= child_card) {
 				return false;
 			}
 		}

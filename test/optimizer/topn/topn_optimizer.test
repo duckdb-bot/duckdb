@@ -79,3 +79,21 @@ query II
 EXPLAIN select * from large_table order by a limit 10000;
 ----
 logical_opt	<!REGEX>:.*TOP_N.*
+
+# a source whose estimate is below the limit, as range with a subquery argument gets one row, keeps top-n
+# (duckdblabs/bot-issue-tracker#633)
+query II
+EXPLAIN SELECT i FROM range((SELECT 2000000)) t(i) ORDER BY hash(i) DESC LIMIT 10000;
+----
+logical_opt	<REGEX>:.*TOP_N.*
+
+query I
+SELECT count(*) FROM (SELECT i FROM range((SELECT 2000000)) t(i) ORDER BY hash(i) DESC LIMIT 10000);
+----
+10000
+
+query I
+SELECT count(*) FROM (SELECT * FROM large_table ORDER BY a LIMIT 200000);
+----
+100000
+

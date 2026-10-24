@@ -41,6 +41,9 @@ static int64_t TargetTypeCost(const LogicalType &type) {
 	case LogicalTypeId::UNION:
 	case LogicalTypeId::ARRAY:
 		return 160;
+	case LogicalTypeId::VARIANT:
+		// an untyped NULL binds to a function of a concrete type before one that takes a VARIANT
+		return 170;
 	case LogicalTypeId::ANY:
 		return int64_t(AnyType::GetCastScore(type));
 	case LogicalTypeId::TEMPLATE:

@@ -1041,11 +1041,13 @@ unique_ptr<GlobalTableFunctionState> TableScanInitGlobal(ClientContext &context,
 	auto max_count = MaxValue(scan_max_count, total_rows_from_percentage);
 
 	if (bind_data.fetch_filtered_row_ids) {
-		// the rows that the row id filter names are fetched instead of scanning their row groups
+		// the rows that the row id filter names are fetched instead of scanning their row groups, and vacuum must not
+		// move any rows until they are, also in a table without indexes
 		unsafe_vector<row_t> filtered_row_ids;
 		if (TryGetFilteredRowIds(input, filter_set, max_count, filtered_row_ids)) {
+			auto vacuum_lock = DuckTransactionManager::Get(storage.GetAttached()).SharedVacuumLock();
 			return DuckIndexScanInitGlobal(context, input, bind_data, std::move(filtered_row_ids),
-			                               LockRowIdsAgainstVacuum(storage));
+			                               std::move(vacuum_lock));
 		}
 	}
 

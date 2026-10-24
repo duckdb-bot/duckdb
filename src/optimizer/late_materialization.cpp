@@ -156,7 +156,20 @@ void LateMaterialization::ReplaceExpressionReferences(LogicalOperator &next_op, 
 	    });
 }
 
-bool LateMaterialization::TryLateMaterialization(unique_ptr<LogicalOperator> &op) {
+//! Whether the type holds lists, or arrays of some size, whose scan can skip the children of rows that are not selected
+static bool HasSelectableChildren(const LogicalType &type) {
+	static constexpr idx_t MIN_ARRAY_SIZE = 64;
+	if (type.id() == LogicalTypeId::ARRAY && ArrayType::GetSize(type) < MIN_ARRAY_SIZE) {
+		return false;
+	}
+	if (type.id() != LogicalTypeId::LIST && type.id() != LogicalTypeId::ARRAY) {
+		return false;
+	}
+	auto &child_type = type.id() == LogicalTypeId::LIST ? ListType::GetChildType(type) : ArrayType::GetChildType(type);
+	return !child_type.IsNested() && child_type.InternalType() != PhysicalType::VARCHAR;
+}
+
+bool LateMaterialization::TryLateMaterialization(unique_ptr<LogicalOperator> &op, bool only_deferred_lists) {
 	// check if we can benefit from late materialization
 	// we need to see how many columns we require in the pipeline versus how many columns we emit in the scan
 	// for example, in a query like SELECT * FROM tbl ORDER BY ts LIMIT 5, the top-n only needs the "ts" column
@@ -224,6 +237,19 @@ bool LateMaterialization::TryLateMaterialization(unique_ptr<LogicalOperator> &op
 		// we do not benefit from late materialization
 		// every column the scan reads is already required upstream (Top-N/Limit/etc) or by its pushed-down filters
 		return false;
+	}
+	if (only_deferred_lists) {
+		bool defers_lists = false;
+		auto &column_ids = get.GetColumnIds();
+		for (idx_t i = 0; i < column_ids.size() && !defers_lists; i++) {
+			defers_lists =
+			    !column_ids[i].IsVirtualColumn() &&
+			    required_columns.find(ColumnBinding(get.table_index, ProjectionIndex(i))) == required_columns.end() &&
+			    HasSelectableChildren(get.GetColumnType(column_ids[i]));
+		}
+		if (!defers_lists) {
+			return false;
+		}
 	}
 	if (!get.function.late_materialization) {
 		// this function does not support late materialization
@@ -433,13 +459,10 @@ unique_ptr<LogicalOperator> LateMaterialization::Optimize(unique_ptr<LogicalOper
 			if (!OptimizeLargeLimit(limit, limit_val, has_offset)) {
 				break;
 			}
-		} else {
-			// optimizing small limits really only makes sense if we have an offset
-			if (!has_offset) {
-				break;
-			}
 		}
-		if (TryLateMaterialization(op)) {
+		// optimizing small limits really only makes sense if we have an offset, or if the scan then reads fewer lists
+		bool only_deferred_lists = limit_val <= max_row_count && !has_offset;
+		if (TryLateMaterialization(op, only_deferred_lists)) {
 			return op;
 		}
 		break;

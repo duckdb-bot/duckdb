@@ -62,6 +62,8 @@ SELECT count(*) FROM read_parquet('{TEST_DIR}/repaired_bloom.parquet', binary_as
 is not valid UTF8
 
 # JSON is validated but not repaired, so it keeps its statistics, while a repaired VARCHAR has no minimum
+require json
+
 statement ok
 COPY (SELECT ('{"a": ' || i || '}')::JSON AS j, ('k' || i)::BLOB AS x FROM range(1000) t(i)) TO '{TEST_DIR}/repaired_json.parquet';
 

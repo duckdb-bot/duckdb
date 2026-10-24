@@ -9,6 +9,7 @@
 #include "duckdb/parser/expression/positional_reference_expression.hpp"
 #include "duckdb/parser/parser_function_rewrite.hpp"
 #include "duckdb/catalog/catalog.hpp"
+#include "duckdb/main/database_manager.hpp"
 #include "duckdb/planner/expression_binder/having_binder.hpp"
 #include "duckdb/planner/planner_extension.hpp"
 
@@ -318,14 +319,22 @@ optional_ptr<CatalogEntry> ColumnQualifier::QualifyFunction(FunctionExpression &
 }
 
 bool ColumnQualifier::QualificationNamesSchema(const QualifiedName &name) {
-	auto resolved = Binder::ResolveCatalog(binder.EntryRetriever(), name, false);
-	auto &path = resolved.Path();
-	vector<Identifier> schema_path(path.begin() + 1, path.end() - 1);
-	if (schema_path.empty() || (schema_path.size() == 1 && schema_path[0].empty())) {
-		// the qualification is a database
+	// a name that is both a database and a schema is a namespace either way, so it is not resolved further
+	auto &db_manager = DatabaseManager::Get(binder.context);
+	vector<Identifier> schema_path(name.Path().begin(), name.Path().end() - 1);
+	Identifier catalog;
+	if (db_manager.GetDatabase(binder.context, schema_path[0])) {
+		if (schema_path.size() == 1) {
+			return true;
+		}
+		catalog = schema_path[0];
+		schema_path.erase(schema_path.begin());
+	}
+	if (schema_path.size() == 1 && schema_path[0].empty()) {
+		// a database without a schema, as the binder qualifies it
 		return true;
 	}
-	return Catalog::GetSchema(binder.context, path[0], schema_path, OnEntryNotFound::RETURN_NULL) != nullptr;
+	return Catalog::GetSchema(binder.context, catalog, schema_path, OnEntryNotFound::RETURN_NULL) != nullptr;
 }
 
 unique_ptr<ParsedExpression> ColumnQualifier::RewriteQualifiedParserFunction(FunctionExpression &function) {

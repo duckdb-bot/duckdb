@@ -183,6 +183,9 @@ void HTTPRetryBudget::Settle(bool success) {
 		} else if (quota) {
 			quota->Release(HTTPRetryQuota::NO_RETRY_REFUND);
 		}
+		for (auto &throttled_retry : earlier_throttled_retries) {
+			throttled_retry.first->Release(throttled_retry.second);
+		}
 	}
 	ForgetLastRetry();
 }
@@ -190,6 +193,8 @@ void HTTPRetryBudget::Settle(bool success) {
 void HTTPRetryBudget::ForgetLastRetry() {
 	last_retry_quota.reset();
 	last_retry_cost = 0;
+	last_retry_throttled = false;
+	earlier_throttled_retries.clear();
 }
 
 uint64_t HTTPRetryBudget::BackoffMs(uint64_t retry_wait_ms, float retry_backoff, uint64_t retry, uint64_t floor_ms,
@@ -327,20 +332,20 @@ bool HTTPRetryBudget::ConsumeAndWait(const HTTPRetryDecision &decision) {
 		ForgetLastRetry();
 		return false;
 	}
-	auto cost = HTTPRetryQuota::RETRY_COST;
-	if (decision.type == HTTPRetryDecision::Type::TRANSIENT) {
-		cost = HTTPRetryQuota::TRANSIENT_RETRY_COST;
-	} else if (throttled) {
-		cost = HTTPRetryQuota::THROTTLED_RETRY_COST;
-	}
-	if (quota && cost > 0 && !quota->TryAcquire(cost)) {
+	const auto cost = decision.type == HTTPRetryDecision::Type::TRANSIENT ? HTTPRetryQuota::TRANSIENT_RETRY_COST
+	                                                                      : HTTPRetryQuota::RETRY_COST;
+	if (quota && !quota->TryAcquire(cost)) {
 		quota_exhausted = true;
 		ForgetLastRetry();
 		return false;
 	}
 	// The admitted retry is the one a later success refunds; its outcome is still open.
+	if (last_retry_quota && last_retry_throttled) {
+		earlier_throttled_retries.emplace_back(std::move(last_retry_quota), last_retry_cost);
+	}
 	last_retry_quota = quota;
 	last_retry_cost = cost;
+	last_retry_throttled = throttled;
 	outcome_settled = false;
 	retries_used++;
 	if (throttled) {

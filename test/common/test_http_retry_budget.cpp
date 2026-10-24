@@ -185,7 +185,7 @@ TEST_CASE("HTTP retry budget stops when the host quota is exhausted", "[http]") 
 	clean_budget.ReportSuccess();
 	REQUIRE(quota->Available() == HTTPRetryQuota::RETRY_COST + HTTPRetryQuota::NO_RETRY_REFUND);
 
-	// Throttled retries are not charged, so a request that keeps being throttled runs out of its own retries
+	// Throttled retries beyond http_retries are still charged
 	params.retries = 1;
 	HTTPRetryBudget throttled_budget(params);
 	throttled_budget.BindQuota(quota);
@@ -194,10 +194,9 @@ TEST_CASE("HTTP retry budget stops when the host quota is exhausted", "[http]") 
 		attempts++;
 		return HTTPRetryDecision::Throttled("0");
 	});
-	REQUIRE(attempts == 2 + HTTPRetryBudget::THROTTLE_EXTRA_RETRIES);
-	REQUIRE(throttled_budget.ThrottledRetries() == 1 + HTTPRetryBudget::THROTTLE_EXTRA_RETRIES);
-	REQUIRE_FALSE(throttled_budget.QuotaExhausted());
-	REQUIRE(quota->Available() == HTTPRetryQuota::RETRY_COST + HTTPRetryQuota::NO_RETRY_REFUND);
+	REQUIRE(attempts == 2);
+	REQUIRE(throttled_budget.ThrottledRetries() == 1);
+	REQUIRE(quota->Available() == HTTPRetryQuota::NO_RETRY_REFUND);
 }
 
 TEST_CASE("HTTP retry quota is not drained by requests that get through after being throttled", "[http]") {
@@ -205,6 +204,10 @@ TEST_CASE("HTTP retry quota is not drained by requests that get through after be
 	HTTPParams params(http_util);
 	params.retry_wait_ms = 0;
 	auto quota = make_shared_ptr<HTTPRetryQuota>();
+	// start below the capacity, so that a refund beyond what was charged would show
+	REQUIRE(quota->TryAcquire(100));
+	const auto available = HTTPRetryQuota::INITIAL_CAPACITY - 100;
+
 	// as for a glob over many objects of a host that throttles each object twice (duckdb/duckdb#6153)
 	for (idx_t object = 0; object < 1000; object++) {
 		HTTPRetryBudget budget(params, HTTPRetryOutcomeOwner::COORDINATOR);
@@ -218,13 +221,58 @@ TEST_CASE("HTTP retry quota is not drained by requests that get through after be
 		REQUIRE_FALSE(budget.QuotaExhausted());
 		budget.ReportSuccess();
 	}
-	REQUIRE(quota->Available() == HTTPRetryQuota::INITIAL_CAPACITY);
+	REQUIRE(quota->Available() == available);
 
-	// server errors still draw from it
-	HTTPRetryBudget failing(params);
-	failing.BindQuota(quota);
-	failing.Run([&]() { return HTTPRetryDecision::Retry(); });
-	REQUIRE(quota->Available() == HTTPRetryQuota::INITIAL_CAPACITY - params.retries * HTTPRetryQuota::RETRY_COST);
+	// a server error before the throttle is not refunded, as for an operation that retried server errors only
+	HTTPRetryBudget error_then_throttle(params, HTTPRetryOutcomeOwner::COORDINATOR);
+	error_then_throttle.BindQuota(quota);
+	idx_t attempts = 0;
+	error_then_throttle.Run([&]() {
+		attempts++;
+		if (attempts == 1) {
+			return HTTPRetryDecision::Retry();
+		}
+		return attempts == 2 ? HTTPRetryDecision::Throttled("0") : HTTPRetryDecision::Finish();
+	});
+	error_then_throttle.ReportSuccess();
+	REQUIRE(quota->Available() == available - HTTPRetryQuota::RETRY_COST);
+
+	// throttles before a server error are refunded with it
+	HTTPRetryBudget throttle_then_error(params, HTTPRetryOutcomeOwner::COORDINATOR);
+	throttle_then_error.BindQuota(quota);
+	attempts = 0;
+	throttle_then_error.Run([&]() {
+		attempts++;
+		if (attempts <= 2) {
+			return HTTPRetryDecision::Throttled("0");
+		}
+		return attempts == 3 ? HTTPRetryDecision::Retry() : HTTPRetryDecision::Finish();
+	});
+	throttle_then_error.ReportSuccess();
+	REQUIRE(quota->Available() == available - HTTPRetryQuota::RETRY_COST);
+
+	// a request that keeps being throttled is not refunded, so the quota still stops a host that never lets one through
+	HTTPRetryBudget throttled(params, HTTPRetryOutcomeOwner::COORDINATOR);
+	throttled.BindQuota(quota);
+	throttled.Run([&]() { return HTTPRetryDecision::Throttled("0"); });
+	throttled.ReportFailure();
+	REQUIRE(quota->Available() == available - HTTPRetryQuota::RETRY_COST -
+	                                  static_cast<int64_t>(throttled.RetriesUsed()) * HTTPRetryQuota::RETRY_COST);
+
+	// throttles charged to another host are refunded to that host
+	auto other_quota = make_shared_ptr<HTTPRetryQuota>();
+	HTTPRetryBudget redirected(params, HTTPRetryOutcomeOwner::COORDINATOR);
+	redirected.BindQuota(other_quota);
+	attempts = 0;
+	redirected.Run([&]() {
+		attempts++;
+		if (attempts == 2) {
+			redirected.BindQuota(quota);
+		}
+		return attempts <= 2 ? HTTPRetryDecision::Throttled("0") : HTTPRetryDecision::Finish();
+	});
+	redirected.ReportSuccess();
+	REQUIRE(other_quota->Available() == HTTPRetryQuota::INITIAL_CAPACITY);
 }
 
 TEST_CASE("HTTP retry budget charges the host of the request being retried", "[http]") {
@@ -706,8 +754,9 @@ TEST_CASE("Corrected re-sends are bounded and stay within the advertised attempt
 		REQUIRE(entry.first <= entry.second);
 	}
 	REQUIRE(http_util.attempts.back() == std::pair<idx_t, idx_t>(base_max + 1, base_max + 1));
-	// The throttled retries were not charged
-	REQUIRE(quota->Available() == HTTPRetryQuota::INITIAL_CAPACITY);
+	// The throttled retries were charged and the failure refunded nothing
+	REQUIRE(quota->Available() ==
+	        HTTPRetryQuota::INITIAL_CAPACITY - static_cast<int64_t>(base_max - 1) * HTTPRetryQuota::RETRY_COST);
 
 	// With retries switched off the corrected re-send is the second and last attempt
 	params.retries = 0;

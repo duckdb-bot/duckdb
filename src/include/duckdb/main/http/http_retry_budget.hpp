@@ -68,11 +68,8 @@ private:
 class HTTPRetryQuota {
 public:
 	static constexpr int64_t INITIAL_CAPACITY = 500;
-	//! Cost of retrying a received server error: the server answered, it is just unhappy.
+	//! Cost of retrying a received server error or throttle: the server answered, it is just unhappy.
 	static constexpr int64_t RETRY_COST = 5;
-	//! Cost of retrying a throttle: none, as the server answered and the back-off already slows the retries down.
-	//! A request that keeps being throttled still runs out of its own retries.
-	static constexpr int64_t THROTTLED_RETRY_COST = 0;
 	//! Cost of retrying a transport failure: nothing is known about the server, so it costs more.
 	static constexpr int64_t TRANSIENT_RETRY_COST = 10;
 	//! Refund for a request that succeeded without retrying.
@@ -221,6 +218,10 @@ private:
 	//! Quota and tokens of the most recent admitted retry, refunded on success.
 	shared_ptr<HTTPRetryQuota> last_retry_quota;
 	int64_t last_retry_cost = 0;
+	bool last_retry_throttled = false;
+	//! Quotas and tokens of the throttled retries before the most recent one, refunded on success as well, as a host
+	//! that throttles requests which then get through is not failing
+	vector<pair<shared_ptr<HTTPRetryQuota>, int64_t>> earlier_throttled_retries;
 	bool quota_exhausted = false;
 	bool corrections_exhausted = false;
 };

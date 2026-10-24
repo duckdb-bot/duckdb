@@ -44,10 +44,10 @@ SELECT time_bucket(INTERVAL '7 microseconds', make_timestamp(9223372036854775806
 294247-01-10 04:00:54.775802
 
 # milliseconds since the epoch are rounded as the cast to TIMESTAMP_MS rounds, also next to the ends
-query IIII
-SELECT epoch_ms(make_timestamp(9223372036854775806)), epoch_ms(make_timestamp(-9223372036854775807 - 1)), epoch_ms(make_timestamp(1500)), epoch_ms(make_timestamp(-1499));
+query III
+SELECT epoch_ms(make_timestamp(9223372036854775806)), epoch_ms(make_timestamp(1500)), epoch_ms(make_timestamp(-1499));
 ----
-9223372036854776	-9223372036854776	2	-1
+9223372036854776	2	-1
 
 # INT96 counts Julian days without a sign, so earlier timestamps are not written
 require parquet

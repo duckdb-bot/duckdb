@@ -72,8 +72,8 @@ Transaction &MetaTransaction::GetTransaction(AttachedDatabase &db) {
 		if (starting == starting_transactions.end()) {
 			break;
 		}
-		if (starting->second == std::this_thread::get_id()) {
-			throw TransactionException("Cannot use the transaction of database \"%s\" while it is being started",
+		if (starting->second == ThreadUtil::GetThreadId()) {
+			throw TransactionException("Cannot use the transaction of database %s while it is being started",
 			                           db.GetName());
 		}
 		// another thread of the query is starting it
@@ -81,7 +81,7 @@ Transaction &MetaTransaction::GetTransaction(AttachedDatabase &db) {
 	}
 	// The transaction manager can run extension code that needs the transactions of other databases, such as the
 	// system catalog for a secret lookup, so it is called without the lock
-	starting_transactions.insert(make_pair(reference<AttachedDatabase>(db), std::this_thread::get_id()));
+	starting_transactions.insert(make_pair(reference<AttachedDatabase>(db), ThreadUtil::GetThreadId()));
 	guard.unlock();
 	optional_ptr<Transaction> new_transaction;
 	try {

@@ -95,7 +95,7 @@ private:
 	//! The set of active transactions for each database.
 	reference_map_t<AttachedDatabase, TransactionReference> transactions;
 	//! The databases whose transaction is being started, without holding the lock, and the threads starting them
-	reference_map_t<AttachedDatabase, std::thread::id> starting_transactions;
+	reference_map_t<AttachedDatabase, thread_id> starting_transactions;
 	//! Signalled when a transaction is no longer being started
 	condition_variable transaction_started;
 	//! The set of referenced databases in invocation order.

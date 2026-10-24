@@ -1,12 +1,14 @@
 #include "catch.hpp"
 #include "test_helpers.hpp"
+#include "duckdb/common/vector/vector_writer.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 
 #if defined(__linux__) || defined(__APPLE__)
-#include <sys/resource.h>
 #include <time.h>
 #endif
 
 #include <chrono>
+#include <condition_variable>
 #include <thread>
 
 using namespace duckdb;
@@ -22,12 +24,67 @@ double ThreadSeconds() {
 	return double(now.tv_sec) + double(now.tv_nsec) / 1e9;
 }
 
-double ProcessSeconds() {
-	rusage usage;
-	getrusage(RUSAGE_SELF, &usage);
-	return double(usage.ru_utime.tv_sec) + double(usage.ru_utime.tv_usec) / 1e6 + double(usage.ru_stime.tv_sec) +
-	       double(usage.ru_stime.tv_usec) / 1e6;
+double WallSeconds() {
+	timespec now;
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	return double(now.tv_sec) + double(now.tv_nsec) / 1e9;
 }
+
+//! The only task of the query tells the client which thread runs it, and waits until the client lets it go on
+struct HandoffState {
+	mutex lock;
+	std::condition_variable cv;
+	bool started = false;
+	bool released = false;
+	std::thread::id scan_thread;
+
+	void Reset() {
+		lock_guard<mutex> guard(lock);
+		started = false;
+		released = false;
+	}
+	bool WaitUntilStarted() {
+		unique_lock<mutex> guard(lock);
+		return cv.wait_for(guard, std::chrono::seconds(10), [&]() { return started; });
+	}
+	void Release() {
+		lock_guard<mutex> guard(lock);
+		released = true;
+		cv.notify_all();
+	}
+	void StartAndWaitForRelease() {
+		unique_lock<mutex> guard(lock);
+		started = true;
+		scan_thread = std::this_thread::get_id();
+		cv.notify_all();
+		cv.wait(guard, [&]() { return released; });
+	}
+};
+
+struct HandoffInfo : TableFunctionInfo {
+	explicit HandoffInfo(shared_ptr<HandoffState> state) : state(std::move(state)) {
+	}
+	shared_ptr<HandoffState> state;
+};
+
+struct HandoffBindData : TableFunctionData {
+	explicit HandoffBindData(shared_ptr<HandoffState> state) : state(std::move(state)) {
+	}
+	unique_ptr<FunctionData> Copy() const override {
+		return make_uniq<HandoffBindData>(state);
+	}
+	bool Equals(const FunctionData &other) const override {
+		return state == other.Cast<HandoffBindData>().state;
+	}
+	shared_ptr<HandoffState> state;
+};
+
+struct HandoffGlobalState : GlobalTableFunctionState {
+	bool done = false;
+	idx_t MaxThreads() const override {
+		return 1;
+	}
+};
 
 } // namespace
 
@@ -35,25 +92,54 @@ TEST_CASE("Test that the client thread does not poll while a worker runs the onl
 	DuckDB db(nullptr);
 	Connection con(db);
 	REQUIRE_NO_FAIL(con.Query("SET threads = 4"));
-	idx_t worker_runs = 0;
-	for (idx_t run = 0; run < 10; run++) {
-		// range has a single task, which a worker takes while this thread sleeps
-		auto result = con.Submit("SELECT sum(hash(i)) FROM range(50000000) t(i)");
-		std::this_thread::sleep_for(std::chrono::milliseconds(20));
+	auto state = make_shared_ptr<HandoffState>();
+	TableFunction handoff(
+	    "handoff", {},
+	    [](ClientContext &, TableFunctionInput &input, DataChunk &output) {
+		    auto &global = input.global_state->Cast<HandoffGlobalState>();
+		    if (global.done) {
+			    return;
+		    }
+		    global.done = true;
+		    input.bind_data->Cast<HandoffBindData>().state->StartAndWaitForRelease();
+		    // the worker keeps the only task for a while
+		    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+		    auto writer = FlatVector::Writer<int64_t>(output.data[0], 1);
+		    writer.WriteValue(42);
+		    output.SetChildCardinality(1);
+	    },
+	    [](ClientContext &, TableFunctionBindInput &input, vector<LogicalType> &return_types,
+	       vector<Identifier> &names) -> unique_ptr<FunctionData> {
+		    return_types.push_back(LogicalType::BIGINT);
+		    names.push_back("i");
+		    return make_uniq<HandoffBindData>(input.info->Cast<HandoffInfo>().state);
+	    },
+	    [](ClientContext &, TableFunctionInitInput &) -> unique_ptr<GlobalTableFunctionState> {
+		    return make_uniq<HandoffGlobalState>();
+	    });
+	handoff.function_info = make_shared_ptr<HandoffInfo>(state);
+	ExtensionInfo extension_info {};
+	ExtensionActiveLoad load_info {*db.instance, extension_info, "test_extension", ""};
+	ExtensionLoader loader {load_info};
+	loader.RegisterFunction(handoff);
+
+	for (idx_t run = 0; run < 3; run++) {
+		state->Reset();
+		auto result = con.Submit("SELECT * FROM handoff()");
+		// a worker runs the task, as this thread waits here
+		auto started = state->WaitUntilStarted();
+		auto wall_start = WallSeconds();
 		auto thread_start = ThreadSeconds();
-		auto process_start = ProcessSeconds();
+		state->Release();
 		result->Complete();
-		REQUIRE_NO_FAIL(*result);
 		auto thread = ThreadSeconds() - thread_start;
-		auto others = ProcessSeconds() - process_start - thread;
-		if (others < thread) {
-			// this thread ran the task itself
-			continue;
-		}
-		worker_runs++;
-		// polling keeps this thread busy while the worker does the work, also when they share one CPU
-		REQUIRE(thread < 0.2 * others);
+		auto wall = WallSeconds() - wall_start;
+		REQUIRE(started);
+		REQUIRE(state->scan_thread != std::this_thread::get_id());
+		REQUIRE_NO_FAIL(*result);
+		REQUIRE(CHECK_COLUMN(result, 0, {42}));
+		// polling keeps this thread busy while the worker holds the task
+		REQUIRE(thread < 0.2 * wall);
 	}
-	REQUIRE(worker_runs > 0);
 }
 #endif

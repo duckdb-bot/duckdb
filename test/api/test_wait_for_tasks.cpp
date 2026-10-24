@@ -13,7 +13,7 @@ using namespace duckdb;
 
 // A client thread whose query has no task left for it waits instead of polling (duckdb/duckdb#22178)
 
-#if defined(__linux__) || defined(__APPLE__)
+#if (defined(__linux__) || defined(__APPLE__)) && !defined(DUCKDB_NO_THREADS)
 namespace {
 
 double ThreadSeconds() {
@@ -29,12 +29,6 @@ double ProcessSeconds() {
 	       double(usage.ru_stime.tv_usec) / 1e6;
 }
 
-double WallSeconds() {
-	timespec now;
-	clock_gettime(CLOCK_MONOTONIC, &now);
-	return double(now.tv_sec) + double(now.tv_nsec) / 1e9;
-}
-
 } // namespace
 
 TEST_CASE("Test that the client thread does not poll while a worker runs the only task", "[api]") {
@@ -44,17 +38,15 @@ TEST_CASE("Test that the client thread does not poll while a worker runs the onl
 	idx_t worker_runs = 0;
 	for (idx_t run = 0; run < 10; run++) {
 		// range has a single task, which a worker takes while this thread sleeps
-		auto result = con.Submit("SELECT sum(hash(i)) FROM range(20000000) t(i)");
-		std::this_thread::sleep_for(std::chrono::milliseconds(50));
-		auto wall_start = WallSeconds();
+		auto result = con.Submit("SELECT sum(hash(i)) FROM range(50000000) t(i)");
+		std::this_thread::sleep_for(std::chrono::milliseconds(20));
 		auto thread_start = ThreadSeconds();
 		auto process_start = ProcessSeconds();
 		result->Complete();
 		REQUIRE_NO_FAIL(*result);
-		auto wall = WallSeconds() - wall_start;
 		auto thread = ThreadSeconds() - thread_start;
 		auto others = ProcessSeconds() - process_start - thread;
-		if (others < 0.5 * wall) {
+		if (others < thread) {
 			// this thread ran the task itself
 			continue;
 		}

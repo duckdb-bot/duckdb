@@ -15,6 +15,11 @@ EXPLAIN SELECT count(*) FROM s WHERE map_extract_value(m, 'apple' COLLATE NOCASE
 ----
 physical_plan	<REGEX>:.*Empty Result.*
 
+query II
+EXPLAIN SELECT count(*) FROM s WHERE m[upper('apple') COLLATE NOCASE] > 10;
+----
+physical_plan	<REGEX>:.*Empty Result.*
+
 query I
 SELECT count(*) FROM s WHERE m['apple' COLLATE NOCASE] > 10;
 ----

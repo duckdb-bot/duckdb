@@ -161,8 +161,8 @@ static unique_ptr<Expression> BindCollatedMapExtract(FunctionBindExpressionInput
 	auto &context = input.context;
 	const Identifier map_name("map");
 	const Identifier key_name("key");
-	// Other expressions are evaluated once by invoke, which hides the statistics of the map values
-	const bool use_invoke = !CanEvaluateTwice(*input.children[0]) || !CanEvaluateTwice(*input.children[1]);
+	// The map is used twice, so other maps are evaluated once by invoke, which hides the statistics of their values
+	const bool use_invoke = !CanEvaluateTwice(*input.children[0]);
 	unique_ptr<Expression> map_expr;
 	unique_ptr<Expression> key_expr;
 	if (use_invoke) {

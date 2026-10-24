@@ -1,0 +1,66 @@
+# name: test/sql/types/timestamp/timestamp_range_ends.test
+# description: Functions on timestamps at the ends of the range that compute a value past them on the way (duckdblabs/bot-issue-tracker#605)
+# group: [timestamp]
+
+# a local time past the range whose offset gives an instant inside it
+query II
+SELECT epoch_us(TIMESTAMPTZ '290309-12-21 (BC) 18:59:05.224192-01'), epoch_us(TIMESTAMPTZ '294247-01-10 05:00:54.775806+01');
+----
+-9223372036854775808	9223372036854775806
+
+query I
+SELECT epoch_us(DATE '294247-01-10' + TIMETZ '05:00:54.775806+01');
+----
+9223372036854775806
+
+statement error
+SELECT TIMESTAMPTZ '294247-01-10 05:00:54.775806+00';
+----
+out of range
+
+# the date comparison rewrite keeps the comparison when a midnight of it does not exist
+statement ok
+CREATE TABLE ends AS SELECT * FROM (VALUES (make_timestamp(-9223372036854775806)), (make_timestamp(9223372036854775806))) t(ts);
+
+query II
+SELECT count(*) FILTER (WHERE ts::DATE = DATE '290309-12-21 (BC)'), count(*) FILTER (WHERE ts::DATE = DATE '294247-01-10') FROM ends;
+----
+1	1
+
+query I
+SELECT count(*) FROM ends WHERE ts::DATE = DATE '294247-01-10';
+----
+1
+
+# a bucket that the timestamp starts, whose distance from the origin does not fit
+query I
+SELECT time_bucket(INTERVAL '10 microseconds', make_timestamp(9223372036854775806), make_timestamp(-4));
+----
+294247-01-10 04:00:54.775806
+
+query I
+SELECT time_bucket(INTERVAL '7 microseconds', make_timestamp(9223372036854775806), make_timestamp(-5));
+----
+294247-01-10 04:00:54.775802
+
+# milliseconds since the epoch are rounded as the cast to TIMESTAMP_MS rounds, also next to the ends
+query IIII
+SELECT epoch_ms(make_timestamp(9223372036854775806)), epoch_ms(make_timestamp(-9223372036854775807 - 1)), epoch_ms(make_timestamp(1500)), epoch_ms(make_timestamp(-1499));
+----
+9223372036854776	-9223372036854776	2	-1
+
+# INT96 counts Julian days without a sign, so earlier timestamps are not written
+require parquet
+
+statement error
+COPY (SELECT TIMESTAMP '4714-11-23 (BC) 23:59:59' AS ts) TO '{TEST_DIR}/int96_before_julian_day_0.parquet' (FORMAT PARQUET, write_timestamp_as_int96 true);
+----
+cannot be written as an INT96 timestamp
+
+statement ok
+COPY (SELECT TIMESTAMP '4714-11-24 (BC) 00:00:00' AS ts) TO '{TEST_DIR}/int96_julian_day_0.parquet' (FORMAT PARQUET, write_timestamp_as_int96 true);
+
+query I
+SELECT ts FROM '{TEST_DIR}/int96_julian_day_0.parquet';
+----
+4714-11-24 (BC) 00:00:00

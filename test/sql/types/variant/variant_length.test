@@ -68,3 +68,28 @@ query III
 SELECT sum(len(v)), count(len(v)), sum(CASE WHEN i % 3 = 0 THEN array_length(v) END) FROM mixed;
 ----
 6999	2000	2999
+
+# an untyped NULL binds to an overload of a concrete type before the VARIANT one
+query II
+SELECT len(NULL), array_length(NULL)
+----
+NULL	NULL
+
+statement ok
+CREATE MACRO pick(x VARCHAR[]) AS 'VARCHAR[]', (x VARIANT[]) AS 'VARIANT[]';
+
+query I
+SELECT pick([NULL]);
+----
+VARCHAR[]
+
+# the overloads that take a VARIANT have their descriptions
+query II
+SELECT function_name, description IS NOT NULL
+FROM duckdb_functions()
+WHERE function_name IN ('length', 'array_length', 'variant_array_length') AND parameter_types = ['VARIANT']
+ORDER BY ALL;
+----
+array_length	true
+length	true
+variant_array_length	true

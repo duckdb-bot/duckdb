@@ -287,10 +287,7 @@ void VariantLengthFunction(DataChunk &args, ExpressionState &state, Vector &resu
 	const VectorIterator<VectorVariantType> variants(args.data[0]);
 	auto writer = FlatVector::Writer<int64_t>(result, args.size());
 	for (idx_t row = 0; row < args.size(); row++) {
-		if (!variants.RowIsValid(row)) {
-			writer.WriteNull();
-			continue;
-		}
+		// a NULL row has a NULL root
 		auto node = variants[row];
 		if (node.IsNull()) {
 			writer.WriteNull();
@@ -319,10 +316,7 @@ void VariantArrayLengthFunction(DataChunk &args, ExpressionState &state, Vector 
 	const VectorIterator<VectorVariantType> variants(args.data[0]);
 	auto writer = FlatVector::Writer<int64_t>(result, args.size());
 	for (idx_t row = 0; row < args.size(); row++) {
-		if (!variants.RowIsValid(row)) {
-			writer.WriteNull();
-			continue;
-		}
+		// a NULL row has a NULL root
 		auto node = variants[row];
 		if (node.IsNull()) {
 			writer.WriteNull();

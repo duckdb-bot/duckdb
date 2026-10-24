@@ -75,6 +75,12 @@ shared_ptr<DuckDB> DBInstanceCache::GetInstanceInternal(const string &database, 
 		db_instances_lock.unlock();
 		std::lock_guard<mutex> create_db_lock(cache_entry->update_database_mutex);
 		db_instance = cache_entry->database.lock();
+		auto instance = cache_entry->instance.lock();
+		if (!db_instance && instance) {
+			// a connection keeps the database open, so it is handed out again
+			db_instance = make_shared_ptr<DuckDB>(*instance);
+			cache_entry->database = db_instance;
+		}
 	}
 	// cache entry exists - check if the actual database still exists
 	if (!db_instance) {
@@ -85,9 +91,13 @@ shared_ptr<DuckDB> DBInstanceCache::GetInstanceInternal(const string &database, 
 		while (!weak_cache_entry.expired()) {
 		}
 		D_ASSERT(!cache_entry);
-		// the cache entry has now been deleted - clear it from the set of database instances and return
+		// the cache entry has now been deleted - clear it from the set of database instances and return, unless
+		// another caller replaced it meanwhile
 		db_instances_lock.lock();
-		db_instances.erase(cache_key);
+		auto current_entry = db_instances.find(cache_key);
+		if (current_entry != db_instances.end() && current_entry->second.expired()) {
+			db_instances.erase(current_entry);
+		}
 		db_instances_lock.unlock();
 		return nullptr;
 	}
@@ -134,6 +144,7 @@ shared_ptr<DuckDB> DBInstanceCache::CreateInstanceInternal(const string &databas
 		db_instances_lock.unlock();
 		db_instance = make_shared_ptr<DuckDB>(instance_path, &config);
 		cache_entry->database = db_instance;
+		cache_entry->instance = db_instance->instance;
 	} else {
 		db_instances_lock.unlock();
 		db_instance = make_shared_ptr<DuckDB>(instance_path, &config);

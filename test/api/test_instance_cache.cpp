@@ -334,6 +334,27 @@ TEST_CASE("Test CreateInstance of a database that the instance cache holds", "[a
 	auto result = Connection(*lookup).Query("SELECT i FROM t");
 	REQUIRE(CHECK_COLUMN(result, 0, {42}));
 
+	// a connection keeps a database open after the last DuckDB of it is gone
+	auto kept_path = TestCreatePath("create_instance_kept.db");
+	DeleteDatabase(kept_path);
+	unique_ptr<Connection> kept_con;
+	{
+		DBConfig kept_config;
+		auto kept_db = instance_cache.CreateInstance(kept_path, kept_config);
+		kept_con = make_uniq<Connection>(*kept_db);
+		REQUIRE_NO_FAIL(kept_con->Query("CREATE TABLE t AS SELECT 7 AS i"));
+	}
+	DBConfig kept_second_config;
+	REQUIRE_THROWS_WITH(instance_cache.CreateInstance(kept_path, kept_second_config),
+	                    Catch::Contains("already cached"));
+	DBConfig kept_lookup_config;
+	auto kept_lookup = instance_cache.GetOrCreateInstance(kept_path, kept_lookup_config, true);
+	REQUIRE(kept_lookup->instance == kept_con->context->db);
+	result = Connection(*kept_lookup).Query("SELECT i FROM t");
+	REQUIRE(CHECK_COLUMN(result, 0, {7}));
+	kept_con.reset();
+	kept_lookup.reset();
+
 	// an instance that is not cached is created next to a cached one
 	DBConfig uncached_config;
 	auto uncached = instance_cache.CreateInstance(":memory:create_instance_cached", uncached_config, false);

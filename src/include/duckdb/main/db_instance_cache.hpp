@@ -23,6 +23,8 @@ struct DatabaseCacheEntry {
 	~DatabaseCacheEntry();
 
 	weak_ptr<DuckDB> database;
+	//! The instance, which connections keep open after the last DuckDB of it is gone
+	weak_ptr<DatabaseInstance> instance;
 	mutex update_database_mutex;
 };
 

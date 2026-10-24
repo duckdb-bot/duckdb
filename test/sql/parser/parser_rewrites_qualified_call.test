@@ -200,3 +200,23 @@ SELECT * FROM other_db.main.v2;
 ----
 777
 
+# also for a nested schema
+statement ok
+CREATE SCHEMA other_db.s3;
+
+statement ok
+CREATE SCHEMA other_db.s3.s4;
+
+statement ok
+USE other_db;
+
+statement ok
+CREATE VIEW v3 AS SELECT s3.s4.construct_array(3) AS r FROM (SELECT {'s4': 42} AS s3);
+
+statement ok
+USE third_db;
+
+query I
+SELECT * FROM other_db.main.v3;
+----
+[3]

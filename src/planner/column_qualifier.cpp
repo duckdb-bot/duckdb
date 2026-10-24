@@ -334,12 +334,15 @@ bool ColumnQualifier::QualificationNamesSchema(const QualifiedName &name) {
 		// a database without a schema, as the binder qualifies it
 		return true;
 	}
-	if (schema_path.size() == 1) {
-		// the binder's own search path, which for a view is the one the view was created with
-		EntryLookupInfo schema_lookup(CatalogType::SCHEMA_ENTRY, QualifiedName(catalog, Identifier(), schema_path[0]));
-		return Catalog::GetSchema(binder.EntryRetriever(), schema_lookup, OnEntryNotFound::RETURN_NULL) != nullptr;
+	// the outermost schema is looked up on the binder's own search path, which for a view is the one the view was
+	// created with
+	EntryLookupInfo schema_lookup(CatalogType::SCHEMA_ENTRY, QualifiedName(catalog, Identifier(), schema_path[0]));
+	auto outermost = Catalog::GetSchema(binder.EntryRetriever(), schema_lookup, OnEntryNotFound::RETURN_NULL);
+	if (!outermost || schema_path.size() == 1) {
+		return outermost != nullptr;
 	}
-	return Catalog::GetSchema(binder.context, catalog, schema_path, OnEntryNotFound::RETURN_NULL) != nullptr;
+	return Catalog::GetSchema(binder.context, outermost->ParentCatalog().GetName(), schema_path,
+	                          OnEntryNotFound::RETURN_NULL) != nullptr;
 }
 
 unique_ptr<ParsedExpression> ColumnQualifier::RewriteQualifiedParserFunction(FunctionExpression &function) {

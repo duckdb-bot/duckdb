@@ -669,16 +669,55 @@ static void CreateValuesTuple(const StructNames &names, yyjson_mut_doc *doc, yyj
 static void CreateValuesMapKeys(yyjson_mut_doc *doc, yyjson_mut_val *vals[], Vector &value_v, idx_t count,
                                 const JSONCopyFormatOptions &options);
 
-//! Returns the value of a child entry, or a copy of it when another array or object holds it already, since yyjson
-//! links the values of an array or object. Lists may share child entries, as overlapping Arrow list views do.
-static yyjson_mut_val *TakeChildValue(yyjson_mut_doc *doc, yyjson_mut_val *child_vals[], vector<bool> &taken,
-                                      idx_t child_idx) {
-	if (!taken[child_idx]) {
-		taken[child_idx] = true;
-		return child_vals[child_idx];
+//! yyjson links the values of an array or object into a circle. Rows with the same list entry rebuild the same
+//! circle, but a value that a list entry with other bounds holds already has to be copied, as for overlapping
+//! Arrow list views.
+class SharedChildValues {
+public:
+	SharedChildValues(const UnifiedVectorFormat &list_data, const list_entry_t *entries, idx_t count,
+	                  idx_t child_count) {
+		// entries that each start after the previous one, or repeat it, share no values
+		optional_ptr<const list_entry_t> previous;
+		idx_t end = 0;
+		for (idx_t i = 0; i < count && !track; i++) {
+			auto idx = list_data.sel->get_index(i);
+			if (!list_data.validity.RowIsValid(idx) || entries[idx].length == 0) {
+				continue;
+			}
+			auto &entry = entries[idx];
+			if (previous && previous->offset == entry.offset && previous->length == entry.length) {
+				continue;
+			}
+			track = entry.offset < end;
+			end = entry.offset + entry.length;
+			previous = &entry;
+		}
+		if (track) {
+			owners.resize(child_count, list_entry_t(0, 0));
+		}
 	}
-	return yyjson_mut_val_mut_copy(doc, child_vals[child_idx]);
-}
+
+	//! The value of a child for the list entry, or a copy of it when a list entry with other bounds holds it
+	yyjson_mut_val *Take(yyjson_mut_doc *doc, yyjson_mut_val *child_vals[], const list_entry_t &entry,
+	                     idx_t child_idx) {
+		if (!track) {
+			return child_vals[child_idx];
+		}
+		auto &owner = owners[child_idx];
+		if (owner.length == 0) {
+			owner = entry;
+			return child_vals[child_idx];
+		}
+		if (owner.offset == entry.offset && owner.length == entry.length) {
+			return child_vals[child_idx];
+		}
+		return JSONCommon::MutValMutCopy(doc, child_vals[child_idx], true);
+	}
+
+private:
+	bool track = false;
+	vector<list_entry_t> owners;
+};
 
 static void CreateValuesMap(const StructNames &names, yyjson_mut_doc *doc, yyjson_mut_val *vals[], Vector &value_v,
                             idx_t count, const JSONCopyFormatOptions &options) {
@@ -696,7 +735,8 @@ static void CreateValuesMap(const StructNames &names, yyjson_mut_doc *doc, yyjso
 	UnifiedVectorFormat map_data;
 	value_v.ToUnifiedFormat(map_data);
 	auto map_key_list_entries = UnifiedVectorFormat::GetData<list_entry_t>(map_data);
-	vector<bool> taken(map_key_count, false);
+	SharedChildValues shared_keys(map_data, map_key_list_entries, count, map_key_count);
+	SharedChildValues shared_vals(map_data, map_key_list_entries, count, map_val_count);
 	for (idx_t i = 0; i < count; i++) {
 		idx_t idx = map_data.sel->get_index(i);
 		if (!map_data.validity.RowIsValid(idx)) {
@@ -708,14 +748,8 @@ static void CreateValuesMap(const StructNames &names, yyjson_mut_doc *doc, yyjso
 			for (idx_t child_i = key_list_entry.offset; child_i < key_list_entry.offset + key_list_entry.length;
 			     child_i++) {
 				if (!unsafe_yyjson_is_null(nested_keys[child_i])) {
-					auto key = nested_keys[child_i];
-					auto value = nested_vals[child_i];
-					if (taken[child_i]) {
-						key = yyjson_mut_val_mut_copy(doc, key);
-						value = yyjson_mut_val_mut_copy(doc, value);
-					}
-					taken[child_i] = true;
-					yyjson_mut_obj_add(vals[i], key, value);
+					yyjson_mut_obj_add(vals[i], shared_keys.Take(doc, nested_keys, key_list_entry, child_i),
+					                   shared_vals.Take(doc, nested_vals, key_list_entry, child_i));
 				}
 			}
 		}
@@ -803,7 +837,7 @@ static void CreateValuesList(const StructNames &names, yyjson_mut_doc *doc, yyjs
 	UnifiedVectorFormat list_data;
 	value_v.ToUnifiedFormat(list_data);
 	auto list_entries = UnifiedVectorFormat::GetData<list_entry_t>(list_data);
-	vector<bool> taken(child_count, false);
+	SharedChildValues shared_values(list_data, list_entries, count, child_count);
 	for (idx_t i = 0; i < count; i++) {
 		idx_t idx = list_data.sel->get_index(i);
 		if (!list_data.validity.RowIsValid(idx)) {
@@ -812,7 +846,7 @@ static void CreateValuesList(const StructNames &names, yyjson_mut_doc *doc, yyjs
 			vals[i] = yyjson_mut_arr(doc);
 			const auto &entry = list_entries[idx];
 			for (idx_t child_i = entry.offset; child_i < entry.offset + entry.length; child_i++) {
-				yyjson_mut_arr_append(vals[i], TakeChildValue(doc, nested_vals, taken, child_i));
+				yyjson_mut_arr_append(vals[i], shared_values.Take(doc, nested_vals, entry, child_i));
 			}
 		}
 	}

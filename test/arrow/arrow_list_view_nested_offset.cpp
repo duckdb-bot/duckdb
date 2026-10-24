@@ -96,6 +96,75 @@ bool ListViewScanMatches(ArrowSchema &column_schema, ArrowArray &column_array, c
 	return ArrowTestHelper::RunArrowComparison(con, query, stream);
 }
 
+//! A list view of structs with a single integer field x
+struct ListViewStructColumn {
+	ListViewStructColumn(std::vector<int32_t> offsets_p, std::vector<int32_t> sizes_p, std::vector<int32_t> values_p)
+	    : offsets(std::move(offsets_p)), sizes(std::move(sizes_p)), values(std::move(values_p)) {
+		field_schema.format = "i";
+		field_schema.name = "x";
+		field_schema.flags = 2;
+		field_schema.release = ListViewReleaseSchema;
+		field_buffers[0] = nullptr;
+		field_buffers[1] = values.data();
+		field_array.length = int64_t(values.size());
+		field_array.n_buffers = 2;
+		field_array.buffers = field_buffers;
+		field_array.release = ListViewReleaseArray;
+
+		struct_schema.format = "+s";
+		struct_schema.name = "item";
+		struct_schema.flags = 2;
+		struct_schema.n_children = 1;
+		struct_schema.children = struct_schema_children;
+		struct_schema.release = ListViewReleaseSchema;
+		struct_schema_children[0] = &field_schema;
+		struct_buffers[0] = nullptr;
+		struct_array.length = int64_t(values.size());
+		struct_array.n_buffers = 1;
+		struct_array.buffers = struct_buffers;
+		struct_array.n_children = 1;
+		struct_array.children = struct_array_children;
+		struct_array.release = ListViewReleaseArray;
+		struct_array_children[0] = &field_array;
+
+		schema.format = "+vl";
+		schema.name = "a";
+		schema.flags = 2;
+		schema.n_children = 1;
+		schema.children = schema_children;
+		schema.release = ListViewReleaseSchema;
+		schema_children[0] = &struct_schema;
+		buffers[0] = nullptr;
+		buffers[1] = offsets.data();
+		buffers[2] = sizes.data();
+		array.length = int64_t(offsets.size());
+		array.n_buffers = 3;
+		array.buffers = buffers;
+		array.n_children = 1;
+		array.children = array_children;
+		array.release = ListViewReleaseArray;
+		array_children[0] = &struct_array;
+	}
+	ListViewStructColumn(const ListViewStructColumn &) = delete;
+
+	std::vector<int32_t> offsets;
+	std::vector<int32_t> sizes;
+	std::vector<int32_t> values;
+	const void *field_buffers[2];
+	const void *struct_buffers[1];
+	const void *buffers[3];
+	ArrowSchema *struct_schema_children[1];
+	ArrowArray *struct_array_children[1];
+	ArrowSchema *schema_children[1];
+	ArrowArray *array_children[1];
+	ArrowSchema field_schema {};
+	ArrowSchema struct_schema {};
+	ArrowSchema schema {};
+	ArrowArray field_array {};
+	ArrowArray struct_array {};
+	ArrowArray array {};
+};
+
 //! Scans the column through arrow_scan and returns the rows of the expression as strings
 vector<string> ListViewExpressionValues(ArrowSchema &column_schema, ArrowArray &column_array,
                                         const string &expression) {
@@ -146,6 +215,12 @@ TEST_CASE("Arrow scan of ListView with overlapping child ranges", "[arrow]") {
 }
 
 TEST_CASE("to_json of ListView entries that share child values", "[arrow]") {
+	{
+		DuckDB db(nullptr);
+		if (!db.ExtensionIsLoaded("json")) {
+			return;
+		}
+	}
 	// rows 0 and 2 share the value 3, rows 1 and 3 share the values 1 and 2 (duckdblabs/bot-issue-tracker#506)
 	ListViewColumn<int32_t> column({3, 0, 2, 1}, {2, 3, 2, 3}, {0, 1, 2, 3, 4});
 	auto values = ListViewExpressionValues(column.schema, column.array, "to_json(a)::VARCHAR");
@@ -154,4 +229,11 @@ TEST_CASE("to_json of ListView entries that share child values", "[arrow]") {
 	ListViewColumn<int32_t> nested_column({3, 0, 2, 1}, {2, 3, 2, 3}, {0, 1, 2, 3, 4});
 	values = ListViewExpressionValues(nested_column.schema, nested_column.array, "to_json({'l': a})::VARCHAR");
 	REQUIRE(values == vector<string> {"{\"l\":[3,4]}", "{\"l\":[0,1,2]}", "{\"l\":[2,3]}", "{\"l\":[1,2,3]}"});
+
+	// structs are nested values, so the copies are deep
+	ListViewStructColumn struct_column({3, 0, 2, 1, 3}, {2, 3, 2, 3, 2}, {0, 1, 2, 3, 4});
+	values = ListViewExpressionValues(struct_column.schema, struct_column.array, "to_json(a)::VARCHAR");
+	REQUIRE(values == vector<string> {"[{\"x\":3},{\"x\":4}]", "[{\"x\":0},{\"x\":1},{\"x\":2}]",
+	                                  "[{\"x\":2},{\"x\":3}]", "[{\"x\":1},{\"x\":2},{\"x\":3}]",
+	                                  "[{\"x\":3},{\"x\":4}]"});
 }

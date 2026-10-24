@@ -837,6 +837,7 @@ struct CTEPipelineSelection {
 	bool fallback_dependency_added;
 	bool fallback_dependency_active;
 	bool stream_serialized_candidates = false;
+	bool has_multiplying_candidate = false;
 	bool materialize_candidates = false;
 };
 
@@ -926,6 +927,18 @@ static bool ProducerLimitsParallelism(const PhysicalCTE &cte, idx_t thread_count
 	return EstimateChunkCount(cte.children[0].get().estimated_cardinality) > producer_threads;
 }
 
+//! Whether an operator of the consumer produces at least twice the rows of the CTE
+static bool ConsumerMultipliesRows(const Pipeline &pipeline, const PhysicalCTE &cte) {
+	D_ASSERT(!cte.children.empty());
+	auto cte_cardinality = cte.children[0].get().estimated_cardinality;
+	for (auto &op : pipeline.GetOperators()) {
+		if (op.get().estimated_cardinality / 2 >= MaxValue<idx_t>(cte_cardinality, 1)) {
+			return true;
+		}
+	}
+	return false;
+}
+
 static void SelectExternalInputCandidates(PipelineBuildStateData &data) {
 	for (auto &candidate : data.external_input_candidates) {
 		auto selection_entry = data.cte_selection_map.find(candidate.cte.get());
@@ -935,6 +948,9 @@ static void SelectExternalInputCandidates(PipelineBuildStateData &data) {
 		selection.candidate_count++;
 		if (candidate.input_cost == PipelineExternalInputCost::SERIALIZED_FANOUT) {
 			selection.serialized_fanout_candidate_count++;
+		}
+		if (ConsumerMultipliesRows(candidate.pipeline.get(), candidate.cte.get())) {
+			selection.has_multiplying_candidate = true;
 		}
 	}
 
@@ -947,8 +963,8 @@ static void SelectExternalInputCandidates(PipelineBuildStateData &data) {
 		D_ASSERT(cte.exchange);
 		auto consumer_summary = cte.exchange->GetConsumerSummary();
 		D_ASSERT(consumer_summary.unresolved == selection.candidate_count);
-		// A hash join probe can run on more threads with a parallel scan of the materialized CTE.
-		if (selection.serialized_fanout_candidate_count > 0 && ProducerLimitsParallelism(cte, thread_count)) {
+		// A consumer that multiplies the rows runs on more threads when it scans the materialized CTE in parallel.
+		if (selection.has_multiplying_candidate && ProducerLimitsParallelism(cte, thread_count)) {
 			selection.materialize_candidates = true;
 			selection.estimated_materialization_size =
 			    consumer_summary.materialized > 0 ? 0 : EstimateMaterializationSize(cte);

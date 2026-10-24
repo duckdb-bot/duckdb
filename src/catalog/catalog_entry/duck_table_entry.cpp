@@ -12,6 +12,7 @@
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/database_manager.hpp"
 #include "duckdb/parser/constraints/list.hpp"
+#include "duckdb/parser/expression/cast_expression.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/parser/parsed_data/comment_on_column_info.hpp"
 #include "duckdb/parser/parsed_expression_iterator.hpp"
@@ -1256,7 +1257,9 @@ unique_ptr<CatalogEntry> DuckTableEntry::ChangeColumnType(ClientContext &context
 			copy.SetType(info.target_type);
 			if ((alter_table_type == AlterTableType::RENAME_FIELD || alter_table_type == AlterTableType::ADD_FIELD) &&
 			    copy.HasDefaultValue()) {
-				copy.SetDefaultValue(RemapStructDefault(copy.DefaultValue().Copy(), info.target_type, info));
+				// the stored default is not cast yet, the mapping is for the old type of the column
+				auto old_default = make_uniq<CastExpression>(col.Type(), copy.DefaultValue().Copy());
+				copy.SetDefaultValue(RemapStructDefault(std::move(old_default), info.target_type, info));
 			}
 		}
 		// TODO: check if the generated_expression breaks, only delete it if it does

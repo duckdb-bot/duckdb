@@ -94,3 +94,52 @@ SELECT i, s FROM t ORDER BY i;
 ----
 1	{'a': 1, 'b': 2, 'c': NULL}
 2	NULL
+
+query I
+SELECT column_default IS NULL FROM duckdb_columns() WHERE table_name = 't' AND column_name = 's';
+----
+true
+
+# defaults that are cast to the column type when they are used
+statement ok
+CREATE TABLE c(i INT, s STRUCT(a INT) DEFAULT NULL, p STRUCT(a INT, b VARCHAR) DEFAULT {'a': 1},
+	q STRUCT(a INT) DEFAULT '{a: 5}', l STRUCT(a INT)[] DEFAULT [], m MAP(VARCHAR, STRUCT(a INT)) DEFAULT MAP {});
+
+statement ok
+ALTER TABLE c ADD COLUMN s.c INT DEFAULT 9;
+
+statement ok
+ALTER TABLE c ADD COLUMN p.c INT DEFAULT 9;
+
+statement ok
+ALTER TABLE c ADD COLUMN q.c INT DEFAULT 9;
+
+statement ok
+ALTER TABLE c ADD COLUMN l.element.c INT DEFAULT 9;
+
+statement ok
+ALTER TABLE c ADD COLUMN m.value.c INT DEFAULT 9;
+
+statement ok
+INSERT INTO c(i) VALUES (1);
+
+query IIIIII
+SELECT * FROM c;
+----
+1	NULL	{'a': 1, 'b': NULL, 'c': 9}	{'a': 5, 'c': 9}	[]	{}
+
+# renaming a field remaps such defaults as well
+statement ok
+ALTER TABLE c RENAME s.c TO d;
+
+statement ok
+ALTER TABLE c RENAME q.c TO d;
+
+statement ok
+INSERT INTO c(i) VALUES (2);
+
+query III
+SELECT i, s, q FROM c ORDER BY i;
+----
+1	NULL	{'a': 5, 'd': 9}
+2	NULL	{'a': 5, 'd': 9}

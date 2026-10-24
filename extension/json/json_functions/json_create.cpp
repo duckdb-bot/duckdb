@@ -797,9 +797,13 @@ private:
 
 	//! Whether two list entries with other bounds share children
 	bool EntriesOverlap() const {
-		// many short entries share nothing when no child is taken twice, few long ones are cheaper to sort
-		static constexpr idx_t CHILDREN_PER_ENTRY_TO_SORT = 64;
-		if (count * CHILDREN_PER_ENTRY_TO_SORT >= child_count && !AnyChildTakenTwice()) {
+		// entries share nothing when no child is taken twice, which costs a step per child, while sorting the entries
+		// costs about log2(count) steps per entry, so long entries are sorted instead
+		idx_t log2_count = 1;
+		while (log2_count < 64 && (idx_t(1) << log2_count) < count) {
+			log2_count++;
+		}
+		if (child_count <= 2 * count * log2_count && !AnyChildTakenTwice()) {
 			return false;
 		}
 		// sorted entries overlap when one starts before the end of those before it, repeats aside

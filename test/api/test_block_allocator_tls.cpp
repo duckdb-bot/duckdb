@@ -737,7 +737,7 @@ TEST_CASE("BlockAllocator fallback pressure shares headroom with cached blocks",
 	}
 }
 
-TEST_CASE("BlockAllocator purges fallback frees for a large allocation only when they do not fit",
+TEST_CASE("BlockAllocator purges for a large allocation only when the freed memory does not fit",
           "[api][block_allocator]") {
 	constexpr idx_t BLOCK_SIZE = 65536;
 	Allocator fallback;
@@ -749,35 +749,17 @@ TEST_CASE("BlockAllocator purges fallback frees for a large allocation only when
 	allocator.FreeData(other, 2 * BLOCK_SIZE);
 	REQUIRE(BlockAllocatorTestHelper::Deallocated(allocator) == 2 * BLOCK_SIZE);
 
-	// cached and fallback memory fit next to the allocation, so nothing is purged
-	allocator.FlushForAllocation(NumericLimits<idx_t>::Maximum(), 3 * BLOCK_SIZE);
-	CHECK(BlockAllocatorTestHelper::Deallocated(allocator) == 2 * BLOCK_SIZE);
-	CHECK(allocator.GetCachedMemory() == BLOCK_SIZE);
+	// the freed memory that the allocator reports fits next to the allocation, so nothing is purged
+	if (Allocator::GetPurgeableMemory().IsValid()) {
+		allocator.FlushForAllocation(NumericLimits<idx_t>::Maximum(), NumericLimits<idx_t>::Maximum());
+		CHECK(BlockAllocatorTestHelper::Deallocated(allocator) == 2 * BLOCK_SIZE);
+		CHECK(allocator.GetCachedMemory() == BLOCK_SIZE);
+	}
 
-	// one byte less and the fallback frees are purged, while the pooled block still fits
-	allocator.FlushForAllocation(NumericLimits<idx_t>::Maximum(), 3 * BLOCK_SIZE - 1);
+	// without headroom the cached block alone does not fit, so everything is purged
+	allocator.FlushForAllocation(NumericLimits<idx_t>::Maximum(), 0);
 	CHECK(BlockAllocatorTestHelper::Deallocated(allocator) == 0);
-	CHECK(allocator.GetCachedMemory() == BLOCK_SIZE);
-	auto reused = allocator.AllocateData(BLOCK_SIZE);
-	CHECK(reused == pooled);
-	allocator.FreeData(reused, BLOCK_SIZE);
-}
-
-TEST_CASE("BlockAllocator counts the memory that a fallback reallocation gives back", "[api][block_allocator]") {
-	constexpr idx_t BLOCK_SIZE = 65536;
-	Allocator fallback;
-	BlockAllocator allocator(fallback, BLOCK_SIZE, 0);
-	auto pointer = allocator.AllocateData(4 * BLOCK_SIZE);
-	pointer[0] = 42;
-	auto shrunk = allocator.ReallocateData(pointer, 4 * BLOCK_SIZE, 1024);
-	CHECK(shrunk[0] == 42);
-	const auto given_back = BlockAllocatorTestHelper::Deallocated(allocator);
-	CHECK(given_back == (shrunk == pointer ? 4 * BLOCK_SIZE - 1024 : 4 * BLOCK_SIZE));
-
-	// the memory given back does not fit next to a large allocation, so it is purged
-	allocator.FlushForAllocation(NumericLimits<idx_t>::Maximum(), given_back - 1);
-	CHECK(BlockAllocatorTestHelper::Deallocated(allocator) == 0);
-	allocator.FreeData(shrunk, 1024);
+	CHECK(allocator.GetCachedMemory() == 0);
 }
 
 TEST_CASE("BlockAllocator bounds fallback pressure using available footprint statistics", "[api][block_allocator]") {

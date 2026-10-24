@@ -677,14 +677,7 @@ data_ptr_t BlockAllocator::ReallocateData(const data_ptr_t pointer, const idx_t 
 	const bool old_in_pool = IsInPool(pointer);
 	const bool new_can_use_pool = new_size == block_size && TryUsePool();
 	if (!old_in_pool && !new_can_use_pool) {
-		auto new_pointer = allocator.ReallocateData(pointer, old_size, new_size);
-		// the allocator may keep the memory it gives back, as for a free
-		if (new_pointer != pointer) {
-			estimated_unflushed_memory.fetch_add(old_size, std::memory_order_relaxed);
-		} else if (new_size < old_size) {
-			estimated_unflushed_memory.fetch_add(old_size - new_size, std::memory_order_relaxed);
-		}
-		return new_pointer;
+		return allocator.ReallocateData(pointer, old_size, new_size);
 	}
 
 	// Either old or new can be in the pool: allocate, copy, and free
@@ -972,8 +965,9 @@ void BlockAllocator::FlushOnShutdown() const noexcept {
 void BlockAllocator::FlushForAllocation(const idx_t extra_memory, const idx_t memory_headroom) const noexcept {
 	TrimCachedMemory(memory_headroom, DivBlockSize(extra_memory));
 	// Purging every arena is expensive, and freed memory that fits next to the allocation cannot exceed the limit
-	const auto deallocated = estimated_unflushed_memory.load(std::memory_order_relaxed);
-	if (deallocated <= memory_headroom && GetCachedMemory() <= memory_headroom - deallocated) {
+	const auto purgeable = Allocator::GetPurgeableMemory();
+	if (purgeable.IsValid() && purgeable.GetIndex() <= memory_headroom &&
+	    GetCachedMemory() <= memory_headroom - purgeable.GetIndex()) {
 		return;
 	}
 	FlushFallbackAllocator(estimated_unflushed_memory.exchange(0, std::memory_order_relaxed));

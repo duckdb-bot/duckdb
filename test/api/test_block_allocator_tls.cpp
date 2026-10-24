@@ -737,6 +737,32 @@ TEST_CASE("BlockAllocator fallback pressure shares headroom with cached blocks",
 	}
 }
 
+TEST_CASE("BlockAllocator purges fallback frees for a large allocation only when they do not fit",
+          "[api][block_allocator]") {
+	constexpr idx_t BLOCK_SIZE = 65536;
+	Allocator fallback;
+	BlockAllocator allocator(fallback, BLOCK_SIZE, BLOCK_SIZE);
+	auto pooled = allocator.AllocateData(BLOCK_SIZE);
+	pooled[0] = 42;
+	allocator.FreeData(pooled, BLOCK_SIZE);
+	auto other = allocator.AllocateData(2 * BLOCK_SIZE);
+	allocator.FreeData(other, 2 * BLOCK_SIZE);
+	REQUIRE(BlockAllocatorTestHelper::Deallocated(allocator) == 2 * BLOCK_SIZE);
+
+	// cached and fallback memory fit next to the allocation, so nothing is purged
+	allocator.FlushForAllocation(NumericLimits<idx_t>::Maximum(), 3 * BLOCK_SIZE);
+	CHECK(BlockAllocatorTestHelper::Deallocated(allocator) == 2 * BLOCK_SIZE);
+	CHECK(allocator.GetCachedMemory() == BLOCK_SIZE);
+
+	// one byte less and the fallback frees are purged, while the pooled block still fits
+	allocator.FlushForAllocation(NumericLimits<idx_t>::Maximum(), 3 * BLOCK_SIZE - 1);
+	CHECK(BlockAllocatorTestHelper::Deallocated(allocator) == 0);
+	CHECK(allocator.GetCachedMemory() == BLOCK_SIZE);
+	auto reused = allocator.AllocateData(BLOCK_SIZE);
+	CHECK(reused == pooled);
+	allocator.FreeData(reused, BLOCK_SIZE);
+}
+
 TEST_CASE("BlockAllocator bounds fallback pressure using available footprint statistics", "[api][block_allocator]") {
 	constexpr idx_t BLOCK_SIZE = 65536;
 	// Keep this test on jemalloc rather than the power-of-two allocation cache.

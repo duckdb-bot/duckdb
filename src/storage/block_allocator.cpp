@@ -964,6 +964,11 @@ void BlockAllocator::FlushOnShutdown() const noexcept {
 
 void BlockAllocator::FlushForAllocation(const idx_t extra_memory, const idx_t memory_headroom) const noexcept {
 	TrimCachedMemory(memory_headroom, DivBlockSize(extra_memory));
+	// Purging every arena is expensive, and freed memory that fits next to the allocation cannot exceed the limit
+	const auto deallocated = estimated_unflushed_memory.load(std::memory_order_relaxed);
+	if (deallocated <= memory_headroom && GetCachedMemory() <= memory_headroom - deallocated) {
+		return;
+	}
 	FlushFallbackAllocator(estimated_unflushed_memory.exchange(0, std::memory_order_relaxed));
 }
 

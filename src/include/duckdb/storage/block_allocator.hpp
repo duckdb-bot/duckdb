@@ -68,7 +68,8 @@ public:
 	void FlushAll() const noexcept DUCKDB_EXCLUDES(flush_lock);
 	//! Leave pool backing for unmapping and release cached fallback allocations.
 	void FlushOnShutdown() const noexcept DUCKDB_EXCLUDES(flush_lock);
-	//! Retain cached backing that fits alongside the buffer manager's live reservations.
+	//! Retain cached backing that fits alongside the buffer manager's live reservations, and purge fallback frees
+	//! that do not.
 	void FlushForAllocation(idx_t extra_memory, idx_t memory_headroom) const noexcept DUCKDB_EXCLUDES(flush_lock);
 	//! Trim cached backing, then purge accumulated fallback frees that do not fit in the headroom.
 	bool TryFlushDeallocated(idx_t threshold, idx_t memory_headroom) const noexcept DUCKDB_EXCLUDES(flush_lock);

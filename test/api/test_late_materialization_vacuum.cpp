@@ -2,6 +2,7 @@
 #include "test_helpers.hpp"
 #include "duckdb/common/vector/vector_writer.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
+#include "duckdb/planner/expression/bound_function_expression.hpp"
 
 #include <chrono>
 #include <condition_variable>
@@ -22,26 +23,29 @@ struct PauseState {
 	bool enabled = false;
 	bool paused = false;
 	bool released = false;
+	bool timed_out = false;
 };
 
-PauseState &GetPauseState() {
-	static PauseState state;
-	return state;
-}
+struct PauseInfo : ScalarFunctionInfo {
+	explicit PauseInfo(shared_ptr<PauseState> state) : state(std::move(state)) {
+	}
+	shared_ptr<PauseState> state;
+};
 
-void PauseFunction(DataChunk &args, ExpressionState &, Vector &result) {
+void PauseFunction(DataChunk &args, ExpressionState &expr_state, Vector &result) {
 	auto writer = FlatVector::Writer<int64_t>(result, args.size());
 	for (idx_t i = 0; i < args.size(); i++) {
 		writer.WriteValue(1);
 	}
-	auto &state = GetPauseState();
+	auto &func_expr = expr_state.expr.Cast<BoundFunctionExpression>();
+	auto &state = *func_expr.Function().GetExtraFunctionInfo().Cast<PauseInfo>().state;
 	unique_lock<mutex> guard(state.lock);
 	if (!state.enabled || state.paused) {
 		return;
 	}
 	state.paused = true;
 	state.cv.notify_all();
-	state.cv.wait_for(guard, std::chrono::seconds(10), [&]() { return state.released; });
+	state.timed_out = !state.cv.wait_for(guard, std::chrono::seconds(10), [&]() { return state.released; });
 }
 
 } // namespace
@@ -53,8 +57,11 @@ TEST_CASE("Test a checkpoint between the fetch batches of late materialization",
 	Connection con(db);
 	Connection checkpointer(db);
 
+	auto pause_state = make_shared_ptr<PauseState>();
+	auto &state = *pause_state;
 	ScalarFunction pause("pause_once", {LogicalType::BIGINT}, LogicalType::BIGINT, PauseFunction);
 	pause.SetFallible();
+	pause.SetExtraFunctionInfo(make_shared_ptr<PauseInfo>(pause_state));
 	ExtensionInfo extension_info {};
 	ExtensionActiveLoad load_info {*db.instance, extension_info, "test_extension", ""};
 	ExtensionLoader loader {load_info};
@@ -82,7 +89,6 @@ TEST_CASE("Test a checkpoint between the fetch batches of late materialization",
 	auto expected = con.Query("SELECT i, s, 1::BIGINT AS p FROM t ORDER BY ord LIMIT 4097")->ToString();
 
 	// the checkpoint vacuums only when nothing committed after the query started, so nothing else runs meanwhile
-	auto &state = GetPauseState();
 	state.enabled = true;
 	unique_ptr<QueryResult> result;
 	std::thread reader([&]() { result = con.Query(query); });
@@ -101,6 +107,8 @@ TEST_CASE("Test a checkpoint between the fetch batches of late materialization",
 	reader.join();
 	state.enabled = false;
 	REQUIRE(paused);
+	// the query went on only after the checkpoint
+	REQUIRE(!state.timed_out);
 	REQUIRE_NO_FAIL(*checkpoint);
 	REQUIRE_NO_FAIL(*result);
 	REQUIRE(result->RowCount() == 4097);

@@ -76,3 +76,35 @@ query I
 SELECT count(*) FROM main WHERE xid IN (SELECT xid FROM links WHERE yid = xid + 1500);
 ----
 500
+
+query I
+SELECT count(*) FROM main WHERE xid + 1 IN (SELECT xid + yid FROM links WHERE yid = 1);
+----
+1000
+
+# the filters below the limit stay below it when the joins are reordered
+query IIII
+SELECT EXISTS (SELECT x FROM range(2) r(i) WHERE i > 0), EXISTS (SELECT x FROM range(2) r(i) QUALIFY row_number() OVER () > 1),
+	x IN (SELECT x FROM range(2) r(i) WHERE i > 0), x NOT IN (SELECT x FROM range(2) r(i) WHERE i > 1)
+FROM (VALUES (1)) o(x);
+----
+true	true	true	true
+
+query II
+SELECT x, i FROM range(1) o(x), (SELECT i FROM range(2) r(i) WHERE i > 0 LIMIT 1) ORDER BY ALL;
+----
+0	1
+
+# the producer of a CTE can have side effects, so it runs to the end
+statement ok
+CREATE SEQUENCE seq;
+
+query I
+WITH c AS MATERIALIZED (SELECT nextval('seq') AS v FROM range(100000)) SELECT x IN (SELECT x FROM c WHERE v > 0) FROM (VALUES (1)) o(x);
+----
+true
+
+query I
+SELECT currval('seq');
+----
+100000

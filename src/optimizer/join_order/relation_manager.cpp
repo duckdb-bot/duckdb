@@ -418,6 +418,10 @@ bool RelationManager::ExtractJoinRelations(JoinOrderOptimizer &optimizer, Logica
 	// pass through single child operators (but never past a non-reorderable op such as a DML node, which
 	// must be preserved as its own relation rather than skipped over and dropped during reconstruction)
 	while (op->children.size() == 1 && !OperatorNeedsRelation(op->type) && !OperatorIsNonReorderable(*op)) {
+		if (op->type == LogicalOperatorType::LOGICAL_LIMIT && parent) {
+			// below a join, the filters and joins under a limit cannot move past it
+			break;
+		}
 		if (op->type == LogicalOperatorType::LOGICAL_FILTER) {
 			if (HasNonReorderableChild(*op)) {
 				datasource_filters.push_back(*op);
@@ -473,6 +477,22 @@ bool RelationManager::ExtractJoinRelations(JoinOrderOptimizer &optimizer, Logica
 	}
 
 	switch (op->type) {
+	case LogicalOperatorType::LOGICAL_LIMIT: {
+		// optimize the input of the limit on its own
+		RelationStats child_stats;
+		auto child_optimizer = optimizer.CreateChildOptimizer();
+		op->children[0] = child_optimizer.Optimize(std::move(op->children[0]), &child_stats);
+		if (!child_stats.stats_initialized) {
+			stats_complete = false;
+			return false;
+		}
+		if (!datasource_filters.empty()) {
+			child_stats.cardinality = LossyNumericCast<idx_t>(static_cast<double>(child_stats.cardinality) *
+			                                                  RelationStatisticsHelper::DEFAULT_SELECTIVITY);
+		}
+		ModifyStatsIfLimit(op.get(), child_stats);
+		return AddRelation(input_op, parent, child_stats);
+	}
 	case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY: {
 		// optimize children
 		RelationStats child_stats;

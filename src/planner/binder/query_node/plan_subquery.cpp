@@ -488,7 +488,9 @@ static bool ReadsOuterColumns(const Expression &expr) {
 }
 
 static bool IsIndependentPlan(const LogicalOperator &op) {
-	if (op.type == LogicalOperatorType::LOGICAL_DEPENDENT_JOIN || op.type == LogicalOperatorType::LOGICAL_DELIM_GET) {
+	// a CTE can have a producer with side effects that a limit would stop early
+	if (op.type == LogicalOperatorType::LOGICAL_DEPENDENT_JOIN || op.type == LogicalOperatorType::LOGICAL_DELIM_GET ||
+	    op.type == LogicalOperatorType::LOGICAL_CTE_REF) {
 		return false;
 	}
 	bool independent = true;

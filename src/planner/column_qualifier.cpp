@@ -7,6 +7,8 @@
 #include "duckdb/parser/expression/lambda_expression.hpp"
 #include "duckdb/parser/expression/operator_expression.hpp"
 #include "duckdb/parser/expression/positional_reference_expression.hpp"
+#include "duckdb/parser/parser_function_rewrite.hpp"
+#include "duckdb/catalog/catalog.hpp"
 #include "duckdb/planner/expression_binder/having_binder.hpp"
 #include "duckdb/planner/planner_extension.hpp"
 
@@ -237,6 +239,11 @@ void ColumnQualifier::QualifyColumnNames(unique_ptr<ParsedExpression> &expr, vec
 	case ExpressionType::FUNCTION: {
 		// Special-handling for lambdas, which are inside function expressions.
 		auto &function = expr->Cast<FunctionExpression>();
+		if (auto rewritten = RewriteQualifiedParserFunction(function)) {
+			expr = std::move(rewritten);
+			QualifyColumnNames(expr, lambda_params, within_function_expression);
+			return;
+		}
 		if (!ExpressionBinder::IsUnnestFunction(function.FunctionName())) {
 			QualifyFunction(function);
 		}
@@ -308,6 +315,52 @@ optional_ptr<CatalogEntry> ColumnQualifier::QualifyFunction(FunctionExpression &
 	function.GetArgumentsMutable().insert(function.GetArgumentsMutable().begin(), std::move(new_colref));
 	function.SetQualifiedName(QualifiedName(function.GetQualifiedName().Name()));
 	return func;
+}
+
+bool ColumnQualifier::QualificationNamesSchema(const QualifiedName &name) {
+	auto resolved = Binder::ResolveCatalog(binder.EntryRetriever(), name, false);
+	auto &path = resolved.Path();
+	vector<Identifier> schema_path(path.begin() + 1, path.end() - 1);
+	if (schema_path.empty() || (schema_path.size() == 1 && schema_path[0].empty())) {
+		// the qualification is a database
+		return true;
+	}
+	return Catalog::GetSchema(binder.context, path[0], schema_path, OnEntryNotFound::RETURN_NULL) != nullptr;
+}
+
+unique_ptr<ParsedExpression> ColumnQualifier::RewriteQualifiedParserFunction(FunctionExpression &function) {
+	if (function.GetQualifiedName().Path().size() < 2) {
+		return nullptr;
+	}
+	auto lowercase_name = StringUtil::Lower(function.FunctionName().GetIdentifierName());
+	if (!ParserFunctionRewrite::BinderRewritesQualifiedCall(lowercase_name)) {
+		return nullptr;
+	}
+	auto name = function.GetQualifiedName();
+	unique_ptr<ParsedExpression> result;
+	// a column is at most qualified with its table, as in a dot call on a catalog function
+	if (name.Path().size() > 3 || QualificationNamesSchema(name)) {
+		// coalesce has a grammar form of its own, so written as a qualified call it is looked up in the catalog
+		if (lowercase_name == "coalesce") {
+			return nullptr;
+		}
+		result = ParserFunctionRewrite::Rewrite(lowercase_name, function.GetArgumentsMutable(),
+		                                        ParserRewriteCallForm::PLAIN);
+	} else {
+		unique_ptr<ParsedExpression> column;
+		if (name.Path().size() == 2) {
+			column = make_uniq<ColumnRefExpression>(name.Schema());
+		} else {
+			column = make_uniq<ColumnRefExpression>(name.Schema(), name.Catalog());
+		}
+		column->SetQueryLocation(function.GetQueryLocation());
+		function.GetArgumentsMutable().insert(function.GetArgumentsMutable().begin(), std::move(column));
+		function.SetQualifiedName(QualifiedName(name.Name()));
+		result = ParserFunctionRewrite::RewriteMethodCall(function);
+	}
+	result->SetAlias(function.GetAlias());
+	result->SetQueryLocation(function.GetQueryLocation());
+	return result;
 }
 
 void ColumnQualifier::QualifyColumnNamesInLambda(FunctionExpression &function,

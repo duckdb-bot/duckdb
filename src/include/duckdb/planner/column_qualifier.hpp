@@ -41,8 +41,15 @@ public:
 	                        const bool within_function_expression = false);
 
 	optional_ptr<CatalogEntry> QualifyFunction(FunctionExpression &function);
+	//! Rewrites a qualified call of a name that the parser rewrites. After a schema the qualification is dropped, as
+	//! for an unqualified call, otherwise the qualification is a column the function is called on (x.ifnull(y)).
+	//! Returns nullptr when the call is not rewritten
+	unique_ptr<ParsedExpression> RewriteQualifiedParserFunction(FunctionExpression &function);
 
 private:
+	//! Whether the qualification of the name is a schema or a database
+	bool QualificationNamesSchema(const QualifiedName &name);
+
 	Binder &binder;
 	optional_ptr<vector<DummyBinding>> lambda_bindings;
 	optional_ptr<ColumnAliasBinder> alias_binder;

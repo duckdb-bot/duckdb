@@ -1,0 +1,140 @@
+# name: test/sql/parser/parser_rewrites_qualified_call.test
+# description: a name that the parser rewrites, called on a column as in col.ifnull(x), takes the column as its first argument (duckdblabs/bot-issue-tracker#562)
+# group: [parser]
+
+statement ok
+CREATE TABLE t AS SELECT * FROM (VALUES (NULL::VARCHAR), ('2020-01-01')) v(col);
+
+query IIII
+SELECT col.ifnull('b'), col.coalesce(NULL, 'c'), t.col.ifnull('d'), col.coalesce('e').ifnull('f') FROM t ORDER BY ALL;
+----
+2020-01-01	2020-01-01	2020-01-01	2020-01-01
+b	c	d	e
+
+query III
+SELECT col.date(), col.try(), col.construct_array('x') FROM t ORDER BY ALL;
+----
+2020-01-01	2020-01-01	[2020-01-01, x]
+NULL	NULL	[NULL, x]
+
+# the column counts towards the arguments
+statement error
+SELECT col.ifnull('x', 'y') FROM t;
+----
+Wrong number of arguments to IFNULL.
+
+statement error
+SELECT col.date('2020-02-02') FROM t;
+----
+Wrong number of arguments provided to DATE function
+
+# unpack is rewritten before stars are expanded, so its qualification is dropped as before
+statement error
+SELECT col.unpack() FROM t;
+----
+Wrong number of arguments to the UNPACK operator
+
+query I
+SELECT [main.unpack(COLUMNS(*))] FROM (SELECT 1 AS a, 2 AS b);
+----
+[1, 2]
+
+# a qualification that is neither a schema nor a column
+statement error
+SELECT foo.ifnull(1);
+----
+Referenced column "foo" was not found
+
+# modifiers that the rewritten expression cannot carry
+statement error
+SELECT col.ifnull(DISTINCT 'b') FROM t;
+----
+DISTINCT is not supported in IFNULL expressions
+
+statement error
+SELECT col.coalesce('b' ORDER BY 1) FROM t;
+----
+ORDER BY is not supported in COALESCE expressions
+
+statement error
+SELECT col.coalesce('b') FILTER (WHERE true) FROM t;
+----
+FILTER is not supported in COALESCE expressions
+
+# after a schema or a database the qualification is dropped, as before
+query III
+SELECT main.ifnull(NULL, 'z'), system.main.date('2020-01-01'), memory.main.try('x'::INTEGER);
+----
+z	2020-01-01	NULL
+
+statement ok
+CREATE SCHEMA s;
+
+query I
+SELECT s.ifnull(NULL, 'z');
+----
+z
+
+# a schema wins over a column of the same name
+statement ok
+CREATE TABLE named_s AS SELECT 'a' AS s;
+
+query I
+SELECT s.ifnull(NULL, 'z') FROM named_s;
+----
+z
+
+# a qualified coalesce is still looked up in the catalog first
+statement ok
+CREATE MACRO s.coalesce(a, b) AS 777;
+
+query I
+SELECT s.coalesce(NULL, 5);
+----
+777
+
+statement error
+SELECT main.coalesce(NULL, 5);
+----
+Scalar Function with name coalesce does not exist
+
+# lambda parameters, macro parameters and columns of an outer query
+query I
+SELECT list_transform([NULL, 'a'], lambda x: x.ifnull('z'));
+----
+[z, a]
+
+statement ok
+CREATE MACRO or_z(p) AS p.ifnull('z');
+
+query II
+SELECT or_z(NULL), or_z('q');
+----
+z	q
+
+query I
+SELECT (SELECT col.ifnull('b')) FROM t ORDER BY ALL;
+----
+2020-01-01
+b
+
+# constraints and views
+statement ok
+CREATE TABLE checked(col INTEGER, CHECK (col.ifnull(0) >= 0));
+
+statement ok
+INSERT INTO checked VALUES (1), (NULL);
+
+statement error
+INSERT INTO checked VALUES (-1);
+----
+CHECK constraint failed
+
+statement ok
+CREATE VIEW v AS SELECT col.ifnull('b') AS r FROM t;
+
+query I
+SELECT r FROM v ORDER BY ALL;
+----
+2020-01-01
+b

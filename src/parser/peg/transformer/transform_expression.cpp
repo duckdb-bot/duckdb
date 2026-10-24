@@ -19,6 +19,7 @@
 #include "duckdb/parser/tableref/emptytableref.hpp"
 #include "duckdb/parser/parsed_expression_iterator.hpp"
 #include "duckdb/parser/expression/star_expression.hpp"
+#include "duckdb/parser/parser_function_rewrite.hpp"
 #include "duckdb/common/string_util.hpp"
 
 namespace duckdb {
@@ -29,15 +30,14 @@ static bool ExpressionIsUnqualifiedStar(const ParsedExpression &expr) {
 	return PEGTransformerFactory::ExpressionIsEmptyStar(expr) && expr.Cast<StarExpression>().RelationName().empty();
 }
 
-//! Which syntactic form named the function: f(x) or x.f(y).
-enum class ParserRewriteCallForm : uint8_t { PLAIN, METHOD_CHAIN };
+bool ParserFunctionRewrite::BinderRewritesQualifiedCall(const string &lowercase_name) {
+	return lowercase_name == "try" || lowercase_name == "construct_array" || lowercase_name == "ifnull" ||
+	       lowercase_name == "coalesce" || lowercase_name == "date";
+}
 
-//! Names that the parser rewrites into a syntax node instead of a catalog function call.
-//! Every path that can name a function must go through this, or the paths disagree.
-//! Returns nullptr when the name is an ordinary function.
-static unique_ptr<ParsedExpression> TransformParserFunctionRewrite(const string &lowercase_name,
-                                                                   vector<FunctionArgument> &function_children,
-                                                                   ParserRewriteCallForm call_form) {
+unique_ptr<ParsedExpression> ParserFunctionRewrite::Rewrite(const string &lowercase_name,
+                                                            vector<FunctionArgument> &function_children,
+                                                            ParserRewriteCallForm call_form) {
 	auto reject_named_arguments = [&function_children](const char *context) {
 		for (auto &arg : function_children) {
 			if (arg.HasName()) {
@@ -110,6 +110,30 @@ static unique_ptr<ParsedExpression> TransformParserFunctionRewrite(const string 
 	return nullptr;
 }
 
+unique_ptr<ParsedExpression> ParserFunctionRewrite::RewriteMethodCall(FunctionExpression &function) {
+	auto lowercase_name = StringUtil::Lower(function.FunctionName().GetIdentifierName());
+	const bool distinct = function.Distinct();
+	const bool has_order_by = function.OrderBy() && !function.OrderBy()->orders.empty();
+	const bool has_filter = function.Filter() != nullptr;
+	auto rewritten = Rewrite(lowercase_name, function.GetArgumentsMutable(), ParserRewriteCallForm::METHOD_CHAIN);
+	if (!rewritten) {
+		return nullptr;
+	}
+	// The method grammar accepts DISTINCT and ORDER BY for every call, but a rewrite yields a
+	// syntax node with nowhere to put them. Reject rather than drop them silently.
+	auto upper_name = StringUtil::Upper(lowercase_name);
+	if (distinct) {
+		throw ParserException("DISTINCT is not supported in %s expressions", upper_name);
+	}
+	if (has_order_by) {
+		throw ParserException("ORDER BY is not supported in %s expressions", upper_name);
+	}
+	if (has_filter) {
+		throw ParserException("FILTER is not supported in %s expressions", upper_name);
+	}
+	return rewritten;
+}
+
 unique_ptr<ParsedExpression>
 PEGTransformerFactory::TransformBaseExpression(PEGTransformer &transformer,
                                                unique_ptr<ParsedExpression> single_expression,
@@ -140,20 +164,7 @@ PEGTransformerFactory::TransformBaseExpression(PEGTransformer &transformer,
 			auto function_expr = unique_ptr_cast<ParsedExpression, FunctionExpression>(std::move(indirection_expr));
 			function_expr->GetArgumentsMutable().insert(function_expr->GetArgumentsMutable().begin(), std::move(expr));
 			// A method-chained call names a function too, so it takes the same rewrites.
-			auto lowercase_name = StringUtil::Lower(function_expr->FunctionName().GetIdentifierName());
-			const bool distinct = function_expr->Distinct();
-			const bool has_order_by = function_expr->OrderBy() && !function_expr->OrderBy()->orders.empty();
-			if (auto rewritten = TransformParserFunctionRewrite(lowercase_name, function_expr->GetArgumentsMutable(),
-			                                                    ParserRewriteCallForm::METHOD_CHAIN)) {
-				// The method grammar accepts DISTINCT and ORDER BY for every call, but a rewrite yields a
-				// syntax node with nowhere to put them. Reject rather than drop them silently.
-				auto upper_name = StringUtil::Upper(lowercase_name);
-				if (distinct) {
-					throw ParserException("DISTINCT is not supported in %s expressions", upper_name);
-				}
-				if (has_order_by) {
-					throw ParserException("ORDER BY is not supported in %s expressions", upper_name);
-				}
+			if (auto rewritten = ParserFunctionRewrite::RewriteMethodCall(*function_expr)) {
 				expr = std::move(rewritten);
 			} else {
 				expr = std::move(function_expr);
@@ -294,9 +305,11 @@ unique_ptr<ParsedExpression> PEGTransformerFactory::TransformFunctionExpression(
 		lowercase_name = "count_star";
 	}
 
-	if (auto rewritten =
-	        TransformParserFunctionRewrite(lowercase_name, function_children, ParserRewriteCallForm::PLAIN)) {
-		return rewritten;
+	if (qualified_function.Path().size() < 2 || !ParserFunctionRewrite::BinderRewritesQualifiedCall(lowercase_name)) {
+		if (auto rewritten =
+		        ParserFunctionRewrite::Rewrite(lowercase_name, function_children, ParserRewriteCallForm::PLAIN)) {
+			return rewritten;
+		}
 	}
 	if (function_expression_arguments.has_ignore_nulls) {
 		throw ParserException("RESPECT/IGNORE NULLS is not supported for non-window functions");

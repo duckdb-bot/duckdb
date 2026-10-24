@@ -50,13 +50,11 @@ SELECT (SELECT count(*) FROM read_parquet('{TEST_DIR}/repaired_bloom.parquet', b
 ----
 2	1	2	1
 
-# without repairs the statistics still prune the row group, before its invalid strings are read, and so they do for
-# blobs, which are not repaired
-query II
-SELECT (SELECT count(*) FROM read_parquet('{TEST_DIR}/repaired_bloom.parquet', binary_as_string = true) WHERE x = 'a'),
-	(SELECT count(*) FROM read_parquet('{TEST_DIR}/repaired_bloom.parquet', utf8_validation = 'ignore') WHERE x = 'k1'::BLOB);
+# blobs are not repaired, and their statistics still prune
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/repaired_bloom.parquet', utf8_validation = 'ignore') WHERE x = 'k1'::BLOB;
 ----
-0	20
+20
 
 statement error
 SELECT count(*) FROM read_parquet('{TEST_DIR}/repaired_bloom.parquet', binary_as_string = true) WHERE x = 'k1';

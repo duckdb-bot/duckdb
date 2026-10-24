@@ -18,10 +18,17 @@ using namespace duckdb;
 
 namespace {
 
+// an entry may also ask to be bound like a DuckDB table without being a DuckTableEntry
 class ExternalTableEntry : public TableCatalogEntry {
 public:
 	ExternalTableEntry(Catalog &catalog, SchemaCatalogEntry &schema, CreateTableInfo &info)
-	    : TableCatalogEntry(catalog, schema, info), columns(info.columns.Copy()) {
+	    : TableCatalogEntry(catalog, schema, info), columns(info.columns.Copy()),
+	      duck_binding(StringUtil::StartsWith(info.GetTableName().GetIdentifierName(), "ext_binding")) {
+	}
+
+public:
+	bool IsDuckTable() const override {
+		return duck_binding;
 	}
 	const ColumnList &GetColumns() const override {
 		return columns;
@@ -38,6 +45,7 @@ public:
 
 private:
 	ColumnList columns;
+	bool duck_binding;
 };
 
 // tables whose name starts with "ext" are owned by the extension, other tables are DuckDB tables
@@ -45,6 +53,8 @@ class ExternalSchemaEntry : public DuckSchemaEntry {
 public:
 	ExternalSchemaEntry(Catalog &catalog, CreateSchemaInfo &info) : DuckSchemaEntry(catalog, info) {
 	}
+
+public:
 	optional_ptr<CatalogEntry> CreateTable(CatalogTransaction transaction, BoundCreateTableInfo &info) override {
 		if (!StringUtil::StartsWith(info.Base().GetTableName().GetIdentifierName(), "ext")) {
 			return DuckSchemaEntry::CreateTable(transaction, info);
@@ -58,6 +68,8 @@ class ExternalCatalog : public DuckCatalog {
 public:
 	explicit ExternalCatalog(AttachedDatabase &db) : DuckCatalog(db) {
 	}
+
+public:
 	void ReplaceDefaultSchema(CatalogTransaction transaction) {
 		auto &schemas = GetSchemaCatalogSet();
 		(void)schemas.DropEntry(transaction, DEFAULT_SCHEMA, true, true);
@@ -98,11 +110,12 @@ TEST_CASE("Test checkpoints of an in-memory catalog with tables owned by an exte
 
 	REQUIRE_NO_FAIL(con.Query("ATTACH ':memory:' AS ext (TYPE external)"));
 	REQUIRE_NO_FAIL(con.Query("CREATE TABLE ext.ext_tbl (i INTEGER)"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE ext.ext_binding (i INTEGER)"));
 	REQUIRE_NO_FAIL(con.Query("CREATE TABLE ext.duck_tbl AS SELECT i FROM range(10000) t(i)"));
 	REQUIRE_NO_FAIL(con.Query("DELETE FROM ext.duck_tbl WHERE i % 2 = 0"));
 	REQUIRE_NO_FAIL(con.Query("FORCE CHECKPOINT ext"));
-	REQUIRE_NO_FAIL(con.Query("CHECKPOINT ext"));
 	REQUIRE_NO_FAIL(con.Query("CREATE TABLE ext.ext_tbl2 (i INTEGER)"));
+	REQUIRE_NO_FAIL(con.Query("CHECKPOINT ext"));
 
 	auto result = con.Query("SELECT count(*), sum(i) FROM ext.duck_tbl");
 	REQUIRE(CHECK_COLUMN(result, 0, {5000}));
@@ -117,5 +130,5 @@ TEST_CASE("Test checkpoints of an in-memory catalog with tables owned by an exte
 	REQUIRE(CHECK_COLUMN(result, 0, {5001}));
 	REQUIRE(CHECK_COLUMN(result, 1, {25010001}));
 	result = con.Query("SELECT table_name FROM duckdb_tables() WHERE database_name = 'ext' ORDER BY table_name");
-	REQUIRE(CHECK_COLUMN(result, 0, {"duck_tbl", "ext_tbl", "ext_tbl2", "ext_tbl3"}));
+	REQUIRE(CHECK_COLUMN(result, 0, {"duck_tbl", "ext_binding", "ext_tbl", "ext_tbl2", "ext_tbl3"}));
 }

@@ -55,10 +55,10 @@ void InMemoryCheckpointer::CreateCheckpoint() {
 			if (entry.type != CatalogType::TABLE_ENTRY) {
 				return;
 			}
-			auto &table = entry.Cast<TableCatalogEntry>();
 			// a table that an extension owns has no storage to checkpoint
-			if (table.IsDuckTable()) {
-				tables.push_back(table);
+			auto duck_table = entry.Cast<TableCatalogEntry>().TryGetDuckTableEntry();
+			if (duck_table) {
+				tables.push_back(*duck_table);
 			}
 		});
 	}

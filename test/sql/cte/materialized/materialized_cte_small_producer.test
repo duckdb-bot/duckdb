@@ -1,0 +1,108 @@
+# name: test/sql/cte/materialized/materialized_cte_small_producer.test
+# description: A CTE whose producer reads few source chunks is materialized, so that its consumers scan it in parallel (duckdb/duckdb#11565)
+# group: [materialized]
+
+require vector_size 2048
+
+statement ok
+PRAGMA threads=4;
+
+# a single chunk of range(300) produces 147 chunks
+query II
+EXPLAIN ANALYZE WITH a AS MATERIALIZED (SELECT key, match FROM range(300) t(key) CROSS JOIN range(1000) c(match))
+SELECT count(*) FROM a JOIN range(1000) b(match) USING (match);
+----
+analyzed_plan	<REGEX>:.*Execution Mode: MATERIALIZED.*Materialized Consumers: 1.*
+
+query I
+WITH a AS MATERIALIZED (SELECT key, match FROM range(300) t(key) CROSS JOIN range(1000) c(match))
+SELECT count(*) FROM a JOIN range(1000) b(match) USING (match);
+----
+300000
+
+query II
+WITH a AS MATERIALIZED (SELECT key, match, hash(key, match) % 1000 AS value FROM range(300) t(key) CROSS JOIN range(1000) c(match)),
+     b AS MATERIALIZED (SELECT key, match, hash(key, match, 1) % 1000 AS value FROM range(300) t(key) CROSS JOIN range(1000) c(match))
+SELECT count(*), sum(s) FROM (SELECT a.key, b.key, sum(a.value * b.value) AS s FROM a JOIN b ON a.match = b.match GROUP BY a.key, b.key);
+----
+90000	22428297945172
+
+# consumers without a hash join and several consumers are materialized as well
+query II
+EXPLAIN ANALYZE WITH a AS MATERIALIZED (SELECT key, match FROM range(300) t(key) CROSS JOIN range(1000) c(match))
+SELECT count(*), sum(key * match) FROM a;
+----
+analyzed_plan	<REGEX>:.*Execution Mode: MATERIALIZED.*Materialized Consumers: 1.*
+
+query II
+WITH a AS MATERIALIZED (SELECT key, match FROM range(300) t(key) CROSS JOIN range(1000) c(match))
+SELECT count(*), sum(key * match) FROM a;
+----
+300000	22402575000
+
+query II
+EXPLAIN ANALYZE WITH a AS MATERIALIZED (SELECT key, match FROM range(300) t(key) CROSS JOIN range(1000) c(match))
+SELECT count(*) FROM a x JOIN a y USING (key, match);
+----
+analyzed_plan	<REGEX>:.*Execution Mode: MATERIALIZED.*Materialized Consumers: 2.*
+
+query I
+WITH a AS MATERIALIZED (SELECT key, match FROM range(300) t(key) CROSS JOIN range(1000) c(match))
+SELECT count(*) FROM a x JOIN a y USING (key, match);
+----
+300000
+
+query III
+WITH a AS MATERIALIZED (SELECT key, match FROM range(300) t(key) CROSS JOIN range(1000) c(match))
+SELECT key, match, count(*) OVER () FROM a ORDER BY key DESC, match DESC LIMIT 2;
+----
+299	999	300000
+299	998	300000
+
+# a producer with a chunk per thread, or one that does not expand its rows, feeds its consumer directly
+query II
+EXPLAIN ANALYZE WITH a AS MATERIALIZED (SELECT key, match FROM range(10000) t(key) CROSS JOIN range(30) c(match))
+SELECT count(*) FROM a JOIN range(30) b(match) USING (match);
+----
+analyzed_plan	<REGEX>:.*Fanout Mode: DIRECT.*
+
+query II
+EXPLAIN ANALYZE WITH a AS MATERIALIZED (SELECT key FROM range(1000) t(key))
+SELECT count(*) FROM a JOIN range(1000) b(key) USING (key);
+----
+analyzed_plan	<REGEX>:.*Fanout Mode: DIRECT.*
+
+# so does a CTE that is too large for half the memory limit
+statement ok
+SET memory_limit='8MB';
+
+query II
+EXPLAIN ANALYZE WITH a AS MATERIALIZED (SELECT key, match FROM range(300) t(key) CROSS JOIN range(1000) c(match))
+SELECT count(*), sum(key) FROM a JOIN range(1000) b(match) USING (match);
+----
+analyzed_plan	<REGEX>:.*Fanout Mode: DIRECT.*
+
+query II
+WITH a AS MATERIALIZED (SELECT key, match FROM range(300) t(key) CROSS JOIN range(1000) c(match))
+SELECT count(*), sum(key) FROM a JOIN range(1000) b(match) USING (match);
+----
+300000	44850000
+
+statement ok
+RESET memory_limit;
+
+# and a producer on a single thread
+statement ok
+PRAGMA threads=1;
+
+query II
+EXPLAIN ANALYZE WITH a AS MATERIALIZED (SELECT key, match FROM range(300) t(key) CROSS JOIN range(1000) c(match))
+SELECT count(*) FROM a JOIN range(1000) b(match) USING (match);
+----
+analyzed_plan	<REGEX>:.*Fanout Mode: DIRECT.*
+
+query I
+WITH a AS MATERIALIZED (SELECT key, match FROM range(300) t(key) CROSS JOIN range(1000) c(match))
+SELECT count(*) FROM a JOIN range(1000) b(match) USING (match);
+----
+300000

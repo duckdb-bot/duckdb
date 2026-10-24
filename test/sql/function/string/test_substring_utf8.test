@@ -92,7 +92,7 @@ SELECT substring_grapheme('ääääää', -10, 2), substring_grapheme('ääää�
 
 # a negative offset counts from the end, so a non-ASCII character after the window counts as well
 # (duckdblabs/bot-issue-tracker#636)
-query IIIIII
+query TTTTTT
 SELECT substring_grapheme('xyé', -4, 1), substring_grapheme('xyé', -3, -1), substring_grapheme('xyzwé', -5, 1),
        substring_grapheme('xyzwé', -5, 2), substring_grapheme('xyzwé', -6, 2), substring('xyzwé', -5, 2);
 ----

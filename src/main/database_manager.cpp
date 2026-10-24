@@ -104,28 +104,19 @@ bool RequiresTrackingAttaches(const string &path, const string &db_type) {
 	return true;
 }
 
-//! Whether the path no longer names the file that the database has open, as when a writer replaced the file. Opening
-//! the path to find out would release the locks the database holds on the file, so only its metadata is read
+//! Whether the path no longer names the file that the database has open, as when a writer replaced the file
 static bool FileWasReplaced(ClientContext &context, AttachedDatabase &db, const string &path) {
-	auto &fs = FileSystem::GetFileSystem(context);
-	auto current = fs.GetStatsIfExists(OpenFileInfo(path));
-	if (!current) {
-		return false;
-	}
-	if (!current->device_id.IsValid() || !current->file_id.IsValid()) {
-		// a remote file has no identity to compare, so it is read again
-		return true;
+	string extension;
+	if (FileSystem::IsRemoteFile(path, extension)) {
+		// a remote file has no identity to compare and holds no locks, so it is read again if it exists
+		auto &fs = FileSystem::GetFileSystem(context);
+		return fs.GetStatsIfExists(OpenFileInfo(path)).has_value();
 	}
 	auto &block_manager = db.GetStorageManager().GetBlockManager();
 	if (block_manager.InMemory()) {
 		return false;
 	}
-	auto attached = block_manager.Cast<SingleFileBlockManager>().GetFileMetadata();
-	if (!attached || !attached->device_id.IsValid() || !attached->file_id.IsValid()) {
-		return false;
-	}
-	return attached->device_id.GetIndex() != current->device_id.GetIndex() ||
-	       attached->file_id.GetIndex() != current->file_id.GetIndex();
+	return block_manager.Cast<SingleFileBlockManager>().PathNamesOtherFile(path);
 }
 
 shared_ptr<AttachedDatabase> DatabaseManager::AttachDatabase(ClientContext &context, AttachInfo &info,
@@ -143,6 +134,8 @@ shared_ptr<AttachedDatabase> DatabaseManager::AttachDatabase(ClientContext &cont
 		}
 	}
 	bool requires_tracking_attaches = RequiresTrackingAttaches(info.path, options.db_type);
+	// held until the database that replaces a read-only one is attached
+	unique_lock<mutex> reopen_guard;
 	if (requires_tracking_attaches) {
 		// canonicalize the path to the database
 		auto &fs = FileSystem::GetFileSystem(context);
@@ -180,8 +173,18 @@ shared_ptr<AttachedDatabase> DatabaseManager::AttachDatabase(ClientContext &cont
 				// allow custom catalogs to override this behavior
 				if (!existing_db->GetCatalog().HasConflictingAttachOptions(info.path, options)) {
 					// a DuckDB file attached for reading that a writer replaced is opened again next to it
-					if (!existing_db->IsReadOnly() || existing_db->StoredPath().empty() ||
-					    !FileWasReplaced(context, *existing_db, info.path)) {
+					if (!existing_db->IsReadOnly() || existing_db->StoredPath().empty()) {
+						return existing_db;
+					}
+					// one connection at a time checks and opens the file, as closing either of two handles of
+					// the new file would release the locks of the other
+					reopen_guard = unique_lock<mutex>(reopen_lock);
+					if (GetDatabase(info.name) != existing_db) {
+						// another connection replaced the database while this one waited
+						reopen_guard.unlock();
+						return AttachDatabase(context, info, options);
+					}
+					if (!FileWasReplaced(context, *existing_db, info.path)) {
 						return existing_db;
 					}
 					options.access_mode = AccessMode::READ_ONLY;

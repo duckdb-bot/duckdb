@@ -1127,11 +1127,11 @@ idx_t SingleFileBlockManager::FreeBlocks() {
 	return free_list.size();
 }
 
-optional<FileMetadata> SingleFileBlockManager::GetFileMetadata() {
+bool SingleFileBlockManager::PathNamesOtherFile(const string &path) {
 	if (!handle) {
-		return nullopt;
+		return false;
 	}
-	return handle->GetFileMetadata();
+	return handle->PathNamesOtherFile(path);
 }
 
 bool SingleFileBlockManager::IsRemote() {

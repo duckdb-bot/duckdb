@@ -1,10 +1,14 @@
 #include "catch.hpp"
 #include "test_helpers.hpp"
 #include "duckdb/common/file_system.hpp"
+#include "duckdb/common/local_file_system.hpp"
+#include "duckdb/common/string_util.hpp"
 
 #if defined(__linux__) || defined(__APPLE__)
+#include <condition_variable>
 #include <fcntl.h>
 #include <sys/wait.h>
+#include <thread>
 #include <unistd.h>
 #endif
 
@@ -35,6 +39,78 @@ int64_t DatabaseOid(Connection &con) {
 	REQUIRE_NO_FAIL(*result);
 	return result->Collection().GetValue(0, 0).GetValue<int64_t>();
 }
+
+void CreateTable(Connection &con, const string &path, const string &select) {
+	REQUIRE_NO_FAIL(con.Query("ATTACH '" + path + "' AS w"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE w.t AS " + select));
+	REQUIRE_NO_FAIL(con.Query("DETACH w"));
+}
+
+//! Holds a metadata read of the database path until a second one arrives or a second passes, so that two
+//! connections that check the file at the same time both see it replaced
+class GateFileSystem : public LocalFileSystem {
+public:
+	explicit GateFileSystem(string path_p) : path(std::move(path_p)) {
+	}
+
+	bool CanHandleFile(const string &fpath) override {
+		return StringUtil::StartsWith(fpath, path);
+	}
+	optional<FileMetadata> GetStatsIfExists(const OpenFileInfo &file, optional_ptr<FileOpener> opener) override {
+		auto result = LocalFileSystem::GetStatsIfExists(file, opener);
+		if (gate && file.path == path) {
+			std::unique_lock<std::mutex> guard(lock);
+			arrivals++;
+			arrived.notify_all();
+			arrived.wait_for(guard, std::chrono::seconds(1), [&]() { return arrivals >= 2; });
+		}
+		return result;
+	}
+
+	string path;
+	std::atomic<bool> gate {false};
+	std::mutex lock;
+	std::condition_variable arrived;
+	idx_t arrivals = 0;
+};
+
+//! Forwards to a local file system, but reads metadata by opening the file as the FileSystem default does
+class ForwardingFileSystem : public FileSystem {
+public:
+	explicit ForwardingFileSystem(string path_p) : path(std::move(path_p)) {
+	}
+
+	string GetName() const override {
+		return "ForwardingFileSystem";
+	}
+	bool CanHandleFile(const string &fpath) override {
+		return StringUtil::StartsWith(fpath, path);
+	}
+	unique_ptr<FileHandle> OpenFile(const string &fpath, FileOpenFlags flags,
+	                                optional_ptr<FileOpener> opener = nullptr) override {
+		opens++;
+		return local.OpenFile(fpath, flags, opener);
+	}
+	FileMetadata Stats(FileHandle &handle) override {
+		return handle.Stats();
+	}
+	bool FileExists(const string &filename, optional_ptr<FileOpener> opener = nullptr) override {
+		return local.FileExists(filename, opener);
+	}
+	string CanonicalizePath(const string &fpath, optional_ptr<FileOpener> opener = nullptr) override {
+		return local.CanonicalizePath(fpath, opener);
+	}
+	bool CanSeek() override {
+		return true;
+	}
+	bool OnDiskFile(FileHandle &handle) override {
+		return true;
+	}
+
+	string path;
+	LocalFileSystem local;
+	std::atomic<idx_t> opens {0};
+};
 
 } // namespace
 
@@ -71,6 +147,73 @@ TEST_CASE("Test ATTACH OR REPLACE of a database file that was replaced", "[api]"
 	result = con.Query("SELECT i, s FROM r.t");
 	REQUIRE(CHECK_COLUMN(result, 0, {2}));
 	REQUIRE(CHECK_COLUMN(result, 1, {"new"}));
+	REQUIRE(!OtherProcessCanLockForWriting(path));
+	REQUIRE_NO_FAIL(con.Query("DETACH r"));
+	REQUIRE(OtherProcessCanLockForWriting(path));
+}
+
+TEST_CASE("Test ATTACH OR REPLACE of a replaced database file from two connections at once", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	Connection other(db);
+	auto &fs = FileSystem::GetFileSystem(*con.context);
+	auto path = fs.CanonicalizePath(TestCreatePath("or_replace_two_connections.db"));
+	auto new_path = TestCreatePath("or_replace_two_connections_new.db");
+	DeleteDatabase(path);
+	DeleteDatabase(new_path);
+	auto gate_fs = make_uniq<GateFileSystem>(path);
+	auto &gate = *gate_fs;
+	fs.RegisterSubSystem(std::move(gate_fs));
+
+	CreateTable(con, path, "SELECT 1 AS i");
+	REQUIRE_NO_FAIL(con.Query("ATTACH '" + path + "' AS r (READ_ONLY)"));
+	CreateTable(con, new_path, "SELECT 2 AS i");
+	fs.MoveFile(new_path, path);
+
+	// each connection that opened the new file would close it again, releasing the lock of the other
+	gate.gate = true;
+	unique_ptr<QueryResult> results[2];
+	std::thread first([&]() { results[0] = con.Query("ATTACH OR REPLACE '" + path + "' AS r (READ_ONLY)"); });
+	std::thread second([&]() { results[1] = other.Query("ATTACH OR REPLACE '" + path + "' AS r (READ_ONLY)"); });
+	first.join();
+	second.join();
+	REQUIRE_NO_FAIL(*results[0]);
+	REQUIRE_NO_FAIL(*results[1]);
+	REQUIRE(gate.arrivals > 0);
+	auto result = con.Query("SELECT i FROM r.t");
+	REQUIRE(CHECK_COLUMN(result, 0, {2}));
+	REQUIRE(!OtherProcessCanLockForWriting(path));
+	REQUIRE_NO_FAIL(con.Query("DETACH r"));
+	REQUIRE(OtherProcessCanLockForWriting(path));
+}
+
+TEST_CASE("Test ATTACH OR REPLACE of a database file of a file system that opens files to read metadata", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	auto &fs = FileSystem::GetFileSystem(*con.context);
+	auto path = fs.CanonicalizePath(TestCreatePath("or_replace_forwarded.db"));
+	auto new_path = TestCreatePath("or_replace_forwarded_new.db");
+	DeleteDatabase(path);
+	DeleteDatabase(new_path);
+	CreateTable(con, path, "SELECT 1 AS i");
+	auto forwarding_fs = make_uniq<ForwardingFileSystem>(path);
+	auto &forwarding = *forwarding_fs;
+	fs.RegisterSubSystem(std::move(forwarding_fs));
+	REQUIRE_NO_FAIL(con.Query("ATTACH '" + path + "' AS r (READ_ONLY)"));
+	REQUIRE(forwarding.opens > 0);
+	auto oid = DatabaseOid(con);
+
+	// the file is checked without opening it, as closing it would release the lock of the attached database
+	REQUIRE_NO_FAIL(con.Query("ATTACH OR REPLACE '" + path + "' AS r (READ_ONLY)"));
+	REQUIRE(DatabaseOid(con) == oid);
+	REQUIRE(!OtherProcessCanLockForWriting(path));
+
+	CreateTable(con, new_path, "SELECT 2 AS i");
+	fs.MoveFile(new_path, path);
+	REQUIRE_NO_FAIL(con.Query("ATTACH OR REPLACE '" + path + "' AS r (READ_ONLY)"));
+	REQUIRE(DatabaseOid(con) != oid);
+	auto result = con.Query("SELECT i FROM r.t");
+	REQUIRE(CHECK_COLUMN(result, 0, {2}));
 	REQUIRE(!OtherProcessCanLockForWriting(path));
 	REQUIRE_NO_FAIL(con.Query("DETACH r"));
 	REQUIRE(OtherProcessCanLockForWriting(path));

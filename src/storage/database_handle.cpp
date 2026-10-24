@@ -180,11 +180,21 @@ FileHandle &DatabaseHandle::GetFileHandle() {
 	return *handle;
 }
 
-optional<FileMetadata> DatabaseHandle::GetFileMetadata() {
-	if (!handle) {
-		return nullopt;
+bool DatabaseHandle::PathNamesOtherFile(const string &path) {
+	// other file systems may open and close the file to read its metadata, which releases the locks of this handle
+	if (!handle || handle->file_system.GetName() != "LocalFileSystem") {
+		return false;
 	}
-	return handle->Stats();
+	auto current = handle->file_system.GetStatsIfExists(OpenFileInfo(path));
+	if (!current || !current->device_id.IsValid() || !current->file_id.IsValid()) {
+		return false;
+	}
+	auto open = handle->Stats();
+	if (!open.device_id.IsValid() || !open.file_id.IsValid()) {
+		return false;
+	}
+	return open.device_id.GetIndex() != current->device_id.GetIndex() ||
+	       open.file_id.GetIndex() != current->file_id.GetIndex();
 }
 
 void DatabaseHandle::EnsureMappedSize(idx_t required_size) const {

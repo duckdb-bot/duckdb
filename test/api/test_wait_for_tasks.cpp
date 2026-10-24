@@ -2,6 +2,7 @@
 #include "test_helpers.hpp"
 #include "duckdb/common/vector/vector_writer.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
+#include "duckdb/main/query_profiler.hpp"
 
 #if defined(__linux__) || defined(__APPLE__)
 #include <time.h>
@@ -122,6 +123,8 @@ TEST_CASE("Test that the client thread does not poll while a worker runs the onl
 	ExtensionActiveLoad load_info {*db.instance, extension_info, "test_extension", ""};
 	ExtensionLoader loader {load_info};
 	loader.RegisterFunction(handoff);
+	// the profiler records how long threads waited for a task
+	REQUIRE_NO_FAIL(con.Query("PRAGMA enable_profiling = 'no_output'"));
 
 	for (idx_t run = 0; run < 3; run++) {
 		state->Reset();
@@ -138,7 +141,8 @@ TEST_CASE("Test that the client thread does not poll while a worker runs the onl
 		REQUIRE(state->scan_thread != std::this_thread::get_id());
 		REQUIRE_NO_FAIL(*result);
 		REQUIRE(CHECK_COLUMN(result, 0, {42}));
-		// polling keeps this thread busy while the worker holds the task
+		// this thread waits while the worker holds the task, instead of polling
+		REQUIRE(QueryProfiler::Get(*con.context).GetQueryMetrics().blocked_thread_time > 0.5 * wall);
 		REQUIRE(thread < 0.2 * wall);
 	}
 }

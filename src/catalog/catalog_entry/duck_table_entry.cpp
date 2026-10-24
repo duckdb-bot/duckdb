@@ -455,7 +455,6 @@ static void RenameExpression(ParsedExpression &root_expr, RenameColumnInfo &info
 	});
 }
 
-// Keep struct literal defaults aligned with nested field renames.
 //! Remaps the default of a struct column with the mapping and the field defaults of the remap_struct call
 static unique_ptr<ParsedExpression> RemapStructDefault(unique_ptr<ParsedExpression> default_value,
                                                        const LogicalType &new_type, ChangeColumnTypeInfo &info) {

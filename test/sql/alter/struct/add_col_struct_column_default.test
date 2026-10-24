@@ -143,3 +143,21 @@ SELECT i, s, q FROM c ORDER BY i;
 ----
 1	NULL	{'a': 5, 'd': 9}
 2	NULL	{'a': 5, 'd': 9}
+
+# renaming fields of defaults that are not cast yet
+statement ok
+CREATE TABLE r(i INT, s STRUCT(a INT) DEFAULT NULL, q STRUCT(a INT) DEFAULT '{a: 5}');
+
+statement ok
+ALTER TABLE r RENAME s.a TO b;
+
+statement ok
+ALTER TABLE r RENAME q.a TO b;
+
+statement ok
+INSERT INTO r(i) VALUES (1);
+
+query III
+SELECT * FROM r;
+----
+1	NULL	{'b': 5}

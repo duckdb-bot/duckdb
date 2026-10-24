@@ -103,14 +103,15 @@ struct TimeBucket {
 	static inline timestamp_t WidthConvertibleToMicrosCommon(int64_t bucket_width_micros, int64_t ts_micros,
 	                                                         int64_t origin_micros) {
 		origin_micros %= bucket_width_micros;
-		ts_micros = SubtractOperatorOverflowCheck::Operation<int64_t, int64_t, int64_t>(ts_micros, origin_micros);
-
-		int64_t result_micros = (ts_micros / bucket_width_micros) * bucket_width_micros;
-		if (ts_micros < 0 && ts_micros % bucket_width_micros != 0) {
-			result_micros =
-			    SubtractOperatorOverflowCheck::Operation<int64_t, int64_t, int64_t>(result_micros, bucket_width_micros);
+		// the distance past the start of the bucket, computed without the timestamp minus the origin, which can
+		// overflow next to the ends of the range although the bucket fits
+		auto remainder = SubtractOperatorOverflowCheck::Operation<int64_t, int64_t, int64_t>(
+		    ts_micros % bucket_width_micros, origin_micros);
+		remainder %= bucket_width_micros;
+		if (remainder < 0) {
+			remainder += bucket_width_micros;
 		}
-		result_micros = AddOperatorOverflowCheck::Operation<int64_t, int64_t, int64_t>(result_micros, origin_micros);
+		auto result_micros = SubtractOperatorOverflowCheck::Operation<int64_t, int64_t, int64_t>(ts_micros, remainder);
 		if (result_micros < MIN_TIMESTAMP_MICROS) {
 			throw OutOfRangeException("Overflow in TIME_BUCKET: the result is below the minimum TIMESTAMP");
 		}

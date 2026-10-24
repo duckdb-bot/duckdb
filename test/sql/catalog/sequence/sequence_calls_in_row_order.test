@@ -73,3 +73,61 @@ query II
 SELECT count(*), max(n) FROM (SELECT nextval('s7') AS n FROM range(5000));
 ----
 5000	5000
+
+# calls nested in other functions and in lambda bodies
+statement ok
+CREATE SEQUENCE s8;
+
+query I
+SELECT nextval('s8') + currval('s8') FROM range(4);
+----
+2
+4
+6
+8
+
+statement ok
+CREATE SEQUENCE s9;
+
+query I
+SELECT abs(CASE WHEN x THEN nextval('s9') ELSE currval('s9') END) FROM unnest([1, 0, 1, 0]) _(x);
+----
+1
+1
+2
+2
+
+statement ok
+CREATE SEQUENCE s10;
+
+query II
+SELECT list_transform([i], lambda v: nextval('s10')), currval('s10') FROM range(4) _(i);
+----
+[1]	1
+[2]	2
+[3]	3
+[4]	4
+
+# strings and lists of a filtered input that spans several vectors pass through unchanged
+statement ok
+CREATE SEQUENCE s11;
+
+query IIIII
+SELECT count(*), sum(n - c), sum(len(s)), sum(l[2]), max(n)
+FROM (SELECT nextval('s11') AS n, currval('s11') AS c, repeat('x', i % 50) || i AS s, [i, i + 1] AS l FROM range(5000) t(i) WHERE i % 3 <> 0);
+----
+3333	0	94261	8335000	3333
+
+# the rows before an error have taken their values, as in PostgreSQL
+statement ok
+CREATE SEQUENCE s12;
+
+statement error
+SELECT CASE WHEN i = 3 THEN error('stop') ELSE nextval('s12') END, currval('s12') FROM range(5) t(i);
+----
+stop
+
+query I
+SELECT currval('s12');
+----
+3

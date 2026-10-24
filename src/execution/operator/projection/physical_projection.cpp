@@ -1,6 +1,7 @@
 #include "duckdb/execution/operator/projection/physical_projection.hpp"
 #include "duckdb/parallel/thread_context.hpp"
 #include "duckdb/execution/expression_executor.hpp"
+#include "duckdb/function/lambda_functions.hpp"
 #include "duckdb/function/scalar/sequence_functions.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
@@ -8,22 +9,37 @@
 
 namespace duckdb {
 
+//! Counts the calls of functions that require ordered execution, as nextval, and of currval, also in nested calls and
+//! in lambda bodies
+static void CountOrderedCalls(const Expression &expr, idx_t &sequence_calls, bool &requires_ordered_execution) {
+	if (expr.GetExpressionClass() == ExpressionClass::BOUND_FUNCTION) {
+		auto &function = expr.Cast<BoundFunctionExpression>();
+		if (function.Function().RequiresOrderedExecution()) {
+			requires_ordered_execution = true;
+			sequence_calls++;
+		} else if (function.Function().GetName() == CurrvalFun::Name) {
+			sequence_calls++;
+		}
+		if (function.Function().HasBindLambdaCallback() && function.BindInfo()) {
+			auto lambda = function.BindInfo()->Cast<LambdaFunctionData>().GetLambdaExpression();
+			if (lambda) {
+				CountOrderedCalls(*lambda, sequence_calls, requires_ordered_execution);
+			}
+		}
+	}
+	ExpressionIterator::EnumerateChildren(
+	    expr, [&](const Expression &child) { CountOrderedCalls(child, sequence_calls, requires_ordered_execution); });
+}
+
 //! Whether the select list calls sequence functions that see what the others do, which must then happen in the order
 //! of the rows, as when a currval follows the nextval of an earlier row
 static bool CallsDependentSequenceFunctions(const vector<unique_ptr<Expression>> &expressions) {
 	idx_t sequence_calls = 0;
-	bool changes_sequence = false;
+	bool requires_ordered_execution = false;
 	for (auto &expression : expressions) {
-		ExpressionIterator::VisitExpression<BoundFunctionExpression>(*expression, [&](const auto &function) {
-			if (function.RequiresOrderedExecution()) {
-				changes_sequence = true;
-				sequence_calls++;
-			} else if (function.Function().GetName() == CurrvalFun::Name) {
-				sequence_calls++;
-			}
-		});
+		CountOrderedCalls(*expression, sequence_calls, requires_ordered_execution);
 	}
-	return changes_sequence && sequence_calls > 1;
+	return requires_ordered_execution && sequence_calls > 1;
 }
 
 class ProjectionState : public OperatorState {
@@ -109,18 +125,12 @@ unique_ptr<OperatorState> PhysicalProjection::GetOperatorState(ExecutionContext 
 }
 
 bool PhysicalProjection::ParallelOperator() const {
+	idx_t sequence_calls = 0;
+	bool requires_ordered_execution = false;
 	for (auto &expression : select_list) {
-		bool requires_ordered_execution = false;
-		ExpressionIterator::VisitExpression<BoundFunctionExpression>(*expression, [&](const auto &function) {
-			if (function.RequiresOrderedExecution()) {
-				requires_ordered_execution = true;
-			}
-		});
-		if (requires_ordered_execution) {
-			return false;
-		}
+		CountOrderedCalls(*expression, sequence_calls, requires_ordered_execution);
 	}
-	return true;
+	return !requires_ordered_execution;
 }
 
 InsertionOrderPreservingMap<string> PhysicalProjection::ParamsToString() const {

@@ -65,6 +65,10 @@ void Allocator::FlushAll() {
 	MallocTrim(0);
 }
 
+void Allocator::FlushThreadCacheAndSystemHeap() {
+	MallocTrim(0);
+}
+
 void Allocator::SetBackgroundThreads(bool enable) {
 	/* no-op */
 }

@@ -132,6 +132,8 @@ public:
 	static void ThreadFlush(bool allocator_background_threads, idx_t threshold, idx_t thread_count);
 	static void ThreadIdle();
 	static void FlushAll();
+	//! Gives back what FlushAll gives back except the freed pages of the allocator's arenas, which take long to purge
+	static void FlushThreadCacheAndSystemHeap();
 	static void SetBackgroundThreads(bool enable);
 
 private:

@@ -164,6 +164,12 @@ void Allocator::FlushAll() {
 	MallocTrim(0);
 }
 
+void Allocator::FlushThreadCacheAndSystemHeap() {
+	SetJemallocCTL("thread.tcache.flush");
+	SetJemallocCTL("thread.peak.reset");
+	MallocTrim(0);
+}
+
 void Allocator::SetBackgroundThreads(bool enable) {
 #ifndef __APPLE__
 	SetJemallocCTL("background_thread", enable);

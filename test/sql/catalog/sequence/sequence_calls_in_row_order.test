@@ -131,3 +131,25 @@ query I
 SELECT currval('s12');
 ----
 3
+
+# stored rows with strings and lists
+statement ok
+CREATE TABLE payload AS SELECT i, repeat('x', i % 50) || i AS s, [i, i + 1] AS l FROM range(600000) t(i);
+
+statement ok
+CREATE SEQUENCE s13;
+
+query IIII
+SELECT count(*), sum(n - c), sum(len(s)), sum(l[2])
+FROM (SELECT nextval('s13') AS n, currval('s13') AS c, s, l FROM payload WHERE i % 3 <> 0);
+----
+400000	0	12125930	120000400000
+
+# a nested nextval keeps the projection on one thread, so it numbers the rows in their order
+statement ok
+CREATE SEQUENCE s14;
+
+query I
+SELECT count(*) FROM (SELECT i, abs(abs(nextval('s14'))) AS n FROM payload) WHERE n <> i + 1;
+----
+0

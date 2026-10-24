@@ -1,5 +1,5 @@
 # name: test/sql/attach/attach_or_replace_same_path.test
-# description: ATTACH OR REPLACE of the attached path opens the file again (duckdblabs/bot-issue-tracker#540)
+# description: ATTACH OR REPLACE of a path attached for reading opens the file again (duckdblabs/bot-issue-tracker#540)
 # group: [attach]
 
 statement ok
@@ -11,14 +11,14 @@ CREATE TABLE db1.t AS SELECT 1 AS i;
 statement ok
 CREATE TABLE oids AS SELECT database_oid AS oid FROM duckdb_databases() WHERE database_name = 'db1';
 
-# a database attached for writing is detached and attached again
+# a database attached for writing stays attached
 statement ok
 ATTACH OR REPLACE '{TEST_DIR}/or_replace_same_path.db' AS db1;
 
 query II
 SELECT i, (SELECT database_oid FROM duckdb_databases() WHERE database_name = 'db1') IN (SELECT oid FROM oids) FROM db1.t;
 ----
-1	false
+1	true
 
 statement ok
 INSERT INTO db1.t VALUES (2);
@@ -46,6 +46,23 @@ SELECT count(*) FROM duckdb_databases() WHERE database_name = 'db1';
 ----
 1
 
+# without an access mode the new one is attached for reading as well
+statement ok
+INSERT INTO oids SELECT database_oid FROM duckdb_databases() WHERE database_name = 'db1';
+
+statement ok
+ATTACH OR REPLACE '{TEST_DIR}/or_replace_same_path.db' AS db1;
+
+query I
+SELECT database_oid IN (SELECT oid FROM oids) FROM duckdb_databases() WHERE database_name = 'db1';
+----
+false
+
+statement error
+INSERT INTO db1.t VALUES (3);
+----
+read-only
+
 # IF NOT EXISTS keeps the attached database
 statement ok
 INSERT INTO oids SELECT database_oid FROM duckdb_databases() WHERE database_name = 'db1';
@@ -58,7 +75,7 @@ SELECT database_oid IN (SELECT oid FROM oids) FROM duckdb_databases() WHERE data
 ----
 true
 
-# the default database can be replaced, for reading and for writing
+# the default database can be replaced
 statement ok
 ATTACH ':memory:' AS other_db;
 
@@ -76,31 +93,28 @@ SELECT sum(i) FROM t;
 statement ok
 USE other_db;
 
+# a transaction that read the database can replace it
 statement ok
-DETACH db1;
-
-statement ok
-ATTACH '{TEST_DIR}/or_replace_same_path.db' AS db1;
-
-statement ok
-USE db1;
-
-statement ok
-ATTACH OR REPLACE '{TEST_DIR}/or_replace_same_path.db' AS db1;
-
-statement ok
-INSERT INTO t VALUES (3);
+BEGIN
 
 query I
-SELECT sum(i) FROM t;
+SELECT sum(i) FROM db1.t
 ----
-6
+3
 
 statement ok
-USE other_db;
+ATTACH OR REPLACE '{TEST_DIR}/or_replace_same_path.db' AS db1 (READ_ONLY);
+
+query I
+SELECT sum(i) FROM db1.t
+----
+3
+
+statement ok
+COMMIT
 
 # a different access mode is still an error
 statement error
-ATTACH OR REPLACE '{TEST_DIR}/or_replace_same_path.db' AS db1 (READ_ONLY);
+ATTACH OR REPLACE '{TEST_DIR}/or_replace_same_path.db' AS db1 (READ_WRITE);
 ----
-already attached in READ_WRITE mode
+already attached in READ_ONLY mode

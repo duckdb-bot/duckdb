@@ -154,15 +154,11 @@ shared_ptr<AttachedDatabase> DatabaseManager::AttachDatabase(ClientContext &cont
 				}
 				// allow custom catalogs to override this behavior
 				if (!existing_db->GetCatalog().HasConflictingAttachOptions(info.path, options)) {
-					if (!requires_tracking_attaches) {
+					// a DuckDB file attached for reading may have been replaced, so it is opened again next to it
+					if (!existing_db->IsReadOnly() || existing_db->StoredPath().empty()) {
 						return existing_db;
 					}
-					// the file may have been replaced, so it is opened again
-					if (!existing_db->IsReadOnly()) {
-						// a file can be attached for writing only once
-						existing_db.reset();
-						DetachDatabase(context, info.name, OnEntryNotFound::RETURN_NULL, true);
-					}
+					options.access_mode = AccessMode::READ_ONLY;
 				}
 			} else {
 				return existing_db;

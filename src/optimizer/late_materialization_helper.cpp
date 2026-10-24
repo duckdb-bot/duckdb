@@ -9,7 +9,7 @@ unique_ptr<LogicalGet> LateMaterializationHelper::CreateLHSGet(const LogicalGet 
 	auto table_index = binder.GenerateTableIndex();
 	auto new_get = make_uniq<LogicalGet>(table_index, rhs.function, rhs.bind_data->Copy(), rhs.returned_types,
 	                                     rhs.names, rhs.virtual_columns);
-	if (rhs.function.GetName() == TableScanFunction::GetFunction().GetName()) {
+	if (rhs.function.function == TableScanFunction::GetFunction().function) {
 		// a DuckDB table fetches the rows that the join on row ids names
 		new_get->bind_data->Cast<TableScanBindData>().fetch_filtered_row_ids = true;
 	}

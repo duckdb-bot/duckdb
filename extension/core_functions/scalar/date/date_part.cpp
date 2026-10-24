@@ -1247,7 +1247,12 @@ int64_t DatePart::EpochMicrosecondsOperator::Operation(interval_t input) {
 template <>
 int64_t DatePart::EpochMillisOperator::Operation(timestamp_t input) {
 	D_ASSERT(input.IsFinite());
-	return Cast::Operation<timestamp_t, timestamp_ms_t>(input).value;
+	// rounded away from the epoch as the cast to TIMESTAMP_MS rounds, but a count of milliseconds next to the ends
+	// of the range is not a timestamp, so it is not checked as one
+	const int64_t half_millisecond = Interval::MICROS_PER_MSEC / 2;
+	auto result = input.value / half_millisecond;
+	result += result < 0 ? -1 : 1;
+	return result / 2;
 }
 
 template <>

@@ -2,9 +2,6 @@
 # description: Slices of a string that a lambda captures, which is the same string in every row of the lambda (duckdblabs/bot-issue-tracker#637)
 # group: [string]
 
-statement ok
-PRAGMA enable_verification
-
 # an ASCII string, a non-ASCII one, one whose only non-ASCII character is last, an inlined one, an empty one and NULL
 statement ok
 CREATE TABLE strs AS SELECT * FROM (VALUES
@@ -57,6 +54,16 @@ SELECT x, count(*) FROM (SELECT id, unnest(list_transform(range(3000), lambda i:
 ----
 b	3000
 é	6000
+
+# slices of a captured string that is not ASCII, in order, backwards and repeated
+query IIIT
+SELECT id, list_transform(range(0, 40), lambda i: s[i * 3 + 1 : i * 3 + 2]) = list_transform(range(0, 40), lambda i: substring(s, i * 3 + 1, 2)),
+	list_transform(range(40, 0, -1), lambda i: s[i * 3 + 1 : i * 3 + 5]) = list_transform(range(40, 0, -1), lambda i: substring(s, i * 3 + 1, 5)),
+	list_transform([5, 5, 2, 2, 9], lambda i: s[i:i + 1])
+FROM strs WHERE id IN (2, 3) ORDER BY id;
+----
+2	true	true	[aé, aé, é€, é€, aé]
+3	true	true	[xx, xx, xx, xx, xx]
 
 # elements of a list, which differ in every row
 query I

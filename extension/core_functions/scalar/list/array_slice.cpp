@@ -76,36 +76,69 @@ struct StringSliceOperations {
 		if (value.IsInlined()) {
 			return Length<string_t, int64_t>(value);
 		}
-		Analyze(value);
+		if (value.GetData() == last_data && value.GetSize() == last_size) {
+			return last_length;
+		}
+		last_data = value.GetData();
+		last_size = value.GetSize();
+		last_length = Length<string_t, int64_t>(value);
+		last_ascii = AsciiCheck::NOT_CHECKED;
+		known_character = 0;
+		known_byte = 0;
 		return last_length;
 	}
 
 	string_t SliceValue(Vector &result, string_t input, int64_t begin, int64_t end) {
-		if (!input.IsInlined()) {
-			Analyze(input);
-			if (last_is_ascii) {
-				return SubstringASCII(result, input, begin + 1, end - begin);
+		// the previous row sliced the same string, as when a lambda captures it
+		const bool repeats = input.GetData() == previous_data && input.GetSize() == previous_size;
+		previous_data = input.GetData();
+		previous_size = input.GetSize();
+		if (!repeats || input.IsInlined() || input.GetData() != last_data || input.GetSize() != last_size) {
+			return SubstringUnicode(result, input, begin + 1, end - begin);
+		}
+		// a repeated string is checked for ASCII once, and a string that is not ASCII is searched for the start of
+		// a slice from where the previous slice ended instead of from its start
+		if (last_ascii == AsciiCheck::NOT_CHECKED) {
+			last_ascii = IsAscii(last_data, last_size) ? AsciiCheck::ASCII : AsciiCheck::NOT_ASCII;
+		}
+		if (last_ascii == AsciiCheck::ASCII) {
+			return SubstringASCII(result, input, begin + 1, end - begin);
+		}
+		auto start_byte = BytePosition(begin);
+		auto end_byte = BytePosition(end);
+		return StringVector::AddString(result, last_data + start_byte, end_byte - start_byte);
+	}
+
+	//! The byte at which a character of the last string starts, or its size past its last character. A character
+	//! after the one found before is searched from there
+	idx_t BytePosition(int64_t character) {
+		if (character < known_character) {
+			known_character = 0;
+			known_byte = 0;
+		}
+		while (known_character < character && known_byte < last_size) {
+			known_byte++;
+			while (known_byte < last_size && (static_cast<unsigned char>(last_data[known_byte]) & 0xC0) == 0x80) {
+				known_byte++;
 			}
+			known_character++;
 		}
-		return SubstringUnicode(result, input, begin + 1, end - begin);
+		return known_byte;
 	}
 
-	//! A string that a lambda captures is the same in every row, so the last string is only checked again when
-	//! another one comes. Inlined strings are short and are copied out of the vector, so they are not remembered
-	void Analyze(const string_t &value) {
-		if (value.GetData() == last_data && value.GetSize() == last_size) {
-			return;
-		}
-		last_data = value.GetData();
-		last_size = value.GetSize();
-		last_is_ascii = IsAscii(last_data, last_size);
-		last_length = last_is_ascii ? UnsafeNumericCast<int64_t>(last_size) : Length<string_t, int64_t>(value);
-	}
+	enum class AsciiCheck : uint8_t { NOT_CHECKED, ASCII, NOT_ASCII };
 
+	//! The last string that was not inlined, as inlined strings are copied out of the vector, and its code points
 	const char *last_data = nullptr;
 	idx_t last_size = 0;
-	bool last_is_ascii = false;
 	int64_t last_length = 0;
+	//! The string that the previous row sliced
+	const char *previous_data = nullptr;
+	idx_t previous_size = 0;
+	AsciiCheck last_ascii = AsciiCheck::NOT_CHECKED;
+	//! A character of the last string and the byte at which it starts
+	int64_t known_character = 0;
+	idx_t known_byte = 0;
 
 	static string_t SliceValueWithSteps(Vector &result, SelectionVector &sel, string_t input, int64_t begin,
 	                                    int64_t end, int64_t step, idx_t &sel_idx) {
@@ -318,14 +351,25 @@ void ArraySliceFunction(DataChunk &args, ExpressionState &state, Vector &result)
 		break;
 	}
 	case LogicalTypeId::BLOB:
-		// the slices are copied into the result, so the strings are read from the input instead of copying them first
-		ExecuteSlice<string_t, int64_t, BlobSliceOperations>(result, args.data[0], begin_vector, end_vector,
-		                                                     step_vector, count, begin_is_empty, end_is_empty);
+	case LogicalTypeId::VARCHAR: {
+		// the slices are copied into the result, so a dictionary or constant input, whose strings repeat in its rows
+		// as those of a string that a lambda captures do, is read as it is instead of copying every row's string
+		auto &input = args.data[0];
+		const bool repeats_strings = input.GetVectorType() == VectorType::DICTIONARY_VECTOR ||
+		                             input.GetVectorType() == VectorType::CONSTANT_VECTOR;
+		Vector &strings = repeats_strings ? input : result;
+		if (!repeats_strings) {
+			VectorOperations::Copy(input, strings, count, 0, 0);
+		}
+		if (result.GetType().id() == LogicalTypeId::BLOB) {
+			ExecuteSlice<string_t, int64_t, BlobSliceOperations>(result, strings, begin_vector, end_vector, step_vector,
+			                                                     count, begin_is_empty, end_is_empty);
+		} else {
+			ExecuteSlice<string_t, int64_t, StringSliceOperations>(result, strings, begin_vector, end_vector,
+			                                                       step_vector, count, begin_is_empty, end_is_empty);
+		}
 		break;
-	case LogicalTypeId::VARCHAR:
-		ExecuteSlice<string_t, int64_t, StringSliceOperations>(result, args.data[0], begin_vector, end_vector,
-		                                                       step_vector, count, begin_is_empty, end_is_empty);
-		break;
+	}
 	default:
 		throw NotImplementedException("Specifier type not implemented");
 	}

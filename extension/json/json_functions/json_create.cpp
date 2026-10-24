@@ -1,3 +1,4 @@
+#include "duckdb/common/algorithm.hpp"
 #include "duckdb/common/vector/array_vector.hpp"
 #include "duckdb/common/vector/flat_vector.hpp"
 #include "duckdb/common/vector/list_vector.hpp"
@@ -676,46 +677,65 @@ class SharedChildValues {
 public:
 	SharedChildValues(const UnifiedVectorFormat &list_data, const list_entry_t *entries, idx_t count,
 	                  idx_t child_count) {
-		// entries that each start after the previous one, or repeat it, share no values
+		if (EntriesOverlap(list_data, entries, count)) {
+			owners.resize(child_count, list_entry_t(0, 0));
+		}
+	}
+
+	//! Whether a list entry with other bounds holds the child already, so the list entry needs a copy of it
+	bool MustCopy(const list_entry_t &entry, idx_t child_idx) {
+		if (owners.empty()) {
+			return false;
+		}
+		auto &owner = owners[child_idx];
+		if (owner.length == 0) {
+			owner = entry;
+			return false;
+		}
+		return owner.offset != entry.offset || owner.length != entry.length;
+	}
+
+private:
+	//! Whether two list entries with other bounds share children
+	static bool EntriesOverlap(const UnifiedVectorFormat &list_data, const list_entry_t *entries, idx_t count) {
+		// entries that each start after the previous one, or repeat it, share nothing
+		bool sequential = true;
 		optional_ptr<const list_entry_t> previous;
 		idx_t end = 0;
-		for (idx_t i = 0; i < count && !track; i++) {
+		vector<list_entry_t> sorted;
+		for (idx_t i = 0; i < count; i++) {
 			auto idx = list_data.sel->get_index(i);
 			if (!list_data.validity.RowIsValid(idx) || entries[idx].length == 0) {
 				continue;
 			}
 			auto &entry = entries[idx];
+			sorted.push_back(entry);
 			if (previous && previous->offset == entry.offset && previous->length == entry.length) {
 				continue;
 			}
-			track = entry.offset < end;
+			sequential = sequential && entry.offset >= end;
 			end = entry.offset + entry.length;
 			previous = &entry;
 		}
-		if (track) {
-			owners.resize(child_count, list_entry_t(0, 0));
+		if (sequential) {
+			return false;
 		}
+		std::sort(sorted.begin(), sorted.end(), [](const list_entry_t &a, const list_entry_t &b) {
+			return a.offset < b.offset || (a.offset == b.offset && a.length < b.length);
+		});
+		end = 0;
+		for (idx_t i = 0; i < sorted.size(); i++) {
+			if (i > 0 && sorted[i].offset == sorted[i - 1].offset && sorted[i].length == sorted[i - 1].length) {
+				continue;
+			}
+			if (sorted[i].offset < end) {
+				return true;
+			}
+			end = MaxValue<idx_t>(end, sorted[i].offset + sorted[i].length);
+		}
+		return false;
 	}
 
-	//! The value of a child for the list entry, or a copy of it when a list entry with other bounds holds it
-	yyjson_mut_val *Take(yyjson_mut_doc *doc, yyjson_mut_val *child_vals[], const list_entry_t &entry,
-	                     idx_t child_idx) {
-		if (!track) {
-			return child_vals[child_idx];
-		}
-		auto &owner = owners[child_idx];
-		if (owner.length == 0) {
-			owner = entry;
-			return child_vals[child_idx];
-		}
-		if (owner.offset == entry.offset && owner.length == entry.length) {
-			return child_vals[child_idx];
-		}
-		return JSONCommon::MutValMutCopy(doc, child_vals[child_idx], true);
-	}
-
-private:
-	bool track = false;
 	vector<list_entry_t> owners;
 };
 
@@ -735,8 +755,7 @@ static void CreateValuesMap(const StructNames &names, yyjson_mut_doc *doc, yyjso
 	UnifiedVectorFormat map_data;
 	value_v.ToUnifiedFormat(map_data);
 	auto map_key_list_entries = UnifiedVectorFormat::GetData<list_entry_t>(map_data);
-	SharedChildValues shared_keys(map_data, map_key_list_entries, count, map_key_count);
-	SharedChildValues shared_vals(map_data, map_key_list_entries, count, map_val_count);
+	SharedChildValues shared_entries(map_data, map_key_list_entries, count, map_key_count);
 	for (idx_t i = 0; i < count; i++) {
 		idx_t idx = map_data.sel->get_index(i);
 		if (!map_data.validity.RowIsValid(idx)) {
@@ -748,8 +767,13 @@ static void CreateValuesMap(const StructNames &names, yyjson_mut_doc *doc, yyjso
 			for (idx_t child_i = key_list_entry.offset; child_i < key_list_entry.offset + key_list_entry.length;
 			     child_i++) {
 				if (!unsafe_yyjson_is_null(nested_keys[child_i])) {
-					yyjson_mut_obj_add(vals[i], shared_keys.Take(doc, nested_keys, key_list_entry, child_i),
-					                   shared_vals.Take(doc, nested_vals, key_list_entry, child_i));
+					auto key = nested_keys[child_i];
+					auto value = nested_vals[child_i];
+					if (shared_entries.MustCopy(key_list_entry, child_i)) {
+						key = JSONCommon::MutValMutCopy(doc, key, true);
+						value = JSONCommon::MutValMutCopy(doc, value, true);
+					}
+					yyjson_mut_obj_add(vals[i], key, value);
 				}
 			}
 		}
@@ -846,7 +870,11 @@ static void CreateValuesList(const StructNames &names, yyjson_mut_doc *doc, yyjs
 			vals[i] = yyjson_mut_arr(doc);
 			const auto &entry = list_entries[idx];
 			for (idx_t child_i = entry.offset; child_i < entry.offset + entry.length; child_i++) {
-				yyjson_mut_arr_append(vals[i], shared_values.Take(doc, nested_vals, entry, child_i));
+				auto value = nested_vals[child_i];
+				if (shared_values.MustCopy(entry, child_i)) {
+					value = JSONCommon::MutValMutCopy(doc, value, true);
+				}
+				yyjson_mut_arr_append(vals[i], value);
 			}
 		}
 	}

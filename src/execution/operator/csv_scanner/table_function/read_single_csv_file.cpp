@@ -15,6 +15,23 @@ struct ReadSingleCSVFileData : public ReadCSVData {
 	//! The names/types this file is read with
 	vector<Identifier> csv_names;
 	vector<LogicalType> csv_types;
+
+	//! Hands out the buffers that were read from a file to combine the schema, once, so that the file is read on from
+	//! them instead of being opened again
+	shared_ptr<CSVBufferManager> TakeSniffedBuffers(const string &path) const {
+		lock_guard<mutex> guard(sniffed_lock);
+		auto entry = sniffed_buffers.find(path);
+		if (entry == sniffed_buffers.end()) {
+			return nullptr;
+		}
+		auto result = std::move(entry->second);
+		sniffed_buffers.erase(entry);
+		return result;
+	}
+
+	//! The buffers of the files that were sniffed to combine the schema, by path
+	mutable unordered_map<string, shared_ptr<CSVBufferManager>> sniffed_buffers;
+	mutable mutex sniffed_lock;
 };
 
 struct ReadSingleCSVFileGlobalState : public GlobalTableFunctionState {
@@ -93,7 +110,9 @@ static void SniffCSVFile(ClientContext &context, ReadSingleCSVFileData &result, 
                          const MultiFileOptions &file_options, vector<LogicalType> &return_types,
                          vector<Identifier> &names) {
 	auto &options = result.options;
-	result.buffer_manager = CSVBufferManager::Open(context, options, options.file_path, false);
+	if (!result.buffer_manager) {
+		result.buffer_manager = CSVBufferManager::Open(context, options, options.file_path, false);
+	}
 	auto &state_machine_cache = CSVStateMachineCache::Get(context);
 	if (file_schema.Empty()) {
 		// the columns of this file are fixed - only its dialect is sniffed
@@ -178,6 +197,7 @@ static unique_ptr<FunctionData> ReadSingleCSVFileBind(ClientContext &context, Ta
 	if (schema_source) {
 		// the schema of this file must be reconcilable with the schema of the scan
 		result->csv_schema = schema_source->csv_schema;
+		result->buffer_manager = schema_source->TakeSniffedBuffers(result->file.path);
 		if (options.auto_detect) {
 			SniffCSVFile(context, *result, result->csv_schema, file_options, return_types, names);
 		}
@@ -255,11 +275,15 @@ static unique_ptr<FunctionData> ReadSingleCSVFileCombineSchema(ClientContext &co
 	}
 	optional_ptr<const ReadSingleCSVFileData> first_file;
 	CSVSchema best_schema;
+	unordered_map<string, shared_ptr<CSVBufferManager>> sniffed_buffers;
 	for (auto &bind_data : input.bind_data) {
 		auto &csv_data = bind_data.get().Cast<ReadSingleCSVFileData>();
 		if (csv_data.csv_schema.Empty()) {
 			// the schema of this file was not sniffed - fall back to combining the types
 			return nullptr;
+		}
+		if (csv_data.buffer_manager) {
+			sniffed_buffers[csv_data.file.path] = csv_data.buffer_manager;
 		}
 		auto schema = csv_data.csv_schema;
 		if (first_file && schema.IsEmptyFile()) {
@@ -296,6 +320,8 @@ static unique_ptr<FunctionData> ReadSingleCSVFileCombineSchema(ClientContext &co
 	// the buffer manager of the first file is kept, like the multi-file sniffer does - it tells the scan whether
 	// the files can be read ahead, and the first file does not need to be opened again
 	result->buffer_manager = first_file->buffer_manager;
+	// every file that was sniffed is read on from its buffers, which pipes cannot give a second time
+	result->sniffed_buffers = std::move(sniffed_buffers);
 	result->csv_schema = best_schema;
 	result->csv_names = names;
 	result->csv_types = return_types;

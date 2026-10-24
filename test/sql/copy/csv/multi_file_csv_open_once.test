@@ -1,0 +1,48 @@
+# name: test/sql/copy/csv/multi_file_csv_open_once.test
+# description: The CSV files that are sniffed to combine the schema are read on from what was sniffed instead of being opened again (duckdblabs/bot-issue-tracker#554)
+# group: [csv]
+
+statement ok
+COPY (SELECT 1 AS c1, 'a' AS c2) TO '{TEST_DIR}/open_once_1.csv';
+
+statement ok
+COPY (SELECT 2 AS c1, 'b' AS c2) TO '{TEST_DIR}/open_once_2.csv';
+
+statement ok
+COPY (SELECT i AS c1, repeat('x', 100) || i AS c2 FROM range(300000) t(i)) TO '{TEST_DIR}/open_once_3.csv';
+
+statement ok
+CALL enable_logging('FileSystem');
+
+query III
+SELECT count(*), sum(c1), sum(length(c2)) FROM read_csv(['{TEST_DIR}/open_once_1.csv', '{TEST_DIR}/open_once_2.csv', '{TEST_DIR}/open_once_3.csv']);
+----
+300002	44999850003	31688892
+
+statement ok
+CALL disable_logging();
+
+query II
+SELECT parse_filename(path), count(*) FROM duckdb_logs_parsed('FileSystem')
+WHERE op = 'OPEN' AND path LIKE '%open_once_%' GROUP BY ALL ORDER BY ALL;
+----
+open_once_1.csv	1
+open_once_2.csv	1
+open_once_3.csv	1
+
+# the same file twice is read twice
+query I
+SELECT count(*) FROM read_csv(['{TEST_DIR}/open_once_1.csv', '{TEST_DIR}/open_once_1.csv', '{TEST_DIR}/open_once_2.csv']);
+----
+3
+
+# files beyond the ones sniffed, and only one sniffed file
+query II
+SELECT count(*), sum(c1) FROM read_csv(['{TEST_DIR}/open_once_1.csv', '{TEST_DIR}/open_once_2.csv', '{TEST_DIR}/open_once_3.csv'], files_to_sniff = 2);
+----
+300002	44999850003
+
+query II
+SELECT count(*), sum(c1) FROM read_csv(['{TEST_DIR}/open_once_2.csv', '{TEST_DIR}/open_once_1.csv'], files_to_sniff = 1);
+----
+2	3

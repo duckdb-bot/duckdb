@@ -1,0 +1,108 @@
+# name: test/sql/types/nested/map/test_map_extract_collation.test
+# description: map_extract, map_extract_value, element_at and subscripts respect the collations of map keys (duckdblabs/bot-issue-tracker#487)
+# group: [map]
+
+statement ok
+SET debug_verify_serializer = true;
+
+query IIIII
+SELECT MAP {'Apple': 1}['apple' COLLATE NOCASE],
+       map_extract_value(MAP {'Apple': 1}, 'apple' COLLATE NOCASE),
+       map_extract(MAP {'Apple': 1}, 'apple' COLLATE NOCASE),
+       element_at(MAP {'Apple': 1}, 'apple' COLLATE NOCASE),
+       map_contains(MAP {'Apple': 1}, 'apple' COLLATE NOCASE);
+----
+1	1	[1]	[1]	true
+
+statement ok
+CREATE TABLE t (k VARCHAR COLLATE NOCASE);
+
+statement ok
+INSERT INTO t VALUES ('Apple');
+
+query III
+SELECT map([k], [1])['apple'], map_extract(map([k], [1]), 'apple'), map_contains(map([k], [1]), 'apple') FROM t;
+----
+1	[1]	true
+
+# missing keys, NULL keys and maps, NULL values and empty maps behave as without a collation
+statement ok
+CREATE TABLE m (id INT, m MAP(VARCHAR, VARCHAR), k VARCHAR);
+
+statement ok
+INSERT INTO m VALUES (1, MAP {'Apple': 'Pie', 'b': NULL}, 'APPLE'), (2, NULL, 'apple'), (3, MAP {'Apple': 'Pie'}, NULL),
+	(4, MAP {'Apple': 'Pie'}, 'pear'), (5, MAP {'Apple': 'Pie', 'b': NULL}, 'B'), (6, MAP {}, 'apple'),
+	(7, MAP {'Apple': 'Pie'}, 'Apple');
+
+query IIIIII
+SELECT id, m[k COLLATE NOCASE], map_extract(m, k COLLATE NOCASE), element_at(m, k COLLATE NOCASE), m[k], map_extract(m, k)
+FROM m ORDER BY id;
+----
+1	Pie	[Pie]	[Pie]	NULL	[]
+2	NULL	NULL	NULL	NULL	NULL
+3	NULL	[]	[]	NULL	[]
+4	NULL	[]	[]	NULL	[]
+5	NULL	[NULL]	[NULL]	NULL	[]
+6	NULL	[]	[]	NULL	[]
+7	Pie	[Pie]	[Pie]	Pie	[Pie]
+
+# the values keep their case and type
+query II
+SELECT typeof(m[k COLLATE NOCASE]), typeof(map_extract(m, k COLLATE NOCASE)) FROM m WHERE id = 1;
+----
+VARCHAR	VARCHAR[]
+
+query III
+SELECT MAP {'Apple': 1}['APPLE' COLLATE NOACCENT.NOCASE], MAP {'Äpple': 1}['apple' COLLATE NOACCENT.NOCASE],
+       MAP {'Äpple': 1}['apple' COLLATE NOCASE];
+----
+1	1	NULL
+
+# keys that are lists of collated strings
+query II
+SELECT map([['A' COLLATE NOCASE, 'b']], [1])[['a', 'B']], map_extract(map([['A' COLLATE NOCASE, 'b']], [1]), ['a', 'C']);
+----
+1	[]
+
+# lookups inside lambdas, with the key as a lambda parameter or a captured column
+query II
+SELECT list_transform([MAP {'Apple': 1}, MAP {'APPLE': 2}], lambda x: x['apple' COLLATE NOCASE]),
+       list_transform(['apple', 'APPLE', 'pear'], lambda x: MAP {'Apple': 1}[x COLLATE NOCASE]);
+----
+[1, 2]	[1, 1, NULL]
+
+query II
+SELECT id, list_transform([k, upper(k)], lambda y: list_transform([m], lambda z: map_extract(z, y COLLATE NOCASE)))
+FROM m WHERE id <= 2 ORDER BY id;
+----
+1	[[[Pie]], [[Pie]]]
+2	[[NULL], [NULL]]
+
+query II
+SELECT id, [z FOR z IN [m] IF z[k COLLATE NOCASE] IS NOT NULL] FROM m WHERE id <= 2 ORDER BY id;
+----
+1	[{Apple=Pie, b=NULL}]
+2	[]
+
+# the map and the key are evaluated once
+query I
+SELECT MAP {'Apple': 1}[(CASE WHEN random() < 2 THEN 'apple' END) COLLATE NOCASE];
+----
+1
+
+statement ok
+CREATE VIEW v AS SELECT id, m['APPLE' COLLATE NOCASE] AS x FROM m;
+
+query II
+SELECT * FROM v WHERE id IN (1, 2) ORDER BY id;
+----
+1	Pie
+2	NULL
+
+statement ok
+PREPARE p AS SELECT MAP {'Apple': 1}[$1 COLLATE NOCASE], map_extract(MAP {'Apple': 1}, $1 COLLATE NOCASE);
+
+query II
+EXECUTE p('APPLE');
+----
+1	[1]

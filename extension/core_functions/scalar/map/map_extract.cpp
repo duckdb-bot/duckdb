@@ -1,9 +1,15 @@
 #include "duckdb/common/vector/map_vector.hpp"
 #include "core_functions/scalar/map_functions.hpp"
 #include "duckdb/common/types/data_chunk.hpp"
+#include "duckdb/function/function_binder.hpp"
 #include "duckdb/function/scalar/list/contains_or_position.hpp"
 #include "duckdb/function/scalar/nested_functions.hpp"
+#include "duckdb/planner/expression/bound_cast_expression.hpp"
+#include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
+#include "duckdb/planner/expression/bound_lambda_expression.hpp"
+#include "duckdb/planner/expression/bound_operator_expression.hpp"
+#include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/storage/statistics/list_stats.hpp"
 #include "duckdb/storage/statistics/struct_stats.hpp"
 
@@ -97,6 +103,109 @@ static void MapExtractListFunc(DataChunk &args, ExpressionState &state, Vector &
 	}
 }
 
+static bool TypeHasCollation(const LogicalType &type) {
+	switch (type.id()) {
+	case LogicalTypeId::VARCHAR:
+		return !type.HasAlias() && !StringType::GetCollation(type).empty();
+	case LogicalTypeId::LIST:
+		return TypeHasCollation(ListType::GetChildType(type));
+	case LogicalTypeId::ARRAY:
+		return TypeHasCollation(ArrayType::GetChildType(type));
+	default:
+		return false;
+	}
+}
+
+static unique_ptr<Expression> BindFunction(ClientContext &context, const char *name,
+                                           vector<unique_ptr<Expression>> children) {
+	FunctionBinder function_binder(context);
+	return function_binder.BindScalarFunction(Identifier::DefaultSchema(), Identifier(name), std::move(children));
+}
+
+//! Binds invoke, which evaluates each argument once. The body refers to the last argument as reference 0
+static unique_ptr<Expression> BindInvoke(ClientContext &context, unique_ptr<Expression> body,
+                                         vector<unique_ptr<Expression>> arguments, vector<Identifier> names) {
+	D_ASSERT(arguments.size() == names.size());
+	auto lambda = make_uniq<BoundLambdaExpression>(ExpressionType::LAMBDA, LogicalType::LAMBDA, std::move(body),
+	                                               arguments.size());
+	lambda->SetParameterNames(std::move(names));
+	vector<unique_ptr<Expression>> children;
+	children.push_back(std::move(lambda));
+	for (auto &argument : arguments) {
+		children.push_back(std::move(argument));
+	}
+	return BindFunction(context, "invoke", std::move(children));
+}
+
+//! Rebinds a lookup with a collated key as a lookup of the position in the keys, as list_position applies collations
+static unique_ptr<Expression> BindCollatedMapExtract(FunctionBindExpressionInput &input, bool extract_list) {
+	const auto &map_type = input.children[0]->GetReturnType();
+	const auto &key_type = input.children[1]->GetReturnType();
+	if (!TypeHasCollation(key_type) && !TypeHasCollation(MapType::KeyType(map_type))) {
+		return nullptr;
+	}
+	auto &context = input.context;
+	const Identifier map_name("map");
+	const Identifier key_name("key");
+	auto map_ref = make_uniq<BoundReferenceExpression>(map_name, map_type, idx_t(1));
+	auto key_ref = make_uniq<BoundReferenceExpression>(key_name, key_type, idx_t(0));
+
+	vector<unique_ptr<Expression>> children;
+	children.push_back(map_ref->Copy());
+	auto keys = BindFunction(context, "map_keys", std::move(children));
+	children.clear();
+	children.push_back(std::move(keys));
+	children.push_back(std::move(key_ref));
+	auto position = BindFunction(context, "list_position", std::move(children));
+	children.clear();
+	children.push_back(std::move(map_ref));
+	auto values = BindFunction(context, "map_values", std::move(children));
+
+	unique_ptr<Expression> body;
+	if (extract_list) {
+		// A missing key gives position 0, whose slice is empty
+		auto first_position =
+		    make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_COALESCE, position->GetReturnType());
+		first_position->GetChildrenMutable().push_back(std::move(position));
+		first_position->GetChildrenMutable().push_back(
+		    make_uniq<BoundConstantExpression>(Value::INTEGER(0).DefaultCastAs(first_position->GetReturnType())));
+
+		const Identifier values_name("values");
+		const Identifier position_name("position");
+		auto position_ref =
+		    make_uniq<BoundReferenceExpression>(position_name, first_position->GetReturnType(), idx_t(0));
+		children.clear();
+		children.push_back(make_uniq<BoundReferenceExpression>(values_name, values->GetReturnType(), idx_t(1)));
+		children.push_back(position_ref->Copy());
+		children.push_back(std::move(position_ref));
+		auto slice = BindFunction(context, "list_slice", std::move(children));
+
+		vector<unique_ptr<Expression>> arguments;
+		arguments.push_back(std::move(values));
+		arguments.push_back(std::move(first_position));
+		body = BindInvoke(context, std::move(slice), std::move(arguments), {values_name, position_name});
+	} else {
+		children.clear();
+		children.push_back(std::move(values));
+		children.push_back(std::move(position));
+		body = BindFunction(context, "list_extract", std::move(children));
+	}
+
+	vector<unique_ptr<Expression>> arguments;
+	arguments.push_back(std::move(input.children[0]));
+	arguments.push_back(std::move(input.children[1]));
+	auto result = BindInvoke(context, std::move(body), std::move(arguments), {map_name, key_name});
+	return BoundCastExpression::AddCastToType(context, std::move(result), input.bound_function.GetReturnType());
+}
+
+static unique_ptr<Expression> BindMapExtractValueExpression(FunctionBindExpressionInput &input) {
+	return BindCollatedMapExtract(input, false);
+}
+
+static unique_ptr<Expression> BindMapExtractExpression(FunctionBindExpressionInput &input) {
+	return BindCollatedMapExtract(input, true);
+}
+
 static unique_ptr<BaseStatistics> MapExtractValueStats(ClientContext &, FunctionStatisticsInput &input) {
 	auto &entry_stats = ListStats::GetChildStats(input.child_stats[0]);
 	auto value_copy = StructStats::GetChildStats(entry_stats, 1).Copy();
@@ -116,6 +225,7 @@ ScalarFunction MapExtractValueFun::GetFunction() {
 	fun.GetSignature().AddParameter("map", LogicalType::MAP(key_type, val_type)).AddParameter("key", key_type);
 	fun.SetStatisticsCallback(MapExtractValueStats);
 	fun.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
+	fun.SetBindExpressionCallback(BindMapExtractValueExpression);
 	return fun;
 }
 
@@ -126,6 +236,7 @@ ScalarFunction MapExtractFun::GetFunction() {
 	ScalarFunction fun({}, LogicalType::LIST(val_type), MapExtractListFunc);
 	fun.GetSignature().AddParameter("map", LogicalType::MAP(key_type, val_type)).AddParameter("key", key_type);
 	fun.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
+	fun.SetBindExpressionCallback(BindMapExtractExpression);
 	return fun;
 }
 

@@ -81,9 +81,8 @@ TimestampCastResult Timestamp::TryConvertTimestampTZ(const char *str, idx_t len,
 		return TimestampCastResult::ERROR_RANGE;
 	}
 	pos += time_pos;
-	if (!Timestamp::TryFromDatetime(date, time, result)) {
-		return TimestampCastResult::ERROR_RANGE;
-	}
+	// the local time can lie past the ends of the range while the instant that its offset gives does not
+	auto micros = hugeint_t(date.days) * hugeint_t(Interval::MICROS_PER_DAY) + hugeint_t(time.value);
 	if (pos < len) {
 		// skip a "Z" at the end (as per the ISO8601 specs)
 		int hh, mm, ss;
@@ -93,8 +92,8 @@ TimestampCastResult Timestamp::TryConvertTimestampTZ(const char *str, idx_t len,
 		} else if (Timestamp::TryParseUTCOffset(str, pos, len, hh, mm, ss)) {
 			const int64_t delta =
 			    hh * Interval::MICROS_PER_HOUR + mm * Interval::MICROS_PER_MINUTE + ss * Interval::MICROS_PER_SEC;
-			if (use_offset && !TrySubtractOperator::Operation(result.value, delta, result.value)) {
-				return TimestampCastResult::ERROR_RANGE;
+			if (use_offset) {
+				micros -= hugeint_t(delta);
 			}
 			has_offset = true;
 		} else {
@@ -120,6 +119,9 @@ TimestampCastResult Timestamp::TryConvertTimestampTZ(const char *str, idx_t len,
 		if (pos < len) {
 			return TimestampCastResult::ERROR_INCORRECT_FORMAT;
 		}
+	}
+	if (!Hugeint::TryCast(micros, result.value) || !result.IsFinite()) {
+		return TimestampCastResult::ERROR_RANGE;
 	}
 	return TimestampCastResult::SUCCESS;
 }
@@ -385,12 +387,11 @@ bool Timestamp::TryFromDatetime(date_t date, dtime_t time, timestamp_t &result) 
 }
 
 bool Timestamp::TryFromDatetime(date_t date, dtime_tz_t timetz, timestamp_t &result) {
-	if (!TryFromDatetime(date, timetz.time(), result)) {
-		return false;
-	}
-	// Offset is in seconds
+	// Offset is in seconds. The local time can lie past the ends of the range while the instant does not
 	const auto offset = int64_t(timetz.offset() * Interval::MICROS_PER_SEC);
-	if (!TryAddOperator::Operation(result.value, -offset, result.value)) {
+	auto micros =
+	    hugeint_t(date.days) * hugeint_t(Interval::MICROS_PER_DAY) + hugeint_t(timetz.time().value) - hugeint_t(offset);
+	if (!Hugeint::TryCast(micros, result.value)) {
 		return false;
 	}
 	return result.IsFinite();

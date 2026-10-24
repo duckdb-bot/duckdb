@@ -41,6 +41,10 @@ optional_idx Allocator::GetMappedMemory() const {
 	return optional_idx();
 }
 
+optional_idx Allocator::GetPurgeableMemory() noexcept {
+	return optional_idx();
+}
+
 bool Allocator::SupportsFlush() {
 #if defined(__GLIBC__)
 	return true;
@@ -58,6 +62,10 @@ void Allocator::ThreadIdle() {
 }
 
 void Allocator::FlushAll() {
+	MallocTrim(0);
+}
+
+void Allocator::FlushThreadCacheAndSystemHeap() {
 	MallocTrim(0);
 }
 

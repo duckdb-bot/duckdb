@@ -737,6 +737,33 @@ TEST_CASE("BlockAllocator fallback pressure shares headroom with cached blocks",
 	}
 }
 
+TEST_CASE("BlockAllocator purges for a large allocation only when the freed memory does not fit",
+          "[api][block_allocator]") {
+	constexpr idx_t BLOCK_SIZE = 65536;
+	Allocator fallback;
+	BlockAllocator allocator(fallback, BLOCK_SIZE, BLOCK_SIZE);
+	auto pooled = allocator.AllocateData(BLOCK_SIZE);
+	pooled[0] = 42;
+	allocator.FreeData(pooled, BLOCK_SIZE);
+	auto other = allocator.AllocateData(2 * BLOCK_SIZE);
+	allocator.FreeData(other, 2 * BLOCK_SIZE);
+	REQUIRE(BlockAllocatorTestHelper::Deallocated(allocator) == 2 * BLOCK_SIZE);
+
+	// the freed memory that the allocator reports fits next to the allocation, so nothing is purged
+	if (Allocator::GetPurgeableMemory().IsValid()) {
+		allocator.FlushForAllocation(NumericLimits<idx_t>::Maximum(), NumericLimits<idx_t>::Maximum());
+		CHECK(BlockAllocatorTestHelper::Deallocated(allocator) == 2 * BLOCK_SIZE);
+		CHECK(allocator.GetCachedMemory() == BLOCK_SIZE);
+	}
+
+	// without headroom the cached block is given back, and the arenas are purged unless decay already emptied them
+	allocator.FlushForAllocation(NumericLimits<idx_t>::Maximum(), 0);
+	CHECK(allocator.GetCachedMemory() == 0);
+	const auto purgeable = Allocator::GetPurgeableMemory();
+	const bool purged = BlockAllocatorTestHelper::Deallocated(allocator) == 0;
+	CHECK((purged || (purgeable.IsValid() && purgeable.GetIndex() == 0)));
+}
+
 TEST_CASE("BlockAllocator bounds fallback pressure using available footprint statistics", "[api][block_allocator]") {
 	constexpr idx_t BLOCK_SIZE = 65536;
 	// Keep this test on jemalloc rather than the power-of-two allocation cache.

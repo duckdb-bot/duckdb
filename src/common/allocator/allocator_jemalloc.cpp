@@ -92,6 +92,31 @@ optional_idx Allocator::GetMappedMemory() const {
 	return optional_idx(mapped);
 }
 
+optional_idx Allocator::GetPurgeableMemory() noexcept {
+	uint64_t epoch = 1;
+	if (duckdb_je_mallctl("epoch", nullptr, nullptr, &epoch, sizeof(epoch)) != 0) {
+		return optional_idx();
+	}
+	size_t page_size = 0;
+	size_t length = sizeof(page_size);
+	if (duckdb_je_mallctl("arenas.page", &page_size, &length, nullptr, 0) != 0) {
+		return optional_idx();
+	}
+	// the dirty and muzzy pages of all arenas, which a purge gives back
+	idx_t pages = 0;
+	for (auto stat : {"pdirty", "pmuzzy"}) {
+		char name[64];
+		snprintf(name, sizeof(name), "stats.arenas.%u.%s", static_cast<unsigned>(MALLCTL_ARENAS_ALL), stat);
+		size_t count = 0;
+		length = sizeof(count);
+		if (duckdb_je_mallctl(name, &count, &length, nullptr, 0) != 0) {
+			return optional_idx();
+		}
+		pages += count;
+	}
+	return optional_idx(pages * page_size);
+}
+
 bool Allocator::SupportsFlush() {
 	return true;
 }
@@ -136,6 +161,12 @@ void Allocator::FlushAll() {
 	SetJemallocCTL("thread.peak.reset");
 
 	// Also return the system heap (see ThreadFlush) to the OS
+	MallocTrim(0);
+}
+
+void Allocator::FlushThreadCacheAndSystemHeap() {
+	SetJemallocCTL("thread.tcache.flush");
+	SetJemallocCTL("thread.peak.reset");
 	MallocTrim(0);
 }
 

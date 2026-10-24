@@ -980,6 +980,21 @@ void BlockAllocator::FlushOnShutdown() const noexcept {
 
 void BlockAllocator::FlushForAllocation(const idx_t extra_memory, const idx_t memory_headroom) const noexcept {
 	TrimCachedMemory(memory_headroom, DivBlockSize(extra_memory));
+	if (Allocator::SupportsFlush()) {
+		// Purging every arena is expensive, and freed pages that fit next to the allocation cannot exceed the limit,
+		// so then only the thread cache and the system heap are given back
+		bool flushed = true;
+		try {
+			Allocator::FlushThreadCacheAndSystemHeap();
+		} catch (...) {
+			flushed = false;
+		}
+		const auto purgeable = Allocator::GetPurgeableMemory();
+		if (flushed && purgeable.IsValid() && purgeable.GetIndex() <= memory_headroom &&
+		    GetCachedMemory() <= memory_headroom - purgeable.GetIndex()) {
+			return;
+		}
+	}
 	FlushFallbackAllocator(estimated_unflushed_memory.exchange(0, std::memory_order_relaxed));
 }
 

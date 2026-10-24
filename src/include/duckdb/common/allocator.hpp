@@ -125,11 +125,15 @@ public:
 
 	//! Total mapped allocator memory, if supported by this allocator.
 	optional_idx GetMappedMemory() const;
+	//! Freed memory that the allocator holds and FlushAll gives back, if the allocator reports it
+	static optional_idx GetPurgeableMemory() noexcept;
 	static bool SupportsFlush();
 	static optional_idx DecayDelay();
 	static void ThreadFlush(bool allocator_background_threads, idx_t threshold, idx_t thread_count);
 	static void ThreadIdle();
 	static void FlushAll();
+	//! Gives back what FlushAll gives back except the freed pages of the allocator's arenas, which take long to purge
+	static void FlushThreadCacheAndSystemHeap();
 	static void SetBackgroundThreads(bool enable);
 
 private:

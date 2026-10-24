@@ -1,5 +1,5 @@
 # name: test/sql/aggregate/aggregates/approx_quantile_top_of_range.test
-# description: approx_quantile of values next to the top of a 64 or 128 bit range stays within the inputs (duckdblabs/bot-issue-tracker#592)
+# description: approx_quantile of values next to the top of a 64 or 128 bit range does not go past the top of the type (duckdblabs/bot-issue-tracker#592)
 # group: [aggregates]
 
 # a double rounds them below the top, so a finite timestamp never becomes infinity
@@ -32,3 +32,14 @@ query II
 SELECT approx_quantile(x, 0.5), approx_quantile(x, 0.5) <= x FROM (VALUES (170141183460469231731687303715884105726::HUGEINT)) t(x) GROUP BY x;
 ----
 170141183460469212842221372237303250944	true
+
+# the bottom of the range is kept as it is
+query II
+SELECT approx_quantile(x, 0.5), approx_quantile(x, [0.0, 1.0]) FROM (VALUES ('-170141183460469231731687303715884105728'::HUGEINT)) t(x);
+----
+-170141183460469231731687303715884105728	[-170141183460469231731687303715884105728, -170141183460469231731687303715884105728]
+
+query I
+SELECT approx_quantile(x, 0.5) FROM (VALUES (-9223372036854775807::BIGINT)) t(x);
+----
+-9223372036854775808

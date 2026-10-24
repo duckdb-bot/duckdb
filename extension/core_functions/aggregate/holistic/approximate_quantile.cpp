@@ -62,10 +62,10 @@ struct ApproxQuantileCoding {
 //! above every input. Those values are rounded down instead
 template <typename INPUT_TYPE>
 static double EncodeWithinType(const INPUT_TYPE &input) {
+	static const auto past_maximum = Cast::Operation<INPUT_TYPE, double>(NumericLimits<INPUT_TYPE>::Maximum());
 	auto result = Cast::Operation<INPUT_TYPE, double>(input);
-	INPUT_TYPE decoded;
-	if (!TryCast::Operation(result, decoded, false)) {
-		result = std::nextafter(result, 0.0);
+	if (result >= past_maximum) {
+		result = std::nextafter(past_maximum, 0.0);
 	}
 	return result;
 }

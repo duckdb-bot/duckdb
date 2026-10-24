@@ -680,7 +680,8 @@ bool LocalFileSystem::CreateDirectoryExtended(const string &directory, const Cre
 	}
 	ApplyLocalFileSystemDelay(opener);
 	auto normalized_dir = ExpandPath(directory, opener);
-	if (mkdir(normalized_dir.c_str(), 0755) == 0) {
+	// as files, directories get the permissions the umask and the default ACL leave
+	if (mkdir(normalized_dir.c_str(), options.private_directory ? 0700 : 0777) == 0) {
 		return true;
 	}
 	auto error = errno;

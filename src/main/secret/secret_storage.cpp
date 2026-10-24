@@ -288,7 +288,7 @@ void LocalFileSecretStorage::WriteSecret(const BaseSecret &secret, OnCreateConfl
 	// construction
 	if (!fs.DirectoryExists(secret_path)) {
 		try {
-			fs.CreateDirectoriesRecursive(secret_path);
+			fs.CreateDirectoryExtended(secret_path, {CreateDirectoryMode::RECURSIVE, true});
 		} catch (std::exception &ex) {
 			ErrorData error(ex);
 			if (error.Type() == ExceptionType::IO) {

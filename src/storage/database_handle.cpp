@@ -180,6 +180,13 @@ FileHandle &DatabaseHandle::GetFileHandle() {
 	return *handle;
 }
 
+optional<FileMetadata> DatabaseHandle::GetFileMetadata() {
+	if (!handle) {
+		return nullopt;
+	}
+	return handle->Stats();
+}
+
 void DatabaseHandle::EnsureMappedSize(idx_t required_size) const {
 	if (!mmap_handle) {
 		return;

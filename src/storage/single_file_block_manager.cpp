@@ -1127,6 +1127,13 @@ idx_t SingleFileBlockManager::FreeBlocks() {
 	return free_list.size();
 }
 
+optional<FileMetadata> SingleFileBlockManager::GetFileMetadata() {
+	if (!handle) {
+		return nullopt;
+	}
+	return handle->GetFileMetadata();
+}
+
 bool SingleFileBlockManager::IsRemote() {
 	return !handle->OnDiskFile();
 }

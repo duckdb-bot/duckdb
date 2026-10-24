@@ -142,6 +142,9 @@ public:
 	//! Return the version number of the file.
 	StorageVersion GetVersionNumber() const;
 	//! Return the database identifier.
+	//! The metadata of the open database file, if it can be read
+	optional<FileMetadata> GetFileMetadata();
+
 	data_ptr_t GetDBIdentifier() {
 		return options.db_identifier;
 	}

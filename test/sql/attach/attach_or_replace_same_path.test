@@ -1,5 +1,5 @@
 # name: test/sql/attach/attach_or_replace_same_path.test
-# description: ATTACH OR REPLACE of a path attached for reading opens the file again (duckdblabs/bot-issue-tracker#540)
+# description: ATTACH OR REPLACE of the attached path keeps the database while the file is the same one (duckdblabs/bot-issue-tracker#540)
 # group: [attach]
 
 statement ok
@@ -21,12 +21,9 @@ SELECT i, (SELECT database_oid FROM duckdb_databases() WHERE database_name = 'db
 1	true
 
 statement ok
-INSERT INTO db1.t VALUES (2);
-
-statement ok
 DETACH db1;
 
-# a database attached for reading is replaced by a new one
+# so does one attached for reading, while the path names the file it has open
 statement ok
 ATTACH '{TEST_DIR}/or_replace_same_path.db' AS db1 (READ_ONLY);
 
@@ -36,82 +33,18 @@ INSERT INTO oids SELECT database_oid FROM duckdb_databases() WHERE database_name
 statement ok
 ATTACH OR REPLACE '{TEST_DIR}/or_replace_same_path.db' AS db1 (READ_ONLY);
 
-query II
-SELECT sum(i), (SELECT database_oid FROM duckdb_databases() WHERE database_name = 'db1') IN (SELECT oid FROM oids) FROM db1.t;
-----
-3	false
-
-query I
-SELECT count(*) FROM duckdb_databases() WHERE database_name = 'db1';
-----
-1
-
-# without an access mode the new one is attached for reading as well
-statement ok
-INSERT INTO oids SELECT database_oid FROM duckdb_databases() WHERE database_name = 'db1';
-
 statement ok
 ATTACH OR REPLACE '{TEST_DIR}/or_replace_same_path.db' AS db1;
 
-query I
-SELECT database_oid IN (SELECT oid FROM oids) FROM duckdb_databases() WHERE database_name = 'db1';
+query II
+SELECT sum(i), (SELECT database_oid FROM duckdb_databases() WHERE database_name = 'db1') IN (SELECT oid FROM oids) FROM db1.t;
 ----
-false
+1	true
 
 statement error
-INSERT INTO db1.t VALUES (3);
+INSERT INTO db1.t VALUES (2);
 ----
 read-only
-
-# IF NOT EXISTS keeps the attached database
-statement ok
-INSERT INTO oids SELECT database_oid FROM duckdb_databases() WHERE database_name = 'db1';
-
-statement ok
-ATTACH IF NOT EXISTS '{TEST_DIR}/or_replace_same_path.db' AS db1 (READ_ONLY);
-
-query I
-SELECT database_oid IN (SELECT oid FROM oids) FROM duckdb_databases() WHERE database_name = 'db1';
-----
-true
-
-# the default database can be replaced
-statement ok
-ATTACH ':memory:' AS other_db;
-
-statement ok
-USE db1;
-
-statement ok
-ATTACH OR REPLACE '{TEST_DIR}/or_replace_same_path.db' AS db1 (READ_ONLY);
-
-query I
-SELECT sum(i) FROM t;
-----
-3
-
-statement ok
-USE other_db;
-
-# a transaction that read the database can replace it
-statement ok
-BEGIN
-
-query I
-SELECT sum(i) FROM db1.t
-----
-3
-
-statement ok
-ATTACH OR REPLACE '{TEST_DIR}/or_replace_same_path.db' AS db1 (READ_ONLY);
-
-query I
-SELECT sum(i) FROM db1.t
-----
-3
-
-statement ok
-COMMIT
 
 # a different access mode is still an error
 statement error

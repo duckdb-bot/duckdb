@@ -11,6 +11,7 @@
 #include "duckdb/main/extension_helper.hpp"
 #include "duckdb/parser/parsed_data/alter_database_info.hpp"
 #include "duckdb/storage/storage_extension.hpp"
+#include "duckdb/storage/single_file_block_manager.hpp"
 #include "duckdb/storage/storage_manager.hpp"
 #include "duckdb/transaction/duck_transaction.hpp"
 #include "duckdb/transaction/duck_transaction_manager.hpp"
@@ -103,6 +104,30 @@ bool RequiresTrackingAttaches(const string &path, const string &db_type) {
 	return true;
 }
 
+//! Whether the path no longer names the file that the database has open, as when a writer replaced the file. Opening
+//! the path to find out would release the locks the database holds on the file, so only its metadata is read
+static bool FileWasReplaced(ClientContext &context, AttachedDatabase &db, const string &path) {
+	auto &fs = FileSystem::GetFileSystem(context);
+	auto current = fs.GetStatsIfExists(OpenFileInfo(path));
+	if (!current) {
+		return false;
+	}
+	if (!current->device_id.IsValid() || !current->file_id.IsValid()) {
+		// a remote file has no identity to compare, so it is read again
+		return true;
+	}
+	auto &block_manager = db.GetStorageManager().GetBlockManager();
+	if (block_manager.InMemory()) {
+		return false;
+	}
+	auto attached = block_manager.Cast<SingleFileBlockManager>().GetFileMetadata();
+	if (!attached || !attached->device_id.IsValid() || !attached->file_id.IsValid()) {
+		return false;
+	}
+	return attached->device_id.GetIndex() != current->device_id.GetIndex() ||
+	       attached->file_id.GetIndex() != current->file_id.GetIndex();
+}
+
 shared_ptr<AttachedDatabase> DatabaseManager::AttachDatabase(ClientContext &context, AttachInfo &info,
                                                              AttachOptions &options) {
 	string extension = "";
@@ -154,8 +179,9 @@ shared_ptr<AttachedDatabase> DatabaseManager::AttachDatabase(ClientContext &cont
 				}
 				// allow custom catalogs to override this behavior
 				if (!existing_db->GetCatalog().HasConflictingAttachOptions(info.path, options)) {
-					// a DuckDB file attached for reading may have been replaced, so it is opened again next to it
-					if (!existing_db->IsReadOnly() || existing_db->StoredPath().empty()) {
+					// a DuckDB file attached for reading that a writer replaced is opened again next to it
+					if (!existing_db->IsReadOnly() || existing_db->StoredPath().empty() ||
+					    !FileWasReplaced(context, *existing_db, info.path)) {
 						return existing_db;
 					}
 					options.access_mode = AccessMode::READ_ONLY;

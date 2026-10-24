@@ -39,6 +39,8 @@ struct DatabaseHandle {
 	idx_t GetFileSize();
 
 	FileHandle &GetFileHandle();
+	//! The metadata of the open file, if the file is not memory-mapped
+	optional<FileMetadata> GetFileMetadata();
 
 private:
 	//! Throws if a write at [required_size] would exceed the mmap reserve. No-op otherwise.

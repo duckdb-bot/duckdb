@@ -551,15 +551,16 @@ BoundStatement Binder::BindSelectNode(SelectNode &statement, BoundStatement from
 	statement.select_list = std::move(new_select_list);
 
 	auto &bind_state = result.bind_state;
+	// the aliases written in the query, qualification adds others to keep the names of columns
+	identifier_set_t written_aliases;
 	for (idx_t i = 0; i < statement.select_list.size(); i++) {
 		auto &expr = statement.select_list[i];
 		result.names.emplace_back(GetExpressionName(*expr));
+		if (!expr->GetAlias().empty() && !written_aliases.insert(expr->GetAlias()).second) {
+			bind_state.ambiguous_aliases.insert(expr->GetAlias());
+		}
 		ExpressionBinder::QualifyColumnNames(*this, expr);
 		if (!expr->GetAlias().empty()) {
-			auto entry = bind_state.alias_map.find(expr->GetAlias());
-			if (entry != bind_state.alias_map.end()) {
-				bind_state.ambiguous_aliases.insert(expr->GetAlias());
-			}
 			bind_state.alias_map[expr->GetAlias()] = i;
 			result.names[i] = expr->GetAlias();
 		}

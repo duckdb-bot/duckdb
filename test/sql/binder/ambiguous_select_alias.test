@@ -91,3 +91,24 @@ statement error
 SELECT s.x AS a, s.X AS A FROM (VALUES ({x: 1}), ({x: 2})) t(s) ORDER BY a
 ----
 <REGEX>:Binder Error: ORDER BY "a" is ambiguous.*
+
+# aliases that qualification adds to keep the names of columns are not written aliases
+query II
+SELECT I, 10 - i AS i FROM range(3) t(i) ORDER BY i
+----
+2	8
+1	9
+0	10
+
+statement ok
+CREATE TABLE gen (i INTEGER, j INTEGER GENERATED ALWAYS AS (i + 1));
+
+statement ok
+INSERT INTO gen (i) VALUES (0), (1), (2);
+
+query II
+SELECT j, 10 - i AS j FROM gen ORDER BY j
+----
+3	8
+2	9
+1	10

@@ -44,3 +44,16 @@ query II
 SELECT count(*), sum(a) FROM read_ndjson('{DATA_DIR}/json/sample_utf8_bom.jsonl.gz', maximum_object_size = 64);
 ----
 1000	499500
+
+# a file that is only a BOM, or a BOM and a newline
+statement ok
+COPY (SELECT from_hex('EFBBBF')) TO '{TEST_DIR}/only_bom.jsonl' (FORMAT BLOB);
+
+statement ok
+COPY (SELECT from_hex('EFBBBF0A')) TO '{TEST_DIR}/bom_newline.jsonl' (FORMAT BLOB);
+
+query II
+SELECT (SELECT count(*) FROM read_ndjson('{TEST_DIR}/only_bom.jsonl', columns = {a: 'INTEGER'})), (SELECT count(*) FROM read_ndjson('{TEST_DIR}/bom_newline.jsonl', columns = {a: 'INTEGER'}));
+----
+0	0
+

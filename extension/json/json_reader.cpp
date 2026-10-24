@@ -925,7 +925,9 @@ bool JSONReader::CopyRemainderFromPreviousBuffer(JSONReaderScanState &scan_state
 	// First we find the newline in the previous block
 	idx_t prev_buffer_size = previous_buffer_handle->buffer_size - previous_buffer_handle->buffer_start;
 	auto prev_buffer_ptr = char_ptr_cast(previous_buffer_handle->buffer.get()) + previous_buffer_handle->buffer_size;
-	auto prev_object_start = PreviousNewline(prev_buffer_ptr, prev_buffer_size);
+	// the first buffer of a file that is only a byte order mark holds nothing past it
+	auto prev_object_start =
+	    prev_buffer_size == 0 ? prev_buffer_ptr : PreviousNewline(prev_buffer_ptr, prev_buffer_size);
 	auto prev_object_size = NumericCast<idx_t>(prev_buffer_ptr - prev_object_start);
 
 	D_ASSERT(scan_state.buffer_offset == options.maximum_object_size);
@@ -940,8 +942,8 @@ bool JSONReader::CopyRemainderFromPreviousBuffer(JSONReaderScanState &scan_state
 		RemoveBuffer(*previous_buffer_handle);
 	}
 
-	if (prev_object_size == 1) {
-		// Just a newline
+	if (prev_object_size <= 1) {
+		// Just a newline, or nothing
 		return false;
 	}
 	scan_state.buffer_offset -= prev_object_size;

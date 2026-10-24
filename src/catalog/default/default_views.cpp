@@ -38,7 +38,8 @@ static const DefaultView internal_views[] = {
      "SELECT name, statement, NULL prepare_time, parameter_types, result_types, NULL from_sql, NULL generic_plans, "
      "NULL custom_plans from duckdb_prepared_statements()"},
     {"pg_catalog", "pg_attribute",
-     "SELECT table_oid attrelid, column_name attname, data_type_id atttypid, 0 attstattarget, NULL attlen, "
+     "SELECT table_oid attrelid, column_name attname, coalesce((SELECT map_to_pg_oid(t.type_name) FROM duckdb_types() t "
+     "WHERE t.type_oid = data_type_id AND t.internal), data_type_id + 16384) atttypid, 0 attstattarget, NULL attlen, "
      "column_index attnum, 0 attndims, -1 attcacheoff, case when data_type ilike '%decimal%' then "
      "numeric_precision*1000+numeric_scale else -1 end atttypmod, false attbyval, NULL attstorage, NULL attalign, NOT "
      "is_nullable attnotnull, column_default IS NOT NULL atthasdef, false atthasmissing, '' attidentity, '' "

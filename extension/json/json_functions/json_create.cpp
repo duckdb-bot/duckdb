@@ -757,17 +757,12 @@ private:
 		if (!up && !down) {
 			return false;
 		}
-		if (down && !run_up) {
-			run_down = true;
-			run_start = MinValue(run_start, entry.offset);
-		} else {
-			// the run turns, and the entry starts the next one
-			previous_runs_end = run_end;
-			run_up = false;
-			run_down = false;
-			run_start = entry.offset;
-			run_end = entry_end;
-		}
+		// the run turns, and the entry starts the next one
+		previous_runs_end = run_end;
+		run_up = false;
+		run_down = false;
+		run_start = entry.offset;
+		run_end = entry_end;
 		if (run_start < previous_runs_end) {
 			return false;
 		}
@@ -776,13 +771,11 @@ private:
 		return true;
 	}
 
-	//! Whether two list entries with other bounds share children
-	bool EntriesOverlap() const {
-		// entries in any order share nothing when no child is taken twice
+	//! Whether a child is taken by two list entries, which have other bounds or repeat each other
+	bool AnyChildTakenTwice() const {
 		vector<bool> taken(child_count, false);
-		bool taken_twice = false;
 		optional_ptr<const list_entry_t> last;
-		for (idx_t i = 0; i < count && !taken_twice; i++) {
+		for (idx_t i = 0; i < count; i++) {
 			auto idx = list_data.sel->get_index(i);
 			if (!list_data.validity.RowIsValid(idx) || entries[idx].length == 0) {
 				continue;
@@ -793,17 +786,23 @@ private:
 			}
 			for (idx_t child_idx = entry.offset; child_idx < entry.offset + entry.length; child_idx++) {
 				if (taken[child_idx]) {
-					taken_twice = true;
-					break;
+					return true;
 				}
 				taken[child_idx] = true;
 			}
 			last = &entry;
 		}
-		if (!taken_twice) {
+		return false;
+	}
+
+	//! Whether two list entries with other bounds share children
+	bool EntriesOverlap() const {
+		// many short entries share nothing when no child is taken twice, few long ones are cheaper to sort
+		static constexpr idx_t CHILDREN_PER_ENTRY_TO_SORT = 64;
+		if (count * CHILDREN_PER_ENTRY_TO_SORT >= child_count && !AnyChildTakenTwice()) {
 			return false;
 		}
-		// a child taken twice comes from entries with the same bounds, or from entries that overlap
+		// sorted entries overlap when one starts before the end of those before it, repeats aside
 		vector<list_entry_t> sorted;
 		for (idx_t i = 0; i < count; i++) {
 			auto idx = list_data.sel->get_index(i);

@@ -702,23 +702,28 @@ private:
 		bool sequential = true;
 		optional_ptr<const list_entry_t> previous;
 		idx_t end = 0;
-		vector<list_entry_t> sorted;
-		for (idx_t i = 0; i < count; i++) {
+		for (idx_t i = 0; i < count && sequential; i++) {
 			auto idx = list_data.sel->get_index(i);
 			if (!list_data.validity.RowIsValid(idx) || entries[idx].length == 0) {
 				continue;
 			}
 			auto &entry = entries[idx];
-			sorted.push_back(entry);
 			if (previous && previous->offset == entry.offset && previous->length == entry.length) {
 				continue;
 			}
-			sequential = sequential && entry.offset >= end;
+			sequential = entry.offset >= end;
 			end = entry.offset + entry.length;
 			previous = &entry;
 		}
 		if (sequential) {
 			return false;
+		}
+		vector<list_entry_t> sorted;
+		for (idx_t i = 0; i < count; i++) {
+			auto idx = list_data.sel->get_index(i);
+			if (list_data.validity.RowIsValid(idx) && entries[idx].length > 0) {
+				sorted.push_back(entries[idx]);
+			}
 		}
 		std::sort(sorted.begin(), sorted.end(), [](const list_entry_t &a, const list_entry_t &b) {
 			return a.offset < b.offset || (a.offset == b.offset && a.length < b.length);

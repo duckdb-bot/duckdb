@@ -165,6 +165,62 @@ struct ListViewStructColumn {
 	ArrowArray array {};
 };
 
+//! A list view of strings
+struct ListViewStringColumn {
+	ListViewStringColumn(std::vector<int32_t> offsets_p, std::vector<int32_t> sizes_p,
+	                     const std::vector<std::string> &values)
+	    : offsets(std::move(offsets_p)), sizes(std::move(sizes_p)) {
+		string_offsets.push_back(0);
+		for (auto &value : values) {
+			data += value;
+			string_offsets.push_back(int32_t(data.size()));
+		}
+		child_schema.format = "u";
+		child_schema.name = "item";
+		child_schema.flags = 2;
+		child_schema.release = ListViewReleaseSchema;
+		child_buffers[0] = nullptr;
+		child_buffers[1] = string_offsets.data();
+		child_buffers[2] = data.data();
+		child_array.length = int64_t(values.size());
+		child_array.n_buffers = 3;
+		child_array.buffers = child_buffers;
+		child_array.release = ListViewReleaseArray;
+
+		schema.format = "+vl";
+		schema.name = "a";
+		schema.flags = 2;
+		schema.n_children = 1;
+		schema.children = schema_children;
+		schema.release = ListViewReleaseSchema;
+		schema_children[0] = &child_schema;
+		buffers[0] = nullptr;
+		buffers[1] = offsets.data();
+		buffers[2] = sizes.data();
+		array.length = int64_t(offsets.size());
+		array.n_buffers = 3;
+		array.buffers = buffers;
+		array.n_children = 1;
+		array.children = array_children;
+		array.release = ListViewReleaseArray;
+		array_children[0] = &child_array;
+	}
+	ListViewStringColumn(const ListViewStringColumn &) = delete;
+
+	std::vector<int32_t> offsets;
+	std::vector<int32_t> sizes;
+	std::vector<int32_t> string_offsets;
+	std::string data;
+	const void *child_buffers[3];
+	const void *buffers[3];
+	ArrowSchema *schema_children[1];
+	ArrowArray *array_children[1];
+	ArrowSchema child_schema {};
+	ArrowSchema schema {};
+	ArrowArray child_array {};
+	ArrowArray array {};
+};
+
 //! Scans the column through arrow_scan and returns the rows of the expression as strings
 vector<string> ListViewExpressionValues(ArrowSchema &column_schema, ArrowArray &column_array,
                                         const string &expression) {
@@ -236,4 +292,11 @@ TEST_CASE("to_json of ListView entries that share child values", "[arrow]") {
 	REQUIRE(values == vector<string> {"[{\"x\":3},{\"x\":4}]", "[{\"x\":0},{\"x\":1},{\"x\":2}]",
 	                                  "[{\"x\":2},{\"x\":3}]", "[{\"x\":1},{\"x\":2},{\"x\":3}]",
 	                                  "[{\"x\":3},{\"x\":4}]"});
+
+	// the copies of shared strings point at the same string, long ones too
+	string long_string(100000, 'x');
+	ListViewStringColumn string_column({3, 0, 2, 1}, {2, 3, 2, 3}, {"a", "b", long_string, "d", "e"});
+	values = ListViewExpressionValues(string_column.schema, string_column.array, "to_json(a)::VARCHAR");
+	REQUIRE(values == vector<string> {"[\"d\",\"e\"]", "[\"a\",\"b\",\"" + long_string + "\"]",
+	                                  "[\"" + long_string + "\",\"d\"]", "[\"b\",\"" + long_string + "\",\"d\"]"});
 }

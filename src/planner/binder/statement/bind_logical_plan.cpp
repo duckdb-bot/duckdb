@@ -31,10 +31,10 @@ namespace {
 //! put there. A LogicalAggregate may only hold aggregates and a LogicalWindow only window expressions, so the function
 //! keeps its type and a projection directly above the operator casts it back, so every operator above it, including
 //! those that take its columns without an expression (set operations, CTEs), sees the types the plan was written with
-void RestoreSerializedAggregateTypes(ClientContext &context, unique_ptr<LogicalOperator> &root,
+void RestoreSerializedFunctionTypes(ClientContext &context, unique_ptr<LogicalOperator> &root,
                                      unique_ptr<LogicalOperator> &op, TableIndex &next_table_index) {
 	for (auto &child : op->children) {
-		RestoreSerializedAggregateTypes(context, root, child, next_table_index);
+		RestoreSerializedFunctionTypes(context, root, child, next_table_index);
 	}
 	TableIndex function_index(0);
 	ExpressionClass function_class;
@@ -86,7 +86,7 @@ void RestoreSerializedAggregateTypes(ClientContext &context, unique_ptr<LogicalO
 
 BoundStatement Binder::Bind(LogicalPlanStatement &stmt) {
 	auto next_table_index = TableIndex(GetMaxTableIndex(*stmt.plan).index + 1);
-	RestoreSerializedAggregateTypes(context, stmt.plan, stmt.plan, next_table_index);
+	RestoreSerializedFunctionTypes(context, stmt.plan, stmt.plan, next_table_index);
 	stmt.plan->ResolveOperatorTypes();
 	BoundStatement result;
 	result.types = stmt.plan->types;

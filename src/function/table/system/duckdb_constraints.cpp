@@ -128,15 +128,22 @@ struct ExtraConstraintInfo {
 	vector<Identifier> referenced_columns;
 };
 
-//! The columns a CHECK reads, named as the CHECK binder resolves them: the first name, or the second when the first
-//! is the name of the table, while the names after it are struct fields
-void ExtractReferencedColumns(const TableCatalogEntry &table, const ParsedExpression &root_expr,
+//! The columns a CHECK reads, named as the CHECK binder resolves them. That is the first name, or the second when the
+//! first is the name of the table, while the names after it are struct fields
+void ExtractReferencedColumns(const TableCatalogEntry &table, const ParsedExpression &expr,
                               vector<Identifier> &result) {
-	ParsedExpressionIterator::VisitExpression<ColumnRefExpression>(root_expr, [&](const ColumnRefExpression &colref) {
-		auto &names = colref.ColumnNames();
+	if (expr.GetExpressionClass() == ExpressionClass::LAMBDA) {
+		// the CHECK binder refuses columns in lambdas, so a lambda only names its own parameters
+		return;
+	}
+	if (expr.GetExpressionClass() == ExpressionClass::COLUMN_REF) {
+		auto &names = expr.Cast<ColumnRefExpression>().ColumnNames();
 		const idx_t column_position = names.size() > 1 && names[0] == table.name ? 1 : 0;
 		result.emplace_back(names[column_position]);
-	});
+		return;
+	}
+	ParsedExpressionIterator::EnumerateChildren(
+	    expr, [&](const ParsedExpression &child) { ExtractReferencedColumns(table, child, result); });
 }
 
 ExtraConstraintInfo GetExtraConstraintInfo(const TableCatalogEntry &table, const Constraint &constraint) {

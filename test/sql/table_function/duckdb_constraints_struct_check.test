@@ -38,6 +38,20 @@ SELECT constraint_column_indexes, constraint_column_names, constraint_name FROM 
 ----
 [1, 0]	[b, a]	t6_b_a_check
 
+# a lambda only names its own parameters, as columns in the lambdas of a CHECK are refused
+statement ok
+CREATE TABLE t7 (a INTEGER[], x INTEGER, CHECK (list_transform(a, lambda x: 1) = [1]));
+
+query III
+SELECT constraint_column_indexes, constraint_column_names, constraint_name FROM duckdb_constraints() WHERE table_name = 't7' AND constraint_type = 'CHECK';
+----
+[0]	[a]	t7_a_check
+
+statement error
+CREATE TABLE t8 (a INTEGER[], x INTEGER, CHECK (list_transform(a, lambda y: x) = [1]));
+----
+Lambda functions are currently not supported in CHECK constraints
+
 query II
 SELECT DISTINCT constraint_name, check_clause FROM information_schema.check_constraints WHERE constraint_name IN ('t_b_check', 't5_b_check', 't6_b_a_check') ORDER BY ALL;
 ----

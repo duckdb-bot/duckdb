@@ -32,7 +32,7 @@ namespace {
 //! keeps its type and a projection directly above the operator casts it back, so every operator above it, including
 //! those that take its columns without an expression (set operations, CTEs), sees the types the plan was written with
 void RestoreSerializedFunctionTypes(ClientContext &context, unique_ptr<LogicalOperator> &root,
-                                     unique_ptr<LogicalOperator> &op, TableIndex &next_table_index) {
+                                    unique_ptr<LogicalOperator> &op, TableIndex &next_table_index) {
 	for (auto &child : op->children) {
 		RestoreSerializedFunctionTypes(context, root, child, next_table_index);
 	}

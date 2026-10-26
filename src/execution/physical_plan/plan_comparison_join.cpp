@@ -219,6 +219,24 @@ PhysicalOperator &PhysicalPlanGenerator::PlanComparisonJoin(LogicalComparisonJoi
 
 	idx_t has_range = 0;
 	bool has_equality = op.HasEquality(has_range);
+	// a range join sorts on its first inequalities, but a UNION compares as NULL with a UNION of the same tag when
+	// either member is NULL, which its order does not show, so an inequality of UNIONs is only checked after the sort
+	// (PhysicalRangeJoin puts it last), and a join with no other inequality is left to the nested loop join
+	for (auto &cond : op.conditions) {
+		if (!cond.IsComparison() || !PhysicalRangeJoin::IsUnionComparison(cond)) {
+			continue;
+		}
+		switch (cond.GetComparisonType()) {
+		case ExpressionType::COMPARE_LESSTHAN:
+		case ExpressionType::COMPARE_LESSTHANOREQUALTO:
+		case ExpressionType::COMPARE_GREATERTHAN:
+		case ExpressionType::COMPARE_GREATERTHANOREQUALTO:
+			has_range--;
+			break;
+		default:
+			break;
+		}
+	}
 	bool can_merge = has_range > 0;
 	bool can_iejoin = has_range >= 2 && recursive_cte_tables.empty();
 	switch (op.join_type) {
@@ -235,17 +253,6 @@ PhysicalOperator &PhysicalPlanGenerator::PlanComparisonJoin(LogicalComparisonJoi
 	default:
 		break;
 	}
-	// a range join orders its keys, but a UNION compares as NULL with a UNION of the same tag when either member is
-	// NULL, so an inequality of UNIONs is left to the nested loop join, which compares them
-	for (auto &cond : op.conditions) {
-		if (cond.IsComparison() && cond.GetLHS().GetReturnType().id() == LogicalTypeId::UNION &&
-		    cond.GetComparisonType() != ExpressionType::COMPARE_EQUAL &&
-		    cond.GetComparisonType() != ExpressionType::COMPARE_NOT_DISTINCT_FROM) {
-			can_merge = false;
-			can_iejoin = false;
-		}
-	}
-
 	//	TODO: Extend PWMJ to handle all comparisons and projection maps
 	bool prefer_range_joins = Settings::Get<PreferRangeJoinsSetting>(context);
 	prefer_range_joins = prefer_range_joins && can_iejoin;

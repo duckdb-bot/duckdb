@@ -2005,7 +2005,7 @@ static bool MarkJoinChunkHasUnknown(DataChunk &left, idx_t left_row, DataChunk &
 void JoinHashTable::AddUnionMarkJoinTags(const Vector &keys, idx_t count) {
 	auto &info = mark_join_info;
 	RecursiveUnifiedVectorFormat format;
-	Vector::RecursiveToUnifiedFormat(keys, count, format);
+	Vector::RecursiveToUnifiedFormat(keys, format);
 	auto &tag_format = format.children[0].unified;
 	auto tags = UnifiedVectorFormat::GetData<union_tag_t>(tag_format);
 	for (idx_t row_idx = 0; row_idx < count; row_idx++) {
@@ -2034,7 +2034,7 @@ void JoinHashTable::SetUnionMarkJoinUnknown(const Vector &keys, idx_t count, con
 		return;
 	}
 	RecursiveUnifiedVectorFormat format;
-	Vector::RecursiveToUnifiedFormat(keys, count, format);
+	Vector::RecursiveToUnifiedFormat(keys, format);
 	auto &tag_format = format.children[0].unified;
 	auto tags = UnifiedVectorFormat::GetData<union_tag_t>(tag_format);
 	for (idx_t row_idx = 0; row_idx < count; row_idx++) {

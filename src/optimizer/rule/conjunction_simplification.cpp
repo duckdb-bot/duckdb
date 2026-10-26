@@ -31,11 +31,11 @@ unique_ptr<Expression> ConjunctionSimplificationRule::RemoveExpression(BoundConj
 	return nullptr;
 }
 
-//! Replacing a conjunction with a constant drops its other children, which must then not be volatile or able to throw
-//! (this rule does not know whether it is inside TRY; statistics propagation folds the ones that can throw outside it)
-static bool CanReplaceWithConstant(const BoundConjunctionExpression &conjunction) {
+//! Replacing a conjunction with a constant drops its other children, which must then not be volatile, nor able to throw
+//! inside TRY, as TRY would then return a value instead of NULL
+static bool CanReplaceWithConstant(const BoundConjunctionExpression &conjunction, bool in_try) {
 	for (auto &child : conjunction.GetChildren()) {
-		if (child->IsVolatile() || child->CanThrow()) {
+		if (child->IsVolatile() || (in_try && child->CanThrow())) {
 			return false;
 		}
 	}
@@ -68,7 +68,7 @@ unique_ptr<Expression> ConjunctionSimplificationRule::Apply(LogicalOperator &op,
 	if (conjunction.GetExpressionType() == ExpressionType::CONJUNCTION_AND) {
 		if (!BooleanValue::Get(constant_value)) {
 			// FALSE in AND, result of expression is false
-			if (!CanReplaceWithConstant(conjunction)) {
+			if (!CanReplaceWithConstant(conjunction, rewriter.InTry())) {
 				return nullptr;
 			}
 			return make_uniq<BoundConstantExpression>(Value::BOOLEAN(false));
@@ -83,7 +83,7 @@ unique_ptr<Expression> ConjunctionSimplificationRule::Apply(LogicalOperator &op,
 			return RemoveExpression(conjunction, constant_expr);
 		} else {
 			// TRUE in OR, result of expression is true
-			if (!CanReplaceWithConstant(conjunction)) {
+			if (!CanReplaceWithConstant(conjunction, rewriter.InTry())) {
 				return nullptr;
 			}
 			return make_uniq<BoundConstantExpression>(Value::BOOLEAN(true));

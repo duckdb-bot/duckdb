@@ -130,7 +130,25 @@ NULL
 NULL
 NULL
 
+# a constant child that fails is left to the execution, where TRY catches it
+query I
+SELECT TRY(x > 0 OR CAST('bad' AS BOOLEAN)) FROM v;
+----
+NULL
+NULL
+NULL
+
 # outside TRY, folds over operands that cannot throw for the values in the statistics stay
+query II
+EXPLAIN SELECT * FROM v WHERE (CASE WHEN ln(x) > 0 OR true THEN x ELSE 100 END) > 50;
+----
+physical_plan	<REGEX>:.*Empty Result.*
+
+query II
+EXPLAIN SELECT ln(x) > 0 OR true FROM v;
+----
+physical_plan	<!REGEX>:.*Projections: x.*
+
 statement ok
 CREATE TABLE t AS SELECT range x FROM range(10);
 

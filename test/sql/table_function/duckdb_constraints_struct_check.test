@@ -47,17 +47,6 @@ SELECT constraint_column_indexes, constraint_column_names, constraint_name FROM 
 ----
 [0]	[a]	t7_a_check
 
-# the arrow is also the JSON operator, whose operands are read
-require json
-
-statement ok
-CREATE TABLE tj (j JSON, CHECK ((j -> 'x') = '1'::JSON));
-
-query III
-SELECT constraint_column_indexes, constraint_column_names, constraint_name FROM duckdb_constraints() WHERE table_name = 'tj' AND constraint_type = 'CHECK';
-----
-[0]	[j]	tj_j_check
-
 statement error
 CREATE TABLE t8 (a INTEGER[], x INTEGER, CHECK (list_transform(a, lambda y: x) = [1]));
 ----
@@ -69,3 +58,14 @@ SELECT DISTINCT constraint_name, check_clause FROM information_schema.check_cons
 t5_b_check	CHECK((b.a > 0))
 t6_b_a_check	CHECK(((t6.b.a > 0) AND (t6.a > 0)))
 t_b_check	CHECK((b.x > 0))
+
+# the arrow is also the JSON operator, whose operands are read
+require json
+
+statement ok
+CREATE TABLE tj (j JSON, CHECK ((j -> 'x') = '1'::JSON));
+
+query III
+SELECT constraint_column_indexes, constraint_column_names, constraint_name FROM duckdb_constraints() WHERE table_name = 'tj' AND constraint_type = 'CHECK';
+----
+[0]	[j]	tj_j_check

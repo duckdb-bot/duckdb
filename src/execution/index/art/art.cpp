@@ -1014,8 +1014,8 @@ void ART::VerifyLeaf(const NodePtr &leaf_ptr, const ARTKey &key, DeleteIndexInfo
 	// FIXME: proper foreign key + delete ART support.
 	if (index_constraint_type == IndexConstraintType::FOREIGN) {
 		D_ASSERT(deleted_row_ids.empty());
-		// We don't handle FK conflicts in UPSERT, so the row ID should not matter.
-		if (manager.AddHit(i, MAX_ROW_ID)) {
+		// We don't handle FK conflicts in UPSERT, and several rows have no single row ID.
+		if (manager.AddHit(i, static_cast<row_t>(DConstants::INVALID_INDEX))) {
 			conflict_idx = i;
 		}
 		return;

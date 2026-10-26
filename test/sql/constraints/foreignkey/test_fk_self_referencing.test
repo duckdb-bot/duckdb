@@ -22,7 +22,7 @@ statement ok
 INSERT INTO employee VALUES (1, NULL, 'Smith'), (2, NULL, 'Jhon'), (3, NULL, 'Romeo');
 
 statement error
-INSERT INTO employee VALUES (4, 4, 'Mark');
+INSERT INTO employee VALUES (4, 5, 'Mark');
 ----
 <REGEX>:Constraint Error.*Violates foreign key constraint.*
 

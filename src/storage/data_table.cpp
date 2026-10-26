@@ -28,6 +28,7 @@
 #include "duckdb/planner/expression_binder/constant_binder.hpp"
 #include "duckdb/planner/table_filter.hpp"
 #include "duckdb/storage/checkpoint/table_data_writer.hpp"
+#include "duckdb/storage/buffer_manager.hpp"
 #include "duckdb/storage/storage_manager.hpp"
 #include "duckdb/storage/table/append_state.hpp"
 #include "duckdb/storage/table/delete_state.hpp"
@@ -657,9 +658,101 @@ static bool IsAppend(VerifyExistenceType verify_type) {
 	return verify_type == VerifyExistenceType::APPEND_FK;
 }
 
+static bool HasMatch(ConflictManager &manager, idx_t row) {
+	return manager.HasConflicts() && manager.GetFirstValidity().RowIsValid(row);
+}
+
+//! The first row of a delete whose key is referenced by a row that the delete keeps, if any
+static optional_idx FirstReferenceOutside(ConflictManager &manager, const unordered_set<row_t> &deleted) {
+	if (!manager.HasConflicts()) {
+		return optional_idx();
+	}
+	// the index records one referencing row, or an invalid row ID when several rows reference the key
+	auto row_ids = manager.GetRowIds().Values<row_t>();
+	auto &sel = manager.GetInvertedSel();
+	for (idx_t i = 0; i < manager.ConflictCount(); i++) {
+		auto row_id = row_ids[i].GetValue();
+		if (deleted.find(row_id) == deleted.end()) {
+			return sel.get_index(i);
+		}
+	}
+	return optional_idx();
+}
+
+static void HashKeys(DataChunk &chunk, const vector<PhysicalIndex> &keys, Vector &hashes) {
+	VectorOperations::Hash(chunk.data[keys[0].index], hashes, chunk.size());
+	for (idx_t i = 1; i < keys.size(); i++) {
+		VectorOperations::CombineHash(hashes, chunk.data[keys[i].index], chunk.size());
+	}
+}
+
+//! The rows without a match whose foreign key is not the primary key of a row in the chunk either
+static vector<idx_t> RemoveMatchesInChunk(DataChunk &chunk, const ForeignKeyInfo &info, const vector<idx_t> &missing) {
+	Vector pk_hashes(LogicalType::HASH, chunk.size());
+	Vector fk_hashes(LogicalType::HASH, chunk.size());
+	HashKeys(chunk, info.pk_keys, pk_hashes);
+	HashKeys(chunk, info.fk_keys, fk_hashes);
+	auto pk_hash_values = pk_hashes.Values<hash_t>();
+	auto fk_hash_values = fk_hashes.Values<hash_t>();
+
+	unordered_map<hash_t, vector<idx_t>> rows_by_key;
+	for (idx_t row = 0; row < chunk.size(); row++) {
+		rows_by_key[pk_hash_values[row].GetValue()].push_back(row);
+	}
+	vector<idx_t> result;
+	for (auto row : missing) {
+		bool found = false;
+		auto entry = rows_by_key.find(fk_hash_values[row].GetValue());
+		if (entry != rows_by_key.end()) {
+			for (auto pk_row : entry->second) {
+				found = true;
+				for (idx_t i = 0; i < info.fk_keys.size() && found; i++) {
+					auto fk_value = chunk.data[info.fk_keys[i].index].GetValue(row);
+					auto pk_value = chunk.data[info.pk_keys[i].index].GetValue(pk_row);
+					found = !fk_value.IsNull() && fk_value == pk_value;
+				}
+				if (found) {
+					break;
+				}
+			}
+		}
+		if (!found) {
+			result.push_back(row);
+		}
+	}
+	return result;
+}
+
+static void DeferForeignKeyCheck(ClientContext &context, DeferredForeignKeyChecks &deferred, idx_t constraint_index,
+                                 DataChunk &chunk, const vector<PhysicalIndex> &fk_keys, const vector<idx_t> &rows) {
+	vector<LogicalType> types;
+	for (auto &key : fk_keys) {
+		types.push_back(chunk.data[key.index].GetType());
+	}
+	SelectionVector sel(rows.size());
+	for (idx_t i = 0; i < rows.size(); i++) {
+		sel.set_index(i, rows[i]);
+	}
+	DataChunk keys;
+	keys.InitializeEmpty(types);
+	for (idx_t i = 0; i < fk_keys.size(); i++) {
+		keys.data[i].Slice(chunk.data[fk_keys[i].index], sel, rows.size());
+	}
+	keys.SetCardinality(rows.size());
+
+	lock_guard<mutex> guard(deferred.lock);
+	auto &collection = deferred.keys[constraint_index];
+	if (!collection) {
+		collection = make_uniq<ColumnDataCollection>(BufferManager::GetBufferManager(context), types);
+	}
+	collection->Append(keys);
+}
+
 void DataTable::VerifyForeignKeyConstraint(optional_ptr<LocalTableStorage> storage,
                                            const BoundForeignKeyConstraint &bound_foreign_key, ClientContext &context,
-                                           DataChunk &chunk, VerifyExistenceType verify_type) {
+                                           DataChunk &chunk, VerifyExistenceType verify_type,
+                                           optional_ptr<DeferredForeignKeyChecks> deferred, idx_t constraint_index,
+                                           bool match_in_chunk, optional_ptr<Vector> deleted_row_ids) {
 	reference<const vector<PhysicalIndex>> src_keys_ptr = bound_foreign_key.info.fk_keys;
 	reference<const vector<PhysicalIndex>> dst_keys_ptr = bound_foreign_key.info.pk_keys;
 
@@ -734,6 +827,49 @@ void DataTable::VerifyForeignKeyConstraint(optional_ptr<LocalTableStorage> stora
 
 	// Check whether we can insert into the foreign key table, or delete from the reference table.
 	index_entry = data_table.info->indexes.FindForeignKeyIndex(dst_keys_ptr, fk_type);
+
+	if (is_append && bound_foreign_key.info.type == ForeignKeyType::FK_TYPE_SELF_REFERENCE_TABLE) {
+		// A row of a table that references itself can reference a row inserted with it
+		vector<idx_t> missing;
+		for (idx_t row = 0; row < count; row++) {
+			if (!HasMatch(global_conflict_manager, row) &&
+			    (!local_verification || !HasMatch(local_conflict_manager, row))) {
+				missing.push_back(row);
+			}
+		}
+		if (match_in_chunk && !missing.empty()) {
+			missing = RemoveMatchesInChunk(chunk, bound_foreign_key.info, missing);
+		}
+		if (missing.empty()) {
+			return;
+		}
+		if (deferred) {
+			DeferForeignKeyCheck(context, *deferred, constraint_index, chunk, bound_foreign_key.info.fk_keys, missing);
+			return;
+		}
+		auto message = ConstructForeignKeyError(missing[0], true, index_entry, dst_chunk);
+		throw ConstraintException(message);
+	}
+	if (!is_append && bound_foreign_key.info.type == ForeignKeyType::FK_TYPE_SELF_REFERENCE_TABLE && deleted_row_ids) {
+		// A row of a table that references itself is not referenced anymore by a row deleted with it
+		unordered_set<row_t> deleted;
+		for (auto row_id : deleted_row_ids->Values<row_t>()) {
+			deleted.insert(row_id.GetValue());
+		}
+		auto conflict = FirstReferenceOutside(global_conflict_manager, deleted);
+		if (conflict.IsValid()) {
+			throw ConstraintException(ConstructForeignKeyError(conflict, false, index_entry, dst_chunk));
+		}
+		if (local_verification) {
+			conflict = FirstReferenceOutside(local_conflict_manager, deleted);
+			if (conflict.IsValid()) {
+				auto local_entry =
+				    local_storage.GetIndexes(context, data_table).FindForeignKeyIndex(dst_keys_ptr, fk_type);
+				throw ConstraintException(ConstructForeignKeyError(conflict, false, local_entry, dst_chunk));
+			}
+		}
+		return;
+	}
 	if (!local_verification) {
 		auto conflict = LocateErrorIndex(global_conflict_manager, is_append, count);
 		auto message = ConstructForeignKeyError(conflict, is_append, index_entry, dst_chunk);
@@ -791,14 +927,53 @@ void DataTable::VerifyForeignKeyConstraint(optional_ptr<LocalTableStorage> stora
 
 void DataTable::VerifyAppendForeignKeyConstraint(optional_ptr<LocalTableStorage> storage,
                                                  const BoundForeignKeyConstraint &bound_foreign_key,
-                                                 ClientContext &context, DataChunk &chunk) {
-	VerifyForeignKeyConstraint(storage, bound_foreign_key, context, chunk, VerifyExistenceType::APPEND_FK);
+                                                 ClientContext &context, DataChunk &chunk,
+                                                 optional_ptr<DeferredForeignKeyChecks> deferred,
+                                                 idx_t constraint_index) {
+	VerifyForeignKeyConstraint(storage, bound_foreign_key, context, chunk, VerifyExistenceType::APPEND_FK, deferred,
+	                           constraint_index);
+}
+
+bool DataTable::HasSelfReferencingForeignKey(const vector<unique_ptr<BoundConstraint>> &bound_constraints) {
+	for (auto &constraint : bound_constraints) {
+		if (constraint->type == ConstraintType::FOREIGN_KEY &&
+		    constraint->Cast<BoundForeignKeyConstraint>().info.type == ForeignKeyType::FK_TYPE_SELF_REFERENCE_TABLE) {
+			return true;
+		}
+	}
+	return false;
+}
+
+void DataTable::VerifyDeferredForeignKeys(ClientContext &context, TableCatalogEntry &table,
+                                          const vector<unique_ptr<BoundConstraint>> &bound_constraints,
+                                          DeferredForeignKeyChecks &checks) {
+	vector<LogicalType> types;
+	for (auto &col : table.GetColumns().Physical()) {
+		types.push_back(col.Type());
+	}
+	for (auto &entry : checks.keys) {
+		auto &bound_foreign_key = bound_constraints[entry.first]->Cast<BoundForeignKeyConstraint>();
+		auto &fk_keys = bound_foreign_key.info.fk_keys;
+		for (auto &keys : entry.second->Chunks()) {
+			// only the foreign key columns are read
+			DataChunk chunk;
+			chunk.InitializeEmpty(types);
+			for (idx_t i = 0; i < fk_keys.size(); i++) {
+				chunk.data[fk_keys[i].index].Reference(keys.data[i]);
+			}
+			chunk.SetCardinality(keys.size());
+			VerifyForeignKeyConstraint(nullptr, bound_foreign_key, context, chunk, VerifyExistenceType::APPEND_FK,
+			                           nullptr, entry.first, false);
+		}
+	}
+	checks.keys.clear();
 }
 
 void DataTable::VerifyDeleteForeignKeyConstraint(optional_ptr<LocalTableStorage> storage,
                                                  const BoundForeignKeyConstraint &bound_foreign_key,
-                                                 ClientContext &context, DataChunk &chunk) {
-	VerifyForeignKeyConstraint(storage, bound_foreign_key, context, chunk, VerifyExistenceType::DELETE_FK);
+                                                 ClientContext &context, DataChunk &chunk, Vector &row_ids) {
+	VerifyForeignKeyConstraint(storage, bound_foreign_key, context, chunk, VerifyExistenceType::DELETE_FK, nullptr, 0,
+	                           false, row_ids);
 }
 
 void DataTable::VerifyNewConstraint(LocalStorage &local_storage, DataTable &parent, const BoundConstraint &constraint) {
@@ -861,7 +1036,8 @@ void DataTable::VerifyAppendConstraints(ConstraintState &constraint_state, Clien
 		case ConstraintType::FOREIGN_KEY: {
 			auto &bound_foreign_key = constraint->Cast<BoundForeignKeyConstraint>();
 			if (bound_foreign_key.info.IsAppendConstraint()) {
-				VerifyAppendForeignKeyConstraint(storage, bound_foreign_key, context, chunk);
+				VerifyAppendForeignKeyConstraint(storage, bound_foreign_key, context, chunk,
+				                                 constraint_state.deferred_foreign_keys, i);
 			}
 			break;
 		}
@@ -941,9 +1117,11 @@ void DataTable::LocalAppend(LocalAppendState &state, DuckTableEntry &table_entry
 }
 
 void DataTable::LocalAppend(DuckTableEntry &table, ClientContext &context, DataChunk &chunk,
-                            const vector<unique_ptr<BoundConstraint>> &bound_constraints, bool unsafe) {
+                            const vector<unique_ptr<BoundConstraint>> &bound_constraints, bool unsafe,
+                            optional_ptr<DeferredForeignKeyChecks> deferred_foreign_keys) {
 	LocalAppendState append_state;
 	InitializeLocalAppend(append_state, table, context, bound_constraints);
+	append_state.constraint_state->deferred_foreign_keys = deferred_foreign_keys;
 	LocalAppend(append_state, table, context, chunk, unsafe);
 	FinalizeLocalAppend(append_state);
 }
@@ -1296,7 +1474,7 @@ static bool TableHasDeleteConstraints(TableCatalogEntry &table) {
 }
 
 void DataTable::VerifyDeleteConstraints(optional_ptr<LocalTableStorage> storage, TableDeleteState &state,
-                                        ClientContext &context, DataChunk &chunk) {
+                                        ClientContext &context, DataChunk &chunk, Vector &row_ids) {
 	for (auto &constraint : state.constraint_state->bound_constraints) {
 		switch (constraint->type) {
 		case ConstraintType::NOT_NULL:
@@ -1306,7 +1484,7 @@ void DataTable::VerifyDeleteConstraints(optional_ptr<LocalTableStorage> storage,
 		case ConstraintType::FOREIGN_KEY: {
 			auto &bound_foreign_key = constraint->Cast<BoundForeignKeyConstraint>();
 			if (bound_foreign_key.info.IsDeleteConstraint()) {
-				VerifyDeleteForeignKeyConstraint(storage, bound_foreign_key, context, chunk);
+				VerifyDeleteForeignKeyConstraint(storage, bound_foreign_key, context, chunk, row_ids);
 			}
 			break;
 		}
@@ -1375,7 +1553,7 @@ idx_t DataTable::Delete(TableDeleteState &state, ClientContext &context, DuckTab
 				ColumnFetchState fetch_state;
 				local_storage.FetchChunk(*this, offset_ids, current_count, state.col_ids, state.verify_chunk,
 				                         fetch_state);
-				VerifyDeleteConstraints(storage, state, context, state.verify_chunk);
+				VerifyDeleteConstraints(storage, state, context, state.verify_chunk, offset_ids);
 			}
 			delete_count += local_storage.Delete(*this, table_entry, offset_ids, current_count);
 			continue;
@@ -1386,7 +1564,7 @@ idx_t DataTable::Delete(TableDeleteState &state, ClientContext &context, DuckTab
 			// Verify any delete constraints.
 			ColumnFetchState fetch_state;
 			Fetch(transaction, state.verify_chunk, state.col_ids, offset_ids, current_count, fetch_state);
-			VerifyDeleteConstraints(storage, state, context, state.verify_chunk);
+			VerifyDeleteConstraints(storage, state, context, state.verify_chunk, offset_ids);
 		}
 		delete_count += row_groups->Delete(transaction, table_entry, ids + current_offset, current_count);
 	}

@@ -1,0 +1,165 @@
+# name: test/sql/constraints/foreignkey/test_fk_self_reference_same_statement.test
+# description: A row of a table that references itself can reference a row inserted by the same statement
+# group: [foreignkey]
+
+statement ok
+CREATE TABLE t (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES t (id));
+
+statement ok
+INSERT INTO t VALUES (1, NULL), (10, 1);
+
+# the referenced row can come later in the statement, and a row can reference itself
+statement ok
+INSERT INTO t VALUES (11, 12), (12, 10), (13, 13);
+
+statement error
+INSERT INTO t VALUES (20, 21), (22, NULL);
+----
+Violates foreign key constraint because key "id: 21" does not exist in the referenced table
+
+query II
+SELECT * FROM t ORDER BY id
+----
+1	NULL
+10	1
+11	12
+12	10
+13	13
+
+# rows of earlier chunks of the statement are in the transaction-local storage, rows of the same chunk are found too
+statement ok
+INSERT INTO t SELECT i, i - 1 FROM range(100, 10000) r(i) WHERE i > 100 UNION ALL SELECT 100, NULL ORDER BY 1
+
+query III
+SELECT count(*), min(id), max(id) FROM t WHERE id >= 100
+----
+9900	100	9999
+
+# a reference to a row of a later chunk is checked once the statement has inserted all its rows, also when the
+# statement writes more than a row group
+statement ok
+CREATE TABLE ring (id INTEGER PRIMARY KEY, next_id INTEGER REFERENCES ring (id));
+
+statement ok
+INSERT INTO ring SELECT i, (i + 1) % 150000 FROM range(150000) r(i)
+
+statement error
+INSERT INTO ring SELECT i, i + 1 FROM range(150000, 160000) r(i)
+----
+Violates foreign key constraint because key "id: 160000" does not exist in the referenced table
+
+statement error
+INSERT INTO ring SELECT i, i + 1 FROM range(200000, 350000) r(i)
+----
+Violates foreign key constraint because key "id: 350000" does not exist in the referenced table
+
+query II
+SELECT count(*), count(*) FILTER (next_id = 0) FROM ring
+----
+150000	1
+
+# inserts with ON CONFLICT and RETURNING
+statement ok
+INSERT INTO t VALUES (40, 41), (41, NULL) ON CONFLICT DO NOTHING
+
+statement ok
+INSERT OR REPLACE INTO t VALUES (42, 43), (43, 40)
+
+query I rowsort
+INSERT INTO t VALUES (44, 45), (45, 44) RETURNING id
+----
+44
+45
+
+statement error
+INSERT INTO t VALUES (46, 47) ON CONFLICT DO NOTHING
+----
+Violates foreign key constraint because key "id: 47" does not exist in the referenced table
+
+statement error
+INSERT INTO t VALUES (46, 47) RETURNING id
+----
+Violates foreign key constraint because key "id: 47" does not exist in the referenced table
+
+# a conflicting row becomes an update, which references a row that exists
+statement ok
+INSERT INTO t VALUES (42, 1), (48, 42) ON CONFLICT (id) DO UPDATE SET parent_id = excluded.parent_id
+
+query II
+SELECT * FROM t WHERE id IN (42, 48) ORDER BY id
+----
+42	1
+48	42
+
+# composite keys and a referenced unique column
+statement ok
+CREATE TABLE c (a INTEGER, b VARCHAR, pa INTEGER, pb VARCHAR, PRIMARY KEY (a, b), FOREIGN KEY (pa, pb) REFERENCES c (a, b));
+
+statement ok
+INSERT INTO c VALUES (1, 'x', 2, 'y'), (2, 'y', NULL, NULL), (3, 'z', 2, NULL);
+
+statement error
+INSERT INTO c VALUES (4, 'x', 1, 'y'), (5, 'y', 4, 'x');
+----
+Violates foreign key constraint because key "a: 1, b: y" does not exist in the referenced table
+
+statement ok
+CREATE TABLE u (id INTEGER PRIMARY KEY, code VARCHAR UNIQUE, parent_code VARCHAR REFERENCES u (code));
+
+statement ok
+INSERT INTO u VALUES (1, 'b', 'a'), (2, 'a', NULL);
+
+statement error
+INSERT INTO u VALUES (3, 'c', 'd');
+----
+Violates foreign key constraint because key "code: d" does not exist in the referenced table
+
+# a transaction sees its own earlier inserts, as before
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO t VALUES (30, NULL)
+
+statement ok
+INSERT INTO t VALUES (31, 30), (32, 31)
+
+statement ok
+COMMIT
+
+query I
+SELECT count(*) FROM t WHERE id BETWEEN 30 AND 32
+----
+3
+
+# a database with a table that references itself can be copied
+statement ok
+ATTACH '{TEST_DIR}/self_fk_src.db' AS src;
+
+statement ok
+ATTACH '{TEST_DIR}/self_fk_dst.db' AS dst;
+
+statement ok
+CREATE TABLE src.example (id INTEGER NOT NULL, parent_id INTEGER, PRIMARY KEY (id), FOREIGN KEY (parent_id) REFERENCES example (id));
+
+statement ok
+INSERT INTO src.example VALUES (1, NULL), (2, NULL);
+
+statement ok
+INSERT INTO src.example VALUES (10, 1), (20, 2);
+
+statement ok
+COPY FROM DATABASE src TO dst;
+
+query II
+SELECT * FROM dst.example ORDER BY id
+----
+1	NULL
+2	NULL
+10	1
+20	2
+
+statement error
+INSERT INTO dst.example VALUES (30, 40)
+----
+Violates foreign key constraint because key "id: 40" does not exist in the referenced table

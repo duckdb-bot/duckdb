@@ -38,6 +38,8 @@ public:
 	ColumnDataCollection return_collection;
 	//! Leftover thread-local collections (smaller than a row group) that are compacted and merged in Finalize.
 	vector<PhysicalIndex> unmerged_collections;
+	//! The keys of foreign keys referencing the table itself, checked in Finalize
+	unique_ptr<DeferredForeignKeyChecks> deferred_foreign_keys;
 };
 
 class InsertLocalState : public LocalSinkState {

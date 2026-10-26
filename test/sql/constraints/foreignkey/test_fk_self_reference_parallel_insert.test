@@ -1,0 +1,48 @@
+# name: test/sql/constraints/foreignkey/test_fk_self_reference_parallel_insert.test
+# description: Parallel and batch inserts into a table that references itself check the references once all rows are inserted
+# group: [foreignkey]
+
+statement ok
+SET threads = 4
+
+statement ok
+CREATE TABLE src AS SELECT i AS id, (i + 1) % 300000 AS next_id FROM range(300000) r(i);
+
+statement ok
+CREATE TABLE src_missing AS SELECT i AS id, i + 1 AS next_id FROM range(400000, 700000) r(i);
+
+foreach preserve true false
+
+statement ok
+SET preserve_insertion_order = {preserve}
+
+statement ok
+CREATE OR REPLACE TABLE ring (id INTEGER PRIMARY KEY, next_id INTEGER REFERENCES ring (id));
+
+statement ok
+INSERT INTO ring SELECT * FROM src
+
+statement error
+INSERT INTO ring SELECT * FROM src_missing
+----
+Violates foreign key constraint because key "id: 700000" does not exist in the referenced table
+
+statement error
+INSERT INTO ring SELECT id + 300000, next_id + 300001 FROM src WHERE id < 10000
+----
+Violates foreign key constraint because key "id: 310000" does not exist in the referenced table
+
+query II
+SELECT count(*), count(*) FILTER (next_id = 0) FROM ring
+----
+300000	1
+
+statement ok
+INSERT INTO ring VALUES (700001, 700002), (700002, 700001) ON CONFLICT DO NOTHING
+
+query I
+SELECT count(*) FROM ring
+----
+300002
+
+endloop

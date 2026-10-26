@@ -563,6 +563,10 @@ LogicalType DBConfig::ParseLogicalType(const string &type) {
 		throw InternalException("Error while generating extension function overloads - unrecognized logical type %s",
 		                        type);
 	}
+	if (type_id == LogicalTypeId::VARIANT) {
+		// VARIANT requires its type info
+		return LogicalType::VARIANT();
+	}
 	return type_id;
 }
 

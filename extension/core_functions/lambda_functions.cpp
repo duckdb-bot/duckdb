@@ -228,7 +228,7 @@ void ListLambdaBindData::Serialize(Serializer &serializer, const optional_ptr<Fu
                                    const BoundScalarFunction &) {
 	auto &bind_data = bind_data_p->Cast<ListLambdaBindData>();
 	serializer.WriteProperty(100, "return_type", bind_data.return_type);
-	serializer.WritePropertyWithDefault(101, "lambda_expr", bind_data.lambda_expr, unique_ptr<Expression>());
+	serializer.WritePropertyWithDefault(101, "lambda_expr", bind_data.lambda_expr, shared_ptr<Expression>());
 	serializer.WriteProperty(102, "has_index", bind_data.has_index);
 	serializer.WritePropertyWithDefault<bool>(103, "has_initial", bind_data.has_initial, false);
 }

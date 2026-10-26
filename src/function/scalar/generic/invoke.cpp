@@ -19,26 +19,27 @@ static void PropagateLambdaProperties(BoundScalarFunction &function, const Expre
 }
 
 struct LambdaInvokeData final : public LambdaFunctionData {
-	unique_ptr<Expression> lambda_expr;
+	//! The bound lambda. It does not change after binding, so the copies of the bind data share it, as for
+	//! ListLambdaBindData
+	shared_ptr<Expression> lambda_expr;
 
-	explicit LambdaInvokeData(unique_ptr<Expression> lambda_expr_p) : lambda_expr(std::move(lambda_expr_p)) {
+	explicit LambdaInvokeData(shared_ptr<Expression> lambda_expr_p) : lambda_expr(std::move(lambda_expr_p)) {
 	}
 
 	unique_ptr<FunctionData> Copy() const override {
-		auto lambda_expr_copy = lambda_expr ? lambda_expr->Copy() : nullptr;
-		return make_uniq<LambdaInvokeData>(std::move(lambda_expr_copy));
+		return make_uniq<LambdaInvokeData>(lambda_expr);
 	}
 
 	bool Equals(const FunctionData &other_p) const override {
 		auto &other = other_p.Cast<LambdaInvokeData>();
-		return Expression::Equals(lambda_expr, other.lambda_expr);
+		return LambdaExpressionEquals(lambda_expr, other.lambda_expr);
 	}
 
 	//! Serializes a lambda function's bind data
 	static void Serialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data_p,
 	                      const BoundScalarFunction &function) {
 		auto &bind_data = bind_data_p->Cast<LambdaInvokeData>();
-		serializer.WritePropertyWithDefault(101, "lambda_expr", bind_data.lambda_expr, unique_ptr<Expression>());
+		serializer.WritePropertyWithDefault(101, "lambda_expr", bind_data.lambda_expr, shared_ptr<Expression>());
 	}
 
 	//! Deserializes a lambda function's bind data

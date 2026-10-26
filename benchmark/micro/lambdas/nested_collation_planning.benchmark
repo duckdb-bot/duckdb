@@ -1,0 +1,17 @@
+# name: benchmark/micro/lambdas/nested_collation_planning.benchmark
+# description: DISTINCT of eight nested STRUCT(...)[] levels under a collation, collated through nested lambdas (duckdblabs/bot-issue-tracker#689)
+# group: [lambdas]
+
+name Nested collation planning
+group lambdas
+
+load
+SET default_collation = 'nocase';
+CREATE TABLE t(x STRUCT(f STRUCT(f STRUCT(f STRUCT(f STRUCT(f STRUCT(f STRUCT(f STRUCT(f VARCHAR)[])[])[])[])[])[])[])[]);
+INSERT INTO t VALUES ([{'f': [{'f': [{'f': [{'f': [{'f': [{'f': [{'f': [{'f': 'Abc'}]}]}]}]}]}]}]}]), ([{'f': [{'f': [{'f': [{'f': [{'f': [{'f': [{'f': [{'f': 'aBC'}]}]}]}]}]}]}]}]);
+
+run
+SELECT count(DISTINCT x) FROM t;
+
+result I
+1

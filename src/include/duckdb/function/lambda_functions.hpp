@@ -24,32 +24,41 @@ struct LambdaFunctionData : public FunctionData {
 	//! kept in the children do not contain it, so it has to be recovered when they are deserialized.
 	//! Returns nullptr if this bind data carries no lambda (e.g. a NULL list argument).
 	DUCKDB_API virtual unique_ptr<Expression> RecoverLambdaChild() const = 0;
+
+protected:
+	static bool LambdaExpressionEquals(const shared_ptr<Expression> &left, const shared_ptr<Expression> &right) {
+		if (left == right) {
+			return true;
+		}
+		return left && right && left->Equals(*right);
+	}
 };
 
 struct ListLambdaBindData final : public LambdaFunctionData {
 public:
-	ListLambdaBindData(const LogicalType &return_type, unique_ptr<Expression> lambda_expr, const bool has_index = false,
+	ListLambdaBindData(const LogicalType &return_type, shared_ptr<Expression> lambda_expr, const bool has_index = false,
 	                   const bool has_initial = false)
 	    : return_type(return_type), lambda_expr(std::move(lambda_expr)), has_index(has_index),
 	      has_initial(has_initial) {};
 
 	//! Return type of the scalar function
 	LogicalType return_type;
-	//! Lambda expression that the expression executor executes
-	unique_ptr<Expression> lambda_expr;
+	//! Lambda expression that the expression executor executes. It does not change after binding, so the copies of
+	//! the bind data share it: copying it each time copies the lambdas nested in it as well, which doubles the
+	//! expression for every level of nesting
+	shared_ptr<Expression> lambda_expr;
 	//! True, if the last parameter in a lambda parameter list represents the index of the current list element
 	bool has_index;
 	bool has_initial;
 
 public:
 	unique_ptr<FunctionData> Copy() const override {
-		auto lambda_expr_copy = lambda_expr ? lambda_expr->Copy() : nullptr;
-		return make_uniq<ListLambdaBindData>(return_type, std::move(lambda_expr_copy), has_index, has_initial);
+		return make_uniq<ListLambdaBindData>(return_type, lambda_expr, has_index, has_initial);
 	}
 
 	bool Equals(const FunctionData &other_p) const override {
 		auto &other = other_p.Cast<ListLambdaBindData>();
-		return Expression::Equals(lambda_expr, other.lambda_expr) && return_type == other.return_type &&
+		return LambdaExpressionEquals(lambda_expr, other.lambda_expr) && return_type == other.return_type &&
 		       has_index == other.has_index && has_initial == other.has_initial;
 	}
 
@@ -133,7 +142,7 @@ public:
 			// get the lambda expression
 			auto &func_expr = state.expr.Cast<BoundFunctionExpression>();
 			auto &bind_info = func_expr.BindInfo()->Cast<ListLambdaBindData>();
-			lambda_expr = bind_info.lambda_expr;
+			lambda_expr = bind_info.lambda_expr.get();
 			is_volatile = lambda_expr->IsVolatile();
 			has_index = bind_info.has_index;
 			has_initial = bind_info.has_initial;

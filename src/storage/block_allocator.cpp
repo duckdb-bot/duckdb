@@ -811,7 +811,7 @@ public:
 		allocator.flush_state = FlushState::IDLE;
 		// Failed or unavailable work waits for another idle request; successful work can continue in bounded tasks.
 		if ((remaining > 0 || cache_freed > 0 || reschedule) && scheduler.GetNumberOfTasks() == 0 &&
-		    scheduler.NumberOfAsyncThreads() > 0 && allocator.HasReclaimableMemory()) {
+		    scheduler.NumberOfLaunchedAsyncThreads() > 0 && allocator.HasReclaimableMemory()) {
 			try {
 				scheduler.ScheduleTask(
 				    *allocator.flush_producer,
@@ -835,7 +835,8 @@ private:
 
 bool BlockAllocator::TryScheduleFlush(TaskScheduler &scheduler) const {
 	annotated_lock_guard<annotated_mutex> guard(flush_lock);
-	if (scheduler.NumberOfAsyncThreads() == 0) {
+	// idle maintenance must not launch the async threads, whose launch flushes this allocator
+	if (scheduler.NumberOfLaunchedAsyncThreads() == 0) {
 		return false;
 	}
 	if (flush_state != FlushState::IDLE) {

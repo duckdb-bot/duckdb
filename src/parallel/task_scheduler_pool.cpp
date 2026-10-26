@@ -41,11 +41,18 @@ struct TaskSchedulerThread {
 #endif
 };
 
+#ifndef DUCKDB_NO_THREADS
+static vector<int> GetProcessCPUMask();
+#endif
+
 TaskSchedulerPool::TaskSchedulerPool(DatabaseInstance &db_p, TaskSchedulerType pool_type_p)
     : db(db_p), pool_type(pool_type_p), requested_thread_count(0),
       current_thread_count(pool_type == TaskSchedulerType::REGULAR ? 1 : 0) {
 #ifndef DUCKDB_NO_THREADS
 	semaphore = make_uniq<LightWeightSemaphoreWrapper>();
+	if (pool_type == TaskSchedulerType::ASYNC) {
+		launch_cpus = GetProcessCPUMask();
+	}
 #endif
 }
 
@@ -97,6 +104,20 @@ static vector<int> GetProcessCPUMask() {
 	return available_cpus;
 #else
 	return {};
+#endif
+}
+
+void TaskSchedulerPool::RunOnLaunchCPUs() {
+#if defined(__GLIBC__)
+	if (launch_cpus.empty()) {
+		return;
+	}
+	cpu_set_t cpuset;
+	CPU_ZERO(&cpuset);
+	for (auto cpu : launch_cpus) {
+		CPU_SET(cpu, &cpuset);
+	}
+	sched_setaffinity(0, sizeof(cpu_set_t), &cpuset);
 #endif
 }
 

@@ -7,6 +7,7 @@ add_library(
   cast.cpp
   executor.cpp
   concurrent_commits.cpp
+  database_open.cpp
   in.cpp
   parser.cpp
   storage.cpp

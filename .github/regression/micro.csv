@@ -45,5 +45,7 @@ benchmark/micro/result_collection/stream_materialize.benchmark
 benchmark/parquet/dlba_read-long-1000000.benchmark
 benchmark/micro/update/upsert_select_cast_key.benchmark
 benchmark/micro/update/upsert_enum_key.benchmark
+benchmark/micro/aggregate/min_double.benchmark
+benchmark/micro/aggregate/max_double.benchmark
 benchmark/micro/cast/cast_json_documents_to_variant.benchmark
 benchmark/micro/variant/variant_update_nested_constant.benchmark

@@ -108,6 +108,15 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundConjun
 			removed_expressions = true;
 			continue;
 		}
+		// the constant decides the conjunction, but replacing it drops the other children, which must then not be
+		// volatile or able to throw
+		bool can_drop_children = true;
+		for (auto &other : expr.GetChildren()) {
+			can_drop_children = can_drop_children && !other->IsVolatile() && !other->CanThrow();
+		}
+		if (!can_drop_children) {
+			continue;
+		}
 		expr_ptr = make_uniq<BoundConstantExpression>(Value::BOOLEAN(constant_value));
 		return PropagateExpression(expr_ptr);
 	}

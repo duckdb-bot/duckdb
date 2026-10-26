@@ -273,6 +273,8 @@ unique_ptr<BaseStatistics> PropagateNumericStats(ClientContext &context, Functio
 		}
 		expr.FunctionMutable().SetFunctionCallback(
 		    GetScalarIntegerFunction<BASEOP>(expr.GetReturnType().InternalType()));
+		// which cannot throw, so the optimizer may fold expressions over it
+		expr.FunctionMutable().SetErrorMode(FunctionErrors::CANNOT_ERROR);
 	}
 	auto result = NumericStats::CreateEmpty(expr.GetReturnType());
 	NumericStats::SetMin(result, new_min);
@@ -316,6 +318,8 @@ unique_ptr<BaseStatistics> PropagateFloatingStats(ClientContext &context, Functi
 		return nullptr;
 	}
 
+	// the result cannot overflow, so the operator cannot throw and the optimizer may fold expressions over it
+	expr.FunctionMutable().SetErrorMode(FunctionErrors::CANNOT_ERROR);
 	auto result = NumericStats::CreateEmpty(return_type);
 	NumericStats::SetMin(result, new_min);
 	NumericStats::SetMax(result, new_max);

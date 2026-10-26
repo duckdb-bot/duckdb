@@ -157,6 +157,12 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateComparison(BoundFuncti
 	}
 	// propagate the statistics of the comparison operator
 	auto propagate_result = PropagateComparison(*left_stats, *right_stats, expr.GetExpressionType());
+	if ((propagate_result == FilterPropagateResult::FILTER_ALWAYS_TRUE ||
+	     propagate_result == FilterPropagateResult::FILTER_ALWAYS_FALSE) &&
+	    (expr.IsVolatile() || expr.CanThrow())) {
+		// a constant would drop the children, which are volatile or can throw
+		return nullptr;
+	}
 	switch (propagate_result) {
 	case FilterPropagateResult::FILTER_ALWAYS_TRUE:
 		expr_ptr = make_uniq<BoundConstantExpression>(Value::BOOLEAN(true));

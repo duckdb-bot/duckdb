@@ -25,7 +25,7 @@ static bool ContainsThrowingVariantCast(const Expression &expr) {
 //! Folding a NULL check removes its child from the plan
 static bool CanFoldNullCheck(const BoundOperatorExpression &expr) {
 	auto &child = *expr.GetChildren()[0];
-	return !child.IsVolatile() && !ContainsThrowingVariantCast(child);
+	return !child.IsVolatile() && !child.CanThrow() && !ContainsThrowingVariantCast(child);
 }
 
 unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundOperatorExpression &expr,
@@ -48,10 +48,11 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundOperat
 		// COALESCE, merge stats of all children
 		for (idx_t i = 0; i < expr.GetChildrenMutable().size(); i++) {
 			D_ASSERT(child_stats[i]);
+			auto &child = *expr.GetChildren()[i];
 			if (!child_stats[i]->CanHaveNoNull()) {
 				// this child is always NULL, we can remove it from the coalesce
-				// UNLESS there is only one node remaining
-				if (expr.GetChildrenMutable().size() > 1) {
+				// UNLESS there is only one node remaining, or it is volatile or can throw
+				if (expr.GetChildrenMutable().size() > 1 && !child.IsVolatile() && !child.CanThrow()) {
 					expr.GetChildrenMutable().erase_at(i);
 					child_stats.erase_at(i);
 					i--;

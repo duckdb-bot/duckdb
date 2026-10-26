@@ -1,0 +1,151 @@
+# name: test/sql/optimizer/fold_volatile_and_throwing_operands.test
+# description: Folds that decide an expression from statistics or a constant keep the operands that are volatile or can throw (duckdblabs/bot-issue-tracker#645)
+# group: [optimizer]
+
+statement ok
+CREATE TABLE v AS SELECT * FROM (VALUES (1), (2), (3)) t(x);
+
+statement ok
+CREATE TABLE caps AS SELECT 'abc' AS a;
+
+# a comparison whose statistics decide it, over a CASE whose condition is volatile
+statement ok
+CREATE SEQUENCE s_case START 1;
+
+query I
+SELECT (CASE WHEN nextval('s_case') > 0 THEN x ELSE x END) > 0 AS r FROM v;
+----
+true
+true
+true
+
+query I
+SELECT nextval('s_case');
+----
+4
+
+statement ok
+CREATE SEQUENCE s_between START 1;
+
+query I
+SELECT (CASE WHEN nextval('s_between') > 0 THEN x ELSE x END) BETWEEN 0 AND 10 AS r FROM v;
+----
+true
+true
+true
+
+query I
+SELECT nextval('s_between');
+----
+4
+
+# a BETWEEN whose lower bound is always met keeps a volatile lower bound
+statement ok
+CREATE SEQUENCE s_bound START 1;
+
+query I
+SELECT x BETWEEN (CASE WHEN nextval('s_bound') > 0 THEN 0 ELSE 0 END) AND 2 AS r FROM v;
+----
+true
+true
+false
+
+query I
+SELECT nextval('s_bound');
+----
+4
+
+# a constant that decides OR or AND
+statement ok
+CREATE SEQUENCE s_or START 1;
+
+query I
+SELECT nextval('s_or') > 0 OR true AS r FROM v;
+----
+true
+true
+true
+
+query I
+SELECT nextval('s_or');
+----
+4
+
+statement ok
+CREATE SEQUENCE s_and START 1;
+
+query I
+SELECT nextval('s_and') > 0 AND false AS r FROM v;
+----
+false
+false
+false
+
+query I
+SELECT nextval('s_and');
+----
+4
+
+# a COALESCE argument that is always NULL
+statement ok
+CREATE SEQUENCE s_coalesce START 1;
+
+query I
+SELECT coalesce(CASE WHEN nextval('s_coalesce') > 0 THEN NULL::INTEGER END, x) AS r FROM v;
+----
+1
+2
+3
+
+query I
+SELECT nextval('s_coalesce');
+----
+4
+
+# operands that can throw, under TRY
+query I
+SELECT TRY((CASE WHEN CAST('bad' AS INTEGER) > 0 THEN x ELSE x END) > 0) AS try_case FROM v;
+----
+NULL
+NULL
+NULL
+
+query I
+SELECT TRY(substring(a, 5000000000, 1) IS NULL) AS try_isnull FROM caps;
+----
+NULL
+
+statement ok
+CREATE TABLE big AS SELECT 9223372036854775807::BIGINT AS i;
+
+query I
+SELECT TRY([i + 1] IS NULL) FROM big;
+----
+NULL
+
+query I
+SELECT TRY(CAST('bad' AS INTEGER) > 0 OR true) FROM v;
+----
+NULL
+NULL
+NULL
+
+# without TRY, the error is raised
+statement error
+SELECT (CASE WHEN CAST('bad' AS INTEGER) > 0 THEN x ELSE x END) > 0 FROM v;
+----
+Could not convert string 'bad' to INT32
+
+# folds over operands that cannot throw stay, also over arithmetic that the statistics show cannot overflow
+statement ok
+CREATE TABLE t AS SELECT range x FROM range(10);
+
+query II
+EXPLAIN SELECT x FROM t WHERE x + 1 > -5;
+----
+physical_plan	<!REGEX>:.*FILTER.*
+
+query II
+EXPLAIN SELECT x IS NULL, x > -1, x BETWEEN -1 AND 100, coalesce(NULL::INTEGER, x) FROM t;
+----
+physical_plan	<REGEX>:.*Projections:.*false.*true.*true.*x.*

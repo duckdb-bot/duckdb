@@ -31,6 +31,16 @@ unique_ptr<Expression> ConjunctionSimplificationRule::RemoveExpression(BoundConj
 	return nullptr;
 }
 
+//! Replacing a conjunction with a constant drops its other children, which must then not be volatile or able to throw
+static bool CanReplaceWithConstant(const BoundConjunctionExpression &conjunction) {
+	for (auto &child : conjunction.GetChildren()) {
+		if (child->IsVolatile() || child->CanThrow()) {
+			return false;
+		}
+	}
+	return true;
+}
+
 unique_ptr<Expression> ConjunctionSimplificationRule::Apply(LogicalOperator &op,
                                                             vector<reference<Expression>> &bindings, bool &changes_made,
                                                             bool is_root) {
@@ -57,6 +67,9 @@ unique_ptr<Expression> ConjunctionSimplificationRule::Apply(LogicalOperator &op,
 	if (conjunction.GetExpressionType() == ExpressionType::CONJUNCTION_AND) {
 		if (!BooleanValue::Get(constant_value)) {
 			// FALSE in AND, result of expression is false
+			if (!CanReplaceWithConstant(conjunction)) {
+				return nullptr;
+			}
 			return make_uniq<BoundConstantExpression>(Value::BOOLEAN(false));
 		} else {
 			// TRUE in AND, remove the expression from the set
@@ -69,6 +82,9 @@ unique_ptr<Expression> ConjunctionSimplificationRule::Apply(LogicalOperator &op,
 			return RemoveExpression(conjunction, constant_expr);
 		} else {
 			// TRUE in OR, result of expression is true
+			if (!CanReplaceWithConstant(conjunction)) {
+				return nullptr;
+			}
 			return make_uniq<BoundConstantExpression>(Value::BOOLEAN(true));
 		}
 	}

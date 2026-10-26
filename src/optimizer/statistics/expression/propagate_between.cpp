@@ -29,9 +29,10 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateBetween(BoundFunctionE
 	if (upper_stats) {
 		upper_prune = PropagateComparison(*input_stats, *upper_stats, upper_comparison);
 	}
-	// a rewrite that drops a child that is volatile or can throw would change how often it runs or whether it throws
-	auto can_drop = [](const Expression &child) {
-		return !child.IsVolatile() && !child.CanThrow();
+	// a rewrite that drops a child that is volatile, or that can throw inside TRY, would change how often it runs or
+	// whether it throws
+	auto can_drop = [&](const Expression &child) {
+		return CanDropExpression(child);
 	};
 	if (lower_prune == FilterPropagateResult::FILTER_ALWAYS_TRUE &&
 	    upper_prune == FilterPropagateResult::FILTER_ALWAYS_TRUE) {

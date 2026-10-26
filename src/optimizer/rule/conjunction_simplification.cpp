@@ -32,6 +32,7 @@ unique_ptr<Expression> ConjunctionSimplificationRule::RemoveExpression(BoundConj
 }
 
 //! Replacing a conjunction with a constant drops its other children, which must then not be volatile or able to throw
+//! (this rule does not know whether it is inside TRY; statistics propagation folds the ones that can throw outside it)
 static bool CanReplaceWithConstant(const BoundConjunctionExpression &conjunction) {
 	for (auto &child : conjunction.GetChildren()) {
 		if (child->IsVolatile() || child->CanThrow()) {

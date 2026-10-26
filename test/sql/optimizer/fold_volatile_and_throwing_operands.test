@@ -130,13 +130,7 @@ NULL
 NULL
 NULL
 
-# without TRY, the error is raised
-statement error
-SELECT (CASE WHEN CAST('bad' AS INTEGER) > 0 THEN x ELSE x END) > 0 FROM v;
-----
-Could not convert string 'bad' to INT32
-
-# folds over operands that cannot throw stay, also over arithmetic that the statistics show cannot overflow
+# outside TRY, folds over operands that cannot throw for the values in the statistics stay
 statement ok
 CREATE TABLE t AS SELECT range x FROM range(10);
 

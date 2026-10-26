@@ -10,8 +10,25 @@ LogicalOperatorDeepCopy::LogicalOperatorDeepCopy(Binder &binder, optional_ptr<bo
     : binder(binder), parameter_data(parameter_data) {
 }
 
+//! Deserialization binds a function without serialization callbacks again, losing the filters pushed into it
+static void CopyBindData(LogicalOperator &op, LogicalOperator &copy) {
+	if (op.type == LogicalOperatorType::LOGICAL_GET) {
+		auto &get = op.Cast<LogicalGet>();
+		if (get.has_pushed_complex_filter && !get.function.HasSerializationCallbacks()) {
+			auto &copy_get = copy.Cast<LogicalGet>();
+			copy_get.bind_data = get.bind_data->Copy();
+			copy_get.has_pushed_complex_filter = true;
+		}
+	}
+	D_ASSERT(op.children.size() == copy.children.size());
+	for (idx_t child_idx = 0; child_idx < op.children.size(); child_idx++) {
+		CopyBindData(*op.children[child_idx], *copy.children[child_idx]);
+	}
+}
+
 unique_ptr<LogicalOperator> LogicalOperatorDeepCopy::DeepCopy(unique_ptr<duckdb::LogicalOperator> &op) {
 	auto copy = op->Copy(binder.context);
+	CopyBindData(*op, *copy);
 	VisitOperator(*copy);
 	TableBindingReplacer replacer(table_idx_replacements, parameter_data);
 	replacer.VisitOperator(*copy);

@@ -11,30 +11,6 @@
 
 namespace duckdb {
 
-bool FunctionStabilityIsConsistent(FunctionStability stability) {
-	switch (stability) {
-	case FunctionStability::CONSISTENT:
-	case FunctionStability::CONSISTENT_WITHIN_SETTINGS:
-		return true;
-	case FunctionStability::CONSISTENT_WITHIN_QUERY:
-	case FunctionStability::VOLATILE:
-		return false;
-	}
-	throw InternalException("Unsupported FunctionStability");
-}
-
-bool FunctionStabilityRequiresRebind(FunctionStability stability) {
-	switch (stability) {
-	case FunctionStability::CONSISTENT_WITHIN_SETTINGS:
-	case FunctionStability::CONSISTENT_WITHIN_QUERY:
-		return true;
-	case FunctionStability::CONSISTENT:
-	case FunctionStability::VOLATILE:
-		return false;
-	}
-	throw InternalException("Unsupported FunctionStability");
-}
-
 TypedKwarg::TypedKwarg(Identifier name_p, LogicalType type_p) : name(std::move(name_p)), type(std::move(type_p)) {
 }
 

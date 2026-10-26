@@ -96,6 +96,18 @@ Index keys cannot contain expressions with side effects. They also cannot depend
 statement ok
 CREATE INDEX i_enum_text ON nested ((e::VARCHAR));
 
+# a generated column is expanded into the key
+statement ok
+CREATE TABLE generated (ts TIMESTAMPTZ, ts_text AS (ts::VARCHAR), ts_epoch AS (epoch_us(ts)));
+
+statement error
+CREATE INDEX i ON generated (ts_text);
+----
+Index keys cannot contain expressions with side effects. They also cannot depend on settings such as TimeZone
+
+statement ok
+CREATE INDEX i_generated_epoch ON generated (ts_epoch);
+
 # a cast to a union applies only the cast to the member it selects
 statement ok
 CREATE INDEX i_union_member ON t (((naive::UNION(a TIMESTAMPTZ, b TIMESTAMP)).b));

@@ -866,7 +866,7 @@ static bool FoldConstantArgument(ClientContext &context, unique_ptr<Expression> 
 		return false;
 	}
 	if (binder && child->RequiresRebind()) {
-		// the constant no longer shows that its value depends on the query or on settings such as TimeZone
+		// the constant no longer shows that its value can change across queries
 		binder->SetAlwaysRequireRebind();
 	}
 	Value result;
@@ -1642,8 +1642,8 @@ unique_ptr<Expression> FunctionBinder::BindScalarFunction(shared_ptr<const Scala
 	auto result_func = make_uniq<BoundFunctionExpression>(std::move(bound_function), std::move(children),
 	                                                      std::move(bind_info), is_operator);
 
-	if (binder && FunctionStabilityRequiresRebind(result_func->Function().GetStability())) {
-		// the result depends on the query or on settings, also when the bind_expression callback folds it
+	if (binder && result_func->Function().GetStability() == FunctionStability::CONSISTENT_WITHIN_QUERY) {
+		// the result depends on the query it is bound in, also when the bind_expression callback folds it
 		binder->SetAlwaysRequireRebind();
 	}
 	if (result_func->Function().HasBindExpressionCallback()) {

@@ -176,7 +176,7 @@ struct ICUMakeTimestampTZFunc : public ICUDateFunc {
 		    .AddParameter("minute", type)
 		    .AddParameter("seconds", LogicalType::DOUBLE);
 		function.SetFallible();
-		function.SetStability(FunctionStability::CONSISTENT_WITHIN_SETTINGS);
+		function.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 		function.SetInitStateCallback(InitCalendarCache);
 		return function;
 	}
@@ -193,7 +193,7 @@ struct ICUMakeTimestampTZFunc : public ICUDateFunc {
 		    .AddParameter("seconds", LogicalType::DOUBLE)
 		    .AddParameter("timezone", LogicalType::VARCHAR);
 		function.SetFallible();
-		function.SetStability(FunctionStability::CONSISTENT_WITHIN_SETTINGS);
+		function.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 		function.SetInitStateCallback(InitCalendarCache);
 		return function;
 	}

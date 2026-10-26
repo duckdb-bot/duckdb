@@ -505,7 +505,7 @@ struct ICUDatePart : public ICUDateFunc {
 	//! The epoch is read from the instant itself, every other part from the calendar of the settings
 	static FunctionStability PartCodeStability(DatePartSpecifier part_code) {
 		return part_code == DatePartSpecifier::EPOCH ? FunctionStability::CONSISTENT
-		                                             : FunctionStability::CONSISTENT_WITHIN_SETTINGS;
+		                                             : FunctionStability::CONSISTENT_WITHIN_QUERY;
 	}
 
 	static void SetPartCodesStability(BoundScalarFunction &bound_function,
@@ -632,7 +632,7 @@ struct ICUDatePart : public ICUDateFunc {
 		set.AddFunction(GetBinaryPartCodeFunction<timestamp_tz_ns_t, double>(LogicalType::TIMESTAMP_TZ_NS));
 		set.AddFunction(GetStructFunction<timestamp_tz_ns_t>(LogicalType::TIMESTAMP_TZ_NS));
 		set.SetFallible();
-		set.SetStability(FunctionStability::CONSISTENT_WITHIN_SETTINGS);
+		set.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 		loader.RegisterFunction(set);
 	}
 
@@ -656,7 +656,7 @@ struct ICUDatePart : public ICUDateFunc {
 		set.AddFunction(GetLastDayFunction<timestamp_tz_t>(LogicalType::TIMESTAMP_TZ));
 		set.AddFunction(GetLastDayFunction<timestamp_tz_ns_t>(LogicalType::TIMESTAMP_TZ_NS));
 		set.SetFallible();
-		set.SetStability(FunctionStability::CONSISTENT_WITHIN_SETTINGS);
+		set.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 		loader.RegisterFunction(set);
 	}
 
@@ -679,7 +679,7 @@ struct ICUDatePart : public ICUDateFunc {
 		set.AddFunction(GetMonthNameFunction<timestamp_tz_t>(LogicalType::TIMESTAMP_TZ));
 		set.AddFunction(GetMonthNameFunction<timestamp_tz_ns_t>(LogicalType::TIMESTAMP_TZ_NS));
 		set.SetFallible();
-		set.SetStability(FunctionStability::CONSISTENT_WITHIN_SETTINGS);
+		set.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 		loader.RegisterFunction(set);
 	}
 
@@ -702,7 +702,7 @@ struct ICUDatePart : public ICUDateFunc {
 		set.AddFunction(GetDayNameFunction<timestamp_tz_t>(LogicalType::TIMESTAMP_TZ));
 		set.AddFunction(GetDayNameFunction<timestamp_tz_ns_t>(LogicalType::TIMESTAMP_TZ_NS));
 		set.SetFallible();
-		set.SetStability(FunctionStability::CONSISTENT_WITHIN_SETTINGS);
+		set.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 		loader.RegisterFunction(set);
 	}
 };

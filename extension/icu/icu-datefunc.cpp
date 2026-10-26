@@ -49,7 +49,7 @@ unique_ptr<FunctionData> ICUDateFunc::Bind(BindScalarFunctionInput &input) {
 }
 
 unique_ptr<ICUDateFunc::CastData> ICUDateFunc::BindCastData(BindCastInput &input) {
-	input.stability = FunctionStability::CONSISTENT_WITHIN_SETTINGS;
+	input.stability = FunctionStability::CONSISTENT_WITHIN_QUERY;
 	return make_uniq<CastData>(make_uniq<BindData>(*input.context));
 }
 

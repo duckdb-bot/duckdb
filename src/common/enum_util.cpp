@@ -2929,20 +2929,19 @@ const StringUtil::EnumStringLiteral *GetFunctionStabilityValues() {
 	static constexpr StringUtil::EnumStringLiteral values[] {
 		{ static_cast<uint32_t>(FunctionStability::CONSISTENT), "CONSISTENT" },
 		{ static_cast<uint32_t>(FunctionStability::VOLATILE), "VOLATILE" },
-		{ static_cast<uint32_t>(FunctionStability::CONSISTENT_WITHIN_QUERY), "CONSISTENT_WITHIN_QUERY" },
-		{ static_cast<uint32_t>(FunctionStability::CONSISTENT_WITHIN_SETTINGS), "CONSISTENT_WITHIN_SETTINGS" }
+		{ static_cast<uint32_t>(FunctionStability::CONSISTENT_WITHIN_QUERY), "CONSISTENT_WITHIN_QUERY" }
 	};
 	return values;
 }
 
 template<>
 const char* EnumUtil::ToChars<FunctionStability>(FunctionStability value) {
-	return StringUtil::EnumToString(GetFunctionStabilityValues(), 4, "FunctionStability", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetFunctionStabilityValues(), 3, "FunctionStability", static_cast<uint32_t>(value));
 }
 
 template<>
 FunctionStability EnumUtil::FromString<FunctionStability>(const char *value) {
-	return static_cast<FunctionStability>(StringUtil::StringToEnum(GetFunctionStabilityValues(), 4, "FunctionStability", value));
+	return static_cast<FunctionStability>(StringUtil::StringToEnum(GetFunctionStabilityValues(), 3, "FunctionStability", value));
 }
 
 const StringUtil::EnumStringLiteral *GetGateStatusValues() {

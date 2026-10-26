@@ -736,13 +736,6 @@ typedef enum DUCKDB_V2_FUNCTION_PROPERTY_VALUE {
 	//! The result is stable within a single query/transaction but may change across queries (e.g. now()).
 	DUCKDB_V2_FUNCTION_PROPERTY_STABILITY_CONSISTENT_WITHIN_QUERY = 65538,
 
-	/*!
-	 * The result is the same for the same input and the same settings, such as the TimeZone that the bind reads (e.g.
-	 * strftime() of a TIMESTAMPTZ). Statements that call the function are bound again before every execution, and index
-	 * keys cannot contain it.
-	 */
-	DUCKDB_V2_FUNCTION_PROPERTY_STABILITY_CONSISTENT_WITHIN_SETTINGS = 65539,
-
 	//! Default NULL handling: if any argument is NULL the result is NULL and the function is not invoked for that row.
 	DUCKDB_V2_FUNCTION_PROPERTY_NULL_HANDLING_DEFAULT = 65792,
 

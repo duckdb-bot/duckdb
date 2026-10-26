@@ -21,12 +21,10 @@ static idx_t StabilityRank(FunctionStability stability) {
 	switch (stability) {
 	case FunctionStability::CONSISTENT:
 		return 0;
-	case FunctionStability::CONSISTENT_WITHIN_SETTINGS:
-		return 1;
 	case FunctionStability::CONSISTENT_WITHIN_QUERY:
-		return 2;
+		return 1;
 	case FunctionStability::VOLATILE:
-		return 3;
+		return 2;
 	}
 	throw InternalException("Unsupported FunctionStability");
 }

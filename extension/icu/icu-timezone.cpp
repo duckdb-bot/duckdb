@@ -705,7 +705,7 @@ struct ICUTimeZoneFunc : public ICUDateFunc {
 
 		set.ApplyToFunctions([](ScalarFunction &func) {
 			func.SetFallible();
-			func.SetStability(FunctionStability::CONSISTENT_WITHIN_SETTINGS);
+			func.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 			func.SetInitStateCallback(InitCalendarCache);
 		});
 		loader.RegisterFunction(set);

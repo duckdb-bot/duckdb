@@ -275,7 +275,7 @@ struct ICUDateAdd : public ICUDateFunc {
 		set.AddFunction(interval_tstz_fun);
 		// throws for dates that overflow the timestamp range
 		set.SetFallible();
-		set.SetStability(FunctionStability::CONSISTENT_WITHIN_SETTINGS);
+		set.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 		loader.RegisterFunction(set);
 	}
 
@@ -306,7 +306,7 @@ struct ICUDateAdd : public ICUDateFunc {
 		set.AddFunction(tstz_tstz_fun);
 		// throws for dates that overflow the timestamp range
 		set.SetFallible();
-		set.SetStability(FunctionStability::CONSISTENT_WITHIN_SETTINGS);
+		set.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 		loader.RegisterFunction(set);
 	}
 
@@ -317,7 +317,7 @@ struct ICUDateAdd : public ICUDateFunc {
 		    LogicalType::TIMESTAMP_TZ, LogicalType::TIMESTAMP_TZ);
 		binary_fun.GetSignature().GetParameter(0).SetName("timestamp1");
 		binary_fun.GetSignature().GetParameter(1).SetName("timestamp2");
-		binary_fun.SetStability(FunctionStability::CONSISTENT_WITHIN_SETTINGS);
+		binary_fun.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 		set.AddFunction(binary_fun);
 		auto unary_fun = GetUnaryAgeFunction<timestamp_tz_t, ICUCalendarAge>(LogicalType::TIMESTAMP_TZ);
 		unary_fun.GetSignature().GetParameter(0).SetName("timestamp");

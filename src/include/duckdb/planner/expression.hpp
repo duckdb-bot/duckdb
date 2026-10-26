@@ -52,11 +52,13 @@ public:
 	bool HasParameter() const override;
 
 	virtual bool IsVolatile() const;
+	//! Whether the expression returns the same result for the same input within a query
 	virtual bool IsConsistent() const;
 	virtual bool PropagatesNullValues() const;
 	virtual bool IsFoldable() const;
 	virtual bool CanThrow() const;
-	//! Whether a function or a cast of the expression depends on the query or on settings, so it must be bound again
+	//! Whether a function or a cast of the expression can return another result in another query, so a statement that
+	//! contains it must be bound again
 	virtual bool RequiresRebind() const;
 
 	hash_t Hash() const override;

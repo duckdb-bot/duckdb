@@ -49,24 +49,10 @@ struct AuxiliaryDataHolder {
 	virtual idx_t GetAllocationSize() const {
 		return 0;
 	}
-	//! Whether holding this keeps the strings that it holds alive. Holding a buffer does not, as a vector cache that
-	//! reuses the buffer drops its auxiliary data
-	virtual bool OwnsStrings() const {
-		return true;
-	}
 };
 
 struct AuxiliaryDataSet {
 	vector<unique_ptr<AuxiliaryDataHolder>> data;
-
-	bool OwnsStrings() const {
-		for (auto &holder : data) {
-			if (!holder->OwnsStrings()) {
-				return false;
-			}
-		}
-		return true;
-	}
 };
 
 class PinnedBufferHolder : public AuxiliaryDataHolder {
@@ -83,10 +69,6 @@ public:
 	explicit AuxiliaryDataSetHolder(buffer_ptr<AuxiliaryDataSet> buffer) : auxiliary_data(std::move(buffer)) {
 	}
 
-	bool OwnsStrings() const override {
-		return !auxiliary_data || auxiliary_data->OwnsStrings();
-	}
-
 private:
 	buffer_ptr<AuxiliaryDataSet> auxiliary_data;
 };
@@ -94,10 +76,6 @@ private:
 class VectorBufferHolder : public AuxiliaryDataHolder {
 public:
 	explicit VectorBufferHolder(buffer_ptr<VectorBuffer> buffer_p) : buffer(std::move(buffer_p)) {
-	}
-
-	bool OwnsStrings() const override {
-		return false;
 	}
 
 private:

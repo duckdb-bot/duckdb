@@ -794,6 +794,17 @@ unique_ptr<QueryResult> ClientContext::SubmitStatement(ClientContextLock &lock, 
 	// the statement is moved into the query - keep the source text for error reporting
 	auto query = statement->query;
 	const auto statement_type = statement->type;
+	// start the query before it can fail, so that a failure replaces the previous profile and counters
+	QueryProfiler::Get(*this).StartQuery(query);
+	// until the query begins, no active query ends the profile
+	auto end_before_begin = [&](unique_ptr<QueryResult> result) {
+		ErrorData error;
+		EndQueryProfiling(error);
+		if (error.HasError() && !result->HasError()) {
+			return ErrorResult<QueryResult>(std::move(error), query);
+		}
+		return result;
+	};
 	const bool has_parameters =
 	    !statement->named_param_map.empty() || (parameters.statement_args && !parameters.statement_args->empty());
 	PreprocessedStatement preprocessed;
@@ -812,12 +823,12 @@ unique_ptr<QueryResult> ClientContext::SubmitStatement(ClientContextLock &lock, 
 		}
 	} catch (std::exception &ex) {
 		// preserve extra error data (like query location)
-		return ErrorResult<QueryResult>(ErrorData(ex), query);
+		return end_before_begin(ErrorResult<QueryResult>(ErrorData(ex), query));
 	}
 	if (preprocessed.statements.empty()) {
 		StatementProperties properties;
 		properties.return_type = StatementReturnType::NOTHING;
-		return EmptyResultInternal(statement_type, std::move(properties), {}, {}, parameters.format);
+		return end_before_begin(EmptyResultInternal(statement_type, std::move(properties), {}, {}, parameters.format));
 	}
 	const bool expands = preprocessed.statements.size() > 1;
 	try {
@@ -829,7 +840,7 @@ unique_ptr<QueryResult> ClientContext::SubmitStatement(ClientContextLock &lock, 
 			auto &db_instance = DatabaseInstance::GetDatabase(*this);
 			ValidChecker::Invalidate(db_instance, error.RawMessage());
 		}
-		return ErrorResult<QueryResult>(std::move(error), query);
+		return end_before_begin(ErrorResult<QueryResult>(std::move(error), query));
 	}
 	active_query->outside_local_transaction = outside_local_transaction;
 

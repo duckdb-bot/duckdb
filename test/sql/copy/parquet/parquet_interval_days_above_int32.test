@@ -1,0 +1,45 @@
+# name: test/sql/copy/parquet/parquet_interval_days_above_int32.test
+# description: A Parquet INTERVAL whose unsigned days field is above the largest days of an interval reads back its value (duckdblabs/bot-issue-tracker#650)
+# group: [parquet]
+
+require parquet
+
+# the milliseconds do not fit 32 bits, so the writer moves the whole days of the microseconds into the days field
+statement ok
+COPY (SELECT INTERVAL '2147483647 days' + to_microseconds(4320000000000) AS iv) TO '{TEST_DIR}/interval_days.parquet';
+
+query I
+SELECT iv FROM '{TEST_DIR}/interval_days.parquet';
+----
+2147483647 days 1200:00:00
+
+# the largest microseconds, also inside a list and a struct
+statement ok
+COPY (
+	SELECT i, iv, [iv] AS l, {'iv': iv} AS s
+	FROM (VALUES
+		(1, INTERVAL '2147483647 days' + to_microseconds(9223372036854775000)),
+		(2, INTERVAL '2147483600 days' + to_microseconds(8640000000000)),
+		(3, INTERVAL '5 days' + to_microseconds(4320000000000))
+	) t(i, iv)
+) TO '{TEST_DIR}/interval_days_nested.parquet';
+
+query IIII
+SELECT i, iv = original, l[1] = original, s.iv = original
+FROM '{TEST_DIR}/interval_days_nested.parquet' JOIN (VALUES
+	(1, INTERVAL '2147483647 days' + to_microseconds(9223372036854775000)),
+	(2, INTERVAL '2147483600 days' + to_microseconds(8640000000000)),
+	(3, INTERVAL '5 days' + to_microseconds(4320000000000))
+) t(i, original) USING (i)
+ORDER BY i;
+----
+1	true	true	true
+2	true	true	true
+3	true	true	true
+
+query II
+SELECT i, iv FROM '{TEST_DIR}/interval_days_nested.parquet' ORDER BY i;
+----
+1	2147483647 days 2562047788:00:54.775
+2	2147483647 days 1272:00:00
+3	55 days

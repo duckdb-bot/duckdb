@@ -42,6 +42,8 @@ public:
 	ClientContext &context;
 	Binder &binder;
 	ExpressionRewriter rewriter;
+	//! How many more filters filter pushdown may derive from the conditions of inner joins
+	idx_t implied_join_filter_budget = 4;
 
 private:
 	friend class FilterStatisticsOptimizer;

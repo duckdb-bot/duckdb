@@ -74,6 +74,14 @@ static void ReplaceInFunction(unique_ptr<ParsedExpression> &expr, expression_lis
 static void ReplaceInOperator(unique_ptr<ParsedExpression> &expr, expression_list_t &star_list, StarExpression &star,
                               optional_ptr<duckdb_re2::RE2> regex) {
 	auto &operator_expr = expr->Cast<OperatorExpression>();
+	bool has_unpacked_child = false;
+	for (auto &child : operator_expr.GetChildren()) {
+		has_unpacked_child |= StarExpression::IsColumnsUnpacked(*child);
+	}
+	if (!has_unpacked_child) {
+		// only an operator with a direct unpacked child is checked
+		return;
+	}
 
 	vector<ExpressionType> allowed_types({
 	    ExpressionType::OPERATOR_COALESCE,

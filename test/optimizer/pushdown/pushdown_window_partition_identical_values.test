@@ -19,6 +19,12 @@ SELECT cnt FROM (SELECT x, count(*) OVER (PARTITION BY x) AS cnt FROM w) WHERE x
 ----
 2
 
+# the negation of a filter that tells equal values apart tells them apart too
+query I
+SELECT rn FROM (SELECT x, row_number() OVER (PARTITION BY x ORDER BY x::VARCHAR) AS rn FROM w) WHERE x::VARCHAR NOT IN ('-0.0', '1.5');
+----
+2
+
 query I
 SELECT cnt FROM (SELECT f, count(*) OVER (PARTITION BY f) AS cnt FROM w) WHERE f::VARCHAR = '0.0';
 ----

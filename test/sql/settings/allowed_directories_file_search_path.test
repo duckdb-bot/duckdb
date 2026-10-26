@@ -1,0 +1,148 @@
+# name: test/sql/settings/allowed_directories_file_search_path.test
+# description: A relative path is checked against allowed_directories where file_search_path resolves it
+# group: [settings]
+
+require skip_reload
+
+require no_extension_autoloading "EXPECTED: Test disable autoloading"
+
+statement ok
+SET file_search_path = '{DATA_DIR}/csv/glob'
+
+statement ok
+SET allowed_directories = ['{DATA_DIR}/csv/glob']
+
+statement ok
+SET enable_external_access = false
+
+# the working directory is outside the allowed directory, the search path inside it
+query III
+SELECT * FROM 'f_1.csv'
+----
+1	alice	alice@email.com
+2	eve	eve@email.com
+3r	bob	NULL
+
+query I
+SELECT count(*) FROM glob('*/*.csv')
+----
+5
+
+# a name that only the working directory holds is not looked up there
+query I
+SELECT count(*) FROM read_text('Makefile')
+----
+0
+
+# a trailing separator still matches directories
+query I
+SELECT parse_filename(file) FROM glob('*/') ORDER BY 1
+----
+a1
+a2
+a3
+crawl
+empty
+i1
+
+# an empty entry adds nothing
+statement ok
+SET file_search_path = ',{DATA_DIR}/csv/glob'
+
+query I
+SELECT count(*) FROM glob('*.csv')
+----
+3
+
+# a relative home directory is resolved in the search path
+statement ok
+SET home_directory = 'a1'
+
+statement ok
+SET file_search_path = '{DATA_DIR}/csv/glob'
+
+query I
+SELECT * FROM '~/a1.csv'
+----
+2019-06-05
+2019-06-15
+2019-06-25
+
+# a search path under the home directory is listed where the check resolved it
+statement ok
+SET home_directory = '{DATA_DIR}/csv'
+
+statement ok
+SET file_search_path = '~/glob'
+
+query I
+SELECT parse_filename(file) FROM glob('*.csv') ORDER BY 1
+----
+f_1.csv
+f_2.csv
+f_3.csv
+
+# the home directory is expanded before ".." is resolved, for the check as for the listing
+statement ok
+SET home_directory = '{DATA_DIR}/json'
+
+statement ok
+SET file_search_path = '~/../csv/glob'
+
+query I
+SELECT parse_filename(file) FROM glob('*.csv') ORDER BY 1
+----
+f_1.csv
+f_2.csv
+f_3.csv
+
+# a pattern whose "~" only comes to the front once normalized is refused
+statement ok
+SET home_directory = '{DATA_DIR}/json'
+
+statement ok
+SET file_search_path = '{DATA_DIR}/csv/glob'
+
+statement error
+SELECT * FROM glob('./~/*.csv')
+----
+Cannot access file "./~/*.csv"
+
+# a name that only starts with "~" is not the home directory
+query I
+SELECT count(*) FROM glob('./~a1/*.csv')
+----
+0
+
+# a search path outside the allowed directory is not searched
+statement ok
+SET file_search_path = '{DATA_DIR}/json'
+
+statement error
+SELECT * FROM glob('*.json')
+----
+Cannot access file "*.json"
+
+statement ok
+SET file_search_path = '{DATA_DIR}/json,{DATA_DIR}/csv/glob'
+
+query I
+SELECT count(*) FROM glob('*.json')
+----
+0
+
+query I
+SELECT count(*) FROM glob('*.csv')
+----
+3
+
+# absolute paths are checked as before
+query I
+SELECT count(*) FROM '{DATA_DIR}/csv/glob/f_2.csv'
+----
+2
+
+statement error
+SELECT * FROM read_text('{DATA_DIR}/json/arr.json')
+----
+Cannot access file

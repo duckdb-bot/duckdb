@@ -659,6 +659,79 @@ void TestCreateSymlink(const string &source, const string &target, bool director
 #endif
 }
 
+static void TestWriteFile(FileSystem &fs, const string &path) {
+	auto handle = fs.OpenFile(path, FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE_NEW);
+	string contents = "v\n1\n";
+	handle->Write((void *)contents.data(), NumericCast<int64_t>(contents.size()));
+	handle->Close();
+}
+
+static void TestSearchRootIdentity(const string &allowed_directory, const string &search_path) {
+	DuckDB db(nullptr);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query(StringUtil::Format("SET allowed_directories = [%s]", SQLString(allowed_directory))));
+	REQUIRE_NO_FAIL(con.Query(StringUtil::Format("SET file_search_path = %s", SQLString(search_path))));
+	REQUIRE_NO_FAIL(con.Query("SET enable_external_access = false"));
+	auto result = con.Query("SELECT parse_filename(file) FROM glob('guess*.csv') ORDER BY 1");
+	REQUIRE(CHECK_COLUMN(result, 0, {"guess_inside.csv"}));
+	REQUIRE(result->RowCount() == 1);
+}
+
+//! The directory tree of the search root test, removed again even when an assertion fails
+struct SearchRootFixture {
+	SearchRootFixture(FileSystem &fs, string base_p) : fs(fs), base(std::move(base_p)) {
+		Remove();
+		fs.CreateDirectory(base);
+	}
+	~SearchRootFixture() {
+		Remove();
+	}
+
+	void Remove() {
+		// the link goes first, since removing the tree would follow it
+		try {
+			fs.RemoveFile(fs.JoinPath(fs.JoinPath(base, "inside"), "link"));
+		} catch (...) { // NOLINT
+		}
+		try {
+			if (fs.DirectoryExists(base)) {
+				fs.RemoveDirectory(base);
+			}
+		} catch (...) { // NOLINT
+		}
+	}
+
+	FileSystem &fs;
+	string base;
+};
+
+TEST_CASE("A search path root is listed in the form allowed_directories checked", "[file_system]") {
+	auto fs = FileSystem::CreateLocal();
+	SearchRootFixture fixture(*fs, TestMakeAbsolute(TestCreatePath("search_root_identity"), fs->GetWorkingDirectory()));
+	auto inside = fs->JoinPath(fixture.base, "inside");
+	auto other = fs->JoinPath(fixture.base, "other");
+	fs->CreateDirectory(inside);
+	fs->CreateDirectory(other);
+	fs->CreateDirectory(fs->JoinPath(other, "sub"));
+	TestWriteFile(*fs, fs->JoinPath(inside, "guess_inside.csv"));
+	TestWriteFile(*fs, fs->JoinPath(other, "guess_other.csv"));
+
+	// "inside/link/.." is the other directory for the operating system, and "inside" once normalized
+	TestCreateSymlink(fs->JoinPath(inside, "link"), fs->JoinPath(other, "sub"), true);
+	TestSearchRootIdentity(inside, fs->JoinPath(inside, "link") + "/..");
+
+#ifdef TEST_HAVE_SYMLINK
+	// a backslash is part of a name on POSIX, and a separator once normalized
+	auto sub = fs->JoinPath(inside, "sub");
+	fs->CreateDirectory(sub);
+	TestWriteFile(*fs, fs->JoinPath(sub, "guess_inside.csv"));
+	auto backslash_directory = inside + "\\sub";
+	fs->CreateDirectory(backslash_directory);
+	TestWriteFile(*fs, backslash_directory + "/guess_other.csv");
+	TestSearchRootIdentity(sub, backslash_directory);
+#endif
+}
+
 TEST_CASE("Test path canonicalization with symlinks", "[file_system]") {
 	auto fs = FileSystem::CreateLocal();
 

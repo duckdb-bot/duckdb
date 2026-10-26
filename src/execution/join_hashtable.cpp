@@ -4,6 +4,7 @@
 #include "duckdb/common/vector/dictionary_vector.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/radix_partitioning.hpp"
+#include "duckdb/common/row_operations/row_operations.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/common/types/column/column_data_collection.hpp"
 #include "duckdb/execution/ht_entry.hpp"
@@ -181,6 +182,8 @@ void JoinHashTable::CreateCorrelatedTagCounts() {
 	info.tag_payload.InitializeEmpty(vector<LogicalType> {LogicalType::BOOLEAN});
 	info.tag_result_chunk.Destroy();
 	info.tag_result_chunk.Initialize(allocator, result_types);
+	// a lookup state belongs to one table
+	info.tag_lookup_state = make_uniq<AggregateHTLookupState>();
 }
 
 //! Writes the tag of every UNION, NULL for a NULL UNION, and a BOOLEAN that is valid where its member is NULL
@@ -2309,15 +2312,32 @@ void ScanStructure::NextMarkJoin(DataChunk &keys, DataChunk &probe_data, DataChu
 			Vector null_members(LogicalType::BOOLEAN, probe_data.size());
 			GetUnionTags(last_key, probe_data.size(), tags, null_members);
 			SetCorrelatedTagGroups(info.tag_group_chunk, keys, info.correlated_types.size(), tags);
-			info.correlated_tag_counts->FetchAggregates(info.tag_group_chunk, info.tag_result_chunk);
+			// a group and tag that the right side does not have counts nothing, so it is looked up without adding it
+			SelectionVector found(STANDARD_VECTOR_SIZE);
+			auto found_count =
+			    info.correlated_tag_counts->LookupGroups(info.tag_group_chunk, *info.tag_lookup_state, found);
+			Vector found_addresses(LogicalType::POINTER, found_count);
+			auto lookup_addresses = FlatVector::GetData<data_ptr_t>(info.tag_lookup_state->addresses);
+			auto found_address_data = FlatVector::GetDataMutable<data_ptr_t>(found_addresses);
+			for (idx_t found_idx = 0; found_idx < found_count; found_idx++) {
+				found_address_data[found_idx] = lookup_addresses[found.get_index(found_idx)];
+			}
+			FlatVector::SetSize(found_addresses, found_count);
+			info.tag_result_chunk.Reset();
+			info.tag_result_chunk.SetCardinality(found_count);
+			ArenaAllocator arena(BufferAllocator::Get(ht.context));
+			RowOperationsState row_state(arena);
+			RowOperations::FinalizeStates(row_state, *info.correlated_tag_counts->GetLayoutPtr(), found_addresses,
+			                              info.tag_result_chunk, 0);
 			auto tag_rows = FlatVector::GetData<int64_t>(info.tag_result_chunk.data[0]);
 			auto null_member_rows = FlatVector::GetData<int64_t>(info.tag_result_chunk.data[1]);
 			auto &probe_null_members = FlatVector::Validity(null_members);
-			for (idx_t i = 0; i < probe_data.size(); i++) {
+			for (idx_t found_idx = 0; found_idx < found_count; found_idx++) {
+				auto i = found.get_index(found_idx);
 				if (bool_result[i] || !mask.RowIsValid(i) || count_star[i] == 0) {
 					continue;
 				}
-				if (null_member_rows[i] > 0 || (probe_null_members.RowIsValid(i) && tag_rows[i] > 0)) {
+				if (null_member_rows[found_idx] > 0 || (probe_null_members.RowIsValid(i) && tag_rows[found_idx] > 0)) {
 					mask.SetInvalid(i);
 				}
 			}

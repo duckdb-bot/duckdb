@@ -162,7 +162,64 @@ statement ok
 SET prefer_range_joins = true;
 
 query I
-SELECT (SELECT count(*) FROM ml JOIN mr ON ml.a = mr.a - 1 AND ml.a < mr.a AND ml.x < mr.y AND ml.x <= mr.y) -
-	(SELECT count(*) FROM ml, mr WHERE (ml.a = mr.a - 1 AND ml.a < mr.a AND ml.x < mr.y AND ml.x <= mr.y) IS TRUE);
+SELECT count(*) FROM (
+	(SELECT ml.a, ml.x, mr.a, mr.y FROM ml JOIN mr ON ml.a = mr.a - 1 AND ml.a < mr.a AND ml.x < mr.y AND ml.x <= mr.y
+	 EXCEPT ALL SELECT ml.a, ml.x, mr.a, mr.y FROM ml, mr
+	 WHERE (ml.a = mr.a - 1 AND ml.a < mr.a AND ml.x < mr.y AND ml.x <= mr.y) IS TRUE)
+	UNION ALL
+	(SELECT ml.a, ml.x, mr.a, mr.y FROM ml, mr WHERE (ml.a = mr.a - 1 AND ml.a < mr.a AND ml.x < mr.y AND ml.x <= mr.y) IS TRUE
+	 EXCEPT ALL SELECT ml.a, ml.x, mr.a, mr.y FROM ml JOIN mr
+	 ON ml.a = mr.a - 1 AND ml.a < mr.a AND ml.x < mr.y AND ml.x <= mr.y));
 ----
 0
+
+statement ok
+RESET prefer_range_joins;
+
+statement ok
+RESET merge_join_threshold;
+
+# a NULL correlation key that IS NOT DISTINCT FROM matches a group of the right side
+statement ok
+CREATE TABLE nk(g INTEGER, y UNION(k INTEGER));
+
+statement ok
+INSERT INTO nk VALUES (NULL, union_value(k := 2)), (NULL, union_value(k := NULL::INTEGER)), (1, union_value(k := 2));
+
+query III
+SELECT t.g, x, x IN (SELECT y FROM nk WHERE nk.g IS NOT DISTINCT FROM t.g)
+FROM (VALUES (NULL, union_value(k := 1)::UNION(k INTEGER)), (NULL, union_value(k := 2)::UNION(k INTEGER)),
+	(1, union_value(k := 1)::UNION(k INTEGER)), (1, union_value(k := NULL::INTEGER)::UNION(k INTEGER))) t(g, x)
+ORDER BY ALL;
+----
+1	1	false
+1	NULL	NULL
+NULL	1	NULL
+NULL	2	true
+
+# a recursive CTE compares with the rows of its previous iteration, in the same group every time
+statement ok
+CREATE TYPE ku AS UNION(k INTEGER, s VARCHAR);
+
+query II
+WITH RECURSIVE r(n, g, x, actual) AS (
+	SELECT 0, 1, union_value(k := NULL::INTEGER)::ku, false
+	UNION ALL
+	SELECT n + 1, g, (CASE n % 5 WHEN 0 THEN union_value(k := 2) WHEN 1 THEN NULL WHEN 2 THEN union_value(s := 'z')
+		WHEN 3 THEN union_value(k := NULL::INTEGER) ELSE union_value(k := 3) END)::ku,
+		union_value(k := 9)::ku IN (SELECT b.x FROM r b WHERE b.g = a.g)
+	FROM r a WHERE n < 10
+)
+SELECT n, actual FROM r ORDER BY n;
+----
+0	false
+1	NULL
+2	false
+3	NULL
+4	false
+5	NULL
+6	false
+7	false
+8	NULL
+9	false
+10	NULL

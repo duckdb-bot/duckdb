@@ -524,10 +524,11 @@ public:
 		//! count)
 		vector<unique_ptr<Expression>> correlated_tag_aggregates;
 		unique_ptr<GroupedAggregateHashTable> correlated_tag_counts;
-		//! Group chunk (the correlated columns and the tag), payload and result used for correlated_tag_counts
+		//! Group chunk (the correlated columns and the tag), payload, result and lookup state of correlated_tag_counts
 		DataChunk tag_group_chunk;
 		DataChunk tag_payload;
 		DataChunk tag_result_chunk;
+		unique_ptr<AggregateHTLookupState> tag_lookup_state;
 	} mark_join_info;
 
 private:

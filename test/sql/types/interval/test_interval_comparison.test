@@ -75,11 +75,11 @@ select interval '-1 month' + interval '4 days' = interval '-26 days';
 ----
 True
 
-# Normalising the extremes saturates instead of overflowing the borrowed field
+# Normalising the extremes keeps their length without overflowing the borrowed field
 query I
 select normalized_interval(interval '-2147483648 months -2147483648 days -9223372036854775807 microseconds');
 ----
--178956970 years -8 months -2147483648 days -2562047788:00:54.775808
+-178956970 years -8 months -2147483648 days -2562047788:00:54.775807
 
 query I
 select normalized_interval(interval '2147483647 months 2147483647 days 9223372036854775807 microseconds');

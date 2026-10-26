@@ -455,9 +455,12 @@ public:
 	//! statistics of the file, but not read it
 	static shared_ptr<ParquetReader> CreateMetadataReader(ClientContext &context, ParquetOptions parquet_options,
 	                                                      shared_ptr<ParquetFileMetadataCache> metadata);
+	//! The row groups of a file, with their column statistics if the schema and the options are given. The reader, if
+	//! given, keeps them alive for the row groups
 	static void GetPartitionStats(const duckdb_parquet::FileMetaData &metadata, vector<PartitionStatistics> &result,
 	                              optional_ptr<ParquetColumnSchema> root_schema = nullptr,
-	                              optional_ptr<ParquetOptions> parquet_options = nullptr);
+	                              optional_ptr<ParquetOptions> parquet_options = nullptr,
+	                              shared_ptr<ParquetReader> reader = nullptr);
 	static bool MetadataCacheEnabled(ClientContext &context);
 	static shared_ptr<ParquetFileMetadataCache> GetMetadataCacheEntry(ClientContext &context, const OpenFileInfo &file);
 

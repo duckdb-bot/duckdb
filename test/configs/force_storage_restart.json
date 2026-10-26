@@ -86,7 +86,8 @@
     {
       "reason": "Parquet metadata cache doesn't survive restarts",
       "paths": [
-        "test/sql/copy/parquet/parquet_glob_cache.test"
+        "test/sql/copy/parquet/parquet_glob_cache.test",
+        "test/sql/copy/parquet/parquet_metadata_cache_file_list_stats.test"
       ]
     },
     {

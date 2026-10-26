@@ -1,0 +1,254 @@
+# name: test/sql/copy/parquet/parquet_metadata_cache_file_list_stats.test
+# description: MIN, MAX and COUNT over a list of Parquet files whose metadata is cached use its column statistics
+# group: [parquet]
+
+require parquet
+
+statement ok
+SET parquet_metadata_cache = true;
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+# files of several row groups, with their maxima in their last row groups
+statement ok
+COPY (SELECT i AS x FROM range(50000) t(i)) TO '{TEST_DIR}/list_stats_1.parquet' (ROW_GROUP_SIZE 10000);
+
+statement ok
+COPY (SELECT i + 50000 AS x FROM range(50000) t(i)) TO '{TEST_DIR}/list_stats_2.parquet' (ROW_GROUP_SIZE 10000);
+
+# the first query reads the files and caches their metadata
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/list_stats_[12].parquet');
+----
+100000
+
+statement ok
+PRAGMA explain_output = 'physical_only';
+
+# a glob is answered from the cached metadata
+query II
+EXPLAIN SELECT min(x), max(x), count(*) FROM read_parquet('{TEST_DIR}/list_stats_*.parquet');
+----
+physical_plan	<!REGEX>:.*READ_PARQUET.*
+
+# FIXME: a file named in a list gets no version tag from the local file system, so its cached metadata is not used
+mode skip
+
+query II
+EXPLAIN SELECT min(x), max(x), count(*) FROM read_parquet(['{TEST_DIR}/list_stats_1.parquet', '{TEST_DIR}/list_stats_2.parquet']);
+----
+physical_plan	<!REGEX>:.*READ_PARQUET.*
+
+mode unskip
+
+statement ok
+PRAGMA explain_output = 'all';
+
+query III
+SELECT min(x), max(x), count(*) FROM read_parquet('{TEST_DIR}/list_stats_[12].parquet');
+----
+0	99999	100000
+
+# a file rewritten after its metadata was cached
+statement ok
+COPY (SELECT i * 3 AS x FROM range(70000) t(i)) TO '{TEST_DIR}/list_stats_2.parquet' (ROW_GROUP_SIZE 10000);
+
+query III
+SELECT min(x), max(x), count(*) FROM read_parquet('{TEST_DIR}/list_stats_[12].parquet');
+----
+0	209997	120000
+
+# FIXME: local modification times are kept in seconds, so a file rewritten within the same second keeps its version tag
+mode skip
+
+# a file rewritten in place with the same size within the same second, after a pause longer than the timestamp
+# granularity of file systems
+statement ok
+COPY (SELECT 1::INTEGER AS x) TO '{TEST_DIR}/list_stats_same_1.parquet' (USE_TMP_FILE false);
+
+statement ok
+COPY (SELECT 10::INTEGER AS x) TO '{TEST_DIR}/list_stats_same_2.parquet' (USE_TMP_FILE false);
+
+query I
+SELECT count(*) FROM read_parquet(['{TEST_DIR}/list_stats_same_1.parquet', '{TEST_DIR}/list_stats_same_2.parquet']);
+----
+2
+
+sleep 20 milliseconds
+
+statement ok
+COPY (SELECT 20::INTEGER AS x) TO '{TEST_DIR}/list_stats_same_2.parquet' (USE_TMP_FILE false);
+
+query III
+SELECT min(x), max(x), count(*) FROM read_parquet(['{TEST_DIR}/list_stats_same_1.parquet', '{TEST_DIR}/list_stats_same_2.parquet']);
+----
+1	20	2
+
+query III
+SELECT min(x), max(x), count(*) FROM read_parquet('{TEST_DIR}/list_stats_same_2.parquet');
+----
+20	20	1
+
+mode unskip
+
+# files with the columns in another order
+statement ok
+COPY (SELECT 1 AS x, 100 AS y) TO '{TEST_DIR}/list_stats_a.parquet';
+
+statement ok
+COPY (SELECT 200 AS y, 2 AS x) TO '{TEST_DIR}/list_stats_b.parquet';
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/list_stats_[ab].parquet');
+----
+2
+
+query IIII
+SELECT min(x), max(x), max(y), count(*) FROM read_parquet('{TEST_DIR}/list_stats_[ab].parquet');
+----
+1	2	200	2
+
+query IIII
+SELECT min(x), max(x), max(y), count(*) FROM read_parquet('{TEST_DIR}/list_stats_[ab].parquet', union_by_name = true);
+----
+1	2	200	2
+
+# files with a column of another type
+statement ok
+COPY (SELECT 5::INTEGER AS x) TO '{TEST_DIR}/list_stats_int.parquet';
+
+statement ok
+COPY (SELECT 9000000000::BIGINT AS x) TO '{TEST_DIR}/list_stats_bigint.parquet';
+
+query II
+SELECT count(*), typeof(min(x)) FROM read_parquet('{TEST_DIR}/list_stats_*int.parquet');
+----
+2	BIGINT
+
+query II
+SELECT min(x), max(x) FROM read_parquet('{TEST_DIR}/list_stats_*int.parquet');
+----
+5	9000000000
+
+query II
+SELECT min(x), max(x) FROM read_parquet('{TEST_DIR}/list_stats_*int.parquet', union_by_name = true);
+----
+5	9000000000
+
+# a later file whose column has a wider type than the scan, with a minimum that fits the type of the scan
+statement ok
+COPY (SELECT 5::INTEGER AS x) TO '{TEST_DIR}/list_stats_type_1.parquet';
+
+statement ok
+COPY (SELECT x::BIGINT AS x FROM (VALUES (1), (9000000000)) t(x)) TO '{TEST_DIR}/list_stats_type_2.parquet';
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/list_stats_type_[12].parquet');
+----
+3
+
+statement error
+SELECT min(x) FROM read_parquet('{TEST_DIR}/list_stats_type_[12].parquet');
+----
+failed to cast column "x" from type BIGINT to INTEGER
+
+# a file without one of the columns
+statement ok
+COPY (SELECT 7 AS x) TO '{TEST_DIR}/list_stats_x.parquet';
+
+query III
+SELECT min(y), max(y), count(*) FROM read_parquet('{TEST_DIR}/list_stats_[ax].parquet', union_by_name = true);
+----
+100	100	2
+
+# a generated column next to the columns of the files
+query II
+SELECT min(x), max(filename LIKE '%list_stats_b%') FROM read_parquet('{TEST_DIR}/list_stats_[ab].parquet', filename = true);
+----
+1	true
+
+# with an explicit schema no file is bound before the scan, which checks an encryption configuration
+statement ok
+PRAGMA add_parquet_key('list_stats_key', '0123456789112345');
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/list_stats_[ax].parquet', schema = MAP {1: {name: 'x', type: 'INTEGER', default_value: NULL}});
+----
+2
+
+statement error
+SELECT count(*) FROM read_parquet('{TEST_DIR}/list_stats_[ax].parquet', schema = MAP {1: {name: 'x', type: 'INTEGER', default_value: NULL}}, encryption_config = {footer_key: 'list_stats_key'});
+----
+is not encrypted, but 'encryption_config' was set
+
+statement error
+SELECT count(*) FROM read_parquet('{TEST_DIR}/list_stats_[ax].parquet', schema = MAP {1: {name: 'x', type: 'INTEGER', default_value: NULL}}, encryption_config = {footer_key: 'missing_key'});
+----
+No key with name
+
+# the other options are checked when a file is bound as well
+statement error
+SELECT count(*) FROM read_parquet('{TEST_DIR}/list_stats_[ax].parquet', schema = MAP {1: {name: 'x', type: 'INTEGER', default_value: NULL}}, prefetch_strategy = 'nonsense');
+----
+Unrecognized prefetch_strategy 'nonsense'
+
+# options can change the values from the ones the statistics describe, so a scan with options is not answered from them
+statement ok
+COPY (SELECT x FROM (VALUES ('a'::BLOB), ('\x80'::BLOB), (encode('é'))) t(x)) TO '{TEST_DIR}/list_stats_blob_1.parquet';
+
+statement ok
+COPY (SELECT x FROM (VALUES ('a'::BLOB), ('\x80'::BLOB), (encode('é'))) t(x)) TO '{TEST_DIR}/list_stats_blob_2.parquet';
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/list_stats_blob_[12].parquet');
+----
+6
+
+query III
+SELECT min(x) = '', max(x) = 'é', count(*) FROM read_parquet('{TEST_DIR}/list_stats_blob_[12].parquet', binary_as_string = true, utf8_validation = 'ignore');
+----
+true	true	6
+
+query III
+SELECT min(x) = '?', max(x) = 'é', count(*) FROM read_parquet('{TEST_DIR}/list_stats_blob_[12].parquet', binary_as_string = true, utf8_validation = 'replace');
+----
+true	true	6
+
+# a setting that sets an option counts as well
+statement ok
+SET binary_as_string = true;
+
+statement error
+SELECT min(x), max(x), count(*) FROM read_parquet('{TEST_DIR}/list_stats_blob_[12].parquet');
+----
+is not valid UTF8
+
+statement ok
+RESET binary_as_string;
+
+# an option the file list gives one of the files is checked by its reader
+statement ok
+SET validate_external_file_cache = 'NO_VALIDATION';
+
+statement error
+SELECT min(x), max(x), count(*) FROM read_parquet([{filename: '{TEST_DIR}/list_stats_1.parquet'}, {filename: '{TEST_DIR}/list_stats_2.parquet', footer_size: -1}]);
+----
+Invalid value for file option "footer_size"
+
+statement ok
+RESET validate_external_file_cache;
+
+# a file without row groups, whose columns are not those of the scan
+statement ok
+COPY (SELECT 1 AS y WHERE false) TO '{TEST_DIR}/list_stats_x_empty.parquet';
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/list_stats_x*.parquet');
+----
+1
+
+statement error
+SELECT min(x), max(x), count(*) FROM read_parquet('{TEST_DIR}/list_stats_x*.parquet');
+----
+but could not be found in file

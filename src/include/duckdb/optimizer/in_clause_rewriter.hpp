@@ -31,7 +31,12 @@ public:
 	static constexpr idx_t IN_CLAUSE_REWRITE_THRESHOLD = 6;
 	static bool HasRewritableInClause(const Expression &expr);
 	unique_ptr<LogicalOperator> Rewrite(unique_ptr<LogicalOperator> op);
+	void VisitExpression(unique_ptr<Expression> *expression) override;
 	unique_ptr<Expression> VisitReplace(BoundOperatorExpression &expr, unique_ptr<Expression> *expr_ptr) override;
+
+private:
+	//! The number of TRY expressions around the expression being visited
+	idx_t try_depth = 0;
 };
 
 } // namespace duckdb

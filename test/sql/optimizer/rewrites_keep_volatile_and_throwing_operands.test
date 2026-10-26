@@ -1,0 +1,131 @@
+# name: test/sql/optimizer/rewrites_keep_volatile_and_throwing_operands.test
+# description: Rewrites that drop an operand keep it when it is volatile, or can throw inside TRY (duckdblabs/bot-issue-tracker#694)
+# group: [optimizer]
+
+statement ok
+CREATE TABLE v AS SELECT * FROM (VALUES (1), (2), (3)) t(x);
+
+# a function statistics callback that replaces the function, as isnan over a child without NULLs
+statement ok
+CREATE SEQUENCE snan;
+
+query I
+SELECT isnan(CASE WHEN nextval('snan') > 0 THEN x::DOUBLE ELSE x::DOUBLE END) FROM v;
+----
+false
+false
+false
+
+query I
+SELECT nextval('snan');
+----
+4
+
+query I
+SELECT TRY(isnan(CASE WHEN CAST('bad' AS INTEGER) > 0 THEN x::DOUBLE ELSE x::DOUBLE END)) FROM v;
+----
+NULL
+NULL
+NULL
+
+# a comparison with NULL
+statement ok
+CREATE SEQUENCE snull;
+
+query I
+SELECT nextval('snull') > NULL FROM v;
+----
+NULL
+NULL
+NULL
+
+query I
+SELECT nextval('snull');
+----
+4
+
+# struct_extract over struct_pack
+query I
+SELECT TRY(struct_extract(struct_pack(a := x, b := CAST('bad' AS INTEGER)), 'a')) FROM v;
+----
+NULL
+NULL
+NULL
+
+statement ok
+CREATE SEQUENCE sstruct;
+
+query I
+SELECT struct_extract(struct_pack(a := x, b := nextval('sstruct')), 'a') FROM v;
+----
+1
+2
+3
+
+query I
+SELECT nextval('sstruct');
+----
+4
+
+# distributivity, which absorbs (x > 0 AND y) into x > 0
+query I
+SELECT TRY(x > 0 OR (x > 0 AND CAST('bad' AS BOOLEAN))) FROM v;
+----
+NULL
+NULL
+NULL
+
+statement ok
+CREATE SEQUENCE sdist;
+
+query I
+SELECT x > 0 OR (x > 0 AND nextval('sdist') > 0) FROM v;
+----
+true
+true
+true
+
+query I
+SELECT nextval('sdist');
+----
+4
+
+# an ENUM compared with a string that is not one of its values
+statement ok
+CREATE TABLE e AS SELECT x, 'a'::ENUM('a', 'b') val FROM v;
+
+query I
+SELECT TRY((CASE WHEN CAST('bad' AS BOOLEAN) THEN val ELSE val END)::VARCHAR IS DISTINCT FROM 'z') FROM e;
+----
+NULL
+NULL
+NULL
+
+# a large IN list, whose join would evaluate the probe outside TRY
+query I
+SELECT TRY(CAST(x::VARCHAR || 'bad' AS INTEGER) IN (1, 2, 3, 4, 5, 6)) FROM v;
+----
+NULL
+NULL
+NULL
+
+# operands that can be dropped are still dropped
+query II
+EXPLAIN SELECT x > NULL, struct_extract(struct_pack(a := x, b := x + 1), 'a') FROM v;
+----
+physical_plan	<!REGEX>:.*struct_pack.*
+
+query II
+EXPLAIN SELECT val::VARCHAR IS DISTINCT FROM 'z' FROM e;
+----
+physical_plan	<REGEX>:.*Projections: true.*
+
+query II
+EXPLAIN SELECT x IN (1, 2, 3, 4, 5, 6) FROM v;
+----
+physical_plan	<REGEX>:.*MARK.*
+
+query II
+EXPLAIN SELECT isnan(x::DOUBLE) FROM v;
+----
+physical_plan	<REGEX>:.*Projections: false.*

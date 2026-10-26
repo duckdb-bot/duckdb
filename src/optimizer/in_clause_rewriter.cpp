@@ -60,6 +60,17 @@ unique_ptr<LogicalOperator> InClauseRewriter::Rewrite(unique_ptr<LogicalOperator
 	return op;
 }
 
+void InClauseRewriter::VisitExpression(unique_ptr<Expression> *expression) {
+	auto is_try = (*expression)->GetExpressionType() == ExpressionType::OPERATOR_TRY;
+	if (is_try) {
+		try_depth++;
+	}
+	LogicalOperatorVisitor::VisitExpression(expression);
+	if (is_try) {
+		try_depth--;
+	}
+}
+
 unique_ptr<Expression> InClauseRewriter::VisitReplace(BoundOperatorExpression &expr, unique_ptr<Expression> *expr_ptr) {
 	if (expr.GetExpressionType() != ExpressionType::COMPARE_IN &&
 	    expr.GetExpressionType() != ExpressionType::COMPARE_NOT_IN) {
@@ -77,7 +88,10 @@ unique_ptr<Expression> InClauseRewriter::VisitReplace(BoundOperatorExpression &e
 			all_scalar = false;
 		}
 	}
-	const bool rewrite_to_join = expr.GetChildrenMutable().size() >= IN_CLAUSE_REWRITE_THRESHOLD && all_scalar;
+	// the join evaluates the probe outside of a TRY around the IN, which could then no longer catch its error
+	const bool probe_must_stay = try_depth > 0 && expr.GetChildrenMutable()[0]->CanThrow();
+	const bool rewrite_to_join =
+	    expr.GetChildrenMutable().size() >= IN_CLAUSE_REWRITE_THRESHOLD && all_scalar && !probe_must_stay;
 	if (!rewrite_to_join) {
 		VisitExpressionChildren(expr);
 	}

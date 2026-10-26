@@ -35,6 +35,11 @@ public:
 	bool InTry() const {
 		return in_try;
 	}
+	//! Whether a rule may drop the expression from the plan, which must not be volatile, nor able to throw inside TRY,
+	//! as TRY would then return a value instead of NULL
+	bool CanDropExpression(const Expression &expr) const {
+		return !expr.IsVolatile() && (!in_try || !expr.CanThrow());
+	}
 
 	// Generates either a constant_or_null(child) expression
 	static unique_ptr<Expression> ConstantOrNull(ClientContext &context, unique_ptr<Expression> child, Value value);

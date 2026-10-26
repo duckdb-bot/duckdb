@@ -220,7 +220,10 @@ unique_ptr<Expression> ComparisonSimplificationRule::Apply(LogicalOperator &op, 
 	}
 	if (constant_value.IsNull() && !(expr.GetExpressionType() == ExpressionType::COMPARE_NOT_DISTINCT_FROM ||
 	                                 expr.GetExpressionType() == ExpressionType::COMPARE_DISTINCT_FROM)) {
-		// comparison with constant NULL, return NULL
+		// comparison with constant NULL, return NULL, unless that drops the other side
+		if (!rewriter.CanDropExpression(column_ref_expr)) {
+			return nullptr;
+		}
 		return make_uniq<BoundConstantExpression>(Value(LogicalType::BOOLEAN));
 	}
 	if (BoundComparisonExpression::IsComparison(column_ref_expr) && !constant_value.IsNull() &&

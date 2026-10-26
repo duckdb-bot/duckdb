@@ -1,0 +1,79 @@
+# name: test/sql/subquery/missing_column_in_subquery_error.test
+# description: Report missing columns in subqueries
+# group: [subquery]
+
+statement ok
+CREATE TABLE foo(a INTEGER);
+
+statement ok
+CREATE TABLE bar(b INTEGER);
+
+statement error
+FROM foo WHERE a NOT IN (FROM bar WHERE bar.c >= 42);
+----
+Table "bar" does not have a column named "c"
+
+statement error
+FROM foo WHERE a IN (SELECT bar.c FROM bar);
+----
+Table "bar" does not have a column named "c"
+
+# a table that neither query knows is still reported as such
+statement error
+FROM foo WHERE a IN (SELECT baz.c FROM bar);
+----
+Referenced table "baz" not found
+
+# a table that HAVING does not know is still reported as such
+statement error
+SELECT (SELECT 1 HAVING missing.c > 0);
+----
+Referenced table "missing" not found
+
+# in a derived table and a lateral join
+statement error
+FROM foo, (SELECT bar.c FROM bar) t;
+----
+Table "bar" does not have a column named "c"
+
+statement error
+FROM foo, LATERAL (SELECT bar.c FROM bar WHERE bar.b = foo.a) t;
+----
+Table "bar" does not have a column named "c"
+
+# a column of the outer query still resolves
+statement ok
+INSERT INTO foo VALUES (1);
+
+statement ok
+INSERT INTO bar VALUES (1);
+
+query I
+FROM foo WHERE a IN (SELECT foo.a FROM bar);
+----
+1
+
+# an outer scope that has the column wins over an inner one whose table lacks it
+query I
+FROM foo WHERE a IN (SELECT foo.a FROM bar AS foo);
+----
+1
+
+# a values list
+statement error
+SELECT (SELECT v.c FROM (VALUES (1)) v(b));
+----
+Values list "v" does not have a column named "c"
+
+statement ok
+SET errors_as_json = true;
+
+statement error
+FROM foo WHERE a IN (SELECT baz.c FROM bar);
+----
+<REGEX>:.*"error_subtype":"TABLE_NOT_FOUND".*
+
+statement error
+SELECT (SELECT v.c FROM (VALUES (1)) v(b));
+----
+<REGEX>:.*"error_subtype":"TABLE_COLUMN_NOT_FOUND".*

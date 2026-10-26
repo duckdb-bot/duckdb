@@ -7,7 +7,9 @@
 #include "duckdb/execution/operator/join/physical_nested_loop_join.hpp"
 #include "duckdb/execution/operator/join/physical_piecewise_merge_join.hpp"
 #include "duckdb/execution/operator/join/physical_recursive_cte_key_join.hpp"
+#include "duckdb/execution/operator/scan/physical_column_data_scan.hpp"
 #include "duckdb/execution/operator/set/physical_recursive_cte.hpp"
+#include "duckdb/storage/buffer_manager.hpp"
 #include "duckdb/execution/physical_plan_generator.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
@@ -174,6 +176,29 @@ CreateRecursiveKeyProbeNormalizers(ClientContext &context, const PhysicalRecursi
 	return normalizers;
 }
 
+//! The size of the hash table of a join over a constant collection whose key is one of its columns, if it has one
+static optional_idx ConstantBuildSize(const PhysicalHashJoin &join, PhysicalOperator &right) {
+	if (right.type != PhysicalOperatorType::COLUMN_DATA_SCAN) {
+		return optional_idx();
+	}
+	auto &scan = right.Cast<PhysicalColumnDataScan>();
+	if (!scan.collection) {
+		return optional_idx();
+	}
+	// the hash table stores the key of each condition and the columns of a residual predicate, so only a single key
+	// that is a column of the collection keeps it within the size of the collection
+	if (join.conditions.size() != 1 || join.predicate || !join.conditions[0].IsComparison() ||
+	    join.conditions[0].GetRHS().GetExpressionType() != ExpressionType::BOUND_REF) {
+		return optional_idx();
+	}
+	if (join.conditions[0].GetRHS().GetReturnType().IsNested()) {
+		// the hash table lays out nested keys with more validity than the collection
+		return optional_idx();
+	}
+	// the pointer table and the hashes come on top of the rows
+	return scan.collection->SizeInBytes() + scan.collection->Count() * (sizeof(data_ptr_t) + sizeof(hash_t));
+}
+
 PhysicalOperator &PhysicalPlanGenerator::PlanComparisonJoin(LogicalComparisonJoin &op) {
 	// now visit the children
 	D_ASSERT(op.children.size() == 2);
@@ -244,6 +269,19 @@ PhysicalOperator &PhysicalPlanGenerator::PlanComparisonJoin(LogicalComparisonJoi
 		auto &join = Make<PhysicalHashJoin>(op, left, right, std::move(op.conditions), op.join_type,
 		                                    op.left_projection_map, op.right_projection_map, std::move(op.mark_types),
 		                                    op.estimated_cardinality, std::move(op.filter_pushdown));
+		// an IN list of constants becomes such a join, which has to keep the order of the filter it replaces
+		auto &hash_join = join.Cast<PhysicalHashJoin>();
+		auto build_size = ConstantBuildSize(hash_join, right);
+		if (build_size.IsValid() &&
+		    (op.join_type == JoinType::MARK || op.join_type == JoinType::SEMI || op.join_type == JoinType::ANTI) &&
+		    Settings::Get<PreserveInsertionOrderSetting>(context)) {
+			// such joins stay in memory together, so they may take a quarter of the memory limit
+			auto total_size = ordered_constant_build_size + build_size.GetIndex();
+			if (total_size <= BufferManager::GetBufferManager(context).GetMaxMemory() / 4) {
+				hash_join.preserves_probe_order = true;
+				ordered_constant_build_size = total_size;
+			}
+		}
 		return join;
 	}
 

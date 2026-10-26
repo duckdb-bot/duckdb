@@ -2034,7 +2034,8 @@ SinkFinalizeType PhysicalHashJoin::Finalize(Pipeline &pipeline, Event &event, Cl
 		idx_t temp_total_size =
 		    ht.GetTotalSize(sink.local_hash_tables, temp_max_partition_size, temp_max_partition_count);
 
-		if (temp_total_size < sink.temporary_memory_state->GetReservation()) {
+		// a join that keeps the order of the probe side stays in memory, its constant build side was planned to fit
+		if (temp_total_size < sink.temporary_memory_state->GetReservation() || preserves_probe_order) {
 			// We prevented the external join by reducing the load factor. Update the state accordingly
 			sink.temporary_memory_state->SetMinimumReservation(temp_total_size);
 			sink.temporary_memory_state->SetRemainingSizeAndUpdateReservation(context, temp_total_size);

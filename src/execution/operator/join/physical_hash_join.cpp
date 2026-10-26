@@ -842,9 +842,11 @@ unique_ptr<JoinHashTable> PhysicalHashJoin::InitializeHashTable(ClientContext &c
 			info.result_chunk.Initialize(allocator, delim_payload_types);
 		}
 	}
+	// a TUPLE or a UNION key can be equal as NULL when neither side is NULL, which the matches of the table miss
 	const bool has_row_equality =
 	    conditions.size() > 1 ||
-	    (conditions.size() == 1 && conditions[0].GetLHS().GetReturnType().id() == LogicalTypeId::TUPLE);
+	    (conditions.size() == 1 && (conditions[0].GetLHS().GetReturnType().id() == LogicalTypeId::TUPLE ||
+	                                conditions[0].GetLHS().GetReturnType().id() == LogicalTypeId::UNION));
 	if (delim_types.empty() && join_type == JoinType::MARK && has_row_equality) {
 		bool all_equal = true;
 		for (auto &condition : conditions) {

@@ -1,0 +1,88 @@
+# name: test/sql/subquery/any_all/test_union_null_member_quantified.test
+# description: Quantified comparisons of a UNION whose active member is NULL are NULL, as its comparison is (duckdblabs/bot-issue-tracker#688)
+# group: [any_all]
+
+statement ok
+CREATE TABLE u(x UNION(s VARCHAR));
+
+statement ok
+INSERT INTO u VALUES (union_value(s := NULL::VARCHAR)), ('a');
+
+statement ok
+CREATE TABLE v(y UNION(s VARCHAR));
+
+statement ok
+INSERT INTO v VALUES ('b'), ('c');
+
+query TIIIII
+SELECT x, x < 'b'::UNION(s VARCHAR), x < ANY (SELECT y FROM v), x IN (SELECT y FROM v), x < ALL (SELECT y FROM v),
+       x <> ALL (SELECT y FROM v)
+FROM u ORDER BY x;
+----
+a	true	true	false	true	true
+NULL	NULL	NULL	NULL	NULL	NULL
+
+query I
+SELECT count(*) FROM u WHERE x NOT IN (SELECT y FROM v);
+----
+1
+
+query I
+SELECT count(*) FROM u WHERE NOT (x < ANY (SELECT y FROM v));
+----
+0
+
+# every quantified comparison against the three-valued result of its comparisons, for UNIONs with NULL members, other
+# tags, NULL values and empty sets
+statement ok
+CREATE TABLE l(id INTEGER, x UNION(i INTEGER, s VARCHAR));
+
+statement ok
+INSERT INTO l VALUES (1, union_value(s := NULL::VARCHAR)), (2, union_value(s := 'a')), (3, union_value(i := NULL::INTEGER)),
+	(4, union_value(i := 1)), (5, NULL);
+
+statement ok
+CREATE TABLE r(g INTEGER, y UNION(i INTEGER, s VARCHAR));
+
+statement ok
+INSERT INTO r VALUES (1, union_value(s := 'b')), (1, union_value(s := 'c')), (2, union_value(s := 'b')), (2, NULL),
+	(3, union_value(i := 2)), (4, union_value(s := NULL::VARCHAR)), (4, union_value(i := 0)), (6, union_value(s := 'a'));
+
+loop g 1 7
+
+foreach op < <= > >= = <>
+
+query I
+SELECT count(*) FROM l
+WHERE (l.x {op} ANY (SELECT y FROM r WHERE r.g = {g})) IS DISTINCT FROM
+	(SELECT CASE WHEN bool_or(l.x {op} y) THEN true WHEN bool_or((l.x {op} y) IS NULL) THEN NULL ELSE false END
+	 FROM r WHERE r.g = {g});
+----
+0
+
+query I
+SELECT count(*) FROM l
+WHERE (l.x {op} ALL (SELECT y FROM r WHERE r.g = {g})) IS DISTINCT FROM
+	(SELECT CASE WHEN bool_or(NOT (l.x {op} y)) THEN false WHEN bool_or((l.x {op} y) IS NULL) THEN NULL ELSE true END
+	 FROM r WHERE r.g = {g});
+----
+0
+
+endloop
+
+endloop
+
+# IN and NOT IN
+query II
+SELECT id, x IN (SELECT y FROM r WHERE r.g = 1) FROM l ORDER BY id;
+----
+1	NULL
+2	false
+3	false
+4	false
+5	NULL
+
+query I
+SELECT list(id ORDER BY id) FROM l WHERE x NOT IN (SELECT y FROM r WHERE r.g = 1);
+----
+[2, 3, 4]

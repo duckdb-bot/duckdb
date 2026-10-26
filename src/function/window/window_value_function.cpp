@@ -13,6 +13,8 @@
 #include "duckdb/planner/expression/bound_window_expression.hpp"
 #include "duckdb/main/settings.hpp"
 
+#include <bitset>
+
 namespace duckdb {
 
 //===--------------------------------------------------------------------===//
@@ -279,6 +281,9 @@ public:
 				// 	Note: If the user specifies an partial secondary sort, the disambiguation will use the
 				//	partition's row numbers, not the secondary sort's row numbers.
 				row_tree = make_uniq<WindowTokenTree>(client, arg_orders, executor.arg_order_idx, payload_count, true);
+				//	The value tree breaks ties the same way, so that both trees put the rows in one order
+				value_tree =
+				    make_uniq<WindowIndexTree>(client, arg_orders, executor.arg_order_idx, payload_count, true);
 			} else {
 				// The value_tree is cheap to construct, so we just get rid of it if we now discover we don't need it.
 				value_tree.reset();
@@ -286,12 +291,52 @@ public:
 		}
 	}
 
+	//! Under IGNORE NULLS, mark the tokens of the row tree whose rows have a value
+	void CountTokenValues(const ValidityMask &values);
+	//! The number of rows with a value whose token is smaller
+	idx_t ValuesBeforeToken(idx_t token) const;
+
 	//! Flag that we are using framing, even if we don't need the trees
 	bool use_framing = false;
 
 	//! Merge sort tree to map partition offset to row number (algorithm from Section 4.5)
 	unique_ptr<WindowTokenTree> row_tree;
+
+	//! Whether the row of each token has a value, 64 tokens per entry
+	vector<uint64_t> token_values;
+	//! The number of rows with a value before each entry of token_values
+	vector<idx_t> token_value_offsets;
+	mutex token_values_lock;
+	bool token_values_counted = false;
 };
+
+void WindowLeadLagGlobalState::CountTokenValues(const ValidityMask &values) {
+	lock_guard<mutex> guard(token_values_lock);
+	if (token_values_counted) {
+		return;
+	}
+	const auto entry_count = (payload_count + 63) / 64;
+	token_values.resize(entry_count, 0);
+	for (idx_t row_idx = 0; row_idx < payload_count; ++row_idx) {
+		if (values.RowIsValid(row_idx)) {
+			const auto token = row_tree->Token(row_idx);
+			token_values[token / 64] |= uint64_t(1) << (token % 64);
+		}
+	}
+	token_value_offsets.resize(entry_count);
+	idx_t offset = 0;
+	for (idx_t entry_idx = 0; entry_idx < entry_count; ++entry_idx) {
+		token_value_offsets[entry_idx] = offset;
+		offset += std::bitset<64>(token_values[entry_idx]).count();
+	}
+	token_values_counted = true;
+}
+
+idx_t WindowLeadLagGlobalState::ValuesBeforeToken(idx_t token) const {
+	const auto entry_idx = token / 64;
+	const auto below = token_values[entry_idx] & ((uint64_t(1) << (token % 64)) - 1);
+	return token_value_offsets[entry_idx] + std::bitset<64>(below).count();
+}
 
 //===--------------------------------------------------------------------===//
 // WindowLeadLagLocalState
@@ -348,6 +393,11 @@ void WindowLeadLagLocalState::Finalizer(ExecutionContext &context, CollectionPtr
 		auto &row_state = local_row->Cast<WindowMergeSortTreeLocalState>();
 		row_state.Finalize(context, sink.interrupt_state);
 		row_state.window_tree.Build(context.client);
+
+		auto &ignore_nulls = *sink.local_state.Cast<WindowLeadLagLocalState>().ignore_nulls;
+		if (!ignore_nulls.CannotHaveNull()) {
+			sink.global_state.Cast<WindowLeadLagGlobalState>().CountTokenValues(ignore_nulls);
+		}
 	}
 }
 
@@ -642,6 +692,35 @@ static int64_t LeadLagIndex(ExpressionType type, int64_t row_idx, int64_t offset
 	return result;
 }
 
+//! The number of rows of the value tree in the frame that come before the own row in the argument order
+static idx_t ValuesBeforeRow(const WindowLeadLagGlobalState &glstate, const ValidityMask &values,
+                             const FrameBounds &frame, idx_t row_idx) {
+	auto &row_tree = *glstate.row_tree;
+	const auto own_token = row_tree.Token(row_idx);
+	//	Both trees use the same order, so the value tree starts with the rows whose token is smaller
+	const auto values_before = glstate.ValuesBeforeToken(own_token);
+	if (!values_before) {
+		return 0;
+	}
+	if (values_before == own_token) {
+		//	Every row before the own row has a value, so the rank of all rows is the one of the values
+		return row_tree.Rank(frame.start, frame.end, row_idx) - 1;
+	}
+	//	A narrow frame is cheaper to count row by row than a longer prefix of the value tree
+	static constexpr idx_t SCAN_LIMIT = 256;
+	const auto frame_width = frame.end - frame.start;
+	if (frame_width <= SCAN_LIMIT && frame_width <= values_before) {
+		idx_t result = 0;
+		for (auto frame_row = frame.start; frame_row < frame.end; ++frame_row) {
+			if (values.RowIsValid(frame_row) && row_tree.Token(frame_row) < own_token) {
+				++result;
+			}
+		}
+		return result;
+	}
+	return glstate.value_tree->CountInFrame(values_before, frame);
+}
+
 void WindowLeadLagExecutor::GetData(ExecutionContext &context, DataChunk &eval_chunk, DataChunk &bounds, Vector &result,
                                     idx_t row_idx, OperatorSinkInput &sink) {
 	auto &glstate = sink.global_state.Cast<WindowLeadLagGlobalState>();
@@ -665,6 +744,7 @@ void WindowLeadLagExecutor::GetData(ExecutionContext &context, DataChunk &eval_c
 
 	if (glstate.row_tree) {
 		// TODO: Handle subframes (SelectNth can handle it but Rank can't)
+		auto &ignore_nulls = *llstate.ignore_nulls;
 		auto &frames = llstate.frames;
 		frames.resize(1);
 		auto &frame = frames[0];
@@ -680,13 +760,26 @@ void WindowLeadLagExecutor::GetData(ExecutionContext &context, DataChunk &eval_c
 
 			// (1) compute the ROW_NUMBER of the own row
 			frame = FrameBounds(frame_begin[i], MaxValue(frame_end[i], frame_begin[i]));
-			const auto own_row = glstate.row_tree->Rank(frame.start, frame.end, row_idx) - 1;
+			const auto frame_width = NumericCast<int64_t>(frame.end - frame.start);
+			idx_t own_row = 0;
+			bool own_value = true;
+			if (ignore_nulls.CannotHaveNull()) {
+				own_row = glstate.row_tree->Rank(frame.start, frame.end, row_idx) - 1;
+			} else {
+				own_value = ignore_nulls.RowIsValid(row_idx);
+				//	An offset beyond the frame width leaves the frame from any row, so the row number does not matter
+				if (offset <= frame_width && offset >= -frame_width) {
+					//	The value tree only holds the rows with a value, so only those count
+					own_row = ValuesBeforeRow(glstate, ignore_nulls, frame, row_idx);
+				}
+			}
 			// (2) adjust the row number by adding or subtracting an offset
 			auto val_idx = LeadLagIndex(wexpr.GetExpressionType(), NumericCast<int64_t>(own_row), offset);
 			const auto is_lead = (wexpr.GetExpressionType() == ExpressionType::WINDOW_LEAD);
-			if (row_idx < frame.start || frame.end <= row_idx) {
-				//	An own row outside the frame ranks just before own_row instead of at it,
-				//	so a zero shift is the own row itself and a forward shift lands one row earlier.
+			if (row_idx < frame.start || frame.end <= row_idx || !own_value) {
+				//	An own row outside the value tree (outside the frame, or NULL under IGNORE NULLS) ranks just
+				//	before own_row instead of at it, so a zero shift is the own row itself and a forward shift lands
+				//	one row earlier.
 				if (!offset) {
 					cursor.CopyCell(0, row_idx, result, i);
 					continue;
@@ -695,7 +788,6 @@ void WindowLeadLagExecutor::GetData(ExecutionContext &context, DataChunk &eval_c
 					--val_idx;
 				}
 			}
-			const auto frame_width = NumericCast<int64_t>(frame.end - frame.start);
 			if (val_idx >= 0 && val_idx < frame_width) {
 				// (3) find the row at that offset
 				const auto n = NumericCast<idx_t>(val_idx);

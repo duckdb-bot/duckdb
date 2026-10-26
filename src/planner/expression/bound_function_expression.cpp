@@ -11,14 +11,6 @@
 
 namespace duckdb {
 
-static optional_ptr<const Expression> GetLambdaExpression(const BoundFunctionExpression &expr) {
-	if (!expr.Function().HasBindLambdaCallback()) {
-		return nullptr;
-	}
-	D_ASSERT(expr.BindInfo());
-	return expr.BindInfo()->Cast<LambdaFunctionData>().GetLambdaExpression();
-}
-
 BoundFunctionExpression::BoundFunctionExpression(BoundScalarFunction bound_function,
                                                  vector<unique_ptr<Expression>> arguments,
                                                  unique_ptr<FunctionData> bind_info_p, bool is_operator)
@@ -34,6 +26,14 @@ ExpressionType BoundFunctionExpression::GetFunctionExpressionType(const BoundSca
                                                                   optional_ptr<FunctionData> bind_info_p) {
 	FunctionToStringInput input(bound_function, bind_info_p.get(), arguments);
 	return bound_function.GetExpressionType(input);
+}
+
+optional_ptr<const Expression> BoundFunctionExpression::GetLambdaExpression() const {
+	if (!function.HasBindLambdaCallback()) {
+		return nullptr;
+	}
+	D_ASSERT(bind_info);
+	return bind_info->Cast<LambdaFunctionData>().GetLambdaExpression();
 }
 
 bool BoundFunctionExpression::RequiresOrderedExecution() const {
@@ -52,20 +52,20 @@ bool BoundFunctionExpression::RequiresOrderedExecution() const {
 }
 
 bool BoundFunctionExpression::IsVolatile() const {
-	auto lambda_expr = GetLambdaExpression(*this);
+	auto lambda_expr = GetLambdaExpression();
 	return function.GetStability() == FunctionStability::VOLATILE || (lambda_expr && lambda_expr->IsVolatile()) ||
 	       Expression::IsVolatile();
 }
 
 bool BoundFunctionExpression::IsConsistent() const {
-	auto lambda_expr = GetLambdaExpression(*this);
+	auto lambda_expr = GetLambdaExpression();
 	return function.GetStability() == FunctionStability::CONSISTENT && (!lambda_expr || lambda_expr->IsConsistent()) &&
 	       Expression::IsConsistent();
 }
 
 bool BoundFunctionExpression::IsFoldable() const {
 	// functions with side effects cannot be folded: they have to be executed once for every row
-	auto lambda_expr = GetLambdaExpression(*this);
+	auto lambda_expr = GetLambdaExpression();
 	if (lambda_expr && lambda_expr->IsVolatile()) {
 		return false;
 	}
@@ -73,7 +73,7 @@ bool BoundFunctionExpression::IsFoldable() const {
 }
 
 bool BoundFunctionExpression::CanThrow() const {
-	auto lambda_expr = GetLambdaExpression(*this);
+	auto lambda_expr = GetLambdaExpression();
 	return function.GetErrorMode() == FunctionErrors::CAN_THROW_RUNTIME_ERROR ||
 	       (lambda_expr && lambda_expr->CanThrow()) || Expression::CanThrow();
 }

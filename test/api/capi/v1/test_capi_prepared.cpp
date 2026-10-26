@@ -1042,3 +1042,32 @@ TEST_CASE("Preparing an extracted dynamic PIVOT in the C API", "[capi][expanding
 	REQUIRE(statement_type == DUCKDB_STATEMENT_TYPE_MULTI);
 	RequirePivotRows(*result);
 }
+
+TEST_CASE("Preparing a statement that folds nextval while binding in the C API", "[capi]") {
+	CAPITester tester;
+	REQUIRE(tester.OpenDatabase(nullptr));
+	REQUIRE_NO_FAIL(tester.Query("CREATE SEQUENCE s"));
+
+	// preparing does not advance the sequence, every execution advances it once
+	CAPIPrepared prepared;
+	REQUIRE(prepared.Prepare(tester, "SELECT count(*) FROM range(nextval('s'))"));
+	REQUIRE(tester.Query("SELECT 42")->Fetch<int64_t>(0, 0) == 42);
+	REQUIRE(tester.QueryPrepared(prepared.prepared)->Fetch<int64_t>(0, 0) == 1);
+	REQUIRE(tester.QueryPrepared(prepared.prepared)->Fetch<int64_t>(0, 0) == 2);
+
+	// SQL cannot prepare a SET, the C API can
+	CAPIPrepared set_prepared;
+	REQUIRE(set_prepared.Prepare(tester, "SET threads = setval('s', 4)"));
+	REQUIRE(tester.Query("SELECT currval('s')")->Fetch<int64_t>(0, 0) == 2);
+	REQUIRE_NO_FAIL(tester.QueryPrepared(set_prepared.prepared));
+	REQUIRE(tester.Query("SELECT currval('s')")->Fetch<int64_t>(0, 0) == 4);
+	REQUIRE(tester.Query("SELECT current_setting('threads')")->Fetch<int64_t>(0, 0) == 4);
+
+	// a prepared EXECUTE binds the statement it executes when it runs
+	REQUIRE_NO_FAIL(tester.Query("PREPARE p AS SELECT count(*) FROM range(nextval('s'))"));
+	CAPIPrepared execute_prepared;
+	REQUIRE(execute_prepared.Prepare(tester, "EXECUTE p"));
+	REQUIRE(tester.Query("SELECT currval('s')")->Fetch<int64_t>(0, 0) == 4);
+	REQUIRE(tester.QueryPrepared(execute_prepared.prepared)->Fetch<int64_t>(0, 0) == 5);
+	REQUIRE(tester.QueryPrepared(execute_prepared.prepared)->Fetch<int64_t>(0, 0) == 6);
+}

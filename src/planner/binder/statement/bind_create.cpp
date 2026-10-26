@@ -1027,15 +1027,14 @@ BoundStatement Binder::Bind(CreateStatement &stmt) {
 			if (bound_provider->HasParameter()) {
 				throw InvalidInputException("Create Secret expressions can not have parameters!");
 			}
-			provider_string =
-			    StringUtil::Lower(ExpressionExecutor::EvaluateScalar(context, *bound_provider, true).ToString());
+			provider_string = StringUtil::Lower(FoldExpression(*bound_provider).ToString());
 		}
 		if (info.type) {
 			auto bound_type = default_binder.Bind(info.type);
 			if (bound_type->HasParameter()) {
 				throw InvalidInputException("Create Secret expressions can not have parameters!");
 			}
-			type_string = StringUtil::Lower(ExpressionExecutor::EvaluateScalar(context, *bound_type, true).ToString());
+			type_string = StringUtil::Lower(FoldExpression(*bound_type).ToString());
 		}
 		if (info.scope) {
 			auto bound_scope = default_binder.Bind(info.scope);
@@ -1043,7 +1042,7 @@ BoundStatement Binder::Bind(CreateStatement &stmt) {
 				throw InvalidInputException("Create Secret expressions can not have parameters!");
 			}
 			// Execute all scope expressions
-			Value scope = ExpressionExecutor::EvaluateScalar(context, *bound_scope, true);
+			Value scope = FoldExpression(*bound_scope);
 			if (scope.type() == LogicalType::VARCHAR) {
 				scope_strings.push_back(scope.ToString());
 			} else if (scope.type() == LogicalType::LIST(LogicalType::VARCHAR)) {
@@ -1073,7 +1072,7 @@ BoundStatement Binder::Bind(CreateStatement &stmt) {
 			if (bound_value->HasParameter()) {
 				throw InvalidInputException("Create Secret expressions can not have parameters!");
 			}
-			bound_options.insert({option.first, ExpressionExecutor::EvaluateScalar(context, *bound_value, true)});
+			bound_options.insert({option.first, FoldExpression(*bound_value)});
 		}
 
 		CreateSecretInput create_secret_input {Identifier(type_string),

@@ -772,7 +772,7 @@ vector<Value> BindCopyOption(ClientContext &context, Binder &binder, const Ident
 	if (bound_expr->HasParameter()) {
 		throw ParameterNotResolvedException();
 	}
-	auto val = ExpressionExecutor::EvaluateScalar(context, *bound_expr, true);
+	auto val = binder.FoldExpression(*bound_expr);
 	if (val.IsNull()) {
 		throw BinderException("NULL is not supported as a valid option for COPY option \"" + name + "\"");
 	}

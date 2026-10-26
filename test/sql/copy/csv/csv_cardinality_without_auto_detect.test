@@ -28,7 +28,7 @@ EXPLAIN SELECT count(*) FROM read_csv('{TEST_DIR}/sized*.csv', auto_detect = fal
 ----
 logical_opt	<REGEX>:.*~212,890 rows.*
 
-# a list of two files, estimated from each of them
+# a list of two files, estimated as the first file times the number of files
 statement ok
 COPY (SELECT i AS id, repeat('x', 100) AS payload FROM range(20000) t(i)) TO '{TEST_DIR}/sized_2.csv';
 

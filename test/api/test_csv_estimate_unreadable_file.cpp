@@ -10,7 +10,8 @@ using namespace duckdb;
 
 #ifndef _WIN32
 TEST_CASE("Test the row estimate of read_csv without auto-detection for a file that cannot be inspected", "[api]") {
-	DuckDB db(nullptr);
+	auto config = GetTestConfig();
+	DuckDB db(nullptr, config.get());
 	Connection con(db);
 	auto fs = FileSystem::CreateLocal();
 	auto dir = fs->JoinPath(LocalTestDirectoryPath(), "csv_estimate_unreadable");

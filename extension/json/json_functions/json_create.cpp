@@ -1502,6 +1502,7 @@ ScalarFunctionSet JSONFunctions::GetArrayFunction() {
 	                   nullptr, JSONFunctionLocalState::Init);
 	fun.GetSignature().AddArgs("args", LogicalType::ANY);
 	fun.SetResolveTypesCallback(JSONCreateResolveTypes<JSONArrayBind<ResolveScalarFunctionTypesInput>>);
+	fun.SetFallible();
 	fun.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	return ScalarFunctionSet(fun);
 }
@@ -1511,6 +1512,7 @@ ScalarFunctionSet JSONFunctions::GetToJSONFunction() {
 	                   JSONFunctionLocalState::Init);
 	fun.GetSignature().AddArgs("args", LogicalType::ANY);
 	fun.SetResolveTypesCallback(JSONCreateResolveTypes<ToJSONBind<ResolveScalarFunctionTypesInput>>);
+	fun.SetFallible();
 	return ScalarFunctionSet(fun);
 }
 
@@ -1551,6 +1553,7 @@ ScalarFunctionSet JSONFunctions::GetArrayToJSONFunction() {
 	                   ArrayToJSONBind<BindScalarFunctionInput>, nullptr, JSONFunctionLocalState::Init);
 	fun.GetSignature().AddArgs("args", LogicalType::ANY);
 	fun.SetResolveTypesCallback(JSONCreateResolveTypes<ArrayToJSONBind<ResolveScalarFunctionTypesInput>>);
+	fun.SetFallible();
 	return ScalarFunctionSet(fun);
 }
 
@@ -1559,6 +1562,7 @@ ScalarFunctionSet JSONFunctions::GetRowToJSONFunction() {
 	                   nullptr, JSONFunctionLocalState::Init);
 	fun.GetSignature().AddArgs("args", LogicalType::ANY);
 	fun.SetResolveTypesCallback(JSONCreateResolveTypes<RowToJSONBind<ResolveScalarFunctionTypesInput>>);
+	fun.SetFallible();
 	return ScalarFunctionSet(fun);
 }
 

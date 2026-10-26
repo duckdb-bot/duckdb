@@ -1,4 +1,5 @@
 #include "catch.hpp"
+#include <functional>
 #include "duckdb/common/types/data_chunk.hpp"
 #include "duckdb/common/types/vector.hpp"
 #include "duckdb/common/vector/constant_vector.hpp"
@@ -64,18 +65,35 @@ TEST_CASE("A constant reference to a string of a slice keeps it after the sliced
 		}
 		chunk.SetCardinality(4);
 	};
-	fill(long_string);
-
-	Vector reference(LogicalType::VARCHAR);
-	{
-		// an offset slice holds the buffer of the chunk, whose heap holds the string
+	// an offset slice holds the buffer of the chunk, whose heap holds the string
+	auto offset_slice = [&](Vector &result) {
+		result.Slice(chunk.data[0], 1, 4);
+	};
+	// a flattened dictionary over that slice holds the auxiliary data of the slice, which holds the same buffer
+	auto flattened_slice = [&](Vector &result) {
 		Vector slice(LogicalType::VARCHAR);
 		slice.Slice(chunk.data[0], 1, 4);
-		ConstantVector::Reference(reference, count_t(4097), slice, 1, 3);
+		SelectionVector sel(3);
+		for (idx_t i = 0; i < 3; i++) {
+			sel.set_index(i, 2 - i);
+		}
+		result.Slice(slice, sel, 3);
+		result.Flatten();
+	};
+	for (auto &make_slice :
+	     {std::function<void(Vector &)>(offset_slice), std::function<void(Vector &)>(flattened_slice)}) {
+		fill(long_string);
+		Vector reference(LogicalType::VARCHAR);
+		{
+			Vector slice(LogicalType::VARCHAR);
+			make_slice(slice);
+			ConstantVector::Reference(reference, count_t(4097), slice, 1, 3);
+		}
+		// a reset of the cached chunk releases its heap, and the chunk is filled again
+		chunk.Reset();
+		fill(string(long_string.size(), 'y'));
+		REQUIRE(reference.GetValue(0) == Value(long_string));
+		REQUIRE(reference.GetValue(4096) == Value(long_string));
+		chunk.Reset();
 	}
-	// a reset of the cached chunk releases its heap, and the chunk is filled again
-	chunk.Reset();
-	fill(string(long_string.size(), 'y'));
-	REQUIRE(reference.GetValue(0) == Value(long_string));
-	REQUIRE(reference.GetValue(4096) == Value(long_string));
 }

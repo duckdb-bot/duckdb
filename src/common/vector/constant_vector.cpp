@@ -149,6 +149,19 @@ static bool HoldsUncompressedStrings(const Vector &vector) {
 	}
 }
 
+//! Whether holding the auxiliary data of the vector keeps its strings alive. It does not when it holds the buffer of
+//! another vector, as a slice does, since a vector cache that reuses that buffer drops its auxiliary data
+static bool HeapOwnsStrings(const Vector &vector) {
+	if (vector.GetVectorType() == VectorType::DICTIONARY_VECTOR) {
+		return HeapOwnsStrings(DictionaryVector::Child(vector));
+	}
+	auto &buffer = vector.GetBufferRef();
+	if (!buffer || !buffer->GetAuxiliaryData()) {
+		return false;
+	}
+	return buffer->GetAuxiliaryData()->OwnsStrings();
+}
+
 void ConstantVector::Reference(Vector &vector, count_t count, const Vector &source, idx_t position,
                                idx_t source_count) {
 	auto &source_type = source.GetType();
@@ -247,10 +260,16 @@ void ConstantVector::Reference(Vector &vector, count_t count, const Vector &sour
 			SetNull(vector, count);
 			break;
 		}
+		auto &string = entry.GetValue();
+		if (!string.IsInlined() && !HeapOwnsStrings(source)) {
+			// the string can go away while the heap is held, so it is copied
+			vector.Reference(source.GetValue(position), count);
+			break;
+		}
 		// share the heap that holds the string instead of copying it, which for a long string referenced for each
 		// output chunk costs the string's size every time
 		auto buffer = make_buffer<VectorStringBuffer>(capacity_t(1ULL));
-		reinterpret_cast<string_t *>(buffer->GetData())[0] = entry.GetValue();
+		reinterpret_cast<string_t *>(buffer->GetData())[0] = string;
 		buffer->SetVectorType(VectorType::CONSTANT_VECTOR);
 		buffer->SetVectorSize(count);
 		// the vector can be the source itself, so the source is held until its heap is shared

@@ -1814,9 +1814,23 @@ dtime_tz_t InterpolateOperator::Operation(const dtime_tz_t &lo, const double d, 
 	return dtime_tz_t(dtime_t(micros), 0);
 }
 
+//! The infinities are sentinels, not microsecond counts. Between an infinity and another value lies that infinity, and
+//! between infinities of opposite signs lies no timestamp
 template <>
 timestamp_t InterpolateOperator::Operation(const timestamp_t &lo, const double d, const timestamp_t &hi) {
-	return timestamp_t(InterpolateInt64(lo.value, d, hi.value));
+	if (lo.IsFinite() && hi.IsFinite()) {
+		return timestamp_t(InterpolateInt64(lo.value, d, hi.value));
+	}
+	if (lo == hi || d <= 0) {
+		return lo;
+	}
+	if (d >= 1 || lo.IsFinite()) {
+		return hi;
+	}
+	if (hi.IsFinite()) {
+		return lo;
+	}
+	throw InvalidInputException("Cannot interpolate between infinite timestamps of opposite signs");
 }
 
 template <>

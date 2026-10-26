@@ -338,8 +338,8 @@ public:
 	//! NULL without a NULL key
 	void InitializeUncorrelatedMarkJoin();
 	bool HasUncorrelatedMarkJoin() const;
-	//! Whether a UNION's comparison is NULL only for a NULL member of the same tag (it has no UNION members)
-	static bool CanCountUnionTags(const LogicalType &type);
+	//! Create the table of correlated_tag_counts from correlated_tag_aggregates
+	void CreateCorrelatedTagCounts();
 	//! Record the tags of the RHS of a MARK join on one UNION condition
 	void AddUnionMarkJoinTags(const Vector &keys, idx_t count);
 	//! Set the MARK result of the unmatched probes of a MARK join on one UNION condition that compare as UNKNOWN
@@ -519,9 +519,15 @@ public:
 		bool union_rhs_has_null = false;
 		vector<bool> union_rhs_tags;
 		vector<bool> union_rhs_null_member_tags;
-		//! For a correlated MARK join on a UNION without UNION members: its member count, as correlated_counts then
-		//! also counts, per tag, the rows of each group and its rows with a NULL member
-		idx_t correlated_union_tags = 0;
+		//! For a correlated MARK join on a UNION, which compares as UNKNOWN with a UNION of the same tag when either
+		//! member is NULL: per correlated group and tag, the rows and the rows with a NULL member (count(*) and a
+		//! count)
+		vector<unique_ptr<Expression>> correlated_tag_aggregates;
+		unique_ptr<GroupedAggregateHashTable> correlated_tag_counts;
+		//! Group chunk (the correlated columns and the tag), payload and result used for correlated_tag_counts
+		DataChunk tag_group_chunk;
+		DataChunk tag_payload;
+		DataChunk tag_result_chunk;
 	} mark_join_info;
 
 private:

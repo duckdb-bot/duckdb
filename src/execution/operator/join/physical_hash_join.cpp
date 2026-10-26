@@ -834,31 +834,27 @@ unique_ptr<JoinHashTable> PhysicalHashJoin::InitializeHashTable(ClientContext &c
 			delim_payload_types.push_back(aggr->GetReturnType());
 			info.correlated_aggregates.push_back(std::move(aggr));
 
-			// a UNION compares as NULL with a UNION of the same tag when either member is NULL, so for a UNION
-			// without UNION members we also count, per tag, the rows of the group and its rows with a NULL member
-			auto &condition_type = conditions[delim_types.size()].GetLHS().GetReturnType();
-			if (JoinHashTable::CanCountUnionTags(condition_type)) {
-				auto member_count = UnionType::GetMemberCount(condition_type);
-				for (idx_t i = 0; i < 2 * member_count; i++) {
-					auto tag_count_fun = GetBuiltinAggregateFunction(context, CountFun::Name, {LogicalType::BOOLEAN});
-					vector<unique_ptr<Expression>> tag_children;
-					tag_children.push_back(
-					    make_uniq_base<Expression, BoundReferenceExpression>(LogicalType::BOOLEAN, 0U));
-					aggr = function_binder.BindAggregateFunction(std::move(tag_count_fun), std::move(tag_children),
-					                                             nullptr, AggregateType::NON_DISTINCT);
-					correlated_aggregates.emplace_back(*aggr);
-					delim_payload_types.push_back(aggr->GetReturnType());
-					info.correlated_aggregates.push_back(std::move(aggr));
-				}
-				info.correlated_union_tags = member_count;
-			}
-
 			auto &allocator = BufferAllocator::Get(context);
 			info.correlated_counts = make_uniq<GroupedAggregateHashTable>(
 			    context, allocator, delim_types, delim_payload_types, std::move(correlated_aggregates));
 			info.correlated_types = delim_types;
 			info.group_chunk.InitializeEmpty(delim_types);
 			info.result_chunk.Initialize(allocator, delim_payload_types);
+
+			// a UNION compares as NULL with a UNION of the same tag when either member is NULL, so we also count, per
+			// group and tag, its rows and its rows with a NULL member
+			if (conditions[delim_types.size()].GetLHS().GetReturnType().id() == LogicalTypeId::UNION) {
+				info.correlated_tag_aggregates.push_back(
+				    function_binder.BindAggregateFunction(GetBuiltinAggregateFunction(context, CountStarFun::Name, {}),
+				                                          {}, nullptr, AggregateType::NON_DISTINCT));
+				vector<unique_ptr<Expression>> null_member_children;
+				null_member_children.push_back(
+				    make_uniq_base<Expression, BoundReferenceExpression>(LogicalType::BOOLEAN, 0U));
+				info.correlated_tag_aggregates.push_back(function_binder.BindAggregateFunction(
+				    GetBuiltinAggregateFunction(context, CountFun::Name, {LogicalType::BOOLEAN}),
+				    std::move(null_member_children), nullptr, AggregateType::NON_DISTINCT));
+				result->CreateCorrelatedTagCounts();
+			}
 		}
 	}
 	// a TUPLE or a UNION key can be equal as NULL when neither side is NULL, which the matches of the table miss

@@ -148,51 +148,77 @@ void JoinHashTable::InitializeUncorrelatedMarkJoin() {
 	D_ASSERT(mark_join_info.correlated_types.empty());
 	mark_join_info.uncorrelated_has_null = false;
 	mark_join_info.uncorrelated_condition_rows = make_uniq<ColumnDataCollection>(context, condition_types);
-	if (condition_types.size() != 1 || !CanCountUnionTags(condition_types[0])) {
+	if (condition_types.size() != 1 || condition_types[0].id() != LogicalTypeId::UNION) {
 		return;
 	}
 	auto member_count = UnionType::GetMemberCount(condition_types[0]);
+	for (idx_t member_idx = 0; member_idx < member_count; member_idx++) {
+		if (UnionType::GetMemberType(condition_types[0], member_idx).id() == LogicalTypeId::UNION) {
+			return;
+		}
+	}
 	mark_join_info.union_rhs_tags.assign(member_count, false);
 	mark_join_info.union_rhs_null_member_tags.assign(member_count, false);
 }
 
-bool JoinHashTable::CanCountUnionTags(const LogicalType &type) {
-	if (type.id() != LogicalTypeId::UNION) {
-		return false;
+void JoinHashTable::CreateCorrelatedTagCounts() {
+	auto &info = mark_join_info;
+	vector<AggregateObject> aggregates;
+	vector<LogicalType> result_types;
+	for (auto &expr : info.correlated_tag_aggregates) {
+		auto &aggr = expr->Cast<BoundAggregateExpression>();
+		aggregates.emplace_back(aggr);
+		result_types.push_back(aggr.GetReturnType());
 	}
-	for (idx_t member_idx = 0; member_idx < UnionType::GetMemberCount(type); member_idx++) {
-		if (UnionType::GetMemberType(type, member_idx).id() == LogicalTypeId::UNION) {
-			return false;
-		}
-	}
-	return true;
+	auto group_types = info.correlated_types;
+	group_types.push_back(LogicalType::UTINYINT);
+	auto &allocator = BufferAllocator::Get(context);
+	info.correlated_tag_counts =
+	    make_uniq<GroupedAggregateHashTable>(context, allocator, group_types, result_types, std::move(aggregates));
+	info.tag_group_chunk.Destroy();
+	info.tag_group_chunk.InitializeEmpty(group_types);
+	info.tag_payload.Destroy();
+	info.tag_payload.InitializeEmpty(vector<LogicalType> {LogicalType::BOOLEAN});
+	info.tag_result_chunk.Destroy();
+	info.tag_result_chunk.Initialize(allocator, result_types);
 }
 
-//! Makes, for every tag of the UNIONs, a column valid for the rows of that tag, then one valid for the rows of that tag
-//! with a NULL member, in the payload of a correlated MARK join from the column first_column on
-static void SetUnionTagIndicators(const Vector &keys, idx_t count, DataChunk &payload, idx_t first_column,
-                                  idx_t member_count) {
+//! Writes the tag of every UNION, NULL for a NULL UNION, and a BOOLEAN that is valid where its member is NULL
+static void GetUnionTags(const Vector &keys, idx_t count, Vector &tags, Vector &null_members) {
 	RecursiveUnifiedVectorFormat format;
 	Vector::RecursiveToUnifiedFormat(keys, format);
 	auto &tag_format = format.children[0].unified;
-	auto tags = UnifiedVectorFormat::GetData<union_tag_t>(tag_format);
-	for (idx_t column = 0; column < 2 * member_count; column++) {
-		Vector indicator(LogicalType::BOOLEAN, count);
-		FlatVector::ValidityMutable(indicator).SetAllInvalid(count);
-		payload.data[first_column + column].Reference(indicator);
-	}
+	auto key_tags = UnifiedVectorFormat::GetData<union_tag_t>(tag_format);
+	auto tag_data = FlatVector::GetDataMutable<union_tag_t>(tags);
+	auto &tag_validity = FlatVector::ValidityMutable(tags);
+	auto null_member_data = FlatVector::GetDataMutable<bool>(null_members);
+	auto &null_member_validity = FlatVector::ValidityMutable(null_members);
+	null_member_validity.SetAllInvalid(count);
 	for (idx_t row_idx = 0; row_idx < count; row_idx++) {
 		auto idx = format.unified.sel->get_index(row_idx);
 		if (!format.unified.validity.RowIsValid(idx)) {
+			tag_validity.SetInvalid(row_idx);
 			continue;
 		}
-		auto tag = tags[tag_format.sel->get_index(idx)];
-		FlatVector::ValidityMutable(payload.data[first_column + tag]).SetValid(row_idx);
+		auto tag = key_tags[tag_format.sel->get_index(idx)];
+		tag_data[row_idx] = tag;
+		null_member_data[row_idx] = true;
 		auto &member_format = format.children[1 + tag].unified;
 		if (!member_format.validity.RowIsValid(member_format.sel->get_index(idx))) {
-			FlatVector::ValidityMutable(payload.data[first_column + member_count + tag]).SetValid(row_idx);
+			null_member_validity.SetValid(row_idx);
 		}
 	}
+	FlatVector::SetSize(tags, count);
+	FlatVector::SetSize(null_members, count);
+}
+
+//! Points the group chunk of correlated_tag_counts at the correlated columns of the keys and the tags
+static void SetCorrelatedTagGroups(DataChunk &group_chunk, DataChunk &keys, idx_t correlated_count, Vector &tags) {
+	for (idx_t i = 0; i < correlated_count; i++) {
+		group_chunk.data[i].Reference(keys.data[i]);
+	}
+	group_chunk.data[correlated_count].Reference(tags);
+	group_chunk.SetChildCardinality(keys.size());
 }
 
 bool JoinHashTable::HasUncorrelatedMarkJoin() const {
@@ -212,6 +238,9 @@ void JoinHashTable::Merge(JoinHashTable &other) {
 		if (!info.correlated_types.empty()) {
 			auto &other_info = other.mark_join_info;
 			info.correlated_counts->Combine(*other_info.correlated_counts);
+			if (info.correlated_tag_counts) {
+				info.correlated_tag_counts->Combine(*other_info.correlated_tag_counts);
+			}
 		}
 		if (info.uncorrelated_condition_rows && other.mark_join_info.uncorrelated_condition_rows) {
 			info.uncorrelated_has_null = info.uncorrelated_has_null || other.mark_join_info.uncorrelated_has_null;
@@ -710,18 +739,20 @@ void JoinHashTable::Build(PartitionedTupleDataAppendState &append_state, DataChu
 		if (info.correlated_payload.data.empty()) {
 			vector<LogicalType> types;
 			types.push_back(keys.data[info.correlated_types.size()].GetType());
-			for (idx_t column = 0; column < 2 * info.correlated_union_tags; column++) {
-				types.push_back(LogicalType::BOOLEAN);
-			}
 			info.correlated_payload.InitializeEmpty(types);
 		}
 		info.correlated_payload.data[0].Reference(keys.data[info.correlated_types.size()]);
-		if (info.correlated_union_tags > 0) {
-			SetUnionTagIndicators(keys.data[info.correlated_types.size()], keys.size(), info.correlated_payload, 1,
-			                      info.correlated_union_tags);
-		}
 		info.correlated_payload.SetChildCardinality(keys.size());
 		info.correlated_counts->AddChunk(info.group_chunk, info.correlated_payload, AggregateType::NON_DISTINCT);
+		if (info.correlated_tag_counts) {
+			Vector tags(LogicalType::UTINYINT, keys.size());
+			Vector null_members(LogicalType::BOOLEAN, keys.size());
+			GetUnionTags(keys.data[info.correlated_types.size()], keys.size(), tags, null_members);
+			SetCorrelatedTagGroups(info.tag_group_chunk, keys, info.correlated_types.size(), tags);
+			info.tag_payload.data[0].Reference(null_members);
+			info.tag_payload.SetChildCardinality(keys.size());
+			info.correlated_tag_counts->AddChunk(info.tag_group_chunk, info.tag_payload, AggregateType::NON_DISTINCT);
+		}
 	}
 	if (mark_join_info.uncorrelated_condition_rows && !mark_join_info.union_rhs_tags.empty()) {
 		AddUnionMarkJoinTags(keys.data[0], keys.size());
@@ -2270,25 +2301,23 @@ void ScanStructure::NextMarkJoin(DataChunk &keys, DataChunk &probe_data, DataChu
 				mask.SetValid(i);
 			}
 		}
-		if (info.correlated_union_tags > 0) {
+		if (info.correlated_tag_counts) {
 			// an unmatched UNION is UNKNOWN when its group has its tag with a NULL member, or when its own member is
-			// NULL and its group has its tag
-			RecursiveUnifiedVectorFormat format;
-			Vector::RecursiveToUnifiedFormat(last_key, format);
-			auto &tag_format = format.children[0].unified;
-			auto tags = UnifiedVectorFormat::GetData<union_tag_t>(tag_format);
+			// NULL and its group has its tag. A member that is itself a UNION can also compare as NULL when neither is
+			// NULL, which these counts do not see
+			Vector tags(LogicalType::UTINYINT, probe_data.size());
+			Vector null_members(LogicalType::BOOLEAN, probe_data.size());
+			GetUnionTags(last_key, probe_data.size(), tags, null_members);
+			SetCorrelatedTagGroups(info.tag_group_chunk, keys, info.correlated_types.size(), tags);
+			info.correlated_tag_counts->FetchAggregates(info.tag_group_chunk, info.tag_result_chunk);
+			auto tag_rows = FlatVector::GetData<int64_t>(info.tag_result_chunk.data[0]);
+			auto null_member_rows = FlatVector::GetData<int64_t>(info.tag_result_chunk.data[1]);
+			auto &probe_null_members = FlatVector::Validity(null_members);
 			for (idx_t i = 0; i < probe_data.size(); i++) {
 				if (bool_result[i] || !mask.RowIsValid(i) || count_star[i] == 0) {
 					continue;
 				}
-				auto idx = format.unified.sel->get_index(i);
-				auto tag = tags[tag_format.sel->get_index(idx)];
-				auto &member_format = format.children[1 + tag].unified;
-				auto member_is_null = !member_format.validity.RowIsValid(member_format.sel->get_index(idx));
-				auto tag_rows = FlatVector::GetData<int64_t>(info.result_chunk.data[2 + tag])[i];
-				auto null_member_rows =
-				    FlatVector::GetData<int64_t>(info.result_chunk.data[2 + info.correlated_union_tags + tag])[i];
-				if (null_member_rows > 0 || (member_is_null && tag_rows > 0)) {
+				if (null_member_rows[i] > 0 || (probe_null_members.RowIsValid(i) && tag_rows[i] > 0)) {
 					mask.SetInvalid(i);
 				}
 			}
@@ -2702,6 +2731,9 @@ static void ResetMarkJoinInfo(JoinHashTable &ht) {
 		info.group_chunk.Reset();
 		info.correlated_payload.Reset();
 		info.result_chunk.Reset();
+		if (info.correlated_tag_counts) {
+			ht.CreateCorrelatedTagCounts();
+		}
 	}
 	if (info.uncorrelated_condition_rows) {
 		info.uncorrelated_has_null = false;

@@ -1,0 +1,93 @@
+# name: test/sql/json/scalar/test_json_list_extract.test
+# description: list_extract, list_element and array_extract on JSON extract array elements as the JSON subscript does
+# group: [scalar]
+
+require json
+
+statement ok
+CREATE TABLE t AS SELECT '[10, 20, 30]'::JSON AS j
+
+query IIIII
+SELECT j[1], list_extract(j, 1), array_extract(j, 1), list_element(j, 1), typeof(list_extract(j, 1)) FROM t
+----
+20	20	20	20	JSON
+
+statement ok
+CREATE TABLE elements AS SELECT '[10, "x", [1, 2], {"a": null}, null]'::JSON AS j
+
+# JSON arrays are 0-based, negative indices count from the end
+query IIIIIII
+SELECT list_extract(j, 0), list_element(j, 1), array_extract(j, 2), list_extract(j, 3), list_extract(j, 4),
+       list_extract(j, -1), list_extract(j, -5)
+FROM elements
+----
+10	"x"	[1,2]	{"a":null}	null	null	10
+
+query IIIIII
+SELECT list_extract(j, 5), list_extract(j, -6), list_extract(j, 4294967296), list_extract(j, NULL),
+       list_extract(NULL::JSON, 0), list_extract(list_extract(j, 2), 1)
+FROM elements
+----
+NULL	NULL	NULL	NULL	NULL	2
+
+# constant and non-constant indices match the subscript
+query I
+SELECT count(*) FROM elements, range(-7, 7) r(i)
+WHERE list_extract(j, i) IS DISTINCT FROM j[i]
+   OR list_element(j, i) IS DISTINCT FROM j[i]
+   OR array_extract(j, i) IS DISTINCT FROM j[i]
+----
+0
+
+query I
+SELECT list_extract(j, '1') FROM t
+----
+20
+
+# the index is a number, also for JSON objects
+statement error
+SELECT array_extract('{"a": 42}'::JSON, 'a')
+----
+Could not convert string 'a' to INT64
+
+# values that are not arrays
+query IIII
+SELECT list_extract('{"a": 1}'::JSON, 0), list_extract('5'::JSON, 0), list_extract('null'::JSON, 0),
+       list_extract('[]'::JSON, 0)
+----
+NULL	NULL	NULL	NULL
+
+query II
+SELECT i, list_extract(j, i) FROM (VALUES ('[1, 2]'::JSON, 1), (NULL, 0), ('[3]', NULL), ('{"b": 4}', 0)) v(j, i)
+ORDER BY ALL
+----
+0	NULL
+0	NULL
+1	2
+NULL	NULL
+
+statement ok
+PREPARE extract_index AS SELECT list_extract(j, ?) FROM t
+
+query I
+EXECUTE extract_index(2)
+----
+30
+
+query I
+EXECUTE extract_index(NULL)
+----
+NULL
+
+# strings, lists and untyped NULLs keep their behavior
+query IIIII
+SELECT list_extract('[10, 20]', 1), array_extract('abc', 2), list_element('abc', 3),
+       list_extract(['1', '2']::JSON[], 1), typeof(list_extract(NULL, 1))
+----
+[	b	c	1	VARCHAR
+
+query IIII
+SELECT list_extract(NULL::VARCHAR, 1), list_extract(NULL::VARCHAR, 'a'), list_extract('abc', NULL),
+       list_extract(error('evaluated')::VARCHAR, NULL::BIGINT)
+----
+NULL	NULL	NULL	NULL

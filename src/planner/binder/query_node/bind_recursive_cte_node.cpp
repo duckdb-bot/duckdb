@@ -51,8 +51,9 @@ BoundStatement Binder::BindNode(RecursiveCTENode &statement) {
 	// This allows the right side to reference the CTE recursively
 	bind_context.AddGenericBinding(setop_index, statement.ctename, result.names, result.types);
 
-	// Create temporary binder to bind expressions
+	// Create temporary binder to bind expressions, which looks up functions in the search path of this binder
 	auto aggregate_binder = Binder::CreateBinder(context, nullptr);
+	aggregate_binder->EntryRetriever().Inherit(EntryRetriever());
 	ErrorData error;
 	FunctionBinder function_binder(*aggregate_binder);
 	aggregate_binder->bind_context.AddGenericBinding(setop_index, statement.ctename, result.names, result.types);

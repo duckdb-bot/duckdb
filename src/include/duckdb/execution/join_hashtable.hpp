@@ -338,6 +338,8 @@ public:
 	//! NULL without a NULL key
 	void InitializeUncorrelatedMarkJoin();
 	bool HasUncorrelatedMarkJoin() const;
+	//! Whether a UNION's comparison is NULL only for a NULL member of the same tag (it has no UNION members)
+	static bool CanCountUnionTags(const LogicalType &type);
 	//! Record the tags of the RHS of a MARK join on one UNION condition
 	void AddUnionMarkJoinTags(const Vector &keys, idx_t count);
 	//! Set the MARK result of the unmatched probes of a MARK join on one UNION condition that compare as UNKNOWN
@@ -517,6 +519,9 @@ public:
 		bool union_rhs_has_null = false;
 		vector<bool> union_rhs_tags;
 		vector<bool> union_rhs_null_member_tags;
+		//! For a correlated MARK join on a UNION without UNION members: its member count, as correlated_counts then
+		//! also counts, per tag, the rows of each group and its rows with a NULL member
+		idx_t correlated_union_tags = 0;
 	} mark_join_info;
 
 private:

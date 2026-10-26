@@ -64,9 +64,8 @@ static bool IsExtremumRewriteValid(const BoundSubqueryExpression &expr) {
 		return false;
 	}
 	// a UNION compares as NULL when the active members are of the same tag and one is NULL, which the extremum hides,
-	// so an uncorrelated comparison is planned as a MARK join that sees each NULL result. A correlated MARK join
-	// compares the rows of its hash table, which order such a UNION instead, so it keeps the rewrite
-	if (!expr.IsCorrelated() && expr.GetChildTargets()[0].id() == LogicalTypeId::UNION) {
+	// so the comparison is planned as a MARK join that sees each NULL result
+	if (expr.GetChildTargets()[0].id() == LogicalTypeId::UNION) {
 		return false;
 	}
 	auto cmp_type = expr.ComparisonType();

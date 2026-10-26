@@ -209,6 +209,38 @@ idx_t SelectComparison<LessThanEquals>(const Vector &left, const Vector &right, 
 	return VectorOperations::DistinctLessThanEquals(left, right, &sel, count, true_sel, false_sel);
 }
 
+//! The order of UNIONs places a NULL member as a value, but a UNION compares as NULL with a UNION of the same tag when
+//! either member is NULL, so its inequalities use the comparison
+template <class OP>
+struct UnionComparison {};
+
+template <>
+idx_t SelectComparison<UnionComparison<GreaterThan>>(const Vector &left, const Vector &right,
+                                                     const SelectionVector &sel, idx_t count, SelectionVector *true_sel,
+                                                     SelectionVector *false_sel) {
+	return VectorOperations::GreaterThan(left, right, &sel, count, true_sel, false_sel);
+}
+
+template <>
+idx_t SelectComparison<UnionComparison<GreaterThanEquals>>(const Vector &left, const Vector &right,
+                                                           const SelectionVector &sel, idx_t count,
+                                                           SelectionVector *true_sel, SelectionVector *false_sel) {
+	return VectorOperations::GreaterThanEquals(left, right, &sel, count, true_sel, false_sel);
+}
+
+template <>
+idx_t SelectComparison<UnionComparison<LessThan>>(const Vector &left, const Vector &right, const SelectionVector &sel,
+                                                  idx_t count, SelectionVector *true_sel, SelectionVector *false_sel) {
+	return VectorOperations::LessThan(left, right, &sel, count, true_sel, false_sel);
+}
+
+template <>
+idx_t SelectComparison<UnionComparison<LessThanEquals>>(const Vector &left, const Vector &right,
+                                                        const SelectionVector &sel, idx_t count,
+                                                        SelectionVector *true_sel, SelectionVector *false_sel) {
+	return VectorOperations::LessThanEquals(left, right, &sel, count, true_sel, false_sel);
+}
+
 template <bool NO_MATCH_SEL, class OP>
 static idx_t GenericNestedMatch(Vector &lhs_vector, const TupleDataVectorFormat &, SelectionVector &sel,
                                 const idx_t count, const TupleDataLayout &rhs_layout, Vector &rhs_row_locations,
@@ -403,16 +435,24 @@ MatchFunction RowMatcher::GetStructMatchFunction(const LogicalType &type, const 
 		}
 		break;
 	case ExpressionType::COMPARE_GREATERTHAN:
-		result.function = GenericNestedMatch<NO_MATCH_SEL, GreaterThan>;
+		result.function = type.id() == LogicalTypeId::UNION
+		                      ? GenericNestedMatch<NO_MATCH_SEL, UnionComparison<GreaterThan>>
+		                      : GenericNestedMatch<NO_MATCH_SEL, GreaterThan>;
 		return result;
 	case ExpressionType::COMPARE_GREATERTHANOREQUALTO:
-		result.function = GenericNestedMatch<NO_MATCH_SEL, GreaterThanEquals>;
+		result.function = type.id() == LogicalTypeId::UNION
+		                      ? GenericNestedMatch<NO_MATCH_SEL, UnionComparison<GreaterThanEquals>>
+		                      : GenericNestedMatch<NO_MATCH_SEL, GreaterThanEquals>;
 		return result;
 	case ExpressionType::COMPARE_LESSTHAN:
-		result.function = GenericNestedMatch<NO_MATCH_SEL, LessThan>;
+		result.function = type.id() == LogicalTypeId::UNION
+		                      ? GenericNestedMatch<NO_MATCH_SEL, UnionComparison<LessThan>>
+		                      : GenericNestedMatch<NO_MATCH_SEL, LessThan>;
 		return result;
 	case ExpressionType::COMPARE_LESSTHANOREQUALTO:
-		result.function = GenericNestedMatch<NO_MATCH_SEL, LessThanEquals>;
+		result.function = type.id() == LogicalTypeId::UNION
+		                      ? GenericNestedMatch<NO_MATCH_SEL, UnionComparison<LessThanEquals>>
+		                      : GenericNestedMatch<NO_MATCH_SEL, LessThanEquals>;
 		return result;
 	default:
 		throw InternalException("Unsupported ExpressionType for RowMatcher::GetStructMatchFunction: %s",

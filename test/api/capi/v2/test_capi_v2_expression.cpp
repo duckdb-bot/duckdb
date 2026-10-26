@@ -467,6 +467,20 @@ TEST_CASE("V2 expression: conjunctions, operators and functions", "[capi_v2][exp
 	        Filters {"between(col0, 1, 2)"});
 }
 
+TEST_CASE("V2 expression: ranges keep the inclusiveness of their bounds", "[capi_v2][expression]") {
+	EnvFixture fx;
+	RegisterProbe(fx.conn);
+
+	REQUIRE(Probe(fx.conn, "SELECT count(*) FROM expr_probe() WHERE a > 0 AND a < 3", 2) ==
+	        Filters {"<(col0, 3)", ">(col0, 0)"});
+	REQUIRE(Probe(fx.conn, "SELECT count(*) FROM expr_probe() WHERE a > 0 AND a <= 3", 3) ==
+	        Filters {"<=(col0, 3)", ">(col0, 0)"});
+	REQUIRE(Probe(fx.conn, "SELECT count(*) FROM expr_probe() WHERE a >= 1 AND a < 3", 2) ==
+	        Filters {"<(col0, 3)", ">=(col0, 1)"});
+	REQUIRE(Probe(fx.conn, "SELECT count(*) FROM expr_probe() WHERE a >= 1 AND a <= 2", 2) ==
+	        Filters {"between(col0, 1, 2)"});
+}
+
 TEST_CASE("V2 expression: casts report their mode and target", "[capi_v2][expression]") {
 	EnvFixture fx;
 	RegisterProbe(fx.conn);

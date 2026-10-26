@@ -8,6 +8,9 @@
 #include "duckdb/function/partition_stats.hpp"
 #include "duckdb/parallel/pipeline.hpp"
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
+#include "duckdb/planner/expression/bound_between_expression.hpp"
+#include "duckdb/planner/expression/bound_comparison_expression.hpp"
+#include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/storage/statistics/node_statistics.hpp"
 
@@ -717,6 +720,47 @@ static auto CV2TableProgress(ClientContext &context, const FunctionData *bind_da
 	return MinValue<double>(MaxValue<double>(args.out_progress, 0.0), 1.0) * 100.0;
 }
 
+//! The public API models BETWEEN as SQL does, with both bounds inclusive. The optimizer also folds ranges with an
+//! exclusive bound into BETWEEN, keeping the inclusiveness in the bind data, which the API does not expose.
+static auto CV2IsExclusiveBetween(const Expression &expression) -> bool {
+	if (expression.GetExpressionType() != ExpressionType::COMPARE_BETWEEN ||
+	    expression.GetExpressionClass() != ExpressionClass::BOUND_FUNCTION) {
+		return false;
+	}
+	auto &between = expression.Cast<BoundFunctionExpression>();
+	return BoundBetweenExpression::HasValidBindData(between) &&
+	       !(BoundBetweenExpression::LowerInclusive(between) && BoundBetweenExpression::UpperInclusive(between));
+}
+
+static auto CV2BetweenLowerComparison(const BoundFunctionExpression &between) -> unique_ptr<Expression> {
+	return BoundComparisonExpression::Create(BoundBetweenExpression::LowerComparisonType(between),
+	                                         BoundBetweenExpression::Input(between).Copy(),
+	                                         BoundBetweenExpression::LowerBound(between).Copy());
+}
+
+static auto CV2BetweenUpperComparison(const BoundFunctionExpression &between) -> unique_ptr<Expression> {
+	return BoundComparisonExpression::Create(BoundBetweenExpression::UpperComparisonType(between),
+	                                         BoundBetweenExpression::Input(between).Copy(),
+	                                         BoundBetweenExpression::UpperBound(between).Copy());
+}
+
+//! A predicate that is a BETWEEN with an exclusive bound is offered as its two comparisons, which the callback can
+//! accept one by one, so that the callback sees the bounds as they are. The optimizer only folds ranges into BETWEEN
+//! at the top level of the predicates
+static auto CV2SplitExclusiveBetween(vector<unique_ptr<Expression>> &filters) -> void {
+	vector<unique_ptr<Expression>> result;
+	for (auto &filter : filters) {
+		if (CV2IsExclusiveBetween(*filter)) {
+			auto &between = filter->Cast<BoundFunctionExpression>();
+			result.push_back(CV2BetweenLowerComparison(between));
+			result.push_back(CV2BetweenUpperComparison(between));
+		} else {
+			result.push_back(std::move(filter));
+		}
+	}
+	filters = std::move(result);
+}
+
 //! The optimizer hands over the predicates it would otherwise evaluate above the scan; whatever the callback accepts
 //! is removed from the list, and the engine keeps applying the rest itself.
 static auto CV2TableFilterPushdown(ClientContext &context, LogicalGet &get, FunctionData *bind_data_p,
@@ -724,6 +768,7 @@ static auto CV2TableFilterPushdown(ClientContext &context, LogicalGet &get, Func
 	if (filters.empty()) {
 		return;
 	}
+	CV2SplitExclusiveBetween(filters);
 	const auto &bind_data = bind_data_p->Cast<CV2TableFunctionData>();
 	const auto &info = *bind_data.info;
 

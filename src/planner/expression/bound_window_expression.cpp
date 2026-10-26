@@ -2,6 +2,7 @@
 #include "duckdb/catalog/catalog_entry/window_function_catalog_entry.hpp"
 #include "duckdb/parser/expression/window_expression.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
+#include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/parser/expression_map.hpp"
 
@@ -393,6 +394,15 @@ unique_ptr<Expression> BoundWindowExpression::Deserialize(Deserializer &deserial
 		result->window = make_uniq<BoundWindowFunction>(std::move(bound_func));
 	}
 
+	// a function whose return type changed since the plan was written keeps its own type under a cast to the
+	// serialized type, as an aggregate does in BoundAggregateExpression::Deserialize
+	const auto &function_type =
+	    result->aggregate ? result->aggregate->GetReturnType() : result->window->GetReturnType();
+	if (!return_type.IsAggregateState() && function_type != return_type) {
+		result->return_type = function_type;
+		auto &context = deserializer.Get<ClientContext &>();
+		return BoundCastExpression::AddCastToType(context, std::move(result), return_type);
+	}
 	return std::move(result);
 }
 

@@ -1151,6 +1151,22 @@ TEST_CASE("Test C-API Arrow scans apply the projection and the filters of the qu
 	REQUIRE(result->row_count() == 1);
 	REQUIRE(result->Fetch<int32_t>(0, 0) == 3);
 
+	// the filtered column is not returned, and an IN subquery or a join reads the scan
+	stream.sent = false;
+	result = tester.Query("SELECT i FROM t WHERE a = 0 AND i IN (SELECT 2 UNION ALL SELECT 3)");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->row_count() == 1);
+	REQUIRE(result->Fetch<int32_t>(0, 0) == 3);
+
+	stream.sent = false;
+	result = tester.Query("SELECT i, k FROM t JOIN (VALUES (1), (2), (3)) v(k) ON i = k WHERE a = 0 ORDER BY i");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->row_count() == 2);
+	REQUIRE(result->Fetch<int32_t>(0, 0) == 1);
+	REQUIRE(result->Fetch<int32_t>(1, 0) == 1);
+	REQUIRE(result->Fetch<int32_t>(0, 1) == 3);
+	REQUIRE(result->Fetch<int32_t>(1, 1) == 3);
+
 	// without the optimizer that prunes unused columns, the scan returns every column besides the filtered one
 	REQUIRE_NO_FAIL(tester.Query("SET disabled_optimizers = 'unused_columns'"));
 	stream.sent = false;

@@ -1,0 +1,45 @@
+# name: test/sql/aggregate/aggregates/approx_quantile_top_of_range.test
+# description: approx_quantile of values next to the top of a 64 or 128 bit range does not go past the top of the type (duckdblabs/bot-issue-tracker#592)
+# group: [aggregates]
+
+# a double rounds them below the top, so a finite timestamp never becomes infinity
+query II
+SELECT approx_quantile(ts, 0.5), isfinite(approx_quantile(ts, 0.5)) FROM (VALUES (TIMESTAMP '294247-01-10 04:00:54.775806')) t(ts);
+----
+294247-01-10 04:00:54.774784	true
+
+query I
+SELECT isfinite(approx_quantile(ts, 0.5)) FROM (VALUES (TIMESTAMPTZ '294247-01-10 04:00:54.775806+00')) t(ts);
+----
+true
+
+query I
+SELECT approx_quantile(ts, [0.0, 1.0]) FROM (VALUES (TIMESTAMP '294247-01-10 04:00:54.775806'), ('infinity'::TIMESTAMP)) t(ts);
+----
+['294247-01-10 04:00:54.774784', infinity]
+
+query I
+SELECT approx_quantile(ts, 0.5) FROM (VALUES (TIMESTAMP '294247-01-10 03:00:00')) t(ts);
+----
+294247-01-10 03:00:00
+
+query II
+SELECT approx_quantile(x, 0.5), approx_quantile(x, 0.5) <= 9223372036854775806 FROM (VALUES (9223372036854775806::BIGINT)) t(x);
+----
+9223372036854774784	true
+
+query II
+SELECT approx_quantile(x, 0.5), approx_quantile(x, 0.5) <= x FROM (VALUES (170141183460469231731687303715884105726::HUGEINT)) t(x) GROUP BY x;
+----
+170141183460469212842221372237303250944	true
+
+# the bottom of the range is kept as it is
+query II
+SELECT approx_quantile(x, 0.5), approx_quantile(x, [0.0, 1.0]) FROM (VALUES ('-170141183460469231731687303715884105728'::HUGEINT)) t(x);
+----
+-170141183460469231731687303715884105728	[-170141183460469231731687303715884105728, -170141183460469231731687303715884105728]
+
+query I
+SELECT approx_quantile(x, 0.5) FROM (VALUES (-9223372036854775807::BIGINT)) t(x);
+----
+-9223372036854775808

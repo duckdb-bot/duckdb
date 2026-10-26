@@ -16,7 +16,9 @@ static unique_ptr<Expression> AddCastExpressionInternal(unique_ptr<Expression> e
 		return expr;
 	}
 	auto &expr_type = expr->GetReturnType();
-	if (target_type.id() == LogicalTypeId::LIST && expr_type.id() == LogicalTypeId::LIST) {
+	// a cast of an aggregate state to its layout also drops the state type
+	if (target_type.id() == LogicalTypeId::LIST && expr_type.id() == LogicalTypeId::LIST &&
+	    !expr_type.IsAggregateState()) {
 		auto &target_list = ListType::GetChildType(target_type);
 		auto &expr_list = ListType::GetChildType(expr_type);
 		if (target_list.id() == LogicalTypeId::ANY || expr_list == target_list) {

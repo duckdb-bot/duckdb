@@ -81,6 +81,28 @@ TEST_CASE("Test deserialized plans from file", "[.][serialization]") {
 }
 
 // Reads a case file: every non-empty line is a statement, the last one is the statement whose plan is serialized
+//! A plan written when a function returned another type keeps the type it was written with, so the result of the
+//! statement planned now is compared after a cast to the types of the deserialized result
+static bool EqualsInDeserializedTypes(QueryResult &deserialized, QueryResult &expected) {
+	deserialized.Complete();
+	expected.Complete();
+	auto &deserialized_rows = deserialized.Collection();
+	auto &expected_rows = expected.Collection();
+	auto &types = deserialized.GetTypes();
+	if (types.size() != expected.GetTypes().size() || deserialized.RowCount() != expected.RowCount()) {
+		return false;
+	}
+	for (idx_t row = 0; row < deserialized.RowCount(); row++) {
+		for (idx_t col = 0; col < types.size(); col++) {
+			auto expected_value = expected_rows.GetValue(col, row).DefaultCastAs(types[col]);
+			if (!Value::NotDistinctFrom(expected_value, deserialized_rows.GetValue(col, row))) {
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
 static std::vector<string> read_case_statements(const string &sql_file) {
 	std::ifstream query_stream(sql_file);
 	std::vector<string> statements;
@@ -221,7 +243,10 @@ TEST_CASE("Test specific serialized plans", "[.][serialization]") {
 		REQUIRE_NO_FAIL(*expected_results);
 
 		// ignore names
-		if (!deserialized_results->Equals(*expected_results, false)) {
+		const bool matches = deserialized_results->GetTypes() == expected_results->GetTypes()
+		                         ? deserialized_results->Equals(*expected_results, false)
+		                         : EqualsInDeserializedTypes(*deserialized_results, *expected_results);
+		if (!matches) {
 			fprintf(stderr, "-----------------------------------\n");
 			fprintf(stderr, "Deserialized result does not match!\n");
 			fprintf(stderr, "-----------------------------------\n");

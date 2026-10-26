@@ -14,6 +14,8 @@
 #include "duckdb/common/serializer/serializer.hpp"
 #include "duckdb/common/serializer/deserializer.hpp"
 #include "duckdb/function/function_binder.hpp"
+#include "duckdb/planner/expression/bound_cast_expression.hpp"
+#include "duckdb/planner/expression/bound_function_expression.hpp"
 
 namespace duckdb {
 class ClientContext;
@@ -164,6 +166,23 @@ public:
 	static void RestoreErasedArguments(vector<LogicalType> &arguments, vector<LogicalType> &original_arguments) {
 		if (!original_arguments.empty()) {
 			arguments = std::move(original_arguments);
+		}
+	}
+
+	//! Such a bind could also change the type of an argument it kept and cast the child to it, as approx_quantile did
+	//! for DECIMAL. The pre-erase list has the type before that cast, and rebinding against it picks the overload for
+	//! that type, so the child goes back without the cast. A cast in the query itself has the pre-erase type already
+	static void RemoveCastsOfErasingBind(const vector<LogicalType> &arguments,
+	                                     vector<unique_ptr<Expression>> &children) {
+		for (idx_t i = 0; i < children.size() && i < arguments.size(); i++) {
+			auto &child = children[i];
+			if (child->GetReturnType() == arguments[i] || !BoundCastExpression::IsCast(*child)) {
+				continue;
+			}
+			auto &cast_child = BoundCastExpression::ChildMutable(child->Cast<BoundFunctionExpression>());
+			if (cast_child->GetReturnType() == arguments[i]) {
+				child = std::move(cast_child);
+			}
 		}
 	}
 
@@ -345,7 +364,11 @@ public:
 		auto positional_count = deserializer.ReadPropertyWithDefault<idx_t>(508, "positional_arguments");
 		auto named_arguments = deserializer.ReadPropertyWithDefault<vector<Identifier>>(509, "named_arguments");
 
+		const bool restores_erased_arguments = !original_arguments.empty();
 		RestoreErasedArguments(arguments, original_arguments);
+		if (restores_erased_arguments) {
+			RemoveCastsOfErasingBind(arguments, children);
+		}
 
 		if (arguments.empty() && !children.empty()) {
 			// The function is specified as having no arguments, but somehow expressions were passed anyway

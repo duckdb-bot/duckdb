@@ -114,6 +114,8 @@ BindResult BaseSelectBinder::BindWindowExpression(WindowExpression &window, idx_
 	QueryErrorContext error_context(window.GetQueryLocation());
 
 	RewriteFilteredCountStar(window);
+	// promote a lone qualifier that names an attached database to a catalog, as for other function calls
+	Binder::BindSchemaOrCatalog(context, window.GetQualifiedNameMutable());
 
 	//	Check for macros pretending to be aggregates
 	EntryLookupInfo function_lookup(CatalogType::SCALAR_FUNCTION_ENTRY, window.GetQualifiedName(), error_context);

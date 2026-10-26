@@ -79,6 +79,8 @@ private:
 	//! Whether persistent blocks referenced by `storage_info` have been reclaimed
 	//! or handed off to a bound index.
 	bool storage_reclaimed = false;
+	//! Whether a bind started to create an index from `storage_info`, which may have released some of its blocks.
+	bool storage_load_started = false;
 
 public:
 	UnboundIndex(unique_ptr<CreateInfo> create_info, IndexStorageInfo storage_info, TableIOManager &table_io_manager,
@@ -119,6 +121,10 @@ public:
 	//! but all columns required by this index must be populated.
 	void BufferChunk(DataChunk &table_chunk, Vector &row_ids, BufferedIndexReplay replay_type);
 	unique_ptr<BoundIndex> Bind(IndexBinder &binder, const vector<LogicalType> &physical_column_types);
+	//! Records that an index is created from the storage information, so that a failed bind is not retried.
+	void BeginStorageLoad() {
+		storage_load_started = true;
+	}
 	bool HasBufferedReplays() const {
 		return buffered_replays.HasBufferedReplays();
 	}

@@ -60,6 +60,10 @@ IndexCheckpointResult UnboundIndex::Checkpoint(PartialBlockManager &, StorageVer
 }
 
 unique_ptr<BoundIndex> UnboundIndex::Bind(IndexBinder &binder, const vector<LogicalType> &physical_column_types) {
+	if (storage_load_started) {
+		throw IOException("Cannot bind index %s, as an earlier attempt to bind it failed after loading its storage",
+		                  GetIndexName());
+	}
 	auto bound_index = binder.BindIndex(*this);
 	storage_reclaimed = true;
 	if (HasBufferedReplays()) {

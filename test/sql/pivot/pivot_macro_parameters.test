@@ -1,0 +1,112 @@
+# name: test/sql/pivot/pivot_macro_parameters.test
+# description: Macro parameters in the ON clause of a PIVOT or UNPIVOT are replaced by their arguments
+# group: [pivot]
+
+statement ok
+CREATE TABLE t1 AS SELECT 1 AS id, 42 AS i, 84 AS j;
+
+statement ok
+CREATE TABLE t2 AS SELECT * FROM (VALUES ('a', 1), ('b', 2)) v(k, i);
+
+statement ok
+CREATE MACRO unp(vars) AS TABLE UNPIVOT t1 ON COLUMNS(vars);
+
+query III
+FROM unp(['i', 'j']) ORDER BY name;
+----
+1	i	42
+1	j	84
+
+statement ok
+CREATE MACRO unp_lambda(pat) AS TABLE UNPIVOT t1 ON COLUMNS(lambda c: c LIKE pat);
+
+query IIII
+FROM unp_lambda('j');
+----
+1	42	j	84
+
+# also inside an expression, and in a scalar macro
+statement ok
+CREATE MACRO unp_cast(vars) AS TABLE UNPIVOT t1 ON COLUMNS(vars)::VARCHAR;
+
+query III
+FROM unp_cast(['i', 'j']) ORDER BY name;
+----
+1	i	42
+1	j	84
+
+statement ok
+CREATE MACRO unp_times(vars) AS TABLE UNPIVOT t1 ON COLUMNS(vars) * 2;
+
+query III
+FROM unp_times(['i', 'j']) ORDER BY name;
+----
+1	i	84
+1	j	168
+
+statement ok
+CREATE MACRO unp_sum(vars) AS (SELECT sum(value::INTEGER) FROM (UNPIVOT t1 ON COLUMNS(vars)::VARCHAR));
+
+query I
+SELECT unp_sum(['i', 'j']);
+----
+126
+
+# a column named like a parameter stays a column outside COLUMNS
+statement ok
+CREATE MACRO unp_name(tbl, i) AS TABLE UNPIVOT query_table(tbl) ON i::VARCHAR, j::VARCHAR;
+
+query III
+FROM unp_name('t1', 'ignored') ORDER BY name;
+----
+1	i	42
+1	j	84
+
+statement ok
+CREATE MACRO piv(sfx) AS TABLE PIVOT t2 ON (k || sfx) IN ('a_x', 'b_x') USING sum(i);
+
+query II
+FROM piv('_x');
+----
+1	2
+
+# also in a subquery of a scalar macro
+statement ok
+CREATE MACRO first_sum(sfx) AS (SELECT a_x FROM (PIVOT t2 ON (k || sfx) IN ('a_x', 'b_x') USING sum(i)));
+
+query I
+SELECT first_sum('_x');
+----
+1
+
+# the values of a PIVOT IN list are values, also where they are named like a parameter
+statement ok
+CREATE TABLE t4 AS SELECT 'a' AS k, 1 AS n, 42 AS v;
+
+statement ok
+CREATE MACRO in_list(a) AS (SELECT * FROM t4 PIVOT (sum(v) FOR (k, n) IN ((a, 1))));
+
+query I
+SELECT in_list('ignored');
+----
+42
+
+statement ok
+CREATE MACRO in_list_table(a) AS TABLE SELECT * FROM t4 PIVOT (sum(v) FOR (k, n) IN ((a, 1)));
+
+query I
+FROM in_list_table('ignored');
+----
+42
+
+# UNPIVOT on a column name in a string, also when constants become parameters in the verification
+statement ok
+SET debug_verify_statement = 'prepared_statement';
+
+query II
+UNPIVOT (SELECT 42 AS i) ON 'i';
+----
+i	42
+
+statement ok
+RESET debug_verify_statement;

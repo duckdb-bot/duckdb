@@ -12,6 +12,7 @@
 #include "test_helpers.hpp"
 #include "tpch_extension.hpp"
 
+#include <algorithm>
 #include <fstream>
 
 using namespace duckdb;
@@ -80,8 +81,8 @@ TEST_CASE("Test deserialized plans from file", "[.][serialization]") {
 	test_deserialization(get_full_file_name(PERSISTENT_FILE_NAME));
 }
 
-//! A plan written when a function returned another type keeps the type it was written with, so the result of the
-//! statement planned now is compared after a cast to the types of the deserialized result
+//! Compares the rows as a multiset, after a cast to the types of the deserialized result: a plan written when a
+//! function returned another type keeps the type it was written with
 static bool EqualsInDeserializedTypes(QueryResult &deserialized, QueryResult &expected) {
 	deserialized.Complete();
 	expected.Complete();
@@ -91,15 +92,21 @@ static bool EqualsInDeserializedTypes(QueryResult &deserialized, QueryResult &ex
 	}
 	auto deserialized_rows = deserialized.Collection().GetRows();
 	auto expected_rows = expected.Collection().GetRows();
+	vector<string> deserialized_lines;
+	vector<string> expected_lines;
 	for (idx_t row = 0; row < deserialized_rows.size(); row++) {
+		string deserialized_line;
+		string expected_line;
 		for (idx_t col = 0; col < types.size(); col++) {
-			auto expected_value = expected_rows.GetValue(col, row).DefaultCastAs(types[col]);
-			if (!Value::NotDistinctFrom(expected_value, deserialized_rows.GetValue(col, row))) {
-				return false;
-			}
+			deserialized_line += deserialized_rows.GetValue(col, row).ToSQLString() + "\t";
+			expected_line += expected_rows.GetValue(col, row).DefaultCastAs(types[col]).ToSQLString() + "\t";
 		}
+		deserialized_lines.push_back(std::move(deserialized_line));
+		expected_lines.push_back(std::move(expected_line));
 	}
-	return true;
+	std::sort(deserialized_lines.begin(), deserialized_lines.end());
+	std::sort(expected_lines.begin(), expected_lines.end());
+	return deserialized_lines == expected_lines;
 }
 
 // Reads a case file: every non-empty line is a statement, the last one is the statement whose plan is serialized
@@ -246,7 +253,9 @@ TEST_CASE("Test specific serialized plans", "[.][serialization]") {
 		REQUIRE_NO_FAIL(*expected_results);
 
 		// ignore names
-		const bool matches = deserialized_results->GetTypes() == expected_results->GetTypes()
+		// a statement without ORDER BY may return its rows in either order
+		const bool ordered = StringUtil::Contains(StringUtil::Upper(target_stmt), "ORDER BY");
+		const bool matches = ordered && deserialized_results->GetTypes() == expected_results->GetTypes()
 		                         ? deserialized_results->Equals(*expected_results, false)
 		                         : EqualsInDeserializedTypes(*deserialized_results, *expected_results);
 		if (!matches) {

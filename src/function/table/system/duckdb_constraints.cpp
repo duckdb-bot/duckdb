@@ -12,6 +12,7 @@
 #include "duckdb/parser/constraints/foreign_key_constraint.hpp"
 #include "duckdb/parser/constraints/not_null_constraint.hpp"
 #include "duckdb/parser/constraints/unique_constraint.hpp"
+#include "duckdb/parser/expression/lambda_expression.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/constraints/bound_check_constraint.hpp"
 #include "duckdb/parser/parsed_expression_iterator.hpp"
@@ -132,8 +133,10 @@ struct ExtraConstraintInfo {
 //! first is the name of the table, while the names after it are struct fields
 void ExtractReferencedColumns(const TableCatalogEntry &table, const ParsedExpression &expr,
                               vector<Identifier> &result) {
-	if (expr.GetExpressionClass() == ExpressionClass::LAMBDA) {
-		// the CHECK binder refuses columns in lambdas, so a lambda only names its own parameters
+	if (expr.GetExpressionClass() == ExpressionClass::LAMBDA &&
+	    expr.Cast<LambdaExpression>().GetLambdaSyntaxType() == LambdaSyntaxType::LAMBDA_KEYWORD) {
+		// the CHECK binder refuses columns in lambdas, so a lambda only names its own parameters. The arrow form is
+		// also the JSON operator, whose operands are read
 		return;
 	}
 	if (expr.GetExpressionClass() == ExpressionClass::COLUMN_REF) {

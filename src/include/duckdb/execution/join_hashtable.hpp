@@ -520,8 +520,7 @@ public:
 		vector<bool> union_rhs_tags;
 		vector<bool> union_rhs_null_member_tags;
 		//! For a correlated MARK join on a UNION, which compares as UNKNOWN with a UNION of the same tag when either
-		//! member is NULL: per correlated group and tag, the rows and the rows with a NULL member (count(*) and a
-		//! count)
+		//! member is NULL, the rows and the rows with a NULL member per correlated group and tag (count(*) and a count)
 		vector<unique_ptr<Expression>> correlated_tag_aggregates;
 		unique_ptr<GroupedAggregateHashTable> correlated_tag_counts;
 		//! Group chunk (the correlated columns and the tag), payload, result and lookup state of correlated_tag_counts

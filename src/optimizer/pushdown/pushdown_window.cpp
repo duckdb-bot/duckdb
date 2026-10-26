@@ -55,8 +55,8 @@ bool EqualValuesAreIdentical(const LogicalType &type) {
 	});
 }
 
-//! Whether the filter only compares columns with constants or tests them for NULL (also as ranges, IN lists and
-//! their combinations), which gives values that compare equal the same result
+//! Whether the filter only compares columns with constants or tests them for NULL (also as ranges, IN lists, their
+//! negations and combinations), which gives values that compare equal the same result
 bool ComparesColumnsWithConstants(const Expression &filter) {
 	auto is_column = [](const Expression &expr) {
 		return expr.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF;
@@ -92,6 +92,8 @@ bool ComparesColumnsWithConstants(const Expression &filter) {
 	case ExpressionType::OPERATOR_IS_NULL:
 	case ExpressionType::OPERATOR_IS_NOT_NULL:
 		return is_column(*filter.Cast<BoundOperatorExpression>().GetChildren()[0]);
+	case ExpressionType::OPERATOR_NOT:
+		return ComparesColumnsWithConstants(*filter.Cast<BoundOperatorExpression>().GetChildren()[0]);
 	default:
 		break;
 	}

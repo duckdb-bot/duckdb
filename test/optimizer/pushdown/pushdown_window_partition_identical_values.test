@@ -49,6 +49,23 @@ SELECT cnt FROM (SELECT u, count(*) OVER (PARTITION BY u) AS cnt FROM (SELECT un
 ----
 2
 
+# a NULL partition with filters that test for NULL
+statement ok
+CREATE TABLE wn AS SELECT * FROM (VALUES (-0.0::DOUBLE), (0.0::DOUBLE), (NULL), (NULL), (2.0)) t(x);
+
+query II
+SELECT x IS NULL, rn FROM (SELECT x, row_number() OVER (PARTITION BY x ORDER BY x::VARCHAR) AS rn FROM wn) WHERE x IN (0) OR x IS NULL ORDER BY ALL;
+----
+false	1
+false	2
+true	1
+true	2
+
+query I
+SELECT count(*) FROM (SELECT x, count(*) OVER (PARTITION BY x) AS cnt FROM wn) WHERE x NOT IN (2.0) AND cnt = 2;
+----
+2
+
 statement ok
 SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 
@@ -80,6 +97,17 @@ logical_opt	<!REGEX>:(?s).*FILTER.*WINDOW.*
 
 query I
 SELECT rn FROM (SELECT x, row_number() OVER (PARTITION BY x ORDER BY x::VARCHAR) AS rn FROM w) WHERE x >= -1 AND x <= 1 ORDER BY ALL;
+----
+1
+2
+
+query II
+EXPLAIN SELECT rn FROM (SELECT x, row_number() OVER (PARTITION BY x ORDER BY x::VARCHAR) AS rn FROM w) WHERE x NOT IN (1.5, 2);
+----
+logical_opt	<!REGEX>:(?s).*FILTER.*WINDOW.*
+
+query I
+SELECT rn FROM (SELECT x, row_number() OVER (PARTITION BY x ORDER BY x::VARCHAR) AS rn FROM w) WHERE x NOT IN (1.5, 2) ORDER BY ALL;
 ----
 1
 2

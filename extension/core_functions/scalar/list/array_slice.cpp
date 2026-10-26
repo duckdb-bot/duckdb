@@ -72,6 +72,23 @@ struct BlobSliceOperations {
 };
 
 struct StringSliceOperations {
+	static int64_t ValueLength(const string_t &value) {
+		return Length<string_t, int64_t>(value);
+	}
+
+	static string_t SliceValue(Vector &result, string_t input, int64_t begin, int64_t end) {
+		return SubstringUnicode(result, input, begin + 1, end - begin);
+	}
+
+	static string_t SliceValueWithSteps(Vector &result, SelectionVector &sel, string_t input, int64_t begin,
+	                                    int64_t end, int64_t step, idx_t &sel_idx) {
+		throw InternalException("Slicing with steps is not supported for strings");
+	}
+};
+
+//! Slices strings that repeat in consecutive rows, as a string that a lambda captures does, remembering the length
+//! and the ASCII check of the last string and where its last slice ended
+struct RepeatedStringSliceOperations {
 	int64_t ValueLength(const string_t &value) {
 		if (value.IsInlined()) {
 			return Length<string_t, int64_t>(value);
@@ -131,7 +148,7 @@ struct StringSliceOperations {
 		return known_byte;
 	}
 
-	enum class AsciiCheck : uint8_t { NOT_CHECKED, ASCII, NOT_ASCII };
+	enum class AsciiCheck { NOT_CHECKED, ASCII, NOT_ASCII };
 
 	//! The last string that was not inlined, as inlined strings are copied out of the vector, and its code points
 	const char *last_data = nullptr;
@@ -371,7 +388,11 @@ void ArraySliceFunction(DataChunk &args, ExpressionState &state, Vector &result)
 		if (result.GetType().id() == LogicalTypeId::BLOB) {
 			ExecuteSlice<string_t, int64_t, BlobSliceOperations>(result, strings, begin_vector, end_vector, step_vector,
 			                                                     count, begin_is_empty, end_is_empty);
+		} else if (repeats_strings) {
+			ExecuteSlice<string_t, int64_t, RepeatedStringSliceOperations>(
+			    result, strings, begin_vector, end_vector, step_vector, count, begin_is_empty, end_is_empty);
 		} else {
+			// every row of the copy has its own string, so there is nothing to remember between rows
 			ExecuteSlice<string_t, int64_t, StringSliceOperations>(result, strings, begin_vector, end_vector,
 			                                                       step_vector, count, begin_is_empty, end_is_empty);
 		}

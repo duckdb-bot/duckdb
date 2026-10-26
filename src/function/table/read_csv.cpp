@@ -155,6 +155,10 @@ static bool PushdownProjectionExpression(ClientContext &context, const TableFunc
 		return false;
 	}
 	const auto &cast = input.expr.Cast<BoundFunctionExpression>();
+	if (BoundCastExpression::IsTryCast(cast)) {
+		// the reader fails on a value that does not convert, where TRY_CAST gives NULL
+		return false;
+	}
 	const auto &target_type = cast.GetReturnType();
 	auto &bind_data = input.get.bind_data->Cast<MultiFileBindData>();
 	const idx_t idx = input.get.GetColumnIds()[input.column_index].GetPrimaryIndex();

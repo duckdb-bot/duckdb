@@ -157,10 +157,11 @@ FROM read_csv('{DATA_DIR}/csv/real/lineitem_sample.csv', delim='|') ORDER BY 1, 
 3	3
 
 # TRY_CAST: column is only used with try_cast
+# CSV reader doesn't push down TRY_CAST, it fails on a value that does not convert
 query II
 EXPLAIN SELECT TRY_CAST(column00 AS UTINYINT) FROM read_csv('{DATA_DIR}/csv/real/lineitem_sample.csv', delim='|');
 ----
-physical_plan	<!REGEX>:.*PROJECTION.*
+physical_plan	<REGEX>:.*PROJECTION.*
 
 query I
 SELECT TRY_CAST(column00 AS UTINYINT) FROM read_csv('{DATA_DIR}/csv/real/lineitem_sample.csv', delim='|') ORDER BY 1;

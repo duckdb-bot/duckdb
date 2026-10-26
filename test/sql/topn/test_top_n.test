@@ -60,10 +60,7 @@ SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 statement ok
 PRAGMA explain_output = 'OPTIMIZED_ONLY';
 
-statement ok
-CREATE TABLE test_large AS SELECT range::INTEGER b FROM range(10000);
-
 query II
-EXPLAIN SELECT b FROM test_large ORDER BY b LIMIT 6000;
+EXPLAIN SELECT b FROM test ORDER BY b LIMIT 6000;
 ----
 logical_opt	<REGEX>:(?s).*ORDER_BY.*

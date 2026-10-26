@@ -29,6 +29,26 @@ SELECT cnt FROM (SELECT s, count(*) OVER (PARTITION BY s) AS cnt FROM w) WHERE s
 ----
 2
 
+query I
+SELECT cnt FROM (SELECT l, count(*) OVER (PARTITION BY l) AS cnt FROM (SELECT [x] AS l FROM w)) WHERE l::VARCHAR = '[0.0]';
+----
+2
+
+query I
+SELECT cnt FROM (SELECT a, count(*) OVER (PARTITION BY a) AS cnt FROM (SELECT [x]::DOUBLE[1] AS a FROM w)) WHERE a::VARCHAR = '[0.0]';
+----
+2
+
+query I
+SELECT cnt FROM (SELECT m, count(*) OVER (PARTITION BY m) AS cnt FROM (SELECT MAP {'k': x} AS m FROM w)) WHERE m::VARCHAR = '{k=0.0}';
+----
+2
+
+query I
+SELECT cnt FROM (SELECT u, count(*) OVER (PARTITION BY u) AS cnt FROM (SELECT union_value(d := x) AS u FROM w)) WHERE u::VARCHAR = '0.0';
+----
+2
+
 statement ok
 SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 
@@ -46,6 +66,29 @@ query II
 EXPLAIN SELECT rn FROM (SELECT x, row_number() OVER (PARTITION BY x ORDER BY x::VARCHAR) AS rn FROM w) WHERE x > 1;
 ----
 logical_opt	<!REGEX>:(?s).*FILTER.*WINDOW.*
+
+# so do ranges and IN lists of constants, also combined
+query II
+EXPLAIN SELECT rn FROM (SELECT x, row_number() OVER (PARTITION BY x ORDER BY x::VARCHAR) AS rn FROM w) WHERE x >= -1 AND x <= 1;
+----
+logical_opt	<!REGEX>:(?s).*FILTER.*WINDOW.*
+
+query II
+EXPLAIN SELECT rn FROM (SELECT x, row_number() OVER (PARTITION BY x ORDER BY x::VARCHAR) AS rn FROM w) WHERE x IN (0, 2) OR x IS NULL;
+----
+logical_opt	<!REGEX>:(?s).*FILTER.*WINDOW.*
+
+query I
+SELECT rn FROM (SELECT x, row_number() OVER (PARTITION BY x ORDER BY x::VARCHAR) AS rn FROM w) WHERE x >= -1 AND x <= 1 ORDER BY ALL;
+----
+1
+2
+
+query I
+SELECT rn FROM (SELECT x, row_number() OVER (PARTITION BY x ORDER BY x::VARCHAR) AS rn FROM w) WHERE x IN (0, 2) ORDER BY ALL;
+----
+1
+2
 
 query I
 SELECT cnt FROM (SELECT x, count(*) OVER (PARTITION BY x) AS cnt FROM w) WHERE x = 0 ORDER BY ALL;

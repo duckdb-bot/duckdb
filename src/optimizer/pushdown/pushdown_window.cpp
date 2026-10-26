@@ -1,8 +1,12 @@
 #include "duckdb/optimizer/filter_pushdown.hpp"
+#include "duckdb/common/type_visitor.hpp"
 #include "duckdb/planner/column_binding_map.hpp"
+#include "duckdb/planner/expression/bound_between_expression.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
+#include "duckdb/planner/expression/bound_conjunction_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
+#include "duckdb/planner/expression/bound_operator_expression.hpp"
 #include "duckdb/planner/expression/bound_window_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/planner/operator/logical_window.hpp"
@@ -36,47 +40,75 @@ bool CanPushdownFilter(vector<column_binding_set_t> window_exprs_partition_bindi
 //! result. Signed zeros compare equal but print differently, as do intervals of the same length and strings that a
 //! collation compares
 bool EqualValuesAreIdentical(const LogicalType &type) {
-	switch (type.id()) {
-	case LogicalTypeId::FLOAT:
-	case LogicalTypeId::DOUBLE:
-	case LogicalTypeId::INTERVAL:
-	case LogicalTypeId::VARIANT:
-		return false;
-	case LogicalTypeId::VARCHAR:
-		return StringType::GetCollation(type).empty();
-	case LogicalTypeId::LIST:
-		return EqualValuesAreIdentical(ListType::GetChildType(type));
-	case LogicalTypeId::ARRAY:
-		return EqualValuesAreIdentical(ArrayType::GetChildType(type));
-	case LogicalTypeId::MAP:
-		return EqualValuesAreIdentical(MapType::KeyType(type)) && EqualValuesAreIdentical(MapType::ValueType(type));
-	case LogicalTypeId::STRUCT:
-	case LogicalTypeId::TUPLE:
-	case LogicalTypeId::UNION:
-		for (auto &child : StructType::GetChildTypes(type)) {
-			if (!EqualValuesAreIdentical(child.second)) {
+	return !TypeVisitor::Contains(type, [](const LogicalType &child) {
+		switch (child.id()) {
+		case LogicalTypeId::FLOAT:
+		case LogicalTypeId::DOUBLE:
+		case LogicalTypeId::INTERVAL:
+		case LogicalTypeId::VARIANT:
+			return true;
+		case LogicalTypeId::VARCHAR:
+			return !StringType::GetCollation(child).empty();
+		default:
+			return false;
+		}
+	});
+}
+
+//! Whether the filter only compares columns with constants or tests them for NULL (also as ranges, IN lists and
+//! their combinations), which gives values that compare equal the same result
+bool ComparesColumnsWithConstants(const Expression &filter) {
+	auto is_column = [](const Expression &expr) {
+		return expr.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF;
+	};
+	switch (filter.GetExpressionType()) {
+	case ExpressionType::CONJUNCTION_AND:
+	case ExpressionType::CONJUNCTION_OR:
+		for (auto &child : filter.Cast<BoundConjunctionExpression>().GetChildren()) {
+			if (!ComparesColumnsWithConstants(*child)) {
 				return false;
 			}
 		}
 		return true;
-	default:
+	case ExpressionType::COMPARE_BETWEEN: {
+		auto &between = filter.Cast<BoundFunctionExpression>();
+		return is_column(BoundBetweenExpression::Input(between)) &&
+		       BoundBetweenExpression::LowerBound(between).IsFoldable() &&
+		       BoundBetweenExpression::UpperBound(between).IsFoldable();
+	}
+	case ExpressionType::COMPARE_IN:
+	case ExpressionType::COMPARE_NOT_IN: {
+		auto &children = filter.Cast<BoundOperatorExpression>().GetChildren();
+		if (!is_column(*children[0])) {
+			return false;
+		}
+		for (idx_t i = 1; i < children.size(); i++) {
+			if (!children[i]->IsFoldable()) {
+				return false;
+			}
+		}
 		return true;
 	}
+	case ExpressionType::OPERATOR_IS_NULL:
+	case ExpressionType::OPERATOR_IS_NOT_NULL:
+		return is_column(*filter.Cast<BoundOperatorExpression>().GetChildren()[0]);
+	default:
+		break;
+	}
+	if (!BoundComparisonExpression::IsComparison(filter)) {
+		return false;
+	}
+	auto &children = filter.Cast<BoundFunctionExpression>().GetChildren();
+	return children.size() == 2 && ((is_column(*children[0]) && children[1]->IsFoldable()) ||
+	                                (is_column(*children[1]) && children[0]->IsFoldable()));
 }
 
 //! Whether the filter gives the values that a partition puts together the same result, so that it keeps or removes
-//! whole partitions. A comparison of a column with a constant treats equal values alike, other filters only do so
+//! whole partitions. A comparison of columns with constants treats equal values alike, other filters only do so
 //! when equal values of the columns they read are identical
 bool FilterKeepsWholePartitions(const Expression &filter) {
-	if (BoundComparisonExpression::IsComparison(filter)) {
-		auto &children = filter.Cast<BoundFunctionExpression>().GetChildren();
-		if (children.size() == 2) {
-			auto left_is_column = children[0]->GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF;
-			auto right_is_column = children[1]->GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF;
-			if ((left_is_column && children[1]->IsFoldable()) || (right_is_column && children[0]->IsFoldable())) {
-				return true;
-			}
-		}
+	if (ComparesColumnsWithConstants(filter)) {
+		return true;
 	}
 	bool keeps_whole_partitions = true;
 	ExpressionIterator::VisitExpression<BoundColumnRefExpression>(filter, [&](const BoundColumnRefExpression &col) {

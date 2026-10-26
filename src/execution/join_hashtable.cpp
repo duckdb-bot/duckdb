@@ -148,6 +148,17 @@ void JoinHashTable::InitializeUncorrelatedMarkJoin() {
 	D_ASSERT(mark_join_info.correlated_types.empty());
 	mark_join_info.uncorrelated_has_null = false;
 	mark_join_info.uncorrelated_condition_rows = make_uniq<ColumnDataCollection>(context, condition_types);
+	if (condition_types.size() != 1 || condition_types[0].id() != LogicalTypeId::UNION) {
+		return;
+	}
+	auto member_count = UnionType::GetMemberCount(condition_types[0]);
+	for (idx_t member_idx = 0; member_idx < member_count; member_idx++) {
+		if (UnionType::GetMemberType(condition_types[0], member_idx).id() == LogicalTypeId::UNION) {
+			return;
+		}
+	}
+	mark_join_info.union_rhs_tags.assign(member_count, false);
+	mark_join_info.union_rhs_null_member_tags.assign(member_count, false);
 }
 
 bool JoinHashTable::HasUncorrelatedMarkJoin() const {
@@ -171,6 +182,13 @@ void JoinHashTable::Merge(JoinHashTable &other) {
 		if (info.uncorrelated_condition_rows && other.mark_join_info.uncorrelated_condition_rows) {
 			info.uncorrelated_has_null = info.uncorrelated_has_null || other.mark_join_info.uncorrelated_has_null;
 			info.uncorrelated_condition_rows->Combine(*other.mark_join_info.uncorrelated_condition_rows);
+			auto &other_info = other.mark_join_info;
+			info.union_rhs_has_null = info.union_rhs_has_null || other_info.union_rhs_has_null;
+			for (idx_t tag = 0; tag < info.union_rhs_tags.size(); tag++) {
+				info.union_rhs_tags[tag] = info.union_rhs_tags[tag] || other_info.union_rhs_tags[tag];
+				info.union_rhs_null_member_tags[tag] =
+				    info.union_rhs_null_member_tags[tag] || other_info.union_rhs_null_member_tags[tag];
+			}
 		}
 	}
 
@@ -664,7 +682,9 @@ void JoinHashTable::Build(PartitionedTupleDataAppendState &append_state, DataChu
 		info.correlated_payload.SetChildCardinality(keys.size());
 		info.correlated_counts->AddChunk(info.group_chunk, info.correlated_payload, AggregateType::NON_DISTINCT);
 	}
-	if (mark_join_info.uncorrelated_condition_rows) {
+	if (mark_join_info.uncorrelated_condition_rows && !mark_join_info.union_rhs_tags.empty()) {
+		AddUnionMarkJoinTags(keys.data[0], keys.size());
+	} else if (mark_join_info.uncorrelated_condition_rows) {
 		// Keep all rows: probe-side NULLs can be UNKNOWN against non-NULL rows in other external hash partitions.
 		mark_join_info.uncorrelated_has_null = mark_join_info.uncorrelated_has_null || MarkJoinKeysHaveNull(keys);
 		mark_join_info.uncorrelated_condition_rows->Append(keys);
@@ -1982,6 +2002,59 @@ static bool MarkJoinChunkHasUnknown(DataChunk &left, idx_t left_row, DataChunk &
 	return false;
 }
 
+void JoinHashTable::AddUnionMarkJoinTags(const Vector &keys, idx_t count) {
+	auto &info = mark_join_info;
+	RecursiveUnifiedVectorFormat format;
+	Vector::RecursiveToUnifiedFormat(keys, count, format);
+	auto &tag_format = format.children[0].unified;
+	auto tags = UnifiedVectorFormat::GetData<union_tag_t>(tag_format);
+	for (idx_t row_idx = 0; row_idx < count; row_idx++) {
+		auto idx = format.unified.sel->get_index(row_idx);
+		if (!format.unified.validity.RowIsValid(idx)) {
+			info.union_rhs_has_null = true;
+			continue;
+		}
+		auto tag = tags[tag_format.sel->get_index(idx)];
+		auto &member_format = format.children[1 + tag].unified;
+		info.union_rhs_tags[tag] = true;
+		if (!member_format.validity.RowIsValid(member_format.sel->get_index(idx))) {
+			info.union_rhs_null_member_tags[tag] = true;
+		}
+	}
+}
+
+void JoinHashTable::SetUnionMarkJoinUnknown(const Vector &keys, idx_t count, const bool found_match[],
+                                            ValidityMask &mask) const {
+	auto &info = mark_join_info;
+	auto rhs_has_rows = info.union_rhs_has_null;
+	for (idx_t tag = 0; tag < info.union_rhs_tags.size(); tag++) {
+		rhs_has_rows = rhs_has_rows || info.union_rhs_tags[tag];
+	}
+	if (!rhs_has_rows) {
+		return;
+	}
+	RecursiveUnifiedVectorFormat format;
+	Vector::RecursiveToUnifiedFormat(keys, count, format);
+	auto &tag_format = format.children[0].unified;
+	auto tags = UnifiedVectorFormat::GetData<union_tag_t>(tag_format);
+	for (idx_t row_idx = 0; row_idx < count; row_idx++) {
+		if (found_match[row_idx]) {
+			continue;
+		}
+		auto idx = format.unified.sel->get_index(row_idx);
+		if (info.union_rhs_has_null || !format.unified.validity.RowIsValid(idx)) {
+			mask.SetInvalid(row_idx);
+			continue;
+		}
+		auto tag = tags[tag_format.sel->get_index(idx)];
+		auto &member_format = format.children[1 + tag].unified;
+		auto member_is_null = !member_format.validity.RowIsValid(member_format.sel->get_index(idx));
+		if (info.union_rhs_null_member_tags[tag] || (member_is_null && info.union_rhs_tags[tag])) {
+			mask.SetInvalid(row_idx);
+		}
+	}
+}
+
 void JoinHashTable::ConstructMarkJoinResult(DataChunk &join_keys, DataChunk &probe_data, DataChunk &result,
                                             optional_ptr<const bool> found_match) {
 	// extract OUTPUT columns from probe_data
@@ -2033,6 +2106,10 @@ void JoinHashTable::ConstructMarkJoinResult(DataChunk &join_keys, DataChunk &pro
 				mask.SetInvalid(i);
 			}
 		}
+	}
+	if (HasUncorrelatedMarkJoin() && !mark_join_info.union_rhs_tags.empty()) {
+		SetUnionMarkJoinUnknown(join_keys.data[0], join_keys.size(), bool_result, mask);
+		return;
 	}
 	if (!HasUncorrelatedMarkJoin() || !mark_join_info.uncorrelated_condition_rows ||
 	    mark_join_info.uncorrelated_condition_rows->Count() == 0) {
@@ -2565,6 +2642,9 @@ static void ResetMarkJoinInfo(JoinHashTable &ht) {
 	if (info.uncorrelated_condition_rows) {
 		info.uncorrelated_has_null = false;
 		info.uncorrelated_condition_rows = make_uniq<ColumnDataCollection>(ht.context, ht.condition_types);
+		info.union_rhs_has_null = false;
+		std::fill(info.union_rhs_tags.begin(), info.union_rhs_tags.end(), false);
+		std::fill(info.union_rhs_null_member_tags.begin(), info.union_rhs_null_member_tags.end(), false);
 	}
 }
 

@@ -337,6 +337,10 @@ public:
 	//! Enable selective NULL refinement for an uncorrelated multi-column MARK join
 	void InitializeUncorrelatedMarkJoin();
 	bool HasUncorrelatedMarkJoin() const;
+	//! Record the tags of the RHS of a MARK join on one UNION condition
+	void AddUnionMarkJoinTags(const Vector &keys, idx_t count);
+	//! Set the MARK result of the unmatched probes of a MARK join on one UNION condition that compare as UNKNOWN
+	void SetUnionMarkJoinUnknown(const Vector &keys, idx_t count, const bool found_match[], ValidityMask &mask) const;
 	//! Construct a MARK result, including selective UNKNOWN refinement when enabled
 	void ConstructMarkJoinResult(DataChunk &join_keys, DataChunk &probe_data, DataChunk &result,
 	                             optional_ptr<const bool> found_match = nullptr);
@@ -506,6 +510,12 @@ public:
 		bool uncorrelated_has_null = false;
 		//! All RHS condition rows, used only for uncorrelated row equality NULL refinement
 		unique_ptr<ColumnDataCollection> uncorrelated_condition_rows;
+		//! For one UNION condition without UNION members, which compares as UNKNOWN with a UNION of the same tag when
+		//! either member is NULL: whether the RHS has a NULL UNION, and for every tag whether the RHS has it and has it
+		//! with a NULL member, which replace the RHS condition rows
+		bool union_rhs_has_null = false;
+		vector<bool> union_rhs_tags;
+		vector<bool> union_rhs_null_member_tags;
 	} mark_join_info;
 
 private:

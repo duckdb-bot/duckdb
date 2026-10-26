@@ -86,3 +86,78 @@ query I
 SELECT list(id ORDER BY id) FROM l WHERE x NOT IN (SELECT y FROM r WHERE r.g = 1);
 ----
 [2, 3, 4]
+
+# inputs above the nested loop join threshold, which a range join would compare by the order of the UNIONs
+statement ok
+CREATE TABLE ones AS SELECT union_value(i := 1)::UNION(i INTEGER, s VARCHAR) x FROM range(10);
+
+statement ok
+CREATE TABLE null_members AS SELECT union_value(i := NULL::INTEGER)::UNION(i INTEGER, s VARCHAR) y FROM range(10);
+
+query III
+SELECT count(*) FILTER (m), count(*) FILTER (NOT m), count(*) FILTER (m IS NULL)
+FROM (SELECT x < ANY (SELECT y FROM null_members) m FROM ones);
+----
+0	0	10
+
+query I
+SELECT count(*) FROM ones WHERE x < ANY (SELECT y FROM null_members);
+----
+0
+
+query I
+SELECT count(*) FROM ones JOIN null_members ON ones.x < null_members.y;
+----
+0
+
+# joins on an inequality of UNIONs against the comparison of every pair
+statement ok
+CREATE TABLE jl AS SELECT CASE i % 4 WHEN 0 THEN union_value(i := NULL::INTEGER) WHEN 1 THEN union_value(i := i)
+	WHEN 2 THEN union_value(s := i::VARCHAR) ELSE NULL END::UNION(i INTEGER, s VARCHAR) x FROM range(40) t(i);
+
+statement ok
+CREATE TABLE jr AS SELECT CASE i % 5 WHEN 0 THEN union_value(s := NULL::VARCHAR) WHEN 1 THEN union_value(i := i)
+	WHEN 2 THEN union_value(s := i::VARCHAR) WHEN 3 THEN union_value(i := NULL::INTEGER) ELSE union_value(i := -i)
+	END::UNION(i INTEGER, s VARCHAR) y FROM range(50) t(i);
+
+foreach op < <= > >=
+
+query I
+SELECT (SELECT count(*) FROM jl JOIN jr ON jl.x {op} jr.y) - (SELECT count(*) FROM jl, jr WHERE (jl.x {op} jr.y) IS TRUE);
+----
+0
+
+query I
+SELECT count(*) FROM jl
+WHERE (x {op} ANY (SELECT y FROM jr)) IS DISTINCT FROM
+	(SELECT CASE WHEN bool_or(jl.x {op} y) THEN true WHEN bool_or((jl.x {op} y) IS NULL) THEN NULL ELSE false END FROM jr);
+----
+0
+
+query I
+SELECT (SELECT count(*) FROM jl WHERE x {op} ANY (SELECT y FROM jr)) -
+	(SELECT count(*) FROM jl WHERE (SELECT bool_or(jl.x {op} y) FROM jr));
+----
+0
+
+endloop
+
+# IN of a large right side: only a NULL member of the same tag makes a missing UNION UNKNOWN
+statement ok
+CREATE TABLE many AS SELECT union_value(i := r::INTEGER)::UNION(i INTEGER, s VARCHAR) y FROM range(100000) t(r)
+UNION ALL SELECT union_value(s := NULL::VARCHAR);
+
+statement ok
+CREATE TABLE probes AS SELECT union_value(i := (r * 2)::INTEGER)::UNION(i INTEGER, s VARCHAR) x FROM range(100000) t(r)
+UNION ALL SELECT union_value(s := 'a') UNION ALL SELECT union_value(i := NULL::INTEGER);
+
+query III
+SELECT count(*) FILTER (m), count(*) FILTER (NOT m), count(*) FILTER (m IS NULL)
+FROM (SELECT x IN (SELECT y FROM many) m FROM probes);
+----
+50000	50000	2
+
+query I
+SELECT count(*) FROM probes WHERE x NOT IN (SELECT y FROM many);
+----
+50000

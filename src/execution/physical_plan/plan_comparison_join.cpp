@@ -235,6 +235,16 @@ PhysicalOperator &PhysicalPlanGenerator::PlanComparisonJoin(LogicalComparisonJoi
 	default:
 		break;
 	}
+	// a range join orders its keys, but a UNION compares as NULL with a UNION of the same tag when either member is
+	// NULL, so an inequality of UNIONs is left to the nested loop join, which compares them
+	for (auto &cond : op.conditions) {
+		if (cond.IsComparison() && cond.GetLHS().GetReturnType().id() == LogicalTypeId::UNION &&
+		    cond.GetComparisonType() != ExpressionType::COMPARE_EQUAL &&
+		    cond.GetComparisonType() != ExpressionType::COMPARE_NOT_DISTINCT_FROM) {
+			can_merge = false;
+			can_iejoin = false;
+		}
+	}
 
 	//	TODO: Extend PWMJ to handle all comparisons and projection maps
 	bool prefer_range_joins = Settings::Get<PreferRangeJoinsSetting>(context);

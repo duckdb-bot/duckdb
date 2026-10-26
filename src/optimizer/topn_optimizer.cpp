@@ -19,6 +19,26 @@ namespace duckdb {
 TopN::TopN(ClientContext &context_p) : context(context_p) {
 }
 
+//! Whether the rows come from a table function that gives no estimate of its own. Its estimate is then one row, or
+//! the rows of its input, which says nothing about how many rows a full sort would sort
+static bool ReadsSourceWithoutEstimate(LogicalOperator &op, ClientContext &context) {
+	reference<LogicalOperator> current = op;
+	while (true) {
+		switch (current.get().type) {
+		case LogicalOperatorType::LOGICAL_PROJECTION:
+		case LogicalOperatorType::LOGICAL_FILTER:
+		case LogicalOperatorType::LOGICAL_ORDER_BY:
+		case LogicalOperatorType::LOGICAL_WINDOW:
+			current = *current.get().children[0];
+			break;
+		case LogicalOperatorType::LOGICAL_GET:
+			return !current.get().Cast<LogicalGet>().HasSourceEstimate(context);
+		default:
+			return false;
+		}
+	}
+}
+
 bool TopN::CanOptimize(LogicalOperator &op, optional_ptr<ClientContext> context) {
 	if (op.type == LogicalOperatorType::LOGICAL_LIMIT) {
 		auto &limit = op.Cast<LogicalLimit>();
@@ -38,6 +58,15 @@ bool TopN::CanOptimize(LogicalOperator &op, optional_ptr<ClientContext> context)
 			child_op->EstimateCardinality(*context);
 		}
 
+		auto order_op = child_op;
+		while (order_op->type == LogicalOperatorType::LOGICAL_PROJECTION) {
+			D_ASSERT(!order_op->children.empty());
+			order_op = order_op->children[0].get();
+		}
+		if (order_op->type != LogicalOperatorType::LOGICAL_ORDER_BY) {
+			return false;
+		}
+
 		if (child_op->has_estimated_cardinality) {
 			// only check if we should switch to full sorting if we have estimated cardinality
 			auto constant_limit = static_cast<double>(limit.limit_val.GetConstantValue());
@@ -48,17 +77,12 @@ bool TopN::CanOptimize(LogicalOperator &op, optional_ptr<ClientContext> context)
 
 			// if the limit is > 0.7% of the child cardinality, sorting the whole table is faster
 			bool limit_is_large = constant_limit > 5000;
-			if (constant_limit > child_card * 0.007 && limit_is_large) {
+			if (constant_limit > child_card * 0.007 && limit_is_large &&
+			    (!context || !ReadsSourceWithoutEstimate(*child_op, *context))) {
 				return false;
 			}
 		}
-
-		while (child_op->type == LogicalOperatorType::LOGICAL_PROJECTION) {
-			D_ASSERT(!child_op->children.empty());
-			child_op = child_op->children[0].get();
-		}
-
-		return child_op->type == LogicalOperatorType::LOGICAL_ORDER_BY;
+		return true;
 	}
 	return false;
 }

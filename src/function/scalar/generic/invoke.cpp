@@ -21,9 +21,9 @@ static void PropagateLambdaProperties(BoundScalarFunction &function, const Expre
 struct LambdaInvokeData final : public LambdaFunctionData {
 	//! The bound lambda. It does not change after binding, so the copies of the bind data share it, as for
 	//! ListLambdaBindData
-	shared_ptr<Expression> lambda_expr;
+	shared_ptr<const Expression> lambda_expr;
 
-	explicit LambdaInvokeData(shared_ptr<Expression> lambda_expr_p) : lambda_expr(std::move(lambda_expr_p)) {
+	explicit LambdaInvokeData(shared_ptr<const Expression> lambda_expr_p) : lambda_expr(std::move(lambda_expr_p)) {
 	}
 
 	unique_ptr<FunctionData> Copy() const override {
@@ -39,7 +39,7 @@ struct LambdaInvokeData final : public LambdaFunctionData {
 	static void Serialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data_p,
 	                      const BoundScalarFunction &function) {
 		auto &bind_data = bind_data_p->Cast<LambdaInvokeData>();
-		serializer.WritePropertyWithDefault(101, "lambda_expr", bind_data.lambda_expr, shared_ptr<Expression>());
+		serializer.WritePropertyWithDefault(101, "lambda_expr", bind_data.lambda_expr, shared_ptr<const Expression>());
 	}
 
 	//! Deserializes a lambda function's bind data

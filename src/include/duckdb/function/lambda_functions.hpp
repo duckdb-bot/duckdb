@@ -26,7 +26,8 @@ struct LambdaFunctionData : public FunctionData {
 	DUCKDB_API virtual unique_ptr<Expression> RecoverLambdaChild() const = 0;
 
 protected:
-	static bool LambdaExpressionEquals(const shared_ptr<Expression> &left, const shared_ptr<Expression> &right) {
+	static bool LambdaExpressionEquals(const shared_ptr<const Expression> &left,
+	                                   const shared_ptr<const Expression> &right) {
 		if (left == right) {
 			return true;
 		}
@@ -36,17 +37,16 @@ protected:
 
 struct ListLambdaBindData final : public LambdaFunctionData {
 public:
-	ListLambdaBindData(const LogicalType &return_type, shared_ptr<Expression> lambda_expr, const bool has_index = false,
-	                   const bool has_initial = false)
+	ListLambdaBindData(const LogicalType &return_type, shared_ptr<const Expression> lambda_expr,
+	                   const bool has_index = false, const bool has_initial = false)
 	    : return_type(return_type), lambda_expr(std::move(lambda_expr)), has_index(has_index),
 	      has_initial(has_initial) {};
 
 	//! Return type of the scalar function
 	LogicalType return_type;
 	//! Lambda expression that the expression executor executes. It does not change after binding, so the copies of
-	//! the bind data share it: copying it each time copies the lambdas nested in it as well, which doubles the
-	//! expression for every level of nesting
-	shared_ptr<Expression> lambda_expr;
+	//! the bind data share it instead of copying the lambdas nested in it, which doubled the expression per level
+	shared_ptr<const Expression> lambda_expr;
 	//! True, if the last parameter in a lambda parameter list represents the index of the current list element
 	bool has_index;
 	bool has_initial;
@@ -162,7 +162,7 @@ public:
 		Vector &result;
 		optional_ptr<ValidityMask> result_validity;
 		vector<ColumnInfo> column_infos;
-		optional_ptr<Expression> lambda_expr;
+		optional_ptr<const Expression> lambda_expr;
 
 		const idx_t row_count;
 		bool has_index;

@@ -1,0 +1,63 @@
+# name: test/issues/general/test_26053.test
+# description: A prepared checkpoint of a database that was detached since raises an error instead of using it
+# group: [general]
+
+statement ok
+ATTACH ':memory:' AS other;
+
+statement ok
+ATTACH '{TEST_DIR}/checkpoint_detached.db' AS mydb;
+
+statement ok
+CREATE TABLE mydb.t AS SELECT 42 AS i;
+
+statement ok
+PREPARE checkpoint_named AS SELECT * FROM checkpoint('mydb');
+
+statement ok
+PREPARE force_checkpoint_named AS SELECT * FROM force_checkpoint('mydb');
+
+statement ok
+USE mydb;
+
+statement ok
+PREPARE checkpoint_default AS SELECT * FROM checkpoint();
+
+statement ok
+USE other;
+
+statement ok
+EXECUTE checkpoint_named;
+
+statement ok
+DETACH mydb;
+
+foreach stmt checkpoint_named force_checkpoint_named checkpoint_default
+
+statement error
+EXECUTE {stmt};
+----
+Database "mydb" not found
+
+endloop
+
+query I
+SELECT 42;
+----
+42
+
+# attaching the database again makes the statements usable again
+statement ok
+ATTACH '{TEST_DIR}/checkpoint_detached.db' AS mydb;
+
+foreach stmt checkpoint_named force_checkpoint_named checkpoint_default
+
+statement ok
+EXECUTE {stmt};
+
+endloop
+
+query I
+SELECT i FROM mydb.t;
+----
+42

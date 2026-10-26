@@ -17,7 +17,6 @@
 using namespace duckdb;
 
 // A client that streams a result waits instead of polling while a worker runs the only task
-// (duckdblabs/bot-issue-tracker#525)
 
 #if defined(__linux__) && !defined(DUCKDB_NO_THREADS)
 namespace {
@@ -174,6 +173,8 @@ TEST_CASE("Test that a streaming client waits for the next unit while a worker r
 		REQUIRE(second->size() == STANDARD_VECTOR_SIZE);
 		REQUIRE(second->GetValue(0, 0) == Value::BIGINT(2));
 		REQUIRE(!stream.Fetch());
+		// the stream ended, without an error
+		REQUIRE(!stream.HasError());
 		REQUIRE(state->scan_thread != std::this_thread::get_id());
 		// this thread slept while the worker held the task, instead of polling
 		REQUIRE(state->client_slept);

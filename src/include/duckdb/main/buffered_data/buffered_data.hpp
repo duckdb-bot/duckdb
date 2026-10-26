@@ -28,6 +28,7 @@ namespace duckdb {
 
 class QueryResult;
 class ClientContextLock;
+class Executor;
 
 //! A blocked sink. Holds the InterruptState and owns the finished unit it could not append.
 struct BlockedSink {
@@ -113,6 +114,15 @@ public:
 	//! Producers call it without holding the buffer's lock, as the waiting consumer checks the buffer under the
 	//! executor's lock
 	void SignalConsumer();
+	//! The executor whose producers fill the buffer, set before they start. Producers reach it through this pointer
+	//! rather than the context, which the consumer resets when it closes the result
+	void SetExecutor(Executor &executor_p) {
+		executor = &executor_p;
+	}
+	//! Whether the consumer waits in Executor::WaitForTask for the buffer
+	bool ConsumerWaiting() const {
+		return consumer_waiting;
+	}
 	//! Whether the blocking replenish can stop: a unit is poppable, and the buffer will
 	//! not accept more input right now
 	virtual bool ReplenishSatisfied() = 0;
@@ -164,6 +174,7 @@ protected:
 	annotated_mutex glock;
 	//! Set while the consumer waits for a unit or a task, so that producers only wake it then
 	atomic<bool> consumer_waiting {false};
+	optional_ptr<Executor> executor;
 	//! Read unlocked on the producers' fast path; written once, under glock, by Decide
 	atomic<ResultLifetime> lifetime;
 	//! Producers parked with their first chunk unconsumed, until the retention is decided

@@ -396,9 +396,10 @@ void Executor::WaitForTask() {
 		return;
 	}
 	auto buffer = GetResultBuffer();
-	if (buffer && buffer->Lifetime() != ResultLifetime::RETAINED && buffer->ReplenishSatisfied()) {
-		// The streaming consumer can go on with the units it has. A producer that queues a unit or parks later
-		// signals under this lock, so the wait below cannot miss it
+	if (buffer && buffer->ConsumerWaiting() && buffer->Lifetime() != ResultLifetime::RETAINED &&
+	    buffer->ReplenishSatisfied()) {
+		// The streaming consumer, the only thread that waits with the flag set, can go on with the units it has. A
+		// producer that queues a unit or parks later signals under this lock, so the wait below cannot miss it
 		blocked_thread_time += blocked_micros;
 		return;
 	}
@@ -682,6 +683,9 @@ bool Executor::HasStreamingResultCollector() {
 void Executor::SetResultBuffer(shared_ptr<BufferedData> result_buffer_p) {
 	lock_guard<mutex> guard(result_buffer_lock);
 	result_buffer = std::move(result_buffer_p);
+	if (result_buffer) {
+		result_buffer->SetExecutor(*this);
+	}
 }
 
 shared_ptr<BufferedData> Executor::GetResultBuffer() {

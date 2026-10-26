@@ -158,14 +158,11 @@ QueryResultState BufferedData::Poll(ClientContextLock &context_lock, QueryResult
 }
 
 void BufferedData::SignalConsumer() {
-	if (!consumer_waiting) {
+	if (!consumer_waiting || !executor) {
 		return;
 	}
-	auto cc = context.lock();
-	if (!cc) {
-		return;
-	}
-	Executor::Get(*cc).SignalResultUnit();
+	// a waiting consumer means the query and its executor are still running
+	executor->SignalResultUnit();
 }
 
 QueryResultState BufferedData::ReplenishBuffer(ClientContextLock &context_lock, QueryResult &result) {

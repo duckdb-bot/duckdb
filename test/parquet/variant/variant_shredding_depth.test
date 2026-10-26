@@ -8,8 +8,8 @@ require json
 
 # A deeply nested array used to make the writer recurse once per level into an equally deep 'typed_value' schema,
 # overflowing the stack. Now the shredded type stops at 32 levels. The JSON -> VARIANT cast refuses more than 128
-# levels and recurses once per level up to that, and the release tests run worker threads with 128 KiB stacks
-# (--thread-stack-size, as musl sizes them), so the values stay at 100 levels, well past the 32 that matter here.
+# levels and recurses once per level, and the release tests give worker threads 128 KiB stacks, so no value here
+# nests deeper than 101 levels, well past the 32 that matter.
 statement ok
 COPY (SELECT (repeat('[', 100) || '1' || repeat(']', 100))::JSON::VARIANT AS v FROM range(3)) TO '{TEST_DIR}/variant_deep_array.parquet'
 

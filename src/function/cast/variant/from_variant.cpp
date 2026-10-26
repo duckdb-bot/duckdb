@@ -375,52 +375,6 @@ private:
 	vector<pair<idx_t, idx_t>> entries;
 };
 
-//! Whether two primitive VARIANT values convert to Values of the same type
-static bool HaveSameValueType(const UnifiedVariantVectorData &variant, idx_t row, uint32_t left, uint32_t right) {
-	auto left_type = variant.GetTypeId(row, left);
-	auto right_type = variant.GetTypeId(row, right);
-	auto is_boolean = [](VariantLogicalType type_id) {
-		return type_id == VariantLogicalType::BOOL_TRUE || type_id == VariantLogicalType::BOOL_FALSE;
-	};
-	if (is_boolean(left_type) && is_boolean(right_type)) {
-		return true;
-	}
-	if (left_type != right_type) {
-		return false;
-	}
-	if (left_type != VariantLogicalType::DECIMAL) {
-		return true;
-	}
-	auto left_decimal = VariantUtils::DecodeDecimalData(variant, row, left);
-	auto right_decimal = VariantUtils::DecodeDecimalData(variant, row, right);
-	return left_decimal.width == right_decimal.width && left_decimal.scale == right_decimal.scale;
-}
-
-//! Whether the elements of an ARRAY are primitive values of one type, which the cast of their LIST quotes when needed.
-//! The elements of an ARRAY of values of different types convert to a LIST(VARIANT), whose elements are not quoted.
-static bool HasPrimitiveElementType(const UnifiedVariantVectorData &variant, idx_t row,
-                                    const VariantNestedData &nested_data) {
-	if (nested_data.child_count == 0) {
-		return false;
-	}
-	auto first_index = variant.GetValuesIndex(row, nested_data.children_idx);
-	switch (variant.GetTypeId(row, first_index)) {
-	case VariantLogicalType::VARIANT_NULL:
-	case VariantLogicalType::ARRAY:
-	case VariantLogicalType::OBJECT:
-		return false;
-	default:
-		break;
-	}
-	for (idx_t child_idx = 1; child_idx < nested_data.child_count; child_idx++) {
-		auto child_index = variant.GetValuesIndex(row, nested_data.children_idx + child_idx);
-		if (!HaveSameValueType(variant, row, first_index, child_index)) {
-			return false;
-		}
-	}
-	return true;
-}
-
 template <bool STRUCT_KEY>
 static void AppendEscapedString(string &text, const string_t &str) {
 	bool needs_quotes;
@@ -428,14 +382,6 @@ static void AppendEscapedString(string &text, const string_t &str) {
 	auto start = text.size();
 	text.resize(start + length);
 	VectorCastHelpers::WriteEscapedString<STRUCT_KEY>(&text[start], str, needs_quotes);
-}
-
-static void AppendVariantString(string &text, const string_t &str, bool quote) {
-	if (quote) {
-		AppendEscapedString<false>(text, str);
-	} else {
-		text.append(str.GetData(), str.GetSize());
-	}
 }
 
 //! Writes VARIANT values as the text the cast of their Value to VARCHAR produces, without building the Values
@@ -511,26 +457,25 @@ public:
 		return primitives.Cast();
 	}
 
-	//! Writes the text of a value, quoting a primitive value when needed if 'quote' is set
-	void Write(idx_t row, uint32_t value_index, Position &position, bool quote, string &text) const {
+	//! Writes the text of a value as a LIST or STRUCT element, which quotes a primitive value when needed
+	void Write(idx_t row, uint32_t value_index, Position &position, string &text) const {
 		auto type_id = variant.GetTypeId(row, value_index);
 		switch (type_id) {
 		case VariantLogicalType::VARIANT_NULL:
 			text += "NULL";
 			break;
 		case VariantLogicalType::VARCHAR:
-			AppendVariantString(text, VariantUtils::DecodeStringData(variant, row, value_index), quote);
+			AppendEscapedString<false>(text, VariantUtils::DecodeStringData(variant, row, value_index));
 			break;
 		case VariantLogicalType::ARRAY: {
 			auto nested_data = VariantUtils::DecodeNestedData(variant, row, value_index);
-			auto quote_elements = HasPrimitiveElementType(variant, row, nested_data);
 			text += '[';
 			for (idx_t child_idx = 0; child_idx < nested_data.child_count; child_idx++) {
 				if (child_idx > 0) {
 					text += ", ";
 				}
 				auto child_index = variant.GetValuesIndex(row, nested_data.children_idx + child_idx);
-				Write(row, child_index, position, quote_elements, text);
+				Write(row, child_index, position, text);
 			}
 			text += ']';
 			break;
@@ -547,8 +492,7 @@ public:
 				auto child_idx = object_children[start + i];
 				AppendEscapedString<true>(text, GetKey(row, nested_data, child_idx));
 				text += ": ";
-				// primitive values inside a STRUCT are quoted when needed
-				Write(row, variant.GetValuesIndex(row, nested_data.children_idx + child_idx), position, true, text);
+				Write(row, variant.GetValuesIndex(row, nested_data.children_idx + child_idx), position, text);
 			}
 			text += '}';
 			break;
@@ -556,7 +500,7 @@ public:
 		default: {
 			string_t str;
 			if (TryGetPrimitive(position, str)) {
-				AppendVariantString(text, str, quote);
+				AppendEscapedString<false>(text, str);
 			} else {
 				text += "NULL";
 			}
@@ -647,7 +591,7 @@ static bool CastVariantToVarchar(FromVariantConversionData &conversion_data, Vec
 			continue;
 		}
 		text.clear();
-		text_writer.Write(row_index, sel[i], positions[i], false, text);
+		text_writer.Write(row_index, sel[i], positions[i], text);
 		auto &str = writer.WriteEmptyString(text.size());
 		memcpy(str.GetDataWriteable(), text.data(), text.size());
 		str.Finalize();

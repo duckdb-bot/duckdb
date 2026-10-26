@@ -1,0 +1,67 @@
+# name: test/sql/types/variant/variant_to_varchar_quoting.test
+# description: Strings in VARIANT lists and objects cast to VARCHAR are quoted as in a VARIANT[] or STRUCT
+# group: [variant]
+
+require json
+
+query I
+SELECT ['', 'it''s', 'a,b', 'null', 'NULL', NULL, ' x', 'y ', '[z]', '{w}', 'k:v', 'a\b', 'b c']::VARIANT::VARCHAR
+----
+['', 'it\'s', 'a,b', 'null', 'NULL', NULL, ' x', 'y ', '[z]', '{w}', 'k:v', 'a\\b', b c]
+
+query I
+SELECT [''::VARIANT, 1::VARIANT, 'a,b'::VARIANT, NULL::VARIANT, 'null'::VARIANT, true::VARIANT, 'it''s'::VARIANT]::VARIANT::VARCHAR
+----
+['', 1, 'a,b', NULL, 'null', true, 'it\'s']
+
+query I
+SELECT [['', NULL], ['a,b', 'null'], NULL, [], ['it''s']]::VARIANT::VARCHAR
+----
+[['', NULL], ['a,b', 'null'], NULL, [], ['it\'s']]
+
+query I
+SELECT {'e': '', 'q': 'it''s', 'c': 'a,b', 'n': 'null', 'u': NULL, 'l': ['', NULL, 'a,b'], 's': {'x': 'NULL', 'y': [NULL, 'k:v']}}::VARIANT::VARCHAR
+----
+{'c': 'a,b', 'e': '', 'l': ['', NULL, 'a,b'], 'n': 'null', 'q': 'it\'s', 's': {'x': 'NULL', 'y': [NULL, 'k:v']}, 'u': NULL}
+
+query I
+SELECT [{'a': '', 'b': 'a,b'}, NULL, {'a': 'null', 'b': NULL}]::VARIANT::VARCHAR
+----
+[{'a': '', 'b': 'a,b'}, NULL, {'a': 'null', 'b': NULL}]
+
+query I
+SELECT [{'a': 'a,b'}::VARIANT, ['', NULL]::VARIANT, 'it''s'::VARIANT, NULL::VARIANT, 'NULL'::VARIANT, [[''], ['null', NULL]]::VARIANT]::VARIANT::VARCHAR
+----
+[{'a': 'a,b'}, ['', NULL], 'it\'s', NULL, 'NULL', [[''], ['null', NULL]]]
+
+query I
+SELECT {'it''s': '', 'a,b': NULL, 'null': ['null', NULL]}::VARIANT::VARCHAR
+----
+{'a,b': NULL, 'it\'s': '', 'null': ['null', NULL]}
+
+query I
+SELECT '{"a": ["", "a,b", null, "null", 1, {"b": "it''s", "c": [null, ""]}], "d": "", "f": [[null, "x,y"], ["", 2]]}'::JSON::VARIANT::VARCHAR
+----
+{'a': ['', 'a,b', NULL, 'null', 1, {'b': 'it\'s', 'c': [NULL, '']}], 'd': '', 'f': [[NULL, 'x,y'], ['', 2]]}
+
+# a string that is not inside a list or object is not quoted
+query I
+SELECT v::VARCHAR FROM (VALUES (1, ''::VARIANT), (2, 'a,b'::VARIANT), (3, 'null'::VARIANT), (4, NULL::VARIANT), (5, ['', NULL]::VARIANT), (6, {'a': 'a,b'}::VARIANT)) t(i, v) ORDER BY i
+----
+(empty)
+a,b
+null
+NULL
+['', NULL]
+{'a': 'a,b'}
+
+# the text matches the cast of the VARIANT[] or STRUCT with VARIANT children of the same value
+query I
+SELECT count(*) FROM (SELECT [i::VARIANT, ('a,' || i)::VARIANT, NULL::VARIANT, (CASE WHEN i % 2 = 0 THEN '' ELSE 'null' END)::VARIANT, ['it''s ' || i, NULL]::VARIANT, {'k': 'x:' || i}::VARIANT]::VARIANT AS v FROM range(3000) t(i)) WHERE v::VARCHAR IS DISTINCT FROM v::VARIANT[]::VARCHAR
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT {'a': 'a,' || i, 'b': CASE WHEN i % 3 = 0 THEN NULL ELSE 'null' END, 'c': CASE WHEN i % 2 = 0 THEN '' ELSE 'it''s' END, 'd': [i::VARIANT, ''::VARIANT]}::VARIANT AS v FROM range(3000) t(i)) WHERE v::VARCHAR IS DISTINCT FROM v::STRUCT(a VARIANT, b VARIANT, c VARIANT, d VARIANT)::VARCHAR
+----
+0

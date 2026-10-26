@@ -22,7 +22,7 @@ SELECT ['a', 'b c', 'it''s', '', 'a,b', '[x]', '{y}', 'NULL', 'null', ' lead', '
 query I
 SELECT ['a', 'b c', 'it''s', '', NULL, 'a,b', 'null']::VARIANT::VARCHAR
 ----
-[a, b c, it's, , NULL, a,b, null]
+[a, b c, 'it\'s', '', NULL, 'a,b', 'null']
 
 query I
 SELECT '{"k''ey": "v", "a b": null, "x:y": [1.5, 2.25], "n": "null", "e": ""}'::JSON::VARIANT::VARCHAR
@@ -42,7 +42,7 @@ SELECT [TIMESTAMP '2020-01-01 10:00:00', TIMESTAMP '2021-01-01 10:00:00']::VARIA
 query I
 SELECT [TIMESTAMP '2020-01-01 10:00:00', NULL]::VARIANT::VARCHAR
 ----
-[2020-01-01 10:00:00, NULL]
+['2020-01-01 10:00:00', NULL]
 
 query I
 SELECT [DATE '2020-01-01', TIMESTAMP '2020-01-01 10:00:00']::VARIANT::VARCHAR
@@ -97,7 +97,7 @@ SELECT [{'a': 'x:y'}, {'a': 'x:z'}]::VARIANT::VARCHAR
 query I
 SELECT [{'a': 1}::VARIANT, [1]::VARIANT, 'x y'::VARIANT, 'p:q'::VARIANT, NULL::VARIANT, 2::VARIANT]::VARIANT::VARCHAR
 ----
-[{'a': 1}, [1], x y, p:q, NULL, 2]
+[{'a': 1}, [1], x y, 'p:q', NULL, 2]
 
 query I
 SELECT {'a': {}, 'b': [], 'c': [[]], 'd': {'e': {'f': 'g:h'}}}::VARIANT::VARCHAR
@@ -227,7 +227,7 @@ SELECT {'var': [1::VARIANT, 'x'::VARIANT]}::VARIANT::VARCHAR
 query I
 SELECT [[1::VARIANT, 'x:y'::VARIANT], [2::VARIANT, 3::VARIANT]]::VARIANT::VARCHAR
 ----
-[[1, x:y], [2, 3]]
+[[1, 'x:y'], [2, 3]]
 
 query I
 SELECT [12345678901234567890123::HUGEINT, 1::HUGEINT]::VARIANT::VARCHAR
@@ -318,7 +318,7 @@ SELECT count(*), max(length(rv::VARCHAR)) FROM (SELECT [i, i+1, i+2]::VARIANT AS
 query I
 SELECT '{"a": 1, "A": [2, "x:y"], "b": {"c": 1, "C": 2}}'::JSON::VARIANT::VARCHAR
 ----
-{'A': [2, x:y], 'a': 1, 'b': {'C': 2, 'c': 1}}
+{'A': [2, 'x:y'], 'a': 1, 'b': {'C': 2, 'c': 1}}
 
 query I
 SELECT '[{"a": 1}, {"A": 2}, [{"b": 3}, {"B": 4}]]'::JSON::VARIANT::VARCHAR

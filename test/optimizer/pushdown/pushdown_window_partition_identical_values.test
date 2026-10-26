@@ -1,0 +1,70 @@
+# name: test/optimizer/pushdown/pushdown_window_partition_identical_values.test
+# description: A filter on a partition column goes below the window only when it keeps whole partitions (duckdblabs/bot-issue-tracker#670)
+# group: [pushdown]
+
+statement ok
+CREATE TABLE w (x DOUBLE, f FLOAT, s STRUCT(a DOUBLE));
+
+statement ok
+INSERT INTO w VALUES (-0.0::DOUBLE, -0.0::FLOAT, {'a': -0.0::DOUBLE}), (0.0, 0.0, {'a': 0.0}), (1.5, 1.5, {'a': 1.5});
+
+# signed zeros share a partition, but their text tells them apart
+query I
+SELECT rn FROM (SELECT x, row_number() OVER (PARTITION BY x ORDER BY x::VARCHAR) AS rn FROM w) WHERE x::VARCHAR = '0.0';
+----
+2
+
+query I
+SELECT cnt FROM (SELECT x, count(*) OVER (PARTITION BY x) AS cnt FROM w) WHERE x::VARCHAR = '0.0';
+----
+2
+
+query I
+SELECT cnt FROM (SELECT f, count(*) OVER (PARTITION BY f) AS cnt FROM w) WHERE f::VARCHAR = '0.0';
+----
+2
+
+query I
+SELECT cnt FROM (SELECT s, count(*) OVER (PARTITION BY s) AS cnt FROM w) WHERE s::VARCHAR = '{''a'': 0.0}';
+----
+2
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+statement ok
+PRAGMA explain_output = 'OPTIMIZED_ONLY';
+
+# a filter that tells equal values apart stays above the window
+query II
+EXPLAIN SELECT rn FROM (SELECT x, row_number() OVER (PARTITION BY x ORDER BY x::VARCHAR) AS rn FROM w) WHERE x::VARCHAR = '0.0';
+----
+logical_opt	<REGEX>:(?s).*FILTER.*WINDOW.*
+
+# a comparison with a constant keeps whole partitions and goes below the window
+query II
+EXPLAIN SELECT rn FROM (SELECT x, row_number() OVER (PARTITION BY x ORDER BY x::VARCHAR) AS rn FROM w) WHERE x > 1;
+----
+logical_opt	<!REGEX>:(?s).*FILTER.*WINDOW.*
+
+query I
+SELECT cnt FROM (SELECT x, count(*) OVER (PARTITION BY x) AS cnt FROM w) WHERE x = 0 ORDER BY ALL;
+----
+2
+2
+
+# keys whose equal values are identical still push any filter
+statement ok
+CREATE TABLE wi AS SELECT range % 3 AS k FROM range(9);
+
+query II
+EXPLAIN SELECT rn FROM (SELECT k, row_number() OVER (PARTITION BY k) AS rn FROM wi) WHERE k::VARCHAR = '1';
+----
+logical_opt	<!REGEX>:(?s).*FILTER.*WINDOW.*
+
+query I
+SELECT cnt FROM (SELECT k, count(*) OVER (PARTITION BY k) AS cnt FROM wi) WHERE k::VARCHAR = '1';
+----
+3
+3
+3

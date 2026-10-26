@@ -4,6 +4,7 @@
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/expression/bound_window_expression.hpp"
+#include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/planner/operator/logical_window.hpp"
 
 namespace duckdb {
@@ -29,6 +30,61 @@ bool CanPushdownFilter(vector<column_binding_set_t> window_exprs_partition_bindi
 		}
 	}
 	return filter_on_all_partitions;
+}
+
+//! Whether values of the type that compare equal are also identical, so that every expression gives them the same
+//! result. Signed zeros compare equal but print differently, as do intervals of the same length and strings that a
+//! collation compares
+bool EqualValuesAreIdentical(const LogicalType &type) {
+	switch (type.id()) {
+	case LogicalTypeId::FLOAT:
+	case LogicalTypeId::DOUBLE:
+	case LogicalTypeId::INTERVAL:
+	case LogicalTypeId::VARIANT:
+		return false;
+	case LogicalTypeId::VARCHAR:
+		return StringType::GetCollation(type).empty();
+	case LogicalTypeId::LIST:
+		return EqualValuesAreIdentical(ListType::GetChildType(type));
+	case LogicalTypeId::ARRAY:
+		return EqualValuesAreIdentical(ArrayType::GetChildType(type));
+	case LogicalTypeId::MAP:
+		return EqualValuesAreIdentical(MapType::KeyType(type)) && EqualValuesAreIdentical(MapType::ValueType(type));
+	case LogicalTypeId::STRUCT:
+	case LogicalTypeId::TUPLE:
+	case LogicalTypeId::UNION:
+		for (auto &child : StructType::GetChildTypes(type)) {
+			if (!EqualValuesAreIdentical(child.second)) {
+				return false;
+			}
+		}
+		return true;
+	default:
+		return true;
+	}
+}
+
+//! Whether the filter gives the values that a partition puts together the same result, so that it keeps or removes
+//! whole partitions. A comparison of a column with a constant treats equal values alike, other filters only do so
+//! when equal values of the columns they read are identical
+bool FilterKeepsWholePartitions(const Expression &filter) {
+	if (BoundComparisonExpression::IsComparison(filter)) {
+		auto &children = filter.Cast<BoundFunctionExpression>().GetChildren();
+		if (children.size() == 2) {
+			auto left_is_column = children[0]->GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF;
+			auto right_is_column = children[1]->GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF;
+			if ((left_is_column && children[1]->IsFoldable()) || (right_is_column && children[0]->IsFoldable())) {
+				return true;
+			}
+		}
+	}
+	bool keeps_whole_partitions = true;
+	ExpressionIterator::VisitExpression<BoundColumnRefExpression>(filter, [&](const BoundColumnRefExpression &col) {
+		if (!EqualValuesAreIdentical(col.GetReturnType())) {
+			keeps_whole_partitions = false;
+		}
+	});
+	return keeps_whole_partitions;
 }
 
 unique_ptr<Filter> CreateAuxiliaryFilter(const Expression &partition, const Filter &filter) {
@@ -173,7 +229,8 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownWindow(unique_ptr<LogicalOpe
 		// If a filter is on a partition in every window expression it can be pushed down.
 		vector<ColumnBinding> bindings;
 		ExtractFilterBindings(*filters.at(i)->filter, bindings);
-		if (CanPushdownFilter(window_exprs_partition_bindings, bindings) && !filters.at(i)->filter->IsVolatile()) {
+		if (CanPushdownFilter(window_exprs_partition_bindings, bindings) && !filters.at(i)->filter->IsVolatile() &&
+		    FilterKeepsWholePartitions(*filters.at(i)->filter)) {
 			pushdown.filters.push_back(std::move(filters.at(i)));
 			continue;
 		}

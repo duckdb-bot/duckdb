@@ -8,6 +8,7 @@ build/{debug,relassert,reldebug,release}/test/unittest under DUCKDB_ROOT (defaul
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -46,19 +47,34 @@ def unittest_bin() -> Path:
     return binary
 
 
+def _run(unittest_bin: Path, *args: str, wrapper: tuple = ()) -> subprocess.CompletedProcess:
+    root = Path(os.environ.get("DUCKDB_ROOT", os.getcwd()))
+    # An ambient DUCKDB_TEST_ option would change the configuration under test.
+    ambient = {k: v for k, v in os.environ.items() if not k.startswith("DUCKDB_TEST_")}
+    return subprocess.run(
+        [*wrapper, str(unittest_bin), "--test-dir", str(root), "--stdin", *args],
+        input=TRIVIAL,
+        capture_output=True,
+        text=True,
+        env=ambient,
+        timeout=300,
+    )
+
+
 @pytest.mark.parametrize("stack_size", ["131072", "8388608"])
 def test_thread_stack_size_starts_the_run(unittest_bin: Path, stack_size: str):
     """Sizing the stacks probes threads on minimum size stacks, which must not crash the runner."""
-    root = Path(os.environ.get("DUCKDB_ROOT", os.getcwd()))
-    ambient = {k: v for k, v in os.environ.items() if not k.startswith("DUCKDB_TEST_")}
     for _ in range(RUNS):
-        result = subprocess.run(
-            [str(unittest_bin), "--test-dir", str(root), "--stdin", "--thread-stack-size", stack_size],
-            input=TRIVIAL,
-            capture_output=True,
-            text=True,
-            env=ambient,
-            timeout=300,
-        )
+        result = _run(unittest_bin, "--thread-stack-size", stack_size)
         assert result.returncode == 0, f"exit code {result.returncode}\n{result.stdout}\n{result.stderr}"
         assert "All tests passed" in result.stdout
+
+
+def test_thread_stack_size_reports_an_unusable_default_stack(unittest_bin: Path):
+    """A default stack size too large to probe is reported as an error, not a crash."""
+    prlimit = shutil.which("prlimit")
+    if prlimit is None:
+        pytest.skip("no prlimit")
+    huge = str(2**64 - 32768)
+    result = _run(unittest_bin, "--thread-stack-size", "131072", wrapper=(prlimit, f"--stack={huge}:{huge}", "--"))
+    assert result.returncode > 0, f"exit code {result.returncode}\n{result.stdout}\n{result.stderr}"

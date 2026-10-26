@@ -88,6 +88,11 @@ static ThreadStackProbeResult TryThreadStackSize(size_t stack_size, string &erro
 		return ThreadStackProbeResult::ERROR;
 	}
 
+	if (stack_size > std::numeric_limits<size_t>::max() - PROBE_STACK_RESERVE) {
+		pthread_attr_destroy(&attributes);
+		error = "Failed to map a " + to_string(stack_size) + " byte probe stack";
+		return ThreadStackProbeResult::ERROR;
+	}
 	auto mapping_size = PROBE_STACK_RESERVE + stack_size;
 	auto mapping = mmap(nullptr, mapping_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
 	if (mapping == MAP_FAILED) {

@@ -62,6 +62,6 @@ SELECT count(*) FROM (SELECT [i::VARIANT, ('a,' || i)::VARIANT, NULL::VARIANT, (
 0
 
 query I
-SELECT count(*) FROM (SELECT {'a': 'a,' || i, 'b': CASE WHEN i % 3 = 0 THEN NULL ELSE 'null' END, 'c': CASE WHEN i % 2 = 0 THEN '' ELSE 'it''s' END, 'd': [i::VARIANT, ''::VARIANT]}::VARIANT AS v FROM range(3000) t(i)) WHERE v::VARCHAR IS DISTINCT FROM v::STRUCT(a VARIANT, b VARIANT, c VARIANT, d VARIANT)::VARCHAR
+SELECT count(*) FROM (SELECT {'a': 'a,' || i, 'b': CASE WHEN i % 3 = 0 THEN NULL ELSE 'null' END, 'c': CASE WHEN i % 2 = 0 THEN '' ELSE 'it''s' END, 'd': [i::VARIANT, ''::VARIANT]}::VARIANT AS v FROM range(3000) t(i)) WHERE v::VARCHAR IS DISTINCT FROM v::STRUCT(a VARIANT, b VARIANT, c VARIANT, d VARIANT[])::VARCHAR
 ----
 0

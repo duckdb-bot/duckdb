@@ -297,7 +297,7 @@ public:
 			groups.emplace_back(type_id, width, scale, std::move(type));
 		}
 		auto &group = groups[group_idx];
-		entries.emplace_back(group_idx, group.rows.size());
+		entries.push_back({group_idx, group.rows.size()});
 		group.rows.push_back(row);
 		group.value_indexes.push_back(value_index);
 	}
@@ -339,9 +339,9 @@ public:
 	//! The text of the value added at 'index' after Cast, returns false if the cast returned NULL
 	bool TryGetString(idx_t index, string_t &result) const {
 		auto &entry = entries[index];
-		auto &group = groups[entry.first];
-		auto &strings = group.strings[entry.second / STANDARD_VECTOR_SIZE];
-		auto string_idx = entry.second % STANDARD_VECTOR_SIZE;
+		auto &group = groups[entry.group_idx];
+		auto &strings = group.strings[entry.index_in_group / STANDARD_VECTOR_SIZE];
+		auto string_idx = entry.index_in_group % STANDARD_VECTOR_SIZE;
 		if (FlatVector::IsNull(strings, string_idx)) {
 			return false;
 		}
@@ -350,6 +350,12 @@ public:
 	}
 
 private:
+	//! Where an added value is in the groups
+	struct PrimitiveEntry {
+		idx_t group_idx;
+		idx_t index_in_group;
+	};
+
 	struct PrimitiveGroup {
 		PrimitiveGroup(VariantLogicalType type_id, uint32_t width, uint32_t scale, LogicalType type)
 		    : type_id(type_id), width(width), scale(scale), type(std::move(type)) {
@@ -371,8 +377,8 @@ private:
 
 	FromVariantConversionData &conversion_data;
 	vector<PrimitiveGroup> groups;
-	//! The group, and the index in the group, of every added value
-	vector<pair<idx_t, idx_t>> entries;
+	//! The entry of every added value, in the order they were added
+	vector<PrimitiveEntry> entries;
 };
 
 template <bool STRUCT_KEY>
@@ -384,7 +390,7 @@ static void AppendEscapedString(string &text, const string_t &str) {
 	VectorCastHelpers::WriteEscapedString<STRUCT_KEY>(&text[start], str, needs_quotes);
 }
 
-//! Writes VARIANT values as the text the cast of their Value to VARCHAR produces, without building the Values
+//! Writes VARIANT values as the text the cast of their Value to VARCHAR produces, without building a Value per row
 class VariantTextWriter {
 public:
 	explicit VariantTextWriter(FromVariantConversionData &conversion_data)

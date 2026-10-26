@@ -254,20 +254,12 @@ void PhysicalRangeJoin::GlobalSortedTable::Materialize(ExecutionContext &context
 	GetSortedRun(context.client);
 }
 
-bool PhysicalRangeJoin::IsUnionComparison(const JoinCondition &condition) {
-	return condition.GetLHS().GetReturnType().id() == LogicalTypeId::UNION;
-}
-
 bool PhysicalRangeJoin::LessThan(const JoinCondition &a, const JoinCondition &b) {
 	//	Comparisons come before non-comparisons
 	if (!b.IsComparison()) {
 		return a.IsComparison();
 	} else if (!a.IsComparison()) {
 		return false;
-	}
-	//	UNION comparisons come last, as the order of UNIONs does not show a comparison that is NULL
-	if (IsUnionComparison(a) != IsUnionComparison(b)) {
-		return IsUnionComparison(b);
 	}
 
 	//	Both are comparisons, so use distinct counts to compare selectivities

@@ -219,24 +219,6 @@ PhysicalOperator &PhysicalPlanGenerator::PlanComparisonJoin(LogicalComparisonJoi
 
 	idx_t has_range = 0;
 	bool has_equality = op.HasEquality(has_range);
-	// a range join sorts on its first inequalities, but a UNION compares as NULL with a UNION of the same tag when
-	// either member is NULL, which its order does not show, so an inequality of UNIONs is only checked after the sort
-	// (PhysicalRangeJoin puts it last), and a join with no other inequality is left to the nested loop join
-	for (auto &cond : op.conditions) {
-		if (!cond.IsComparison() || !PhysicalRangeJoin::IsUnionComparison(cond)) {
-			continue;
-		}
-		switch (cond.GetComparisonType()) {
-		case ExpressionType::COMPARE_LESSTHAN:
-		case ExpressionType::COMPARE_LESSTHANOREQUALTO:
-		case ExpressionType::COMPARE_GREATERTHAN:
-		case ExpressionType::COMPARE_GREATERTHANOREQUALTO:
-			has_range--;
-			break;
-		default:
-			break;
-		}
-	}
 	bool can_merge = has_range > 0;
 	bool can_iejoin = has_range >= 2 && recursive_cte_tables.empty();
 	switch (op.join_type) {
@@ -253,6 +235,23 @@ PhysicalOperator &PhysicalPlanGenerator::PlanComparisonJoin(LogicalComparisonJoi
 	default:
 		break;
 	}
+	// a range join sorts on its keys, but a UNION compares as NULL with a UNION of the same tag when either member is
+	// NULL, which its order does not show, so a join on one inequality of UNIONs (as a quantified comparison plans) is
+	// left to the nested loop join, which compares them
+	if (op.conditions.size() == 1 && op.conditions[0].IsComparison() &&
+	    op.conditions[0].GetLHS().GetReturnType().id() == LogicalTypeId::UNION) {
+		switch (op.conditions[0].GetComparisonType()) {
+		case ExpressionType::COMPARE_LESSTHAN:
+		case ExpressionType::COMPARE_LESSTHANOREQUALTO:
+		case ExpressionType::COMPARE_GREATERTHAN:
+		case ExpressionType::COMPARE_GREATERTHANOREQUALTO:
+			can_merge = false;
+			break;
+		default:
+			break;
+		}
+	}
+
 	//	TODO: Extend PWMJ to handle all comparisons and projection maps
 	bool prefer_range_joins = Settings::Get<PreferRangeJoinsSetting>(context);
 	prefer_range_joins = prefer_range_joins && can_iejoin;

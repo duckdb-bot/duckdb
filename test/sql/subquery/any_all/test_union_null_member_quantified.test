@@ -162,29 +162,21 @@ SELECT count(*) FROM probes WHERE x NOT IN (SELECT y FROM many);
 ----
 50000
 
-# a range join sorts on the other inequalities and checks the UNION inequality after them
-statement ok
-CREATE TABLE ml AS SELECT i k, i a, i + 1 b, union_value(i := 1)::UNION(i INTEGER, s VARCHAR) x FROM range(10) t(i);
 
+# a join with other conditions next to a UNION inequality keeps its plan
 statement ok
-CREATE TABLE mr AS SELECT i k, i + 1 a, i b, union_value(i := NULL::INTEGER)::UNION(i INTEGER, s VARCHAR) y
-FROM range(10) t(i);
+CREATE TABLE ml AS SELECT i k, i a, i + 1 b, union_value(i := 1)::UNION(i INTEGER, s VARCHAR) x,
+	union_value(i := 1)::UNION(i INTEGER, s VARCHAR) z FROM range(10) t(i);
 
 statement ok
-SET merge_join_threshold = 0;
-
-query I
-SELECT count(*) FROM ml JOIN mr ON ml.a < mr.a AND ml.x < mr.y;
-----
-0
-
-query I
-SELECT count(*) FROM ml JOIN mr ON ml.a < mr.a AND ml.b > mr.b AND ml.x < mr.y;
-----
-0
+CREATE TABLE mr AS SELECT i k, i + 1 a, i b, union_value(i := NULL::INTEGER)::UNION(i INTEGER, s VARCHAR) y,
+	union_value(i := NULL::INTEGER)::UNION(i INTEGER, s VARCHAR) w FROM range(10) t(i);
 
 statement ok
 SET prefer_range_joins = true;
+
+statement ok
+SET merge_join_threshold = 0;
 
 query I
 SELECT count(*) FROM ml JOIN mr ON ml.k = mr.k AND ml.a < mr.a AND ml.b > mr.b AND ml.x < mr.y;
@@ -192,7 +184,7 @@ SELECT count(*) FROM ml JOIN mr ON ml.k = mr.k AND ml.a < mr.a AND ml.b > mr.b A
 0
 
 query I
-SELECT count(*) FROM ml JOIN mr ON ml.k = mr.k AND ml.a < mr.a AND ml.b > mr.b AND ml.x >= mr.y;
+SELECT count(*) FROM ml JOIN mr ON ml.k = mr.k AND ml.a < mr.a AND ml.x < mr.y AND ml.z < mr.w;
 ----
 0
 

@@ -156,8 +156,6 @@ public:
 public:
 	// Compare conditions for priority
 	static bool LessThan(const JoinCondition &a, const JoinCondition &b);
-	// Whether a comparison condition compares UNIONs, which the range joins cannot sort on
-	static bool IsUnionComparison(const JoinCondition &condition);
 
 	// Gather the result values and slice the payload columns to those values.
 	static void SliceSortedPayload(DataChunk &chunk, GlobalSortedTable &table, ExternalBlockIteratorState &state,

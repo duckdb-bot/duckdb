@@ -226,6 +226,95 @@ static bool PushNestedCollation(ClientContext &context, unique_ptr<Expression> &
 	return true;
 }
 
+//! Whether the system catalog has the scalar function, which core_functions may not provide
+static bool HasSystemFunction(ClientContext &context, const char *name) {
+	auto &catalog = Catalog::GetSystemCatalog(context);
+	return catalog.GetEntry<ScalarFunctionCatalogEntry>(
+	           context, QualifiedName(catalog.GetName(), Identifier::DefaultSchema(), name),
+	           OnEntryNotFound::RETURN_NULL) != nullptr;
+}
+
+//! Pushes a collation into the keys and values of a MAP by comparing its entries, a LIST of STRUCT that compares as
+//! the MAP does, with the collation applied to every entry. Rebuilding a MAP would fail for keys that the collation
+//! makes equal. Returns false if the entries do not require collation or map_entries is not available
+static bool PushMapCollation(ClientContext &context, unique_ptr<Expression> &source, const LogicalType &sql_type,
+                             CollationType type, const CollationBinding &binding) {
+	auto &entry_type = ListType::GetChildType(sql_type);
+	unique_ptr<Expression> entry_ref = make_uniq<BoundReferenceExpression>(entry_type, idx_t(0));
+	if (!binding.PushCollation(context, entry_ref, entry_type, type) || !HasSystemFunction(context, "map_entries") ||
+	    !HasSystemFunction(context, "list_transform")) {
+		return false;
+	}
+	auto source_alias = source->GetAlias();
+	vector<unique_ptr<Expression>> arguments;
+	arguments.push_back(std::move(source));
+	FunctionBinder function_binder(context);
+	source = function_binder.BindScalarFunction(Identifier::DefaultSchema(), "map_entries", std::move(arguments));
+	if (!PushNestedCollation(context, source, entry_type, type, binding)) {
+		throw InternalException("Failed to push a collation into the entries of a MAP");
+	}
+	source->SetAlias(source_alias);
+	return true;
+}
+
+//! Pushes a collation into the members of a UNION by comparing a STRUCT of its tag and its members, which compares as
+//! the UNION does, with the collation applied to every member. Returns false if no member requires collation or the
+//! union functions are not available
+static bool PushUnionCollation(ClientContext &context, unique_ptr<Expression> &source, const LogicalType &sql_type,
+                               CollationType type, const CollationBinding &binding) {
+	const auto member_count = UnionType::GetMemberCount(sql_type);
+	bool any_member_requires_collation = false;
+	for (idx_t i = 0; i < member_count; i++) {
+		auto &member_type = UnionType::GetMemberType(sql_type, i);
+		unique_ptr<Expression> member_ref = make_uniq<BoundReferenceExpression>(member_type, idx_t(0));
+		if (binding.PushCollation(context, member_ref, member_type, type)) {
+			any_member_requires_collation = true;
+			break;
+		}
+	}
+	if (!any_member_requires_collation || !HasSystemFunction(context, "union_tag") ||
+	    !HasSystemFunction(context, "union_extract")) {
+		return false;
+	}
+
+	const Identifier lambda_parameter("x");
+	auto lambda_parameter_expr = make_uniq<BoundReferenceExpression>(lambda_parameter, sql_type, idx_t(0));
+	FunctionBinder function_binder(context);
+	vector<unique_ptr<Expression>> fields;
+	vector<unique_ptr<Expression>> tag_arguments;
+	tag_arguments.push_back(lambda_parameter_expr->Copy());
+	fields.push_back(
+	    function_binder.BindScalarFunction(Identifier::DefaultSchema(), "union_tag", std::move(tag_arguments)));
+	for (idx_t i = 0; i < member_count; i++) {
+		vector<unique_ptr<Expression>> arguments;
+		arguments.push_back(lambda_parameter_expr->Copy());
+		arguments.push_back(
+		    make_uniq<BoundConstantExpression>(Value(UnionType::GetMemberName(sql_type, i).GetIdentifierName())));
+		auto member =
+		    function_binder.BindScalarFunction(Identifier::DefaultSchema(), "union_extract", std::move(arguments));
+		binding.PushCollation(context, member, UnionType::GetMemberType(sql_type, i), type);
+		fields.push_back(std::move(member));
+	}
+	// an unnamed STRUCT, as a member can be named like the tag
+	auto result = function_binder.BindScalarFunction(Identifier::DefaultSchema(), "row", std::move(fields));
+	// A NULL union must remain distinct from a union whose member is NULL
+	auto is_null = make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_IS_NULL, LogicalType::BOOLEAN);
+	is_null->GetChildrenMutable().push_back(lambda_parameter_expr->Copy());
+	auto null_result = make_uniq<BoundConstantExpression>(Value(result->GetReturnType()));
+	auto body = make_uniq<BoundCaseExpression>(std::move(is_null), std::move(null_result), std::move(result));
+	auto lambda =
+	    make_uniq<BoundLambdaExpression>(ExpressionType::LAMBDA, LogicalType::LAMBDA, std::move(body), idx_t(1));
+	lambda->SetParameterNames({lambda_parameter});
+
+	auto source_alias = source->GetAlias();
+	vector<unique_ptr<Expression>> arguments;
+	arguments.push_back(std::move(lambda));
+	arguments.push_back(std::move(source));
+	source = function_binder.BindScalarFunction(Identifier::DefaultSchema(), "invoke", std::move(arguments));
+	source->SetAlias(source_alias);
+	return true;
+}
+
 bool CollationBinding::PushCollation(ClientContext &context, unique_ptr<Expression> &source,
                                      const LogicalType &sql_type, CollationType type) const {
 	// Leave collation of aliased structs, lists and arrays to the registered callbacks.
@@ -238,6 +327,12 @@ bool CollationBinding::PushCollation(ClientContext &context, unique_ptr<Expressi
 		}
 		if (sql_type.id() == LogicalTypeId::ARRAY) {
 			return PushNestedCollation(context, source, ArrayType::GetChildType(sql_type), type, *this);
+		}
+		if (sql_type.id() == LogicalTypeId::MAP) {
+			return PushMapCollation(context, source, sql_type, type, *this);
+		}
+		if (sql_type.id() == LogicalTypeId::UNION) {
+			return PushUnionCollation(context, source, sql_type, type, *this);
 		}
 	}
 	for (auto &collation : collations) {

@@ -1,0 +1,83 @@
+# name: test/sql/collate/test_map_union_collations.test
+# description: MAP and UNION compare, group and deduplicate their contents with collations, as STRUCT and LIST do (duckdblabs/bot-issue-tracker#647)
+# group: [collate]
+
+query IIII
+SELECT MAP {'k': 'A' COLLATE NOCASE} = MAP {'k': 'a' COLLATE NOCASE} AS map_nocase,
+       MAP {'A' COLLATE NOCASE: 1} = MAP {'a' COLLATE NOCASE: 1} AS map_key_nocase,
+       {'k': 'A' COLLATE NOCASE} = {'k': 'a' COLLATE NOCASE} AS struct_nocase,
+       ['A' COLLATE NOCASE] = ['a' COLLATE NOCASE] AS list_nocase;
+----
+true	true	true	true
+
+query III
+SELECT MAP {'k': 1::UINTEGER::VARIANT} = MAP {'k': 1::BIGNUM::VARIANT} AS map_value_variant,
+       MAP {1::TINYINT::VARIANT: 'x'} = MAP {1::BIGINT::VARIANT: 'x'} AS map_key_variant,
+       MAP {'k': 1::UINTEGER::VARIANT} < MAP {'k': 1::BIGNUM::VARIANT} AS map_less;
+----
+true	true	false
+
+query II
+SELECT union_value(v := 1::TINYINT::VARIANT) = union_value(v := 1::BIGINT::VARIANT) AS union_variant,
+       union_value(s := 'A' COLLATE NOCASE) = union_value(s := 'a' COLLATE NOCASE) AS union_nocase;
+----
+true	true
+
+query I
+SELECT count(*) AS map_groups FROM (SELECT m FROM (VALUES (MAP {'k': 1::UINTEGER::VARIANT}), (MAP {'k': 1::BIGNUM::VARIANT})) t(m) GROUP BY m);
+----
+1
+
+query II
+SELECT count(DISTINCT m), count(DISTINCT u) FROM (VALUES
+	(MAP {'k': 'A' COLLATE NOCASE}, union_value(s := 'A' COLLATE NOCASE)),
+	(MAP {'k': 'a' COLLATE NOCASE}, union_value(s := 'a' COLLATE NOCASE)),
+	(MAP {'k': 'b' COLLATE NOCASE}, union_value(s := 'b' COLLATE NOCASE))
+) t(m, u);
+----
+2	2
+
+# keys that the collation makes equal still compare, without rebuilding a map
+query I
+SELECT MAP {'A' COLLATE NOCASE: 1, 'a' COLLATE NOCASE: 1} = MAP {'a' COLLATE NOCASE: 1, 'A' COLLATE NOCASE: 1};
+----
+true
+
+# entries compare in their order, as maps without a collation do
+query II
+SELECT MAP {'a': 1, 'b': 2} = MAP {'b': 2, 'a': 1}, MAP {'a' COLLATE NOCASE: 1, 'b' COLLATE NOCASE: 2} = MAP {'B' COLLATE NOCASE: 2, 'A' COLLATE NOCASE: 1};
+----
+false	false
+
+# a NULL map or union stays apart from one holding a NULL
+query II
+SELECT count(DISTINCT m), count(DISTINCT u) FROM (VALUES
+	(CASE WHEN false THEN MAP {'k' COLLATE NOCASE: 'v' COLLATE NOCASE} END, CASE WHEN false THEN union_value(s := 'v' COLLATE NOCASE) END),
+	(MAP {'k' COLLATE NOCASE: NULL::VARCHAR COLLATE NOCASE}, union_value(s := NULL::VARCHAR COLLATE NOCASE))
+) t(m, u);
+----
+1	1
+
+# unions with different members active stay apart
+statement ok
+CREATE TABLE tu (u UNION(v VARIANT, i INTEGER));
+
+statement ok
+INSERT INTO tu VALUES (union_value(v := 1::TINYINT::VARIANT)), (union_value(v := 1::BIGINT::VARIANT)), (1::INTEGER);
+
+query II
+SELECT count(DISTINCT u), count(*) FILTER (WHERE u = union_value(v := 1::VARIANT)::UNION(v VARIANT, i INTEGER)) FROM tu;
+----
+2	2
+
+# a member named like the tag
+query I
+SELECT union_value(tag := 'A' COLLATE NOCASE) = union_value(tag := 'a' COLLATE NOCASE);
+----
+true
+
+# joins on collated maps
+query I
+SELECT count(*) FROM (VALUES (MAP {'k': 'A' COLLATE NOCASE})) l(m) JOIN (VALUES (MAP {'k': 'a' COLLATE NOCASE})) r(m) ON l.m = r.m;
+----
+1

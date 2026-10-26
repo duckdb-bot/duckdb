@@ -128,9 +128,15 @@ struct ExtraConstraintInfo {
 	vector<Identifier> referenced_columns;
 };
 
-void ExtractReferencedColumns(const ParsedExpression &root_expr, vector<Identifier> &result) {
-	ParsedExpressionIterator::VisitExpression<ColumnRefExpression>(
-	    root_expr, [&](const ColumnRefExpression &colref) { result.emplace_back(colref.GetColumnName()); });
+//! The columns a CHECK reads, named as the CHECK binder resolves them: the first name, or the second when the first
+//! is the name of the table, while the names after it are struct fields
+void ExtractReferencedColumns(const TableCatalogEntry &table, const ParsedExpression &root_expr,
+                              vector<Identifier> &result) {
+	ParsedExpressionIterator::VisitExpression<ColumnRefExpression>(root_expr, [&](const ColumnRefExpression &colref) {
+		auto &names = colref.ColumnNames();
+		const idx_t column_position = names.size() > 1 && names[0] == table.name ? 1 : 0;
+		result.emplace_back(names[column_position]);
+	});
 }
 
 ExtraConstraintInfo GetExtraConstraintInfo(const TableCatalogEntry &table, const Constraint &constraint) {
@@ -138,7 +144,7 @@ ExtraConstraintInfo GetExtraConstraintInfo(const TableCatalogEntry &table, const
 	switch (constraint.type) {
 	case ConstraintType::CHECK: {
 		auto &check_constraint = constraint.Cast<CheckConstraint>();
-		ExtractReferencedColumns(*check_constraint.expression, result.column_names);
+		ExtractReferencedColumns(table, *check_constraint.expression, result.column_names);
 		break;
 	}
 	case ConstraintType::NOT_NULL: {

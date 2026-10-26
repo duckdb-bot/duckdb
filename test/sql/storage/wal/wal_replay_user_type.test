@@ -1,0 +1,100 @@
+# name: test/sql/storage/wal/wal_replay_user_type.test
+# description: WAL replay resolves user types in macros and defaults of ALTER statements
+# group: [wal]
+
+require skip_reload
+
+load {TEST_DIR}/wal_replay_user_type.db
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown
+
+statement ok
+PRAGMA wal_autocheckpoint='1TB';
+
+statement ok
+CREATE TYPE e AS ENUM ('a', 'b');
+
+statement ok
+CREATE SCHEMA s;
+
+statement ok
+CREATE TYPE s.f AS ENUM ('x', 'y');
+
+# a user type inside a macro of ALTER COLUMN TYPE USING
+statement ok
+CREATE MACRO g(x) AS x::e;
+
+statement ok
+CREATE TABLE t1 (p VARCHAR);
+
+statement ok
+INSERT INTO t1 VALUES ('a');
+
+statement ok
+ALTER TABLE t1 ALTER p SET TYPE USING g(p);
+
+# a user type cast in the default of an added column
+statement ok
+CREATE TABLE t2 (p INTEGER);
+
+statement ok
+INSERT INTO t2 VALUES (1);
+
+statement ok
+ALTER TABLE t2 ADD COLUMN q VARCHAR DEFAULT 'b'::e;
+
+# the same in another schema, unqualified and qualified
+statement ok
+CREATE TABLE s.t3 (p INTEGER);
+
+statement ok
+INSERT INTO s.t3 VALUES (1);
+
+statement ok
+ALTER TABLE s.t3 ADD COLUMN q VARCHAR DEFAULT 'y'::f;
+
+statement ok
+ALTER TABLE t2 ADD COLUMN r VARCHAR DEFAULT 'x'::s.f;
+
+# a cast written in USING
+statement ok
+CREATE TABLE t4 (p VARCHAR);
+
+statement ok
+INSERT INTO t4 VALUES ('b');
+
+statement ok
+ALTER TABLE t4 ALTER p SET TYPE USING p::e;
+
+restart
+
+query II
+SELECT p, typeof(p) FROM t1;
+----
+a	ENUM('a', 'b')
+
+query III
+SELECT * FROM t2;
+----
+1	b	x
+
+query II
+SELECT * FROM s.t3;
+----
+1	y
+
+query II
+SELECT p, typeof(p) FROM t4;
+----
+b	ENUM('a', 'b')
+
+# the defaults keep working after the replay
+statement ok
+INSERT INTO t2 (p) VALUES (2);
+
+query III
+SELECT * FROM t2 ORDER BY p;
+----
+1	b	x
+2	b	x

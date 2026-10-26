@@ -301,3 +301,68 @@ TEST_CASE("Test automatic DB instance caching", "[api][.]") {
 		REQUIRE_NO_FAIL(con2.Query("SELECT * FROM t"));
 	}
 }
+
+TEST_CASE("Database instances of one cache rename their read-only attach of the same file", "[api]") {
+	auto shared_path = TestCreatePath("rename_shared_file.db");
+	{
+		DuckDB db(shared_path);
+		Connection con(db);
+		REQUIRE_NO_FAIL(con.Query("CREATE TABLE t AS SELECT 42 AS i"));
+	}
+	DBInstanceCache cache;
+	DBConfig config;
+	auto db1 = cache.GetOrCreateInstance(TestCreatePath("rename_shared_main1.db"), config, true);
+	auto db2 = cache.GetOrCreateInstance(TestCreatePath("rename_shared_main2.db"), config, true);
+	Connection con1(*db1);
+	Connection con2(*db2);
+	auto attach = [&](Connection &con, const string &name) {
+		return con.Query("ATTACH IF NOT EXISTS '" + shared_path + "' AS " + name + " (READ_ONLY)");
+	};
+	for (auto con : {&con1, &con2}) {
+		REQUIRE_NO_FAIL(con->Query("SET max_execution_time = 10000"));
+		REQUIRE_NO_FAIL(attach(*con, "x"));
+	}
+
+	REQUIRE_NO_FAIL(con1.Query("ALTER DATABASE x SET ALIAS TO y"));
+	REQUIRE_NO_FAIL(attach(con2, "x"));
+	REQUIRE_NO_FAIL(attach(con1, "y"));
+	REQUIRE_NO_FAIL(con2.Query("ALTER DATABASE x SET ALIAS TO z"));
+	REQUIRE_NO_FAIL(attach(con2, "y"));
+	REQUIRE_NO_FAIL(attach(con1, "x"));
+
+	auto result = con1.Query("SELECT database_name FROM duckdb_databases() WHERE NOT internal AND database_name NOT "
+	                         "LIKE 'rename_shared_main%' ORDER BY ALL");
+	REQUIRE(CHECK_COLUMN(result, 0, {"x", "y"}));
+	result = con2.Query("SELECT database_name FROM duckdb_databases() WHERE NOT internal AND database_name NOT "
+	                    "LIKE 'rename_shared_main%' ORDER BY ALL");
+	REQUIRE(CHECK_COLUMN(result, 0, {"y", "z"}));
+	result = con2.Query("SELECT i FROM y.t");
+	REQUIRE(CHECK_COLUMN(result, 0, {42}));
+}
+
+TEST_CASE("A write attach names the database of another instance that keeps the file attached", "[api]") {
+	auto shared_path = TestCreatePath("rename_shared_message.db");
+	{
+		DuckDB db(shared_path);
+		Connection con(db);
+		REQUIRE_NO_FAIL(con.Query("CREATE TABLE t AS SELECT 42 AS i"));
+	}
+	DBInstanceCache cache;
+	DBConfig config;
+	auto db1 = cache.GetOrCreateInstance(TestCreatePath("rename_message_main1.db"), config, true);
+	auto db2 = cache.GetOrCreateInstance(TestCreatePath("rename_message_main2.db"), config, true);
+	Connection con1(*db1);
+	Connection con2(*db2);
+	for (auto con : {&con1, &con2}) {
+		REQUIRE_NO_FAIL(con->Query("SET max_execution_time = 10000"));
+		REQUIRE_NO_FAIL(con->Query("ATTACH '" + shared_path + "' AS x (READ_ONLY)"));
+	}
+	REQUIRE_NO_FAIL(con1.Query("ALTER DATABASE x SET ALIAS TO y"));
+	REQUIRE_NO_FAIL(con2.Query("ALTER DATABASE x SET ALIAS TO z"));
+	REQUIRE_NO_FAIL(con1.Query("DETACH y"));
+	for (auto &name : {"y", "w"}) {
+		auto result = con1.Query("ATTACH IF NOT EXISTS '" + shared_path + "' AS " + name + " (READ_WRITE)");
+		REQUIRE(result->HasError());
+		REQUIRE(StringUtil::Contains(result->GetError(), "already attached by database \"z\""));
+	}
+}

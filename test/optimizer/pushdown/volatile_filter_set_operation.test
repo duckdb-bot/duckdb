@@ -1,0 +1,174 @@
+# name: test/optimizer/pushdown/volatile_filter_set_operation.test
+# description: A volatile filter in or above INTERSECT and EXCEPT runs once per row where it was written
+# group: [pushdown]
+
+statement ok
+SET threads = 1;
+
+statement ok
+CREATE TABLE t AS SELECT range AS a FROM range(10000);
+
+statement ok
+CREATE TABLE u (a INTEGER);
+
+statement ok
+INSERT INTO u VALUES (1), (2), (3), (4);
+
+# the filter samples one input only
+query I
+SELECT count(*) BETWEEN 4500 AND 5500 FROM (SELECT a FROM t WHERE random() < 0.5 INTERSECT ALL SELECT a FROM t)
+----
+true
+
+query I
+SELECT count(*) BETWEEN 2250 AND 2750 FROM (SELECT a FROM t WHERE random() < 0.5 EXCEPT ALL SELECT a FROM t WHERE a % 2 = 0)
+----
+true
+
+# each of the two copies of a value is sampled before the intersection, so about three in four values stay
+statement ok
+CREATE TABLE t2 AS SELECT a FROM t UNION ALL SELECT a FROM t;
+
+query I
+SELECT count(*) BETWEEN 7200 AND 7800 FROM (SELECT a FROM t2 WHERE random() < 0.5 INTERSECT ALL SELECT a FROM t)
+----
+true
+
+# a filter above the set operation runs once per result row
+statement ok
+CREATE SEQUENCE s1;
+
+query I
+SELECT count(*) FROM (SELECT a FROM u INTERSECT ALL SELECT a FROM u) q WHERE nextval('s1') <= 2
+----
+2
+
+query I
+SELECT currval('s1')
+----
+4
+
+statement ok
+CREATE SEQUENCE s2;
+
+query I
+SELECT count(*) FROM (SELECT a FROM u EXCEPT ALL SELECT 4) q WHERE nextval('s2') <= 10
+----
+3
+
+query I
+SELECT currval('s2')
+----
+3
+
+statement ok
+CREATE SEQUENCE s3;
+
+query I
+SELECT count(*) FROM (SELECT a FROM u INTERSECT SELECT a FROM u) q WHERE nextval('s3') <= 10
+----
+4
+
+query I
+SELECT currval('s3')
+----
+4
+
+# a filter in an input runs once per row of that input
+statement ok
+CREATE SEQUENCE s4;
+
+query I
+SELECT count(*) FROM (SELECT a FROM u WHERE nextval('s4') > 0 INTERSECT ALL SELECT a FROM u)
+----
+4
+
+query I
+SELECT currval('s4')
+----
+4
+
+statement ok
+CREATE SEQUENCE s5;
+
+query I
+SELECT count(*) FROM (SELECT a FROM u WHERE nextval('s5') > 0 EXCEPT ALL SELECT 4)
+----
+3
+
+query I
+SELECT currval('s5')
+----
+4
+
+# filters that are not volatile still reach both inputs
+query I
+SELECT count(*) FROM (SELECT a FROM t INTERSECT ALL SELECT a FROM t) WHERE a < 10
+----
+10
+
+# a filter that is not volatile still reaches the other input, the volatile one stays in its input
+query II
+EXPLAIN SELECT a FROM t WHERE a = 1 AND random() < 0.5 INTERSECT ALL SELECT a FROM u
+----
+physical_plan	<REGEX>:.*= 1.*= 1.*
+
+query II
+EXPLAIN SELECT a FROM t WHERE a = 1 AND random() < 0.5 INTERSECT ALL SELECT a FROM u
+----
+physical_plan	<!REGEX>:.*random\(\).*random\(\).*
+
+# a volatile join condition runs once per pair of rows, below the intersection
+statement ok
+CREATE TABLE l AS SELECT k, 0.5::DOUBLE AS a FROM range(1000) t(k), range(100);
+
+statement ok
+CREATE TABLE r AS SELECT 0.0::DOUBLE AS b;
+
+query I
+SELECT count(*) FROM (SELECT k, a, b FROM l JOIN r ON random() < a OR b > 1 INTERSECT ALL SELECT k, 0.5::DOUBLE, 0.0::DOUBLE FROM range(1000) t(k))
+----
+1000
+
+# a deterministic condition next to the volatile one is pulled up alone, and reaches the other input
+query I
+SELECT count(*) FROM (SELECT k, a, b FROM l JOIN r ON (random() < a OR b > 1) AND k < 500 INTERSECT ALL SELECT k, 0.5::DOUBLE, 0.0::DOUBLE FROM range(1000) t(k))
+----
+500
+
+query II
+EXPLAIN SELECT count(*) FROM (SELECT k, a, b FROM l JOIN r ON (random() < a OR b > 1) AND k < 500 INTERSECT ALL SELECT k, 0.5::DOUBLE, 0.0::DOUBLE FROM range(1000) t(k))
+----
+physical_plan	<REGEX>:.*k < 500.*k < 500.*
+
+query II
+EXPLAIN SELECT count(*) FROM (SELECT k, a, b FROM l JOIN r ON (random() < a OR b > 1) AND k < 500 INTERSECT ALL SELECT k, 0.5::DOUBLE, 0.0::DOUBLE FROM range(1000) t(k))
+----
+physical_plan	<!REGEX>:.*random\(\).*random\(\).*
+
+# a volatile filter that can throw keeps its guard below the projection
+statement ok
+SET disabled_optimizers = 'filter_pushdown';
+
+statement ok
+CREATE SEQUENCE s6;
+
+statement ok
+CREATE TABLE guarded (i INTEGER, v VARCHAR);
+
+statement ok
+INSERT INTO guarded VALUES (0, 'bad'), (1, '1');
+
+query II
+SELECT i, v::INTEGER FROM guarded WHERE i > 0 AND nextval('s6') > 0 INTERSECT ALL SELECT 1, 1
+----
+1	1
+
+# also the guards of a nested filter
+statement ok
+CREATE SEQUENCE s7;
+
+query II
+SELECT i, v::INTEGER FROM (SELECT * FROM guarded WHERE i > 0) q WHERE nextval('s7') > 0 INTERSECT ALL SELECT 1, 1
+----
+1	1

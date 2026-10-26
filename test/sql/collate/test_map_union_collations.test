@@ -103,6 +103,28 @@ SELECT union_value(s := 'B' COLLATE NOCASE) > ANY (SELECT union_value(s := 'a' C
 ----
 true	true
 
+# the subquery column is cast to the comparison type before it is collated, as its STRUCT field is narrower
+query III
+SELECT {'n': 1::INTEGER, 's': 'a' COLLATE NOCASE} < ALL (SELECT {'n': 2::SMALLINT, 's': 'b'}),
+       {'n': 2::BIGINT, 's': 'A' COLLATE NOCASE} >= ALL (SELECT {'n': 2::SMALLINT, 's': 'a'} UNION ALL SELECT {'n': 1::SMALLINT, 's': 'z'}),
+       {'n': 2::BIGINT, 's': 'a' COLLATE NOCASE} > ANY (SELECT {'n': 2::SMALLINT, 's': 'A'});
+----
+true	true	false
+
+statement ok
+CREATE TABLE mixed_structs AS SELECT * FROM (VALUES (0, {'n': 1::SMALLINT, 's': 'A'}), (1, {'n': 2::SMALLINT, 's': 'b'}), (2, {'n': NULL::SMALLINT, 's': NULL::VARCHAR}), (3, NULL)) t(id, v);
+
+query III
+SELECT l.id,
+       {'n': l.v.n::BIGINT, 's': l.v.s COLLATE NOCASE} < ANY (SELECT r.v FROM mixed_structs r WHERE r.id <> l.id),
+       {'n': l.v.n::BIGINT, 's': l.v.s COLLATE NOCASE} > ALL (SELECT r.v FROM mixed_structs r WHERE r.id < l.id AND r.v IS NOT NULL)
+FROM mixed_structs l ORDER BY l.id;
+----
+0	true	true
+1	true	true
+2	NULL	true
+3	false	false
+
 # nested maps are collated at every level
 query I
 SELECT count(DISTINCT m) FROM (VALUES

@@ -95,7 +95,12 @@ static unique_ptr<Expression> PlanExtremumRewrite(Binder &binder, BoundSubqueryE
 	// through to its binary-key implementation whose return type is BLOB.
 	bool extremum_is_collated = false;
 	if (compare_type.id() != LogicalTypeId::BIT && compare_type.id() != LogicalTypeId::VARIANT) {
-		extremum_is_collated = ExpressionBinder::PushCollation(binder.context, min_max_child, compare_type);
+		// the collation is bound for the comparison type, as a STRUCT field can be wider there than in the column
+		auto collated_child = BoundCastExpression::AddDefaultCastToType(bound_colref->Copy(), compare_type);
+		if (ExpressionBinder::PushCollation(binder.context, collated_child, compare_type)) {
+			min_max_child = std::move(collated_child);
+			extremum_is_collated = true;
+		}
 	}
 	min_max_children.push_back(std::move(min_max_child));
 
@@ -159,8 +164,6 @@ static unique_ptr<Expression> PlanExtremumRewrite(Binder &binder, BoundSubqueryE
 	ExpressionBinder::PushCollation(binder.context, x_cast, compare_type);
 	if (!extremum_is_collated) {
 		ExpressionBinder::PushCollation(binder.context, extremum_side, compare_type);
-	} else if (extremum_side->GetReturnType() != x_cast->GetReturnType()) {
-		extremum_side = BoundCastExpression::AddDefaultCastToType(std::move(extremum_side), x_cast->GetReturnType());
 	}
 	unique_ptr<Expression> x_op_min =
 	    BoundComparisonExpression::Create(cmp_type, std::move(x_cast), std::move(extremum_side));

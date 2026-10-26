@@ -203,6 +203,8 @@ void BatchedBufferedData::UpdateMinBatchIndex(idx_t min_batch_index) {
 		}
 	}
 	InvokeUnblocks(to_unblock);
+	// completed batches can have moved to the read queue
+	SignalConsumer();
 }
 
 void BatchedBufferedData::CompleteBatch(idx_t batch) {

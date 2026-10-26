@@ -357,6 +357,13 @@ void Executor::SignalTaskRescheduled(lock_guard<mutex> &) {
 	task_reschedule.notify_one();
 }
 
+void Executor::SignalResultUnit() {
+#ifndef DUCKDB_NO_THREADS
+	lock_guard<mutex> l(executor_lock);
+	task_reschedule.notify_all();
+#endif
+}
+
 void Executor::UnregisterTask() {
 #ifndef DUCKDB_NO_THREADS
 	lock_guard<mutex> l(executor_lock);
@@ -385,6 +392,13 @@ void Executor::WaitForTask() {
 	}
 	if (ResultCollectorIsBlocked()) {
 		// Only the consumer's decision or pop lets the query progress, so waiting here is pointless
+		blocked_thread_time += blocked_micros;
+		return;
+	}
+	auto buffer = GetResultBuffer();
+	if (buffer && buffer->Lifetime() != ResultLifetime::RETAINED && buffer->ReplenishSatisfied()) {
+		// The streaming consumer can go on with the units it has. A producer that queues a unit or parks later
+		// signals under this lock, so the wait below cannot miss it
 		blocked_thread_time += blocked_micros;
 		return;
 	}

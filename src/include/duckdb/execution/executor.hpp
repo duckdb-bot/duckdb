@@ -68,6 +68,8 @@ public:
 	QueryResultState Poll();
 	void WaitForTask();
 	void SignalTaskRescheduled(lock_guard<mutex> &);
+	//! Wakes a thread in WaitForTask, as a producer queued a result unit or parked with one
+	void SignalResultUnit();
 
 	void Reset();
 

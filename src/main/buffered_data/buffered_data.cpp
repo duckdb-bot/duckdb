@@ -157,6 +157,17 @@ QueryResultState BufferedData::Poll(ClientContextLock &context_lock, QueryResult
 	return execution_result;
 }
 
+void BufferedData::SignalConsumer() {
+	if (!consumer_waiting) {
+		return;
+	}
+	auto cc = context.lock();
+	if (!cc) {
+		return;
+	}
+	Executor::Get(*cc).SignalResultUnit();
+}
+
 QueryResultState BufferedData::ReplenishBuffer(ClientContextLock &context_lock, QueryResult &result) {
 	auto cc = context.lock();
 	if (!cc) {
@@ -167,8 +178,15 @@ QueryResultState BufferedData::ReplenishBuffer(ClientContextLock &context_lock, 
 	while (!IsObservable(execution_result = Participate(context_lock, result))) {
 		if (execution_result == QueryResultState::BLOCKED) {
 			UnblockSinks();
-			cc->WaitForTask(context_lock, result);
+		} else if (execution_result != QueryResultState::NO_TASKS_AVAILABLE) {
+			// a task ran on this thread, so the next step can make progress
+			continue;
 		}
+		// Nothing runs on this thread until a worker finishes or reschedules a task, or queues a unit or parks with
+		// one. The flag is set before WaitForTask checks the buffer, so a producer that comes after that check wakes us
+		consumer_waiting = true;
+		cc->WaitForTask(context_lock, result);
+		consumer_waiting = false;
 	}
 	if (result.HasError()) {
 		Close();

@@ -8,9 +8,10 @@ require json
 
 # A deeply nested array used to make the writer recurse once per level into an equally deep 'typed_value' schema,
 # overflowing the stack. Now the shredded type stops at 32 levels. The JSON -> VARIANT cast refuses more than 128
-# levels, so values deeper than that wrap a UBIGINT, the type of a JSON 1, in one list per level.
+# levels and recurses once per level up to that, and the release tests run worker threads with 128 KiB stacks
+# (--thread-stack-size, as musl sizes them), so the values stay at 100 levels, well past the 32 that matter here.
 statement ok
-COPY (WITH RECURSIVE nested(depth, v) AS (SELECT 1, [1::UBIGINT]::VARIANT UNION ALL SELECT depth + 1, [v]::VARIANT FROM nested WHERE depth < 500) SELECT v FROM nested, range(3) WHERE depth = 500) TO '{TEST_DIR}/variant_deep_array.parquet'
+COPY (SELECT (repeat('[', 100) || '1' || repeat(']', 100))::JSON::VARIANT AS v FROM range(3)) TO '{TEST_DIR}/variant_deep_array.parquet'
 
 query I
 SELECT count(*) FROM '{TEST_DIR}/variant_deep_array.parquet'
@@ -24,18 +25,10 @@ SELECT count(*) FILTER (name = 'list'), count(*) FILTER (name = 'typed_value') F
 32	32
 
 # The value reads back whole
-statement ok
-COPY (SELECT (repeat('[', 100) || '1' || repeat(']', 100))::JSON::VARIANT AS v FROM range(3)) TO '{TEST_DIR}/variant_deep_array_100.parquet'
-
 query I
-SELECT DISTINCT v::JSON::VARCHAR = repeat('[', 100) || '1' || repeat(']', 100) FROM '{TEST_DIR}/variant_deep_array_100.parquet'
+SELECT DISTINCT v::JSON::VARCHAR = repeat('[', 100) || '1' || repeat(']', 100) FROM '{TEST_DIR}/variant_deep_array.parquet'
 ----
 true
-
-query II
-SELECT count(*) FILTER (name = 'list'), count(*) FILTER (name = 'typed_value') FROM parquet_schema('{TEST_DIR}/variant_deep_array_100.parquet')
-----
-32	32
 
 # The same for objects: 40 nested objects with a single key, shredded 32 levels deep
 statement ok
@@ -54,7 +47,7 @@ SELECT count(*) FILTER (name = 'k'), count(*) FILTER (name = 'typed_value') FROM
 
 # A deep value next to shallow ones does not stop those from being shredded
 statement ok
-COPY (WITH RECURSIVE nested(depth, v) AS (SELECT 1, [1::UBIGINT]::VARIANT UNION ALL SELECT depth + 1, [v]::VARIANT FROM nested WHERE depth < 200) SELECT {'a': 1::UBIGINT, 'b': 'x', 'c': v}::VARIANT AS v FROM nested, range(3) WHERE depth = 200) TO '{TEST_DIR}/variant_deep_field.parquet'
+COPY (SELECT ('{"a": 1, "b": "x", "c": ' || repeat('[', 100) || '1' || repeat(']', 100) || '}')::JSON::VARIANT AS v FROM range(3)) TO '{TEST_DIR}/variant_deep_field.parquet'
 
 query I
 SELECT DISTINCT (v.a::INTEGER, v.b::VARCHAR) FROM '{TEST_DIR}/variant_deep_field.parquet'

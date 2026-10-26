@@ -1,0 +1,14 @@
+# name: test/sql/catalog/function/test_table_macro_named_parameter_json.test
+# description: A JSON arrow in the arguments of a table function keeps the name = value form of the others
+# group: [function]
+
+require json
+
+statement ok
+CREATE MACRO m(num_rows) AS TABLE SELECT * FROM repeat_row('{"a":1}' -> 'a', num_rows = num_rows);
+
+query I
+SELECT * FROM m(2);
+----
+1
+1

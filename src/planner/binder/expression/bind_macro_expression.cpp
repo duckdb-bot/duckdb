@@ -1,6 +1,11 @@
 #include "duckdb/catalog/catalog_entry/scalar_macro_catalog_entry.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/parser/expression/columnref_expression.hpp"
+#include "duckdb/parser/expression/comparison_expression.hpp"
+#include "duckdb/parser/tableref/table_function_ref.hpp"
+#include "duckdb/catalog/catalog_entry/table_function_catalog_entry.hpp"
+#include "duckdb/common/reference_map.hpp"
+#include "duckdb/catalog/catalog_entry_retriever.hpp"
 #include "duckdb/catalog/entry_lookup_info.hpp"
 #include "duckdb/common/enums/expression_type.hpp"
 #include "duckdb/common/enums/on_entry_not_found.hpp"
@@ -19,9 +24,29 @@
 
 namespace duckdb {
 
-void ExpressionBinder::ReplaceMacroParametersInLambda(FunctionExpression &function,
-                                                      vector<identifier_set_t> &lambda_params) {
+//! The comparison of a name = value argument, which a table function can read as a named parameter
+static optional_ptr<ComparisonExpression> GetNamedParameter(ParsedExpression &argument) {
+	if (argument.GetExpressionType() != ExpressionType::COMPARE_EQUAL) {
+		return nullptr;
+	}
+	auto &comparison = argument.Cast<ComparisonExpression>();
+	if (comparison.Left().GetExpressionType() != ExpressionType::COLUMN_REF ||
+	    comparison.Left().Cast<ColumnRefExpression>().IsQualified()) {
+		return nullptr;
+	}
+	return comparison;
+}
+
+void ExpressionBinder::ReplaceMacroParametersInArguments(FunctionExpression &function,
+                                                         vector<identifier_set_t> &lambda_params,
+                                                         bool named_parameters) {
 	for (auto &child : function.GetArgumentsMutable()) {
+		auto named_parameter = named_parameters ? GetNamedParameter(*child.GetExpressionMutable()) : nullptr;
+		if (named_parameter) {
+			// the name is not a macro parameter
+			ReplaceMacroParameters(named_parameter->RightMutable(), lambda_params);
+			continue;
+		}
 		if (child.GetExpression().GetExpressionClass() != ExpressionClass::LAMBDA) {
 			ReplaceMacroParameters(child.GetExpressionMutable(), lambda_params);
 			continue;
@@ -52,6 +77,66 @@ void ExpressionBinder::ReplaceMacroParametersInLambda(FunctionExpression &functi
 
 		lambda_params.pop_back();
 	}
+}
+
+//! Whether the binder reads name = value among the arguments of a table function as a named parameter. A table macro
+//! and a table in-out function read it as a comparison, unless the function takes a table.
+static bool TakesNamedParameters(Binder &binder, FunctionExpression &function) {
+	// the function may never be bound, so the lookup records no dependency
+	CatalogEntryRetriever retriever(binder.context);
+	retriever.Inherit(binder.EntryRetriever());
+	retriever.SetCallback(nullptr);
+	EntryLookupInfo lookup(CatalogType::TABLE_FUNCTION_ENTRY, QualifiedName(function.FunctionName()));
+	auto entry = retriever.GetEntry(EntryLookupInfo(lookup, binder.BindTableName(function.GetQualifiedName())),
+	                                OnEntryNotFound::RETURN_NULL);
+	if (!entry || entry->type != CatalogType::TABLE_FUNCTION_ENTRY) {
+		return false;
+	}
+	auto &functions = entry->Cast<TableFunctionCatalogEntry>().functions;
+	bool in_out = false;
+	for (idx_t i = 0; i < functions.Size(); i++) {
+		auto &table_function = *functions.GetFunctionByOffset(i);
+		for (auto &parameter : table_function.GetSignature().GetParameters()) {
+			if (parameter.GetType().id() == LogicalTypeId::TABLE) {
+				return true;
+			}
+		}
+		in_out |= table_function.in_out_function != nullptr;
+	}
+	return !in_out;
+}
+
+void ExpressionBinder::ReplaceMacroParameters(QueryNode &node, vector<identifier_set_t> &lambda_params) {
+	reference_set_t<const ParsedExpression> named_parameter_functions;
+	ParsedExpressionIterator::EnumerateQueryNodeChildren(
+	    node, [](unique_ptr<ParsedExpression> &child) {},
+	    [&](TableRef &ref) {
+		    if (ref.type != TableReferenceType::TABLE_FUNCTION) {
+			    return;
+		    }
+		    auto &function_expr = ref.Cast<TableFunctionRef>().function;
+		    if (function_expr->GetExpressionClass() != ExpressionClass::FUNCTION) {
+			    return;
+		    }
+		    auto &function = function_expr->Cast<FunctionExpression>();
+		    for (auto &argument : function.GetArgumentsMutable()) {
+			    auto named_parameter = GetNamedParameter(*argument.GetExpressionMutable());
+			    if (named_parameter && macro_binding->HasMatchingBinding(
+			                               named_parameter->Left().Cast<ColumnRefExpression>().GetColumnName())) {
+				    if (TakesNamedParameters(binder, function)) {
+					    named_parameter_functions.insert(function);
+				    }
+				    return;
+			    }
+		    }
+	    });
+	ParsedExpressionIterator::EnumerateQueryNodeChildren(node, [&](unique_ptr<ParsedExpression> &child) {
+		if (named_parameter_functions.find(*child) == named_parameter_functions.end()) {
+			ReplaceMacroParameters(child, lambda_params);
+			return;
+		}
+		ReplaceMacroParametersInArguments(child->Cast<FunctionExpression>(), lambda_params, true);
+	});
 }
 
 void ExpressionBinder::ReplaceMacroParameters(unique_ptr<ParsedExpression> &expr,
@@ -85,14 +170,13 @@ void ExpressionBinder::ReplaceMacroParameters(unique_ptr<ParsedExpression> &expr
 		// Special-handling for lambdas, which are inside function expressions.
 		auto &function = expr->Cast<FunctionExpression>();
 		if (function.IsLambdaFunction()) {
-			return ReplaceMacroParametersInLambda(function, lambda_params);
+			return ReplaceMacroParametersInArguments(function, lambda_params, false);
 		}
 		break;
 	}
 	case ExpressionClass::SUBQUERY: {
 		auto &sq = (expr->Cast<SubqueryExpression>()).Subquery();
-		ParsedExpressionIterator::EnumerateQueryNodeChildren(
-		    *sq->node, [&](unique_ptr<ParsedExpression> &child) { ReplaceMacroParameters(child, lambda_params); });
+		ReplaceMacroParameters(*sq->node, lambda_params);
 		break;
 	}
 	default:

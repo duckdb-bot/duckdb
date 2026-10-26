@@ -182,7 +182,7 @@ QueryResultState BufferedData::ReplenishBuffer(ClientContextLock &context_lock, 
 		// Nothing runs on this thread until a worker finishes or reschedules a task, or queues a unit or parks with
 		// one. The flag is set before WaitForTask checks the buffer, so a producer that comes after that check wakes us
 		consumer_waiting = true;
-		cc->WaitForTask(context_lock, result);
+		cc->WaitForTask(context_lock, result, true);
 		consumer_waiting = false;
 	}
 	if (result.HasError()) {

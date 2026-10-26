@@ -378,7 +378,7 @@ void Executor::UnregisterTask() {
 #endif
 }
 
-void Executor::WaitForTask() {
+void Executor::WaitForTask(bool streaming_consumer) {
 #ifndef DUCKDB_NO_THREADS
 	static constexpr std::chrono::microseconds WAIT_TIME_MS = std::chrono::microseconds(WAIT_TIME * 1000);
 	auto begin = TimePoint::Tick();
@@ -396,10 +396,10 @@ void Executor::WaitForTask() {
 		return;
 	}
 	auto buffer = GetResultBuffer();
-	if (buffer && buffer->ConsumerWaiting() && buffer->Lifetime() != ResultLifetime::RETAINED &&
+	if (streaming_consumer && buffer && buffer->Lifetime() != ResultLifetime::RETAINED &&
 	    buffer->ReplenishSatisfied()) {
-		// The streaming consumer, the only thread that waits with the flag set, can go on with the units it has. A
-		// producer that queues a unit or parks later signals under this lock, so the wait below cannot miss it
+		// The streaming consumer can go on with the units it has. A producer that queues a unit or parks later
+		// signals under this lock, so the wait below cannot miss it
 		blocked_thread_time += blocked_micros;
 		return;
 	}

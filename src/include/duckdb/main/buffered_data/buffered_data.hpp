@@ -119,10 +119,6 @@ public:
 	void SetExecutor(Executor &executor_p) {
 		executor = &executor_p;
 	}
-	//! Whether the consumer waits in Executor::WaitForTask for the buffer
-	bool ConsumerWaiting() const {
-		return consumer_waiting;
-	}
 	//! Whether the blocking replenish can stop: a unit is poppable, and the buffer will
 	//! not accept more input right now
 	virtual bool ReplenishSatisfied() = 0;

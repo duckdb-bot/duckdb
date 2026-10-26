@@ -161,3 +161,9 @@ query II
 EXPLAIN SELECT x IS NULL, x > -1, x BETWEEN -1 AND 100, coalesce(NULL::INTEGER, x) FROM t;
 ----
 physical_plan	<REGEX>:.*Projections:.*false.*true.*true.*x.*
+
+# a conjunction that statistics replace with a constant no longer reads its column
+query II
+EXPLAIN SELECT x > 0 OR x > 1 FROM v;
+----
+physical_plan	<!REGEX>:.*Projections: x.*

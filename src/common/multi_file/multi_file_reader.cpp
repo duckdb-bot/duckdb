@@ -878,6 +878,19 @@ ReaderInitializeType MultiFileReader::CreateMapping(
 	                     virtual_columns, bind_data.mapping);
 }
 
+string MultiFileReader::GetCastErrorHint(const BaseFileReader &reader, const Identifier &column_name,
+                                         const LogicalType &source_type, const LogicalType &target_type) {
+	auto reader_type = reader.GetReaderType();
+	return StringUtil::Format("In file \"%s\" the column %s has type %s, but we are trying to read it as type %s."
+	                          "\nThis can happen when reading multiple %s files. The schema information is taken from "
+	                          "the first %s file by default. Possible solutions:\n"
+	                          "* Enable the union_by_name=True option to combine the schema of all %s files "
+	                          "(https://duckdb.org/docs/current/data/multiple_files/combining_schemas)\n"
+	                          "* Use a COPY statement to automatically derive types from an existing table.",
+	                          reader.GetFileName(), column_name, source_type, target_type, reader_type, reader_type,
+	                          reader_type);
+}
+
 static string GetExtendedMultiFileError(const MultiFileBindData &bind_data, const Expression &expr,
                                         BaseFileReader &reader, idx_t expr_idx, string &first_message) {
 	if (expr.GetExpressionType() != ExpressionType::OPERATOR_CAST) {
@@ -913,17 +926,10 @@ static string GetExtendedMultiFileError(const MultiFileBindData &bind_data, cons
 		    function_name);
 	} else {
 		// read_parquet() with multiple files
-		extended_error = StringUtil::Format(
-		    "In file \"%s\" the column %s has type %s, but we are trying to read it as type %s."
-		    "\nThis can happen when reading multiple %s files. The schema information is taken from "
-		    "the first %s file by default. Possible solutions:\n"
-		    "* Enable the union_by_name=True option to combine the schema of all %s files "
-		    "(https://duckdb.org/docs/current/data/multiple_files/combining_schemas)\n"
-		    "* Use a COPY statement to automatically derive types from an existing table.",
-		    reader.GetFileName(), local_col.name, source_type, target_type, reader_type, reader_type, reader_type);
+		extended_error = MultiFileReader::GetCastErrorHint(reader, local_col.name, source_type, target_type);
 	}
 	first_message =
-	    StringUtil::Format("failed to cast column %s from type %s to %s: ", local_col.name, source_type, target_type);
+	    StringUtil::Format("failed to cast column %s from type %s to %s", local_col.name, source_type, target_type);
 	return extended_error;
 }
 

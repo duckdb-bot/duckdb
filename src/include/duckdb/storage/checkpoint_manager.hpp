@@ -161,6 +161,8 @@ public:
 	optional_ptr<ClientContext> GetClientContext() const {
 		return context;
 	}
+	//! Whether an unbound index holds operations buffered by the WAL replay, which only binding it applies
+	static bool HasBufferedIndexReplays(AttachedDatabase &db);
 
 public:
 	void WriteTable(TableCatalogEntry &table, Serializer &serializer) override;

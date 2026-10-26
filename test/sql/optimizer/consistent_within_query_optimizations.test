@@ -58,17 +58,17 @@ statement ok
 PREPARE older AS SELECT count(*) FROM db.marks WHERE date_diff('millisecond', ts, now()) >= 1000;
 
 statement ok
-SET VARIABLE start_time = TIMESTAMPTZ '2000-01-01 00:00:00+00';
+SET VARIABLE start_ms = 0;
 
 # a statement that reads no table is planned again only because it calls now() and getvariable()
 statement ok
-PREPARE elapsed AS SELECT date_diff('millisecond', getvariable('start_time'), now()) >= 1000;
+PREPARE elapsed AS SELECT epoch_ms(now()) - getvariable('start_ms') >= 1000;
 
 statement ok
 BEGIN;
 
 statement ok
-SET VARIABLE start_time = now();
+SET VARIABLE start_ms = epoch_ms(now());
 
 query I
 EXECUTE elapsed;

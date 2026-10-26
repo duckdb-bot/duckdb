@@ -23,6 +23,7 @@
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
+#include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_expanded_expression.hpp"
 #include "duckdb/planner/expression_binder/column_alias_binder.hpp"
@@ -420,6 +421,25 @@ static unique_ptr<Expression> BindUncollatedFirst(Binder &binder, unique_ptr<Exp
 	return std::move(function);
 }
 
+//! Groups a volatile expression by the collation of one evaluation of it, computed below the aggregate. Returns that
+//! evaluation for the first(x) aggregate, or nullptr when there is no collation.
+static unique_ptr<Expression> PushVolatileGroupCollation(Binder &binder, BoundSelectNode &result,
+                                                         unique_ptr<Expression> &expr, const LogicalType &type) {
+	if (!result.volatile_group_index.IsValid()) {
+		result.volatile_group_index = binder.GenerateTableIndex();
+	}
+	auto index = ColumnBinding::PushExpression(result.volatile_groups, std::move(expr));
+	auto evaluation = make_uniq<BoundColumnRefExpression>(type, ColumnBinding(result.volatile_group_index, index));
+	expr = evaluation->Copy();
+	if (!ExpressionBinder::PushCollation(binder.context, expr, type)) {
+		// without a collation the group is evaluated once anyway
+		expr = std::move(result.volatile_groups.back());
+		result.volatile_groups.pop_back();
+		return nullptr;
+	}
+	return std::move(evaluation);
+}
+
 BoundStatement Binder::BindNode(SelectNode &statement) {
 	D_ASSERT(statement.from_table);
 
@@ -640,12 +660,18 @@ BoundStatement Binder::BindSelectNode(SelectNode &statement, BoundStatement from
 			// the group and the first(x) aggregate below are separate expression trees, so we need our own
 			// copy - it must be made before pushing the collation, which can replace the expression
 			bool contains_subquery = bound_expr->HasSubquery();
-			unique_ptr<Expression> uncollated_expr = contains_subquery ? nullptr : bound_expr->Copy();
-
-			// push a potential collation, if necessary
-			bool requires_collation = ExpressionBinder::PushCollation(context, bound_expr, group_type);
-			if (requires_collation && contains_subquery) {
-				uncollated_expr = group_binder.Bind(parsed_copy);
+			unique_ptr<Expression> uncollated_expr;
+			bool requires_collation;
+			if (bound_expr->IsVolatile()) {
+				uncollated_expr = PushVolatileGroupCollation(*this, result, bound_expr, group_type);
+				requires_collation = uncollated_expr != nullptr;
+			} else {
+				uncollated_expr = contains_subquery ? nullptr : bound_expr->Copy();
+				// push a potential collation, if necessary
+				requires_collation = ExpressionBinder::PushCollation(context, bound_expr, group_type);
+				if (requires_collation && contains_subquery) {
+					uncollated_expr = group_binder.Bind(parsed_copy);
+				}
 			}
 			if (requires_collation) {
 				// if there is a collation on a group x, we should group by the collated expr,
@@ -762,8 +788,12 @@ BoundStatement Binder::BindSelectNode(SelectNode &statement, BoundStatement from
 		auto return_type = expr->GetReturnType();
 		// group by the collated expression, and select the uncollated value through a first(x) aggregate
 		unique_ptr<Expression> uncollated_first;
-		// avoid evaluating volatile groups twice
-		if (!expr->IsVolatile()) {
+		if (expr->IsVolatile()) {
+			auto evaluation = PushVolatileGroupCollation(*this, result, expr, return_type);
+			if (evaluation) {
+				uncollated_first = BindUncollatedFirst(*this, std::move(evaluation));
+			}
+		} else {
 			// copy before pushing the collation, which can replace the expression
 			bool contains_subquery = expr->HasSubquery();
 			auto uncollated_expr = contains_subquery ? nullptr : expr->Copy();

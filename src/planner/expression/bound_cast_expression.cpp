@@ -109,6 +109,13 @@ unique_ptr<Expression> BoundCastExpression::AddArrayCastToList(ClientContext &co
 	return BoundCastExpression::AddCastToType(context, std::move(expr), LogicalType::LIST(child_type));
 }
 
+unique_ptr<Expression> BoundCastExpression::AddListCastForUnnest(ClientContext &context, unique_ptr<Expression> expr) {
+	if (expr->GetReturnType().id() == LogicalTypeId::VARIANT) {
+		return BoundCastExpression::AddCastToType(context, std::move(expr), LogicalType::LIST(LogicalType::VARIANT()));
+	}
+	return AddArrayCastToList(context, std::move(expr));
+}
+
 //! Whether a cast between nested types is invertible: the structure has to stay the same, and all child casts have to
 //! be invertible
 static bool NestedCastIsInvertible(const LogicalType &source_type, const LogicalType &target_type) {

@@ -54,6 +54,8 @@ struct BoundCastExpression {
 
 	//! If the expression returns an array, cast it to return a list with the same child type. Otherwise do nothing.
 	DUCKDB_API static unique_ptr<Expression> AddArrayCastToList(ClientContext &context, unique_ptr<Expression> expr);
+	//! As AddArrayCastToList, and also cast a VARIANT, whose type is only known at run time, to a list of VARIANT
+	DUCKDB_API static unique_ptr<Expression> AddListCastForUnnest(ClientContext &context, unique_ptr<Expression> expr);
 
 	//! Returns true if a cast is invertible (i.e. CAST(s -> t -> s) = s for all values of s). This is not true for e.g.
 	//! boolean casts, because that can be e.g. -1 -> TRUE -> 1. This is necessary to prevent some optimizer bugs.

@@ -19,12 +19,13 @@ foreach disable false true
 statement ok
 SET debug_disable_optimizer={disable};
 
-# Native correlated UNION quantifiers already work, including NULL and empty groups.
+# Native correlated UNION quantifiers already work, including NULL and empty groups. A NULL member of the same tag
+# makes the comparison NULL (duckdblabs/bot-issue-tracker#691).
 query II
 SELECT g,u=ANY(SELECT b.u FROM union_candidates b WHERE b.g=p.g) FROM union_probes p ORDER BY g;
 ----
 0	true
-1	false
+1	NULL
 2	false
 3	NULL
 

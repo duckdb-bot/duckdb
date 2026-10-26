@@ -168,3 +168,73 @@ statement ok
 DROP TABLE t0
 
 endloop
+
+# the smallest finite value sorts below -infinity, so -infinity can lie between finite bounds
+statement ok
+CREATE TABLE dates_min(d DATE);
+
+statement ok
+INSERT INTO dates_min VALUES (make_date(-2147483647 - 1)), ('-infinity'), ('1970-01-01');
+
+query IIIIIIIIIIIIIIIIIIIIIII
+SELECT count(year(d)), count(month(d)), count(day(d)), count(decade(d)), count(century(d)), count(millennium(d)),
+       count(quarter(d)), count(dayofyear(d)), count(dayofweek(d)), count(isodow(d)), count(era(d)), count(epoch(d)),
+       count(julian(d)), count(hour(d)), count(minute(d)), count(second(d)), count(millisecond(d)),
+       count(microsecond(d)), count(nanosecond(d)), count(epoch_ms(d)), count(weekday(d)), count(dayofmonth(d)),
+       count(date_part('year', d))
+FROM dates_min
+----
+2	2	2	2	2	2	2	2	2	2	2	2	2	2	2	2	2	2	2	2	2	2	2
+
+statement ok
+CREATE TABLE timestamps_min(ts TIMESTAMP);
+
+statement ok
+INSERT INTO timestamps_min VALUES (make_timestamp(-9223372036854775807 - 1)), ('-infinity'), ('1970-01-01');
+
+query IIIIIIIIIIIIIIIIIIIIIIIIIII
+SELECT count(year(ts)), count(month(ts)), count(day(ts)), count(decade(ts)), count(century(ts)),
+       count(millennium(ts)), count(quarter(ts)), count(dayofyear(ts)), count(week(ts)), count(isoyear(ts)),
+       count(yearweek(ts)), count(dayofweek(ts)), count(isodow(ts)), count(era(ts)), count(epoch(ts)),
+       count(julian(ts)), count(hour(ts)), count(minute(ts)), count(second(ts)), count(millisecond(ts)),
+       count(microsecond(ts)), count(nanosecond(ts)), count(epoch_us(ts)), count(weekday(ts)), count(weekofyear(ts)),
+       count(dayofmonth(ts)), count(timezone(ts))
+FROM timestamps_min
+----
+2	2	2	2	2	2	2	2	2	2	2	2	2	2	2	2	2	2	2	2	2	2	2	2	2	2	2
+
+statement ok
+CREATE TABLE timestamps_ns_min(ts TIMESTAMP_NS);
+
+statement ok
+INSERT INTO timestamps_ns_min VALUES (make_timestamp_ns(-9223372036854775807 - 1)), ('-infinity'), ('1970-01-01');
+
+query I
+SELECT count(nanosecond(ts)) FROM timestamps_ns_min
+----
+2
+
+# the smallest finite values have date parts
+statement ok
+DELETE FROM dates_min WHERE NOT isfinite(d)
+
+statement ok
+DELETE FROM timestamps_min WHERE NOT isfinite(ts)
+
+query IIII
+SELECT count(year(d)), min(year(d)), max(year(d)), count(month(d)) FROM dates_min
+----
+2	-5877641	1970	2
+
+query IIII
+SELECT count(year(ts)), min(year(ts)), max(year(ts)), count(month(ts)) FROM timestamps_min
+----
+2	-290308	1970	2
+
+statement ok
+DELETE FROM dates_min WHERE year(d) = 1970
+
+query II
+SELECT count(year(d)), year(min(d)) FROM dates_min
+----
+1	-5877641

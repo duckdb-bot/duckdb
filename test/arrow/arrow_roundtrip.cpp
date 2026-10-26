@@ -184,6 +184,64 @@ TEST_CASE("Test arrow NULL value roundtrip", "[arrow]") {
 	TestArrowRoundtrip("SELECT [{'x': NULL, 'y': NULL}, {'x': NULL, 'y': NULL}]");
 }
 
+TEST_CASE("Test arrow roundtrip of ENUM in fixed-size arrays", "[arrow]") {
+	DuckDB db;
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("CREATE TYPE color AS ENUM ('red', 'green', 'blue')"));
+	// an ENUM is exported as a dictionary with uint8 indices and scanned as its VARCHAR values
+	string query = "SELECT CASE WHEN i % 7 = 6 THEN NULL ELSE ['red', NULL, ['red', 'green', 'blue'][i % 3 + 1]] "
+	               "END::color[3] AS a, [{'s': ['blue', 'green']}]::STRUCT(s color[2])[] AS l, "
+	               "[['green'], [NULL]]::color[1][2] AS aa, [{'c': 'blue'}]::STRUCT(c color)[1] AS sa "
+	               "FROM range(3000) t(i)";
+	auto result = con.Query(query);
+	REQUIRE_NO_FAIL(*result);
+	auto types = result->GetTypes();
+	auto names = IdentifiersToStrings(result->GetNames());
+	ArrowTestFactory factory(std::move(types), std::move(names), std::move(result), con.context->GetClientProperties(),
+	                         *con.context);
+	auto arrow_result = ArrowTestHelper::ScanArrowObject(con, ArrowTestHelper::ConstructArrowScan(factory));
+	REQUIRE(arrow_result);
+	child_list_t<LogicalType> l_children {{"s", LogicalType::ARRAY(LogicalType::VARCHAR, 2)}};
+	child_list_t<LogicalType> sa_children {{"c", LogicalType::VARCHAR}};
+	vector<LogicalType> expected_types {LogicalType::ARRAY(LogicalType::VARCHAR, 3),
+	                                    LogicalType::LIST(LogicalType::STRUCT(l_children)),
+	                                    LogicalType::ARRAY(LogicalType::ARRAY(LogicalType::VARCHAR, 1), 2),
+	                                    LogicalType::ARRAY(LogicalType::STRUCT(sa_children), 1)};
+	REQUIRE(arrow_result->GetTypes() == expected_types);
+	REQUIRE(arrow_result->RowCount() == 3000);
+	REQUIRE(ArrowTestHelper::RunArrowComparison(con, query, false));
+}
+
+// Scans the Arrow export of the query in one batch and compares the scan with the expected query, in order.
+static bool ArrowRoundtripMatches(Connection &con, const string &query, const string &expected, idx_t row_count) {
+	auto result = con.context->Query(query, make_shared_ptr<ArrowFormat>(row_count));
+	REQUIRE_NO_FAIL(*result);
+	auto types = result->GetTypes();
+	auto names = IdentifiersToStrings(result->GetNames());
+	ArrowTestFactory factory(std::move(types), std::move(names), std::move(result), con.context->GetClientProperties(),
+	                         *con.context);
+	auto arrow_result = ArrowTestHelper::ScanArrowObject(con, ArrowTestHelper::ConstructArrowScan(factory));
+	REQUIRE(arrow_result);
+	return arrow_result->Equals(*con.Query(expected), false);
+}
+
+TEST_CASE("Test arrow roundtrip of empty lists of ENUM fixed-size arrays", "[arrow]") {
+	DuckDB db;
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("CREATE TYPE color AS ENUM ('red', 'green', 'blue')"));
+	// the lists of the first and the third chunk hold no arrays, so their dictionary has no elements to look up
+	auto vector_size = std::to_string(STANDARD_VECTOR_SIZE);
+	auto lists = "CASE WHEN i < " + vector_size + " OR i >= 2 * " + vector_size + " THEN [] ELSE [['red', NULL]] END";
+	auto rows = " FROM range(2 * " + vector_size + " + 100) t(i)";
+	auto query = "SELECT (" + lists + ")::color[2][] AS l" + rows;
+	REQUIRE(ArrowRoundtripMatches(con, query, "SELECT (" + lists + ")::VARCHAR[2][]" + rows,
+	                              2 * STANDARD_VECTOR_SIZE + 100));
+	REQUIRE(ArrowTestHelper::RunArrowComparison(con, query, true));
+	string empty_query = "SELECT []::color[2][] AS l FROM range(3) t(i)";
+	REQUIRE(ArrowRoundtripMatches(con, empty_query, "SELECT []::VARCHAR[2][] FROM range(3) t(i)", 3));
+	REQUIRE(ArrowTestHelper::RunArrowComparison(con, empty_query, true));
+}
+
 TEST_CASE("Test Arrow fixed-size binary format parsing", "[arrow]") {
 	// Verify that GetTypeFromFormat correctly parses the size from "w:NN" format strings.
 	// Regression test for duckdb/duckdb-wasm#2199: format.find(':') would match colons

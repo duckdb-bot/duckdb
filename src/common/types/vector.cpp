@@ -300,6 +300,20 @@ void Vector::AddAuxiliaryData(unique_ptr<AuxiliaryDataHolder> data) {
 	buffer->AddAuxiliaryData(std::move(data));
 }
 
+//! Collects the auxiliary data of the buffers that the auxiliary data holds, as a slice holds the buffer it slices,
+//! whose heap a reset of that buffer would release
+static void CollectHeldAuxiliaryData(const AuxiliaryDataSet &auxiliary_data,
+                                     vector<buffer_ptr<AuxiliaryDataSet>> &result) {
+	for (auto &holder : auxiliary_data.data) {
+		auto held_buffer = holder->GetHeldBuffer();
+		if (!held_buffer || !held_buffer->GetAuxiliaryData()) {
+			continue;
+		}
+		result.push_back(held_buffer->GetAuxiliaryData());
+		CollectHeldAuxiliaryData(*held_buffer->GetAuxiliaryData(), result);
+	}
+}
+
 void Vector::AddHeapReference(const Vector &other) {
 	if (other.GetVectorType() == VectorType::DICTIONARY_VECTOR) {
 		AddHeapReference(DictionaryVector::Child(other));
@@ -309,7 +323,12 @@ void Vector::AddHeapReference(const Vector &other) {
 	if (!auxiliary_data) {
 		return;
 	}
+	vector<buffer_ptr<AuxiliaryDataSet>> held_auxiliary_data;
+	CollectHeldAuxiliaryData(*auxiliary_data, held_auxiliary_data);
 	AddAuxiliaryData(make_uniq<AuxiliaryDataSetHolder>(auxiliary_data));
+	for (auto &held : held_auxiliary_data) {
+		AddAuxiliaryData(make_uniq<AuxiliaryDataSetHolder>(std::move(held)));
+	}
 }
 
 void Vector::Reserve(idx_t to_reserve_p) {

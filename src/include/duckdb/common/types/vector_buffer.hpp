@@ -10,6 +10,7 @@
 
 #include "duckdb/common/common.hpp"
 #include "duckdb/common/types/selection_vector.hpp"
+#include "duckdb/common/optional_ptr.hpp"
 #include "duckdb/common/types/string_heap.hpp"
 #include "duckdb/common/types/string_type.hpp"
 #include "duckdb/storage/buffer/buffer_handle.hpp"
@@ -49,6 +50,10 @@ struct AuxiliaryDataHolder {
 	virtual idx_t GetAllocationSize() const {
 		return 0;
 	}
+	//! The buffer that this holder keeps alive, if any. Its own auxiliary data can hold the strings of a slice of it
+	virtual optional_ptr<VectorBuffer> GetHeldBuffer() const {
+		return nullptr;
+	}
 };
 
 struct AuxiliaryDataSet {
@@ -76,6 +81,10 @@ private:
 class VectorBufferHolder : public AuxiliaryDataHolder {
 public:
 	explicit VectorBufferHolder(buffer_ptr<VectorBuffer> buffer_p) : buffer(std::move(buffer_p)) {
+	}
+
+	optional_ptr<VectorBuffer> GetHeldBuffer() const override {
+		return buffer.get();
 	}
 
 private:

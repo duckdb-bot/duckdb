@@ -127,6 +127,38 @@ FilterResult FilterCombiner::AddConjuncts(unique_ptr<Expression> expr) {
 	return FilterResult::SUCCESS;
 }
 
+//! Whether values of the type that compare equal are also identical, so that every expression gives them the same
+//! result. Signed zeros compare equal but print differently, as do intervals of the same length and strings that a
+//! collation compares
+static bool EqualValuesAreIdentical(const LogicalType &type) {
+	switch (type.id()) {
+	case LogicalTypeId::FLOAT:
+	case LogicalTypeId::DOUBLE:
+	case LogicalTypeId::INTERVAL:
+	case LogicalTypeId::VARIANT:
+		return false;
+	case LogicalTypeId::VARCHAR:
+		return StringType::GetCollation(type).empty();
+	case LogicalTypeId::LIST:
+		return EqualValuesAreIdentical(ListType::GetChildType(type));
+	case LogicalTypeId::ARRAY:
+		return EqualValuesAreIdentical(ArrayType::GetChildType(type));
+	case LogicalTypeId::MAP:
+		return EqualValuesAreIdentical(MapType::KeyType(type)) && EqualValuesAreIdentical(MapType::ValueType(type));
+	case LogicalTypeId::STRUCT:
+	case LogicalTypeId::TUPLE:
+	case LogicalTypeId::UNION:
+		for (auto &child : StructType::GetChildTypes(type)) {
+			if (!EqualValuesAreIdentical(child.second)) {
+				return false;
+			}
+		}
+		return true;
+	default:
+		return true;
+	}
+}
+
 void FilterCombiner::GenerateEquivalentFilters(const Expression &filter,
                                                const std::function<void(unique_ptr<Expression> filter)> &callback) {
 	if (filter.IsVolatile()) {
@@ -137,6 +169,10 @@ void FilterCombiner::GenerateEquivalentFilters(const Expression &filter,
 	ExpressionIterator::VisitExpression<BoundColumnRefExpression>(filter, [&](const BoundColumnRefExpression &col) {
 		auto entry = equivalence_set_map.find(col);
 		if (entry == equivalence_set_map.end()) {
+			return;
+		}
+		if (!EqualValuesAreIdentical(col.GetReturnType())) {
+			// the filter can tell equal values apart, so it does not hold for the other columns of the set
 			return;
 		}
 		for (auto &existing : candidate_columns) {

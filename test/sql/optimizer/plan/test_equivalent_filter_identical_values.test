@@ -1,0 +1,73 @@
+# name: test/sql/optimizer/plan/test_equivalent_filter_identical_values.test
+# description: A filter is copied to the other columns of a join key only when equal values of the key are identical (duckdblabs/bot-issue-tracker#669)
+# group: [plan]
+
+statement ok
+CREATE TABLE d (x DOUBLE, f FLOAT, s STRUCT(a DOUBLE), l DOUBLE[]);
+
+statement ok
+CREATE TABLE z (x DOUBLE, f FLOAT, s STRUCT(a DOUBLE), l DOUBLE[]);
+
+statement ok
+INSERT INTO d VALUES (-0.0::DOUBLE, -0.0::FLOAT, {'a': -0.0::DOUBLE}, [-0.0::DOUBLE]);
+
+statement ok
+INSERT INTO z VALUES (0.0, 0.0, {'a': 0.0}, [0.0]);
+
+query I
+SELECT count(*) FROM d JOIN z ON d.x = z.x WHERE d.x::VARCHAR = '-0.0';
+----
+1
+
+query I
+SELECT count(z.x) FROM d LEFT JOIN z ON d.x = z.x WHERE d.x::VARCHAR = '-0.0';
+----
+1
+
+query I
+SELECT count(*) FROM d JOIN z ON d.f = z.f WHERE d.f::VARCHAR = '-0.0';
+----
+1
+
+query I
+SELECT count(*) FROM d JOIN z ON d.s = z.s WHERE d.s::VARCHAR = '{''a'': -0.0}';
+----
+1
+
+query I
+SELECT count(*) FROM d JOIN z ON d.l = z.l WHERE d.l::VARCHAR = '[-0.0]';
+----
+1
+
+# the other side keeps its own value
+query II
+SELECT d.x::VARCHAR, z.x::VARCHAR FROM d JOIN z ON d.x = z.x WHERE d.x::VARCHAR = '-0.0';
+----
+-0.0	0.0
+
+# intervals of the same length compare equal
+statement ok
+CREATE TABLE di (i INTERVAL);
+
+statement ok
+CREATE TABLE zi (i INTERVAL);
+
+statement ok
+INSERT INTO di VALUES (INTERVAL '1 month');
+
+statement ok
+INSERT INTO zi VALUES (INTERVAL '30 days');
+
+query I
+SELECT count(*) FROM di JOIN zi ON di.i = zi.i WHERE di.i::VARCHAR = '1 month';
+----
+1
+
+# keys whose equal values are identical still get the filter on both sides
+statement ok
+CREATE TABLE t (f VARCHAR);
+
+query II
+EXPLAIN SELECT * FROM t AS t1 JOIN t AS t2 ON t1.f = t2.f WHERE right(t1.f, 1) = '2';
+----
+physical_plan	<REGEX>:.*right.*right.*

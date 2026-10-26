@@ -39,6 +39,26 @@ SELECT count(*) FROM d JOIN z ON d.l = z.l WHERE d.l::VARCHAR = '[-0.0]';
 ----
 1
 
+query I
+SELECT count(*) FROM (SELECT [x]::DOUBLE[1] AS a FROM d) d JOIN (SELECT [x]::DOUBLE[1] AS a FROM z) z ON d.a = z.a WHERE d.a::VARCHAR = '[-0.0]';
+----
+1
+
+query I
+SELECT count(*) FROM (SELECT MAP {'k': x} AS m FROM d) d JOIN (SELECT MAP {'k': x} AS m FROM z) z ON d.m = z.m WHERE d.m::VARCHAR = '{k=-0.0}';
+----
+1
+
+query I
+SELECT count(*) FROM (SELECT MAP {x: 'v'} AS m FROM d) d JOIN (SELECT MAP {x: 'v'} AS m FROM z) z ON d.m = z.m WHERE d.m::VARCHAR = '{-0.0=v}';
+----
+1
+
+query I
+SELECT count(*) FROM (SELECT union_value(v := x) AS u FROM d) d JOIN (SELECT union_value(v := x) AS u FROM z) z ON d.u = z.u WHERE d.u::VARCHAR = '-0.0';
+----
+1
+
 # the other side keeps its own value
 query II
 SELECT d.x::VARCHAR, z.x::VARCHAR FROM d JOIN z ON d.x = z.x WHERE d.x::VARCHAR = '-0.0';

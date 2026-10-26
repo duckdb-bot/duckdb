@@ -2,6 +2,7 @@
 
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/common/enums/expression_type.hpp"
+#include "duckdb/common/type_visitor.hpp"
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/function/scalar/string_common.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
@@ -131,32 +132,19 @@ FilterResult FilterCombiner::AddConjuncts(unique_ptr<Expression> expr) {
 //! result. Signed zeros compare equal but print differently, as do intervals of the same length and strings that a
 //! collation compares
 static bool EqualValuesAreIdentical(const LogicalType &type) {
-	switch (type.id()) {
-	case LogicalTypeId::FLOAT:
-	case LogicalTypeId::DOUBLE:
-	case LogicalTypeId::INTERVAL:
-	case LogicalTypeId::VARIANT:
-		return false;
-	case LogicalTypeId::VARCHAR:
-		return StringType::GetCollation(type).empty();
-	case LogicalTypeId::LIST:
-		return EqualValuesAreIdentical(ListType::GetChildType(type));
-	case LogicalTypeId::ARRAY:
-		return EqualValuesAreIdentical(ArrayType::GetChildType(type));
-	case LogicalTypeId::MAP:
-		return EqualValuesAreIdentical(MapType::KeyType(type)) && EqualValuesAreIdentical(MapType::ValueType(type));
-	case LogicalTypeId::STRUCT:
-	case LogicalTypeId::TUPLE:
-	case LogicalTypeId::UNION:
-		for (auto &child : StructType::GetChildTypes(type)) {
-			if (!EqualValuesAreIdentical(child.second)) {
-				return false;
-			}
+	return !TypeVisitor::Contains(type, [](const LogicalType &child) {
+		switch (child.id()) {
+		case LogicalTypeId::FLOAT:
+		case LogicalTypeId::DOUBLE:
+		case LogicalTypeId::INTERVAL:
+		case LogicalTypeId::VARIANT:
+			return true;
+		case LogicalTypeId::VARCHAR:
+			return !StringType::GetCollation(child).empty();
+		default:
+			return false;
 		}
-		return true;
-	default:
-		return true;
-	}
+	});
 }
 
 void FilterCombiner::GenerateEquivalentFilters(const Expression &filter,

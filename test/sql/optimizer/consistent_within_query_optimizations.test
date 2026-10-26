@@ -57,12 +57,38 @@ logical_opt	<REGEX>:.*Empty Result.*
 statement ok
 PREPARE older AS SELECT count(*) FROM db.marks WHERE date_diff('millisecond', ts, now()) >= 1000;
 
+statement ok
+SET VARIABLE start_time = TIMESTAMPTZ '2000-01-01 00:00:00+00';
+
+# a statement that reads no table is planned again only because it calls now() and getvariable()
+statement ok
+PREPARE elapsed AS SELECT date_diff('millisecond', getvariable('start_time'), now()) >= 1000;
+
+statement ok
+BEGIN;
+
+statement ok
+SET VARIABLE start_time = now();
+
+query I
+EXECUTE elapsed;
+----
+false
+
+statement ok
+COMMIT;
+
 sleep 1100 millisecond
 
 query I
 EXECUTE older;
 ----
 4096
+
+query I
+EXECUTE elapsed;
+----
+true
 
 # the TimeZone and other settings can change between executions
 statement ok
@@ -123,7 +149,10 @@ EXPLAIN ANALYZE SELECT s FROM db.main.schema_names WHERE in_search_path('db', s)
 analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 4.*
 
 statement ok
-USE memory;
+ATTACH ':memory:' AS elsewhere;
+
+statement ok
+USE elsewhere;
 
 query I
 EXECUTE in_path;

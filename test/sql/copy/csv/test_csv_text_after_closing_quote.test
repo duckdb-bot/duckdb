@@ -1,0 +1,98 @@
+# name: test/sql/copy/csv/test_csv_text_after_closing_quote.test
+# description: Without strict mode, the text after a closing quote is read up to its last byte
+# group: [csv]
+
+statement ok
+COPY (SELECT l FROM (VALUES (1, 'id|name|x'), (2, '54|''Iv'' Ivã|m'), (3, '55|''enclosed''|n'), (4, '56|''Iv'' Ivx|m')) t(i, l) ORDER BY i) TO '{TEST_DIR}/text_after_quote.csv' (HEADER false, QUOTE '');
+
+query III
+SELECT * FROM read_csv('{TEST_DIR}/text_after_quote.csv', strict_mode = false) ORDER BY id
+----
+54	Iv' Ivã	m
+55	enclosed	n
+56	Iv' Ivx	m
+
+statement ok
+CREATE TABLE copied (id INTEGER, name VARCHAR, x VARCHAR);
+
+statement ok
+COPY copied FROM '{TEST_DIR}/text_after_quote.csv' (AUTO_DETECT true, STRICT_MODE false);
+
+query III
+SELECT * FROM copied ORDER BY id
+----
+54	Iv' Ivã	m
+55	enclosed	n
+56	Iv' Ivx	m
+
+# the same with values over buffer ends
+foreach buffer_size 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40
+
+query III
+SELECT * FROM read_csv('{TEST_DIR}/text_after_quote.csv', strict_mode = false, delim = '|', quote = '''', header = true, buffer_size = {buffer_size}) ORDER BY id
+----
+54	Iv' Ivã	m
+55	enclosed	n
+56	Iv' Ivx	m
+
+endloop
+
+# double quotes, with and without an escape, and spaces after a closing quote
+statement ok
+COPY (SELECT l FROM (VALUES (0, 'a;b'), (1, '1;"pdet" holanda'), (2, '2;"enclosed"'), (3, '3;"pdet"  '), (4, '4;"pd""et" holanda')) t(i, l) ORDER BY i) TO '{TEST_DIR}/text_after_double_quote.csv' (HEADER false, QUOTE '');
+
+foreach buffer_size 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 1000
+
+query II
+SELECT a, '#' || b || '#' FROM read_csv('{TEST_DIR}/text_after_double_quote.csv', strict_mode = false, delim = ';', quote = '"', escape = '', header = true, buffer_size = {buffer_size}) ORDER BY a
+----
+1	#pdet" holanda#
+2	#enclosed#
+3	#pdet#
+4	#pd""et" holanda#
+
+query II
+SELECT a, '#' || b || '#' FROM read_csv('{TEST_DIR}/text_after_double_quote.csv', strict_mode = false, delim = ';', quote = '"', escape = '"', header = true, buffer_size = {buffer_size}) ORDER BY a
+----
+1	#pdet holanda#
+2	#enclosed#
+3	#pdet#
+4	#pd"et holanda#
+
+endloop
+
+# a delimiter of two bytes, after the value too
+statement ok
+COPY (SELECT l FROM (VALUES (0, 'a||b||c'), (1, '1||"pdet" holanda||x'), (2, '2||"enclosed"||y'), (3, '3||"pdet"  ||z')) t(i, l) ORDER BY i) TO '{TEST_DIR}/text_after_quote_two_byte_delimiter.csv' (HEADER false, QUOTE '');
+
+foreach buffer_size 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 1000
+
+query III
+SELECT a, '#' || b || '#', c FROM read_csv('{TEST_DIR}/text_after_quote_two_byte_delimiter.csv', strict_mode = false, delim = '||', quote = '"', escape = '', header = true, buffer_size = {buffer_size}) ORDER BY a
+----
+1	#pdet" holanda#	x
+2	#enclosed#	y
+3	#pdet#	z
+
+endloop
+
+# a quoted value of only spaces at the end of the file is empty, for any buffer size
+foreach buffer_size 8 9 10 11 12 1000
+
+query II
+SELECT length(v), v IS NULL FROM read_csv('{DATA_DIR}/csv/quoted_spaces_at_end.csv', auto_detect = false, header = true, columns = {'id': 'INTEGER', 'v': 'VARCHAR'}, delim = ';', quote = '"', escape = '', strict_mode = false, buffer_size = {buffer_size})
+----
+NULL	true
+
+# an unterminated quoted value at the end of the file keeps its last byte
+query I
+SELECT v FROM read_csv('{DATA_DIR}/csv/quoted_value_at_end.csv', auto_detect = false, header = true, columns = {'id': 'INTEGER', 'v': 'VARCHAR'}, delim = ';', quote = '"', escape = '', strict_mode = false, buffer_size = {buffer_size})
+----
+x
+
+query I
+SELECT v FROM read_csv('{DATA_DIR}/csv/quoted_value_spaces_at_end.csv', auto_detect = false, header = true, columns = {'id': 'INTEGER', 'v': 'VARCHAR'}, delim = ';', quote = '"', escape = '', strict_mode = false, buffer_size = {buffer_size})
+----
+x
+
+endloop

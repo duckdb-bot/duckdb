@@ -58,10 +58,10 @@ public:
 	//! Compare two sets of statistics and return whether the comparison is always true or false
 	static FilterPropagateResult PropagateComparison(const BaseStatistics &left, const BaseStatistics &right,
 	                                                 ExpressionType comparison);
-	//! Propagate statistics into the body of a lambda, given the statistics of each of its inputs by reference index
-	//! (an entry is null if nothing is known about that input)
-	void PropagateLambdaStatistics(unique_ptr<Expression> &lambda_expr,
-	                               const vector<unique_ptr<BaseStatistics>> &input_stats);
+
+	//! Propagate statistics into a lambda body, given the statistics of each body reference index
+	void PropagateLambdaStatistics(unique_ptr<Expression> &lambda_body,
+	                               const vector<unique_ptr<BaseStatistics>> &lambda_ref_stats);
 
 private:
 	//! Propagate statistics through an operator
@@ -175,8 +175,8 @@ private:
 	unordered_map<TableIndex, CTEStatistics> cte_stats_map;
 	//! Whether any expression, filter or join condition was removed, leaving columns that may now be unused
 	bool removed_expressions = false;
-	//! The statistics of the inputs of the lambda body that statistics are propagated into, by reference index
-	optional_ptr<const vector<unique_ptr<BaseStatistics>>> lambda_input_stats;
+	//! The statistics of each lambda body reference index, only set within PropagateLambdaStatistics
+	optional_ptr<const vector<unique_ptr<BaseStatistics>>> lambda_ref_stats;
 	//! Node stats for the current node
 	unique_ptr<NodeStatistics> node_stats;
 	//! Whether statistics changed which relations a filter depends on

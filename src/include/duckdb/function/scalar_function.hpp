@@ -93,7 +93,7 @@ struct FunctionStatisticsInput {
 	optional_ptr<FunctionData> bind_data;
 	vector<BaseStatistics> &child_stats;
 	unique_ptr<Expression> *expr_ptr;
-	//! The statistics propagator that calls the callback, if any, e.g. to propagate statistics into a lambda body
+	//! The statistics propagator, e.g. to propagate statistics into lambda bodies
 	optional_ptr<StatisticsPropagator> propagator;
 };
 

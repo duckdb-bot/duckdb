@@ -120,6 +120,7 @@ unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalOper
 		result = PropagateStatistics(node.Cast<LogicalWindow>(), node_ptr);
 		break;
 	case LogicalOperatorType::LOGICAL_UNNEST:
+		// unlike the default handler, also propagate into the unnest expressions
 		result = PropagateChildren(node, node_ptr);
 		for (auto &expr : node.expressions) {
 			PropagateExpression(expr);

@@ -93,10 +93,9 @@ public:
 	                                               vector<unique_ptr<Expression>> &arguments,
 	                                               const bool has_index = false);
 
-	//! Propagates the statistics of the list elements and the captured columns into the lambda body of
-	//! list_transform and list_filter
+	//! Propagates the list element and capture statistics into the lambda body
 	static unique_ptr<BaseStatistics> ListLambdaStats(ClientContext &context, FunctionStatisticsInput &input);
-	//! Propagates the statistics of the list elements and the captured columns into the lambda body of list_reduce
+	//! Like ListLambdaStats, for list_reduce, whose lambda body also receives the accumulator
 	static unique_ptr<BaseStatistics> ListReduceStats(ClientContext &context, FunctionStatisticsInput &input);
 
 	//! Internally executes list_transform

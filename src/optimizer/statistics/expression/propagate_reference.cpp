@@ -5,21 +5,25 @@ namespace duckdb {
 
 unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundReferenceExpression &ref,
                                                                      unique_ptr<Expression> &expr_ptr) {
-	// references only have statistics within a lambda body, where they refer to the inputs of the lambda
-	if (!lambda_input_stats || ref.Index() >= lambda_input_stats->size()) {
+	// references only carry statistics within a lambda body
+	if (!lambda_ref_stats) {
 		return nullptr;
 	}
-	auto &input_stats = (*lambda_input_stats)[ref.Index()];
-	return input_stats ? input_stats->ToUnique() : nullptr;
+	auto &ref_stats = *lambda_ref_stats;
+	auto index = ref.Index();
+	if (index >= ref_stats.size() || !ref_stats[index]) {
+		return nullptr;
+	}
+	return ref_stats[index]->ToUnique();
 }
 
-void StatisticsPropagator::PropagateLambdaStatistics(unique_ptr<Expression> &lambda_expr,
-                                                     const vector<unique_ptr<BaseStatistics>> &input_stats) {
-	// the inputs of an enclosing lambda body are restored afterwards, as nested lambdas have their own inputs
-	auto enclosing_input_stats = lambda_input_stats;
-	lambda_input_stats = &input_stats;
-	PropagateExpression(lambda_expr);
-	lambda_input_stats = enclosing_input_stats;
+void StatisticsPropagator::PropagateLambdaStatistics(unique_ptr<Expression> &lambda_body,
+                                                     const vector<unique_ptr<BaseStatistics>> &lambda_ref_stats_p) {
+	// save and restore the reference statistics, so that nested lambdas are handled
+	auto saved_ref_stats = lambda_ref_stats;
+	lambda_ref_stats = &lambda_ref_stats_p;
+	PropagateExpression(lambda_body);
+	lambda_ref_stats = saved_ref_stats;
 }
 
 } // namespace duckdb

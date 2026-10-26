@@ -409,50 +409,52 @@ unique_ptr<FunctionData> LambdaFunctions::ListLambdaBind(ClientContext &context,
 	return make_uniq<ListLambdaBindData>(bound_function.GetReturnType(), std::move(lambda_expr), has_index);
 }
 
-//! The lambda body reads [index?, element, accumulator?, captures...], as set up by LambdaExecuteInfo and
-//! ReduceExecuteInfo, where the captures are the children after the list, the lambda and the initial value
-static void PropagateListLambdaStats(FunctionStatisticsInput &input, const bool has_accumulator) {
+//! The lambda body's input chunk is [index?, element, accumulator?, remaining children...], see LambdaExecuteInfo
+static unique_ptr<BaseStatistics> PropagateLambdaStats(FunctionStatisticsInput &input, const idx_t accumulator_count) {
+	if (!input.propagator || !input.bind_data) {
+		return nullptr;
+	}
 	auto &bind_data = input.bind_data->Cast<ListLambdaBindData>();
-	if (!input.propagator || !bind_data.lambda_expr) {
-		return;
-	}
-	vector<unique_ptr<BaseStatistics>> input_stats;
-	if (bind_data.has_index) {
-		input_stats.push_back(nullptr);
-	}
-	input_stats.push_back(ListStats::GetChildStats(input.child_stats[0]).ToUnique());
-	if (has_accumulator) {
-		input_stats.push_back(nullptr);
+	if (!bind_data.lambda_expr) {
+		return nullptr;
 	}
 	auto &children = input.expr.GetChildren();
-	auto skip_initial = bind_data.has_initial;
-	for (idx_t child_idx = 1; child_idx < children.size(); child_idx++) {
-		if (children[child_idx]->GetReturnType().id() == LogicalTypeId::LAMBDA) {
+	auto &child_stats = input.child_stats;
+	D_ASSERT(children.size() == child_stats.size());
+
+	const idx_t element_index = bind_data.has_index ? 1 : 0;
+	vector<unique_ptr<BaseStatistics>> ref_stats(element_index + 1 + accumulator_count);
+	if (child_stats[0].GetStatsType() == StatisticsType::LIST_STATS) {
+		ref_stats[element_index] = ListStats::GetChildStats(child_stats[0]).ToUnique();
+	}
+	// the remaining children follow in order, without the lambda placeholder and the initial value
+	bool skip_initial = bind_data.has_initial;
+	for (idx_t i = 1; i < children.size(); i++) {
+		if (children[i]->GetReturnType().id() == LogicalTypeId::LAMBDA) {
 			continue;
 		}
 		if (skip_initial) {
 			skip_initial = false;
 			continue;
 		}
-		input_stats.push_back(input.child_stats[child_idx].ToUnique());
+		ref_stats.push_back(child_stats[i].ToUnique());
 	}
-	// the lambda body sees a captured value once per list element, so its additive statistics do not hold
-	for (auto &stats : input_stats) {
+	// captures repeat once per list element, so cardinality-dependent statistics no longer hold
+	for (auto &stats : ref_stats) {
 		if (stats) {
 			stats->ResetAdditiveStatistics();
 		}
 	}
-	input.propagator->PropagateLambdaStatistics(bind_data.lambda_expr, input_stats);
+	input.propagator->PropagateLambdaStatistics(bind_data.lambda_expr, ref_stats);
+	return nullptr;
 }
 
 unique_ptr<BaseStatistics> LambdaFunctions::ListLambdaStats(ClientContext &context, FunctionStatisticsInput &input) {
-	PropagateListLambdaStats(input, false);
-	return nullptr;
+	return PropagateLambdaStats(input, 0);
 }
 
 unique_ptr<BaseStatistics> LambdaFunctions::ListReduceStats(ClientContext &context, FunctionStatisticsInput &input) {
-	PropagateListLambdaStats(input, true);
-	return nullptr;
+	return PropagateLambdaStats(input, 1);
 }
 
 void LambdaFunctions::ListTransformFunction(DataChunk &args, ExpressionState &state, Vector &result) {

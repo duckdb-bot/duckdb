@@ -19,7 +19,22 @@
 #include <utility>
 
 namespace duckdb {
+//! Whether any expression of the operator is volatile
+static bool HasVolatileExpression(LogicalOperator &op) {
+	bool has_volatile = false;
+	LogicalOperatorVisitor::EnumerateExpressions(op, [&](unique_ptr<Expression> *expr) {
+		if ((*expr)->IsVolatile()) {
+			has_volatile = true;
+		}
+	});
+	return has_volatile;
+}
+
 void JoinElimination::OptimizeChildren(LogicalOperator &op, optional_ptr<LogicalOperator> parent, idx_t idx) {
+	if (HasVolatileExpression(op)) {
+		// volatile expressions run once per row, so a distinct group above them does not hold below them
+		pipe_info.distinct_groups.clear();
+	}
 	if (op.type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN) {
 		if (!parent) {
 			return;
@@ -144,6 +159,15 @@ void JoinElimination::OptimizeChildren(LogicalOperator &op, optional_ptr<Logical
 		}
 		OptimizeChildren(*op.children[0], op, idx);
 		if (invalidates_distinct) {
+			// keep the groups from above that still hold below the UNNEST
+			for (auto it = distinct_groups_above.begin(); it != distinct_groups_above.end();) {
+				auto entry = pipe_info.distinct_groups.find(it->first);
+				if (entry == pipe_info.distinct_groups.end() || entry->second != it->second) {
+					it = distinct_groups_above.erase(it);
+				} else {
+					it++;
+				}
+			}
 			pipe_info.distinct_groups = std::move(distinct_groups_above);
 		}
 	} else {

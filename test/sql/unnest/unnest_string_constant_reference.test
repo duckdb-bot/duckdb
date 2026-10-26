@@ -58,10 +58,10 @@ SET force_compression = '{compression}';
 statement ok
 CREATE TABLE db.{compression}_strs AS SELECT (i % 3)::VARCHAR || repeat('x', 100) || i::VARCHAR AS s FROM range(4096) t(i);
 
-endloop
-
 statement ok
 CHECKPOINT db;
+
+endloop
 
 statement ok
 SET enable_fsst_vectors = true;
@@ -74,3 +74,13 @@ SELECT count(*), count(DISTINCT s), min(length(s)), sum(length(s)) FROM (SELECT 
 8601600	4096	102	900837000
 
 endloop
+
+query I
+SELECT bool_or(vector_type(s) = 'DICTIONARY_VECTOR') FROM db.dictionary_strs;
+----
+true
+
+query I
+SELECT bool_or(vector_type(s) = 'FSST_VECTOR') FROM db.fsst_strs;
+----
+true

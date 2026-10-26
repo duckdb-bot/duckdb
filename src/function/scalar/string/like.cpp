@@ -220,7 +220,7 @@ bool TemplatedLikeOperator(const char *sdata, idx_t slen, const char *pdata, idx
 			char schar = READER::Operation(sdata, sidx);
 			if (HAS_ESCAPE && pchar == escape) {
 				if (pidx + 1 == plen) {
-					throw SyntaxException("Like pattern must not end with escape character!");
+					throw InvalidInputException("Like pattern must not end with escape character!");
 				}
 				if (pdata[pidx + 1] == schar) {
 					pidx += 2;
@@ -259,7 +259,7 @@ bool TemplatedLikeOperator(const char *sdata, idx_t slen, const char *pdata, idx
 	while (pidx < plen) {
 		if (HAS_ESCAPE && pdata[pidx] == escape) {
 			if (pidx + 1 == plen) {
-				throw SyntaxException("Like pattern must not end with escape character!");
+				throw InvalidInputException("Like pattern must not end with escape character!");
 			}
 			// the escape sequence needs a character to match against, and there is none left
 			break;
@@ -434,7 +434,7 @@ bool LikeOperatorFunction(string_t &s, string_t &pat, char escape) {
 char GetEscapeChar(string_t escape) {
 	// Only one escape character should be allowed
 	if (escape.GetSize() > 1) {
-		throw SyntaxException("Invalid escape string. Escape string must be empty or one character.");
+		throw InvalidInputException("Invalid escape string. Escape string must be empty or one character.");
 	}
 	return escape.GetSize() == 0 ? '\0' : *escape.GetData();
 }

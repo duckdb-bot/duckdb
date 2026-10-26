@@ -140,7 +140,7 @@ struct RepeatedStringSliceOperations {
 		}
 		while (known_character < character && known_byte < last_size) {
 			known_byte++;
-			while (known_byte < last_size && (static_cast<unsigned char>(last_data[known_byte]) & 0xC0) == 0x80) {
+			while (known_byte < last_size && !IsCharacter(last_data[known_byte])) {
 				known_byte++;
 			}
 			known_character++;

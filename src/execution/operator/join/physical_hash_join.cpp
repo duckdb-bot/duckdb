@@ -840,11 +840,28 @@ unique_ptr<JoinHashTable> PhysicalHashJoin::InitializeHashTable(ClientContext &c
 			info.correlated_types = delim_types;
 			info.group_chunk.InitializeEmpty(delim_types);
 			info.result_chunk.Initialize(allocator, delim_payload_types);
+
+			// a UNION compares as NULL with a UNION of the same tag when either member is NULL, so we also count, per
+			// group and tag, its rows and its rows with a NULL member
+			if (conditions[delim_types.size()].GetLHS().GetReturnType().id() == LogicalTypeId::UNION) {
+				info.correlated_tag_aggregates.push_back(
+				    function_binder.BindAggregateFunction(GetBuiltinAggregateFunction(context, CountStarFun::Name, {}),
+				                                          {}, nullptr, AggregateType::NON_DISTINCT));
+				vector<unique_ptr<Expression>> null_member_children;
+				null_member_children.push_back(
+				    make_uniq_base<Expression, BoundReferenceExpression>(LogicalType::BOOLEAN, 0U));
+				info.correlated_tag_aggregates.push_back(function_binder.BindAggregateFunction(
+				    GetBuiltinAggregateFunction(context, CountFun::Name, {LogicalType::BOOLEAN}),
+				    std::move(null_member_children), nullptr, AggregateType::NON_DISTINCT));
+				result->CreateCorrelatedTagCounts();
+			}
 		}
 	}
+	// a TUPLE or a UNION key can be equal as NULL when neither side is NULL, which the matches of the table miss
 	const bool has_row_equality =
 	    conditions.size() > 1 ||
-	    (conditions.size() == 1 && conditions[0].GetLHS().GetReturnType().id() == LogicalTypeId::TUPLE);
+	    (conditions.size() == 1 && (conditions[0].GetLHS().GetReturnType().id() == LogicalTypeId::TUPLE ||
+	                                conditions[0].GetLHS().GetReturnType().id() == LogicalTypeId::UNION));
 	if (delim_types.empty() && join_type == JoinType::MARK && has_row_equality) {
 		bool all_equal = true;
 		for (auto &condition : conditions) {

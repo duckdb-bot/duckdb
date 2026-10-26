@@ -63,6 +63,11 @@ static bool IsExtremumRewriteValid(const BoundSubqueryExpression &expr) {
 	if (expr.GetChildren().size() != 1 || expr.GetChildTypes().size() != 1 || expr.GetChildTargets().size() != 1) {
 		return false;
 	}
+	// a UNION compares as NULL when the active members are of the same tag and one is NULL, which the extremum hides,
+	// so the comparison is planned as a MARK join that sees each NULL result
+	if (expr.GetChildTargets()[0].id() == LogicalTypeId::UNION) {
+		return false;
+	}
 	auto cmp_type = expr.ComparisonType();
 	return cmp_type == ExpressionType::COMPARE_GREATERTHAN ||
 	       cmp_type == ExpressionType::COMPARE_GREATERTHANOREQUALTO || cmp_type == ExpressionType::COMPARE_LESSTHAN ||

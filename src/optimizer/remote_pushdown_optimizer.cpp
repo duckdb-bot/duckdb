@@ -82,6 +82,8 @@ RemotePushdownOptimizer::RemotePushdownOptimizer(optional_ptr<RemotePushdownOpti
     : binder(parent_p->binder), parent(parent_p), pushdown_state(parent->pushdown_state) {
 	// inherit table / column names from parent (for correlated subquery detection)
 	local_table_names = parent->local_table_names;
+	outer_scope_has_names = parent->outer_scope_has_names || parent->scope_has_tables;
+	in_expression_subquery = parent->in_expression_subquery;
 }
 
 void RemotePushdownOptimizer::FindRemoteCatalogsInSearchPath() {
@@ -256,6 +258,8 @@ void RemotePushdownOptimizer::Rewrite(unique_ptr<SQLStatement> &statement) {
 	FinishPushdown(statement, result);
 }
 
+static bool StrippingChangesNames(QueryNode &node, const Identifier &catalog_name);
+
 CatalogPushdownResult RemotePushdownOptimizer::Rewrite(QueryNode &node) {
 	if (!cte_results.empty()) {
 		throw InternalException(
@@ -265,9 +269,11 @@ CatalogPushdownResult RemotePushdownOptimizer::Rewrite(QueryNode &node) {
 		const Identifier &cte_name = cte_pair.first;
 		auto &cte_info = *cte_pair.second;
 		CatalogPushdownResult cte_result;
+		bool cte_is_self_contained = false;
 		if (cte_info.query_node) {
 			RemotePushdownOptimizer child_optimizer(this);
 			cte_result = child_optimizer.Rewrite(*cte_info.query_node);
+			cte_is_self_contained = child_optimizer.IsSelfContained(*cte_info.query_node);
 		} else {
 			cte_result = CatalogPushdownResult::Unknown();
 		}
@@ -275,8 +281,25 @@ CatalogPushdownResult RemotePushdownOptimizer::Rewrite(QueryNode &node) {
 			cte_result = Merge(cte_result, Rewrite(key));
 		}
 		cte_results[cte_name] = cte_result;
+		// column aliases apply to the names before the server makes duplicate names unique
+		if (cte_result.reference_type == CatalogReferenceType::SINGLE_REMOTE_CATALOG && cte_is_self_contained &&
+		    cte_info.key_targets.empty() && cte_info.aliases.empty()) {
+			remote_ctes.emplace_back(cte_info, cte_result);
+		}
 	}
 	CatalogPushdownResult result;
+	if (node.type == QueryNodeType::INSERT_QUERY_NODE || node.type == QueryNodeType::DELETE_QUERY_NODE ||
+	    node.type == QueryNodeType::UPDATE_QUERY_NODE || node.type == QueryNodeType::MERGE_QUERY_NODE) {
+		// data-modifying statements run only as part of the statement
+		MarkStaysWithParent();
+	} else if (node.type == QueryNodeType::RECURSIVE_CTE_NODE) {
+		// stripping the catalog changes generated names that the recursive part can refer to
+		MarkStaysWithParent();
+	}
+	if (!node.cte_map.map.empty()) {
+		// once the catalog is stripped, a table of the remote catalog can resolve to a CTE of the same name
+		MarkStaysWithParent();
+	}
 	switch (node.type) {
 	case QueryNodeType::SELECT_NODE:
 		result = RewriteNode(node.Cast<SelectNode>());
@@ -318,6 +341,21 @@ CatalogPushdownResult RemotePushdownOptimizer::Rewrite(QueryNode &node) {
 		}
 	} else if (result.reference_type == CatalogReferenceType::NO_CATALOG_REFERENCED) {
 		result.used_nodes.push_back(node);
+	}
+	if (result.reference_type == CatalogReferenceType::UNKNOWN_CATALOG_REFERENCE) {
+		// the node stays local, push the subqueries and CTEs that a single remote catalog can run on their own
+		for (auto &entry : remote_subqueries) {
+			auto &subquery_node = entry.first.get().subquery->node;
+			if (!StrippingChangesNames(*subquery_node, entry.second.catalog->GetName())) {
+				PushdownNode(subquery_node, entry.second);
+			}
+		}
+		for (auto &entry : remote_ctes) {
+			auto &cte_node = entry.first.get().query_node;
+			if (!StrippingChangesNames(*cte_node, entry.second.catalog->GetName())) {
+				PushdownNode(cte_node, entry.second);
+			}
+		}
 	}
 	return result;
 }
@@ -820,7 +858,16 @@ CatalogPushdownResult RemotePushdownOptimizer::Rewrite(unique_ptr<TableRef> &ref
 		result = CatalogPushdownResult::NoCatalogReference();
 		break;
 	default:
-		return CatalogPushdownResult::Unknown();
+		result = CatalogPushdownResult::Unknown();
+		break;
+	}
+	if (ref->type != TableReferenceType::JOIN && ref->type != TableReferenceType::EMPTY_FROM) {
+		scope_has_tables = true;
+	}
+	auto table_name = ref->type == TableReferenceType::BASE_TABLE ? ref->Cast<BaseTableRef>().Table() : Identifier();
+	if (IsRemoteCatalogName(ref->alias) || IsRemoteCatalogName(table_name)) {
+		// stripping the catalog would also strip this table from its qualified columns
+		MarkStaysWithParent();
 	}
 	if (result.reference_type == CatalogReferenceType::SINGLE_REMOTE_CATALOG) {
 		// the table reference is fully remote - check if the remote catalog supports pushing it down
@@ -851,8 +898,40 @@ CatalogPushdownResult RemotePushdownOptimizer::Rewrite(SubqueryRef &ref) {
 	auto result = child_binder.Rewrite(*ref.subquery->node);
 	if (result.reference_type == CatalogReferenceType::UNKNOWN_CATALOG_REFERENCE) {
 		TrackLocalTable(ref);
+		return result;
+	}
+	// column aliases apply to the names before the server makes duplicate names unique
+	if (result.reference_type == CatalogReferenceType::SINGLE_REMOTE_CATALOG &&
+	    child_binder.IsSelfContained(*ref.subquery->node) && ref.column_name_alias.empty()) {
+		remote_subqueries.emplace_back(ref, result);
 	}
 	return result;
+}
+
+bool RemotePushdownOptimizer::IsSelfContained(const QueryNode &node) const {
+	// only plain queries, a recursive CTE refers to itself
+	if (node.type != QueryNodeType::SELECT_NODE && node.type != QueryNodeType::SET_OPERATION_NODE) {
+		return false;
+	}
+	return !refers_to_parent_cte && !may_refer_to_outer_column && !stays_with_parent && !in_expression_subquery;
+}
+
+void RemotePushdownOptimizer::MarkOuterColumnReference() {
+	// without binding, the reference might be to any table visible from outside each enclosing scope
+	for (auto scope = this; scope && scope->outer_scope_has_names; scope = scope->parent.get()) {
+		scope->may_refer_to_outer_column = true;
+	}
+}
+
+bool RemotePushdownOptimizer::IsRemoteCatalogName(const Identifier &name) {
+	return !name.empty() && ResolveRemoteCatalog(name, RemoteCapability::EXECUTE_QUERY_NODE).reference_type ==
+	                            CatalogReferenceType::SINGLE_REMOTE_CATALOG;
+}
+
+void RemotePushdownOptimizer::MarkStaysWithParent() {
+	for (auto scope = this; scope; scope = scope->parent.get()) {
+		scope->stays_with_parent = true;
+	}
 }
 
 CatalogPushdownResult RemotePushdownOptimizer::RewriteTableFunctionOnly(TableFunctionRef &ref) {
@@ -956,7 +1035,13 @@ CatalogPushdownResult RemotePushdownOptimizer::Rewrite(JoinRef &ref) {
 	// the right side of a join can be correlated to the left side - use a child optimizer to track this
 	RemotePushdownOptimizer child_optimizer(this);
 	auto right_result = child_optimizer.Rewrite(ref.right);
+	remote_subqueries.insert(remote_subqueries.end(), child_optimizer.remote_subqueries.begin(),
+	                         child_optimizer.remote_subqueries.end());
 
+	if (ref.ranking_expression) {
+		// the ranking expression of a NEAREST join is neither analyzed nor stripped of the catalog
+		MarkStaysWithParent();
+	}
 	auto result = Merge(left_result, right_result);
 	// Also analyze the join condition - it may contain subqueries or local macro calls
 	// that affect whether the join can be pushed as a whole.
@@ -990,14 +1075,15 @@ void RemotePushdownOptimizer::TrackLocalTable(const SubqueryRef &ref) {
 	}
 }
 
-bool RemotePushdownOptimizer::RefersToCTE(const Identifier &cte_name, CatalogPushdownResult &result) const {
+bool RemotePushdownOptimizer::RefersToCTE(const Identifier &cte_name, CatalogPushdownResult &result) {
 	auto entry = cte_results.find(cte_name);
 	if (entry != cte_results.end()) {
 		result = entry->second;
 		return true;
 	}
-	if (parent) {
-		return parent->RefersToCTE(cte_name, result);
+	if (parent && parent->RefersToCTE(cte_name, result)) {
+		refers_to_parent_cte = true;
+		return true;
 	}
 	return false;
 }
@@ -1078,6 +1164,11 @@ bool RemotePushdownOptimizer::RefersToLocalTable(const ColumnRefExpression &col_
 ExpressionPushdownResult RemotePushdownOptimizer::AnalyzeExpression(const SubqueryExpression &subquery_expr) {
 	ExpressionPushdownResult state;
 	RemotePushdownOptimizer child_optimizer(this);
+	// the subquery sees the FROM clause and the select list aliases of this scope
+	child_optimizer.outer_scope_has_names = true;
+	child_optimizer.in_expression_subquery = true;
+	// stripping the catalog changes generated names in the subquery that it can refer to
+	MarkStaysWithParent();
 	state.result = child_optimizer.Rewrite(*subquery_expr.Subquery()->node);
 	return state;
 }
@@ -1123,11 +1214,19 @@ ExpressionPushdownResult RemotePushdownOptimizer::AnalyzeExpression(const Functi
 	case CatalogType::SCALAR_FUNCTION_ENTRY: {
 		// at least one overload must be non-volatile (the selected overload is verified after binding)
 		auto &scalar_entry = entry->Cast<ScalarFunctionCatalogEntry>();
+		bool all_volatile = true;
 		for (auto &overload : scalar_entry.functions.functions) {
-			if (foldable_modifiers && overload->GetStability() != FunctionStability::VOLATILE) {
-				state.foldability = ExpressionFoldability::FOLDABLE;
+			if (overload->GetStability() != FunctionStability::VOLATILE) {
+				all_volatile = false;
+				if (foldable_modifiers) {
+					state.foldability = ExpressionFoldability::FOLDABLE;
+				}
 				break;
 			}
+		}
+		if (all_volatile) {
+			// a volatile function such as nextval can depend on local objects
+			MarkStaysWithParent();
 		}
 		break;
 	}
@@ -1148,9 +1247,58 @@ ExpressionPushdownResult RemotePushdownOptimizer::AnalyzeExpression(const TypeEx
 	state.result = CheckCatalogQualification(type_expr, type_expr.GetQualifiedName());
 	return state;
 }
+void RemotePushdownOptimizer::CheckCastType(const TypeExpression &type_expr) {
+	// a user type of a local catalog might not exist remotely, built-in types exist everywhere. The lookups do not
+	// autoload extensions, whose types the server can have
+	if (!type_expr.GetCatalog().empty()) {
+		auto catalog = Catalog::GetCatalogEntry(binder.context, type_expr.GetCatalog());
+		if (catalog && !catalog->IsSystemCatalog() && !catalog->Supports(RemoteCapability::EXECUTE_QUERY_NODE)) {
+			MarkStaysWithParent();
+		}
+	} else if (!type_expr.GetSchema().empty()) {
+		// the schema could also be a catalog, which is not resolved here
+		MarkStaysWithParent();
+	} else {
+		FindRemoteCatalogsInSearchPath();
+		CatalogEntryRetriever retriever(binder.context);
+		for (auto &local_entry : pushdown_state.local_catalogs_in_search_path) {
+			auto catalog = Catalog::GetCatalogEntry(binder.context, local_entry.GetCatalog());
+			if (!catalog || catalog->IsSystemCatalog()) {
+				continue;
+			}
+			EntryLookupInfo type_lookup(
+			    CatalogType::TYPE_ENTRY,
+			    QualifiedName(catalog->GetName(), local_entry.GetSchema(), type_expr.GetTypeName()));
+			if (catalog->LookupEntry(retriever, type_lookup, OnEntryNotFound::RETURN_NULL).Found()) {
+				MarkStaysWithParent();
+				break;
+			}
+		}
+	}
+	for (auto &child : type_expr.GetChildren()) {
+		if (child->GetExpressionClass() == ExpressionClass::TYPE) {
+			CheckCastType(child->Cast<TypeExpression>());
+		}
+	}
+}
+
+ExpressionPushdownResult RemotePushdownOptimizer::AnalyzeExpression(const CastExpression &cast_expr) {
+	// the target type is not a child expression, so it is checked here
+	CheckCastType(cast_expr.TargetType());
+	ExpressionPushdownResult state;
+	state.foldability = ExpressionFoldability::FOLDABLE;
+	return state;
+}
 
 ExpressionPushdownResult RemotePushdownOptimizer::AnalyzeExpression(const ColumnRefExpression &col_ref) {
 	ExpressionPushdownResult state;
+	MarkOuterColumnReference();
+	auto &column_names = col_ref.ColumnNames();
+	if (column_names.size() >= 2 && IsRemoteCatalogName(column_names[0])) {
+		// the first name could also be a struct column, a lambda parameter or a whole row of the catalog's table,
+		// which stripping the catalog would get wrong
+		MarkStaysWithParent();
+	}
 	if (RefersToLocalTable(col_ref)) {
 		// column refers to local table - bail
 		state.result = CatalogPushdownResult::Unknown();
@@ -1196,6 +1344,10 @@ RemotePushdownOptimizer::TryConstantFold(unique_ptr<ParsedExpression> &expr) {
 }
 
 ExpressionPushdownResult RemotePushdownOptimizer::AnalyzeExpression(const ParsedExpression &expr) {
+	if (StarExpression::IsColumnsUnpacked(expr)) {
+		// an unpacked star is named after the qualified columns, which stripping the catalog changes
+		MarkStaysWithParent();
+	}
 	switch (expr.GetExpressionClass()) {
 	case ExpressionClass::SUBQUERY:
 		return AnalyzeExpression(expr.Cast<SubqueryExpression>());
@@ -1207,8 +1359,25 @@ ExpressionPushdownResult RemotePushdownOptimizer::AnalyzeExpression(const Parsed
 		return AnalyzeExpression(expr.Cast<TypeExpression>());
 	case ExpressionClass::COLUMN_REF:
 		return AnalyzeExpression(expr.Cast<ColumnRefExpression>());
-	case ExpressionClass::CONSTANT:
+	case ExpressionClass::STAR: {
+		auto &star = expr.Cast<StarExpression>();
+		if (!star.RelationName().empty()) {
+			MarkOuterColumnReference();
+		}
+		if (star.IsColumns() || !star.ExcludeList().empty() || !star.ReplaceList().empty() ||
+		    !star.RenameList().empty()) {
+			// stripping the catalog does not rewrite the qualified names these refer to or are named after
+			MarkStaysWithParent();
+		}
+		return ExpressionPushdownResult();
+	}
+	case ExpressionClass::PARAMETER:
+		// the values of parameters are only known to the statement
+		MarkStaysWithParent();
+		return ExpressionPushdownResult();
 	case ExpressionClass::CAST:
+		return AnalyzeExpression(expr.Cast<CastExpression>());
+	case ExpressionClass::CONSTANT:
 	case ExpressionClass::COMPARISON:
 	case ExpressionClass::BETWEEN:
 	case ExpressionClass::CONJUNCTION:
@@ -1889,11 +2058,52 @@ void RemotePushdownOptimizer::FinishPushdown(unique_ptr<QueryNode> &node, Catalo
 			}
 		}
 	}
+	PushdownNode(node, result);
+}
+
+static bool StrippingChangesNames(TableRef &ref, const Identifier &catalog_name) {
+	if (ref.type == TableReferenceType::SUBQUERY) {
+		return StrippingChangesNames(*ref.Cast<SubqueryRef>().subquery->node, catalog_name);
+	}
+	if (ref.type == TableReferenceType::JOIN) {
+		auto &join = ref.Cast<JoinRef>();
+		return StrippingChangesNames(*join.left, catalog_name) || StrippingChangesNames(*join.right, catalog_name);
+	}
+	return false;
+}
+
+//! Whether stripping the catalog changes the name of a projection, which the query might refer to
+static bool StrippingChangesNames(QueryNode &node, const Identifier &catalog_name) {
+	for (auto &cte : node.cte_map.map) {
+		if (cte.second->query_node && StrippingChangesNames(*cte.second->query_node, catalog_name)) {
+			return true;
+		}
+	}
+	if (node.type == QueryNodeType::SET_OPERATION_NODE) {
+		for (auto &child : node.Cast<SetOperationNode>().children) {
+			if (StrippingChangesNames(*child, catalog_name)) {
+				return true;
+			}
+		}
+		return false;
+	}
+	if (node.type != QueryNodeType::SELECT_NODE) {
+		return false;
+	}
+	auto &select_node = node.Cast<SelectNode>();
+	for (auto &expr : select_node.select_list) {
+		auto stripped = expr->Copy();
+		RemotePushdownOptimizer::StripCatalogName(*stripped, catalog_name);
+		if (stripped->GetName() != expr->GetName()) {
+			return true;
+		}
+	}
+	return select_node.from_table && StrippingChangesNames(*select_node.from_table, catalog_name);
+}
+
+void RemotePushdownOptimizer::PushdownNode(unique_ptr<QueryNode> &node, CatalogPushdownResult &result) {
 	StripCatalogName(*node, result.catalog->GetName());
-	auto select_node = make_uniq<SelectNode>();
-	select_node->select_list.push_back(make_uniq<StarExpression>());
-	select_node->from_table = CreateRemoteFunctionRef(result, std::move(node));
-	node = std::move(select_node);
+	node = std::move(WrapRemoteRef(CreateRemoteFunctionRef(result, std::move(node)))->node);
 }
 
 } // namespace duckdb

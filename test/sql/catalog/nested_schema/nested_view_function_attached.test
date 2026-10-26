@@ -30,6 +30,18 @@ CREATE VIEW db.p.s.v_table AS SELECT x FROM p.s.t;
 statement ok
 CREATE VIEW db.p.s.v_function AS SELECT p.s.f() AS y;
 
+# a table macro in the nested schema
+statement ok
+CREATE MACRO db.p.s.tf() AS TABLE SELECT 7 AS z;
+
+statement ok
+CREATE VIEW db.p.s.v_table_function AS SELECT z FROM p.s.tf();
+
+query I
+SELECT z FROM db.p.s.v_table_function;
+----
+7
+
 query II
 SELECT (SELECT x FROM db.p.s.v_table), (SELECT y FROM db.p.s.v_function);
 ----
@@ -50,6 +62,32 @@ SELECT q.r.g();
 ----
 33
 
+# the view's own database comes first when the default database has the same nested schema
+statement ok
+CREATE SCHEMA p;
+
+statement ok
+CREATE SCHEMA p.s;
+
+statement ok
+CREATE MACRO p.s.f() AS 101;
+
+statement ok
+CREATE MACRO p.s.tf() AS TABLE SELECT 102 AS z;
+
+statement ok
+CREATE TABLE p.s.t AS SELECT 103 AS x;
+
+query III
+SELECT (SELECT x FROM db.p.s.v_table), (SELECT y FROM db.p.s.v_function), (SELECT z FROM db.p.s.v_table_function);
+----
+5	11	7
+
+query II
+SELECT p.s.f(), (SELECT z FROM p.s.tf());
+----
+101	102
+
 # the view keeps working when the database is attached under a different alias
 statement ok
 DETACH db;
@@ -57,7 +95,7 @@ DETACH db;
 statement ok
 ATTACH '{TEST_DIR}/nested_view_function_attached.db' AS other;
 
-query II
-SELECT (SELECT x FROM other.p.s.v_table), (SELECT y FROM other.p.s.v_function);
+query III
+SELECT (SELECT x FROM other.p.s.v_table), (SELECT y FROM other.p.s.v_function), (SELECT z FROM other.p.s.v_table_function);
 ----
-5	11
+5	11	7

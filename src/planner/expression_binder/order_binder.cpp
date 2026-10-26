@@ -84,6 +84,7 @@ optional_idx OrderBinder::TryGetProjectionReference(ParsedExpression &expr) cons
 		// check the alias list
 		auto entry = bind_state.alias_map.find(alias_name);
 		if (entry != bind_state.alias_map.end()) {
+			bind_state.VerifyUnambiguousAlias(alias_name, expr, query_component);
 			// this is an alias - return the index
 			return entry->second;
 		}

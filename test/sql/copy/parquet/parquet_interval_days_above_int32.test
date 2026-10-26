@@ -43,3 +43,76 @@ SELECT i, iv FROM '{TEST_DIR}/interval_days_nested.parquet' ORDER BY i;
 1	2147483647 days 2562047788:00:54.775
 2	2147483647 days 1272:00:00
 3	55 days
+
+# files of another writer can hold any unsigned days, which keep their value or fail to read when the days past the
+# largest days of an interval do not fit in its microseconds
+statement ok
+COPY (SELECT from_hex('50415231150015a80115a8012c150e150015061506000000000000feffff7f0000000000000000ffffff7f0000000000000000ffffff7fffffffff0000000000000080000000000000000000000080ffffffff00000000f6e75c86f78fdc00ffffff7f00000080000000001502192c4806736368656d61150200150e1518150018026976252a00160e191c191c26001c150e19150019180269761500160e16ce0116ce012608000016ce01160e002823696e646570656e64656e7420696e74657276616c207265766965772066697874757265006900000050415231')) TO '{TEST_DIR}/external_good.parquet' (FORMAT BLOB);
+
+statement ok
+COPY (SELECT from_hex('504152311500151815182c15021500150615061c180c000000000000008000000000180c00000000000000800000000016000000000000000000000080000000001502192c4806736368656d61150200150e1518150018026976252a001602191c191c26001c150e191500191802697615001602167a167a26083c180c000000000000008000000000180c0000000000000080000000001600000000167a1602002823696e646570656e64656e7420696e74657276616c207265766965772066697874757265008600000050415231')) TO '{TEST_DIR}/external_statistics.parquet' (FORMAT BLOB);
+
+statement ok
+COPY (SELECT from_hex('504152311500151815182c1502150015061506000000000000f6e75c86f88fdc001502192c4806736368656d61150200150e1518150018026976252a001602191c191c26001c150e191500191802697615001602163a163a26080000163a1602002823696e646570656e64656e7420696e74657276616c207265766965772066697874757265006600000050415231')) TO '{TEST_DIR}/external_add_overflow.parquet' (FORMAT BLOB);
+
+statement ok
+COPY (SELECT from_hex('504152311500151815182c1502150015061506000000000000f7e75c86000000001502192c4806736368656d61150200150e1518150018026976252a001602191c191c26001c150e191500191802697615001602163a163a26080000163a1602002823696e646570656e64656e7420696e74657276616c207265766965772066697874757265006600000050415231')) TO '{TEST_DIR}/external_multiply_overflow.parquet' (FORMAT BLOB);
+
+statement ok
+COPY (SELECT from_hex('504152311500151815182c1502150015061506000000000000ffffffff000000001502192c4806736368656d61150200150e1518150018026976252a001602191c191c26001c150e191500191802697615001602163a163a26080000163a1602002823696e646570656e64656e7420696e74657276616c207265766965772066697874757265006600000050415231')) TO '{TEST_DIR}/external_uint32_max.parquet' (FORMAT BLOB);
+
+
+query IIII
+SELECT iv = to_months(0) + to_days(2147483646) + to_microseconds(0), datepart('day', iv) = 2147483646, datepart('microseconds', iv) = 0, hash(iv) = hash(to_months(0) + to_days(2147483646) + to_microseconds(0)) FROM read_parquet('{TEST_DIR}/external_good.parquet', file_row_number=true) WHERE file_row_number=0;
+----
+true	true	true	true
+
+query IIII
+SELECT iv = to_months(0) + to_days(2147483647) + to_microseconds(0), datepart('day', iv) = 2147483647, datepart('microseconds', iv) = 0, hash(iv) = hash(to_months(0) + to_days(2147483647) + to_microseconds(0)) FROM read_parquet('{TEST_DIR}/external_good.parquet', file_row_number=true) WHERE file_row_number=1;
+----
+true	true	true	true
+
+query IIII
+SELECT iv = to_months(0) + to_days(2147483647) + to_microseconds(4294967295000), datepart('day', iv) = 2147483647, datepart('microseconds', iv) = 47295000, hash(iv) = hash(to_months(0) + to_days(2147483647) + to_microseconds(4294967295000)) FROM read_parquet('{TEST_DIR}/external_good.parquet', file_row_number=true) WHERE file_row_number=2;
+----
+true	true	true	true
+
+query IIII
+SELECT iv = to_months(0) + to_days(2147483647) + to_microseconds(86400000000), datepart('day', iv) = 2147483647, datepart('microseconds', iv) = 0, hash(iv) = hash(to_months(0) + to_days(2147483647) + to_microseconds(86400000000)) FROM read_parquet('{TEST_DIR}/external_good.parquet', file_row_number=true) WHERE file_row_number=3;
+----
+true	true	true	true
+
+query IIII
+SELECT iv = to_months(0) + to_days(2147483647) + to_microseconds(4381367295000), datepart('day', iv) = 2147483647, datepart('microseconds', iv) = 47295000, hash(iv) = hash(to_months(0) + to_days(2147483647) + to_microseconds(4381367295000)) FROM read_parquet('{TEST_DIR}/external_good.parquet', file_row_number=true) WHERE file_row_number=4;
+----
+true	true	true	true
+
+query IIII
+SELECT iv = to_months(0) + to_days(2147483647) + to_microseconds(9223372036854775000), datepart('day', iv) = 2147483647, datepart('microseconds', iv) = 54775000, hash(iv) = hash(to_months(0) + to_days(2147483647) + to_microseconds(9223372036854775000)) FROM read_parquet('{TEST_DIR}/external_good.parquet', file_row_number=true) WHERE file_row_number=5;
+----
+true	true	true	true
+
+query IIII
+SELECT iv = to_months(2147483647) + to_days(2147483647) + to_microseconds(86400000000), datepart('day', iv) = 2147483647, datepart('microseconds', iv) = 0, hash(iv) = hash(to_months(2147483647) + to_days(2147483647) + to_microseconds(86400000000)) FROM read_parquet('{TEST_DIR}/external_good.parquet', file_row_number=true) WHERE file_row_number=6;
+----
+true	true	true	true
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/external_statistics.parquet' WHERE iv = INTERVAL '2147483647 days 24 hours';
+----
+1
+
+statement error
+SELECT iv FROM '{TEST_DIR}/external_add_overflow.parquet';
+----
+does not fit in an INTERVAL
+
+statement error
+SELECT iv FROM '{TEST_DIR}/external_multiply_overflow.parquet';
+----
+does not fit in an INTERVAL
+
+statement error
+SELECT iv FROM '{TEST_DIR}/external_uint32_max.parquet';
+----
+does not fit in an INTERVAL

@@ -28,6 +28,7 @@ static bool ReadsSourceWithoutEstimate(LogicalOperator &op, ClientContext &conte
 		case LogicalOperatorType::LOGICAL_PROJECTION:
 		case LogicalOperatorType::LOGICAL_FILTER:
 		case LogicalOperatorType::LOGICAL_ORDER_BY:
+		case LogicalOperatorType::LOGICAL_WINDOW:
 			current = *current.get().children[0];
 			break;
 		case LogicalOperatorType::LOGICAL_GET:
@@ -57,7 +58,16 @@ bool TopN::CanOptimize(LogicalOperator &op, optional_ptr<ClientContext> context)
 			child_op->EstimateCardinality(*context);
 		}
 
-		if (child_op->has_estimated_cardinality && (!context || !ReadsSourceWithoutEstimate(*child_op, *context))) {
+		auto order_op = child_op;
+		while (order_op->type == LogicalOperatorType::LOGICAL_PROJECTION) {
+			D_ASSERT(!order_op->children.empty());
+			order_op = order_op->children[0].get();
+		}
+		if (order_op->type != LogicalOperatorType::LOGICAL_ORDER_BY) {
+			return false;
+		}
+
+		if (child_op->has_estimated_cardinality) {
 			// only check if we should switch to full sorting if we have estimated cardinality
 			auto constant_limit = static_cast<double>(limit.limit_val.GetConstantValue());
 			if (limit.offset_val.Type() == LimitNodeType::CONSTANT_VALUE) {
@@ -67,17 +77,12 @@ bool TopN::CanOptimize(LogicalOperator &op, optional_ptr<ClientContext> context)
 
 			// if the limit is > 0.7% of the child cardinality, sorting the whole table is faster
 			bool limit_is_large = constant_limit > 5000;
-			if (constant_limit > child_card * 0.007 && limit_is_large) {
+			if (constant_limit > child_card * 0.007 && limit_is_large &&
+			    (!context || !ReadsSourceWithoutEstimate(*child_op, *context))) {
 				return false;
 			}
 		}
-
-		while (child_op->type == LogicalOperatorType::LOGICAL_PROJECTION) {
-			D_ASSERT(!child_op->children.empty());
-			child_op = child_op->children[0].get();
-		}
-
-		return child_op->type == LogicalOperatorType::LOGICAL_ORDER_BY;
+		return true;
 	}
 	return false;
 }

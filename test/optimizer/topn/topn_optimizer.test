@@ -92,6 +92,16 @@ EXPLAIN SELECT i FROM range((SELECT 2000000)) t(i) WHERE i % 100 <> 0 ORDER BY h
 ----
 logical_opt	<REGEX>:.*TOP_N.*
 
+query II
+EXPLAIN SELECT i, rn FROM (SELECT i, row_number() OVER () AS rn FROM range((SELECT 2000000)) t(i)) ORDER BY hash(i) DESC LIMIT 10000;
+----
+logical_opt	<REGEX>:.*TOP_N.*
+
+query II
+SELECT count(*), count(DISTINCT rn) FROM (SELECT i, rn FROM (SELECT i, row_number() OVER () AS rn FROM range((SELECT 2000000)) t(i)) ORDER BY hash(i) DESC LIMIT 10000);
+----
+10000	10000
+
 # a source with an estimate still sorts fully for a large limit, also when the limit is above the estimate
 query II
 EXPLAIN SELECT i FROM range(20000) t(i) ORDER BY hash(i) DESC LIMIT 20001;

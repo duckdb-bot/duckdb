@@ -80,19 +80,18 @@ TEST_CASE("Test deserialized plans from file", "[.][serialization]") {
 	test_deserialization(get_full_file_name(PERSISTENT_FILE_NAME));
 }
 
-// Reads a case file: every non-empty line is a statement, the last one is the statement whose plan is serialized
 //! A plan written when a function returned another type keeps the type it was written with, so the result of the
 //! statement planned now is compared after a cast to the types of the deserialized result
 static bool EqualsInDeserializedTypes(QueryResult &deserialized, QueryResult &expected) {
 	deserialized.Complete();
 	expected.Complete();
-	auto &deserialized_rows = deserialized.Collection();
-	auto &expected_rows = expected.Collection();
 	auto &types = deserialized.GetTypes();
 	if (types.size() != expected.GetTypes().size() || deserialized.RowCount() != expected.RowCount()) {
 		return false;
 	}
-	for (idx_t row = 0; row < deserialized.RowCount(); row++) {
+	auto deserialized_rows = deserialized.Collection().GetRows();
+	auto expected_rows = expected.Collection().GetRows();
+	for (idx_t row = 0; row < deserialized_rows.size(); row++) {
 		for (idx_t col = 0; col < types.size(); col++) {
 			auto expected_value = expected_rows.GetValue(col, row).DefaultCastAs(types[col]);
 			if (!Value::NotDistinctFrom(expected_value, deserialized_rows.GetValue(col, row))) {
@@ -103,6 +102,7 @@ static bool EqualsInDeserializedTypes(QueryResult &deserialized, QueryResult &ex
 	return true;
 }
 
+// Reads a case file: every non-empty line is a statement, the last one is the statement whose plan is serialized
 static std::vector<string> read_case_statements(const string &sql_file) {
 	std::ifstream query_stream(sql_file);
 	std::vector<string> statements;
@@ -217,9 +217,12 @@ TEST_CASE("Test specific serialized plans", "[.][serialization]") {
 		deserializer.End();
 
 		deserialized_plan->ResolveOperatorTypes();
+		auto serialized_types = deserialized_plan->types;
 
 		auto deserialized_results = con.Query(make_uniq<LogicalPlanStatement>(std::move(deserialized_plan)));
 		REQUIRE_NO_FAIL(*deserialized_results);
+		// the plan returns the types it was written with
+		REQUIRE(deserialized_results->GetTypes() == serialized_types);
 
 		// Reset the state, so that statements that modify data (e.g. DELETE) see the same input
 		con.Rollback();

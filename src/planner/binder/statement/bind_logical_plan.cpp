@@ -6,6 +6,7 @@
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/logical_operator_visitor.hpp"
 #include "duckdb/planner/operator/logical_aggregate.hpp"
+#include "duckdb/planner/operator/logical_projection.hpp"
 #include <algorithm>
 
 namespace duckdb {
@@ -78,10 +79,29 @@ TableIndex GetMaxTableIndex(LogicalOperator &op) {
 }
 
 BoundStatement Binder::Bind(LogicalPlanStatement &stmt) {
+	stmt.plan->ResolveOperatorTypes();
+	auto serialized_types = stmt.plan->types;
 	AggregateCastMover cast_mover(context);
 	cast_mover.VisitOperator(*stmt.plan);
 	if (cast_mover.MovedCasts()) {
 		stmt.plan->ResolveOperatorTypes();
+		if (stmt.plan->types != serialized_types) {
+			// an aggregate reaches the output without an expression above it, so a projection casts it back
+			auto bindings = stmt.plan->GetColumnBindings();
+			vector<unique_ptr<Expression>> expressions;
+			for (idx_t i = 0; i < bindings.size(); i++) {
+				unique_ptr<Expression> column = make_uniq<BoundColumnRefExpression>(stmt.plan->types[i], bindings[i]);
+				if (stmt.plan->types[i] != serialized_types[i]) {
+					column = BoundCastExpression::AddCastToType(context, std::move(column), serialized_types[i]);
+				}
+				expressions.push_back(std::move(column));
+			}
+			auto projection = make_uniq<LogicalProjection>(TableIndex(GetMaxTableIndex(*stmt.plan).index + 1),
+			                                               std::move(expressions));
+			projection->AddChild(std::move(stmt.plan));
+			stmt.plan = std::move(projection);
+			stmt.plan->ResolveOperatorTypes();
+		}
 	}
 	BoundStatement result;
 	result.types = stmt.plan->types;

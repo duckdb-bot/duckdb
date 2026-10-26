@@ -81,3 +81,33 @@ query I
 SELECT count(*) FROM (VALUES (MAP {'k': 'A' COLLATE NOCASE})) l(m) JOIN (VALUES (MAP {'k': 'a' COLLATE NOCASE})) r(m) ON l.m = r.m;
 ----
 1
+
+# a UNION compares its active member as a UNION does, a NULL member included
+query III
+SELECT union_value(s := NULL::VARCHAR COLLATE NOCASE) = union_value(s := NULL::VARCHAR COLLATE NOCASE),
+       union_value(s := 'A' COLLATE NOCASE) = union_value(s := NULL::VARCHAR COLLATE NOCASE),
+       union_value(s := 'A' COLLATE NOCASE) < union_value(s := 'b' COLLATE NOCASE);
+----
+NULL	NULL	true
+
+# ordered comparisons with a subquery take the extremum under the collation
+query II
+SELECT MAP {'k': 'B' COLLATE NOCASE} > ANY (SELECT MAP {'k': 'a' COLLATE NOCASE}),
+       MAP {'k': 'A' COLLATE NOCASE} > ANY (SELECT MAP {'k': 'a' COLLATE NOCASE});
+----
+true	false
+
+query II
+SELECT union_value(s := 'B' COLLATE NOCASE) > ANY (SELECT union_value(s := 'a' COLLATE NOCASE)),
+       union_value(s := 'A' COLLATE NOCASE) >= ALL (SELECT union_value(s := 'a' COLLATE NOCASE));
+----
+true	true
+
+# nested maps are collated at every level
+query I
+SELECT count(DISTINCT m) FROM (VALUES
+	(MAP {'k': MAP {'k': MAP {'k': MAP {'k': MAP {'k': MAP {'k': 'A' COLLATE NOCASE}}}}}}),
+	(MAP {'k': MAP {'k': MAP {'k': MAP {'k': MAP {'k': MAP {'k': 'a' COLLATE NOCASE}}}}}})
+) t(m);
+----
+1

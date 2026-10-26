@@ -7,6 +7,7 @@ add_subdirectory(cpp)
 
 set(TEST_API_OBJECTS
     test_api.cpp
+    test_map_union_collations_without_core_functions.cpp
     test_multi_file_column_mapper.cpp
     test_process_util.cpp
     test_remove_directory_extended.cpp

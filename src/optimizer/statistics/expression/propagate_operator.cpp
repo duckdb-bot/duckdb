@@ -22,10 +22,14 @@ static bool ContainsThrowingVariantCast(const Expression &expr) {
 	return result;
 }
 
+bool StatisticsPropagator::CanDropExpression(const Expression &expr) const {
+	return !expr.IsVolatile() && (try_depth == 0 || !expr.CanThrow());
+}
+
 //! Folding a NULL check removes its child from the plan
-static bool CanFoldNullCheck(const BoundOperatorExpression &expr) {
+static bool CanFoldNullCheck(const StatisticsPropagator &propagator, const BoundOperatorExpression &expr) {
 	auto &child = *expr.GetChildren()[0];
-	return !child.IsVolatile() && !ContainsThrowingVariantCast(child);
+	return propagator.CanDropExpression(child) && !ContainsThrowingVariantCast(child);
 }
 
 unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundOperatorExpression &expr,
@@ -33,12 +37,20 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundOperat
 	bool all_have_stats = true;
 	vector<unique_ptr<BaseStatistics>> child_stats;
 	child_stats.reserve(expr.GetChildrenMutable().size());
+	// a fold under TRY must keep the operands that can throw
+	auto is_try = expr.GetExpressionType() == ExpressionType::OPERATOR_TRY;
+	if (is_try) {
+		try_depth++;
+	}
 	for (auto &child : expr.GetChildrenMutable()) {
 		auto stats = PropagateExpression(child);
 		if (!stats) {
 			all_have_stats = false;
 		}
 		child_stats.push_back(std::move(stats));
+	}
+	if (is_try) {
+		try_depth--;
 	}
 	if (!all_have_stats) {
 		return nullptr;
@@ -48,10 +60,11 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundOperat
 		// COALESCE, merge stats of all children
 		for (idx_t i = 0; i < expr.GetChildrenMutable().size(); i++) {
 			D_ASSERT(child_stats[i]);
+			auto &child = *expr.GetChildren()[i];
 			if (!child_stats[i]->CanHaveNoNull()) {
 				// this child is always NULL, we can remove it from the coalesce
-				// UNLESS there is only one node remaining
-				if (expr.GetChildrenMutable().size() > 1) {
+				// UNLESS there is only one node remaining, or it cannot be dropped
+				if (expr.GetChildrenMutable().size() > 1 && CanDropExpression(child)) {
 					expr.GetChildrenMutable().erase_at(i);
 					child_stats.erase_at(i);
 					i--;
@@ -84,7 +97,7 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundOperat
 		}
 		return std::move(child_stats[0]);
 	case ExpressionType::OPERATOR_IS_NULL:
-		if (!CanFoldNullCheck(expr)) {
+		if (!CanFoldNullCheck(*this, expr)) {
 			return nullptr;
 		}
 		if (!child_stats[0]->CanHaveNull()) {
@@ -99,7 +112,7 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundOperat
 		}
 		return nullptr;
 	case ExpressionType::OPERATOR_IS_NOT_NULL:
-		if (!CanFoldNullCheck(expr)) {
+		if (!CanFoldNullCheck(*this, expr)) {
 			return nullptr;
 		}
 		if (!child_stats[0]->CanHaveNull()) {

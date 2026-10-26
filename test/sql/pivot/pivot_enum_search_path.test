@@ -1,0 +1,72 @@
+# name: test/sql/pivot/pivot_enum_search_path.test
+# description: PIVOT IN <enum> resolves the enum where the other names of a view or macro resolve
+# group: [pivot]
+
+statement ok
+CREATE SCHEMA s
+
+statement ok
+CREATE TYPE s.keys AS ENUM ('a')
+
+statement ok
+CREATE TYPE keys AS ENUM ('b')
+
+statement ok
+CREATE VIEW s.v AS PIVOT (SELECT 'a' AS k, 42 AS v) ON k IN keys USING sum(v)
+
+query I
+SELECT * FROM s.v
+----
+42
+
+query I
+SELECT column_name FROM (DESCRIBE s.v)
+----
+a
+
+# outside the view the session's search path applies
+query I
+SELECT * FROM (PIVOT (SELECT 'b' AS k, 7 AS v) ON k IN keys USING sum(v))
+----
+7
+
+statement ok
+ATTACH ':memory:' AS db
+
+statement ok
+CREATE TYPE db.keys AS ENUM ('c')
+
+statement ok
+CREATE VIEW db.v AS PIVOT (SELECT 'c' AS k, 44 AS v) ON k IN keys USING sum(v)
+
+query I
+SELECT * FROM db.v
+----
+44
+
+statement ok
+CREATE TYPE s.not_an_enum AS VARCHAR
+
+statement error
+CREATE VIEW s.bad AS PIVOT (SELECT 'a' AS k, 1 AS v) ON k IN not_an_enum USING sum(v)
+----
+Pivot must reference an ENUM type
+
+statement error
+CREATE VIEW s.missing AS PIVOT (SELECT 'a' AS k, 1 AS v) ON k IN no_such_enum USING sum(v)
+----
+no_such_enum
+
+# a temporary enum, and the temporary enum a PIVOT without IN creates
+statement ok
+CREATE TEMP TYPE tkeys AS ENUM ('t')
+
+query I
+SELECT * FROM (PIVOT (SELECT 't' AS k, 45 AS v) ON k IN tkeys USING sum(v))
+----
+45
+
+query I
+SELECT * FROM (PIVOT (SELECT 'u' AS k, 46 AS v) ON k USING sum(v))
+----
+46

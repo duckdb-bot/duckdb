@@ -56,6 +56,8 @@ public:
 
 	//! Whether this writer can write to disk at all (not temporary / in-memory / read-only)
 	bool CanWriteToDisk() const;
+	//! Whether appended row groups are written to disk before the commit
+	bool WritesToDisk() const;
 
 	//! Return the client context.
 	ClientContext &GetClientContext() {

@@ -10,7 +10,9 @@
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
 #include "duckdb/planner/expression/bound_between_expression.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
+#include "duckdb/planner/expression/bound_conjunction_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
+#include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/storage/statistics/node_statistics.hpp"
 
@@ -744,40 +746,72 @@ static auto CV2BetweenUpperComparison(const BoundFunctionExpression &between) ->
 	                                         BoundBetweenExpression::UpperBound(between).Copy());
 }
 
-//! A predicate that is a BETWEEN with an exclusive bound is offered as its two comparisons, which the callback can
-//! accept one by one, so that the callback sees the bounds as they are. The optimizer only folds ranges into BETWEEN
-//! at the top level of the predicates
-static auto CV2SplitExclusiveBetween(vector<unique_ptr<Expression>> &filters) -> void {
-	vector<unique_ptr<Expression>> result;
-	for (auto &filter : filters) {
-		if (CV2IsExclusiveBetween(*filter)) {
-			auto &between = filter->Cast<BoundFunctionExpression>();
-			result.push_back(CV2BetweenLowerComparison(between));
-			result.push_back(CV2BetweenUpperComparison(between));
-		} else {
-			result.push_back(std::move(filter));
-		}
+static auto CV2ContainsExclusiveBetween(const Expression &expression) -> bool {
+	if (CV2IsExclusiveBetween(expression)) {
+		return true;
 	}
-	filters = std::move(result);
+	bool found = false;
+	ExpressionIterator::EnumerateChildren(
+	    expression, [&](const Expression &child) { found = found || CV2ContainsExclusiveBetween(child); });
+	return found;
+}
+
+//! Inside another expression, a BETWEEN with an exclusive bound becomes the conjunction of its two comparisons
+static auto CV2SplitNestedExclusiveBetween(unique_ptr<Expression> &expression) -> void {
+	if (CV2IsExclusiveBetween(*expression)) {
+		auto &between = expression->Cast<BoundFunctionExpression>();
+		expression = make_uniq<BoundConjunctionExpression>(
+		    ExpressionType::CONJUNCTION_AND, CV2BetweenLowerComparison(between), CV2BetweenUpperComparison(between));
+	}
+	ExpressionIterator::EnumerateChildren(*expression,
+	                                      [](unique_ptr<Expression> &child) { CV2SplitNestedExclusiveBetween(child); });
 }
 
 //! The optimizer hands over the predicates it would otherwise evaluate above the scan; whatever the callback accepts
 //! is removed from the list, and the engine keeps applying the rest itself.
+//! A predicate that is a BETWEEN with an exclusive bound is offered as its two comparisons, which the callback can
+//! accept one by one, and one that contains such a BETWEEN with it written as the conjunction of its comparisons, so
+//! that the callback sees the bounds as they are. A predicate the callback does not take goes back to the engine as
+//! the optimizer wrote it, so that the engine does not evaluate the input of a BETWEEN twice.
 static auto CV2TableFilterPushdown(ClientContext &context, LogicalGet &get, FunctionData *bind_data_p,
                                    vector<unique_ptr<Expression>> &filters) -> void {
 	if (filters.empty()) {
 		return;
 	}
-	CV2SplitExclusiveBetween(filters);
 	const auto &bind_data = bind_data_p->Cast<CV2TableFunctionData>();
 	const auto &info = *bind_data.info;
+
+	// the predicates offered to the callback, and the index of the predicate each one comes from
+	vector<unique_ptr<Expression>> offered;
+	vector<idx_t> origin;
+	// whether a predicate is offered as itself, without a rewrite
+	vector<bool> offered_as_is(filters.size(), false);
+	for (idx_t i = 0; i < filters.size(); i++) {
+		auto &filter = filters[i];
+		if (CV2IsExclusiveBetween(*filter)) {
+			auto &between = filter->Cast<BoundFunctionExpression>();
+			offered.push_back(CV2BetweenLowerComparison(between));
+			origin.push_back(i);
+			offered.push_back(CV2BetweenUpperComparison(between));
+			origin.push_back(i);
+		} else if (CV2ContainsExclusiveBetween(*filter)) {
+			auto rewritten = filter->Copy();
+			CV2SplitNestedExclusiveBetween(rewritten);
+			offered.push_back(std::move(rewritten));
+			origin.push_back(i);
+		} else {
+			offered.push_back(std::move(filter));
+			origin.push_back(i);
+			offered_as_is[i] = true;
+		}
+	}
 
 	CV2TableFilterPushdownInfo args = {};
 	args.in_user_data = info.user_data ? info.user_data->GetData() : nullptr;
 	args.in_bind_data = bind_data.handle ? bind_data.handle->GetData() : nullptr;
-	args.in_filters = &filters;
+	args.in_filters = &offered;
 	args.in_column_ids = &get.GetColumnIds();
-	args.out_handled.resize(filters.size(), false);
+	args.out_handled.resize(offered.size(), false);
 
 	CV2ErrorInfo err = {};
 	auto err_ptr = Convert(&err);
@@ -785,14 +819,40 @@ static auto CV2TableFilterPushdown(ClientContext &context, LogicalGet &get, Func
 	info.filter_pushdown_cb(Convert(&args), Convert(&callback_context), &err_ptr);
 
 	if (err.HasError()) {
+		// the predicates offered as themselves go back to the engine before the error is thrown
+		for (idx_t o = 0; o < offered.size(); o++) {
+			if (offered_as_is[origin[o]]) {
+				filters[origin[o]] = std::move(offered[o]);
+			}
+		}
 		err.ThrowAsException();
 	}
 
 	vector<unique_ptr<Expression>> remaining;
-	for (idx_t i = 0; i < filters.size(); i++) {
-		if (!args.out_handled[i]) {
-			remaining.push_back(std::move(filters[i]));
+	for (idx_t o = 0; o < offered.size();) {
+		auto i = origin[o];
+		idx_t end = o;
+		idx_t accepted = 0;
+		while (end < offered.size() && origin[end] == i) {
+			accepted += args.out_handled[end];
+			end++;
 		}
+		if (offered_as_is[i]) {
+			if (!accepted) {
+				remaining.push_back(std::move(offered[o]));
+			}
+		} else if (!accepted) {
+			// nothing was taken: the engine keeps the predicate as the optimizer wrote it
+			remaining.push_back(std::move(filters[i]));
+		} else {
+			// the comparisons of a BETWEEN that the callback did not take
+			for (idx_t k = o; k < end; k++) {
+				if (!args.out_handled[k]) {
+					remaining.push_back(std::move(offered[k]));
+				}
+			}
+		}
+		o = end;
 	}
 	filters = std::move(remaining);
 }

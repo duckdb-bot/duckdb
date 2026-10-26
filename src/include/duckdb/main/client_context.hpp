@@ -406,9 +406,10 @@ private:
 
 	unique_ptr<ClientContextLock> LockContext();
 
-	//! Begins the query of a user statement, whose first statement runs next
+	//! Begins the query of a user statement, whose first statement runs next. outside_local_transaction is whether
+	//! it runs on the CONNECT-ed database, outside the local transaction
 	void BeginQueryInternal(ClientContextLock &lock, PreprocessedStatement statements,
-	                        const QueryParameters &parameters, Retention retention);
+	                        const QueryParameters &parameters, Retention retention, bool outside_local_transaction);
 	//! Begins one statement of the active query: its query number, its text and its query log line
 	void BeginStatementInternal(ClientContextLock &lock, const string &query);
 	//! Refreshes the logger for the statement that begins
@@ -423,7 +424,8 @@ private:
 	void EndStatementInternal(ClientContextLock &lock);
 	ErrorData EndQueryInternal(ClientContextLock &lock, bool success, bool invalidate_transaction,
 	                           optional_ptr<ErrorData> previous_error);
-	//! End the query in the profiler; a failure to emit the profile becomes the error unless there is one already
+	//! End the query in the profiler. A failure to emit the profile becomes the error unless there is one already, and
+	//! a fatal or internal one invalidates the database
 	void EndQueryProfiling(ErrorData &error);
 	//! The result of the finished query. For a statement that expands into several and returns no rows, that is an
 	//! empty result in the query's format, the way a statement that returns nothing reports

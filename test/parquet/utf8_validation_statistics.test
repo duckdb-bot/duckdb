@@ -72,3 +72,14 @@ query II
 SELECT coalesce(stats(j)::VARCHAR LIKE '%''min''%', stats(j) IS NULL), coalesce(stats(x)::VARCHAR LIKE '%''min''%', false) FROM read_parquet('{TEST_DIR}/repaired_json.parquet', binary_as_string = true, utf8_validation = 'ignore') LIMIT 1;
 ----
 true	false
+
+# page statistics of an existing file hold an invalid minimum, which the repaired values sort below
+query I
+SELECT count(*) FROM read_parquet('data/parquet-testing/invalid_utf8_dlba.parquet', utf8_validation = 'ignore') WHERE X1 = 'TREL';
+----
+1
+
+query I
+SELECT count(*) FROM read_parquet('data/parquet-testing/invalid_utf8_dlba.parquet', utf8_validation = 'replace') WHERE X1 = 'TREL?';
+----
+1

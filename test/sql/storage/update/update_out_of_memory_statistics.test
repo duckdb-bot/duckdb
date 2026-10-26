@@ -86,4 +86,3 @@ query III
 SELECT min(i), max(i), count(*) FROM t2
 ----
 0	511	512
-

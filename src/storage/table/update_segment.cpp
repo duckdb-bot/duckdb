@@ -1488,8 +1488,8 @@ void UpdateSegment::Update(TransactionData transaction, DuckTableEntry &table_en
 	UnifiedVectorFormat update_format;
 	update_p.ToUnifiedFormat(update_format);
 
-	// the statistics of this update join those of the segment once the update cannot fail anymore: a failed update
-	// must not leave its values in them, as RowGroup::Update publishes them after the next update of the column
+	// the statistics of this update join those of the segment only once it cannot fail anymore, as RowGroup::Update
+	// publishes them after the next update of the column, which must not see the values of a failed update
 	SelectionVector sel;
 	SegmentStatistics update_stats(column_data.type);
 	count = statistics_update_function(this, update_stats, update_format, count, sel);

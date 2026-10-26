@@ -20,8 +20,16 @@ TEST_CASE("A constant reference to a string keeps the heap that holds it", "[api
 		return source;
 	};
 
-	// the source goes away before the reference is read
+	// the constant shares the bytes of the string instead of copying them
 	Vector reference(LogicalType::VARCHAR);
+	{
+		auto source = make_source();
+		ConstantVector::Reference(reference, count_t(3000), source, 2, 4);
+		REQUIRE(ConstantVector::GetData<string_t>(reference)->GetData() ==
+		        FlatVector::GetData<string_t>(source)[2].GetData());
+	}
+
+	// the source goes away before the reference is read
 	{
 		auto source = make_source();
 		ConstantVector::Reference(reference, count_t(3000), source, 2, 4);

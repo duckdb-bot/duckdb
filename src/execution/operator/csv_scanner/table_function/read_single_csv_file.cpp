@@ -1,3 +1,4 @@
+#include "duckdb/common/error_data.hpp"
 #include "duckdb/common/multi_file/multi_file_list.hpp"
 #include "duckdb/common/multi_file/table_function_multi_file.hpp"
 #include "duckdb/execution/operator/csv_scanner/csv_error.hpp"
@@ -464,6 +465,23 @@ static double ReadSingleCSVFileProgress(ClientContext &context, const FunctionDa
 	return gstate.file_scan->GetProgressInFile(context);
 }
 
+//! The size of a local regular file for the row estimate, or 0 when it is not known. The estimate is optional, so a
+//! file that cannot be inspected keeps the default estimate and fails only if the scan reaches it
+static idx_t LocalCSVFileSize(ClientContext &context, const OpenFileInfo &file) {
+	try {
+		auto stats = FileSystem::GetFileSystem(context).GetStatsIfExists(file);
+		if (stats && stats->file_type == FileType::FILE_TYPE_REGULAR && stats->file_size > 0) {
+			return UnsafeNumericCast<idx_t>(stats->file_size);
+		}
+	} catch (std::exception &ex) {
+		ErrorData error(ex);
+		if (error.Type() != ExceptionType::IO && error.Type() != ExceptionType::PERMISSION) {
+			throw;
+		}
+	}
+	return 0;
+}
+
 static unique_ptr<NodeStatistics> ReadSingleCSVFileCardinality(ClientContext &context, const FunctionData *bind_data) {
 	auto &csv_data = bind_data->Cast<ReadSingleCSVFileData>();
 	// determined through the scientific method as the average amount of rows in a CSV file
@@ -483,10 +501,7 @@ static unique_ptr<NodeStatistics> ReadSingleCSVFileCardinality(ClientContext &co
 		auto &file = csv_data.file;
 		if (!file.extended_info || !file.extended_info->TryGetOption("file_size", file_size)) {
 			if (!FileSystem::IsRemoteFile(file.path)) {
-				auto stats = FileSystem::GetFileSystem(context).GetStatsIfExists(file);
-				if (stats && stats->file_type == FileType::FILE_TYPE_REGULAR && stats->file_size > 0) {
-					file_size = UnsafeNumericCast<idx_t>(stats->file_size);
-				}
+				file_size = LocalCSVFileSize(context, file);
 			}
 		}
 		if (file_size > 0) {

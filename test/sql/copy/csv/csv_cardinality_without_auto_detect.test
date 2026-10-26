@@ -27,3 +27,27 @@ query II
 EXPLAIN SELECT count(*) FROM read_csv('{TEST_DIR}/sized*.csv', auto_detect = false, header = true, columns = {'id': 'BIGINT', 'payload': 'VARCHAR'});
 ----
 logical_opt	<REGEX>:.*~212,890 rows.*
+
+# a list of two files, estimated from each of them
+statement ok
+COPY (SELECT i AS id, repeat('x', 100) AS payload FROM range(20000) t(i)) TO '{TEST_DIR}/sized_2.csv';
+
+query II
+EXPLAIN SELECT count(*) FROM read_csv(['{TEST_DIR}/sized.csv', '{TEST_DIR}/sized_2.csv'], auto_detect = false, header = true, columns = {'id': 'BIGINT', 'payload': 'VARCHAR'});
+----
+logical_opt	<REGEX>:.*~425,780 rows.*
+
+# the size the file list gives is used instead of the size on disk
+query II
+EXPLAIN SELECT count(*) FROM read_csv([{'filename': '{TEST_DIR}/sized.csv', 'file_size': 10000}], auto_detect = false, header = true, columns = {'id': 'BIGINT', 'payload': 'VARCHAR'});
+----
+logical_opt	<REGEX>:.*~1,000 rows.*
+
+# an empty file keeps the default estimate
+statement ok
+COPY (SELECT 1 AS id WHERE false) TO '{TEST_DIR}/empty_sized.csv' (HEADER false);
+
+query II
+EXPLAIN SELECT count(*) FROM read_csv('{TEST_DIR}/empty_sized.csv', auto_detect = false, header = false, columns = {'id': 'BIGINT', 'payload': 'VARCHAR'});
+----
+logical_opt	<REGEX>:.*~42 rows.*

@@ -334,7 +334,8 @@ public:
 	//! Probe the HT with the given input chunk, resulting in the given result
 	void Probe(ScanStructure &scan_structure, DataChunk &keys, TupleDataChunkState &key_state, ProbeState &probe_state,
 	           optional_ptr<Vector> precomputed_hashes = nullptr);
-	//! Enable selective NULL refinement for an uncorrelated multi-column MARK join
+	//! Enable selective NULL refinement for an uncorrelated MARK join on rows or on a UNION, whose comparison can be
+	//! NULL without a NULL key
 	void InitializeUncorrelatedMarkJoin();
 	bool HasUncorrelatedMarkJoin() const;
 	//! Record the tags of the RHS of a MARK join on one UNION condition

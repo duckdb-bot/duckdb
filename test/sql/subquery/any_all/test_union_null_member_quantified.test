@@ -193,3 +193,55 @@ RESET prefer_range_joins;
 
 statement ok
 RESET merge_join_threshold;
+
+# members that are a STRUCT, compared as a STRUCT, or a UNION, which can itself compare as NULL
+statement ok
+CREATE TABLE nested_members(id INTEGER, x UNION(m STRUCT(n INTEGER), u UNION(j INTEGER), i INTEGER));
+
+statement ok
+INSERT INTO nested_members VALUES (0, union_value(m := NULL::STRUCT(n INTEGER))), (1, union_value(m := {'n': NULL::INTEGER})),
+	(2, union_value(m := {'n': 1})), (3, union_value(u := NULL::UNION(j INTEGER))),
+	(4, union_value(u := union_value(j := NULL::INTEGER))), (5, union_value(u := union_value(j := 1))),
+	(6, union_value(i := NULL::INTEGER)), (7, union_value(i := 1)), (8, NULL);
+
+foreach op = < <>
+
+loop k 0 10
+
+query I
+SELECT count(*) FROM nested_members a
+WHERE (x {op} ANY (SELECT x FROM nested_members WHERE id = {k} OR {k} = 9)) IS DISTINCT FROM
+	(SELECT CASE WHEN bool_or(a.x {op} b.x) THEN true WHEN bool_or((a.x {op} b.x) IS NULL) THEN NULL ELSE false END
+	 FROM nested_members b WHERE b.id = {k} OR {k} = 9);
+----
+0
+
+endloop
+
+endloop
+
+# a recursive CTE runs the MARK join again in every iteration, against a right side that changes
+statement ok
+CREATE TABLE p(x UNION(i INTEGER, s VARCHAR));
+
+statement ok
+INSERT INTO p VALUES (union_value(i := NULL::INTEGER)), (union_value(i := 9)), (union_value(s := NULL::VARCHAR)),
+	(union_value(s := 'z')), (NULL);
+
+query II
+WITH RECURSIVE rec(n, err) AS (
+	SELECT 0, 0::BIGINT
+	UNION ALL
+	SELECT n + 1, (SELECT count(*) FROM
+		(SELECT x IN (SELECT CASE n % 5 WHEN 0 THEN NULL::UNION(i INTEGER, s VARCHAR)
+			WHEN 1 THEN union_value(i := NULL::INTEGER)::UNION(i INTEGER, s VARCHAR)
+			WHEN 2 THEN union_value(s := 'a')::UNION(i INTEGER, s VARCHAR)
+			ELSE union_value(i := 1)::UNION(i INTEGER, s VARCHAR) END FROM rec r WHERE r.n % 5 <> 4) got, x FROM p) a
+		WHERE got IS DISTINCT FROM CASE WHEN rec.n % 5 = 4 THEN false WHEN rec.n % 5 = 0 OR x IS NULL THEN NULL
+			WHEN rec.n % 5 = 1 AND union_tag(x) = 'i' THEN NULL WHEN rec.n % 5 = 2 AND union_tag(x) = 's' AND x.s IS NULL THEN NULL
+			WHEN rec.n % 5 = 3 AND union_tag(x) = 'i' AND x.i IS NULL THEN NULL ELSE false END)
+	FROM rec WHERE n < 14
+)
+SELECT count(*), sum(err) FROM rec;
+----
+15	0

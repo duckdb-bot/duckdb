@@ -42,6 +42,14 @@ SELECT bool_and(bloom_filter_offset IS NOT NULL) FROM parquet_metadata('{TEST_DI
 ----
 true
 
+# the stored bloom filter excludes every repaired value
+query III
+SELECT (SELECT bool_and(bloom_filter_excludes) FROM parquet_bloom_probe('{TEST_DIR}/repaired_bloom.parquet', 'x', 'zz'::BLOB)),
+	(SELECT bool_and(bloom_filter_excludes) FROM parquet_bloom_probe('{TEST_DIR}/repaired_bloom.parquet', 'x', '?zz'::BLOB)),
+	(SELECT bool_and(bloom_filter_excludes) FROM parquet_bloom_probe('{TEST_DIR}/repaired_bloom.parquet', 'x', 'zz?'::BLOB));
+----
+true	true	true
+
 query IIII
 SELECT (SELECT count(*) FROM read_parquet('{TEST_DIR}/repaired_bloom.parquet', binary_as_string = true, utf8_validation = 'ignore') WHERE x = 'zz'),
 	(SELECT count(*) FROM read_parquet('{TEST_DIR}/repaired_bloom.parquet', binary_as_string = true, utf8_validation = 'replace') WHERE x = '?zz'),
@@ -61,6 +69,17 @@ SELECT count(*) FROM read_parquet('{TEST_DIR}/repaired_bloom.parquet', binary_as
 ----
 is not valid UTF8
 
+# page statistics of an existing file hold an invalid minimum, which the repaired values sort below
+query I
+SELECT count(*) FROM read_parquet('data/parquet-testing/invalid_utf8_dlba.parquet', utf8_validation = 'ignore') WHERE X1 = 'TREL';
+----
+1
+
+query I
+SELECT count(*) FROM read_parquet('data/parquet-testing/invalid_utf8_dlba.parquet', utf8_validation = 'replace') WHERE X1 = 'TREL?';
+----
+1
+
 # JSON is validated but not repaired, so it keeps its statistics, while a repaired VARCHAR has no minimum. Without the
 # optimizer no statistics are propagated
 require json
@@ -72,14 +91,3 @@ query II
 SELECT coalesce(stats(j)::VARCHAR LIKE '%''min''%', stats(j) IS NULL), coalesce(stats(x)::VARCHAR LIKE '%''min''%', false) FROM read_parquet('{TEST_DIR}/repaired_json.parquet', binary_as_string = true, utf8_validation = 'ignore') LIMIT 1;
 ----
 true	false
-
-# page statistics of an existing file hold an invalid minimum, which the repaired values sort below
-query I
-SELECT count(*) FROM read_parquet('data/parquet-testing/invalid_utf8_dlba.parquet', utf8_validation = 'ignore') WHERE X1 = 'TREL';
-----
-1
-
-query I
-SELECT count(*) FROM read_parquet('data/parquet-testing/invalid_utf8_dlba.parquet', utf8_validation = 'replace') WHERE X1 = 'TREL?';
-----
-1

@@ -140,7 +140,7 @@ TEST_CASE("Test that a streaming client waits for the next unit while a worker r
 		    for (idx_t i = 0; i < STANDARD_VECTOR_SIZE; i++) {
 			    writer.WriteValue(static_cast<int64_t>(call + 1));
 		    }
-		    output.SetCardinality(STANDARD_VECTOR_SIZE);
+		    output.CheckCardinality(STANDARD_VECTOR_SIZE);
 	    },
 	    [](ClientContext &, TableFunctionBindInput &input, vector<LogicalType> &return_types,
 	       vector<Identifier> &names) -> unique_ptr<FunctionData> {

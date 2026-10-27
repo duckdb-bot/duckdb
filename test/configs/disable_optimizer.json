@@ -30,6 +30,12 @@
       ]
     },
     {
+      "reason": "Checks that optimizer filter pushdown turns a filter below a delim join into a table filter.",
+      "paths": [
+        "test/optimizer/pushdown/view_filter_delim_window_scan.test"
+      ]
+    },
+    {
       "reason": "The error depends on the optimizer folding the cast of the constant",
       "paths": [
         "test/sql/cast/string_to_map_null_keys.test"

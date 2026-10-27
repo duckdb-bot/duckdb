@@ -42,3 +42,14 @@ FROM range(2) t(i);
 ----
 NULL
 42
+
+# NULLs and empty containers count as values nested in the arrays and objects around them
+statement ok
+CREATE TABLE leaves AS SELECT d, (repeat('[', d) || 'null' || repeat(']', d))::JSON::VARIANT AS n,
+	(repeat('{"a": ', d) || '{}' || repeat('}', d))::JSON::VARIANT AS e FROM range(127, 129) r(d);
+
+query III
+SELECT d, TRY_CAST(n AS VARCHAR) IS NULL, TRY_CAST(e AS VARCHAR) IS NULL FROM leaves ORDER BY d;
+----
+127	false	false
+128	true	true

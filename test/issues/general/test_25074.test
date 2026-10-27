@@ -117,3 +117,20 @@ SELECT d, TRY_CAST(v AS VARCHAR) IS NULL FROM mix ORDER BY d;
 127	false
 128	true
 1000	true
+
+# the depth error is reported also when another row of the batch fails to convert
+statement ok
+CREATE TABLE mixed_errors AS SELECT 1 AS i, v FROM t WHERE d = 128 UNION ALL SELECT 2, 'x'::VARIANT UNION ALL
+	SELECT 3, 42::VARIANT;
+
+statement error
+SELECT CAST(v AS INTEGER) FROM mixed_errors;
+----
+VARIANT exceeds maximum recursion depth of 128
+
+query II
+SELECT i, TRY_CAST(v AS INTEGER) FROM mixed_errors ORDER BY i;
+----
+1	NULL
+2	NULL
+3	42

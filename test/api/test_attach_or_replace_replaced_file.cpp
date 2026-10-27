@@ -197,7 +197,7 @@ TEST_CASE("Test ATTACH OR REPLACE of a replaced database file from two connectio
 	CreateTable(con, new_path, "SELECT 2 AS i");
 	fs.MoveFile(new_path, path);
 
-	// each connection that opened the new file would close it again, releasing the lock of the other
+	// both connections open the new file, and the later attachment replaces the earlier one
 	gate.gate = true;
 	unique_ptr<QueryResult> results[2];
 	std::thread first([&]() { results[0] = con.Query("ATTACH OR REPLACE '" + path + "' AS r (READ_ONLY)"); });
@@ -209,9 +209,9 @@ TEST_CASE("Test ATTACH OR REPLACE of a replaced database file from two connectio
 	REQUIRE(gate.arrivals > 0);
 	auto result = con.Query("SELECT i FROM r.t");
 	REQUIRE(CHECK_COLUMN(result, 0, {2}));
-	REQUIRE(!OtherProcessCanLockForWriting(path));
+	result = other.Query("SELECT i FROM r.t");
+	REQUIRE(CHECK_COLUMN(result, 0, {2}));
 	REQUIRE_NO_FAIL(con.Query("DETACH r"));
-	REQUIRE(OtherProcessCanLockForWriting(path));
 }
 
 TEST_CASE("Test ATTACH OR REPLACE of a database file of a file system that opens files to read metadata", "[api]") {

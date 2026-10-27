@@ -741,6 +741,7 @@ FlattenDependentJoins::UnnestingState FlattenDependentJoins::FinalizeDependentJo
 	finalized->conditions = std::move(conditions);
 	finalized->mark_types = std::move(mark_types);
 	finalized->duplicate_eliminated_columns = std::move(duplicate_eliminated_columns);
+	finalized->delim_row_number = !op.perform_delim;
 	finalized->children = std::move(op.children);
 	LogicalJoin::MoveJoinState(op, *finalized);
 	plan = std::move(finalized);

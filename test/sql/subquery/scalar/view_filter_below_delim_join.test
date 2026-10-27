@@ -150,3 +150,23 @@ query I
 SELECT currval('seq');
 ----
 2
+
+# the delim join of a subquery on an ordinality column de-duplicates that column, which a filter must not renumber
+query II
+SELECT i, rn FROM range(3) WITH ORDINALITY AS t(i, rn) WHERE i = 1 AND EXISTS (SELECT 1 WHERE rn > 0);
+----
+1	2
+
+query II
+SELECT i, rn FROM range(3) WITH ORDINALITY AS t(i, rn) WHERE i = 1 AND EXISTS (SELECT 1 WHERE rn = 2);
+----
+1	2
+
+# a filter with a barrier stays above the row number window, so it only sees the rows the lateral unnest keeps
+statement ok
+CREATE TABLE strings AS SELECT * FROM (VALUES (1, 'bad', []::INTEGER[]), (2, '42', [1])) t(id, s, xs);
+
+query I
+SELECT count(*) FROM strings, unnest(strings.xs) u(x) WHERE EXISTS (SELECT 1 FROM unnest(strings.xs) v(y)) AND __internal_barrier(strings.s::INTEGER = 42);
+----
+1

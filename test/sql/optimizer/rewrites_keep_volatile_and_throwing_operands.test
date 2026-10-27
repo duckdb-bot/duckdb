@@ -305,6 +305,111 @@ SELECT TRY(list_transform(list_filter(list_transform(l, lambda s: struct_pack(fi
 ----
 NULL
 
+# a field of the struct_pack besides the filter and the result
+statement ok
+CREATE TABLE ilists(l INTEGER[]);
+
+statement ok
+INSERT INTO ilists VALUES ([1, 2]);
+
+statement ok
+CREATE SEQUENCE sfield;
+
+query I
+SELECT list_transform(list_filter(list_transform(l, lambda x: struct_pack(filter := x > 0, result := x, extra := nextval('sfield'))),
+	lambda v: v.filter), lambda v: v.result) FROM ilists;
+----
+[1, 2]
+
+query I
+SELECT nextval('sfield');
+----
+3
+
+query I
+SELECT TRY(list_transform(list_filter(list_transform(l, lambda x: struct_pack(filter := x > 0, result := x,
+	extra := CAST(x::VARCHAR || 'bad' AS INTEGER))), lambda v: v.filter), lambda v: v.result)) FROM ilists;
+----
+NULL
+
+# integer division by zero without an error
+statement ok
+SET error_on_division_by_zero = false;
+
+statement ok
+CREATE SEQUENCE sdiv;
+
+query I
+SELECT nextval('sdiv') // 0 FROM v;
+----
+NULL
+NULL
+NULL
+
+query I
+SELECT nextval('sdiv');
+----
+4
+
+query I
+SELECT TRY((CAST(x::VARCHAR || 'bad' AS INTEGER) // 0) IS NULL) FROM v;
+----
+NULL
+NULL
+NULL
+
+statement ok
+RESET error_on_division_by_zero;
+
+# rewrites that remove an operation that can fail under TRY
+statement ok
+CREATE TABLE dates(d DATE);
+
+statement ok
+INSERT INTO dates VALUES (DATE '500000-01-01');
+
+query III
+SELECT TRY(d::TIMESTAMP = TIMESTAMP '2020-01-01 12:00:00'), TRY(d::TIMESTAMP <> TIMESTAMP '2020-01-01 12:00:00'),
+	TRY(d::TIMESTAMP < TIMESTAMP '2020-01-01 12:00:00') FROM dates;
+----
+NULL	NULL	NULL
+
+statement ok
+CREATE TABLE extremes(x INTEGER);
+
+statement ok
+INSERT INTO extremes VALUES (2147483647), (-2147483648), (0), (NULL);
+
+query IIIII
+SELECT x, TRY(x + 1 > 0), TRY(x * 2 = 3), TRY(-x = 0), TRY((x + 1) + (-1)) FROM extremes ORDER BY x;
+----
+-2147483648	false	NULL	NULL	-2147483648
+0	true	false	true	0
+2147483647	NULL	NULL	false	NULL
+NULL	NULL	NULL	NULL	NULL
+
+statement ok
+CREATE SEQUENCE snorm;
+
+query I
+SELECT (nextval('snorm') + CASE WHEN true THEN NULL ELSE x END) + 1 FROM v;
+----
+NULL
+NULL
+NULL
+
+query I
+SELECT nextval('snorm');
+----
+4
+
+query I
+SELECT TRY(((CAST(x::VARCHAR || 'bad' AS INTEGER) + CASE WHEN true THEN NULL ELSE x END) + 1) IS NULL) FROM v;
+----
+NULL
+NULL
+NULL
+
 # operands that can be dropped are still dropped
 query II
 EXPLAIN SELECT x > NULL, struct_extract(struct_pack(a := x, b := x + 1), 'a') FROM v;

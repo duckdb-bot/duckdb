@@ -325,6 +325,14 @@ unique_ptr<Expression> ListComprehensionRewriteRule::Apply(LogicalOperator &, ve
 	if (rewriter.InTry() && match->result_expr->CanThrow()) {
 		return nullptr;
 	}
+	// and drops the fields of the struct_pack besides the filter and the result
+	auto &struct_pack = match->inner_bind->lambda_expr->Cast<BoundFunctionExpression>();
+	for (auto &field : struct_pack.GetChildren()) {
+		if (field.get() != match->filter_expr.get() && field.get() != match->result_expr.get() &&
+		    !rewriter.CanDropExpression(*field)) {
+			return nullptr;
+		}
+	}
 	return BuildListComprehensionRewrite(GetContext(), *match);
 }
 

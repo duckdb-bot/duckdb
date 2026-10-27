@@ -67,6 +67,10 @@ unique_ptr<Expression> MoveConstantsRule::Apply(LogicalOperator &op, vector<refe
 		}
 		return make_uniq<BoundConstantExpression>(Value(comparison.GetReturnType()));
 	}
+	// moving the constant removes the arithmetic, whose overflow TRY would catch
+	if (rewriter.InTry() && arithmetic.CanThrow()) {
+		return nullptr;
+	}
 	auto &constant_type = outer_constant.GetReturnType();
 	hugeint_t outer_value = IntegralValue::Get(outer_constant.GetValue());
 	hugeint_t inner_value = IntegralValue::Get(inner_constant.GetValue());
@@ -272,6 +276,10 @@ unique_ptr<Expression> MoveUnaryMinusRule::Apply(LogicalOperator &op, vector<ref
 		return make_uniq<BoundConstantExpression>(Value(comparison.GetReturnType()));
 	}
 
+	// moving the negation removes it, and its overflow TRY would catch
+	if (rewriter.InTry() && negation.CanThrow()) {
+		return nullptr;
+	}
 	auto &constant_type = outer_constant.GetReturnType();
 	unique_ptr<Expression> nan_guard;
 	bool nan_guard_disjunctive = false;

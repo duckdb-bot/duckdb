@@ -245,6 +245,10 @@ unique_ptr<Expression> ComparisonSimplificationRule::Apply(LogicalOperator &op, 
 		//! invertible in practice.
 		auto &cast_expression = column_ref_expr.Cast<BoundFunctionExpression>();
 		auto target_type = BoundCastExpression::SourceType(cast_expression);
+		// moving the cast to the constant removes it, and its error TRY would catch
+		if (rewriter.InTry() && cast_expression.CanThrow()) {
+			return nullptr;
+		}
 		if (!BoundCastExpression::CastIsInvertible(target_type, cast_expression.GetReturnType()) &&
 		    !IsLosslessIntegralToFloatingCast(target_type, cast_expression.GetReturnType())) {
 			return nullptr;

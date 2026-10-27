@@ -268,8 +268,8 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundFuncti
 	}
 	if (func.Function().HasStatisticsCallback()) {
 		if (!CanDropExpression(func)) {
-			// a callback may replace the function with something that drops its children: it gets a target of its
-			// own for the replacement, and when it uses it, the function is restored from a copy, as the callback may
+			// a callback may replace the function with something that drops its children, so it gets a target of its
+			// own for the replacement, and when it uses it the function is restored from a copy, as the callback may
 			// also have moved its children
 			auto original = func.Copy();
 			unique_ptr<Expression> replacement;

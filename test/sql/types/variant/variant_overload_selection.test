@@ -39,6 +39,20 @@ SELECT pick_type(v) FROM t
 ----
 Macro pick_type() has multiple overloads that match the supplied arguments
 
+statement ok
+PREPARE abs_of AS SELECT abs($1);
+
+statement error
+EXECUTE abs_of(1.5::VARIANT)
+----
+Could not choose a best candidate function for the function call "abs(VARIANT)"
+
+# the same holds for the UNION member that a list of VARIANT values converts to
+statement error
+SELECT CAST([v] AS UNION(i BIGINT[], d DOUBLE[])) FROM t
+----
+The cast is ambiguous, multiple possible members in target
+
 # a cast selects the overload
 query IIII
 SELECT abs(v::DOUBLE), v::DOUBLE + v::DOUBLE, md5(s::VARCHAR) = md5('abc'), pick_type(v::VARCHAR) FROM t
@@ -50,7 +64,31 @@ SELECT sum(v::DOUBLE) FROM t
 ----
 1.5
 
-# a VARIANT is still cast for a function with one overload, or when the other arguments select the overload
+query I
+EXECUTE abs_of(1.5::DOUBLE)
+----
+1.5
+
+query I
+SELECT CAST([v::DOUBLE] AS UNION(i BIGINT[], d DOUBLE[])) FROM t
+----
+[1.5]
+
+# another argument selects one of the overloads that could take the VARIANT
+statement ok
+CREATE MACRO pick_by_second(x DOUBLE, y INTEGER) AS 'DOUBLE', (x BIGINT, y BIGINT) AS 'BIGINT';
+
+query III
+SELECT pick_by_second(v, 1::INTEGER), 2::VARIANT + 1::BIGINT, typeof(2::VARIANT + 1::BIGINT) FROM t
+----
+DOUBLE	3	BIGINT
+
+statement error
+SELECT pick_by_second(v, v) FROM t
+----
+Macro pick_by_second() has multiple overloads that match the supplied arguments
+
+# a function with only one overload that takes the arguments still accepts a VARIANT
 query III
 SELECT lower(s), s || 'd', ['x', 'y', 'z'][2::VARIANT] FROM t
 ----

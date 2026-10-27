@@ -79,7 +79,8 @@ static bool DateTimestampComparisonIsInvertible(ClientContext &context, BoundFun
 
 //! Whether a TRY_CAST from source_type to target_type can give NULL for a value that is not NULL
 static bool TryCastCanFail(const LogicalType &source_type, const LogicalType &target_type) {
-	if (source_type.id() == LogicalTypeId::DECIMAL && target_type.id() == LogicalTypeId::DECIMAL) {
+	if (source_type.id() == LogicalTypeId::DECIMAL && target_type.id() == LogicalTypeId::DECIMAL &&
+	    !source_type.HasAlias() && !target_type.HasAlias()) {
 		// a DECIMAL fits a DECIMAL with as many digits before the point and at least as many after it
 		auto source_scale = DecimalType::GetScale(source_type);
 		auto target_scale = DecimalType::GetScale(target_type);

@@ -1,5 +1,5 @@
-# name: test/optimizer/pushdown/pushdown_window_partition_identical_values.test
-# description: A filter on a partition column goes below the window only when it keeps whole partitions (duckdblabs/bot-issue-tracker#670)
+# name: test/optimizer/pushdown/pushdown_identical_values.test
+# description: A filter goes below a window or an aggregate only when it gives equal values the same result (duckdblabs/bot-issue-tracker#670)
 # group: [pushdown]
 
 statement ok
@@ -76,7 +76,7 @@ statement ok
 SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 
 statement ok
-PRAGMA explain_output = 'OPTIMIZED_ONLY';
+SET explain_output = 'optimized_only';
 
 # a filter that tells equal values apart stays above the window
 query II
@@ -144,4 +144,69 @@ SELECT cnt FROM (SELECT k, count(*) OVER (PARTITION BY k) AS cnt FROM wi) WHERE 
 ----
 3
 3
+3
+
+# groups also put signed zeros together, so a filter that tells them apart stays above the aggregate
+query I
+SELECT count(*) FROM (SELECT x, count(*) AS cnt FROM w GROUP BY x) WHERE x::VARCHAR = '0.0' AND cnt = 1;
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT f, count(*) AS cnt FROM w GROUP BY f) WHERE f::VARCHAR = '0.0' AND cnt = 1;
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT s, count(*) AS cnt FROM w GROUP BY s) WHERE s::VARCHAR = '{''a'': 0.0}' AND cnt = 1;
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT l, count(*) AS cnt FROM (SELECT [x] AS l FROM w) GROUP BY l) WHERE l::VARCHAR = '[0.0]' AND cnt = 1;
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT x, f, count(*) AS cnt FROM w GROUP BY GROUPING SETS ((x), (x, f))) WHERE x::VARCHAR = '0.0' AND cnt = 1;
+----
+0
+
+query II
+EXPLAIN SELECT cnt FROM (SELECT x, count(*) AS cnt FROM w GROUP BY x) WHERE x::VARCHAR = '0.0';
+----
+logical_opt	<REGEX>:(?s).*FILTER.*AGGREGATE.*
+
+# comparisons with constants keep whole groups and go below the aggregate
+query II
+EXPLAIN SELECT cnt FROM (SELECT x, count(*) AS cnt FROM w GROUP BY x) WHERE x = 0;
+----
+logical_opt	<!REGEX>:(?s).*FILTER.*AGGREGATE.*
+
+query I
+SELECT cnt FROM (SELECT x, count(*) AS cnt FROM w GROUP BY x) WHERE x = 0;
+----
+2
+
+query II
+EXPLAIN SELECT cnt FROM (SELECT x, count(*) AS cnt FROM wn GROUP BY x) WHERE x IN (0, 2) OR x IS NULL;
+----
+logical_opt	<!REGEX>:(?s).*FILTER.*AGGREGATE.*
+
+query II
+SELECT x IS NULL, cnt FROM (SELECT x, count(*) AS cnt FROM wn GROUP BY x) WHERE x IN (0, 2) OR x IS NULL ORDER BY ALL;
+----
+false	1
+false	2
+true	2
+
+# groups whose equal values are identical still push any filter
+query II
+EXPLAIN SELECT cnt FROM (SELECT k, count(*) AS cnt FROM wi GROUP BY k) WHERE k::VARCHAR = '1';
+----
+logical_opt	<!REGEX>:(?s).*FILTER.*AGGREGATE.*
+
+query I
+SELECT cnt FROM (SELECT k, count(*) AS cnt FROM wi GROUP BY k) WHERE k::VARCHAR = '1';
+----
 3

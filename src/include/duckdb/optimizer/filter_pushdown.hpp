@@ -130,6 +130,8 @@ private:
 	//! Extract filter bindings to compare them with expressions in an operator and determine if the filter
 	//! can be pushed down
 	void ExtractFilterBindings(const Expression &expr, vector<ColumnBinding> &bindings);
+	//! Whether the filter gives equal values the same result, so that it keeps window partitions and groups whole
+	static bool KeepsEqualValuesTogether(const Expression &filter);
 	//! Generate filters from the current set of filters stored in the FilterCombiner
 	void GenerateFilters();
 	//! if there are filters in this FilterPushdown node, push them into the combiner. Returns

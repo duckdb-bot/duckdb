@@ -90,6 +90,15 @@ SELECT [main.unpack(COLUMNS(*))] FROM (SELECT 1 AS a, 2 AS b);
 ----
 [1, 2]
 
+# a coalesce qualified with main is looked up in the catalog as before
+statement ok
+CREATE MACRO mem_db.main.coalesce(a, b) AS 777;
+
+query I
+SELECT mem_db.main.coalesce(NULL, 5);
+----
+777
+
 # any other qualification is the column the function is called on, also when a schema or a database of that name
 # exists
 statement ok
@@ -110,6 +119,9 @@ statement error
 SELECT s.ifnull(NULL, 'z');
 ----
 Wrong number of arguments to IFNULL.
+
+statement ok
+DETACH mem_db;
 
 # lambda parameters, macro parameters and columns of an outer query
 query I

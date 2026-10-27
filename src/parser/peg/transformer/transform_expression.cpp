@@ -306,8 +306,8 @@ unique_ptr<ParsedExpression> PEGTransformerFactory::TransformFunctionExpression(
 		lowercase_name = "count_star";
 	}
 
-	// x.ifnull(y) parses as a call in schema x, but a rewritten name has no catalog entry to look up there, so a
-	// qualification other than main is the column the function is called on, as in (x).ifnull(y)
+	// x.ifnull(y) parses as a call in schema x. The rewrites are not catalog functions, so for them a qualification
+	// other than main is the column the function is called on, as in (x).ifnull(y)
 	const auto &path = qualified_function.Path();
 	const bool call_on_column = path.size() > 1 && IsParserFunctionRewrite(lowercase_name) &&
 	                            !StringUtil::CIEquals(qualified_function.Schema().GetIdentifierName(), DEFAULT_SCHEMA);

@@ -84,6 +84,31 @@ SELECT a, CASE WHEN a BETWEEN [1] AND [2] THEN 'in' ELSE 'out' END FROM lists OR
 [3]	out
 [4]	out
 
+# an expression input is not split into comparisons, and the earlier branch leaves a partial selection
+query II
+SELECT i, CASE WHEN i % 2 = 0 THEN 'even' WHEN [i] BETWEEN [1] AND [3] THEN 'in' ELSE 'out' END FROM range(6) t(i);
+----
+0	even
+1	in
+2	even
+3	in
+4	even
+5	out
+
+query I
+SELECT i FROM range(6) t(i) WHERE i = 0 OR [i] BETWEEN [2] AND [3] ORDER BY i;
+----
+0
+2
+3
+
+query I
+SELECT i FROM range(6) t(i) WHERE i != 4 AND NOT ([i] BETWEEN [2] AND [3]) ORDER BY i;
+----
+0
+1
+5
+
 # several vectors with NULL rows and NULL elements, against the same comparisons outside a filter
 statement ok
 CREATE TABLE nested AS

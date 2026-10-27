@@ -330,8 +330,7 @@ unique_ptr<LogicalOperator> FilterPushdown::FinishPushdown(unique_ptr<LogicalOpe
 	return PushFinalFilters(std::move(op));
 }
 
-//! Whether values of the type that compare equal are also identical, unlike signed zeros or collated strings
-static bool EqualValuesAreIdentical(const LogicalType &type) {
+bool FilterPushdown::EqualValuesAreIdentical(const LogicalType &type) {
 	return !TypeVisitor::Contains(type, [](const LogicalType &child) {
 		switch (child.id()) {
 		case LogicalTypeId::FLOAT:

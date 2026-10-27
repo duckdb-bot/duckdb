@@ -55,6 +55,13 @@ SELECT cnt FROM (SELECT u, count(*) OVER (PARTITION BY u) AS cnt FROM (SELECT un
 ----
 2
 
+# a combination that tells equal values apart in one of its parts tells them apart too
+query I
+SELECT cnt FROM (SELECT x, count(*) OVER (PARTITION BY x) AS cnt FROM w) WHERE x > 1 OR x::VARCHAR = '0.0' ORDER BY ALL;
+----
+1
+2
+
 # a NULL partition with filters that test for NULL
 statement ok
 CREATE TABLE wn AS SELECT * FROM (VALUES (-0.0::DOUBLE), (0.0::DOUBLE), (NULL), (NULL), (2.0)) t(x);
@@ -172,6 +179,11 @@ SELECT count(*) FROM (SELECT x, f, count(*) AS cnt FROM w GROUP BY GROUPING SETS
 ----
 0
 
+query I
+SELECT count(*) FROM (SELECT x, count(*) AS cnt FROM w GROUP BY x) WHERE (x > 1 OR x::VARCHAR = '0.0') AND cnt = 1;
+----
+1
+
 query II
 EXPLAIN SELECT cnt FROM (SELECT x, count(*) AS cnt FROM w GROUP BY x) WHERE x::VARCHAR = '0.0';
 ----
@@ -186,6 +198,17 @@ logical_opt	<!REGEX>:(?s).*FILTER.*AGGREGATE.*
 query I
 SELECT cnt FROM (SELECT x, count(*) AS cnt FROM w GROUP BY x) WHERE x = 0;
 ----
+2
+
+query II
+EXPLAIN SELECT cnt FROM (SELECT x, f, count(*) AS cnt FROM w GROUP BY GROUPING SETS ((x), (x, f))) WHERE x = 0;
+----
+logical_opt	<!REGEX>:(?s).*FILTER.*AGGREGATE.*
+
+query I
+SELECT cnt FROM (SELECT x, f, count(*) AS cnt FROM w GROUP BY GROUPING SETS ((x), (x, f))) WHERE x = 0;
+----
+2
 2
 
 query II

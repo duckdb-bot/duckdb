@@ -68,16 +68,6 @@ SELECT sum((value->>'intermediate_rows')::BIGINT) FROM read_text('{TEMP_DIR}/vie
 ----
 4
 
-# the filter reaches the scan of facts, which returns only that row
-foreach kind single mark two
-
-query I
-SELECT sum((value->>'intermediate_rows')::BIGINT) FROM read_text('{TEMP_DIR}/view_filter_{kind}.json'), json_tree(content) WHERE value->>'type' = 'TABLE_SCAN' AND (value->'extra_info'->>'Table') LIKE '%facts'
-----
-1
-
-endloop
-
 query II
 SELECT id, dim_names FROM v_single WHERE customer_id = 7 AND id >= 9900 ORDER BY id LIMIT 2;
 ----

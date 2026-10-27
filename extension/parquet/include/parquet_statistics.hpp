@@ -58,8 +58,8 @@ struct ParquetStatisticsUtils {
 
 	//! With repairs_invalid_utf8 VARCHAR columns get no minimum and maximum, as invalid UTF-8 is changed when read
 	static unique_ptr<BaseStatistics> TransformColumnStatistics(const ParquetColumnSchema &reader,
-	                                                            const vector<ColumnChunk> &columns, bool can_have_nan,
-	                                                            bool repairs_invalid_utf8 = false);
+	                                                            const duckdb_parquet::ColumnChunkList &columns,
+	                                                            bool can_have_nan, bool repairs_invalid_utf8 = false);
 
 	static unique_ptr<BaseStatistics> TransformParquetStatistics(
 	    const LogicalType &type, const ParquetColumnSchema &schema, const duckdb_parquet::Statistics &parquet_stats,

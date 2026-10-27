@@ -620,10 +620,10 @@ unique_ptr<BaseStatistics> ParquetStatisticsUtils::TransformParquetStatistics(
 	return unknown_stats.ToUnique();
 }
 
-unique_ptr<BaseStatistics> ParquetStatisticsUtils::TransformColumnStatistics(const ParquetColumnSchema &schema,
-                                                                             const vector<ColumnChunk> &columns,
-                                                                             bool can_have_nan,
-                                                                             bool repairs_invalid_utf8) {
+unique_ptr<BaseStatistics>
+ParquetStatisticsUtils::TransformColumnStatistics(const ParquetColumnSchema &schema,
+                                                  const duckdb_parquet::ColumnChunkList &columns, bool can_have_nan,
+                                                  bool repairs_invalid_utf8) {
 	// Not supported types
 	auto &type = schema.type;
 	if (type.id() == LogicalTypeId::ARRAY) {

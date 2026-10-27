@@ -9,33 +9,31 @@ load {TEST_DIR}/variant_shredding_depth_limit.db
 statement ok
 SET variant_minimum_shredding_size = 0;
 
+# the JSON text comes from a table, so that no deep VARIANT constant is folded into the plan
+statement ok
+CREATE TABLE src AS
+SELECT i,
+       CASE WHEN i = 0 THEN repeat('{"a":', 128) || '1' || repeat('}', 128) ELSE '{"a": ' || i || '}' END AS deep_object,
+       CASE WHEN i = 0 THEN repeat('[', 500) || '1' || repeat(']', 500) ELSE '[' || i || ']' END AS deep_array,
+       CASE WHEN i = 0 THEN repeat('[', 128) || repeat(']', 128) ELSE '[' || i || ']' END AS empty_at_limit,
+       CASE WHEN i = 0 THEN repeat('{"a":', 127) || '1' || repeat('}', 127) ELSE '{"a": ' || i || '}' END AS below_limit
+FROM range(10) t(i);
+
 # 128 nested objects, the leaf is at the depth limit
 statement ok
-CREATE TABLE deep_object AS
-SELECT CASE WHEN i = 0 THEN (repeat('{"a":', 128) || '1' || repeat('}', 128))::JSON::VARIANT
-            ELSE ('{"a": ' || i || '}')::JSON::VARIANT END AS v, i
-FROM range(10) t(i);
+CREATE TABLE deep_object AS SELECT deep_object::JSON::VARIANT AS v, i FROM src;
 
 # arrays far deeper than the limit
 statement ok
-CREATE TABLE deep_array AS
-SELECT CASE WHEN i = 0 THEN (repeat('[', 500) || '1' || repeat(']', 500))::JSON::VARIANT
-            ELSE ('[' || i || ']')::JSON::VARIANT END AS v, i
-FROM range(10) t(i);
+CREATE TABLE deep_array AS SELECT deep_array::JSON::VARIANT AS v, i FROM src;
 
 # an empty array at depth 127 has no children at the limit
 statement ok
-CREATE TABLE empty_at_limit AS
-SELECT CASE WHEN i = 0 THEN (repeat('[', 128) || repeat(']', 128))::JSON::VARIANT
-            ELSE ('[' || i || ']')::JSON::VARIANT END AS v, i
-FROM range(10) t(i);
+CREATE TABLE empty_at_limit AS SELECT empty_at_limit::JSON::VARIANT AS v, i FROM src;
 
 # 127 nested objects can still be shredded
 statement ok
-CREATE TABLE below_limit AS
-SELECT CASE WHEN i = 0 THEN (repeat('{"a":', 127) || '1' || repeat('}', 127))::JSON::VARIANT
-            ELSE ('{"a": ' || i || '}')::JSON::VARIANT END AS v, i
-FROM range(10) t(i);
+CREATE TABLE below_limit AS SELECT below_limit::JSON::VARIANT AS v, i FROM src;
 
 statement ok
 CHECKPOINT;

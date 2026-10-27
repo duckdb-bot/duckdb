@@ -93,8 +93,14 @@ static unique_ptr<Expression> PlanExtremumRewrite(Binder &binder, BoundSubqueryE
 	// under that collation, so it is pushed here. BIT and VARIANT are the exception: min/max pushes its own
 	// collation for those, and doing it first makes that branch a no-op, after which the aggregate falls
 	// through to its binary-key implementation whose return type is BLOB.
+	bool extremum_is_collated = false;
 	if (compare_type.id() != LogicalTypeId::BIT && compare_type.id() != LogicalTypeId::VARIANT) {
-		ExpressionBinder::PushCollation(binder.context, min_max_child, compare_type);
+		// the collation is bound for the comparison type, as a STRUCT field can be wider there than in the column
+		auto collated_child = BoundCastExpression::AddDefaultCastToType(bound_colref->Copy(), compare_type);
+		if (ExpressionBinder::PushCollation(binder.context, collated_child, compare_type)) {
+			min_max_child = std::move(collated_child);
+			extremum_is_collated = true;
+		}
 	}
 	min_max_children.push_back(std::move(min_max_child));
 
@@ -148,18 +154,19 @@ static unique_ptr<Expression> PlanExtremumRewrite(Binder &binder, BoundSubqueryE
 	    make_uniq<BoundCaseExpression>(std::move(count_star_gt_count_child), null_val->Copy(), std::move(current_else));
 
 	// 3. WHEN X > MIN(Y) THEN TRUE
-	auto x_cast = BoundCastExpression::AddDefaultCastToType(x_expr.Copy(), compare_type);
-	auto extremum_cast = BoundCastExpression::AddDefaultCastToType(std::move(extremum_ref), compare_type);
+	unique_ptr<Expression> x_cast = BoundCastExpression::AddDefaultCastToType(x_expr.Copy(), compare_type);
+	unique_ptr<Expression> extremum_side = std::move(extremum_ref);
+	if (!extremum_is_collated) {
+		extremum_side = BoundCastExpression::AddDefaultCastToType(std::move(extremum_side), compare_type);
+	}
+	// Push collations for the comparison. A collated extremum is compared as it is, as a collation can change the
+	// type into one that does not cast back, as a MAP compared by its entries
+	ExpressionBinder::PushCollation(binder.context, x_cast, compare_type);
+	if (!extremum_is_collated) {
+		ExpressionBinder::PushCollation(binder.context, extremum_side, compare_type);
+	}
 	unique_ptr<Expression> x_op_min =
-	    BoundComparisonExpression::Create(cmp_type, std::move(x_cast), std::move(extremum_cast));
-
-	// Push collations for the comparison
-	ExpressionBinder::PushCollation(binder.context,
-	                                BoundComparisonExpression::LeftMutable(x_op_min->Cast<BoundFunctionExpression>()),
-	                                compare_type);
-	ExpressionBinder::PushCollation(binder.context,
-	                                BoundComparisonExpression::RightMutable(x_op_min->Cast<BoundFunctionExpression>()),
-	                                compare_type);
+	    BoundComparisonExpression::Create(cmp_type, std::move(x_cast), std::move(extremum_side));
 
 	current_else = make_uniq<BoundCaseExpression>(std::move(x_op_min), true_val->Copy(), std::move(current_else));
 

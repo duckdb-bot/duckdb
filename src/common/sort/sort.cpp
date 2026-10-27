@@ -11,6 +11,7 @@
 #include "duckdb/common/types/row/tuple_data_collection.hpp"
 #include "duckdb/function/create_sort_key.hpp"
 #include "duckdb/function/function_binder.hpp"
+#include "duckdb/parallel/task_executor.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/storage/temporary_memory_manager.hpp"
@@ -137,6 +138,25 @@ public:
 	DataChunk payload;
 };
 
+//! Physically reorders a run that was sorted in memory before the sort went external
+class SortedRunMakeExternalTask : public BaseExecutorTask {
+public:
+	SortedRunMakeExternalTask(TaskExecutor &executor, SortedRun &sorted_run_p)
+	    : BaseExecutorTask(executor), sorted_run(sorted_run_p) {
+	}
+
+	void ExecuteTask() override {
+		sorted_run.MakeExternal();
+	}
+
+	string TaskType() const override {
+		return "SortedRunMakeExternalTask";
+	}
+
+private:
+	SortedRun &sorted_run;
+};
+
 class SortGlobalSinkState : public GlobalSinkState {
 public:
 	explicit SortGlobalSinkState(ClientContext &context)
@@ -158,7 +178,7 @@ public:
 
 		// If we already got less than we requested last time, have to go external
 		if (temporary_memory_state->GetReservation() < temporary_memory_state->GetRemainingSize()) {
-			GoExternal();
+			GoExternal(context);
 			return;
 		}
 
@@ -177,23 +197,33 @@ public:
 
 		// If we got less than we required, we have to go external
 		if (temporary_memory_state->GetReservation() < required) {
-			GoExternal();
+			GoExternal(context);
 		}
 	}
 
-	//! Go external, also for the runs that threads that finished early have sorted in memory
-	void GoExternal() {
+	//! Go external, reordering in parallel the runs that threads that finished early sorted in memory
+	void GoExternal(ClientContext &context) {
 		external = true;
-		for (auto &sorted_run : sorted_runs) {
-			sorted_run->MakeExternal();
+		if (sorted_runs.empty()) {
+			return;
 		}
+		TaskExecutor executor(context);
+		vector<unique_ptr<BaseExecutorTask>> tasks;
+		tasks.reserve(sorted_runs.size());
+		for (auto &sorted_run : sorted_runs) {
+			tasks.push_back(make_uniq<SortedRunMakeExternalTask>(executor, *sorted_run));
+		}
+		executor.ScheduleTasks(std::move(tasks));
+		executor.WorkOnTasks();
 	}
 
 	void AddSortedRun(SortLocalSinkState &lstate) {
-		const lock_guard<mutex> guard(lock);
-		if (external) {
-			// the run was sorted in memory before another thread made the sort external
+		unique_lock<mutex> guard(lock);
+		if (external && !lstate.sorted_run->external) {
+			// Reorder a run that was sorted in memory before the sort went external, without holding the lock
+			guard.unlock();
 			lstate.sorted_run->MakeExternal();
+			guard.lock();
 		}
 		sorted_runs.push_back(std::move(lstate.sorted_run));
 		sorted_tuples += sorted_runs.back()->Count();

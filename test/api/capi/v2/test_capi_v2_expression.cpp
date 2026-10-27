@@ -467,6 +467,26 @@ TEST_CASE("V2 expression: conjunctions, operators and functions", "[capi_v2][exp
 	        Filters {"between(col0, 1, 2)"});
 }
 
+TEST_CASE("V2 expression: ranges keep the inclusiveness of their bounds", "[capi_v2][expression]") {
+	EnvFixture fx;
+	RegisterProbe(fx.conn);
+
+	REQUIRE(Probe(fx.conn, "SELECT count(*) FROM expr_probe() WHERE a > 0 AND a < 3", 2) ==
+	        Filters {"<(col0, 3)", ">(col0, 0)"});
+	REQUIRE(Probe(fx.conn, "SELECT count(*) FROM expr_probe() WHERE a > 0 AND a <= 3", 3) ==
+	        Filters {"<=(col0, 3)", ">(col0, 0)"});
+	REQUIRE(Probe(fx.conn, "SELECT count(*) FROM expr_probe() WHERE a >= 1 AND a < 3", 2) ==
+	        Filters {"<(col0, 3)", ">=(col0, 1)"});
+	REQUIRE(Probe(fx.conn, "SELECT count(*) FROM expr_probe() WHERE a >= 1 AND a <= 2", 2) ==
+	        Filters {"between(col0, 1, 2)"});
+	// the filters of a materialized CTE's consumers reach the scan as one disjunction of their ranges
+	REQUIRE(
+	    Probe(fx.conn,
+	          "SELECT count(*) FROM (WITH t AS MATERIALIZED (SELECT * FROM expr_probe()) SELECT a FROM t WHERE a > 0 "
+	          "AND a < 2 UNION ALL SELECT a FROM t WHERE a > 2 AND a < 4)",
+	          2) == Filters {"or(and(>(col0, 0), <(col0, 2)), and(>(col0, 2), <(col0, 4)))"});
+}
+
 TEST_CASE("V2 expression: casts report their mode and target", "[capi_v2][expression]") {
 	EnvFixture fx;
 	RegisterProbe(fx.conn);

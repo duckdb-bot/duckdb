@@ -24,6 +24,17 @@ WHERE list_transform([strings.s], lambda v: __internal_barrier(v::INTEGER))[1] =
 1
 
 query I
+SELECT count(*) FROM strings, unnest(strings.xs) u(x) WHERE invoke(lambda v: __internal_barrier(v::INTEGER = 42), strings.s);
+----
+1
+
+query I
+SELECT count(*) FROM strings, unnest(strings.xs) u(x)
+WHERE invoke(lambda a: invoke(lambda v: __internal_barrier(v::INTEGER = 42), a), strings.s);
+----
+1
+
+query I
 SELECT count(*) FROM strings, (SELECT x FROM unnest(strings.xs) t(x) WHERE x > 0) u
 WHERE __internal_barrier(strings.s::INTEGER = 42);
 ----
@@ -39,6 +50,21 @@ query I
 SELECT count(*) FROM strings WHERE EXISTS (SELECT 1 FROM unnest(strings.xs)) AND __internal_barrier(strings.s::INTEGER = 42);
 ----
 1
+
+# a volatile barrier filter runs once for every row of the lateral join
+statement ok
+CREATE SEQUENCE seq;
+
+query I
+SELECT count(*) FROM (SELECT 2 AS id, [1, 2, 3] AS xs) t, unnest(t.xs) u(x)
+WHERE list_transform([t.id], lambda v: __internal_barrier(nextval('seq') <= v))[1];
+----
+2
+
+query I
+SELECT currval('seq');
+----
+3
 
 # a filter without a barrier gives the same rows wherever it runs
 query II

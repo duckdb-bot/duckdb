@@ -67,6 +67,10 @@ static unique_ptr<Expression> TryRewriteEqualOrIsNull(Expression &equal_expr, Ex
 	// Make sure on the AND conjunction the relevant conditions appear
 	auto &a_exp = BoundComparisonExpression::Left(equal_cast);
 	auto &b_exp = BoundComparisonExpression::Right(equal_cast);
+	// the rewrite evaluates each side once instead of twice, which changes a volatile one
+	if (a_exp.IsVolatile() || b_exp.IsVolatile()) {
+		return nullptr;
+	}
 	bool a_is_null_found = false;
 	bool b_is_null_found = false;
 

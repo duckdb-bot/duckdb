@@ -265,6 +265,11 @@ unique_ptr<Expression> ComparisonSimplificationRule::Apply(LogicalOperator &op, 
 			return nullptr;
 		}
 		if (replacement) {
+			if (replacement->GetExpressionClass() == ExpressionClass::BOUND_CONSTANT &&
+			    !rewriter.CanDropExpression(cast_expression)) {
+				// the constant would drop the operand of the cast
+				return nullptr;
+			}
 			return replacement;
 		}
 

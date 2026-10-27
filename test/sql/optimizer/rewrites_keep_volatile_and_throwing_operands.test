@@ -190,6 +190,121 @@ true
 true
 true
 
+# LIKE, prefix and regexp_matches with a pattern that becomes NULL
+statement ok
+CREATE SEQUENCE slike;
+
+query I
+SELECT nextval('slike')::VARCHAR LIKE CASE WHEN true THEN NULL ELSE x::VARCHAR END FROM v;
+----
+NULL
+NULL
+NULL
+
+query I
+SELECT nextval('slike');
+----
+4
+
+query I
+SELECT TRY((CAST(x::VARCHAR || 'bad' AS INTEGER)::VARCHAR LIKE CASE WHEN true THEN NULL ELSE x::VARCHAR END) IS NULL) FROM v;
+----
+NULL
+NULL
+NULL
+
+statement ok
+CREATE SEQUENCE sprefix;
+
+query I
+SELECT prefix(nextval('sprefix')::VARCHAR, CASE WHEN true THEN NULL ELSE x::VARCHAR END) FROM v;
+----
+NULL
+NULL
+NULL
+
+query I
+SELECT nextval('sprefix');
+----
+4
+
+statement ok
+CREATE SEQUENCE sregexp;
+
+query I
+SELECT regexp_matches(nextval('sregexp')::VARCHAR, CASE WHEN true THEN NULL ELSE x::VARCHAR END) FROM v;
+----
+NULL
+NULL
+NULL
+
+query I
+SELECT nextval('sregexp');
+----
+4
+
+query I
+SELECT TRY((regexp_matches(CAST(x::VARCHAR || 'bad' AS INTEGER)::VARCHAR, CASE WHEN true THEN NULL ELSE x::VARCHAR END)) IS NULL) FROM v;
+----
+NULL
+NULL
+NULL
+
+# a DATE cast to TIMESTAMP compared with a TIMESTAMP that is not at midnight
+statement ok
+CREATE SEQUENCE sdate;
+
+query I
+SELECT (DATE '2000-01-01' + nextval('sdate')::INTEGER)::TIMESTAMP IS DISTINCT FROM TIMESTAMP '2020-01-01 12:00:00' FROM v;
+----
+true
+true
+true
+
+query I
+SELECT nextval('sdate');
+----
+4
+
+query I
+SELECT TRY(CAST(x::VARCHAR || 'bad' AS DATE)::TIMESTAMP IS DISTINCT FROM TIMESTAMP '2020-01-01 12:00:00') FROM v;
+----
+NULL
+NULL
+NULL
+
+# a = b OR (a IS NULL AND b IS NULL) with a volatile side
+statement ok
+CREATE TABLE n(x BIGINT);
+
+statement ok
+INSERT INTO n VALUES (NULL), (NULL), (NULL);
+
+statement ok
+CREATE SEQUENCE sequal;
+
+query I
+SELECT x FROM n WHERE nextval('sequal') = x OR (nextval('sequal') IS NULL AND x IS NULL);
+----
+
+query I
+SELECT nextval('sequal');
+----
+7
+
+# a transform over a filter over a transform, whose rewrite skips the rejected elements
+statement ok
+CREATE TABLE lists(l VARCHAR[]);
+
+statement ok
+INSERT INTO lists VALUES (['1', 'bad']);
+
+query I
+SELECT TRY(list_transform(list_filter(list_transform(l, lambda s: struct_pack(filter := s <> 'bad', result := CAST(s AS INTEGER))),
+	lambda v: v.filter), lambda v: v.result)) FROM lists;
+----
+NULL
+
 # operands that can be dropped are still dropped
 query II
 EXPLAIN SELECT x > NULL, struct_extract(struct_pack(a := x, b := x + 1), 'a') FROM v;

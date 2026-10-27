@@ -478,7 +478,7 @@ static unique_ptr<NodeStatistics> ReadSingleCSVFileCardinality(ClientContext &co
 		}
 		per_file_cardinality = file_size / estimated_row_width;
 	} else if (estimated_row_width > 0) {
-		// without sniffing the file was not opened, so its size comes from the file list
+		// without sniffing there is no file handle, so the size comes from the file list
 		auto file_size = csv_data.file.TryGetFileSize();
 		if (file_size.IsValid() && file_size.GetIndex() > 0) {
 			per_file_cardinality = file_size.GetIndex() / estimated_row_width;

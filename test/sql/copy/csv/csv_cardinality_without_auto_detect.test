@@ -1,5 +1,5 @@
 # name: test/sql/copy/csv/csv_cardinality_without_auto_detect.test
-# description: A CSV file read without auto-detection is estimated from its size, as with it (duckdblabs/bot-issue-tracker#640)
+# description: A CSV file read without auto-detection is estimated from its size, as with it
 # group: [csv]
 
 statement ok
@@ -22,7 +22,7 @@ SELECT count(*), sum(id) FROM read_csv('{TEST_DIR}/sized.csv', auto_detect = {au
 
 endloop
 
-# a glob, whose files are estimated from the first one
+# a glob, whose files get their size from the directory listing
 query II
 EXPLAIN SELECT count(*) FROM read_csv('{TEST_DIR}/sized*.csv', auto_detect = false, header = true, columns = {'id': 'BIGINT', 'payload': 'VARCHAR'});
 ----
@@ -63,6 +63,24 @@ query II
 EXPLAIN SELECT count(*) FROM read_csv([{'filename': '{TEST_DIR}/sized.csv', 'file_size': 10000}], auto_detect = false, header = true, columns = {'id': 'BIGINT', 'payload': 'VARCHAR'});
 ----
 logical_opt	<REGEX>:.*~1,000 rows.*
+
+# a file entry without a size keeps the default estimate, the file itself is not inspected
+query II
+EXPLAIN SELECT count(*) FROM read_csv([{'filename': '{TEST_DIR}/sized.csv'}], auto_detect = false, header = true, columns = {'id': 'BIGINT', 'payload': 'VARCHAR'});
+----
+logical_opt	<REGEX>:.*~42 rows.*
+
+# a size that is not a number is an error
+statement error
+EXPLAIN SELECT count(*) FROM read_csv([{'filename': '{TEST_DIR}/sized.csv', 'file_size': 'big'}], auto_detect = false, header = true, columns = {'id': 'BIGINT', 'payload': 'VARCHAR'});
+----
+<REGEX>:.*Invalid value for file option "file_size".*
+
+# a sniffed file is estimated from the file it opened
+query II
+EXPLAIN SELECT count(*) FROM read_csv([{'filename': '{TEST_DIR}/sized.csv', 'file_size': 10000}], auto_detect = true, header = true, columns = {'id': 'BIGINT', 'payload': 'VARCHAR'});
+----
+logical_opt	<REGEX>:.*~212,890 rows.*
 
 # an empty file keeps the default estimate
 statement ok

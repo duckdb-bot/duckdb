@@ -76,6 +76,19 @@ TEST_CASE("to_json of list entries that share children", "[api][json]") {
 	                     {"{\"d\":3,\"e\":4}", "{\"a\":0,\"b\":1,\"c\":2}", Value(), "{\"a\":0,\"b\":1,\"c\":2}",
 	                      "{\"c\":2,\"d\":3}", "{\"b\":1,\"c\":2,\"d\":3}", "{\"d\":3,\"e\":4}"}));
 
+	// entries that go up overlap too, here only across a NULL and an empty entry
+	const string ascending_bounds = " FROM (VALUES (0, 3), (NULL, NULL), (3, 0), (2, 2), (4, 1)) t(o, n)";
+	result = con.Query("SELECT to_json(list_child_range([0, 1, 2, 3, 4], o, n))" + ascending_bounds);
+	REQUIRE(CHECK_COLUMN(result, 0, {"[0,1,2]", Value(), "[]", "[2,3]", "[4]"}));
+
+	result = con.Query("SELECT to_json(list_child_range(MAP {'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': 4}, o, n))" +
+	                   ascending_bounds);
+	REQUIRE(CHECK_COLUMN(result, 0, {"{\"a\":0,\"b\":1,\"c\":2}", Value(), "{}", "{\"c\":2,\"d\":3}", "{\"e\":4}"}));
+
+	// entries with the same offset but another length are no repeats
+	result = con.Query("SELECT to_json(list_child_range([0, 1, 2], o, n)) FROM (VALUES (0, 2), (0, 3)) t(o, n)");
+	REQUIRE(CHECK_COLUMN(result, 0, {"[0,1]", "[0,1,2]"}));
+
 	// the arrays of the shared lists are themselves linked into the struct of each row
 	result = con.Query("SELECT to_json({'l': list_child_range([0, 1, 2, 3, 4], o, n)})" + bounds);
 	REQUIRE(CHECK_COLUMN(result, 0,

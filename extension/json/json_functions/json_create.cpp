@@ -4,7 +4,6 @@
 #include "duckdb/common/vector/map_vector.hpp"
 #include "duckdb/common/vector/union_vector.hpp"
 #include "duckdb/common/vector/struct_vector.hpp"
-#include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/function/cast/cast_function_set.hpp"
 #include "duckdb/function/cast/default_casts.hpp"
@@ -699,7 +698,7 @@ static void CreateValuesMap(const StructNames &names, yyjson_mut_doc *doc, yyjso
 	if (!ListEntriesAscend(value_v, count)) {
 		// a copy of the map gives each entry its own children
 		Vector copy(value_v.GetType(), count);
-		VectorOperations::Copy(value_v, copy, count, 0, 0);
+		copy.Append(value_v, count);
 		CreateValuesMap(names, doc, vals, copy, count, options);
 		return;
 	}
@@ -809,7 +808,7 @@ static void CreateValuesList(const StructNames &names, yyjson_mut_doc *doc, yyjs
 	if (!ListEntriesAscend(value_v, count)) {
 		// a copy of the list gives each entry its own children
 		Vector copy(value_v.GetType(), count);
-		VectorOperations::Copy(value_v, copy, count, 0, 0);
+		copy.Append(value_v, count);
 		CreateValuesList(names, doc, vals, copy, count, options);
 		return;
 	}

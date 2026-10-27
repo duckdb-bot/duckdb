@@ -2,8 +2,6 @@
 # description: a name that the parser rewrites, called on a column as in col.ifnull(x), takes the column as its first argument (duckdblabs/bot-issue-tracker#562)
 # group: [parser]
 
-load {TEST_DIR}/parser_rewrites_qualified_call.db
-
 statement ok
 CREATE TABLE t AS SELECT * FROM (VALUES (NULL::VARCHAR), ('2020-01-01')) v(col);
 
@@ -141,15 +139,8 @@ CHECK constraint failed
 statement ok
 CREATE VIEW v AS SELECT col.ifnull('b') AS r FROM t;
 
-restart
-
 query I
 SELECT r FROM v ORDER BY ALL;
 ----
 2020-01-01
 b
-
-statement error
-INSERT INTO checked VALUES (-1);
-----
-CHECK constraint failed

@@ -7,7 +7,7 @@ namespace duckdb {
 DatabaseCacheEntry::DatabaseCacheEntry() {
 }
 
-DatabaseCacheEntry::DatabaseCacheEntry(const shared_ptr<DuckDB> &database_p) : database(database_p) {
+DatabaseCacheEntry::DatabaseCacheEntry(const shared_ptr<DatabaseInstance> &instance_p) : instance(instance_p) {
 }
 
 DatabaseCacheEntry::~DatabaseCacheEntry() {
@@ -70,30 +70,24 @@ shared_ptr<DuckDB> DBInstanceCache::GetInstanceInternal(const string &database, 
 		db_instances.erase(entry);
 		return nullptr;
 	}
-	shared_ptr<DuckDB> db_instance;
+	shared_ptr<DatabaseInstance> db_instance;
 	{
 		db_instances_lock.unlock();
 		std::lock_guard<mutex> create_db_lock(cache_entry->update_database_mutex);
-		db_instance = cache_entry->database.lock();
-		auto instance = cache_entry->instance.lock();
-		if (!db_instance && instance) {
-			// a connection keeps the database open, so it is handed out again
-			db_instance = make_shared_ptr<DuckDB>(*instance);
-			cache_entry->database = db_instance;
-		}
+		db_instance = cache_entry->instance.lock();
 	}
 	// cache entry exists - check if the actual database still exists
 	if (!db_instance) {
-		// if the database does not exist, but the cache entry still exists, the database is being shut down
+		// if the instance does not exist, but the cache entry still exists, the instance is being shut down
 		// we need to wait until the database is fully shut down to safely proceed
 		// we do this here using a busy spin
 		cache_entry.reset();
 		while (!weak_cache_entry.expired()) {
 		}
 		D_ASSERT(!cache_entry);
-		// the cache entry has now been deleted - clear it from the set of database instances and return, unless
-		// another caller replaced it meanwhile
+		// the cache entry has now been deleted - clear it from the set of database instances and return
 		db_instances_lock.lock();
+		// another thread can have cached a new entry under the same key by now
 		auto current_entry = db_instances.find(cache_key);
 		if (current_entry != db_instances.end() && current_entry->second.expired()) {
 			db_instances.erase(current_entry);
@@ -102,11 +96,11 @@ shared_ptr<DuckDB> DBInstanceCache::GetInstanceInternal(const string &database, 
 		return nullptr;
 	}
 	// the database instance exists - check that the config matches
-	if (db_instance->instance->config != config) {
+	if (db_instance->config != config) {
 		throw ConnectionException("Can't open a connection to same database file with a different configuration "
 		                          "than existing connections");
 	}
-	return db_instance;
+	return make_shared_ptr<DuckDB>(*db_instance);
 }
 
 shared_ptr<DuckDB> DBInstanceCache::GetInstance(const string &database, const DBConfig &config) {
@@ -143,7 +137,6 @@ shared_ptr<DuckDB> DBInstanceCache::CreateInstanceInternal(const string &databas
 		db_instances[cache_key] = cache_entry;
 		db_instances_lock.unlock();
 		db_instance = make_shared_ptr<DuckDB>(instance_path, &config);
-		cache_entry->database = db_instance;
 		cache_entry->instance = db_instance->instance;
 	} else {
 		db_instances_lock.unlock();

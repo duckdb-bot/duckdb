@@ -331,6 +331,15 @@ SELECT {'a': [1, 2]}::VARIANT || 'x'
 ----
 {'a': [1, 2]}x
 
+# a value nested as deeply as VariantVisitor rejects is converted through a Value, which raises the depth error
+statement ok
+CREATE TABLE deep_json AS SELECT repeat('[', 50000) || '1' || repeat(']', 50000) AS arr;
+
+statement error
+SELECT arr::JSON::VARIANT::VARCHAR FROM deep_json;
+----
+VARIANT exceeds maximum recursion depth of 128
+
 require icu
 
 statement ok
@@ -350,12 +359,3 @@ query I
 SELECT (TIMESTAMPTZ '2020-01-01 10:00:00+00')::VARIANT::VARCHAR
 ----
 2020-01-01 05:00:00-05
-
-# a value nested as deeply as VariantVisitor rejects is converted through a Value, which raises the depth error
-statement ok
-CREATE TABLE deep_json AS SELECT repeat('[', 50000) || '1' || repeat(']', 50000) AS arr;
-
-statement error
-SELECT arr::JSON::VARIANT::VARCHAR FROM deep_json;
-----
-VARIANT exceeds maximum recursion depth of 128

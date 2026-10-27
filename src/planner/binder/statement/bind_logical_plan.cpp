@@ -74,6 +74,8 @@ void RestoreSerializedFunctionTypes(ClientContext &context, unique_ptr<LogicalOp
 		}
 	}
 	auto new_bindings = projection->GetColumnBindings();
+	// the projection returns the serialized types, so the operators above keep theirs
+	projection->ResolveOperatorTypes();
 	op = std::move(projection);
 	// the operators above read the projection, which itself still reads the aggregate or the window
 	ColumnBindingReplacer replacer;
@@ -87,7 +89,6 @@ void RestoreSerializedFunctionTypes(ClientContext &context, unique_ptr<LogicalOp
 BoundStatement Binder::Bind(LogicalPlanStatement &stmt) {
 	auto next_table_index = TableIndex(GetMaxTableIndex(*stmt.plan).index + 1);
 	RestoreSerializedFunctionTypes(context, stmt.plan, stmt.plan, next_table_index);
-	stmt.plan->ResolveOperatorTypes();
 	BoundStatement result;
 	result.types = stmt.plan->types;
 	for (idx_t i = 0; i < result.types.size(); i++) {

@@ -20,13 +20,11 @@ static idx_t GetLambdaParamCount(vector<DummyBinding> &lambda_bindings) {
 	return count;
 }
 
-//! The type of a reference to a lambda parameter, which keeps a collation that COLLATE gave the parameter
+//! The type of a reference to a lambda parameter, which keeps the collations that binding gave the parameter
 static LogicalType GetLambdaParamType(const LogicalType &parameter_type, const BoundLambdaRefExpression &lambda_ref) {
+	// Type equality ignores collations, so equal types differ at most in their collations
 	auto &ref_type = lambda_ref.GetReturnType();
-	if (parameter_type.id() == LogicalTypeId::VARCHAR && ref_type.id() == LogicalTypeId::VARCHAR) {
-		return ref_type;
-	}
-	return parameter_type;
+	return ref_type == parameter_type ? ref_type : parameter_type;
 }
 
 static idx_t GetLambdaParamIndex(vector<DummyBinding> &lambda_bindings, const BoundLambdaExpression &bound_lambda_expr,

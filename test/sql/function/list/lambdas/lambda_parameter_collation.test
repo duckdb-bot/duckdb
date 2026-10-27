@@ -1,0 +1,35 @@
+# name: test/sql/function/list/lambdas/lambda_parameter_collation.test
+# description: Lambda parameters keep the collation that COLLATE gives them
+# group: [lambdas]
+
+statement ok
+SET debug_verify_serializer = true;
+
+statement ok
+CREATE TABLE lambda_inputs (k VARCHAR);
+
+statement ok
+INSERT INTO lambda_inputs VALUES ('A');
+
+query IIIIII
+SELECT list_transform([k], lambda x: x COLLATE NOCASE)[1] = 'a',
+       list_reduce([k, k], lambda a, x: x COLLATE NOCASE) = 'a',
+       list_reduce([k, k], lambda a, x: x COLLATE NOCASE, '') = 'a',
+       invoke(lambda x: x COLLATE NOCASE, k) = 'a',
+       list_transform([[k]], lambda y: list_transform(y, lambda x: x COLLATE NOCASE))[1][1] = 'a',
+       [x COLLATE NOCASE FOR x IN [k]][1] = 'a'
+FROM lambda_inputs;
+----
+true	true	true	true	true	true
+
+query II
+SELECT typeof(list_transform([k], lambda x: x COLLATE NOCASE)), list_filter([k, 'b'], lambda x: x COLLATE NOCASE = 'a')
+FROM lambda_inputs;
+----
+VARCHAR('NOCASE')[]	[A]
+
+# a parameter of the outer lambda keeps its collation inside the inner lambda
+query I
+SELECT list_transform([k], lambda y: list_transform([1], lambda x: y COLLATE NOCASE))[1][1] = 'a' FROM lambda_inputs;
+----
+true

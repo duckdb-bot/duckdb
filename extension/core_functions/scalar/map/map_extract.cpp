@@ -31,19 +31,13 @@ struct MapExtractCollationData final : public FunctionData {
 };
 
 struct MapExtractCollationState final : public FunctionLocalState {
-	MapExtractCollationState(ClientContext &context, const Expression &key_position) : executor(context, key_position) {
-	}
-
-	static unique_ptr<FunctionLocalState> Init(ExpressionState &state, const BoundFunctionExpression &,
+	static unique_ptr<FunctionLocalState> Init(ExpressionState &, const BoundFunctionExpression &,
 	                                           FunctionData *bind_data) {
-		if (!bind_data) {
-			return nullptr;
-		}
-		auto &key_position = *bind_data->Cast<MapExtractCollationData>().key_position;
-		return make_uniq<MapExtractCollationState>(state.GetContext(), key_position);
+		return bind_data ? make_uniq<MapExtractCollationState>() : nullptr;
 	}
 
-	ExpressionExecutor executor;
+	//! Created on first use, as the executor needs a client context that binding an index does not have
+	unique_ptr<ExpressionExecutor> executor;
 };
 
 //! Finds the position of the key in each map, comparing collated values when the lookup has a collation
@@ -54,7 +48,12 @@ static void FindKeyPositions(DataChunk &args, ExpressionState &state, Vector &po
 		ListSearchOp<int32_t>(map_vec, MapVector::GetKeys(map_vec), args.data[1], positions, args.size());
 		return;
 	}
-	local_state->Cast<MapExtractCollationState>().executor.ExecuteExpression(args, positions);
+	auto &executor = local_state->Cast<MapExtractCollationState>().executor;
+	if (!executor) {
+		auto &bind_data = state.expr.Cast<BoundFunctionExpression>().BindInfo()->Cast<MapExtractCollationData>();
+		executor = make_uniq<ExpressionExecutor>(state.GetContext(), *bind_data.key_position);
+	}
+	executor->ExecuteExpression(args, positions);
 }
 
 static void MapExtractValueFunc(DataChunk &args, ExpressionState &state, Vector &result) {

@@ -93,7 +93,12 @@ SELECT count(*), sum(m['APPLE' COLLATE NOCASE]) FROM (SELECT MAP {'Apple': i % 5
 ----
 5000	10000
 
-# lookups inside lambdas, with the key as a lambda parameter or a captured column
+# lookups inside lambdas, with the key or the map as a lambda parameter, or a captured column
+query I
+SELECT list_transform([MAP {'Apple': 7}], lambda x: cast_to_type(x, map(['witness' COLLATE NOCASE], [0]))['apple']);
+----
+[7]
+
 query II
 SELECT list_transform([MAP {'Apple': 1}, MAP {'APPLE': 2}], lambda x: x['apple' COLLATE NOCASE]),
        list_transform(['apple', 'APPLE', 'pear'], lambda x: MAP {'Apple': 1}[x COLLATE NOCASE]);
@@ -216,14 +221,25 @@ EXECUTE p('pear');
 ----
 NULL	[]
 
-# an index cannot evaluate a collated lookup, while a binary collation needs no collated lookup
+# an index cannot evaluate a collated lookup for new rows, as for map_contains, and a binary collation needs none
 statement ok
 CREATE TABLE indexed (m MAP(VARCHAR, INTEGER));
 
-statement error
+statement ok
 CREATE INDEX collated_idx ON indexed ((m['Apple' COLLATE NOCASE]));
+
+statement error
+INSERT INTO indexed VALUES (MAP {'Apple': 7});
 ----
 Cannot use "map_extract_value" in this context
+
+statement error
+INSERT INTO indexed VALUES (MAP {'Apple': 7});
+----
+Cannot use "map_extract_value" in this context
+
+statement ok
+DROP INDEX collated_idx;
 
 statement ok
 CREATE INDEX binary_idx ON indexed ((m['Apple' COLLATE "binary"]));

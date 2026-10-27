@@ -104,7 +104,8 @@ unique_ptr<Expression> InClauseRewriter::VisitReplace(BoundOperatorExpression &e
 		    std::move(expr.GetChildrenMutable()[0]), std::move(expr.GetChildrenMutable()[1]));
 	}
 	if (!rewrite_to_join) {
-		if (expr.GetChildrenMutable()[0]->IsVolatile()) {
+		if (expr.GetChildrenMutable()[0]->IsVolatile() || probe_must_stay) {
+			// the IN evaluates its probe once per row, where the comparisons would evaluate a copy each
 			return nullptr;
 		}
 		// low amount of children or not all scalar

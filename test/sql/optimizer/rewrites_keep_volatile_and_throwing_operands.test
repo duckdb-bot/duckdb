@@ -44,6 +44,29 @@ SELECT nextval('snull');
 ----
 4
 
+# rules that move a constant or a negation first also fold a comparison with NULL
+statement ok
+CREATE SEQUENCE snull2;
+
+query III
+SELECT nextval('snull2') + 1 > NULL, -nextval('snull2') > NULL, left(nextval('snull2')::VARCHAR, 1) = NULL FROM v;
+----
+NULL	NULL	NULL
+NULL	NULL	NULL
+NULL	NULL	NULL
+
+query I
+SELECT nextval('snull2');
+----
+10
+
+query I
+SELECT TRY(((CAST(x::VARCHAR || 'bad' AS INTEGER) + 1) > NULL) IS NULL) FROM v;
+----
+NULL
+NULL
+NULL
+
 # struct_extract over struct_pack
 query I
 SELECT TRY(struct_extract(struct_pack(a := x, b := CAST('bad' AS INTEGER)), 'a')) FROM v;
@@ -108,6 +131,26 @@ SELECT TRY(CAST(x::VARCHAR || 'bad' AS INTEGER) IN (1, 2, 3, 4, 5, 6)) FROM v;
 NULL
 NULL
 NULL
+
+query I
+SELECT TRY(CAST(x::VARCHAR || 'bad' AS INTEGER) NOT IN (1, 2, 3, 4, 5, 6)) FROM v;
+----
+NULL
+NULL
+NULL
+
+# the IN under TRY stays an IN, which evaluates its probe once
+query II
+EXPLAIN SELECT TRY(CAST(x::VARCHAR AS INTEGER) IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10)) FROM v;
+----
+physical_plan	<!REGEX>:.*MARK.*
+
+query I
+SELECT TRY(CAST(x::VARCHAR AS INTEGER) IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10)) FROM v;
+----
+true
+true
+true
 
 # operands that can be dropped are still dropped
 query II

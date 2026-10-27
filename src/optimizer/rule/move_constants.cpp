@@ -61,7 +61,8 @@ unique_ptr<Expression> MoveConstantsRule::Apply(LogicalOperator &op, vector<refe
 	D_ASSERT(arithmetic.GetChildren()[0]->GetReturnType().IsIntegral());
 	if (inner_constant.GetValue().IsNull() || outer_constant.GetValue().IsNull()) {
 		if (comparison.GetExpressionType() == ExpressionType::COMPARE_DISTINCT_FROM ||
-		    comparison.GetExpressionType() == ExpressionType::COMPARE_NOT_DISTINCT_FROM) {
+		    comparison.GetExpressionType() == ExpressionType::COMPARE_NOT_DISTINCT_FROM ||
+		    !rewriter.CanDropExpression(comparison)) {
 			return nullptr;
 		}
 		return make_uniq<BoundConstantExpression>(Value(comparison.GetReturnType()));
@@ -264,7 +265,8 @@ unique_ptr<Expression> MoveUnaryMinusRule::Apply(LogicalOperator &op, vector<ref
 	// Handle NULL values
 	if (outer_constant.GetValue().IsNull()) {
 		if (comparison.GetExpressionType() == ExpressionType::COMPARE_DISTINCT_FROM ||
-		    comparison.GetExpressionType() == ExpressionType::COMPARE_NOT_DISTINCT_FROM) {
+		    comparison.GetExpressionType() == ExpressionType::COMPARE_NOT_DISTINCT_FROM ||
+		    !rewriter.CanDropExpression(comparison)) {
 			return nullptr;
 		}
 		return make_uniq<BoundConstantExpression>(Value(comparison.GetReturnType()));

@@ -882,10 +882,18 @@ static bool TryFromShreddedCast(Vector &variant_vec, Vector &result) {
 	return false;
 }
 
-//! Whether the VARIANT value of the row is nested too deeply for VariantVisitor to convert it
-static bool ExceedsVisitorDepth(const UnifiedVariantVectorData &variant, idx_t row) {
+//! Whether converting the row to the target type goes deeper into the VARIANT than VariantVisitor allows
+static bool RowExceedsVisitorDepth(Vector &variant_vec, idx_t row, const LogicalType &target_type,
+                                   optional_ptr<ClientContext> client) {
+	SelectionVector row_sel(1);
+	row_sel.set_index(0, row);
+	Vector row_vec(variant_vec, row_sel, 1);
+	RecursiveUnifiedVectorFormat row_format;
+	Vector::RecursiveToUnifiedFormat(row_vec, row_format);
+	FromVariantConversionData row_data(row_format, client);
+	Vector row_result(target_type, 1);
 	try {
-		VariantUtils::ConvertVariantToValue(variant, row, 0);
+		CastVariant(row_data, row_result, *ConstantVector::ZeroSelectionVector(), 0, 1, optional_idx());
 		return false;
 	} catch (const InvalidInputException &) {
 		return true;
@@ -928,7 +936,7 @@ static bool CastFromVARIANT(Vector &variant_vec, Vector &result, idx_t count, Ca
 		VectorOperations::Copy(variant_vec, convertible, count, 0, 0);
 		bool too_deep = false;
 		for (idx_t i = 0; i < count; i++) {
-			if (ExceedsVisitorDepth(conversion_data.variant, i)) {
+			if (RowExceedsVisitorDepth(variant_vec, i, result.GetType(), client)) {
 				FlatVector::SetNull(convertible, i, true);
 				too_deep = true;
 			}

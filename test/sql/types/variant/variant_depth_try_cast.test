@@ -26,6 +26,26 @@ SELECT d, TRY_CAST(v AS VARCHAR) = v::VARCHAR FROM t WHERE d < 128 ORDER BY d;
 126	true
 127	true
 
+# a nested target converts each element on its own, so only the rows its conversion rejects become NULL
+query II
+SELECT d, length(TRY_CAST(v AS VARCHAR[])[1]) FROM t ORDER BY d;
+----
+126	251
+127	253
+128	255
+129	NULL
+
+# a field the STRUCT target does not read may be nested too deeply
+query II
+SELECT id, TRY_CAST(v AS STRUCT(b INTEGER)) FROM (
+    SELECT 1 AS id, {'a': (SELECT v FROM t WHERE d = 128), 'b': 1}::VARIANT AS v
+    UNION ALL
+    SELECT 2, {'a': 1, 'b': (SELECT v FROM t WHERE d = 128)}::VARIANT
+) ORDER BY id;
+----
+1	{'b': 1}
+2	NULL
+
 query I
 SELECT count(*) FROM t WHERE TRY_CAST(v AS VARCHAR) IS NOT NULL;
 ----

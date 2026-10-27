@@ -312,9 +312,7 @@ static int64_t ImplicitCastBignum(const LogicalType &to) {
 	}
 }
 
-static int64_t ImplicitCastVariant(const LogicalType &to) {
-	return TargetTypeCost(to);
-}
+static constexpr int64_t VARIANT_IMPLICIT_CAST_COST = 110;
 
 bool LogicalTypeIsValid(const LogicalType &type) {
 	switch (type.id()) {
@@ -639,7 +637,8 @@ int64_t CastRules::ImplicitCast(const LogicalType &from, const LogicalType &to) 
 	case LogicalTypeId::BIGNUM:
 		return ImplicitCastBignum(to);
 	case LogicalTypeId::VARIANT:
-		return ImplicitCastVariant(to);
+		// every target costs the same, so a VARIANT argument alone never selects one overload over another
+		return VARIANT_IMPLICIT_CAST_COST;
 	default:
 		return -1;
 	}

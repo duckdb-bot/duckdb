@@ -1,0 +1,63 @@
+# name: test/sql/types/variant/variant_overload_selection.test
+# description: The type a VARIANT argument would be cast to does not select one function overload over another
+# group: [variant]
+
+statement ok
+CREATE TABLE t AS SELECT 1.5::VARIANT AS v, 'abc'::VARIANT AS s;
+
+# overloads that differ only in the type the VARIANT is cast to
+statement error
+SELECT abs(v) FROM t
+----
+Could not choose a best candidate function for the function call "abs(VARIANT)"
+
+statement error
+SELECT sum(v) FROM t
+----
+Could not choose a best candidate function for the function call "sum(VARIANT)"
+
+statement error
+SELECT v + v FROM t
+----
+Could not choose a best candidate function for the function call "+(VARIANT, VARIANT)"
+
+statement error
+SELECT md5(s) FROM t
+----
+Could not choose a best candidate function for the function call "md5(VARIANT)"
+
+statement error
+SELECT variant_extract({'a': 1}::VARIANT, 'a'::VARIANT)
+----
+Could not choose a best candidate function for the function call "variant_extract(VARIANT, VARIANT)"
+
+statement ok
+CREATE MACRO pick_type(x INTEGER) AS 'INTEGER', (x VARCHAR) AS 'VARCHAR';
+
+statement error
+SELECT pick_type(v) FROM t
+----
+Macro pick_type() has multiple overloads that match the supplied arguments
+
+# a cast selects the overload
+query IIII
+SELECT abs(v::DOUBLE), v::DOUBLE + v::DOUBLE, md5(s::VARCHAR) = md5('abc'), pick_type(v::VARCHAR) FROM t
+----
+1.5	3.0	true	VARCHAR
+
+query I
+SELECT sum(v::DOUBLE) FROM t
+----
+1.5
+
+# a VARIANT is still cast for a function with one overload, or when the other arguments select the overload
+query III
+SELECT lower(s), s || 'd', ['x', 'y', 'z'][2::VARIANT] FROM t
+----
+abc	abcd	y
+
+# an overload that takes a VARIANT needs no cast
+query II
+SELECT len(s), variant_typeof(v) FROM t
+----
+3	DECIMAL(2, 1)

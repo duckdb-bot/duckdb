@@ -47,10 +47,10 @@ FROM m ORDER BY id;
 7	Pie	[Pie]	[Pie]	Pie	[Pie]
 
 # the values keep their case and type
-query II
-SELECT typeof(m[k COLLATE NOCASE]), typeof(map_extract(m, k COLLATE NOCASE)) FROM m WHERE id = 1;
+query III
+SELECT typeof(m[k COLLATE NOCASE]), typeof(map_extract(m, k COLLATE NOCASE)), m[k COLLATE NOCASE] = 'pie' FROM m WHERE id = 1;
 ----
-VARCHAR	VARCHAR[]
+VARCHAR	VARCHAR[]	false
 
 query III
 SELECT MAP {'Apple': 1}['APPLE' COLLATE NOACCENT.NOCASE], MAP {'Äpple': 1}['apple' COLLATE NOACCENT.NOCASE],
@@ -58,11 +58,33 @@ SELECT MAP {'Apple': 1}['APPLE' COLLATE NOACCENT.NOCASE], MAP {'Äpple': 1}['app
 ----
 1	1	NULL
 
-# keys that are lists of collated strings
+statement error
+SELECT map_extract(map(['a' COLLATE NOCASE], [1]), 'A' COLLATE NOACCENT);
+----
+Cannot combine types with different collation
+
+# keys that are lists, arrays or structs of collated strings
 query II
 SELECT map([['A' COLLATE NOCASE, 'b']], [1])[['a', 'B']], map_extract(map([['A' COLLATE NOCASE, 'b']], [1]), ['a', 'C']);
 ----
 1	[]
+
+query II
+SELECT map([array_value('A' COLLATE NOCASE, 'b')], [1])[array_value('a', 'B')],
+       map_extract(MAP {{'a': 'X' COLLATE NOCASE}: 1}, {'a': 'x'});
+----
+1	[1]
+
+# maps with more keys than a vector holds, and lookups over several vectors
+query I
+SELECT map_from_entries(list_transform(range(3000), lambda i: {'key': 'K' || i, 'value': i}))['k2999' COLLATE NOCASE];
+----
+2999
+
+query II
+SELECT count(*), sum(m['APPLE' COLLATE NOCASE]) FROM (SELECT MAP {'Apple': i % 5, 'b': i} AS m FROM range(5000) r(i));
+----
+5000	10000
 
 # lookups inside lambdas, with the key as a lambda parameter or a captured column
 query II

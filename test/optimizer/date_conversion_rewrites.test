@@ -1,0 +1,45 @@
+# name: test/optimizer/date_conversion_rewrites.test
+# description: Comparisons keep a DATE to TIMESTAMP conversion that can fail when a TRY_CAST or a TRY sees it (duckdblabs/bot-issue-tracker#696)
+# group: [optimizer]
+
+statement ok
+CREATE TABLE dates(d DATE);
+
+statement ok
+INSERT INTO dates VALUES (DATE '500000-01-01'), (DATE '2020-01-01'), (NULL);
+
+query III
+SELECT TRY_CAST(d AS TIMESTAMP) = TIMESTAMP '2020-01-01 12:00:00',
+	TRY_CAST(d AS TIMESTAMP) IS NOT DISTINCT FROM NULL::TIMESTAMP,
+	TRY(date_trunc('day', d) = TIMESTAMP '2020-01-01 12:00:00')
+FROM dates ORDER BY d;
+----
+false	false	false
+NULL	true	NULL
+NULL	true	NULL
+
+query I
+SELECT TRY(date_trunc('day', d) = TIMESTAMP '2020-01-01 00:00:00') FROM dates ORDER BY d;
+----
+true
+NULL
+NULL
+
+# casts that cannot fail, a regular cast and date_trunc outside TRY, are still rewritten
+statement ok
+CREATE TABLE ints(i INTEGER);
+
+query II
+EXPLAIN SELECT TRY_CAST(i AS BIGINT) = 5 FROM ints;
+----
+physical_plan	<REGEX>:.*Projections: i = 5.*
+
+query II
+EXPLAIN SELECT d::TIMESTAMP = TIMESTAMP '2020-01-01 00:00:00' FROM dates;
+----
+physical_plan	<REGEX>:.*Projections: d = '2020-01-01'::DATE.*
+
+query II
+EXPLAIN SELECT date_trunc('day', d) = TIMESTAMP '2020-01-01 12:00:00' FROM dates;
+----
+physical_plan	<!REGEX>:.*date_trunc.*

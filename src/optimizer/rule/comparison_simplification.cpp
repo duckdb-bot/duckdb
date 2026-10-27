@@ -249,6 +249,11 @@ unique_ptr<Expression> ComparisonSimplificationRule::Apply(LogicalOperator &op, 
 		if (rewriter.InTry() && cast_expression.CanThrow()) {
 			return nullptr;
 		}
+		// a TRY_CAST that fails gives NULL, which the comparison with the source value would not
+		if (BoundCastExpression::IsTryCast(cast_expression) &&
+		    BoundCastExpression::CastCanThrow(target_type, cast_expression.GetReturnType(), false)) {
+			return nullptr;
+		}
 		if (!BoundCastExpression::CastIsInvertible(target_type, cast_expression.GetReturnType()) &&
 		    !IsLosslessIntegralToFloatingCast(target_type, cast_expression.GetReturnType())) {
 			return nullptr;

@@ -199,7 +199,7 @@ string_t SubstringUnicode(Vector &result, string_t input, int64_t offset, int64_
 	                      UnsafeNumericCast<int64_t>(end_pos - start_pos));
 }
 
-//! With KNOWN_ASCII the input is ASCII (from statistics), and only a CR can make bytes differ from grapheme clusters
+//! With KNOWN_ASCII the input is ASCII (from statistics), and only a CR LF can make bytes differ from grapheme clusters
 template <bool KNOWN_ASCII>
 static string_t SubstringGraphemeInternal(Vector &result, string_t input, int64_t offset, int64_t length) {
 	auto input_data = input.GetData();
@@ -226,8 +226,8 @@ static string_t SubstringGraphemeInternal(Vector &result, string_t input, int64_
 	}
 	auto ascii_data = input_data + ascii_start;
 	auto ascii_size = ascii_end - ascii_start;
-	if (KNOWN_ASCII ? !memchr(ascii_data, '\r', ascii_size) : IsAsciiWithoutCR(ascii_data, ascii_size)) {
-		// all characters are ascii and none is part of a CR LF, so bytes are grapheme clusters and we can just slice
+	if ((KNOWN_ASCII || IsAscii(ascii_data, ascii_size)) && !ContainsCRLF(ascii_data, ascii_size)) {
+		// all characters are ascii and there is no CR LF, so bytes are grapheme clusters and we can just slice
 		return SubstringSlice(result, input_data, start, end - start);
 	}
 	// if the characters are not ascii, we need to scan grapheme clusters

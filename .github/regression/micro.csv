@@ -49,3 +49,4 @@ benchmark/micro/aggregate/min_double.benchmark
 benchmark/micro/aggregate/max_double.benchmark
 benchmark/micro/pushdown/view_filter_below_delim_join.benchmark
 benchmark/micro/string/substring_grapheme_negative_offset.benchmark
+benchmark/micro/string/substring_grapheme_carriage_return.benchmark

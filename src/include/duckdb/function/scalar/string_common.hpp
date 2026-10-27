@@ -9,8 +9,8 @@ namespace duckdb {
 bool IsAscii(const char *input, idx_t n);
 //! Returns the index of the first byte with the high bit set, or n if all bytes are ASCII
 idx_t FirstNonAscii(const char *input, idx_t n);
-//! Whether the input is ASCII without a CR, so that every byte is a grapheme cluster (CR LF is one, UAX #29 GB3)
-bool IsAsciiWithoutCR(const char *input, idx_t n);
+//! Whether the input contains CR LF, the one pair of ASCII bytes that is a single grapheme cluster (UAX #29, GB3)
+bool ContainsCRLF(const char *input, idx_t n);
 //! The number of grapheme clusters in ASCII input, one per byte except for CR LF, which is one
 idx_t AsciiGraphemeCount(const char *input, idx_t n);
 //! Decodes one codepoint and returns its length - throws an InternalException on invalid UTF-8

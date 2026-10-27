@@ -22,7 +22,7 @@ static idx_t GetLambdaParamCount(vector<DummyBinding> &lambda_bindings) {
 
 //! The type of a reference to a lambda parameter, which keeps the collations that binding gave the parameter
 static LogicalType GetLambdaParamType(const LogicalType &parameter_type, const BoundLambdaRefExpression &lambda_ref) {
-	// Type equality ignores collations, so equal types differ at most in their collations
+	// Type equality ignores collations, so this keeps the collations of an otherwise equal type
 	auto &ref_type = lambda_ref.GetReturnType();
 	return ref_type == parameter_type ? ref_type : parameter_type;
 }

@@ -22,11 +22,13 @@ FROM lambda_inputs;
 ----
 true	true	true	true	true	true
 
-query II
-SELECT typeof(list_transform([k], lambda x: x COLLATE NOCASE)), list_filter([k, 'b'], lambda x: x COLLATE NOCASE = 'a')
+# list_filter compares with the collation and returns the elements with their own type
+query IIII
+SELECT typeof(list_transform([k], lambda x: x COLLATE NOCASE)), list_filter([k, 'b'], lambda x: x COLLATE NOCASE = 'a'),
+       list_filter([k, 'b'], lambda x: x COLLATE NOCASE = 'a')[1] = 'a', [x COLLATE NOCASE FOR x IN [k] IF x IS NOT NULL][1] = 'a'
 FROM lambda_inputs;
 ----
-VARCHAR('NOCASE')[]	[A]
+VARCHAR('NOCASE')[]	[A]	false	true
 
 # a parameter of the outer lambda keeps its collation inside the inner lambda
 query I

@@ -161,13 +161,46 @@ TEST_CASE("Value::ToSQLString renders nested VARIANT values once", "[api][value_
 	REQUIRE(EvalScalar(con, "{'b': 'x', 'a': [2]}::VARIANT").ToSQLString() ==
 	        "CAST({'a': CAST([CAST(CAST(2 AS INTEGER) AS VARIANT)] AS VARIANT), 'b': CAST(CAST('x' AS VARCHAR) AS "
 	        "VARIANT)} AS VARIANT)");
-	// deeply nested heterogeneous arrays
+	// heterogeneous arrays around a scalar 127 levels deep, the deepest value VariantVisitor accepts
 	string deep = "1::VARIANT";
-	for (idx_t depth = 0; depth < 200; depth++) {
+	for (idx_t depth = 0; depth < 127; depth++) {
 		deep = "['x'::VARIANT, (" + deep + ")]::VARIANT";
 	}
 	auto rendered = EvalScalar(con, deep).ToSQLString();
 	REQUIRE(EvalScalar(con, "(" + deep + ") IS NOT DISTINCT FROM (" + rendered + ")") == Value::BOOLEAN(true));
+}
+
+// Casts JSON that nests an empty array in 'depth' levels, each opened by 'open' and closed by 'close', to VARIANT
+// during execution, since the optimizer names a constant VARIANT with Value::ToSQLString
+static string DeepJSONVariant(const string &open, const string &close, idx_t depth) {
+	return "(SELECT (repeat('" + open + "', i) || '[]' || repeat('" + close + "', i))::JSON::VARIANT FROM range(" +
+	       to_string(depth) + ", " + to_string(depth + 1) + ") t(i))";
+}
+
+TEST_CASE("Value::ToSQLString fails on JSON-derived VARIANT values deeper than VariantVisitor accepts",
+          "[api][value_sql]") {
+	DuckDB db;
+	Connection con(db);
+	if (!db.instance->ExtensionIsLoaded("json")) {
+		WARN("JSON extension required for deep VARIANT coverage");
+		return;
+	}
+	// an empty array inside 127 arrays or objects is the deepest value that renders
+	for (auto &original : {DeepJSONVariant("[", "]", 127), DeepJSONVariant("{\"a\": ", "}", 127)}) {
+		auto rendered = EvalScalar(con, original).ToSQLString();
+		REQUIRE(EvalScalar(con, "(" + original + ")::JSON = (" + rendered + ")::JSON") == Value::BOOLEAN(true));
+	}
+	// an object whose only key is empty renders as a list of key and value pairs instead
+	REQUIRE_NOTHROW(EvalScalar(con, DeepJSONVariant("{\"\": ", "}", 127)).ToSQLString());
+	// deeper values fail without recursing once per level
+	for (idx_t depth : {idx_t(128), idx_t(50000)}) {
+		for (auto &deep : {DeepJSONVariant("[", "]", depth), DeepJSONVariant("{\"a\": ", "}", depth),
+		                   DeepJSONVariant("{\"\": ", "}", depth)}) {
+			INFO(deep.substr(0, 30) << " " << depth);
+			REQUIRE_THROWS_WITH(EvalScalar(con, deep).ToSQLString(),
+			                    Catch::Matchers::Contains("VARIANT exceeds maximum recursion depth of 128"));
+		}
+	}
 }
 
 TEST_CASE("Value::ToSQLString round-trips JSON-derived supported VARIANT objects", "[api][value_sql]") {

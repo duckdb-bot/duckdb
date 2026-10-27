@@ -1741,19 +1741,30 @@ static bool VariantIsMapObject(const UnifiedVariantVectorData &variant, idx_t ro
 	       variant.GetKey(row, variant.GetKeysIndex(row, nested_data.children_idx)).GetSize() == 0;
 }
 
-static void VariantToSQLString(const UnifiedVariantVectorData &variant, idx_t row, uint32_t values_idx, string &result);
+//! An object field of a VARIANT, rendered in the order of its key
+struct VariantObjectField {
+	string key;
+	uint32_t values_idx;
+};
 
+static void VariantToSQLString(const UnifiedVariantVectorData &variant, idx_t row, uint32_t values_idx, idx_t depth,
+                               string &result);
+
+//! Renders an array element or object field, failing at the depth where VariantVisitor fails
 static void VariantChildToSQLString(const UnifiedVariantVectorData &variant, idx_t row, uint32_t values_idx,
-                                    string &result) {
+                                    idx_t depth, string &result) {
+	if (depth >= VariantUtils::MAX_NESTING_DEPTH) {
+		throw InvalidInputException("VARIANT exceeds maximum recursion depth of %d", VariantUtils::MAX_NESTING_DEPTH);
+	}
 	if (variant.GetTypeId(row, values_idx) == VariantLogicalType::VARIANT_NULL) {
 		result += "NULL::VARIANT";
 		return;
 	}
-	VariantToSQLString(variant, row, values_idx, result);
+	VariantToSQLString(variant, row, values_idx, depth, result);
 }
 
 //! Renders each array element and object field as a VARIANT of its own, reading each value once
-static void VariantToSQLString(const UnifiedVariantVectorData &variant, idx_t row, uint32_t values_idx,
+static void VariantToSQLString(const UnifiedVariantVectorData &variant, idx_t row, uint32_t values_idx, idx_t depth,
                                string &result) {
 	auto type_id = variant.GetTypeId(row, values_idx);
 	if (type_id == VariantLogicalType::ARRAY) {
@@ -1764,7 +1775,7 @@ static void VariantToSQLString(const UnifiedVariantVectorData &variant, idx_t ro
 				result += ", ";
 			}
 			auto child_idx = variant.GetValuesIndex(row, nested_data.children_idx + i);
-			VariantChildToSQLString(variant, row, child_idx, result);
+			VariantChildToSQLString(variant, row, child_idx, depth + 1, result);
 		}
 		result += "] AS VARIANT)";
 		return;
@@ -1773,28 +1784,28 @@ static void VariantToSQLString(const UnifiedVariantVectorData &variant, idx_t ro
 		// as a VARIANT the MAP becomes a list of its key and value pairs
 		auto nested_data = VariantUtils::DecodeNestedData(variant, row, values_idx);
 		result += "CAST([CAST({'key': CAST(CAST('' AS VARCHAR) AS VARIANT), 'value': ";
-		VariantChildToSQLString(variant, row, variant.GetValuesIndex(row, nested_data.children_idx), result);
+		VariantChildToSQLString(variant, row, variant.GetValuesIndex(row, nested_data.children_idx), depth + 1, result);
 		result += "} AS VARIANT)] AS VARIANT)";
 		return;
 	}
 	if (type_id == VariantLogicalType::OBJECT) {
 		auto nested_data = VariantUtils::DecodeNestedData(variant, row, values_idx);
-		vector<pair<string, uint32_t>> fields;
+		vector<VariantObjectField> fields;
 		for (idx_t i = 0; i < nested_data.child_count; i++) {
 			auto keys_idx = variant.GetKeysIndex(row, nested_data.children_idx + i);
-			fields.emplace_back(variant.GetKey(row, keys_idx).GetString(),
-			                    variant.GetValuesIndex(row, nested_data.children_idx + i));
+			fields.push_back(VariantObjectField {variant.GetKey(row, keys_idx).GetString(),
+			                                     variant.GetValuesIndex(row, nested_data.children_idx + i)});
 		}
 		std::stable_sort(
 		    fields.begin(), fields.end(),
-		    [](const pair<string, uint32_t> &lhs, const pair<string, uint32_t> &rhs) { return lhs.first < rhs.first; });
+		    [](const VariantObjectField &lhs, const VariantObjectField &rhs) { return lhs.key < rhs.key; });
 		result += "CAST({";
 		for (idx_t i = 0; i < fields.size(); i++) {
 			if (i > 0) {
 				result += ", ";
 			}
-			result += "'" + StringUtil::Replace(fields[i].first, "'", "''") + "': ";
-			VariantChildToSQLString(variant, row, fields[i].second, result);
+			result += "'" + StringUtil::Replace(fields[i].key, "'", "''") + "': ";
+			VariantChildToSQLString(variant, row, fields[i].values_idx, depth + 1, result);
 		}
 		result += "} AS VARIANT)";
 		return;
@@ -1843,7 +1854,7 @@ string Value::ToSQLString() const {
 		Vector::RecursiveToUnifiedFormat(tmp, format);
 		UnifiedVariantVectorData vector_data(format);
 		string result;
-		VariantToSQLString(vector_data, 0, 0, result);
+		VariantToSQLString(vector_data, 0, 0, 0, result);
 		return result;
 	}
 	case LogicalTypeId::TUPLE:

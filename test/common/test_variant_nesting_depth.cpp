@@ -8,14 +8,14 @@ TEST_CASE("A VARIANT nested deeper than the limit does not convert to a Value", 
 	DuckDB db(nullptr);
 	Connection con(db);
 	auto result = con.Query("WITH RECURSIVE r(d, v) AS (SELECT 1, [1]::VARIANT UNION ALL "
-	                        "SELECT d + 1, [v]::VARIANT FROM r WHERE d < 129) "
-	                        "SELECT v FROM r WHERE d IN (128, 129) ORDER BY d");
+	                        "SELECT d + 1, [v]::VARIANT FROM r WHERE d < 128) "
+	                        "SELECT v FROM r WHERE d IN (127, 128) ORDER BY d");
 	REQUIRE_NO_FAIL(*result);
 	auto shallow = result->Collection().GetValue(0, 0);
 	auto deep = result->Collection().GetValue(0, 1);
 
 	REQUIRE(VariantValue::GetValue(shallow).type().id() == LogicalTypeId::LIST);
-	REQUIRE_THROWS_WITH(VariantValue::GetValue(deep), Catch::Contains("nested deeper than 128 levels"));
+	REQUIRE_THROWS_WITH(VariantValue::GetValue(deep), Catch::Contains("exceeds maximum recursion depth of 128"));
 
 	// containers of the deep value do not cast to VARCHAR either
 	child_list_t<Value> struct_children;
@@ -30,17 +30,17 @@ TEST_CASE("A VARIANT nested deeper than the limit does not convert to a Value", 
 	                                  Value::UNION(std::move(union_members), 0, deep)};
 	for (auto &container : containers) {
 		REQUIRE_THROWS_WITH(container.DefaultCastAs(LogicalType::VARCHAR),
-		                    Catch::Contains("nested deeper than 128 levels"));
+		                    Catch::Contains("exceeds maximum recursion depth of 128"));
 		string error;
 		REQUIRE(!container.DefaultTryCastAs(LogicalType::VARCHAR, &error));
 	}
 	REQUIRE(Value::LIST(LogicalType::VARIANT(), {shallow}).DefaultCastAs(LogicalType::VARCHAR).ToString().size() ==
-	        259);
+	        257);
 
 	// the SQL of the shallow value reads back, the SQL of the deep one fails when it is executed
 	auto shallow_sql = con.Query("SELECT " + shallow.ToSQLString() + " = " + shallow.ToSQLString());
 	REQUIRE(CHECK_COLUMN(shallow_sql, 0, {true}));
 	auto deep_sql = con.Query("SELECT " + deep.ToSQLString());
 	REQUIRE(deep_sql->HasError());
-	REQUIRE(StringUtil::Contains(deep_sql->GetError(), "nested deeper than 128 levels"));
+	REQUIRE(StringUtil::Contains(deep_sql->GetError(), "exceeds maximum recursion depth of 128"));
 }

@@ -8,21 +8,21 @@ statement ok
 CREATE TABLE t AS WITH RECURSIVE r(d, v, o) AS (
 	SELECT 1, [1]::VARIANT, {'a': 1}::VARIANT
 	UNION ALL
-	SELECT d + 1, [v]::VARIANT, {'a': o}::VARIANT FROM r WHERE d < 129
+	SELECT d + 1, [v]::VARIANT, {'a': o}::VARIANT FROM r WHERE d < 128
 )
-SELECT d, v, o FROM r WHERE d IN (128, 129);
+SELECT d, v, o FROM r WHERE d IN (127, 128);
 
 # a value nested too deeply does not convert to JSON either
 query III
 SELECT d, TRY_CAST(v AS JSON) IS NULL, TRY_CAST(o AS STRUCT(a JSON)) IS NULL FROM t ORDER BY d;
 ----
-128	false	false
-129	true	true
+127	false	false
+128	true	true
 
 statement error
-SELECT v::JSON FROM t WHERE d = 129;
+SELECT v::JSON FROM t WHERE d = 128;
 ----
-Can't convert VARIANT value nested deeper than 128 levels
+VARIANT exceeds maximum recursion depth of 128
 
 # a constant is folded through a Value
 query I
@@ -33,7 +33,7 @@ SELECT length((repeat('[', 128) || repeat(']', 128))::JSON::VARIANT::VARCHAR);
 statement error
 SELECT (repeat('[', 129) || repeat(']', 129))::JSON::VARIANT::VARCHAR;
 ----
-<REGEX>:.*(nested deeper than 128 levels|depth).*
+<REGEX>:.*VARIANT exceeds maximum recursion depth of 128.*
 
 # naming an expression renders its constants, also one nested too deeply
 query I

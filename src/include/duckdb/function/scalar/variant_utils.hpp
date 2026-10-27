@@ -114,7 +114,7 @@ struct VariantPathSelection {
 };
 
 struct VariantUtils {
-	//! The deepest nesting of arrays and objects that a depth-checked VARIANT conversion accepts
+	//! VariantVisitor and the depth checks before it fail on a value nested in this many arrays and objects
 	static constexpr idx_t MAX_NESTING_DEPTH = 128;
 
 	//! Throws a DataCorruptionException unless 'size' bytes are available in a blob of 'blob_size' starting at
@@ -145,7 +145,7 @@ struct VariantUtils {
 	                                    VariantPathSelection &path_selection);
 	DUCKDB_API static vector<uint32_t> ValueIsNull(const UnifiedVariantVectorData &variant, const SelectionVector &sel,
 	                                               idx_t count, optional_idx row);
-	//! Whether the value nests arrays and objects deeper than MAX_NESTING_DEPTH
+	//! Whether the value holds a value nested in MAX_NESTING_DEPTH arrays and objects
 	DUCKDB_API static bool ExceedsNestingDepth(const UnifiedVariantVectorData &variant, idx_t row, uint32_t values_idx);
 	DUCKDB_API static string NestingDepthError();
 	//! Throws if the value exceeds MAX_NESTING_DEPTH

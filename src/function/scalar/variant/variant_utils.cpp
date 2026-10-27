@@ -238,16 +238,16 @@ bool VariantUtils::ExceedsNestingDepth(const UnifiedVariantVectorData &variant, 
 	if (!variant.RowIsValid(row) || !IsNestedType(variant, row, values_idx)) {
 		return false;
 	}
-	// the values to visit, with the number of arrays and objects they are nested in
+	// the arrays and objects to visit, with the number of arrays and objects their children are nested in
 	vector<pair<uint32_t, idx_t>> pending;
 	pending.emplace_back(values_idx, 1);
 	while (!pending.empty()) {
 		auto entry = pending.back();
 		pending.pop_back();
-		if (entry.second > MAX_NESTING_DEPTH) {
+		auto nested_data = DecodeNestedData(variant, row, entry.first);
+		if (nested_data.child_count > 0 && entry.second >= MAX_NESTING_DEPTH) {
 			return true;
 		}
-		auto nested_data = DecodeNestedData(variant, row, entry.first);
 		for (idx_t i = 0; i < nested_data.child_count; i++) {
 			auto child_idx = variant.GetValuesIndex(row, nested_data.children_idx + i);
 			if (IsNestedType(variant, row, child_idx)) {
@@ -259,14 +259,10 @@ bool VariantUtils::ExceedsNestingDepth(const UnifiedVariantVectorData &variant, 
 }
 
 string VariantUtils::NestingDepthError() {
-	return StringUtil::Format("Can't convert VARIANT value nested deeper than %d levels", MAX_NESTING_DEPTH);
+	return StringUtil::Format("VARIANT exceeds maximum recursion depth of %d", MAX_NESTING_DEPTH);
 }
 
 Value VariantUtils::ConvertVariantToValue(const UnifiedVariantVectorData &variant, idx_t row, uint32_t values_idx) {
-	// the conversion, and the casts and comparisons of the nested value it returns, recurse once per level
-	if (ExceedsNestingDepth(variant, row, values_idx)) {
-		throw InvalidInputException(NestingDepthError());
-	}
 	return VariantVisitor<ValueConverter>::Visit(variant, row, values_idx, 0);
 }
 

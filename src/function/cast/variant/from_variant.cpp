@@ -11,7 +11,7 @@
 #include "duckdb/function/cast/default_casts.hpp"
 #include "duckdb/common/types/variant.hpp"
 #include "duckdb/function/scalar/variant_utils.hpp"
-#include "duckdb/function/variant/variant_value_convert.hpp"
+#include "duckdb/common/operator/cast_operators.hpp"
 #include "duckdb/common/serializer/varint.hpp"
 #include "yyjson.hpp"
 
@@ -95,12 +95,6 @@ public:
 //===--------------------------------------------------------------------===//
 // VARIANT -> ANY
 //===--------------------------------------------------------------------===//
-
-//! Rows are depth-checked by CastFromVARIANT
-static Value ConvertCheckedVariantToValue(FromVariantConversionData &conversion_data, idx_t row, uint32_t values_idx) {
-	D_ASSERT(!conversion_data.IsTooDeep(row));
-	return VariantVisitor<ValueConverter>::Visit(conversion_data.variant, row, values_idx, 0);
-}
 
 static bool FinalizeErrorMessage(FromVariantConversionData &conversion_data, Vector &result,
                                  CastParameters &parameters) {
@@ -226,7 +220,7 @@ static bool CastVariantToPrimitive(FromVariantConversionData &conversion_data, V
 			}
 		}
 		if (!converted) {
-			auto value = ConvertCheckedVariantToValue(conversion_data, row_index, sel[i]);
+			auto value = VariantUtils::ConvertVariantToValue(conversion_data.variant, row_index, sel[i]);
 			auto cast_value = conversion_data.TryCastAs(value, target_type);
 			if (!cast_value) {
 				conversion_data.error = StringUtil::Format("Can't convert VARIANT(%s) value '%s'",
@@ -706,7 +700,7 @@ static bool CastVariant(FromVariantConversionData &conversion_data, Vector &resu
 			}
 			//! Get the index into 'values'
 			uint32_t value_index = sel[i];
-			auto value = ConvertCheckedVariantToValue(conversion_data, row_index, value_index);
+			auto value = VariantUtils::ConvertVariantToValue(conversion_data.variant, row_index, value_index);
 			try {
 				auto cast_value = target_type.id() == LogicalTypeId::MAP
 				                      ? TryCastVariantValueToMap(conversion_data, value, target_type)
@@ -943,15 +937,13 @@ static bool CastFromVARIANT(Vector &variant_vec, Vector &result, idx_t count, Ca
 		}
 	}
 	auto success = CastVariant(conversion_data, result, sel, 0, count, optional_idx());
-	if (!conversion_data.too_deep_rows.empty()) {
-		if (success) {
-			// the rows that did convert may have left the error of a conversion they retried another way
-			conversion_data.error = VariantUtils::NestingDepthError();
-		}
-		success = false;
-	}
 	if (variant_vec.GetVectorType() == VectorType::CONSTANT_VECTOR) {
 		result.SetVectorType(VectorType::CONSTANT_VECTOR);
+	}
+	if (!conversion_data.too_deep_rows.empty()) {
+		// the rows that did convert may have left the error of a conversion they retried another way
+		HandleCastError::AssignError(VariantUtils::NestingDepthError(), parameters);
+		return false;
 	}
 	if (!success) {
 		return FinalizeErrorMessage(conversion_data, result, parameters);

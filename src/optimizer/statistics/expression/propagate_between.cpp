@@ -29,12 +29,22 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateBetween(BoundFunctionE
 	if (upper_stats) {
 		upper_prune = PropagateComparison(*input_stats, *upper_stats, upper_comparison);
 	}
+	// a rewrite that drops a child that is volatile, or that can throw inside TRY, would change how often it runs or
+	// whether it throws
+	auto can_drop = [&](const Expression &child) {
+		return CanDropExpression(child);
+	};
 	if (lower_prune == FilterPropagateResult::FILTER_ALWAYS_TRUE &&
 	    upper_prune == FilterPropagateResult::FILTER_ALWAYS_TRUE) {
 		// both filters are always true: replace the between expression with a constant true
-		expr_ptr = make_uniq<BoundConstantExpression>(Value::BOOLEAN(true));
+		if (can_drop(between)) {
+			expr_ptr = make_uniq<BoundConstantExpression>(Value::BOOLEAN(true));
+		}
 	} else if (lower_prune == FilterPropagateResult::FILTER_ALWAYS_FALSE ||
 	           upper_prune == FilterPropagateResult::FILTER_ALWAYS_FALSE) {
+		if (!can_drop(between)) {
+			return nullptr;
+		}
 		// either one of the filters is always false: replace the between expression with a constant false
 		expr_ptr = make_uniq<BoundConstantExpression>(Value::BOOLEAN(false));
 	} else if (lower_prune == FilterPropagateResult::FILTER_FALSE_OR_NULL ||
@@ -43,8 +53,10 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateBetween(BoundFunctionE
 		// the result is null only when the input or the bound of the false-or-null comparison is null
 		auto &false_bound = lower_prune == FilterPropagateResult::FILTER_FALSE_OR_NULL ? lower_bound : upper_bound;
 		auto other_prune = lower_prune == FilterPropagateResult::FILTER_FALSE_OR_NULL ? upper_prune : lower_prune;
-		if (other_prune == FilterPropagateResult::FILTER_ALWAYS_TRUE ||
-		    other_prune == FilterPropagateResult::FILTER_TRUE_OR_NULL) {
+		auto &other_bound = lower_prune == FilterPropagateResult::FILTER_FALSE_OR_NULL ? upper_bound : lower_bound;
+		if ((other_prune == FilterPropagateResult::FILTER_ALWAYS_TRUE ||
+		     other_prune == FilterPropagateResult::FILTER_TRUE_OR_NULL) &&
+		    can_drop(*other_bound)) {
 			vector<unique_ptr<Expression>> children;
 			children.push_back(std::move(input));
 			children.push_back(std::move(false_bound));
@@ -58,10 +70,10 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateBetween(BoundFunctionE
 		children.push_back(std::move(lower_bound));
 		children.push_back(std::move(upper_bound));
 		expr_ptr = ExpressionRewriter::ConstantOrNull(context, std::move(children), Value::BOOLEAN(true));
-	} else if (lower_prune == FilterPropagateResult::FILTER_ALWAYS_TRUE) {
+	} else if (lower_prune == FilterPropagateResult::FILTER_ALWAYS_TRUE && can_drop(*lower_bound)) {
 		// lower filter is always true: replace with upper comparison
 		expr_ptr = BoundComparisonExpression::Create(upper_comparison, std::move(input), std::move(upper_bound));
-	} else if (upper_prune == FilterPropagateResult::FILTER_ALWAYS_TRUE) {
+	} else if (upper_prune == FilterPropagateResult::FILTER_ALWAYS_TRUE && can_drop(*upper_bound)) {
 		// upper filter is always true: replace with lower comparison
 		expr_ptr = BoundComparisonExpression::Create(lower_comparison, std::move(input), std::move(lower_bound));
 	}

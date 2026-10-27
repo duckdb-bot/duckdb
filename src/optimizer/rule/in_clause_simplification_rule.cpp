@@ -277,10 +277,16 @@ unique_ptr<Expression> EnumCompareSimplificationRule::Apply(LogicalOperator &op,
 		case ExpressionType::COMPARE_EQUAL:
 			return rewriter.ConstantOrNull(GetContext(), std::move(cmp_children[0]), Value::BOOLEAN(false));
 		case ExpressionType::COMPARE_NOT_DISTINCT_FROM:
+			if (!rewriter.CanDropExpression(enum_expr)) {
+				return nullptr;
+			}
 			return make_uniq<BoundConstantExpression>(Value::BOOLEAN(false));
 		case ExpressionType::COMPARE_NOTEQUAL:
 			return rewriter.ConstantOrNull(GetContext(), std::move(cmp_children[0]), Value::BOOLEAN(true));
 		case ExpressionType::COMPARE_DISTINCT_FROM:
+			if (!rewriter.CanDropExpression(enum_expr)) {
+				return nullptr;
+			}
 			return make_uniq<BoundConstantExpression>(Value::BOOLEAN(true));
 		default:
 			break;

@@ -1,4 +1,5 @@
 #include "duckdb/optimizer/rule/distributivity.hpp"
+#include "duckdb/optimizer/expression_rewriter.hpp"
 
 #include "duckdb/optimizer/matcher/expression_matcher.hpp"
 #include "duckdb/planner/expression/bound_conjunction_expression.hpp"
@@ -57,6 +58,10 @@ unique_ptr<Expression> DistributivityRule::ExtractExpression(BoundConjunctionExp
 unique_ptr<Expression> DistributivityRule::Apply(LogicalOperator &op, vector<reference<Expression>> &bindings,
                                                  bool &changes_made, bool is_root) {
 	auto &initial_or = bindings[0].get().Cast<BoundConjunctionExpression>();
+	// factoring out the common expressions can absorb the others (X OR (X AND A) is X), and changes how often they run
+	if (!rewriter.CanDropExpression(initial_or)) {
+		return nullptr;
+	}
 
 	// we want to find expressions that occur in each of the children of the OR
 	// i.e. (X AND A) OR (X AND B) => X occurs in all branches

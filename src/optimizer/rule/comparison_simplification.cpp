@@ -77,6 +77,19 @@ static bool DateTimestampComparisonIsInvertible(ClientContext &context, BoundFun
 	return true;
 }
 
+//! Whether a TRY_CAST from source_type to target_type can give NULL for a value that is not NULL
+static bool TryCastCanFail(const LogicalType &source_type, const LogicalType &target_type) {
+	if (source_type.id() == LogicalTypeId::DECIMAL && target_type.id() == LogicalTypeId::DECIMAL &&
+	    !source_type.HasAlias() && !target_type.HasAlias()) {
+		// a DECIMAL fits a DECIMAL with as many digits before the point and at least as many after it
+		auto source_scale = DecimalType::GetScale(source_type);
+		auto target_scale = DecimalType::GetScale(target_type);
+		return target_scale < source_scale ||
+		       DecimalType::GetWidth(target_type) - target_scale < DecimalType::GetWidth(source_type) - source_scale;
+	}
+	return BoundCastExpression::CastCanThrow(source_type, target_type, false);
+}
+
 static bool IsLosslessIntegralToFloatingCast(const LogicalType &source_type, const LogicalType &target_type) {
 	if (target_type.id() == LogicalTypeId::DOUBLE) {
 		switch (source_type.id()) {
@@ -220,7 +233,10 @@ unique_ptr<Expression> ComparisonSimplificationRule::Apply(LogicalOperator &op, 
 	}
 	if (constant_value.IsNull() && !(expr.GetExpressionType() == ExpressionType::COMPARE_NOT_DISTINCT_FROM ||
 	                                 expr.GetExpressionType() == ExpressionType::COMPARE_DISTINCT_FROM)) {
-		// comparison with constant NULL, return NULL
+		// comparison with constant NULL, return NULL, unless that drops the other side
+		if (!rewriter.CanDropExpression(column_ref_expr)) {
+			return nullptr;
+		}
 		return make_uniq<BoundConstantExpression>(Value(LogicalType::BOOLEAN));
 	}
 	if (BoundComparisonExpression::IsComparison(column_ref_expr) && !constant_value.IsNull() &&
@@ -242,6 +258,15 @@ unique_ptr<Expression> ComparisonSimplificationRule::Apply(LogicalOperator &op, 
 		//! invertible in practice.
 		auto &cast_expression = column_ref_expr.Cast<BoundFunctionExpression>();
 		auto target_type = BoundCastExpression::SourceType(cast_expression);
+		// moving the cast to the constant removes it, and its error TRY would catch
+		if (rewriter.InTry() && cast_expression.CanThrow()) {
+			return nullptr;
+		}
+		// a TRY_CAST that fails gives NULL, which the comparison with the source value would not
+		if (BoundCastExpression::IsTryCast(cast_expression) &&
+		    TryCastCanFail(target_type, cast_expression.GetReturnType())) {
+			return nullptr;
+		}
 		if (!BoundCastExpression::CastIsInvertible(target_type, cast_expression.GetReturnType()) &&
 		    !IsLosslessIntegralToFloatingCast(target_type, cast_expression.GetReturnType())) {
 			return nullptr;
@@ -262,6 +287,11 @@ unique_ptr<Expression> ComparisonSimplificationRule::Apply(LogicalOperator &op, 
 			return nullptr;
 		}
 		if (replacement) {
+			if (replacement->GetExpressionClass() == ExpressionClass::BOUND_CONSTANT &&
+			    !rewriter.CanDropExpression(cast_expression)) {
+				// the constant would drop the operand of the cast
+				return nullptr;
+			}
 			return replacement;
 		}
 

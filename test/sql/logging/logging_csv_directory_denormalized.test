@@ -126,6 +126,11 @@ EXECUTE csv_normalize;
 ----
 Can not set path to
 
+query I
+SELECT current_setting('logging_storage');
+----
+memory
+
 statement ok
 SELECT 49 AS answer;
 

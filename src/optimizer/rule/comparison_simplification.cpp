@@ -77,6 +77,18 @@ static bool DateTimestampComparisonIsInvertible(ClientContext &context, BoundFun
 	return true;
 }
 
+//! Whether a TRY_CAST from source_type to target_type can give NULL for a value that is not NULL
+static bool TryCastCanFail(const LogicalType &source_type, const LogicalType &target_type) {
+	if (source_type.id() == LogicalTypeId::DECIMAL && target_type.id() == LogicalTypeId::DECIMAL) {
+		// a DECIMAL fits a DECIMAL with as many digits before the point and at least as many after it
+		auto source_scale = DecimalType::GetScale(source_type);
+		auto target_scale = DecimalType::GetScale(target_type);
+		return target_scale < source_scale ||
+		       DecimalType::GetWidth(target_type) - target_scale < DecimalType::GetWidth(source_type) - source_scale;
+	}
+	return BoundCastExpression::CastCanThrow(source_type, target_type, false);
+}
+
 static bool IsLosslessIntegralToFloatingCast(const LogicalType &source_type, const LogicalType &target_type) {
 	if (target_type.id() == LogicalTypeId::DOUBLE) {
 		switch (source_type.id()) {
@@ -251,7 +263,7 @@ unique_ptr<Expression> ComparisonSimplificationRule::Apply(LogicalOperator &op, 
 		}
 		// a TRY_CAST that fails gives NULL, which the comparison with the source value would not
 		if (BoundCastExpression::IsTryCast(cast_expression) &&
-		    BoundCastExpression::CastCanThrow(target_type, cast_expression.GetReturnType(), false)) {
+		    TryCastCanFail(target_type, cast_expression.GetReturnType())) {
 			return nullptr;
 		}
 		if (!BoundCastExpression::CastIsInvertible(target_type, cast_expression.GetReturnType()) &&

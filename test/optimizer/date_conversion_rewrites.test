@@ -34,6 +34,19 @@ EXPLAIN SELECT TRY_CAST(i AS BIGINT) = 5 FROM ints;
 ----
 physical_plan	<REGEX>:.*Projections: i = 5.*
 
+statement ok
+CREATE TABLE decimals(m DECIMAL(10, 2));
+
+query II
+EXPLAIN SELECT TRY_CAST(m AS DECIMAL(18, 2)) = 5 FROM decimals;
+----
+physical_plan	<!REGEX>:.*TRY_CAST.*
+
+query II
+EXPLAIN SELECT TRY_CAST(m AS DECIMAL(4, 2)) = 5 FROM decimals;
+----
+physical_plan	<REGEX>:.*TRY_CAST.*
+
 query II
 EXPLAIN SELECT d::TIMESTAMP = TIMESTAMP '2020-01-01 00:00:00' FROM dates;
 ----

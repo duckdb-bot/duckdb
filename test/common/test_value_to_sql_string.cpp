@@ -153,6 +153,72 @@ TEST_CASE("Value::ToSQLString round-trips typed VARIANT payloads", "[api][value_
 	}
 }
 
+TEST_CASE("Value::ToSQLString renders nested VARIANT values once", "[api][value_sql]") {
+	DuckDB db;
+	Connection con(db);
+	REQUIRE(EvalScalar(con, "[1::SMALLINT, NULL]::VARIANT").ToSQLString() ==
+	        "CAST([CAST(CAST(1 AS SMALLINT) AS VARIANT), NULL::VARIANT] AS VARIANT)");
+	REQUIRE(EvalScalar(con, "{'b': 'x', 'a': [2]}::VARIANT").ToSQLString() ==
+	        "CAST({'a': CAST([CAST(CAST(2 AS INTEGER) AS VARIANT)] AS VARIANT), 'b': CAST(CAST('x' AS VARCHAR) AS "
+	        "VARIANT)} AS VARIANT)");
+	// heterogeneous arrays around a scalar 127 levels deep, the deepest value VariantVisitor accepts
+	string deep = "1::VARIANT";
+	for (idx_t depth = 0; depth < 127; depth++) {
+		deep = "['x'::VARIANT, (" + deep + ")]::VARIANT";
+	}
+	auto rendered = EvalScalar(con, deep).ToSQLString();
+	REQUIRE(EvalScalar(con, "(" + deep + ") IS NOT DISTINCT FROM (" + rendered + ")") == Value::BOOLEAN(true));
+}
+
+// Casts JSON that nests 'terminal' in 'depth' levels, each opened by 'open' and closed by 'close', to VARIANT during
+// execution, since the optimizer names a constant VARIANT by rendering it as SQL
+static string DeepJSONVariant(const string &open, const string &close, const string &terminal, idx_t depth) {
+	return "(SELECT (repeat('" + open + "', i) || '" + terminal + "' || repeat('" + close +
+	       "', i))::JSON::VARIANT FROM range(" + to_string(depth) + ", " + to_string(depth + 1) + ") t(i))";
+}
+
+// Requires rendering the value as SQL to fail with the error that VariantVisitor raises
+static void RequireNestingDepthError(const Value &value) {
+	try {
+		value.ToSQLString();
+		FAIL("Value::ToSQLString rendered a VARIANT nested too deeply");
+	} catch (const Exception &ex) {
+		const ErrorData error(ex);
+		REQUIRE(error.Type() == ExceptionType::INVALID_INPUT);
+		REQUIRE(error.RawMessage() == "VARIANT exceeds maximum recursion depth of 128");
+	}
+}
+
+TEST_CASE("Value::ToSQLString fails on JSON-derived VARIANT values deeper than VariantVisitor accepts",
+          "[api][value_sql]") {
+	DuckDB db;
+	Connection con(db);
+	if (!db.instance->ExtensionIsLoaded("json")) {
+		WARN("JSON extension required for deep VARIANT coverage");
+		return;
+	}
+	for (auto terminal : {"[]", "null", "1"}) {
+		// a value inside 127 arrays or objects is the deepest that renders
+		for (auto &original :
+		     {DeepJSONVariant("[", "]", terminal, 127), DeepJSONVariant("{\"a\": ", "}", terminal, 127)}) {
+			INFO(original);
+			auto rendered = EvalScalar(con, original).ToSQLString();
+			REQUIRE(EvalScalar(con, "(" + original + ")::JSON = (" + rendered + ")::JSON") == Value::BOOLEAN(true));
+		}
+		// an object whose only key is empty renders as a list of key and value pairs instead
+		REQUIRE_NOTHROW(EvalScalar(con, DeepJSONVariant("{\"\": ", "}", terminal, 127)).ToSQLString());
+		// deeper values fail without recursing once per level
+		for (idx_t depth : {idx_t(128), idx_t(50000)}) {
+			for (auto &deep :
+			     {DeepJSONVariant("[", "]", terminal, depth), DeepJSONVariant("{\"a\": ", "}", terminal, depth),
+			      DeepJSONVariant("{\"\": ", "}", terminal, depth)}) {
+				INFO(deep);
+				RequireNestingDepthError(EvalScalar(con, deep));
+			}
+		}
+	}
+}
+
 TEST_CASE("Value::ToSQLString round-trips JSON-derived supported VARIANT objects", "[api][value_sql]") {
 	DuckDB db;
 	Connection con(db);
@@ -167,6 +233,37 @@ TEST_CASE("Value::ToSQLString round-trips JSON-derived supported VARIANT objects
 		for (auto function : {"variant_typeof", "variant_keys"}) {
 			REQUIRE(EvalScalar(con, string(function) + "(" + original + ")") ==
 			        EvalScalar(con, string(function) + "(" + rendered + ")"));
+		}
+	}
+}
+
+// JSON around an object whose only key is empty, at each %s
+struct EmptyKeyWrapper {
+	string json;
+	//! Whether the JSON has a field b next to the object, which the test compares after rendering
+	bool has_sibling_b;
+};
+
+TEST_CASE("Value::ToSQLString renders VARIANT objects whose only key is empty", "[api][value_sql]") {
+	DuckDB db;
+	Connection con(db);
+	if (!db.instance->ExtensionIsLoaded("json")) {
+		WARN("JSON extension required for empty VARIANT key coverage");
+		return;
+	}
+	// at the root, as a field next to another one, and inside an array
+	duckdb::vector<EmptyKeyWrapper> wrappers {
+	    {"%s", false}, {"{\"a\":%s,\"b\":[1,null]}", true}, {"[%s,{\"c\":%s}]", false}};
+	for (auto json : {"{\"\":1}", "{\"\":null}", "{\"\":[1,\"x\"]}", "{\"\":{\"\":{\"b\":2}}}"}) {
+		for (auto &wrapper : wrappers) {
+			auto original = "'" + StringUtil::Replace(wrapper.json, "%s", json) + "'::JSON::VARIANT";
+			INFO(original);
+			auto rendered = EvalScalar(con, original).ToSQLString();
+			REQUIRE(!EvalScalar(con, "variant_typeof(" + rendered + ")").IsNull());
+			if (wrapper.has_sibling_b) {
+				REQUIRE(EvalScalar(con, "(" + original + ").b IS NOT DISTINCT FROM (" + rendered + ").b") ==
+				        Value::BOOLEAN(true));
+			}
 		}
 	}
 }

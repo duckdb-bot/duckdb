@@ -29,6 +29,8 @@
 #include "duckdb/function/scalar/generic_functions.hpp"
 #include "duckdb/function/scalar/struct_functions.hpp"
 #include "duckdb/main/settings.hpp"
+#include "duckdb/common/type_visitor.hpp"
+#include "duckdb/planner/column_binding_map.hpp"
 
 namespace duckdb {
 
@@ -445,9 +447,94 @@ static bool PerformDelimOnType(const LogicalType &type) {
 	return true;
 }
 
+//! Whether values of the type that compare equal are also identical. Signed zeros compare equal but print
+//! differently, and so do intervals of the same length
+static bool EqualValuesAreIdentical(const LogicalType &type) {
+	return !TypeVisitor::Contains(type, [](const LogicalType &child) {
+		switch (child.id()) {
+		case LogicalTypeId::FLOAT:
+		case LogicalTypeId::DOUBLE:
+		case LogicalTypeId::INTERVAL:
+		case LogicalTypeId::VARIANT:
+			return true;
+		default:
+			return false;
+		}
+	});
+}
+
+//! Whether the operand of a comparison is a column, as is or with the collation that comparisons push for its type
+static bool IsComparedColumn(ClientContext &context, const Expression &operand) {
+	if (operand.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
+		return true;
+	}
+	if (operand.GetExpressionClass() != ExpressionClass::BOUND_FUNCTION) {
+		return false;
+	}
+	auto &children = operand.Cast<BoundFunctionExpression>().GetChildren();
+	if (children.size() != 1 || children[0]->GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
+		return false;
+	}
+	auto collated = children[0]->Copy();
+	return ExpressionBinder::PushCollation(context, collated, collated->GetReturnType()) && collated->Equals(operand);
+}
+
+static bool UsedBeyondComparison(ClientContext &context, const LogicalOperator &op,
+                                 const column_binding_set_t &columns);
+
+//! Whether the expression uses one of the columns other than as an operand of a comparison
+static bool UsedBeyondComparison(ClientContext &context, const Expression &expr, const column_binding_set_t &columns) {
+	if (expr.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
+		return columns.find(expr.Cast<BoundColumnRefExpression>().Binding()) != columns.end();
+	}
+	if (expr.GetExpressionClass() == ExpressionClass::BOUND_SUBQUERY) {
+		// a subquery that is planned later, e.g. in the condition of an outer join
+		auto &plan = expr.Cast<BoundSubqueryExpression>().Subquery().plan;
+		if (!plan || UsedBeyondComparison(context, *plan, columns)) {
+			return true;
+		}
+	}
+	auto is_comparison = BoundComparisonExpression::IsComparison(expr);
+	bool used = false;
+	ExpressionIterator::EnumerateChildren(expr, [&](const Expression &child) {
+		if (!is_comparison || !IsComparedColumn(context, child)) {
+			used = used || UsedBeyondComparison(context, child, columns);
+		}
+	});
+	return used;
+}
+
+//! Whether the plan uses one of the columns other than as an operand of a comparison
+static bool UsedBeyondComparison(ClientContext &context, const LogicalOperator &op,
+                                 const column_binding_set_t &columns) {
+	bool used = false;
+	LogicalOperatorVisitor::EnumerateExpressions(
+	    op, [&](const unique_ptr<Expression> *expr) { used = used || UsedBeyondComparison(context, **expr, columns); });
+	for (auto &child : op.children) {
+		used = used || UsedBeyondComparison(context, *child, columns);
+	}
+	return used;
+}
+
+//! Whether outer rows with equal correlated values can share one result of the subquery. Comparisons give equal
+//! values the same result, other expressions can tell values apart that are equal but not identical
+static bool CanShareSubqueryResult(ClientContext &context, const CorrelatedColumns &correlated_columns,
+                                   const LogicalOperator &dependent_plan) {
+	if (dependent_plan.HasVolatileExpressions()) {
+		return false;
+	}
+	column_binding_set_t not_identical;
+	for (auto &col : correlated_columns) {
+		if (!EqualValuesAreIdentical(col.type)) {
+			not_identical.insert(col.binding);
+		}
+	}
+	return not_identical.empty() || !UsedBeyondComparison(context, dependent_plan, not_identical);
+}
+
 static bool PerformDuplicateElimination(Binder &binder, CorrelatedColumns &correlated_columns,
                                         optional_ptr<LogicalOperator> dependent_plan = nullptr) {
-	bool perform_delim = !dependent_plan || !dependent_plan->HasVolatileExpressions();
+	bool perform_delim = !dependent_plan || CanShareSubqueryResult(binder.context, correlated_columns, *dependent_plan);
 	if (perform_delim && !Settings::Get<EnableOptimizerSetting>(binder.context)) {
 		// if optimizations are disabled we always do a delim join
 		return true;
@@ -476,12 +563,13 @@ static unique_ptr<Expression> PlanCorrelatedSubquery(Binder &binder, BoundSubque
                                                      unique_ptr<LogicalOperator> &root,
                                                      unique_ptr<LogicalOperator> plan) {
 	auto &correlated_columns = expr.GetBinder()->correlated_columns;
-	// Preserve the existing duplicate-elimination path for deterministic ANY queries. Volatile ANY queries require
-	// row identity for the same reason as other correlated subqueries: sharing one result between equal outer values
-	// changes their evaluation cardinality.
-	bool perform_delim = expr.GetSubqueryType() == SubqueryType::ANY && !plan->HasVolatileExpressions()
-	                         ? true
-	                         : PerformDuplicateElimination(binder, correlated_columns, plan);
+	// Preserve the existing duplicate-elimination path for ANY queries whose outer rows can share one result. Other ANY
+	// queries require row identity for the same reason as other correlated subqueries: sharing one result between
+	// equal outer values changes their evaluation cardinality, or their result when the values are not identical.
+	bool perform_delim =
+	    expr.GetSubqueryType() == SubqueryType::ANY && CanShareSubqueryResult(binder.context, correlated_columns, *plan)
+	        ? true
+	        : PerformDuplicateElimination(binder, correlated_columns, plan);
 	D_ASSERT(expr.IsCorrelated());
 	// correlated subquery
 	// for a more in-depth explanation of this code, read the paper "Unnesting Arbitrary Subqueries"

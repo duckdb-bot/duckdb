@@ -430,7 +430,7 @@ void JSONCommon::GetWildcardPath(yyjson_val *val, const char *ptr, const idx_t &
 }
 
 //! Shallow copy of a mutable value - the children of containers are copied by MutValMutCopy
-static yyjson_mut_val *MutValShallowCopy(yyjson_mut_doc *doc, yyjson_mut_val *val, bool share_strings) {
+static yyjson_mut_val *MutValShallowCopy(yyjson_mut_doc *doc, yyjson_mut_val *val) {
 	auto result = unsafe_yyjson_mut_val(doc, 1);
 	if (!result) {
 		return nullptr;
@@ -443,10 +443,6 @@ static yyjson_mut_val *MutValShallowCopy(yyjson_mut_doc *doc, yyjson_mut_val *va
 		break;
 	case YYJSON_TYPE_RAW:
 	case YYJSON_TYPE_STR:
-		if (share_strings) {
-			result->uni = val->uni;
-			break;
-		}
 		result->uni.str = unsafe_yyjson_mut_strncpy(doc, val->uni.str, unsafe_yyjson_get_len(val));
 		if (!result->uni.str) {
 			return nullptr;
@@ -459,7 +455,7 @@ static yyjson_mut_val *MutValShallowCopy(yyjson_mut_doc *doc, yyjson_mut_val *va
 	return result;
 }
 
-yyjson_mut_val *JSONCommon::MutValMutCopy(yyjson_mut_doc *doc, yyjson_mut_val *val, bool share_strings) {
+yyjson_mut_val *JSONCommon::MutValMutCopy(yyjson_mut_doc *doc, yyjson_mut_val *val) {
 	if (!doc || !val) {
 		return nullptr;
 	}
@@ -468,7 +464,7 @@ yyjson_mut_val *JSONCommon::MutValMutCopy(yyjson_mut_doc *doc, yyjson_mut_val *v
 		yyjson_mut_val *target;
 	};
 	vector<CopyEntry> containers;
-	auto result = MutValShallowCopy(doc, val, share_strings);
+	auto result = MutValShallowCopy(doc, val);
 	if (!result) {
 		return nullptr;
 	}
@@ -484,7 +480,7 @@ yyjson_mut_val *JSONCommon::MutValMutCopy(yyjson_mut_doc *doc, yyjson_mut_val *v
 		yyjson_mut_val *first_copy = nullptr;
 		yyjson_mut_val *prev_copy = nullptr;
 		do {
-			auto child_copy = MutValShallowCopy(doc, source_child, share_strings);
+			auto child_copy = MutValShallowCopy(doc, source_child);
 			if (!child_copy) {
 				return nullptr;
 			}

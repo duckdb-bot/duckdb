@@ -40,7 +40,7 @@ SELECT pick_type(v) FROM t
 Macro pick_type() has multiple overloads that match the supplied arguments
 
 statement ok
-PREPARE abs_of AS SELECT abs($1);
+PREPARE abs_of AS SELECT abs($1), typeof(abs($1));
 
 statement error
 EXECUTE abs_of(1.5::VARIANT)
@@ -64,10 +64,10 @@ SELECT sum(v::DOUBLE) FROM t
 ----
 1.5
 
-query I
+query II
 EXECUTE abs_of(1.5::DOUBLE)
 ----
-1.5
+1.5	DOUBLE
 
 query I
 SELECT CAST([v::DOUBLE] AS UNION(i BIGINT[], d DOUBLE[])) FROM t

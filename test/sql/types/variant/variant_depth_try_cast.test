@@ -1,0 +1,98 @@
+# name: test/sql/types/variant/variant_depth_try_cast.test
+# description: TRY_CAST returns NULL for a VARIANT value nested too deeply to convert, while CAST raises
+# group: [variant]
+
+statement ok
+CREATE TABLE t AS
+WITH RECURSIVE r(d, v) AS (
+    SELECT 1, [1]::VARIANT
+    UNION ALL
+    SELECT d + 1, [v]::VARIANT FROM r WHERE d < 129
+)
+SELECT d, v FROM r WHERE d >= 126;
+
+query II
+SELECT d, TRY_CAST(v AS VARCHAR) IS NULL FROM t ORDER BY d;
+----
+126	false
+127	false
+128	true
+129	true
+
+# the rows next to a row that is too deep keep their values
+query II
+SELECT d, TRY_CAST(v AS VARCHAR) = v::VARCHAR FROM t WHERE d < 128 ORDER BY d;
+----
+126	true
+127	true
+
+query I
+SELECT count(*) FROM t WHERE TRY_CAST(v AS VARCHAR) IS NOT NULL;
+----
+2
+
+statement error
+SELECT CAST(v AS VARCHAR) FROM t;
+----
+VARIANT exceeds maximum recursion depth of 128
+
+# objects, NULL rows and a value of another type in the same vector
+statement ok
+CREATE TABLE mixed AS
+WITH RECURSIVE r(d, v) AS (
+    SELECT 1, {'k': 1}::VARIANT
+    UNION ALL
+    SELECT d + 1, {'k': v}::VARIANT FROM r WHERE d < 128
+)
+SELECT d, v FROM r WHERE d IN (1, 127, 128)
+UNION ALL SELECT 0, NULL::VARIANT
+UNION ALL SELECT -1, 42::VARIANT;
+
+query II
+SELECT d, TRY_CAST(v AS VARCHAR) IS NULL FROM mixed ORDER BY d;
+----
+-1	false
+0	true
+1	false
+127	false
+128	true
+
+query II
+SELECT d, TRY_CAST(v AS INTEGER) FROM mixed WHERE d <= 1 ORDER BY d;
+----
+-1	42
+0	NULL
+1	NULL
+
+# a too deep row in a later vector of a larger table
+statement ok
+CREATE TABLE many AS
+SELECT i, CASE WHEN i = 3000 THEN (SELECT v FROM t WHERE d = 128) ELSE [i]::VARIANT END AS v FROM range(5000) r(i);
+
+query III
+SELECT count(*), count(TRY_CAST(v AS VARCHAR)), sum(TRY_CAST(v AS INTEGER[])[1]) FROM many;
+----
+5000	4999	12494500
+
+query I
+SELECT i FROM many WHERE TRY_CAST(v AS VARCHAR) IS NULL;
+----
+3000
+
+# the same after the values are written to disk and read back
+statement ok
+ATTACH '{TEST_DIR}/variant_depth_try_cast.db' AS disk;
+
+statement ok
+CREATE OR REPLACE TABLE disk.many AS FROM many;
+
+statement ok
+DETACH disk;
+
+statement ok
+ATTACH '{TEST_DIR}/variant_depth_try_cast.db' AS disk;
+
+query II
+SELECT count(TRY_CAST(v AS VARCHAR)), min(i) FILTER (WHERE TRY_CAST(v AS VARCHAR) IS NULL) FROM disk.many;
+----
+4999	3000

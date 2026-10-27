@@ -11,6 +11,7 @@
 #include "duckdb/function/cast/default_casts.hpp"
 #include "duckdb/common/types/variant.hpp"
 #include "duckdb/function/scalar/variant_utils.hpp"
+#include "duckdb/common/operator/cast_operators.hpp"
 #include "duckdb/common/serializer/varint.hpp"
 #include "yyjson.hpp"
 
@@ -881,6 +882,16 @@ static bool TryFromShreddedCast(Vector &variant_vec, Vector &result) {
 	return false;
 }
 
+//! Whether the VARIANT value of the row is nested too deeply for VariantVisitor to convert it
+static bool ExceedsVisitorDepth(const UnifiedVariantVectorData &variant, idx_t row) {
+	try {
+		VariantUtils::ConvertVariantToValue(variant, row, 0);
+		return false;
+	} catch (const InvalidInputException &) {
+		return true;
+	}
+}
+
 static bool CastFromVARIANT(Vector &variant_vec, Vector &result, idx_t count, CastParameters &parameters) {
 	if (TryFromShreddedCast(variant_vec, result)) {
 		return true;
@@ -905,7 +916,33 @@ static bool CastFromVARIANT(Vector &variant_vec, Vector &result, idx_t count, Ca
 		sel = zero_sel;
 	}
 
-	auto success = CastVariant(conversion_data, result, sel, 0, count, optional_idx());
+	bool success;
+	try {
+		success = CastVariant(conversion_data, result, sel, 0, count, optional_idx());
+	} catch (const InvalidInputException &ex) {
+		if (!parameters.error_message) {
+			throw;
+		}
+		// under TRY_CAST the rows nested too deeply to convert become NULL, and the others are cast again
+		Vector convertible(variant_vec.GetType(), count);
+		VectorOperations::Copy(variant_vec, convertible, count, 0, 0);
+		bool too_deep = false;
+		for (idx_t i = 0; i < count; i++) {
+			if (ExceedsVisitorDepth(conversion_data.variant, i)) {
+				FlatVector::SetNull(convertible, i, true);
+				too_deep = true;
+			}
+		}
+		if (!too_deep) {
+			throw;
+		}
+		// the failed attempt may have left partial results, so the retry writes into a new vector
+		Vector retried(result.GetType(), count);
+		CastFromVARIANT(convertible, retried, count, parameters);
+		result.Reference(retried);
+		HandleCastError::AssignError(ErrorData(ex).RawMessage(), parameters);
+		return false;
+	}
 	if (variant_vec.GetVectorType() == VectorType::CONSTANT_VECTOR) {
 		result.SetVectorType(VectorType::CONSTANT_VECTOR);
 	}

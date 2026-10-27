@@ -1,0 +1,27 @@
+# name: test/sql/types/variant/variant_depth_try_cast_json.test
+# description: TRY_CAST to JSON returns NULL for a VARIANT value nested too deeply to convert, while CAST raises
+# group: [variant]
+
+require json
+
+statement ok
+CREATE TABLE t AS
+WITH RECURSIVE r(d, v) AS (
+    SELECT 1, [1]::VARIANT
+    UNION ALL
+    SELECT d + 1, [v]::VARIANT FROM r WHERE d < 129
+)
+SELECT d, v FROM r WHERE d >= 126;
+
+query II
+SELECT d, TRY_CAST(v AS JSON) IS NULL FROM t ORDER BY d;
+----
+126	false
+127	false
+128	true
+129	true
+
+statement error
+SELECT v::JSON FROM t WHERE d = 128;
+----
+VARIANT exceeds maximum recursion depth of 128

@@ -364,6 +364,9 @@ jobs:
     - name: Test
       run: make unittest_relassert
 
+    - name: Unittest Runner Tests
+      run: python -m pytest tools/sqllogic/tests --unittest-binary build/relassert/test/unittest
+
     - name: Test Benchmark SQL
       run: make test_benchmark_sql
 

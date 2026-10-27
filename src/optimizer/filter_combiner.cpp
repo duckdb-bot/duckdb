@@ -2,6 +2,7 @@
 
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/common/enums/expression_type.hpp"
+#include "duckdb/common/type_visitor.hpp"
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/function/scalar/string_common.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
@@ -127,6 +128,25 @@ FilterResult FilterCombiner::AddConjuncts(unique_ptr<Expression> expr) {
 	return FilterResult::SUCCESS;
 }
 
+//! Whether values of the type that compare equal are also identical, so that every expression gives them the same
+//! result. Signed zeros compare equal but print differently, as do intervals of the same length and strings that a
+//! collation compares
+static bool EqualValuesAreIdentical(const LogicalType &type) {
+	return !TypeVisitor::Contains(type, [](const LogicalType &child) {
+		switch (child.id()) {
+		case LogicalTypeId::FLOAT:
+		case LogicalTypeId::DOUBLE:
+		case LogicalTypeId::INTERVAL:
+		case LogicalTypeId::VARIANT:
+			return true;
+		case LogicalTypeId::VARCHAR:
+			return !StringType::GetCollation(child).empty();
+		default:
+			return false;
+		}
+	});
+}
+
 void FilterCombiner::GenerateEquivalentFilters(const Expression &filter,
                                                const std::function<void(unique_ptr<Expression> filter)> &callback) {
 	if (filter.IsVolatile()) {
@@ -137,6 +157,10 @@ void FilterCombiner::GenerateEquivalentFilters(const Expression &filter,
 	ExpressionIterator::VisitExpression<BoundColumnRefExpression>(filter, [&](const BoundColumnRefExpression &col) {
 		auto entry = equivalence_set_map.find(col);
 		if (entry == equivalence_set_map.end()) {
+			return;
+		}
+		if (!EqualValuesAreIdentical(col.GetReturnType())) {
+			// the filter can tell equal values apart, so it does not hold for the other columns of the set
 			return;
 		}
 		for (auto &existing : candidate_columns) {

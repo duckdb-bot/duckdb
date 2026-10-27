@@ -29,17 +29,10 @@ public:
 	}
 };
 
-void BetweenFunction(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto &between_expr = state.expr.Cast<BoundFunctionExpression>();
-	bool upper_inclusive = BoundBetweenExpression::UpperInclusive(between_expr);
-	bool lower_inclusive = BoundBetweenExpression::LowerInclusive(between_expr);
-
+static void ExecuteBetween(const Vector &input, const Vector &lower, const Vector &upper, bool lower_inclusive,
+                           bool upper_inclusive, Vector &result) {
 	Vector intermediate1(LogicalType::BOOLEAN);
 	Vector intermediate2(LogicalType::BOOLEAN);
-
-	const auto &input = args.data[0];
-	const auto &lower = args.data[1];
-	const auto &upper = args.data[2];
 
 	if (upper_inclusive && lower_inclusive) {
 		VectorOperations::GreaterThanEquals(input, lower, intermediate1);
@@ -55,6 +48,13 @@ void BetweenFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 		VectorOperations::LessThan(input, upper, intermediate2);
 	}
 	VectorOperations::And(intermediate1, intermediate2, result);
+}
+
+void BetweenFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto &between_expr = state.expr.Cast<BoundFunctionExpression>();
+	bool upper_inclusive = BoundBetweenExpression::UpperInclusive(between_expr);
+	bool lower_inclusive = BoundBetweenExpression::LowerInclusive(between_expr);
+	ExecuteBetween(args.data[0], args.data[1], args.data[2], lower_inclusive, upper_inclusive, result);
 }
 
 #if !DUCKDB_SMALLER_BINARY(between_select)
@@ -149,6 +149,13 @@ idx_t BetweenSelect(DataChunk &args, ExpressionState &state, optional_ptr<const 
 	const auto &upper = args.data[2];
 	auto count = args.size();
 
+	if (input.GetType().IsNested()) {
+		// nested types have no ternary kernel, so the rows are selected on the result of both comparisons
+		Vector result(LogicalType::BOOLEAN);
+		ExecuteBetween(input, lower, upper, lower_inclusive, upper_inclusive, result);
+		return UnaryExecutor::Select<bool>(
+		    result, sel.get(), count, [](bool value) { return value; }, true_sel.get(), false_sel.get());
+	}
 	if (upper_inclusive && lower_inclusive) {
 		return BetweenLoopTypeSwitch<BothInclusiveBetweenOperator>(input, lower, upper, sel, count, true_sel,
 		                                                           false_sel);

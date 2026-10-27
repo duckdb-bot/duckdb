@@ -6,7 +6,7 @@ statement ok
 COPY (SELECT i AS id, repeat('x', 100) AS payload FROM range(20000) t(i)) TO '{TEST_DIR}/sized.csv';
 
 statement ok
-PRAGMA explain_output = 'OPTIMIZED_ONLY';
+SET explain_output = 'OPTIMIZED_ONLY';
 
 foreach auto_detect true false
 
@@ -27,6 +27,27 @@ query II
 EXPLAIN SELECT count(*) FROM read_csv('{TEST_DIR}/sized*.csv', auto_detect = false, header = true, columns = {'id': 'BIGINT', 'payload': 'VARCHAR'});
 ----
 logical_opt	<REGEX>:.*~212,890 rows.*
+
+# a glob whose last component is not a pattern
+statement ok
+COPY (SELECT i AS id, repeat('x', 100) AS payload, 1 AS part FROM range(20000) t(i)) TO '{TEST_DIR}/sized_partitioned' (FORMAT csv, PARTITION_BY (part));
+
+query II
+EXPLAIN SELECT count(*) FROM read_csv('{TEST_DIR}/sized_partitioned/*/data_0.csv', auto_detect = false, header = true, hive_partitioning = false, columns = {'id': 'BIGINT', 'payload': 'VARCHAR'});
+----
+logical_opt	<REGEX>:.*~212,890 rows.*
+
+# a file found through the file search path
+statement ok
+SET file_search_path = '{TEST_DIR}';
+
+query II
+EXPLAIN SELECT count(*) FROM read_csv('sized.csv', auto_detect = false, header = true, columns = {'id': 'BIGINT', 'payload': 'VARCHAR'});
+----
+logical_opt	<REGEX>:.*~212,890 rows.*
+
+statement ok
+RESET file_search_path;
 
 # a list of two files, estimated as the first file times the number of files
 statement ok

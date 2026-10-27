@@ -489,20 +489,15 @@ unique_ptr<NodeStatistics> ParquetMultiFileInfo::GetCardinality(ClientContext &c
 	idx_t files_with_sizes = 0;
 	idx_t estimated_file_row_count = 0;
 	while (bind_data.file_list->Scan(scan_data, file)) {
-		if (!file.extended_info) {
-			// no extended info
-			estimated_file_row_count = 0;
-			break;
-		}
-		idx_t current_file_size;
-		if (!file.extended_info->TryGetOption("file_size", current_file_size)) {
+		auto current_file_size = file.TryGetFileSize();
+		if (!current_file_size.IsValid()) {
 			// no file size available
 			estimated_file_row_count = 0;
 			break;
 		}
 		// we have the file size - estimate row count based on estimated bytes per row
 		files_with_sizes++;
-		idx_t rows_in_this_file = MaxValue<idx_t>(current_file_size / estimated_bytes_per_row, 1ULL);
+		idx_t rows_in_this_file = MaxValue<idx_t>(current_file_size.GetIndex() / estimated_bytes_per_row, 1ULL);
 		estimated_file_row_count += rows_in_this_file;
 	}
 	idx_t per_file_cardinality;

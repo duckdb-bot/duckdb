@@ -2,6 +2,7 @@
 #include "duckdb/planner/expression/bound_default_expression.hpp"
 #include "duckdb/planner/expression/bound_parameter_expression.hpp"
 #include "duckdb/function/cast/cast_function_set.hpp"
+#include "duckdb/common/type_visitor.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/planner/expression_binder.hpp"
 
@@ -341,8 +342,8 @@ bool BoundCastExpression::CastCanThrow(const LogicalType &source_type, const Log
 	if (source_type == target_type) {
 		return false;
 	}
-	// Converting VARIANT can hit its traversal depth limit, regardless of the target type or TRY_CAST.
-	if (source_type.id() == LogicalTypeId::VARIANT) {
+	// Converting VARIANT, also inside a nested type, can hit its depth limit, whatever the target type or TRY_CAST.
+	if (TypeVisitor::Contains(source_type, LogicalTypeId::VARIANT)) {
 		return true;
 	}
 	// Casts involving custom types are implemented by extensions, so we cannot reason about them - they can throw

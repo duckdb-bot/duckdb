@@ -89,6 +89,13 @@ Value ShreddedVectorBuffer::GetValue(const LogicalType &type, idx_t index) const
 	return result.GetValue(0);
 }
 
+buffer_ptr<VectorBuffer> ShreddedVectorBuffer::ConstantReferenceInternal(const LogicalType &type, idx_t index,
+                                                                         count_t count) const {
+	// the rows are unshredded once, so that the constant references to them share the unshredded data
+	CallOnce(unshredded_once, [&]() { unshredded = Flatten(type); });
+	return unshredded->ConstantReference(type, index, count);
+}
+
 buffer_ptr<VectorBuffer> ShreddedVectorBuffer::SliceInternal(const LogicalType &type, idx_t offset, idx_t end) {
 	// propagate the slice into the shredded data and emit a new shredded vector
 	auto count = count_t(end - offset);

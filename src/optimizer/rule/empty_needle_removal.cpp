@@ -64,6 +64,10 @@ unique_ptr<Expression> EmptyNeedleRemovalRule::Apply(LogicalOperator &op, vector
 	}
 
 	if (prefix_value.IsNull()) {
+		// a NULL result drops the haystack, which must then not be volatile, nor able to throw inside TRY
+		if (!rewriter.CanDropExpression(*root.GetChildren()[0])) {
+			return nullptr;
+		}
 		return make_uniq<BoundConstantExpression>(Value(LogicalType::BOOLEAN));
 	}
 

@@ -1,4 +1,5 @@
 #include "duckdb/optimizer/rule/list_comprehension_rewrite.hpp"
+#include "duckdb/optimizer/expression_rewriter.hpp"
 
 #include "duckdb/planner/expression/bound_lambda_expression.hpp"
 
@@ -319,6 +320,18 @@ unique_ptr<Expression> ListComprehensionRewriteRule::Apply(LogicalOperator &, ve
 	auto match = MatchListComprehensionRewrite(GetContext(), root);
 	if (!match) {
 		return nullptr;
+	}
+	// the rewrite skips the transform of the elements the filter rejects, whose errors TRY would catch
+	if (rewriter.InTry() && match->result_expr->CanThrow()) {
+		return nullptr;
+	}
+	// and drops the fields of the struct_pack besides the filter and the result
+	auto &struct_pack = match->inner_bind->lambda_expr->Cast<BoundFunctionExpression>();
+	for (auto &field : struct_pack.GetChildren()) {
+		if (field.get() != match->filter_expr.get() && field.get() != match->result_expr.get() &&
+		    !rewriter.CanDropExpression(*field)) {
+			return nullptr;
+		}
 	}
 	return BuildListComprehensionRewrite(GetContext(), *match);
 }

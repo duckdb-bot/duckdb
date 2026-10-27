@@ -63,6 +63,13 @@ SELECT map_extract(map(['a' COLLATE NOCASE], [1]), 'A' COLLATE NOACCENT);
 ----
 Cannot combine types with different collation
 
+# keys that collate equal find the first, and a binary collation compares as without a collation
+query IIII
+SELECT MAP {'A': 1, 'a': 2}['a' COLLATE NOCASE], map_extract(MAP {'A': 1, 'a': 2}, 'a' COLLATE NOCASE),
+       MAP {'Apple': 1}['Apple' COLLATE "binary"], MAP {'Apple': 1}['apple' COLLATE "binary"];
+----
+1	[1]	1	NULL
+
 # keys that are lists, arrays or structs of collated strings
 query II
 SELECT map([['A' COLLATE NOCASE, 'b']], [1])[['a', 'B']], map_extract(map([['A' COLLATE NOCASE, 'b']], [1]), ['a', 'C']);
@@ -203,3 +210,29 @@ query II
 EXECUTE p('APPLE');
 ----
 1	[1]
+
+query II
+EXECUTE p('pear');
+----
+NULL	[]
+
+# an index cannot evaluate a collated lookup, while a binary collation needs no collated lookup
+statement ok
+CREATE TABLE indexed (m MAP(VARCHAR, INTEGER));
+
+statement error
+CREATE INDEX collated_idx ON indexed ((m['Apple' COLLATE NOCASE]));
+----
+Cannot use "map_extract_value" in this context
+
+statement ok
+CREATE INDEX binary_idx ON indexed ((m['Apple' COLLATE "binary"]));
+
+statement ok
+INSERT INTO indexed VALUES (MAP {'Apple': 7}), (MAP {'apple': 8});
+
+query I
+SELECT m['Apple' COLLATE "binary"] FROM indexed ORDER BY ALL;
+----
+7
+NULL

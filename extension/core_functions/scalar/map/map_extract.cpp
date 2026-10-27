@@ -1,7 +1,5 @@
 #include "duckdb/common/vector/map_vector.hpp"
 #include "core_functions/scalar/map_functions.hpp"
-#include "duckdb/common/serializer/deserializer.hpp"
-#include "duckdb/common/serializer/serializer.hpp"
 #include "duckdb/common/type_visitor.hpp"
 #include "duckdb/common/types/data_chunk.hpp"
 #include "duckdb/execution/expression_executor.hpp"
@@ -10,6 +8,7 @@
 #include "duckdb/function/scalar/nested_functions.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
+#include "duckdb/planner/expression_binder.hpp"
 #include "duckdb/storage/statistics/list_stats.hpp"
 #include "duckdb/storage/statistics/struct_stats.hpp"
 
@@ -31,30 +30,31 @@ struct MapExtractCollationData final : public FunctionData {
 	}
 };
 
-//! Only lookups with a collation have bind data, so only their plans serialize it
-static void MapExtractCollationSerialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data,
-                                         const BoundScalarFunction &) {
-	serializer.WriteProperty(100, "key_position", bind_data->Cast<MapExtractCollationData>().key_position);
-}
+struct MapExtractCollationState final : public FunctionLocalState {
+	MapExtractCollationState(ClientContext &context, const Expression &key_position) : executor(context, key_position) {
+	}
 
-static unique_ptr<FunctionData> MapExtractCollationDeserialize(Deserializer &deserializer,
-                                                               BoundScalarFunction &function) {
-	auto key_position = deserializer.ReadProperty<unique_ptr<Expression>>(100, "key_position");
-	function.SetReturnType(deserializer.Get<const LogicalType &>());
-	function.SetSerializeCallback(MapExtractCollationSerialize);
-	return make_uniq<MapExtractCollationData>(std::move(key_position));
-}
+	static unique_ptr<FunctionLocalState> Init(ExpressionState &state, const BoundFunctionExpression &,
+	                                           FunctionData *bind_data) {
+		if (!bind_data) {
+			return nullptr;
+		}
+		auto &key_position = *bind_data->Cast<MapExtractCollationData>().key_position;
+		return make_uniq<MapExtractCollationState>(state.GetContext(), key_position);
+	}
+
+	ExpressionExecutor executor;
+};
 
 //! Finds the position of the key in each map, comparing collated values when the lookup has a collation
 static void FindKeyPositions(DataChunk &args, ExpressionState &state, Vector &positions) {
-	auto &bind_data = state.expr.Cast<BoundFunctionExpression>().BindInfo();
-	if (!bind_data) {
+	auto local_state = ExecuteFunctionState::GetFunctionState(state);
+	if (!local_state) {
 		const auto &map_vec = args.data[0];
 		ListSearchOp<int32_t>(map_vec, MapVector::GetKeys(map_vec), args.data[1], positions, args.size());
 		return;
 	}
-	ExpressionExecutor executor(state.GetContext(), *bind_data->Cast<MapExtractCollationData>().key_position);
-	executor.ExecuteExpression(args, positions);
+	local_state->Cast<MapExtractCollationState>().executor.ExecuteExpression(args, positions);
 }
 
 static void MapExtractValueFunc(DataChunk &args, ExpressionState &state, Vector &result) {
@@ -139,21 +139,28 @@ static void MapExtractListFunc(DataChunk &args, ExpressionState &state, Vector &
 	}
 }
 
-static bool HasCollation(const LogicalType &type) {
-	return TypeVisitor::Contains(type, [](const LogicalType &child) {
+//! Whether the type has an explicit collation that changes how its values compare
+static bool RequiresCollation(ClientContext &context, const LogicalType &type) {
+	const auto has_collation = TypeVisitor::Contains(type, [](const LogicalType &child) {
 		return child.id() == LogicalTypeId::VARCHAR && !StringType::GetCollation(child).empty();
 	});
+	if (!has_collation) {
+		return false;
+	}
+	unique_ptr<Expression> collated_value = make_uniq<BoundReferenceExpression>(type, idx_t(0));
+	return ExpressionBinder::PushCollation(context, collated_value, type, CollationType::COMBINABLE_COLLATIONS);
 }
 
 //! A lookup with a collated key or map keys searches with list_position, which pushes the collation into both
 static unique_ptr<FunctionData> MapExtractBind(BindScalarFunctionInput &input) {
+	auto &context = input.GetClientContext();
 	auto &arguments = input.GetArguments();
 	const auto &map_type = arguments[0]->GetReturnType();
 	const auto &key_type = arguments[1]->GetReturnType();
-	if (!HasCollation(MapType::KeyType(map_type)) && !HasCollation(key_type)) {
+	if (!RequiresCollation(context, MapType::KeyType(map_type)) && !RequiresCollation(context, key_type)) {
 		return nullptr;
 	}
-	FunctionBinder function_binder(input.GetClientContext());
+	FunctionBinder function_binder(context);
 	vector<unique_ptr<Expression>> children;
 	children.push_back(make_uniq<BoundReferenceExpression>(map_type, idx_t(0)));
 	auto keys =
@@ -163,7 +170,6 @@ static unique_ptr<FunctionData> MapExtractBind(BindScalarFunctionInput &input) {
 	children.push_back(make_uniq<BoundReferenceExpression>(key_type, idx_t(1)));
 	auto key_position = function_binder.BindScalarFunction(Identifier::DefaultSchema(), Identifier("list_position"),
 	                                                       std::move(children));
-	input.GetBoundFunction().SetSerializeCallback(MapExtractCollationSerialize);
 	return make_uniq<MapExtractCollationData>(std::move(key_position));
 }
 
@@ -185,7 +191,7 @@ ScalarFunction MapExtractValueFun::GetFunction() {
 	ScalarFunction fun({}, val_type, MapExtractValueFunc);
 	fun.GetSignature().AddParameter("map", LogicalType::MAP(key_type, val_type)).AddParameter("key", key_type);
 	fun.SetBindCallback(MapExtractBind);
-	fun.SetDeserializeCallback(MapExtractCollationDeserialize);
+	fun.SetInitStateCallback(MapExtractCollationState::Init);
 	// The collation of the key applies to the key search, not to the value
 	fun.SetCollationHandling(FunctionCollationHandling::IGNORE_COLLATIONS);
 	fun.SetStatisticsCallback(MapExtractValueStats);
@@ -200,7 +206,7 @@ ScalarFunction MapExtractFun::GetFunction() {
 	ScalarFunction fun({}, LogicalType::LIST(val_type), MapExtractListFunc);
 	fun.GetSignature().AddParameter("map", LogicalType::MAP(key_type, val_type)).AddParameter("key", key_type);
 	fun.SetBindCallback(MapExtractBind);
-	fun.SetDeserializeCallback(MapExtractCollationDeserialize);
+	fun.SetInitStateCallback(MapExtractCollationState::Init);
 	fun.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	return fun;
 }

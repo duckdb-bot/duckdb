@@ -284,11 +284,6 @@ CatalogEntry &ExpressionBinder::BindFunction(FunctionExpression &function) {
 
 BindResult ExpressionBinder::BindExpression(FunctionExpression &function, idx_t depth,
                                             unique_ptr<ParsedExpression> &expr_ptr) {
-	ColumnQualifier qualifier(binder);
-	if (auto rewritten = qualifier.RewriteQualifiedParserFunction(function)) {
-		expr_ptr = std::move(rewritten);
-		return BindExpression(expr_ptr, depth);
-	}
 	auto &func = BindFunction(function);
 
 	switch (func.type) {

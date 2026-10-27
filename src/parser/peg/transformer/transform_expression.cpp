@@ -19,7 +19,6 @@
 #include "duckdb/parser/tableref/emptytableref.hpp"
 #include "duckdb/parser/parsed_expression_iterator.hpp"
 #include "duckdb/parser/expression/star_expression.hpp"
-#include "duckdb/parser/parser_function_rewrite.hpp"
 #include "duckdb/common/string_util.hpp"
 
 namespace duckdb {
@@ -30,14 +29,15 @@ static bool ExpressionIsUnqualifiedStar(const ParsedExpression &expr) {
 	return PEGTransformerFactory::ExpressionIsEmptyStar(expr) && expr.Cast<StarExpression>().RelationName().empty();
 }
 
-bool ParserFunctionRewrite::BinderRewritesQualifiedCall(const string &lowercase_name) {
-	return lowercase_name == "try" || lowercase_name == "construct_array" || lowercase_name == "ifnull" ||
-	       lowercase_name == "coalesce" || lowercase_name == "date";
-}
+//! Which syntactic form named the function: f(x) or x.f(y).
+enum class ParserRewriteCallForm : uint8_t { PLAIN, METHOD_CHAIN };
 
-unique_ptr<ParsedExpression> ParserFunctionRewrite::Rewrite(const string &lowercase_name,
-                                                            vector<FunctionArgument> &function_children,
-                                                            ParserRewriteCallForm call_form) {
+//! Names that the parser rewrites into a syntax node instead of a catalog function call.
+//! Every path that can name a function must go through this, or the paths disagree.
+//! Returns nullptr when the name is an ordinary function.
+static unique_ptr<ParsedExpression> TransformParserFunctionRewrite(const string &lowercase_name,
+                                                                   vector<FunctionArgument> &function_children,
+                                                                   ParserRewriteCallForm call_form) {
 	auto reject_named_arguments = [&function_children](const char *context) {
 		for (auto &arg : function_children) {
 			if (arg.HasName()) {
@@ -110,25 +110,32 @@ unique_ptr<ParsedExpression> ParserFunctionRewrite::Rewrite(const string &lowerc
 	return nullptr;
 }
 
-unique_ptr<ParsedExpression> ParserFunctionRewrite::RewriteMethodCall(FunctionExpression &function) {
-	auto lowercase_name = StringUtil::Lower(function.FunctionName().GetIdentifierName());
-	const bool distinct = function.Distinct();
-	const bool has_order_by = function.OrderBy() && !function.OrderBy()->orders.empty();
-	const bool has_filter = function.Filter() != nullptr;
-	auto rewritten = Rewrite(lowercase_name, function.GetArgumentsMutable(), ParserRewriteCallForm::METHOD_CHAIN);
+//! Whether TransformParserFunctionRewrite rewrites the name in a method call
+static bool IsParserFunctionRewrite(const string &lowercase_name) {
+	return lowercase_name == "unpack" || lowercase_name == "try" || lowercase_name == "construct_array" ||
+	       lowercase_name == "ifnull" || lowercase_name == "coalesce" || lowercase_name == "date";
+}
+
+//! A call on a value, as x.f(y), takes the value as its first argument and the same rewrites as a plain call
+static unique_ptr<ParsedExpression> TransformMethodCall(unique_ptr<ParsedExpression> value,
+                                                        unique_ptr<FunctionExpression> function) {
+	function->GetArgumentsMutable().insert(function->GetArgumentsMutable().begin(), std::move(value));
+	auto lowercase_name = StringUtil::Lower(function->FunctionName().GetIdentifierName());
+	auto rewritten = TransformParserFunctionRewrite(lowercase_name, function->GetArgumentsMutable(),
+	                                                ParserRewriteCallForm::METHOD_CHAIN);
 	if (!rewritten) {
-		return nullptr;
+		return std::move(function);
 	}
-	// The method grammar accepts DISTINCT and ORDER BY for every call, but a rewrite yields a
-	// syntax node with nowhere to put them. Reject rather than drop them silently.
+	// A method call accepts modifiers for every name, but a rewrite yields a syntax node with nowhere to put them.
+	// Reject rather than drop them silently.
 	auto upper_name = StringUtil::Upper(lowercase_name);
-	if (distinct) {
+	if (function->Distinct()) {
 		throw ParserException("DISTINCT is not supported in %s expressions", upper_name);
 	}
-	if (has_order_by) {
+	if (function->OrderBy() && !function->OrderBy()->orders.empty()) {
 		throw ParserException("ORDER BY is not supported in %s expressions", upper_name);
 	}
-	if (has_filter) {
+	if (function->Filter()) {
 		throw ParserException("FILTER is not supported in %s expressions", upper_name);
 	}
 	return rewritten;
@@ -162,13 +169,7 @@ PEGTransformerFactory::TransformBaseExpression(PEGTransformer &transformer,
 			prev_indirection_was_cast = false;
 		} else if (indirection_expr->GetExpressionClass() == ExpressionClass::FUNCTION) {
 			auto function_expr = unique_ptr_cast<ParsedExpression, FunctionExpression>(std::move(indirection_expr));
-			function_expr->GetArgumentsMutable().insert(function_expr->GetArgumentsMutable().begin(), std::move(expr));
-			// A method-chained call names a function too, so it takes the same rewrites.
-			if (auto rewritten = ParserFunctionRewrite::RewriteMethodCall(*function_expr)) {
-				expr = std::move(rewritten);
-			} else {
-				expr = std::move(function_expr);
-			}
+			expr = TransformMethodCall(std::move(expr), std::move(function_expr));
 			prev_indirection_was_cast = false;
 		} else if (indirection_expr->GetExpressionClass() == ExpressionClass::CONSTANT) {
 			vector<unique_ptr<ParsedExpression>> struct_children;
@@ -305,17 +306,14 @@ unique_ptr<ParsedExpression> PEGTransformerFactory::TransformFunctionExpression(
 		lowercase_name = "count_star";
 	}
 
-	// a call qualified with anything but a schema of DuckDB's own may be a call on a column, as x.ifnull(y), which only
-	// the binder can tell
-	const auto &qualifier = qualified_function.Schema().GetIdentifierName();
-	const bool qualified_with_own_schema =
-	    qualified_function.Path().size() == 2 &&
-	    (StringUtil::CIEquals(qualifier, DEFAULT_SCHEMA) || StringUtil::CIEquals(qualifier, "pg_catalog") ||
-	     StringUtil::CIEquals(qualifier, "information_schema"));
-	if (qualified_function.Path().size() < 2 || qualified_with_own_schema ||
-	    !ParserFunctionRewrite::BinderRewritesQualifiedCall(lowercase_name)) {
+	// x.ifnull(y) parses as a call in schema x, but the rewritten names are in no schema other than main, so x is the
+	// column the function is called on, as in (x).ifnull(y)
+	const auto &path = qualified_function.Path();
+	const bool call_on_column = path.size() > 1 && IsParserFunctionRewrite(lowercase_name) &&
+	                            !StringUtil::CIEquals(qualified_function.Schema().GetIdentifierName(), DEFAULT_SCHEMA);
+	if (!call_on_column) {
 		if (auto rewritten =
-		        ParserFunctionRewrite::Rewrite(lowercase_name, function_children, ParserRewriteCallForm::PLAIN)) {
+		        TransformParserFunctionRewrite(lowercase_name, function_children, ParserRewriteCallForm::PLAIN)) {
 			return rewritten;
 		}
 	}
@@ -345,7 +343,10 @@ unique_ptr<ParsedExpression> PEGTransformerFactory::TransformFunctionExpression(
 	auto result = make_uniq<FunctionExpression>(qualified_function.WithName(Identifier(lowercase_name)),
 	                                            std::move(function_children), std::move(filter_expr),
 	                                            std::move(order_modifier), distinct, false, export_clause);
-
+	if (call_on_column) {
+		vector<Identifier> column_name(path.begin(), path.end() - 1);
+		return TransformMethodCall(make_uniq<ColumnRefExpression>(std::move(column_name)), std::move(result));
+	}
 	return std::move(result);
 }
 

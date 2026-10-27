@@ -7,9 +7,6 @@
 #include "duckdb/parser/expression/lambda_expression.hpp"
 #include "duckdb/parser/expression/operator_expression.hpp"
 #include "duckdb/parser/expression/positional_reference_expression.hpp"
-#include "duckdb/parser/parser_function_rewrite.hpp"
-#include "duckdb/catalog/catalog.hpp"
-#include "duckdb/main/database_manager.hpp"
 #include "duckdb/planner/expression_binder/having_binder.hpp"
 #include "duckdb/planner/planner_extension.hpp"
 
@@ -240,11 +237,6 @@ void ColumnQualifier::QualifyColumnNames(unique_ptr<ParsedExpression> &expr, vec
 	case ExpressionType::FUNCTION: {
 		// Special-handling for lambdas, which are inside function expressions.
 		auto &function = expr->Cast<FunctionExpression>();
-		if (auto rewritten = RewriteQualifiedParserFunction(function)) {
-			expr = std::move(rewritten);
-			QualifyColumnNames(expr, lambda_params, within_function_expression);
-			return;
-		}
 		if (!ExpressionBinder::IsUnnestFunction(function.FunctionName())) {
 			QualifyFunction(function);
 		}
@@ -316,68 +308,6 @@ optional_ptr<CatalogEntry> ColumnQualifier::QualifyFunction(FunctionExpression &
 	function.GetArgumentsMutable().insert(function.GetArgumentsMutable().begin(), std::move(new_colref));
 	function.SetQualifiedName(QualifiedName(function.GetQualifiedName().Name()));
 	return func;
-}
-
-bool ColumnQualifier::QualificationNamesSchema(const QualifiedName &name) {
-	// a name that is both a database and a schema is a namespace either way, so it is not resolved further
-	auto &db_manager = DatabaseManager::Get(binder.context);
-	vector<Identifier> schema_path(name.Path().begin(), name.Path().end() - 1);
-	Identifier catalog;
-	if (db_manager.GetDatabase(binder.context, schema_path[0])) {
-		if (schema_path.size() == 1) {
-			return true;
-		}
-		catalog = schema_path[0];
-		schema_path.erase(schema_path.begin());
-	}
-	if (schema_path.size() == 1 && schema_path[0].empty()) {
-		// a database without a schema, as the binder qualifies it
-		return true;
-	}
-	// the outermost schema is looked up on the binder's own search path, which for a view is the one the view was
-	// created with
-	EntryLookupInfo schema_lookup(CatalogType::SCHEMA_ENTRY, QualifiedName(catalog, Identifier(), schema_path[0]));
-	auto outermost = Catalog::GetSchema(binder.EntryRetriever(), schema_lookup, OnEntryNotFound::RETURN_NULL);
-	if (!outermost || schema_path.size() == 1) {
-		return outermost != nullptr;
-	}
-	return Catalog::GetSchema(binder.context, outermost->ParentCatalog().GetName(), schema_path,
-	                          OnEntryNotFound::RETURN_NULL) != nullptr;
-}
-
-unique_ptr<ParsedExpression> ColumnQualifier::RewriteQualifiedParserFunction(FunctionExpression &function) {
-	if (function.GetQualifiedName().Path().size() < 2) {
-		return nullptr;
-	}
-	auto lowercase_name = StringUtil::Lower(function.FunctionName().GetIdentifierName());
-	if (!ParserFunctionRewrite::BinderRewritesQualifiedCall(lowercase_name)) {
-		return nullptr;
-	}
-	auto name = function.GetQualifiedName();
-	unique_ptr<ParsedExpression> result;
-	// a column is at most qualified with its table, as in a dot call on a catalog function
-	if (name.Path().size() > 3 || QualificationNamesSchema(name)) {
-		// coalesce has a grammar form of its own, so written as a qualified call it is looked up in the catalog
-		if (lowercase_name == "coalesce") {
-			return nullptr;
-		}
-		result = ParserFunctionRewrite::Rewrite(lowercase_name, function.GetArgumentsMutable(),
-		                                        ParserRewriteCallForm::PLAIN);
-	} else {
-		unique_ptr<ParsedExpression> column;
-		if (name.Path().size() == 2) {
-			column = make_uniq<ColumnRefExpression>(name.Schema());
-		} else {
-			column = make_uniq<ColumnRefExpression>(name.Schema(), name.Catalog());
-		}
-		column->SetQueryLocation(function.GetQueryLocation());
-		function.GetArgumentsMutable().insert(function.GetArgumentsMutable().begin(), std::move(column));
-		function.SetQualifiedName(QualifiedName(name.Name()));
-		result = ParserFunctionRewrite::RewriteMethodCall(function);
-	}
-	result->SetAlias(function.GetAlias());
-	result->SetQueryLocation(function.GetQueryLocation());
-	return result;
 }
 
 void ColumnQualifier::QualifyColumnNamesInLambda(FunctionExpression &function,

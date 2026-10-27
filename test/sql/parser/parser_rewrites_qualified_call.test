@@ -2,6 +2,8 @@
 # description: a name that the parser rewrites, called on a column as in col.ifnull(x), takes the column as its first argument (duckdblabs/bot-issue-tracker#562)
 # group: [parser]
 
+load {TEST_DIR}/parser_rewrites_qualified_call.db
+
 statement ok
 CREATE TABLE t AS SELECT * FROM (VALUES (NULL::VARCHAR), ('2020-01-01')) v(col);
 
@@ -28,22 +30,22 @@ SELECT col.date('2020-02-02') FROM t;
 ----
 Wrong number of arguments provided to DATE function
 
-# unpack is rewritten before stars are expanded, so its qualification is dropped as before
 statement error
 SELECT col.unpack() FROM t;
 ----
-Wrong number of arguments to the UNPACK operator
+UNPACK can only be used in combination with a STAR
 
-query I
-SELECT [main.unpack(COLUMNS(*))] FROM (SELECT 1 AS a, 2 AS b);
-----
-[1, 2]
-
-# a qualification that is neither a schema nor a column
+# a qualification that is not a column
 statement error
 SELECT foo.ifnull(1);
 ----
 Referenced column "foo" was not found
+
+# a struct field
+query I
+SELECT s.f.ifnull(1) FROM (SELECT {'f': NULL::INT} AS s);
+----
+1
 
 # modifiers that the rewritten expression cannot carry
 statement error
@@ -61,45 +63,40 @@ SELECT col.coalesce('b') FILTER (WHERE true) FROM t;
 ----
 FILTER is not supported in COALESCE expressions
 
-# after a schema or a database the qualification is dropped, as before
+statement error
+SELECT col.ifnull('b' IGNORE NULLS) FROM t;
+----
+RESPECT/IGNORE NULLS is not supported for non-window functions
+
+# after the main schema the qualification is dropped as before, as main.lower() is lower()
 statement ok
 ATTACH ':memory:' AS mem_db;
 
-query IIII
-SELECT main.ifnull(NULL, 'z'), system.main.date('2020-01-01'), mem_db.main.try('x'::INTEGER), mem_db.ifnull(NULL, 'y');
+query III
+SELECT main.ifnull(NULL, 'z'), system.main.date('2020-01-01'), mem_db.main.try('x'::INTEGER);
 ----
-z	2020-01-01	NULL	y
+z	2020-01-01	NULL
 
+query I
+SELECT [main.unpack(COLUMNS(*))] FROM (SELECT 1 AS a, 2 AS b);
+----
+[1, 2]
+
+# any other qualification is the column the function is called on, also when a schema of that name exists, as for
+# s.lower()
 statement ok
 CREATE SCHEMA s;
 
-query I
-SELECT s.ifnull(NULL, 'z');
+query II
+SELECT s.ifnull('z'), s.lower() FROM (VALUES (NULL), ('A')) v(s) ORDER BY ALL;
 ----
-z
-
-# a schema wins over a column of the same name
-statement ok
-CREATE TABLE named_s AS SELECT 'a' AS s;
-
-query I
-SELECT s.ifnull(NULL, 'z') FROM named_s;
-----
-z
-
-# a qualified coalesce is still looked up in the catalog first
-statement ok
-CREATE MACRO s.coalesce(a, b) AS 777;
-
-query I
-SELECT s.coalesce(NULL, 5);
-----
-777
+A	a
+z	NULL
 
 statement error
-SELECT main.coalesce(NULL, 5);
+SELECT s.ifnull(NULL, 'z');
 ----
-Scalar Function with name coalesce does not exist
+Wrong number of arguments to IFNULL.
 
 # lambda parameters, macro parameters and columns of an outer query
 query I
@@ -121,6 +118,14 @@ SELECT (SELECT col.ifnull('b')) FROM t ORDER BY ALL;
 2020-01-01
 b
 
+# the call is rewritten like the plain form, so ORDER BY matches it
+query I
+SELECT a.ifnull(0) AS v FROM (VALUES (NULL::INT), (1)) t(a) UNION ALL SELECT 3 ORDER BY COALESCE(a, 0);
+----
+0
+1
+3
+
 # constraints and views
 statement ok
 CREATE TABLE checked(col INTEGER, CHECK (col.ifnull(0) >= 0));
@@ -136,87 +141,15 @@ CHECK constraint failed
 statement ok
 CREATE VIEW v AS SELECT col.ifnull('b') AS r FROM t;
 
+restart
+
 query I
 SELECT r FROM v ORDER BY ALL;
 ----
 2020-01-01
 b
 
-# a call qualified with a schema of DuckDB's own is rewritten by the parser as before, so it matches the plain form
-query I
-SELECT main.ifnull(a, 0) AS v FROM (VALUES (NULL::INT), (1)) t(a) UNION ALL SELECT 3 ORDER BY COALESCE(a, 0);
+statement error
+INSERT INTO checked VALUES (-1);
 ----
-0
-1
-3
-
-query II
-SELECT main.ifnull(NULL, 2) WITHIN GROUP (ORDER BY 1), main.ifnull(NULL, 2 IGNORE NULLS);
-----
-2	2
-
-# a name that is both a schema and a database is a namespace either way
-statement ok
-CREATE SCHEMA clash;
-
-statement ok
-ATTACH ':memory:' AS clash;
-
-query II
-SELECT clash.ifnull(NULL, 7), clash.date('2020-01-01');
-----
-7	2020-01-01
-
-# a table column named like one of DuckDB's own schemas is still a column
-query II
-SELECT t.main.ifnull(7), t.information_schema.construct_array(3) FROM (SELECT NULL::INT AS main, 1 AS information_schema) t;
-----
-7	[1, 3]
-
-# a view resolves the qualification with the search path it was created with
-statement ok
-ATTACH ':memory:' AS other_db;
-
-statement ok
-CREATE SCHEMA other_db.s2;
-
-statement ok
-CREATE MACRO other_db.s2.coalesce(a, b) AS 777;
-
-statement ok
-USE other_db;
-
-statement ok
-CREATE VIEW v2 AS SELECT s2.coalesce(NULL, 5) AS r FROM (SELECT 42 AS s2);
-
-statement ok
-ATTACH ':memory:' AS third_db;
-
-statement ok
-USE third_db;
-
-query I
-SELECT * FROM other_db.main.v2;
-----
-777
-
-# also for a nested schema
-statement ok
-CREATE SCHEMA other_db.s3;
-
-statement ok
-CREATE SCHEMA other_db.s3.s4;
-
-statement ok
-USE other_db;
-
-statement ok
-CREATE VIEW v3 AS SELECT s3.s4.construct_array(3) AS r FROM (SELECT {'s4': 42} AS s3);
-
-statement ok
-USE third_db;
-
-query I
-SELECT * FROM other_db.main.v3;
-----
-[3]
+CHECK constraint failed

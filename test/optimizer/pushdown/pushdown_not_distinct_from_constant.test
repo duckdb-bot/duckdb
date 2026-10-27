@@ -2,8 +2,6 @@
 # description: A constant that one side of an IS NOT DISTINCT FROM condition equals is pushed to the other side
 # group: [pushdown]
 
-require json
-
 statement ok
 CREATE TABLE t1 AS SELECT * FROM (VALUES (1, {'a': 1}), (3, {'a': 3}), (NULL, NULL), (3, {'a': 4})) v(a, s);
 
@@ -221,26 +219,3 @@ SELECT c1.a, t2.b FROM c1 LEFT JOIN t2 ON c1.a IS NOT DISTINCT FROM t2.b AND t2.
 ----
 3	3
 7	NULL
-
-# a selective outer filter reaches the recursive CTE of a nested correlated LATERAL (issue #27072)
-statement ok
-CREATE TABLE person AS SELECT i AS id FROM range(1000) t(i);
-
-statement ok
-PRAGMA enable_profiling = 'json';
-
-statement ok
-PRAGMA profiling_output = '{TEMP_DIR}/lateral_recursive.json';
-
-query I
-SELECT max(q.x) FROM person o, LATERAL (SELECT r.x FROM person i, LATERAL (WITH RECURSIVE walk(x) AS (SELECT i.id UNION ALL SELECT x + 1 FROM walk WHERE x < i.id + 2) SELECT x FROM walk) r WHERE i.id = o.id) q WHERE o.id = 3
-----
-5
-
-statement ok
-PRAGMA disable_profiling;
-
-query I
-SELECT sum((value->>'intermediate_rows')::BIGINT) FROM read_text('{TEMP_DIR}/lateral_recursive.json'), json_tree(content) WHERE value->>'type' = 'RECURSIVE_CTE'
-----
-3

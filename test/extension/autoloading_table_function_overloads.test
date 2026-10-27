@@ -1,0 +1,119 @@
+# name: test/extension/autoloading_table_function_overloads.test
+# description: An extension autoloaded while binding a parameter of a table function adds overloads to that function
+# group: [extension]
+
+# This test assumes icu is available in the LOCAL_EXTENSION_REPO and not linked into duckdb statically, which is the
+# case for our autoloading tests where the local_extension_repo variable is set
+require-env LOCAL_EXTENSION_REPO
+
+require icu
+
+statement ok
+set extension_directory='{TEST_DIR}/autoloading_table_function_overloads'
+
+statement ok
+set autoload_known_extensions=true
+
+statement ok
+set autoinstall_known_extensions=true
+
+statement ok
+set autoinstall_extension_repository='{LOCAL_EXTENSION_REPO}';
+
+# epoch(TIMESTAMPTZ) is an icu function, so binding it autoloads icu, which adds its own overloads to range and
+# replaces the catalog entry of range while its parameters are bound
+query I
+SELECT * FROM range(epoch('1970-01-01 00:00:02+00'::TIMESTAMPTZ)::BIGINT)
+----
+0
+1
+
+# icu is loaded now, so the same query binds against the new entry from the start
+query I
+SELECT * FROM range(epoch('1970-01-01 00:00:02+00'::TIMESTAMPTZ)::BIGINT)
+----
+0
+1
+
+restart
+
+statement ok
+set extension_directory='{TEST_DIR}/autoloading_table_function_overloads'
+
+statement ok
+set autoload_known_extensions=true
+
+statement ok
+set autoinstall_known_extensions=true
+
+statement ok
+set autoinstall_extension_repository='{LOCAL_EXTENSION_REPO}';
+
+# a parameter after the one that autoloads icu
+query I
+SELECT * FROM range(epoch('1970-01-01 00:00:02+00'::TIMESTAMPTZ)::BIGINT, 4)
+----
+2
+3
+
+restart
+
+statement ok
+set extension_directory='{TEST_DIR}/autoloading_table_function_overloads'
+
+statement ok
+set autoload_known_extensions=true
+
+statement ok
+set autoinstall_known_extensions=true
+
+statement ok
+set autoinstall_extension_repository='{LOCAL_EXTENSION_REPO}';
+
+query I
+SELECT * FROM generate_series(0, epoch('1970-01-01 00:00:02+00'::TIMESTAMPTZ)::BIGINT)
+----
+0
+1
+2
+
+restart
+
+statement ok
+set extension_directory='{TEST_DIR}/autoloading_table_function_overloads'
+
+statement ok
+set autoload_known_extensions=true
+
+statement ok
+set autoinstall_known_extensions=true
+
+statement ok
+set autoinstall_extension_repository='{LOCAL_EXTENSION_REPO}';
+
+# the overloads icu adds are available once the parameters are bound
+query I
+SELECT count(*) FROM range(TIMESTAMPTZ '1970-01-01 00:00:00+00', to_timestamp(epoch('1970-01-01 00:00:02+00'::TIMESTAMPTZ)), INTERVAL 1 SECOND)
+----
+2
+
+restart
+
+statement ok
+set extension_directory='{TEST_DIR}/autoloading_table_function_overloads'
+
+statement ok
+set autoload_known_extensions=true
+
+statement ok
+set autoinstall_known_extensions=true
+
+statement ok
+set autoinstall_extension_repository='{LOCAL_EXTENSION_REPO}';
+
+# a table function icu does not touch keeps its entry, also with a named parameter
+query I
+SELECT * FROM repeat_row(epoch('1970-01-01 00:00:02+00'::TIMESTAMPTZ)::BIGINT, num_rows = 2)
+----
+2
+2

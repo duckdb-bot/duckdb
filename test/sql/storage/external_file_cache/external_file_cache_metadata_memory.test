@@ -30,6 +30,40 @@ SELECT (SELECT memory_usage_bytes FROM duckdb_memory() WHERE tag = 'OBJECT_CACHE
 ----
 true
 
+# start from an empty cache, so that the checks below count only the next file
+statement ok
+SET enable_external_file_cache=false;
+
+statement ok
+SET enable_external_file_cache=true;
+
+query I
+SELECT (SELECT count(*) FROM duckdb_external_file_cache()) + (SELECT memory_usage_bytes FROM duckdb_memory() WHERE tag = 'OBJECT_CACHE');
+----
+0
+
+# reads of one column leave many more blocks than the size of the file needs
+statement ok
+SET external_file_cache_local_max_block_size=1048576;
+
+statement ok
+COPY (SELECT i AS id, md5(i::VARCHAR) AS c0, md5((i + 1)::VARCHAR) AS c1 FROM range(300000) r(i)) TO '{TEST_DIR}/efc_metadata_memory_wide.parquet' (FORMAT PARQUET, ROW_GROUP_SIZE 2048);
+
+query I
+SELECT sum(id) FROM read_parquet('{TEST_DIR}/efc_metadata_memory_wide.parquet');
+----
+44999850000
+
+query I
+SELECT count(*) > 2 * ceil((SELECT size FROM read_blob('{TEST_DIR}/efc_metadata_memory_wide.parquet')) / 1048576) FROM duckdb_external_file_cache() WHERE path LIKE '%efc_metadata_memory_wide.parquet';
+----
+true
+
+query I
+SELECT (SELECT memory_usage_bytes FROM duckdb_memory() WHERE tag = 'OBJECT_CACHE') >= 100 * (SELECT count(*) FROM duckdb_external_file_cache());
+----
+true
+
 statement ok
 SET enable_external_file_cache=false;
 

@@ -1,5 +1,4 @@
 #include "duckdb/optimizer/late_materialization_helper.hpp"
-#include "duckdb/function/table/table_scan.hpp"
 #include "duckdb/planner/filter/expression_filter.hpp"
 #include "duckdb/planner/filter/table_filter_functions.hpp"
 
@@ -9,10 +8,6 @@ unique_ptr<LogicalGet> LateMaterializationHelper::CreateLHSGet(const LogicalGet 
 	auto table_index = binder.GenerateTableIndex();
 	auto new_get = make_uniq<LogicalGet>(table_index, rhs.function, rhs.bind_data->Copy(), rhs.returned_types,
 	                                     rhs.names, rhs.virtual_columns);
-	if (rhs.function.function == TableScanFunction::GetFunction().function) {
-		// a DuckDB table fetches the rows that the join on row ids names
-		new_get->bind_data->Cast<TableScanBindData>().fetch_filtered_row_ids = true;
-	}
 	new_get->GetMutableColumnIds() = rhs.GetColumnIds();
 	new_get->projection_ids = rhs.projection_ids;
 	new_get->parameters = rhs.parameters;

@@ -1,5 +1,4 @@
 #include "duckdb/storage/table/struct_column_data.hpp"
-#include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/common/vector/flat_vector.hpp"
 #include "duckdb/common/vector/struct_vector.hpp"
 #include "duckdb/storage/statistics/struct_stats.hpp"
@@ -350,13 +349,15 @@ void StructColumnData::FetchRows(TransactionData transaction, ColumnFetchState &
 		auto &child_type = StructType::GetChildTypes(type)[child_index].second;
 		if (!child_storage_index.HasChildren() && child_storage_index.HasType() &&
 		    child_storage_index.GetType() != child_type) {
-			// cast the rows as a scan does, so that a failing cast raises the same error
 			auto context = transaction.transaction->context.lock();
-			Vector intermediate(child_type, fetch_count);
-			sub_column.FetchRows(transaction, state, child_storage_index, offsets, sel, fetch_count, intermediate, 0);
-			Vector cast_rows(result.GetType(), fetch_count);
-			VectorOperations::Cast(*context, intermediate, cast_rows, fetch_count);
-			VectorOperations::Copy(cast_rows, result, fetch_count, 0, result_offset);
+			for (idx_t idx = 0; idx < fetch_count; idx++) {
+				const idx_t offset = offsets[sel.get_index(idx)];
+				Vector intermediate(child_type, 1);
+				sub_column.FetchRows(transaction, state, child_storage_index, &offset,
+				                     *FlatVector::IncrementalSelectionVector(), /*count=*/1, intermediate, 0);
+				auto fetched_row = intermediate.GetValue(0).CastAs(*context, result.GetType());
+				result.SetValue(result_offset + idx, fetched_row);
+			}
 			return;
 		} else {
 			sub_column.FetchRows(transaction, state, child_storage_index, offsets, sel, fetch_count, result,

@@ -964,51 +964,6 @@ bool TryScanIndex(const IndexReadHandle<ART> &art, const ColumnList &column_list
 	return true;
 }
 
-//! Collects the row ids of a scan whose only filter that must hold is a row id equality or IN list
-static bool TryGetFilteredRowIds(const TableFunctionInitInput &input, const TableFilterSet &filter_set, idx_t max_count,
-                                 unsafe_vector<row_t> &row_ids) {
-	if (filter_set.HasMultiColumnFilters()) {
-		return false;
-	}
-	optional_ptr<const TableFilter> row_id_filter;
-	for (auto &entry : filter_set) {
-		if (input.column_indexes[entry.GetIndex().GetIndex()].IsRowIdColumn()) {
-			row_id_filter = entry.Filter();
-		} else if (!ExpressionFilter::IsOptionalFilter(entry.Filter())) {
-			return false;
-		}
-	}
-	if (!row_id_filter) {
-		return false;
-	}
-	auto &expr_filter = ExpressionFilter::GetExpressionFilter(*row_id_filter, "TryGetFilteredRowIds");
-	DataChunk values;
-	if (!ExtractValuesFromExpression(*expr_filter.expr, LogicalType::ROW_TYPE, values) || values.size() > max_count) {
-		return false;
-	}
-	for (idx_t i = 0; i < values.size(); i++) {
-		auto row_id = values.GetValue(0, i).GetValue<row_t>();
-		// the rows of the transaction's local storage are scanned with the filters
-		if (row_id >= 0 && row_id < MAX_ROW_ID) {
-			row_ids.push_back(row_id);
-		}
-	}
-	std::sort(row_ids.begin(), row_ids.end());
-	row_ids.erase(std::unique(row_ids.begin(), row_ids.end()), row_ids.end());
-	return true;
-}
-
-//! Keeps row ids and row-group trees paired while rowid-shifting index vacuum can run
-static unique_ptr<StorageLockKey> LockRowIdsAgainstVacuum(DataTable &storage) {
-	auto &attached = storage.GetAttached();
-	const bool indexed_vacuum_may_move_rowids = attached.GetVacuumRebuildIndexThreshold() > 0 ||
-	                                            StorageCompatibility::FromDatabase(attached).CanPersistRowIdGaps();
-	if (!indexed_vacuum_may_move_rowids) {
-		return nullptr;
-	}
-	return DuckTransactionManager::Get(attached).SharedVacuumLock();
-}
-
 unique_ptr<GlobalTableFunctionState> TableScanInitGlobal(ClientContext &context, TableFunctionInitInput &input) {
 	D_ASSERT(input.bind_data);
 
@@ -1033,24 +988,6 @@ unique_ptr<GlobalTableFunctionState> TableScanInitGlobal(ClientContext &context,
 
 	auto &filter_set = *input.filters;
 
-	auto scan_percentage = Settings::Get<IndexScanPercentageSetting>(context);
-	auto scan_max_count = Settings::Get<IndexScanMaxCountSetting>(context);
-
-	auto total_rows = storage.GetTotalRows();
-	auto total_rows_from_percentage = LossyNumericCast<idx_t>(double(total_rows) * scan_percentage);
-	auto max_count = MaxValue(scan_max_count, total_rows_from_percentage);
-
-	if (bind_data.fetch_filtered_row_ids) {
-		// the rows that the row id filter names are fetched instead of scanning their row groups, and vacuum must not
-		// move any rows until they are, also in a table without indexes
-		unsafe_vector<row_t> filtered_row_ids;
-		if (TryGetFilteredRowIds(input, filter_set, max_count, filtered_row_ids)) {
-			auto vacuum_lock = DuckTransactionManager::Get(storage.GetAttached()).SharedVacuumLock();
-			return DuckIndexScanInitGlobal(context, input, bind_data, std::move(filtered_row_ids),
-			                               std::move(vacuum_lock));
-		}
-	}
-
 	// FIXME: We currently only support scanning one ART with one filter.
 	// If multiple filters exist, i.e., a = 11 AND b = 24, we need to
 	// 1.	1.1. Find + scan one ART for a = 11.
@@ -1067,6 +1004,13 @@ unique_ptr<GlobalTableFunctionState> TableScanInitGlobal(ClientContext &context,
 		return DuckTableScanInitGlobal(context, input, storage, bind_data);
 	}
 
+	auto scan_percentage = Settings::Get<IndexScanPercentageSetting>(context);
+	auto scan_max_count = Settings::Get<IndexScanMaxCountSetting>(context);
+
+	auto total_rows = storage.GetTotalRows();
+	auto total_rows_from_percentage = LossyNumericCast<idx_t>(double(total_rows) * scan_percentage);
+	auto max_count = MaxValue(scan_max_count, total_rows_from_percentage);
+
 	auto &column_list = duck_table.GetColumns();
 	bool index_scan = false;
 	RowIdVectorOutput row_ids(max_count);
@@ -1075,7 +1019,13 @@ unique_ptr<GlobalTableFunctionState> TableScanInitGlobal(ClientContext &context,
 
 	// Exclude rowid-shifting vacuum from the ART probe until the index scan finishes: collected rowids must be
 	// fetched against the matching row-group tree. Falling back to a table scan releases the lock on return.
-	auto vacuum_lock = LockRowIdsAgainstVacuum(storage);
+	unique_ptr<StorageLockKey> vacuum_lock;
+	auto &attached = storage.GetAttached();
+	const bool indexed_vacuum_may_move_rowids = attached.GetVacuumRebuildIndexThreshold() > 0 ||
+	                                            StorageCompatibility::FromDatabase(attached).CanPersistRowIdGaps();
+	if (indexed_vacuum_may_move_rowids) {
+		vacuum_lock = DuckTransactionManager::Get(attached).SharedVacuumLock();
+	}
 
 	for (auto entry : indexes.IndexEntries()) {
 		if (entry->GetBindState() != IndexBindState::BOUND || entry->GetIndexType() != ART::TYPE_NAME) {
@@ -1191,7 +1141,6 @@ static void TableScanSerialize(Serializer &serializer, const optional_ptr<Functi
 	serializer.WritePropertyWithDefault(105, "result_ids", unsafe_vector<row_t>());
 	serializer.WritePropertyWithDefault<QualifiedName>(
 	    106, "qualified_name", bind_data.table.schema.GetQualifiedName(bind_data.table.name), QualifiedName());
-	serializer.WritePropertyWithDefault<bool>(107, "fetch_filtered_row_ids", bind_data.fetch_filtered_row_ids, false);
 }
 
 static unique_ptr<FunctionData> TableScanDeserialize(Deserializer &deserializer, BoundTableFunction &function) {
@@ -1204,8 +1153,6 @@ static unique_ptr<FunctionData> TableScanDeserialize(Deserializer &deserializer,
 	// plans written before nested schema support only have the innermost qualification
 	auto qualified_name =
 	    deserializer.ReadPropertyWithExplicitDefault<QualifiedName>(106, "qualified_name", QualifiedName());
-	auto fetch_filtered_row_ids =
-	    deserializer.ReadPropertyWithExplicitDefault<bool>(107, "fetch_filtered_row_ids", false);
 	if (qualified_name.Path().empty()) {
 		qualified_name = QualifiedName(catalog, schema, table);
 	}
@@ -1216,7 +1163,6 @@ static unique_ptr<FunctionData> TableScanDeserialize(Deserializer &deserializer,
 	auto result = make_uniq<TableScanBindData>(catalog_entry.Cast<DuckTableEntry>());
 	result->is_index_scan = is_index_scan;
 	result->is_create_index = is_create_index;
-	result->fetch_filtered_row_ids = fetch_filtered_row_ids;
 	return std::move(result);
 }
 

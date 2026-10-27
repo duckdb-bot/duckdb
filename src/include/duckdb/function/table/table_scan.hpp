@@ -35,8 +35,6 @@ struct TableScanBindData : public TableFunctionData {
 	unique_ptr<RowGroupOrderOptions> order_options;
 	//! Subset of partition indices to scan, if null, scan all
 	unique_ptr<unordered_set<idx_t>> partitions_to_scan;
-	//! Whether the scan fetches the rows that its row id filter names, as the scan that late materialization adds
-	bool fetch_filtered_row_ids = false;
 
 public:
 	bool Equals(const FunctionData &other_p) const override {
@@ -51,7 +49,6 @@ public:
 		bind_data->order_options = order_options ? make_uniq<RowGroupOrderOptions>(*order_options) : nullptr;
 		bind_data->partitions_to_scan =
 		    partitions_to_scan ? make_uniq<unordered_set<idx_t>>(*partitions_to_scan) : nullptr;
-		bind_data->fetch_filtered_row_ids = fetch_filtered_row_ids;
 		return std::move(bind_data);
 	}
 };

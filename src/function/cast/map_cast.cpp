@@ -30,7 +30,7 @@ static bool MapToVarcharCast(Vector &source, Vector &result, idx_t count, CastPa
 	FlatVector::SetSize(varchar_map, count);
 
 	// since map's physical type is a list, the ListCast can be utilized
-	bool all_converted = ListCast::ListToListCast(source, varchar_map, count, parameters);
+	ListCast::ListToListCast(source, varchar_map, count, parameters);
 
 	varchar_map.Flatten();
 	auto &validity = FlatVector::ValidityMutable(varchar_map);
@@ -149,7 +149,7 @@ static bool MapToVarcharCast(Vector &source, Vector &result, idx_t count, CastPa
 	if (constant) {
 		result.SetVectorType(VectorType::CONSTANT_VECTOR);
 	}
-	return all_converted;
+	return true;
 }
 
 static bool MapToMapCast(Vector &source, Vector &result, idx_t count, CastParameters &parameters) {

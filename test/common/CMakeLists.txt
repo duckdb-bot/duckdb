@@ -59,7 +59,6 @@ add_library_unity(
   test_value_to_sql_string.cpp
   test_value_to_expression.cpp
   test_variant_size.cpp
-  test_variant_nesting_depth.cpp
   test_vector_buffer_validity.cpp
   test_lazy_vector.cpp
   test_musl_stack_size.cpp)

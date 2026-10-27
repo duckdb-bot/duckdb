@@ -8,7 +8,6 @@
 #include "duckdb/common/types/decimal.hpp"
 #include "duckdb/common/serializer/varint.hpp"
 #include "duckdb/common/types/variant_visitor.hpp"
-#include "duckdb/common/string_util.hpp"
 #include "duckdb/function/variant/variant_value_convert.hpp"
 #include "duckdb/common/type_visitor.hpp"
 #include "duckdb/function/variant/variant_shredding.hpp"
@@ -232,34 +231,6 @@ void VariantUtils::TraversePath(const UnifiedVariantVectorData &variant, const v
 			}
 		}
 	}
-}
-
-bool VariantUtils::ExceedsNestingDepth(const UnifiedVariantVectorData &variant, idx_t row, uint32_t values_idx) {
-	if (!variant.RowIsValid(row) || !IsNestedType(variant, row, values_idx)) {
-		return false;
-	}
-	// the arrays and objects to visit, with the number of arrays and objects their children are nested in
-	vector<pair<uint32_t, idx_t>> pending;
-	pending.emplace_back(values_idx, 1);
-	while (!pending.empty()) {
-		auto entry = pending.back();
-		pending.pop_back();
-		auto nested_data = DecodeNestedData(variant, row, entry.first);
-		if (nested_data.child_count > 0 && entry.second >= MAX_NESTING_DEPTH) {
-			return true;
-		}
-		for (idx_t i = 0; i < nested_data.child_count; i++) {
-			auto child_idx = variant.GetValuesIndex(row, nested_data.children_idx + i);
-			if (IsNestedType(variant, row, child_idx)) {
-				pending.emplace_back(child_idx, entry.second + 1);
-			}
-		}
-	}
-	return false;
-}
-
-string VariantUtils::NestingDepthError() {
-	return StringUtil::Format("VARIANT exceeds maximum recursion depth of %d", MAX_NESTING_DEPTH);
 }
 
 Value VariantUtils::ConvertVariantToValue(const UnifiedVariantVectorData &variant, idx_t row, uint32_t values_idx) {

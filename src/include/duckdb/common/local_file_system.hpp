@@ -118,6 +118,8 @@ public:
 	static bool IsPrivateFile(const string &path_p, FileOpener *opener);
 
 	vector<OpenFileInfo> FetchFileWithoutGlob(const string &path, optional_ptr<FileOpener> opener, bool absolute_path);
+	//! A regular file, with the options that a directory listing gives the files it finds
+	OpenFileInfo FetchRegularFile(const string &path, optional_ptr<FileOpener> opener);
 
 	string CanonicalizePath(const string &path_p, optional_ptr<FileOpener> opener) override;
 

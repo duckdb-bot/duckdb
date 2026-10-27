@@ -2158,10 +2158,24 @@ static bool IsSymbolicLink(const string &path) {
 #endif
 }
 
+OpenFileInfo LocalFileSystem::FetchRegularFile(const string &path, optional_ptr<FileOpener> opener) {
+	OpenFileInfo result(path);
+	auto file_metadata = GetStatsIfExists(result, opener);
+	if (file_metadata) {
+		result.extended_info = make_shared_ptr<ExtendedOpenFileInfo>();
+		auto &options = result.extended_info->options;
+		options.emplace("type", Value("file"));
+		FillFileOptions(*file_metadata, options);
+	}
+	return result;
+}
+
 vector<OpenFileInfo> LocalFileSystem::FetchFileWithoutGlob(const string &path, optional_ptr<FileOpener> opener,
                                                            bool absolute_path) {
 	vector<OpenFileInfo> result;
-	if (FileExists(path, opener) || IsPipe(path, opener)) {
+	if (FileExists(path, opener)) {
+		result.push_back(FetchRegularFile(path, opener));
+	} else if (IsPipe(path, opener)) {
 		result.emplace_back(path);
 	} else if (!absolute_path) {
 		Value value;
@@ -2170,7 +2184,9 @@ vector<OpenFileInfo> LocalFileSystem::FetchFileWithoutGlob(const string &path, o
 			vector<std::string> search_paths = StringUtil::Split(search_paths_str, ',');
 			for (const auto &search_path : search_paths) {
 				auto joined_path = JoinPath(search_path, path);
-				if (FileExists(joined_path, opener) || IsPipe(joined_path, opener)) {
+				if (FileExists(joined_path, opener)) {
+					result.push_back(FetchRegularFile(joined_path, opener));
+				} else if (IsPipe(joined_path, opener)) {
 					result.emplace_back(joined_path);
 				}
 			}
@@ -2367,7 +2383,9 @@ bool LocalGlobResult::ExpandNextPath() const {
 			if (is_last_component) {
 				// last component - we are emitting a result here
 				auto filename = fs.JoinPath(current_path, next_component);
-				if (fs.FileExists(filename, opener) || fs.DirectoryExists(filename, opener)) {
+				if (fs.FileExists(filename, opener)) {
+					expanded_files.push_back(fs.FetchRegularFile(filename, opener));
+				} else if (fs.DirectoryExists(filename, opener)) {
 					expanded_files.emplace_back(std::move(filename));
 				}
 			} else {

@@ -151,6 +151,21 @@ EXPLAIN SELECT (SELECT count(*) FROM inn i1 JOIN inn i2 ON i1.k = i2.k AND i1.y 
 ----
 physical_plan	<!REGEX>:.*delim_index.*
 
+# interval comparisons compare the normalized value, so equal intervals keep sharing one result
+statement ok
+CREATE TABLE iv AS SELECT * FROM (VALUES (INTERVAL '1 month'), (INTERVAL '30 days')) t(i);
+
+query TI
+SELECT i::VARCHAR AS a, (SELECT count(*) FROM iv AS v WHERE v.i = iv.i) AS b FROM iv ORDER BY ALL;
+----
+1 month	2
+30 days	2
+
+query II
+EXPLAIN SELECT (SELECT count(*) FROM iv AS v WHERE v.i = iv.i) FROM iv;
+----
+physical_plan	<!REGEX>:.*delim_index.*
+
 # other uses of such a column get each outer row its own result
 query TT
 SELECT x::VARCHAR AS a, (SELECT max(x * (i + 1))::VARCHAR FROM range(2) t(i)) AS b FROM w GROUP BY ALL ORDER BY ALL;
@@ -174,6 +189,13 @@ query II
 EXPLAIN SELECT (SELECT x::VARCHAR) FROM w;
 ----
 physical_plan	<REGEX>:.*delim_index.*
+
+# a subquery in the condition of an outer join is planned later
+query TI
+SELECT x::VARCHAR AS a, (SELECT count(q.i) FROM (VALUES (1)) p(i) LEFT JOIN (VALUES (1)) q(i) ON (SELECT x::VARCHAR) = '0.0') AS b FROM w GROUP BY ALL ORDER BY ALL;
+----
+-0.0	0
+0.0	1
 
 # values whose equal values are identical keep sharing one result
 query II

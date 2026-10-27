@@ -114,7 +114,7 @@ struct VariantPathSelection {
 };
 
 struct VariantUtils {
-	//! VariantVisitor and Value::ToSQLString fail on a value nested in this many arrays and objects
+	//! VariantVisitor and the SQL rendering of a VARIANT fail on a value nested in this many arrays and objects
 	static constexpr idx_t MAX_NESTING_DEPTH = 128;
 
 	//! Throws a DataCorruptionException unless 'size' bytes are available in a blob of 'blob_size' starting at

@@ -171,19 +171,19 @@ TEST_CASE("Value::ToSQLString renders nested VARIANT values once", "[api][value_
 }
 
 // Casts JSON that nests 'terminal' in 'depth' levels, each opened by 'open' and closed by 'close', to VARIANT during
-// execution, since the optimizer names a constant VARIANT with Value::ToSQLString
+// execution, since the optimizer names a constant VARIANT by rendering it as SQL
 static string DeepJSONVariant(const string &open, const string &close, const string &terminal, idx_t depth) {
 	return "(SELECT (repeat('" + open + "', i) || '" + terminal + "' || repeat('" + close +
 	       "', i))::JSON::VARIANT FROM range(" + to_string(depth) + ", " + to_string(depth + 1) + ") t(i))";
 }
 
-// Requires Value::ToSQLString to fail with the error that VariantVisitor raises
+// Requires rendering the value as SQL to fail with the error that VariantVisitor raises
 static void RequireNestingDepthError(const Value &value) {
 	try {
 		value.ToSQLString();
 		FAIL("Value::ToSQLString rendered a VARIANT nested too deeply");
-	} catch (Exception &ex) {
-		ErrorData error(ex);
+	} catch (const Exception &ex) {
+		const ErrorData error(ex);
 		REQUIRE(error.Type() == ExceptionType::INVALID_INPUT);
 		REQUIRE(error.RawMessage() == "VARIANT exceeds maximum recursion depth of 128");
 	}

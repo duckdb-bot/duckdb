@@ -66,22 +66,32 @@ SELECT col.ifnull('b' IGNORE NULLS) FROM t;
 ----
 RESPECT/IGNORE NULLS is not supported for non-window functions
 
+statement error
+SELECT col.coalesce('b') WITHIN GROUP (ORDER BY 1) FROM t;
+----
+Unknown ordered aggregate
+
+statement error
+SELECT col.ifnull(a := 'b') FROM t;
+----
+Named arguments are not supported in IFNULL expressions
+
 # after the main schema the qualification is dropped as before, as main.lower() is lower()
 statement ok
 ATTACH ':memory:' AS mem_db;
 
-query III
-SELECT main.ifnull(NULL, 'z'), system.main.date('2020-01-01'), mem_db.main.try('x'::INTEGER);
+query IIII
+SELECT main.ifnull(NULL, 'z'), MAIN.ifnull(NULL, 'y'), system.main.date('2020-01-01'), mem_db.main.try('x'::INTEGER);
 ----
-z	2020-01-01	NULL
+z	y	2020-01-01	NULL
 
 query I
 SELECT [main.unpack(COLUMNS(*))] FROM (SELECT 1 AS a, 2 AS b);
 ----
 [1, 2]
 
-# any other qualification is the column the function is called on, also when a schema of that name exists, as for
-# s.lower()
+# any other qualification is the column the function is called on, also when a schema or a database of that name
+# exists
 statement ok
 CREATE SCHEMA s;
 
@@ -90,6 +100,11 @@ SELECT s.ifnull('z'), s.lower() FROM (VALUES (NULL), ('A')) v(s) ORDER BY ALL;
 ----
 A	a
 z	NULL
+
+query I
+SELECT mem_db.ifnull(2) FROM (SELECT 1 AS mem_db);
+----
+1
 
 statement error
 SELECT s.ifnull(NULL, 'z');

@@ -116,7 +116,7 @@ static bool IsParserFunctionRewrite(const string &lowercase_name) {
 	       lowercase_name == "ifnull" || lowercase_name == "coalesce" || lowercase_name == "date";
 }
 
-//! A call on a value, as x.f(y), takes the value as its first argument and the same rewrites as a plain call
+//! Makes a call on a value, as x.f(y), the call f(x, y) with the rewrites of a method call
 static unique_ptr<ParsedExpression> TransformMethodCall(unique_ptr<ParsedExpression> value,
                                                         unique_ptr<FunctionExpression> function) {
 	function->GetArgumentsMutable().insert(function->GetArgumentsMutable().begin(), std::move(value));
@@ -306,8 +306,8 @@ unique_ptr<ParsedExpression> PEGTransformerFactory::TransformFunctionExpression(
 		lowercase_name = "count_star";
 	}
 
-	// x.ifnull(y) parses as a call in schema x, but the rewritten names are in no schema other than main, so x is the
-	// column the function is called on, as in (x).ifnull(y)
+	// x.ifnull(y) parses as a call in schema x, but a rewritten name has no catalog entry to look up there, so a
+	// qualification other than main is the column the function is called on, as in (x).ifnull(y)
 	const auto &path = qualified_function.Path();
 	const bool call_on_column = path.size() > 1 && IsParserFunctionRewrite(lowercase_name) &&
 	                            !StringUtil::CIEquals(qualified_function.Schema().GetIdentifierName(), DEFAULT_SCHEMA);

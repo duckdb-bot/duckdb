@@ -67,6 +67,29 @@ NULL
 NULL
 NULL
 
+# arithmetic with NULL, which an inner rewrite produces before the comparison sees it
+statement ok
+CREATE SEQUENCE sarith;
+
+query I
+SELECT (nextval('sarith') + CASE WHEN true THEN NULL ELSE x END) > 0 FROM v;
+----
+NULL
+NULL
+NULL
+
+query I
+SELECT nextval('sarith');
+----
+4
+
+query I
+SELECT TRY(((CAST(x::VARCHAR || 'bad' AS INTEGER) + CASE WHEN true THEN NULL ELSE x END) > 0) IS NULL) FROM v;
+----
+NULL
+NULL
+NULL
+
 # struct_extract over struct_pack
 query I
 SELECT TRY(struct_extract(struct_pack(a := x, b := CAST('bad' AS INTEGER)), 'a')) FROM v;
@@ -147,6 +170,21 @@ physical_plan	<!REGEX>:.*MARK.*
 
 query I
 SELECT TRY(CAST(x::VARCHAR AS INTEGER) IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10)) FROM v;
+----
+true
+true
+true
+
+# nested IN expressions under TRY that stay IN expressions are planned once each
+query I
+SELECT TRY(CAST(CAST(CAST(CAST(CAST(CAST(CAST(CAST(CAST(CAST(CAST(CAST(CAST(CAST(CAST(CAST(CAST(CAST(
+	CAST(x::VARCHAR AS INTEGER)
+	IN (1, 2, 3, 4, 5, 6) AS INTEGER) IN (1, 2, 3, 4, 5, 6) AS INTEGER) IN (1, 2, 3, 4, 5, 6) AS INTEGER)
+	IN (1, 2, 3, 4, 5, 6) AS INTEGER) IN (1, 2, 3, 4, 5, 6) AS INTEGER) IN (1, 2, 3, 4, 5, 6) AS INTEGER)
+	IN (1, 2, 3, 4, 5, 6) AS INTEGER) IN (1, 2, 3, 4, 5, 6) AS INTEGER) IN (1, 2, 3, 4, 5, 6) AS INTEGER)
+	IN (1, 2, 3, 4, 5, 6) AS INTEGER) IN (1, 2, 3, 4, 5, 6) AS INTEGER) IN (1, 2, 3, 4, 5, 6) AS INTEGER)
+	IN (1, 2, 3, 4, 5, 6) AS INTEGER) IN (1, 2, 3, 4, 5, 6) AS INTEGER) IN (1, 2, 3, 4, 5, 6) AS INTEGER)
+	IN (1, 2, 3, 4, 5, 6) AS INTEGER) IN (1, 2, 3, 4, 5, 6) AS INTEGER) IN (1, 2, 3, 4, 5, 6) AS INTEGER) = 1) FROM v;
 ----
 true
 true

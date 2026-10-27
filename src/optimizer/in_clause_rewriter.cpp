@@ -92,6 +92,12 @@ unique_ptr<Expression> InClauseRewriter::VisitReplace(BoundOperatorExpression &e
 	const bool probe_must_stay = try_depth > 0 && expr.GetChildrenMutable()[0]->CanThrow();
 	const bool rewrite_to_join =
 	    expr.GetChildrenMutable().size() >= IN_CLAUSE_REWRITE_THRESHOLD && all_scalar && !probe_must_stay;
+	if (!rewrite_to_join && expr.GetChildrenMutable().size() > 2 &&
+	    (expr.GetChildrenMutable()[0]->IsVolatile() || probe_must_stay)) {
+		// the IN evaluates its probe once per row, where comparisons would evaluate a copy each, so it stays as it is
+		// (the visitor then visits its children)
+		return nullptr;
+	}
 	if (!rewrite_to_join) {
 		VisitExpressionChildren(expr);
 	}
@@ -104,10 +110,6 @@ unique_ptr<Expression> InClauseRewriter::VisitReplace(BoundOperatorExpression &e
 		    std::move(expr.GetChildrenMutable()[0]), std::move(expr.GetChildrenMutable()[1]));
 	}
 	if (!rewrite_to_join) {
-		if (expr.GetChildrenMutable()[0]->IsVolatile() || probe_must_stay) {
-			// the IN evaluates its probe once per row, where the comparisons would evaluate a copy each
-			return nullptr;
-		}
 		// low amount of children or not all scalar
 		// IN: turn into (X = 1 OR X = 2 OR X = 3...)
 		// NOT IN: turn into (X <> 1 AND X <> 2 AND X <> 3 ...)

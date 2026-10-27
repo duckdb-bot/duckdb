@@ -219,3 +219,12 @@ SELECT c1.a, t2.b FROM c1 LEFT JOIN t2 ON c1.a IS NOT DISTINCT FROM t2.b AND t2.
 ----
 3	3
 7	NULL
+
+# a constant on the outer key of a nested correlated LATERAL with a recursive CTE
+statement ok
+CREATE TABLE person AS SELECT i AS id FROM range(1000) t(i);
+
+query I
+SELECT max(q.x) FROM person o, LATERAL (SELECT r.x FROM person i, LATERAL (WITH RECURSIVE walk(x) AS (SELECT i.id UNION ALL SELECT x + 1 FROM walk WHERE x < i.id + 2) SELECT x FROM walk) r WHERE i.id = o.id) q WHERE o.id = 3
+----
+5

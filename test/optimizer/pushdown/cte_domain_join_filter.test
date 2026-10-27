@@ -295,7 +295,7 @@ SELECT recursive_rows(), semi_joins();
 ----
 9	1
 
-# Transitive restriction through nested lateral joins is deferred to cost-based domain placement
+# A constant on the outer key reaches the innermost scan through the nested joins
 
 statement ok
 PRAGMA enable_profiling='json';
@@ -316,12 +316,12 @@ SELECT max(q.x) FROM person o, LATERAL (
 statement ok
 PRAGMA disable_profiling;
 
-# A constant on the outer key reaches the innermost scan through the nested joins
-
 query I
 SELECT recursive_rows();
 ----
 3
+
+# Transitive restriction through nested lateral joins is deferred to cost-based domain placement
 
 statement ok
 PRAGMA enable_profiling='json';
@@ -349,7 +349,7 @@ SELECT recursive_rows();
 ----
 3000
 
-# Only the lateral joined directly with the selective scan is restricted
+# A constant on the outer key restricts both laterals
 
 statement ok
 PRAGMA enable_profiling='json';
@@ -374,12 +374,12 @@ SELECT max(a.x), max(b.y) FROM person o, LATERAL (
 statement ok
 PRAGMA disable_profiling;
 
-# A constant on the outer key restricts both laterals
-
 query I
 SELECT recursive_rows();
 ----
 7
+
+# Only the lateral joined directly with the selective scan is restricted
 
 statement ok
 PRAGMA enable_profiling='json';
@@ -469,7 +469,7 @@ SELECT recursive_rows();
 # A filtered scan of a large table is not copied as a key domain, even when the filter is selective
 
 statement ok
-CREATE TABLE big AS SELECT i AS id FROM range(100000) t(i);
+CREATE TABLE big AS SELECT i AS id, i AS join_key FROM range(100000) t(i);
 
 statement ok
 CREATE MACRO big_scans() AS (
@@ -505,6 +505,30 @@ query I
 SELECT recursive_rows();
 ----
 3
+
+# A selective filter on another column of the large table does not make it a key domain either
+
+statement ok
+PRAGMA enable_profiling='json';
+
+query I
+SELECT max(q.x) FROM big o, LATERAL (
+    SELECT r.x FROM person i, LATERAL (
+        WITH RECURSIVE walk(x) AS (
+            SELECT i.id UNION ALL SELECT x+1 FROM walk WHERE x < i.id+2
+        ) SELECT x FROM walk
+    ) r WHERE i.id = o.join_key
+) q WHERE o.id=3;
+----
+5
+
+statement ok
+PRAGMA disable_profiling;
+
+query III
+SELECT big_scans(), semi_joins(), recursive_rows();
+----
+1	0	3000
 
 # Disabling the coordinating pass must retain all recursive partitions.
 statement ok

@@ -15,13 +15,6 @@ idx_t RowIdColumnData::GetRowStart(ColumnScanState &state) {
 	return state.parent->GetRowGroup()->GetRowStart();
 }
 
-FilterPropagateResult RowIdColumnData::CheckZonemap(ColumnScanState &state, TableFilter &filter,
-                                                    optional_ptr<SegmentNode<ColumnSegment>> &checked_segment) {
-	checked_segment = nullptr;
-	auto row_start = GetRowStart(state);
-	return RowGroup::CheckRowIdFilter(filter, row_start, row_start + count);
-}
-
 void RowIdColumnData::InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t rows) {
 }
 

@@ -731,6 +731,23 @@ FilterPropagateResult RowGroup::CheckRowIdFilter(const TableFilter &filter, idx_
 	return expr_filter.CheckStatistics(rowid_stats);
 }
 
+//! Whether a row id filter can reject vectors, optional filters are marked always true without being proven
+static bool ChecksRowIdVectors(const ScanFilter &entry) {
+	if (!entry.table_column_index.IsRowIdColumn()) {
+		return false;
+	}
+	return !entry.IsAlwaysTrue() || ExpressionFilter::IsRootNonSelectivityOptionalFilter(entry.filter);
+}
+
+static bool RowIdFilterRejectsVector(const TableFilter &filter, idx_t row_group_start, idx_t vector_start,
+                                     idx_t end_row) {
+	const idx_t vector_end = MinValue<idx_t>(vector_start + STANDARD_VECTOR_SIZE, end_row);
+	const auto prune_result =
+	    RowGroup::CheckRowIdFilter(filter, row_group_start + vector_start, row_group_start + vector_end);
+	return prune_result == FilterPropagateResult::FILTER_ALWAYS_FALSE ||
+	       prune_result == FilterPropagateResult::FILTER_FALSE_OR_NULL;
+}
+
 bool RowGroup::CheckZonemap(optional_ptr<ClientContext> context, ScanFilterInfo &filters, idx_t row_start) {
 	const auto table_filters = filters.GetTableFilters();
 	const auto column_ids = filters.GetColumnIds();
@@ -807,6 +824,21 @@ bool RowGroup::CheckZonemapSegments(CollectionScanState &state) {
 	auto &filters = state.GetFilterInfo();
 	optional_idx target_vector_index_max;
 	for (auto &entry : filters.GetFilterList()) {
+		if (ChecksRowIdVectors(entry)) {
+			// the row ids of a vector are known, so skip ahead to the first vector the filter can accept
+			const auto row_group_start = state.GetRowGroup()->GetRowStart();
+			idx_t target_vector_index = state.vector_index;
+			while (target_vector_index * STANDARD_VECTOR_SIZE < state.max_row_group_row &&
+			       RowIdFilterRejectsVector(entry.filter, row_group_start, target_vector_index * STANDARD_VECTOR_SIZE,
+			                                state.max_row_group_row)) {
+				target_vector_index++;
+			}
+			if (target_vector_index > state.vector_index &&
+			    (!target_vector_index_max.IsValid() || target_vector_index_max.GetIndex() < target_vector_index)) {
+				target_vector_index_max = target_vector_index;
+			}
+			continue;
+		}
 		if (entry.IsAlwaysTrue()) {
 			// filter is always true - avoid checking
 			continue;
@@ -894,6 +926,18 @@ idx_t RowGroup::PrefetchRowCount(CollectionScanState &state) {
 	idx_t end_row = state.max_row_group_row;
 	auto context = state.context.GetClientContext();
 	for (auto &entry : state.GetFilterInfo().GetFilterList()) {
+		if (ChecksRowIdVectors(entry)) {
+			// end after the last vector that holds a row id the filter can accept
+			const auto row_group_start = state.GetRowGroup()->GetRowStart();
+			idx_t scan_end = start_row;
+			for (idx_t vector_start = start_row; vector_start < end_row; vector_start += STANDARD_VECTOR_SIZE) {
+				if (!RowIdFilterRejectsVector(entry.filter, row_group_start, vector_start, end_row)) {
+					scan_end = MinValue<idx_t>(vector_start + STANDARD_VECTOR_SIZE, end_row);
+				}
+			}
+			end_row = scan_end;
+			continue;
+		}
 		if (entry.IsAlwaysTrue() || entry.table_column_index.IsPushdownExtract()) {
 			continue;
 		}

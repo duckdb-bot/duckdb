@@ -35,6 +35,13 @@ SELECT d, length(TRY_CAST(v AS VARCHAR[])[1]) FROM t ORDER BY d;
 128	255
 129	NULL
 
+# a row of another type in the batch does not change which rows a nested target converts
+query II
+SELECT d, length(TRY_CAST(v AS VARCHAR[])[1]) FROM (SELECT d, v FROM t WHERE d = 128 UNION ALL SELECT 0, 42::VARIANT) ORDER BY d;
+----
+0	NULL
+128	255
+
 # a field the STRUCT target does not read may be nested too deeply
 query II
 SELECT id, TRY_CAST(v AS STRUCT(b INTEGER)) FROM (

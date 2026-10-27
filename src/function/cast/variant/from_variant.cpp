@@ -882,22 +882,34 @@ static bool TryFromShreddedCast(Vector &variant_vec, Vector &result) {
 	return false;
 }
 
-//! Whether converting the row to the target type goes deeper into the VARIANT than VariantVisitor allows
-static bool RowExceedsVisitorDepth(Vector &variant_vec, idx_t row, const LogicalType &target_type,
-                                   optional_ptr<ClientContext> client) {
+//! Casts each row on its own, so a row nested too deeply for VariantVisitor only makes its own row NULL
+static bool CastVariantRowByRow(Vector &variant_vec, Vector &result, idx_t count, optional_ptr<ClientContext> client,
+                                CastParameters &parameters, const string &depth_error) {
+	auto &target_type = result.GetType();
+	Vector cast_rows(target_type, count);
+	bool success = true;
 	SelectionVector row_sel(1);
-	row_sel.set_index(0, row);
-	Vector row_vec(variant_vec, row_sel, 1);
-	RecursiveUnifiedVectorFormat row_format;
-	Vector::RecursiveToUnifiedFormat(row_vec, row_format);
-	FromVariantConversionData row_data(row_format, client);
-	Vector row_result(target_type, 1);
-	try {
-		CastVariant(row_data, row_result, *ConstantVector::ZeroSelectionVector(), 0, 1, optional_idx());
-		return false;
-	} catch (const InvalidInputException &) {
-		return true;
+	for (idx_t i = 0; i < count; i++) {
+		row_sel.set_index(0, i);
+		Vector row_vec(variant_vec, row_sel, 1);
+		RecursiveUnifiedVectorFormat row_format;
+		Vector::RecursiveToUnifiedFormat(row_vec, row_format);
+		FromVariantConversionData row_data(row_format, client);
+		Vector row_result(target_type, 1);
+		try {
+			if (!CastVariant(row_data, row_result, *ConstantVector::ZeroSelectionVector(), 0, 1, optional_idx())) {
+				success = FinalizeErrorMessage(row_data, row_result, parameters);
+			}
+		} catch (const InvalidInputException &) {
+			FlatVector::SetNull(cast_rows, i, true);
+			HandleCastError::AssignError(depth_error, parameters);
+			success = false;
+			continue;
+		}
+		VectorOperations::Copy(row_result, cast_rows, 1, 0, i);
 	}
+	result.Reference(cast_rows);
+	return success;
 }
 
 static bool CastFromVARIANT(Vector &variant_vec, Vector &result, idx_t count, CastParameters &parameters) {
@@ -931,25 +943,8 @@ static bool CastFromVARIANT(Vector &variant_vec, Vector &result, idx_t count, Ca
 		if (!parameters.error_message) {
 			throw;
 		}
-		// under TRY_CAST the rows nested too deeply to convert become NULL, and the others are cast again
-		Vector convertible(variant_vec.GetType(), count);
-		VectorOperations::Copy(variant_vec, convertible, count, 0, 0);
-		bool too_deep = false;
-		for (idx_t i = 0; i < count; i++) {
-			if (RowExceedsVisitorDepth(variant_vec, i, result.GetType(), client)) {
-				FlatVector::SetNull(convertible, i, true);
-				too_deep = true;
-			}
-		}
-		if (!too_deep) {
-			throw;
-		}
-		// the failed attempt may have left partial results, so the retry writes into a new vector
-		Vector retried(result.GetType(), count);
-		CastFromVARIANT(convertible, retried, count, parameters);
-		result.Reference(retried);
-		HandleCastError::AssignError(ErrorData(ex).RawMessage(), parameters);
-		return false;
+		// the failed attempt may have left partial results, so the rows are cast again into a new vector
+		return CastVariantRowByRow(variant_vec, result, count, client, parameters, ErrorData(ex).RawMessage());
 	}
 	if (variant_vec.GetVectorType() == VectorType::CONSTANT_VECTOR) {
 		result.SetVectorType(VectorType::CONSTANT_VECTOR);

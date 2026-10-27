@@ -23,6 +23,13 @@ SELECT CASE WHEN i = 0 THEN (repeat('[', 500) || '1' || repeat(']', 500))::JSON:
             ELSE ('[' || i || ']')::JSON::VARIANT END AS v, i
 FROM range(10) t(i);
 
+# an empty array at depth 127 has no children at the limit
+statement ok
+CREATE TABLE empty_at_limit AS
+SELECT CASE WHEN i = 0 THEN (repeat('[', 128) || repeat(']', 128))::JSON::VARIANT
+            ELSE ('[' || i || ']')::JSON::VARIANT END AS v, i
+FROM range(10) t(i);
+
 # 127 nested objects can still be shredded
 statement ok
 CREATE TABLE below_limit AS
@@ -62,6 +69,11 @@ query I
 SELECT count(*) > 0 FROM pragma_storage_info('below_limit') WHERE column_name = 'v' AND column_path LIKE '[0, 2%';
 ----
 true
+
+query II
+SELECT length(v::VARCHAR), (SELECT count(*) > 0 FROM pragma_storage_info('empty_at_limit') WHERE column_name = 'v' AND column_path LIKE '[0, 2%') FROM empty_at_limit WHERE i = 0;
+----
+256	true
 
 # later checkpoints keep working
 statement ok

@@ -1,0 +1,72 @@
+# name: test/sql/subquery/lateral/lateral_barrier_filter.test
+# description: A filter with a barrier stays above a lateral join that removes rows, also with the barrier in a lambda
+# group: [lateral]
+
+statement ok
+CREATE TABLE strings AS SELECT * FROM (VALUES (1, 'bad', []::INTEGER[]), (2, '42', [1])) t(id, s, xs);
+
+# the row with 'bad' has an empty list, so the lateral join removes it before the barrier filter
+query I
+SELECT count(*) FROM strings, unnest(strings.xs) u(x) WHERE __internal_barrier(strings.s::INTEGER = 42);
+----
+1
+
+query I
+SELECT count(*) FROM strings, unnest(strings.xs) u(x)
+WHERE list_filter([strings.s], lambda v: __internal_barrier(v::INTEGER = 42)) <> [];
+----
+1
+
+query I
+SELECT count(*) FROM strings, unnest(strings.xs) u(x)
+WHERE list_transform([strings.s], lambda v: __internal_barrier(v::INTEGER))[1] = 42;
+----
+1
+
+query I
+SELECT count(*) FROM strings, (SELECT x FROM unnest(strings.xs) t(x) WHERE x > 0) u
+WHERE __internal_barrier(strings.s::INTEGER = 42);
+----
+1
+
+query I
+SELECT count(*) FROM strings, (SELECT x FROM unnest(strings.xs) t(x) WHERE x > 0) u
+WHERE list_filter([strings.s], lambda v: __internal_barrier(v::INTEGER = 42)) <> [];
+----
+1
+
+query I
+SELECT count(*) FROM strings WHERE EXISTS (SELECT 1 FROM unnest(strings.xs)) AND __internal_barrier(strings.s::INTEGER = 42);
+----
+1
+
+# a filter without a barrier gives the same rows wherever it runs
+query II
+SELECT id, x FROM strings, unnest(strings.xs) u(x) WHERE strings.id = 2;
+----
+2	1
+
+# without the delim join rewrite, filter pushdown has to see the barrier in the lambda body
+statement ok
+SET delim_join_as_cte = false;
+
+query I
+SELECT count(*) FROM strings, unnest(strings.xs) u(x)
+WHERE list_filter([strings.s], lambda v: __internal_barrier(v::INTEGER = 42)) <> [];
+----
+1
+
+query I
+SELECT count(*) FROM strings, (SELECT x FROM unnest(strings.xs) t(x) WHERE x > 0) u
+WHERE list_filter([strings.s], lambda v: __internal_barrier(v::INTEGER = 42)) <> [];
+----
+1
+
+statement ok
+RESET delim_join_as_cte;
+
+# without a lateral join removing rows, the barrier does not hide the error
+statement error
+SELECT count(*) FROM strings WHERE list_filter([strings.s], lambda v: __internal_barrier(v::INTEGER = 42)) <> [];
+----
+Could not convert string 'bad' to INT32

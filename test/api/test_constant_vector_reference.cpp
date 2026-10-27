@@ -1,5 +1,6 @@
 #include "catch.hpp"
 #include "duckdb/common/types/vector.hpp"
+#include "duckdb/common/types/vector_cache.hpp"
 #include "duckdb/common/vector/constant_vector.hpp"
 #include "duckdb/common/vector/dictionary_vector.hpp"
 #include "duckdb/common/vector/flat_vector.hpp"
@@ -7,7 +8,6 @@
 
 using namespace duckdb;
 
-// duckdblabs/bot-issue-tracker#638: a constant reference shares the heap of the string instead of copying it
 TEST_CASE("A constant reference to a string keeps the heap that holds it", "[api]") {
 	const string long_string(100000, 'x');
 	auto make_source = [&]() {
@@ -18,7 +18,6 @@ TEST_CASE("A constant reference to a string keeps the heap that holds it", "[api
 				writer.WriteValue(i == 2 ? string_t(long_string) : string_t("short"));
 			}
 		}
-		FlatVector::SetSize(source, 4);
 		return source;
 	};
 
@@ -37,6 +36,7 @@ TEST_CASE("A constant reference to a string keeps the heap that holds it", "[api
 		ConstantVector::Reference(reference, count_t(3000), source, 2, 4);
 	}
 	REQUIRE(reference.GetVectorType() == VectorType::CONSTANT_VECTOR);
+	REQUIRE(reference.size() == 3000);
 	REQUIRE(reference.GetValue(0) == Value(long_string));
 	REQUIRE(reference.GetValue(2999) == Value(long_string));
 
@@ -75,6 +75,29 @@ TEST_CASE("A constant reference to a string keeps the heap that holds it", "[api
 	REQUIRE(ConstantVector::GetData<string_t>(constant)->GetData() ==
 	        ConstantVector::GetData<string_t>(reference)->GetData());
 	REQUIRE(constant.GetValue(1) == Value(long_string));
+}
+
+TEST_CASE("A constant reference to a string outlives the reset of its cached source", "[api]") {
+	const string long_string(100000, 'x');
+	VectorCache cache(Allocator::DefaultAllocator(), LogicalType::VARCHAR);
+	Vector source(cache);
+	{
+		auto writer = FlatVector::Writer<string_t>(source, 2);
+		writer.WriteValue(string_t("short"));
+		writer.WriteValue(string_t(long_string));
+	}
+	Vector reference(LogicalType::VARCHAR);
+	ConstantVector::Reference(reference, count_t(3000), source, 1, 2);
+
+	// the cache gives the source its buffer again, and new strings overwrite its entries and heap
+	source.ResetFromCache(cache);
+	{
+		const string other_string(100000, 'y');
+		auto writer = FlatVector::Writer<string_t>(source, 2);
+		writer.WriteValue(string_t(other_string));
+		writer.WriteValue(string_t(other_string));
+	}
+	REQUIRE(reference.GetValue(2999) == Value(long_string));
 }
 
 TEST_CASE("A constant reference holds the entry of a sequence", "[api]") {

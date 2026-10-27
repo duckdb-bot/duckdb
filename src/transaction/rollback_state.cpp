@@ -49,7 +49,8 @@ void RollbackState::RollbackEntry(UndoFlags type, data_ptr_t data) {
 	case UndoFlags::ATTACHED_DATABASE: {
 		auto db = Load<AttachedDatabase *>(data);
 		auto &db_manager = DatabaseManager::Get(db->GetDatabase());
-		auto attached_db = db_manager.DetachInternal(db->name);
+		// after this transaction detached it, another connection can have attached a database under the name
+		auto attached_db = db_manager.DetachInternal(db->name, db);
 		if (attached_db) {
 			// another transaction can keep the database alive, its name must not wait for that
 			attached_db->UnregisterStoredPath();

@@ -68,6 +68,12 @@ QueryProgress ProgressBar::GetDetailedQueryProgress() {
 	return query_progress;
 }
 
+void ProgressBar::SetQueryStart(std::chrono::steady_clock::time_point query_start) {
+	if (display) {
+		display->SetQueryStart(query_start);
+	}
+}
+
 void ProgressBar::Start() {
 	profiler.Start();
 	query_progress.Initialize();

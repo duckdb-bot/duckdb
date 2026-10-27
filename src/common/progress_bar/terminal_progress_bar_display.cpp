@@ -203,7 +203,7 @@ double TerminalProgressBarDisplay::UpdateEstimatedRemainingSeconds(double percen
 }
 
 void TerminalProgressBarDisplay::Finish() {
-	PrintProgressInternal(100, GetElapsedDuration(), true);
+	PrintProgressInternal(100, GetQueryDuration(), true);
 	Printer::RawPrint(OutputStream::STREAM_STDOUT, "\n");
 	Printer::Flush(OutputStream::STREAM_STDOUT);
 }

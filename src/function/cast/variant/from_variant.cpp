@@ -409,8 +409,12 @@ public:
 	}
 
 	//! Gathers the primitive values and the key order of the OBJECTs of a value, in the order Write uses them
-	//! Returns false if the value holds an OBJECT with a single empty key, which converts to a MAP instead of a STRUCT
-	bool Collect(idx_t row, uint32_t value_index) {
+	//! Returns false if the value holds an OBJECT with a single empty key, which converts to a MAP instead of a STRUCT,
+	//! or a value nested as deeply as VariantVisitor rejects, so that the conversion through a Value raises its error
+	bool Collect(idx_t row, uint32_t value_index, idx_t depth) {
+		if (depth >= VariantUtils::MAX_NESTING_DEPTH) {
+			return false;
+		}
 		auto type_id = variant.GetTypeId(row, value_index);
 		switch (type_id) {
 		case VariantLogicalType::VARIANT_NULL:
@@ -419,7 +423,7 @@ public:
 		case VariantLogicalType::ARRAY: {
 			auto nested_data = VariantUtils::DecodeNestedData(variant, row, value_index);
 			for (idx_t child_idx = 0; child_idx < nested_data.child_count; child_idx++) {
-				if (!Collect(row, variant.GetValuesIndex(row, nested_data.children_idx + child_idx))) {
+				if (!Collect(row, variant.GetValuesIndex(row, nested_data.children_idx + child_idx), depth + 1)) {
 					return false;
 				}
 			}
@@ -447,7 +451,7 @@ public:
 			});
 			for (idx_t i = 0; i < nested_data.child_count; i++) {
 				auto child_idx = object_children[start + i];
-				if (!Collect(row, variant.GetValuesIndex(row, nested_data.children_idx + child_idx))) {
+				if (!Collect(row, variant.GetValuesIndex(row, nested_data.children_idx + child_idx), depth + 1)) {
 					return false;
 				}
 			}
@@ -547,7 +551,7 @@ static bool CastVariantToVarchar(FromVariantConversionData &conversion_data, Vec
 			continue;
 		}
 		positions[i] = text_writer.GetPosition();
-		write_text[i] = text_writer.Collect(row_index, sel[i]);
+		write_text[i] = text_writer.Collect(row_index, sel[i], 0);
 	}
 	if (!text_writer.CastPrimitives()) {
 		//! Convert every row through a Value, which reports the error of the row that fails

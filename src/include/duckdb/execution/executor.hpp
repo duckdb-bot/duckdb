@@ -66,8 +66,12 @@ public:
 	QueryResultState ExecuteTask();
 	//! Report the execution state without running any task
 	QueryResultState Poll();
-	void WaitForTask();
+	//! The consumer of a streaming result passes streaming_consumer, which lets it return as soon as its buffer
+	//! satisfies its fetch
+	void WaitForTask(bool streaming_consumer = false);
 	void SignalTaskRescheduled(lock_guard<mutex> &);
+	//! Wakes a thread in WaitForTask, as a producer queued a result unit or parked with one
+	void SignalResultUnit();
 
 	void Reset();
 

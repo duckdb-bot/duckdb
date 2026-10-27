@@ -385,13 +385,13 @@ unique_ptr<QueryResult> ClientContext::CompleteDelegatedInternal(ClientContextLo
 	return produced;
 }
 
-void ClientContext::WaitForTask(ClientContextLock &lock, BaseQueryResult &result) {
+void ClientContext::WaitForTask(ClientContextLock &lock, BaseQueryResult &result, bool streaming_consumer) {
 	auto &executor = *active_query->executor;
 	if (executor.HasTaskInProgress()) {
 		// This thread is holding a partially processed task, the next step resumes it without waiting.
 		return;
 	}
-	executor.WaitForTask();
+	executor.WaitForTask(streaming_consumer);
 }
 
 QueryResultState ClientContext::ExecuteTaskInternal(ClientContextLock &lock, BaseQueryResult &result) {

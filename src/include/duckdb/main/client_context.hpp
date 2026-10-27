@@ -444,7 +444,7 @@ private:
 	ResultLifetime DecideResultLifetimeInternal(ClientContextLock &lock, ResultLifetime decision);
 
 	//! Wait until a task is available to execute
-	void WaitForTask(ClientContextLock &lock, BaseQueryResult &result);
+	void WaitForTask(ClientContextLock &lock, BaseQueryResult &result, bool streaming_consumer = false);
 	//! Run one partial task slice of the open result on the calling thread
 	QueryResultState ExecuteTaskInternal(ClientContextLock &lock, BaseQueryResult &result);
 	//! Report the execution state of the open result without running any task

@@ -1,6 +1,5 @@
 #include "duckdb/common/vector/constant_vector.hpp"
 #include "duckdb/common/vector/array_vector.hpp"
-#include "duckdb/common/vector/dictionary_vector.hpp"
 #include "duckdb/common/vector/flat_vector.hpp"
 #include "duckdb/common/vector/list_vector.hpp"
 #include "duckdb/common/vector/string_vector.hpp"
@@ -140,142 +139,9 @@ const SelectionVector *ConstantVector::ZeroSelectionVector(idx_t count, Selectio
 	return &owned_sel;
 }
 
-//! Whether the vector holds its strings uncompressed, in its own buffers or in those of its dictionary
-static bool HoldsUncompressedStrings(const Vector &vector) {
-	switch (vector.GetVectorType()) {
-	case VectorType::FLAT_VECTOR:
-	case VectorType::CONSTANT_VECTOR:
-		return true;
-	case VectorType::DICTIONARY_VECTOR:
-		return HoldsUncompressedStrings(DictionaryVector::Child(vector));
-	default:
-		return false;
-	}
-}
-
 void ConstantVector::Reference(Vector &vector, count_t count, const Vector &source, idx_t position,
                                idx_t source_count) {
-	auto &source_type = source.GetType();
-	switch (source_type.InternalType()) {
-	case PhysicalType::LIST: {
-		// retrieve the list entry from the source vector
-		auto entries = source.Values<list_entry_t>();
-		auto entry = entries[position];
-
-		if (!entry.IsValid()) {
-			// list is null: create null value
-			SetNull(vector, count);
-			break;
-		}
-
-		auto list_entry = entry.GetValue();
-
-		// add the list entry as the first element of "vector"
-		// FIXME: we only need to allocate space for 1 tuple here
-		auto target_data = FlatVector::GetDataMutable<list_entry_t>(vector);
-		target_data[0] = list_entry;
-
-		// create a reference to the child list of the source vector
-		auto &child = ListVector::GetChildMutable(vector);
-		child.Reference(ListVector::GetChild(source));
-
-		ListVector::SetListSize(vector, ListVector::GetListSize(source));
-		vector.SetVectorType(VectorType::CONSTANT_VECTOR);
-		auto &validity = vector.BufferMutable().GetValidityMask();
-		validity.Set(0, true);
-		FlatVector::SetSize(vector, count);
-		break;
-	}
-	case PhysicalType::ARRAY: {
-		UnifiedVectorFormat vdata;
-		source.ToUnifiedFormat(vdata);
-		auto source_idx = vdata.sel->get_index(position);
-		if (!vdata.validity.RowIsValid(source_idx)) {
-			// list is null: create null value
-			SetNull(vector, count);
-			break;
-		}
-
-		// Reference the child vector
-		auto &target_child = ArrayVector::GetChildMutable(vector);
-		auto &source_child = ArrayVector::GetChild(source);
-		target_child.Reference(source_child);
-
-		// Only take the element at the given position
-		auto array_size = ArrayType::GetSize(source_type);
-		SelectionVector sel(array_size);
-		for (idx_t i = 0; i < array_size; i++) {
-			sel.set_index(i, array_size * source_idx + i);
-		}
-		target_child.Slice(sel, array_size);
-		target_child.Flatten(); // since its constant we only have to flatten this much
-
-		vector.SetVectorType(VectorType::CONSTANT_VECTOR);
-		auto &validity = vector.BufferMutable().GetValidityMask();
-		validity.Set(0, true);
-		FlatVector::SetSize(vector, count);
-		break;
-	}
-	case PhysicalType::STRUCT: {
-		UnifiedVectorFormat vdata;
-		source.ToUnifiedFormat(vdata);
-
-		auto struct_index = vdata.sel->get_index(position);
-		if (!vdata.validity.RowIsValid(struct_index)) {
-			// null struct: create null value
-			SetNull(vector, count);
-			break;
-		}
-
-		// struct: pass constant reference into child entries
-		auto &source_entries = StructVector::GetEntries(source);
-		auto &target_entries = StructVector::GetEntries(vector);
-		for (idx_t i = 0; i < source_entries.size(); i++) {
-			ConstantVector::Reference(target_entries[i], count, source_entries[i], position, source_count);
-		}
-		vector.SetVectorType(VectorType::CONSTANT_VECTOR);
-		auto &validity = vector.BufferMutable().GetValidityMask();
-		validity.Set(0, true);
-		FlatVector::SetSize(vector, count);
-		break;
-	}
-	case PhysicalType::VARCHAR: {
-		if (!HoldsUncompressedStrings(source)) {
-			// an FSST vector decompresses its strings into memory of its own, so the string is copied
-			vector.Reference(source.GetValue(position), count);
-			break;
-		}
-		auto entries = source.Values<string_t>();
-		auto entry = entries[position];
-		if (!entry.IsValid()) {
-			SetNull(vector, count);
-			break;
-		}
-		// share the string instead of copying it, which for a long string referenced for each output chunk costs the
-		// string's size every time. As for a list, the constant shares the data of the source
-		auto &string = entry.GetValue();
-		auto buffer = make_buffer<VectorStringBuffer>(capacity_t(1ULL));
-		reinterpret_cast<string_t *>(buffer->GetData())[0] = string;
-		buffer->SetVectorType(VectorType::CONSTANT_VECTOR);
-		buffer->SetVectorSize(count);
-		if (string.IsInlined()) {
-			vector.SetBuffer(std::move(buffer));
-			break;
-		}
-		// the vector can be the source itself, so the source is held until its heap is shared
-		auto source_reference = Vector::Ref(source);
-		vector.SetBuffer(std::move(buffer));
-		StringVector::AddHeapReference(vector, source_reference);
-		break;
-	}
-	default:
-		// default behavior: get a value from the vector and reference it
-		// this is not that expensive for scalar types
-		auto value = source.GetValue(position);
-		vector.Reference(value, count);
-		D_ASSERT(vector.GetVectorType() == VectorType::CONSTANT_VECTOR);
-		break;
-	}
+	vector.SetBuffer(source.Buffer().ConstantReference(source.GetType(), position, count));
 }
 
 } // namespace duckdb

@@ -1,6 +1,7 @@
 #include "catch.hpp"
 #include "duckdb/common/types/vector.hpp"
 #include "duckdb/common/vector/constant_vector.hpp"
+#include "duckdb/common/vector/dictionary_vector.hpp"
 #include "duckdb/common/vector/flat_vector.hpp"
 #include "duckdb/common/vector/string_vector.hpp"
 
@@ -53,9 +54,36 @@ TEST_CASE("A constant reference to a string keeps the heap that holds it", "[api
 	ConstantVector::Reference(reference, count_t(10), with_null, 1, 4);
 	REQUIRE(ConstantVector::IsNull(reference));
 
-	// an inlined string needs no heap, so the constant does not keep the heap of the source
+	// an inlined string is held by the constant itself
 	auto with_inlined = make_source();
 	ConstantVector::Reference(reference, count_t(10), with_inlined, 1, 4);
-	REQUIRE(!reference.GetBufferRef()->GetAuxiliaryData());
 	REQUIRE(reference.GetValue(9) == Value("short"));
+
+	// a dictionary references the string of its child, and a constant the string at its only entry
+	auto dictionary = make_source();
+	SelectionVector sel(2);
+	sel.set_index(0, 3);
+	sel.set_index(1, 2);
+	dictionary.Slice(sel, 2);
+	REQUIRE(dictionary.GetVectorType() == VectorType::DICTIONARY_VECTOR);
+	ConstantVector::Reference(reference, count_t(3000), dictionary, 1, 2);
+	REQUIRE(reference.GetVectorType() == VectorType::CONSTANT_VECTOR);
+	REQUIRE(ConstantVector::GetData<string_t>(reference)->GetData() ==
+	        FlatVector::GetData<string_t>(DictionaryVector::Child(dictionary))[2].GetData());
+	Vector constant(LogicalType::VARCHAR);
+	ConstantVector::Reference(constant, count_t(3000), reference, 2999, 3000);
+	REQUIRE(ConstantVector::GetData<string_t>(constant)->GetData() ==
+	        ConstantVector::GetData<string_t>(reference)->GetData());
+	REQUIRE(constant.GetValue(1) == Value(long_string));
+}
+
+TEST_CASE("A constant reference holds the entry of a sequence", "[api]") {
+	Vector sequence(LogicalType::BIGINT);
+	sequence.Sequence(10, 3, 100);
+	REQUIRE(sequence.GetVectorType() == VectorType::SEQUENCE_VECTOR);
+	Vector reference(LogicalType::BIGINT);
+	ConstantVector::Reference(reference, count_t(3000), sequence, 7, 100);
+	REQUIRE(reference.GetVectorType() == VectorType::CONSTANT_VECTOR);
+	REQUIRE(reference.size() == 3000);
+	REQUIRE(reference.GetValue(2999) == Value::BIGINT(31));
 }

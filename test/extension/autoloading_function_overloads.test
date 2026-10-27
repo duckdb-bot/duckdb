@@ -1,0 +1,58 @@
+# name: test/extension/autoloading_function_overloads.test
+# description: The function overloads that stand in for an extension load it only when autoloading is enabled
+# group: [extension]
+
+# This test assumes icu to be available in the LOCAL_EXTENSION_REPO and NOT linked into duckdb statically
+# -> this should be the case for our autoloading tests where we have the local_extension_repo variable set
+require-env LOCAL_EXTENSION_REPO
+
+require icu
+
+# Ensure we have a clean extension directory without any preinstalled extensions
+statement ok
+set extension_directory='{TEST_DIR}/autoloading_function_overloads'
+
+statement ok
+set custom_extension_repository='{LOCAL_EXTENSION_REPO}'
+
+statement ok
+INSTALL icu
+
+statement ok
+set autoload_known_extensions=false
+
+statement ok
+set autoinstall_known_extensions=false
+
+# age has an overload for TIMESTAMPTZ that stands in for icu's
+statement error
+SELECT age(TIMESTAMPTZ '2024-01-01 00:00:00+00', TIMESTAMPTZ '2023-01-01 00:00:00+00')
+----
+<REGEX>:Binder Error.*present in extension "icu".*not loaded and autoloading is disabled.*LOAD icu.*
+
+query I
+SELECT loaded FROM duckdb_extensions() WHERE extension_name = 'icu'
+----
+false
+
+statement ok
+set autoload_known_extensions=true
+
+query I
+SELECT age(TIMESTAMPTZ '2024-01-01 00:00:00+00', TIMESTAMPTZ '2023-01-01 00:00:00+00')
+----
+1 year
+
+query I
+SELECT loaded FROM duckdb_extensions() WHERE extension_name = 'icu'
+----
+true
+
+# once icu is loaded, disabling autoloading does not matter
+statement ok
+set autoload_known_extensions=false
+
+query I
+SELECT age(TIMESTAMPTZ '2025-01-01 00:00:00+00', TIMESTAMPTZ '2023-01-01 00:00:00+00')
+----
+2 years

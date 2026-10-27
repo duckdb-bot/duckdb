@@ -1,0 +1,111 @@
+# name: test/sql/types/list/list_selective_scan.test
+# description: Scans of large lists read only the children of the selected rows (duckdb/duckdb#13682)
+# group: [list]
+
+load {TEST_DIR}/list_selective_scan.db
+
+statement ok
+CREATE TABLE t AS SELECT i AS id, CASE WHEN i % 7 = 0 THEN NULL WHEN i % 11 = 0 THEN [] ELSE [x + i * 1000 FOR x IN range((i % 50) * 20)] END AS l FROM range(5000) r(i);
+
+statement ok
+CREATE TABLE s AS SELECT i AS id, CASE WHEN i % 7 = 0 THEN NULL ELSE [(x + i)::VARCHAR FOR x IN range(i % 30)] END AS l, [[x, i] FOR x IN range(i % 30)] AS n FROM range(5000) r(i);
+
+statement ok
+CREATE TABLE m AS SELECT i AS id, [x + i * 1000 FOR x IN range(CASE WHEN i < 2048 THEN 200 ELSE 1 END)] AS l FROM range(4096) r(i);
+
+# the expected lists are computed from the id, not read from the table
+statement ok
+CREATE MACRO expected(i) AS CASE WHEN i % 7 = 0 THEN NULL WHEN i % 11 = 0 THEN [] ELSE [x + i * 1000 FOR x IN range((i % 50) * 20)] END;
+
+loop k 0 2
+
+query II
+SELECT count(*), sum(len(l)) FROM t WHERE id = 1234
+----
+1	680
+
+query I
+SELECT l = expected(id) FROM t WHERE id = 1234
+----
+true
+
+# a range of rows across the end of a vector, with NULL and empty lists
+query III
+SELECT count(*), count(l), count(*) FILTER (WHERE l IS NOT DISTINCT FROM expected(id)) FROM t WHERE id BETWEEN 2040 AND 2060
+----
+21	18	21
+
+# many ranges in each vector
+query III
+SELECT count(*), count(l), count(*) FILTER (WHERE l IS NOT DISTINCT FROM expected(id)) FROM t WHERE id % 97 = 3
+----
+52	45	52
+
+query III
+SELECT count(*), count(l), count(*) FILTER (WHERE l IS NOT DISTINCT FROM expected(id)) FROM t WHERE id >= 4990 OR id < 5
+----
+15	12	15
+
+query I
+SELECT l = expected(id) FROM t WHERE rowid = 4321
+----
+true
+
+# a vector of short lists in a column of long lists is read whole
+query III
+SELECT count(*), sum(len(l)), count(*) FILTER (WHERE l = [x + id * 1000 FOR x IN range(CASE WHEN id < 2048 THEN 200 ELSE 1 END)]) FROM m WHERE id % 97 = 3
+----
+43	4421	43
+
+# lists of strings and nested lists are read the usual way
+query II
+SELECT l, n FROM s WHERE id = 1234
+----
+[1234, 1235, 1236, 1237]	[[0, 1234], [1, 1234], [2, 1234], [3, 1234]]
+
+query II
+SELECT count(*), sum(len(l)) FROM s WHERE id % 97 = 3
+----
+52	621
+
+# a small limit reads the lists of its rows only
+query II
+EXPLAIN SELECT l[1] FROM t LIMIT 2
+----
+physical_plan	<REGEX>:.*Hash Join.*
+
+query I
+SELECT l[1] FROM t LIMIT 3
+----
+NULL
+1000
+2000
+
+restart
+
+endloop
+
+# a row ID filter below a small limit, with and without an offset
+query I
+SELECT l = expected(id) FROM t WHERE rowid = 4321 LIMIT 1
+----
+true
+
+query I
+SELECT l = expected(id) FROM t WHERE rowid = 4321 LIMIT 1 OFFSET 0
+----
+true
+
+# deleted rows are not selected either
+statement ok
+DELETE FROM t WHERE id % 3 = 0;
+
+query III
+SELECT count(*), sum(len(l)), count(*) FILTER (WHERE l IS NOT DISTINCT FROM expected(id)) FROM t
+----
+3333	1272300	3333
+
+query III
+SELECT count(*), count(l), count(*) FILTER (WHERE l IS NOT DISTINCT FROM expected(id)) FROM t WHERE id BETWEEN 2040 AND 2060
+----
+14	12	14

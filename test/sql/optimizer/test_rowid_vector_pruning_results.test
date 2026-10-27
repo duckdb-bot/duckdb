@@ -2,8 +2,6 @@
 # description: Scans that skip the vectors a row id filter rejects return the rows of the row ids
 # group: [optimizer]
 
-load {TEST_DIR}/rowid_vector_pruning_results.db
-
 # 300000 rows in three row groups, row id i holds k = (i * 7919) % 300000 and g = 'geom i'
 statement ok
 CREATE TABLE r (k BIGINT PRIMARY KEY, g VARCHAR, risk BIGINT, zone VARCHAR, score DOUBLE);
@@ -18,8 +16,6 @@ statement ok
 CREATE TABLE nested AS
 SELECT [i, i + 1] AS l, {'a': i, 'b': 'v' || i} AS st, CASE WHEN i % 3 = 0 THEN NULL ELSE i END AS maybe
 FROM range(300000) t(i);
-
-restart
 
 # row ids at the edges of vectors and row groups
 query II

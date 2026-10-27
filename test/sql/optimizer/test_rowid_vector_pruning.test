@@ -136,10 +136,10 @@ statement ok
 SET profiling_output = '{TEST_DIR}/rowid_vector_pruning_prefetch_range.json'
 
 query I
-SELECT s FROM p WHERE rowid IN (122881, 245000) ORDER BY rowid
+SELECT s FROM p WHERE rowid IN (122881, 245759) ORDER BY rowid
 ----
 506995c3dc5272bbfb3321c48ef268ff71452dbcef3372bb549d6385d9566ee5
-a3270a8fd403c540deeb6ed7505b442ab96061ff9198ed3243d17458ee473a16
+16d1463e014629c4db37dfbc739a1cfc54251033b4966af2e59dff7330afed9d
 
 statement ok
 PRAGMA disable_profiling

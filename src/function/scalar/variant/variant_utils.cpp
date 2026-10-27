@@ -267,7 +267,7 @@ Value VariantUtils::ConvertVariantToValue(const UnifiedVariantVectorData &varian
 	if (ExceedsNestingDepth(variant, row, values_idx)) {
 		throw InvalidInputException(NestingDepthError());
 	}
-	return VariantVisitor<ValueConverter>::Visit(variant, row, values_idx);
+	return VariantVisitor<ValueConverter>::Visit(variant, row, values_idx, 0);
 }
 
 void VariantUtils::FinalizeVariantKeys(Vector &variant, OrderedOwningStringMap<uint32_t> &dictionary,

@@ -99,7 +99,7 @@ public:
 //! Rows are depth-checked by CastFromVARIANT
 static Value ConvertCheckedVariantToValue(FromVariantConversionData &conversion_data, idx_t row, uint32_t values_idx) {
 	D_ASSERT(!conversion_data.IsTooDeep(row));
-	return VariantVisitor<ValueConverter>::Visit(conversion_data.variant, row, values_idx);
+	return VariantVisitor<ValueConverter>::Visit(conversion_data.variant, row, values_idx, 0);
 }
 
 static bool FinalizeErrorMessage(FromVariantConversionData &conversion_data, Vector &result,

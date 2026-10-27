@@ -54,8 +54,9 @@ public:
 	void Finalize(bool external);
 	//! Physically reorders the data of a run that was finalized for an in-memory sort, as an external sort needs
 	void MakeExternal();
-	//! Destroy data between these tuple indices
-	void DestroyData(idx_t tuple_idx_begin, idx_t tuple_idx_end);
+	//! Destroy keys/payload between these tuple indices
+	void DestroyKeyData(idx_t tuple_idx_begin, idx_t tuple_idx_end);
+	void DestroyPayloadData(idx_t tuple_idx_begin, idx_t tuple_idx_end);
 	//! Number of tuples
 	idx_t Count() const;
 	//! Size of this sorted run

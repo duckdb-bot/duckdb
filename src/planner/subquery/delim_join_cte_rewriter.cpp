@@ -17,6 +17,7 @@
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/planner/expression/bound_operator_expression.hpp"
+#include "duckdb/planner/expression/bound_window_expression.hpp"
 #include "duckdb/planner/expression/expression_barrier.hpp"
 #include "duckdb/planner/expression_nullability.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
@@ -126,6 +127,48 @@ static bool GetExpressionColumnBindings(Expression &expr, column_binding_set_t &
 		}
 	});
 	return depth_zero;
+}
+
+//! A delim join that does not deduplicate its input eliminates duplicates on a row_number() OVER () window over it,
+//! whose numbers only identify the rows: a filter that does not read them can go below the window
+static bool IsDelimRowNumberWindow(const LogicalComparisonJoin &delim_join, const LogicalOperator &op) {
+	if (op.type != LogicalOperatorType::LOGICAL_WINDOW) {
+		return false;
+	}
+	auto &window = op.Cast<LogicalWindow>();
+	if (window.expressions.size() != 1 ||
+	    window.expressions[0]->GetExpressionType() != ExpressionType::WINDOW_ROW_NUMBER) {
+		return false;
+	}
+	auto &row_number = window.expressions[0]->Cast<BoundWindowExpression>();
+	if (!row_number.Partitions().empty() || !row_number.OrderBy().empty()) {
+		return false;
+	}
+	for (auto &column : delim_join.duplicate_eliminated_columns) {
+		if (column->GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF &&
+		    column->Cast<BoundColumnRefExpression>().Binding().table_index == window.window_index) {
+			return true;
+		}
+	}
+	return false;
+}
+
+//! Add a filter on the input of a delim join, below its row number window when it has one
+static void AddFilterToDelimJoinInput(LogicalComparisonJoin &delim_join, unique_ptr<Expression> filter) {
+	reference<unique_ptr<LogicalOperator>> target = delim_join.children[0];
+	if (IsDelimRowNumberWindow(delim_join, *target.get())) {
+		auto &window = target.get()->Cast<LogicalWindow>();
+		column_binding_set_t filter_bindings;
+		GetExpressionColumnBindings(*filter, filter_bindings);
+		bool reads_row_number = false;
+		for (auto &binding : filter_bindings) {
+			reads_row_number = reads_row_number || binding.table_index == window.window_index;
+		}
+		if (!reads_row_number) {
+			target = window.children[0];
+		}
+	}
+	AddFilterToOperator(target.get(), std::move(filter));
 }
 
 static bool ChildContainsBindings(LogicalOperator &child, const column_binding_set_t &bindings) {
@@ -427,7 +470,7 @@ static bool PushEligibleFilterExpressionsIntoDelimJoinInputs(unique_ptr<LogicalO
 				auto rewritten = expr->Copy();
 				if (RewriteFilterThroughProjections(rewritten, projections) &&
 				    FilterReferencesDelimInput(delim_join, *rewritten)) {
-					AddFilterToOperator(delim_join.children[0], std::move(rewritten));
+					AddFilterToDelimJoinInput(delim_join, std::move(rewritten));
 					changed = true;
 					continue;
 				}
@@ -436,7 +479,7 @@ static bool PushEligibleFilterExpressionsIntoDelimJoinInputs(unique_ptr<LogicalO
 			continue;
 		}
 		if (FilterReferencesDelimInput(delim_join, *expr)) {
-			AddFilterToOperator(delim_join.children[0], std::move(expr));
+			AddFilterToDelimJoinInput(delim_join, std::move(expr));
 			changed = true;
 			continue;
 		}

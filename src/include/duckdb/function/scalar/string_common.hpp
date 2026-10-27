@@ -9,6 +9,10 @@ namespace duckdb {
 bool IsAscii(const char *input, idx_t n);
 //! Returns the index of the first byte with the high bit set, or n if all bytes are ASCII
 idx_t FirstNonAscii(const char *input, idx_t n);
+//! Whether the input is ASCII without a CR, so that every byte is a grapheme cluster (CR LF is one, UAX #29 GB3)
+bool IsAsciiWithoutCR(const char *input, idx_t n);
+//! The number of grapheme clusters in ASCII input, one per byte except for CR LF, which is one
+idx_t AsciiGraphemeCount(const char *input, idx_t n);
 //! Decodes one codepoint and returns its length - throws an InternalException on invalid UTF-8
 idx_t DecodeCodepoint(const char *input, idx_t size, int32_t &codepoint);
 idx_t LowerLength(const char *input_data, idx_t input_length);
@@ -53,8 +57,7 @@ static inline TR GraphemeCount(TA input) {
 	auto input_data = input.GetData();
 	auto input_length = input.GetSize();
 	if (FirstNonAscii(input_data, input_length) == input_length) {
-		// ASCII: every byte is a grapheme cluster
-		return UnsafeNumericCast<TR>(input_length);
+		return UnsafeNumericCast<TR>(AsciiGraphemeCount(input_data, input_length));
 	}
 	return UnsafeNumericCast<TR>(Utf8Proc::GraphemeCount(input_data, input_length));
 }

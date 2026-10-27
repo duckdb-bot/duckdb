@@ -16,16 +16,9 @@
 
 namespace duckdb {
 
-//! The first midnight of Timestamp::MIN_YEAR. Smaller values are not valid timestamps, as their midnight is not one
-static constexpr int64_t FIRST_MIDNIGHT_MICROS = -9223372022400000000LL;
-
-//! Whether the instant that a local time and its offset give is a timestamp. The local time can lie past the ends of
-//! the range. Before the first midnight an instant is only kept when its local time lies after it, as before
-static bool LocalTimeAndInstantInRange(const hugeint_t &local_micros, const hugeint_t &micros, timestamp_t &result) {
-	if (!Hugeint::TryCast(micros, result.value) || !result.IsFinite()) {
-		return false;
-	}
-	return result.value >= FIRST_MIDNIGHT_MICROS || local_micros >= hugeint_t(FIRST_MIDNIGHT_MICROS);
+//! Whether an instant is a finite timestamp, computed in hugeint as its local time can lie past the range
+static bool TryGetFiniteTimestamp(const hugeint_t &micros, timestamp_t &result) {
+	return Hugeint::TryCast(micros, result.value) && result.IsFinite();
 }
 
 static_assert(sizeof(timestamp_t) == sizeof(int64_t), "timestamp_t was padded");
@@ -93,8 +86,7 @@ TimestampCastResult Timestamp::TryConvertTimestampTZ(const char *str, idx_t len,
 		return TimestampCastResult::ERROR_RANGE;
 	}
 	pos += time_pos;
-	const auto local_micros = hugeint_t(date.days) * hugeint_t(Interval::MICROS_PER_DAY) + hugeint_t(time.value);
-	auto micros = local_micros;
+	auto micros = hugeint_t(date.days) * hugeint_t(Interval::MICROS_PER_DAY) + hugeint_t(time.value);
 	if (pos < len) {
 		// skip a "Z" at the end (as per the ISO8601 specs)
 		int hh, mm, ss;
@@ -132,7 +124,7 @@ TimestampCastResult Timestamp::TryConvertTimestampTZ(const char *str, idx_t len,
 			return TimestampCastResult::ERROR_INCORRECT_FORMAT;
 		}
 	}
-	if (!LocalTimeAndInstantInRange(local_micros, micros, result)) {
+	if (!TryGetFiniteTimestamp(micros, result)) {
 		return TimestampCastResult::ERROR_RANGE;
 	}
 	return TimestampCastResult::SUCCESS;
@@ -388,11 +380,23 @@ dtime_ns_t Timestamp::GetTimeNs(timestamp_ns_t input) {
 	return dtime_ns_t(nanos);
 }
 
-bool Timestamp::TryFromDatetime(date_t date, dtime_t time, timestamp_t &result) {
-	if (!TryMultiplyOperator::Operation<int64_t, int64_t, int64_t>(date.days, Interval::MICROS_PER_DAY, result.value)) {
+bool Timestamp::TryCombineUnits(int64_t whole, int64_t part, int64_t unit, int64_t &result) {
+	int64_t whole_units;
+	if (TryMultiplyOperator::Operation<int64_t, int64_t, int64_t>(whole, unit, whole_units)) {
+		return TryAddOperator::Operation<int64_t, int64_t, int64_t>(whole_units, part, result);
+	}
+	if (whole >= 0) {
 		return false;
 	}
-	if (!TryAddOperator::Operation<int64_t, int64_t, int64_t>(result.value, time.value, result.value)) {
+	// start from the next whole unit, which still fits when the sum does
+	if (!TryMultiplyOperator::Operation<int64_t, int64_t, int64_t>(whole + 1, unit, whole_units)) {
+		return false;
+	}
+	return TryAddOperator::Operation<int64_t, int64_t, int64_t>(whole_units, part - unit, result);
+}
+
+bool Timestamp::TryFromDatetime(date_t date, dtime_t time, timestamp_t &result) {
+	if (!TryCombineUnits(date.days, time.value, Interval::MICROS_PER_DAY, result.value)) {
 		return false;
 	}
 	return result.IsFinite();
@@ -403,7 +407,7 @@ bool Timestamp::TryFromDatetime(date_t date, dtime_tz_t timetz, timestamp_t &res
 	const auto offset = int64_t(timetz.offset() * Interval::MICROS_PER_SEC);
 	const auto local_micros =
 	    hugeint_t(date.days) * hugeint_t(Interval::MICROS_PER_DAY) + hugeint_t(timetz.time().value);
-	return LocalTimeAndInstantInRange(local_micros, local_micros - hugeint_t(offset), result);
+	return TryGetFiniteTimestamp(local_micros - hugeint_t(offset), result);
 }
 
 timestamp_t Timestamp::FromDatetime(date_t date, dtime_t time) {
@@ -416,12 +420,7 @@ timestamp_t Timestamp::FromDatetime(date_t date, dtime_t time) {
 
 void Timestamp::Convert(timestamp_t timestamp, date_t &out_date, dtime_t &out_time) {
 	out_date = GetDate(timestamp);
-	int64_t days_micros;
-	if (!TryMultiplyOperator::Operation<int64_t, int64_t, int64_t>(out_date.days, Interval::MICROS_PER_DAY,
-	                                                               days_micros)) {
-		throw ConversionException("Date out of range in timestamp conversion");
-	}
-	out_time = dtime_t(timestamp.value - days_micros);
+	out_time = GetTime(timestamp);
 	D_ASSERT(timestamp == Timestamp::FromDatetime(out_date, out_time));
 }
 
@@ -458,9 +457,6 @@ timestamp_t Timestamp::FromEpochSeconds(int64_t sec) {
 timestamp_t Timestamp::FromEpochMsPossiblyInfinite(int64_t ms) {
 	int64_t result;
 	if (!TryMultiplyOperator::Operation(ms, Interval::MICROS_PER_MSEC, result)) {
-		throw ConversionException("Could not convert Timestamp(MS) to Timestamp(US)");
-	}
-	if (result < FIRST_MIDNIGHT_MICROS) {
 		throw ConversionException("Could not convert Timestamp(MS) to Timestamp(US)");
 	}
 	return timestamp_t(result);

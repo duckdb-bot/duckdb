@@ -18,25 +18,28 @@ SELECT TIMESTAMPTZ '294247-01-10 05:00:54.775806+00';
 ----
 out of range
 
-# before the first midnight of the range a timestamp has no date that is a timestamp, so a local time there is
-# refused unless its offset gives an instant after it
-query III
-SELECT TRY_CAST('290309-12-21 (BC) 23:00:00' AS TIMESTAMP), epoch_us(TRY_CAST('290309-12-21 (BC) 23:30:00-01' AS TIMESTAMPTZ)), TRY_CAST('290309-12-21 (BC) 23:30:00+01' AS TIMESTAMPTZ);
+# instants before the first midnight are timestamps too, also when their local time lies below the range
+query IIII
+SELECT epoch_us('290309-12-21 (BC) 23:00:00'::TIMESTAMP), epoch_us(TIMESTAMPTZ '290309-12-21 (BC) 23:30:00-01'), epoch_us(TIMESTAMPTZ '290309-12-21 (BC) 23:30:00+01'), epoch_us(TIMESTAMPTZ '290309-12-21 (BC) 18:59:05.224192-01');
 ----
-NULL	-9223372020600000000	NULL
+-9223372026000000000	-9223372020600000000	-9223372027800000000	-9223372036854775808
 
-query I
-SELECT epoch_us(DATE '290309-12-21 (BC)' + TIMETZ '23:00:00-02');
+query III
+SELECT epoch_us(DATE '290309-12-21 (BC)' + TIMETZ '23:00:00-02'), epoch_us(DATE '290309-12-21 (BC)' + TIMETZ '23:00:00+00'), epoch_us(DATE '290309-12-21 (BC)' + TIMETZ '19:00:00-01');
 ----
--9223372018800000000
+-9223372018800000000	-9223372026000000000	-9223372036800000000
 
 statement error
-SELECT DATE '290309-12-21 (BC)' + TIMETZ '23:00:00+00';
+SELECT TIMESTAMPTZ '290309-12-21 (BC) 18:59:05.224191-01';
 ----
 out of range
 
-# a local time after the first midnight whose instant lies before it stays accepted, as on main. It is read from a
-# table, as a constant there cannot be shown
+statement error
+SELECT DATE '290309-12-21 (BC)' + TIMETZ '19:00:00+01';
+----
+out of range
+
+# a local time after the first midnight whose instant lies before it stays accepted
 statement ok
 CREATE TABLE lower_offsets(d DATE, t TIMETZ, s VARCHAR);
 
@@ -78,11 +81,22 @@ SELECT epoch_us(time_bucket(INTERVAL '9223372036854775807 microseconds', make_ti
 ----
 9223372036854775803
 
-# milliseconds since the epoch are rounded as the cast to TIMESTAMP_MS rounds, also next to the ends
-query III
-SELECT epoch_ms(make_timestamp(9223372036854775806)), epoch_ms(make_timestamp(1500)), epoch_ms(make_timestamp(-1499));
+query II
+SELECT epoch_us(time_bucket(INTERVAL '10 microseconds', make_timestamp(-9223372036854775806), make_timestamp(4))), epoch_us(time_bucket(INTERVAL '10 microseconds', make_timestamp(-9223372036854775807 - 1), make_timestamp(2)));
 ----
-9223372036854776	2	-1
+-9223372036854775806	-9223372036854775808
+
+# a bucket that starts below the range overflows
+statement error
+SELECT time_bucket(INTERVAL '10 microseconds', make_timestamp(-9223372036854775806), make_timestamp(5));
+----
+Overflow
+
+# milliseconds since the epoch are rounded as the cast to TIMESTAMP_MS rounds, also next to the ends
+query IIII
+SELECT epoch_ms(make_timestamp(9223372036854775806)), epoch_ms(make_timestamp(-9223372036854775807 - 1)), epoch_ms(make_timestamp(1500)), epoch_ms(make_timestamp(-1499));
+----
+9223372036854776	-9223372036854776	2	-1
 
 # INT96 counts Julian days without a sign, so earlier timestamps are not written
 require parquet

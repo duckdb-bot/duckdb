@@ -97,9 +97,6 @@ struct TimeBucket {
 		return (Date::ExtractYear(ts_date) - 1970) * 12 + Date::ExtractMonth(ts_date) - 1;
 	}
 
-	//! The first midnight of Timestamp::MIN_YEAR - smaller values are not valid timestamps
-	static constexpr int64_t MIN_TIMESTAMP_MICROS = -9223372022400000000LL;
-
 	static inline int64_t PositiveRemainder(int64_t value, int64_t width) {
 		auto remainder = value % width;
 		return remainder < 0 ? remainder + width : remainder;
@@ -116,8 +113,8 @@ struct TimeBucket {
 			remainder += bucket_width_micros;
 		}
 		auto result_micros = AddOperatorOverflowCheck::Operation<int64_t, int64_t, int64_t>(ts_micros, -remainder);
-		if (result_micros < MIN_TIMESTAMP_MICROS) {
-			throw OutOfRangeException("Overflow in TIME_BUCKET: the result is below the minimum TIMESTAMP");
+		if (!timestamp_t(result_micros).IsFinite()) {
+			throw OutOfRangeException("Overflow in TIME_BUCKET: the result is not a finite TIMESTAMP");
 		}
 
 		return Timestamp::FromEpochMicroSeconds(result_micros);

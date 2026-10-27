@@ -809,7 +809,7 @@ bool RowGroup::CheckZonemap(optional_ptr<ClientContext> context, ScanFilterInfo 
 			return false;
 		}
 		if (ExpressionFilter::IsRootNonSelectivityOptionalFilter(filter)) {
-			// these are only for row group checking, set as always true so we don't check it
+			// these are only for pruning row groups and vectors, set as always true so we don't check it
 			filters.SetFilterAlwaysTrue(i);
 		} else if (prune_result == FilterPropagateResult::FILTER_ALWAYS_TRUE) {
 			// filter is always true - no need to check it
@@ -930,9 +930,13 @@ idx_t RowGroup::PrefetchRowCount(CollectionScanState &state) {
 			// end after the last vector that holds a row id the filter can accept
 			const auto row_group_start = state.GetRowGroup()->GetRowStart();
 			idx_t scan_end = start_row;
-			for (idx_t vector_start = start_row; vector_start < end_row; vector_start += STANDARD_VECTOR_SIZE) {
+			const idx_t vector_count =
+			    end_row > start_row ? (end_row - start_row + STANDARD_VECTOR_SIZE - 1) / STANDARD_VECTOR_SIZE : 0;
+			for (idx_t vector_idx = vector_count; vector_idx > 0; vector_idx--) {
+				const idx_t vector_start = start_row + (vector_idx - 1) * STANDARD_VECTOR_SIZE;
 				if (!RowIdFilterRejectsVector(entry.filter, row_group_start, vector_start, end_row)) {
 					scan_end = MinValue<idx_t>(vector_start + STANDARD_VECTOR_SIZE, end_row);
+					break;
 				}
 			}
 			end_row = scan_end;

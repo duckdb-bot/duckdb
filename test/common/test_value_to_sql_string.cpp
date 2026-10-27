@@ -170,11 +170,23 @@ TEST_CASE("Value::ToSQLString renders nested VARIANT values once", "[api][value_
 	REQUIRE(EvalScalar(con, "(" + deep + ") IS NOT DISTINCT FROM (" + rendered + ")") == Value::BOOLEAN(true));
 }
 
-// Casts JSON that nests an empty array in 'depth' levels, each opened by 'open' and closed by 'close', to VARIANT
-// during execution, since the optimizer names a constant VARIANT with Value::ToSQLString
-static string DeepJSONVariant(const string &open, const string &close, idx_t depth) {
-	return "(SELECT (repeat('" + open + "', i) || '[]' || repeat('" + close + "', i))::JSON::VARIANT FROM range(" +
-	       to_string(depth) + ", " + to_string(depth + 1) + ") t(i))";
+// Casts JSON that nests 'terminal' in 'depth' levels, each opened by 'open' and closed by 'close', to VARIANT during
+// execution, since the optimizer names a constant VARIANT with Value::ToSQLString
+static string DeepJSONVariant(const string &open, const string &close, const string &terminal, idx_t depth) {
+	return "(SELECT (repeat('" + open + "', i) || '" + terminal + "' || repeat('" + close +
+	       "', i))::JSON::VARIANT FROM range(" + to_string(depth) + ", " + to_string(depth + 1) + ") t(i))";
+}
+
+// Requires Value::ToSQLString to fail with the error that VariantVisitor raises
+static void RequireNestingDepthError(const Value &value) {
+	try {
+		value.ToSQLString();
+		FAIL("Value::ToSQLString rendered a VARIANT nested too deeply");
+	} catch (Exception &ex) {
+		ErrorData error(ex);
+		REQUIRE(error.Type() == ExceptionType::INVALID_INPUT);
+		REQUIRE(error.RawMessage() == "VARIANT exceeds maximum recursion depth of 128");
+	}
 }
 
 TEST_CASE("Value::ToSQLString fails on JSON-derived VARIANT values deeper than VariantVisitor accepts",
@@ -185,20 +197,24 @@ TEST_CASE("Value::ToSQLString fails on JSON-derived VARIANT values deeper than V
 		WARN("JSON extension required for deep VARIANT coverage");
 		return;
 	}
-	// an empty array inside 127 arrays or objects is the deepest value that renders
-	for (auto &original : {DeepJSONVariant("[", "]", 127), DeepJSONVariant("{\"a\": ", "}", 127)}) {
-		auto rendered = EvalScalar(con, original).ToSQLString();
-		REQUIRE(EvalScalar(con, "(" + original + ")::JSON = (" + rendered + ")::JSON") == Value::BOOLEAN(true));
-	}
-	// an object whose only key is empty renders as a list of key and value pairs instead
-	REQUIRE_NOTHROW(EvalScalar(con, DeepJSONVariant("{\"\": ", "}", 127)).ToSQLString());
-	// deeper values fail without recursing once per level
-	for (idx_t depth : {idx_t(128), idx_t(50000)}) {
-		for (auto &deep : {DeepJSONVariant("[", "]", depth), DeepJSONVariant("{\"a\": ", "}", depth),
-		                   DeepJSONVariant("{\"\": ", "}", depth)}) {
-			INFO(deep.substr(0, 30) << " " << depth);
-			REQUIRE_THROWS_WITH(EvalScalar(con, deep).ToSQLString(),
-			                    Catch::Matchers::Contains("VARIANT exceeds maximum recursion depth of 128"));
+	for (auto terminal : {"[]", "null", "1"}) {
+		// a value inside 127 arrays or objects is the deepest that renders
+		for (auto &original :
+		     {DeepJSONVariant("[", "]", terminal, 127), DeepJSONVariant("{\"a\": ", "}", terminal, 127)}) {
+			INFO(original);
+			auto rendered = EvalScalar(con, original).ToSQLString();
+			REQUIRE(EvalScalar(con, "(" + original + ")::JSON = (" + rendered + ")::JSON") == Value::BOOLEAN(true));
+		}
+		// an object whose only key is empty renders as a list of key and value pairs instead
+		REQUIRE_NOTHROW(EvalScalar(con, DeepJSONVariant("{\"\": ", "}", terminal, 127)).ToSQLString());
+		// deeper values fail without recursing once per level
+		for (idx_t depth : {idx_t(128), idx_t(50000)}) {
+			for (auto &deep :
+			     {DeepJSONVariant("[", "]", terminal, depth), DeepJSONVariant("{\"a\": ", "}", terminal, depth),
+			      DeepJSONVariant("{\"\": ", "}", terminal, depth)}) {
+				INFO(deep);
+				RequireNestingDepthError(EvalScalar(con, deep));
+			}
 		}
 	}
 }
@@ -221,6 +237,13 @@ TEST_CASE("Value::ToSQLString round-trips JSON-derived supported VARIANT objects
 	}
 }
 
+// JSON around an object whose only key is empty, at each %s
+struct EmptyKeyWrapper {
+	string json;
+	//! Whether the JSON has a field b next to the object, which the test compares after rendering
+	bool has_sibling_b;
+};
+
 TEST_CASE("Value::ToSQLString renders VARIANT objects whose only key is empty", "[api][value_sql]") {
 	DuckDB db;
 	Connection con(db);
@@ -229,15 +252,15 @@ TEST_CASE("Value::ToSQLString renders VARIANT objects whose only key is empty", 
 		return;
 	}
 	// at the root, as a field next to another one, and inside an array
-	duckdb::vector<std::pair<string, bool>> wrappers {
+	duckdb::vector<EmptyKeyWrapper> wrappers {
 	    {"%s", false}, {"{\"a\":%s,\"b\":[1,null]}", true}, {"[%s,{\"c\":%s}]", false}};
 	for (auto json : {"{\"\":1}", "{\"\":null}", "{\"\":[1,\"x\"]}", "{\"\":{\"\":{\"b\":2}}}"}) {
 		for (auto &wrapper : wrappers) {
-			auto original = "'" + StringUtil::Replace(wrapper.first, "%s", json) + "'::JSON::VARIANT";
+			auto original = "'" + StringUtil::Replace(wrapper.json, "%s", json) + "'::JSON::VARIANT";
 			INFO(original);
 			auto rendered = EvalScalar(con, original).ToSQLString();
 			REQUIRE(!EvalScalar(con, "variant_typeof(" + rendered + ")").IsNull());
-			if (wrapper.second) {
+			if (wrapper.has_sibling_b) {
 				REQUIRE(EvalScalar(con, "(" + original + ").b IS NOT DISTINCT FROM (" + rendered + ").b") ==
 				        Value::BOOLEAN(true));
 			}

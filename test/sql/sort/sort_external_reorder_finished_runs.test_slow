@@ -58,7 +58,7 @@ SET memory_limit = '4GB'
 
 # every row once, with its own payload, in the order of the sort key
 query IIII
-SELECT count(*), count(DISTINCT i), count(*) FILTER (WHERE k < previous), count(*) FILTER (WHERE k <> hash(i) OR p <> payload(i, 3 * 122880))
+SELECT count(*), count(DISTINCT i), count(*) FILTER (WHERE k < previous), count(*) FILTER (WHERE k IS DISTINCT FROM hash(i) OR p IS DISTINCT FROM payload(i, 3 * 122880))
 FROM (SELECT k, i, p, lag(k) OVER (ORDER BY rn) AS previous
       FROM (SELECT k, i, p, row_number() OVER () AS rn
             FROM read_csv('{TEST_DIR}/one_group_each.csv', header = true, columns = {'k': 'UBIGINT', 'i': 'BIGINT', 'p': 'VARCHAR'})))
@@ -66,7 +66,7 @@ FROM (SELECT k, i, p, lag(k) OVER (ORDER BY rn) AS previous
 491520	491520	0	0
 
 query IIII
-SELECT count(*), count(DISTINCT i), count(*) FILTER (WHERE k < previous), count(*) FILTER (WHERE k <> hash(i) OR p <> payload(i, 8 * 122880))
+SELECT count(*), count(DISTINCT i), count(*) FILTER (WHERE k < previous), count(*) FILTER (WHERE k IS DISTINCT FROM hash(i) OR p IS DISTINCT FROM payload(i, 8 * 122880))
 FROM (SELECT k, i, p, lag(k) OVER (ORDER BY rn) AS previous
       FROM (SELECT k, i, p, row_number() OVER () AS rn
             FROM read_csv('{TEST_DIR}/two_groups_each.csv', header = true, columns = {'k': 'UBIGINT', 'i': 'BIGINT', 'p': 'VARCHAR'})))

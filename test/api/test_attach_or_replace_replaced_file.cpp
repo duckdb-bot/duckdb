@@ -199,7 +199,7 @@ TEST_CASE("Test ATTACH OR REPLACE of a replaced database file from two connectio
 
 	// with TYPE given, each connection opens the new file once, and the later attachment replaces the earlier one
 	gate.gate = true;
-	auto reattach = "ATTACH OR REPLACE '" + path + "' AS r (TYPE duckdb, READ_ONLY)";
+	const auto reattach = "ATTACH OR REPLACE '" + path + "' AS r (TYPE duckdb, READ_ONLY)";
 	unique_ptr<QueryResult> results[2];
 	std::thread first([&]() { results[0] = con.Query(reattach); });
 	std::thread second([&]() { results[1] = other.Query(reattach); });

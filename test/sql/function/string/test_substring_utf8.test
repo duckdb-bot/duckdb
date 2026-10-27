@@ -91,7 +91,6 @@ SELECT substring_grapheme('ääääää', -10, 2), substring_grapheme('ääää�
 (empty)	ä	ää
 
 # a negative offset counts from the end, so a non-ASCII character after the window counts as well
-# (duckdblabs/bot-issue-tracker#636)
 query TTTTTT
 SELECT substring_grapheme('xyé', -4, 1), substring_grapheme('xyé', -3, -1), substring_grapheme('xyzwé', -5, 1),
        substring_grapheme('xyzwé', -5, 2), substring_grapheme('xyzwé', -6, 2), substring('xyzwé', -5, 2);
@@ -112,6 +111,7 @@ CREATE TABLE clusters AS SELECT * FROM (VALUES
 	('combining', 'e' || repeat(chr(769), 30)),
 	('hangul', chr(4352) || chr(4449) || chr(4520)),
 	('indic', chr(2325) || chr(2381) || chr(2359)),
+	('spacing_mark', 'a' || chr(2366)),
 	('prepend', chr(1536) || chr(1537) || 'x')
 ) t(name, c);
 
@@ -157,7 +157,8 @@ WHERE substring_grapheme(replace(template, 'C', c), o, l) <> replace(expected, '
 
 # an odd run of regional indicators pairs up from its start
 query TTTT
-SELECT substring_grapheme(s, -3), substring_grapheme(s, -4, 1), substring_grapheme(s, -5, 1), substring_grapheme(s, -5, 2)
+SELECT substring_grapheme(s, -3), substring_grapheme(s, -4, 1), substring_grapheme(s, -5, 1),
+       substring_grapheme(s, -5, 2)
 FROM (SELECT 'x' || repeat('🇳', 7) || 'abc' AS s);
 ----
 abc	🇳	🇳🇳	🇳🇳🇳

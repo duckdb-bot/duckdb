@@ -46,7 +46,7 @@ void CreateTable(Connection &con, const string &path, const string &select) {
 	REQUIRE_NO_FAIL(con.Query("DETACH w"));
 }
 
-//! Holds an open of the database path until a second one arrives or a second passes, so that two connections that
+//! Holds an open of the database path until a second one arrives or ten seconds pass, so that two connections that
 //! found the file replaced at the same time both open it
 class GateFileSystem : public LocalFileSystem {
 public:
@@ -62,7 +62,7 @@ public:
 			std::unique_lock<std::mutex> guard(lock);
 			arrivals++;
 			arrived.notify_all();
-			arrived.wait_for(guard, std::chrono::seconds(1), [&]() { return arrivals >= 2; });
+			arrived.wait_for(guard, std::chrono::seconds(10), [&]() { return arrivals >= 2; });
 		}
 		return LocalFileSystem::OpenFile(fpath, flags, opener);
 	}
@@ -197,16 +197,17 @@ TEST_CASE("Test ATTACH OR REPLACE of a replaced database file from two connectio
 	CreateTable(con, new_path, "SELECT 2 AS i");
 	fs.MoveFile(new_path, path);
 
-	// both connections open the new file, and the later attachment replaces the earlier one
+	// with TYPE given, each connection opens the new file once, and the later attachment replaces the earlier one
 	gate.gate = true;
+	auto reattach = "ATTACH OR REPLACE '" + path + "' AS r (TYPE duckdb, READ_ONLY)";
 	unique_ptr<QueryResult> results[2];
-	std::thread first([&]() { results[0] = con.Query("ATTACH OR REPLACE '" + path + "' AS r (READ_ONLY)"); });
-	std::thread second([&]() { results[1] = other.Query("ATTACH OR REPLACE '" + path + "' AS r (READ_ONLY)"); });
+	std::thread first([&]() { results[0] = con.Query(reattach); });
+	std::thread second([&]() { results[1] = other.Query(reattach); });
 	first.join();
 	second.join();
 	REQUIRE_NO_FAIL(*results[0]);
 	REQUIRE_NO_FAIL(*results[1]);
-	REQUIRE(gate.arrivals > 0);
+	REQUIRE(gate.arrivals == 2);
 	auto result = con.Query("SELECT i FROM r.t");
 	REQUIRE(CHECK_COLUMN(result, 0, {2}));
 	result = other.Query("SELECT i FROM r.t");

@@ -133,3 +133,20 @@ SELECT id FROM v_edge WHERE customer_id = 7 AND not_in8 ORDER BY id;
 ----
 3
 4
+
+# a volatile filter stays above the row number window of the delim join, so it runs for each unnested element
+statement ok
+CREATE TABLE lists AS SELECT * FROM (VALUES (1, [10, 20])) t(id, xs);
+
+statement ok
+CREATE SEQUENCE seq;
+
+query I
+SELECT count(*) FROM lists, unnest(lists.xs) u(x) WHERE EXISTS (SELECT 1 FROM unnest(lists.xs) v(y)) AND nextval('seq') <= lists.id;
+----
+1
+
+query I
+SELECT currval('seq');
+----
+2

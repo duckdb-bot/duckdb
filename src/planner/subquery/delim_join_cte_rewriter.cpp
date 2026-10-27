@@ -130,7 +130,7 @@ static bool GetExpressionColumnBindings(Expression &expr, column_binding_set_t &
 }
 
 //! A delim join that does not deduplicate its input eliminates duplicates on a row_number() OVER () window over it,
-//! whose numbers only identify the rows: a filter that does not read them can go below the window
+//! whose numbers only identify the rows
 static bool IsDelimRowNumberWindow(const LogicalComparisonJoin &delim_join, const LogicalOperator &op) {
 	if (op.type != LogicalOperatorType::LOGICAL_WINDOW) {
 		return false;
@@ -153,10 +153,11 @@ static bool IsDelimRowNumberWindow(const LogicalComparisonJoin &delim_join, cons
 	return false;
 }
 
-//! Add a filter on the input of a delim join, below its row number window when it has one
+//! Add a filter on the input of a delim join, below its row number window when the filter does not read the row
+//! number and is not volatile, as filter pushdown keeps volatile filters above a window
 static void AddFilterToDelimJoinInput(LogicalComparisonJoin &delim_join, unique_ptr<Expression> filter) {
 	reference<unique_ptr<LogicalOperator>> target = delim_join.children[0];
-	if (IsDelimRowNumberWindow(delim_join, *target.get())) {
+	if (!filter->IsVolatile() && IsDelimRowNumberWindow(delim_join, *target.get())) {
 		auto &window = target.get()->Cast<LogicalWindow>();
 		column_binding_set_t filter_bindings;
 		GetExpressionColumnBindings(*filter, filter_bindings);

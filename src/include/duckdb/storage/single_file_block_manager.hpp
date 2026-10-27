@@ -141,6 +141,10 @@ public:
 	}
 	//! Return the version number of the file.
 	StorageVersion GetVersionNumber() const;
+	//! Return the checksum type of the blocks after the file headers and of the WAL entries.
+	ChecksumType GetChecksumType() const {
+		return checksum_type;
+	}
 	//! Return the database identifier.
 	data_ptr_t GetDBIdentifier() {
 		return options.db_identifier;
@@ -168,6 +172,8 @@ private:
 	                      bool skip_block_header = false) const;
 
 	idx_t GetBlockLocation(block_id_t block_id) const;
+	//! The file headers keep the word XOR checksum, so older releases can read the storage version
+	ChecksumType GetChecksumType(uint64_t location) const;
 
 	// Encrypt, Store, Decrypt the canary
 	static void StoreEncryptedCanary(AttachedDatabase &db, MainHeader &main_header, const string &key_id);
@@ -230,6 +236,8 @@ private:
 	idx_t free_list_id;
 	//! The current header iteration count.
 	uint64_t iteration_count;
+	//! The checksum type of the blocks after the file headers and of the WAL entries
+	ChecksumType checksum_type = ChecksumType::WORD_XOR;
 	//! The storage manager options
 	StorageManagerOptions options;
 	//! Lock for performing various operations in the single file block manager

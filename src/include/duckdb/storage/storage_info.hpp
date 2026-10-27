@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "duckdb/common/checksum.hpp"
 #include "duckdb/common/constants.hpp"
 #include "duckdb/common/string.hpp"
 #include "duckdb/common/vector_size.hpp"
@@ -246,6 +247,8 @@ public:
 
 	//! Indicates whether database is encrypted or not.
 	static constexpr uint64_t ENCRYPTED_DATABASE_FLAG = 1;
+	//! Indicates whether the blocks after the file headers and the WAL entries are checksummed with XXH64.
+	static constexpr uint64_t XXHASH64_CHECKSUM_FLAG = 2;
 	//! The encryption key length.
 	static constexpr uint64_t DEFAULT_ENCRYPTION_KEY_LENGTH = 32;
 	//! The magic bytes in front of the file should be "DUCK".
@@ -293,6 +296,17 @@ public:
 	}
 	void SetEncryptionVersion(uint8_t version) {
 		encryption_version = version;
+	}
+
+	ChecksumType GetChecksumType() const {
+		return flags[0] & MainHeader::XXHASH64_CHECKSUM_FLAG ? ChecksumType::XXHASH64 : ChecksumType::WORD_XOR;
+	}
+	void SetChecksumType(ChecksumType type) {
+		if (type == ChecksumType::XXHASH64) {
+			flags[0] |= MainHeader::XXHASH64_CHECKSUM_FLAG;
+		} else {
+			flags[0] &= ~MainHeader::XXHASH64_CHECKSUM_FLAG;
+		}
 	}
 
 	void SetEncryptionMetadata(data_ptr_t source) {

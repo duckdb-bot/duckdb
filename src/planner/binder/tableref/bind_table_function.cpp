@@ -489,21 +489,28 @@ BoundStatement Binder::Bind(TableFunctionRef &ref) {
 	// selection, named-argument checking, folding and casting all happen in the function binder
 	auto &current_function = LookupFunctionEntryAgain(schema, CatalogType::TABLE_FUNCTION_ENTRY, function_name)
 	                             .Cast<TableFunctionCatalogEntry>();
-	FunctionBinder function_binder(*this);
-	vector<Value> parameters;
-	named_argument_map_t named_parameters;
-	auto best_function_idx =
-	    table_in_out
-	        ? function_binder.BindTableInOutFunction(current_function.name, current_function.functions, subquery.types,
-	                                                 error)
-	        : function_binder.BindFunction(current_function.name, current_function.functions, positional_arguments,
-	                                       named_arguments, parameters, named_parameters, error);
-	if (!best_function_idx.IsValid()) {
+	unique_ptr<ResolvedTableFunction> resolved;
+	if (table_in_out) {
+		// the arguments are the columns of the subquery
+		auto selection = FunctionBinder::SelectFunction(context, current_function.functions, subquery.types);
+		if (selection.IsSuccess()) {
+			auto definition = selection.GetBinding().GetFunction<TableFunction>();
+			resolved = make_uniq<ResolvedTableFunction>(BoundTableFunction(definition));
+		} else {
+			error = selection.GetError();
+		}
+	} else {
+		FunctionBinder function_binder(*this);
+		resolved =
+		    function_binder.BindTableFunction(current_function.functions, positional_arguments, named_arguments, error);
+	}
+	if (!resolved) {
 		error.AddQueryLocation(ref);
 		error.Throw();
 	}
-	// copied out of the set: BindTableFunctionInternal fills in the bound return types
-	BoundTableFunction table_function(current_function.functions.GetFunctionByOffset(best_function_idx.GetIndex()));
+	auto &table_function = resolved->function;
+	auto &parameters = resolved->parameters;
+	auto &named_parameters = resolved->named_parameters;
 
 	vector<LogicalType> input_table_types;
 	vector<Identifier> input_table_names;

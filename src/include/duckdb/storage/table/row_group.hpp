@@ -194,7 +194,8 @@ public:
 	//! Checks the given set of table filters against the row-group statistics. Returns false if the entire row group
 	//! can be skipped.
 	bool CheckZonemap(optional_ptr<ClientContext> context, ScanFilterInfo &filters, idx_t row_start);
-	//! Skips the vectors that the segment statistics or the row ids rule out, returns false if it skipped any
+	//! Checks the given set of table filters against the zonemaps of their columns. Returns false if any vectors were
+	//! skipped.
 	bool CheckZonemapSegments(CollectionScanState &state);
 	void Scan(ScanOptions options, CollectionScanState &state, DataChunk &result);
 	void Scan(CollectionScanState &state, DataChunk &result, TableScanType type);

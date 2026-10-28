@@ -38,6 +38,10 @@ public:
 
 	void Skip(ColumnScanState &state, idx_t count = STANDARD_VECTOR_SIZE) override;
 
+	FilterPropagateResult CheckZonemap(ColumnScanState &state, const ScanFilter &filter,
+	                                   optional_idx &checked_end) override;
+	idx_t ZonemapScanEnd(ColumnScanState &state, const ScanFilter &filter, idx_t start_row, idx_t end_row) override;
+
 	void InitializeAppend(ColumnAppendState &state) override;
 	void Append(ColumnAppendState &state, const Vector &vector, idx_t count) override;
 	void AppendData(ColumnAppendState &state, UnifiedVectorFormat &vdata, idx_t count) override;

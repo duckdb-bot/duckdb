@@ -38,6 +38,7 @@ class TableStorageInfo;
 struct DataTableInfo;
 struct PrefetchState;
 struct RowGroupWriteInfo;
+struct ScanFilter;
 struct TableScanOptions;
 struct TransactionData;
 struct PersistentColumnData;
@@ -82,8 +83,10 @@ public:
 	LogicalType type;
 
 public:
-	virtual FilterPropagateResult CheckZonemap(ColumnScanState &state, TableFilter &filter,
-	                                           optional_ptr<SegmentNode<ColumnSegment>> &checked_segment);
+	//! Checks the filter against the zonemap from the scan position, and sets checked_end to the row of the row group
+	//! up to which the result holds, so that the scan can skip ahead to it when the filter is rejected
+	virtual FilterPropagateResult CheckZonemap(ColumnScanState &state, const ScanFilter &filter,
+	                                           optional_idx &checked_end);
 
 	BlockManager &GetBlockManager() const {
 		return block_manager;
@@ -218,8 +221,8 @@ public:
 
 	FilterPropagateResult CheckZonemap(optional_ptr<ClientContext> context, const StorageIndex &index,
 	                                   TableFilter &filter);
-	//! End of the last vector in [start_row, end_row) that the segment zonemaps do not reject for the filter
-	idx_t ZonemapScanEnd(optional_ptr<ClientContext> context, idx_t start_row, idx_t end_row, TableFilter &filter);
+	//! End of the last vector in [start_row, end_row) that the zonemap does not reject for the filter
+	virtual idx_t ZonemapScanEnd(ColumnScanState &state, const ScanFilter &filter, idx_t start_row, idx_t end_row);
 
 	static shared_ptr<ColumnData> CreateColumn(BlockManager &block_manager, DataTableInfo &info, idx_t column_index,
 	                                           const LogicalType &type,
@@ -265,9 +268,8 @@ protected:
 	//! Checks the filter against the statistics of one segment
 	FilterPropagateResult CheckSegmentStatistics(optional_ptr<ClientContext> context,
 	                                             SegmentNode<ColumnSegment> &segment, ExpressionFilter &expr_filter);
-	FilterPropagateResult CheckValidityZonemap(ColumnScanState &state, TableFilter &filter,
-	                                           optional_ptr<SegmentNode<ColumnSegment>> &checked_segment,
-	                                           ColumnData &validity_column);
+	FilterPropagateResult CheckValidityZonemap(ColumnScanState &state, const ScanFilter &filter,
+	                                           optional_idx &checked_end, ColumnData &validity_column);
 
 private:
 	void UpdateCompressionFunction(SegmentLock &l, const CompressionFunction &function);

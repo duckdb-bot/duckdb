@@ -50,9 +50,9 @@ void ListColumnData::SetDataType(ColumnDataType data_type) {
 	validity->SetDataType(data_type);
 }
 
-FilterPropagateResult ListColumnData::CheckZonemap(ColumnScanState &state, TableFilter &filter,
-                                                   optional_ptr<SegmentNode<ColumnSegment>> &checked_segment) {
-	return CheckValidityZonemap(state, filter, checked_segment, *validity);
+FilterPropagateResult ListColumnData::CheckZonemap(ColumnScanState &state, const ScanFilter &filter,
+                                                   optional_idx &checked_end) {
+	return CheckValidityZonemap(state, filter, checked_end, *validity);
 }
 
 void ListColumnData::InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t rows) {

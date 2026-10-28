@@ -63,6 +63,61 @@ SELECT query.total_rows_scanned < 122880 FROM '{TEST_DIR}/rowid_vector_pruning_l
 ----
 true
 
+# one row group whose last vector is partial, row id i holds v = i
+statement ok
+CREATE TABLE s AS SELECT i AS v, 'pad ' || i AS pad FROM range(100001) t(i);
+
+statement ok
+SET enable_profiling = 'json'
+
+statement ok
+SET profiling_output = '{TEST_DIR}/rowid_vector_pruning_first.json'
+
+query I
+SELECT v FROM s WHERE rowid = 0
+----
+0
+
+statement ok
+SET profiling_output = '{TEST_DIR}/rowid_vector_pruning_first_last.json'
+
+query I
+SELECT v FROM s WHERE rowid IN (0, 100000) ORDER BY v
+----
+0
+100000
+
+statement ok
+SET profiling_output = '{TEST_DIR}/rowid_vector_pruning_late_first.json'
+
+query II
+SELECT v, pad FROM s ORDER BY abs(v - 50000) DESC, v LIMIT 1
+----
+0	pad 0
+
+statement ok
+SET profiling_output = '{TEST_DIR}/rowid_vector_pruning_late_first_last.json'
+
+query II
+SELECT v, pad FROM s ORDER BY abs(v - 50000) DESC, v LIMIT 2
+----
+0	pad 0
+100000	pad 100000
+
+statement ok
+PRAGMA disable_profiling
+
+# a row id in the first vector skips the partial last vector too, a row id in the last vector reads it
+query II
+SELECT one_id.query.total_rows_scanned < two_ids.query.total_rows_scanned,
+       late_one_id.query.total_rows_scanned < late_two_ids.query.total_rows_scanned
+FROM '{TEST_DIR}/rowid_vector_pruning_first.json' one_id,
+     '{TEST_DIR}/rowid_vector_pruning_first_last.json' two_ids,
+     '{TEST_DIR}/rowid_vector_pruning_late_first.json' late_one_id,
+     '{TEST_DIR}/rowid_vector_pruning_late_first_last.json' late_two_ids
+----
+true	true
+
 # with prefetching, late materialization reads the blocks of one vector instead of its whole row group
 statement ok
 CREATE TABLE p (k BIGINT PRIMARY KEY, o BIGINT, s VARCHAR);

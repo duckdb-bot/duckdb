@@ -39,8 +39,56 @@ static idx_t TimestampTimeLength(const char *str, idx_t len) {
 // Z is optional
 // ISO 8601
 
+bool Timestamp::TryRoundFraction(timestamp_t &result, optional_ptr<int32_t> nanos, const TruncatedFraction &fraction) {
+	// a tie rounds away from the epoch, like the casts to a lower precision
+	if (!fraction.RoundsUp(result.value >= 0)) {
+		return true;
+	}
+	if (fraction.at_end_of_day) {
+		return false;
+	}
+	if (nanos) {
+		if (++(*nanos) < Interval::NANOS_PER_MICRO) {
+			return true;
+		}
+		*nanos = 0;
+	}
+	return TryAddOperator::Operation(result.value, int64_t(1), result.value) && result.IsFinite();
+}
+
+//! Whether rounding adds a microsecond to a value of the given sign, once the nanoseconds when given carry over
+static bool RoundsUpMicros(const TruncatedFraction &fraction, bool non_negative, optional_ptr<int32_t> nanos) {
+	return fraction.RoundsUp(non_negative) && !fraction.at_end_of_day &&
+	       (!nanos || *nanos == Interval::NANOS_PER_MICRO - 1);
+}
+
+bool Timestamp::TryTakeRoundingUp(optional_ptr<int32_t> nanos, TruncatedFraction &fraction) {
+	if (!RoundsUpMicros(fraction, false, nanos)) {
+		return false;
+	}
+	if (nanos) {
+		*nanos = 0;
+	}
+	fraction = TruncatedFraction();
+	return true;
+}
+
+//! Whether the next microsecond is past an end of the range
+static bool NextIsOutOfRange(timestamp_t value) {
+	return !timestamp_t(value.value + 1).IsFinite();
+}
+
+static bool TrySubtractOffset(timestamp_t local, int64_t delta, timestamp_t &instant) {
+	return TrySubtractOperator::Operation(local.value, delta, instant.value) && instant.IsFinite();
+}
+
 TimestampCastResult Timestamp::TryConvertTimestampTZ(const char *str, idx_t len, timestamp_t &result, bool use_offset,
-                                                     bool &has_offset, string_t &tz, optional_ptr<int32_t> nanos) {
+                                                     bool &has_offset, string_t &tz, optional_ptr<int32_t> nanos,
+                                                     optional_ptr<TruncatedFraction> truncated) {
+	if (truncated) {
+		*truncated = TruncatedFraction();
+	}
+	TruncatedFraction fraction;
 	idx_t pos;
 	date_t date;
 	dtime_t time;
@@ -73,15 +121,22 @@ TimestampCastResult Timestamp::TryConvertTimestampTZ(const char *str, idx_t len,
 	// TryConvertTime may recursively call us, so we use TryConvertInterval.
 	// Note that we can't pass strict== true here because we want to process any suffix.
 	auto time_len = TimestampTimeLength(str + pos, len - pos);
-	if (!Time::TryConvertInterval(str + pos, time_len, time_pos, time, false, nanos) || time_pos != time_len) {
+	if (!Time::TryConvertInterval(str + pos, time_len, time_pos, time, false, nanos, false, &fraction) ||
+	    time_pos != time_len) {
 		return TimestampCastResult::ERROR_INCORRECT_FORMAT;
 	}
-	//	We parsed an interval, so make sure it is in range.
-	if (time.value > Interval::MICROS_PER_DAY) {
+	//	We parsed an interval, so make sure it is in range, nanoseconds included.
+	if (time.value > Interval::MICROS_PER_DAY || (time.value == Interval::MICROS_PER_DAY && nanos && *nanos > 0)) {
 		return TimestampCastResult::ERROR_RANGE;
 	}
+	fraction.at_end_of_day = time.value == Interval::MICROS_PER_DAY;
 	pos += time_pos;
+	// the range checks apply to the rounded local time, which can be in range when the truncated one is not
 	if (!Timestamp::TryFromDatetime(date, time, result)) {
+		if (!TryTakeRoundingUp(nanos, fraction) || !Timestamp::TryFromDatetime(date, dtime_t(time.value + 1), result)) {
+			return TimestampCastResult::ERROR_RANGE;
+		}
+	} else if (NextIsOutOfRange(result) && RoundsUpMicros(fraction, result.value >= 0, nanos)) {
 		return TimestampCastResult::ERROR_RANGE;
 	}
 	if (pos < len) {
@@ -93,9 +148,17 @@ TimestampCastResult Timestamp::TryConvertTimestampTZ(const char *str, idx_t len,
 		} else if (Timestamp::TryParseUTCOffset(str, pos, len, hh, mm, ss)) {
 			const int64_t delta =
 			    hh * Interval::MICROS_PER_HOUR + mm * Interval::MICROS_PER_MINUTE + ss * Interval::MICROS_PER_SEC;
-			if (use_offset &&
-			    (!TrySubtractOperator::Operation(result.value, delta, result.value) || !result.IsFinite())) {
-				return TimestampCastResult::ERROR_RANGE;
+			if (use_offset) {
+				// the range checks apply to the rounded instant too
+				const auto local = result;
+				if (!TrySubtractOffset(local, delta, result)) {
+					if (!TryTakeRoundingUp(nanos, fraction) ||
+					    !TrySubtractOffset(timestamp_t(local.value + 1), delta, result)) {
+						return TimestampCastResult::ERROR_RANGE;
+					}
+				} else if (NextIsOutOfRange(result) && RoundsUpMicros(fraction, result.value >= 0, nanos)) {
+					return TimestampCastResult::ERROR_RANGE;
+				}
 			}
 			has_offset = true;
 		} else {
@@ -122,14 +185,20 @@ TimestampCastResult Timestamp::TryConvertTimestampTZ(const char *str, idx_t len,
 			return TimestampCastResult::ERROR_INCORRECT_FORMAT;
 		}
 	}
+	if (truncated) {
+		*truncated = fraction;
+	} else if (!TryRoundFraction(result, nanos, fraction)) {
+		return TimestampCastResult::ERROR_RANGE;
+	}
 	return TimestampCastResult::SUCCESS;
 }
 
 TimestampCastResult Timestamp::TryConvertTimestamp(const char *str, idx_t len, timestamp_t &result, bool use_offset,
-                                                   optional_ptr<int32_t> nanos, bool strict) {
+                                                   optional_ptr<int32_t> nanos, bool strict,
+                                                   optional_ptr<TruncatedFraction> truncated) {
 	string_t tz(nullptr, 0);
 	bool has_offset = false;
-	auto success = TryConvertTimestampTZ(str, len, result, use_offset, has_offset, tz, nanos);
+	auto success = TryConvertTimestampTZ(str, len, result, use_offset, has_offset, tz, nanos, truncated);
 	if (success != TimestampCastResult::SUCCESS) {
 		return success;
 	}

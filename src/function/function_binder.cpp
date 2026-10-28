@@ -1319,7 +1319,8 @@ static string PushArgumentCollations(ClientContext &context, BoundSimpleFunction
 	}
 }
 
-//! Propagates the collation of the arguments to the return type of the function (if it returns a varchar)
+//! Propagates the collation of the arguments to the return type of the function (if it returns a varchar), unless the
+//! function already chose a collation for its result, as invoke does with the collation of its lambda body
 static void PropagateReturnCollation(BoundSimpleFunction &bound_function, const FunctionProperties &props,
                                      const vector<unique_ptr<Expression>> &children, const string &pushed_collation) {
 	if (!RequiresCollationPropagation(bound_function.GetReturnType())) {
@@ -1328,7 +1329,7 @@ static void PropagateReturnCollation(BoundSimpleFunction &bound_function, const 
 	auto collation = props.GetCollationHandling() == FunctionCollationHandling::PROPAGATE_COLLATIONS
 	                     ? ExtractCollation(children)
 	                     : pushed_collation;
-	if (collation.empty()) {
+	if (collation.empty() || !StringType::GetCollation(bound_function.GetReturnType()).empty()) {
 		return;
 	}
 	bound_function.SetReturnType(LogicalType::VARCHAR_COLLATION(std::move(collation)));

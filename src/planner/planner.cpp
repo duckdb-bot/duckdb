@@ -348,19 +348,19 @@ static bool OperatorSupportsSerialization(LogicalOperator &op) {
 	return op.SupportSerialization();
 }
 
-void Planner::VerifyPlan(ClientContext &context, unique_ptr<LogicalOperator> &op,
+bool Planner::VerifyPlan(ClientContext &context, unique_ptr<LogicalOperator> &op,
                          optional_ptr<bound_parameter_map_t> map) {
 	if (!op) {
-		return;
+		return false;
 	}
 	// verify the column bindings of the plan
 	LogicalPlanVerifier::Verify(context, *op);
 	if (!Settings::Get<DebugVerifySerializerSetting>(context)) {
-		return;
+		return false;
 	}
 	//! SELECT only for now
 	if (!OperatorSupportsSerialization(*op)) {
-		return;
+		return false;
 	}
 
 	auto &config = DBConfig::GetConfig(context);
@@ -385,11 +385,12 @@ void Planner::VerifyPlan(ClientContext &context, unique_ptr<LogicalOperator> &op
 			*map = std::move(parameters);
 		}
 		op = std::move(new_plan);
+		return true;
 	} catch (std::exception &ex) {
 		ErrorData error(ex);
 		switch (error.Type()) {
 		case ExceptionType::NOT_IMPLEMENTED: // NOLINT: explicitly allowing these errors (for now)
-			break;                           // pass
+			return false;
 		default:
 			throw;
 		}

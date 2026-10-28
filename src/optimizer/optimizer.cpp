@@ -574,7 +574,14 @@ unique_ptr<LogicalOperator> Optimizer::Optimize(unique_ptr<LogicalOperator> plan
 		});
 	}
 
-	Planner::VerifyPlan(context, plan);
+	if (Planner::VerifyPlan(context, plan)) {
+		// the deserialized plan has no join filter pushdown, which links a join and its scans through a shared filter
+		// set that is not serialized
+		RunOptimizer(OptimizerType::JOIN_FILTER_PUSHDOWN, [&]() {
+			JoinFilterPushdownOptimizer join_filter_pushdown(*this);
+			join_filter_pushdown.VisitOperator(*plan);
+		});
+	}
 
 	return std::move(plan);
 }

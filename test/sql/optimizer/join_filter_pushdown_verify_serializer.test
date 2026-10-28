@@ -1,0 +1,65 @@
+# name: test/sql/optimizer/join_filter_pushdown_verify_serializer.test
+# description: The plan that serializer verification executes keeps the join filter pushdown of late materialization
+# group: [optimizer]
+
+require json
+
+statement ok
+SET threads = 1;
+
+statement ok
+CREATE TABLE r (k BIGINT PRIMARY KEY, g VARCHAR, risk BIGINT, zone VARCHAR, score DOUBLE);
+
+statement ok
+INSERT INTO r
+SELECT (i * 7919) % 300000, 'geom ' || i, i % 7, 'zone ' || (i % 13), i * 0.5
+FROM range(300000) t(i);
+
+statement ok
+CHECKPOINT;
+
+statement ok
+SET enable_profiling = 'json';
+
+statement ok
+SET tracked_metrics = ['query.total_rows_scanned'];
+
+statement ok
+SET profiling_output = '{TEST_DIR}/no_verify.json';
+
+query IIIII
+SELECT k, risk, zone, score, length(g) AS d FROM r WHERE k BETWEEN 4242 AND 4300 ORDER BY d DESC, k LIMIT 3;
+----
+4242	3	zone 11	147159.0	11
+4243	2	zone 6	105998.5	11
+4244	1	zone 1	64838.0	11
+
+statement ok
+SET debug_verify_serializer = true;
+
+statement ok
+SET profiling_output = '{TEST_DIR}/verify.json';
+
+query IIIII
+SELECT k, risk, zone, score, length(g) AS d FROM r WHERE k BETWEEN 4242 AND 4300 ORDER BY d DESC, k LIMIT 3;
+----
+4242	3	zone 11	147159.0	11
+4243	2	zone 6	105998.5	11
+4244	1	zone 1	64838.0	11
+
+statement ok
+PRAGMA disable_profiling;
+
+statement ok
+SET debug_verify_serializer = false;
+
+# the join filter lets the second scan skip the row groups the index scan does not reach
+query I
+SELECT (SELECT query.total_rows_scanned FROM '{TEST_DIR}/verify.json') = (SELECT query.total_rows_scanned FROM '{TEST_DIR}/no_verify.json');
+----
+true
+
+query I
+SELECT query.total_rows_scanned < 300000 FROM '{TEST_DIR}/verify.json';
+----
+true

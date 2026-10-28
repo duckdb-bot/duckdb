@@ -195,3 +195,31 @@ FROM read_text('{TEST_DIR}/state_cast_verify.json') t, json_tree(t.content) j
 WHERE json_extract_string(j.value, '$.extra_info.Table') LIKE '%.main.pi';
 ----
 10
+
+# the cast an IN subquery adds is a default cast, which the comparison keeps as such
+statement ok
+SET debug_verify_serializer = true;
+
+statement ok
+SET enable_profiling = 'json';
+
+statement ok
+SET profiling_output = '{TEST_DIR}/in_verify.json';
+
+query I
+SELECT count(*) FROM pc WHERE k IN (SELECT k FROM bc);
+----
+10
+
+statement ok
+PRAGMA disable_profiling;
+
+statement ok
+SET debug_verify_serializer = false;
+
+query I
+SELECT json_extract_string(j.value, '$.intermediate_rows')::BIGINT
+FROM read_text('{TEST_DIR}/in_verify.json') t, json_tree(t.content) j
+WHERE json_extract_string(j.value, '$.extra_info.Table') LIKE '%.main.pc';
+----
+10

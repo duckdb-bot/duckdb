@@ -351,23 +351,27 @@ static bool OperatorSupportsSerialization(LogicalOperator &op) {
 	return op.SupportSerialization();
 }
 
-// Deserialization binds every cast the default way, while statistics propagation may have specialized the cast of
-// the original, so the original's casts are bound again before the two are compared
-static unique_ptr<Expression> WithDefaultCasts(ClientContext &context, unique_ptr<Expression> expr) {
+// Deserialization binds every cast anew, as a default or a context cast as it was bound, while statistics propagation
+// may have specialized the cast of the original, so the original's casts are bound anew the same way before the two
+// are compared
+static unique_ptr<Expression> WithReboundCasts(ClientContext &context, unique_ptr<Expression> expr) {
 	ExpressionIterator::EnumerateChildren(
-	    *expr, [&](unique_ptr<Expression> &child) { child = WithDefaultCasts(context, std::move(child)); });
+	    *expr, [&](unique_ptr<Expression> &child) { child = WithReboundCasts(context, std::move(child)); });
 	if (!BoundCastExpression::IsCast(*expr)) {
 		return expr;
 	}
 	auto &cast = expr->Cast<BoundFunctionExpression>();
 	auto target_type = BoundCastExpression::TargetType(cast);
 	auto try_cast = BoundCastExpression::IsTryCast(cast);
-	return BoundCastExpression::AddCastToType(context, std::move(BoundCastExpression::ChildMutable(cast)), target_type,
-	                                          try_cast);
+	auto child = std::move(BoundCastExpression::ChildMutable(cast));
+	if (BoundCastExpression::IsDefaultCast(cast)) {
+		return BoundCastExpression::AddDefaultCastToType(std::move(child), target_type, try_cast);
+	}
+	return BoundCastExpression::AddCastToType(context, std::move(child), target_type, try_cast);
 }
 
 static bool ExpressionsMatch(ClientContext &context, const Expression &original, const Expression &copy) {
-	return Expression::Equals(*WithDefaultCasts(context, original.Copy()), copy);
+	return Expression::Equals(*WithReboundCasts(context, original.Copy()), copy);
 }
 
 // A filter pushed from the join conditions only applies when the copy kept them

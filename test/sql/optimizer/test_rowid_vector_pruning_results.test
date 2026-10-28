@@ -152,6 +152,22 @@ SELECT count(*), min(st.a), max(st.a) FROM seg WHERE st.a >= 99990
 ----
 11	99990	100000
 
+# the first rows of a segment share a vector with the end of the rejected segment before it
+query III
+SELECT count(*), min(x), max(x) FROM seg WHERE x >= 98301
+----
+1700	98301	100000
+
+query II
+SELECT count(*), min(x) FROM seg WHERE x = 98301
+----
+1	98301
+
+query II
+SELECT count(*), min(st.a) FROM seg WHERE st.a = 98301
+----
+1	98301
+
 query II
 SELECT count(*), max(x) FROM seg WHERE rowid < 10 AND x < 10
 ----

@@ -86,12 +86,12 @@ void DataTableInfo::VerifyInPlaceUpdate(const vector<PhysicalIndex> &column_ids)
 			auto &build_columns = index_build.get().GetColumns();
 			if (std::find(build_columns.begin(), build_columns.end(), column_id.index) != build_columns.end()) {
 				throw TransactionException(
-				    "Transaction conflict: cannot update table \"%s\" while an index on the updated columns is created",
+				    "Transaction conflict: cannot update table %s while an index on the updated columns is created",
 				    GetTableName());
 			}
 		}
 		if (indexed_columns.find(column_id.index) != indexed_columns.end()) {
-			throw TransactionException("Transaction conflict: cannot update table \"%s\" because an index on the "
+			throw TransactionException("Transaction conflict: cannot update table %s because an index on the "
 			                           "updated columns was created after the update was planned",
 			                           GetTableName());
 		}

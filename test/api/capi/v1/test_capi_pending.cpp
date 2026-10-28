@@ -223,7 +223,8 @@ TEST_CASE("Test a pending update planned before an index on its column was creat
 	auto result = pending.Execute();
 	REQUIRE(result);
 	REQUIRE(result->HasError());
-	REQUIRE(string(result->ErrorMessage()).find("Transaction conflict") != string::npos);
+	REQUIRE(string(result->ErrorMessage()).find("Transaction conflict: cannot update table \"t\" because") !=
+	        string::npos);
 
 	// The index finds the rows that a scan finds
 	for (string key : {"5", "30000000"}) {

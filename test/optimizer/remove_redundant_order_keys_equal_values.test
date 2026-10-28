@@ -159,3 +159,20 @@ SELECT v, row_number() OVER (PARTITION BY v ORDER BY v::BLOB DESC) AS rn FROM c 
 ----
 abc	1
 ABC	2
+
+# the ORDER BY of a DISTINCT aggregate must be a function of its arguments; a function over such a key still counts
+# there, as before (DISTINCT keeps the representations apart)
+query I
+SELECT string_agg(DISTINCT s COLLATE NOCASE, ',' ORDER BY s COLLATE NOCASE) FROM (VALUES ('x'), ('Z')) t(s);
+----
+x,Z
+
+query I
+SELECT list(DISTINCT v ORDER BY v::VARCHAR DESC) FROM i;
+----
+[30 days, 1 month]
+
+query I
+SELECT list(DISTINCT x ORDER BY signbit(x)) FROM z;
+----
+[0.0, -0.0]

@@ -39,7 +39,7 @@ static bool EqualValuesAreIdentical(const LogicalType &type) {
 }
 
 static bool IsFunctionallyDependent(const unique_ptr<Expression> &expr, const vector<reference<Expression>> &deps,
-                                    bool is_root) {
+                                    bool strict, bool is_root) {
 	//	Volatile expressions can't depend on anything else
 	if (expr->IsVolatile()) {
 		return false;
@@ -48,12 +48,12 @@ static bool IsFunctionallyDependent(const unique_ptr<Expression> &expr, const ve
 	if (expr->IsFoldable()) {
 		return true;
 	}
-	// If the expression matches ANY of the dependencies, then it is FD on them. An expression over a match only is
-	// when equal values of the match are identical: the sign of a zero is constant on a partition, signbit(x) is not
+	// If the expression matches ANY of the dependencies, then it is FD on them. When strict, an expression over a match
+	// only is when equal values of the match are identical: x is equal on its partition, signbit(x) need not be
 	for (const auto &dep : deps) {
 		// We don't need to check volatility of the dependencies because we checked it for the expression.
 		if (expr->Equals(dep.get())) {
-			return is_root || EqualValuesAreIdentical(expr->GetReturnType());
+			return is_root || !strict || EqualValuesAreIdentical(expr->GetReturnType());
 		}
 	}
 
@@ -62,14 +62,14 @@ static bool IsFunctionallyDependent(const unique_ptr<Expression> &expr, const ve
 	bool are_dependent = true;
 	ExpressionIterator::EnumerateChildren(*expr, [&](unique_ptr<Expression> &child) {
 		has_children = true;
-		are_dependent &= IsFunctionallyDependent(child, deps, false);
+		are_dependent &= IsFunctionallyDependent(child, deps, strict, false);
 	});
 	return has_children && are_dependent;
 }
 
 bool BaseSelectBinder::IsFunctionallyDependent(const unique_ptr<Expression> &expr,
-                                               const vector<reference<Expression>> &deps) {
-	return duckdb::IsFunctionallyDependent(expr, deps, true);
+                                               const vector<reference<Expression>> &deps, bool strict) {
+	return duckdb::IsFunctionallyDependent(expr, deps, strict, true);
 }
 
 static Value NegatePercentileValue(const Value &v, const bool desc) {
@@ -304,7 +304,9 @@ BindResult BaseSelectBinder::BindAggregate(FunctionExpression &aggr, AggregateFu
 		}
 		bool in_args = true;
 		for (const auto &order_by : order_bys->orders) {
-			in_args &= IsFunctionallyDependent(order_by.expression, arg_refs);
+			// not strict: ORDER BY s COLLATE NOCASE over the argument s COLLATE NOCASE is its collation function, and
+			// is accepted as before
+			in_args &= IsFunctionallyDependent(order_by.expression, arg_refs, false);
 		}
 
 		if (!in_args) {

@@ -16,6 +16,13 @@ static bool StrReverseASCII(const char *input, idx_t n, char *output) {
 			// non-ascii character
 			return false;
 		}
+		if (input[i] == '\r' && i + 1 < n && input[i + 1] == '\n') {
+			// CR LF is one grapheme cluster, which keeps its order
+			output[n - i - 2] = '\r';
+			output[n - i - 1] = '\n';
+			i++;
+			continue;
+		}
 		output[n - i - 1] = input[i];
 	}
 	return true;

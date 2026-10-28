@@ -9,6 +9,8 @@
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "utf8proc.hpp"
 
+#include <cstring>
+
 namespace duckdb {
 
 static const int64_t SUPPORTED_UPPER_BOUND = NumericLimits<uint32_t>::Maximum();
@@ -197,7 +199,9 @@ string_t SubstringUnicode(Vector &result, string_t input, int64_t offset, int64_
 	                      UnsafeNumericCast<int64_t>(end_pos - start_pos));
 }
 
-string_t SubstringGrapheme(Vector &result, string_t input, int64_t offset, int64_t length) {
+//! With KNOWN_ASCII the input is ASCII (from statistics), and only a CR LF can make bytes differ from grapheme clusters
+template <bool KNOWN_ASCII>
+static string_t SubstringGraphemeInternal(Vector &result, string_t input, int64_t offset, int64_t length) {
 	auto input_data = input.GetData();
 	auto input_size = input.GetSize();
 
@@ -210,19 +214,20 @@ string_t SubstringGrapheme(Vector &result, string_t input, int64_t offset, int64
 		return SubstringEmptyString(result);
 	}
 
-	// now check if all the characters between 0 and end are ascii characters
-	// note that we scan one further to check for a potential combining diacritics (e.g. i + diacritic is ï)
-	bool is_ascii = true;
-	idx_t ascii_end = MinValue<idx_t>(UnsafeNumericCast<idx_t>(end + 1), input_size);
-	for (idx_t i = 0; i < ascii_end; i++) {
-		if (input_data[i] & 0x80) {
-			// found a non-ascii character: eek
-			is_ascii = false;
-			break;
-		}
+	// now check if the characters that determine the window are ascii characters
+	idx_t ascii_start = 0;
+	idx_t ascii_end = input_size;
+	if (offset < 0) {
+		// counted from the end, check from one before the window (a prepended character, e.g. U+0600) to the end
+		ascii_start = UnsafeNumericCast<idx_t>(MaxValue<int64_t>(start - 1, 0));
+	} else {
+		// counted from the start, check up to one after the window (a combining diacritic, e.g. i + diacritic is ï)
+		ascii_end = MinValue<idx_t>(UnsafeNumericCast<idx_t>(end + 1), input_size);
 	}
-	if (is_ascii) {
-		// all characters are ascii, we can just slice the substring
+	auto ascii_data = input_data + ascii_start;
+	auto ascii_size = ascii_end - ascii_start;
+	if ((KNOWN_ASCII || IsAscii(ascii_data, ascii_size)) && !ContainsCRLF(ascii_data, ascii_size)) {
+		// all characters are ascii and there is no CR LF, so bytes are grapheme clusters and we can just slice
 		return SubstringSlice(result, input_data, start, end - start);
 	}
 	// if the characters are not ascii, we need to scan grapheme clusters
@@ -258,6 +263,10 @@ string_t SubstringGrapheme(Vector &result, string_t input, int64_t offset, int64
 	                      UnsafeNumericCast<int64_t>(end_pos - start_pos));
 }
 
+string_t SubstringGrapheme(Vector &result, string_t input, int64_t offset, int64_t length) {
+	return SubstringGraphemeInternal<false>(result, input, offset, length);
+}
+
 namespace {
 
 struct SubstringUnicodeOp {
@@ -269,6 +278,13 @@ struct SubstringUnicodeOp {
 struct SubstringGraphemeOp {
 	static string_t Substring(Vector &result, string_t input, int64_t offset, int64_t length) {
 		return SubstringGrapheme(result, input, offset, length);
+	}
+};
+
+//! For input that statistics say is ASCII
+struct SubstringGraphemeASCIIOp {
+	static string_t Substring(Vector &result, string_t input, int64_t offset, int64_t length) {
+		return SubstringGraphemeInternal<true>(result, input, offset, length);
 	}
 };
 
@@ -444,7 +460,7 @@ unique_ptr<BaseStatistics> SubstringGraphemePropagateStats(ClientContext &contex
 	auto &child_stats = input.child_stats;
 	auto &expr = input.expr;
 	if (!StringStats::CanContainUnicode(child_stats[0])) {
-		expr.FunctionMutable().SetFunctionCallback(SubstringFunctionASCII);
+		expr.FunctionMutable().SetFunctionCallback(SubstringFunction<SubstringGraphemeASCIIOp>);
 	}
 	if (!StringStats::HasMaxStringLength(input.child_stats[0])) {
 		return nullptr;

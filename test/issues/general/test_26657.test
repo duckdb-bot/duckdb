@@ -90,6 +90,12 @@ SELECT '290309-12-21 (BC) 19:59:05.2241936'::TIME, '290309-12-22 (BC) 00:59:05.2
 ----
 19:59:05.224194	19:59:05.224194+00
 
+# with nanoseconds, only a carry into the microseconds can take the value into the range
+query III
+SELECT '290309-12-21 (BC) 19:59:05.2241919996'::TIME_NS, '290309-12-21 (BC) 19:59:05.2241939996'::TIME_NS, TRY_CAST('290309-12-21 (BC) 19:59:05.2241939986' AS TIME_NS)
+----
+19:59:05.224192	19:59:05.224194	NULL
+
 # the local time of a string with an offset must be in range once rounded too
 query III
 SELECT TRY_CAST('290309-12-21 (BC) 19:59:05.2241926-05' AS TIMESTAMPTZ), TRY_CAST('294247-01-10 04:00:54.7758065+05' AS TIMESTAMPTZ), TRY_CAST('294247-01-10 04:00:54.7758065' AS TIME)
@@ -194,6 +200,12 @@ SELECT epoch_us('290309-12-22 (BC) 05:18:04.2241936 Asia/Tokyo'::TIMESTAMPTZ), e
 
 query II
 SELECT TRY_CAST('290309-12-21 (BC) 19:59:05.2241926 America/New_York' AS TIMESTAMPTZ), TRY_CAST('294247-01-10 04:00:54.7758065 Asia/Tokyo' AS TIMESTAMPTZ)
+----
+NULL	NULL
+
+# a local time that rounds onto -infinity is out of range, also when its instant is below the range
+query II
+SELECT TRY_CAST('290309-12-21 (BC) 19:59:05.2241926 Asia/Tokyo' AS TIMESTAMPTZ), TRY_CAST('290309-12-21 (BC) 19:59:05.2241929996 Asia/Tokyo' AS TIMESTAMPTZ_NS)
 ----
 NULL	NULL
 

@@ -53,9 +53,9 @@ public:
 	//! Convert a string where the offset can also be a time zone string: / [A_Za-z0-9/_]+/
 	//! If has_offset is true, then the result is an instant that was offset from UTC
 	//! If the tz is not empty, the result is still an instant, but the parts can be extracted and applied to the TZ
-	//! When truncated is given, the fraction is truncated, and TryRoundFraction must be applied to the instant after
-	//! resolving the TZ. A value that is only in range once rounded is rounded, and truncated is cleared. Otherwise
-	//! the fraction is rounded
+	//! Without truncated, the fraction is rounded
+	//! With truncated, the fraction is truncated, and TryRoundFraction rounds the instant after resolving the TZ
+	//! A value that is only in range once rounded is rounded right away, which leaves truncated empty
 	DUCKDB_API static TimestampCastResult TryConvertTimestampTZ(const char *str, idx_t len, timestamp_t &result,
 	                                                            const bool use_offset, bool &has_offset, string_t &tz,
 	                                                            optional_ptr<int32_t> nanos = nullptr,
@@ -69,7 +69,8 @@ public:
 	//! Round a truncated fraction to the parsed precision (microseconds, or nanoseconds when nanos is given)
 	DUCKDB_API static bool TryRoundFraction(timestamp_t &result, optional_ptr<int32_t> nanos,
 	                                        const TruncatedFraction &fraction);
-	//! Whether a value before the epoch rounds up to its next microsecond, which consumes the fraction and the nanos
+	//! Whether the fraction rounds a value before the epoch up a microsecond, which the caller adds and range checks
+	//! When it does, the fraction and the nanoseconds are consumed
 	DUCKDB_API static bool TryTakeRoundingUp(optional_ptr<int32_t> nanos, TruncatedFraction &fraction);
 	DUCKDB_API static TimestampCastResult TryConvertTimestamp(const char *str, idx_t len, timestamp_ns_t &result,
 	                                                          bool use_offset, bool strict = false);

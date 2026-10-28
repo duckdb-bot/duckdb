@@ -13,6 +13,7 @@
 #include "utf8proc_wrapper.hpp"
 #include "duckdb/common/types/string_type.hpp"
 #include "duckdb/common/operator/cast_operators.hpp"
+#include "duckdb/common/operator/multiply.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -108,6 +109,10 @@ int64_t StringUtil::ToSigned(const string &str) {
 
 double StringUtil::ToDouble(const string &str) {
 	return std::stod(str);
+}
+
+string StringUtil::ToString(double value) {
+	return StringUtil::Format("%f", value);
 }
 
 void StringUtil::LTrim(string &str) {
@@ -406,6 +411,21 @@ string StringUtil::TryParseFormattedBytes(const string &arg, idx_t &result) {
 		return StringUtil::Format("Unknown unit for memory: '%s' (expected: KB, MB, GB, TB for 1000^i units or KiB, "
 		                          "MiB, GiB, TiB for 1024^i units)",
 		                          unit);
+	}
+
+	// integer values are multiplied exactly - going through a double loses precision above 2^53
+	bool is_integer = !number.empty() && number.find_first_not_of("0123456789") == string::npos;
+	if (is_integer) {
+		uint64_t integer_limit;
+		if (!TryCast::Operation<string_t, uint64_t>(string_t(number), integer_limit)) {
+			return "Memory value out of range: value is too large";
+		}
+		uint64_t integer_bytes;
+		if (!TryMultiplyOperator::Operation(integer_limit, static_cast<uint64_t>(multiplier), integer_bytes)) {
+			return "Memory value out of range: value is too large";
+		}
+		result = integer_bytes;
+		return string();
 	}
 
 	// Make sure the result is not greater than `idx_t` max value
@@ -726,6 +746,32 @@ idx_t StringUtil::LevenshteinDistance(const string &s1_p, const string &s2_p, id
 	return array.Score(len1, len2);
 }
 
+idx_t StringUtil::DamerauLevenshteinDistance(const string &s1_p, const string &s2_p) {
+	auto s1 = StringUtil::Lower(s1_p);
+	auto s2 = StringUtil::Lower(s2_p);
+	idx_t len1 = s1.size();
+	idx_t len2 = s2.size();
+	LevenshteinArray array(len1 + 1, len2 + 1);
+	for (idx_t i = 0; i <= len1; i++) {
+		array.Score(i, 0) = i;
+	}
+	for (idx_t j = 0; j <= len2; j++) {
+		array.Score(0, j) = j;
+	}
+	for (idx_t i = 1; i <= len1; i++) {
+		for (idx_t j = 1; j <= len2; j++) {
+			idx_t cost = s1[i - 1] == s2[j - 1] ? 0 : 1;
+			idx_t score = MinValue(array.Score(i - 1, j) + 1, array.Score(i, j - 1) + 1);
+			score = MinValue(score, array.Score(i - 1, j - 1) + cost);
+			if (i > 1 && j > 1 && s1[i - 1] == s2[j - 2] && s1[i - 2] == s2[j - 1]) {
+				score = MinValue(score, array.Score(i - 2, j - 2) + 1);
+			}
+			array.Score(i, j) = score;
+		}
+	}
+	return array.Score(len1, len2);
+}
+
 idx_t StringUtil::SimilarityScore(const string &s1, const string &s2) {
 	return LevenshteinDistance(s1, s2, 3);
 }
@@ -802,7 +848,7 @@ static string JSONValueToString(const string &json, JSONValue value) {
 		return to_string(value.GetSignedInteger());
 	case JSONValueType::DOUBLE:
 	case JSONValueType::RAW:
-		return to_string(value.GetDouble());
+		return StringUtil::ToString(value.GetDouble());
 	case JSONValueType::JSON_NULL:
 		return "null";
 	case JSONValueType::OBJECT:

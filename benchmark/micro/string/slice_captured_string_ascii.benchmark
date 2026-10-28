@@ -1,0 +1,15 @@
+# name: benchmark/micro/string/slice_captured_string_ascii.benchmark
+# description: Slicing an ASCII string of 64 MiB that a lambda captures into 1024 parts (duckdblabs/bot-issue-tracker#637)
+# group: [string]
+
+name Slice Captured String (ASCII)
+group string
+
+load
+CREATE TABLE t AS SELECT repeat('x', 64 * 1024 * 1024) AS s;
+
+run
+SELECT count(*), sum(length(p)) FROM (SELECT unnest(list_transform(range(0, 1024), lambda i: s[i * 65536 + 1 : i * 65536 + 65536])) AS p FROM t);
+
+result II
+1024	67108864

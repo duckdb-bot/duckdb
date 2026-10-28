@@ -1,0 +1,79 @@
+# name: test/sql/function/string/test_string_slice_captured.test
+# description: Slices of a string that a lambda captures, which is the same string in every row of the lambda (duckdblabs/bot-issue-tracker#637)
+# group: [string]
+
+# an ASCII string, a non-ASCII one, one whose only non-ASCII character is last, an inlined one, an empty one and NULL
+statement ok
+CREATE TABLE strs AS SELECT * FROM (VALUES
+	(1, repeat('abcdefghij', 10000)),
+	(2, repeat('aé€😀', 10000)),
+	(3, repeat('x', 99999) || 'é'),
+	(4, 'héllo wörld'),
+	(5, ''),
+	(6, NULL)) t(id, s);
+
+# every slice of 100 characters equals the substring at the same place
+query III
+SELECT id, len(l), bool_and(e)
+FROM (SELECT id, list_transform(range(0, length(s) // 100 + 1), lambda i: s[i * 100 + 1 : i * 100 + 100] IS NOT DISTINCT FROM substring(s, i * 100 + 1, 100)) AS l FROM strs),
+	(SELECT unnest(l) AS e)
+GROUP BY ALL ORDER BY id;
+----
+1	1001	true
+2	401	true
+3	1001	true
+4	1	true
+5	1	true
+
+# negative, omitted and out of range bounds
+query IIIIIIII
+SELECT id, list_transform([1, 2, 3], lambda i: s[-i * 3:]) = [s[-3:], s[-6:], s[-9:]], list_transform([1, 2, 3], lambda i: s[-i * 3:])[3][:12], list_transform([1, 2], lambda i: s[:i * 2])[2][-4:], list_transform([0, 2], lambda i: s[i:i + 2]), list_transform([1], lambda i: s[-5:-2]), list_transform([1], lambda i: s[100000:]), list_transform([1], lambda i: s[-100005:3])
+FROM (FROM strs UNION ALL SELECT 7, 'héllo') ORDER BY id;
+----
+1	true	bcdefghij	abcd	[ab, bcd]	[fghi]	[j]	[abc]
+2	true	😀aé€😀aé€😀	aé€😀	[aé, é€😀]	[😀aé€]	['']	[aé€]
+3	true	xxxxxxxxé	xxxx	[xx, xxx]	[xxxx]	[é]	[xxx]
+4	true	llo wörld	héll	[hé, éll]	[wörl]	['']	[hél]
+5	true	(empty)	(empty)	['', '']	['']	['']	['']
+6	true	NULL	NULL	[NULL, NULL]	[NULL]	[NULL]	[NULL]
+7	true	héllo	héll	[hé, éll]	[héll]	['']	[hél]
+
+# strings of the same size, one of them ASCII, whose slices alternate within a lambda call
+statement ok
+CREATE TABLE pair AS SELECT * FROM (VALUES (1, repeat('a', 1000) || 'é'), (2, repeat('b', 1002)), (3, repeat('a', 1000) || 'é')) t(id, s);
+
+query IIII
+SELECT id, strlen(s), list_transform(range(3), lambda i: s[-1 - i:]), list_transform(range(2), lambda i: length(s[2:])) FROM pair ORDER BY id;
+----
+1	1002	[é, aé, aaé]	[1000, 1000]
+2	1002	[b, bb, bbb]	[1001, 1001]
+3	1002	[é, aé, aaé]	[1000, 1000]
+
+query II
+SELECT x, count(*) FROM (SELECT id, unnest(list_transform(range(3000), lambda i: s[-1:])) x FROM pair) GROUP BY x ORDER BY ALL;
+----
+b	3000
+é	6000
+
+# slices of a captured string that is not ASCII, in order, backwards and repeated
+query IIIT
+SELECT id, list_transform(range(0, 40), lambda i: s[i * 3 + 1 : i * 3 + 2]) = list_transform(range(0, 40), lambda i: substring(s, i * 3 + 1, 2)),
+	list_transform(range(40, 0, -1), lambda i: s[i * 3 + 1 : i * 3 + 5]) = list_transform(range(40, 0, -1), lambda i: substring(s, i * 3 + 1, 5)),
+	list_transform([5, 5, 2, 2, 9], lambda i: s[i:i + 1])
+FROM strs WHERE id IN (2, 3) ORDER BY id;
+----
+2	true	true	[aé, aé, é€, é€, aé]
+3	true	true	[xx, xx, xx, xx, xx]
+
+# elements of a list, which differ in every row
+query I
+SELECT list_transform(['héllo', 'wörld', NULL, '', 'a'], lambda x: x[2:3]);
+----
+[él, ör, NULL, '', '']
+
+# blobs are sliced by bytes
+query IIII
+SELECT b, list_transform([1, 2, 3], lambda i: b[i:i]), b[2:], b[-2:] FROM (VALUES ('\xAA\xBB\xCC'::BLOB), (repeat('\xAA', 20)::BLOB)) t(b);
+----
+\xAA\xBB\xCC	['\\xAA', '\\xBB', '\\xCC']	\xBB\xCC	\xBB\xCC
+\xAA\xAA\xAA\xAA\xAA\xAA\xAA\xAA\xAA\xAA\xAA\xAA\xAA\xAA\xAA\xAA\xAA\xAA\xAA\xAA	['\\xAA', '\\xAA', '\\xAA']	\xAA\xAA\xAA\xAA\xAA\xAA\xAA\xAA\xAA\xAA\xAA\xAA\xAA\xAA\xAA\xAA\xAA\xAA\xAA	\xAA\xAA

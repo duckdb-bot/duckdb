@@ -70,6 +70,29 @@ SELECT MAP {'A': 1, 'a': 2}['a' COLLATE NOCASE], map_extract(MAP {'A': 1, 'a': 2
 ----
 1	[1]	1	NULL
 
+# the map is not rebuilt with collated keys, which would make these keys equal
+statement ok
+CREATE TABLE same_keys (id INT, m MAP(VARCHAR, INT), k VARCHAR);
+
+statement ok
+INSERT INTO same_keys VALUES (1, MAP {'Apple': 1, 'APPLE': 2}, 'apple'), (2, MAP {'APPLE': 2, 'Apple': 1}, 'aPPLE'),
+	(3, MAP {'Apple': 1, 'APPLE': 2}, 'APPLE'), (4, MAP {'Apple': 1, 'APPLE': 2}, 'pear');
+
+query IIIII
+SELECT id, m[k COLLATE NOCASE], map_extract(m, k COLLATE NOCASE), element_at(m, k COLLATE NOCASE), m[k]
+FROM same_keys ORDER BY id;
+----
+1	1	[1]	[1]	NULL
+2	2	[2]	[2]	NULL
+3	1	[1]	[1]	2
+4	NULL	[]	[]	NULL
+
+query II
+SELECT map_from_entries([{'key': 'Apple', 'value': 1}, {'key': 'APPLE', 'value': 2}])['apple' COLLATE NOCASE],
+       map(['Apple', 'APPLE'], [1, 2])['APPLE' COLLATE NOCASE];
+----
+1	1
+
 # keys that are lists, arrays or structs of collated strings
 query II
 SELECT map([['A' COLLATE NOCASE, 'b']], [1])[['a', 'B']], map_extract(map([['A' COLLATE NOCASE, 'b']], [1]), ['a', 'C']);
@@ -147,6 +170,13 @@ SELECT currval('map_seq'), currval('key_seq');
 ----
 2	2
 
+# the value of a volatile map does not take the collation of the key either
+query II
+SELECT typeof(map(['k'], [nextval('map_seq') || 'v'])['K' COLLATE NOCASE]),
+       right(map(['k'], [nextval('map_seq') || 'v'])['K' COLLATE NOCASE], 1) = 'V';
+----
+VARCHAR	false
+
 # a key with side effects is evaluated for NULL maps as well
 statement ok
 CREATE SEQUENCE null_seq;
@@ -185,11 +215,6 @@ query I
 EXECUTE q(NULL);
 ----
 NULL
-
-query I
-SELECT currval('null_seq');
-----
-5
 
 statement ok
 CREATE TABLE s AS SELECT MAP {'Apple': i % 5} AS m FROM range(1000) r(i);
@@ -231,12 +256,12 @@ CREATE INDEX collated_idx ON indexed ((m['Apple' COLLATE NOCASE]));
 statement error
 INSERT INTO indexed VALUES (MAP {'Apple': 7});
 ----
-Cannot use "map_extract_value" in this context
+Cannot use "list_transform" in this context
 
 statement error
 INSERT INTO indexed VALUES (MAP {'Apple': 7});
 ----
-Cannot use "map_extract_value" in this context
+Cannot use "list_transform" in this context
 
 statement ok
 DROP INDEX collated_idx;

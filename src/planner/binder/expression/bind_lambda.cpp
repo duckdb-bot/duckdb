@@ -20,13 +20,6 @@ static idx_t GetLambdaParamCount(vector<DummyBinding> &lambda_bindings) {
 	return count;
 }
 
-//! The type of a reference to a lambda parameter, which keeps the collations that binding gave the parameter
-static LogicalType GetLambdaParamType(const LogicalType &parameter_type, const BoundLambdaRefExpression &lambda_ref) {
-	// Type equality ignores collations, so this keeps the collations of an otherwise equal type
-	auto &ref_type = lambda_ref.GetReturnType();
-	return ref_type == parameter_type ? ref_type : parameter_type;
-}
-
 static idx_t GetLambdaParamIndex(vector<DummyBinding> &lambda_bindings, const BoundLambdaExpression &bound_lambda_expr,
                                  const BoundLambdaRefExpression &bound_lambda_ref_expr) {
 	D_ASSERT(bound_lambda_ref_expr.LambdaIndex() < lambda_bindings.size());
@@ -194,8 +187,8 @@ void ExpressionBinder::TransformCapturedLambdaColumn(unique_ptr<Expression> &ori
 				if (ProjectionIndex(column_idx) == bound_lambda_ref.Binding().column_index) {
 					// now create the replacement
 					auto index = GetLambdaParamIndex(*lambda_bindings, bound_lambda_expr, bound_lambda_ref);
-					auto logical_type = GetLambdaParamType(column_types[column_idx], bound_lambda_ref);
-					replacement = make_uniq<BoundReferenceExpression>(column_names[column_idx], logical_type, index);
+					replacement =
+					    make_uniq<BoundReferenceExpression>(column_names[column_idx], column_types[column_idx], index);
 					return;
 				}
 			}
@@ -207,8 +200,7 @@ void ExpressionBinder::TransformCapturedLambdaColumn(unique_ptr<Expression> &ori
 		auto logical_type = (*bind_lambda_function)(context, function_child_types,
 		                                            bound_lambda_ref.Binding().column_index, bind_lambda_context);
 		auto index = bound_lambda_expr.ParameterCount() - bound_lambda_ref.Binding().column_index - 1;
-		replacement =
-		    make_uniq<BoundReferenceExpression>(alias, GetLambdaParamType(logical_type, bound_lambda_ref), index);
+		replacement = make_uniq<BoundReferenceExpression>(alias, logical_type, index);
 		return;
 	}
 

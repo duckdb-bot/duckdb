@@ -17,9 +17,11 @@ CREATE TABLE db2.all_types_new AS SELECT * FROM test_all_types();
 statement ok
 DETACH db2;
 
-# ATTACH OR REPLACE same path to same alias should work
-statement ok
+# ATTACH OR REPLACE same path to same alias is an error
+statement error
 ATTACH OR REPLACE '{TEST_DIR}/attach_or_replace.db' AS db1;
+----
+ATTACH OR REPLACE cannot replace it with the same file
 
 statement ok
 SELECT * FROM db1.all_types;

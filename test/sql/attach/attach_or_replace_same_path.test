@@ -1,53 +1,94 @@
 # name: test/sql/attach/attach_or_replace_same_path.test
-# description: ATTACH OR REPLACE of the attached path keeps the database while the file is the same one (duckdblabs/bot-issue-tracker#540)
+# description: ATTACH OR REPLACE with the file the database already has attached is an error (duckdblabs/bot-issue-tracker#540)
 # group: [attach]
 
 statement ok
-ATTACH '{TEST_DIR}/or_replace_same_path.db' AS db1;
+ATTACH '{TEST_DIR}/or_replace_same_path.db' AS db1 (DEFAULT_TABLE 't');
 
 statement ok
 CREATE TABLE db1.t AS SELECT 1 AS i;
 
 statement ok
+CREATE TABLE db1.u AS SELECT 2 AS i;
+
+statement ok
 CREATE TABLE oids AS SELECT database_oid AS oid FROM duckdb_databases() WHERE database_name = 'db1';
 
-# a database attached for writing stays attached
-statement ok
-ATTACH OR REPLACE '{TEST_DIR}/or_replace_same_path.db' AS db1;
+# a database attached for writing
+statement error
+ATTACH OR REPLACE '{TEST_DIR}/or_replace_same_path.db' AS db1 (DEFAULT_TABLE 'u');
+----
+ATTACH OR REPLACE cannot replace it with the same file
 
+# the error keeps the attached database and its default table
 query II
-SELECT i, (SELECT database_oid FROM duckdb_databases() WHERE database_name = 'db1') IN (SELECT oid FROM oids) FROM db1.t;
+SELECT i, (SELECT database_oid FROM duckdb_databases() WHERE database_name = 'db1') IN (SELECT oid FROM oids) FROM db1;
 ----
 1	true
+
+# ATTACH IF NOT EXISTS keeps the attached database
+statement ok
+ATTACH IF NOT EXISTS '{TEST_DIR}/or_replace_same_path.db' AS db1;
 
 statement ok
 DETACH db1;
 
-# so does one attached for reading, while the path names the file it has open
+# a database attached for reading, with or without a mode
 statement ok
 ATTACH '{TEST_DIR}/or_replace_same_path.db' AS db1 (READ_ONLY);
 
 statement ok
 INSERT INTO oids SELECT database_oid FROM duckdb_databases() WHERE database_name = 'db1';
 
-statement ok
+statement error
 ATTACH OR REPLACE '{TEST_DIR}/or_replace_same_path.db' AS db1 (READ_ONLY);
-
-statement ok
-ATTACH OR REPLACE '{TEST_DIR}/or_replace_same_path.db' AS db1;
-
-query II
-SELECT sum(i), (SELECT database_oid FROM duckdb_databases() WHERE database_name = 'db1') IN (SELECT oid FROM oids) FROM db1.t;
 ----
-1	true
+ATTACH OR REPLACE cannot replace it with the same file
 
 statement error
-INSERT INTO db1.t VALUES (2);
+ATTACH OR REPLACE '{TEST_DIR}/or_replace_same_path.db' AS db1;
 ----
-read-only
+ATTACH OR REPLACE cannot replace it with the same file
 
-# a different access mode is still an error
+# a different access mode is reported as such
 statement error
 ATTACH OR REPLACE '{TEST_DIR}/or_replace_same_path.db' AS db1 (READ_WRITE);
 ----
 already attached in READ_ONLY mode
+
+# DETACH followed by ATTACH opens the file again
+statement ok
+DETACH db1;
+
+statement ok
+ATTACH '{TEST_DIR}/or_replace_same_path.db' AS db1 (READ_ONLY);
+
+query II
+SELECT i, (SELECT database_oid FROM duckdb_databases() WHERE database_name = 'db1') IN (SELECT oid FROM oids) FROM db1.t;
+----
+1	false
+
+# another file replaces the database
+statement ok
+ATTACH '{TEST_DIR}/or_replace_other_path.db' AS db2;
+
+statement ok
+CREATE TABLE db2.t AS SELECT 3 AS i;
+
+statement ok
+DETACH db2;
+
+statement ok
+ATTACH OR REPLACE '{TEST_DIR}/or_replace_other_path.db' AS db1;
+
+query I
+SELECT i FROM db1.t;
+----
+3
+
+# an in-memory database has no file and keeps its attachment
+statement ok
+ATTACH ':memory:' AS mem;
+
+statement ok
+ATTACH OR REPLACE ':memory:' AS mem;

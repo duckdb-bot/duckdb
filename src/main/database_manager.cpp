@@ -11,7 +11,6 @@
 #include "duckdb/main/extension_helper.hpp"
 #include "duckdb/parser/parsed_data/alter_database_info.hpp"
 #include "duckdb/storage/storage_extension.hpp"
-#include "duckdb/storage/single_file_block_manager.hpp"
 #include "duckdb/storage/storage_manager.hpp"
 #include "duckdb/transaction/duck_transaction.hpp"
 #include "duckdb/transaction/duck_transaction_manager.hpp"
@@ -104,20 +103,6 @@ bool RequiresTrackingAttaches(const string &path, const string &db_type) {
 	return true;
 }
 
-//! Whether the path no longer names the file that the database has open, as when a writer replaced the file
-static bool FileWasReplaced(ClientContext &context, AttachedDatabase &db, const string &path) {
-	string extension;
-	if (FileSystem::IsRemoteFile(path, extension)) {
-		// a remote file has no identity to compare, so it is read again if it exists
-		return FileSystem::GetFileSystem(context).GetStatsIfExists(OpenFileInfo(path)).has_value();
-	}
-	auto &block_manager = db.GetStorageManager().GetBlockManager();
-	if (block_manager.InMemory()) {
-		return false;
-	}
-	return block_manager.Cast<SingleFileBlockManager>().PathNamesOtherFile(path);
-}
-
 shared_ptr<AttachedDatabase> DatabaseManager::AttachDatabase(ClientContext &context, AttachInfo &info,
                                                              AttachOptions &options) {
 	string extension = "";
@@ -153,9 +138,7 @@ shared_ptr<AttachedDatabase> DatabaseManager::AttachDatabase(ClientContext &cont
 				throw BinderException("Database %s is already attached in %s mode, cannot re-attach in %s mode",
 				                      info.name, existing_mode_str, attached_mode);
 			}
-			if (!options.default_table.Name().empty()) {
-				existing_db->GetCatalog().SetDefaultTable(options.default_table.Schema(), options.default_table.Name());
-			}
+			bool replace_existing = false;
 			if (info.on_conflict == OnCreateConflict::REPLACE_ON_CONFLICT) {
 				// we require the vacuuming threshold for indexed tables to be the same as the already attached db
 				if (options.vacuum_rebuild_indexes_threshold.IsValid()) {
@@ -168,15 +151,21 @@ shared_ptr<AttachedDatabase> DatabaseManager::AttachDatabase(ClientContext &cont
 					}
 				}
 				// allow custom catalogs to override this behavior
-				if (!existing_db->GetCatalog().HasConflictingAttachOptions(info.path, options)) {
-					// a DuckDB file attached for reading that a writer replaced is opened again next to it
-					if (!existing_db->IsReadOnly() || existing_db->StoredPath().empty() ||
-					    !FileWasReplaced(context, *existing_db, info.path)) {
-						return existing_db;
-					}
-					options.access_mode = AccessMode::READ_ONLY;
+				auto &existing_catalog = existing_db->GetCatalog();
+				replace_existing = existing_catalog.HasConflictingAttachOptions(info.path, options);
+				if (!replace_existing && existing_catalog.IsDuckCatalog() && !existing_catalog.InMemory()) {
+					// the database already has this file open, so it cannot be replaced by it
+					throw BinderException("Database %s is already attached with path \"%s\", ATTACH OR REPLACE cannot "
+					                      "replace it with the same file. Use DETACH followed by ATTACH to open the "
+					                      "file again",
+					                      info.name, info.path);
 				}
-			} else {
+			}
+			if (!replace_existing) {
+				if (!options.default_table.Name().empty()) {
+					existing_db->GetCatalog().SetDefaultTable(options.default_table.Schema(),
+					                                          options.default_table.Name());
+				}
 				return existing_db;
 			}
 		}

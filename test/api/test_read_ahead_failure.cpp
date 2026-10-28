@@ -55,6 +55,11 @@ public:
 		return LocalFileSystem::FileExists(MapPath(path), opener);
 	}
 
+	//! Glob through the override below, since the local glob would stat the unmapped path
+	bool SupportsGlobExtended() const override {
+		return false;
+	}
+
 	vector<OpenFileInfo> Glob(const string &path, FileOpener *opener) override {
 		if (!CanHandleFile(path)) {
 			return LocalFileSystem::Glob(path, opener);

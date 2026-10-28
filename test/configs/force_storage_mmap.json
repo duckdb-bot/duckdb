@@ -7,7 +7,7 @@
     {
       "reason": "Memory-mapped reads do not count toward io.total_bytes_read.",
       "paths": [
-        "test/sql/optimizer/test_rowid_vector_pruning.test"
+        "test/sql/optimizer/test_rowid_vector_pruning_prefetch.test"
       ]
     }
   ],

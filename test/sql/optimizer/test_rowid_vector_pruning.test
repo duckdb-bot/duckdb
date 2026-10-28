@@ -4,6 +4,9 @@
 
 require json
 
+# the rows scanned count whole vectors
+require exact_vector_size 2048
+
 load {TEST_DIR}/rowid_vector_pruning.db
 
 statement ok
@@ -52,16 +55,13 @@ SELECT k, risk, zone, score, length(g) AS d FROM r WHERE k BETWEEN 4242 AND 4300
 statement ok
 PRAGMA disable_profiling
 
-# both scans read a few vectors instead of whole row groups
-query I
-SELECT query.total_rows_scanned < 122880 FROM '{TEST_DIR}/rowid_vector_pruning_in.json'
+# the IN list reads four full vectors and the 992 rows of the partial last vector of the table
+# late materialization reads the 59 index hits and the three vectors that hold its row ids
+query II
+SELECT in_list.query.total_rows_scanned, late.query.total_rows_scanned
+FROM '{TEST_DIR}/rowid_vector_pruning_in.json' in_list, '{TEST_DIR}/rowid_vector_pruning_late.json' late
 ----
-true
-
-query I
-SELECT query.total_rows_scanned < 122880 FROM '{TEST_DIR}/rowid_vector_pruning_late.json'
-----
-true
+9184	6203
 
 # one row group whose last vector is partial, row id i holds v = i
 statement ok
@@ -107,16 +107,17 @@ SELECT v, pad FROM s ORDER BY abs(v - 50000) DESC, v LIMIT 2
 statement ok
 PRAGMA disable_profiling
 
-# a row id in the first vector skips the partial last vector too, a row id in the last vector reads it
-query II
-SELECT one_id.query.total_rows_scanned < two_ids.query.total_rows_scanned,
-       late_one_id.query.total_rows_scanned < late_two_ids.query.total_rows_scanned
+# a row id in the first vector reads that vector and skips the partial last vector of 1697 rows
+# a row id in the last vector reads it, late materialization scans the 100001 rows for its row ids first
+query IIII
+SELECT one_id.query.total_rows_scanned, two_ids.query.total_rows_scanned,
+       late_one_id.query.total_rows_scanned, late_two_ids.query.total_rows_scanned
 FROM '{TEST_DIR}/rowid_vector_pruning_first.json' one_id,
      '{TEST_DIR}/rowid_vector_pruning_first_last.json' two_ids,
      '{TEST_DIR}/rowid_vector_pruning_late_first.json' late_one_id,
      '{TEST_DIR}/rowid_vector_pruning_late_first_last.json' late_two_ids
 ----
-true	true
+2048	3745	102049	103746
 
 # segment zonemaps also skip a partial last vector, so a table with one scans as much as the table without it
 statement ok

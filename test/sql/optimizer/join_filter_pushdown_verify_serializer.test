@@ -1,5 +1,5 @@
 # name: test/sql/optimizer/join_filter_pushdown_verify_serializer.test
-# description: The plan that serializer verification executes keeps the join filter pushdown of late materialization
+# description: The plan that serializer verification executes keeps the join filter pushdown of the plan it replaces
 # group: [optimizer]
 
 require json
@@ -49,6 +49,19 @@ SELECT k, risk, zone, score, length(g) AS d FROM r WHERE k BETWEEN 4242 AND 4300
 
 statement ok
 PRAGMA disable_profiling;
+
+# a join filter must not reach a scan that numbers its rows, as the window above it blocked it before verification
+statement ok
+CREATE TABLE p AS SELECT i FROM range(100) t(i);
+
+statement ok
+CREATE TABLE b AS SELECT * FROM (VALUES (10::BIGINT), (20::BIGINT)) t(i);
+
+query II
+SELECT p.i, p.rn FROM (SELECT i, row_number() OVER () AS rn FROM p) p JOIN b USING (i) ORDER BY i;
+----
+10	11
+20	21
 
 statement ok
 SET debug_verify_serializer = false;

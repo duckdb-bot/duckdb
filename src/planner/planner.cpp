@@ -1,4 +1,6 @@
 #include "duckdb/planner/planner.hpp"
+#include "duckdb/planner/operator/logical_comparison_join.hpp"
+#include "duckdb/planner/operator/logical_get.hpp"
 
 #include "duckdb/common/serializer/binary_deserializer.hpp"
 #include "duckdb/common/serializer/binary_serializer.hpp"
@@ -348,19 +350,43 @@ static bool OperatorSupportsSerialization(LogicalOperator &op) {
 	return op.SupportSerialization();
 }
 
-bool Planner::VerifyPlan(ClientContext &context, unique_ptr<LogicalOperator> &op,
+// Optimizer state that links operators through shared objects is not serialized, so the copy takes it over from the
+// plan it replaces
+static void TransferUnserializedState(LogicalOperator &original, LogicalOperator &copy) {
+	if (original.type != copy.type || original.children.size() != copy.children.size()) {
+		return;
+	}
+	switch (original.type) {
+	case LogicalOperatorType::LOGICAL_GET:
+		copy.Cast<LogicalGet>().dynamic_filters = std::move(original.Cast<LogicalGet>().dynamic_filters);
+		break;
+	case LogicalOperatorType::LOGICAL_COMPARISON_JOIN:
+	case LogicalOperatorType::LOGICAL_ASOF_JOIN:
+	case LogicalOperatorType::LOGICAL_DELIM_JOIN:
+		copy.Cast<LogicalComparisonJoin>().filter_pushdown =
+		    std::move(original.Cast<LogicalComparisonJoin>().filter_pushdown);
+		break;
+	default:
+		break;
+	}
+	for (idx_t i = 0; i < original.children.size(); i++) {
+		TransferUnserializedState(*original.children[i], *copy.children[i]);
+	}
+}
+
+void Planner::VerifyPlan(ClientContext &context, unique_ptr<LogicalOperator> &op,
                          optional_ptr<bound_parameter_map_t> map) {
 	if (!op) {
-		return false;
+		return;
 	}
 	// verify the column bindings of the plan
 	LogicalPlanVerifier::Verify(context, *op);
 	if (!Settings::Get<DebugVerifySerializerSetting>(context)) {
-		return false;
+		return;
 	}
 	//! SELECT only for now
 	if (!OperatorSupportsSerialization(*op)) {
-		return false;
+		return;
 	}
 
 	auto &config = DBConfig::GetConfig(context);
@@ -384,13 +410,13 @@ bool Planner::VerifyPlan(ClientContext &context, unique_ptr<LogicalOperator> &op
 		if (map) {
 			*map = std::move(parameters);
 		}
+		TransferUnserializedState(*op, *new_plan);
 		op = std::move(new_plan);
-		return true;
 	} catch (std::exception &ex) {
 		ErrorData error(ex);
 		switch (error.Type()) {
 		case ExceptionType::NOT_IMPLEMENTED: // NOLINT: explicitly allowing these errors (for now)
-			return false;
+			break;                           // pass
 		default:
 			throw;
 		}

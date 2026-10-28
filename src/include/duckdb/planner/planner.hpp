@@ -41,8 +41,7 @@ public:
 	void CreatePlan(unique_ptr<SQLStatement> statement);
 	//! Apply the execution planner's optimizer policy, including mandatory rewrites.
 	void Optimize();
-	//! Returns whether the plan was replaced by its deserialized copy
-	static bool VerifyPlan(ClientContext &context, unique_ptr<LogicalOperator> &op,
+	static void VerifyPlan(ClientContext &context, unique_ptr<LogicalOperator> &op,
 	                       optional_ptr<bound_parameter_map_t> map = nullptr);
 
 private:

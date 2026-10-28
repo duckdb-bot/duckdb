@@ -837,6 +837,8 @@ struct CTEPipelineSelection {
 	bool fallback_dependency_added;
 	bool fallback_dependency_active;
 	bool stream_serialized_candidates = false;
+	bool has_multiplying_candidate = false;
+	bool materialize_candidates = false;
 };
 
 class PipelineBuildStateData {
@@ -898,6 +900,45 @@ static idx_t EstimateMaterializationSize(const PhysicalCTE &cte) {
 	return producer.estimated_cardinality > maximum / row_width ? maximum : producer.estimated_cardinality * row_width;
 }
 
+static idx_t EstimateChunkCount(idx_t cardinality) {
+	return MaxValue<idx_t>(cardinality / STANDARD_VECTOR_SIZE + (cardinality % STANDARD_VECTOR_SIZE != 0), 1);
+}
+
+//! Direct consumers run on the threads of the producer pipelines, and a source feeds at most one thread per chunk
+static bool ProducerLimitsParallelism(const PhysicalCTE &cte, idx_t thread_count) {
+	D_ASSERT(!cte.children.empty());
+	// The materialization estimate does not cover variable-size payloads
+	for (auto &type : cte.children[0].get().GetTypes()) {
+		if (!TypeIsConstantSize(type.InternalType())) {
+			return false;
+		}
+	}
+	idx_t producer_threads = 0;
+	for (auto &pipeline : cte.GetProducerPipelines()) {
+		auto source = pipeline.get().GetSource();
+		if (!source) {
+			return false;
+		}
+		producer_threads = SaturatingAdd(producer_threads, EstimateChunkCount(source->estimated_cardinality));
+	}
+	if (producer_threads >= thread_count) {
+		return false;
+	}
+	return EstimateChunkCount(cte.children[0].get().estimated_cardinality) > producer_threads;
+}
+
+//! Whether an operator between the source and the sink of the consumer produces at least twice the rows of the CTE
+static bool ConsumerMultipliesRows(const Pipeline &pipeline, const PhysicalCTE &cte) {
+	D_ASSERT(!cte.children.empty());
+	auto cte_cardinality = cte.children[0].get().estimated_cardinality;
+	for (auto &op : pipeline.GetIntermediateOperators()) {
+		if (op.get().estimated_cardinality / 2 >= MaxValue<idx_t>(cte_cardinality, 1)) {
+			return true;
+		}
+	}
+	return false;
+}
+
 static void SelectExternalInputCandidates(PipelineBuildStateData &data) {
 	for (auto &candidate : data.external_input_candidates) {
 		auto selection_entry = data.cte_selection_map.find(candidate.cte.get());
@@ -908,8 +949,13 @@ static void SelectExternalInputCandidates(PipelineBuildStateData &data) {
 		if (candidate.input_cost == PipelineExternalInputCost::SERIALIZED_FANOUT) {
 			selection.serialized_fanout_candidate_count++;
 		}
+		if (ConsumerMultipliesRows(candidate.pipeline.get(), candidate.cte.get())) {
+			selection.has_multiplying_candidate = true;
+		}
 	}
 
+	auto &context = data.external_input_candidates[0].pipeline.get().GetClientContext();
+	auto thread_count = NumericCast<idx_t>(TaskScheduler::GetScheduler(context).NumberOfThreads());
 	vector<idx_t> fanout_selections;
 	for (idx_t selection_idx = 0; selection_idx < data.cte_selections.size(); selection_idx++) {
 		auto &selection = data.cte_selections[selection_idx];
@@ -917,6 +963,14 @@ static void SelectExternalInputCandidates(PipelineBuildStateData &data) {
 		D_ASSERT(cte.exchange);
 		auto consumer_summary = cte.exchange->GetConsumerSummary();
 		D_ASSERT(consumer_summary.unresolved == selection.candidate_count);
+		// A consumer that multiplies the rows runs on more threads when it scans the materialized CTE in parallel.
+		if (selection.has_multiplying_candidate && ProducerLimitsParallelism(cte, thread_count)) {
+			selection.materialize_candidates = true;
+			selection.estimated_materialization_size =
+			    consumer_summary.materialized > 0 ? 0 : EstimateMaterializationSize(cte);
+			fanout_selections.push_back(selection_idx);
+			continue;
+		}
 		if (selection.serialized_fanout_candidate_count == 0) {
 			continue;
 		}
@@ -935,7 +989,6 @@ static void SelectExternalInputCandidates(PipelineBuildStateData &data) {
 
 	// Direct fanout trades materialization memory for serialized pushes into every consumer. Keep small fanouts
 	// materialized, and stream the largest CTEs when materializing all eligible inputs would consume too much memory.
-	auto &context = data.external_input_candidates[0].pipeline.get().GetClientContext();
 	auto materialization_budget = BufferManager::GetBufferManager(context).GetOperatorMemoryLimit() / 2;
 	std::sort(fanout_selections.begin(), fanout_selections.end(), [&](idx_t left, idx_t right) {
 		return data.cte_selections[left].estimated_materialization_size <
@@ -948,11 +1001,15 @@ static void SelectExternalInputCandidates(PipelineBuildStateData &data) {
 			materialization_size += selection.estimated_materialization_size;
 		} else {
 			selection.stream_serialized_candidates = true;
+			selection.materialize_candidates = false;
 		}
 	}
 
 	for (auto &candidate : data.external_input_candidates) {
 		auto &selection = data.cte_selections[candidate.selection_idx];
+		if (selection.materialize_candidates) {
+			continue;
+		}
 		if (candidate.input_cost == PipelineExternalInputCost::PIPELINED || selection.stream_serialized_candidates) {
 			candidate.input_mode = PipelineExternalInputCandidate::InputMode::EXTERNAL_INPUT;
 		}

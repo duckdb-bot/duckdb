@@ -524,7 +524,7 @@ FilterPropagateResult ColumnData::CheckSegmentStatistics(optional_ptr<ClientCont
 	}
 	auto update_stats = GetUpdateStatistics();
 	if (!update_stats) {
-		// no updates - return original result
+		// without updates the result of the segment holds
 		return prune_result;
 	}
 	// combine the update and original prune result

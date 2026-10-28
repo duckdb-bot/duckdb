@@ -67,12 +67,15 @@ void ListColumnData::InitializePrefetch(PrefetchState &prefetch_state, ColumnSca
 	if (child_column->count > this->count && this->count > 0) {
 		rows_per_list = child_column->count / this->count;
 	}
-	// the child rows of the range are estimated from the child row the scan is at
-	auto &child_state = scan_state.child_states[1];
+	// the child rows of the range are estimated from the child row the list scan is at, which last_offset holds
 	D_ASSERT(start_row >= scan_state.offset_in_column);
-	const idx_t child_start = child_state.offset_in_column + (start_row - scan_state.offset_in_column) * rows_per_list;
-	const idx_t child_end = child_state.offset_in_column + (end_row - scan_state.offset_in_column) * rows_per_list;
-	child_column->InitializePrefetch(prefetch_state, child_state, child_start, child_end);
+	const idx_t child_start = scan_state.last_offset + (start_row - scan_state.offset_in_column) * rows_per_list;
+	if (child_start >= child_column->GetMaxEntry()) {
+		// no child rows remain
+		return;
+	}
+	const idx_t child_end = scan_state.last_offset + (end_row - scan_state.offset_in_column) * rows_per_list;
+	child_column->InitializePrefetch(prefetch_state, scan_state.child_states[1], child_start, child_end);
 }
 
 void ListColumnData::InitializeScan(ColumnScanState &state) {
@@ -117,6 +120,9 @@ void ListColumnData::InitializeScanWithOffset(ColumnScanState &state, idx_t row_
 	auto child_offset = FetchListOffset(row_idx - 1);
 	if (child_offset < child_column->GetMaxEntry()) {
 		child_column->InitializeScanWithOffset(state.child_states[1], child_offset);
+	} else {
+		// no child rows remain, start the child scan over so that it does not keep the position of an earlier scan
+		child_column->InitializeScan(state.child_states[1]);
 	}
 	state.last_offset = child_offset;
 }

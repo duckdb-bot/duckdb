@@ -153,3 +153,72 @@ FROM '{TEST_DIR}/rowid_vector_pruning_prefetch_late.json' late,
      '{TEST_DIR}/rowid_vector_pruning_prefetch_late_range.json' late_two_ids
 ----
 true	true	true
+
+# a list of structs of lists prefetches its children from the position the skipped vectors leave the list scan at
+statement ok
+CREATE TABLE nested AS SELECT [{'xs': [i, i + 1]}] AS v, i AS k FROM range(4097) t(i);
+
+statement ok
+CHECKPOINT
+
+foreach depth -1 0
+
+restart
+
+statement ok
+SET threads = 1
+
+statement ok
+SET storage_block_prefetch = 'debug_force_always'
+
+statement ok
+SET read_ahead_depth = {depth}
+
+query II
+SELECT rowid, v FROM nested WHERE rowid IN (2048, 4096) ORDER BY rowid
+----
+2048	[{'xs': [2048, 2049]}]
+4096	[{'xs': [4096, 4097]}]
+
+query I
+SELECT v FROM nested WHERE k = 4000 ORDER BY k LIMIT 1
+----
+[{'xs': [4000, 4001]}]
+
+endloop
+
+# a scan state reused for a row group of empty lists keeps the child scan of the earlier row group
+statement ok
+CREATE TABLE reuse AS SELECT CASE WHEN i < 122880 THEN [[i, i + 1]] ELSE [] END AS v, i AS k FROM range(245760) t(i);
+
+statement ok
+CHECKPOINT
+
+foreach depth -1 0
+
+restart
+
+statement ok
+SET threads = 2
+
+statement ok
+PRAGMA verify_parallelism
+
+statement ok
+SET storage_block_prefetch = 'debug_force_always'
+
+statement ok
+SET read_ahead_depth = {depth}
+
+query II
+SELECT count(*), sum(len(v)) FROM reuse WHERE k % 7 = 0
+----
+35109	17555
+
+query II
+SELECT rowid, v FROM reuse WHERE rowid IN (100, 200000) ORDER BY rowid
+----
+100	[[100, 101]]
+200000	[]
+
+endloop

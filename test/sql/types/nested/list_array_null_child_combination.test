@@ -43,6 +43,27 @@ SELECT [[1], array_value(NULL)];
 ----
 [[1], [NULL]]
 
+# the cost of a MAP or UNION cast follows its children
+query IIII
+SELECT can_cast_implicitly(map([1], [1]), NULL::MAP(INTEGER, BIGINT)),
+       can_cast_implicitly(map([1], [1]), NULL::MAP(DATE, INTEGER)),
+       can_cast_implicitly(map([1], [1]), NULL::MAP(INTEGER, DATE)),
+       can_cast_implicitly(union_value(a := 1)::UNION(a INTEGER, b INTEGER), NULL::UNION(a INTEGER, b DATE));
+----
+true	false	false	false
+
+# a typed MAP overload still wins over an untyped one for its own type
+statement ok
+CREATE MACRO which(x) AS 'any';
+
+statement ok
+CREATE OR REPLACE MACRO which(x MAP(VARCHAR, INTEGER)) AS 'map';
+
+query I
+SELECT which(map(['k'], [1]));
+----
+map
+
 # maps and unions whose children cannot be cast do not combine
 statement error
 SELECT [[map(['k'], [1])], array_value(map(['k'], [DATE '2000-01-01']))];

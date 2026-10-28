@@ -517,10 +517,7 @@ int64_t CastRules::ImplicitCast(const LogicalType &from, const LogicalType &to) 
 				return -1;
 			}
 		}
-		// If not found, try casting source to member of target (below)
-		if (cost != -1) {
-			return cost;
-		}
+		return cost;
 	}
 	if (StructType::IsStruct(from) && StructType::IsStruct(to)) {
 		if (!to.HasParameters()) {
@@ -595,7 +592,12 @@ int64_t CastRules::ImplicitCast(const LogicalType &from, const LogicalType &to) 
 		if (key_cost == -1 || value_cost == -1) {
 			return -1;
 		}
-		return MaxValue(key_cost, value_cost);
+		auto cost = MaxValue(key_cost, value_cost);
+		if (cost >= 1) {
+			// subtract one from the cost because we prefer MAP[X] -> MAP[ANY] over MAP[X] -> ANY
+			cost--;
+		}
+		return cost;
 	}
 	if (from.id() == to.id()) {
 		// arguments match: do nothing

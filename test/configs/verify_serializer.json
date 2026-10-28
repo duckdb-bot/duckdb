@@ -23,7 +23,7 @@
       ]
     },
     {
-      "reason": "Deserialized plans lose the join filters that late materialization pushes into its scan",
+      "reason": "Deserialized plans lose the join filters that late materialization pushes into its scan, see https://github.com/duckdblabs/bot-issue-tracker/issues/715",
       "paths": [
         "test/sql/optimizer/test_rowid_vector_pruning.test"
       ]

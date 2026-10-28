@@ -1957,6 +1957,8 @@ collapsible_rules:
 packrat_memoized_rules:
   - Expression
   - TableRef
+  - WithClause
+  - SelectParens
   - Identifier
   - ColId
   - CatalogQualification

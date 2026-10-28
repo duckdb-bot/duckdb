@@ -29,47 +29,36 @@ static bool RejectsRowIds(const TableFilter &filter, idx_t start_row_id, idx_t e
 
 FilterPropagateResult RowIdColumnData::CheckZonemap(ColumnScanState &state, const ScanFilter &filter,
                                                     optional_idx &checked_end) {
+	return CheckZonemapAt(state, filter, state.parent->vector_index * STANDARD_VECTOR_SIZE, checked_end);
+}
+
+FilterPropagateResult RowIdColumnData::CheckZonemapAt(ColumnScanState &state, const ScanFilter &filter, idx_t row,
+                                                      optional_idx &checked_end) {
 	if (!PrunesVectors(filter)) {
 		return FilterPropagateResult::NO_PRUNING_POSSIBLE;
 	}
 	// the row ids of each vector are known, so look ahead for the first vector with a row id the filter accepts
 	const auto row_group_start = GetRowStart(state);
-	const idx_t scan_start = state.parent->vector_index * STANDARD_VECTOR_SIZE;
 	const idx_t scan_end = state.parent->max_row_group_row;
-	idx_t vector_start = scan_start;
+	idx_t vector_start = row;
 	while (vector_start < scan_end) {
-		const idx_t vector_end = MinValue<idx_t>(vector_start + STANDARD_VECTOR_SIZE, scan_end);
+		const idx_t vector_end = MinValue<idx_t>(AlignValue<idx_t, STANDARD_VECTOR_SIZE>(vector_start + 1), scan_end);
 		if (!RejectsRowIds(filter.filter, row_group_start + vector_start, row_group_start + vector_end)) {
 			break;
 		}
 		vector_start = vector_end;
 	}
-	if (vector_start == scan_start) {
+	if (vector_start == row) {
+		// the vector of row can hold row ids the filter accepts, the next vector has to be checked again
+		checked_end = MinValue<idx_t>(AlignValue<idx_t, STANDARD_VECTOR_SIZE>(row + 1), scan_end);
 		return FilterPropagateResult::NO_PRUNING_POSSIBLE;
 	}
 	checked_end = vector_start;
 	return FilterPropagateResult::FILTER_ALWAYS_FALSE;
 }
 
-idx_t RowIdColumnData::ZonemapScanEnd(ColumnScanState &state, const ScanFilter &filter, idx_t start_row,
-                                      idx_t end_row) {
-	if (!PrunesVectors(filter) || end_row <= start_row) {
-		return end_row;
-	}
-	// look back from the end for the last vector with a row id the filter accepts
-	const auto row_group_start = GetRowStart(state);
-	const idx_t vector_count = (end_row - start_row + STANDARD_VECTOR_SIZE - 1) / STANDARD_VECTOR_SIZE;
-	for (idx_t vector_idx = vector_count; vector_idx > 0; vector_idx--) {
-		const idx_t vector_start = start_row + (vector_idx - 1) * STANDARD_VECTOR_SIZE;
-		const idx_t vector_end = MinValue<idx_t>(vector_start + STANDARD_VECTOR_SIZE, end_row);
-		if (!RejectsRowIds(filter.filter, row_group_start + vector_start, row_group_start + vector_end)) {
-			return vector_end;
-		}
-	}
-	return start_row;
-}
-
-void RowIdColumnData::InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t rows) {
+void RowIdColumnData::InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t start_row,
+                                         idx_t end_row) {
 }
 
 void RowIdColumnData::InitializeScan(ColumnScanState &state) {

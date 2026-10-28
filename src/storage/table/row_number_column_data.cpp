@@ -19,7 +19,8 @@ FilterPropagateResult RowNumberColumnData::CheckZonemap(ColumnScanState &state, 
 	return FilterPropagateResult::NO_PRUNING_POSSIBLE;
 }
 
-void RowNumberColumnData::InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t rows) {
+void RowNumberColumnData::InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state,
+                                             idx_t start_row, idx_t end_row) {
 }
 
 void RowNumberColumnData::InitializeScan(ColumnScanState &state) {

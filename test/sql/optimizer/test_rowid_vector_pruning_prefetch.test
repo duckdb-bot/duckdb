@@ -63,7 +63,34 @@ SELECT count(DISTINCT s) FROM p WHERE rowid >= 122880
 ----
 122880
 
-# row ids in the first and the last vector of a row group prefetch the vectors between them as well
+# a row id in the first vector of the row group and one in its last vector, each on its own
+foreach id 122881 245759
+
+restart
+
+statement ok
+SET threads = 1
+
+statement ok
+SET storage_block_prefetch = 'debug_force_always'
+
+statement ok
+SET enable_profiling = 'json'
+
+statement ok
+SET tracked_metrics = ['io.total_bytes_read']
+
+statement ok
+SET profiling_output = '{TEST_DIR}/rowid_vector_pruning_prefetch_{id}.json'
+
+query I
+SELECT length(s) FROM p WHERE rowid = {id}
+----
+64
+
+endloop
+
+# both row ids together prefetch their two vectors and nothing in between
 restart
 
 statement ok
@@ -87,13 +114,42 @@ SELECT s FROM p WHERE rowid IN (122881, 245759) ORDER BY rowid
 506995c3dc5272bbfb3321c48ef268ff71452dbcef3372bb549d6385d9566ee5
 16d1463e014629c4db37dfbc739a1cfc54251033b4966af2e59dff7330afed9d
 
+# late materialization with row ids at both ends of the row group reads less than the row group too
+restart
+
+statement ok
+SET threads = 1
+
+statement ok
+SET storage_block_prefetch = 'debug_force_always'
+
+statement ok
+SET enable_profiling = 'json'
+
+statement ok
+SET tracked_metrics = ['io.total_bytes_read']
+
+statement ok
+SET profiling_output = '{TEST_DIR}/rowid_vector_pruning_prefetch_late_range.json'
+
+query I
+SELECT s FROM p WHERE k IN (122881, 245759) ORDER BY o LIMIT 2
+----
+16d1463e014629c4db37dfbc739a1cfc54251033b4966af2e59dff7330afed9d
+506995c3dc5272bbfb3321c48ef268ff71452dbcef3372bb549d6385d9566ee5
+
 statement ok
 PRAGMA disable_profiling
 
-query II
-SELECT late.io.total_bytes_read < row_group.io.total_bytes_read, two_ids.io.total_bytes_read >= row_group.io.total_bytes_read
+query III
+SELECT late.io.total_bytes_read < row_group.io.total_bytes_read,
+       two_ids.io.total_bytes_read <= first_id.io.total_bytes_read + last_id.io.total_bytes_read,
+       late_two_ids.io.total_bytes_read < row_group.io.total_bytes_read
 FROM '{TEST_DIR}/rowid_vector_pruning_prefetch_late.json' late,
      '{TEST_DIR}/rowid_vector_pruning_prefetch_group.json' row_group,
-     '{TEST_DIR}/rowid_vector_pruning_prefetch_range.json' two_ids
+     '{TEST_DIR}/rowid_vector_pruning_prefetch_122881.json' first_id,
+     '{TEST_DIR}/rowid_vector_pruning_prefetch_245759.json' last_id,
+     '{TEST_DIR}/rowid_vector_pruning_prefetch_range.json' two_ids,
+     '{TEST_DIR}/rowid_vector_pruning_prefetch_late_range.json' late_two_ids
 ----
-true	true
+true	true	true

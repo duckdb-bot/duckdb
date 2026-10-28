@@ -32,11 +32,13 @@ FilterPropagateResult ArrayColumnData::CheckZonemap(ColumnScanState &state, cons
 	return CheckValidityZonemap(state, filter, checked_end, *validity);
 }
 
-void ArrayColumnData::InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t rows) {
-	ColumnData::InitializePrefetch(prefetch_state, scan_state, rows);
-	validity->InitializePrefetch(prefetch_state, scan_state.child_states[0], rows);
+void ArrayColumnData::InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t start_row,
+                                         idx_t end_row) {
+	ColumnData::InitializePrefetch(prefetch_state, scan_state, start_row, end_row);
+	validity->InitializePrefetch(prefetch_state, scan_state.child_states[0], start_row, end_row);
 	auto array_size = ArrayType::GetSize(type);
-	child_column->InitializePrefetch(prefetch_state, scan_state.child_states[1], rows * array_size);
+	child_column->InitializePrefetch(prefetch_state, scan_state.child_states[1], start_row * array_size,
+	                                 end_row * array_size);
 }
 
 void ArrayColumnData::InitializeScan(ColumnScanState &state) {

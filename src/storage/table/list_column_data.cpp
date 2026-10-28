@@ -55,9 +55,10 @@ FilterPropagateResult ListColumnData::CheckZonemap(ColumnScanState &state, const
 	return CheckValidityZonemap(state, filter, checked_end, *validity);
 }
 
-void ListColumnData::InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t rows) {
-	ColumnData::InitializePrefetch(prefetch_state, scan_state, rows);
-	validity->InitializePrefetch(prefetch_state, scan_state.child_states[0], rows);
+void ListColumnData::InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t start_row,
+                                        idx_t end_row) {
+	ColumnData::InitializePrefetch(prefetch_state, scan_state, start_row, end_row);
+	validity->InitializePrefetch(prefetch_state, scan_state.child_states[0], start_row, end_row);
 
 	// we can't know how many rows we need to prefetch for the child of this list without looking at the actual data
 	// we make an estimation by looking at how many rows the child column has versus this column
@@ -66,7 +67,12 @@ void ListColumnData::InitializePrefetch(PrefetchState &prefetch_state, ColumnSca
 	if (child_column->count > this->count && this->count > 0) {
 		rows_per_list = child_column->count / this->count;
 	}
-	child_column->InitializePrefetch(prefetch_state, scan_state.child_states[1], rows * rows_per_list);
+	// the child rows of the range are estimated from the child row the scan is at
+	auto &child_state = scan_state.child_states[1];
+	D_ASSERT(start_row >= scan_state.offset_in_column);
+	const idx_t child_start = child_state.offset_in_column + (start_row - scan_state.offset_in_column) * rows_per_list;
+	const idx_t child_end = child_state.offset_in_column + (end_row - scan_state.offset_in_column) * rows_per_list;
+	child_column->InitializePrefetch(prefetch_state, child_state, child_start, child_end);
 }
 
 void ListColumnData::InitializeScan(ColumnScanState &state) {

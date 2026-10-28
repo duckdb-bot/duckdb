@@ -88,6 +88,10 @@ public:
 	//! up to which the result holds, so that the scan can skip ahead to it when the filter is rejected
 	virtual FilterPropagateResult CheckZonemap(ColumnScanState &state, const ScanFilter &filter,
 	                                           optional_idx &checked_end);
+	//! Checks the filter against the zonemap from any row of the row group, reporting checked_end as CheckZonemap
+	//! does, so that the prefetch of a scan can leave out the vectors the filter rejects
+	virtual FilterPropagateResult CheckZonemapAt(ColumnScanState &state, const ScanFilter &filter, idx_t row,
+	                                             optional_idx &checked_end);
 
 	BlockManager &GetBlockManager() const {
 		return block_manager;
@@ -142,8 +146,9 @@ public:
 	//! Whether or not we can scan an entire vector
 	virtual ScanVectorType GetVectorScanType(ColumnScanState &state, idx_t scan_count, Vector &result);
 
-	//! Initialize prefetch state with required I/O data for the next N rows
-	virtual void InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t rows);
+	//! Initialize prefetch state with the I/O data required to scan the rows in [start_row, end_row)
+	virtual void InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t start_row,
+	                                idx_t end_row);
 	//! Initialize a scan of the column
 	virtual void InitializeScan(ColumnScanState &state);
 	//! Initialize a scan starting at the specified offset
@@ -222,8 +227,6 @@ public:
 
 	FilterPropagateResult CheckZonemap(optional_ptr<ClientContext> context, const StorageIndex &index,
 	                                   TableFilter &filter);
-	//! End of the last vector in [start_row, end_row) that the zonemap does not reject for the filter
-	virtual idx_t ZonemapScanEnd(ColumnScanState &state, const ScanFilter &filter, idx_t start_row, idx_t end_row);
 
 	static shared_ptr<ColumnData> CreateColumn(BlockManager &block_manager, DataTableInfo &info, idx_t column_index,
 	                                           const LogicalType &type,
@@ -266,7 +269,7 @@ protected:
 	idx_t GetVectorCount(idx_t vector_index) const;
 
 	static bool IsDirectNullCheckFilter(const TableFilter &filter);
-	//! Checks the filter against the statistics of one segment
+	//! Checks the filter against the statistics of one segment and of the updates of the column
 	FilterPropagateResult CheckSegmentStatistics(optional_ptr<ClientContext> context,
 	                                             SegmentNode<ColumnSegment> &segment, ExpressionFilter &expr_filter);
 	FilterPropagateResult CheckValidityZonemap(ColumnScanState &state, const ScanFilter &filter,

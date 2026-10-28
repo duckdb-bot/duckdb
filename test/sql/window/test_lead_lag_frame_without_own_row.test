@@ -1,0 +1,122 @@
+# name: test/sql/window/test_lead_lag_frame_without_own_row.test
+# description: LEAD and LAG with an argument ORDER BY over frames, with defaults and IGNORE NULLS
+# group: [window]
+
+statement ok
+CREATE TABLE f (id INTEGER, x VARCHAR);
+
+statement ok
+INSERT INTO f VALUES (1, 'e'), (2, 'd'), (3, 'c'), (4, 'b'), (5, 'a');
+
+# a default value and partitions
+query IIII
+SELECT
+	id,
+	LEAD(x, 1, 'none' ORDER BY x DESC, id DESC) OVER w,
+	LAG(x, 1, 'none' ORDER BY x DESC, id DESC) OVER w,
+	LEAD(x, 1, 'none' ORDER BY x DESC) OVER w
+FROM f
+WINDOW w AS (PARTITION BY id % 2 ORDER BY x DESC, id ASC ROWS BETWEEN 1 FOLLOWING AND 1 FOLLOWING)
+ORDER BY id
+----
+1	c	none	c
+2	b	none	b
+3	a	none	a
+4	none	none	none
+5	none	none	none
+
+# negative offsets count the other way
+query III
+SELECT
+	id,
+	LEAD(x, -1 ORDER BY x DESC, id DESC) OVER w1,
+	LAG(x, -1 ORDER BY x DESC, id DESC) OVER w1
+FROM f
+WINDOW w1 AS (ORDER BY x DESC, id ASC ROWS BETWEEN 1 FOLLOWING AND UNBOUNDED FOLLOWING)
+ORDER BY id
+----
+1	NULL	d
+2	NULL	c
+3	NULL	b
+4	NULL	a
+5	NULL	NULL
+
+# a default is used when no row is left after ignoring NULLs
+query III
+SELECT
+	id,
+	LEAD(v, 1, 99 ORDER BY id, v IGNORE NULLS) OVER w,
+	LAG(v, -1, 99 ORDER BY id, v IGNORE NULLS) OVER w
+FROM (VALUES (1, 10), (2, NULL)) t(id, v)
+WINDOW w AS (ORDER BY id ROWS BETWEEN 1 FOLLOWING AND 1 FOLLOWING)
+ORDER BY id
+----
+1	99	99
+2	99	99
+
+# IGNORE NULLS with the own row in the frame
+query IIII
+SELECT
+	id,
+	LEAD(v, 1, 99 ORDER BY id, v IGNORE NULLS) OVER w,
+	LAG(v, -1, 99 ORDER BY id, v IGNORE NULLS) OVER w,
+	LEAD(v, 1 ORDER BY id, v IGNORE NULLS) OVER w
+FROM (VALUES (1, 10), (2, 20), (3, NULL)) t(id, v)
+WINDOW w AS (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)
+ORDER BY id
+----
+1	20	20	20
+2	99	99	NULL
+3	99	99	NULL
+
+# RANGE and GROUPS frames with peers
+statement ok
+CREATE TABLE p (id INTEGER, x INTEGER);
+
+statement ok
+INSERT INTO p VALUES (1, 1), (2, 2), (3, 2), (4, 3), (5, 5);
+
+query IIII
+SELECT
+	id,
+	LEAD(id ORDER BY x, id) OVER (ORDER BY x RANGE BETWEEN 1 FOLLOWING AND 2 FOLLOWING),
+	LAG(id ORDER BY x, id) OVER (ORDER BY x RANGE BETWEEN 1 FOLLOWING AND 2 FOLLOWING),
+	LEAD(id ORDER BY x, id) OVER (ORDER BY x GROUPS BETWEEN 1 FOLLOWING AND 1 FOLLOWING)
+FROM p
+ORDER BY id
+----
+1	2	NULL	2
+2	4	NULL	4
+3	4	NULL	4
+4	5	NULL	5
+5	NULL	NULL	NULL
+
+# the own row ranks between frame rows of the argument ordering
+query III
+SELECT
+	id,
+	LEAD(v ORDER BY v) OVER w,
+	LAG(v ORDER BY v) OVER w
+FROM (VALUES (1, 20), (2, 10), (3, 30)) t(id, v)
+WINDOW w AS (ORDER BY id ROWS BETWEEN 1 FOLLOWING AND UNBOUNDED FOLLOWING)
+ORDER BY id
+----
+1	30	10
+2	30	NULL
+3	NULL	NULL
+
+# NULLs ignored after some rows of the frame qualify
+query IIIII
+SELECT
+	id,
+	LEAD(v, 1, 99 ORDER BY id, v IGNORE NULLS) OVER w,
+	LEAD(v, 2, 99 ORDER BY id, v IGNORE NULLS) OVER w,
+	LEAD(v, 1, 99 ORDER BY id IGNORE NULLS) OVER w,
+	LEAD(v, 2, 99 ORDER BY id IGNORE NULLS) OVER w
+FROM (VALUES (1, 10), (2, NULL), (3, 30)) t(id, v)
+WINDOW w AS (ORDER BY id ROWS BETWEEN 1 FOLLOWING AND UNBOUNDED FOLLOWING)
+ORDER BY id
+----
+1	30	99	30	99
+2	30	99	30	99
+3	99	99	99	99

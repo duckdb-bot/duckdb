@@ -61,9 +61,6 @@ public:
 	}
 
 	vector<OpenFileInfo> Glob(const string &path, FileOpener *opener) override {
-		if (!CanHandleFile(path)) {
-			return LocalFileSystem::Glob(path, opener);
-		}
 		vector<OpenFileInfo> result;
 		if (LocalFileSystem::FileExists(MapPath(path), opener)) {
 			result.emplace_back(path);

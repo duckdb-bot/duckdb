@@ -1576,16 +1576,15 @@ static bool TryCastStringToCoarseTimestamp(string_t input, T &result, bool stric
 	timestamp_t us;
 	TruncatedFraction truncated;
 	if (Timestamp::TryConvertTimestamp(input.GetData(), input.GetSize(), us, false, nullptr, false, &truncated) !=
-	        TimestampCastResult::SUCCESS ||
-	    !TryCastTimestampBase<timestamp_t, T>(us, result, strict)) {
+	    TimestampCastResult::SUCCESS) {
 		return false;
 	}
-	// before the epoch the cast rounds a tie down, but digits past the microseconds put the value above the tie
+	// digits past the microseconds put the value above a tie before the epoch, so it rounds like the next microsecond
 	const int64_t unit = timestamp_t::PRECISION / T::PRECISION;
 	if (truncated.Inexact() && us.IsFinite() && us.value < 0 && ((us.value % unit) + unit) % unit == unit / 2) {
-		result.value++;
+		us.value++;
 	}
-	return true;
+	return TryCastTimestampBase<timestamp_t, T>(us, result, strict);
 }
 
 template <>

@@ -54,7 +54,8 @@ public:
 	//! If has_offset is true, then the result is an instant that was offset from UTC
 	//! If the tz is not empty, the result is still an instant, but the parts can be extracted and applied to the TZ
 	//! When truncated is given, the fraction is truncated, and TryRoundFraction must be applied to the instant after
-	//! resolving the TZ. Otherwise the fraction is rounded
+	//! resolving the TZ. A value that is only in range once rounded is rounded, and truncated is cleared. Otherwise
+	//! the fraction is rounded
 	DUCKDB_API static TimestampCastResult TryConvertTimestampTZ(const char *str, idx_t len, timestamp_t &result,
 	                                                            const bool use_offset, bool &has_offset, string_t &tz,
 	                                                            optional_ptr<int32_t> nanos = nullptr,
@@ -68,6 +69,8 @@ public:
 	//! Round a truncated fraction to the parsed precision (microseconds, or nanoseconds when nanos is given)
 	DUCKDB_API static bool TryRoundFraction(timestamp_t &result, optional_ptr<int32_t> nanos,
 	                                        const TruncatedFraction &fraction);
+	//! Whether a value before the epoch rounds up to its next microsecond, which consumes the fraction and the nanos
+	DUCKDB_API static bool TryTakeRoundingUp(optional_ptr<int32_t> nanos, TruncatedFraction &fraction);
 	DUCKDB_API static TimestampCastResult TryConvertTimestamp(const char *str, idx_t len, timestamp_ns_t &result,
 	                                                          bool use_offset, bool strict = false);
 	DUCKDB_API static timestamp_t FromCString(const char *str, idx_t len, bool use_offset = false,

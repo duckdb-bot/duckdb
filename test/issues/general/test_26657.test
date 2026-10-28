@@ -74,6 +74,34 @@ SELECT '294247-01-10 04:00:54.7758064'::TIMESTAMP
 ----
 294247-01-10 04:00:54.775806
 
+# at the lower end, the range check applies to the rounded value, which can be in range when the truncated one is not
+query III
+SELECT epoch_us('290309-12-21 (BC) 19:59:05.2241936'::TIMESTAMP), epoch_us('290309-12-21 (BC) 19:59:05.2241916'::TIMESTAMP), TRY_CAST('290309-12-21 (BC) 19:59:05.2241926' AS TIMESTAMP)
+----
+-9223372036854775806	-9223372036854775808	NULL
+
+query III
+SELECT epoch_us('290309-12-22 (BC) 00:59:05.2241936+05'::TIMESTAMPTZ), epoch_us('290309-12-22 (BC) 00:59:05.2241916+05'::TIMESTAMPTZ), epoch_us('290309-12-21 (BC) 19:59:05.2241936-05'::TIMESTAMPTZ)
+----
+-9223372036854775806	-9223372036854775808	-9223372018854775806
+
+query II
+SELECT '290309-12-21 (BC) 19:59:05.2241936'::TIME, '290309-12-22 (BC) 00:59:05.2241936+05'::TIMETZ
+----
+19:59:05.224194	19:59:05.224194+00
+
+# the local time of a string with an offset must be in range once rounded too
+query III
+SELECT TRY_CAST('290309-12-21 (BC) 19:59:05.2241926-05' AS TIMESTAMPTZ), TRY_CAST('294247-01-10 04:00:54.7758065+05' AS TIMESTAMPTZ), TRY_CAST('294247-01-10 04:00:54.7758065' AS TIME)
+----
+NULL	NULL	NULL
+
+# a time taken from a timestamp needs the rounded timestamp in range, and its time then rounds like a time
+query IIII
+SELECT TRY_CAST('290309-12-22 (BC) 00:59:05.2241926+05' AS TIMETZ), TRY_CAST('294247-01-09 23:00:54.7758065-05' AS TIMETZ), '290309-12-22 (BC) 00:59:05.2241925+05'::TIMETZ, '290309-12-21 (BC) 19:59:05.2241925'::TIME
+----
+NULL	NULL	19:59:05.224193+00	19:59:05.224193
+
 # the CSV reader parses with the same rules
 statement ok
 COPY (SELECT '2024-01-01 12:00:00.1234569' AS ts, '12:00:00.9999996' AS t) TO '{TEMP_DIR}/round_fraction.csv' (HEADER);
@@ -82,6 +110,14 @@ query II
 SELECT ts, t FROM read_csv('{TEMP_DIR}/round_fraction.csv', columns = {'ts': 'TIMESTAMP', 't': 'TIME'})
 ----
 2024-01-01 12:00:00.123457	12:00:01
+
+statement ok
+COPY (SELECT '290309-12-22 (BC) 00:59:05.2241936+05' AS ts) TO '{TEMP_DIR}/round_fraction_lowest.csv' (HEADER);
+
+query I
+SELECT epoch_us(ts) FROM read_csv('{TEMP_DIR}/round_fraction_lowest.csv', columns = {'ts': 'TIMESTAMPTZ'})
+----
+-9223372036854775806
 
 # TRY_CAST and casts of columns round the same way
 query II
@@ -100,6 +136,12 @@ query IIII
 SELECT '1969-12-31 23:59:59.5000009'::TIMESTAMP_S, '1969-12-31 23:59:59.50000001'::TIMESTAMP_S, '1969-12-31 23:59:59.5'::TIMESTAMP_S, '1969-12-31 23:59:59.9995009'::TIMESTAMP_MS
 ----
 1970-01-01 00:00:00	1970-01-01 00:00:00	1969-12-31 23:59:59	1970-01-01 00:00:00
+
+# at the lower end, the range check applies to the value above the tie
+query IIII
+SELECT '290309-12-21 (BC) 19:59:05.2245001'::TIMESTAMP_MS, '290309-12-21 (BC) 19:59:05.5000001'::TIMESTAMP_S, TRY_CAST('290309-12-21 (BC) 19:59:05.2245' AS TIMESTAMP_MS), TRY_CAST('290309-12-21 (BC) 19:59:05.5' AS TIMESTAMP_S)
+----
+290309-12-21 (BC) 19:59:05.225	290309-12-21 (BC) 19:59:06	NULL	NULL
 
 # rounding cannot take the time of a timestamp past 24:00:00, nor any value past its largest one
 query IIII
@@ -144,6 +186,17 @@ SELECT '1970-01-01 00:59:59.9999995 Europe/Berlin'::TIMESTAMPTZ
 ----
 1969-12-31 23:59:59.999999+00
 
+# at the ends of the range, the checks apply to the rounded local time and the rounded instant
+query III
+SELECT epoch_us('290309-12-22 (BC) 05:18:04.2241936 Asia/Tokyo'::TIMESTAMPTZ), epoch_us('290309-12-22 (BC) 05:18:04.2241916 Asia/Tokyo'::TIMESTAMPTZ), epoch_us('290309-12-21 (BC) 19:59:05.2241936 America/New_York'::TIMESTAMPTZ)
+----
+-9223372036854775806	-9223372036854775808	-9223372019092775806
+
+query II
+SELECT TRY_CAST('290309-12-21 (BC) 19:59:05.2241926 America/New_York' AS TIMESTAMPTZ), TRY_CAST('294247-01-10 04:00:54.7758065 Asia/Tokyo' AS TIMESTAMPTZ)
+----
+NULL	NULL
+
 statement ok
 SET TimeZone = 'America/New_York';
 
@@ -156,3 +209,8 @@ query I
 SELECT TRY_CAST('294247-01-10 04:00:54.7758065+00' AS TIMESTAMPTZ)
 ----
 NULL
+
+query II
+SELECT epoch_us('290309-12-21 (BC) 19:59:05.2241936'::TIMESTAMPTZ), TRY_CAST('290309-12-21 (BC) 19:59:05.2241926' AS TIMESTAMPTZ)
+----
+-9223372019092775806	NULL

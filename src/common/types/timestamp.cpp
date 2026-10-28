@@ -56,6 +56,32 @@ bool Timestamp::TryRoundFraction(timestamp_t &result, optional_ptr<int32_t> nano
 	return TryAddOperator::Operation(result.value, int64_t(1), result.value) && result.IsFinite();
 }
 
+//! Whether rounding adds a microsecond to a value of the given sign, once the nanoseconds when given carry over
+static bool RoundsUpMicros(const TruncatedFraction &fraction, bool non_negative, optional_ptr<int32_t> nanos) {
+	return fraction.RoundsUp(non_negative) && !fraction.at_end_of_day &&
+	       (!nanos || *nanos == Interval::NANOS_PER_MICRO - 1);
+}
+
+bool Timestamp::TryTakeRoundingUp(optional_ptr<int32_t> nanos, TruncatedFraction &fraction) {
+	if (!RoundsUpMicros(fraction, false, nanos)) {
+		return false;
+	}
+	if (nanos) {
+		*nanos = 0;
+	}
+	fraction = TruncatedFraction();
+	return true;
+}
+
+//! Whether rounding takes a value in range past the end of the range
+static bool RoundsOutOfRange(timestamp_t value, const TruncatedFraction &fraction, optional_ptr<int32_t> nanos) {
+	return RoundsUpMicros(fraction, value.value >= 0, nanos) && !timestamp_t(value.value + 1).IsFinite();
+}
+
+static bool TrySubtractOffset(timestamp_t local, int64_t delta, timestamp_t &instant) {
+	return TrySubtractOperator::Operation(local.value, delta, instant.value) && instant.IsFinite();
+}
+
 TimestampCastResult Timestamp::TryConvertTimestampTZ(const char *str, idx_t len, timestamp_t &result, bool use_offset,
                                                      bool &has_offset, string_t &tz, optional_ptr<int32_t> nanos,
                                                      optional_ptr<TruncatedFraction> truncated) {
@@ -105,7 +131,12 @@ TimestampCastResult Timestamp::TryConvertTimestampTZ(const char *str, idx_t len,
 	}
 	fraction.at_end_of_day = time.value == Interval::MICROS_PER_DAY;
 	pos += time_pos;
+	// the range checks apply to the rounded local time, which can be in range when the truncated one is not
 	if (!Timestamp::TryFromDatetime(date, time, result)) {
+		if (!TryTakeRoundingUp(nanos, fraction) || !Timestamp::TryFromDatetime(date, dtime_t(time.value + 1), result)) {
+			return TimestampCastResult::ERROR_RANGE;
+		}
+	} else if (RoundsOutOfRange(result, fraction, nanos)) {
 		return TimestampCastResult::ERROR_RANGE;
 	}
 	if (pos < len) {
@@ -117,9 +148,18 @@ TimestampCastResult Timestamp::TryConvertTimestampTZ(const char *str, idx_t len,
 		} else if (Timestamp::TryParseUTCOffset(str, pos, len, hh, mm, ss)) {
 			const int64_t delta =
 			    hh * Interval::MICROS_PER_HOUR + mm * Interval::MICROS_PER_MINUTE + ss * Interval::MICROS_PER_SEC;
-			if (use_offset &&
-			    (!TrySubtractOperator::Operation(result.value, delta, result.value) || !result.IsFinite())) {
-				return TimestampCastResult::ERROR_RANGE;
+			if (use_offset) {
+				// the range checks apply to the rounded instant too
+				timestamp_t instant;
+				if (!TrySubtractOffset(result, delta, instant)) {
+					if (!TryTakeRoundingUp(nanos, fraction) ||
+					    !TrySubtractOffset(timestamp_t(result.value + 1), delta, instant)) {
+						return TimestampCastResult::ERROR_RANGE;
+					}
+				} else if (RoundsOutOfRange(instant, fraction, nanos)) {
+					return TimestampCastResult::ERROR_RANGE;
+				}
+				result = instant;
 			}
 			has_offset = true;
 		} else {

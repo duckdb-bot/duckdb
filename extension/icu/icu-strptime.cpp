@@ -410,10 +410,12 @@ struct ICUStrptime : public ICUDateFunc {
 				}
 			}
 
-			// Now get the parts in the given time zone
+			// Now get the parts in the given time zone, where rounding can take an instant below the range into it
 			timestamp_tz_t result;
 			string error_msg;
-			if (!TryFromNaive(calendar, us, result, error_msg)) {
+			if (!TryFromNaive(calendar, us, result, error_msg) &&
+			    (!Timestamp::TryTakeRoundingUp(nanos, truncated) ||
+			     !TryFromNaive(calendar, timestamp_t(us.value + 1), result, error_msg))) {
 				HandleCastError::AssignError(error_msg, parameters);
 				return nullopt;
 			}

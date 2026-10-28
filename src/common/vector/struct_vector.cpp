@@ -180,8 +180,7 @@ buffer_ptr<VectorBuffer> VectorStructBuffer::ConstantReferenceInternal(const Log
 	}
 	vector<Vector> result_children;
 	for (auto &child : children) {
-		auto &child_type = child.GetType();
-		result_children.emplace_back(child_type, child.Buffer().ConstantReference(child_type, index, count));
+		result_children.emplace_back(child.GetType(), ConstantReference(child, index, count));
 	}
 	auto result = make_buffer<VectorStructBuffer>(std::move(result_children), capacity_t(1ULL));
 	result->SetVectorType(VectorType::CONSTANT_VECTOR);

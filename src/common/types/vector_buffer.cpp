@@ -242,9 +242,15 @@ buffer_ptr<VectorBuffer> VectorBuffer::SliceWithCache(SelCache &cache, const Log
 	return Slice(type, sel, count);
 }
 
-buffer_ptr<VectorBuffer> VectorBuffer::ConstantReference(const LogicalType &type, idx_t index, count_t count) const {
+buffer_ptr<VectorBuffer> VectorBuffer::ConstantReference(const Vector &source, idx_t index, count_t count) {
+	if (source.GetVectorType() == VectorType::SHREDDED_VECTOR) {
+		// unshred the source in place once, so that the constants of its rows share the unshredded data
+		source.Flatten();
+	}
+	auto &buffer = source.Buffer();
 	// a constant holds its entry at index zero
-	auto result = ConstantReferenceInternal(type, vector_type == VectorType::CONSTANT_VECTOR ? 0 : index, count);
+	auto entry_index = buffer.GetVectorType() == VectorType::CONSTANT_VECTOR ? 0 : index;
+	auto result = buffer.ConstantReferenceInternal(source.GetType(), entry_index, count);
 	D_ASSERT(result->GetVectorType() == VectorType::CONSTANT_VECTOR);
 	D_ASSERT(result->Size() == count);
 	return result;

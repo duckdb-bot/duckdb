@@ -141,7 +141,7 @@ const SelectionVector *ConstantVector::ZeroSelectionVector(idx_t count, Selectio
 
 void ConstantVector::Reference(Vector &vector, count_t count, const Vector &source, idx_t position,
                                idx_t source_count) {
-	vector.SetBuffer(source.Buffer().ConstantReference(source.GetType(), position, count));
+	vector.SetBuffer(VectorBuffer::ConstantReference(source, position, count));
 }
 
 } // namespace duckdb

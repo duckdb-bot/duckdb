@@ -193,9 +193,10 @@ public:
 	//! Slice the buffer with a selection vector, returning a new buffer
 	virtual buffer_ptr<VectorBuffer> SliceWithCache(SelCache &cache, const LogicalType &type,
 	                                                const SelectionVector &sel, idx_t count);
-	//! Create a constant buffer of "count" rows holding the entry at "index" of this buffer. A string or a list shares
-	//! the heap or the child of this buffer, which has to stay valid while the result is used, as for a slice
-	buffer_ptr<VectorBuffer> ConstantReference(const LogicalType &type, idx_t index, count_t count) const;
+	//! Create a constant buffer of "count" rows holding the entry at "index" of "source". A string or a list shares
+	//! the heap or the child of the source, which has to stay valid while the result is used, as for a slice. A
+	//! shredded source is flattened in place first, so that its constants share the unshredded data
+	static buffer_ptr<VectorBuffer> ConstantReference(const Vector &source, idx_t index, count_t count);
 	//! Create a UnifiedVectorFormat from the buffer's data
 	virtual void ToUnifiedFormat(UnifiedVectorFormat &format) const;
 	//! Serialize the buffer as-is (including the vector_type), returns false if the vector must be serialized flat

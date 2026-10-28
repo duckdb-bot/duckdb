@@ -1,0 +1,79 @@
+# name: test/sql/storage/wal/wal_replay_struct_field_alter_default.test
+# description: Replaying an ALTER of a struct field does not bind the column defaults, which can need extensions that load after the WAL replay
+# group: [wal]
+
+load {TEST_DIR}/wal_replay_struct_field_alter_default.db
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown
+
+statement ok
+SET wal_autocheckpoint = '1TB'
+
+# the defaults use list_value from core_functions
+statement ok
+CREATE TABLE add_field(i INT, v STRUCT(a INT)[] DEFAULT [{'a': 1}]);
+
+statement ok
+INSERT INTO add_field (i) VALUES (1);
+
+statement ok
+INSERT INTO add_field VALUES (2, [{'a': 5}]);
+
+statement ok
+ALTER TABLE add_field ADD COLUMN v.element.c INT DEFAULT 7;
+
+statement ok
+INSERT INTO add_field (i) VALUES (3);
+
+statement ok
+CREATE TABLE rename_field(i INT, v STRUCT(a INT)[] DEFAULT [{'a': 1}]);
+
+statement ok
+ALTER TABLE rename_field RENAME v.element.a TO z;
+
+statement ok
+CREATE TABLE remove_field(i INT, v STRUCT(a INT, b INT)[] DEFAULT [{'a': 1, 'b': 2}]);
+
+statement ok
+ALTER TABLE remove_field DROP COLUMN v.element.b;
+
+statement ok
+CREATE TABLE struct_field(i INT, s STRUCT(a INT) DEFAULT {'a': list_value(1)[1]});
+
+statement ok
+ALTER TABLE struct_field ADD COLUMN s.c INT;
+
+restart
+
+query II
+SELECT i, v FROM add_field ORDER BY i;
+----
+1	[{'a': 1, 'c': 7}]
+2	[{'a': 5, 'c': 7}]
+3	[{'a': 1, 'c': NULL}]
+
+# the defaults still work after the replay
+statement ok
+INSERT INTO rename_field (i) VALUES (1);
+
+statement ok
+INSERT INTO remove_field (i) VALUES (1);
+
+statement ok
+INSERT INTO struct_field (i) VALUES (1);
+
+query II
+SELECT i, v FROM rename_field;
+----
+1	[{'z': 1}]
+
+query II
+SELECT i, v FROM remove_field;
+----
+1	[{'a': 1}]
+
+query II
+SELECT i, s FROM struct_field;
+----
+1	{'a': 1, 'c': NULL}

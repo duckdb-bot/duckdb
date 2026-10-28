@@ -241,6 +241,24 @@ SELECT (NULL::MAP(VARCHAR, INTEGER))[error('bad key')::VARCHAR COLLATE NOCASE];
 ----
 bad key
 
+# maps and keys from subqueries, which the lookup does not copy
+query III
+SELECT (SELECT MAP {'Apple': 1})['apple' COLLATE NOCASE], map_extract((SELECT MAP {'Apple': 1}), 'APPLE' COLLATE NOCASE),
+       MAP {'Apple': 1}[(SELECT 'apple') COLLATE NOCASE];
+----
+1	[1]	1
+
+query II
+SELECT id, (SELECT m)[k COLLATE NOCASE] FROM m WHERE id <= 2 ORDER BY id;
+----
+1	Pie
+2	NULL
+
+statement error
+SELECT map_extract(NULL::MAP(VARCHAR, INTEGER), (SELECT 'x' FROM range(2)) COLLATE NOCASE);
+----
+More than one row returned by a subquery
+
 statement ok
 CREATE TABLE s AS SELECT MAP {'Apple': i % 5} AS m FROM range(1000) r(i);
 

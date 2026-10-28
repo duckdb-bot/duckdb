@@ -168,8 +168,8 @@ static unique_ptr<Expression> BindCollatedKey(FunctionBindExpressionInput &input
 	    !RequiresCollation(context, key->GetReturnType())) {
 		return nullptr;
 	}
-	// the rewrite refers to the map three times and does not evaluate the key of a NULL map
-	if (map->IsVolatile() || key->IsVolatile() || key->CanThrow()) {
+	// the rewrite copies the map, which a subquery cannot be, and does not evaluate the key of a NULL map
+	if (map->IsVolatile() || map->HasSubquery() || key->IsVolatile() || key->CanThrow() || key->HasSubquery()) {
 		return BindLookupInInvoke(input);
 	}
 	auto map_keys = BindFunction(context, "map_keys", map->Copy());

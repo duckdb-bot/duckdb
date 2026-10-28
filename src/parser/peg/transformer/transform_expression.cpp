@@ -33,6 +33,32 @@ static bool ExpressionIsUnqualifiedStar(const ParsedExpression &expr) {
 enum class ParserRewriteCallForm : uint8_t { PLAIN, METHOD_CHAIN };
 
 //! Names that the parser rewrites into a syntax node instead of a catalog function call.
+enum class ParserFunctionRewrite { NONE, UNPACK, TRY, CONSTRUCT_ARRAY, IFNULL, COALESCE, DATE };
+
+//! Which rewrite the lowercase name takes, NONE for an ordinary function
+static ParserFunctionRewrite GetParserFunctionRewrite(const string &lowercase_name) {
+	if (lowercase_name == "unpack") {
+		return ParserFunctionRewrite::UNPACK;
+	}
+	if (lowercase_name == "try") {
+		return ParserFunctionRewrite::TRY;
+	}
+	if (lowercase_name == "construct_array") {
+		return ParserFunctionRewrite::CONSTRUCT_ARRAY;
+	}
+	if (lowercase_name == "ifnull") {
+		return ParserFunctionRewrite::IFNULL;
+	}
+	if (lowercase_name == "coalesce") {
+		return ParserFunctionRewrite::COALESCE;
+	}
+	if (lowercase_name == "date") {
+		return ParserFunctionRewrite::DATE;
+	}
+	return ParserFunctionRewrite::NONE;
+}
+
+//! Rewrites a call of such a name into its syntax node.
 //! Every path that can name a function must go through this, or the paths disagree.
 //! Returns nullptr when the name is an ordinary function.
 static unique_ptr<ParsedExpression> TransformParserFunctionRewrite(const string &lowercase_name,
@@ -46,7 +72,8 @@ static unique_ptr<ParsedExpression> TransformParserFunctionRewrite(const string 
 		}
 	};
 
-	if (lowercase_name == "unpack") {
+	switch (GetParserFunctionRewrite(lowercase_name)) {
+	case ParserFunctionRewrite::UNPACK: {
 		if (function_children.size() != 1) {
 			throw ParserException("Wrong number of arguments to the UNPACK operator");
 		}
@@ -57,7 +84,7 @@ static unique_ptr<ParsedExpression> TransformParserFunctionRewrite(const string 
 		}
 		return std::move(expr);
 	}
-	if (lowercase_name == "try") {
+	case ParserFunctionRewrite::TRY: {
 		if (function_children.size() != 1) {
 			throw ParserException("Wrong number of arguments provided to TRY expression");
 		}
@@ -68,7 +95,7 @@ static unique_ptr<ParsedExpression> TransformParserFunctionRewrite(const string 
 		}
 		return std::move(try_expression);
 	}
-	if (lowercase_name == "construct_array") {
+	case ParserFunctionRewrite::CONSTRUCT_ARRAY: {
 		reject_named_arguments("array constructors");
 		auto construct_array = make_uniq<OperatorExpression>(ExpressionType::ARRAY_CONSTRUCTOR);
 		for (auto &arg : function_children) {
@@ -76,7 +103,7 @@ static unique_ptr<ParsedExpression> TransformParserFunctionRewrite(const string 
 		}
 		return std::move(construct_array);
 	}
-	if (lowercase_name == "ifnull") {
+	case ParserFunctionRewrite::IFNULL: {
 		if (function_children.size() != 2) {
 			throw ParserException("Wrong number of arguments to IFNULL.");
 		}
@@ -92,7 +119,10 @@ static unique_ptr<ParsedExpression> TransformParserFunctionRewrite(const string 
 	// it. Reaching the plain path under this name therefore means the caller wrote it as a function
 	// call - quoted, or schema-qualified - which resolves in the catalog and lets a user macro named
 	// coalesce win. The method chain has no grammar form, so the rewrite is its only route.
-	if (lowercase_name == "coalesce" && call_form == ParserRewriteCallForm::METHOD_CHAIN) {
+	case ParserFunctionRewrite::COALESCE: {
+		if (call_form != ParserRewriteCallForm::METHOD_CHAIN) {
+			return nullptr;
+		}
 		reject_named_arguments("COALESCE expressions");
 		auto coalesce_op = make_uniq<OperatorExpression>(ExpressionType::OPERATOR_COALESCE);
 		for (auto &arg : function_children) {
@@ -100,20 +130,17 @@ static unique_ptr<ParsedExpression> TransformParserFunctionRewrite(const string 
 		}
 		return std::move(coalesce_op);
 	}
-	if (lowercase_name == "date") {
+	case ParserFunctionRewrite::DATE: {
 		if (function_children.size() != 1) {
 			throw ParserException("Wrong number of arguments provided to DATE function");
 		}
 		return std::move(
 		    make_uniq<CastExpression>(LogicalType::DATE, std::move(function_children[0].GetExpressionMutable())));
 	}
+	case ParserFunctionRewrite::NONE:
+		break;
+	}
 	return nullptr;
-}
-
-//! Whether TransformParserFunctionRewrite rewrites the name in a method call
-static bool IsParserFunctionRewrite(const string &lowercase_name) {
-	return lowercase_name == "unpack" || lowercase_name == "try" || lowercase_name == "construct_array" ||
-	       lowercase_name == "ifnull" || lowercase_name == "coalesce" || lowercase_name == "date";
 }
 
 //! Makes a call on a value, as x.f(y), the call f(x, y) with the rewrites of a method call
@@ -309,7 +336,8 @@ unique_ptr<ParsedExpression> PEGTransformerFactory::TransformFunctionExpression(
 	// x.ifnull(y) parses as a call in schema x. The rewrites are not catalog functions, so for them a qualification
 	// other than main is the column the function is called on, as in (x).ifnull(y)
 	const auto &path = qualified_function.Path();
-	const bool call_on_column = path.size() > 1 && IsParserFunctionRewrite(lowercase_name) &&
+	const bool call_on_column = path.size() > 1 &&
+	                            GetParserFunctionRewrite(lowercase_name) != ParserFunctionRewrite::NONE &&
 	                            !StringUtil::CIEquals(qualified_function.Schema().GetIdentifierName(), DEFAULT_SCHEMA);
 	if (!call_on_column) {
 		if (auto rewritten =

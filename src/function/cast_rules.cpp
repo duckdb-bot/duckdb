@@ -42,7 +42,7 @@ static int64_t TargetTypeCost(const LogicalType &type) {
 	case LogicalTypeId::ARRAY:
 		return 160;
 	case LogicalTypeId::VARIANT:
-		// an untyped NULL binds to a function of a concrete type before one that takes a VARIANT
+		// VARIANT costs more than any concrete target, so an untyped NULL binds to a concrete type first
 		return 170;
 	case LogicalTypeId::ANY:
 		return int64_t(AnyType::GetCastScore(type));
@@ -311,8 +311,6 @@ static int64_t ImplicitCastBignum(const LogicalType &to) {
 		return -1;
 	}
 }
-
-static constexpr int64_t VARIANT_IMPLICIT_CAST_COST = 110;
 
 bool LogicalTypeIsValid(const LogicalType &type) {
 	switch (type.id()) {
@@ -637,8 +635,8 @@ int64_t CastRules::ImplicitCast(const LogicalType &from, const LogicalType &to) 
 	case LogicalTypeId::BIGNUM:
 		return ImplicitCastBignum(to);
 	case LogicalTypeId::VARIANT:
-		// every target costs the same, so a VARIANT argument alone never selects one overload over another
-		return VARIANT_IMPLICIT_CAST_COST;
+		// every target costs the same as a cast to VARIANT, so the target type never selects an overload
+		return TargetTypeCost(from);
 	default:
 		return -1;
 	}

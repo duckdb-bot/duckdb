@@ -423,7 +423,7 @@ static void TransferUnserializedState(ClientContext &context, LogicalOperator &o
 	case LogicalOperatorType::LOGICAL_DELIM_JOIN: {
 		auto &original_join = original.Cast<LogicalComparisonJoin>();
 		auto &copy_join = copy.Cast<LogicalComparisonJoin>();
-		if (JoinConditionsMatch(context, original_join, copy_join)) {
+		if (original_join.join_type == copy_join.join_type && JoinConditionsMatch(context, original_join, copy_join)) {
 			copy_join.filter_pushdown = std::move(original_join.filter_pushdown);
 		}
 		break;

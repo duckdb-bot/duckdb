@@ -35,20 +35,35 @@ SELECT d, length(TRY_CAST(v AS VARCHAR[])[1]) FROM t ORDER BY d;
 128	255
 129	NULL
 
-# a row of another type in the batch does not change which rows a nested target converts
+# a row of another type in the same vector does not change which rows a nested target converts
+statement ok
+CREATE TABLE with_scalar AS SELECT d, v FROM t WHERE d = 128 UNION ALL SELECT 0, 42::VARIANT;
+
 query II
-SELECT d, length(TRY_CAST(v AS VARCHAR[])[1]) FROM (SELECT d, v FROM t WHERE d = 128 UNION ALL SELECT 0, 42::VARIANT) ORDER BY d;
+SELECT d, length(TRY_CAST(v AS VARCHAR[])[1]) FROM with_scalar ORDER BY d;
 ----
 0	NULL
 128	255
 
-# a field the STRUCT target does not read may be nested too deeply
+# every row of the vector converts on its own
+statement ok
+CREATE TABLE with_string AS SELECT d, v FROM t WHERE d = 128 UNION ALL SELECT 0, '[hello]'::VARIANT;
+
 query II
-SELECT id, TRY_CAST(v AS STRUCT(b INTEGER)) FROM (
-    SELECT 1 AS id, {'a': (SELECT v FROM t WHERE d = 128), 'b': 1}::VARIANT AS v
-    UNION ALL
-    SELECT 2, {'a': 1, 'b': (SELECT v FROM t WHERE d = 128)}::VARIANT
-) ORDER BY id;
+SELECT d, length(TRY_CAST(v AS VARCHAR[])[1]) FROM with_string ORDER BY d;
+----
+0	5
+128	255
+
+# a field the STRUCT target does not read may be nested too deeply
+statement ok
+CREATE TABLE fields AS
+SELECT 1 AS id, {'a': (SELECT v FROM t WHERE d = 128), 'b': 1}::VARIANT AS v
+UNION ALL
+SELECT 2, {'a': 1, 'b': (SELECT v FROM t WHERE d = 128)}::VARIANT;
+
+query II
+SELECT id, TRY_CAST(v AS STRUCT(b INTEGER)) FROM fields ORDER BY id;
 ----
 1	{'b': 1}
 2	NULL

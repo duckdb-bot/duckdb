@@ -83,6 +83,12 @@ Int96 TimestampToImpalaTimestamp(timestamp_t &ts) {
 	uint64_t micros_since_midnight =
 	    hour * Interval::MICROS_PER_HOUR + min * Interval::MICROS_PER_MINUTE + sec * Interval::MICROS_PER_SEC + micros;
 	auto days_since_epoch = Date::Epoch(Timestamp::GetDate(ts)) / int64_t(24 * 60 * 60);
+	if (days_since_epoch + JULIAN_TO_UNIX_EPOCH_DAYS < 0) {
+		// the Julian day count of INT96 starts at 4714-11-24 (BC) and has no sign
+		throw InvalidInputException("Timestamp %s cannot be written as an INT96 timestamp, which starts at 4714-11-24 "
+		                            "(BC)",
+		                            Timestamp::ToString(ts));
+	}
 	// first two uint32 in Int96 are nanoseconds since midnights
 	// last uint32 is number of days since year 4713 BC ("Julian date")
 	Int96 impala_ts;

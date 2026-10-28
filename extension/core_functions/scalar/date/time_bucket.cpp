@@ -97,17 +97,22 @@ struct TimeBucket {
 		return (Date::ExtractYear(ts_date) - 1970) * 12 + Date::ExtractMonth(ts_date) - 1;
 	}
 
+	static inline int64_t PositiveRemainder(int64_t value, int64_t width) {
+		auto remainder = value % width;
+		return remainder < 0 ? remainder + width : remainder;
+	}
+
 	static inline timestamp_t WidthConvertibleToMicrosCommon(int64_t bucket_width_micros, int64_t ts_micros,
 	                                                         int64_t origin_micros) {
-		origin_micros %= bucket_width_micros;
-		ts_micros = SubtractOperatorOverflowCheck::Operation<int64_t, int64_t, int64_t>(ts_micros, origin_micros);
-
-		int64_t result_micros = (ts_micros / bucket_width_micros) * bucket_width_micros;
-		if (ts_micros < 0 && ts_micros % bucket_width_micros != 0) {
-			result_micros =
-			    SubtractOperatorOverflowCheck::Operation<int64_t, int64_t, int64_t>(result_micros, bucket_width_micros);
+		// the distance past the start of the bucket, computed from the remainders of the timestamp and the origin
+		// instead of the timestamp minus the origin, which can overflow next to the ends of the range although the
+		// bucket fits. Both remainders lie in [0, width), so their difference cannot overflow either
+		auto remainder =
+		    PositiveRemainder(ts_micros, bucket_width_micros) - PositiveRemainder(origin_micros, bucket_width_micros);
+		if (remainder < 0) {
+			remainder += bucket_width_micros;
 		}
-		result_micros = AddOperatorOverflowCheck::Operation<int64_t, int64_t, int64_t>(result_micros, origin_micros);
+		auto result_micros = AddOperatorOverflowCheck::Operation<int64_t, int64_t, int64_t>(ts_micros, -remainder);
 		if (!timestamp_t(result_micros).IsFinite()) {
 			throw OutOfRangeException("Overflow in TIME_BUCKET: the result is not a finite TIMESTAMP");
 		}

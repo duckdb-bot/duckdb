@@ -1248,7 +1248,9 @@ int64_t DatePart::EpochMicrosecondsOperator::Operation(interval_t input) {
 template <>
 int64_t DatePart::EpochMillisOperator::Operation(timestamp_t input) {
 	D_ASSERT(input.IsFinite());
-	return Cast::Operation<timestamp_t, timestamp_ms_t>(input).value;
+	// rounded away from the epoch as the cast to TIMESTAMP_MS rounds, but a count of milliseconds next to the ends
+	// of the range is not a timestamp, so it is not checked as one
+	return Timestamp::GetEpochRounded(input, Interval::MICROS_PER_MSEC);
 }
 
 template <>

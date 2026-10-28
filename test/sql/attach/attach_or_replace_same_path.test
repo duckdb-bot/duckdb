@@ -26,14 +26,19 @@ SELECT i, (SELECT database_oid FROM duckdb_databases() WHERE database_name = 'db
 ----
 1	true
 
-# ATTACH IF NOT EXISTS keeps the attached database
+# ATTACH IF NOT EXISTS keeps the attached database and sets its default table
 statement ok
-ATTACH IF NOT EXISTS '{TEST_DIR}/or_replace_same_path.db' AS db1;
+ATTACH IF NOT EXISTS '{TEST_DIR}/or_replace_same_path.db' AS db1 (DEFAULT_TABLE 'u');
+
+query II
+SELECT i, (SELECT database_oid FROM duckdb_databases() WHERE database_name = 'db1') IN (SELECT oid FROM oids) FROM db1;
+----
+2	true
 
 statement ok
 DETACH db1;
 
-# a database attached for reading, with or without a mode
+# a database attached for reading, with or without a mode, and through an equivalent path
 statement ok
 ATTACH '{TEST_DIR}/or_replace_same_path.db' AS db1 (READ_ONLY);
 
@@ -41,9 +46,9 @@ statement ok
 INSERT INTO oids SELECT database_oid FROM duckdb_databases() WHERE database_name = 'db1';
 
 statement error
-ATTACH OR REPLACE '{TEST_DIR}/or_replace_same_path.db' AS db1 (READ_ONLY);
+ATTACH OR REPLACE '{TEST_DIR}/./or_replace_same_path.db' AS db1 (READ_ONLY);
 ----
-ATTACH OR REPLACE cannot replace it with the same file
+<REGEX>:Binder Error: Database "db1" is already attached with path ".*or_replace_same_path.db", ATTACH OR REPLACE cannot replace it with the same file.*
 
 statement error
 ATTACH OR REPLACE '{TEST_DIR}/or_replace_same_path.db' AS db1;
@@ -68,7 +73,7 @@ SELECT i, (SELECT database_oid FROM duckdb_databases() WHERE database_name = 'db
 ----
 1	false
 
-# another file replaces the database
+# another file replaces the database, with the default table it names
 statement ok
 ATTACH '{TEST_DIR}/or_replace_other_path.db' AS db2;
 
@@ -79,10 +84,10 @@ statement ok
 DETACH db2;
 
 statement ok
-ATTACH OR REPLACE '{TEST_DIR}/or_replace_other_path.db' AS db1;
+ATTACH OR REPLACE '{TEST_DIR}/or_replace_other_path.db' AS db1 (DEFAULT_TABLE 't');
 
 query I
-SELECT i FROM db1.t;
+SELECT i FROM db1;
 ----
 3
 
@@ -91,4 +96,15 @@ statement ok
 ATTACH ':memory:' AS mem;
 
 statement ok
+CREATE TABLE mem.t AS SELECT 4 AS i;
+
+statement ok
+CREATE TABLE mem_oids AS SELECT database_oid AS oid FROM duckdb_databases() WHERE database_name = 'mem';
+
+statement ok
 ATTACH OR REPLACE ':memory:' AS mem;
+
+query II
+SELECT i, (SELECT database_oid FROM duckdb_databases() WHERE database_name = 'mem') IN (SELECT oid FROM mem_oids) FROM mem.t;
+----
+4	true

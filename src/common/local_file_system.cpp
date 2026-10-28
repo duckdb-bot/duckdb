@@ -642,6 +642,20 @@ optional<FileMetadata> LocalFileSystem::GetStatsIfExists(const OpenFileInfo &fil
 	return file_metadata;
 }
 
+optional<FileMetadata> LocalFileSystem::TryGetStats(const string &path, optional_ptr<FileOpener> opener) {
+	if (path.empty()) {
+		return nullopt;
+	}
+	auto normalized_path = ExpandPath(path, opener);
+	struct stat status;
+	if (stat(normalized_path.c_str(), &status) != 0) {
+		return nullopt;
+	}
+	auto file_metadata = StatsFromStruct(status);
+	file_metadata.version_tag = VersionTagFromMetadata(file_metadata);
+	return file_metadata;
+}
+
 void LocalFileSystem::Truncate(FileHandle &handle, int64_t new_size) {
 	int fd = handle.Cast<UnixFileHandle>().fd;
 	if (ftruncate(fd, new_size) != 0) {
@@ -1113,27 +1127,24 @@ static timestamp_t FiletimeToTimeStamp(FILETIME file_time) {
 	return Timestamp::FromEpochSeconds(fileTime64 / WINDOWS_TICK - SEC_TO_UNIX_EPOCH);
 }
 
-static FileMetadata StatsInternal(HANDLE hFile, const string &path) {
-	FileMetadata file_metadata;
-
+static bool TryStatsInternal(HANDLE hFile, const string &path, FileMetadata &file_metadata) {
 	DWORD handle_type = GetFileType(hFile);
 	if (handle_type == FILE_TYPE_CHAR) {
 		file_metadata.file_type = FileType::FILE_TYPE_CHARDEV;
 		file_metadata.file_size = 0;
 		file_metadata.last_modification_time = Timestamp::FromEpochSeconds(0);
-		return file_metadata;
+		return true;
 	}
 	if (handle_type == FILE_TYPE_PIPE) {
 		file_metadata.file_type = FileType::FILE_TYPE_FIFO;
 		file_metadata.file_size = 0;
 		file_metadata.last_modification_time = Timestamp::FromEpochSeconds(0);
-		return file_metadata;
+		return true;
 	}
 
 	BY_HANDLE_FILE_INFORMATION file_info;
 	if (!GetFileInformationByHandle(hFile, &file_info)) {
-		auto error = LocalFileSystem::GetLastErrorAsString();
-		throw IOException("Failed to get stats for file \"%s\": %s", path, error);
+		return false;
 	}
 
 	// Get file size from high and low parts.
@@ -1162,6 +1173,15 @@ static FileMetadata StatsInternal(HANDLE hFile, const string &path) {
 		file_metadata.file_type = FileType::FILE_TYPE_INVALID;
 	}
 
+	return true;
+}
+
+static FileMetadata StatsInternal(HANDLE hFile, const string &path) {
+	FileMetadata file_metadata;
+	if (!TryStatsInternal(hFile, path, file_metadata)) {
+		auto error = LocalFileSystem::GetLastErrorAsString();
+		throw IOException("Failed to get stats for file \"%s\": %s", path, error);
+	}
 	return file_metadata;
 }
 
@@ -1758,6 +1778,30 @@ optional<FileMetadata> LocalFileSystem::GetStatsIfExists(const OpenFileInfo &fil
 	return file_metadata;
 }
 
+optional<FileMetadata> LocalFileSystem::TryGetStats(const string &path, optional_ptr<FileOpener> opener) {
+	if (path.empty()) {
+		return nullopt;
+	}
+	auto unicode_path = NormalizePathAndConvertToUnicode(*this, path, opener);
+	auto raw_handle = CreateFileW(unicode_path.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+	                              OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+	if (raw_handle == INVALID_HANDLE_VALUE) {
+		return nullopt;
+	}
+	unique_ptr<void, decltype(&CloseHandle)> handle(raw_handle, CloseHandle);
+
+	FileMetadata file_metadata;
+	if (!TryStatsInternal(handle.get(), path, file_metadata)) {
+		return nullopt;
+	}
+	if (file_metadata.file_type == FileType::FILE_TYPE_LINK) {
+		// stat reports a file with a reparse point, such as a OneDrive file, as a regular file
+		file_metadata.file_type = FileType::FILE_TYPE_REGULAR;
+	}
+	file_metadata.version_tag = VersionTagFromMetadata(file_metadata);
+	return file_metadata;
+}
+
 bool LocalFileSystem::TryCanonicalizeExistingPath(string &input) {
 	auto unicode_path = ConvertPathToUnicode(input);
 	HANDLE handle = CreateFileW(unicode_path.c_str(),
@@ -2158,21 +2202,45 @@ static bool IsSymbolicLink(const string &path) {
 #endif
 }
 
+OpenFileInfo LocalFileSystem::RegularFileInfo(const string &path, const FileMetadata &file_metadata) {
+	OpenFileInfo result(path);
+	result.extended_info = make_shared_ptr<ExtendedOpenFileInfo>();
+	auto &options = result.extended_info->options;
+	options.emplace("type", Value("file"));
+	FillFileOptions(file_metadata, options);
+	return result;
+}
+
+//! Adds the path to the result when a single stat call finds a regular file, a pipe or a character device there
+static bool TryAddFileOrPipe(LocalFileSystem &fs, const string &path, optional_ptr<FileOpener> opener,
+                             vector<OpenFileInfo> &result) {
+	auto file_metadata = fs.TryGetStats(path, opener);
+	if (!file_metadata) {
+		return false;
+	}
+	switch (file_metadata->file_type) {
+	case FileType::FILE_TYPE_REGULAR:
+		result.push_back(fs.RegularFileInfo(path, *file_metadata));
+		return true;
+	case FileType::FILE_TYPE_FIFO:
+	case FileType::FILE_TYPE_CHARDEV:
+		result.emplace_back(path);
+		return true;
+	default:
+		return false;
+	}
+}
+
 vector<OpenFileInfo> LocalFileSystem::FetchFileWithoutGlob(const string &path, optional_ptr<FileOpener> opener,
                                                            bool absolute_path) {
 	vector<OpenFileInfo> result;
-	if (FileExists(path, opener) || IsPipe(path, opener)) {
-		result.emplace_back(path);
-	} else if (!absolute_path) {
+	if (!TryAddFileOrPipe(*this, path, opener, result) && !absolute_path) {
 		Value value;
 		if (opener && opener->TryGetCurrentSetting("file_search_path", value)) {
 			auto search_paths_str = value.ToString();
 			vector<std::string> search_paths = StringUtil::Split(search_paths_str, ',');
 			for (const auto &search_path : search_paths) {
-				auto joined_path = JoinPath(search_path, path);
-				if (FileExists(joined_path, opener) || IsPipe(joined_path, opener)) {
-					result.emplace_back(joined_path);
-				}
+				TryAddFileOrPipe(*this, JoinPath(search_path, path), opener, result);
 			}
 		}
 	}
@@ -2367,7 +2435,10 @@ bool LocalGlobResult::ExpandNextPath() const {
 			if (is_last_component) {
 				// last component - we are emitting a result here
 				auto filename = fs.JoinPath(current_path, next_component);
-				if (fs.FileExists(filename, opener) || fs.DirectoryExists(filename, opener)) {
+				auto file_metadata = fs.TryGetStats(filename, opener);
+				if (file_metadata && file_metadata->file_type == FileType::FILE_TYPE_REGULAR) {
+					expanded_files.push_back(fs.RegularFileInfo(filename, *file_metadata));
+				} else if (file_metadata && file_metadata->file_type == FileType::FILE_TYPE_DIR) {
 					expanded_files.emplace_back(std::move(filename));
 				}
 			} else {

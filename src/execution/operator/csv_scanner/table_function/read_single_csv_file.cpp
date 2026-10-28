@@ -468,15 +468,21 @@ static unique_ptr<NodeStatistics> ReadSingleCSVFileCardinality(ClientContext &co
 	auto &csv_data = bind_data->Cast<ReadSingleCSVFileData>();
 	// determined through the scientific method as the average amount of rows in a CSV file
 	idx_t per_file_cardinality = 42;
+	auto estimated_row_width = csv_data.csv_types.size() * 5;
 	if (csv_data.buffer_manager && csv_data.buffer_manager->file_handle) {
 		auto &file_handle = *csv_data.buffer_manager->file_handle;
-		auto estimated_row_width = csv_data.csv_types.size() * 5;
 		auto file_size = file_handle.FileSize();
 		if (file_handle.IsPipe()) {
 			// a pipe has no size, the bytes the sniffer read are a lower bound for it
 			file_size = MaxValue<idx_t>(file_size, file_handle.UncompressedBytesRead());
 		}
 		per_file_cardinality = file_size / estimated_row_width;
+	} else if (estimated_row_width > 0) {
+		// without sniffing there is no file handle, so the size comes from the file list
+		auto file_size = csv_data.file.TryGetFileSize();
+		if (file_size.IsValid() && file_size.GetIndex() > 0) {
+			per_file_cardinality = file_size.GetIndex() / estimated_row_width;
+		}
 	}
 	return make_uniq<NodeStatistics>(per_file_cardinality);
 }

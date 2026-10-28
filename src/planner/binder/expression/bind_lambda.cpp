@@ -179,15 +179,14 @@ void ExpressionBinder::TransformCapturedLambdaColumn(unique_ptr<Expression> &ori
 		if (lambda_bindings && bound_lambda_ref.LambdaIndex() != lambda_bindings->size()) {
 			auto &binding = (*lambda_bindings)[bound_lambda_ref.LambdaIndex()];
 			auto &column_names = binding.GetColumnNames();
-			auto &column_types = binding.GetColumnTypes();
-			D_ASSERT(column_names.size() == column_types.size());
+			D_ASSERT(column_names.size() == binding.GetColumnTypes().size());
 
 			// find the matching dummy column in the lambda binding
 			for (idx_t column_idx = 0; column_idx < binding.GetColumnCount(); column_idx++) {
 				if (ProjectionIndex(column_idx) == bound_lambda_ref.Binding().column_index) {
 					// now create the replacement, with the type of the reference itself, since a COLLATE in the
 					// lambda body changes it
-					D_ASSERT(column_types[column_idx].id() == original->GetReturnType().id());
+					D_ASSERT(binding.GetColumnTypes()[column_idx].id() == original->GetReturnType().id());
 					auto index = GetLambdaParamIndex(*lambda_bindings, bound_lambda_expr, bound_lambda_ref);
 					replacement =
 					    make_uniq<BoundReferenceExpression>(column_names[column_idx], original->GetReturnType(), index);
@@ -199,10 +198,10 @@ void ExpressionBinder::TransformCapturedLambdaColumn(unique_ptr<Expression> &ori
 			throw InternalException("Failed to bind lambda parameter internally");
 		}
 		// refers to a lambda parameter inside the current lambda function
-		auto logical_type = (*bind_lambda_function)(context, function_child_types,
-		                                            bound_lambda_ref.Binding().column_index, bind_lambda_context);
-		D_ASSERT(logical_type.id() == original->GetReturnType().id());
-		(void)logical_type;
+		// the reference has the parameter type, which a COLLATE in the lambda body changes
+		D_ASSERT((*bind_lambda_function)(context, function_child_types, bound_lambda_ref.Binding().column_index,
+		                                 bind_lambda_context)
+		             .id() == original->GetReturnType().id());
 		auto index = bound_lambda_expr.ParameterCount() - bound_lambda_ref.Binding().column_index - 1;
 		replacement = make_uniq<BoundReferenceExpression>(alias, original->GetReturnType(), index);
 		return;

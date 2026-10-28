@@ -296,3 +296,11 @@ statement error
 SELECT (NULL).coalesce(5) FILTER (WHERE true);
 ----
 syntax error
+
+# The qualified form x.f(y) is a method call too, and the function call grammar accepts FILTER on it.
+# A rewritten name rejects FILTER there, like DISTINCT and ORDER BY, where before it was dropped silently.
+
+statement error
+SELECT x.construct_array(1) FILTER (WHERE false) FROM (SELECT 2 AS x);
+----
+FILTER is not supported in CONSTRUCT_ARRAY expressions

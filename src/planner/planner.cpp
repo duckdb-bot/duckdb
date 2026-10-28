@@ -1,5 +1,7 @@
 #include "duckdb/planner/planner.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
+#include "duckdb/planner/expression/bound_cast_expression.hpp"
+#include "duckdb/planner/expression/bound_function_expression.hpp"
 
 #include "duckdb/common/serializer/binary_deserializer.hpp"
 #include "duckdb/common/serializer/binary_serializer.hpp"
@@ -349,38 +351,47 @@ static bool OperatorSupportsSerialization(LogicalOperator &op) {
 	return op.SupportSerialization();
 }
 
-static string SerializedBytes(ClientContext &context, const JoinCondition &condition,
-                              const SerializationOptions &options) {
-	MemoryStream stream(Allocator::Get(context));
-	BinarySerializer::Serialize(condition, stream, options);
-	return string(const_char_ptr_cast(stream.GetData()), stream.GetPosition());
+// Deserialization binds every cast the default way, while statistics propagation may have specialized the cast of
+// the original, so the original's casts are bound again before the two are compared
+static unique_ptr<Expression> WithDefaultCasts(ClientContext &context, unique_ptr<Expression> expr) {
+	ExpressionIterator::EnumerateChildren(
+	    *expr, [&](unique_ptr<Expression> &child) { child = WithDefaultCasts(context, std::move(child)); });
+	if (!BoundCastExpression::IsCast(*expr)) {
+		return expr;
+	}
+	auto &cast = expr->Cast<BoundFunctionExpression>();
+	auto target_type = BoundCastExpression::TargetType(cast);
+	auto try_cast = BoundCastExpression::IsTryCast(cast);
+	return BoundCastExpression::AddCastToType(context, std::move(BoundCastExpression::ChildMutable(cast)), target_type,
+	                                          try_cast);
 }
 
-static bool ConditionsEqual(const JoinCondition &original, const JoinCondition &copy) {
-	if (original.IsComparison() != copy.IsComparison()) {
-		return false;
-	}
-	if (!original.IsComparison()) {
-		return Expression::Equals(original.GetJoinExpression(), copy.GetJoinExpression());
-	}
-	return original.GetComparisonType() == copy.GetComparisonType() &&
-	       Expression::Equals(original.GetLHS(), copy.GetLHS()) && Expression::Equals(original.GetRHS(), copy.GetRHS());
+static bool ExpressionsMatch(ClientContext &context, const Expression &original, const Expression &copy) {
+	return Expression::Equals(*WithDefaultCasts(context, original.Copy()), copy);
 }
 
-// A filter pushed from the join conditions only applies when the copy kept them. Expression equality misses a cast
-// whose implementation statistics propagation specialized, and the serialized form misses a type whose properties
-// serialize in another order, so a condition passes when either agrees
+// A filter pushed from the join conditions only applies when the copy kept them
 static bool JoinConditionsMatch(ClientContext &context, const LogicalComparisonJoin &original,
-                                const LogicalComparisonJoin &copy, const SerializationOptions &options) {
+                                const LogicalComparisonJoin &copy) {
 	if (original.conditions.size() != copy.conditions.size()) {
 		return false;
 	}
 	for (idx_t i = 0; i < original.conditions.size(); i++) {
 		auto &original_condition = original.conditions[i];
 		auto &copy_condition = copy.conditions[i];
-		if (!ConditionsEqual(original_condition, copy_condition) &&
-		    SerializedBytes(context, original_condition, options) !=
-		        SerializedBytes(context, copy_condition, options)) {
+		if (original_condition.IsComparison() != copy_condition.IsComparison()) {
+			return false;
+		}
+		if (!original_condition.IsComparison()) {
+			if (!ExpressionsMatch(context, original_condition.GetJoinExpression(),
+			                      copy_condition.GetJoinExpression())) {
+				return false;
+			}
+			continue;
+		}
+		if (original_condition.GetComparisonType() != copy_condition.GetComparisonType() ||
+		    !ExpressionsMatch(context, original_condition.GetLHS(), copy_condition.GetLHS()) ||
+		    !ExpressionsMatch(context, original_condition.GetRHS(), copy_condition.GetRHS())) {
 			return false;
 		}
 	}
@@ -389,8 +400,7 @@ static bool JoinConditionsMatch(ClientContext &context, const LogicalComparisonJ
 
 // Optimizer state that links operators through shared objects is not serialized, so the copy takes it over from the
 // plan it replaces, where the copy kept what the state refers to
-static void TransferUnserializedState(ClientContext &context, LogicalOperator &original, LogicalOperator &copy,
-                                      const SerializationOptions &options) {
+static void TransferUnserializedState(ClientContext &context, LogicalOperator &original, LogicalOperator &copy) {
 	if (original.type != copy.type || original.children.size() != copy.children.size()) {
 		return;
 	}
@@ -409,7 +419,7 @@ static void TransferUnserializedState(ClientContext &context, LogicalOperator &o
 	case LogicalOperatorType::LOGICAL_DELIM_JOIN: {
 		auto &original_join = original.Cast<LogicalComparisonJoin>();
 		auto &copy_join = copy.Cast<LogicalComparisonJoin>();
-		if (JoinConditionsMatch(context, original_join, copy_join, options)) {
+		if (JoinConditionsMatch(context, original_join, copy_join)) {
 			copy_join.filter_pushdown = std::move(original_join.filter_pushdown);
 		}
 		break;
@@ -418,7 +428,7 @@ static void TransferUnserializedState(ClientContext &context, LogicalOperator &o
 		break;
 	}
 	for (idx_t i = 0; i < original.children.size(); i++) {
-		TransferUnserializedState(context, *original.children[i], *copy.children[i], options);
+		TransferUnserializedState(context, *original.children[i], *copy.children[i]);
 	}
 }
 
@@ -458,7 +468,7 @@ void Planner::VerifyPlan(ClientContext &context, unique_ptr<LogicalOperator> &op
 		if (map) {
 			*map = std::move(parameters);
 		}
-		TransferUnserializedState(context, *op, *new_plan, options);
+		TransferUnserializedState(context, *op, *new_plan);
 		op = std::move(new_plan);
 	} catch (std::exception &ex) {
 		ErrorData error(ex);

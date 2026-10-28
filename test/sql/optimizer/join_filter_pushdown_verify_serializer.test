@@ -161,3 +161,37 @@ FROM read_text('{TEST_DIR}/state_verify.json') t, json_tree(t.content) j
 WHERE json_extract_string(j.value, '$.extra_info.Table') LIKE '%.main.ps';
 ----
 10
+
+# an implicit cast that statistics propagation specialized, in a condition with such a type
+statement ok
+CREATE TABLE pi AS SELECT i::INTEGER AS k FROM range(300000) t(i);
+
+statement ok
+CHECKPOINT;
+
+statement ok
+SET debug_verify_serializer = true;
+
+statement ok
+SET enable_profiling = 'json';
+
+statement ok
+SET profiling_output = '{TEST_DIR}/state_cast_verify.json';
+
+query I
+SELECT count(*) FROM pi JOIN bs ON pi.k = finalize(bs.s);
+----
+10
+
+statement ok
+PRAGMA disable_profiling;
+
+statement ok
+SET debug_verify_serializer = false;
+
+query I
+SELECT json_extract_string(j.value, '$.intermediate_rows')::BIGINT
+FROM read_text('{TEST_DIR}/state_cast_verify.json') t, json_tree(t.content) j
+WHERE json_extract_string(j.value, '$.extra_info.Table') LIKE '%.main.pi';
+----
+10

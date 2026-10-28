@@ -505,6 +505,9 @@ int64_t CastRules::ImplicitCast(const LogicalType &from, const LogicalType &to) 
 					auto &to_member_type = UnionType::GetMemberType(to, to_member_idx);
 
 					auto child_cost = ImplicitCast(from_member_type, to_member_type);
+					if (child_cost == -1) {
+						return -1;
+					}
 					cost = MaxValue(cost, child_cost);
 					found = true;
 					break;
@@ -514,10 +517,7 @@ int64_t CastRules::ImplicitCast(const LogicalType &from, const LogicalType &to) 
 				return -1;
 			}
 		}
-		// If not found, try casting source to member of target (below)
-		if (cost != -1) {
-			return cost;
-		}
+		return cost;
 	}
 	if (StructType::IsStruct(from) && StructType::IsStruct(to)) {
 		if (!to.HasParameters()) {
@@ -585,6 +585,20 @@ int64_t CastRules::ImplicitCast(const LogicalType &from, const LogicalType &to) 
 		return cost;
 	}
 
+	if (from.id() == LogicalTypeId::MAP && to.id() == LogicalTypeId::MAP) {
+		// Maps can be cast if their key and value types can be cast
+		auto key_cost = ImplicitCast(MapType::KeyType(from), MapType::KeyType(to));
+		auto value_cost = ImplicitCast(MapType::ValueType(from), MapType::ValueType(to));
+		if (key_cost == -1 || value_cost == -1) {
+			return -1;
+		}
+		auto cost = MaxValue(key_cost, value_cost);
+		if (cost >= 1) {
+			// subtract one from the cost because we prefer MAP[X] -> MAP[ANY] over MAP[X] -> ANY
+			cost--;
+		}
+		return cost;
+	}
 	if (from.id() == to.id()) {
 		// arguments match: do nothing
 		return 0;

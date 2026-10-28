@@ -45,6 +45,11 @@ SELECT col.ifnull('b' IGNORE NULLS) FROM t;
 ----
 RESPECT/IGNORE NULLS is not supported for non-window functions
 
+statement error
+SELECT col.ifnull('b') WITHIN GROUP (ORDER BY 1) FROM t;
+----
+Unknown ordered aggregate
+
 # after the main schema the qualification is dropped as before, as main.lower() is lower()
 statement ok
 ATTACH ':memory:' AS mem_db;

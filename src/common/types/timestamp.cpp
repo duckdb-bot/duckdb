@@ -150,16 +150,15 @@ TimestampCastResult Timestamp::TryConvertTimestampTZ(const char *str, idx_t len,
 			    hh * Interval::MICROS_PER_HOUR + mm * Interval::MICROS_PER_MINUTE + ss * Interval::MICROS_PER_SEC;
 			if (use_offset) {
 				// the range checks apply to the rounded instant too
-				timestamp_t instant;
-				if (!TrySubtractOffset(result, delta, instant)) {
+				const auto local = result;
+				if (!TrySubtractOffset(local, delta, result)) {
 					if (!TryTakeRoundingUp(nanos, fraction) ||
-					    !TrySubtractOffset(timestamp_t(result.value + 1), delta, instant)) {
+					    !TrySubtractOffset(timestamp_t(local.value + 1), delta, result)) {
 						return TimestampCastResult::ERROR_RANGE;
 					}
-				} else if (NextIsOutOfRange(instant) && RoundsUpMicros(fraction, instant.value >= 0, nanos)) {
+				} else if (NextIsOutOfRange(result) && RoundsUpMicros(fraction, result.value >= 0, nanos)) {
 					return TimestampCastResult::ERROR_RANGE;
 				}
-				result = instant;
 			}
 			has_offset = true;
 		} else {

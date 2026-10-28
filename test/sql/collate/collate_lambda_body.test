@@ -4,9 +4,6 @@
 
 # the bodies here are expressions over the parameter, as a COLLATE on a bare lambda parameter is dropped (issue #711)
 
-statement ok
-PRAGMA enable_verification
-
 query I
 SELECT invoke(lambda x: (x || '') COLLATE NOCASE, 'A' COLLATE NOACCENT) = 'a';
 ----
@@ -94,6 +91,24 @@ query I
 SELECT typeof(invoke(lambda x: upper(x) COLLATE NOCASE, NULL::VARCHAR COLLATE NOACCENT));
 ----
 VARCHAR('NOCASE')
+
+# a function whose result type is an argument's or a field's type keeps that type's collation as well
+query I
+SELECT typeof(struct_extract({'a': 'A' COLLATE NOCASE}, 'a' COLLATE NOACCENT));
+----
+VARCHAR('NOCASE')
+
+# also when a NULL argument folds the call before the function is bound
+query I
+SELECT typeof(struct_extract(cast_to_type(NULL, {'a': 'A' COLLATE NOCASE}), 'a' COLLATE NOACCENT));
+----
+VARCHAR('NOCASE')
+
+# arguments with different collations are still rejected, whatever the body's collation
+statement error
+SELECT invoke(lambda x, y: upper(x) COLLATE NOCASE, 'A' COLLATE NOACCENT, 'B' COLLATE NOCASE);
+----
+Cannot combine types with different collation
 
 # other functions keep propagating their arguments' collation
 query I

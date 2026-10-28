@@ -504,6 +504,7 @@ TEST_CASE("Local paths looked up without listing their directory", "[file_system
 	REQUIRE(files.size() == 1);
 	REQUIRE(files[0].path == link);
 	RequireListingOptions(files[0], listed_files[0]);
+	fs.RemoveFile(link);
 
 	// pipes and character devices are found without options
 	auto fifo = fs.JoinPath(dir, "fifo.csv");
@@ -531,17 +532,32 @@ TEST_CASE("Local paths looked up without listing their directory", "[file_system
 	// the final component of a glob finds files and directories
 	auto sub_dir = fs.JoinPath(dir, "sub");
 	fs.CreateDirectory(sub_dir);
-	auto sub_file = fs.JoinPath(sub_dir, "file.csv");
+	auto sub_file = fs.JoinPath(sub_dir, "local_path_lookup.csv");
 	CreateDummyFile(sub_file);
-	fs.CreateDirectory(fs.JoinPath(sub_dir, "nested"));
-	files = fs.Glob(fs.JoinPath(fs.JoinPath(dir, "s*"), "file.csv"));
+	auto listed_sub_files = fs.Glob(fs.JoinPath(sub_dir, "local_path_lookup*.csv"));
+	REQUIRE(listed_sub_files.size() == 1);
+	auto sub_glob = fs.JoinPath(fs.JoinPath(dir, "s*"), "local_path_lookup.csv");
+	files = fs.Glob(sub_glob);
 	REQUIRE(files.size() == 1);
 	REQUIRE(files[0].path == sub_file);
-	REQUIRE(files[0].TryGetFileSize().IsValid());
+	RequireListingOptions(files[0], listed_sub_files[0]);
+	fs.CreateDirectory(fs.JoinPath(sub_dir, "nested"));
 	files = fs.Glob(fs.JoinPath(fs.JoinPath(dir, "s*"), "nested"));
 	REQUIRE(files.size() == 1);
 	REQUIRE(files[0].path == fs.JoinPath(sub_dir, "nested"));
 	REQUIRE(!files[0].extended_info);
+
+	// a relative path is looked up in every directory of the search path
+	REQUIRE(!fs.FileExists("local_path_lookup.csv"));
+	DuckDB db(nullptr);
+	Connection con(db);
+	ClientContextFileOpener opener(*con.context);
+	auto missing_dir = fs.JoinPath(dir, "missing");
+	REQUIRE_NO_FAIL(con.Query(StringUtil::Format("SET file_search_path = '%s,%s'", missing_dir, sub_dir)));
+	files = fs.Glob("local_path_lookup.csv", &opener);
+	REQUIRE(files.size() == 1);
+	REQUIRE(files[0].path == sub_file);
+	RequireListingOptions(files[0], listed_sub_files[0]);
 
 	if (geteuid() == 0) {
 		// permissions do not apply to root
@@ -550,21 +566,16 @@ TEST_CASE("Local paths looked up without listing their directory", "[file_system
 	// a path in a directory without permissions is not found, and does not stop a glob or a search path
 	auto locked_dir = fs.JoinPath(dir, "secret");
 	fs.CreateDirectory(locked_dir);
-	CreateDummyFile(fs.JoinPath(locked_dir, "file.csv"));
+	CreateDummyFile(fs.JoinPath(locked_dir, "local_path_lookup.csv"));
 	InaccessibleDirectory inaccessible_dir(locked_dir);
-	REQUIRE(fs.Glob(fs.JoinPath(locked_dir, "file.csv")).empty());
-	files = fs.Glob(fs.JoinPath(fs.JoinPath(dir, "s*"), "file.csv"));
+	REQUIRE(fs.Glob(fs.JoinPath(locked_dir, "local_path_lookup.csv")).empty());
+	files = fs.Glob(sub_glob);
 	REQUIRE(files.size() == 1);
 	REQUIRE(files[0].path == sub_file);
-
-	DuckDB db(nullptr);
-	Connection con(db);
 	REQUIRE_NO_FAIL(con.Query(StringUtil::Format("SET file_search_path = '%s,%s'", locked_dir, sub_dir)));
-	ClientContextFileOpener opener(*con.context);
-	files = fs.Glob("file.csv", &opener);
+	files = fs.Glob("local_path_lookup.csv", &opener);
 	REQUIRE(files.size() == 1);
 	REQUIRE(files[0].path == sub_file);
-	REQUIRE(files[0].TryGetFileSize().IsValid());
 }
 #endif
 

@@ -1127,27 +1127,24 @@ static timestamp_t FiletimeToTimeStamp(FILETIME file_time) {
 	return Timestamp::FromEpochSeconds(fileTime64 / WINDOWS_TICK - SEC_TO_UNIX_EPOCH);
 }
 
-static FileMetadata StatsInternal(HANDLE hFile, const string &path) {
-	FileMetadata file_metadata;
-
+static bool TryStatsInternal(HANDLE hFile, const string &path, FileMetadata &file_metadata) {
 	DWORD handle_type = GetFileType(hFile);
 	if (handle_type == FILE_TYPE_CHAR) {
 		file_metadata.file_type = FileType::FILE_TYPE_CHARDEV;
 		file_metadata.file_size = 0;
 		file_metadata.last_modification_time = Timestamp::FromEpochSeconds(0);
-		return file_metadata;
+		return true;
 	}
 	if (handle_type == FILE_TYPE_PIPE) {
 		file_metadata.file_type = FileType::FILE_TYPE_FIFO;
 		file_metadata.file_size = 0;
 		file_metadata.last_modification_time = Timestamp::FromEpochSeconds(0);
-		return file_metadata;
+		return true;
 	}
 
 	BY_HANDLE_FILE_INFORMATION file_info;
 	if (!GetFileInformationByHandle(hFile, &file_info)) {
-		auto error = LocalFileSystem::GetLastErrorAsString();
-		throw IOException("Failed to get stats for file \"%s\": %s", path, error);
+		return false;
 	}
 
 	// Get file size from high and low parts.
@@ -1176,6 +1173,15 @@ static FileMetadata StatsInternal(HANDLE hFile, const string &path) {
 		file_metadata.file_type = FileType::FILE_TYPE_INVALID;
 	}
 
+	return true;
+}
+
+static FileMetadata StatsInternal(HANDLE hFile, const string &path) {
+	FileMetadata file_metadata;
+	if (!TryStatsInternal(hFile, path, file_metadata)) {
+		auto error = LocalFileSystem::GetLastErrorAsString();
+		throw IOException("Failed to get stats for file \"%s\": %s", path, error);
+	}
 	return file_metadata;
 }
 
@@ -1784,7 +1790,10 @@ optional<FileMetadata> LocalFileSystem::TryGetStats(const string &path, optional
 	}
 	unique_ptr<void, decltype(&CloseHandle)> handle(raw_handle, CloseHandle);
 
-	auto file_metadata = StatsInternal(handle.get(), path);
+	FileMetadata file_metadata;
+	if (!TryStatsInternal(handle.get(), path, file_metadata)) {
+		return nullopt;
+	}
 	if (file_metadata.file_type == FileType::FILE_TYPE_LINK) {
 		// stat reports a file with a reparse point, such as a OneDrive file, as a regular file
 		file_metadata.file_type = FileType::FILE_TYPE_REGULAR;

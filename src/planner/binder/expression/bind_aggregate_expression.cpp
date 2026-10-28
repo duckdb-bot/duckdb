@@ -1,6 +1,7 @@
 #include "duckdb/catalog/catalog_entry/aggregate_function_catalog_entry.hpp"
 #include "duckdb/common/operator/cast_operators.hpp"
 #include "duckdb/common/pair.hpp"
+#include "duckdb/common/type_visitor.hpp"
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/function/function_binder.hpp"
 #include "duckdb/function/scalar/generic_common.hpp"
@@ -19,8 +20,32 @@
 
 namespace duckdb {
 
-bool BaseSelectBinder::IsFunctionallyDependent(const unique_ptr<Expression> &expr,
-                                               const vector<reference<Expression>> &deps) {
+//! Whether the collation compares strings byte by byte, as no collation does
+static bool IsBinaryCollation(const string &collation) {
+	auto lower = StringUtil::Lower(collation);
+	return lower.empty() || lower == "binary" || lower == "c" || lower == "posix";
+}
+
+//! Whether values of the type that compare equal are also identical. Signed zeros compare equal but their sign bit
+//! differs, as do intervals of the same length in days and months, and strings equal under a collation
+static bool EqualValuesAreIdentical(const LogicalType &type) {
+	return !TypeVisitor::Contains(type, [](const LogicalType &child) {
+		switch (child.id()) {
+		case LogicalTypeId::FLOAT:
+		case LogicalTypeId::DOUBLE:
+		case LogicalTypeId::INTERVAL:
+		case LogicalTypeId::VARIANT:
+			return true;
+		case LogicalTypeId::VARCHAR:
+			return !IsBinaryCollation(StringType::GetCollation(child));
+		default:
+			return false;
+		}
+	});
+}
+
+static bool IsFunctionallyDependent(const unique_ptr<Expression> &expr, const vector<reference<Expression>> &deps,
+                                    bool strict, bool is_root) {
 	//	Volatile expressions can't depend on anything else
 	if (expr->IsVolatile()) {
 		return false;
@@ -29,11 +54,12 @@ bool BaseSelectBinder::IsFunctionallyDependent(const unique_ptr<Expression> &exp
 	if (expr->IsFoldable()) {
 		return true;
 	}
-	// If the expression matches ANY of the dependencies, then it is FD on them
+	// If the expression matches ANY of the dependencies, then it is FD on them. When strict, an expression over a match
+	// only is when equal values of the match are identical, as x is equal on its partition but signbit(x) need not be
 	for (const auto &dep : deps) {
 		// We don't need to check volatility of the dependencies because we checked it for the expression.
 		if (expr->Equals(dep.get())) {
-			return true;
+			return is_root || !strict || EqualValuesAreIdentical(expr->GetReturnType());
 		}
 	}
 
@@ -42,9 +68,14 @@ bool BaseSelectBinder::IsFunctionallyDependent(const unique_ptr<Expression> &exp
 	bool are_dependent = true;
 	ExpressionIterator::EnumerateChildren(*expr, [&](unique_ptr<Expression> &child) {
 		has_children = true;
-		are_dependent &= IsFunctionallyDependent(child, deps);
+		are_dependent &= IsFunctionallyDependent(child, deps, strict, false);
 	});
 	return has_children && are_dependent;
+}
+
+bool BaseSelectBinder::IsFunctionallyDependent(const unique_ptr<Expression> &expr,
+                                               const vector<reference<Expression>> &deps, bool strict) {
+	return duckdb::IsFunctionallyDependent(expr, deps, strict, true);
 }
 
 static Value NegatePercentileValue(const Value &v, const bool desc) {
@@ -279,7 +310,9 @@ BindResult BaseSelectBinder::BindAggregate(FunctionExpression &aggr, AggregateFu
 		}
 		bool in_args = true;
 		for (const auto &order_by : order_bys->orders) {
-			in_args &= IsFunctionallyDependent(order_by.expression, arg_refs);
+			// Not strict, as the ORDER BY only has to be determined by the arguments, and ORDER BY s COLLATE NOCASE
+			// over the argument s COLLATE NOCASE binds to the collation function over it
+			in_args &= IsFunctionallyDependent(order_by.expression, arg_refs, false);
 		}
 
 		if (!in_args) {

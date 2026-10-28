@@ -9,7 +9,7 @@ TEST_CASE("CountZeros of 64-bit values with bits above the lower 32", "[bit_util
 	REQUIRE(CountZeros<uint64_t>::Leading(NumericLimits<uint64_t>::Maximum()) == 0);
 	REQUIRE(CountZeros<uint64_t>::Trailing(NumericLimits<uint64_t>::Maximum()) == 0);
 	for (idx_t bit = 0; bit < 64; bit++) {
-		auto value = uint64_t(1) << bit;
+		const auto value = uint64_t(1) << bit;
 		REQUIRE(CountZeros<uint64_t>::Leading(value) == 63 - bit);
 		REQUIRE(CountZeros<uint64_t>::Trailing(value) == bit);
 		REQUIRE(CountZeros<uint64_t>::Leading(value | 1) == 63 - bit);

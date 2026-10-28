@@ -160,6 +160,47 @@ SELECT v, row_number() OVER (PARTITION BY v ORDER BY v::BLOB DESC) AS rn FROM c 
 abc	1
 ABC	2
 
+# a binary collation compares bytes, like no collation, so a function of the key still goes
+query II
+EXPLAIN SELECT row_number() OVER (PARTITION BY s COLLATE "binary" ORDER BY upper(s COLLATE "binary")) FROM n;
+----
+physical_plan	<!REGEX>:.*ORDER BY.*
+
+# the other users of the dependency check: a DISTINCT window aggregate ordered by a function of its argument is not
+# rewritten to a self join, and a join on a function of the partition key is not pushed below the window
+query I
+SELECT len(list(DISTINCT x ORDER BY signbit(x)) OVER ()) FROM z;
+----
+1
+1
+
+statement ok
+CREATE TABLE b(flag BOOLEAN PRIMARY KEY);
+
+statement ok
+INSERT INTO b VALUES (true);
+
+statement ok
+SET disabled_optimizers = 'window_self_join,filter_pushdown';
+
+query II
+SELECT signbit(w.x), w.c FROM (SELECT x, count(*) OVER (PARTITION BY x) AS c FROM z) w SEMI JOIN b ON signbit(w.x) = b.flag;
+----
+true	2
+
+query II
+SELECT signbit(w.x), w.c FROM (SELECT x, count(*) OVER (PARTITION BY x) AS c FROM z) w ANTI JOIN b ON signbit(w.x) = b.flag;
+----
+false	2
+
+query II
+SELECT signbit(w.x), w.c FROM (SELECT x, count(*) OVER (PARTITION BY x) AS c FROM z) w JOIN b ON signbit(w.x) = b.flag;
+----
+true	2
+
+statement ok
+RESET disabled_optimizers;
+
 # the ORDER BY of a DISTINCT aggregate must be a function of its arguments; a function over such a key still counts
 # there, as before (DISTINCT keeps the representations apart)
 query I

@@ -20,6 +20,12 @@
 
 namespace duckdb {
 
+//! Whether the collation compares strings byte by byte, as no collation does
+static bool IsBinaryCollation(const string &collation) {
+	auto lower = StringUtil::Lower(collation);
+	return lower.empty() || lower == "binary" || lower == "c" || lower == "posix";
+}
+
 //! Whether values of the type that compare equal are also identical. Signed zeros compare equal but their sign bit
 //! differs, as do intervals of the same length in days and months, and strings equal under a collation
 static bool EqualValuesAreIdentical(const LogicalType &type) {
@@ -31,7 +37,7 @@ static bool EqualValuesAreIdentical(const LogicalType &type) {
 		case LogicalTypeId::VARIANT:
 			return true;
 		case LogicalTypeId::VARCHAR:
-			return !StringType::GetCollation(child).empty();
+			return !IsBinaryCollation(StringType::GetCollation(child));
 		default:
 			return false;
 		}
@@ -304,8 +310,8 @@ BindResult BaseSelectBinder::BindAggregate(FunctionExpression &aggr, AggregateFu
 		}
 		bool in_args = true;
 		for (const auto &order_by : order_bys->orders) {
-			// not strict: ORDER BY s COLLATE NOCASE over the argument s COLLATE NOCASE is its collation function, and
-			// is accepted as before
+			// not strict: the ORDER BY only has to be determined by the arguments, and ORDER BY s COLLATE NOCASE over
+			// the argument s COLLATE NOCASE binds to the collation function over it
 			in_args &= IsFunctionallyDependent(order_by.expression, arg_refs, false);
 		}
 

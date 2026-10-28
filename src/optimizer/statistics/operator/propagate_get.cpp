@@ -3,10 +3,12 @@
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/planner/expression/bound_conjunction_expression.hpp"
+#include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/expression/bound_operator_expression.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/planner/filter/expression_filter.hpp"
+#include "duckdb/planner/filter/table_filter_functions.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/planner/table_filter.hpp"
 #include "duckdb/function/scalar/generic_common.hpp"
@@ -139,6 +141,47 @@ static bool CanReplaceConstantOrNull(const TableFilter &table_filter) {
 	return true;
 }
 
+//! The longest IN list that the scan checks itself, as it compares every row with every value
+static constexpr idx_t MAX_SCAN_IN_FILTER_VALUES = 8;
+//! The scan only checks an IN list that keeps at most this fraction of the rows, as checking costs more than it
+//! saves unless it removes whole vectors
+static constexpr float SCAN_IN_FILTER_SELECTIVITY = 0.001f;
+static constexpr idx_t SCAN_IN_FILTER_VECTORS_TO_CHECK = 1;
+
+//! An IN list that only prunes row groups is also checked during the scan when the column has so many distinct values
+//! that the list keeps almost no rows, so that the scan skips the other columns of the vectors without a match
+static unique_ptr<TableFilter> TryCheckInListDuringScan(const TableFilter &filter, BaseStatistics &stats) {
+	auto &expr = *ExpressionFilter::GetExpressionFilter(filter, "TryCheckInListDuringScan").expr;
+	if (expr.GetExpressionClass() != ExpressionClass::BOUND_FUNCTION ||
+	    expr.Cast<BoundFunctionExpression>().Function().GetName() != OptionalFilterScalarFun::NAME) {
+		return nullptr;
+	}
+	auto in_list = ExpressionFilter::GetOptionalFilterChild(expr);
+	if (!in_list || in_list->GetExpressionType() != ExpressionType::COMPARE_IN) {
+		return nullptr;
+	}
+	// the column itself in a list of constants
+	auto &children = in_list->Cast<BoundOperatorExpression>().GetChildren();
+	if (children[0]->GetExpressionClass() != ExpressionClass::BOUND_REF) {
+		return nullptr;
+	}
+	for (idx_t i = 1; i < children.size(); i++) {
+		if (children[i]->GetExpressionClass() != ExpressionClass::BOUND_CONSTANT ||
+		    children[i]->Cast<BoundConstantExpression>().GetValue().IsNull()) {
+			return nullptr;
+		}
+	}
+	auto value_count = children.size() - 1;
+	if (value_count > MAX_SCAN_IN_FILTER_VALUES ||
+	    static_cast<double>(value_count) > static_cast<double>(stats.GetDistinctCount()) * SCAN_IN_FILTER_SELECTIVITY) {
+		return nullptr;
+	}
+	auto &input_type = expr.Cast<BoundFunctionExpression>().GetChildren()[0]->GetReturnType();
+	auto filter_expr = CreateSelectivityOptionalFilterExpression(
+	    in_list->Copy(), input_type, SCAN_IN_FILTER_SELECTIVITY, SCAN_IN_FILTER_VECTORS_TO_CHECK);
+	return make_uniq<ExpressionFilter>(std::move(filter_expr));
+}
+
 unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalGet &get,
                                                                      unique_ptr<LogicalOperator> &node_ptr) {
 	if (get.function.cardinality) {
@@ -206,10 +249,15 @@ unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalGet 
 			// filter is always false; this entire filter should be replaced by an empty result block
 			ReplaceWithEmptyResult(node_ptr);
 			return make_uniq<NodeStatistics>(0U, 0U);
-		default:
+		default: {
 			// general case: filter can be true or false, update this columns' statistics
+			auto scan_filter = TryCheckInListDuringScan(filter, stats);
 			UpdateFilterStatistics(stats, filter);
+			if (scan_filter) {
+				get.table_filters.SetFilterByColumnIndex(table_filter_column, std::move(scan_filter));
+			}
 			break;
+		}
 		}
 	}
 	return std::move(node_stats);

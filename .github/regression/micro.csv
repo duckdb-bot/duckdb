@@ -53,3 +53,5 @@ benchmark/micro/string/lpad.benchmark
 benchmark/micro/insert/bulk_insert_commit_batch.benchmark
 benchmark/micro/insert/bulk_insert_commit_parallel.benchmark
 benchmark/micro/insert/bulk_insert_commit_in_memory.benchmark
+benchmark/micro/lambdas/list_transform_substring_capture.benchmark
+benchmark/micro/lambdas/list_transform_subscript_capture.benchmark

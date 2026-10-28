@@ -261,3 +261,10 @@ statement error
 SELECT invoke(lambda x: x * 2, 9223372036854775807::BIGINT);
 ----
 Out of Range Error: Overflow in multiplication of INT64
+
+# the result has the collation of the lambda body, not the collations of the other arguments
+query IIII
+SELECT typeof(invoke(lambda x, y: x, 'A', 'b' COLLATE NOCASE)), invoke(lambda x, y: x, 'A', 'b' COLLATE NOCASE) = 'a',
+       typeof(invoke(lambda x, y: y, 'A', 'b' COLLATE NOCASE)), invoke(lambda x: x, 'A' COLLATE NOCASE) = 'a';
+----
+VARCHAR	false	VARCHAR('NOCASE')	true

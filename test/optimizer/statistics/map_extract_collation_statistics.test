@@ -1,0 +1,26 @@
+# name: test/optimizer/statistics/map_extract_collation_statistics.test
+# description: The statistics of map values prune filters on lookups with a collated key (duckdblabs/bot-issue-tracker#487)
+# group: [statistics]
+
+statement ok
+CREATE TABLE s AS SELECT MAP {'Apple': i % 5} AS m FROM range(1000) r(i);
+
+query II
+EXPLAIN SELECT count(*) FROM s WHERE m['apple' COLLATE NOCASE] > 10;
+----
+physical_plan	<REGEX>:.*Empty Result.*
+
+query II
+EXPLAIN SELECT count(*) FROM s WHERE map_extract_value(m, 'apple' COLLATE NOCASE) < 0;
+----
+physical_plan	<REGEX>:.*Empty Result.*
+
+query II
+EXPLAIN SELECT count(*) FROM s WHERE m[upper('apple') COLLATE NOCASE] > 10;
+----
+physical_plan	<REGEX>:.*Empty Result.*
+
+query I
+SELECT count(*) FROM s WHERE m['apple' COLLATE NOCASE] > 10;
+----
+0

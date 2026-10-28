@@ -1,0 +1,322 @@
+# name: test/sql/types/nested/map/test_map_extract_collation.test
+# description: map_extract, map_extract_value, element_at and subscripts respect the collations of map keys (duckdblabs/bot-issue-tracker#487)
+# group: [map]
+
+statement ok
+SET debug_verify_serializer = true;
+
+query IIIII
+SELECT MAP {'Apple': 1}['apple' COLLATE NOCASE],
+       map_extract_value(MAP {'Apple': 1}, 'apple' COLLATE NOCASE),
+       map_extract(MAP {'Apple': 1}, 'apple' COLLATE NOCASE),
+       element_at(MAP {'Apple': 1}, 'apple' COLLATE NOCASE),
+       map_contains(MAP {'Apple': 1}, 'apple' COLLATE NOCASE);
+----
+1	1	[1]	[1]	true
+
+statement ok
+CREATE TABLE t (k VARCHAR COLLATE NOCASE);
+
+statement ok
+INSERT INTO t VALUES ('Apple');
+
+query III
+SELECT map([k], [1])['apple'], map_extract(map([k], [1]), 'apple'), map_contains(map([k], [1]), 'apple') FROM t;
+----
+1	[1]	true
+
+# missing keys, NULL keys and maps, NULL values and empty maps behave as without a collation
+statement ok
+CREATE TABLE m (id INT, m MAP(VARCHAR, VARCHAR), k VARCHAR);
+
+statement ok
+INSERT INTO m VALUES (1, MAP {'Apple': 'Pie', 'b': NULL}, 'APPLE'), (2, NULL, 'apple'), (3, MAP {'Apple': 'Pie'}, NULL),
+	(4, MAP {'Apple': 'Pie'}, 'pear'), (5, MAP {'Apple': 'Pie', 'b': NULL}, 'B'), (6, MAP {}, 'apple'),
+	(7, MAP {'Apple': 'Pie'}, 'Apple');
+
+query IIIIII
+SELECT id, m[k COLLATE NOCASE], map_extract(m, k COLLATE NOCASE), element_at(m, k COLLATE NOCASE), m[k], map_extract(m, k)
+FROM m ORDER BY id;
+----
+1	Pie	[Pie]	[Pie]	NULL	[]
+2	NULL	NULL	NULL	NULL	NULL
+3	NULL	[]	[]	NULL	[]
+4	NULL	[]	[]	NULL	[]
+5	NULL	[NULL]	[NULL]	NULL	[]
+6	NULL	[]	[]	NULL	[]
+7	Pie	[Pie]	[Pie]	Pie	[Pie]
+
+# the values keep their case and type
+query III
+SELECT typeof(m[k COLLATE NOCASE]), typeof(map_extract(m, k COLLATE NOCASE)), m[k COLLATE NOCASE] = 'pie' FROM m WHERE id = 1;
+----
+VARCHAR	VARCHAR[]	false
+
+query III
+SELECT MAP {'Apple': 1}['APPLE' COLLATE NOACCENT.NOCASE], MAP {'Äpple': 1}['apple' COLLATE NOACCENT.NOCASE],
+       MAP {'Äpple': 1}['apple' COLLATE NOCASE];
+----
+1	1	NULL
+
+statement error
+SELECT map_extract(map(['a' COLLATE NOCASE], [1]), 'A' COLLATE NOACCENT);
+----
+Cannot combine types with different collation
+
+# keys that collate equal find the first, and a binary collation compares as without a collation
+query IIII
+SELECT MAP {'A': 1, 'a': 2}['a' COLLATE NOCASE], map_extract(MAP {'A': 1, 'a': 2}, 'a' COLLATE NOCASE),
+       MAP {'Apple': 1}['Apple' COLLATE "binary"], MAP {'Apple': 1}['apple' COLLATE "binary"];
+----
+1	[1]	1	NULL
+
+# the map is not rebuilt with collated keys, which would make these keys equal
+statement ok
+CREATE TABLE same_keys (id INT, m MAP(VARCHAR, INT), k VARCHAR);
+
+statement ok
+INSERT INTO same_keys VALUES (1, MAP {'Apple': 1, 'APPLE': 2}, 'apple'), (2, MAP {'APPLE': 2, 'Apple': 1}, 'aPPLE'),
+	(3, MAP {'Apple': 1, 'APPLE': 2}, 'APPLE'), (4, MAP {'Apple': 1, 'APPLE': 2}, 'pear');
+
+query IIIII
+SELECT id, m[k COLLATE NOCASE], map_extract(m, k COLLATE NOCASE), element_at(m, k COLLATE NOCASE), m[k]
+FROM same_keys ORDER BY id;
+----
+1	1	[1]	[1]	NULL
+2	2	[2]	[2]	NULL
+3	1	[1]	[1]	2
+4	NULL	[]	[]	NULL
+
+query II
+SELECT map_from_entries([{'key': 'Apple', 'value': 1}, {'key': 'APPLE', 'value': 2}])['apple' COLLATE NOCASE],
+       map(['Apple', 'APPLE'], [1, 2])['APPLE' COLLATE NOCASE];
+----
+1	1
+
+# keys that are lists, arrays or structs of collated strings
+query II
+SELECT map([['A' COLLATE NOCASE, 'b']], [1])[['a', 'B']], map_extract(map([['A' COLLATE NOCASE, 'b']], [1]), ['a', 'C']);
+----
+1	[]
+
+query II
+SELECT map([array_value('A' COLLATE NOCASE, 'b')], [1])[array_value('a', 'B')],
+       map_extract(MAP {{'a': 'X' COLLATE NOCASE}: 1}, {'a': 'x'});
+----
+1	[1]
+
+# maps with more keys than a vector holds, and lookups over several vectors
+query I
+SELECT map_from_entries(list_transform(range(3000), lambda i: {'key': 'K' || i, 'value': i}))['k2999' COLLATE NOCASE];
+----
+2999
+
+query II
+SELECT count(*), sum(m['APPLE' COLLATE NOCASE]) FROM (SELECT MAP {'Apple': i % 5, 'b': i} AS m FROM range(5000) r(i));
+----
+5000	10000
+
+# lookups inside lambdas, with the key or the map as a lambda parameter, or a captured column
+query I
+SELECT list_transform([MAP {'Apple': 7}], lambda x: cast_to_type(x, map(['witness' COLLATE NOCASE], [0]))['apple']);
+----
+[7]
+
+query II
+SELECT list_transform([MAP {'Apple': 1}, MAP {'APPLE': 2}], lambda x: x['apple' COLLATE NOCASE]),
+       list_transform(['apple', 'APPLE', 'pear'], lambda x: MAP {'Apple': 1}[x COLLATE NOCASE]);
+----
+[1, 2]	[1, 1, NULL]
+
+query II
+SELECT id, list_transform([k, upper(k)], lambda y: list_transform([m], lambda z: map_extract(z, y COLLATE NOCASE)))
+FROM m WHERE id <= 2 ORDER BY id;
+----
+1	[[[Pie]], [[Pie]]]
+2	[[NULL], [NULL]]
+
+query II
+SELECT id, [z FOR z IN [m] IF z[k COLLATE NOCASE] IS NOT NULL] FROM m WHERE id <= 2 ORDER BY id;
+----
+1	[{Apple=Pie, b=NULL}]
+2	[]
+
+# the map and the key are evaluated once
+statement ok
+CREATE SEQUENCE map_seq;
+
+statement ok
+CREATE SEQUENCE key_seq;
+
+query II
+SELECT map([nextval('map_seq')::VARCHAR], ['a'])['1' COLLATE NOCASE],
+       map_extract(MAP {'1': 'b', '2': 'c'}, nextval('key_seq')::VARCHAR COLLATE NOCASE);
+----
+a	[b]
+
+query II
+SELECT currval('map_seq'), currval('key_seq');
+----
+1	1
+
+query II
+SELECT map_extract(map([nextval('map_seq')::VARCHAR], ['a']), '2' COLLATE NOCASE),
+       MAP {'1': 'b', '2': 'c'}[nextval('key_seq')::VARCHAR COLLATE NOCASE];
+----
+[a]	c
+
+query II
+SELECT currval('map_seq'), currval('key_seq');
+----
+2	2
+
+# a volatile map and a volatile key in one lookup are evaluated once, in that order
+statement ok
+CREATE SEQUENCE both_seq;
+
+query II
+SELECT element_at(map([nextval('both_seq')::VARCHAR], ['a']), (nextval('both_seq') - 1)::VARCHAR COLLATE NOCASE),
+       currval('both_seq');
+----
+[a]	2
+
+# the value of a volatile map does not take the collation of the key either
+query II
+SELECT typeof(map(['k'], [nextval('map_seq') || 'v'])['K' COLLATE NOCASE]),
+       right(map(['k'], [nextval('map_seq') || 'v'])['K' COLLATE NOCASE], 1) = 'V';
+----
+VARCHAR	false
+
+# a key with side effects is evaluated for NULL maps as well
+statement ok
+CREATE SEQUENCE null_seq;
+
+statement ok
+CREATE TABLE nm (m MAP(VARCHAR, VARCHAR));
+
+statement ok
+INSERT INTO nm VALUES (NULL), (NULL);
+
+query II
+SELECT m[nextval('null_seq')::VARCHAR COLLATE NOCASE], map_extract(m, nextval('null_seq')::VARCHAR COLLATE NOCASE) FROM nm;
+----
+NULL	NULL
+NULL	NULL
+
+query I
+SELECT currval('null_seq');
+----
+4
+
+statement error
+SELECT m[error('bad key')::VARCHAR COLLATE NOCASE] FROM nm;
+----
+bad key
+
+statement error
+SELECT map_extract(m, error('bad key')::VARCHAR COLLATE NOCASE) FROM nm;
+----
+bad key
+
+statement ok
+PREPARE q AS SELECT map_extract($1::MAP(VARCHAR, VARCHAR), nextval('null_seq')::VARCHAR COLLATE NOCASE);
+
+query I
+EXECUTE q(NULL);
+----
+NULL
+
+query I
+SELECT currval('null_seq');
+----
+5
+
+statement error
+SELECT map_extract(NULL::MAP(VARCHAR, INTEGER), error('bad key')::VARCHAR COLLATE NOCASE);
+----
+bad key
+
+statement error
+SELECT (NULL::MAP(VARCHAR, INTEGER))[error('bad key')::VARCHAR COLLATE NOCASE];
+----
+bad key
+
+# maps and keys from subqueries, which the lookup does not copy
+query III
+SELECT (SELECT MAP {'Apple': 1})['apple' COLLATE NOCASE], map_extract((SELECT MAP {'Apple': 1}), 'APPLE' COLLATE NOCASE),
+       MAP {'Apple': 1}[(SELECT 'apple') COLLATE NOCASE];
+----
+1	[1]	1
+
+query II
+SELECT id, (SELECT m)[k COLLATE NOCASE] FROM m WHERE id <= 2 ORDER BY id;
+----
+1	Pie
+2	NULL
+
+statement error
+SELECT map_extract(NULL::MAP(VARCHAR, INTEGER), (SELECT 'x' FROM range(2)) COLLATE NOCASE);
+----
+More than one row returned by a subquery
+
+statement ok
+CREATE TABLE s AS SELECT MAP {'Apple': i % 5} AS m FROM range(1000) r(i);
+
+query II
+SELECT count(*) FILTER (m['apple' COLLATE NOCASE] > 10), count(*) FILTER (m['apple' COLLATE NOCASE] = 3) FROM s;
+----
+0	200
+
+statement ok
+CREATE VIEW v AS SELECT id, m['APPLE' COLLATE NOCASE] AS x FROM m;
+
+query II
+SELECT * FROM v WHERE id IN (1, 2) ORDER BY id;
+----
+1	Pie
+2	NULL
+
+statement ok
+PREPARE p AS SELECT MAP {'Apple': 1}[$1 COLLATE NOCASE], map_extract(MAP {'Apple': 1}, $1 COLLATE NOCASE);
+
+query II
+EXECUTE p('APPLE');
+----
+1	[1]
+
+query II
+EXECUTE p('pear');
+----
+NULL	[]
+
+# an index cannot evaluate a collated lookup for new rows, as for map_contains, and a binary collation needs none
+statement ok
+CREATE TABLE indexed (m MAP(VARCHAR, INTEGER));
+
+statement ok
+CREATE INDEX collated_idx ON indexed ((m['Apple' COLLATE NOCASE]));
+
+statement error
+INSERT INTO indexed VALUES (MAP {'Apple': 7});
+----
+Cannot use "list_transform" in this context
+
+statement error
+INSERT INTO indexed VALUES (MAP {'Apple': 7});
+----
+Cannot use "list_transform" in this context
+
+statement ok
+DROP INDEX collated_idx;
+
+statement ok
+CREATE INDEX binary_idx ON indexed ((m['Apple' COLLATE "binary"]));
+
+statement ok
+INSERT INTO indexed VALUES (MAP {'Apple': 7}), (MAP {'apple': 8});
+
+query I
+SELECT m['Apple' COLLATE "binary"] FROM indexed ORDER BY ALL;
+----
+7
+NULL

@@ -1,9 +1,14 @@
 #include "duckdb/common/vector/map_vector.hpp"
 #include "core_functions/scalar/map_functions.hpp"
+#include "duckdb/common/type_visitor.hpp"
 #include "duckdb/common/types/data_chunk.hpp"
+#include "duckdb/function/function_binder.hpp"
 #include "duckdb/function/scalar/list/contains_or_position.hpp"
 #include "duckdb/function/scalar/nested_functions.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
+#include "duckdb/planner/expression/bound_lambda_expression.hpp"
+#include "duckdb/planner/expression/bound_reference_expression.hpp"
+#include "duckdb/planner/expression_binder.hpp"
 #include "duckdb/storage/statistics/list_stats.hpp"
 #include "duckdb/storage/statistics/struct_stats.hpp"
 
@@ -108,12 +113,80 @@ static unique_ptr<BaseStatistics> MapExtractValueStats(ClientContext &, Function
 	return value_copy.ToUnique();
 }
 
+//! Whether the type has an explicit collation that changes how its values compare
+static bool RequiresCollation(ClientContext &context, const LogicalType &type) {
+	const auto has_collation = TypeVisitor::Contains(type, [](const LogicalType &child) {
+		return child.id() == LogicalTypeId::VARCHAR && !StringType::GetCollation(child).empty();
+	});
+	if (!has_collation) {
+		return false;
+	}
+	unique_ptr<Expression> collated_value = make_uniq<BoundReferenceExpression>(type, idx_t(0));
+	return ExpressionBinder::PushCollation(context, collated_value, type, CollationType::COMBINABLE_COLLATIONS);
+}
+
+static unique_ptr<Expression> BindFunction(ClientContext &context, const Identifier &name,
+                                           vector<unique_ptr<Expression>> children) {
+	FunctionBinder function_binder(context);
+	return function_binder.BindScalarFunction(Identifier::DefaultSchema(), name, std::move(children));
+}
+
+static unique_ptr<Expression> BindFunction(ClientContext &context, const Identifier &name, unique_ptr<Expression> first,
+                                           unique_ptr<Expression> second = nullptr) {
+	vector<unique_ptr<Expression>> children;
+	children.push_back(std::move(first));
+	if (second) {
+		children.push_back(std::move(second));
+	}
+	return BindFunction(context, name, std::move(children));
+}
+
+//! Binds the lookup in invoke, which evaluates the map and the key once for every row
+static unique_ptr<Expression> BindLookupInInvoke(FunctionBindExpressionInput &input) {
+	const Identifier map_name("map");
+	const Identifier key_name("key");
+	// invoke passes its last argument as reference 0
+	auto map_ref = make_uniq<BoundReferenceExpression>(map_name, input.children[0]->GetReturnType(), idx_t(1));
+	auto key_ref = make_uniq<BoundReferenceExpression>(key_name, input.children[1]->GetReturnType(), idx_t(0));
+	auto lookup = BindFunction(input.context, input.bound_function.GetName(), std::move(map_ref), std::move(key_ref));
+	auto lambda =
+	    make_uniq<BoundLambdaExpression>(ExpressionType::LAMBDA, LogicalType::LAMBDA, std::move(lookup), idx_t(2));
+	lambda->SetParameterNames({map_name, key_name});
+	vector<unique_ptr<Expression>> children;
+	children.push_back(std::move(lambda));
+	children.push_back(std::move(input.children[0]));
+	children.push_back(std::move(input.children[1]));
+	return BindFunction(input.context, "invoke", std::move(children));
+}
+
+//! A collated key is replaced by the first map key that list_position finds with the collation pushed into both
+static unique_ptr<Expression> BindCollatedKey(FunctionBindExpressionInput &input) {
+	auto &context = input.context;
+	auto &map = input.children[0];
+	auto &key = input.children[1];
+	if (!RequiresCollation(context, MapType::KeyType(map->GetReturnType())) &&
+	    !RequiresCollation(context, key->GetReturnType())) {
+		return nullptr;
+	}
+	// the rewrite copies the map, which a subquery cannot be, and does not evaluate the key of a NULL map
+	if (map->IsVolatile() || map->HasSubquery() || key->IsVolatile() || key->CanThrow() || key->HasSubquery()) {
+		return BindLookupInInvoke(input);
+	}
+	auto map_keys = BindFunction(context, "map_keys", map->Copy());
+	auto position = BindFunction(context, "list_position", map_keys->Copy(), std::move(key));
+	key = BindFunction(context, "list_extract", std::move(map_keys), std::move(position));
+	return nullptr;
+}
+
 ScalarFunction MapExtractValueFun::GetFunction() {
 	auto key_type = LogicalType::TEMPLATE("K");
 	auto val_type = LogicalType::TEMPLATE("V");
 
 	ScalarFunction fun({}, val_type, MapExtractValueFunc);
 	fun.GetSignature().AddParameter("map", LogicalType::MAP(key_type, val_type)).AddParameter("key", key_type);
+	fun.SetBindExpressionCallback(BindCollatedKey);
+	// The collation of the key applies to the key search, not to the value
+	fun.SetCollationHandling(FunctionCollationHandling::IGNORE_COLLATIONS);
 	fun.SetStatisticsCallback(MapExtractValueStats);
 	fun.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	return fun;
@@ -125,6 +198,7 @@ ScalarFunction MapExtractFun::GetFunction() {
 
 	ScalarFunction fun({}, LogicalType::LIST(val_type), MapExtractListFunc);
 	fun.GetSignature().AddParameter("map", LogicalType::MAP(key_type, val_type)).AddParameter("key", key_type);
+	fun.SetBindExpressionCallback(BindCollatedKey);
 	fun.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	return fun;
 }

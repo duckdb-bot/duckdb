@@ -834,12 +834,8 @@ bool RowGroup::CheckZonemapSegments(CollectionScanState &state) {
 	}
 	if (target_vector_index_max.IsValid()) {
 		if (state.vector_index == target_vector_index_max.GetIndex()) {
-			// we can't skip any full vectors because this segment contains less than a full vector
-			// for now we just bail-out
-			// FIXME: we could check if we can ALSO skip the next segments, in which case skipping a full vector
-			// might be possible
-			// we don't care that much though, since a single segment that fits less than a full vector is
-			// exceedingly rare
+			// the rejected rows end inside the current vector, which can hold rows of the next segment
+			// FIXME: the next segments could reject the rest of the vector, which would let the scan skip it
 			return true;
 		}
 		while (state.vector_index < target_vector_index_max.GetIndex()) {

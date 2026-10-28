@@ -204,3 +204,26 @@ query I
 SELECT currval('seq12');
 ----
 6
+
+# a subquery that repeats a volatile collated group with a subquery of its own does not refer to the group
+statement ok
+CREATE TABLE outer_rows (s VARCHAR COLLATE NOCASE, x VARCHAR);
+
+statement ok
+INSERT INTO outer_rows VALUES ('A', 'outer');
+
+statement ok
+CREATE TABLE inner_rows (x VARCHAR);
+
+statement ok
+INSERT INTO inner_rows VALUES ('inner');
+
+statement error
+SELECT (SELECT s || (SELECT x) || CASE WHEN random() >= 0 THEN '' END FROM inner_rows) FROM outer_rows GROUP BY s || (SELECT x) || CASE WHEN random() >= 0 THEN '' END;
+----
+must appear in the GROUP BY clause
+
+query I
+SELECT (SELECT s || CASE WHEN random() >= 0 THEN '' END FROM inner_rows) FROM outer_rows GROUP BY s || CASE WHEN random() >= 0 THEN '' END;
+----
+A

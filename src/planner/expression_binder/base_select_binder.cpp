@@ -9,6 +9,7 @@
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_case_expression.hpp"
+#include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/planner/query_node/bound_select_node.hpp"
 #include "duckdb/planner/expression_binder/select_bind_state.hpp"
 
@@ -66,13 +67,28 @@ bool BaseSelectBinder::MatchesGroup(ParsedExpression &expr) {
 	return FindGroup(expr).IsValid();
 }
 
+//! Whether the group contains a subquery, also in the volatile expression that a collated group is computed from
+static bool GroupHasSubquery(const BoundSelectNode &node, const Expression &group) {
+	if (group.HasSubquery()) {
+		return true;
+	}
+	bool has_subquery = false;
+	ExpressionIterator::VisitExpression<BoundColumnRefExpression>(group, [&](const BoundColumnRefExpression &colref) {
+		if (colref.Binding().table_index == node.volatile_group_index &&
+		    node.volatile_groups[colref.Binding().column_index]->HasSubquery()) {
+			has_subquery = true;
+		}
+	});
+	return has_subquery;
+}
+
 bool BaseSelectBinder::MatchesGroupWithoutSubquery(ParsedExpression &expr) {
 	auto group_index = FindGroup(expr);
 	auto &groups = node.groups.group_expressions;
 	if (!group_index.IsValid() || group_index.GetIndex() >= groups.size()) {
 		return false;
 	}
-	return !groups[group_index]->HasSubquery();
+	return !GroupHasSubquery(node, *groups[group_index]);
 }
 
 ProjectionIndex BaseSelectBinder::TryBindGroup(ParsedExpression &expr) {

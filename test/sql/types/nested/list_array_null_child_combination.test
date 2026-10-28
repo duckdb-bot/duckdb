@@ -52,17 +52,19 @@ SELECT can_cast_implicitly(map([1], [1]), NULL::MAP(INTEGER, BIGINT)),
 ----
 true	false	false	false
 
-# a typed MAP overload still wins over an untyped one for its own type
+# a typed MAP overload still wins over an untyped one, also when its children need a cast
 statement ok
-CREATE MACRO which(x) AS 'any';
+CREATE MACRO which(x) AS 'any', (x MAP(VARCHAR, INTEGER)) AS 'map';
 
-statement ok
-CREATE OR REPLACE MACRO which(x MAP(VARCHAR, INTEGER)) AS 'map';
+query II
+SELECT which(map(['k'], [1])), which(map(['k'], [1::SMALLINT]));
+----
+map	map
 
 query I
-SELECT which(map(['k'], [1]));
+SELECT which(42);
 ----
-map
+any
 
 # maps and unions whose children cannot be cast do not combine
 statement error

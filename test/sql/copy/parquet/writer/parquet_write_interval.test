@@ -65,26 +65,26 @@ statement error
 COPY (SELECT INTERVAL '2147483647 days' + to_microseconds(4320000000000) AS i)
 TO '{TEST_DIR}/days_overflow.parquet'
 ----
-<REGEX>:.*IO Error.*Cannot write the interval 2147483647 days 1200:00:00 to Parquet.*exceed 2147483647.*
+<REGEX>:.*Out of Range Error.*Cannot write the interval 2147483647 days 1200:00:00 to Parquet.*exceed 2147483647.*
 
 # The time moves into the days from 2^32 milliseconds on
 statement error
 COPY (SELECT INTERVAL '2147483647 days' + to_microseconds(4294967296000) AS i)
 TO '{TEST_DIR}/days_overflow.parquet'
 ----
-<REGEX>:.*IO Error.*Cannot write the interval.*
+<REGEX>:.*Out of Range Error.*Cannot write the interval.*
 
 statement error
 COPY (SELECT [INTERVAL '2147483598 days' + to_microseconds(4320000000000)] AS l)
 TO '{TEST_DIR}/days_overflow.parquet'
 ----
-<REGEX>:.*IO Error.*Cannot write the interval.*
+<REGEX>:.*Out of Range Error.*Cannot write the interval.*
 
 statement error
 COPY (SELECT {'i': INTERVAL '2147483598 days' + to_microseconds(4320000000000)} AS s)
 TO '{TEST_DIR}/days_overflow.parquet'
 ----
-<REGEX>:.*IO Error.*Cannot write the interval.*
+<REGEX>:.*Out of Range Error.*Cannot write the interval.*
 
 statement error
 COPY (
@@ -93,7 +93,7 @@ COPY (
 	FROM range(10000) t(r)
 ) TO '{TEST_DIR}/days_overflow.parquet'
 ----
-<REGEX>:.*IO Error.*Cannot write the interval.*
+<REGEX>:.*Out of Range Error.*Cannot write the interval.*
 
 # The largest days that fit, with and without days moved out of the time, and the largest months
 statement ok

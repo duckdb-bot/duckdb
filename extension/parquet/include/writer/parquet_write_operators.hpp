@@ -264,9 +264,9 @@ struct ParquetIntervalOperator : public BaseParquetOperator {
 		// the reader loads the days as a signed 32 bit integer
 		const auto days = Load<uint32_t>(result.bytes + sizeof(uint32_t));
 		if (days > UnsafeNumericCast<uint32_t>(NumericLimits<int32_t>::Maximum())) {
-			throw IOException("Cannot write the interval %s to Parquet, as its days plus the whole days of its time "
-			                  "exceed %d",
-			                  Interval::ToString(input), NumericLimits<int32_t>::Maximum());
+			throw OutOfRangeException(
+			    "Cannot write the interval %s to Parquet, as its days plus the whole days of its time exceed %d",
+			    Interval::ToString(input), NumericLimits<int32_t>::Maximum());
 		}
 		return result;
 	}

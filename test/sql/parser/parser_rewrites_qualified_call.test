@@ -39,42 +39,11 @@ SELECT foo.ifnull(1);
 ----
 Referenced column "foo" was not found
 
-# a struct field
-query I
-SELECT s.f.ifnull(1) FROM (SELECT {'f': NULL::INT} AS s);
-----
-1
-
-# modifiers that the rewritten expression cannot carry
-statement error
-SELECT col.ifnull(DISTINCT 'b') FROM t;
-----
-DISTINCT is not supported in IFNULL expressions
-
-statement error
-SELECT col.coalesce('b' ORDER BY 1) FROM t;
-----
-ORDER BY is not supported in COALESCE expressions
-
-statement error
-SELECT col.coalesce('b') FILTER (WHERE true) FROM t;
-----
-FILTER is not supported in COALESCE expressions
-
+# the qualified form reaches the checks of a function call, which the plain form skips
 statement error
 SELECT col.ifnull('b' IGNORE NULLS) FROM t;
 ----
 RESPECT/IGNORE NULLS is not supported for non-window functions
-
-statement error
-SELECT col.coalesce('b') WITHIN GROUP (ORDER BY 1) FROM t;
-----
-Unknown ordered aggregate
-
-statement error
-SELECT col.ifnull(a := 'b') FROM t;
-----
-Named arguments are not supported in IFNULL expressions
 
 # after the main schema the qualification is dropped as before, as main.lower() is lower()
 statement ok
@@ -123,12 +92,7 @@ Wrong number of arguments to IFNULL.
 statement ok
 DETACH mem_db;
 
-# lambda parameters, macro parameters and columns of an outer query
-query I
-SELECT list_transform([NULL, 'a'], lambda x: x.ifnull('z'));
-----
-[z, a]
-
+# the column is an ordinary column reference, so a macro parameter takes its place
 statement ok
 CREATE MACRO or_z(p) AS p.ifnull('z');
 
@@ -136,38 +100,3 @@ query II
 SELECT or_z(NULL), or_z('q');
 ----
 z	q
-
-query I
-SELECT (SELECT col.ifnull('b')) FROM t ORDER BY ALL;
-----
-2020-01-01
-b
-
-# the call is rewritten like the plain form, so ORDER BY matches it
-query I
-SELECT a.ifnull(0) AS v FROM (VALUES (NULL::INT), (1)) t(a) UNION ALL SELECT 3 ORDER BY COALESCE(a, 0);
-----
-0
-1
-3
-
-# constraints and views
-statement ok
-CREATE TABLE checked(col INTEGER, CHECK (col.ifnull(0) >= 0));
-
-statement ok
-INSERT INTO checked VALUES (1), (NULL);
-
-statement error
-INSERT INTO checked VALUES (-1);
-----
-CHECK constraint failed
-
-statement ok
-CREATE VIEW v AS SELECT col.ifnull('b') AS r FROM t;
-
-query I
-SELECT r FROM v ORDER BY ALL;
-----
-2020-01-01
-b

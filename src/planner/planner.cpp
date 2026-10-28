@@ -1,5 +1,4 @@
 #include "duckdb/planner/planner.hpp"
-#include "duckdb/planner/operator/logical_comparison_join.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 
 #include "duckdb/common/serializer/binary_deserializer.hpp"
@@ -358,6 +357,15 @@ static bool JoinConditionsMatch(const LogicalComparisonJoin &original, const Log
 	for (idx_t i = 0; i < original.conditions.size(); i++) {
 		auto &original_condition = original.conditions[i];
 		auto &copy_condition = copy.conditions[i];
+		if (original_condition.IsComparison() != copy_condition.IsComparison()) {
+			return false;
+		}
+		if (!original_condition.IsComparison()) {
+			if (!Expression::Equals(original_condition.GetJoinExpression(), copy_condition.GetJoinExpression())) {
+				return false;
+			}
+			continue;
+		}
 		if (original_condition.GetComparisonType() != copy_condition.GetComparisonType() ||
 		    !Expression::Equals(original_condition.GetLHS(), copy_condition.GetLHS()) ||
 		    !Expression::Equals(original_condition.GetRHS(), copy_condition.GetRHS())) {

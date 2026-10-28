@@ -1,0 +1,161 @@
+# name: test/optimizer/remove_redundant_order_keys_equal_values.test
+# description: An ORDER BY over a partition or order key stays when equal key values can differ, as -0.0 and 0.0 do (issue #716)
+# group: [optimizer]
+
+statement ok
+CREATE TABLE z(x DOUBLE);
+
+statement ok
+INSERT INTO z VALUES (-0.0::DOUBLE), (0.0::DOUBLE);
+
+# both zeros are in one partition, and the order within it goes by the sign bit
+query I
+SELECT count(*) OVER (PARTITION BY x) FROM z;
+----
+2
+2
+
+query II
+SELECT signbit(x), row_number() OVER (PARTITION BY x ORDER BY signbit(x)) AS rn FROM z ORDER BY rn;
+----
+false	1
+true	2
+
+query II
+SELECT signbit(x), row_number() OVER (PARTITION BY x ORDER BY signbit(x) DESC) AS rn FROM z ORDER BY rn;
+----
+true	1
+false	2
+
+query II
+SELECT x::VARCHAR, rank() OVER (PARTITION BY x ORDER BY x::VARCHAR) AS r FROM z ORDER BY r;
+----
+-0.0	1
+0.0	2
+
+query II
+SELECT x::VARCHAR, first_value(x::VARCHAR) OVER (PARTITION BY x ORDER BY signbit(x)) FROM z ORDER BY 1;
+----
+-0.0	0.0
+0.0	0.0
+
+# the same for an ORDER BY that follows the key
+query II
+SELECT signbit(x), rank() OVER (ORDER BY x, signbit(x) DESC) AS r FROM z ORDER BY r;
+----
+true	1
+false	2
+
+query I
+SELECT x::VARCHAR FROM z ORDER BY x, x::VARCHAR DESC;
+----
+0.0
+-0.0
+
+# and for a partition key over another
+query II
+SELECT signbit(x), count(*) OVER (PARTITION BY x, signbit(x)) FROM z ORDER BY 1;
+----
+false	1
+true	1
+
+# the keys stay in the plan
+query II
+EXPLAIN SELECT row_number() OVER (PARTITION BY x ORDER BY signbit(x)) FROM z;
+----
+physical_plan	<REGEX>:.*ORDER BY signbit.*
+
+# the key itself is constant on its partition and still goes
+query II
+EXPLAIN SELECT row_number() OVER (PARTITION BY x ORDER BY x) FROM z;
+----
+physical_plan	<!REGEX>:.*ORDER BY.*
+
+# a function of a key whose equal values are identical still goes
+statement ok
+CREATE TABLE n(x INTEGER, s VARCHAR);
+
+statement ok
+INSERT INTO n VALUES (1, 'a'), (1, 'b'), (2, 'c');
+
+query II
+EXPLAIN SELECT row_number() OVER (PARTITION BY x ORDER BY x + 1) FROM n;
+----
+physical_plan	<!REGEX>:.*ORDER BY.*
+
+query II
+EXPLAIN SELECT row_number() OVER (PARTITION BY s ORDER BY upper(s)) FROM n;
+----
+physical_plan	<!REGEX>:.*ORDER BY.*
+
+query II
+EXPLAIN SELECT rank() OVER (ORDER BY x, x % 2) FROM n;
+----
+physical_plan	<!REGEX>:.*%.*
+
+# floats, nested types that hold a double, intervals and collated strings also have equal values that differ
+statement ok
+CREATE TABLE f(x FLOAT);
+
+statement ok
+INSERT INTO f VALUES (-0.0::FLOAT), (0.0::FLOAT);
+
+query II
+SELECT signbit(x), row_number() OVER (PARTITION BY x ORDER BY signbit(x)) AS rn FROM f ORDER BY rn;
+----
+false	1
+true	2
+
+statement ok
+CREATE TABLE l(x DOUBLE[], s STRUCT(d DOUBLE));
+
+statement ok
+INSERT INTO l VALUES ([-0.0::DOUBLE], {'d': -0.0::DOUBLE}), ([0.0::DOUBLE], {'d': 0.0::DOUBLE});
+
+query II
+SELECT signbit(x[1]), row_number() OVER (PARTITION BY x ORDER BY signbit(x[1])) AS rn FROM l ORDER BY rn;
+----
+false	1
+true	2
+
+query II
+SELECT signbit(s.d), row_number() OVER (PARTITION BY s ORDER BY signbit(s.d)) AS rn FROM l ORDER BY rn;
+----
+false	1
+true	2
+
+statement ok
+CREATE TABLE i(v INTERVAL);
+
+statement ok
+INSERT INTO i VALUES (INTERVAL '30 days'), (INTERVAL '1 month');
+
+query I
+SELECT count(*) OVER (PARTITION BY v) FROM i;
+----
+2
+2
+
+query II
+SELECT v, row_number() OVER (PARTITION BY v ORDER BY v::VARCHAR) AS rn FROM i ORDER BY rn;
+----
+1 month	1
+30 days	2
+
+query II
+SELECT v, row_number() OVER (PARTITION BY v ORDER BY v::VARCHAR DESC) AS rn FROM i ORDER BY rn;
+----
+30 days	1
+1 month	2
+
+statement ok
+CREATE TABLE c(v VARCHAR COLLATE NOCASE);
+
+statement ok
+INSERT INTO c VALUES ('ABC'), ('abc');
+
+query II
+SELECT v, row_number() OVER (PARTITION BY v ORDER BY v::BLOB DESC) AS rn FROM c ORDER BY rn;
+----
+abc	1
+ABC	2

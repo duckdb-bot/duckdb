@@ -356,16 +356,31 @@ static string SerializedBytes(ClientContext &context, const JoinCondition &condi
 	return string(const_char_ptr_cast(stream.GetData()), stream.GetPosition());
 }
 
-// A filter pushed from the join conditions only applies when the copy kept them, which their serialized form tells
-// without the cast implementations that statistics propagation picks
+static bool ConditionsEqual(const JoinCondition &original, const JoinCondition &copy) {
+	if (original.IsComparison() != copy.IsComparison()) {
+		return false;
+	}
+	if (!original.IsComparison()) {
+		return Expression::Equals(original.GetJoinExpression(), copy.GetJoinExpression());
+	}
+	return original.GetComparisonType() == copy.GetComparisonType() &&
+	       Expression::Equals(original.GetLHS(), copy.GetLHS()) && Expression::Equals(original.GetRHS(), copy.GetRHS());
+}
+
+// A filter pushed from the join conditions only applies when the copy kept them. Expression equality misses a cast
+// whose implementation statistics propagation specialized, and the serialized form misses a type whose properties
+// serialize in another order, so a condition passes when either agrees
 static bool JoinConditionsMatch(ClientContext &context, const LogicalComparisonJoin &original,
                                 const LogicalComparisonJoin &copy, const SerializationOptions &options) {
 	if (original.conditions.size() != copy.conditions.size()) {
 		return false;
 	}
 	for (idx_t i = 0; i < original.conditions.size(); i++) {
-		if (SerializedBytes(context, original.conditions[i], options) !=
-		    SerializedBytes(context, copy.conditions[i], options)) {
+		auto &original_condition = original.conditions[i];
+		auto &copy_condition = copy.conditions[i];
+		if (!ConditionsEqual(original_condition, copy_condition) &&
+		    SerializedBytes(context, original_condition, options) !=
+		        SerializedBytes(context, copy_condition, options)) {
 			return false;
 		}
 	}

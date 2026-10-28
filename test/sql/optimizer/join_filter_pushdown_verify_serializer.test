@@ -124,3 +124,40 @@ FROM read_text('{TEST_DIR}/cast_verify.json') t, json_tree(t.content) j
 WHERE json_extract_string(j.value, '$.extra_info.Table') LIKE '%.main.pc';
 ----
 10
+
+# a type whose properties serialize in another order after the round trip keeps its filter too
+statement ok
+CREATE TABLE ps AS SELECT i AS k FROM range(300000) t(i);
+
+statement ok
+CREATE TABLE bs AS SELECT min(i) EXPORT_STATE AS s FROM range(10, 20) t(i) GROUP BY i;
+
+statement ok
+CHECKPOINT;
+
+statement ok
+SET debug_verify_serializer = true;
+
+statement ok
+SET enable_profiling = 'json';
+
+statement ok
+SET profiling_output = '{TEST_DIR}/state_verify.json';
+
+query I
+SELECT count(*) FROM ps JOIN bs ON ps.k = finalize(bs.s);
+----
+10
+
+statement ok
+PRAGMA disable_profiling;
+
+statement ok
+SET debug_verify_serializer = false;
+
+query I
+SELECT json_extract_string(j.value, '$.intermediate_rows')::BIGINT
+FROM read_text('{TEST_DIR}/state_verify.json') t, json_tree(t.content) j
+WHERE json_extract_string(j.value, '$.extra_info.Table') LIKE '%.main.ps';
+----
+10

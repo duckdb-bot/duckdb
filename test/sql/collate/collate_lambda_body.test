@@ -62,29 +62,30 @@ SELECT typeof(list_reduce(['b'], lambda a, x: a || x, 'A' COLLATE NOACCENT));
 ----
 VARCHAR('NOACCENT')
 
-# the body's collation also decides the result over rows
+# the body's collation also decides which rows match
 statement ok
 CREATE TABLE strings AS SELECT * FROM (VALUES ('A'), ('ä'), ('b')) t(s);
 
 query I
-SELECT count(*) FROM strings WHERE invoke(lambda x: (x || '') COLLATE NOCASE, s COLLATE NOACCENT) = 'a';
+SELECT s FROM strings WHERE invoke(lambda x: (x || '') COLLATE NOCASE, s COLLATE NOACCENT) = 'a';
 ----
-1
+A
 
 query I
-SELECT count(*) FROM strings WHERE invoke(lambda x: (x || '') COLLATE NOACCENT, s COLLATE NOCASE) = 'a';
+SELECT s FROM strings WHERE invoke(lambda x: (x || '') COLLATE NOACCENT, s COLLATE NOCASE) = 'a';
 ----
-1
+ä
 
 query I
-SELECT count(*) FROM strings WHERE invoke(lambda x: x || '', s COLLATE NOACCENT) = 'a';
+SELECT s FROM strings WHERE invoke(lambda x: x || '', s COLLATE NOACCENT) = 'a';
 ----
-1
+ä
 
 query I
-SELECT count(*) FROM strings WHERE invoke(lambda x: (x || '') COLLATE NOCASE.NOACCENT, s COLLATE NOACCENT) = 'a';
+SELECT s FROM strings WHERE invoke(lambda x: (x || '') COLLATE NOCASE.NOACCENT, s COLLATE NOACCENT) = 'a' ORDER BY s;
 ----
-2
+A
+ä
 
 # a NULL argument folds the call to a NULL of the result type
 query I

@@ -1,0 +1,323 @@
+# name: test/sql/copy/csv/test_sniffed_type_past_sample_warning.test
+# description: Values after the sample that the sniffer rejects for a sniffed type give a warning
+# group: [csv]
+
+statement ok
+SET enable_logging=true;
+
+statement ok
+SET warnings_as_errors=true;
+
+statement ok
+COPY (SELECT CASE WHEN i < 2048 THEN '1' ELSE '1.5' END AS c0 FROM range(2049) t(i)) TO '{TEST_DIR}/past_sample_decimal.csv' (HEADER, QUOTE '');
+
+statement ok
+COPY (SELECT CASE WHEN i < 2048 THEN '1' ELSE '007' END AS c0 FROM range(2049) t(i)) TO '{TEST_DIR}/past_sample_zero.csv' (HEADER, QUOTE '');
+
+statement ok
+COPY (SELECT CASE WHEN i < 2048 THEN '1' ELSE '1_000' END AS c0 FROM range(2049) t(i)) TO '{TEST_DIR}/past_sample_underscore.csv' (HEADER, QUOTE '');
+
+statement ok
+COPY (SELECT CASE WHEN i < 2048 THEN '2020-01-01' ELSE '2020-06-15T13:45:59' END AS c0 FROM range(2049) t(i)) TO '{TEST_DIR}/past_sample_date.csv' (HEADER, QUOTE '');
+
+statement ok
+COPY (SELECT CASE WHEN i < 2048 THEN '1.5' ELSE '+2.5' END AS c0 FROM range(2049) t(i)) TO '{TEST_DIR}/past_sample_double.csv' (HEADER, QUOTE '');
+
+statement ok
+COPY (SELECT CASE WHEN i < 2048 THEN 'true' ELSE '1' END AS c0 FROM range(2049) t(i)) TO '{TEST_DIR}/past_sample_boolean.csv' (HEADER, QUOTE '');
+
+statement ok
+COPY (SELECT CASE WHEN i < 2048 THEN '99999999999999999999' ELSE '1.5' END AS c0 FROM range(2049) t(i)) TO '{TEST_DIR}/past_sample_hugeint.csv' (HEADER, QUOTE '');
+
+statement ok
+COPY (SELECT CASE WHEN i < 2048 THEN '10:00:00' ELSE '10:00:00+02' END AS c0 FROM range(2049) t(i)) TO '{TEST_DIR}/past_sample_time.csv' (HEADER, QUOTE '');
+
+statement ok
+COPY (SELECT CASE WHEN i < 2048 THEN '1' || repeat('0', 40) ELSE '1.5' END AS n FROM range(2049) t(i)) TO '{TEST_DIR}/past_sample_bignum.csv' (HEADER, QUOTE '');
+
+statement ok
+COPY (SELECT CASE WHEN i < 2048 THEN '1,5' ELSE '+2,5' END AS d FROM range(2049) t(i)) TO '{TEST_DIR}/past_sample_comma.csv' (HEADER, QUOTE '', DELIMITER ';');
+
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/past_sample_decimal.csv', sample_size = 2048)
+----
+<REGEX>:Invalid Input Error: Column "c0" of CSV file ".*past_sample_decimal\.csv" has values outside the sample that type detection does not accept as BIGINT, such as "1\.5"\. They are still read as BIGINT, which can change them\. To detect the type from more values, set sample_size=-1, or set the type of the column explicitly\..*
+
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/past_sample_zero.csv', sample_size = 2048)
+----
+<REGEX>:.*does not accept as BIGINT, such as "007".*
+
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/past_sample_underscore.csv', sample_size = 2048)
+----
+<REGEX>:.*does not accept as BIGINT, such as "1_000".*
+
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/past_sample_date.csv', sample_size = 2048)
+----
+<REGEX>:.*does not accept as DATE, such as "2020-06-15T13:45:59".*
+
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/past_sample_double.csv', sample_size = 2048)
+----
+<REGEX>:.*does not accept as DOUBLE, such as "\+2\.5".*
+
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/past_sample_double.csv', sample_size = 2048, auto_type_candidates = ['FLOAT', 'VARCHAR'])
+----
+<REGEX>:.*does not accept as FLOAT, such as "\+2\.5".*
+
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/past_sample_boolean.csv', sample_size = 2048)
+----
+<REGEX>:.*does not accept as BOOLEAN, such as "1".*
+
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/past_sample_decimal.csv', sample_size = 2048, auto_type_candidates = ['INTEGER', 'VARCHAR'])
+----
+<REGEX>:.*does not accept as INTEGER, such as "1\.5".*
+
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/past_sample_hugeint.csv', sample_size = 2048)
+----
+<REGEX>:.*does not accept as HUGEINT, such as "1\.5".*
+
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/past_sample_time.csv', sample_size = 2048)
+----
+<REGEX>:.*does not accept as TIME, such as "10:00:00\+02".*
+
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/past_sample_bignum.csv', sample_size = 2048)
+----
+<REGEX>:.*does not accept as BIGNUM, such as "1\.5".*
+
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/past_sample_comma.csv', delim = ';', decimal_separator = ',', sample_size = 2048)
+----
+<REGEX>:.*does not accept as DOUBLE, such as "\+2,5".*
+
+# the warning shows the value as it is in the file
+statement ok
+COPY (SELECT CASE WHEN i < 2048 THEN '"1,000"' ELSE '"2,000.4"' END AS a, 'x' AS b FROM range(2049) t(i)) TO '{TEST_DIR}/past_sample_thousands.csv' (HEADER, QUOTE '');
+
+statement error
+SELECT a, b FROM read_csv('{TEST_DIR}/past_sample_thousands.csv', thousands = ',', sample_size = 2048)
+----
+<REGEX>:.*Column "a" of CSV file .*does not accept as BIGINT, such as "2,000\.4".*
+
+# ignore_errors keeps the value and warns
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/past_sample_decimal.csv', sample_size = 2048, ignore_errors = true)
+----
+<REGEX>:.*does not accept as BIGINT, such as "1\.5".*
+
+# no warning when every value fits the sniffed type
+statement ok
+COPY (SELECT i::VARCHAR AS c0, (i * 0.5)::VARCHAR AS c1, (DATE '2020-01-01' + i::INTEGER)::VARCHAR AS c2 FROM range(5000) t(i)) TO '{TEST_DIR}/past_sample_fits.csv' (HEADER, QUOTE '');
+
+query IIII
+SELECT typeof(c0), typeof(c1), typeof(c2), count(*) FROM read_csv('{TEST_DIR}/past_sample_fits.csv', sample_size = 2048) GROUP BY ALL
+----
+BIGINT	DOUBLE	DATE	5000
+
+# no warning when the sample covers the value
+query II
+SELECT typeof(c0), max(c0) FROM read_csv('{TEST_DIR}/past_sample_decimal.csv', sample_size = -1) GROUP BY ALL
+----
+DOUBLE	1.5
+
+# no warning for TINYINT values that the first sniffed chunk accepts
+statement ok
+COPY (SELECT CASE WHEN i < 10 THEN '1' ELSE '1.5' END AS c0 FROM range(11) t(i)) TO '{TEST_DIR}/tinyint_decimal.csv' (HEADER, QUOTE '');
+
+query II
+SELECT typeof(c0), max(c0) FROM read_csv('{TEST_DIR}/tinyint_decimal.csv', auto_type_candidates = ['TINYINT', 'VARCHAR']) GROUP BY ALL
+----
+TINYINT	2
+
+# no warning for values that type detection accepted as a more specific type, before a later value made it less specific
+statement ok
+COPY (SELECT CASE WHEN i = 0 THEN '1 ' WHEN i < 10 THEN '1' ELSE '1.5' END AS c0 FROM range(30) t(i)) TO '{TEST_DIR}/promoted_first_chunk.csv' (HEADER, QUOTE '');
+
+query II
+SELECT typeof(c0), sum(c0) FROM read_csv('{TEST_DIR}/promoted_first_chunk.csv') GROUP BY ALL
+----
+DOUBLE	40.0
+
+statement ok
+COPY (SELECT CASE WHEN i < 1000 THEN '1 ' WHEN i < 3000 THEN '1' ELSE '1.5' END AS c0 FROM range(4096) t(i)) TO '{TEST_DIR}/promoted_second_chunk.csv' (HEADER, QUOTE '');
+
+query II
+SELECT typeof(c0), sum(c0) FROM read_csv('{TEST_DIR}/promoted_second_chunk.csv') GROUP BY ALL
+----
+DOUBLE	4644.0
+
+statement ok
+COPY (SELECT CASE WHEN i = 0 THEN '1.5' WHEN i = 1 THEN '128' ELSE '1' END AS c0 FROM range(10) t(i)) TO '{TEST_DIR}/promoted_tinyint.csv' (HEADER, QUOTE '');
+
+query II
+SELECT typeof(c0), sum(c0) FROM read_csv('{TEST_DIR}/promoted_tinyint.csv', auto_type_candidates = ['TINYINT', 'SMALLINT']) GROUP BY ALL
+----
+SMALLINT	138
+
+# after a value that type detection accepted, a scanner reads the rest of the column without the strict casts
+statement ok
+COPY (SELECT CASE WHEN i = 0 THEN '1.5' WHEN i = 1 THEN '128' WHEN i < 2048 THEN '1' ELSE '128.5' END AS c0 FROM range(2049) t(i)) TO '{TEST_DIR}/promoted_tinyint_past_sample.csv' (HEADER, QUOTE '');
+
+query II
+SELECT typeof(c0), max(c0) FROM read_csv('{TEST_DIR}/promoted_tinyint_past_sample.csv', auto_type_candidates = ['TINYINT', 'SMALLINT'], sample_size = 2048, parallel = false) GROUP BY ALL
+----
+SMALLINT	129
+
+# no warning when a cast in the query sets the type that a column is read as
+statement ok
+COPY (SELECT CASE WHEN i < 5 THEN '1' ELSE '1.5' END AS c0 FROM range(10) t(i)) TO '{TEST_DIR}/small_decimal.csv' (HEADER, QUOTE '');
+
+query I
+SELECT c0::BIGINT AS v FROM read_csv('{TEST_DIR}/small_decimal.csv') ORDER BY v DESC LIMIT 1
+----
+2
+
+statement ok
+COPY (SELECT CASE WHEN i < 2048 THEN '1' ELSE '1.5' END AS a, '1.5' AS b FROM range(2049) t(i)) TO '{TEST_DIR}/past_sample_cast_column.csv' (HEADER, QUOTE '');
+
+query I
+SELECT b::BIGINT AS v FROM read_csv('{TEST_DIR}/past_sample_cast_column.csv', sample_size = 2048) ORDER BY v DESC LIMIT 1
+----
+2
+
+statement error
+SELECT a, b::BIGINT FROM read_csv('{TEST_DIR}/past_sample_cast_column.csv', sample_size = 2048)
+----
+<REGEX>:.*Column "a" of CSV file.*
+
+# no warning for types given by the user
+query I
+SELECT max(c0) FROM read_csv('{TEST_DIR}/past_sample_decimal.csv', sample_size = 2048, types = {'c0': 'BIGINT'})
+----
+2
+
+query I
+SELECT max(c0) FROM read_csv('{TEST_DIR}/past_sample_decimal.csv', columns = {'c0': 'BIGINT'}, header = true)
+----
+2
+
+query I
+SELECT max(c0) FROM read_csv('{TEST_DIR}/past_sample_date.csv', sample_size = 2048, types = {'c0': 'DATE'})
+----
+2020-06-15
+
+statement ok
+CREATE TABLE t (c0 BIGINT);
+
+statement ok
+COPY t FROM '{TEST_DIR}/past_sample_decimal.csv' (SAMPLE_SIZE 2048);
+
+query I
+SELECT max(c0) FROM t
+----
+2
+
+# the type of each column decides, also when only some columns are read
+statement ok
+COPY (SELECT CASE WHEN i < 2048 THEN '1' ELSE '1.5' END AS a, CASE WHEN i < 2048 THEN '1' ELSE '1.5' END AS b FROM range(2049) t(i)) TO '{TEST_DIR}/past_sample_two_columns.csv' (HEADER, QUOTE '');
+
+query I
+SELECT max(b) FROM read_csv('{TEST_DIR}/past_sample_two_columns.csv', sample_size = 2048, types = {'b': 'BIGINT'})
+----
+2
+
+statement error
+SELECT max(b) FROM read_csv('{TEST_DIR}/past_sample_two_columns.csv', sample_size = 2048, types = {'a': 'VARCHAR'})
+----
+<REGEX>:.*Column "b" of CSV file.*
+
+# positional types are given by the user for their columns only
+query I
+SELECT max(a) FROM read_csv('{TEST_DIR}/past_sample_two_columns.csv', sample_size = 2048, types = ['BIGINT'])
+----
+2
+
+statement error
+SELECT max(b) FROM read_csv('{TEST_DIR}/past_sample_two_columns.csv', sample_size = 2048, types = ['BIGINT'])
+----
+<REGEX>:.*Column "b" of CSV file.*
+
+# files that order their columns differently
+statement ok
+COPY (SELECT '1' AS a, '1' AS b FROM range(10)) TO '{TEST_DIR}/columns_ab.csv' (HEADER);
+
+statement ok
+COPY (SELECT CASE WHEN i < 2048 THEN '1' ELSE '1.5' END AS b, CASE WHEN i < 2048 THEN '1' ELSE '1.5' END AS a FROM range(2049) t(i)) TO '{TEST_DIR}/columns_ba.csv' (HEADER, QUOTE '');
+
+statement error
+SELECT max(a), max(b) FROM read_csv(['{TEST_DIR}/columns_ab.csv', '{TEST_DIR}/columns_ba.csv'], types = {'a': 'BIGINT'}, sample_size = 2048)
+----
+<REGEX>:.*Column "b" of CSV file ".*columns_ba\.csv".*
+
+statement error
+SELECT max(a), max(b) FROM read_csv(['{TEST_DIR}/columns_ab.csv', '{TEST_DIR}/columns_ba.csv'], types = {'b': 'BIGINT'}, sample_size = 2048)
+----
+<REGEX>:.*Column "a" of CSV file ".*columns_ba\.csv".*
+
+query II
+SELECT max(a), max(b) FROM read_csv(['{TEST_DIR}/columns_ab.csv', '{TEST_DIR}/columns_ba.csv'], types = {'a': 'BIGINT', 'b': 'BIGINT'}, sample_size = 2048)
+----
+2	2
+
+statement error
+SELECT max(a), max(b) FROM read_csv(['{TEST_DIR}/columns_ab.csv', '{TEST_DIR}/columns_ba.csv'], types = {'a': 'BIGINT'}, sample_size = 2048, union_by_name = true)
+----
+<REGEX>:.*Column "b" of CSV file ".*columns_ba\.csv".*
+
+query I
+SELECT max(a) FROM read_csv(['{TEST_DIR}/columns_ab.csv', '{TEST_DIR}/columns_ba.csv'], types = {'a': 'BIGINT'}, sample_size = 2048, union_by_name = true)
+----
+2
+
+# no warning for a column that a cast in the query sets the type of, when the files order their columns differently
+query I
+SELECT b::HUGEINT AS v FROM read_csv(['{TEST_DIR}/columns_ab.csv', '{TEST_DIR}/columns_ba.csv'], types = {'a': 'BIGINT'}, sample_size = 2048, union_by_name = true) ORDER BY v DESC LIMIT 1
+----
+2
+
+statement error
+SELECT a, b::HUGEINT FROM read_csv(['{TEST_DIR}/columns_ab.csv', '{TEST_DIR}/columns_ba.csv'], sample_size = 2048, union_by_name = true)
+----
+<REGEX>:.*Column "a" of CSV file ".*columns_ba\.csv".*
+
+# one warning per column and file, also when many scanners read a file
+statement ok
+SET warnings_as_errors=false;
+
+statement ok
+SET threads=4;
+
+statement ok
+COPY (SELECT CASE WHEN i < 2048 THEN '1' ELSE '1.5' END AS a, CASE WHEN i < 2048 THEN '2' ELSE '2.5' END AS b FROM range(30000) t(i)) TO '{TEST_DIR}/many_x.csv' (HEADER, QUOTE '');
+
+statement ok
+COPY (SELECT CASE WHEN i < 2048 THEN '1' ELSE '1.5' END AS a, CASE WHEN i < 2048 THEN '2' ELSE '2.5' END AS b FROM range(30000) t(i)) TO '{TEST_DIR}/many_y.csv' (HEADER, QUOTE '');
+
+statement ok
+CALL truncate_duckdb_logs();
+
+query IIIII
+SELECT typeof(a), typeof(b), count(*), sum(a), sum(b) FROM read_csv(['{TEST_DIR}/many_x.csv', '{TEST_DIR}/many_y.csv'], sample_size = 2048, buffer_size = 4096) GROUP BY ALL
+----
+BIGINT	BIGINT	60000	115904	175904
+
+query I
+SELECT DISTINCT count(*) FROM duckdb_logs WHERE log_level = 'WARNING' AND contains(message, 'type detection does not accept') GROUP BY query_id
+----
+4
+
+query III
+SELECT DISTINCT regexp_extract(message, 'Column "(\w)"', 1), regexp_extract(message, 'many_(\w)\.csv', 1), regexp_extract(message, 'such as "([0-9.]*)"', 1) FROM duckdb_logs WHERE log_level = 'WARNING' AND contains(message, 'type detection does not accept') ORDER BY ALL
+----
+a	x	1.5
+a	y	1.5
+b	x	2.5
+b	y	2.5

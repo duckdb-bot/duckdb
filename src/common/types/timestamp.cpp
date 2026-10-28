@@ -73,9 +73,9 @@ bool Timestamp::TryTakeRoundingUp(optional_ptr<int32_t> nanos, TruncatedFraction
 	return true;
 }
 
-//! Whether rounding takes a value in range past the end of the range
-static bool RoundsOutOfRange(timestamp_t value, const TruncatedFraction &fraction, optional_ptr<int32_t> nanos) {
-	return RoundsUpMicros(fraction, value.value >= 0, nanos) && !timestamp_t(value.value + 1).IsFinite();
+//! Whether the next microsecond is past an end of the range
+static bool NextIsOutOfRange(timestamp_t value) {
+	return !timestamp_t(value.value + 1).IsFinite();
 }
 
 static bool TrySubtractOffset(timestamp_t local, int64_t delta, timestamp_t &instant) {
@@ -136,7 +136,7 @@ TimestampCastResult Timestamp::TryConvertTimestampTZ(const char *str, idx_t len,
 		if (!TryTakeRoundingUp(nanos, fraction) || !Timestamp::TryFromDatetime(date, dtime_t(time.value + 1), result)) {
 			return TimestampCastResult::ERROR_RANGE;
 		}
-	} else if (RoundsOutOfRange(result, fraction, nanos)) {
+	} else if (NextIsOutOfRange(result) && RoundsUpMicros(fraction, result.value >= 0, nanos)) {
 		return TimestampCastResult::ERROR_RANGE;
 	}
 	if (pos < len) {
@@ -156,7 +156,7 @@ TimestampCastResult Timestamp::TryConvertTimestampTZ(const char *str, idx_t len,
 					    !TrySubtractOffset(timestamp_t(result.value + 1), delta, instant)) {
 						return TimestampCastResult::ERROR_RANGE;
 					}
-				} else if (RoundsOutOfRange(instant, fraction, nanos)) {
+				} else if (NextIsOutOfRange(instant) && RoundsUpMicros(fraction, instant.value >= 0, nanos)) {
 					return TimestampCastResult::ERROR_RANGE;
 				}
 				result = instant;

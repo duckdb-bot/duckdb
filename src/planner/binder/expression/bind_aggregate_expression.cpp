@@ -55,7 +55,7 @@ static bool IsFunctionallyDependent(const unique_ptr<Expression> &expr, const ve
 		return true;
 	}
 	// If the expression matches ANY of the dependencies, then it is FD on them. When strict, an expression over a match
-	// only is when equal values of the match are identical: x is equal on its partition, signbit(x) need not be
+	// only is when equal values of the match are identical, as x is equal on its partition but signbit(x) need not be
 	for (const auto &dep : deps) {
 		// We don't need to check volatility of the dependencies because we checked it for the expression.
 		if (expr->Equals(dep.get())) {
@@ -310,8 +310,8 @@ BindResult BaseSelectBinder::BindAggregate(FunctionExpression &aggr, AggregateFu
 		}
 		bool in_args = true;
 		for (const auto &order_by : order_bys->orders) {
-			// not strict: the ORDER BY only has to be determined by the arguments, and ORDER BY s COLLATE NOCASE over
-			// the argument s COLLATE NOCASE binds to the collation function over it
+			// Not strict, as the ORDER BY only has to be determined by the arguments, and ORDER BY s COLLATE NOCASE
+			// over the argument s COLLATE NOCASE binds to the collation function over it
 			in_args &= IsFunctionallyDependent(order_by.expression, arg_refs, false);
 		}
 

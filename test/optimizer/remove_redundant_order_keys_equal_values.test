@@ -166,10 +166,17 @@ EXPLAIN SELECT row_number() OVER (PARTITION BY s COLLATE "binary" ORDER BY upper
 ----
 physical_plan	<!REGEX>:.*ORDER BY.*
 
-# the other users of the dependency check: a DISTINCT window aggregate ordered by a function of its argument is not
-# rewritten to a self join, and a join on a function of the partition key is not pushed below the window
+# the other users of the dependency check. A DISTINCT window aggregate ordered by a function of its argument, in the
+# aggregate or in the window, is not rewritten to a self join, and a join on a function of the partition key is not
+# pushed below the window
 query I
 SELECT len(list(DISTINCT x ORDER BY signbit(x)) OVER ()) FROM z;
+----
+1
+1
+
+query I
+SELECT len(list(DISTINCT x) OVER (ORDER BY signbit(x) ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)) FROM z;
 ----
 1
 1
@@ -201,8 +208,8 @@ true	2
 statement ok
 RESET disabled_optimizers;
 
-# the ORDER BY of a DISTINCT aggregate must be a function of its arguments; a function over such a key still counts
-# there, as before (DISTINCT keeps the representations apart)
+# the ORDER BY of a DISTINCT aggregate must be a function of its arguments, and a function over such a key counts there,
+# as the check only asks whether the arguments determine the order (DISTINCT keeps the representations apart)
 query I
 SELECT string_agg(DISTINCT s COLLATE NOCASE, ',' ORDER BY s COLLATE NOCASE) FROM (VALUES ('x'), ('Z')) t(s);
 ----

@@ -83,3 +83,44 @@ query I
 SELECT query.total_rows_scanned < 300000 FROM '{TEST_DIR}/verify.json';
 ----
 true
+
+# a cast in the join condition, which statistics propagation replaces by one that does not check, keeps its filter
+statement ok
+CREATE TABLE pc AS SELECT i::BIGINT AS k FROM range(300000) t(i);
+
+statement ok
+CREATE TABLE bc AS SELECT i::INTEGER AS k FROM range(10, 20) t(i);
+
+statement ok
+CHECKPOINT;
+
+statement ok
+SET debug_verify_serializer = true;
+
+statement ok
+RESET tracked_metrics;
+
+statement ok
+SET enable_profiling = 'json';
+
+statement ok
+SET profiling_output = '{TEST_DIR}/cast_verify.json';
+
+query I
+SELECT count(*) FROM pc JOIN bc ON CAST(pc.k AS INTEGER) = bc.k;
+----
+10
+
+statement ok
+PRAGMA disable_profiling;
+
+statement ok
+SET debug_verify_serializer = false;
+
+# the join filter leaves ten rows of the probe scan, not all 300000
+query I
+SELECT json_extract_string(j.value, '$.intermediate_rows')::BIGINT
+FROM read_text('{TEST_DIR}/cast_verify.json') t, json_tree(t.content) j
+WHERE json_extract_string(j.value, '$.extra_info.Table') LIKE '%.main.pc';
+----
+10

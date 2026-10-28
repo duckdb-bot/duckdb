@@ -1,4 +1,5 @@
 #include "duckdb/function/table/system_functions.hpp"
+#include "duckdb/function/table/system_catalog_scanner.hpp"
 
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
@@ -16,6 +17,7 @@ struct DuckDBSequencesData : public GlobalTableFunctionState {
 
 	vector<reference<SequenceCatalogEntry>> entries;
 	idx_t offset;
+	SystemCatalogScannerStats stats;
 };
 
 static unique_ptr<FunctionData> DuckDBSequencesBind(ClientContext &context, TableFunctionBindInput &input,
@@ -68,14 +70,14 @@ static unique_ptr<FunctionData> DuckDBSequencesBind(ClientContext &context, Tabl
 	names.emplace_back("sql");
 	return_types.emplace_back(LogicalType::VARCHAR);
 
-	return nullptr;
+	return SystemCatalogScanner::CreateBindData(names, return_types);
 }
 
 unique_ptr<GlobalTableFunctionState> DuckDBSequencesInit(ClientContext &context, TableFunctionInitInput &input) {
 	auto result = make_uniq<DuckDBSequencesData>();
 
-	// scan all the schemas for tables and collect themand collect them
-	auto schemas = Catalog::GetAllSchemas(context);
+	// scan the surviving schemas for sequences and collect them
+	auto schemas = SystemCatalogScanner::GetSchemas(context, input, result->stats);
 	for (auto &schema : schemas) {
 		schema.get().Scan(context, CatalogType::SEQUENCE_ENTRY,
 		                  [&](CatalogEntry &entry) { result->entries.push_back(entry.Cast<SequenceCatalogEntry>()); });
@@ -155,9 +157,15 @@ void DuckDBSequencesFunction(ClientContext &context, TableFunctionInput &data_p,
 	}
 }
 
+static void DuckDBSequencesGetMetrics(TableFunctionGetMetricsInput &input) {
+	SystemCatalogScanner::ReportMetrics(input, input.global_state->Cast<DuckDBSequencesData>().stats);
+}
+
 void DuckDBSequencesFun::RegisterFunction(BuiltinFunctions &set) {
 	auto function =
 	    TableFunction("duckdb_sequences", {}, DuckDBSequencesFunction, DuckDBSequencesBind, DuckDBSequencesInit);
+	SystemCatalogScanner::RegisterPushdown(function);
+	function.get_metrics = DuckDBSequencesGetMetrics;
 	set.AddFunction(std::move(function));
 }
 

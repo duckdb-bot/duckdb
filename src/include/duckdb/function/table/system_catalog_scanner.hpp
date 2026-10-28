@@ -42,8 +42,8 @@ struct SystemCatalogScannerStats {
 
 class SystemCatalogScanner {
 public:
-	//! Bind helper: locate the identity columns by name in `names`. Always returns non-null bind data.
-	static unique_ptr<FunctionData> CreateBindData(const vector<Identifier> &names);
+	//! Bind helper: locate the identity columns by name and type. Always returns non-null bind data.
+	static unique_ptr<FunctionData> CreateBindData(const vector<Identifier> &names, const vector<LogicalType> &types);
 	//! Init helper: the schemas that satisfy the pushed-down filters, in Catalog::GetAllSchemas order.
 	//! Without filters this is exactly Catalog::GetAllSchemas(context).
 	static vector<reference<SchemaCatalogEntry>> GetSchemas(ClientContext &context, TableFunctionInitInput &input,

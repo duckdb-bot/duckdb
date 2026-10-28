@@ -16,6 +16,7 @@
 #include "test_helpers.hpp"
 #if (!defined(_WIN32) && !defined(WIN32))
 #define TEST_HAVE_SYMLINK
+#include <sys/stat.h>
 #include <unistd.h>
 #else
 #include "duckdb/common/windows.hpp"
@@ -443,6 +444,129 @@ TEST_CASE("GetStatsIfExists returns path metadata", "[file_system]") {
 
 	fs->RemoveFile(fname);
 }
+
+#ifndef _WIN32
+namespace {
+
+//! A directory without permissions for as long as it lives
+class InaccessibleDirectory {
+public:
+	explicit InaccessibleDirectory(string path_p) : path(std::move(path_p)) {
+		REQUIRE(chmod(path.c_str(), 0) == 0);
+	}
+	~InaccessibleDirectory() {
+		chmod(path.c_str(), S_IRWXU);
+	}
+
+private:
+	string path;
+};
+
+void RequireListingOptions(const OpenFileInfo &file, const OpenFileInfo &listed_file) {
+	REQUIRE(file.extended_info);
+	REQUIRE(listed_file.extended_info);
+	REQUIRE(file.TryGetFileSize().IsValid());
+	REQUIRE(file.TryGetFileSize().GetIndex() == listed_file.TryGetFileSize().GetIndex());
+	string type, listed_type, etag, listed_etag;
+	REQUIRE(file.extended_info->TryGetOption("type", type));
+	REQUIRE(listed_file.extended_info->TryGetOption("type", listed_type));
+	REQUIRE(type == listed_type);
+	REQUIRE(file.extended_info->TryGetOption("etag", etag));
+	REQUIRE(listed_file.extended_info->TryGetOption("etag", listed_etag));
+	REQUIRE(etag == listed_etag);
+	timestamp_t last_modified, listed_last_modified;
+	REQUIRE(file.extended_info->TryGetOption("last_modified", last_modified));
+	REQUIRE(listed_file.extended_info->TryGetOption("last_modified", listed_last_modified));
+	REQUIRE(last_modified == listed_last_modified);
+}
+
+} // namespace
+
+TEST_CASE("Local paths looked up without listing their directory", "[file_system]") {
+	LocalFileSystem fs;
+	auto dir = TestCreatePath("local_path_lookup");
+	if (fs.DirectoryExists(dir)) {
+		fs.RemoveDirectory(dir);
+	}
+	fs.CreateDirectory(dir);
+	auto file = fs.JoinPath(dir, "file.csv");
+	CreateDummyFile(file);
+	auto listed_files = fs.Glob(fs.JoinPath(dir, "file*.csv"));
+	REQUIRE(listed_files.size() == 1);
+
+	// a regular file and a symbolic link to it get the options of the listed file
+	auto files = fs.Glob(file);
+	REQUIRE(files.size() == 1);
+	RequireListingOptions(files[0], listed_files[0]);
+	auto link = fs.JoinPath(dir, "link.csv");
+	REQUIRE(symlink("file.csv", link.c_str()) == 0);
+	files = fs.Glob(link);
+	REQUIRE(files.size() == 1);
+	REQUIRE(files[0].path == link);
+	RequireListingOptions(files[0], listed_files[0]);
+
+	// pipes and character devices are found without options
+	auto fifo = fs.JoinPath(dir, "fifo.csv");
+	REQUIRE(mkfifo(fifo.c_str(), S_IRUSR | S_IWUSR) == 0);
+	files = fs.Glob(fifo);
+	REQUIRE(files.size() == 1);
+	REQUIRE(!files[0].extended_info);
+	files = fs.Glob("/dev/null");
+	REQUIRE(files.size() == 1);
+	REQUIRE(!files[0].extended_info);
+
+	// directories, missing paths, dangling links and link loops are not found
+	auto dangling_link = fs.JoinPath(dir, "dangling.csv");
+	REQUIRE(symlink("missing.csv", dangling_link.c_str()) == 0);
+	auto link_loop = fs.JoinPath(dir, "loop.csv");
+	REQUIRE(symlink("loop.csv", link_loop.c_str()) == 0);
+	REQUIRE(fs.Glob(dir).empty());
+	REQUIRE(fs.Glob(fs.JoinPath(dir, "missing.csv")).empty());
+	REQUIRE(fs.Glob(fs.JoinPath(file, "child.csv")).empty());
+	REQUIRE(fs.Glob(dangling_link).empty());
+	REQUIRE(fs.Glob(link_loop).empty());
+	fs.RemoveFile(dangling_link);
+	fs.RemoveFile(link_loop);
+
+	// the final component of a glob finds files and directories
+	auto sub_dir = fs.JoinPath(dir, "sub");
+	fs.CreateDirectory(sub_dir);
+	auto sub_file = fs.JoinPath(sub_dir, "file.csv");
+	CreateDummyFile(sub_file);
+	fs.CreateDirectory(fs.JoinPath(sub_dir, "nested"));
+	files = fs.Glob(fs.JoinPath(fs.JoinPath(dir, "s*"), "file.csv"));
+	REQUIRE(files.size() == 1);
+	REQUIRE(files[0].path == sub_file);
+	REQUIRE(files[0].TryGetFileSize().IsValid());
+	files = fs.Glob(fs.JoinPath(fs.JoinPath(dir, "s*"), "nested"));
+	REQUIRE(files.size() == 1);
+	REQUIRE(files[0].path == fs.JoinPath(sub_dir, "nested"));
+	REQUIRE(!files[0].extended_info);
+
+	if (geteuid() == 0) {
+		// permissions do not apply to root
+		return;
+	}
+	// a path in a directory without permissions is not found, and does not stop a glob or a search path
+	auto locked_dir = fs.JoinPath(dir, "secret");
+	fs.CreateDirectory(locked_dir);
+	CreateDummyFile(fs.JoinPath(locked_dir, "file.csv"));
+	InaccessibleDirectory inaccessible_dir(locked_dir);
+	REQUIRE(fs.Glob(fs.JoinPath(locked_dir, "file.csv")).empty());
+	files = fs.Glob(fs.JoinPath(fs.JoinPath(dir, "s*"), "file.csv"));
+	REQUIRE(files.size() == 1);
+	REQUIRE(files[0].path == sub_file);
+
+	DuckDB db(nullptr);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query(StringUtil::Format("SET file_search_path = '%s,%s'", locked_dir, sub_dir)));
+	ClientContextFileOpener opener(*con.context);
+	files = fs.Glob("file.csv", &opener);
+	REQUIRE(files.size() == 1);
+	REQUIRE(files[0].path == sub_file);
+	REQUIRE(files[0].TryGetFileSize().IsValid());
+}
+#endif
 
 TEST_CASE("absolute paths", "[file_system]") {
 	duckdb::LocalFileSystem fs;

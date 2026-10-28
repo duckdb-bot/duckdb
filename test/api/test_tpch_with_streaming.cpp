@@ -19,7 +19,7 @@ TEST_CASE("Test TPC-H SF0.01 using streaming api", "[tpch][.]") {
 	REQUIRE_NO_FAIL(con.Query("CALL dbgen(sf=" + to_string(sf) + ")"));
 
 	for (idx_t tpch_num = 1; tpch_num <= 22; tpch_num++) {
-		auto stream = OpenStream(con, "pragma tpch(" + to_string(tpch_num) + ");");
+		auto stream = OpenStream(con, "pragma tpch(" + to_string(tpch_num) + ", sf=" + to_string(sf) + ");");
 
 		duckdb::ColumnDataCollection collection(duckdb::Allocator::DefaultAllocator(), stream->GetTypes());
 

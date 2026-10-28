@@ -170,6 +170,16 @@ SELECT currval('map_seq'), currval('key_seq');
 ----
 2	2
 
+# a volatile map and a volatile key in one lookup are evaluated once, in that order
+statement ok
+CREATE SEQUENCE both_seq;
+
+query II
+SELECT element_at(map([nextval('both_seq')::VARCHAR], ['a']), (nextval('both_seq') - 1)::VARCHAR COLLATE NOCASE),
+       currval('both_seq');
+----
+[a]	2
+
 # the value of a volatile map does not take the collation of the key either
 query II
 SELECT typeof(map(['k'], [nextval('map_seq') || 'v'])['K' COLLATE NOCASE]),
@@ -215,6 +225,21 @@ query I
 EXECUTE q(NULL);
 ----
 NULL
+
+query I
+SELECT currval('null_seq');
+----
+5
+
+statement error
+SELECT map_extract(NULL::MAP(VARCHAR, INTEGER), error('bad key')::VARCHAR COLLATE NOCASE);
+----
+bad key
+
+statement error
+SELECT (NULL::MAP(VARCHAR, INTEGER))[error('bad key')::VARCHAR COLLATE NOCASE];
+----
+bad key
 
 statement ok
 CREATE TABLE s AS SELECT MAP {'Apple': i % 5} AS m FROM range(1000) r(i);

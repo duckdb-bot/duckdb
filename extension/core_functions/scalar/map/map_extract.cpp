@@ -141,8 +141,8 @@ static unique_ptr<Expression> BindFunction(ClientContext &context, const Identif
 	return BindFunction(context, name, std::move(children));
 }
 
-//! The lookup of a collated key refers to the map three times, so invoke evaluates a volatile map once
-static unique_ptr<Expression> BindVolatileMapLookup(FunctionBindExpressionInput &input) {
+//! Binds the lookup in invoke, which evaluates the map and the key once for every row
+static unique_ptr<Expression> BindLookupInInvoke(FunctionBindExpressionInput &input) {
 	const Identifier map_name("map");
 	const Identifier key_name("key");
 	// invoke passes its last argument as reference 0
@@ -168,8 +168,9 @@ static unique_ptr<Expression> BindCollatedKey(FunctionBindExpressionInput &input
 	    !RequiresCollation(context, key->GetReturnType())) {
 		return nullptr;
 	}
-	if (map->IsVolatile()) {
-		return BindVolatileMapLookup(input);
+	// the rewrite refers to the map three times and does not evaluate the key of a NULL map
+	if (map->IsVolatile() || key->IsVolatile() || key->CanThrow()) {
+		return BindLookupInInvoke(input);
 	}
 	auto map_keys = BindFunction(context, "map_keys", map->Copy());
 	auto position = BindFunction(context, "list_position", map_keys->Copy(), std::move(key));

@@ -350,22 +350,49 @@ static bool OperatorSupportsSerialization(LogicalOperator &op) {
 	return op.SupportSerialization();
 }
 
+// A filter pushed from the join conditions only applies when the copy kept them
+static bool JoinConditionsMatch(const LogicalComparisonJoin &original, const LogicalComparisonJoin &copy) {
+	if (original.conditions.size() != copy.conditions.size()) {
+		return false;
+	}
+	for (idx_t i = 0; i < original.conditions.size(); i++) {
+		auto &original_condition = original.conditions[i];
+		auto &copy_condition = copy.conditions[i];
+		if (original_condition.GetComparisonType() != copy_condition.GetComparisonType() ||
+		    !Expression::Equals(original_condition.GetLHS(), copy_condition.GetLHS()) ||
+		    !Expression::Equals(original_condition.GetRHS(), copy_condition.GetRHS())) {
+			return false;
+		}
+	}
+	return true;
+}
+
 // Optimizer state that links operators through shared objects is not serialized, so the copy takes it over from the
-// plan it replaces
+// plan it replaces, where the copy kept what the state refers to
 static void TransferUnserializedState(LogicalOperator &original, LogicalOperator &copy) {
 	if (original.type != copy.type || original.children.size() != copy.children.size()) {
 		return;
 	}
 	switch (original.type) {
-	case LogicalOperatorType::LOGICAL_GET:
-		copy.Cast<LogicalGet>().dynamic_filters = std::move(original.Cast<LogicalGet>().dynamic_filters);
+	case LogicalOperatorType::LOGICAL_GET: {
+		auto &original_get = original.Cast<LogicalGet>();
+		auto &copy_get = copy.Cast<LogicalGet>();
+		if (original_get.table_index == copy_get.table_index &&
+		    original_get.GetColumnIds() == copy_get.GetColumnIds()) {
+			copy_get.dynamic_filters = std::move(original_get.dynamic_filters);
+		}
 		break;
+	}
 	case LogicalOperatorType::LOGICAL_COMPARISON_JOIN:
 	case LogicalOperatorType::LOGICAL_ASOF_JOIN:
-	case LogicalOperatorType::LOGICAL_DELIM_JOIN:
-		copy.Cast<LogicalComparisonJoin>().filter_pushdown =
-		    std::move(original.Cast<LogicalComparisonJoin>().filter_pushdown);
+	case LogicalOperatorType::LOGICAL_DELIM_JOIN: {
+		auto &original_join = original.Cast<LogicalComparisonJoin>();
+		auto &copy_join = copy.Cast<LogicalComparisonJoin>();
+		if (JoinConditionsMatch(original_join, copy_join)) {
+			copy_join.filter_pushdown = std::move(original_join.filter_pushdown);
+		}
 		break;
+	}
 	default:
 		break;
 	}

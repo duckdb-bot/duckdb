@@ -111,3 +111,75 @@ query I
 SELECT count(*) FROM ((SELECT DISTINCT i, v FROM (SELECT i, v, unnest(range(5000)) FROM db.variants)) EXCEPT ALL FROM db.variants);
 ----
 0
+
+# a shredded variant with NULL rows and rows that the shredded type does not hold
+statement ok
+CREATE TABLE db.mixed_variants AS SELECT i, CASE WHEN i % 5 = 3 THEN NULL WHEN i % 5 = 4 THEN ('str' || i::VARCHAR)::VARIANT ELSE {'k': i, 's': repeat('v', 20) || i::VARCHAR}::VARIANT END AS v FROM range(20) t(i);
+
+statement ok
+CHECKPOINT db;
+
+query I
+SELECT bool_and(vector_type(v) = 'SHREDDED_VECTOR') FROM db.mixed_variants;
+----
+true
+
+query I
+SELECT bool_or(vector_type(v) = 'CONSTANT_VECTOR') FROM (SELECT i, v, unnest(range(5000)) FROM db.mixed_variants);
+----
+true
+
+query IIII
+SELECT count(*), count(v), count(DISTINCT (i, v)), count(DISTINCT v::VARCHAR) FROM (SELECT i, v, unnest(range(5000)) FROM db.mixed_variants);
+----
+100000	80000	20	16
+
+query I
+SELECT count(*) FROM ((SELECT DISTINCT i, v FROM (SELECT i, v, unnest(range(5000)) FROM db.mixed_variants)) EXCEPT ALL FROM db.mixed_variants);
+----
+0
+
+query IIII
+SELECT i, v::VARCHAR, v.k, variant_typeof(v) FROM (SELECT i, v, unnest(range(5000)) AS r FROM db.mixed_variants) WHERE r = 4999 AND i < 5 ORDER BY i;
+----
+0	{'k': 0, 's': vvvvvvvvvvvvvvvvvvvv0}	0	OBJECT(k, s)
+1	{'k': 1, 's': vvvvvvvvvvvvvvvvvvvv1}	1	OBJECT(k, s)
+2	{'k': 2, 's': vvvvvvvvvvvvvvvvvvvv2}	2	OBJECT(k, s)
+3	NULL	NULL	VARIANT_NULL
+4	str4	NULL	VARCHAR
+
+# a struct with a shredded variant field
+statement ok
+CREATE TABLE db.nested_variants AS SELECT i, {'a': i, 'v': CASE WHEN i % 5 = 3 THEN NULL WHEN i % 5 = 4 THEN ('str' || i::VARCHAR)::VARIANT ELSE {'k': i, 's': repeat('v', 20) || i::VARCHAR}::VARIANT END} AS s FROM range(20) t(i);
+
+statement ok
+CHECKPOINT db;
+
+query I
+SELECT bool_and(vector_type(s.v) = 'SHREDDED_VECTOR') FROM db.nested_variants;
+----
+true
+
+query I
+SELECT bool_or(vector_type(s) = 'CONSTANT_VECTOR') FROM (SELECT i, s, unnest(range(5000)) FROM db.nested_variants);
+----
+true
+
+query IIII
+SELECT count(*), count(s.v), count(DISTINCT (i, s)), count(DISTINCT s.v::VARCHAR) FROM (SELECT i, s, unnest(range(5000)) FROM db.nested_variants);
+----
+100000	80000	20	16
+
+query I
+SELECT count(*) FROM ((SELECT DISTINCT i, s FROM (SELECT i, s, unnest(range(5000)) FROM db.nested_variants)) EXCEPT ALL FROM db.nested_variants);
+----
+0
+
+query IIII
+SELECT i, s.v::VARCHAR, s.v.k, variant_typeof(s.v) FROM (SELECT i, s, unnest(range(5000)) AS r FROM db.nested_variants) WHERE r = 4999 AND i < 5 ORDER BY i;
+----
+0	{'k': 0, 's': vvvvvvvvvvvvvvvvvvvv0}	0	OBJECT(k, s)
+1	{'k': 1, 's': vvvvvvvvvvvvvvvvvvvv1}	1	OBJECT(k, s)
+2	{'k': 2, 's': vvvvvvvvvvvvvvvvvvvv2}	2	OBJECT(k, s)
+3	NULL	NULL	VARIANT_NULL
+4	str4	NULL	VARCHAR

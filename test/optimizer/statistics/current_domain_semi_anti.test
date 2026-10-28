@@ -65,10 +65,11 @@ EXPLAIN SELECT * FROM domain_sa_left ANTI JOIN domain_sa_rhs USING (k);
 physical_plan	<REGEX>:(?s).*HASH_JOIN.*Join Type: ANTI.*~200 rows.*
 
 # A direct predicate on the RHS equality key is eligible after plan selection.
+# The LIMIT keeps the predicate out of filter pullup, which would imply it on the LHS before enumeration.
 query II
 EXPLAIN SELECT *
 FROM domain_sa_left
-SEMI JOIN (SELECT * FROM domain_sa_rhs WHERE k = 20) filtered_rhs USING (k);
+SEMI JOIN (SELECT * FROM domain_sa_rhs WHERE k = 20 LIMIT 100) filtered_rhs USING (k);
 ----
 physical_plan	<REGEX>:(?s).*HASH_JOIN.*Join Type: SEMI.*~1 row.*
 
@@ -87,6 +88,7 @@ SEMI JOIN (
 	SELECT k2 AS join_key, 42 AS constant_value, k AS other_key
 	FROM domain_sa_rhs
 	WHERE k2 = 20
+	LIMIT 100
 ) projected_rhs ON domain_sa_left.k = projected_rhs.join_key;
 ----
 physical_plan	<REGEX>:(?s).*HASH_JOIN.*Join Type: SEMI.*Conditions: k = join_key.*~1 row.*
@@ -154,7 +156,7 @@ physical_plan	<REGEX>:(?s).*HASH_JOIN.*Join Type: INNER.*HASH_JOIN.*Join Type: S
 query II
 EXPLAIN SELECT count(*)
 FROM (domain_sa_left
-	SEMI JOIN (SELECT * FROM domain_sa_rhs WHERE k = 20) filtered_rhs USING (k))
+	SEMI JOIN (SELECT * FROM domain_sa_rhs WHERE k = 20 LIMIT 100) filtered_rhs USING (k))
 JOIN domain_sa_fact USING (k);
 ----
 physical_plan	<REGEX>:(?s).*HASH_JOIN.*Join Type: INNER[^~]*~1,[0-9]{3} rows.*HASH_JOIN.*Join Type: SEMI.*~1 row.*
@@ -163,7 +165,7 @@ physical_plan	<REGEX>:(?s).*HASH_JOIN.*Join Type: INNER[^~]*~1,[0-9]{3} rows.*HA
 query II
 EXPLAIN SELECT *
 FROM (domain_sa_left
-	SEMI JOIN (SELECT * FROM domain_sa_rhs WHERE k = 20) filtered_rhs USING (k)) refined
+	SEMI JOIN (SELECT * FROM domain_sa_rhs WHERE k = 20 LIMIT 100) filtered_rhs USING (k)) refined
 ANTI JOIN domain_sa_empty USING (k);
 ----
 physical_plan	<REGEX>:(?s).*HASH_JOIN.*Join Type: ANTI.*~200 rows.*HASH_JOIN.*Join Type: SEMI.*~1 row.*

@@ -26,12 +26,12 @@ WITH a0 AS (WITH a1 AS (WITH a2 AS (WITH a3 AS (WITH a4 AS (WITH a5 AS (WITH a6 
 statement error
 WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (
 ----
-<REGEX>:Parser Error.*syntax error at or near "\(".*
+<REGEX>:Parser Error.*syntax error at end of input.*
 
 statement error
 WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM t) DELETE FROM
 ----
-<REGEX>:Parser Error.*syntax error at or near "FROM".*
+<REGEX>:Parser Error.*syntax error at end of input.*
 
 query I
 WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (WITH a AS (SELECT 42 AS x) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a) SELECT x + 1 AS x FROM a
@@ -79,9 +79,9 @@ ab
 statement error
 SELECT * FROM query('SELECT ' || repeat('(', 4096))
 ----
-<REGEX>:Parser Error.*syntax error at or near "\(".*
+<REGEX>:Parser Error.*syntax error at end of input.*
 
 statement error
 SELECT * FROM query('SELECT 1 WHERE x IN ' || repeat('(', 4096))
 ----
-<REGEX>:Parser Error.*syntax error at or near "\(".*
+<REGEX>:Parser Error.*syntax error at end of input.*

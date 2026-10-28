@@ -123,3 +123,36 @@ SELECT * FROM plain WHERE risk = 3 ORDER BY score DESC LIMIT 2 OFFSET 1
 ----
 204972	geom 299988	3	zone 0	149994.0
 149539	geom 299981	3	zone 6	149990.5
+
+# segments rejected up to a partial last vector are skipped, the rows in the last segment are not
+statement ok
+SET force_compression = 'uncompressed'
+
+statement ok
+CREATE TABLE seg AS SELECT i AS x, {'a': i} AS st FROM range(100001) t(i);
+
+statement ok
+CHECKPOINT
+
+statement ok
+RESET force_compression
+
+query III
+SELECT count(*), min(x), max(x) FROM seg WHERE x < 10
+----
+10	0	9
+
+query III
+SELECT count(*), min(x), max(x) FROM seg WHERE x >= 99990
+----
+11	99990	100000
+
+query III
+SELECT count(*), min(st.a), max(st.a) FROM seg WHERE st.a >= 99990
+----
+11	99990	100000
+
+query II
+SELECT count(*), max(x) FROM seg WHERE rowid < 10 AND x < 10
+----
+10	9

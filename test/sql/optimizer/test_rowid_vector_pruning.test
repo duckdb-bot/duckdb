@@ -118,6 +118,58 @@ FROM '{TEST_DIR}/rowid_vector_pruning_first.json' one_id,
 ----
 true	true
 
+# segment zonemaps also skip a partial last vector, so a table with one scans as much as the table without it
+statement ok
+SET force_compression = 'uncompressed'
+
+statement ok
+CREATE TABLE seg_partial AS SELECT i AS x, {'a': i} AS st FROM range(100001) t(i);
+
+statement ok
+CREATE TABLE seg_aligned AS SELECT i AS x, {'a': i} AS st FROM range(98304) t(i);
+
+statement ok
+CHECKPOINT
+
+statement ok
+RESET force_compression
+
+statement ok
+SET enable_profiling = 'json'
+
+foreach tbl seg_partial seg_aligned
+
+statement ok
+SET profiling_output = '{TEST_DIR}/rowid_vector_pruning_{tbl}_x.json'
+
+query I
+SELECT count(*) FROM {tbl} WHERE x < 10
+----
+10
+
+statement ok
+SET profiling_output = '{TEST_DIR}/rowid_vector_pruning_{tbl}_st.json'
+
+query I
+SELECT count(*) FROM {tbl} WHERE st.a < 10
+----
+10
+
+endloop
+
+statement ok
+PRAGMA disable_profiling
+
+query II
+SELECT partial_x.query.total_rows_scanned = aligned_x.query.total_rows_scanned,
+       partial_st.query.total_rows_scanned = aligned_st.query.total_rows_scanned
+FROM '{TEST_DIR}/rowid_vector_pruning_seg_partial_x.json' partial_x,
+     '{TEST_DIR}/rowid_vector_pruning_seg_aligned_x.json' aligned_x,
+     '{TEST_DIR}/rowid_vector_pruning_seg_partial_st.json' partial_st,
+     '{TEST_DIR}/rowid_vector_pruning_seg_aligned_st.json' aligned_st
+----
+true	true
+
 # with prefetching, late materialization reads the blocks of one vector instead of its whole row group
 statement ok
 CREATE TABLE p (k BIGINT PRIMARY KEY, o BIGINT, s VARCHAR);

@@ -467,7 +467,9 @@ FlattenDependentJoins::UnnestingState FlattenDependentJoins::PrepareDependentJoi
 		// if we are not performing a delim join, we push a row_number() OVER() window operator on the LHS
 		// and perform all duplicate elimination on that row number instead
 		const auto &op_col = op.correlated_columns[op.correlated_columns.GetDelimIndex()];
-		op.children[0] = CreateRowNumberWindow(binder, std::move(op.children[0]), op_col.binding.table_index);
+		auto window = CreateRowNumberWindow(binder, std::move(op.children[0]), op_col.binding.table_index);
+		window->numbering_is_arbitrary = true;
+		op.children[0] = std::move(window);
 	}
 	return result;
 }

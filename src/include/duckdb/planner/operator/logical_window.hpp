@@ -27,6 +27,8 @@ public:
 	}
 
 	TableIndex window_index;
+	//! Whether the numbers only tell rows apart, so they may change as long as every reader sees the same ones
+	bool numbering_is_arbitrary = false;
 
 public:
 	vector<ColumnBinding> GetColumnBindings() override;

@@ -1,0 +1,79 @@
+# name: test/issues/general/test_27265.test
+# description: A list literal of constants binds to one constant, with its elements cast to the type of the list
+# group: [general]
+
+require json
+
+# the bound list is one constant, without a list_value with a cast for each element
+query IIII
+SELECT plan->>'error', plan::VARCHAR LIKE '%list_value%', plan::VARCHAR LIKE '%__cast%', plan::VARCHAR LIKE '%"expression_class":"BOUND_CONSTANT"%'
+FROM (SELECT json_serialize_plan('SELECT [1, 2.5, 100.25]', optimize := false)::JSON AS plan)
+----
+false	false	false	true
+
+query II
+SELECT [1, 2.5, 100.25], typeof([1, 2.5, 100.25])
+----
+[1.00, 2.50, 100.25]	DECIMAL(12,2)[]
+
+query I
+SELECT [x, 1, 2] FROM range(1) t(x)
+----
+[0, 1, 2]
+
+query II
+SELECT [1, NULL, 3], typeof([1, NULL, 3])
+----
+[1, NULL, 3]	INTEGER[]
+
+query II
+SELECT [NULL, NULL], typeof([NULL, NULL])
+----
+[NULL, NULL]	"NULL"[]
+
+query II
+SELECT [1, 2147483648], typeof([1, 2147483648])
+----
+[1, 2147483648]	BIGINT[]
+
+query II
+SELECT [[1, 2], [3.5]], typeof([[1, 2], [3.5]])
+----
+[[1.0, 2.0], [3.5]]	DECIMAL(11,1)[][]
+
+query I
+SELECT [DATE '2024-01-01', TIMESTAMP '2024-01-02 03:04:05']
+----
+['2024-01-01 00:00:00', '2024-01-02 03:04:05']
+
+# a constant that does not cast keeps its cast, so it only fails where it is evaluated
+query I
+SELECT CASE WHEN x > 5 THEN [1, 'abc'] END FROM range(3) t(x)
+----
+NULL
+NULL
+NULL
+
+statement error
+SELECT [1, 'abc']
+----
+Could not convert string 'abc' to INT32
+
+query I
+SELECT [x, 1.5] FROM range(2) t(x)
+----
+[0.0, 1.5]
+[1.0, 1.5]
+
+statement ok
+PREPARE p AS SELECT [?, 1.5]
+
+query I
+EXECUTE p(2)
+----
+[2.0, 1.5]
+
+query III
+SELECT 1.5 + 2, 'x' || 1, list_sum([1, 2.25, 3])
+----
+3.5	x1	6.25

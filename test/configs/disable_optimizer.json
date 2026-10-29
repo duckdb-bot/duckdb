@@ -5,6 +5,12 @@
   "inherit_skip_tests": "test/configs/stats_dependent_tests.json",
   "skip_tests": [
     {
+      "reason": "Bounds the frames of a window aggregate by the statistics of the bound column, which the optimizer propagates.",
+      "paths": [
+        "test/sql/window/window_segment_tree_frame_width_stats.test"
+      ]
+    },
+    {
       "reason": "Counts the evaluations of volatile filters that only the optimizer pushes down or keeps above.",
       "paths": [
         "test/optimizer/pushdown/volatile_filter_aggregate_distinct.test"

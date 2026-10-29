@@ -250,14 +250,15 @@ struct DecimalSumOperation : public OP {
 //! Binds the regular sum that sum_no_overflow is a specialized implementation of
 pair<BoundAggregateFunction, unique_ptr<FunctionData>> BindLogicalSum(ClientContext &context,
                                                                       vector<unique_ptr<Expression>> &arguments) {
-	vector<LogicalType> argument_types;
-	for (auto &argument : arguments) {
-		argument_types.push_back(argument->GetReturnType());
-	}
 	auto &entry = Catalog::GetEntry<AggregateFunctionCatalogEntry>(
 	    context, QualifiedName(Identifier::SystemCatalog(), Identifier::DefaultSchema(), Identifier("sum")));
+	vector<pair<Identifier, unique_ptr<Expression>>> keyword_args;
+	auto selection = FunctionBinder::SelectFunction(context, entry.functions, {arguments, keyword_args});
+	if (!selection.IsSuccess()) {
+		selection.GetError().Throw();
+	}
 	FunctionBinder binder(context);
-	return binder.ResolveFunction(entry.functions.GetFunctionByArguments(context, argument_types), arguments);
+	return binder.ResolveAggregateFunction(selection.GetBinding(), arguments, keyword_args);
 }
 
 void SumNoOverflowSerialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data,
@@ -481,7 +482,7 @@ AggregateFunction GetDecimalSumAggregate(PhysicalType type) {
 unique_ptr<FunctionData> BindDecimalSum(BindAggregateFunctionInput &input) {
 	auto &function = input.GetBoundFunction();
 	auto &arguments = input.GetArguments();
-	auto decimal_type = arguments[0]->GetReturnType();
+	auto decimal_type = BindDecimalArgument(input.GetClientContext(), arguments[0], "sum");
 	function.ReplaceImplementation(GetDecimalSumAggregate(decimal_type.InternalType()));
 	function.SetName("sum");
 	function.GetArguments()[0] = decimal_type;

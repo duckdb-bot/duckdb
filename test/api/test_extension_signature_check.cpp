@@ -2,19 +2,25 @@
 #include "duckdb/main/extension_helper.hpp"
 #include "test_helpers.hpp"
 
-#if defined(__linux__) && !defined(DUCKDB_NO_THREADS)
+// the test limits the threads that can start through the default thread attributes, a glibc extension
+#if defined(__linux__) && !defined(DUCKDB_NO_THREADS) && defined(__GLIBC_PREREQ)
+#if __GLIBC_PREREQ(2, 18)
+#define SIGNATURE_CHECK_TEST_HAS_DEFAULT_PTHREAD_ATTRIBUTES
+#endif
+#endif
+
+#ifdef SIGNATURE_CHECK_TEST_HAS_DEFAULT_PTHREAD_ATTRIBUTES
 #include <fstream>
 #include <mutex>
 #include <pthread.h>
 #include <sys/resource.h>
-#include <system_error>
 #include <thread>
 #include <unistd.h>
 #endif
 
 using namespace duckdb;
 
-#if defined(__linux__) && !defined(DUCKDB_NO_THREADS)
+#ifdef SIGNATURE_CHECK_TEST_HAS_DEFAULT_PTHREAD_ATTRIBUTES
 
 namespace {
 
@@ -26,21 +32,26 @@ constexpr const char *SIGNING_PUBLIC_KEY =
     "F/gtWUY8XyLAKRcjCupdzIaxBhwOQkeAZJrP+r9A8FdoA0TnUCauiUW4qkNq0qe2wp41R48yFuBJlX0+miJ9QaNorYkmv7kpknypZ+oEeLd3Ql"
     "KPwqCCDPYc7OYkAncoOu9QIHVGC66urNqKTCMOUK8BZY8CBEAbeyUUdwIDAQAB";
 
-// The extension buffer of the test is BUFFER_SIZE bytes, all zero except for the signature in its last 256 bytes.
-// The signed part is hashed in four 1 MiB chunks (the last one 256 bytes short), so four hashing threads start.
+// The extension buffer of the test is BUFFER_SIZE bytes, the signature in its last 256 bytes. The signed part is
+// hashed in four 1 MiB chunks (the last one 256 bytes short), so four hashing threads start. Every byte of chunk k
+// is k, so a chunk hashed from the wrong offset changes the hash.
 constexpr idx_t BUFFER_SIZE = 4ULL * 1024 * 1024;
+constexpr idx_t CHUNK_SIZE = 1024ULL * 1024;
 
 // The RSASSA PKCS1 v1.5 signature of the two level hash of the signed part (sha256 of the concatenated sha256 of
 // each chunk), made with openssl pkeyutl in sign mode with the sha256 digest option
 constexpr const char *SIGNATURE_HEX =
-    "21ff30cc5141152f66604f84942ec866593738f50630dfa39811e1c6b976af93ce7cc9909b143f8011a520022a7acdd0e333b9c077c8c4"
-    "3fe75eba3f3d3fdda16aabe4b6533041a32e9004a23d3babf5294f0066270c17b116f3b392bcd0c2409f57ab1d058415cf4192db20fd9f4"
-    "1946873c3897852cff5d639d82aeb08ebf5901ea97badc8312f164ba0e6f496ace28a16a6630ec7d07be018818d2ec2465d8157c0d9d03"
-    "260e54eea42c05e90df2bf8d1540fe009469f329d6adeea4f1de08c7715e221455baac28393c7112cdf117f70058163dc9d8ebb07b6706e"
-    "553758dace8cfcb8d31c54990a5d25a63b4193c95da1ce84d11edd9daeb539eed52de7";
+    "c8d7aaeda40583aedc1948d9455d4d00ea6c1398d7ac73fb7fe4e9afc100f1c178b93810e06be899a3310f3a95e58056a79b31467643fba9"
+    "0f3ef18502a86b99fa1c4cbbd403df10ef255e16bb267feb2087cb529b0a47194e6bab2c16f3106d3ec96f93e949200701ce8b6c1e2db989"
+    "aca2e39be316c7ccd6990f3dac5c93426e389b84ecc57dc6a4eda8dc695ee3788d983e874a18dded2e293f55299ebe759a35c651ca3fc1f6"
+    "5e59c71d98d80a29fd5bc9cb814de18913234cb34f93696b9c0598f98a17a43a83bc74c68927bf94230c06a39ae508c6fa99d8fd18f6651f"
+    "cd58edcd3d6928d6552f2988071cc7d93c89bdd80e1f6c215eb085cb63c849f2";
 
 vector<char> SignedBuffer() {
-	vector<char> buffer(BUFFER_SIZE, 0);
+	vector<char> buffer(BUFFER_SIZE);
+	for (idx_t i = 0; i < BUFFER_SIZE; i++) {
+		buffer[i] = static_cast<char>(i / CHUNK_SIZE);
+	}
 	const string hex(SIGNATURE_HEX);
 	REQUIRE(hex.size() == 2 * ParsedExtensionMetaData::SIGNATURE_SIZE);
 	auto signature = buffer.data() + BUFFER_SIZE - ParsedExtensionMetaData::SIGNATURE_SIZE;
@@ -50,12 +61,16 @@ vector<char> SignedBuffer() {
 	return buffer;
 }
 
-//! The address space of this process in bytes
+//! The address space of this process in bytes, 0 when it cannot be read
 idx_t CurrentAddressSpace() {
 	std::ifstream statm("/proc/self/statm");
 	idx_t pages = 0;
 	statm >> pages;
-	return pages * NumericCast<idx_t>(sysconf(_SC_PAGESIZE));
+	auto page_size = sysconf(_SC_PAGESIZE);
+	if (!statm || page_size <= 0) {
+		return 0;
+	}
+	return pages * NumericCast<idx_t>(page_size);
 }
 
 //! Lets exactly two more threads start. Every new thread gets a 256 MiB stack and the address space limit leaves
@@ -66,14 +81,20 @@ public:
 	static constexpr idx_t STACK_SIZE = 256ULL * 1024 * 1024;
 
 	TwoMoreThreads() {
-		pthread_getattr_default_np(&old_attr);
+		// everything that can fail comes before the settings change, so the destructor always sees what it restores
+		auto address_space = CurrentAddressSpace();
+		if (address_space == 0 || pthread_getattr_default_np(&old_attr) != 0) {
+			return;
+		}
+		attr_read = true;
 		pthread_attr_init(&new_attr);
-		pthread_attr_setstacksize(&new_attr, STACK_SIZE);
-		attr_set = pthread_setattr_default_np(&new_attr) == 0;
-		getrlimit(RLIMIT_AS, &old_limit);
+		if (pthread_attr_setstacksize(&new_attr, STACK_SIZE) != 0 || getrlimit(RLIMIT_AS, &old_limit) != 0) {
+			return;
+		}
 		auto new_limit = old_limit;
-		new_limit.rlim_cur = CurrentAddressSpace() + STACK_SIZE * 5 / 2;
-		limit_set = setrlimit(RLIMIT_AS, &new_limit) == 0;
+		new_limit.rlim_cur = address_space + STACK_SIZE * 5 / 2;
+		attr_set = pthread_setattr_default_np(&new_attr) == 0;
+		limit_set = attr_set && setrlimit(RLIMIT_AS, &new_limit) == 0;
 	}
 	~TwoMoreThreads() {
 		if (limit_set) {
@@ -82,27 +103,32 @@ public:
 		if (attr_set) {
 			pthread_setattr_default_np(&old_attr);
 		}
-		pthread_attr_destroy(&new_attr);
-		pthread_attr_destroy(&old_attr);
+		if (attr_read) {
+			pthread_attr_destroy(&new_attr);
+			pthread_attr_destroy(&old_attr);
+		}
 	}
 
 	//! Whether two threads start and the third does not, which needs a platform that honors both settings
 	bool Works() const {
-		if (!attr_set || !limit_set) {
+		if (!limit_set) {
 			return false;
 		}
+		// the threads wait for the gate until the third one has been tried, nothing below can throw before they are
+		// released and joined
 		std::mutex gate;
-		gate.lock();
+		std::unique_lock<std::mutex> closed(gate);
 		vector<std::thread> threads;
+		threads.reserve(3);
 		bool third_failed = false;
 		try {
 			for (idx_t i = 0; i < 3; i++) {
 				threads.emplace_back([&gate]() { std::lock_guard<std::mutex> hold(gate); });
 			}
-		} catch (std::system_error &) {
+		} catch (std::exception &) {
 			third_failed = threads.size() == 2;
 		}
-		gate.unlock();
+		closed.unlock();
 		for (auto &thread : threads) {
 			thread.join();
 		}
@@ -112,6 +138,7 @@ public:
 private:
 	pthread_attr_t old_attr;
 	pthread_attr_t new_attr;
+	bool attr_read = false;
 	bool attr_set = false;
 	rlimit old_limit;
 	bool limit_set = false;

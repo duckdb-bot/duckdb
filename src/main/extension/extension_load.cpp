@@ -15,7 +15,6 @@
 #include "mbedtls_wrapper.hpp"
 
 #ifndef DUCKDB_NO_THREADS
-#include <system_error>
 #include <thread>
 #endif // DUCKDB_NO_THREADS
 
@@ -348,8 +347,8 @@ static void ComputeHashesOnSegments(F ComputeHashFun, T handle, const vector<idx
 			threads.emplace_back(ComputeHashFun, handle, splits[next_chunk], splits[next_chunk + 1],
 			                     &hash_chunks[next_chunk]);
 		}
-	} catch (std::system_error &) {
-		// the system refused another thread, under a thread or memory limit, so this thread hashes the rest
+	} catch (std::exception &) {
+		// the thread could not be started, under a thread or memory limit, so this thread hashes the rest
 	}
 	for (; next_chunk < hash_chunks.size(); next_chunk++) {
 		ComputeHashFun(handle, splits[next_chunk], splits[next_chunk + 1], &hash_chunks[next_chunk]);

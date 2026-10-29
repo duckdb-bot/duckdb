@@ -5,10 +5,13 @@
 require parquet
 
 # intervals are saved with ms precision -> truncate microsecond precision to millisecond
+# hugeint/uhugeint are stored as DECIMAL(38,0) -> keep them within 38 digits
 statement ok
 CREATE TABLE all_types AS
 SELECT * EXCLUDE (bit, "union", empty_struct, tuple) REPLACE (
-	case when extract(month from interval) <> 0 then interval '1 month 1 day 12:13:34.123' else interval end AS interval
+	case when extract(month from interval) <> 0 then interval '1 month 1 day 12:13:34.123' else interval end AS interval,
+	hugeint // 10 AS hugeint,
+	uhugeint // 10 AS uhugeint
 )
 FROM test_all_types();
 
@@ -16,12 +19,9 @@ statement ok
 COPY all_types TO "{TEST_DIR}/all_types.parquet" (FORMAT PARQUET);
 
 # we have to make some replacements to get result equivalence
-# hugeint/uhugeint is stored as double -> we have to cast
 # TIME WITH TIME ZONE is stored as a UTC-adjusted Parquet TIME
 query I nosort alltypes
 SELECT * REPLACE (
-	hugeint::DOUBLE AS hugeint,
-	uhugeint::DOUBLE AS uhugeint,
 	timezone(interval '0 seconds', time_tz) AS time_tz
 )
 FROM all_types

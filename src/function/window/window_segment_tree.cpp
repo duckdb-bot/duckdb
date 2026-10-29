@@ -49,6 +49,10 @@ public:
 	vector<idx_t> levels_flat_start;
 	//! The level being built (read)
 	std::atomic<idx_t> build_level;
+	//! The number of levels to build. A node is only read by a frame that holds all of its rows, so the levels whose
+	//! nodes are wider than the widest frame are left out, which also keeps the aggregate from running over rows that
+	//! no frame holds together
+	std::atomic<idx_t> build_levels;
 	//! The number of entries started so far at each level
 	unique_ptr<AtomicCounters> build_started;
 	//! The number of entries completed so far at each level
@@ -161,11 +165,33 @@ public:
 	unique_ptr<WindowSegmentTreePart> right_part;
 };
 
+//! The number of levels whose nodes are not wider than the widest frame the statistics allow
+static idx_t LevelsToBuild(const FrameStats &stats, idx_t fanout, idx_t max_levels) {
+	// The deltas are half-open ranges of the offsets of the first and of the last row of a frame from the current row;
+	// an empty range stands for the single offset at its begin (CURRENT ROW)
+	const auto first = stats[0].begin;
+	const auto last = stats[1].end > stats[1].begin ? stats[1].end - 1 : stats[1].begin;
+	if (last < first) {
+		return 0;
+	}
+	const hugeint_t width = hugeint_t(last) - hugeint_t(first) + 1;
+	idx_t levels = 0;
+	hugeint_t node_width = fanout;
+	while (levels < max_levels && node_width <= width) {
+		++levels;
+		node_width *= fanout;
+	}
+	return levels;
+}
+
 void WindowSegmentTree::Finalize(ExecutionContext &context, CollectionPtr collection, const FrameStats &stats,
                                  OperatorSinkInput &sink) {
+	auto &gasink = sink.global_state.Cast<WindowSegmentTreeGlobalState>();
+	// Every thread computes the same value from the same statistics
+	gasink.build_levels = LevelsToBuild(stats, gasink.TREE_FANOUT, gasink.levels_flat_start.size());
+
 	WindowAggregator::Finalize(context, collection, stats, sink);
 
-	auto &gasink = sink.global_state.Cast<WindowSegmentTreeGlobalState>();
 	++gasink.finalized;
 }
 
@@ -363,6 +389,7 @@ WindowSegmentTreeGlobalState::WindowSegmentTreeGlobalState(ClientContext &client
 
 	// Start by building from the bottom level
 	build_level = 0;
+	build_levels = levels_flat_start.size();
 	build_failed = false;
 
 	build_started = make_uniq<AtomicCounters>(levels_flat_start.size());
@@ -402,7 +429,7 @@ void WindowSegmentTreeLocalState::Finalize(ExecutionContext &context, WindowAggr
 	// iterate over the levels of the segment tree
 	for (;;) {
 		const idx_t level_current = gstate.build_level.load();
-		if (level_current >= levels_flat_start.size()) {
+		if (level_current >= levels_flat_start.size() || level_current >= gstate.build_levels.load()) {
 			break;
 		}
 

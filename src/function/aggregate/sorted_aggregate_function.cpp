@@ -369,8 +369,10 @@ struct SortedAggregateFunction {
 		state.linked_list = LinkedList();
 	}
 
-	static void FinalizeGroups(Vector &states, AggregateFinalizeInputData &finalize_input_data, Vector &result,
-	                           idx_t count, const idx_t offset) {
+	//! Finalizes count states, starting at state_offset in the states vector, into the result starting at offset
+	static void FinalizeGroups(Vector &states, const idx_t state_offset,
+	                           AggregateFinalizeInputData &finalize_input_data, Vector &result, idx_t count,
+	                           const idx_t offset) {
 		auto &order_bind = finalize_input_data.bind_data->Cast<SortedAggregateBindData>();
 		auto &client = order_bind.context;
 
@@ -433,7 +435,7 @@ struct SortedAggregateFunction {
 
 		vector<idx_t> state_unprocessed(count, 0);
 		for (idx_t i = 0; i < count; ++i) {
-			state_unprocessed[i] = sdata[i].GetValueUnsafe()->linked_list.total_capacity;
+			state_unprocessed[i] = sdata[state_offset + i].GetValueUnsafe()->linked_list.total_capacity;
 		}
 
 		auto &sort = order_bind.sort;
@@ -446,7 +448,7 @@ struct SortedAggregateFunction {
 		idx_t accumulated = 0;
 		for (idx_t finalized = 0; finalized < count;) {
 			if (unsorted_count < order_bind.threshold) {
-				auto state = sdata[finalized].GetValueUnsafe();
+				auto state = sdata[state_offset + finalized].GetValueUnsafe();
 				OperatorSinkInput sink {*global_sink, *local_sink, interrupt};
 				SinkState(order_bind, *state, finalized, accumulated, finalize_state, context, sink);
 				unsorted_count += state_unprocessed[finalized];
@@ -547,9 +549,9 @@ struct SortedAggregateFunction {
 	                     const idx_t offset) {
 		//	Internally we can only handle 2^16 rows, so chunk them up
 		const idx_t group_limit = NumericLimits<uint16_t>::Maximum();
-		for (auto group_offset = offset; group_offset < count; group_offset += group_limit) {
+		for (idx_t group_offset = 0; group_offset < count; group_offset += group_limit) {
 			const auto group_count = MinValue<idx_t>(group_limit, count - group_offset);
-			FinalizeGroups(states, finalize_input_data, result, group_count, group_offset);
+			FinalizeGroups(states, group_offset, finalize_input_data, result, group_count, offset + group_offset);
 		}
 	}
 };

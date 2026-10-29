@@ -1,4 +1,7 @@
 #include "duckdb/planner/planner.hpp"
+#include "duckdb/planner/operator/logical_get.hpp"
+#include "duckdb/planner/expression/bound_cast_expression.hpp"
+#include "duckdb/planner/expression/bound_function_expression.hpp"
 
 #include "duckdb/common/serializer/binary_deserializer.hpp"
 #include "duckdb/common/serializer/binary_serializer.hpp"
@@ -348,6 +351,91 @@ static bool OperatorSupportsSerialization(LogicalOperator &op) {
 	return op.SupportSerialization();
 }
 
+// Deserialization binds every cast anew, as a default or a context cast as it was bound, while statistics propagation
+// may have specialized the cast of the original, so the original's casts are bound anew the same way before the two
+// are compared
+static unique_ptr<Expression> WithReboundCasts(ClientContext &context, unique_ptr<Expression> expr) {
+	ExpressionIterator::EnumerateChildren(
+	    *expr, [&](unique_ptr<Expression> &child) { child = WithReboundCasts(context, std::move(child)); });
+	if (!BoundCastExpression::IsCast(*expr)) {
+		return expr;
+	}
+	auto &cast = expr->Cast<BoundFunctionExpression>();
+	auto target_type = BoundCastExpression::TargetType(cast);
+	auto try_cast = BoundCastExpression::IsTryCast(cast);
+	auto child = std::move(BoundCastExpression::ChildMutable(cast));
+	if (BoundCastExpression::IsDefaultCast(cast)) {
+		return BoundCastExpression::AddDefaultCastToType(std::move(child), target_type, try_cast);
+	}
+	return BoundCastExpression::AddCastToType(context, std::move(child), target_type, try_cast);
+}
+
+static bool ExpressionsMatch(ClientContext &context, const Expression &original, const Expression &copy) {
+	return Expression::Equals(*WithReboundCasts(context, original.Copy()), copy);
+}
+
+// A filter pushed from the join conditions only applies when the copy kept them
+static bool JoinConditionsMatch(ClientContext &context, const LogicalComparisonJoin &original,
+                                const LogicalComparisonJoin &copy) {
+	if (original.conditions.size() != copy.conditions.size()) {
+		return false;
+	}
+	for (idx_t i = 0; i < original.conditions.size(); i++) {
+		auto &original_condition = original.conditions[i];
+		auto &copy_condition = copy.conditions[i];
+		if (original_condition.IsComparison() != copy_condition.IsComparison()) {
+			return false;
+		}
+		if (!original_condition.IsComparison()) {
+			if (!ExpressionsMatch(context, original_condition.GetJoinExpression(),
+			                      copy_condition.GetJoinExpression())) {
+				return false;
+			}
+			continue;
+		}
+		if (original_condition.GetComparisonType() != copy_condition.GetComparisonType() ||
+		    !ExpressionsMatch(context, original_condition.GetLHS(), copy_condition.GetLHS()) ||
+		    !ExpressionsMatch(context, original_condition.GetRHS(), copy_condition.GetRHS())) {
+			return false;
+		}
+	}
+	return true;
+}
+
+// Optimizer state that links operators through shared objects is not serialized, so the copy takes it over from the
+// plan it replaces, where the copy kept what the state refers to
+static void TransferUnserializedState(ClientContext &context, LogicalOperator &original, LogicalOperator &copy) {
+	if (original.type != copy.type || original.children.size() != copy.children.size()) {
+		return;
+	}
+	switch (original.type) {
+	case LogicalOperatorType::LOGICAL_GET: {
+		auto &original_get = original.Cast<LogicalGet>();
+		auto &copy_get = copy.Cast<LogicalGet>();
+		if (original_get.table_index == copy_get.table_index &&
+		    original_get.GetColumnIds() == copy_get.GetColumnIds()) {
+			copy_get.dynamic_filters = std::move(original_get.dynamic_filters);
+		}
+		break;
+	}
+	case LogicalOperatorType::LOGICAL_COMPARISON_JOIN:
+	case LogicalOperatorType::LOGICAL_ASOF_JOIN:
+	case LogicalOperatorType::LOGICAL_DELIM_JOIN: {
+		auto &original_join = original.Cast<LogicalComparisonJoin>();
+		auto &copy_join = copy.Cast<LogicalComparisonJoin>();
+		if (original_join.join_type == copy_join.join_type && JoinConditionsMatch(context, original_join, copy_join)) {
+			copy_join.filter_pushdown = std::move(original_join.filter_pushdown);
+		}
+		break;
+	}
+	default:
+		break;
+	}
+	for (idx_t i = 0; i < original.children.size(); i++) {
+		TransferUnserializedState(context, *original.children[i], *copy.children[i]);
+	}
+}
+
 void Planner::VerifyPlan(ClientContext &context, unique_ptr<LogicalOperator> &op,
                          optional_ptr<bound_parameter_map_t> map) {
 	if (!op) {
@@ -384,6 +472,7 @@ void Planner::VerifyPlan(ClientContext &context, unique_ptr<LogicalOperator> &op
 		if (map) {
 			*map = std::move(parameters);
 		}
+		TransferUnserializedState(context, *op, *new_plan);
 		op = std::move(new_plan);
 	} catch (std::exception &ex) {
 		ErrorData error(ex);

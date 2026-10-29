@@ -222,6 +222,12 @@
         "test/sql/sql_export/recursive_state.test",
         "test/sql/sql_export/single_child_union.test"
       ]
+    },
+    {
+      "reason": "Checks that serializer verification keeps the join filter pushdown of late materialization, which the optimizer creates",
+      "paths": [
+        "test/sql/optimizer/join_filter_pushdown_verify_serializer.test"
+      ]
     }
   ]
 }

@@ -95,3 +95,20 @@ statement error
 SELECT try(1 + (SELECT unnest((SELECT {'a': 1 // 0}))));
 ----
 TRY over a subquery with UNNEST in its select list is not supported
+
+# a nested subquery that unnests a struct subquery cannot fall back to a plain subquery once the struct
+# subquery has transported its error flag, and falls back when it has not
+statement error
+SELECT try((SELECT 1 + (SELECT unnest((SELECT {'a': 1 // 0})))));
+----
+TRY over a subquery with UNNEST in its select list is not supported
+
+query I
+SELECT try((SELECT 1 + (SELECT unnest((SELECT {'a': 1} ORDER BY 1)))));
+----
+2
+
+statement error
+SELECT try((SELECT 1 + (SELECT unnest((SELECT {'a': 1 // 0} ORDER BY 1)))));
+----
+Division by zero

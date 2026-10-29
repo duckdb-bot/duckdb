@@ -332,9 +332,11 @@ vector<CatalogSearchEntry> CatalogSearchPath::GetWithPrecedenceSchemas(ClientCon
 }
 
 const CatalogSearchEntry &CatalogSearchPath::GetDefault() const {
-	D_ASSERT(paths.size() >= 2);
-	D_ASSERT(!paths[1].GetSchema().empty());
-	return paths[1];
+	// the first entry after the temporary schema, which leads the path unless the entries of a system view do
+	const idx_t default_idx = temporary_first ? 1 : 0;
+	D_ASSERT(paths.size() > default_idx);
+	D_ASSERT(!paths[default_idx].GetSchema().empty());
+	return paths[default_idx];
 }
 
 void CatalogSearchPath::SetPathsInternal(vector<CatalogSearchEntry> new_paths) {

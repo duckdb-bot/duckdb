@@ -131,6 +131,23 @@ SELECT * FROM user_types;
 ----
 1
 
+# and a temporary macro comes first for the user's view, as for the user's queries
+statement ok
+CREATE TEMP MACRO duckdb_types() AS TABLE SELECT 2 AS x;
+
+query I
+SELECT * FROM user_types;
+----
+2
+
+query I
+SELECT count(*) FROM pg_type WHERE typname IN ('int4', 'varchar');
+----
+2
+
+statement ok
+DROP MACRO temp.main.duckdb_types;
+
 # a user table named like a function that a view reads as a bare relation, with the function's columns
 statement ok
 CREATE TABLE duckdb_columns AS SELECT * FROM system.main.duckdb_columns() LIMIT 0;

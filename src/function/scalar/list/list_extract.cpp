@@ -9,6 +9,7 @@
 #include "duckdb/function/scalar/variant_utils.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
+#include "duckdb/planner/expression_binder.hpp"
 #include "duckdb/storage/statistics/list_stats.hpp"
 
 namespace duckdb {
@@ -121,9 +122,14 @@ static unique_ptr<FunctionData> ListExtractBind(BindScalarFunctionInput &input) 
 	return nullptr;
 }
 
-//! The index keeps its own type, as in the subscript
+//! Rejects a string literal, which casts implicitly to VARIANT, and keeps the type of the index as in the subscript
 static void VariantExtractResolveTypes(ResolveScalarFunctionTypesInput &input) {
-	input.GetBoundFunction().GetArguments()[1] = input.GetArgumentType(1);
+	auto &bound_function = input.GetBoundFunction();
+	if (ExpressionBinder::GetExpressionReturnType(input.GetArgument(0)).id() == LogicalTypeId::STRING_LITERAL) {
+		throw BinderException("%s does not extract from a string, use s[i] or substring(s, i, 1) instead",
+		                      bound_function.GetName().GetIdentifierName());
+	}
+	bound_function.GetArguments()[1] = input.GetArgumentType(1);
 }
 
 //! A VARIANT binds to variant_extract, as its subscript does

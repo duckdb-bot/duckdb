@@ -230,7 +230,24 @@ SELECT list_element(s, 1) FROM strings
 ----
 No function matches the given name and argument types 'list_element(VARCHAR, INTEGER_LITERAL)'
 
+# a string literal casts implicitly to VARIANT, which does not make it a list
 statement error
 SELECT array_extract('DuckDB', 2)
 ----
-Could not choose a best candidate function for the function call "array_extract(STRING_LITERAL, INTEGER_LITERAL)"
+array_extract does not extract from a string, use s[i] or substring(s, i, 1) instead
+
+statement error
+SELECT list_extract('DuckDB', 2)
+----
+list_extract does not extract from a string, use s[i] or substring(s, i, 1) instead
+
+statement error
+SELECT list_element('DuckDB', 2)
+----
+list_element does not extract from a string, use s[i] or substring(s, i, 1) instead
+
+# a string cast to VARIANT explicitly is read as a VARIANT, which holds no list here
+query I
+SELECT list_extract('DuckDB'::VARIANT, 2)
+----
+NULL

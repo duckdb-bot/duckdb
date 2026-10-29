@@ -54,9 +54,9 @@ logical_opt	<REGEX>:.*COMPARISON_JOIN.*rowid = rowid.*AGGREGATE.*
 
 # The duplicate-row-ID regression must exercise join late materialization rather than
 # passing by falling back to struct packing.
-# RelDebug uses an inner row-ID reconstruction join for this query. Debug's
-# column-lifetime verification projections can conservatively make late
-# materialization fall back to struct packing; both are valid optimized plans.
+# RelDebug uses an inner row-ID reconstruction join for this query. Debug builds
+# always apply compressed materialization to joins, and the decompression
+# projection makes the rewrite fall back to struct packing. Both are valid optimized plans.
 statement ok
 CREATE TABLE topn_dup_l(id INTEGER, k INTEGER, p VARCHAR)
 
@@ -245,12 +245,12 @@ EXPLAIN SELECT * FROM window_fun('tbl JOIN tbl2 ON grp = x', ['grp', 'a', 'b'], 
 ----
 logical_opt	<!REGEX>:.*FILTER.*WINDOW.*
 
-# Window function with join and one-sided projections + join column. Debug may
-# conservatively use the struct-pack fallback after verification projections.
+# Window function with join and one-sided projections + join column. Debug builds
+# may use the struct-pack fallback because of compressed materialization.
 query II
 EXPLAIN SELECT * FROM window_fun('tbl JOIN tbl2 ON grp = x', ['grp', 'a', 'b', 'x'], '{sort_order}', {topn})
 ----
-logical_opt	<REGEX>:.*(COMPARISON_JOIN.*rowid = rowid.*AGGREGATE|arg_(min|max)\(struct_pack\().*
+logical_opt	<REGEX>:.*(COMPARISON_JOIN.*rowid = rowid.*AGGREGATE|arg_(min|max)_nulls_last\(struct_pack\().*
 
 # window function with join and two-sided projections
 query II

@@ -167,8 +167,8 @@ public:
 
 //! The number of levels whose nodes are not wider than the widest frame the statistics allow
 static idx_t LevelsToBuild(const FrameStats &stats, idx_t fanout, idx_t max_levels) {
-	// The deltas are half-open ranges of the offsets of the first and of the last row of a frame from the current row;
-	// an empty range stands for the single offset at its begin (CURRENT ROW)
+	// The deltas are half-open ranges of the offsets of the first and of the last row of a frame from the current row,
+	// where an empty range stands for the single offset at its begin (CURRENT ROW)
 	const auto first = stats[0].begin;
 	const auto last = stats[1].end > stats[1].begin ? stats[1].end - 1 : stats[1].begin;
 	if (last < first) {

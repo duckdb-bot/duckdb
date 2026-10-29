@@ -202,6 +202,10 @@ static void ApplyWindowStats(const WindowBoundary &boundary, FrameDelta &delta, 
 			if (base_stats.end < delta.end) {
 				delta.end = base_stats.end + 1;
 			}
+			if (is_start && delta.begin < base_stats.begin && base_stats.begin < delta.end) {
+				// the frame starts at the current row at the earliest
+				delta.begin = MaxValue<int64_t>(base_stats.begin, 0);
+			}
 		}
 		return;
 

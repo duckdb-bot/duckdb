@@ -77,9 +77,9 @@ void CommonSubExpressionOptimizer::CountExpressions(Expression &expr, CSEReplace
 
 	// If we have a function that uses short circuiting, then we can only extract CSEs from the leftmost
 	// side of the argument tree (child_no == 0)
-	switch (expr.GetExpressionClass()) {
-	case ExpressionClass::BOUND_CONJUNCTION:
-	case ExpressionClass::BOUND_CASE: {
+	auto expression_class = expr.GetExpressionClass();
+	if (expression_class == ExpressionClass::BOUND_CONJUNCTION || expression_class == ExpressionClass::BOUND_CASE ||
+	    expr.GetExpressionType() == ExpressionType::OPERATOR_COALESCE) {
 		// Save the short circuit reference
 		const auto save_short_circuit = state.short_circuited;
 		ExpressionIterator::EnumerateChildren(expr, [&](Expression &child) {
@@ -87,23 +87,16 @@ void CommonSubExpressionOptimizer::CountExpressions(Expression &expr, CSEReplace
 			state.short_circuited = true;
 		});
 		state.short_circuited = save_short_circuit;
-		break;
+		return;
 	}
-	case ExpressionClass::BOUND_OPERATOR: {
-		const auto save_inside_try = state.inside_try;
-		const auto expression_type = expr.GetExpressionType();
-		if (expression_type == ExpressionType::OPERATOR_TRY || expression_type == ExpressionType::OPERATOR_HAS_ERROR) {
-			state.inside_try = true;
-		}
-		ExpressionIterator::EnumerateChildren(expr, [&](Expression &child) { CountExpressions(child, state); });
-		state.inside_try = save_inside_try;
-		break;
+	const auto save_inside_try = state.inside_try;
+	const auto expression_type = expr.GetExpressionType();
+	if (expression_type == ExpressionType::OPERATOR_TRY || expression_type == ExpressionType::OPERATOR_HAS_ERROR) {
+		state.inside_try = true;
 	}
-	default:
-		// recursively count the children
-		ExpressionIterator::EnumerateChildren(expr, [&](Expression &child) { CountExpressions(child, state); });
-		break;
-	}
+	// recursively count the children
+	ExpressionIterator::EnumerateChildren(expr, [&](Expression &child) { CountExpressions(child, state); });
+	state.inside_try = save_inside_try;
 }
 
 void CommonSubExpressionOptimizer::PerformCSEReplacement(unique_ptr<Expression> &expr_ptr, CSEReplacementState &state) {

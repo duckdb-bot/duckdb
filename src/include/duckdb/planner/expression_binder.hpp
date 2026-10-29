@@ -36,6 +36,7 @@ class ScalarFunctionCatalogEntry;
 class AggregateFunctionCatalogEntry;
 class WindowFunctionCatalogEntry;
 class ScalarMacroCatalogEntry;
+class MacroFunction;
 class ScalarMacroFunction;
 class CatalogEntry;
 class SimpleFunction;
@@ -364,8 +365,8 @@ protected:
 	                             unique_ptr<ParsedExpression> &expr_ptr);
 	void FindAggregateExprs(unique_ptr<ParsedExpression> &expr, vector<reference<unique_ptr<ParsedExpression>>> &exprs);
 	void UnfoldWindowMacroExpression(unique_ptr<ParsedExpression> &expr, ScalarMacroFunction &macro_def);
-	void UnfoldMacroExpression(FunctionExpression &function, ScalarMacroCatalogEntry &macro_func,
-	                           unique_ptr<ParsedExpression> &expr, idx_t depth);
+	MacroFunction &UnfoldMacroExpression(FunctionExpression &function, ScalarMacroCatalogEntry &macro_func,
+	                                     unique_ptr<ParsedExpression> &expr, idx_t depth);
 
 	//! Whether a macro argument that IsPureMacroArgument accepts binds to the same expression wherever this binder
 	//! binds it, so that it can be bound once for all references to its parameter

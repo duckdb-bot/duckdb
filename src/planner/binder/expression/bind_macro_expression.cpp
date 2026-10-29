@@ -7,6 +7,7 @@
 #include "duckdb/common/exception/binder_exception.hpp"
 #include "duckdb/common/unique_ptr.hpp"
 #include "duckdb/function/scalar_macro_function.hpp"
+#include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/parser/expression/conjunction_expression.hpp"
@@ -276,8 +277,9 @@ void ExpressionBinder::UnfoldWindowMacroExpression(unique_ptr<ParsedExpression> 
 	expr = std::move(macro_copy);
 }
 
-void ExpressionBinder::UnfoldMacroExpression(FunctionExpression &function, ScalarMacroCatalogEntry &macro_func,
-                                             unique_ptr<ParsedExpression> &expr, idx_t depth) {
+MacroFunction &ExpressionBinder::UnfoldMacroExpression(FunctionExpression &function,
+                                                       ScalarMacroCatalogEntry &macro_func,
+                                                       unique_ptr<ParsedExpression> &expr, idx_t depth) {
 	// validate the arguments and separate positional and default arguments
 	vector<unique_ptr<ParsedExpression>> positional_arguments;
 	InsertionOrderPreservingMap<unique_ptr<ParsedExpression>, Identifier, identifier_map_t<idx_t>> named_arguments;
@@ -310,7 +312,7 @@ void ExpressionBinder::UnfoldMacroExpression(FunctionExpression &function, Scala
 	vector<identifier_set_t> lambda_params;
 	if (!CanBindMacroArgumentsOnce()) {
 		ReplaceMacroParameters(expr, lambda_params);
-		return;
+		return macro_def;
 	}
 	vector<MacroParameterReference> references;
 	ReplaceMacroParameters(expr, lambda_params, references);
@@ -333,6 +335,7 @@ void ExpressionBinder::UnfoldMacroExpression(FunctionExpression &function, Scala
 			macro_argument_references[reference.replacement.get()] = argument_binding;
 		}
 	}
+	return macro_def;
 }
 
 BindResult ExpressionBinder::BindMacro(FunctionExpression &function, ScalarMacroCatalogEntry &macro_func, idx_t depth,
@@ -342,10 +345,19 @@ BindResult ExpressionBinder::BindMacro(FunctionExpression &function, ScalarMacro
 	context.InterruptCheck();
 
 	// unfold the macro expression
-	UnfoldMacroExpression(function, macro_func, expr, depth);
+	auto &member = UnfoldMacroExpression(function, macro_func, expr, depth);
 
 	// bind the unfolded macro
-	return BindExpression(expr, depth);
+	auto result = BindExpression(expr, depth);
+	if (result.HasError()) {
+		return result;
+	}
+	// enforce a declared RETURNS type by casting the member's result to it
+	if (member.return_type.id() != LogicalTypeId::UNKNOWN) {
+		result.expression =
+		    BoundCastExpression::AddCastToType(context, std::move(result.expression), member.return_type);
+	}
+	return result;
 }
 
 } // namespace duckdb

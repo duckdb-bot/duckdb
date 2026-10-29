@@ -84,3 +84,14 @@ statement error
 SELECT unnest((SELECT {'a': i} FROM range(2) t(i)));
 ----
 More than one row returned by a subquery
+
+# the struct is computed by an UNNEST below the select list, where TRY cannot reach it
+statement error
+SELECT try((SELECT unnest((SELECT {'a': 1 // 0}))));
+----
+TRY over a subquery with UNNEST in its select list is not supported
+
+statement error
+SELECT try(1 + (SELECT unnest((SELECT {'a': 1 // 0}))));
+----
+TRY over a subquery with UNNEST in its select list is not supported

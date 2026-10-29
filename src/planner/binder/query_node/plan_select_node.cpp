@@ -149,6 +149,10 @@ unique_ptr<LogicalOperator> Binder::CreatePlan(BoundSelectNode &statement) {
 		for (auto &entry : statement.unnests.GroupBy()) {
 			try_indexes.unnest_indexes.push_back(entry.second.index);
 		}
+		// the struct of a struct unnest is computed by an unnest below the projection as well
+		for (auto &entry : statement.unnests.StructSources()) {
+			try_indexes.unnest_indexes.push_back(entry.second.index);
+		}
 	}
 	auto root = std::move(statement.from_table.plan);
 

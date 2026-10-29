@@ -238,10 +238,7 @@ static unique_ptr<BaseStatistics> ConstantBoundStats(ClientContext &client, cons
 	if (!ExpressionExecutor::TryEvaluateScalar(client, expr, value) || value.IsNull()) {
 		return nullptr;
 	}
-	auto result = NumericStats::CreateEmpty(value.type());
-	NumericStats::SetMin(result, value);
-	NumericStats::SetMax(result, value);
-	return result.ToUnique();
+	return BaseStatistics::FromConstant(value).ToUnique();
 }
 
 void WindowAggregateExecutor::Finalize(ExecutionContext &context, CollectionPtr collection,

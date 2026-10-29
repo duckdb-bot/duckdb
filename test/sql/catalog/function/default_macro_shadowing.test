@@ -255,6 +255,17 @@ SELECT system.pg_catalog.format_type(NULL::BIGINT, -1);
 ----
 NULL
 
+# format_type's call of its pg_catalog helper and the "+" of its fallback oid stay pinned under
+# shadows of both (TIMESTAMP_S has no PostgreSQL oid and gets its type id 17 plus 16384)
+
+statement ok
+CREATE MACRO map_type_id_to_pg_oid(type_id) AS 999;
+
+query I
+SELECT format_type(16401, 0);
+----
+timestamp_s
+
 # the ILIKE pin through duckdb_logs_parsed lives in default_macro_shadowing_logging.test,
 # since in-memory log contents cannot survive the reload harness
 

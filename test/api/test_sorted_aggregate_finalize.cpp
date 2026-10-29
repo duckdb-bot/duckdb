@@ -12,7 +12,7 @@ using namespace duckdb;
 
 namespace {
 
-//! An order sensitive inner aggregate: the sum of the values weighted by their position
+//! An order sensitive inner aggregate, the sum of the values weighted by their position
 struct WeightedState {
 	int64_t seen;
 	int64_t weighted;

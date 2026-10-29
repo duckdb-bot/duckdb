@@ -1,0 +1,60 @@
+# name: test/sql/window/test_window_sorted_aggregate_batches.test_slow
+# description: A sorted window aggregate finalizes more than 65535 partitions in one call (duckdblabs/bot-issue-tracker#721)
+# group: [window]
+
+# With one thread and this memory limit the window operator uses 16 hash groups, so every finalize call gets about
+# 75000 states, more than the 65535 a sort can number
+statement ok
+SET threads = 1;
+
+statement ok
+SET memory_limit = '150MB';
+
+statement ok
+CREATE TABLE t AS
+	SELECT i AS id, (hash(i) % 1000000)::FLOAT / 10 AS x, (hash(i * 3) % 100000)::DOUBLE AS y
+	FROM range(1200000) r(i);
+
+statement ok
+CREATE TABLE w AS
+	SELECT id, last_value(y) OVER win AS last_y, sum(x) OVER win AS sum_x
+	FROM (SELECT t.*, t.id AS grp FROM t)
+	WINDOW win AS (PARTITION BY grp ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING);
+
+query III
+SELECT
+	count(*) FILTER (w.sum_x IS NULL),
+	count(*) FILTER (abs(w.sum_x - t.x) > 1e-3),
+	count(*) FILTER (w.last_y IS DISTINCT FROM t.y)
+FROM w JOIN t USING (id);
+----
+0	0	0
+
+# another sorted aggregate over the same partitions, with strings
+query III
+SELECT
+	count(*) FILTER (w.ys IS NULL),
+	count(*) FILTER (w.ys <> t.y::VARCHAR),
+	count(*) FILTER (w.last_y IS DISTINCT FROM t.y)
+FROM (
+	SELECT id, last_value(y) OVER win AS last_y, string_agg(y::VARCHAR, ',') OVER win AS ys
+	FROM (SELECT t.*, t.id AS grp FROM t)
+	WINDOW win AS (PARTITION BY grp ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)
+) w
+JOIN t USING (id);
+----
+0	0	0
+
+# partitions with several rows, where the order inside the partition matters
+statement ok
+CREATE TABLE s AS SELECT i // 3 AS grp, i AS id, (hash(i) % 1000)::VARCHAR AS v FROM range(240000) r(i);
+
+query II
+SELECT count(*) FILTER (lst IS NULL), count(*) FILTER (lst <> expected)
+FROM (
+	SELECT grp, string_agg(v, ',') OVER (PARTITION BY grp ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS lst
+	FROM s
+) w
+JOIN (SELECT grp, string_agg(v, ',' ORDER BY id) AS expected FROM s GROUP BY grp) g USING (grp);
+----
+0	0

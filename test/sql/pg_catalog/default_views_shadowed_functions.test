@@ -1,0 +1,132 @@
+# name: test/sql/pg_catalog/default_views_shadowed_functions.test
+# description: The default pg_catalog and information_schema views read the system catalog's functions and views, not a user's objects of the same names (issue #726)
+# group: [pg_catalog]
+
+statement ok
+CREATE TABLE t(i INTEGER, s VARCHAR);
+
+query I
+SELECT count(*) FROM pg_type WHERE typname IN ('int4', 'varchar');
+----
+2
+
+# a user table macro named like the function the view reads
+statement ok
+CREATE MACRO duckdb_types() AS TABLE SELECT 1 AS x;
+
+query I
+SELECT count(*) FROM pg_type WHERE typname IN ('int4', 'varchar');
+----
+2
+
+query I
+SELECT count(*) FROM pg_catalog.pg_type WHERE typname IN ('int4', 'varchar');
+----
+2
+
+query I
+SELECT count(*) FROM system.pg_catalog.pg_type WHERE typname IN ('int4', 'varchar');
+----
+2
+
+# the user's macro is still what the user's own query gets
+query I
+SELECT * FROM duckdb_types();
+----
+1
+
+statement ok
+DROP MACRO duckdb_types;
+
+# a user scalar macro named like a helper of the view
+statement ok
+CREATE MACRO map_to_pg_oid(n) AS 999;
+
+query II
+SELECT oid, typname FROM pg_type WHERE typname IN ('int4', 'varchar') ORDER BY typname;
+----
+23	int4
+1043	varchar
+
+statement ok
+CREATE MACRO format_pg_type(a, b) AS 'bogus';
+
+query I
+SELECT count(*) FROM pg_type WHERE typname = 'bogus';
+----
+0
+
+statement ok
+DROP MACRO map_to_pg_oid;
+
+statement ok
+DROP MACRO format_pg_type;
+
+statement ok
+CREATE MACRO duckdb_tables() AS TABLE SELECT 1 AS x;
+
+query I
+SELECT count(*) FROM pg_class WHERE relname = 't';
+----
+1
+
+statement ok
+DROP MACRO duckdb_tables;
+
+statement ok
+CREATE MACRO duckdb_columns() AS TABLE SELECT 1 AS x;
+
+query I
+SELECT count(*) FROM information_schema.columns WHERE table_name = 't';
+----
+2
+
+statement ok
+DROP MACRO duckdb_columns;
+
+# a user table named like the function that sqlite_master reads without parentheses
+statement ok
+CREATE TABLE duckdb_tables(i INT);
+
+query I
+SELECT count(*) FROM sqlite_master WHERE name IN ('t', 'duckdb_tables');
+----
+2
+
+statement ok
+DROP TABLE duckdb_tables;
+
+# a user schema on the search path
+statement ok
+CREATE SCHEMA s;
+
+statement ok
+CREATE MACRO s.duckdb_types() AS TABLE SELECT 1 AS x;
+
+statement ok
+SET search_path = 's';
+
+query I
+SELECT count(*) FROM pg_type WHERE typname IN ('int4', 'varchar');
+----
+2
+
+query I
+SELECT * FROM duckdb_types();
+----
+1
+
+statement ok
+RESET search_path;
+
+# a user view over the shadowing macro keeps reading the user's macro
+statement ok
+CREATE VIEW user_types AS SELECT * FROM duckdb_types();
+
+statement ok
+CREATE MACRO duckdb_types() AS TABLE SELECT 1 AS x;
+
+query I
+SELECT * FROM user_types;
+----
+1

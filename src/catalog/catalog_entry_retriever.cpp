@@ -101,8 +101,10 @@ const CatalogSearchPath &CatalogEntryRetriever::GetSearchPath() const {
 void CatalogEntryRetriever::SetSearchPath(vector<CatalogSearchEntry> entries) {
 	vector<CatalogSearchEntry> new_path;
 	for (auto &entry : entries) {
-		if (IsInvalidCatalog(entry.GetCatalog()) || entry.GetCatalog() == SYSTEM_CATALOG ||
-		    entry.GetCatalog() == TEMP_CATALOG) {
+		// A temporary view is bound in the session's path, which starts with the temporary schema. A default view in
+		// the system catalog is bound in its own schema and the system catalog first, so that a user's object named
+		// like the function or view it reads does not replace it
+		if (IsInvalidCatalog(entry.GetCatalog()) || entry.GetCatalog() == TEMP_CATALOG) {
 			continue;
 		}
 		new_path.push_back(std::move(entry));

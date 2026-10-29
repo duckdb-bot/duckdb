@@ -263,6 +263,10 @@ public:
 		return !ra_buffer.read_heads.empty() || !ra_buffer.merge_set.empty();
 	}
 
+	bool IsPrefetchMode() const {
+		return prefetch_mode;
+	}
+
 	void SetLocation(idx_t location_p) {
 		location = location_p;
 	}

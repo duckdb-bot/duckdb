@@ -152,7 +152,8 @@
         "test/sql/copy/parquet/read_ahead/readahead_dynamic_pruning.test",
         "test/sql/copy/parquet/read_ahead/readahead_dynamic_pruning_nulls_first.test",
         "test/sql/copy/parquet/read_ahead/recheck_prefetch_log.test",
-        "test/sql/copy/parquet/read_ahead/readahead_dynamic_pruning.test_slow"
+        "test/sql/copy/parquet/read_ahead/readahead_dynamic_pruning.test_slow",
+        "test/sql/copy/parquet/bloom_filter_no_prefetch_reads.test"
       ]
     },
     {

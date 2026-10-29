@@ -118,8 +118,9 @@ vector<CatalogSearchEntry> CatalogSearchEntry::ParseList(const string &input) {
 	return result;
 }
 
-CatalogSearchPath::CatalogSearchPath(ClientContext &context_p, vector<CatalogSearchEntry> entries)
-    : context(context_p) {
+CatalogSearchPath::CatalogSearchPath(ClientContext &context_p, vector<CatalogSearchEntry> entries,
+                                     bool temporary_first_p)
+    : context(context_p), temporary_first(temporary_first_p) {
 	SetPathsInternal(std::move(entries));
 }
 
@@ -341,9 +342,14 @@ void CatalogSearchPath::SetPathsInternal(vector<CatalogSearchEntry> new_paths) {
 
 	paths.clear();
 	paths.reserve(set_paths.size() + 4);
-	paths.emplace_back(TEMP_CATALOG, DEFAULT_SCHEMA);
+	if (temporary_first) {
+		paths.emplace_back(TEMP_CATALOG, DEFAULT_SCHEMA);
+	}
 	for (auto &path : set_paths) {
 		paths.push_back(path);
+	}
+	if (!temporary_first) {
+		paths.emplace_back(TEMP_CATALOG, DEFAULT_SCHEMA);
 	}
 	paths.emplace_back(INVALID_CATALOG, DEFAULT_SCHEMA);
 	paths.emplace_back(SYSTEM_CATALOG, DEFAULT_SCHEMA);

@@ -112,6 +112,13 @@ void CatalogEntryRetriever::SetSearchPath(vector<CatalogSearchEntry> entries) {
 	if (new_path.empty()) {
 		return;
 	}
+	const bool system_view = new_path[0].GetCatalog() == SYSTEM_CATALOG;
+	if (system_view && new_path[0].GetSchema() != DEFAULT_SCHEMA) {
+		// The lookup of a table or view does not expand the catalog's entry to its default schema, so the views of
+		// system.main that such a view reads need the schema itself in the path
+		new_path.insert(new_path.begin() + 1,
+		                CatalogSearchEntry(Identifier(SYSTEM_CATALOG), Identifier(DEFAULT_SCHEMA)));
+	}
 
 	// push the set paths from the ClientContext behind the provided paths
 	auto &client_search_path = *ClientData::Get(context).catalog_search_path;
@@ -126,7 +133,7 @@ void CatalogEntryRetriever::SetSearchPath(vector<CatalogSearchEntry> entries) {
 		new_path.push_back(std::move(path));
 	}
 
-	this->search_path = make_shared_ptr<CatalogSearchPath>(context, std::move(new_path));
+	this->search_path = make_shared_ptr<CatalogSearchPath>(context, std::move(new_path), !system_view);
 }
 
 optional_ptr<BoundAtClause> CatalogEntryRetriever::GetAtClause() const {

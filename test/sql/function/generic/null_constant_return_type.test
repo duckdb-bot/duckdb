@@ -198,7 +198,7 @@ SELECT struct_extract(NULL::INT, 'a')
 query IIII
 SELECT typeof(NULL || 'z'), typeof([1] || NULL), typeof(NULL || NULL), typeof(list_extract(NULL, 1))
 ----
-"NULL"	"NULL"	"NULL"	VARCHAR
+"NULL"	"NULL"	"NULL"	VARIANT
 
 query I
 SELECT typeof(constant_or_null(true, NULL))

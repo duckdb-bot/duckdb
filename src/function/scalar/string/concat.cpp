@@ -235,6 +235,10 @@ void ResolveListConcatTypes(ResolveScalarFunctionTypesInput &input, bool is_oper
 		case LogicalTypeId::ARRAY:
 			next_type = ArrayType::GetChildType(return_type);
 			break;
+		case LogicalTypeId::VARIANT:
+			// a VARIANT argument is read as VARIANT[]
+			next_type = return_type;
+			break;
 		default: {
 			string type_list;
 			for (idx_t arg_idx = 0; arg_idx < input.GetArgumentCount(); arg_idx++) {
@@ -266,6 +270,8 @@ void ResolveListConcatTypes(ResolveScalarFunctionTypesInput &input, bool is_oper
 
 void ResolveConcatTypesInternal(ResolveScalarFunctionTypesInput &input, bool is_operator) {
 	auto &bound_function = input.GetBoundFunction();
+	const auto &func_args = bound_function.GetArguments();
+	const bool list_function = !func_args.empty() && func_args[0].id() == LogicalTypeId::LIST;
 	bool list_concat = false;
 	bool all_null = true;
 	// blob concat is only supported for the concat operator - regular concat converts to varchar
@@ -274,7 +280,8 @@ void ResolveConcatTypesInternal(ResolveScalarFunctionTypesInput &input, bool is_
 		if (arg_type.id() == LogicalTypeId::UNKNOWN) {
 			throw ParameterNotResolvedException();
 		}
-		if (arg_type.id() == LogicalTypeId::LIST || arg_type.id() == LogicalTypeId::ARRAY) {
+		if (arg_type.id() == LogicalTypeId::LIST || arg_type.id() == LogicalTypeId::ARRAY ||
+		    (list_function && arg_type.id() == LogicalTypeId::VARIANT)) {
 			list_concat = true;
 		}
 		if (arg_type.id() != LogicalTypeId::BLOB) {
@@ -294,7 +301,6 @@ void ResolveConcatTypesInternal(ResolveScalarFunctionTypesInput &input, bool is_
 			return;
 		}
 
-		const auto &func_args = bound_function.GetArguments();
 		if (!func_args.empty() &&
 		    (func_args[0].id() == LogicalTypeId::LIST || func_args[0].id() == LogicalTypeId::ARRAY)) {
 			SetArgumentType(bound_function, LogicalTypeId::SQLNULL, is_operator);

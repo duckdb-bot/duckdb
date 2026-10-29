@@ -682,12 +682,66 @@ BoundStatement Binder::BindSelectNode(SelectNode &statement, BoundStatement from
 	// if we expand select-list expressions, e.g., via UNNEST, then we need to possibly
 	// adjust the column index of the already bound ORDER BY modifiers, and not only set their types
 	vector<idx_t> group_by_all_indexes;
+	bool group_by_all_pushed = false;
 	vector<Identifier> new_names;
 	vector<LogicalType> internal_sql_types;
+
+	// push the GROUP BY ALL expressions into the group set, and map the select expressions to their groups, so the
+	// ORDER BY and DISTINCT ON entries bound after them and HAVING bind to them
+	auto push_group_by_all = [&]() {
+		group_by_all_pushed = true;
+		vector<std::pair<idx_t, ProjectionIndex>> group_by_all_groups;
+		for (auto &group_by_all_index : group_by_all_indexes) {
+			auto &expr = result.select_list[group_by_all_index];
+			auto return_type = expr->GetReturnType();
+			// group by the collated expression, and select the uncollated value through a first(x) aggregate
+			unique_ptr<Expression> uncollated_first;
+			// avoid evaluating volatile groups twice
+			if (!expr->IsVolatile()) {
+				// copy before pushing the collation, which can replace the expression
+				bool contains_subquery = expr->HasSubquery();
+				auto uncollated_expr = contains_subquery ? nullptr : expr->Copy();
+				if (ExpressionBinder::PushCollation(context, expr, return_type)) {
+					if (contains_subquery) {
+						// bound subqueries cannot be copied, so bind the select-list expression again
+						auto parsed_copy = bind_state.original_expressions[group_by_all_index]->Copy();
+						auto bound_column_count = select_binder.GetBoundColumns().size();
+						uncollated_expr = select_binder.Bind(parsed_copy);
+						select_binder.TruncateBoundColumns(bound_column_count);
+					}
+					uncollated_first = BindUncollatedFirst(*this, std::move(uncollated_expr));
+				}
+			}
+			auto group_proj_idx = ColumnBinding::PushExpression(result.groups.group_expressions, std::move(expr));
+			if (uncollated_first) {
+				auto aggregate_idx = ColumnBinding::PushExpression(result.aggregates, std::move(uncollated_first));
+				expr = make_uniq<BoundColumnRefExpression>(return_type,
+				                                           ColumnBinding(result.aggregate_index, aggregate_idx));
+				bind_state.collated_groups[group_proj_idx] = aggregate_idx;
+			} else {
+				expr =
+				    make_uniq<BoundColumnRefExpression>(return_type, ColumnBinding(result.group_index, group_proj_idx));
+			}
+			group_by_all_groups.emplace_back(group_by_all_index, group_proj_idx);
+		}
+		// binding a group again must not resolve to a group, so map the groups after pushing all of them
+		for (auto &entry : group_by_all_groups) {
+			auto group_copy = bind_state.original_expressions[entry.first]->Copy();
+			bind_state.group_map[*group_copy] = entry.second;
+			bind_state.unbound_groups.push_back(std::move(group_copy));
+		}
+	};
 
 	for (idx_t i = 0; i < statement.select_list.size(); i++) {
 		bool is_window = statement.select_list[i]->IsWindow();
 		idx_t unnest_count = result.unnests.SelectList().size();
+		bool is_original_column = i < result.column_count;
+		bool can_group_by_all =
+		    statement.aggregate_handling == AggregateHandling::FORCE_AGGREGATES && is_original_column;
+		if (statement.aggregate_handling == AggregateHandling::FORCE_AGGREGATES && !is_original_column &&
+		    !group_by_all_pushed) {
+			push_group_by_all();
+		}
 		LogicalType result_type;
 		// the select item of a TRY subquery transports the error flags of nested scalar subqueries to
 		// the TRY lowering of this node; GROUP BY ALL may move the item into the group expressions,
@@ -696,9 +750,6 @@ BoundStatement Binder::BindSelectNode(SelectNode &statement, BoundStatement from
 		                                    statement.aggregate_handling != AggregateHandling::FORCE_AGGREGATES);
 		auto expr = select_binder.Bind(statement.select_list[i], &result_type, true);
 		select_binder.SetTransportTryErrors(false);
-		bool is_original_column = i < result.column_count;
-		bool can_group_by_all =
-		    statement.aggregate_handling == AggregateHandling::FORCE_AGGREGATES && is_original_column;
 		result.bound_column_count++;
 
 		if (expr->GetExpressionType() == ExpressionType::BOUND_EXPANDED) {
@@ -761,46 +812,8 @@ BoundStatement Binder::BindSelectNode(SelectNode &statement, BoundStatement from
 		}
 	}
 
-	// push the GROUP BY ALL expressions into the group set
-	vector<std::pair<idx_t, ProjectionIndex>> group_by_all_groups;
-	for (auto &group_by_all_index : group_by_all_indexes) {
-		auto &expr = result.select_list[group_by_all_index];
-		auto return_type = expr->GetReturnType();
-		// group by the collated expression, and select the uncollated value through a first(x) aggregate
-		unique_ptr<Expression> uncollated_first;
-		// avoid evaluating volatile groups twice
-		if (!expr->IsVolatile()) {
-			// copy before pushing the collation, which can replace the expression
-			bool contains_subquery = expr->HasSubquery();
-			auto uncollated_expr = contains_subquery ? nullptr : expr->Copy();
-			if (ExpressionBinder::PushCollation(context, expr, return_type)) {
-				if (contains_subquery) {
-					// bound subqueries cannot be copied, so bind the select-list expression again
-					auto parsed_copy = bind_state.original_expressions[group_by_all_index]->Copy();
-					auto bound_column_count = select_binder.GetBoundColumns().size();
-					uncollated_expr = select_binder.Bind(parsed_copy);
-					select_binder.TruncateBoundColumns(bound_column_count);
-				}
-				uncollated_first = BindUncollatedFirst(*this, std::move(uncollated_expr));
-			}
-		}
-		auto group_proj_idx = ColumnBinding::PushExpression(result.groups.group_expressions, std::move(expr));
-		if (uncollated_first) {
-			auto aggregate_idx = ColumnBinding::PushExpression(result.aggregates, std::move(uncollated_first));
-			expr =
-			    make_uniq<BoundColumnRefExpression>(return_type, ColumnBinding(result.aggregate_index, aggregate_idx));
-			bind_state.collated_groups[group_proj_idx] = aggregate_idx;
-		} else {
-			expr = make_uniq<BoundColumnRefExpression>(return_type, ColumnBinding(result.group_index, group_proj_idx));
-		}
-		group_by_all_groups.emplace_back(group_by_all_index, group_proj_idx);
-	}
-	// map the select expressions to their groups, so HAVING binds to them
-	// this happens after all select expressions are bound, since binding them again must not resolve to a group
-	for (auto &entry : group_by_all_groups) {
-		auto group_copy = bind_state.original_expressions[entry.first]->Copy();
-		bind_state.group_map[*group_copy] = entry.second;
-		bind_state.unbound_groups.push_back(std::move(group_copy));
+	if (statement.aggregate_handling == AggregateHandling::FORCE_AGGREGATES && !group_by_all_pushed) {
+		push_group_by_all();
 	}
 
 	// bind the HAVING clause, if any, after the SELECT list and its groups

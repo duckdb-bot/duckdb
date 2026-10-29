@@ -118,12 +118,6 @@
       "paths": [
         "test/sql/aggregate/aggregates/quantile_fallible_decimal_param.test"
       ]
-    },
-    {
-      "reason": "FIXME: name-bound sum_no_overflow delegates its binding to sum, so the rendered SQL rebinds the checked HUGEINT sum and no longer raises",
-      "paths": [
-        "test/sql/aggregate/aggregates/sum_no_overflow_fallible.test"
-      ]
     }
   ]
 }

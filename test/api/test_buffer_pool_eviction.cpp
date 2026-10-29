@@ -509,6 +509,96 @@ TEST_CASE("Test eviction queue: dead_nodes invariants hold under destroyable blo
 	}
 }
 
+TEST_CASE("Test eviction queue: dead nodes are purged from a queue below the purge minimum", "[storage][buffer_pool]") {
+	DuckDB db;
+	Connection con(db);
+	auto &context = *con.context;
+	auto &buffer_manager = BufferManager::GetBufferManager(context);
+	auto &buffer_pool = DatabaseInstance::GetDatabase(context).GetBufferPool();
+
+	// fewer nodes than a queue needs (32768) before it is purged for its size
+	constexpr idx_t churn_iterations = 20000;
+	for (idx_t i = 0; i < churn_iterations; ++i) {
+		// the pin enqueues the block when it is released, then the block is destroyed and its node is dead
+		auto pin = buffer_manager.Allocate(MemoryTag::EXTENSION, 64 * 1024, /*can_destroy=*/true);
+	}
+
+	// a dead node keeps the memory of its block's reference counts, so they cannot pile up
+	for (const auto &q : buffer_pool.GetEvictionQueueInfo()) {
+		REQUIRE(q.dead_nodes < 16384);
+	}
+}
+
+TEST_CASE("Test eviction queue: blocks stay evictable after a purge of a queue below the purge minimum",
+          "[storage][buffer_pool]") {
+	DuckDB db;
+	Connection con(db);
+	auto &context = *con.context;
+	auto &buffer_manager = BufferManager::GetBufferManager(context);
+	auto &buffer_pool = DatabaseInstance::GetDatabase(context).GetBufferPool();
+	const idx_t initial_memory = buffer_pool.GetUsedMemory();
+
+	constexpr idx_t buffer_size = 64 * 1024;
+	constexpr idx_t churn_iterations = 20000;
+	constexpr idx_t live_interval = 1000;
+	vector<shared_ptr<BlockHandle>> live_blocks;
+	for (idx_t i = 0; i < churn_iterations; ++i) {
+		auto pin = buffer_manager.Allocate(MemoryTag::EXTENSION, buffer_size, /*can_destroy=*/true);
+		if (i % live_interval == 0) {
+			live_blocks.push_back(pin.GetBlockHandle());
+		}
+	}
+	for (const auto &q : buffer_pool.GetEvictionQueueInfo()) {
+		REQUIRE(q.dead_nodes < 16384);
+	}
+	for (auto &block : live_blocks) {
+		REQUIRE(block->GetMemory().GetState() == BlockState::BLOCK_LOADED);
+	}
+
+	// the purges moved the nodes of the live blocks, a memory limit still evicts every one of them
+	buffer_pool.SetLimit(initial_memory, EXCEPTION_POSTSCRIPT);
+	for (auto &block : live_blocks) {
+		REQUIRE(block->GetMemory().GetState() == BlockState::BLOCK_UNLOADED);
+	}
+}
+
+TEST_CASE("Test eviction queue: stale nodes of repinned blocks are purged from a queue below the purge minimum",
+          "[storage][buffer_pool]") {
+	DuckDB db;
+	Connection con(db);
+	auto &context = *con.context;
+	auto &buffer_manager = BufferManager::GetBufferManager(context);
+	auto &buffer_pool = DatabaseInstance::GetDatabase(context).GetBufferPool();
+	const idx_t initial_memory = buffer_pool.GetUsedMemory();
+
+	constexpr idx_t block_count = 64;
+	constexpr idx_t rounds = 300;
+	vector<shared_ptr<BlockHandle>> blocks;
+	for (idx_t i = 0; i < block_count; ++i) {
+		auto pin = buffer_manager.Allocate(MemoryTag::EXTENSION, 64 * 1024, /*can_destroy=*/true);
+		blocks.push_back(pin.GetBlockHandle());
+	}
+	// every unpin queues a new node for the block, which makes its previous node stale
+	for (idx_t round = 0; round < rounds; ++round) {
+		for (auto &block : blocks) {
+			auto pin = buffer_manager.Pin(block);
+			REQUIRE(pin.IsValid());
+		}
+	}
+	for (const auto &q : buffer_pool.GetEvictionQueueInfo()) {
+		REQUIRE(q.dead_nodes < 16384);
+	}
+	for (auto &block : blocks) {
+		REQUIRE(block->GetMemory().GetState() == BlockState::BLOCK_LOADED);
+	}
+
+	// the latest node of every block survives the purges
+	buffer_pool.SetLimit(initial_memory, EXCEPTION_POSTSCRIPT);
+	for (auto &block : blocks) {
+		REQUIRE(block->GetMemory().GetState() == BlockState::BLOCK_UNLOADED);
+	}
+}
+
 TEST_CASE("Test buffer pool eviction: SetLimit evicts object cache", "[storage][buffer_pool]") {
 	DuckDB db;
 	Connection con(db);

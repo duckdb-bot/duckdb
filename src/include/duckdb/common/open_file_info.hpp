@@ -10,6 +10,7 @@
 
 #include "duckdb/common/common.hpp"
 #include "duckdb/common/identifier.hpp"
+#include "duckdb/common/optional_idx.hpp"
 #include "duckdb/common/shared_ptr.hpp"
 #include "duckdb/common/types/value.hpp"
 
@@ -57,6 +58,8 @@ public:
 	DUCKDB_API static OpenFileInfo FromValue(const Value &input, const Identifier &function_name);
 	//! The inverse of FromValue: the path as a VARCHAR when there are no options, a file struct otherwise
 	DUCKDB_API Value ToValue() const;
+	//! The size of the file given by its "file_size" option, which the file list or the user can provide
+	DUCKDB_API optional_idx TryGetFileSize() const;
 
 	bool operator<(const OpenFileInfo &rhs) const {
 		return path < rhs.path;

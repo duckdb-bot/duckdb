@@ -941,7 +941,7 @@ bool RowGroup::PrepareScan(ScanOptions options, CollectionScanState &state) {
 				}
 			} else {
 				// percentage based system sampling
-				if (state.random.NextRandom() > sampling_info.sample_rate) {
+				if (state.GetRandomEngine().NextRandom() > sampling_info.sample_rate) {
 					NextVector(state);
 					continue;
 				}
@@ -1268,10 +1268,15 @@ void RowGroup::RevertAppend(idx_t new_count) {
 	if (new_count > this->count) {
 		throw InternalException("RowGroup::RevertAppend new_count out of range");
 	}
-	auto &vinfo = GetOrCreateVersionInfo();
-	vinfo.RevertAppend(new_count);
-	for (auto &column : GetColumns()) {
-		column->RevertAppend(UnsafeNumericCast<row_t>(new_count));
+	// version info or columns that are not loaded hold no appended rows
+	auto vinfo = GetVersionInfoIfLoaded();
+	if (vinfo) {
+		vinfo->RevertAppend(new_count);
+	}
+	for (idx_t c = 0; c < GetColumnCount(); c++) {
+		if (ColumnIsLoaded(c)) {
+			columns[c]->RevertAppend(UnsafeNumericCast<row_t>(new_count));
+		}
 	}
 	if (transient) {
 		*transient = SuballocationBlock();

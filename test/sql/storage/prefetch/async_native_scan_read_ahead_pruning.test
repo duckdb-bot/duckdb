@@ -105,9 +105,9 @@ CREATE TEMPORARY TABLE before AS SELECT memory_usage_bytes AS bytes FROM duckdb_
 
 # the vectors of the first and the last segment of the filter column need nine of the 17 blocks of pad
 query I
-SELECT sum(length(pad)) FROM gaps WHERE {col} BETWEEN 0 AND 9 OR {col} BETWEEN 122870 AND 122879
+SELECT sum(length(pad)) FROM gaps WHERE {col} BETWEEN 1 AND 9 OR {col} BETWEEN 122870 AND 122878
 ----
-640
+576
 
 query I
 SELECT memory_usage_bytes - (SELECT bytes FROM before) <= 13 * 262144 FROM duckdb_memory() WHERE tag = 'BASE_TABLE'

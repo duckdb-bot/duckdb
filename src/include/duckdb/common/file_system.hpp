@@ -62,6 +62,8 @@ enum class RemoveDirectoryMode : uint8_t {
 
 struct CreateDirectoryOptions {
 	CreateDirectoryMode mode = CreateDirectoryMode::SINGLE;
+	//! Create the target directory with restrictive permissions (700 on linux/mac), not its missing parents
+	bool private_directory = false;
 };
 
 struct RemoveDirectoryOptions {

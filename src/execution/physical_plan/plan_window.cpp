@@ -50,7 +50,8 @@ bool HasDegenerateFrameCase1(ClientContext &client, BoundWindowExpression &wexpr
 		return false;
 	}
 	const auto start_val = ExpressionExecutor::EvaluateScalar(client, *start_expr);
-	if (start_val.GetValue<int64_t>()) {
+	// a NULL bound is rejected when the frame is evaluated
+	if (start_val.IsNull() || start_val.GetValue<int64_t>()) {
 		return false;
 	}
 
@@ -59,7 +60,7 @@ bool HasDegenerateFrameCase1(ClientContext &client, BoundWindowExpression &wexpr
 		return false;
 	}
 	const auto end_val = ExpressionExecutor::EvaluateScalar(client, *end_expr);
-	if (end_val.GetValue<int64_t>()) {
+	if (end_val.IsNull() || end_val.GetValue<int64_t>()) {
 		return false;
 	}
 

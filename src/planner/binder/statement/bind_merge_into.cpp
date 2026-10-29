@@ -174,6 +174,80 @@ Binder::BindMergeAction(LogicalMergeInto &merge_into, TableCatalogEntry &table, 
 	return result;
 }
 
+//! Replaces the columns and subqueries that the expression reads by references to new columns of the projection
+static void PushInputsIntoProjection(unique_ptr<Expression> &expr, TableIndex proj_index,
+                                     vector<unique_ptr<Expression>> &proj_expressions) {
+	switch (expr->GetExpressionClass()) {
+	case ExpressionClass::BOUND_COLUMN_REF:
+	case ExpressionClass::BOUND_SUBQUERY: {
+		auto type = expr->GetReturnType();
+		auto alias = expr->GetName();
+		auto index = ColumnBinding::PushExpression(proj_expressions, std::move(expr));
+		expr = make_uniq<BoundColumnRefExpression>(std::move(alias), std::move(type), ColumnBinding(proj_index, index));
+		break;
+	}
+	default:
+		ExpressionIterator::EnumerateChildren(*expr, [&](unique_ptr<Expression> &child) {
+			PushInputsIntoProjection(child, proj_index, proj_expressions);
+		});
+		break;
+	}
+}
+
+//! Points the references of an action to the kept columns, and replaces references to other values by the values
+static void MoveValuesIntoAction(unique_ptr<Expression> &expr, TableIndex proj_index,
+                                 vector<unique_ptr<Expression>> &old_expressions,
+                                 const vector<optional_idx> &kept_columns,
+                                 vector<unique_ptr<Expression>> &new_expressions) {
+	if (expr->GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
+		ExpressionIterator::EnumerateChildren(*expr, [&](unique_ptr<Expression> &child) {
+			MoveValuesIntoAction(child, proj_index, old_expressions, kept_columns, new_expressions);
+		});
+		return;
+	}
+	auto &column_ref = expr->Cast<BoundColumnRefExpression>();
+	if (column_ref.Binding().table_index != proj_index) {
+		return;
+	}
+	auto old_index = column_ref.Binding().column_index.GetIndex();
+	if (kept_columns[old_index].IsValid()) {
+		column_ref.BindingMutable().column_index = ProjectionIndex(kept_columns[old_index].GetIndex());
+		return;
+	}
+	auto value = std::move(old_expressions[old_index]);
+	PushInputsIntoProjection(value, proj_index, new_expressions);
+	expr = std::move(value);
+}
+
+//! Moves the computed values with a single reference out of the projection below the MERGE into their actions
+static void MoveValuesIntoActions(LogicalMergeInto &merge_into, TableIndex proj_index,
+                                  vector<unique_ptr<Expression>> &proj_expressions) {
+	vector<idx_t> reference_counts(proj_expressions.size(), 0);
+	LogicalOperatorVisitor::EnumerateExpressions(merge_into, [&](unique_ptr<Expression> *child) {
+		ExpressionIterator::VisitExpression<BoundColumnRefExpression>(
+		    **child, [&](const BoundColumnRefExpression &column_ref) {
+			    if (column_ref.Binding().table_index == proj_index) {
+				    reference_counts[column_ref.Binding().column_index.GetIndex()]++;
+			    }
+		    });
+	});
+	// the projection runs on every joined row, so it keeps only columns, subqueries and shared values
+	vector<unique_ptr<Expression>> new_expressions;
+	vector<optional_idx> kept_columns(proj_expressions.size());
+	for (idx_t i = 0; i < proj_expressions.size(); i++) {
+		auto value_class = proj_expressions[i]->GetExpressionClass();
+		if (value_class == ExpressionClass::BOUND_COLUMN_REF || value_class == ExpressionClass::BOUND_SUBQUERY ||
+		    reference_counts[i] != 1) {
+			kept_columns[i] = new_expressions.size();
+			new_expressions.push_back(std::move(proj_expressions[i]));
+		}
+	}
+	LogicalOperatorVisitor::EnumerateExpressions(merge_into, [&](unique_ptr<Expression> *child) {
+		MoveValuesIntoAction(*child, proj_index, proj_expressions, kept_columns, new_expressions);
+	});
+	proj_expressions = std::move(new_expressions);
+}
+
 static bool ContainsOperator(LogicalOperator &op, LogicalOperator &target) {
 	if (RefersToSameObject(op, target)) {
 		return true;
@@ -366,6 +440,8 @@ BoundStatement Binder::BindNode(MergeQueryNode &node) {
 		}
 		merge_into->actions.emplace(entry.first, std::move(bound_actions));
 	}
+
+	MoveValuesIntoActions(*merge_into, proj_index, projection_expressions);
 
 	// plan merge action subqueries
 	for (auto &expr : projection_expressions) {

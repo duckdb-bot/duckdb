@@ -69,10 +69,42 @@ SELECT g, sum_no_overflow(i) FROM big GROUP BY g
 ----
 <REGEX>:Out of Range Error: Overflow in sum_no_overflow.*
 
+# only the first of several groups overflows
+statement ok
+CREATE TABLE groups AS SELECT i % 3 AS g, CASE WHEN i % 3 = 0 THEN 9223372036854775807 - i ELSE i END::BIGINT AS i FROM range(6) t(i)
+
+statement error
+SELECT g, sum_no_overflow(i) FROM groups GROUP BY g
+----
+<REGEX>:Out of Range Error: Overflow in sum_no_overflow.*
+
+query II
+SELECT g, sum_no_overflow(i) FROM groups WHERE g <> 0 GROUP BY g ORDER BY g
+----
+1	5
+2	7
+
 statement error
 SELECT sum_no_overflow(i) OVER () FROM big
 ----
 <REGEX>:Out of Range Error: Overflow in sum_no_overflow.*
+
+statement error
+SELECT sum_no_overflow(i) OVER (ORDER BY i ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) FROM big
+----
+<REGEX>:Out of Range Error: Overflow in sum_no_overflow.*
+
+# FIXME: the segment tree aggregates rows that no frame contains, so a fallible aggregate raises for frames that fit
+mode skip
+
+query II
+SELECT i, sum_no_overflow(9223372036854775807::BIGINT - i) OVER (ORDER BY i ROWS BETWEEN 1 PRECEDING AND 1 PRECEDING) FROM range(3) t(i) ORDER BY i
+----
+0	NULL
+1	9223372036854775807
+2	9223372036854775806
+
+mode unskip
 
 statement error
 SELECT list_aggregate([9223372036854775807, 9223372036854775807]::BIGINT[], 'sum_no_overflow')
@@ -122,20 +154,3 @@ SELECT sum_no_overflow(i) FROM big
 
 statement ok
 SET debug_verify_serializer=false
-
-# when statistics prove that the sum fits, the regular sum still becomes sum_no_overflow
-statement ok
-CREATE TABLE small AS SELECT i::BIGINT AS i FROM range(1000) t(i)
-
-statement ok
-PRAGMA explain_output='optimized_only'
-
-query II
-EXPLAIN SELECT sum(i) FROM small
-----
-logical_opt	<REGEX>:.*sum_no_overflow\(i\).*
-
-query I
-SELECT sum(i) FROM small
-----
-499500

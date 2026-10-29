@@ -24,7 +24,6 @@
         "test/sql/copy/parquet/parquet_expression_filter_pruning.test",
         "test/sql/copy/parquet/parquet_stats.test",
         "test/sql/copy/parquet/read_single_parquet_file.test",
-        "test/sql/function/list/aggregates/sum_no_overflow.test",
         "test/sql/optimizer/aggregate_stats_propagation.test",
         "test/sql/optimizer/sum_aggregate_stats_propagation.test",
         "test/sql/optimizer/expression/test_common_aggregate.test",

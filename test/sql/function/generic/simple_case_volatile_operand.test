@@ -1,0 +1,245 @@
+# name: test/sql/function/generic/simple_case_volatile_operand.test
+# description: A simple CASE evaluates its operand once per row
+# group: [generic]
+
+# every row matches one of the branches
+query I
+SELECT count(*) FROM (
+	SELECT CASE (floor(random() * 3))::INTEGER WHEN 0 THEN 'zero' WHEN 1 THEN 'one' WHEN 2 THEN 'two' ELSE 'other' END AS r
+	FROM range(10000)
+) WHERE r = 'other'
+----
+0
+
+statement ok
+CREATE SEQUENCE seq;
+
+query I
+SELECT CASE nextval('seq') WHEN 1 THEN 'a' WHEN 2 THEN 'b' ELSE 'c' END FROM range(3) ORDER BY ALL
+----
+a
+b
+c
+
+query I
+SELECT currval('seq')
+----
+3
+
+# a window in the operand is computed once
+statement ok
+CREATE SEQUENCE window_seq;
+
+query I
+SELECT CASE sum(nextval('window_seq')) OVER () + (random() * 0)::INTEGER WHEN 1 THEN 'a' WHEN 2 THEN 'b' END FROM range(1)
+----
+a
+
+query I
+SELECT currval('window_seq')
+----
+1
+
+# one branch, a subquery operand and a lambda
+statement ok
+CREATE SEQUENCE single_seq;
+
+query I
+SELECT CASE nextval('single_seq') WHEN 1 THEN 'a' ELSE 'b' END FROM range(3) ORDER BY ALL
+----
+a
+b
+b
+
+query I
+SELECT CASE (SELECT 2) WHEN 1 THEN 'a' WHEN 2 THEN 'b' END
+----
+b
+
+query I
+SELECT list_transform([1, 2], lambda x: CASE x + (random() * 0)::INTEGER WHEN 1 THEN 'a' WHEN 2 THEN 'b' END)
+----
+[a, b]
+
+query I
+SELECT list_transform([1, 2, 3], lambda x: CASE x WHEN 1 THEN 'a' WHEN 2 THEN 'b' ELSE 'c' END)
+----
+[a, b, c]
+
+# results of a simple CASE with an ordinary operand are unchanged
+query II
+SELECT CASE g WHEN 0 THEN 'even' ELSE 'odd' END AS k, count(*) FROM (SELECT i % 2 AS g FROM range(4) t(i)) GROUP BY g
+ORDER BY k
+----
+even	2
+odd	2
+
+query I
+SELECT CASE i WHEN 1.5 THEN 'x' WHEN 2 THEN 'two' ELSE 'other' END FROM range(3) t(i) ORDER BY i
+----
+other
+other
+two
+
+query I
+SELECT CASE NULL WHEN NULL THEN 'null' WHEN 1 THEN 'one' ELSE 'else' END
+----
+else
+
+query I
+SELECT CASE 'A' COLLATE NOCASE WHEN 'a' THEN 'match' WHEN 'b' THEN 'b' ELSE 'none' END
+----
+match
+
+statement error
+SELECT CASE i WHEN 1 THEN 'a' WHEN 2 THEN 2 END FROM range(3) t(i)
+----
+Cannot mix values of type VARCHAR and INTEGER_LITERAL in CASE expression
+
+# branches with a subquery or UNNEST, which a lambda cannot hold, still work
+query I
+SELECT CASE (random() * 0)::INTEGER WHEN 0 THEN (SELECT 1) WHEN 1 THEN 2 END
+----
+1
+
+query I
+SELECT CASE (SELECT 2) WHEN 1 THEN (SELECT 'a') WHEN 2 THEN 'b' END
+----
+b
+
+# binders that bind columns or lambdas differently keep the copies of the operand
+statement ok
+CREATE TABLE altered(i INTEGER)
+
+statement ok
+INSERT INTO altered VALUES (42)
+
+statement ok
+ALTER TABLE altered ALTER i TYPE VARCHAR USING CASE (random() * 0)::INTEGER WHEN 0 THEN i::VARCHAR WHEN 1 THEN 'eight' ELSE 'nine' END
+
+query I
+SELECT * FROM altered
+----
+42
+
+statement ok
+CREATE TABLE defaults(i INTEGER DEFAULT (CASE (random() * 0)::INTEGER WHEN 0 THEN 42 WHEN 1 THEN 8 ELSE 9 END))
+
+statement ok
+INSERT INTO defaults DEFAULT VALUES
+
+query I
+SELECT * FROM defaults
+----
+42
+
+# a grouped comparison still matches the copies
+query I
+SELECT CASE i WHEN 1 THEN 42 ELSE 0 END FROM range(3) t(i) GROUP BY i = 1 ORDER BY ALL
+----
+0
+42
+
+statement ok
+SET VARIABLE chosen = (CASE (random() * 0)::INTEGER WHEN 0 THEN 42 WHEN 1 THEN 8 ELSE 9 END)
+
+query I
+SELECT getvariable('chosen')
+----
+42
+
+statement ok
+CREATE TABLE checked(i INTEGER CHECK (CASE (random() * 0)::INTEGER + i WHEN 1 THEN true WHEN 2 THEN true ELSE false END))
+
+statement ok
+INSERT INTO checked VALUES (1)
+
+statement error
+INSERT INTO checked VALUES (3)
+----
+CHECK constraint failed
+
+statement ok
+COPY (SELECT 1 AS p, 2 AS v) TO '{TEST_DIR}/simple_case_partitions' (FORMAT csv, PARTITION_BY (p),
+	PARTITION_PATH CASE (random() * 0)::INTEGER WHEN 0 THEN 'zero_' || p::VARCHAR WHEN 1 THEN 'one' ELSE 'other' END)
+
+query I
+SELECT parse_filename(parse_dirpath(file)) FROM glob('{TEST_DIR}/simple_case_partitions/**/*.csv')
+----
+zero_1
+
+# a simple CASE matches the same CASE written with searched comparisons, as before
+query II
+SELECT CASE x WHEN 1 THEN 'a' ELSE 'b' END AS k, count(*) FROM range(3) t(x) GROUP BY CASE WHEN x = 1 THEN 'a' ELSE 'b' END
+ORDER BY k
+----
+a	1
+b	2
+
+# groups match the comparisons of the copies, so a select with groups keeps them
+query I
+SELECT CASE i + (random() * 0)::INTEGER WHEN 0 THEN 42 WHEN 1 THEN 8 ELSE 9 END AS r FROM range(3) t(i)
+GROUP BY i + (random() * 0)::INTEGER = 0, i + (random() * 0)::INTEGER = 1 ORDER BY ALL
+----
+8
+9
+42
+
+query II
+SELECT 42 AS "#case_operand", CASE (random() * 0)::INTEGER WHEN 0 THEN 42 WHEN 1 THEN 8 ELSE 9 END AS r FROM range(1)
+GROUP BY "#case_operand"
+----
+42	42
+
+# an operand with a lambda that reads an alias
+query II
+SELECT 42 AS a, CASE list_transform([1], lambda x: a) WHEN [42] THEN 1 WHEN [2] THEN 2 END AS r
+----
+42	1
+
+# the lambda parameter captures nothing of the branches
+query II
+SELECT 42 AS "#case_operand", CASE (random() * 0)::INTEGER WHEN 0 THEN "#case_operand" WHEN 1 THEN 8 ELSE 9 END
+----
+42	42
+
+query I
+SELECT list_transform([42], lambda "#case_operand": CASE (random() * 0)::INTEGER WHEN 0 THEN "#case_operand" WHEN 1 THEN 8 ELSE 9 END)
+----
+[42]
+
+query I
+SELECT list_transform([{'x': 42}], lambda "#case_operand": CASE {'x': (random() * 0)::INTEGER} WHEN {'x': 0} THEN "#case_operand".x WHEN {'x': 1} THEN 8 END)
+----
+[42]
+
+# branches with a macro or an alias that holds a subquery or UNNEST
+statement ok
+CREATE MACRO answer() AS (SELECT 42)
+
+query I
+SELECT CASE (random() * 0)::INTEGER WHEN 0 THEN answer() WHEN 1 THEN 8 ELSE 9 END
+----
+42
+
+statement ok
+CREATE MACRO window_answer() AS sum(1) + (SELECT 41)
+
+query I
+SELECT CASE (random() * 0)::INTEGER WHEN 0 THEN window_answer() OVER () WHEN 1 THEN 8 END
+----
+42
+
+query II
+SELECT unnest([42]) AS u, CASE (random() * 0)::INTEGER WHEN 0 THEN u WHEN 1 THEN 8 ELSE 9 END
+----
+42	42
+
+# a macro named invoke does not take the place of the system function
+statement ok
+CREATE MACRO invoke(a, b) AS 'user macro'
+
+query I
+SELECT CASE (random() * 0)::INTEGER WHEN 0 THEN 'a' WHEN 1 THEN 'b' END
+----
+a

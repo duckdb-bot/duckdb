@@ -40,6 +40,10 @@ BindResult BaseSelectBinder::BindExpression(unique_ptr<ParsedExpression> &expr_p
 	}
 }
 
+bool BaseSelectBinder::CanBindCaseOperandOnce() const {
+	return node.bind_state.group_map.empty() && node.bind_state.group_alias_map.empty();
+}
+
 bool BaseSelectBinder::ClaimsAlias(ColumnRefExpression &colref) {
 	if (!ExpressionBinder::IsPotentialAlias(colref)) {
 		return false;

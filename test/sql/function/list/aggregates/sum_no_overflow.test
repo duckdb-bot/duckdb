@@ -84,6 +84,22 @@ SELECT g, sum_no_overflow(i) FROM groups WHERE g <> 0 GROUP BY g ORDER BY g
 1	5
 2	7
 
+# enough rows and aggregates for the clustered update of several groups at once
+statement ok
+CREATE TABLE clustered AS SELECT i % 4 AS g, CASE WHEN i % 4 = 0 THEN 4611686018427387904 ELSE i END::BIGINT AS i FROM range(4096) t(i)
+
+statement error
+SELECT g, sum_no_overflow(i), count(*) FROM clustered GROUP BY g
+----
+<REGEX>:Out of Range Error: Overflow in sum_no_overflow.*
+
+query III
+SELECT g, sum_no_overflow(i), count(*) FROM clustered WHERE g <> 0 GROUP BY g ORDER BY g
+----
+1	2096128	1024
+2	2097152	1024
+3	2098176	1024
+
 statement error
 SELECT sum_no_overflow(i) OVER () FROM big
 ----

@@ -248,7 +248,6 @@ unique_ptr<ExportAggregateBindData> BindExportedAggregate(ClientContext &context
 	auto &aggr_entry = func.Cast<AggregateFunctionCatalogEntry>();
 
 	FunctionBinder function_binder(context);
-	function_binder.binds_exported_state = true;
 	auto best_function = FunctionBinder::SelectFunction(context, aggr_entry.functions, argument_types);
 	if (!best_function.IsSuccess()) {
 		throw BinderException("Could not re-bind exported aggregate %s: %s", function_name,

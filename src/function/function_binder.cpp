@@ -1527,7 +1527,6 @@ FunctionBinder::ResolveAggregateFunction(const FunctionBinding &binding, vector<
 
 	if (bound_function.GetCallbacks().HasBindCallback()) {
 		BindAggregateFunctionInput input(context, bound_function, children);
-		input.SetBindsExportedState(binds_exported_state);
 		bind_info = bound_function.GetCallbacks().GetBindCallback()(input);
 
 		// we may have lost some arguments in the bind

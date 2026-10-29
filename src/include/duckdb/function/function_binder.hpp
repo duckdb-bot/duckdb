@@ -394,8 +394,6 @@ public:
 
 	optional_ptr<Binder> binder;
 	ClientContext &context;
-	//! Whether aggregates are bound to read the states that an earlier binding of them exported
-	bool binds_exported_state = false;
 
 public:
 	//! Overload selection: the cheapest overload of a function set that a call with the given arguments binds to.

@@ -23,26 +23,11 @@ SELECT sum_no_overflow(i::SMALLINT) FROM range(10) t(i)
 ----
 45
 
-# without statistics that prove it cannot overflow, it sums like the regular sum
-query II
-SELECT sum_no_overflow(x), sum(x) FROM (VALUES (9223372036854775807::BIGINT), (9223372036854775807::BIGINT)) t(x)
-----
-18446744073709551614	18446744073709551614
-
-query I
-SELECT sum_no_overflow(x) FROM (VALUES ((-9223372036854775808)::BIGINT), ((-9223372036854775808)::BIGINT)) t(x)
-----
--18446744073709551616
-
+# INTEGER values are accumulated in a BIGINT
 query I
 SELECT sum_no_overflow(x) FROM (VALUES (2147483647::INTEGER), (2147483647::INTEGER), (2147483647::INTEGER)) t(x)
 ----
 6442450941
-
-query I
-SELECT finalize(sum_no_overflow(x) EXPORT_STATE) FROM (VALUES (9223372036854775807::BIGINT), (9223372036854775807::BIGINT)) t(x)
-----
-18446744073709551614
 
 query I
 SELECT sum_no_overflow(NULL::BIGINT)
@@ -54,34 +39,103 @@ SELECT sum_no_overflow(NULL)
 ----
 NULL
 
-# the states of a NULL literal and of other arguments come from the same sum
+# without statistics that prove it cannot overflow, a sum that does not fit in a BIGINT is an error
+statement ok
+CREATE TABLE big AS SELECT 9223372036854775807::BIGINT - i AS i, 1 AS g FROM range(2) t(i)
+
+statement error
+SELECT sum_no_overflow(i) FROM big
+----
+<REGEX>:Out of Range Error: Overflow in sum_no_overflow.*
+
+statement error
+SELECT sum_no_overflow(-i - 1) FROM big
+----
+<REGEX>:Out of Range Error: Overflow in sum_no_overflow.*
+
+# a constant input is added once with its count
+statement error
+SELECT sum_no_overflow(9223372036854775807::BIGINT) FROM range(2)
+----
+<REGEX>:Out of Range Error: Overflow in .*
+
+statement error
+SELECT sum_no_overflow(i) FROM (SELECT 9223372036854775807::BIGINT AS i FROM big)
+----
+<REGEX>:Out of Range Error: Overflow in .*
+
+statement error
+SELECT g, sum_no_overflow(i) FROM big GROUP BY g
+----
+<REGEX>:Out of Range Error: Overflow in sum_no_overflow.*
+
+statement error
+SELECT sum_no_overflow(i) OVER () FROM big
+----
+<REGEX>:Out of Range Error: Overflow in sum_no_overflow.*
+
+statement error
+SELECT list_aggregate([9223372036854775807, 9223372036854775807]::BIGINT[], 'sum_no_overflow')
+----
+<REGEX>:Out of Range Error: Overflow in sum_no_overflow.*
+
+# the same sums fit in a BIGINT when the input is halved
+query I
+SELECT sum_no_overflow(i // 2) FROM big
+----
+9223372036854775806
+
+query II
+SELECT g, sum_no_overflow(i // 2) FROM big GROUP BY g
+----
+1	9223372036854775806
+
+query I
+SELECT sum_no_overflow(i // 2) OVER () FROM big LIMIT 1
+----
+9223372036854775806
+
+# combining exported states checks for overflow too
+statement error
+SELECT finalize(combine(sum_no_overflow(i) EXPORT_STATE, sum_no_overflow(i) EXPORT_STATE)) FROM (SELECT i // 2 AS i FROM big)
+----
+<REGEX>:Out of Range Error: Overflow in sum_no_overflow.*
+
+query I
+SELECT finalize(combine(sum_no_overflow(i) EXPORT_STATE, sum_no_overflow(NULL::BIGINT) EXPORT_STATE)) FROM (SELECT i // 2 AS i FROM big)
+----
+9223372036854775806
+
 query I
 SELECT finalize(combine(sum_no_overflow(NULL) EXPORT_STATE, sum_no_overflow(1::BIGINT) EXPORT_STATE))
 ----
 1
 
-query I
-SELECT finalize(combine(sum_no_overflow(abs(NULL::BIGINT)) EXPORT_STATE, sum_no_overflow(1::BIGINT) EXPORT_STATE))
+# the checked implementation survives a serializer round trip
+statement ok
+SET debug_verify_serializer=true
+
+statement error
+SELECT sum_no_overflow(i) FROM big
 ----
-1
+<REGEX>:Out of Range Error: Overflow in sum_no_overflow.*
+
+statement ok
+SET debug_verify_serializer=false
+
+# when statistics prove that the sum fits, the regular sum still becomes sum_no_overflow
+statement ok
+CREATE TABLE small AS SELECT i::BIGINT AS i FROM range(1000) t(i)
+
+statement ok
+PRAGMA explain_output='optimized_only'
+
+query II
+EXPLAIN SELECT sum(i) FROM small
+----
+logical_opt	<REGEX>:.*sum_no_overflow\(i\).*
 
 query I
-SELECT finalize(combine(sum_no_overflow(abs(NULL::INTEGER)) EXPORT_STATE, sum_no_overflow(1::INTEGER) EXPORT_STATE))
+SELECT sum(i) FROM small
 ----
-1
-
-query I
-SELECT list_aggregate([9223372036854775807, 9223372036854775807]::BIGINT[], 'sum_no_overflow')
-----
-18446744073709551614
-
-query I
-SELECT sum_no_overflow(x) OVER () FROM (VALUES (9223372036854775807::BIGINT), (9223372036854775807::BIGINT)) t(x) LIMIT 1
-----
-18446744073709551614
-
-# a call by name exports the states of the regular sum
-query I
-SELECT finalize(combine(sum_no_overflow(1::INTEGER) EXPORT_STATE, sum(1::INTEGER) EXPORT_STATE))
-----
-2
+499500

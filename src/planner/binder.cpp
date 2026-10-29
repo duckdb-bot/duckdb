@@ -228,7 +228,7 @@ void Binder::AddBoundView(ViewCatalogEntry &view) {
 	auto current = this;
 	while (current) {
 		if (current->bound_views.find(view) != current->bound_views.end()) {
-			throw BinderException("infinite recursion detected: attempting to recursively bind view \"%s\"", view.name);
+			throw BinderException("infinite recursion detected: attempting to recursively bind view %s", view.name);
 		}
 		current = current->parent.get();
 	}
@@ -284,6 +284,22 @@ void Binder::SetInsideSubquery() {
 
 bool Binder::IsInsideSubquery() const {
 	return inside_subquery;
+}
+
+void Binder::SetBindingTrySubquery() {
+	binding_try_subquery = true;
+}
+
+bool Binder::IsBindingTrySubquery() const {
+	return binding_try_subquery;
+}
+
+const TrySubqueryPlanIndexes &Binder::GetTrySubqueryPlanIndexes() const {
+	return try_subquery_plan_indexes;
+}
+
+TrySubqueryPlanIndexes &Binder::GetTrySubqueryPlanIndexesMutable() {
+	return try_subquery_plan_indexes;
 }
 
 void Binder::BeginSubqueryBind(Binder &parent, ExpressionBinder &binder) {

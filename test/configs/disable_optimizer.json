@@ -5,6 +5,24 @@
   "inherit_skip_tests": "test/configs/stats_dependent_tests.json",
   "skip_tests": [
     {
+      "reason": "Counts the evaluations of volatile filters that only the optimizer pushes down or keeps above.",
+      "paths": [
+        "test/optimizer/pushdown/volatile_filter_aggregate_distinct.test"
+      ]
+    },
+    {
+      "reason": "Checks that the optimizer removed ORDER BY operators from the plan.",
+      "paths": [
+        "test/optimizer/remove_redundant_order.test"
+      ]
+    },
+    {
+      "reason": "Checks barrier ordering and scan pushdown performed by the optimizer.",
+      "paths": [
+        "test/sql/optimizer/barrier_projection_siblings.test"
+      ]
+    },
+    {
       "reason": "Checks evaluation counts after optimizer filter pushdown.",
       "paths": [
         "test/optimizer/pushdown/lateral_projection_evaluation.test",
@@ -37,6 +55,12 @@
         "test/sql/types/geo/geometry_parquet_pushdown.test",
         "test/optimizer/statistics/statistics_filter_pruning.test",
         "test/sql/copy/parquet/parquet_expression_filter_pruning.test",
+        "test/sql/copy/parquet/page_index/page_index_read.test",
+        "test/sql/copy/parquet/page_index/page_index_prefetch.test",
+        "test/sql/copy/parquet/page_index/page_index_reference.test",
+        "test/sql/copy/parquet/page_index/page_index_robustness.test",
+        "test/sql/copy/parquet/page_index/page_index_cache.test",
+        "test/sql/copy/parquet/page_index/page_index_cache_disabled.test",
         "test/sql/copy/parquet/parquet_virtual_file_row_group_number.test",
         "test/sql/storage/prefetch/async_native_scan_read_ahead_pruning.test"
       ]
@@ -119,7 +143,10 @@
       "paths": [
         "test/sql/copy/parquet/parquet_prefetch_first_group_cost.test",
         "test/sql/copy/parquet/parquet_prefetch_overlapping_ranges.test",
-        "test/sql/copy/parquet/read_ahead/readahead_dynamic_pruning.test"
+        "test/sql/copy/parquet/read_ahead/readahead_dynamic_pruning.test",
+        "test/sql/copy/parquet/read_ahead/readahead_dynamic_pruning_nulls_first.test",
+        "test/sql/copy/parquet/read_ahead/recheck_prefetch_log.test",
+        "test/sql/copy/parquet/read_ahead/readahead_dynamic_pruning.test_slow"
       ]
     },
     {
@@ -140,6 +167,7 @@
         "test/sql/copy/csv/parallel/csv_parallel_null_option.test",
         "test/sql/transactions/concurrent_drop_table.test",
         "test/sql/index/art/scan/test_art_prepared_scan.test",
+        "test/sql/index/art/storage/test_art_corrupt_pointer.test",
         "test/sql/copy/parquet/multi_file/adaptive_filter_carryover.test",
         "test/sql/copy/parquet/parquet_prefetch_row_group_outcome.test",
         "test/sql/copy/parquet/parquet_prefetch_projection.test",

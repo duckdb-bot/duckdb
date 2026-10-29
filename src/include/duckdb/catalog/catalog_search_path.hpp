@@ -62,7 +62,10 @@ enum class CatalogSetPathType { SET_SCHEMA, SET_SCHEMAS, SET_DIRECTLY };
 class CatalogSearchPath {
 public:
 	DUCKDB_API explicit CatalogSearchPath(ClientContext &client_p);
-	DUCKDB_API CatalogSearchPath(ClientContext &client_p, vector<CatalogSearchEntry> entries);
+	//! Without temporary_first, the temporary schema follows the entries instead of leading the path, for the views of
+	//! the system catalog, which read the system catalog's functions and views rather than a session's objects
+	DUCKDB_API CatalogSearchPath(ClientContext &client_p, vector<CatalogSearchEntry> entries,
+	                             bool temporary_first = true);
 	CatalogSearchPath(const CatalogSearchPath &other) = delete;
 
 	DUCKDB_API void Set(CatalogSearchEntry new_value, CatalogSetPathType set_type);
@@ -101,6 +104,8 @@ private:
 private:
 	ClientContext &context;
 	vector<CatalogSearchEntry> paths;
+	//! Whether the temporary schema leads the path
+	bool temporary_first = true;
 	//! Only the paths that were explicitly set (minus the always included paths)
 	vector<CatalogSearchEntry> set_paths;
 };

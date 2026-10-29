@@ -341,6 +341,28 @@ public:
 	string GetMaxValue() override {
 		return HasStats() ? string(char_ptr_cast(max.bytes), ParquetHugeintTargetType::PARQUET_HUGEINT_SIZE) : string();
 	}
+
+	void Merge(const ColumnWriterStatistics &other_p) override {
+		auto &other = other_p.Cast<HugeintStatisticsState>();
+		if (!other.has_stats) {
+			return;
+		}
+		if (!has_stats || other.min.LessThan(min)) {
+			min = other.min;
+		}
+		if (!has_stats || max.LessThan(other.max)) {
+			max = other.max;
+		}
+		has_stats = true;
+	}
+	int CompareMin(const ColumnWriterStatistics &other_p) const override {
+		auto &other = other_p.Cast<HugeintStatisticsState>();
+		return min.LessThan(other.min) ? -1 : (other.min.LessThan(min) ? 1 : 0);
+	}
+	int CompareMax(const ColumnWriterStatistics &other_p) const override {
+		auto &other = other_p.Cast<HugeintStatisticsState>();
+		return max.LessThan(other.max) ? -1 : (other.max.LessThan(max) ? 1 : 0);
+	}
 };
 
 class UUIDStatisticsState : public ColumnWriterStatistics {

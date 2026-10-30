@@ -80,12 +80,6 @@ timestamp_tz_t ICUCalendarAdd::Operation(timestamp_tz_t timestamp, interval_t in
 		--millis;
 	}
 
-	// Make sure the value is still in range
-	date_t d;
-	dtime_t t;
-	auto us = MultiplyOperatorOverflowCheck::Operation<int64_t, int64_t, int64_t>(millis, Interval::MICROS_PER_MSEC);
-	Timestamp::Convert(timestamp_t(us), d, t);
-
 	// Now use the calendar to add the other parts
 	calendar->SetTime(millis);
 
@@ -275,6 +269,7 @@ struct ICUDateAdd : public ICUDateFunc {
 		set.AddFunction(interval_tstz_fun);
 		// throws for dates that overflow the timestamp range
 		set.SetFallible();
+		set.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 		loader.RegisterFunction(set);
 	}
 
@@ -305,6 +300,7 @@ struct ICUDateAdd : public ICUDateFunc {
 		set.AddFunction(tstz_tstz_fun);
 		// throws for dates that overflow the timestamp range
 		set.SetFallible();
+		set.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 		loader.RegisterFunction(set);
 	}
 
@@ -315,6 +311,7 @@ struct ICUDateAdd : public ICUDateFunc {
 		    LogicalType::TIMESTAMP_TZ, LogicalType::TIMESTAMP_TZ);
 		binary_fun.GetSignature().GetParameter(0).SetName("timestamp1");
 		binary_fun.GetSignature().GetParameter(1).SetName("timestamp2");
+		binary_fun.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 		set.AddFunction(binary_fun);
 		auto unary_fun = GetUnaryAgeFunction<timestamp_tz_t, ICUCalendarAge>(LogicalType::TIMESTAMP_TZ);
 		unary_fun.GetSignature().GetParameter(0).SetName("timestamp");

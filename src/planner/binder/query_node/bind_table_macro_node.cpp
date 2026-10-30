@@ -365,8 +365,7 @@ vector<CatalogSearchEntry> Binder::GetMacroSearchPath(StandardEntry &macro) {
 }
 
 vector<CatalogSearchEntry> Binder::GetMacroSearchPath(Catalog &catalog, const vector<Identifier> &schema_path) {
-	// a nested schema cannot be in a search path, so the macro's catalog is looked in first
-	return GetSearchPath(catalog, schema_path.size() == 1 ? schema_path[0] : Identifier(), true);
+	return GetSearchPath(catalog, schema_path, true);
 }
 
 unique_ptr<QueryNode> Binder::BindTableMacro(FunctionExpression &function, TableMacroCatalogEntry &macro_func,

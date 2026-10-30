@@ -366,7 +366,7 @@ SELECT uses_s1()
 ----
 101
 
-# a nested schema cannot be in a search path, so a macro in one looks in the default schema of its catalog
+# a macro in a nested schema looks names up in that schema first, then in the default schema of its catalog
 statement ok
 CREATE SCHEMA a;
 
@@ -389,6 +389,50 @@ query I
 SELECT a.b.g()
 ----
 1
+
+# the default schema of the catalog comes before the caller's schema
+statement ok
+SET schema = 'b';
+
+query II
+SELECT f(), a.b.g()
+----
+2	1
+
+statement ok
+SET schema = 'main';
+
+statement ok
+CREATE MACRO a.b.f() AS 3;
+
+query I
+SELECT a.b.g()
+----
+3
+
+# the caller's schema does not shadow the nested schema of the macro
+statement ok
+SET schema = 'b';
+
+query II
+SELECT f(), a.b.g()
+----
+2	3
+
+statement ok
+SET schema = 'main';
+
+# creating a macro validates its body with the nested schema too
+statement ok
+CREATE MACRO a.b.only_nested() AS 7;
+
+statement ok
+CREATE MACRO a.b.h() AS only_nested();
+
+query I
+SELECT a.b.h()
+----
+7
 
 # the default table of a catalog is qualified with its own name
 statement ok

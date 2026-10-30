@@ -232,7 +232,7 @@ SELECT count(*) FROM s4.log;
 ----
 1
 
-# a trigger in a nested schema keeps the search path of the statement that fires it
+# a trigger in a nested schema looks names up in that schema, not in a top-level schema of the same name
 statement ok
 CREATE SCHEMA p;
 
@@ -263,7 +263,43 @@ INSERT INTO p.s.t VALUES (1);
 query III
 SELECT (SELECT count(*) FROM p.s.log), (SELECT count(*) FROM s.log), (SELECT count(*) FROM main.log);
 ----
-0	0	1
+1	0	0
+
+# a schema qualification in the body names a top-level schema
+statement ok
+CREATE TRIGGER nested_top AFTER INSERT ON p.s.t FOR EACH STATEMENT INSERT INTO s.log VALUES (5);
+
+statement ok
+INSERT INTO p.s.t VALUES (2);
+
+query III
+SELECT (SELECT count(*) FROM p.s.log), (SELECT count(*) FROM s.log), (SELECT count(*) FROM main.log);
+----
+2	1	0
+
+# a row trigger in a nested schema looks names up in that schema too
+statement ok
+CREATE TABLE p.s.t_row (i INTEGER);
+
+statement ok
+CREATE TRIGGER nested_row AFTER INSERT ON p.s.t_row FOR EACH ROW INSERT INTO log VALUES (NEW.i * 10);
+
+statement ok
+INSERT INTO p.s.t_row VALUES (3);
+
+query III
+SELECT (SELECT list(x ORDER BY x) FROM p.s.log), (SELECT count(*) FROM s.log), (SELECT count(*) FROM main.log);
+----
+[4, 4, 30]	1	0
+
+# the dependencies of the triggers are on the tables of the nested schema
+statement error
+DROP TABLE p.s.log;
+----
+<REGEX>:.*Dependency Error.*
+
+statement ok
+DROP TABLE main.log;
 
 # RETURNING of a trigger body that fires a trigger itself, and the dependency on its macro
 statement ok

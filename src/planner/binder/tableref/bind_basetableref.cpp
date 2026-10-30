@@ -144,11 +144,7 @@ void Binder::SetSearchPath(Catalog &catalog, const vector<Identifier> &schema_pa
 }
 
 void Binder::SetSearchPath(const SchemaCatalogEntry &schema) {
-	if (schema.GetParentSchema()) {
-		// a search path holds top-level schemas only
-		return;
-	}
-	SetSearchPath(schema.catalog, schema.name);
+	SetSearchPath(schema.catalog, schema.GetSchemaPath());
 }
 
 BoundStatement Binder::Bind(BaseTableRef &ref) {

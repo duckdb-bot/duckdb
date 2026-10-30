@@ -28,7 +28,6 @@
 #include "duckdb/planner/constraints/bound_check_constraint.hpp"
 #include "duckdb/planner/logical_operator_visitor.hpp"
 #include "duckdb/planner/operator/logical_copy_to_file.hpp"
-#include "duckdb/planner/operator/logical_delete.hpp"
 #include "duckdb/planner/operator/logical_insert.hpp"
 #include "duckdb/planner/operator/logical_merge_into.hpp"
 #include "duckdb/planner/operator/logical_update.hpp"
@@ -204,7 +203,7 @@ static void RunPostBindExtensions(ClientContext &context, Binder &binder, BoundS
 	}
 }
 
-//! Whether a CHECK constraint the operator verifies has to be bound again on every execution
+//! Whether a CHECK constraint the operator verifies has to be bound again on every execution, a DELETE verifies none
 static bool ConstraintsRequireRebind(const vector<unique_ptr<BoundConstraint>> &constraints) {
 	for (auto &constraint : constraints) {
 		if (constraint->type == ConstraintType::CHECK &&
@@ -222,10 +221,19 @@ static bool HiddenExpressionsRequireRebind(const LogicalOperator &op) {
 		return ConstraintsRequireRebind(op.Cast<LogicalInsert>().bound_constraints);
 	case LogicalOperatorType::LOGICAL_UPDATE:
 		return ConstraintsRequireRebind(op.Cast<LogicalUpdate>().bound_constraints);
-	case LogicalOperatorType::LOGICAL_DELETE:
-		return ConstraintsRequireRebind(op.Cast<LogicalDelete>().bound_constraints);
-	case LogicalOperatorType::LOGICAL_MERGE_INTO:
-		return ConstraintsRequireRebind(op.Cast<LogicalMergeInto>().bound_constraints);
+	case LogicalOperatorType::LOGICAL_MERGE_INTO: {
+		// only the INSERT and UPDATE actions verify the constraints
+		auto &merge = op.Cast<LogicalMergeInto>();
+		for (auto &entry : merge.actions) {
+			for (auto &action : entry.second) {
+				if (action->action_type == MergeActionType::MERGE_INSERT ||
+				    action->action_type == MergeActionType::MERGE_UPDATE) {
+					return ConstraintsRequireRebind(merge.bound_constraints);
+				}
+			}
+		}
+		return false;
+	}
 	case LogicalOperatorType::LOGICAL_COPY_TO_FILE: {
 		auto &partition_path = op.Cast<LogicalCopyToFile>().partition_path_expression;
 		return partition_path && partition_path->RequiresRebind();

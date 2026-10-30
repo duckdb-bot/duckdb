@@ -252,3 +252,62 @@ query I
 EXECUTE series_epoch;
 ----
 1774908000000000
+
+# a prepared statement that reads a setting keeps no plan, one that does not keeps its plan (result_types shows the
+# plan only for statements with a query result)
+query II
+SELECT name, result_types IS NULL AS bound_again FROM duckdb_prepared_statements()
+WHERE name IN ('plain_cast', 'constant_cast', 'table_function_argument', 'range_calendar', 'range_epoch')
+ORDER BY name;
+----
+constant_cast	true
+plain_cast	false
+range_calendar	true
+range_epoch	true
+table_function_argument	true
+
+# a DELETE verifies no CHECK constraint, so it keeps its plan; the optimizer is disabled because it binds every
+# statement that reads a table again anyway
+statement ok
+PRAGMA disable_optimizer;
+
+statement ok
+SET TimeZone = 'UTC';
+
+statement ok
+CREATE TABLE deleted (id INTEGER, s VARCHAR CHECK (s = (TIMESTAMPTZ '2026-01-01 00:00:00+00')::VARCHAR));
+
+statement ok
+INSERT INTO deleted VALUES (1, '2026-01-01 00:00:00+00');
+
+statement ok
+PREPARE delete_checked AS DELETE FROM deleted WHERE id = 1 RETURNING s;
+
+statement ok
+PREPARE insert_deleted AS INSERT INTO deleted VALUES (2, '2026-01-01 00:00:00+00') RETURNING s;
+
+query II
+SELECT name, result_types IS NULL AS bound_again FROM duckdb_prepared_statements()
+WHERE name IN ('delete_checked', 'insert_deleted')
+ORDER BY name;
+----
+delete_checked	false
+insert_deleted	true
+
+statement ok
+SET TimeZone = 'Europe/Amsterdam';
+
+statement error
+EXECUTE insert_deleted;
+----
+CHECK constraint failed
+
+query I
+EXECUTE delete_checked;
+----
+2026-01-01 00:00:00+00
+
+query I
+SELECT count(*) FROM deleted;
+----
+0

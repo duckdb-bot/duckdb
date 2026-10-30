@@ -266,7 +266,7 @@ range_calendar	true
 range_epoch	true
 table_function_argument	true
 
-# a DELETE verifies no CHECK constraint, so it keeps its plan; the optimizer is disabled because it binds every
+# a DELETE verifies no CHECK constraint, so it keeps its plan. The optimizer is disabled because it binds every
 # statement that reads a table again anyway
 statement ok
 PRAGMA disable_optimizer;

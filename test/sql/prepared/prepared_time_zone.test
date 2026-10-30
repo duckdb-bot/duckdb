@@ -172,3 +172,83 @@ query I
 EXECUTE plain_cast;
 ----
 2026-01-01
+
+# a CHECK constraint that reads the TimeZone is bound again with the prepared INSERT and UPDATE
+statement ok
+SET TimeZone = 'UTC';
+
+statement ok
+CREATE TABLE checked (s VARCHAR CHECK (s = (TIMESTAMPTZ '2026-01-01 00:00:00+00')::VARCHAR));
+
+statement ok
+PREPARE insert_checked AS INSERT INTO checked VALUES ('2026-01-01 00:00:00+00');
+
+statement ok
+PREPARE update_checked AS UPDATE checked SET s = '2026-01-01 00:00:00+00';
+
+statement ok
+EXECUTE insert_checked;
+
+statement ok
+SET TimeZone = 'Europe/Amsterdam';
+
+statement error
+EXECUTE insert_checked;
+----
+CHECK constraint failed
+
+statement error
+EXECUTE update_checked;
+----
+CHECK constraint failed
+
+query I
+SELECT count(*) FROM checked;
+----
+1
+
+# the partition path of a prepared COPY is bound again
+statement ok
+SET TimeZone = 'UTC';
+
+statement ok
+PREPARE copy_partitioned AS COPY (SELECT '2026-01-01' AS p, 42 AS n) TO '{TEST_DIR}/prepared_partitions' (FORMAT CSV, PARTITION_BY (p), PARTITION_PATH p::TIMESTAMPTZ::VARCHAR);
+
+statement ok
+SET TimeZone = 'Europe/Amsterdam';
+
+statement ok
+EXECUTE copy_partitioned;
+
+query I
+SELECT count(*) FROM glob('{TEST_DIR}/prepared_partitions/2026-01-01 00:00:00+01/*.csv');
+----
+1
+
+# the calendar of range and generate_series over TIMESTAMPTZ follows the settings even when no argument does
+statement ok
+SET TimeZone = 'UTC';
+
+statement ok
+PREPARE range_epoch AS SELECT max(epoch_us(r)) FROM range(to_timestamp(1774738800), to_timestamp(1774915200), INTERVAL '1 day') t(r);
+
+statement ok
+PREPARE series_epoch AS SELECT max(epoch_us(r)) FROM generate_series(to_timestamp(1774738800), to_timestamp(1774915200), INTERVAL '1 day') t(r);
+
+query I
+EXECUTE range_epoch;
+----
+1774911600000000
+
+statement ok
+SET TimeZone = 'Europe/Amsterdam';
+
+query I
+EXECUTE range_epoch;
+----
+1774908000000000
+
+query I
+EXECUTE series_epoch;
+----
+1774908000000000

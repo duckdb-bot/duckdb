@@ -25,7 +25,13 @@
 #include "duckdb/planner/operator/logical_trigger.hpp"
 #include "duckdb/planner/operator_extension.hpp"
 #include "duckdb/planner/planner_extension.hpp"
+#include "duckdb/planner/constraints/bound_check_constraint.hpp"
 #include "duckdb/planner/logical_operator_visitor.hpp"
+#include "duckdb/planner/operator/logical_copy_to_file.hpp"
+#include "duckdb/planner/operator/logical_delete.hpp"
+#include "duckdb/planner/operator/logical_insert.hpp"
+#include "duckdb/planner/operator/logical_merge_into.hpp"
+#include "duckdb/planner/operator/logical_update.hpp"
 #include "duckdb/planner/logical_plan_verifier.hpp"
 #include "duckdb/planner/operator/logical_explain.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
@@ -198,9 +204,40 @@ static void RunPostBindExtensions(ClientContext &context, Binder &binder, BoundS
 	}
 }
 
+//! Whether a CHECK constraint the operator verifies has to be bound again on every execution
+static bool ConstraintsRequireRebind(const vector<unique_ptr<BoundConstraint>> &constraints) {
+	for (auto &constraint : constraints) {
+		if (constraint->type == ConstraintType::CHECK &&
+		    constraint->Cast<BoundCheckConstraint>().expression->RequiresRebind()) {
+			return true;
+		}
+	}
+	return false;
+}
+
+//! The expressions an operator holds outside of the ones LogicalOperatorVisitor enumerates
+static bool HiddenExpressionsRequireRebind(const LogicalOperator &op) {
+	switch (op.type) {
+	case LogicalOperatorType::LOGICAL_INSERT:
+		return ConstraintsRequireRebind(op.Cast<LogicalInsert>().bound_constraints);
+	case LogicalOperatorType::LOGICAL_UPDATE:
+		return ConstraintsRequireRebind(op.Cast<LogicalUpdate>().bound_constraints);
+	case LogicalOperatorType::LOGICAL_DELETE:
+		return ConstraintsRequireRebind(op.Cast<LogicalDelete>().bound_constraints);
+	case LogicalOperatorType::LOGICAL_MERGE_INTO:
+		return ConstraintsRequireRebind(op.Cast<LogicalMergeInto>().bound_constraints);
+	case LogicalOperatorType::LOGICAL_COPY_TO_FILE: {
+		auto &partition_path = op.Cast<LogicalCopyToFile>().partition_path_expression;
+		return partition_path && partition_path->RequiresRebind();
+	}
+	default:
+		return false;
+	}
+}
+
 //! Whether an expression of the plan has to be bound again on every execution, such as a cast that reads a setting
 static bool PlanRequiresRebind(const LogicalOperator &op) {
-	bool requires_rebind = false;
+	bool requires_rebind = HiddenExpressionsRequireRebind(op);
 	LogicalOperatorVisitor::EnumerateExpressions(op, [&](const unique_ptr<Expression> *expr) {
 		requires_rebind = requires_rebind || (*expr)->RequiresRebind();
 	});

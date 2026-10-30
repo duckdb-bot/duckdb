@@ -813,12 +813,17 @@ static ResolvedArguments ResolveArguments(const SimpleFunction &function, const 
 //! position fill "parameters", so "range(1, col1 := 5)" reaches the callback exactly as "range(1, 5)" does. The
 //! keyword-only and "**kwargs" arguments go into "named_parameters" - an option "**kwargs" declares by the name of the
 //! option, cast to its type like an explicit cast, as it takes no part in selection
-static void FoldArguments(ClientContext &context, const SimpleFunction &function, ResolvedArguments &resolved,
-                          vector<Value> &parameters, named_argument_map_t &named_parameters) {
+static void FoldArguments(ClientContext &context, optional_ptr<Binder> binder, const SimpleFunction &function,
+                          ResolvedArguments &resolved, vector<Value> &parameters,
+                          named_argument_map_t &named_parameters) {
 	auto &signature = function.GetSignature();
 	auto option_schema = signature.GetTypedKwargs();
 	for (idx_t i = 0; i < resolved.arguments.size(); i++) {
 		auto &argument = *resolved.arguments[i];
+		if (binder && argument.RequiresRebind()) {
+			// the folded value no longer shows that it can change across queries, like a cast that reads a setting
+			binder->SetAlwaysRequireRebind();
+		}
 		if (i < resolved.positional_count) {
 			// A TABLE parameter is filled by the subquery itself rather than by a value, so its slot holds a plain
 			// NULL. A NULL of type TABLE would not do: TABLE has no physical type, so it cannot be deserialized
@@ -874,7 +879,7 @@ FunctionBinder::BindTableFunction(const TableFunctionSet &functions,
 	CastToFunctionArguments(definition->GetName(), resolved.types, resolved.arguments);
 	vector<Value> parameters;
 	named_argument_map_t named_parameters;
-	FoldArguments(context, *definition, resolved, parameters, named_parameters);
+	FoldArguments(context, binder, *definition, resolved, parameters, named_parameters);
 	// copied out of the set: binding the table function fills in the bound return types
 	return make_uniq<ResolvedTableFunction>(BoundTableFunction(definition), std::move(parameters),
 	                                        std::move(named_parameters));
@@ -895,7 +900,7 @@ unique_ptr<BoundPragmaInfo> FunctionBinder::BindPragmaFunction(
 	CastToFunctionArguments(definition->GetName(), resolved.types, resolved.arguments);
 	vector<Value> parameters;
 	named_argument_map_t named_parameters;
-	FoldArguments(context, *definition, resolved, parameters, named_parameters);
+	FoldArguments(context, binder, *definition, resolved, parameters, named_parameters);
 	return make_uniq<BoundPragmaInfo>(*definition, std::move(parameters), std::move(named_parameters));
 }
 

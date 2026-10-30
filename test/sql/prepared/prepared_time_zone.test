@@ -86,3 +86,89 @@ SELECT max(ts) - min(ts) FROM local_times;
 
 statement ok
 COMMIT;
+
+# casts that only the optimizer folds, and the arguments of table functions, are bound again too
+# (duckdblabs/bot-issue-tracker#679)
+statement ok
+SET TimeZone = 'UTC';
+
+statement ok
+CREATE TABLE stamps (id INTEGER, ts TIMESTAMPTZ);
+
+# the implicit cast of the string to TIMESTAMPTZ reads the TimeZone
+statement ok
+PREPARE insert_cast AS INSERT INTO stamps VALUES (1, '2026-01-01 00:00:00');
+
+# the cast to VARCHAR reads the TimeZone, and nothing else in the statement is bound
+statement ok
+PREPARE constant_cast AS SELECT (TIMESTAMPTZ '2026-01-01 00:00:00+00')::VARCHAR;
+
+# the arguments of a table function are folded to values when it is bound
+statement ok
+PREPARE table_function_argument AS SELECT epoch_us(x) FROM repeat(TIMESTAMPTZ '2026-01-01 00:00:00', 1) AS t(x);
+
+# range and generate_series step through the days of the TimeZone's calendar
+statement ok
+PREPARE range_calendar AS SELECT max(range)::VARCHAR FROM range(TIMESTAMPTZ '2026-03-28 23:00:00+00', TIMESTAMPTZ '2026-03-31 00:00:00+00', INTERVAL '1 day');
+
+statement ok
+PREPARE series_calendar AS SELECT max(generate_series)::VARCHAR FROM generate_series(TIMESTAMPTZ '2026-03-28 23:00:00+00', TIMESTAMPTZ '2026-03-31 00:00:00+00', INTERVAL '1 day');
+
+# a cast that does not read the TimeZone
+statement ok
+PREPARE plain_cast AS SELECT ('2026-01-01'::DATE)::VARCHAR;
+
+query I
+EXECUTE constant_cast;
+----
+2026-01-01 00:00:00+00
+
+query I
+EXECUTE table_function_argument;
+----
+1767225600000000
+
+query I
+EXECUTE range_calendar;
+----
+2026-03-30 23:00:00+00
+
+statement ok
+SET TimeZone = 'Europe/Amsterdam';
+
+statement ok
+EXECUTE insert_cast;
+
+statement ok
+INSERT INTO stamps VALUES (2, '2026-01-01 00:00:00');
+
+query II
+SELECT id, ts FROM stamps ORDER BY id;
+----
+1	2026-01-01 00:00:00+01
+2	2026-01-01 00:00:00+01
+
+query I
+EXECUTE constant_cast;
+----
+2026-01-01 01:00:00+01
+
+query I
+EXECUTE table_function_argument;
+----
+1767222000000000
+
+query I
+EXECUTE range_calendar;
+----
+2026-03-31 00:00:00+02
+
+query I
+EXECUTE series_calendar;
+----
+2026-03-31 00:00:00+02
+
+query I
+EXECUTE plain_cast;
+----
+2026-01-01

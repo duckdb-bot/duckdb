@@ -540,7 +540,8 @@ void DatabaseInstance::Configure(DBConfig &new_config, const char *database_path
 		config.options.database_path.clear();
 	}
 
-	if (new_config.options.temporary_directory.empty()) {
+	// a disabled temporary directory wins over an explicit path, as it does for the temp_directory setting
+	if (!config.options.use_temporary_directory || new_config.options.temporary_directory.empty()) {
 		config.SetDefaultTempDirectory();
 	}
 

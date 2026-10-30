@@ -189,6 +189,29 @@ TEST_CASE("Test temp_directory defaults", "[api][.]") {
 	}
 }
 
+TEST_CASE("Test use_temporary_directory = false wins over an explicit temporary directory", "[api]") {
+	auto temp_directory = TestCreatePath("unused_spill.tmp");
+	auto fs = FileSystem::CreateLocal();
+	for (bool external_access : {true, false}) {
+		DBConfig config;
+		config.options.use_temporary_directory = false;
+		config.options.temporary_directory = temp_directory;
+		config.SetOptionByName("enable_external_access", Value::BOOLEAN(external_access));
+		config.SetOptionByName("memory_limit", Value("32MB"));
+		config.SetOptionByName("threads", Value::BIGINT(2));
+		DuckDB db(nullptr, &config);
+		Connection con(db);
+
+		// spilling is disabled, so the table that does not fit in memory fails instead of spilling to the directory
+		auto result = con.Query("SELECT current_setting('temp_directory')");
+		REQUIRE(CHECK_COLUMN(result, 0, {""}));
+		result = con.Query("CREATE TABLE t AS SELECT i, repeat('x', 100) || i::VARCHAR AS s FROM range(1000000) t(i)");
+		REQUIRE(result->HasError());
+		REQUIRE(result->GetErrorType() == ExceptionType::OUT_OF_MEMORY);
+		REQUIRE(!fs->DirectoryExists(temp_directory));
+	}
+}
+
 TEST_CASE("Test parallel usage of single client", "[api][.]") {
 	auto db = make_uniq<DuckDB>(nullptr);
 	auto conn = make_uniq<Connection>(*db);

@@ -336,6 +336,13 @@ TEST_CASE("A prepared PRAGMA whose argument reads a variable expands again at ea
 	REQUIRE(CHECK_COLUMN(result, 1, {"x"}));
 	signature = con.context->BindStatement(ParseOne(con, "PRAGMA table_info('a')"));
 	REQUIRE(!signature.properties.always_require_rebind);
+
+	// An execution that fails to expand reports the error, in a result without a statement type
+	REQUIRE_NO_FAIL(con.Query("DROP TABLE b"));
+	result = prepared->Execute();
+	REQUIRE(result->HasError());
+	REQUIRE(result->GetStatementType() == StatementType::INVALID_STATEMENT);
+	REQUIRE(StringUtil::Contains(result->GetError(), "does not exist"));
 }
 
 TEST_CASE("A statement that preprocesses into nothing finishes empty", "[api][expanding_statements]") {

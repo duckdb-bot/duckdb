@@ -208,6 +208,22 @@ TEST_CASE("Test spilling without a database path and without external access", "
 	REQUIRE(CHECK_COLUMN(result, 0, {false}));
 }
 
+TEST_CASE("Test the sandbox stays closed around the temporary directory without a database path", "[api]") {
+	DBConfig config;
+	config.options.use_temporary_directory = true;
+	config.options.temporary_directory = TestCreatePath("sandboxed_spill.tmp");
+	config.SetOptionByName("enable_external_access", Value::BOOLEAN(false));
+	DuckDB db(nullptr, &config);
+	Connection con(db);
+
+	// only the temporary directory is opened to file operations
+	auto result = con.Query("SELECT count(*) FROM duckdb_settings() WHERE name = 'allowed_directories' AND value LIKE "
+	                        "'%sandboxed_spill.tmp%'");
+	REQUIRE(CHECK_COLUMN(result, 0, {1}));
+	REQUIRE_FAIL(con.Query("COPY (SELECT 42) TO '" + TestCreatePath("outside_spill.csv") + "'"));
+	REQUIRE_FAIL(con.Query("COPY (SELECT 42) TO '" + TestCreatePath("sandboxed_spill.tmp/../outside_spill.csv") + "'"));
+}
+
 TEST_CASE("Test parallel usage of single client", "[api][.]") {
 	auto db = make_uniq<DuckDB>(nullptr);
 	auto conn = make_uniq<Connection>(*db);

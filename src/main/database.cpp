@@ -562,7 +562,7 @@ void DatabaseInstance::Configure(DBConfig &new_config, const char *database_path
 			config.AddAllowedDatabasePath(database_path);
 		}
 		// the temporary directory is needed without a database path too, so an in-memory database can spill
-		if (config.options.use_temporary_directory && !config.options.temporary_directory.empty()) {
+		if (!config.options.temporary_directory.empty()) {
 			config.AddAllowedDirectory(config.options.temporary_directory);
 		}
 	}

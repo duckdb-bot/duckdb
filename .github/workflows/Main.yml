@@ -18,6 +18,10 @@ on:
       run_all:
         type: boolean
         default: true
+      extension_exclude_archs:
+        description: 'Extra extension archs to skip, separated by ";" (e.g. windows_amd64)'
+        type: string
+        default: ''
   push:
     branches-ignore:
       - 'main'
@@ -55,6 +59,7 @@ jobs:
     runs-on: ${{ github.repository == 'duckdb/duckdb' && 'namespace-profile-linux-slim;job.priority=1' || 'ubuntu-latest' }}
     outputs:
       duckdb_commit: ${{ steps.version.outputs.duckdb_commit }}
+      runner_linux_slim: ${{ fromJSON(steps.config.outputs.runners).linux_slim }}
       runner_linux_small: ${{ fromJSON(steps.config.outputs.runners).linux_small }}
       runner_linux_x64: ${{ fromJSON(steps.config.outputs.runners).linux_x64 }}
       runner_linux_22_x64: ${{ fromJSON(steps.config.outputs.runners).linux_22_x64 }}
@@ -76,9 +81,11 @@ jobs:
       enabled_jobs: ${{ steps.config.outputs.enabled_jobs }}
       save_cache: ${{ steps.config.outputs.save_cache }}
       reduced_ci_mode: ${{ steps.config.outputs.reduced_ci_mode }}
+      windows_full_matrix: ${{ steps.config.outputs.windows_full_matrix }}
       runner_provider: ${{ steps.runners.outputs.runner_provider }}
       skip_tests: ${{ steps.config.outputs.skip_tests }}
       duckdb_version: ${{ steps.version.outputs.duckdb_version }}
+      is_release_build: ${{ steps.version.outputs.is_release_build }}
       staged_version: ${{ steps.version.outputs.staged_version }}
       extension_allow_failure_archs: ${{ steps.version.outputs.extension_allow_failure_archs }}
     env:
@@ -158,7 +165,6 @@ jobs:
             extensions:
               - .github/config/**
               - .github/patches/**
-              - extension/**
             tests:
               - test/**/*.test
             tests_slow:
@@ -184,6 +190,7 @@ jobs:
         shell: bash
         env:
           CHANGED_KEYS: ${{ steps.changed.outputs.changed_keys }}
+          INPUT_EXCLUDE_ARCHS: ${{ github.event_name == 'workflow_dispatch' && inputs.extension_exclude_archs || '' }}
         run: |
           skip_tests="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.skip_tests || 'false' }}"
           python3 scripts/ci/job_stages.py \
@@ -194,20 +201,24 @@ jobs:
             --skip-tests "$skip_tests" \
             --changed-keys "$CHANGED_KEYS" \
             --reduced-ci-mode "${{ (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && !inputs.run_all)) && 'enabled' || 'disabled' }}" \
+            --run-all "${{ github.event_name != 'workflow_dispatch' || inputs.run_all }}" \
             --runners '${{ steps.runners.outputs.runners }}' \
             --runner-provider '${{ steps.runners.outputs.runner_provider }}'
 
           if [[ "${{ github.event_name }}" != "pull_request" ]]; then
             extra_exclude_archs=
           elif [[ "${{ steps.changed.outputs.extensions_any_changed }}" == "true" ]]; then
-            extra_exclude_archs="windows_arm64;osx_amd64"
+            extra_exclude_archs="osx_amd64"
           else
             extra_exclude_archs="windows_arm64;osx_amd64;wasm_eh"
+          fi
+          if [[ -n "$INPUT_EXCLUDE_ARCHS" ]]; then
+            extra_exclude_archs="${extra_exclude_archs:+$extra_exclude_archs;}$INPUT_EXCLUDE_ARCHS"
           fi
 
           echo "extra_exclude_archs=$extra_exclude_archs" >> "$GITHUB_OUTPUT"
 
-          if [[ "${{ steps.changed.outputs.tests_slow_any_changed }}" == "true" || "${{ github.ref_name }}" == "main" ]]; then
+          if [[ "${{ steps.changed.outputs.tests_slow_any_changed }}" == "true" || "${{ steps.version.outputs.is_release_build }}" == "true" ]]; then
             run_slow_tests=true
           else
             run_slow_tests=false
@@ -459,6 +470,10 @@ jobs:
           config: duckdb/.github/config/rust_based_extensions.cmake
           default_exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_rtools;windows_amd64_mingw;linux_amd64_musl
           toolchain: rust
+        external:
+          config: duckdb/.github/config/external_extensions.cmake
+          default_exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_rtools;windows_amd64_mingw;linux_amd64_musl
+          toolchain: rust
       extension_repository: duckdb/extension-template
       extension_ref: main
       ci_tools_repository: duckdb/extension-ci-tools
@@ -471,18 +486,7 @@ jobs:
       skip_tests: ${{ fromJson(needs.prepare.outputs.skip_tests) }}
       save_cache: ${{ fromJson(needs.prepare.outputs.save_cache) }}
       runners: ${{ needs.prepare.outputs.runners }}
-      prebuilt_duckdb: |
-        {
-          "linux_amd64": "duckdb-static-libs-linux-amd64.tar.gz",
-          "linux_arm64": "duckdb-static-libs-linux-arm64.tar.gz",
-          "linux_amd64_musl": "duckdb-static-libs-linux-amd64-musl.tar.gz",
-          "linux_arm64_musl": "duckdb-static-libs-linux-arm64-musl.tar.gz",
-          "osx_amd64": "duckdb-static-libs-osx-amd64.tar.gz",
-          "osx_arm64": "duckdb-static-libs-osx-arm64.tar.gz",
-          "windows_amd64": "duckdb-static-libs-windows-amd64.tar.gz",
-          "windows_arm64": "duckdb-static-libs-windows-arm64.tar.gz",
-          "windows_amd64_mingw": "duckdb-static-libs-windows-mingw.tar.gz"
-        }
+      prebuilt_source: workflow
 
  extensions-deploy:
     name: Deploy extensions
@@ -754,7 +758,7 @@ jobs:
         echo "::group::CLI check"
         ./build/release/duckdb -c "PRAGMA platform; PRAGMA version;"
         if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-          # Fail on non-zero major version.
+          # Fail on a zero major version.
           ./build/release/duckdb -ascii -noheader -c "SELECT library_version FROM pragma_version() WHERE library_version NOT LIKE 'v0%'" | grep '^v'
         fi
         echo "::endgroup::"
@@ -998,7 +1002,7 @@ jobs:
       run: |
         ./build/release/duckdb -c "PRAGMA platform; PRAGMA version;"
         if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-          # Fail on non-zero major version.
+          # Fail on a zero major version.
           ./build/release/duckdb -ascii -noheader -c "SELECT library_version FROM pragma_version() WHERE library_version NOT LIKE 'v0%'" | grep '^v'
         fi
 
@@ -1105,6 +1109,7 @@ jobs:
     with:
       duckdb_commit: ${{ needs.prepare.outputs.duckdb_commit }}
       duckdb_version: ${{ needs.prepare.outputs.duckdb_version }}
+      is_release_build: ${{ fromJson(needs.prepare.outputs.is_release_build) }}
       runner_macos_arm64: ${{ needs.prepare.outputs.runner_macos_14_arm64 }}
       runner_provider: ${{ needs.prepare.outputs.runner_provider }}
 
@@ -1121,7 +1126,7 @@ jobs:
       runners: ${{ needs.prepare.outputs.runners }}
       runner_provider: ${{ needs.prepare.outputs.runner_provider }}
       skip_tests: ${{ fromJson(needs.prepare.outputs.skip_tests) }}
-      run_all: ${{ github.event_name != 'workflow_dispatch' || inputs.run_all }}
+      run_all: ${{ fromJson(needs.prepare.outputs.windows_full_matrix) }}
 
  osx:
     if: ${{ contains(fromJson(needs.prepare.outputs.enabled_jobs), 'osx') }}
@@ -1131,6 +1136,7 @@ jobs:
     with:
       duckdb_version: ${{ needs.prepare.outputs.duckdb_version }}
       duckdb_commit: ${{ needs.prepare.outputs.duckdb_commit }}
+      is_release_build: ${{ fromJson(needs.prepare.outputs.is_release_build) }}
       runner_macos_arm64: ${{ needs.prepare.outputs.runner_macos_arm64 }}
       skip_tests: ${{ fromJson(needs.prepare.outputs.skip_tests) }}
       run_all: ${{ github.event_name != 'workflow_dispatch' || inputs.run_all }}
@@ -1315,7 +1321,7 @@ jobs:
       run: make unittest_threadsan
 
     - name: Test Extra
-      if: ${{ github.ref_name == 'main' && !fromJson(needs.prepare.outputs.skip_tests) }}
+      if: ${{ fromJson(needs.prepare.outputs.is_release_build) && !fromJson(needs.prepare.outputs.skip_tests) }}
       run: make unittest_threadsan_extra
 
  # TODO: Consider bringing back fts
@@ -1386,7 +1392,9 @@ jobs:
  summary:
     name: Summary
     if: ${{ always() }}
-    runs-on: ${{ fromJSON(needs.prepare.outputs.runners).linux_slim }}
+    # No fromJSON here: when prepare is skipped (draft PRs, non-member synchronize) its outputs are
+    # empty and fromJSON('') makes the whole run fail with every job skipped.
+    runs-on: ${{ needs.prepare.outputs.runner_linux_slim || 'ubuntu-slim' }}
     needs:
       - prepare
       - linux-relassert
@@ -1437,7 +1445,7 @@ jobs:
           STAGED_VERSION: ${{ needs.prepare.outputs.staged_version }}
           RELEASE_STATUS_SUCCESS: ${{ steps.release-status.outputs.success || 'false' }}
           CURRENT_REF: ${{ github.ref }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          ALPHA_BRANCH: 'v2.0-cyanoptera'
         run: |
           is_release_event=false
           if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
@@ -1455,7 +1463,7 @@ jobs:
           fi
 
           is_default_branch=false
-          if [[ "$CURRENT_REF" == "refs/heads/$DEFAULT_BRANCH" ]]; then
+          if [[ "$CURRENT_REF" == "refs/heads/$ALPHA_BRANCH" ]]; then
             is_default_branch=true
           fi
 
@@ -1474,7 +1482,7 @@ jobs:
           echo "  run_release_dispatch=$run_release_dispatch"
           echo "  staged_version=$STAGED_VERSION"
           echo "  current_ref=$CURRENT_REF"
-          echo "  default_branch=$DEFAULT_BRANCH"
+          echo "  alpha_branch=$ALPHA_BRANCH"
           echo "  is_default_branch=$is_default_branch"
           echo "  publish_latest_alpha=$publish_latest_alpha"
 

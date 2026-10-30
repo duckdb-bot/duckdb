@@ -54,7 +54,7 @@ SELECT parameter_types, stability FROM duckdb_functions() WHERE function_name = 
 
 # the age of two timestamps is arithmetic, and can_cast_implicitly folds when both types are known
 statement ok
-CREATE INDEX i_age ON t ((age(TIMESTAMP '2026-01-01' + id * INTERVAL 1 DAY, TIMESTAMP '2026-01-01')));
+CREATE INDEX i_age ON t ((age(TIMESTAMP '2026-01-01' + id * INTERVAL 1 DAY, TIMESTAMP '2026-01-01')::VARCHAR));
 
 statement ok
 CREATE INDEX i_cast ON t ((CASE WHEN can_cast_implicitly(id, 1.5) THEN id ELSE -id END));
@@ -118,6 +118,36 @@ query III
 SELECT id, levenshtein(s, 'abd'), damerau_levenshtein(s, 'acb') FROM t WHERE id = 4;
 ----
 4	3	5
+
+# a transposition involving a non-ASCII character is one edit
+statement ok
+CREATE TABLE d (id INTEGER, s VARCHAR);
+
+statement ok
+INSERT INTO d VALUES (1, 'cáb');
+
+statement ok
+CREATE UNIQUE INDEX i_d ON d ((damerau_levenshtein(s, 'ácb')));
+
+statement error
+INSERT INTO d VALUES (2, 'ácd');
+----
+Duplicate key "damerau_levenshtein(s, 'ácb'): 1"
+
+statement ok
+INSERT INTO d VALUES (2, 'ácb');
+
+statement ok
+DELETE FROM d WHERE id = 1;
+
+statement ok
+INSERT INTO d VALUES (3, 'ácd');
+
+query II
+SELECT id, damerau_levenshtein(s, 'ácb') FROM d ORDER BY id;
+----
+2	0
+3	1
 
 # variant_extract_string uses the allocator of the executor when there is no client context
 statement ok

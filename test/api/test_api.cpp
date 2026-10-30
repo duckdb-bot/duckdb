@@ -189,6 +189,25 @@ TEST_CASE("Test temp_directory defaults", "[api][.]") {
 	}
 }
 
+TEST_CASE("Test spilling without a database path and without external access", "[api]") {
+	DBConfig config;
+	config.options.use_temporary_directory = true;
+	config.options.temporary_directory = TestCreatePath("null_path_spill.tmp");
+	config.SetOptionByName("enable_external_access", Value::BOOLEAN(false));
+	config.SetOptionByName("memory_limit", Value("32MB"));
+	config.SetOptionByName("threads", Value::BIGINT(2));
+	DuckDB db(nullptr, &config);
+	Connection con(db);
+
+	// the table does not fit in memory, so the buffer manager spills to the temporary directory
+	REQUIRE_NO_FAIL(
+	    con.Query("CREATE TABLE t AS SELECT i, repeat('x', 100) || i::VARCHAR AS s FROM range(1000000) t(i)"));
+	auto result = con.Query("SELECT count(*) FROM t");
+	REQUIRE(CHECK_COLUMN(result, 0, {1000000}));
+	result = con.Query("SELECT current_setting('enable_external_access')");
+	REQUIRE(CHECK_COLUMN(result, 0, {false}));
+}
+
 TEST_CASE("Test parallel usage of single client", "[api][.]") {
 	auto db = make_uniq<DuckDB>(nullptr);
 	auto conn = make_uniq<Connection>(*db);

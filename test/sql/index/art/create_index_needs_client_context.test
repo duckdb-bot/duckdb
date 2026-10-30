@@ -23,14 +23,16 @@ CREATE UNIQUE INDEX i ON t ((list_reduce(l, lambda a, b: a + b)));
 ----
 Index keys cannot contain "list_reduce", which needs a client context to execute
 
-foreach function list_sort array_sort list_reverse_sort list_grade_up
-
 statement error
-CREATE INDEX i ON t (({function}(l)[1]));
+CREATE INDEX i ON t ((invoke(lambda x: x + 1, id)));
 ----
-which needs a client context to execute
+Index keys cannot contain "invoke", which needs a client context to execute
 
-endloop
+# a collated element comparison is bound as a lambda over the list
+statement error
+CREATE INDEX i ON t ((list_contains(l::VARCHAR[], 'a' COLLATE nocase)));
+----
+Index keys cannot contain "list_transform", which needs a client context to execute
 
 # without constant types, can_cast_implicitly looks up the casts at execution
 statement error
@@ -43,6 +45,10 @@ statement error
 CREATE INDEX i ON t ((age(TIMESTAMP '2026-01-01' + id * INTERVAL 1 DAY)::VARCHAR));
 ----
 Index keys cannot contain expressions with side effects
+
+# list_sort builds its Sort at bind time, so its keys are computed without a client context
+statement ok
+CREATE INDEX i_sort ON t ((list_sort(l)[1]));
 
 # the edit distances check for interrupts only when there is a client context
 statement ok
@@ -69,17 +75,22 @@ SELECT id FROM t WHERE damerau_levenshtein(s, 'acb') = 1;
 ----
 1
 
+query I
+SELECT id FROM t WHERE list_sort(l)[1] = 4;
+----
+2
+
 statement ok
 DELETE FROM t WHERE id = 1;
 
 statement ok
 INSERT INTO t VALUES (3, [7], 'abe');
 
-query III
-SELECT id, levenshtein(s, 'abd'), damerau_levenshtein(s, 'acb') FROM t ORDER BY id;
+query IIII
+SELECT id, levenshtein(s, 'abd'), damerau_levenshtein(s, 'acb'), list_sort(l)[1] FROM t ORDER BY id;
 ----
-2	2	4
-3	1	2
+2	2	4	4
+3	1	2	7
 
 # variant_extract_string uses the allocator of the executor when there is no client context
 statement ok

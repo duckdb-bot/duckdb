@@ -294,6 +294,37 @@ TEST_CASE("A PRAGMA reparsed into one statement reports that statement", "[api][
 	REQUIRE(CHECK_COLUMN(handle, 0, {"sales"}));
 }
 
+TEST_CASE("A prepared PRAGMA whose argument reads a variable expands again at each execution",
+          "[api][expanding_statements]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE a(x INTEGER)"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE b(y INTEGER)"));
+	REQUIRE_NO_FAIL(con.Query("SET VARIABLE t = 'a'"));
+
+	auto prepared = con.Prepare("PRAGMA table_info(getvariable('t'))");
+	REQUIRE(!prepared->HasError());
+	auto result = prepared->Execute();
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(CHECK_COLUMN(result, 1, {"x"}));
+
+	// The argument is folded under the variable of the execution, as the direct pragma is
+	REQUIRE_NO_FAIL(con.Query("SET VARIABLE t = 'b'"));
+	result = prepared->Execute();
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(CHECK_COLUMN(result, 1, {"y"}));
+	result = con.Query("PRAGMA table_info(getvariable('t'))");
+	REQUIRE(CHECK_COLUMN(result, 1, {"y"}));
+
+	// A prepared pragma with a constant argument still reports the statement it expands into
+	auto constant = con.Prepare("PRAGMA table_info('a')");
+	REQUIRE(!constant->HasError());
+	REQUIRE(constant->GetStatementType() == StatementType::SELECT_STATEMENT);
+	REQUIRE(constant->GetNames()[1].GetIdentifierName() == "name");
+	result = constant->Execute();
+	REQUIRE(CHECK_COLUMN(result, 1, {"x"}));
+}
+
 TEST_CASE("A statement that preprocesses into nothing finishes empty", "[api][expanding_statements]") {
 	DuckDB db(nullptr);
 	Connection con(db);

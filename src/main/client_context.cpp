@@ -548,14 +548,15 @@ unique_ptr<PreparedStatement> ClientContext::PrepareInternal(ClientContextLock &
 		}
 		return make_uniq<PreparedStatement>(shared_from_this(), std::move(statement));
 	}
-	// Only a pragma or a multi-statement can expand, and only one that does not expand into exactly one statement
-	// keeps the statement as written, to expand it again at each execution
+	// Only a pragma or a multi-statement can expand, and only one that does not expand into exactly one statement, or
+	// whose expansion read a setting or a variable, keeps the statement as written, to expand it again at each
+	// execution
 	unique_ptr<SQLStatement> written_statement;
 	if (statement->type == StatementType::PRAGMA_STATEMENT || statement->type == StatementType::MULTI_STATEMENT) {
 		written_statement = statement->Copy();
 	}
 	auto expanded = PreprocessStatementInternal(lock, std::move(statement));
-	if (expanded.statements.size() != 1) {
+	if (expanded.statements.size() != 1 || expanded.requires_rebind) {
 		D_ASSERT(written_statement);
 		if (!written_statement->named_param_map.empty()) {
 			throw InvalidInputException(EXPANDING_PARAMETERS_ERROR);
@@ -638,6 +639,9 @@ StatementSignature ClientContext::BindStatement(unique_ptr<SQLStatement> stateme
 			    signature.names = planner.names;
 			    signature.types = planner.types;
 			    signature.properties = std::move(planner.properties);
+			    if (expanded.requires_rebind) {
+				    signature.properties.always_require_rebind = true;
+			    }
 			    // Parameter types from the bound parameter map (as in PreparedStatementData::TryGetType).
 			    // An un-anchored parameter (e.g. SELECT $1) gets no value_map entry, so its
 			    // type stays UNKNOWN; do not assume every parameter is present.

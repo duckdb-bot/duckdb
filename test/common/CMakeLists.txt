@@ -11,6 +11,7 @@ add_library_unity(
   test_checksum.cpp
   test_dictionary_hash_cache.cpp
   test_column_data_allocator.cpp
+  test_column_data_compact.cpp
   test_file_buffer_handle_group.cpp
   test_file_system.cpp
   test_fsst.cpp
@@ -50,6 +51,7 @@ add_library_unity(
   test_substring_oob.cpp
   test_swar.cpp
   test_aggregate_hll.cpp
+  test_jemalloc_tcache.cpp
   test_radix_ht_sink.cpp
   test_utf8_codepoint_oob.cpp
   test_temporary_memory_manager.cpp

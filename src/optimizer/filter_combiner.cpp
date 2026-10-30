@@ -156,7 +156,7 @@ void FilterCombiner::GenerateEquivalentFilters(const Expression &filter,
 		}
 		auto set_id = equivalence_set_map.find(col)->second;
 		for (auto &item : equivalence_map[set_id]) {
-			if (item.get().IsVolatile() || item.get().CanThrow()) {
+			if (item.get().Equals(col) || item.get().IsVolatile() || item.get().CanThrow()) {
 				continue;
 			}
 			callback(ExpressionIterator::ReplaceExpression(filter, col, item.get()));

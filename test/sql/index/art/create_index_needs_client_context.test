@@ -46,7 +46,20 @@ CREATE INDEX i ON t ((age(TIMESTAMP '2026-01-01' + id * INTERVAL 1 DAY)::VARCHAR
 ----
 Index keys cannot contain expressions with side effects
 
-# list_sort builds its Sort at bind time, so its keys are computed without a client context
+query II
+SELECT parameter_types, stability FROM duckdb_functions() WHERE function_name = 'age' AND parameter_types[1] = 'TIMESTAMP' ORDER BY length(parameter_types);
+----
+[TIMESTAMP]	CONSISTENT_WITHIN_QUERY
+[TIMESTAMP, TIMESTAMP]	CONSISTENT
+
+# the age of two timestamps is arithmetic, and can_cast_implicitly folds when both types are known
+statement ok
+CREATE INDEX i_age ON t ((age(TIMESTAMP '2026-01-01' + id * INTERVAL 1 DAY, TIMESTAMP '2026-01-01')));
+
+statement ok
+CREATE INDEX i_cast ON t ((CASE WHEN can_cast_implicitly(id, 1.5) THEN id ELSE -id END));
+
+# list_sort keeps the Sort of its bind, so its keys need no context from the executor
 statement ok
 CREATE INDEX i_sort ON t ((list_sort(l)[1]));
 
@@ -91,6 +104,20 @@ SELECT id, levenshtein(s, 'abd'), damerau_levenshtein(s, 'acb'), list_sort(l)[1]
 ----
 2	2	4	4
 3	1	2	7
+
+# the distances compare characters, not bytes
+statement error
+INSERT INTO t VALUES (4, [1], 'ábd');
+----
+Duplicate key "levenshtein(s, 'abd'): 1"
+
+statement ok
+INSERT INTO t VALUES (4, [1], 'ábdéx');
+
+query III
+SELECT id, levenshtein(s, 'abd'), damerau_levenshtein(s, 'acb') FROM t WHERE id = 4;
+----
+4	3	5
 
 # variant_extract_string uses the allocator of the executor when there is no client context
 statement ok

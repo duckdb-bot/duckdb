@@ -15,13 +15,13 @@ CREATE TABLE case_clash AS
 SELECT ('{"LONG_FIELD_NAME_ABCDEFGH": ' || i || ', "long_field_name_abcdefgh": ' || (i + 1) || '}')::JSON::VARIANT AS v
 FROM range(100) t(i);
 
-# the same with keys of 16 bytes, one past the buffer of a short std::string
+# the same with keys of 16 bytes, one past the inline buffer of a short string
 statement ok
 CREATE TABLE case_clash_16 AS
 SELECT ('{"ABCDEFGHIJKLMNOP": ' || i || ', "abcdefghijklmnop": ' || (i + 1) || '}')::JSON::VARIANT AS v
 FROM range(100) t(i);
 
-# two distinct keys of 24 bytes shred
+# two distinct long keys shred
 statement ok
 CREATE TABLE distinct_keys AS
 SELECT ('{"long_field_name_abcdefgh": ' || i || ', "other_long_field_name_xyz": ' || (i + 1) || '}')::JSON::VARIANT AS v

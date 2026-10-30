@@ -54,6 +54,11 @@ struct ICUTableRange {
 			cardinality = idx_t(delta / increment);
 		}
 
+		//! The calendar follows the TimeZone and Calendar settings of the bind, so a prepared statement binds again
+		bool SupportStatementCache() const override {
+			return false;
+		}
+
 		string tz_setting;
 		string cal_setting;
 		CalendarPtr calendar;

@@ -137,7 +137,8 @@ optional_ptr<CatalogEntry> DuckSchemaEntry::AddEntryInternal(CatalogTransaction 
 		// CREATE OR REPLACE: first try to drop the entry
 		auto old_entry = set.GetEntry(transaction, entry_name);
 		if (old_entry) {
-			if (dependencies.Contains(*old_entry)) {
+			auto self_dependency = dependencies.Set().find(LogicalDependency(*old_entry));
+			if (self_dependency != dependencies.Set().end() && !self_dependency->flags.IsWeak()) {
 				throw CatalogException("CREATE OR REPLACE is not allowed to depend on itself");
 			}
 			if (old_entry->type != entry_type) {

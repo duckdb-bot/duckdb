@@ -66,6 +66,8 @@ public:
 	static LogicalDependencyList Deserialize(Deserializer &deserializer);
 	bool operator==(const LogicalDependencyList &other) const;
 	const create_info_set_t &Set() const;
+	//! The dependencies without the weak ones, which are never serialized
+	create_info_set_t SerializedSet() const;
 
 private:
 	create_info_set_t set;

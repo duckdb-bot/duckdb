@@ -111,6 +111,16 @@ const LogicalDependencyList::create_info_set_t &LogicalDependencyList::Set() con
 	return set;
 }
 
+LogicalDependencyList::create_info_set_t LogicalDependencyList::SerializedSet() const {
+	create_info_set_t result;
+	for (auto &dependency : set) {
+		if (!dependency.flags.IsWeak()) {
+			result.insert(dependency);
+		}
+	}
+	return result;
+}
+
 bool LogicalDependencyList::operator==(const LogicalDependencyList &other) const {
 	if (set.size() != other.set.size()) {
 		return false;

@@ -294,6 +294,57 @@ TEST_CASE("A PRAGMA reparsed into one statement reports that statement", "[api][
 	REQUIRE(CHECK_COLUMN(handle, 0, {"sales"}));
 }
 
+TEST_CASE("A prepared PRAGMA whose argument reads a variable expands again at each execution",
+          "[api][expanding_statements]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE a(x INTEGER)"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE b(y INTEGER)"));
+	REQUIRE_NO_FAIL(con.Query("SET VARIABLE t = 'a'"));
+
+	// Kept as written, so its result is known only at execution, as for a statement that expands into several
+	auto prepared = con.Prepare("PRAGMA table_info(getvariable('t'))");
+	REQUIRE(!prepared->HasError());
+	REQUIRE(prepared->SubmitsAsWritten());
+	REQUIRE(!prepared->MetadataAvailable());
+	REQUIRE(prepared->GetStatementType() == StatementType::PRAGMA_STATEMENT);
+	auto result = prepared->Execute();
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->GetStatementType() == StatementType::SELECT_STATEMENT);
+	REQUIRE(CHECK_COLUMN(result, 1, {"x"}));
+
+	// The argument is folded under the variable of the execution, as the direct pragma is
+	REQUIRE_NO_FAIL(con.Query("SET VARIABLE t = 'b'"));
+	result = prepared->Execute();
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(CHECK_COLUMN(result, 1, {"y"}));
+	result = con.Query("PRAGMA table_info(getvariable('t'))");
+	REQUIRE(CHECK_COLUMN(result, 1, {"y"}));
+
+	// Binding alone reports the dependency with the metadata of the expansion
+	auto signature = con.context->BindStatement(ParseOne(con, "PRAGMA table_info(getvariable('t'))"));
+	REQUIRE(signature.properties.always_require_rebind);
+	REQUIRE(signature.names[1].GetIdentifierName() == "name");
+
+	// A prepared pragma with a constant argument still reports the statement it expands into
+	auto constant = con.Prepare("PRAGMA table_info('a')");
+	REQUIRE(!constant->HasError());
+	REQUIRE(!constant->SubmitsAsWritten());
+	REQUIRE(constant->GetStatementType() == StatementType::SELECT_STATEMENT);
+	REQUIRE(constant->GetNames()[1].GetIdentifierName() == "name");
+	result = constant->Execute();
+	REQUIRE(CHECK_COLUMN(result, 1, {"x"}));
+	signature = con.context->BindStatement(ParseOne(con, "PRAGMA table_info('a')"));
+	REQUIRE(!signature.properties.always_require_rebind);
+
+	// An execution that fails to expand reports the error, in a result without a statement type
+	REQUIRE_NO_FAIL(con.Query("DROP TABLE b"));
+	result = prepared->Execute();
+	REQUIRE(result->HasError());
+	REQUIRE(result->GetStatementType() == StatementType::INVALID_STATEMENT);
+	REQUIRE(StringUtil::Contains(result->GetError(), "does not exist"));
+}
+
 TEST_CASE("A statement that preprocesses into nothing finishes empty", "[api][expanding_statements]") {
 	DuckDB db(nullptr);
 	Connection con(db);

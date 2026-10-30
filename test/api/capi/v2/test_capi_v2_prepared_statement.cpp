@@ -697,4 +697,62 @@ TEST_CASE("V2: only a statement written as a SELECT streams", "[capi_v2][prepare
 	duckdb_v2_result_destroy(&count);
 }
 
+TEST_CASE("V2: a prepared pragma whose argument reads a variable reports the SELECT it expands into",
+          "[capi_v2][prepared_statement]") {
+	EnvFixture fx;
+	ExecSQL(fx.conn, "CREATE TABLE a(x INTEGER)");
+	ExecSQL(fx.conn, "CREATE TABLE b(y INTEGER, z INTEGER)");
+	ExecSQL(fx.conn, "SET VARIABLE t = 'a'");
+
+	// Kept as written and expanded at each execution, so it is re-bound every time
+	REQUIRE_FALSE(PsReusesPlan(fx.conn, "PRAGMA table_info(getvariable('t'))"));
+	auto prepared = PsPrepare(fx.conn, "PRAGMA table_info(getvariable('t'))");
+	REQUIRE(prepared != nullptr);
+	for (idx_t rows : {1, 2}) {
+		// The result reports the SELECT the pragma expands into, as the direct pragma does
+		duckdb_v2_result_handle r = nullptr;
+		REQUIRE(duckdb_v2_prepared_statement_execute(prepared, nullptr, nullptr, 0, &r, nullptr) ==
+		        DUCKDB_V2_ERROR_NONE);
+		DUCKDB_V2_STATEMENT_TYPE st = DUCKDB_V2_STATEMENT_TYPE_INVALID;
+		REQUIRE(duckdb_v2_result_get_statement_type(r, &st, nullptr) == DUCKDB_V2_ERROR_NONE);
+		REQUIRE(st == DUCKDB_V2_STATEMENT_TYPE_SELECT);
+		REQUIRE(DrainRowCount(r) == rows);
+		REQUIRE(ColumnCount(r) == 6);
+		duckdb_v2_result_destroy(&r);
+
+		duckdb_v2_result_handle direct = nullptr;
+		REQUIRE(Query(fx.conn, "PRAGMA table_info(getvariable('t'))", &direct) == DUCKDB_V2_ERROR_NONE);
+		REQUIRE(duckdb_v2_result_get_statement_type(direct, &st, nullptr) == DUCKDB_V2_ERROR_NONE);
+		REQUIRE(st == DUCKDB_V2_STATEMENT_TYPE_SELECT);
+		REQUIRE(DrainRowCount(direct) == rows);
+		duckdb_v2_result_destroy(&direct);
+		// The next execution describes the other table
+		ExecSQL(fx.conn, "SET VARIABLE t = 'b'");
+	}
+	// It streams as the SELECT it expands into, like the direct pragma
+	duckdb_v2_result_handle r = nullptr;
+	REQUIRE(duckdb_v2_prepared_statement_execute(prepared, nullptr, nullptr, 0, &r, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(HoldsConnectionAfterFirstChunk(fx.conn, r));
+	duckdb_v2_result_destroy(&r);
+	duckdb_v2_result_handle direct = nullptr;
+	REQUIRE(Query(fx.conn, "PRAGMA table_info(getvariable('t'))", &direct) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(HoldsConnectionAfterFirstChunk(fx.conn, direct));
+	duckdb_v2_result_destroy(&direct);
+
+	// An execution that fails to expand reports its error and leaves no result
+	ExecSQL(fx.conn, "DROP TABLE b");
+	duckdb_v2_error_info_handle err = nullptr;
+	REQUIRE(duckdb_v2_prepared_statement_execute(prepared, nullptr, nullptr, 0, &r, &err) ==
+	        DUCKDB_V2_ERROR_DATABASE_CATALOG);
+	REQUIRE(r == nullptr);
+	duckdb_v2_str msg = {nullptr, 0};
+	REQUIRE(duckdb_v2_error_info_get_text(err, &msg) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(std::string(msg.ptr, msg.len).find("does not exist") != std::string::npos);
+	duckdb_v2_error_info_destroy(&err);
+	REQUIRE(Query(fx.conn, "SELECT 1", &direct) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(DrainRowCount(direct) == 1);
+	duckdb_v2_result_destroy(&direct);
+	duckdb_v2_prepared_statement_destroy(&prepared);
+}
+
 } // namespace test_capi_v2

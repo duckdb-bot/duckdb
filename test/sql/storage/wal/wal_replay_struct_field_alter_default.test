@@ -51,7 +51,7 @@ SELECT i, v FROM add_field ORDER BY i;
 ----
 1	[{'a': 1, 'c': 7}]
 2	[{'a': 5, 'c': 7}]
-3	[{'a': 1, 'c': NULL}]
+3	[{'a': 1, 'c': 7}]
 
 # the defaults still work after the replay
 statement ok

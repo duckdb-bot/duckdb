@@ -440,6 +440,8 @@ public:
 
 	void SetSearchPath(Catalog &catalog, const vector<Identifier> &schema_path);
 	void SetSearchPath(Catalog &catalog, const Identifier &schema);
+	//! Looks up names in the schema first, nested schemas included
+	void SetSearchPath(const SchemaCatalogEntry &schema);
 
 	void BindDefaultValue(const ColumnDefinition &column, vector<unique_ptr<Expression>> &bound_defaults,
 	                      const string &catalog = "", const vector<Identifier> &schema_path = {});

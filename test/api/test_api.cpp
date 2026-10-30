@@ -209,9 +209,13 @@ TEST_CASE("Test spilling without a database path and without external access", "
 }
 
 TEST_CASE("Test the sandbox stays closed around the temporary directory without a database path", "[api]") {
+	auto temp_directory = TestCreatePath("sandboxed_spill.tmp");
+	auto fs = FileSystem::CreateLocal();
+	fs->CreateDirectory(temp_directory);
+
 	DBConfig config;
 	config.options.use_temporary_directory = true;
-	config.options.temporary_directory = TestCreatePath("sandboxed_spill.tmp");
+	config.options.temporary_directory = temp_directory;
 	config.SetOptionByName("enable_external_access", Value::BOOLEAN(false));
 	DuckDB db(nullptr, &config);
 	Connection con(db);
@@ -220,8 +224,12 @@ TEST_CASE("Test the sandbox stays closed around the temporary directory without 
 	auto result = con.Query("SELECT count(*) FROM duckdb_settings() WHERE name = 'allowed_directories' AND value LIKE "
 	                        "'%sandboxed_spill.tmp%'");
 	REQUIRE(CHECK_COLUMN(result, 0, {1}));
-	REQUIRE_FAIL(con.Query("COPY (SELECT 42) TO '" + TestCreatePath("outside_spill.csv") + "'"));
-	REQUIRE_FAIL(con.Query("COPY (SELECT 42) TO '" + TestCreatePath("sandboxed_spill.tmp/../outside_spill.csv") + "'"));
+	result = con.Query("COPY (SELECT 42) TO '" + TestCreatePath("outside_spill.csv") + "'");
+	REQUIRE(result->HasError());
+	REQUIRE(result->GetErrorType() == ExceptionType::PERMISSION);
+	result = con.Query("COPY (SELECT 42) TO '" + temp_directory + "/../outside_spill.csv'");
+	REQUIRE(result->HasError());
+	REQUIRE(result->GetErrorType() == ExceptionType::PERMISSION);
 }
 
 TEST_CASE("Test parallel usage of single client", "[api][.]") {

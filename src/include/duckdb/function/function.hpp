@@ -77,6 +77,8 @@ public:
 	DUCKDB_API virtual bool Equals(const FunctionData &other) const = 0;
 	DUCKDB_API static bool Equals(const FunctionData *left, const FunctionData *right);
 	DUCKDB_API virtual bool SupportStatementCache() const;
+	//! Whether executing the function needs a ClientContext, which index keys are executed without
+	DUCKDB_API virtual bool NeedsClientContext() const;
 
 	template <class TARGET>
 	TARGET &Cast() {

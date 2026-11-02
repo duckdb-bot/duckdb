@@ -73,7 +73,7 @@ SELECT min, max, q25, q50, q75 FROM (SUMMARIZE (SELECT ts FROM ends WHERE g = 3)
 ----
 294247-01-10 04:00:54.775805	294247-01-10 04:00:54.775806	294247-01-10 04:00:54.774784	294247-01-10 04:00:54.774784	294247-01-10 04:00:54.774784
 
-# many values at the lower end, merged from several groups and threads, stay finite
+# many values at the lower end stay finite through repeated compression and grouped states
 statement ok
 CREATE TABLE big AS SELECT make_timestamp(-9223372036854775808 + i) AS ts, i % 7 AS g FROM range(0, 3000, 2) t(i);
 
@@ -89,5 +89,22 @@ true	7
 
 query I
 SELECT list_bool_and(list_transform(approx_quantile(ts, [0.0, 0.25, 0.5, 0.75, 1.0]), lambda x: isfinite(x))) FROM big;
+----
+true
+
+# exported states with infinities and finite ends combine and finalize the same way
+statement ok
+CREATE TABLE modes AS SELECT i, i % 9 AS g, CASE WHEN i % 3 = 0 THEN '-infinity'::TIMESTAMP WHEN i % 3 = 1 THEN 'infinity'::TIMESTAMP ELSE make_timestamp(-9223372036854775808) END AS ts FROM range(30000) t(i);
+
+statement ok
+CREATE TABLE mode_states AS SELECT g, i // 1000 AS batch, approx_quantile(ts, 0.5) EXPORT_STATE AS s FROM modes GROUP BY g, batch;
+
+query I
+SELECT count(*) FROM (SELECT g, finalize(combine_aggr(s)) AS q FROM mode_states GROUP BY g) WHERE (g % 3 = 0 AND q = '-infinity'::TIMESTAMP) OR (g % 3 = 1 AND q = 'infinity'::TIMESTAMP) OR (g % 3 = 2 AND epoch_us(q) = -9223372036854774784);
+----
+9
+
+query I
+SELECT bool_and(finalize(s) = q) FROM (SELECT g, approx_quantile(ts, [0.0, 0.5, 1.0]) AS q, approx_quantile(ts, [0.0, 0.5, 1.0]) EXPORT_STATE AS s FROM modes GROUP BY g);
 ----
 true

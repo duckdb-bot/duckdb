@@ -317,6 +317,10 @@ void StatisticsPropagator::TryExecuteAggregates(LogicalAggregate &aggr, unique_p
 		// not possible with groups
 		return;
 	}
+	if (aggr.grouping_sets.size() > 1) {
+		// several empty grouping sets return the same row once per set
+		return;
+	}
 	if (aggr.expressions.empty()) {
 		return;
 	}
@@ -681,17 +685,35 @@ unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalAggr
 	aggr.distinct_validity = distinct_validity;
 
 	const auto is_ungrouped = aggr.groups.empty();
+	// every grouping set emits its own rows, so the bounds below hold per grouping set
+	const idx_t grouping_set_count = MaxValue<idx_t>(aggr.grouping_sets.size(), 1);
 	// after we propagate statistics - try to directly execute aggregates using statistics
 	TryExecuteAggregates(aggr, node_ptr);
 
 	if (is_ungrouped) {
-		// Ungrouped aggregate always returns exactly one row, even over empty input
+		// Ungrouped aggregate always returns exactly one row per grouping set, even over empty input
 		// node_stats holds the input cardinality: do not leak it to the parent operator
 		node_stats.reset();
-		return make_uniq<NodeStatistics>(1U, 1U);
+		return make_uniq<NodeStatistics>(grouping_set_count, grouping_set_count);
 	}
 	// the max cardinality of an aggregate is the max cardinality of the input (i.e. when every row is a unique
-	// group)
+	// group), once per grouping set
+	if (node_stats && grouping_set_count > 1) {
+		if (node_stats->has_max_cardinality) {
+			if (node_stats->max_cardinality > NumericLimits<idx_t>::Maximum() / grouping_set_count) {
+				node_stats->has_max_cardinality = false;
+			} else {
+				node_stats->max_cardinality *= grouping_set_count;
+			}
+		}
+		if (node_stats->has_estimated_cardinality) {
+			if (node_stats->estimated_cardinality > NumericLimits<idx_t>::Maximum() / grouping_set_count) {
+				node_stats->estimated_cardinality = NumericLimits<idx_t>::Maximum();
+			} else {
+				node_stats->estimated_cardinality *= grouping_set_count;
+			}
+		}
+	}
 	// The join-order optimizer bounds a group key's distinct count by its table's min/max only for keys that are
 	// a direct base-table column reference; a key that is an expression or arrives through another operator falls
 	// back to an input-proportional guess. Now that the propagated group statistics are available, tighten the

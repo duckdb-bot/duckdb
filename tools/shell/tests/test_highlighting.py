@@ -185,6 +185,8 @@ def test_manual_uses_detected_color_mode(shell):
 
 
 OSC11_DARK_RESPONSE = b'\x1b]11;rgb:1e1e/1e1e/1e1e\x07\x1b[?62c'
+# the queries the shell sends to the terminal and the answers of a terminal with a dark background
+QUERY_RESPONSES = ((b'\x1b]11;?\x07', OSC11_DARK_RESPONSE), (b'\x1b[6n', b'\x1b[1;1R'))
 
 
 def run_script_in_pty(shell, arguments, steps, no_color=None):
@@ -220,12 +222,17 @@ def run_script_in_pty(shell, arguments, steps, no_color=None):
             if not chunk:
                 return
             output += chunk
-            # a query can be split over reads, so answer each complete one in the bytes not answered yet
+            # a query can be split over reads, so answer the complete queries in the bytes not answered yet, in the
+            # order the shell sent them
             unanswered += chunk
-            for query, response in ((b'\x1b]11;?\x07', OSC11_DARK_RESPONSE), (b'\x1b[6n', b'\x1b[1;1R')):
-                while query in unanswered:
-                    os.write(master, response)
-                    unanswered = unanswered[unanswered.index(query) + len(query):]
+            while True:
+                found = [(unanswered.index(query), query, response) for query, response in QUERY_RESPONSES
+                         if query in unanswered]
+                if not found:
+                    break
+                position, query, response = min(found)
+                os.write(master, response)
+                unanswered = unanswered[position + len(query):]
 
     try:
         pump(1.0)

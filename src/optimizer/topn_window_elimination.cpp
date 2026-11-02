@@ -347,7 +347,7 @@ TopNWindowElimination::CreateAggregateExpression(vector<unique_ptr<Expression>> 
 	fun_name += params.can_be_null && (requires_arg || change_to_arg) ? "_nulls_last" : "";
 
 	auto fun = GetBuiltinAggregateFunction(context, Identifier(fun_name), ExtractReturnTypes(aggregate_params));
-	return function_binder.BindAggregateFunction(std::move(fun), std::move(aggregate_params));
+	return function_binder.BindAggregateFunction(fun, std::move(aggregate_params));
 }
 
 unique_ptr<LogicalOperator>
@@ -616,6 +616,12 @@ bool TopNWindowElimination::CanOptimize(LogicalOperator &op) {
 		const auto current_column_ref = column_references.begin()->first;
 		column_references.clear();
 		D_ASSERT(current_column_ref.table_index == projection.table_index);
+		// The filter has to name the window column itself. An expression that only mentions it, such as
+		// row_number + 10, is a different predicate, and following the inner reference would drop that expression.
+		auto &proj_expr = *projection.expressions[current_column_ref.column_index];
+		if (proj_expr.GetExpressionType() != ExpressionType::BOUND_COLUMN_REF) {
+			return false;
+		}
 		VisitExpression(&projection.expressions[current_column_ref.column_index]);
 
 		child = *child.get().children[0];
@@ -867,7 +873,7 @@ TopNWindowElimination::UpdateTopmostBindings(TableIndex window_idx, unique_ptr<L
 		auto &new_binding = new_bindings[i];
 		unique_ptr<Expression> proj_expr = make_uniq<BoundColumnRefExpression>(original.types[i], new_binding);
 		if (original.types[i] != types[i]) {
-			proj_expr = BoundCastExpression::AddDefaultCastToType(std::move(proj_expr), types[i]);
+			proj_expr = BoundCastExpression::AddCastToType(context, std::move(proj_expr), types[i]);
 		}
 		proj_exprs.emplace_back(std::move(proj_expr));
 		new_binding.table_index = proj_table;

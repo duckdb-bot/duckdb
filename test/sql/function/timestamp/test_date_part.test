@@ -714,7 +714,7 @@ NULL	NULL
 infinity	NULL
 
 # EPOCH_MS doesn't  require ICU
-# epoch_ms on the other timestamp precisions goes through the TIMESTAMP_NS overload
+# epoch_ms on the other timestamp precisions
 query IIII
 SELECT epoch_ms(TIMESTAMP_NS '2026-07-01 09:32:06.999999533'), epoch_ms(TIMESTAMP_NS '2026-07-01 09:32:06.1234567'), epoch_ms(TIMESTAMP_MS '2026-07-01 09:32:06.999'), epoch_ms(TIMESTAMP_S '2026-07-01 09:32:06');
 ----

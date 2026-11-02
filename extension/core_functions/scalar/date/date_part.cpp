@@ -2766,13 +2766,13 @@ ScalarFunctionSet EpochMsFun::GetFunctions() {
 
 	// TIMESTAMP_MS and TIMESTAMP_S get their own overloads, so values outside the TIMESTAMP_NS range still work
 	auto tsms_func = DatePart::UnaryFunction<timestamp_ms_t, int64_t, OP>;
-	auto tsms_stats = OP::template PropagateStatistics<timestamp_ms_t>;
-	ScalarFunction tsms_fun({}, LogicalType::BIGINT, tsms_func, nullptr, tsms_stats);
+	ScalarFunction tsms_fun({}, LogicalType::BIGINT, tsms_func, nullptr,
+	                        StatisticsPropagator::PropagateFiniteMonotoneBounds);
 	tsms_fun.GetSignature().AddParameter("temporal", LogicalType::TIMESTAMP_MS);
 	operator_set.AddFunction(tsms_fun);
 	auto tss_func = DatePart::UnaryFunction<timestamp_sec_t, int64_t, OP>;
-	auto tss_stats = OP::template PropagateStatistics<timestamp_sec_t>;
-	ScalarFunction tss_fun({}, LogicalType::BIGINT, tss_func, nullptr, tss_stats);
+	ScalarFunction tss_fun({}, LogicalType::BIGINT, tss_func, nullptr,
+	                       StatisticsPropagator::PropagateFiniteMonotoneBounds);
 	tss_fun.GetSignature().AddParameter("temporal", LogicalType::TIMESTAMP_S);
 	operator_set.AddFunction(tss_fun);
 

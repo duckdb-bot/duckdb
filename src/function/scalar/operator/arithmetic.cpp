@@ -1874,7 +1874,13 @@ timestamp_t InterpolateOperator::Operation(const timestamp_t &lo, const double d
 	if (!Value::IsFinite(lo) || !Value::IsFinite(hi)) {
 		throw ConversionException("Cannot interpolate infinite TIMESTAMP values");
 	}
-	return timestamp_t(InterpolateInt64(lo.value, d, hi.value));
+	timestamp_t result(InterpolateInt64(lo.value, d, hi.value));
+	if (!Value::IsFinite(result)) {
+		// the smallest finite value lies below the -infinity sentinel, so the midpoint of two finite values can land
+		// on the sentinel itself, which is then moved to its finite neighbour towards the greater value
+		result.value++;
+	}
+	return result;
 }
 
 template <>

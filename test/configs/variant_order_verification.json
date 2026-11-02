@@ -17,6 +17,7 @@
         "test/sql/collate/test_icu_collate.test",
         "test/sql/settings/setting_collation.test",
         "test/sql/storage/icu_collation.test",
+        "test/sql/types/nested/map/test_map_extract_collation.test",
         "test/sql/types/struct/unnest_struct_mix.test"
       ]
     },

@@ -6,10 +6,10 @@
 statement ok
 CREATE TABLE t AS SELECT i, CASE WHEN i IN (3, 8) THEN NULL ELSE 2 * (i % 2) END AS x FROM range(12) r(i);
 
-# the frames of ten rows overlap by more than three quarters, so the window keeps them in skip lists; a frame of
-# two rows is served by the sorted tree
+# the frames of ten rows overlap by more than three quarters, so the window keeps them in skip lists, while a frame
+# of two rows is served by the sorted tree
 statement ok
-CREATE MACRO window_quantiles(frame_name) AS TABLE
+CREATE MACRO window_quantiles() AS TABLE
 SELECT i,
        quantile_cont(x, -0.25) OVER frame AS cont_q,
        quantile_cont(x, [-0.0, -0.25, -1.0]) OVER frame AS cont_list,
@@ -19,13 +19,13 @@ FROM t WINDOW frame AS (ORDER BY i ROWS BETWEEN 10 PRECEDING AND 1 PRECEDING);
 
 # the frame of row 2 holds the values 0 and 2
 query IIIII
-SELECT i, cont_q, cont_list, disc_q, disc_list FROM window_quantiles('wide') WHERE i = 2;
+SELECT i, cont_q, cont_list, disc_q, disc_list FROM window_quantiles() WHERE i = 2;
 ----
 2	1.5	[2.0, 1.5, 0.0]	2	[2, 2, 0]
 
 # every row agrees with the scalar aggregate over the rows of its frame
 query I
-SELECT count(*) FROM window_quantiles('wide') w
+SELECT count(*) FROM window_quantiles() w
 WHERE cont_q IS DISTINCT FROM (SELECT quantile_cont(s.x, -0.25) FROM t s WHERE s.i BETWEEN w.i - 10 AND w.i - 1)
    OR cont_list IS DISTINCT FROM (SELECT quantile_cont(s.x, [-0.0, -0.25, -1.0]) FROM t s WHERE s.i BETWEEN w.i - 10 AND w.i - 1)
    OR disc_q IS DISTINCT FROM (SELECT quantile_disc(s.x, -0.25) FROM t s WHERE s.i BETWEEN w.i - 10 AND w.i - 1)

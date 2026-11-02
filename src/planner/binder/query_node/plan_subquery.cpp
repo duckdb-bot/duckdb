@@ -14,6 +14,7 @@
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/expression/bound_operator_expression.hpp"
+#include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/planner/expression/bound_subquery_expression.hpp"
 #include "duckdb/planner/expression/bound_window_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
@@ -98,9 +99,14 @@ static unique_ptr<Expression> PlanExtremumRewrite(Binder &binder, BoundSubqueryE
 	// through to its binary-key implementation whose return type is BLOB.
 	bool extremum_normalized = false;
 	if (compare_type.id() != LogicalTypeId::BIT && compare_type.id() != LogicalTypeId::VARIANT) {
-		// the extremum is taken over the compared type, so that it normalizes to the same type as X
-		min_max_child = BoundCastExpression::AddDefaultCastToType(std::move(min_max_child), compare_type);
-		extremum_normalized = ExpressionBinder::PushCollation(binder.context, min_max_child, compare_type);
+		// a probe of the compared type tells whether its values are normalized
+		unique_ptr<Expression> probe = make_uniq<BoundReferenceExpression>(compare_type, idx_t(0));
+		if (ExpressionBinder::PushCollation(binder.context, probe, compare_type)) {
+			// the extremum is taken over the compared type, so that it normalizes to the same type as X
+			min_max_child = BoundCastExpression::AddDefaultCastToType(std::move(min_max_child), compare_type);
+			ExpressionBinder::PushCollation(binder.context, min_max_child, compare_type);
+			extremum_normalized = true;
+		}
 	}
 	min_max_children.push_back(std::move(min_max_child));
 

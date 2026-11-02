@@ -150,6 +150,19 @@ SELECT 'b' COLLATE NOCASE > ANY (SELECT NULL), '12:00:00+00'::TIMETZ > ALL (SELE
 ----
 NULL	true
 
+# without a collation the subquery values are cast to the compared type after the extremum is taken, as before,
+# so a typed NULL does not become a UNION member and a value that does not fit the compared type is not cast
+
+query I
+WITH rhs(v) AS (VALUES (2), (NULL::INTEGER)) SELECT union_value(n := 1) < ANY (SELECT v FROM rhs);
+----
+true
+
+query I
+SELECT 0.5::DECIMAL(38,37) > ANY (SELECT v FROM (VALUES (0), (100)) rhs(v));
+----
+true
+
 # maps with collated keys take their extremum under the collation, so 'b' > ALL('A', 'Z') is false under NOCASE
 
 query II

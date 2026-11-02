@@ -1295,8 +1295,7 @@ static bool CollationApplies(ClientContext &context, const LogicalType &type, Co
 	return ExpressionBinder::PushCollation(context, value, type, collation_type);
 }
 
-//! Whether every LIST or ARRAY argument whose elements take a comparison key, such as VARIANT or INTERVAL, can receive
-//! it, so that the keys are pushed into all arguments or into none and their values stay comparable
+//! Whether each LIST or ARRAY argument whose elements take a comparison key can receive it, which needs list_transform
 static bool ComparisonKeysApply(ClientContext &context, const BoundSimpleFunction &bound_function,
                                 const vector<unique_ptr<Expression>> &children, CollationType type) {
 	auto &argument_types = bound_function.GetArguments();

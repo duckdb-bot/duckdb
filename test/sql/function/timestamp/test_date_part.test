@@ -761,6 +761,23 @@ SELECT count(*) FROM ns_finite WHERE epoch_ms(ts) < -2;
 ----
 0
 
+# statistics of the TIMESTAMP_MS and TIMESTAMP_S overloads stay exact too
+statement ok
+CREATE TABLE ms_finite AS SELECT (TIMESTAMP '1970-01-01' + to_milliseconds(n))::TIMESTAMP_MS AS ts FROM range(-2, 3) t(n);
+
+statement ok
+CREATE TABLE s_finite AS SELECT (TIMESTAMP '1970-01-01' + to_seconds(n))::TIMESTAMP_S AS ts FROM range(-2, 3) t(n);
+
+query IIII
+SELECT min(epoch_ms(ts)), max(epoch_ms(ts)), count(*) FILTER (WHERE epoch_ms(ts) < -2), count(*) FILTER (WHERE epoch_ms(ts) BETWEEN -1 AND 1) FROM ms_finite;
+----
+-2	2	0	3
+
+query IIII
+SELECT min(epoch_ms(ts)), max(epoch_ms(ts)), count(*) FILTER (WHERE epoch_ms(ts) < -2000), count(*) FILTER (WHERE epoch_ms(ts) BETWEEN -1000 AND 1000) FROM s_finite;
+----
+-2000	2000	0	3
+
 statement ok
 CREATE TABLE timestamps_ns AS SELECT ts::TIMESTAMP_NS AS ts FROM timestamps;
 

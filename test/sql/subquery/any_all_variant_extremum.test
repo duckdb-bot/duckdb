@@ -107,7 +107,17 @@ SELECT 5 > ALL (SELECT x FROM (VALUES (1)) s(x) WHERE x > 100);
 ----
 true
 
-# keys that are normalized to another type, such as TIME WITH TIME ZONE, compare against the normalized extremum
+# values that are normalized to another type, such as TIME WITH TIME ZONE, compare against the normalized extremum
+
+query II
+SELECT '12:00:00+00'::TIMETZ > ANY (SELECT '11:00:00+00'::TIMETZ), '12:00:00+00'::TIMETZ <= ALL (SELECT '11:00:00+00'::TIMETZ);
+----
+true	false
+
+query I
+SELECT x FROM (VALUES ('12:00:00+00'::TIMETZ), ('09:00:00+00'::TIMETZ)) t(x) WHERE x > ANY (SELECT '10:00:00+00'::TIMETZ);
+----
+12:00:00+00
 
 query I
 SELECT ['12:00:00+00'::TIMETZ] > ANY (SELECT ['11:00:00+00'::TIMETZ]);

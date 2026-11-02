@@ -70,6 +70,26 @@ SELECT count(*) FROM (SELECT count(*) FROM range(5) t(i) GROUP BY GROUPING SETS 
 ----
 2
 
+# over empty input the empty sets still return their rows, so a limit below them stays
+query I
+SELECT count(*) FROM (SELECT i, count(*) FROM range(0) t(i) GROUP BY GROUPING SETS ((i), (), ()));
+----
+2
+
+query I
+SELECT count(*) FROM (SELECT i, count(*) FROM range(0) t(i) GROUP BY GROUPING SETS ((i), (), ()) LIMIT 1);
+----
+1
+
+query I
+SELECT count(*) FROM (SELECT i FROM range(0) t(i) GROUP BY GROUPING SETS ((i), (), ()) LIMIT 1);
+----
+1
+
+# a bound beyond the signed range is given up, so a union above it can still add the bounds
+statement ok
+EXPLAIN SELECT i FROM range(4611686018427387904) t(i) GROUP BY GROUPING SETS ((i), (i)) UNION ALL SELECT i FROM range(1) t(i);
+
 # a single grouping set keeps the input's row count as its bound
 query I
 SELECT count(*) FROM (SELECT i, count(*) FROM t GROUP BY i LIMIT 6);
@@ -99,3 +119,8 @@ query I
 SELECT count(*) FROM (SELECT count(*) FROM t GROUP BY GROUPING SETS ((), (), ()));
 ----
 3
+
+query I
+SELECT count(*) FROM (SELECT i, count(*) FROM range(0) t(i) GROUP BY GROUPING SETS ((i), (), ()) LIMIT 1);
+----
+1

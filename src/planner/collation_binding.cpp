@@ -232,20 +232,6 @@ static bool PushNestedCollation(ClientContext &context, unique_ptr<Expression> &
 //! core_functions extension is not loaded).
 static bool PushMapCollation(ClientContext &context, unique_ptr<Expression> &source, const LogicalType &sql_type,
                              CollationType type, const CollationBinding &binding) {
-	auto &entry_type = ListType::GetChildType(sql_type);
-	const Identifier lambda_parameter("x");
-	auto lambda_parameter_expr = make_uniq<BoundReferenceExpression>(lambda_parameter, entry_type, idx_t(0));
-	FunctionBinder function_binder(context);
-
-	vector<unique_ptr<Expression>> arguments;
-	arguments.push_back(lambda_parameter_expr->Copy());
-	arguments.push_back(make_uniq<BoundConstantExpression>(Value::BIGINT(1)));
-	auto key =
-	    function_binder.BindScalarFunction(Identifier::DefaultSchema(), "struct_extract_at", std::move(arguments));
-	if (!binding.PushCollation(context, key, MapType::KeyType(sql_type), type)) {
-		return false;
-	}
-
 	auto &catalog = Catalog::GetSystemCatalog(context);
 	auto map_entries = catalog.GetEntry<ScalarFunctionCatalogEntry>(
 	    context, QualifiedName(catalog.GetName(), Identifier::DefaultSchema(), "map_entries"),
@@ -258,6 +244,20 @@ static bool PushMapCollation(ClientContext &context, unique_ptr<Expression> &sou
 	    QualifiedName(catalog.GetName(), Identifier::DefaultSchema(), "__internal_map_from_entries_keep_first"),
 	    OnEntryNotFound::RETURN_NULL);
 	if (!map_entries || !list_transform || !map_from_entries) {
+		return false;
+	}
+
+	auto &entry_type = ListType::GetChildType(sql_type);
+	const Identifier lambda_parameter("x");
+	auto lambda_parameter_expr = make_uniq<BoundReferenceExpression>(lambda_parameter, entry_type, idx_t(0));
+	FunctionBinder function_binder(context);
+
+	vector<unique_ptr<Expression>> arguments;
+	arguments.push_back(lambda_parameter_expr->Copy());
+	arguments.push_back(make_uniq<BoundConstantExpression>(Value::BIGINT(1)));
+	auto key =
+	    function_binder.BindScalarFunction(Identifier::DefaultSchema(), "struct_extract_at", std::move(arguments));
+	if (!binding.PushCollation(context, key, MapType::KeyType(sql_type), type)) {
 		return false;
 	}
 

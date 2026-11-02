@@ -30,6 +30,24 @@ SELECT table_name FROM duckdb_tables() WHERE schema_name::INTEGER = 1 ORDER BY A
 log
 t
 
+# tables and views share a catalog set, so a filter on table_name must not run on the views
+statement ok
+CREATE SCHEMA "2";
+
+statement ok
+CREATE TABLE "2"."2" (i INTEGER);
+
+statement ok
+CREATE VIEW "2".v AS SELECT 1;
+
+query I
+SELECT table_name FROM duckdb_tables() WHERE schema_name = '2' AND table_name::INTEGER = 2;
+----
+2
+
+statement ok
+DROP SCHEMA "2" CASCADE;
+
 query I
 SELECT index_name FROM duckdb_indexes() WHERE schema_name::INTEGER = 1;
 ----

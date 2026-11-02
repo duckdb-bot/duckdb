@@ -106,3 +106,29 @@ query I
 SELECT 5 > ALL (SELECT x FROM (VALUES (1)) s(x) WHERE x > 100);
 ----
 true
+
+# keys that are normalized to another type, such as TIME WITH TIME ZONE, compare against the normalized extremum
+
+query I
+SELECT ['12:00:00+00'::TIMETZ] > ANY (SELECT ['11:00:00+00'::TIMETZ]);
+----
+true
+
+query II
+SELECT ['10:00:00+00'::TIMETZ] > ALL (SELECT x FROM (VALUES (['11:00:00+00'::TIMETZ]), (['09:00:00+00'::TIMETZ])) s(x)),
+       ['10:00:00+00'::TIMETZ] >= ANY (SELECT x FROM (VALUES (['11:00:00+00'::TIMETZ]), (['09:00:00+00'::TIMETZ])) s(x));
+----
+false	true
+
+query I
+SELECT map(['12:00:00+00'::TIMETZ], [1]) > ANY (SELECT map(['11:00:00+00'::TIMETZ], [1]));
+----
+true
+
+# maps with collated keys take their extremum under the collation: 'b' > ALL('A', 'Z') is false under NOCASE
+
+query II
+SELECT map(['b' COLLATE NOCASE], [1]) > ANY (SELECT map(['A' COLLATE NOCASE], [1])),
+       map(['b' COLLATE NOCASE], [1]) > ALL (SELECT x FROM (VALUES (map(['A'], [1])), (map(['Z'], [1]))) s(x));
+----
+true	false

@@ -98,6 +98,8 @@ static unique_ptr<Expression> PlanExtremumRewrite(Binder &binder, BoundSubqueryE
 	// through to its binary-key implementation whose return type is BLOB.
 	bool extremum_normalized = false;
 	if (compare_type.id() != LogicalTypeId::BIT && compare_type.id() != LogicalTypeId::VARIANT) {
+		// the extremum is taken over the compared type, so that it normalizes to the same type as X
+		min_max_child = BoundCastExpression::AddDefaultCastToType(std::move(min_max_child), compare_type);
 		extremum_normalized = ExpressionBinder::PushCollation(binder.context, min_max_child, compare_type);
 	}
 	min_max_children.push_back(std::move(min_max_child));

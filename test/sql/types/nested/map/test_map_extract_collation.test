@@ -128,10 +128,16 @@ FROM (SELECT map(['Apple' COLLATE NOCASE], [1]) m UNION ALL SELECT map(['APPLE' 
 ----
 3	2
 
-query II
-SELECT min(m), max(m) FROM (VALUES (map(['b' COLLATE NOCASE], [1])), (map(['A' COLLATE NOCASE], [2])), (map(['C' COLLATE NOCASE], [3]))) t(m);
+query III
+SELECT min(m), max(m), max(m, 2) FROM (VALUES (map(['b' COLLATE NOCASE], [1])), (map(['A' COLLATE NOCASE], [2])), (map(['C' COLLATE NOCASE], [3]))) t(m);
 ----
-{A=2}	{C=3}
+{A=2}	{C=3}	[{C=3}, {b=1}]
+
+# keys that are always normalized, such as TIME WITH TIME ZONE, order by their instant and are returned as stored
+query III
+SELECT min(m), max(m), min(m, 2) FROM (VALUES (map(['10:00:00+02'::TIMETZ], [1])), (map(['09:00:00+00'::TIMETZ], [2])), (map(['09:30:00+00'::TIMETZ], [3]))) t(m);
+----
+{'10:00:00+02'=1}	{'09:30:00+00'=3}	[{'10:00:00+02'=1}, {'09:00:00+00'=2}]
 
 # the default collation applies to map lookups as it does to list_position
 statement ok

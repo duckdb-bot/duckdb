@@ -30,7 +30,7 @@ SELECT TIMESTAMP_NS '2262-04-11 23:47:16.854775806'::TIMESTAMP_S, TIMESTAMP_NS '
 
 # the direct cast agrees with the cast through TIMESTAMP_MS on every value of a table
 statement ok
-CREATE TABLE ns AS SELECT TIMESTAMP_NS '2000-01-01 00:00:00' + to_microseconds(i * 777777) + to_nanoseconds(i % 1000) AS ts FROM range(5000) t(i);
+CREATE TABLE ns AS SELECT make_timestamp_ns(946684800000000000 + i * 777777123) AS ts FROM range(5000) t(i);
 
 query I
 SELECT count(*) FROM ns WHERE ts::TIMESTAMP_S <> ts::TIMESTAMP_MS::TIMESTAMP_S;

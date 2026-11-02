@@ -1,0 +1,94 @@
+# name: test/sql/window/quantile_window_descending.test
+# description: A window quantile with a negative fraction counts from the top, in every frame shape
+# group: [window]
+
+# twelve rows alternating 0 and 2, with two NULLs
+statement ok
+CREATE TABLE t AS SELECT i, CASE WHEN i IN (3, 8) THEN NULL ELSE 2 * (i % 2) END AS x FROM range(12) r(i);
+
+# the frames of ten rows overlap by more than three quarters, so the window keeps them in skip lists; a frame of
+# two rows is served by the sorted tree
+statement ok
+CREATE MACRO window_quantiles(frame_name) AS TABLE
+SELECT i,
+       quantile_cont(x, -0.25) OVER frame AS cont_q,
+       quantile_cont(x, [-0.0, -0.25, -1.0]) OVER frame AS cont_list,
+       quantile_disc(x, -0.25) OVER frame AS disc_q,
+       quantile_disc(x, [-0.0, -0.25, -1.0]) OVER frame AS disc_list
+FROM t WINDOW frame AS (ORDER BY i ROWS BETWEEN 10 PRECEDING AND 1 PRECEDING);
+
+# the frame of row 2 holds the values 0 and 2
+query IIIII
+SELECT i, cont_q, cont_list, disc_q, disc_list FROM window_quantiles('wide') WHERE i = 2;
+----
+2	1.5	[2.0, 1.5, 0.0]	2	[2, 2, 0]
+
+# every row agrees with the scalar aggregate over the rows of its frame
+query I
+SELECT count(*) FROM window_quantiles('wide') w
+WHERE cont_q IS DISTINCT FROM (SELECT quantile_cont(s.x, -0.25) FROM t s WHERE s.i BETWEEN w.i - 10 AND w.i - 1)
+   OR cont_list IS DISTINCT FROM (SELECT quantile_cont(s.x, [-0.0, -0.25, -1.0]) FROM t s WHERE s.i BETWEEN w.i - 10 AND w.i - 1)
+   OR disc_q IS DISTINCT FROM (SELECT quantile_disc(s.x, -0.25) FROM t s WHERE s.i BETWEEN w.i - 10 AND w.i - 1)
+   OR disc_list IS DISTINCT FROM (SELECT quantile_disc(s.x, [-0.0, -0.25, -1.0]) FROM t s WHERE s.i BETWEEN w.i - 10 AND w.i - 1);
+----
+0
+
+# the positive fractions are unchanged
+query I
+SELECT count(*) FROM (
+    SELECT i, quantile_cont(x, 0.25) OVER frame AS cont_q, quantile_disc(x, 0.75) OVER frame AS disc_q
+    FROM t WINDOW frame AS (ORDER BY i ROWS BETWEEN 10 PRECEDING AND 1 PRECEDING)
+) w
+WHERE cont_q IS DISTINCT FROM (SELECT quantile_cont(s.x, 0.25) FROM t s WHERE s.i BETWEEN w.i - 10 AND w.i - 1)
+   OR disc_q IS DISTINCT FROM (SELECT quantile_disc(s.x, 0.75) FROM t s WHERE s.i BETWEEN w.i - 10 AND w.i - 1);
+----
+0
+
+# a frame that ends at the current row and keeps the skip lists
+query I
+SELECT count(*) FROM (
+    SELECT i, quantile_cont(x, -0.25) OVER frame AS cont_q, quantile_disc(x, -0.4) OVER frame AS disc_q
+    FROM t WINDOW frame AS (ORDER BY i ROWS BETWEEN 10 PRECEDING AND CURRENT ROW)
+) w
+WHERE cont_q IS DISTINCT FROM (SELECT quantile_cont(s.x, -0.25) FROM t s WHERE s.i BETWEEN w.i - 10 AND w.i)
+   OR disc_q IS DISTINCT FROM (SELECT quantile_disc(s.x, -0.4) FROM t s WHERE s.i BETWEEN w.i - 10 AND w.i);
+----
+0
+
+# the frames served by the sorted tree agree as well
+query I
+SELECT count(*) FROM (
+    SELECT i, quantile_cont(x, -0.25) OVER frame AS cont_q, quantile_disc(x, -0.25) OVER frame AS disc_q
+    FROM t WINDOW frame AS (ORDER BY i ROWS BETWEEN 1 PRECEDING AND CURRENT ROW)
+) w
+WHERE cont_q IS DISTINCT FROM (SELECT quantile_cont(s.x, -0.25) FROM t s WHERE s.i BETWEEN w.i - 1 AND w.i)
+   OR disc_q IS DISTINCT FROM (SELECT quantile_disc(s.x, -0.25) FROM t s WHERE s.i BETWEEN w.i - 1 AND w.i);
+----
+0
+
+# the issue's timestamps
+query II
+SELECT i, (quantile_cont(ts, -0.25) OVER (ORDER BY i ROWS BETWEEN 10 PRECEDING AND 1 PRECEDING))::VARCHAR
+FROM (SELECT i, CASE WHEN x IS NULL THEN NULL ELSE make_timestamp(1000000 * x) END AS ts FROM t)
+QUALIFY i = 2;
+----
+2	1970-01-01 00:00:01.5
+
+# strings take the same path
+query II
+SELECT i, quantile_disc(s, -0.25) OVER (ORDER BY i ROWS BETWEEN 10 PRECEDING AND 1 PRECEDING)
+FROM (SELECT i, CASE WHEN x IS NULL THEN NULL ELSE 'v' || x::VARCHAR END AS s FROM t)
+QUALIFY i = 2;
+----
+2	v2
+
+# a larger partition with a longer skip list
+query I
+SELECT count(*) FROM (
+    SELECT i, quantile_cont(v, -0.3) OVER frame AS cont_q, quantile_disc(v, -0.3) OVER frame AS disc_q
+    FROM (SELECT i, (i * 37) % 101 AS v FROM range(300) r(i)) WINDOW frame AS (ORDER BY i ROWS BETWEEN 40 PRECEDING AND 2 PRECEDING)
+) w
+WHERE cont_q IS DISTINCT FROM (SELECT quantile_cont(s.v, -0.3) FROM (SELECT i, (i * 37) % 101 AS v FROM range(300) r(i)) s WHERE s.i BETWEEN w.i - 40 AND w.i - 2)
+   OR disc_q IS DISTINCT FROM (SELECT quantile_disc(s.v, -0.3) FROM (SELECT i, (i * 37) % 101 AS v FROM range(300) r(i)) s WHERE s.i BETWEEN w.i - 40 AND w.i - 2);
+----
+0

@@ -725,6 +725,42 @@ SELECT epoch_ms(TIMESTAMP_NS '1962-07-31 12:20:48.123456789'), epoch_ms(NULL::TI
 ----
 -234185951877	NULL	NULL
 
+# half millisecond ties round like the implicit cast to TIMESTAMP did in earlier versions
+query IIIIII
+SELECT epoch_ms(make_timestamp_ns(499499)), epoch_ms(make_timestamp_ns(499500)), epoch_ms(make_timestamp_ns(500000)), epoch_ms(make_timestamp_ns(-499000)), epoch_ms(make_timestamp_ns(-499001)), epoch_ms(make_timestamp_ns(-499500));
+----
+0	1	1	0	0	-1
+
+# TIMESTAMP_MS and TIMESTAMP_S values outside the TIMESTAMP_NS range
+query II
+SELECT epoch_ms(TIMESTAMP_MS '2500-01-01 00:00:00'), epoch_ms(TIMESTAMP_S '1600-01-01 00:00:00');
+----
+16725225600000	-11676096000000
+
+query II
+SELECT epoch_ms(TIME_NS '12:34:56.123456789'), epoch_ms(TIME '12:34:56.123456');
+----
+45296123	45296123
+
+# statistics of epoch_ms over a finite TIMESTAMP_NS column stay exact
+statement ok
+CREATE TABLE ns_finite AS SELECT make_timestamp_ns(n * 1000000) AS ts FROM range(-2, 3) t(n);
+
+query II
+SELECT min(epoch_ms(ts)), max(epoch_ms(ts)) FROM ns_finite;
+----
+-2	2
+
+query III
+SELECT count(*) FILTER (WHERE epoch_ms(ts) < -2), count(*) FILTER (WHERE epoch_ms(ts) BETWEEN -1 AND 1), count(*) FILTER (WHERE epoch_ms(ts) > 2) FROM ns_finite;
+----
+0	3	0
+
+query I
+SELECT count(*) FROM ns_finite WHERE epoch_ms(ts) < -2;
+----
+0
+
 statement ok
 CREATE TABLE timestamps_ns AS SELECT ts::TIMESTAMP_NS AS ts FROM timestamps;
 

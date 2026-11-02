@@ -1315,7 +1315,18 @@ int64_t DatePart::EpochMillisOperator::Operation(timestamp_t input) {
 
 template <>
 int64_t DatePart::EpochMillisOperator::Operation(timestamp_ns_t input) {
-	return Operation<timestamp_t, int64_t>(Truncate(input));
+	// round to microseconds first, as the implicit cast to TIMESTAMP did before the TIMESTAMP_NS overload existed
+	return Operation<timestamp_t, int64_t>(Cast::Operation<timestamp_ns_t, timestamp_t>(input));
+}
+
+template <>
+int64_t DatePart::EpochMillisOperator::Operation(timestamp_ms_t input) {
+	return input.value;
+}
+
+template <>
+int64_t DatePart::EpochMillisOperator::Operation(timestamp_sec_t input) {
+	return Cast::Operation<timestamp_sec_t, timestamp_ms_t>(input).value;
 }
 
 template <>
@@ -1352,6 +1363,11 @@ int64_t DatePart::EpochMillisOperator::Operation(dtime_t input) {
 template <>
 int64_t DatePart::EpochMillisOperator::Operation(dtime_tz_t input) {
 	return DatePart::EpochMillisOperator::Operation<dtime_t, int64_t>(input.time());
+}
+
+template <>
+int64_t DatePart::EpochMillisOperator::Operation(dtime_ns_t input) {
+	return input.value / Interval::NANOS_PER_MSEC;
 }
 
 template <>
@@ -2747,6 +2763,18 @@ ScalarFunctionSet EpochMsFun::GetFunctions() {
 	ScalarFunction tstz_fun({}, LogicalType::BIGINT, tstz_func, nullptr, tstz_stats);
 	tstz_fun.GetSignature().AddParameter("temporal", LogicalType::TIMESTAMP_TZ);
 	operator_set.AddFunction(tstz_fun);
+
+	// TIMESTAMP_MS and TIMESTAMP_S get their own overloads, so values outside the TIMESTAMP_NS range still work
+	auto tsms_func = DatePart::UnaryFunction<timestamp_ms_t, int64_t, OP>;
+	auto tsms_stats = OP::template PropagateStatistics<timestamp_ms_t>;
+	ScalarFunction tsms_fun({}, LogicalType::BIGINT, tsms_func, nullptr, tsms_stats);
+	tsms_fun.GetSignature().AddParameter("temporal", LogicalType::TIMESTAMP_MS);
+	operator_set.AddFunction(tsms_fun);
+	auto tss_func = DatePart::UnaryFunction<timestamp_sec_t, int64_t, OP>;
+	auto tss_stats = OP::template PropagateStatistics<timestamp_sec_t>;
+	ScalarFunction tss_fun({}, LogicalType::BIGINT, tss_func, nullptr, tss_stats);
+	tss_fun.GetSignature().AddParameter("temporal", LogicalType::TIMESTAMP_S);
+	operator_set.AddFunction(tss_fun);
 
 	//	Deprecated inverse BIGINT => TIMESTAMP
 	ScalarFunction inverse_fun({}, LogicalType::TIMESTAMP, DatePart::EpochMillisOperator::Inverse);

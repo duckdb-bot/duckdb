@@ -202,9 +202,10 @@ def run_script_in_pty(shell, arguments, steps, no_color=None):
     process = subprocess.Popen([shell, '-no-init', *arguments], stdin=slave, stdout=slave, stderr=slave, env=env)
     os.close(slave)
     output = b''
+    unanswered = b''
 
     def pump(seconds):
-        nonlocal output
+        nonlocal output, unanswered
         deadline = time.monotonic() + seconds
         while True:
             remaining = deadline - time.monotonic()
@@ -219,10 +220,12 @@ def run_script_in_pty(shell, arguments, steps, no_color=None):
             if not chunk:
                 return
             output += chunk
-            if b'\x1b]11;?' in chunk:
-                os.write(master, OSC11_DARK_RESPONSE)
-            if b'\x1b[6n' in chunk:
-                os.write(master, b'\x1b[1;1R')
+            # a query can be split over reads, so answer each complete one in the bytes not answered yet
+            unanswered += chunk
+            for query, response in ((b'\x1b]11;?\x07', OSC11_DARK_RESPONSE), (b'\x1b[6n', b'\x1b[1;1R')):
+                while query in unanswered:
+                    os.write(master, response)
+                    unanswered = unanswered[unanswered.index(query) + len(query):]
 
     try:
         pump(1.0)
@@ -293,5 +296,30 @@ def test_batch_color_probe_keeps_pasted_statements(shell):
     assert output.count(b'111') == 2, output
     assert output.count(b'222') == 2, output
     assert settings == SANE_TERMINAL, output
+
+
+# once statements are read from the terminal through stdio, turning colors on no longer probes, as the response
+# would take the statements typed ahead with it
+@pytest.mark.skipif(os.name == 'nt', reason="requires a POSIX pseudo-terminal")
+def test_batch_colors_enabled_later_keep_pasted_statements(shell):
+    steps = [(b'.highlight on\nSELECT 111 AS a;\nSELECT 222 AS b;\n', 2.0), (b'.quit\n', 0.5)]
+    status, output, settings = run_script_in_pty(shell, ['-batch'], steps, no_color='1')
+    assert status == 0, output
+    assert b'\x1b]11;?' not in output
+    assert output.count(b'111') == 2, output
+    assert output.count(b'222') == 2, output
+    assert settings == SANE_TERMINAL, output
+
+
+# a batch session that prints no colors does not probe, so it never waits for a terminal that does not answer
+@pytest.mark.skipif(os.name == 'nt', reason="requires a POSIX pseudo-terminal")
+@pytest.mark.parametrize("arguments", [['-batch', '-csv'], ['-batch', '-json']])
+def test_batch_without_colors_does_not_probe(shell, arguments):
+    steps = [(b'SELECT 111 AS a;\nSELECT 222 AS b;\n', 2.0), (b'.quit\n', 0.5)]
+    status, output, settings = run_script_in_pty(shell, arguments, steps)
+    assert status == 0, output
+    assert b'\x1b]11;?' not in output
+    assert output.count(b'111') == 2, output
+    assert output.count(b'222') == 2, output
 
 # fmt: on

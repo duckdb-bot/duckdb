@@ -488,8 +488,8 @@ bool Terminal::TryGetBackgroundColor(TerminalColor &color, bool keep_pending_inp
 		return true;
 	}
 	if (rawmode) {
-		// the line editor holds the terminal in raw mode - entering raw mode again would save the raw settings as
-		// the ones to restore, and the terminal would stay raw after the editor is done
+		// the line editor holds the terminal in raw mode, and entering raw mode again would save the raw settings
+		// as the ones to restore, leaving the terminal raw after the editor is done
 		return false;
 	}
 	if (IsContinuousIntegrationEnvironment()) {
@@ -502,7 +502,7 @@ bool Terminal::TryGetBackgroundColor(TerminalColor &color, bool keep_pending_inp
 		return false;
 	}
 	if (keep_pending_input) {
-		// the response arrives on stdin - move the input typed so far to the line editor's buffer first
+		// the response arrives on stdin, so the input typed so far goes to the line editor's buffer first
 		BufferAvailableInput();
 	}
 	int ifd = STDIN_FILENO;

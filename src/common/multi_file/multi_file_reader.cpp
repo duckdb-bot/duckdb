@@ -94,11 +94,24 @@ bool MultiFileBindData::MatchesPhysicalColumn(idx_t column_idx, const Identifier
 }
 
 bool MultiFileBindData::HasIdentityMapping(const vector<MultiFileColumnDefinition> &physical_columns) const {
-	if (physical_columns.size() != names.size() || physical_columns.size() != types.size()) {
+	if (physical_columns.size() > names.size() || names.size() != types.size()) {
 		return false;
 	}
 	for (idx_t i = 0; i < physical_columns.size(); i++) {
-		if (!MatchesPhysicalColumn(i, physical_columns[i].name, physical_columns[i].type)) {
+		auto &physical = physical_columns[i];
+		if (reader_bind.file_row_number_idx.IsValid() && reader_bind.file_row_number_idx.GetIndex() == i &&
+		    physical.identifier.type().id() == LogicalTypeId::INTEGER &&
+		    physical.identifier.GetValue<int32_t>() == MultiFileReader::ORDINAL_FIELD_ID) {
+			// a reader that lists the file row number among its columns places it where the output has it
+			continue;
+		}
+		if (!MatchesPhysicalColumn(i, physical.name, physical.type)) {
+			return false;
+		}
+	}
+	// the output may go on with generated columns, which no physical ordinal addresses
+	for (idx_t i = physical_columns.size(); i < names.size(); i++) {
+		if (!IsGeneratedColumn(i)) {
 			return false;
 		}
 	}

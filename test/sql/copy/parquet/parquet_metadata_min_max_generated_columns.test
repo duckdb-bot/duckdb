@@ -1,0 +1,90 @@
+# name: test/sql/copy/parquet/parquet_metadata_min_max_generated_columns.test
+# description: min and max over a single Parquet file are answered from the metadata with generated columns requested
+# group: [parquet]
+
+require parquet
+
+statement ok
+COPY (SELECT range AS v, range % 7 AS w FROM range(100000)) TO '__TEST_DIR__/generated_columns.parquet' (ROW_GROUP_SIZE 20000);
+
+statement ok
+COPY (SELECT range AS v, 1 AS k FROM range(100000)) TO '__TEST_DIR__/hive' (FORMAT PARQUET, PARTITION_BY (k), ROW_GROUP_SIZE 20000);
+
+# without generated columns the aggregate reads the row group statistics instead of the data
+query II
+EXPLAIN SELECT min(v), max(v) FROM read_parquet('__TEST_DIR__/generated_columns.parquet')
+----
+physical_plan	<REGEX>:.*Column Data Scan.*
+
+# the filename column follows the columns of the file and does not change their positions
+query II
+EXPLAIN SELECT min(v), max(v) FROM read_parquet('__TEST_DIR__/generated_columns.parquet', filename = true)
+----
+physical_plan	<REGEX>:.*Column Data Scan.*
+
+query II
+SELECT min(v), max(v) FROM read_parquet('__TEST_DIR__/generated_columns.parquet', filename = true)
+----
+0	99999
+
+query II
+EXPLAIN SELECT min(w), max(w) FROM read_parquet('__TEST_DIR__/generated_columns.parquet', filename = true)
+----
+physical_plan	<REGEX>:.*Column Data Scan.*
+
+query II
+SELECT min(w), max(w) FROM read_parquet('__TEST_DIR__/generated_columns.parquet', filename = true)
+----
+0	6
+
+# the same for the file row number
+query II
+EXPLAIN SELECT min(v), max(v) FROM read_parquet('__TEST_DIR__/generated_columns.parquet', file_row_number = true)
+----
+physical_plan	<REGEX>:.*Column Data Scan.*
+
+query II
+SELECT min(v), max(v) FROM read_parquet('__TEST_DIR__/generated_columns.parquet', file_row_number = true)
+----
+0	99999
+
+query II
+EXPLAIN SELECT min(v), max(v) FROM read_parquet('__TEST_DIR__/generated_columns.parquet', file_row_number = true, filename = true)
+----
+physical_plan	<REGEX>:.*Column Data Scan.*
+
+# and for a hive partition column that the file does not have
+query II
+EXPLAIN SELECT min(v), max(v) FROM read_parquet('__TEST_DIR__/hive/k=1/data_0.parquet', hive_partitioning = true)
+----
+physical_plan	<REGEX>:.*Column Data Scan.*
+
+query III
+SELECT min(v), max(v), max(k) FROM read_parquet('__TEST_DIR__/hive/k=1/data_0.parquet', hive_partitioning = true)
+----
+0	99999	1
+
+# the generated columns themselves have no row group statistics, so they are read
+query II
+EXPLAIN SELECT min(filename) FROM read_parquet('__TEST_DIR__/generated_columns.parquet', filename = true)
+----
+physical_plan	<REGEX>:.*Read Parquet.*
+
+query I
+SELECT min(filename) LIKE '%generated_columns.parquet' FROM read_parquet('__TEST_DIR__/generated_columns.parquet', filename = true)
+----
+true
+
+# a hive partition column that replaces a column of the file takes its values from the path, not from the statistics
+statement ok
+COPY (SELECT range AS v, 42 AS k FROM range(100000)) TO '__TEST_DIR__/hive/k=1/replaced.parquet' (ROW_GROUP_SIZE 20000);
+
+query II
+EXPLAIN SELECT min(k), max(k) FROM read_parquet('__TEST_DIR__/hive/k=1/replaced.parquet', hive_partitioning = true)
+----
+physical_plan	<REGEX>:.*Read Parquet.*
+
+query II
+SELECT min(k), max(k) FROM read_parquet('__TEST_DIR__/hive/k=1/replaced.parquet', hive_partitioning = true)
+----
+1	1

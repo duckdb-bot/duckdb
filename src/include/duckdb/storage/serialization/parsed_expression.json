@@ -357,6 +357,9 @@
         "accessor_mut": "GetLambdaSyntaxTypeMutable()",
         "accessor": "GetLambdaSyntaxType()"
       }
+    ],
+    "finalize_deserialization": [
+      "result->FinalizeDeserialization(deserializer);"
     ]
   },
   {

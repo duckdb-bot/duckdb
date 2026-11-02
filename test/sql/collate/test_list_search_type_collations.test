@@ -81,26 +81,26 @@ EXPLAIN SELECT id FROM lists WHERE list_contains(l, 6::UBIGINT::VARIANT)
 ----
 logical_opt	<REGEX>:.*list_contains\(list_transform\(l, lambda x: variant_comparator\(x\)\).*BLOB.*
 
-# lists of flat types keep their own comparison
+# lists of flat types with a comparison key, such as INTERVAL, receive it as well
 statement ok
 CREATE TABLE intervals AS SELECT [to_days(range)] AS l FROM range(40)
 
 query II
 EXPLAIN SELECT count(*) FROM intervals WHERE list_contains(l, INTERVAL '1 month')
 ----
-logical_opt	<!REGEX>:.*normalized_interval.*
+logical_opt	<REGEX>:.*list_contains\(list_transform\(l, lambda x: normalized_interval\(x\)\).*
 
-# 30 days still equals 1 month
+# 30 days equals 1 month
 query I
 SELECT count(*) FROM intervals WHERE list_contains(l, INTERVAL '1 month')
 ----
 1
 
-# the default collation is still not applied to string arguments
+# the default collation applies to string arguments and to lists of strings
 statement ok
 SET default_collation = 'nocase'
 
 query III
 SELECT list_contains(['A'], 'a'), contains('ABC', 'b'), 'ABC' LIKE '%b%'
 ----
-false	false	false
+true	true	true

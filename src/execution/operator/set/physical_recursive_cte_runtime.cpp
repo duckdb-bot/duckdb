@@ -1,4 +1,5 @@
 #include "duckdb/execution/operator/set/physical_recursive_cte_state.hpp"
+#include "duckdb/execution/operator/set/physical_recursive_cte_union_state.hpp"
 
 #include "duckdb/execution/operator/aggregate/physical_hash_aggregate.hpp"
 #include "duckdb/execution/operator/join/physical_blockwise_nl_join.hpp"
@@ -73,10 +74,7 @@ static idx_t GetRecursiveWorkUnits(const RecursiveCTEState &state, idx_t direct_
 		work_units += state.CurrentInputTable().ChunkCount() * references.frontier_scans;
 	}
 	if (op.recurring_table && references.recurring_scans > 0) {
-		const auto recurring_chunks =
-		    op.using_key ? (state.GetHashTable().Count() + STANDARD_VECTOR_SIZE - 1) / STANDARD_VECTOR_SIZE
-		                 : op.recurring_table->ChunkCount();
-		work_units += recurring_chunks * references.recurring_scans;
+		work_units += state.RecurringStateChunks() * references.recurring_scans;
 	}
 	// Direct probes consume their visible input without scanning the frozen recurring state. Recursive probe inputs
 	// are counted above, while independent probe inputs contribute their estimated chunks.
@@ -92,8 +90,7 @@ static idx_t GetRecursiveInputRows(const RecursiveCTEState &state) {
 		recursive_rows += state.CurrentInputTable().Count() * references.frontier_scans;
 	}
 	if (op.recurring_table && references.recurring_scans > 0) {
-		const auto recurring_rows = op.using_key ? state.GetHashTable().Count() : op.recurring_table->Count();
-		recursive_rows += recurring_rows * references.recurring_scans;
+		recursive_rows += state.RecurringStateRows() * references.recurring_scans;
 	}
 	return recursive_rows;
 }
@@ -115,7 +112,7 @@ static RecursiveCTEParallelism GetRecursiveParallelism(const RecursiveCTEState &
 	if (worker_count <= 1) {
 		return RecursiveCTEParallelism(1);
 	}
-	if (!op.using_key && op.union_all && worker_count > 1) {
+	if (!op.UsingKey() && op.UnionAll() && worker_count > 1) {
 		// Ordinary UNION ALL needs enough work to amortize every scheduled pipeline and private-output combine.
 		auto estimated_work_units = work_units;
 		if (op.working_table && schedule_plan.cte_scan_pipeline_count > 0) {
@@ -265,8 +262,8 @@ private:
 //! pipeline scheduling path is too expensive here: it assumes a one-shot execution, creates fresh
 //! PipelineExecutors/tasks every time, and resets shared pipeline state immediately before launch.
 //! Recursive CTEs need the same dependency semantics while reusing cached PipelineExecutors.
-//! Operator state can be shared across pipelines (e.g. operators above a UNION), so it is reset
-//! up-front on the main thread for the whole schedule; events only reset pipeline-local state.
+//! Operator state is invalidated once per iteration on the main thread; events lazily recreate
+//! missing state through the ordinary initialization path once their dependencies have finished.
 class RecursiveCTEPipelineEvent : public BasePipelineEvent {
 public:
 	RecursiveCTEPipelineEvent(shared_ptr<Pipeline> pipeline_p, RecursiveCTEState &state_p, idx_t worker_limit_p,
@@ -281,17 +278,22 @@ public:
 	bool prepared_for_schedule = false;
 
 	void PrepareForSchedule() {
-		// Sink and operator state were reset up-front on the main thread for the whole schedule.
-		// Root events also prepare their source state up-front, before any event can execute.
+		// Sink state was reset up-front on the main thread for the whole schedule. A root event
+		// prepares its operator and source state before its own tasks launch; roots scheduled
+		// earlier may already be executing, with shared state guarded by the operator lock.
+		pipeline->InitializeOperatorState();
 		pipeline->ResetSourceForReschedule();
 		prepared_for_schedule = true;
 	}
 
 	void Schedule() override {
-		// A dependent event schedules from a worker thread while sibling pipelines that share
-		// operator instances may still be executing, so only the pipeline-local source state is
-		// reset here, once dependency outputs such as refilled CTE materializations are final.
+		// A dependent event schedules once all of its dependencies have finished, so dependency
+		// outputs such as join builds and refilled CTE materializations are final here. Operator
+		// state invalidated at iteration start is recreated through the shared create-if-absent
+		// path: the first scheduling pipeline initializes shared state under the operator lock,
+		// and competing pipelines observe the initialized state.
 		if (!prepared_for_schedule) {
+			pipeline->InitializeOperatorState();
 			pipeline->ResetSourceForReschedule();
 		}
 
@@ -428,6 +430,7 @@ BuildRecursivePipelineSchedulePlan(const vector<shared_ptr<MetaPipeline>> &meta_
 	// the active subset and ignore dependencies whose other endpoint is already materialized.
 	auto schedule = BuildPipelineSchedule(meta_pipelines, PipelineScheduleMode::ACTIVE_SUBSET);
 	plan->stages.reserve(schedule->stages.size());
+	reference_set_t<PhysicalOperator> invalidate_dedup;
 	vector<idx_t> recursive_stage_indices(schedule->stages.size(), DConstants::INVALID_INDEX);
 	for (idx_t stage_idx = 0; stage_idx < schedule->stages.size(); stage_idx++) {
 		auto &stage = schedule->stages[stage_idx];
@@ -447,6 +450,11 @@ BuildRecursivePipelineSchedulePlan(const vector<shared_ptr<MetaPipeline>> &meta_
 				plan->has_source_tasks = true;
 				plan->source_tasks_write_recursive_output =
 				    plan->source_tasks_write_recursive_output || pipeline.GetSink().get() == &recursive_cte;
+			}
+			for (auto &op_ref : pipeline.GetIntermediateOperators()) {
+				if (invalidate_dedup.insert(op_ref.get()).second) {
+					plan->invalidate_operators.push_back(op_ref);
+				}
 			}
 		}
 		recursive_stage_indices[stage_idx] = plan->stages.size();
@@ -791,15 +799,6 @@ static void ScheduleRecursivePlan(const RecursiveCTEPipelineSchedulePlan &plan, 
 		pipeline.get().ResetSource(true);
 	}
 
-	// Reset global operator state for every pipeline up-front: dependent events schedule from
-	// worker threads while sibling pipelines sharing operator instances are still executing, so
-	// operator state must not be reset at schedule time.
-	for (auto &stage : plan.stages) {
-		if (stage.type == PipelineScheduleStageType::EXECUTE) {
-			stage.pipeline.get().ResetOperatorsForReschedule();
-		}
-	}
-
 	const auto configured_threads =
 	    TaskScheduler::GetScheduler(state.GetOperator().recursive_meta_pipeline->GetExecutor().context)
 	        .NumberOfThreads();
@@ -870,7 +869,11 @@ static void ExecuteRecursiveInlinePlan(RecursiveCTEState &state, Executor &execu
 		auto &pipeline = stage.pipeline.get();
 		switch (stage.type) {
 		case PipelineScheduleStageType::EXECUTE: {
-			pipeline.ResetForReschedule(false);
+			// Stages become ready in dependency order, so missing operator state is created here
+			// through the same initialization path the ordinary scheduler and the event schedule
+			// use; state shared with an earlier stage is already initialized and kept.
+			pipeline.InitializeOperatorState();
+			pipeline.ResetSourceForReschedule();
 			// Invariant builds have independent source work even when the recursive frontier is tiny.
 			const auto worker_limit =
 			    stage.is_invariant_build ? TaskScheduler::GetScheduler(executor.context).NumberOfThreads() : idx_t(1);
@@ -1012,6 +1015,15 @@ void PhysicalRecursiveCTE::ExecuteRecursivePipelines(ExecutionContext &context) 
 		}
 	}
 
+	// Invalidate global operator state from the main thread while nothing executes: reusable
+	// state is reset in place, everything else is destroyed. Both recursive schedules recreate
+	// missing state through the ordinary create-if-absent initialization once a pipeline's
+	// dependencies have finished, because state construction may consume dependency-produced
+	// sink state. The plan's deduplicated list visits each shared operator exactly once.
+	for (auto &op_ref : schedule_plan->invalidate_operators) {
+		Pipeline::InvalidateOperatorStateForReschedule(context.client, op_ref.get());
+	}
+
 	ConfigureInvariantRecursiveBuildReuse(*this, can_cache_invariant_meta_pipelines);
 
 	if (!allow_reuse) {
@@ -1048,23 +1060,24 @@ void PhysicalRecursiveCTE::ExecuteRecursivePipelines(ExecutionContext &context) 
 		frontier_allocation_bytes = frontier.AllocationSize();
 		epoch_task_start = gstate.GetMetrics().TaskCount();
 	}
-	if (!using_key && union_all) {
+	if (!UsingKey() && UnionAll()) {
+		auto &union_state = gstate.Cast<RecursiveCTEUnionState>();
 		const auto source_tasks_write_recursive_output = parallelism.frontier_worker_count == 1 &&
 		                                                 parallelism.source_task_worker_count > 1 &&
 		                                                 schedule_plan->source_tasks_write_recursive_output;
 		// Materialized fan-out already provides pipeline concurrency; private output multiplies collections per scan.
 		const auto has_materialized_fanout = schedule_plan->cte_scan_pipeline_count > 1;
-		gstate.SetUseLocalUnionAllOutput(source_tasks_write_recursive_output ||
-		                                 (parallelism.frontier_worker_count > 1 && !has_materialized_fanout &&
-		                                  work_units / parallelism.frontier_worker_count >= 2));
-		if (!gstate.UsesLocalUnionAllOutput()) {
-			gstate.InitializeSharedOutputAppend();
+		union_state.SetUseLocalUnionAllOutput(source_tasks_write_recursive_output ||
+		                                      (parallelism.frontier_worker_count > 1 && !has_materialized_fanout &&
+		                                       work_units / parallelism.frontier_worker_count >= 2));
+		if (!union_state.UsesLocalUnionAllOutput()) {
+			union_state.InitializeSharedOutputAppend();
 		}
 	}
 	const auto max_worker_count = parallelism.MaxWorkerCount();
-	if (max_worker_count > 1 && !using_key && !union_all) {
+	if (max_worker_count > 1 && !UsingKey() && !UnionAll()) {
 		const auto partition_count = MinValue<idx_t>(NextPowerOfTwo(max_worker_count), 4);
-		gstate.PromoteDistinctState(context.client, partition_count);
+		gstate.Cast<RecursiveCTEUnionState>().PromoteDistinctState(context.client, partition_count);
 	}
 	const auto epoch_start =
 	    collect_metrics ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();

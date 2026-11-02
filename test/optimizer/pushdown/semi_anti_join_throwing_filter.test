@@ -1,0 +1,102 @@
+# name: test/optimizer/pushdown/semi_anti_join_throwing_filter.test
+# description: A filter that can fail is not copied to the other side of a SEMI or ANTI join
+# group: [pushdown]
+
+statement ok
+CREATE TABLE src(i INTEGER);
+
+statement ok
+CREATE TABLE dst(i INTEGER);
+
+statement ok
+INSERT INTO dst VALUES (1);
+
+# src is empty, so the cast is never evaluated on it, and dst must not evaluate a copy of it
+query I
+SELECT l.i FROM src l ANTI JOIN dst r ON l.i = r.i WHERE l.i = CAST('bad' AS INTEGER);
+----
+
+query I
+SELECT l.i FROM src l SEMI JOIN dst r ON l.i = r.i WHERE l.i = CAST('bad' AS INTEGER);
+----
+
+query I
+SELECT l.i FROM src l SEMI JOIN dst r ON l.i = r.i WHERE l.i = 'bad';
+----
+
+query I
+SELECT l.i FROM src l WHERE l.i = CAST('bad' AS INTEGER);
+----
+
+# the filter stays on the one side it was written for, so the plan has one scan with filters
+query II
+EXPLAIN SELECT l.i FROM src l SEMI JOIN dst r ON l.i = r.i WHERE l.i = CAST('bad' AS INTEGER);
+----
+physical_plan	<REGEX>:(?s).*Filters: i = CAST\('bad' AS INTEGER\).*
+
+query II
+EXPLAIN SELECT l.i FROM src l SEMI JOIN dst r ON l.i = r.i WHERE l.i = CAST('bad' AS INTEGER);
+----
+physical_plan	<!REGEX>:(?s).*Filters:.*Filters:.*
+
+# a guarding filter removes the only src row before the cast runs, while dst's row 5 would reach the copy
+statement ok
+INSERT INTO src VALUES (1);
+
+statement ok
+INSERT INTO dst VALUES (5);
+
+query I
+SELECT l.i FROM src l ANTI JOIN dst r ON l.i = r.i WHERE l.i = 5 AND l.i = CAST('bad' AS INTEGER);
+----
+
+# filters that cannot fail are still copied, so both scans have filters (on data they do not fold away for)
+statement ok
+INSERT INTO src VALUES (2);
+
+query II
+EXPLAIN SELECT l.i FROM src l SEMI JOIN dst r ON l.i = r.i WHERE l.i = 1;
+----
+physical_plan	<REGEX>:(?s).*Filters: i = 1.*Filters: i = 1.*
+
+query I
+SELECT l.i FROM src l SEMI JOIN dst r ON l.i = r.i WHERE l.i = 1;
+----
+1
+
+query I
+SELECT l.i FROM src l ANTI JOIN dst r ON l.i = r.i WHERE l.i = TRY_CAST('bad' AS INTEGER);
+----
+
+# the pullup of a right-side filter into the left side, which the filter pullup copies the other way
+statement ok
+CREATE TABLE l(i INTEGER);
+
+statement ok
+INSERT INTO l VALUES (1);
+
+statement ok
+CREATE TABLE r(i INTEGER);
+
+query I
+SELECT l.i FROM l SEMI JOIN r ON l.i = r.i AND r.i = CAST('bad' AS INTEGER);
+----
+
+query I
+SELECT l.i FROM l ANTI JOIN r ON l.i = r.i AND r.i = CAST('bad' AS INTEGER);
+----
+1
+
+# with rows on both sides the filter fails where it was written, as without the join
+statement ok
+INSERT INTO r VALUES (1);
+
+statement error
+SELECT l.i FROM l SEMI JOIN r ON l.i = r.i AND r.i = CAST('bad' AS INTEGER);
+----
+Could not convert string 'bad' to INT32
+
+statement error
+SELECT l.i FROM l SEMI JOIN r ON l.i = r.i WHERE l.i = CAST('bad' AS INTEGER);
+----
+Could not convert string 'bad' to INT32

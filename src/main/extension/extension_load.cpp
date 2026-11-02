@@ -555,11 +555,9 @@ bool ExtensionHelper::TryInitialLoad(DatabaseInstance &db, FileSystem &fs, const
 			search_directories.push_back(custom_extension_directory);
 		}
 
-		if (!db.config.options.extension_directories.empty()) {
-			// Add all configured extension directories
-			for (const auto &dir : db.config.options.extension_directories) {
-				search_directories.push_back(dir);
-			}
+		// Add all configured extension directories
+		for (auto &dir : db.config.GetExtensionDirectories()) {
+			search_directories.push_back(std::move(dir));
 		}
 
 		// Add default extension directory if no custom directories configured
@@ -772,7 +770,7 @@ void ExtensionHelper::LoadExternalExtension(DatabaseInstance &db, FileSystem &fs
 	// violation, so ask the registry of extensions linked into this binary first.
 	// Statically linked extensions are inherently core-trusted, so only take this shortcut for a bare
 	// load or an explicit core namespace - never let community/x or myrepo/x resolve to a linked core extension.
-	bool allow_static_shortcut = options.repository.empty() || StringUtil::Lower(options.repository) == "core";
+	bool allow_static_shortcut = options.repository.empty() || StringUtil::CIEquals(options.repository, "core");
 	if (allow_static_shortcut && !ExtensionHelper::IsFullPath(options.extension_name)) {
 		auto logical_name = ExtensionHelper::GetExtensionName(options.extension_name);
 		DuckDB db_wrapper(db);

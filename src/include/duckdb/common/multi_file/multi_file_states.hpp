@@ -110,7 +110,8 @@ struct MultiFileBindData : public TableFunctionData {
 	//! Match a physical column to an output column without a generated override or conversion (including collations).
 	DUCKDB_API bool MatchesPhysicalColumn(idx_t column_idx, const Identifier &physical_name,
 	                                      const LogicalType &physical_type) const;
-	//! Whether all physical roots have the output names and types at the same positions, without generated roles.
+	//! Whether all physical roots have the output names and types at the same positions, without generated roles, and
+	//! only generated columns follow them, so that a physical ordinal addresses the output column with that ordinal.
 	DUCKDB_API bool HasIdentityMapping(const vector<MultiFileColumnDefinition> &physical_columns) const;
 };
 

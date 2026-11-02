@@ -1503,6 +1503,11 @@ bool TryCast::Operation(timestamp_ns_t input, timestamp_t &result, bool strict) 
 }
 
 template <>
+bool TryCast::Operation(timestamp_ns_t input, timestamp_sec_t &result, bool strict) {
+	return TryCastTimestampBase<timestamp_ns_t, timestamp_sec_t>(input, result, strict);
+}
+
+template <>
 bool TryCast::Operation(timestamp_ms_t input, timestamp_t &result, bool strict) {
 	return TryCastTimestampBase<timestamp_ms_t, timestamp_t>(input, result, strict);
 }

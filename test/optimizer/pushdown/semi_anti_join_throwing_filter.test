@@ -64,6 +64,7 @@ SELECT l.i FROM src l SEMI JOIN dst r ON l.i = r.i WHERE l.i = 1;
 ----
 1
 
+# a TRY_CAST that fails folds to NULL, and a comparison with NULL keeps no row
 query I
 SELECT l.i FROM src l ANTI JOIN dst r ON l.i = r.i WHERE l.i = TRY_CAST('bad' AS INTEGER);
 ----

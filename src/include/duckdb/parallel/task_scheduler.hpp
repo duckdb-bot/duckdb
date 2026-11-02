@@ -110,6 +110,8 @@ private:
 	DatabaseInstance &db;
 	//! Lock for modifying the thread count
 	mutex thread_lock;
+	//! Set when the thread count changed
+	atomic<bool> relaunch_requested;
 	//! Lock for launching the async threads, not thread_lock, which is held while threads that run tasks are joined
 	mutex async_launch_lock;
 	//! Whether the async threads have been launched

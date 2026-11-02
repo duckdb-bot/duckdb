@@ -22,7 +22,7 @@ SELECT date_part('year', ts) FROM ts_ns ORDER BY ts
 2020
 2021
 
-# reading the nanoseconds as microseconds would put both rows in 1971
+# a year outside the bounds matches no row, and the correct bounds still prune the scan
 query I
 SELECT count(*) FROM ts_ns WHERE date_part('year', ts) = 1971
 ----

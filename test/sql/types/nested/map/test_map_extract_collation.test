@@ -46,11 +46,12 @@ FROM m ORDER BY id;
 6	NULL	[]	[]	NULL	[]
 7	Pie	[Pie]	[Pie]	Pie	[Pie]
 
-# the values keep their case and type
-query III
-SELECT typeof(m[k COLLATE NOCASE]), typeof(map_extract(m, k COLLATE NOCASE)), m[k COLLATE NOCASE] = 'pie' FROM m WHERE id = 1;
+# the values are returned as stored, and a value takes the collation of the lookup as the result of any function does
+query IIII
+SELECT m[k COLLATE NOCASE], typeof(m[k COLLATE NOCASE]), typeof(map_extract(m, k COLLATE NOCASE)), m[k COLLATE NOCASE] = 'pie'
+FROM m WHERE id = 1;
 ----
-VARCHAR	VARCHAR[]	false
+Pie	VARCHAR('NOCASE')	VARCHAR[]	true
 
 query III
 SELECT MAP {'Apple': 1}['APPLE' COLLATE NOACCENT.NOCASE], MAP {'Äpple': 1}['apple' COLLATE NOACCENT.NOCASE],
@@ -63,14 +64,84 @@ SELECT map_extract(map(['a' COLLATE NOCASE], [1]), 'A' COLLATE NOACCENT);
 ----
 Cannot combine types with different collation
 
-# keys that collate equal find the first, and a binary collation compares as without a collation
-query IIII
-SELECT MAP {'A': 1, 'a': 2}['a' COLLATE NOCASE], map_extract(MAP {'A': 1, 'a': 2}, 'a' COLLATE NOCASE),
-       MAP {'Apple': 1}['Apple' COLLATE "binary"], MAP {'Apple': 1}['apple' COLLATE "binary"];
+# a binary collation compares as without a collation
+query II
+SELECT MAP {'Apple': 1}['Apple' COLLATE "binary"], MAP {'Apple': 1}['apple' COLLATE "binary"];
 ----
-1	[1]	1	NULL
+1	NULL
 
-# the map is not rebuilt with collated keys, which would make these keys equal
+# the map is rebuilt with normalized keys, keeping only the first of the entries whose keys normalize to the same value
+query IIII
+SELECT MAP {'Apple': 1, 'APPLE': 2, 'apple': 3}['apple' COLLATE NOCASE],
+       map_extract_value(MAP {'Apple': 1, 'APPLE': 2, 'apple': 3}, 'APPLE' COLLATE NOCASE),
+       map_extract(MAP {'Apple': 1, 'APPLE': 2, 'apple': 3}, 'Apple' COLLATE NOCASE),
+       map_contains(MAP {'Apple': 1, 'APPLE': 2, 'apple': 3}, 'aPPle' COLLATE NOCASE);
+----
+1	1	[1]	true
+
+query IIIII
+SELECT MAP {'Äpple': 1, 'Apple': 2}['Apple' COLLATE NOACCENT], map_extract_value(MAP {'Äpple': 1, 'Apple': 2}, 'Äpple' COLLATE NOACCENT),
+       map_extract(MAP {'Äpple': 1, 'Apple': 2}, 'Apple' COLLATE NOACCENT), map_contains(MAP {'Äpple': 1, 'Apple': 2}, 'Apple' COLLATE NOACCENT),
+       MAP {'Äpple': 1, 'Apple': 2}['apple' COLLATE NOACCENT];
+----
+1	1	[1]	true	NULL
+
+query IIII
+SELECT MAP {'Äpple': 1, 'APPLE': 2, 'apple': 3}['äpple' COLLATE NOACCENT.NOCASE],
+       map_extract_value(MAP {'Äpple': 1, 'APPLE': 2, 'apple': 3}, 'APPLE' COLLATE NOACCENT.NOCASE),
+       map_extract(MAP {'Äpple': 1, 'APPLE': 2, 'apple': 3}, 'apple' COLLATE NOCASE.NOACCENT),
+       map_contains(MAP {'Äpple': 1, 'APPLE': 2, 'apple': 3}, 'Apple' COLLATE NOACCENT.NOCASE);
+----
+1	1	[1]	true
+
+# a map with more entries than a vector holds, whose keys collide in pairs after normalization
+query II
+SELECT m['k1499' COLLATE NOCASE], m['K0' COLLATE NOCASE]
+FROM (SELECT map_from_entries(list_transform(range(3000), lambda i: {'key': (CASE WHEN i % 2 = 0 THEN 'K' ELSE 'k' END) || (i // 2), 'value': i})) m);
+----
+2998	0
+
+# maps whose keys are not strings are unchanged
+query IIIII
+SELECT MAP {1: 'a', 2: 'b'}[2], map_extract(MAP {1: 'a', 2: 'b'}, 1), map_contains(MAP {1: 'a'}, 3), MAP {[1, 2]: 'x'}[[1, 2]],
+       typeof(MAP {1: 'Pie' COLLATE NOCASE}[1]);
+----
+b	[a]	false	x	VARCHAR('NOCASE')
+
+# comparisons and ordering of maps with collated keys use the rebuilt maps as well
+query IIII
+SELECT map(['Apple' COLLATE NOCASE, 'APPLE'], [1, 2]) = map(['apple'], [1]), map(['a' COLLATE NOCASE], [1]) = map(['A'], [1]),
+       map(['a' COLLATE NOCASE], [1]) = map(['A'], [2]), map(['a'], [1]) = map(['A'], [1]);
+----
+true	true	false	false
+
+query I
+SELECT m FROM (VALUES (map(['b' COLLATE NOCASE], [1])), (map(['A' COLLATE NOCASE], [2])), (map(['C' COLLATE NOCASE], [3]))) t(m) ORDER BY m;
+----
+{A=2}
+{b=1}
+{C=3}
+
+query II
+SELECT count(*), count(DISTINCT m)
+FROM (SELECT map(['Apple' COLLATE NOCASE], [1]) m UNION ALL SELECT map(['APPLE' COLLATE NOCASE], [1]) UNION ALL SELECT map(['pear' COLLATE NOCASE], [1]));
+----
+3	2
+
+# the default collation applies to map lookups as it does to list_position
+statement ok
+SET default_collation = 'nocase';
+
+query IIII
+SELECT MAP {'Apple': 1}['apple'], map_extract(MAP {'Apple': 1, 'APPLE': 2}, 'apple'), m[k], list_position(['Apple'], 'apple')
+FROM m WHERE id = 1;
+----
+1	[1]	Pie	1
+
+statement ok
+RESET default_collation;
+
+# the lookup finds the first of the stored keys that normalize to the lookup key
 statement ok
 CREATE TABLE same_keys (id INT, m MAP(VARCHAR, INT), k VARCHAR);
 
@@ -180,12 +251,11 @@ SELECT element_at(map([nextval('both_seq')::VARCHAR], ['a']), (nextval('both_seq
 ----
 [a]	2
 
-# the value of a volatile map does not take the collation of the key either
+# the value of a volatile map is returned as stored
 query II
-SELECT typeof(map(['k'], [nextval('map_seq') || 'v'])['K' COLLATE NOCASE]),
-       right(map(['k'], [nextval('map_seq') || 'v'])['K' COLLATE NOCASE], 1) = 'V';
+SELECT map(['k'], [nextval('map_seq') || 'v'])['K' COLLATE NOCASE], currval('map_seq');
 ----
-VARCHAR	false
+3v	3
 
 # a key with side effects is evaluated for NULL maps as well
 statement ok

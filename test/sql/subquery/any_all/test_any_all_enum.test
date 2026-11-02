@@ -1,0 +1,98 @@
+# name: test/sql/subquery/any_all/test_any_all_enum.test
+# description: ANY and ALL comparisons of a VARCHAR against an ENUM subquery use string order
+# group: [any_all]
+
+statement ok
+CREATE TYPE e AS ENUM ('z', 'a');
+
+statement ok
+CREATE TABLE t(g INTEGER, v e);
+
+statement ok
+INSERT INTO t VALUES (1, 'z'), (1, 'a');
+
+# ENUM order is the dictionary position, so min is 'z' and max is 'a', while the comparison uses string order
+query III
+SELECT bool_or('m' > v), min(v), max(v) FROM t
+----
+true	z	a
+
+query IIII
+SELECT 'm' > ANY (SELECT v FROM t), 'm' >= ANY (SELECT v FROM t), 'm' < ANY (SELECT v FROM t), 'm' <= ANY (SELECT v FROM t)
+----
+true	true	true	true
+
+query IIII
+SELECT 'm' > ALL (SELECT v FROM t), 'm' >= ALL (SELECT v FROM t), 'm' < ALL (SELECT v FROM t), 'm' <= ALL (SELECT v FROM t)
+----
+false	false	false	false
+
+query IIII
+SELECT 'zz' > ALL (SELECT v FROM t), '0' < ALL (SELECT v FROM t), 'zz' < ANY (SELECT v FROM t), '0' > ANY (SELECT v FROM t)
+----
+true	true	false	false
+
+# the extremum rewrite is used for the uncorrelated comparison
+query II
+EXPLAIN SELECT 'm' > ANY (SELECT v FROM t)
+----
+physical_plan	<REGEX>:.*(min|MIN)\(.*
+
+query II
+SELECT 'm' = ANY (SELECT v FROM t), 'a' = ANY (SELECT v FROM t)
+----
+false	true
+
+# a NULL in the subquery
+statement ok
+INSERT INTO t VALUES (1, NULL);
+
+query IIII
+SELECT 'm' > ANY (SELECT v FROM t), 'm' < ALL (SELECT v FROM t), 'zz' > ALL (SELECT v FROM t), '0' < ALL (SELECT v FROM t)
+----
+true	false	NULL	NULL
+
+# the same comparisons from a CTE
+query II
+WITH rhs(v) AS (VALUES ('z'::e), ('a'::e))
+SELECT 'm' > ANY (SELECT v FROM rhs), 'm' > ALL (SELECT v FROM rhs)
+----
+true	false
+
+# correlated subqueries
+statement ok
+CREATE TABLE o(g INTEGER, s VARCHAR);
+
+statement ok
+INSERT INTO o VALUES (1, 'm'), (1, 'zz'), (2, 'm');
+
+query IIII
+SELECT g, s, s > ANY (SELECT v FROM t WHERE t.g = o.g), s > ALL (SELECT v FROM t WHERE t.g = o.g) FROM o ORDER BY g, s
+----
+1	m	true	false
+1	zz	true	NULL
+2	m	false	true
+
+# a collated comparison
+query II
+SELECT 'M' COLLATE NOCASE > ANY (SELECT v FROM t), 'M' COLLATE NOCASE > ALL (SELECT v FROM t)
+----
+true	false
+
+# comparing an ENUM with the subquery keeps the ENUM order
+query II
+SELECT 'a'::e > ANY (SELECT v FROM t), 'z'::e >= ALL (SELECT v FROM t WHERE v IS NOT NULL)
+----
+true	false
+
+# a numeric comparison is not affected by the cast of the subquery column
+statement ok
+CREATE TABLE ints(i INTEGER);
+
+statement ok
+INSERT INTO ints VALUES (1), (3);
+
+query IIII
+SELECT 2.5 > ANY (SELECT i FROM ints), 2.5 > ALL (SELECT i FROM ints), 0.5 < ALL (SELECT i FROM ints), 3.5 <= ANY (SELECT i FROM ints)
+----
+true	false	true	false

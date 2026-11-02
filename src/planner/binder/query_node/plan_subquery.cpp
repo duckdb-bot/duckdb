@@ -91,7 +91,8 @@ static unique_ptr<Expression> PlanExtremumRewrite(Binder &binder, BoundSubqueryE
 
 	auto &compare_type = expr.GetChildTargets()[0];
 	vector<unique_ptr<Expression>> min_max_children;
-	auto min_max_child = bound_colref->Copy();
+	// the extremum is taken in the order of the compared type, which differs from the column's for an ENUM
+	auto min_max_child = BoundCastExpression::AddDefaultCastToType(bound_colref->Copy(), compare_type);
 	// The comparison may carry a collation the subquery column does not, and the extremum has to be taken
 	// under that collation, so it is pushed here. BIT and VARIANT are the exception: min/max pushes its own
 	// collation for those, and doing it first makes that branch a no-op, after which the aggregate falls

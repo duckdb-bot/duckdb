@@ -3784,6 +3784,7 @@ void ShellState::DetectDarkLightMode() {
 		highlight.ToggleMode(HighlightMode::LIGHT_MODE);
 	} else {
 		highlight_mode = HighlightMode::MIXED_MODE;
+		highlight.ToggleMode(HighlightMode::MIXED_MODE);
 	}
 #endif
 }

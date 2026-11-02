@@ -168,6 +168,21 @@ def test_colorfgbg(shell, colorfgbg, error_color):
     assert error_color in output
     assert elapsed < 4
 
+# the fallback of automatic mode uses the mixed palette, whatever palette was set before
+@pytest.mark.skipif(os.name == 'nt', reason="requires a POSIX pseudo-terminal")
+@pytest.mark.parametrize("arguments", [
+    ['-light-mode', '-cmd', '.highlight_mode auto', '-c', 'SELECT missing_column'],
+    ['-dark-mode', '-cmd', '.highlight_mode auto', '-c', 'SELECT missing_column'],
+    ['-light-mode', '-cmd', '.highlight_mode mixed', '-c', 'SELECT missing_column'],
+])
+def test_mixed_fallback_restores_palette(shell, arguments):
+    status, output, _ = run_in_pty(shell, arguments, 'dumb')
+    assert status != 0, output
+    assert b'\x1b]11;?' not in output
+    assert b'\x1b[31m' in output  # mixed-mode error color
+    assert b'\x1b[38;5;124m' not in output  # light-mode error color
+    assert b'\x1b[38;5;203m' not in output  # dark-mode error color
+
 @pytest.mark.skipif(os.name == 'nt', reason="requires a POSIX pseudo-terminal")
 def test_color_probe_answered_by_terminal(shell):
     response = b'\x1b]11;rgb:ffff/ffff/ffff\x07\x1b[?62c'

@@ -128,6 +128,11 @@ FROM (SELECT map(['Apple' COLLATE NOCASE], [1]) m UNION ALL SELECT map(['APPLE' 
 ----
 3	2
 
+query II
+SELECT min(m), max(m) FROM (VALUES (map(['b' COLLATE NOCASE], [1])), (map(['A' COLLATE NOCASE], [2])), (map(['C' COLLATE NOCASE], [3]))) t(m);
+----
+{A=2}	{C=3}
+
 # the default collation applies to map lookups as it does to list_position
 statement ok
 SET default_collation = 'nocase';

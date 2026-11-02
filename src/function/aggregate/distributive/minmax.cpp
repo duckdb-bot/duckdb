@@ -358,7 +358,7 @@ static bool MinMaxUsesCollation(ClientContext &context, const LogicalType &input
 	    input_type.id() == LogicalTypeId::VARCHAR &&
 	    (!StringType::GetCollation(input_type).empty() || !Settings::Get<DefaultCollationSetting>(context).empty());
 	const auto nested_collation = StructType::IsStruct(input_type) || input_type.id() == LogicalTypeId::LIST ||
-	                              input_type.id() == LogicalTypeId::ARRAY;
+	                              input_type.id() == LogicalTypeId::ARRAY || input_type.id() == LogicalTypeId::MAP;
 	return input_type.id() == LogicalTypeId::BIT || input_type.id() == LogicalTypeId::TIME_TZ ||
 	       input_type.id() == LogicalTypeId::VARIANT || varchar_collation || nested_collation;
 }

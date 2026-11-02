@@ -5,6 +5,9 @@
 require parquet
 
 statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+statement ok
 COPY (SELECT i FROM range(5) t(i)) TO '{TEST_DIR}/explicit_cardinality.parquet' (FORMAT PARQUET);
 
 # the estimate comes from the file's metadata
@@ -35,11 +38,17 @@ EXPLAIN SELECT i FROM read_parquet(['{TEST_DIR}/explicit_cardinality.parquet', '
 ----
 physical_plan	<REGEX>:.*~1,000 [Rr]ows.*
 
-# the single-file function takes the count for its file
+# a scan that unifies the columns of its files by name sums the rows of the files it opened, as before
+query II
+EXPLAIN SELECT i FROM read_parquet(['{TEST_DIR}/explicit_cardinality.parquet', '{TEST_DIR}/explicit_cardinality.parquet'], union_by_name = true, explicit_cardinality = 1000)
+----
+physical_plan	<REGEX>:.*~10 [Rr]ows.*
+
+# the option describes the scan, so the single-file function keeps reporting the rows of its one file
 query II
 EXPLAIN SELECT i FROM read_single_parquet_file('{TEST_DIR}/explicit_cardinality.parquet', explicit_cardinality = 1000)
 ----
-physical_plan	<REGEX>:.*~1,000 [Rr]ows.*
+physical_plan	<REGEX>:.*~5 [Rr]ows.*
 
 # the estimate changes no result, and the file's row groups still bound the rows, so a limit above them goes
 query I

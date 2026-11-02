@@ -398,10 +398,7 @@ static unique_ptr<NodeStatistics> ReadSingleParquetFileCardinality(ClientContext
 	if (!parquet_data.cardinality.IsValid()) {
 		return nullptr;
 	}
-	// the caller's row count for this file replaces the one of its metadata as the estimate, not as the bound
-	auto estimate = parquet_data.options.explicit_cardinality ? parquet_data.options.explicit_cardinality
-	                                                          : parquet_data.cardinality.GetIndex();
-	auto result = make_uniq<NodeStatistics>(estimate);
+	auto result = make_uniq<NodeStatistics>(parquet_data.cardinality.GetIndex());
 	if (!parquet_data.metadata) {
 		return result;
 	}

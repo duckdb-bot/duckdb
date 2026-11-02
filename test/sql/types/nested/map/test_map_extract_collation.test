@@ -390,3 +390,26 @@ SELECT m['Apple' COLLATE "binary"] FROM indexed ORDER BY ALL;
 ----
 7
 NULL
+
+# the rebuilt map keeps the first entry of a key also when rows share their entries, and rejects NULL keys
+query I
+SELECT __internal_map_from_entries_keep_first(CASE WHEN i % 2 = 0 THEN [row('a', 1), row('a', 3)] ELSE [row('b', 2)] END) FROM range(5) t(i);
+----
+{a=1}
+{b=2}
+{a=1}
+{b=2}
+{a=1}
+
+query I
+SELECT __internal_map_from_entries_keep_first(x) FROM (VALUES ([row('a', 1), row('a', 2)]), (NULL), ([]), ([row('c', 3), row('d', 4)])) t(x);
+----
+{a=1}
+NULL
+{}
+{c=3, d=4}
+
+statement error
+SELECT __internal_map_from_entries_keep_first([row(NULL::VARCHAR, 1)]);
+----
+Map keys can not be NULL

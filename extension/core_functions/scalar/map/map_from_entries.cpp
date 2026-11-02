@@ -24,7 +24,15 @@ static void MapFromEntriesKeepFirstFunction(DataChunk &args, ExpressionState &, 
 	const auto &values = MapVector::GetValues(entries);
 	const auto key_validity = keys.Validity();
 
-	SelectionVector kept(ListVector::GetListSize(entries));
+	// rows can share their list entries, so the kept entries are counted over the rows and not over the children
+	idx_t entry_count = 0;
+	for (idx_t row_idx = 0; row_idx < count; row_idx++) {
+		auto list_entry = list_entries[row_idx];
+		if (list_entry.IsValid()) {
+			entry_count += list_entry.GetValue().length;
+		}
+	}
+	SelectionVector kept(entry_count);
 	idx_t kept_count = 0;
 	auto result_entries = FlatVector::Writer<list_entry_t>(result, count);
 	for (idx_t row_idx = 0; row_idx < count; row_idx++) {

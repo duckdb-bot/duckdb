@@ -26,3 +26,17 @@ query I
 SELECT pick(2)
 ----
 b
+
+# a WHEN list and a WHEN with a comparison operator print as written
+statement ok
+CREATE MACRO pick_range(x) AS CASE x WHEN 1, 2 THEN 'a' WHEN > 5 THEN 'b' ELSE 'c' END
+
+query I
+SELECT macro_definition FROM duckdb_functions() WHERE function_name = 'pick_range'
+----
+CASE x WHEN 1, 2 THEN 'a' WHEN > 5 THEN 'b' ELSE 'c' END
+
+query III
+SELECT pick_range(2), pick_range(7), pick_range(4)
+----
+a	b	c

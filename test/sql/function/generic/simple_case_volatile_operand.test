@@ -26,6 +26,97 @@ SELECT currval('seq')
 ----
 3
 
+# a WHEN with several operands compares the one evaluation with each of them
+statement ok
+CREATE SEQUENCE list_seq;
+
+query I
+SELECT CASE nextval('list_seq') WHEN 1, 2 THEN 'a' WHEN 3 THEN 'b' END FROM range(3) ORDER BY ALL
+----
+a
+a
+b
+
+query I
+SELECT currval('list_seq')
+----
+3
+
+# one WHEN with two operands also evaluates the operand once
+statement ok
+CREATE SEQUENCE pair_seq;
+
+query I
+SELECT CASE nextval('pair_seq') WHEN 1, 2 THEN 'a' ELSE 'b' END FROM range(3) ORDER BY ALL
+----
+a
+a
+b
+
+query I
+SELECT currval('pair_seq')
+----
+3
+
+# a WHEN with a comparison operator compares the one evaluation with its operand
+statement ok
+CREATE SEQUENCE operator_seq;
+
+query I
+SELECT CASE nextval('operator_seq') WHEN < 2 THEN 'a' WHEN 2, 3 THEN 'b' WHEN >= 4 THEN 'c' END FROM range(4) ORDER BY ALL
+----
+a
+b
+b
+c
+
+query I
+SELECT currval('operator_seq')
+----
+4
+
+# every listed operand is checked for what a lambda cannot hold, and keeps its names free of the parameter
+query I
+SELECT CASE (random() * 0)::INTEGER WHEN 1, (SELECT 0) THEN 'a' WHEN 2 THEN 'b' END
+----
+a
+
+query I
+SELECT CASE (random() * 0)::INTEGER WHEN 1, "#case_operand" THEN 'a' ELSE 'b' END FROM (SELECT 5 AS "#case_operand")
+----
+b
+
+# a NULL operand matches no listed operand, and is evaluated once
+statement ok
+CREATE SEQUENCE null_seq;
+
+query I
+SELECT CASE (CASE WHEN nextval('null_seq') > 0 THEN NULL::BIGINT ELSE 0 END) WHEN NULL, 1, 2 THEN 'x' ELSE 'y' END FROM range(2)
+----
+y
+y
+
+query I
+SELECT currval('null_seq')
+----
+2
+
+# a struct operand with a sequence in a field
+statement ok
+CREATE SEQUENCE struct_seq;
+
+query I
+SELECT CASE {'x': nextval('struct_seq')} WHEN {'x': 1}, {'x': 2} THEN 'a' WHEN {'x': 3} THEN 'b' END FROM range(3) ORDER BY ALL
+----
+a
+a
+b
+
+query I
+SELECT currval('struct_seq')
+----
+3
+
 # a window in the operand is computed once
 statement ok
 CREATE SEQUENCE window_seq;

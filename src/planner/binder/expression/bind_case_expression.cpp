@@ -97,14 +97,23 @@ static void CollectColumnNames(const ParsedExpression &expr, case_insensitive_se
 }
 
 bool ExpressionBinder::CanEvaluateCaseOperandOnce(CaseExpression &expr) {
-	if (!CanBindCaseOperandOnce() || expr.CaseChecks().size() < 2 || !expr.HasSimpleCaseChecks() ||
-	    !CallsVolatileFunction(*this, expr.SimpleCaseOperand())) {
+	if (!CanBindCaseOperandOnce() || !expr.HasSimpleCaseChecks()) {
+		return false;
+	}
+	// a single copy of the operand is evaluated once already
+	idx_t copies = 0;
+	for (auto &check : expr.CaseChecks()) {
+		copies += CaseExpression::SimpleCaseComparisons(*check.when_expr).size();
+	}
+	if (copies < 2 || !CallsVolatileFunction(*this, expr.SimpleCaseOperand())) {
 		return false;
 	}
 	vector<reference<const ParsedExpression>> parts;
 	parts.push_back(expr.SimpleCaseOperand());
 	for (auto &check : expr.CaseChecks()) {
-		parts.push_back(check.when_expr->Cast<ComparisonExpression>().Right());
+		for (auto &comparison : CaseExpression::SimpleCaseComparisons(*check.when_expr)) {
+			parts.push_back(comparison.get().Right());
+		}
 		parts.push_back(*check.then_expr);
 	}
 	parts.push_back(expr.Else());
@@ -114,8 +123,12 @@ bool ExpressionBinder::CanEvaluateCaseOperandOnce(CaseExpression &expr) {
 		}
 	}
 	for (auto &check : expr.CaseChecksMutable()) {
-		if (RefersToAlias(*this, *check.when_expr->Cast<ComparisonExpression>().RightMutable()) ||
-		    RefersToAlias(*this, *check.then_expr)) {
+		for (auto &comparison : CaseExpression::SimpleCaseComparisonsMutable(*check.when_expr)) {
+			if (RefersToAlias(*this, *comparison.get().RightMutable())) {
+				return false;
+			}
+		}
+		if (RefersToAlias(*this, *check.then_expr)) {
 			return false;
 		}
 	}
@@ -129,7 +142,9 @@ BindResult ExpressionBinder::BindCaseOperandOnce(CaseExpression &expr, idx_t dep
 	// the parameter has a name that no branch refers to, so that it captures nothing
 	case_insensitive_set_t names;
 	for (auto &check : expr.CaseChecks()) {
-		CollectColumnNames(check.when_expr->Cast<ComparisonExpression>().Right(), names);
+		for (auto &comparison : CaseExpression::SimpleCaseComparisons(*check.when_expr)) {
+			CollectColumnNames(comparison.get().Right(), names);
+		}
 		CollectColumnNames(*check.then_expr, names);
 	}
 	CollectColumnNames(expr.Else(), names);
@@ -141,12 +156,12 @@ BindResult ExpressionBinder::BindCaseOperandOnce(CaseExpression &expr, idx_t dep
 	auto body = make_uniq<CaseExpression>();
 	body->SetQueryLocation(expr.GetQueryLocation());
 	for (auto &check : expr.CaseChecks()) {
-		auto &comparison = check.when_expr->Cast<ComparisonExpression>();
 		CaseCheck body_check;
-		body_check.when_expr = make_uniq<ComparisonExpression>(ExpressionType::COMPARE_EQUAL,
-		                                                       make_uniq<ColumnRefExpression>(Identifier(parameter)),
-		                                                       comparison.Right().Copy());
-		body_check.when_expr->SetQueryLocation(comparison.GetQueryLocation());
+		// the comparisons of the check, with the parameter in the place of every copy of the operand
+		body_check.when_expr = check.when_expr->Copy();
+		for (auto &comparison : CaseExpression::SimpleCaseComparisonsMutable(*body_check.when_expr)) {
+			comparison.get().LeftMutable() = make_uniq<ColumnRefExpression>(Identifier(parameter));
+		}
 		body_check.then_expr = check.then_expr->Copy();
 		body->CaseChecksMutable().push_back(std::move(body_check));
 	}

@@ -981,6 +981,44 @@ TEST_CASE("Grammar extensions apply in registration order", "[api][grammar_exten
 	CheckGrammarExtensionTestSyntax(con);
 }
 
+TEST_CASE("add_grammar_extension appends to the active grammar extensions", "[api][grammar_extension]") {
+	DuckDB db(nullptr);
+	RegisterGrammarExtensionTestSyntax(*db.instance);
+	Connection set_con(db);
+	ActivateGrammarExtensionTestSyntax(set_con);
+
+	// adding the extensions one by one compiles the same grammar as setting them at once
+	Connection con(db);
+	auto base = CompiledGrammar::Get(*con.context);
+	REQUIRE_NO_FAIL(*con.Query("CALL add_grammar_extension('extension_test_value')"));
+	REQUIRE(CompiledGrammar::Get(*con.context) != base);
+	REQUIRE_NO_FAIL(*con.Query("CALL add_grammar_extension('extension_test_atom')"));
+	REQUIRE(CompiledGrammar::Get(*con.context) == CompiledGrammar::Get(*set_con.context));
+	CheckGrammarExtensionTestSyntax(con);
+
+	// the active extensions are reported by the setting and by duckdb_grammar_extensions
+	auto result = con.Query("SELECT current_setting('active_grammar_extensions')");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->Collection().GetValue(0, 0).ToString() == "[extension_test_value, extension_test_atom]");
+	result = con.Query("SELECT name FROM duckdb_grammar_extensions() WHERE active ORDER BY name");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->RowCount() == 2);
+
+	// removing one keeps the other active
+	REQUIRE_NO_FAIL(*con.Query("CALL remove_grammar_extension('extension_test_atom')"));
+	Connection value_con(db);
+	REQUIRE_NO_FAIL(*value_con.Query("SET active_grammar_extensions = ['extension_test_value']"));
+	REQUIRE(CompiledGrammar::Get(*con.context) == CompiledGrammar::Get(*value_con.context));
+	REQUIRE_FAIL(con.Query("ANSWER"));
+
+	// removing the last one falls back to the default grammar
+	REQUIRE_NO_FAIL(*con.Query("CALL remove_grammar_extension('extension_test_value')"));
+	REQUIRE(CompiledGrammar::Get(*con.context) == base);
+	result = con.Query("SELECT count(*) FROM duckdb_grammar_extensions() WHERE active");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->Collection().GetValue(0, 0) == Value::BIGINT(0));
+}
+
 class ConstantSevenTransformProcess final : public TransformProcess {
 public:
 	explicit ConstantSevenTransformProcess(PEGTransformer &transformer_p) : transformer(transformer_p) {
@@ -2538,5 +2576,648 @@ TEST_CASE("Parse result source extents preserve unknown and out-of-range positio
 		REQUIRE(parent.GetOffset() == optional_idx(10));
 		REQUIRE(parent.GetLength() == optional_idx(5));
 		REQUIRE(parent.GetLocation() == QueryLocation(10, 5));
+	}
+}
+
+class DerivedOptionalTailTestMatcher final : public OptionalMatcher {
+public:
+	explicit DerivedOptionalTailTestMatcher(Matcher &nominal, idx_t &calls_p)
+	    : OptionalMatcher(nominal), child("TAIL", KeywordInfo()), calls(calls_p) {
+	}
+	arena_ptr<MatchProcess> StartMatch(MatchState &state) const override {
+		calls++;
+		return state.Make<GrammarExtensionTestMatchProcess>(child, state);
+	}
+
+private:
+	KeywordMatcher child;
+	idx_t &calls;
+};
+
+enum class EmptyTailTestVariant {
+	ORDINARY,
+	NAMED_OPTIONALS,
+	NONCOLLAPSIBLE,
+	UNNAMED_FIRST,
+	EMPTY_FIRST,
+	NULLABLE_TAIL,
+	REQUIRED_TAIL,
+	DERIVED_TAIL,
+	LEADING_CHAIN
+};
+
+static vector<string> MatchEmptyTailTest(bool structural, EmptyTailTestVariant variant, MatchMode mode,
+                                         const string &text, bool cursor) {
+	auto grammar = CompiledGrammar::DefaultGrammar();
+	CompiledGrammarRule atom_rule("Atom", nullptr), list_rule("List", nullptr), optional_rule("Optional", nullptr),
+	    outer_rule("Outer", nullptr);
+	KeywordMatcher atom("ANSWER", KeywordInfo());
+	NumberLiteralMatcher number;
+	OptionalMatcher first_optional(number), tail(number), last(number), nested(tail);
+	idx_t override_calls = 0;
+	DerivedOptionalTailTestMatcher derived(number, override_calls);
+	if (variant != EmptyTailTestVariant::UNNAMED_FIRST) {
+		atom.SetRule(atom_rule);
+	}
+	first_optional.SetRule(atom_rule);
+	if (variant == EmptyTailTestVariant::NAMED_OPTIONALS) {
+		tail.SetRule(optional_rule);
+		last.SetRule(optional_rule);
+	}
+	if (structural) {
+		first_optional.SetStructural();
+		tail.SetStructural();
+		last.SetStructural();
+		nested.SetStructural();
+	}
+	ListMatcher list;
+	list.SetRule(list_rule);
+	if (variant != EmptyTailTestVariant::NONCOLLAPSIBLE) {
+		list.SetCollapsible();
+	}
+	list.matchers.push_back(variant == EmptyTailTestVariant::EMPTY_FIRST ? reference<Matcher>(first_optional)
+	                                                                     : reference<Matcher>(atom));
+	if (variant == EmptyTailTestVariant::NULLABLE_TAIL) {
+		list.matchers.push_back(nested);
+	} else if (variant == EmptyTailTestVariant::REQUIRED_TAIL) {
+		list.matchers.push_back(number);
+	} else if (variant == EmptyTailTestVariant::DERIVED_TAIL) {
+		list.matchers.push_back(derived);
+	} else {
+		list.matchers.push_back(tail);
+	}
+	list.matchers.push_back(last);
+	ListMatcher outer({list, last});
+	outer.SetRule(outer_rule);
+	outer.SetCollapsible();
+	if (structural) {
+		list.SetStructural();
+		outer.SetStructural();
+	}
+	const Matcher &root = variant == EmptyTailTestVariant::LEADING_CHAIN ? static_cast<const Matcher &>(outer) : list;
+	ComputeFirstSets(outer, grammar->GetKeywordHelper().GetLiteralTable());
+	list.InitializeListChain();
+	outer.InitializeListChain();
+	auto tokens = TokenizeFirstSetTestInput(*grammar, text);
+	REQUIRE(tokens.back().type == TokenType::END_OF_INPUT);
+	if (cursor) {
+		tokens.back().type = TokenType::END_OF_INPUT_AUTOCOMPLETE;
+	}
+	TokenIterator iterator(tokens);
+	vector<MatcherSuggestion> suggestions;
+	ParseResultAllocator allocator;
+	ArenaAllocator processes(Allocator::DefaultAllocator());
+	idx_t max_position = 0;
+	MatchContext context(suggestions, allocator, processes, max_position, mode);
+	MatchState state(iterator, context);
+	auto result = root.MatchParseResult(state);
+	REQUIRE(processes.SizeInBytes() == 0);
+	vector<string> snapshot {StringUtil::Format("%d:%llu:%llu:%llu", result.IsSuccess(),
+	                                            state.token_iterator.Position(), max_position, override_calls)};
+	for (auto &suggestion : suggestions) {
+		snapshot.push_back(suggestion.keyword.candidate);
+	}
+	vector<reference<ParseResult>> pending;
+	if (result.HasParseResult()) {
+		pending.push_back(*result.GetParseResult());
+	}
+	while (!pending.empty()) {
+		auto &node = pending.back().get();
+		pending.pop_back();
+		auto location = node.GetLocation();
+		snapshot.push_back(StringUtil::Format("%s:%s:%s:%d:%llu:%llu", ParseResultToString(node.type), node.Name(),
+		                                      node.GetRule() ? node.GetRule()->name : string(), node.collapsed,
+		                                      location.offset, location.length));
+		if (node.type == ParseResultType::LIST) {
+			for (auto &child : node.Cast<ListParseResult>().GetChildren()) {
+				pending.push_back(child);
+			}
+		} else if (node.type == ParseResultType::OPTIONAL) {
+			auto &optional = node.Cast<OptionalParseResult>();
+			if (optional.HasResult()) {
+				pending.push_back(optional.GetResult());
+			}
+		}
+	}
+	return snapshot;
+}
+
+TEST_CASE("Collapsing known-empty list tails preserves child semantics", "[api][grammar_extension]") {
+	for (auto variant :
+	     {EmptyTailTestVariant::ORDINARY, EmptyTailTestVariant::NAMED_OPTIONALS, EmptyTailTestVariant::NONCOLLAPSIBLE,
+	      EmptyTailTestVariant::UNNAMED_FIRST, EmptyTailTestVariant::EMPTY_FIRST, EmptyTailTestVariant::NULLABLE_TAIL,
+	      EmptyTailTestVariant::REQUIRED_TAIL, EmptyTailTestVariant::DERIVED_TAIL,
+	      EmptyTailTestVariant::LEADING_CHAIN}) {
+		CAPTURE(static_cast<int>(variant));
+		for (auto mode : {MatchMode::BUILD_PARSE_RESULT, MatchMode::RECOGNIZE_ONLY}) {
+			for (auto cursor : {false, true}) {
+				for (auto &text :
+				     vector<string> {"", "ANSWER", "ANSWER 1", "ANSWER 1 2", "ANSWER TAIL", "ANSWER nope"}) {
+					CAPTURE(text);
+					CAPTURE(cursor);
+					CAPTURE(static_cast<int>(mode));
+					auto expected = MatchEmptyTailTest(false, variant, mode, text, cursor);
+					auto actual = MatchEmptyTailTest(true, variant, mode, text, cursor);
+					REQUIRE(actual == expected);
+				}
+			}
+		}
+	}
+}
+
+static vector<string> MatchSingleStepTest(const Matcher &matcher, MatchMode mode, const string &text, bool cursor,
+                                          bool single_step) {
+	vector<MatcherToken> tokens;
+	idx_t offset = 0;
+	for (auto &word : StringUtil::Split(text, ' ')) {
+		if (!word.empty()) {
+			tokens.emplace_back(word, offset, TokenType::KEYWORD);
+		}
+		offset += word.size() + 1;
+	}
+	tokens.emplace_back("", text.size(), cursor ? TokenType::END_OF_INPUT_AUTOCOMPLETE : TokenType::END_OF_INPUT);
+	TokenIterator iterator(tokens);
+	vector<MatcherSuggestion> suggestions;
+	ParseResultAllocator allocator;
+	ArenaAllocator processes(Allocator::DefaultAllocator());
+	idx_t max_position = 0;
+	MatchContext context(suggestions, allocator, processes, max_position, mode);
+	MatchState state(iterator, context);
+	auto result = MatcherResult::Failure();
+	if (single_step) {
+		state.rule = matcher.GetRule();
+		auto process = matcher.StartMatch(state);
+		optional<MatcherResult> child_result;
+		while (true) {
+			auto step = process->Resume(child_result);
+			auto child = step.GetChild();
+			if (!child) {
+				result = step.GetResult();
+				break;
+			}
+			child_result = child->matcher.MatchParseResult(child->state);
+		}
+	} else {
+		result = matcher.MatchParseResult(state);
+		REQUIRE(processes.SizeInBytes() == 0);
+	}
+	vector<string> snapshot {
+	    StringUtil::Format("%d:%llu:%llu", result.IsSuccess(), state.token_iterator.Position(), max_position),
+	    result.HasParseResult() ? result.GetParseResult()->ToString() : string()};
+	for (auto &token : tokens) {
+		snapshot.push_back(StringUtil::Format("%d", static_cast<uint8_t>(token.type)));
+	}
+	for (auto &suggestion : suggestions) {
+		snapshot.push_back(StringUtil::Format("%s:%d:%d:%llu", suggestion.keyword.candidate,
+		                                      static_cast<uint8_t>(suggestion.type), suggestion.keyword.score_bonus,
+		                                      suggestion.keyword.suggestion_pos));
+	}
+	return snapshot;
+}
+
+TEST_CASE("Built-in matchers preserve the public single-step process interface", "[api][grammar_extension]") {
+	auto compiled = CompiledGrammar::Create();
+	for (auto &definition :
+	     vector<string> {"Program <- 'SELECT' 'FROM'", "Program <- ('SELECT' 'FROM') / ('WHERE' 'FROM')",
+	                     "Program <- 'SELECT' / 'FROM' / 'WHERE'", "Program <- ('SELECT' 'FROM')?",
+	                     "Program <- ('SELECT' 'FROM')+"}) {
+		auto grammar = ParsedGrammar::Parse(definition);
+		auto rules = CompileTestProgramRule(grammar);
+		MatcherAllocator allocator;
+		MatcherFactory factory(allocator, grammar, rules, compiled->GetKeywordHelper(), {});
+		auto &root = factory.CreateRootMatcher("Program").Cast<ListMatcher>();
+		vector<reference<Matcher>> matchers {root};
+		for (auto &child : root.matchers) {
+			matchers.push_back(child);
+		}
+		for (auto &matcher : matchers) {
+			for (auto mode : {MatchMode::BUILD_PARSE_RESULT, MatchMode::RECOGNIZE_ONLY}) {
+				for (auto cursor : {false, true}) {
+					for (auto &text :
+					     vector<string> {"", "SELECT", "SELECT FROM", "SELECT FROM SELECT FROM", "WHERE FROM", "X"}) {
+						CAPTURE(definition);
+						CAPTURE(text);
+						CAPTURE(cursor);
+						REQUIRE(MatchSingleStepTest(matcher, mode, text, cursor, true) ==
+						        MatchSingleStepTest(matcher, mode, text, cursor, false));
+					}
+				}
+			}
+		}
+	}
+}
+
+class ForwardingListTestMatcher final : public ListMatcher {
+public:
+	explicit ForwardingListTestMatcher(idx_t &starts_p) : starts(starts_p) {
+	}
+
+	arena_ptr<MatchProcess> StartMatch(MatchState &state) const override {
+		starts++;
+		return ListMatcher::StartMatch(state);
+	}
+
+private:
+	idx_t &starts;
+};
+
+TEST_CASE("Derived matchers can forward to built-in processes through deep heap frames", "[api][grammar_extension]") {
+	CompiledGrammarRule rule("Forwarded", nullptr);
+	MatchProcessLifetimeState lifetime;
+	lifetime.depth = 1;
+	lifetime.create_result = true;
+	NestedTestMatcher leaf(lifetime);
+	idx_t starts = 0;
+	vector<unique_ptr<ForwardingListTestMatcher>> lists;
+	for (idx_t i = 0; i < 4096; i++) {
+		auto list = make_uniq<ForwardingListTestMatcher>(starts);
+		list->SetRule(rule);
+		list->matchers.push_back(lists.empty() ? reference<Matcher>(leaf) : reference<Matcher>(*lists.back()));
+		lists.push_back(std::move(list));
+	}
+	for (auto mode : {MatchMode::BUILD_PARSE_RESULT, MatchMode::RECOGNIZE_ONLY}) {
+		vector<MatcherToken> tokens;
+		TokenIterator iterator(tokens);
+		vector<MatcherSuggestion> suggestions;
+		ParseResultAllocator allocator;
+		ArenaAllocator processes(Allocator::DefaultAllocator());
+		reference<uint64_t> guard(*processes.Make<uint64_t>(0x123456789abcdef0));
+		auto parent_bytes = processes.SizeInBytes();
+		idx_t max_position = 0;
+		MatchContext context(suggestions, allocator, processes, max_position, mode);
+		MatchState state(iterator, context);
+		MatchStack stack;
+		lifetime.throw_at_leaf = true;
+		starts = 0;
+		REQUIRE_THROWS_AS(stack.Execute({*lists.back(), state}), InvalidInputException);
+		REQUIRE(starts == lists.size());
+		REQUIRE(lifetime.active == 0);
+		REQUIRE(processes.SizeInBytes() == parent_bytes);
+		REQUIRE(guard.get() == 0x123456789abcdef0);
+
+		lifetime.throw_at_leaf = false;
+		starts = 0;
+		auto result = stack.Execute({*lists.back(), state});
+		REQUIRE(result.IsSuccess());
+		REQUIRE(starts == lists.size());
+		REQUIRE(lifetime.active == 0);
+		REQUIRE(lifetime.state_valid);
+		REQUIRE(processes.SizeInBytes() == parent_bytes);
+		REQUIRE(guard.get() == 0x123456789abcdef0);
+		REQUIRE(result.HasParseResult() == (mode == MatchMode::BUILD_PARSE_RESULT));
+		if (result.HasParseResult()) {
+			auto node = result.GetParseResult();
+			for (idx_t i = 0; i < lists.size(); i++) {
+				REQUIRE(node->GetRule().get() == &rule);
+				auto children = node->Cast<ListParseResult>().GetChildren();
+				REQUIRE(children.size() == 1);
+				node = children[0].get();
+			}
+			REQUIRE(node->Name() == "nested result");
+		}
+	}
+}
+
+TEST_CASE("Packrat cache preserves entries across indexed and fallback growth", "[api][grammar_extension]") {
+	MatcherAllocator matchers;
+	auto &first = matchers.Allocate(make_uniq<NumberLiteralMatcher>());
+	auto &second = matchers.Allocate(make_uniq<NumberLiteralMatcher>());
+	first.SetPackratMemoized();
+	second.SetPackratMemoized();
+	ArenaAllocator arena(Allocator::DefaultAllocator());
+	ParserPackratCache cache(arena, 100, 1100);
+	IdentifierParseResult result("cached", optional_idx(123), optional_idx(6));
+	ParserPackratEntry original;
+	original.success = true;
+	original.token_index_after = NumericLimits<idx_t>::Maximum();
+	original.max_token_index_seen = NumericLimits<idx_t>::Maximum() - 1;
+	original.result = &result;
+	cache.Store(first, 100, original);
+	auto pinned = cache.Lookup(first, 100);
+	REQUIRE(pinned);
+
+	ParserPackratEntry failure;
+	failure.token_index_after = 101;
+	failure.max_token_index_seen = 102;
+	cache.Store(second, 100, failure);
+	for (idx_t position = 0; position < 2200; position++) {
+		cache.Store(first, position, failure);
+	}
+	cache.Store(first, NumericLimits<idx_t>::Maximum(), failure);
+	auto retained = cache.Lookup(first, 100);
+	REQUIRE(retained.get() == pinned.get());
+	REQUIRE(retained->success);
+	REQUIRE(retained->token_index_after == original.token_index_after);
+	REQUIRE(retained->max_token_index_seen == original.max_token_index_seen);
+	REQUIRE(retained->result.get() == &result);
+	for (auto position : {idx_t(0), idx_t(99), idx_t(1099), idx_t(1100), NumericLimits<idx_t>::Maximum()}) {
+		auto entry = cache.Lookup(first, position);
+		REQUIRE(entry);
+		REQUIRE_FALSE(entry->success);
+		REQUIRE(entry->token_index_after == failure.token_index_after);
+		REQUIRE(entry->max_token_index_seen == failure.max_token_index_seen);
+		REQUIRE_FALSE(entry->result);
+	}
+	auto other_matcher = cache.Lookup(second, 100);
+	REQUIRE(other_matcher);
+	REQUIRE_FALSE(other_matcher->success);
+	REQUIRE_FALSE(cache.Lookup(second, 101));
+}
+
+TEST_CASE("Packrat cache accepts empty and reversed index ranges", "[api][grammar_extension]") {
+	MatcherAllocator matchers;
+	auto &matcher = matchers.Allocate(make_uniq<NumberLiteralMatcher>());
+	matcher.SetPackratMemoized();
+	for (auto range : {pair<idx_t, idx_t> {0, 0}, pair<idx_t, idx_t> {100, 100}, pair<idx_t, idx_t> {200, 100}}) {
+		ArenaAllocator arena(Allocator::DefaultAllocator());
+		ParserPackratCache cache(arena, range.first, range.second);
+		ParserPackratEntry value;
+		value.success = true;
+		value.token_index_after = NumericLimits<idx_t>::Maximum();
+		for (auto position : {idx_t(0), idx_t(100), idx_t(200), NumericLimits<idx_t>::Maximum()}) {
+			REQUIRE_FALSE(cache.Lookup(matcher, position));
+			cache.Store(matcher, position, value);
+			auto entry = cache.Lookup(matcher, position);
+			REQUIRE(entry);
+			REQUIRE(entry->success);
+			REQUIRE(entry->token_index_after == value.token_index_after);
+		}
+	}
+}
+class GroupKeywordTestMatcher final : public KeywordMatcher {
+public:
+	explicit GroupKeywordTestMatcher(const string &word_p) : KeywordMatcher(word_p, KeywordInfo()), word(word_p) {
+	}
+	void InitializeFirstSet(MatcherFirstSet &first, const GrammarLiteralTable &table) const override {
+		auto literal = table.Lookup(word).LiteralId();
+		REQUIRE(literal != 0);
+		first.AddLiteral(literal);
+	}
+	MatcherResult MatchAtomic(MatchState &state) const override {
+		if (should_throw) {
+			throw InvalidInputException("group leaf failure");
+		}
+		return KeywordMatcher::MatchAtomic(state);
+	}
+
+	bool should_throw = false;
+
+private:
+	string word;
+};
+
+TEST_CASE("Prepared list groups preserve entry boundaries, fallbacks and allocator moves", "[api][grammar_extension]") {
+	CompiledGrammarRule atom_rule("Atom", nullptr), inner_rule("Inner", nullptr), middle_rule("Middle", nullptr),
+	    outer_rule("Outer", nullptr);
+	GroupKeywordTestMatcher atom("SELECT"), b("FROM"), c("WHERE"), d("LIMIT");
+	atom.SetRule(atom_rule);
+	OptionalMatcher optional_b(b), optional_c(c), optional_d(d);
+	for (auto optional : {&optional_b, &optional_c, &optional_d}) {
+		optional->SetStructural();
+	}
+	MatcherAllocator allocator;
+	auto &inner = allocator.Allocate(make_uniq<ListMatcher>()).Cast<ListMatcher>();
+	auto &middle = allocator.Allocate(make_uniq<ListMatcher>()).Cast<ListMatcher>();
+	auto &outer = allocator.Allocate(make_uniq<ListMatcher>()).Cast<ListMatcher>();
+	inner.SetRule(inner_rule);
+	middle.SetRule(middle_rule);
+	outer.SetRule(outer_rule);
+	vector<reference<ListMatcher>> lists {inner, middle, outer};
+	for (auto &list : lists) {
+		list.get().SetStructural();
+		list.get().SetCollapsible();
+	}
+	inner.matchers = {atom, optional_b};
+	middle.matchers = {inner, optional_c};
+	outer.matchers = {middle, optional_d};
+	auto grammar = CompiledGrammar::DefaultGrammar();
+	auto &table = grammar->GetKeywordHelper().GetLiteralTable();
+	ComputeFirstSets(outer, table);
+	auto snapshots = [&]() {
+		vector<vector<string>> result;
+		for (auto &entry : lists) {
+			for (auto mode : {MatchMode::BUILD_PARSE_RESULT, MatchMode::RECOGNIZE_ONLY}) {
+				for (auto cursor : {false, true}) {
+					for (auto single_step : {false, true}) {
+						for (auto &text : vector<string> {"", "SELECT", "SELECT FROM", "SELECT WHERE", "SELECT LIMIT",
+						                                  "SELECT FROM WHERE LIMIT", "SELECT X", "X"}) {
+							result.push_back(MatchSingleStepTest(entry, mode, text, cursor, single_step));
+						}
+					}
+				}
+			}
+		}
+		return result;
+	};
+	auto expected = snapshots();
+	allocator.InitializeListChains();
+	REQUIRE(outer.GetPreparedChain());
+	REQUIRE(outer.GetPreparedChain() == inner.GetPreparedChain());
+	REQUIRE(middle.GetPreparedChain() == inner.GetPreparedChain());
+	REQUIRE(outer.GetPreparedChain()->lists.size() == 3);
+	REQUIRE(snapshots() == expected);
+
+	auto moved = std::move(allocator);
+	REQUIRE(snapshots() == expected);
+	moved.InitializeListChains();
+	REQUIRE(outer.GetPreparedChain()->lists.size() == 3);
+	REQUIRE(snapshots() == expected);
+
+	SECTION("A second parent ends the group before the shared child") {
+		auto &other = moved.Allocate(make_uniq<ListMatcher>()).Cast<ListMatcher>();
+		other.SetStructural();
+		other.SetCollapsible();
+		other.matchers = {inner, optional_d};
+		ComputeFirstSets(other, table);
+		moved.InitializeListChains();
+		REQUIRE(outer.GetPreparedChain());
+		REQUIRE(outer.GetPreparedChain()->lists.size() == 2);
+		REQUIRE_FALSE(inner.GetPreparedChain());
+		REQUIRE(snapshots() == expected);
+	}
+	SECTION("Changing a tail invalidates the old group before rebuilding") {
+		middle.matchers[1] = c;
+		for (auto &list : lists) {
+			list.get().InitializeListChain();
+		}
+		ComputeFirstSets(outer, table);
+		expected = snapshots();
+		moved.InitializeListChains();
+		for (auto &list : lists) {
+			REQUIRE_FALSE(list.get().GetPreparedChain());
+		}
+		REQUIRE(snapshots() == expected);
+	}
+}
+
+TEST_CASE("Prepared list groups do not collapse to a present named prefix", "[api][grammar_extension]") {
+	// Program <- Middle 'WHERE'?   Middle <- 'NOT'? Inner   Inner <- Atom 'FROM'?   Atom <- 'SELECT'
+	CompiledGrammarRule atom_rule("Atom", nullptr), prefix_rule("Prefix", nullptr), inner_rule("Inner", nullptr),
+	    middle_rule("Middle", nullptr), outer_rule("Program", nullptr);
+	GroupKeywordTestMatcher atom("SELECT"), not_keyword("NOT"), from_keyword("FROM"), where_keyword("WHERE");
+	atom.SetRule(atom_rule);
+	OptionalMatcher optional_not(not_keyword), optional_from(from_keyword), optional_where(where_keyword);
+	for (auto optional : {&optional_not, &optional_from, &optional_where}) {
+		optional->SetStructural();
+	}
+	// the prefix carries a rule, so its result passes the named-result guard of the collapse
+	optional_not.SetRule(prefix_rule);
+	MatcherAllocator allocator;
+	auto &inner = allocator.Allocate(make_uniq<ListMatcher>()).Cast<ListMatcher>();
+	auto &middle = allocator.Allocate(make_uniq<ListMatcher>()).Cast<ListMatcher>();
+	auto &outer = allocator.Allocate(make_uniq<ListMatcher>()).Cast<ListMatcher>();
+	inner.SetRule(inner_rule);
+	middle.SetRule(middle_rule);
+	outer.SetRule(outer_rule);
+	vector<reference<ListMatcher>> lists {inner, middle, outer};
+	for (auto &list : lists) {
+		list.get().SetStructural();
+		list.get().SetCollapsible();
+	}
+	inner.matchers = {atom, optional_from};
+	middle.matchers = {optional_not, inner};
+	outer.matchers = {middle, optional_where};
+	auto grammar = CompiledGrammar::DefaultGrammar();
+	auto &table = grammar->GetKeywordHelper().GetLiteralTable();
+	ComputeFirstSets(outer, table);
+	auto snapshots = [&]() {
+		vector<vector<string>> result;
+		for (auto &entry : lists) {
+			for (auto mode : {MatchMode::BUILD_PARSE_RESULT, MatchMode::RECOGNIZE_ONLY}) {
+				for (auto cursor : {false, true}) {
+					for (auto single_step : {false, true}) {
+						for (auto &text :
+						     vector<string> {"", "SELECT", "NOT SELECT", "NOT SELECT FROM", "NOT SELECT WHERE",
+						                     "NOT SELECT FROM WHERE", "NOT", "NOT X", "SELECT FROM WHERE", "X"}) {
+							result.push_back(MatchSingleStepTest(entry, mode, text, cursor, single_step));
+						}
+					}
+				}
+			}
+		}
+		return result;
+	};
+	auto expected = snapshots();
+	allocator.InitializeListChains();
+	REQUIRE(outer.GetPreparedChain());
+	REQUIRE(outer.GetPreparedChain()->lists.size() == 3);
+	REQUIRE(middle.GetChainChildIndex() == 1);
+	// the present prefix must not stand in for the group: both tokens are consumed
+	auto prepared = MatchSingleStepTest(outer, MatchMode::BUILD_PARSE_RESULT, "NOT SELECT", false, false);
+	REQUIRE(prepared[0] == "1:2:2");
+	REQUIRE(snapshots() == expected);
+}
+
+TEST_CASE("Deep prepared list groups keep success and exception state on the heap", "[api][grammar_extension]") {
+	CompiledGrammarRule rule("GroupLeaf", nullptr);
+	GroupKeywordTestMatcher atom("SELECT");
+	atom.SetRule(rule);
+	auto grammar = CompiledGrammar::DefaultGrammar();
+	auto &table = grammar->GetKeywordHelper().GetLiteralTable();
+	ComputeFirstSets(atom, table);
+	MatcherAllocator allocator;
+	optional_ptr<ListMatcher> root;
+	for (idx_t i = 0; i < 4096; i++) {
+		auto &list = allocator.Allocate(make_uniq<ListMatcher>()).Cast<ListMatcher>();
+		list.SetStructural();
+		list.SetCollapsible();
+		list.SetRule(rule);
+		list.matchers.push_back(root ? reference<Matcher>(*root) : reference<Matcher>(atom));
+		// A one-child list has exactly its child's FIRST set; avoid quadratic test setup.
+		list.first_set = atom.first_set;
+		root = list;
+	}
+	allocator.InitializeListChains();
+	REQUIRE(root->GetPreparedChain());
+	REQUIRE(root->GetPreparedChain()->lists.size() == 4096);
+	vector<MatcherToken> tokens {MatcherToken("SELECT", 0, TokenType::KEYWORD)};
+	TokenIterator iterator(tokens);
+	vector<MatcherSuggestion> suggestions;
+	ParseResultAllocator results;
+	ArenaAllocator processes(Allocator::DefaultAllocator());
+	auto &guard = *processes.Make<uint64_t>(0x123456789abcdef0);
+	auto parent_bytes = processes.SizeInBytes();
+	idx_t max_position = 0;
+	MatchContext context(suggestions, results, processes, max_position);
+	MatchStack stack;
+	for (auto fail : {true, false}) {
+		atom.should_throw = fail;
+		MatchState state(iterator, context);
+		if (fail) {
+			REQUIRE_THROWS_AS(stack.Execute({*root, state}), InvalidInputException);
+		} else {
+			auto result = stack.Execute({*root, state});
+			REQUIRE(result.IsSuccess());
+			REQUIRE(result.HasParseResult());
+			REQUIRE(result.GetParseResult()->GetRule().get() == &rule);
+			REQUIRE(result.GetParseResult()->collapsed);
+			REQUIRE(state.token_iterator.Position() == 1);
+		}
+		REQUIRE(processes.SizeInBytes() == parent_bytes);
+		REQUIRE(guard == 0x123456789abcdef0);
+	}
+}
+
+TEST_CASE("Generated list finalization validates its tree before consuming child results", "[api][grammar_extension]") {
+	static const TransformFrameOps ops {"NameListValidation", [](PEGTransformer &, GeneratedTransformProcess &) {},
+	                                    PEGTransformerFactory::FinalizeNameListTrampoline};
+	auto grammar = CompiledGrammar::DefaultGrammar();
+	auto options = ParserOptions::Builtin();
+	vector<MatcherToken> tokens;
+	TokenIterator iterator(tokens);
+	ArenaAllocator transform_results(Allocator::DefaultAllocator());
+	PEGTransformer transformer(transform_results, iterator, options, *grammar);
+#ifdef DUCKDB_CRASH_ON_ASSERT
+	// Malformed trees intentionally raise InternalException, which aborts in this mode.
+	constexpr idx_t shape_count = 2;
+#else
+	constexpr idx_t shape_count = 6;
+#endif
+	for (idx_t shape = 0; shape < shape_count; shape++) {
+		INFO("List shape: " << shape);
+		ParseResultAllocator results;
+		ArenaAllocator temporary(Allocator::DefaultAllocator());
+		auto children = [&](std::initializer_list<reference<ParseResult>> input) {
+			arena_vector<reference<ParseResult>> collected(temporary);
+			for (auto &child : input) {
+				collected.push_back(child);
+			}
+			return results.MakeChildren(collected);
+		};
+		auto list = [&](std::initializer_list<reference<ParseResult>> input) -> ParseResult & {
+			return *results.Make<ListParseResult>(children(input), nullptr, optional_idx());
+		};
+		IdentifierParseResult first("alpha", optional_idx()), second("beta", optional_idx());
+		KeywordParseResult punctuation(",", optional_idx());
+		OptionalParseResult absent;
+		auto &pair = shape == 3 ? list({punctuation}) : list({punctuation, second});
+		auto repeated_child = shape == 2 ? reference<ParseResult>(second) : reference<ParseResult>(pair);
+		auto repeat = results.Make<RepeatParseResult>(children({repeated_child}), optional_idx());
+		OptionalParseResult tail(repeat, optional_idx());
+		auto &body = shape == 4   ? list({first})
+		             : shape == 5 ? list({first, second})
+		             : shape == 0 ? list({first, absent})
+		                          : list({first, tail});
+		auto &parens = list({punctuation, body, punctuation});
+		auto &root = list({parens});
+		GeneratedTransformProcess process(transformer, {root}, ops);
+		process.ReserveChildSlots(2);
+		process.SetChildResult(0, transformer.MakeResult<Identifier>("alpha"));
+		process.SetChildResult(1, transformer.MakeResult<Identifier>("beta"));
+		if (shape >= 2) {
+			REQUIRE_THROWS_AS(PEGTransformerFactory::FinalizeNameListTrampoline(transformer, process),
+			                  InternalException);
+			REQUIRE(process.GetResult<Identifier>(0) == Identifier("alpha"));
+			REQUIRE(process.GetResult<Identifier>(1) == Identifier("beta"));
+		} else {
+			auto finalized = PEGTransformerFactory::FinalizeNameListTrampoline(transformer, process);
+			auto values = TryGetTransformResult<vector<string>>(*finalized);
+			REQUIRE(values);
+			vector<string> expected {"alpha"};
+			if (shape == 1) {
+				expected.push_back("beta");
+			}
+			REQUIRE(*values == expected);
+		}
 	}
 }

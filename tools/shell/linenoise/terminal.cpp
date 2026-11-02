@@ -476,7 +476,7 @@ static bool IsContinuousIntegrationEnvironment() {
 }
 #endif
 
-bool Terminal::TryGetBackgroundColor(TerminalColor &color) {
+bool Terminal::TryGetBackgroundColor(TerminalColor &color, bool keep_pending_input) {
 #if defined(_WIN32) || defined(WIN32)
 	// FIXME: always emit black background on Windows
 	color.r = 0;
@@ -487,6 +487,11 @@ bool Terminal::TryGetBackgroundColor(TerminalColor &color) {
 	if (TryGetBackgroundColorFromEnvironment(color)) {
 		return true;
 	}
+	if (rawmode) {
+		// the line editor holds the terminal in raw mode - entering raw mode again would save the raw settings as
+		// the ones to restore, and the terminal would stay raw after the editor is done
+		return false;
+	}
 	if (IsContinuousIntegrationEnvironment()) {
 		// no terminal emulator is attached in CI
 		return false;
@@ -496,8 +501,10 @@ bool Terminal::TryGetBackgroundColor(TerminalColor &color) {
 		// no terminal that can answer the query
 		return false;
 	}
-	// buffer any available input - we need to interact with stdin
-	BufferAvailableInput();
+	if (keep_pending_input) {
+		// the response arrives on stdin - move the input typed so far to the line editor's buffer first
+		BufferAvailableInput();
+	}
 	int ifd = STDIN_FILENO;
 	int ofd = STDOUT_FILENO;
 	if (!isatty(ifd)) {

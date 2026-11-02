@@ -602,6 +602,8 @@ char *ShellState::OneInputLine(FILE *in, char *&zPrior, int isContinuation) {
 		}
 		free(zPrior);
 		zPrior = nullptr;
+		// the editor highlights as it renders, and the terminal cannot be probed while the editor holds it
+		DetectDarkLightMode();
 		return linenoise(prompt_text);
 	}
 #endif
@@ -3774,8 +3776,9 @@ void ShellState::DetectDarkLightMode() {
 		// not printing to console - don't auto-detect
 		return;
 	}
-	// detect terminal colors
-	auto terminal_color = linenoiseGetTerminalColorMode();
+	// detect terminal colors - input typed ahead is kept only when the line editor is the one reading stdin
+	bool line_editor_reads_stdin = !in && rl_version == ReadLineVersion::LINENOISE;
+	auto terminal_color = linenoiseGetTerminalColorMode(line_editor_reads_stdin);
 	if (terminal_color == LINENOISE_DARK_MODE) {
 		highlight_mode = HighlightMode::DARK_MODE;
 		highlight.ToggleMode(HighlightMode::DARK_MODE);
@@ -4050,6 +4053,10 @@ int RunShell(int argc, const char **argv) {
 			rc = data.ProcessInput(InputMode::STANDARD);
 		} else {
 			data.in = stdin;
+			if (isatty(0)) {
+				// the color probe shares stdin with the statements read from the terminal - probe before reading any
+				data.DetectDarkLightMode();
+			}
 			rc = data.ProcessInput(InputMode::STANDARD);
 		}
 	}

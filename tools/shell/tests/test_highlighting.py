@@ -183,4 +183,115 @@ def test_manual_uses_detected_color_mode(shell):
     assert status == 0, output
     assert output.count(b'\x1b]11;?') == 1
 
+
+OSC11_DARK_RESPONSE = b'\x1b]11;rgb:1e1e/1e1e/1e1e\x07\x1b[?62c'
+
+
+def run_script_in_pty(shell, arguments, steps, no_color=None):
+    # runs the shell on a pseudo-terminal that answers the background color and cursor position queries, writes the
+    # steps (bytes, seconds to wait afterwards) as a user would type them, and reports the terminal settings at the end
+    import pty, select, time, termios
+    master, slave = pty.openpty()
+    env = ShellTest(shell).get_environment()
+    env.pop('CI', None)
+    env.pop('COLORFGBG', None)
+    env.pop('NO_COLOR', None)
+    env['TERM'] = 'xterm-256color'
+    if no_color is not None:
+        env['NO_COLOR'] = no_color
+    process = subprocess.Popen([shell, '-no-init', *arguments], stdin=slave, stdout=slave, stderr=slave, env=env)
+    os.close(slave)
+    output = b''
+
+    def pump(seconds):
+        nonlocal output
+        deadline = time.monotonic() + seconds
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            if not select.select([master], [], [], remaining)[0]:
+                continue
+            try:
+                chunk = os.read(master, 4096)
+            except OSError:
+                return
+            if not chunk:
+                return
+            output += chunk
+            if b'\x1b]11;?' in chunk:
+                os.write(master, OSC11_DARK_RESPONSE)
+            if b'\x1b[6n' in chunk:
+                os.write(master, b'\x1b[1;1R')
+
+    try:
+        pump(1.0)
+        for data, seconds in steps:
+            os.write(master, data)
+            pump(seconds)
+        deadline = time.monotonic() + 20
+        while process.poll() is None and time.monotonic() < deadline:
+            pump(0.1)
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=5)
+        attrs = termios.tcgetattr(master)
+        settings = {
+            'ICANON': bool(attrs[3] & termios.ICANON),
+            'ECHO': bool(attrs[3] & termios.ECHO),
+            'OPOST': bool(attrs[1] & termios.OPOST),
+        }
+    finally:
+        os.close(master)
+    return process.returncode, output, settings
+
+
+SANE_TERMINAL = {'ICANON': True, 'ECHO': True, 'OPOST': True}
+
+
+# the color probe must not run while the line editor holds the terminal in raw mode, or the editor restores the raw
+# settings afterwards and the terminal stays raw after the shell exits
+@pytest.mark.skipif(os.name == 'nt', reason="requires a POSIX pseudo-terminal")
+@pytest.mark.parametrize("no_color, enable", [
+    ('1', b'.highlight on\r'),
+    (None, b'.highlight_mode auto\r'),
+])
+def test_repl_color_probe_restores_terminal(shell, no_color, enable):
+    steps = [(b".prompt 'D '\r", 0.3), (enable, 0.3)]
+    # typed one character at a time, as a user does, so the editor renders and highlights after each one
+    steps += [(bytes([ch]), 0.1) for ch in b'SELECT 42;']
+    steps += [(b'\r', 1.0), (b'.quit\r', 0.5)]
+    status, output, settings = run_script_in_pty(shell, [], steps, no_color=no_color)
+    assert status == 0, output
+    assert b'\x1b]11;?' in output
+    assert settings == SANE_TERMINAL, output
+    # the result is printed with the prompt restored, so the rows end in CR LF
+    assert b'42' in output
+    assert b'\r\n' in output
+
+
+# the REPL probes before the first line is read, with a prompt that uses no color
+@pytest.mark.skipif(os.name == 'nt', reason="requires a POSIX pseudo-terminal")
+def test_repl_color_probe_before_first_line(shell):
+    steps = [(b'SELECT 42;\r', 1.0), (b'.quit\r', 0.5)]
+    status, output, settings = run_script_in_pty(shell, [], steps)
+    assert status == 0, output
+    assert output.count(b'\x1b]11;?') == 1
+    assert output.index(b'\x1b]11;?') < output.index(b'42')
+    assert settings == SANE_TERMINAL, output
+
+
+# in -batch mode the statements are read from stdin by stdio, so the probe must not move pending input into the
+# line editor's buffer, where it would never be read
+@pytest.mark.skipif(os.name == 'nt', reason="requires a POSIX pseudo-terminal")
+def test_batch_color_probe_keeps_pasted_statements(shell):
+    steps = [(b'SELECT 111 AS a;\nSELECT 222 AS b;\n', 2.0), (b'.quit\n', 0.5)]
+    status, output, settings = run_script_in_pty(shell, ['-batch'], steps)
+    assert status == 0, output
+    assert b'\x1b]11;?' in output
+    # each value appears once in the echo of the statement and once in its result
+    assert output.count(b'111') == 2, output
+    assert output.count(b'222') == 2, output
+    assert settings == SANE_TERMINAL, output
+
 # fmt: on

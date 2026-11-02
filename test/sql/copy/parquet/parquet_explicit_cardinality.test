@@ -1,0 +1,63 @@
+# name: test/sql/copy/parquet/parquet_explicit_cardinality.test
+# description: explicit_cardinality gives the planner's row count estimate of a Parquet scan
+# group: [parquet]
+
+require parquet
+
+statement ok
+COPY (SELECT i FROM range(5) t(i)) TO '{TEST_DIR}/explicit_cardinality.parquet' (FORMAT PARQUET);
+
+# the estimate comes from the file's metadata
+query II
+EXPLAIN SELECT i FROM read_parquet('{TEST_DIR}/explicit_cardinality.parquet')
+----
+physical_plan	<REGEX>:.*~5 [Rr]ows.*
+
+# the option replaces it, upwards and downwards
+query II
+EXPLAIN SELECT i FROM read_parquet('{TEST_DIR}/explicit_cardinality.parquet', explicit_cardinality = 1000)
+----
+physical_plan	<REGEX>:.*~1,000 [Rr]ows.*
+
+query II
+EXPLAIN SELECT i FROM read_parquet('{TEST_DIR}/explicit_cardinality.parquet', explicit_cardinality = 1)
+----
+physical_plan	<REGEX>:.*~1 [Rr]ows?.*
+
+# the count is the one of the whole scan, not of each file
+query II
+EXPLAIN SELECT i FROM read_parquet(['{TEST_DIR}/explicit_cardinality.parquet', '{TEST_DIR}/explicit_cardinality.parquet'])
+----
+physical_plan	<REGEX>:.*~10 [Rr]ows.*
+
+query II
+EXPLAIN SELECT i FROM read_parquet(['{TEST_DIR}/explicit_cardinality.parquet', '{TEST_DIR}/explicit_cardinality.parquet'], explicit_cardinality = 1000)
+----
+physical_plan	<REGEX>:.*~1,000 [Rr]ows.*
+
+# the single-file function takes the count for its file
+query II
+EXPLAIN SELECT i FROM read_single_parquet_file('{TEST_DIR}/explicit_cardinality.parquet', explicit_cardinality = 1000)
+----
+physical_plan	<REGEX>:.*~1,000 [Rr]ows.*
+
+# the estimate changes no result, and the file's row groups still bound the rows, so a limit above them goes
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/explicit_cardinality.parquet', explicit_cardinality = 1)
+----
+5
+
+query I
+SELECT count(*) FROM read_parquet(['{TEST_DIR}/explicit_cardinality.parquet', '{TEST_DIR}/explicit_cardinality.parquet'], explicit_cardinality = 1000)
+----
+10
+
+query II
+EXPLAIN SELECT i FROM read_parquet('{TEST_DIR}/explicit_cardinality.parquet', explicit_cardinality = 1000) LIMIT 6
+----
+physical_plan	<!REGEX>:.*LIMIT.*
+
+query I
+SELECT count(*) FROM (SELECT i FROM read_parquet('{TEST_DIR}/explicit_cardinality.parquet', explicit_cardinality = 1) LIMIT 3)
+----
+3

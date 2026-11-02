@@ -741,6 +741,17 @@ unique_ptr<NodeStatistics> TableFunctionMultiFileWrapper::GetCardinality(ClientC
 		result->has_estimated_cardinality = true;
 		result->estimated_cardinality = data.cardinality.GetIndex() * file_count;
 	}
+	if (!settings.explicit_cardinality_parameter.empty()) {
+		// the caller's row count of the scan takes the place of the estimate from the first file
+		auto entry = data.options.named_parameters.find(settings.explicit_cardinality_parameter);
+		if (entry != data.options.named_parameters.end() && !entry->second.IsNull()) {
+			auto explicit_cardinality = entry->second.GetValue<idx_t>();
+			if (explicit_cardinality > 0) {
+				result->has_estimated_cardinality = true;
+				result->estimated_cardinality = explicit_cardinality;
+			}
+		}
+	}
 	if (!bind_data.file_options.union_by_name && bind_data.union_readers.size() == 1 &&
 	    bind_data.file_list->GetExpandResult() == FileExpandResult::SINGLE_FILE &&
 	    bind_data.union_readers[0]->GetFileName() == bind_data.file_list->GetFirstFile().path) {

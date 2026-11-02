@@ -187,6 +187,9 @@ struct TableFunctionMultiFileSettings {
 	idx_t maximum_sample_files = 1;
 	//! The named parameter of the wrapped function that sets how many files are sampled (if it has one)
 	Identifier sample_files_parameter;
+	//! The named parameter of the wrapped function that gives the number of rows of the whole scan (if it has one),
+	//! which then replaces the estimate taken from the first file
+	Identifier explicit_cardinality_parameter;
 	//! Whether the schemas of the sampled files are combined into a union of their columns - files are then allowed
 	//! to be missing columns of the combined schema
 	bool sampled_schema_is_union = true;

@@ -398,7 +398,10 @@ static unique_ptr<NodeStatistics> ReadSingleParquetFileCardinality(ClientContext
 	if (!parquet_data.cardinality.IsValid()) {
 		return nullptr;
 	}
-	auto result = make_uniq<NodeStatistics>(parquet_data.cardinality.GetIndex());
+	// the caller's row count for this file replaces the one of its metadata as the estimate, not as the bound
+	auto estimate = parquet_data.options.explicit_cardinality ? parquet_data.options.explicit_cardinality
+	                                                          : parquet_data.cardinality.GetIndex();
+	auto result = make_uniq<NodeStatistics>(estimate);
 	if (!parquet_data.metadata) {
 		return result;
 	}
@@ -590,6 +593,8 @@ TableFunctionMultiFileSettings ParquetScanFunction::GetMultiFileSettings() {
 	settings.schedule_io = ReadSingleParquetFileScheduleIO;
 	settings.prepare_read_ahead = ReadSingleParquetFilePrepareReadAhead;
 	settings.get_file_columns = ReadSingleParquetFileColumns;
+	// the row count the caller gives for the scan, which the first file's metadata would otherwise estimate
+	settings.explicit_cardinality_parameter = Identifier("explicit_cardinality");
 	// the order the filters are best applied in is learned while reading, and carries over to the next file
 	settings.reuses_local_state = true;
 	settings.reports_bytes_scanned = true;

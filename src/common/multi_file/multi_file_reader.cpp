@@ -98,14 +98,7 @@ bool MultiFileBindData::HasIdentityMapping(const vector<MultiFileColumnDefinitio
 		return false;
 	}
 	for (idx_t i = 0; i < physical_columns.size(); i++) {
-		auto &physical = physical_columns[i];
-		if (reader_bind.file_row_number_idx.IsValid() && reader_bind.file_row_number_idx.GetIndex() == i &&
-		    physical.identifier.type().id() == LogicalTypeId::INTEGER &&
-		    physical.identifier.GetValue<int32_t>() == MultiFileReader::ORDINAL_FIELD_ID) {
-			// a reader that lists the file row number among its columns places it where the output has it
-			continue;
-		}
-		if (!MatchesPhysicalColumn(i, physical.name, physical.type)) {
+		if (!MatchesPhysicalColumn(i, physical_columns[i].name, physical_columns[i].type)) {
 			return false;
 		}
 	}

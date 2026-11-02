@@ -96,3 +96,25 @@ query IIII
 SELECT 2.5 > ANY (SELECT i FROM ints), 2.5 > ALL (SELECT i FROM ints), 0.5 < ALL (SELECT i FROM ints), 3.5 <= ANY (SELECT i FROM ints)
 ----
 true	false	true	false
+
+# every row is cast to the compared type, so a value it cannot hold raises the cast error like equality does
+statement ok
+CREATE TABLE dates(d DATE);
+
+statement ok
+INSERT INTO dates VALUES ('1990-01-01'), ('5874897-12-31');
+
+statement error
+SELECT TIMESTAMP '2000-01-01' > ANY (SELECT d FROM dates)
+----
+<REGEX>:.*Conversion Error.*5874897-12-31.*
+
+statement error
+SELECT TIMESTAMP '2000-01-01' = ANY (SELECT d FROM dates)
+----
+<REGEX>:.*Conversion Error.*5874897-12-31.*
+
+query I
+SELECT TIMESTAMP '2000-01-01' > ANY (SELECT d FROM dates WHERE d < DATE '3000-01-01')
+----
+true

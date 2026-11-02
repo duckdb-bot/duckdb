@@ -1,5 +1,6 @@
 #include "catch.hpp"
 #include "duckdb/main/database.hpp"
+#include "duckdb/main/db_instance_cache.hpp"
 #include "test_helpers.hpp"
 
 using namespace duckdb;
@@ -23,5 +24,21 @@ TEST_CASE("Test that a failure while configuring a database reaches the caller",
 	// the failure leaves nothing behind that stops a later database from opening
 	DuckDB db(nullptr);
 	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("SELECT 42"));
+}
+
+TEST_CASE("Test that a failed cached database construction releases its cache entry", "[api]") {
+	DBInstanceCache cache;
+	DBConfig config;
+	config.options.http_client_pool_capacity = 0;
+	REQUIRE_THROWS_WITH(cache.GetOrCreateInstance(":memory:", config, true),
+	                    Catch::Contains("HTTP client pool capacity must be at least 1"));
+	// the entry the failed attempt reserved is gone, otherwise the next lookup waits for it forever
+	REQUIRE(!config.db_cache_entry);
+
+	config.options.http_client_pool_capacity = DConstants::INVALID_INDEX;
+	auto db = cache.GetOrCreateInstance(":memory:", config, true);
+	REQUIRE(db);
+	Connection con(*db);
 	REQUIRE_NO_FAIL(con.Query("SELECT 42"));
 }

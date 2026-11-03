@@ -21,6 +21,7 @@ bool SelectBinder::TryResolveAliasReference(ColumnRefExpression &colref, idx_t d
 		return false;
 	}
 
+	node.bind_state.VerifyUnambiguousAlias(alias_name, colref, "Alias");
 	auto alias_index = entry->second;
 	// Simple way to prevent circular aliasing (`SELECT alias.y as x, alias.x as y;`)
 	if (alias_index >= node.bound_column_count) {

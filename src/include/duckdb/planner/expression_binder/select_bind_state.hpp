@@ -21,6 +21,8 @@ namespace duckdb {
 struct SelectBindState {
 	// Mapping of (alias -> index) and a mapping of (Expression -> index) for the SELECT list
 	identifier_map_t<idx_t> alias_map;
+	//! Aliases that several expressions of the SELECT list have
+	identifier_set_t ambiguous_aliases;
 	parsed_expression_map_t<idx_t> projection_map;
 	//! The original unparsed expressions. This is exported after binding, because the binding might change the
 	//! expressions (e.g. when a * clause is present)
@@ -35,6 +37,8 @@ struct SelectBindState {
 
 public:
 	unique_ptr<ParsedExpression> BindAlias(idx_t index);
+	//! Throws if several expressions of the SELECT list have the alias that the expression references
+	void VerifyUnambiguousAlias(const Identifier &alias, const ParsedExpression &expr, const string &component) const;
 
 	void SetExpressionIsVolatile(idx_t index);
 	void SetExpressionHasSubquery(idx_t index);

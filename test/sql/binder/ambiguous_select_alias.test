@@ -1,0 +1,141 @@
+# name: test/sql/binder/ambiguous_select_alias.test
+# description: An alias that several SELECT expressions have cannot be referenced (duckdb/duckdb#11855)
+# group: [binder]
+
+statement error
+SELECT i AS r2, 10 - i AS r2 FROM range(4) t(i) ORDER BY r2
+----
+<REGEX>:Binder Error: ORDER BY "r2" is ambiguous.*
+
+statement error
+SELECT i AS r2, 10 - i AS r2 FROM range(4) t(i) ORDER BY r2 + 1
+----
+<REGEX>:Binder Error: Alias "r2" is ambiguous.*
+
+statement error
+SELECT DISTINCT ON (r) i AS r, 10 - i AS r FROM range(3) t(i)
+----
+<REGEX>:Binder Error: DISTINCT ON "r" is ambiguous.*
+
+statement error
+SELECT i % 2 AS g, i AS g FROM range(3) t(i) GROUP BY g
+----
+<REGEX>:Binder Error: GROUP BY "g" is ambiguous.*
+
+statement error
+SELECT count(*) AS c, sum(i) AS c FROM range(3) t(i) HAVING c > 0
+----
+<REGEX>:Binder Error: Alias "c" is ambiguous.*
+
+statement error
+SELECT i AS r, 10 - i AS r FROM range(3) t(i) WHERE r > 1
+----
+<REGEX>:Binder Error: Alias "r" is ambiguous.*
+
+statement error
+SELECT 1 AS a, 2 AS a, a + 1
+----
+<REGEX>:Binder Error: Alias "a" is ambiguous.*
+
+statement error
+SELECT i AS q, 10 - i AS q FROM range(3) t(i) QUALIFY row_number() OVER (ORDER BY q) = 1
+----
+<REGEX>:Binder Error: .*"q" is ambiguous.*
+
+# positions, a wrapping query and table columns still work
+query II
+SELECT i AS r2, 10 - i AS r2 FROM range(4) t(i) ORDER BY 2
+----
+3	7
+2	8
+1	9
+0	10
+
+query II
+SELECT * FROM (SELECT i AS r2, 10 - i AS r2 FROM range(4) t(i)) ORDER BY r2
+----
+0	10
+1	9
+2	8
+3	7
+
+query II
+SELECT i AS r, 10 - i AS r FROM range(3) t(i) WHERE i > 1
+----
+2	8
+
+# the same expression twice under one alias is ambiguous as well
+statement error
+SELECT i AS a, i AS a FROM range(3) t(i) ORDER BY a DESC
+----
+<REGEX>:Binder Error: ORDER BY "a" is ambiguous.*
+
+# positional groups keep working when the aliases look like their internal names
+query II
+SELECT i AS "0", 10 - i AS "0" FROM range(3) t(i) GROUP BY 1, 2 ORDER BY 1
+----
+0	10
+1	9
+2	8
+
+# an alias that has the name of a column of the SELECT list is used as before
+query II
+SELECT i, 10 - i AS i FROM range(3) t(i) ORDER BY i
+----
+2	8
+1	9
+0	10
+
+# names that differ only in case are one alias
+statement error
+SELECT s.x AS a, s.X AS A FROM (VALUES ({x: 1}), ({x: 2})) t(s) ORDER BY a
+----
+<REGEX>:Binder Error: ORDER BY "a" is ambiguous.*
+
+# aliases that qualification adds to keep the names of columns are not written aliases
+query II
+SELECT I, 10 - i AS i FROM range(3) t(i) ORDER BY i
+----
+2	8
+1	9
+0	10
+
+statement ok
+CREATE TABLE gen (i INTEGER, j INTEGER GENERATED ALWAYS AS (i + 1));
+
+statement ok
+INSERT INTO gen (i) VALUES (0), (1), (2);
+
+query II
+SELECT j, 10 - i AS j FROM gen ORDER BY j
+----
+3	8
+2	9
+1	10
+
+# names that a star expansion gives its columns are not written aliases
+query II
+SELECT COLUMNS(*), 10 - i AS i FROM range(3) t(i) ORDER BY i
+----
+2	8
+1	9
+0	10
+
+query II
+SELECT *, 10 - i AS i FROM range(2) a(i) FULL JOIN range(2) b(i) USING (i) ORDER BY i
+----
+1	9
+0	10
+
+# an alias on a star names the columns of its expansion, written aliases next to it still count
+query II
+SELECT COLUMNS(*) AS a, 10 - i AS a FROM range(3) t(i) ORDER BY a
+----
+2	8
+1	9
+0	10
+
+statement error
+SELECT COLUMNS(*) AS a, 10 - i AS a, 20 - i AS a FROM range(3) t(i) ORDER BY a
+----
+<REGEX>:Binder Error: ORDER BY "a" is ambiguous.*

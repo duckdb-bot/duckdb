@@ -137,7 +137,7 @@ struct ICUFromNaiveTimestamp : public ICUDateFunc {
 		Time::Convert(local_time, hr, mn, secs, frac);
 		const int32_t millis = frac / int32_t(Interval::MICROS_PER_MSEC);
 
-		calendar->Set(CAL_YEAR, year);
+		calendar->Set(CAL_EXTENDED_YEAR, year);
 		calendar->Set(CAL_MONTH, int32_t(mm - 1));
 		calendar->Set(CAL_DATE, dd);
 		calendar->Set(CAL_HOUR_OF_DAY, hr);
@@ -179,7 +179,7 @@ struct ICUFromNaiveTimestamp : public ICUDateFunc {
 		uint64_t micros = frac % Interval::MICROS_PER_MSEC;
 
 		// Use them to set the time in the time zone
-		calendar->Set(CAL_YEAR, year);
+		calendar->Set(CAL_EXTENDED_YEAR, year);
 		calendar->Set(CAL_MONTH, int32_t(mm - 1));
 		calendar->Set(CAL_DATE, dd);
 		calendar->Set(CAL_HOUR_OF_DAY, hr);
@@ -300,12 +300,10 @@ struct ICUToNaiveTimestamp : public ICUDateFunc {
 
 		// Extract the time zone parts
 		auto micros = int32_t(SetTime(calendar, instant));
-		const auto era = ExtractField(calendar, CAL_ERA);
-		const auto year = ExtractField(calendar, CAL_YEAR);
+		const auto yyyy = ExtractField(calendar, CAL_EXTENDED_YEAR);
 		const auto mm = ExtractField(calendar, CAL_MONTH) + 1;
 		const auto dd = ExtractField(calendar, CAL_DATE);
 
-		const auto yyyy = era ? year : (-year + 1);
 		date_t local_date;
 		if (!Date::TryFromDate(yyyy, mm, dd, local_date)) {
 			error = "Unable to convert TIMESTAMPTZ to local date";

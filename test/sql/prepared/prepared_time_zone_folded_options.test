@@ -7,8 +7,7 @@ require icu
 statement ok
 SET TimeZone = 'UTC';
 
-# the cast of the epoch to TIMESTAMP gives midnight in UTC and one in the morning in Amsterdam, which the fraction
-# and the options below depend on; the fraction is folded to a constant when the aggregate is bound
+# the epoch cast to TIMESTAMP is midnight in UTC and one in the morning in Amsterdam, which decides every folded value
 statement ok
 PREPARE fraction AS SELECT percentile_cont(CASE WHEN to_timestamp(1767225600)::TIMESTAMP = TIMESTAMP '2026-01-01 00:00:00' THEN 0.0 ELSE 1.0 END) WITHIN GROUP (ORDER BY v) FROM (VALUES (0), (10)) t(v);
 
@@ -26,6 +25,10 @@ PREPARE recursive_option AS SELECT UNNEST([[1]], recursive := to_timestamp(17672
 
 statement ok
 PREPARE depth_option AS SELECT UNNEST([[[1]]], max_depth := CASE WHEN to_timestamp(1767225600)::TIMESTAMP = TIMESTAMP '2026-01-01 00:00:00' THEN 1 ELSE 2 END);
+
+# keep_parent_names decides the names of the columns a struct is unnested into
+statement ok
+PREPARE names_option AS SELECT alias(COLUMNS(*)) FROM (SELECT UNNEST({'b': {'c': 1}}, recursive := true, keep_parent_names := to_timestamp(1767225600)::TIMESTAMP = TIMESTAMP '2026-01-01 00:00:00'));
 
 # a fraction and an option that do not read a setting
 statement ok
@@ -58,6 +61,11 @@ query I
 EXECUTE depth_option;
 ----
 [[1]]
+
+query I
+EXECUTE names_option;
+----
+b.c
 
 query I
 EXECUTE plain_fraction;
@@ -108,6 +116,16 @@ EXECUTE depth_option;
 [1]
 
 query I
+EXECUTE names_option;
+----
+c
+
+query I
+SELECT alias(COLUMNS(*)) FROM (SELECT UNNEST({'b': {'c': 1}}, recursive := true, keep_parent_names := to_timestamp(1767225600)::TIMESTAMP = TIMESTAMP '2026-01-01 00:00:00'));
+----
+c
+
+query I
 EXECUTE plain_fraction;
 ----
 5.0
@@ -120,13 +138,14 @@ EXECUTE plain_option;
 # the statements that read the TimeZone keep no plan, the others keep theirs
 query II
 SELECT name, result_types IS NULL AS bound_again FROM duckdb_prepared_statements()
-WHERE name IN ('fraction', 'fraction_desc', 'fraction_list', 'recursive_option', 'depth_option', 'plain_fraction', 'plain_option')
+WHERE name IN ('fraction', 'fraction_desc', 'fraction_list', 'recursive_option', 'depth_option', 'names_option', 'plain_fraction', 'plain_option')
 ORDER BY name;
 ----
 depth_option	true
 fraction	true
 fraction_desc	true
 fraction_list	true
+names_option	true
 plain_fraction	false
 plain_option	false
 recursive_option	true
@@ -144,3 +163,8 @@ query I
 EXECUTE recursive_option;
 ----
 1
+
+query I
+EXECUTE names_option;
+----
+b.c

@@ -1,0 +1,29 @@
+# name: benchmark/micro/cte/lateral_recursive_constant_filter.benchmark
+# description: A constant filter on the outer key of a nested correlated LATERAL with a recursive CTE
+# group: [cte]
+
+name Lateral Recursive Constant Filter
+group micro
+subgroup cte
+
+load
+CREATE TABLE person AS SELECT i AS id FROM range(100000) t(i);
+
+run
+SELECT max(q.x)
+FROM person o, LATERAL (
+    SELECT r.x
+    FROM person i, LATERAL (
+        WITH RECURSIVE walk(x) AS (
+            SELECT i.id
+            UNION ALL
+            SELECT x + 1 FROM walk WHERE x < i.id + 2
+        )
+        SELECT x FROM walk
+    ) r
+    WHERE i.id = o.id
+) q
+WHERE o.id = 3;
+
+result I
+5

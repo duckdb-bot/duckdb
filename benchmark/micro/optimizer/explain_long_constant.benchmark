@@ -1,0 +1,18 @@
+# name: benchmark/micro/optimizer/explain_long_constant.benchmark
+# description: EXPLAIN of a filter on a long constant, which the plan renderer measures to wrap and truncate
+# group: [optimizer]
+
+name EXPLAIN Long Constant
+group micro
+subgroup optimizer
+
+load
+CREATE TABLE t AS SELECT * FROM (VALUES ('a'), ('b')) v(s);
+
+run
+EXPLAIN SELECT s FROM t WHERE s = repeat('a', 10000000);
+
+result_query II
+SELECT explain_key, contains(explain_value, 'Filters:') FROM __answer
+----
+physical_plan	true

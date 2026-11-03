@@ -1,7 +1,9 @@
 #include "duckdb/planner/expression_binder/alter_binder.hpp"
 
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
+#include "duckdb/parser/expression/cast_expression.hpp"
 #include "duckdb/parser/expression/columnref_expression.hpp"
+#include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/planner/table_binding.hpp"
 
@@ -28,6 +30,14 @@ BindResult AlterBinder::BindExpression(unique_ptr<ParsedExpression> &expr_ptr, i
 		return BindResult(BinderException::Unsupported(expr, "cannot use subquery in alter statement"));
 	case ExpressionClass::COLUMN_REF:
 		return BindColumnReference(expr.Cast<ColumnRefExpression>(), depth);
+	case ExpressionClass::CAST: {
+		auto result = ExpressionBinder::BindExpression(expr_ptr, depth);
+		if (!result.HasError()) {
+			auto &target = expr.Cast<CastExpression>().TargetType();
+			bound_cast_types.emplace(target.ToString(), binder.BindLogicalType(target));
+		}
+		return result;
+	}
 	default:
 		return ExpressionBinder::BindExpression(expr_ptr, depth);
 	}

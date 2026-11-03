@@ -1,0 +1,59 @@
+# name: test/sql/upsert/upsert_large_array_memory.test
+# description: A one row upsert into large fixed size array columns stays within a small memory limit
+# group: [upsert]
+
+statement ok
+SET threads = 4;
+
+statement ok
+SET memory_limit = '500MB';
+
+statement ok
+CREATE TABLE t (id INT PRIMARY KEY, a DOUBLE[3072], b DOUBLE[3072], c DOUBLE[3072]);
+
+statement ok
+INSERT INTO t (id, a) VALUES (1, (SELECT list(0.0) FROM range(3072))::DOUBLE[3072]);
+
+statement ok
+INSERT INTO t (id, b) VALUES (1, (SELECT list(1.0) FROM range(3072))::DOUBLE[3072]) ON CONFLICT DO UPDATE SET b = EXCLUDED.b, a = a, c = c;
+
+query IIII
+SELECT id, a[1], b[3072], c IS NULL FROM t
+----
+1	0.0	1.0	true
+
+statement ok
+INSERT INTO t (id, c) VALUES (1, (SELECT list(2.0) FROM range(3072))::DOUBLE[3072]), (2, (SELECT list(3.0) FROM range(3072))::DOUBLE[3072]) ON CONFLICT DO UPDATE SET c = EXCLUDED.c;
+
+query IIII
+SELECT id, a[1], b[1], c[3072] FROM t ORDER BY id
+----
+1	0.0	1.0	2.0
+2	NULL	NULL	3.0
+
+statement ok
+MERGE INTO t USING (SELECT 2 AS id, (SELECT list(4.0) FROM range(3072))::DOUBLE[3072] AS a) s ON t.id = s.id WHEN MATCHED THEN UPDATE SET a = s.a WHEN NOT MATCHED THEN INSERT (id, a) VALUES (s.id, s.a);
+
+query II
+SELECT id, a[2] FROM t ORDER BY id
+----
+1	0.0
+2	4.0
+
+# the output of the merge actions holds no rows of an earlier chunk after it is reset
+statement ok
+SET debug_verification_mode = 'verify_vectors';
+
+statement ok
+CREATE TABLE u(id INTEGER PRIMARY KEY, v INTEGER);
+
+statement ok
+INSERT INTO u VALUES (1, 10);
+
+statement ok
+INSERT INTO u VALUES (1, 20) ON CONFLICT DO UPDATE SET v = excluded.v;
+
+query II
+SELECT * FROM u
+----
+1	20

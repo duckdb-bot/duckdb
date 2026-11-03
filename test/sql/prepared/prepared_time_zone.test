@@ -278,8 +278,7 @@ SELECT id, ts FROM defaulted ORDER BY id;
 1	2026-01-01 00:00:00+01
 2	2026-01-01 00:00:00+01
 
-# the cast of a set operation's column to the result type is added after its expressions are bound, to_timestamp
-# itself does not read the TimeZone
+# the cast of a set operation's column to VARCHAR is added after its expressions are bound (to_timestamp reads none)
 statement ok
 SET TimeZone = 'UTC';
 
@@ -304,7 +303,7 @@ statement ok
 SET TimeZone = 'UTC';
 
 statement ok
-PREPARE unnest_struct AS SELECT UNNEST({'s': (TIMESTAMPTZ '2026-01-01 00:00:00+00')::VARCHAR});
+PREPARE unnest_struct AS SELECT UNNEST({'s': ts::VARCHAR}) FROM (VALUES (to_timestamp(1767225600))) t(ts);
 
 query I
 EXECUTE unnest_struct;
@@ -368,8 +367,7 @@ setop_cast	true
 table_function_argument	true
 variable_argument	true
 
-# a DELETE binds the constraints of its table too, so it is bound again as well. The optimizer is disabled because it
-# binds every statement that reads a table again anyway
+# a DELETE binds the constraints of its table too, so it is bound again as well (with the optimizer on it is anyway)
 statement ok
 PRAGMA disable_optimizer;
 

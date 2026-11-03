@@ -88,7 +88,8 @@ static bool IsStructOrTuple(const LogicalType &type) {
 
 static bool CastChangesOrder(const LogicalType &source, const LogicalType &target);
 
-//! The fields are paired as the STRUCT cast pairs them, by name or by position
+//! The fields are paired as the STRUCT cast pairs them, by name or by position. STRUCT values compare field by field
+//! in the order of their type, so a cast that reorders the fields or drops one changes the order of the values
 static bool StructCastChangesOrder(const LogicalType &source, const LogicalType &target) {
 	auto mapping = StructBoundCastData::GetFieldMapping(source, target);
 	if (mapping.kind != StructCastFieldMapping::MatchKind::VALID) {
@@ -96,13 +97,30 @@ static bool StructCastChangesOrder(const LogicalType &source, const LogicalType 
 	}
 	auto &source_children = StructType::GetChildTypes(source);
 	auto &target_children = StructType::GetChildTypes(target);
+	// a dropped source field decided the order of values that are equal in the fields before it
+	if (mapping.source_indexes.size() != source_children.size()) {
+		return true;
+	}
 	for (idx_t pair_idx = 0; pair_idx < mapping.source_indexes.size(); pair_idx++) {
+		// the pairs are in source order, so the target fields have to follow the same order
+		if (pair_idx > 0 && mapping.target_indexes[pair_idx] < mapping.target_indexes[pair_idx - 1]) {
+			return true;
+		}
 		if (CastChangesOrder(source_children[mapping.source_indexes[pair_idx]].second,
 		                     target_children[mapping.target_indexes[pair_idx]].second)) {
 			return true;
 		}
 	}
 	return false;
+}
+
+//! A VARIANT compares the keys of an object in name order and the value of a UNION without its tag, so a STRUCT or a
+//! UNION changes its order when it becomes a VARIANT, as an ENUM does
+static bool VariantCastChangesOrder(const LogicalType &source) {
+	return TypeVisitor::Contains(source, [](const LogicalType &type) {
+		return type.id() == LogicalTypeId::STRUCT || type.id() == LogicalTypeId::UNION ||
+		       type.id() == LogicalTypeId::ENUM;
+	});
 }
 
 //! The members are paired by name as the UNION cast pairs them, and a member without a counterpart makes the cast
@@ -130,13 +148,17 @@ static bool UnionCastChangesOrder(const LogicalType &source, const LogicalType &
 }
 
 //! Whether a cast from the source type to the target type changes the order of the values, which a cast of an ENUM
-//! does, as an ENUM sorts by dictionary position, also as a member of a nested type
+//! does, as an ENUM sorts by dictionary position, also as a member of a nested type, a STRUCT cast that pairs the
+//! fields in another order, and a cast of a STRUCT or a UNION to VARIANT
 static bool CastChangesOrder(const LogicalType &source, const LogicalType &target) {
 	if (source == target) {
 		return false;
 	}
 	if (source.id() == LogicalTypeId::ENUM) {
 		return true;
+	}
+	if (target.id() == LogicalTypeId::VARIANT) {
+		return VariantCastChangesOrder(source);
 	}
 	if (IsListOrArray(source) && IsListOrArray(target)) {
 		return CastChangesOrder(ListOrArrayChildType(source), ListOrArrayChildType(target));

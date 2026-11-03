@@ -54,7 +54,8 @@ private:
 
 static void VariantExtractStringFunction(DataChunk &input, ExpressionState &state, Vector &result) {
 	string error;
-	ConvertedJSONHolder holder(state.GetAllocator());
+	auto &allocator = state.HasContext() ? BufferAllocator::Get(state.GetContext()) : state.GetAllocator();
+	ConvertedJSONHolder holder(allocator);
 	VariantPathFunction::Execute<string_t>(input, state, result, VariantStringWriter(holder, error));
 }
 

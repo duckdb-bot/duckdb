@@ -298,10 +298,8 @@ unique_ptr<Expression> ExpressionBinder::Bind(unique_ptr<ParsedExpression> &expr
 			throw ParameterNotResolvedException();
 		}
 	}
-	if (!binder.GetStatementProperties().always_require_rebind && result->RequiresRebind()) {
-		// casts are bound without the binder, so a cast that reads a setting such as TimeZone is found here
-		binder.SetAlwaysRequireRebind();
-	}
+	// casts are bound without the binder, so a cast that reads a setting such as TimeZone is found here
+	binder.CheckRequiresRebind(*result);
 	if (result_type) {
 		*result_type = result->GetReturnType();
 	}

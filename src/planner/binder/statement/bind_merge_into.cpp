@@ -150,10 +150,8 @@ Binder::BindMergeAction(LogicalMergeInto &merge_into, TableCatalogEntry &table, 
 				auto expression = table.GetDefaultExpressionForColumn(context, insert_types[mapped_index], col.Type(),
 				                                                      insert_bindings[mapped_index],
 				                                                      *merge_into.bound_defaults[storage_idx]);
-				if (expression->RequiresRebind()) {
-					// the catalog casts the value to the type of the column, a cast to TIMESTAMPTZ reads the TimeZone
-					SetAlwaysRequireRebind();
-				}
+				// the catalog casts the value to the type of the column, a cast to TIMESTAMPTZ reads the TimeZone
+				CheckRequiresRebind(*expression);
 				result->expressions.push_back(std::move(expression));
 			}
 		}

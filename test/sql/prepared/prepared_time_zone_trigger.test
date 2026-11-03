@@ -1,0 +1,41 @@
+# name: test/sql/prepared/prepared_time_zone_trigger.test
+# description: A prepared RETURNING on a table with a trigger is bound again when it reads the TimeZone
+# group: [prepared]
+
+require icu
+
+require noforcestorage
+
+statement ok
+SET TimeZone = 'UTC';
+
+statement ok
+CREATE TABLE stamps (id INTEGER, ts TIMESTAMPTZ);
+
+statement ok
+CREATE TABLE log (s VARCHAR);
+
+statement ok
+CREATE TRIGGER stamps_log AFTER INSERT ON stamps FOR EACH STATEMENT INSERT INTO log VALUES ('inserted');
+
+# the RETURNING list of a statement with triggers is bound by a binder of its own
+statement ok
+PREPARE insert_returning AS INSERT INTO stamps SELECT 1, to_timestamp(1767225600) RETURNING ts::VARCHAR;
+
+query I
+EXECUTE insert_returning;
+----
+2026-01-01 00:00:00+00
+
+statement ok
+SET TimeZone = 'Europe/Amsterdam';
+
+query I
+EXECUTE insert_returning;
+----
+2026-01-01 01:00:00+01
+
+query I
+SELECT count(*) FROM log;
+----
+2

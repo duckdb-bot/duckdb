@@ -434,6 +434,12 @@ void Binder::SetAlwaysRequireRebind() {
 	properties.always_require_rebind = true;
 }
 
+void Binder::CheckRequiresRebind(const Expression &expr) {
+	if (!GetStatementProperties().always_require_rebind && expr.RequiresRebind()) {
+		SetAlwaysRequireRebind();
+	}
+}
+
 unique_ptr<Expression> Binder::AddCastToType(unique_ptr<Expression> expr, const LogicalType &target_type) {
 	auto result = BoundCastExpression::AddCastToType(context, std::move(expr), target_type);
 	if (!BoundCastExpression::IsCast(*result)) {
@@ -654,6 +660,10 @@ BoundStatement Binder::BindReturning(vector<unique_ptr<ParsedExpression>> return
 	}
 	if (new_returning_list.empty()) {
 		throw BinderException("RETURNING list is empty!");
+	}
+	if (binder->GetStatementProperties().always_require_rebind) {
+		// the RETURNING binder has statement properties of its own
+		SetAlwaysRequireRebind();
 	}
 	auto projection = make_uniq<LogicalProjection>(GenerateTableIndex(), std::move(projection_expressions));
 	projection->AddChild(std::move(child_operator));

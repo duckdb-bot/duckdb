@@ -75,10 +75,8 @@ void Binder::BindUpdateSet(TableIndex proj_index, unique_ptr<LogicalOperator> &r
 
 			auto expression = table.GetDefaultExpressionForColumn(context, bound_type, column.Type(), source_binding,
 			                                                      *bound_defaults[column.StorageOid()]);
-			if (expression->RequiresRebind()) {
-				// the catalog casts the value to the type of the column, and a cast to TIMESTAMPTZ reads the TimeZone
-				SetAlwaysRequireRebind();
-			}
+			// the catalog casts the value to the type of the column, and a cast to TIMESTAMPTZ reads the TimeZone
+			CheckRequiresRebind(*expression);
 			update_expressions.push_back(std::move(expression));
 		}
 	}

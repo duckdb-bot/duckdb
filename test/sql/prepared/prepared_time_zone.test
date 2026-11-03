@@ -336,6 +336,83 @@ SELECT id, ts FROM stamps WHERE id = 3;
 ----
 3	2026-01-01 00:00:00+01
 
+# aggregates, windows and UNNEST leave the expression tree while they are bound, and are checked there
+statement ok
+SET TimeZone = 'UTC';
+
+statement ok
+PREPARE aggregate_cast AS SELECT min(x::VARCHAR) FROM (VALUES (to_timestamp(1767225600))) t(x);
+
+statement ok
+PREPARE window_cast AS SELECT first(x::VARCHAR) OVER () FROM (VALUES (to_timestamp(1767225600))) t(x);
+
+# the RANGE offset of a window frame is bound without the binder
+statement ok
+PREPARE window_frame AS SELECT count(*) OVER (ORDER BY x RANGE BETWEEN INTERVAL 1 DAY PRECEDING AND CURRENT ROW) FROM (VALUES (to_timestamp(1767225600))) t(x);
+
+statement ok
+PREPARE unnest_list AS SELECT UNNEST([x::VARCHAR]) FROM (VALUES (to_timestamp(1767225600))) t(x);
+
+# RETURNING and the aggregates of USING KEY are bound by a binder of their own
+statement ok
+PREPARE insert_returning AS INSERT INTO stamps SELECT 4, to_timestamp(1767225600) RETURNING ts::VARCHAR;
+
+statement ok
+PREPARE key_aggregate AS WITH RECURSIVE r(k, n, s, t) USING KEY (k, last(s::VARCHAR) AS t) AS (SELECT 1, 0, to_timestamp(1767225600), '' UNION SELECT k, n + 1, s, t FROM r WHERE n < 1) SELECT t FROM r;
+
+query I
+EXECUTE aggregate_cast;
+----
+2026-01-01 00:00:00+00
+
+query I
+EXECUTE window_cast;
+----
+2026-01-01 00:00:00+00
+
+query I
+EXECUTE unnest_list;
+----
+2026-01-01 00:00:00+00
+
+query I
+EXECUTE insert_returning;
+----
+2026-01-01 00:00:00+00
+
+query I
+EXECUTE key_aggregate;
+----
+2026-01-01 00:00:00+00
+
+statement ok
+SET TimeZone = 'Europe/Amsterdam';
+
+query I
+EXECUTE aggregate_cast;
+----
+2026-01-01 01:00:00+01
+
+query I
+EXECUTE window_cast;
+----
+2026-01-01 01:00:00+01
+
+query I
+EXECUTE unnest_list;
+----
+2026-01-01 01:00:00+01
+
+query I
+EXECUTE insert_returning;
+----
+2026-01-01 01:00:00+01
+
+query I
+EXECUTE key_aggregate;
+----
+2026-01-01 01:00:00+01
+
 # the struct_extract expressions that UNNEST of a struct expands to are checked as well
 statement ok
 SET TimeZone = 'UTC';
@@ -394,17 +471,23 @@ second
 # plan only for statements with a query result)
 query II
 SELECT name, result_types IS NULL AS bound_again FROM duckdb_prepared_statements()
-WHERE name IN ('plain_cast', 'constant_cast', 'table_function_argument', 'range_calendar', 'range_epoch', 'setop_cast', 'values_cast', 'variable_argument')
+WHERE name IN ('plain_cast', 'constant_cast', 'table_function_argument', 'range_calendar', 'range_epoch', 'setop_cast', 'values_cast', 'variable_argument', 'aggregate_cast', 'window_cast', 'window_frame', 'unnest_list', 'insert_returning', 'key_aggregate')
 ORDER BY name;
 ----
+aggregate_cast	true
 constant_cast	true
+insert_returning	true
+key_aggregate	true
 plain_cast	false
 range_calendar	true
 range_epoch	true
 setop_cast	true
 table_function_argument	true
+unnest_list	true
 values_cast	true
 variable_argument	true
+window_cast	true
+window_frame	true
 
 # a DELETE binds the constraints of its table too, so it is bound again as well (with the optimizer on it is anyway)
 statement ok

@@ -423,6 +423,8 @@ public:
 	void SetCanContainNulls(bool can_contain_nulls);
 	bool CanContainNulls() const;
 	void SetAlwaysRequireRebind();
+	//! Requires a rebind when the expression contains a function or cast whose result can change between queries
+	void CheckRequiresRebind(const Expression &expr);
 	void SetInsideSubquery();
 	bool IsInsideSubquery() const;
 	//! Set while binding the key expressions of an index

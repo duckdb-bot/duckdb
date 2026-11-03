@@ -136,6 +136,30 @@ SELECT [union_value(s := {'n': 0.5::DECIMAL(38,37)})::UNION(s STRUCT(n DECIMAL(3
 ----
 true	true
 
+# a source member without a counterpart wraps the whole value into a member of the compared UNION, so the pairs of the
+# other members do not decide the cast before the extremum
+query I
+SELECT [union_value(w := union_value(a := {'n': 0.5::DECIMAL(38,37), 'm': 1}))::UNION(a STRUCT(m FLOAT, n FLOAT), w UNION(a STRUCT(n DECIMAL(38,37), m INTEGER), z BLOB, d INTEGER), z INTEGER)] > ANY (SELECT [union_value(a := {'n': i, 'm': 1})::UNION(a STRUCT(n INTEGER, m INTEGER), z BLOB, d INTEGER)] FROM (VALUES (0), (100)) r(i))
+----
+true
+
+# UNION values order by their tag first, so members paired in another order change the order of the values
+statement ok
+CREATE TABLE un_perm(v UNION(a INTEGER, b VARCHAR));
+
+statement ok
+INSERT INTO un_perm VALUES (union_value(a := 1)), (union_value(b := 'x'));
+
+query III
+SELECT bool_or([union_value(a := 0)::UNION(b VARCHAR, a INTEGER)] > [v]), union_tag(min(v)), union_tag(min(v::UNION(b VARCHAR, a INTEGER))) FROM un_perm
+----
+true	a	b
+
+query II
+SELECT [union_value(a := 0)::UNION(b VARCHAR, a INTEGER)] > ANY (SELECT [v] FROM un_perm), [union_value(a := 0)::UNION(b VARCHAR, a INTEGER)] > ALL (SELECT [v] FROM un_perm)
+----
+true	false
+
 # a UNION whose member is NULL becomes a NULL VARIANT, which the comparison and the count of the NULL rows both see
 statement ok
 CREATE TABLE un_null(v UNION(a INTEGER));

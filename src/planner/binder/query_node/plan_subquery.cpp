@@ -136,25 +136,32 @@ static bool UnionMemberCastChangesOrder(const LogicalType &source, const Logical
 	return CastChangesOrder(source, UnionType::GetMemberType(target, member_idx.GetIndex()));
 }
 
-//! The members are paired by name as the UNION cast pairs them, and a member without a counterpart makes the cast
-//! wrap the whole value into a member of the target
+//! The members are paired by name as the UNION cast pairs them, when every member has a counterpart. A member
+//! without one makes the cast wrap the whole value into a member of the target instead, whatever the other pairs
 static bool UnionCastChangesOrder(const LogicalType &source, const LogicalType &target) {
+	vector<idx_t> target_indexes;
 	for (idx_t source_idx = 0; source_idx < UnionType::GetMemberCount(source); source_idx++) {
 		auto &member_name = UnionType::GetMemberName(source, source_idx);
-		bool found = false;
-		for (idx_t target_idx = 0; target_idx < UnionType::GetMemberCount(target); target_idx++) {
-			if (UnionType::GetMemberName(target, target_idx) != member_name) {
-				continue;
+		optional_idx target_idx;
+		for (idx_t candidate_idx = 0; candidate_idx < UnionType::GetMemberCount(target); candidate_idx++) {
+			if (UnionType::GetMemberName(target, candidate_idx) == member_name) {
+				target_idx = candidate_idx;
+				break;
 			}
-			if (CastChangesOrder(UnionType::GetMemberType(source, source_idx),
-			                     UnionType::GetMemberType(target, target_idx))) {
-				return true;
-			}
-			found = true;
-			break;
 		}
-		if (!found) {
+		if (!target_idx.IsValid()) {
 			return UnionMemberCastChangesOrder(source, target);
+		}
+		target_indexes.push_back(target_idx.GetIndex());
+	}
+	for (idx_t source_idx = 0; source_idx < target_indexes.size(); source_idx++) {
+		// UNION values order by their tag first, so the members have to keep their order in the target
+		if (source_idx > 0 && target_indexes[source_idx] < target_indexes[source_idx - 1]) {
+			return true;
+		}
+		if (CastChangesOrder(UnionType::GetMemberType(source, source_idx),
+		                     UnionType::GetMemberType(target, target_indexes[source_idx]))) {
+			return true;
 		}
 	}
 	return false;

@@ -1,0 +1,114 @@
+# name: test/optimizer/pushdown/pushdown_window_partition_null.test
+# description: Auxiliary window filters keep the rows whose partition expression is NULL
+# group: [pushdown]
+
+statement ok
+SET explain_output = OPTIMIZED_ONLY
+
+foreach type DATE TIMESTAMP
+
+statement ok
+CREATE OR REPLACE TABLE t(d {type});
+
+statement ok
+INSERT INTO t VALUES ('-infinity'), ('2000-01-01'), ('infinity'), (NULL);
+
+# year and last_day are NULL at both infinities, which share the partition of the NULL row
+query II
+SELECT d::DATE, n FROM (SELECT d, count(*) OVER (PARTITION BY year(d)) AS n FROM t) s WHERE d > '2010-01-01'::{type}
+----
+infinity	3
+
+query II
+SELECT d::DATE, n FROM (SELECT d, count(*) OVER (PARTITION BY last_day(d)) AS n FROM t) s WHERE d < '1970-01-01'::{type}
+----
+-infinity	3
+
+# year('infinity') is NULL, so no auxiliary filter is built from it
+query II
+SELECT d::DATE, n FROM (SELECT d, count(*) OVER (PARTITION BY year(d)) AS n FROM t) s WHERE d < 'infinity'::{type}
+ORDER BY d
+----
+-infinity	3
+2000-01-01	1
+
+# finite constants still push the auxiliary filter below the window
+query II
+EXPLAIN SELECT d, n FROM (SELECT d, count(*) OVER (PARTITION BY year(d)) AS n FROM t) s WHERE d > '2010-01-01'::{type}
+----
+logical_opt	<REGEX>:.*\("year"\(d\) >= 2010\) OR \("year"\(d\) IS NULL\).*
+
+endloop
+
+# make_date of an integer is NULL only for NULL, so its NULL partition stays out of the filter below the window
+statement ok
+CREATE TABLE ints(id INTEGER, v INTEGER);
+
+statement ok
+INSERT INTO ints VALUES (1, NULL), (2, NULL), (3, 1000), (4, 1000), (5, 20);
+
+query III
+SELECT id, v, n FROM (SELECT id, v, row_number() OVER (PARTITION BY make_date(v) ORDER BY id) AS n FROM ints) s
+WHERE v > 100 ORDER BY id
+----
+3	1000	1
+4	1000	2
+
+query II
+EXPLAIN SELECT id, n FROM (SELECT id, v, row_number() OVER (PARTITION BY make_date(v) ORDER BY id) AS n FROM ints) s
+WHERE v > 100
+----
+logical_opt	<!REGEX>:.*IS NULL.*
+
+query II
+EXPLAIN SELECT id, n FROM (SELECT id, v, row_number() OVER (PARTITION BY make_date(v) ORDER BY id) AS n FROM ints) s
+WHERE v > 100
+----
+logical_opt	<REGEX>:.*make_date\(v\) > '1970-04-11'::DATE.*
+
+# no auxiliary filter is built when e(c) cannot be evaluated
+statement ok
+SET ieee_floating_point_ops = false
+
+statement ok
+CREATE TABLE doubles(x DOUBLE);
+
+statement ok
+INSERT INTO doubles VALUES (1), (4), (4);
+
+query II
+SELECT x, n FROM (SELECT x, count(*) OVER (PARTITION BY sqrt(x)) AS n FROM doubles) s WHERE x > -1::DOUBLE ORDER BY x
+----
+1.0	1
+4.0	2
+4.0	2
+
+# sqrt(-infinity) fails without IEEE semantics, which does not make its NULL partition pass the filter
+statement ok
+CREATE TABLE doubles_with_null(id INTEGER, x DOUBLE);
+
+statement ok
+INSERT INTO doubles_with_null VALUES (1, NULL), (2, 1000), (3, 1000);
+
+query II
+EXPLAIN SELECT id, n FROM (SELECT id, x, row_number() OVER (PARTITION BY sqrt(x) ORDER BY id) AS n FROM doubles_with_null) s
+WHERE x > 100
+----
+logical_opt	<!REGEX>:.*IS NULL.*
+
+statement ok
+SET ieee_floating_point_ops = true
+
+# make_date of a STRUCT is NULL when a field is NULL
+statement ok
+CREATE TABLE structs(id INTEGER, b STRUCT(year BIGINT, month BIGINT, day BIGINT));
+
+statement ok
+INSERT INTO structs VALUES (1, row(2000, 1, 1)), (2, row(2000, NULL, 1)), (3, NULL);
+
+query II
+SELECT id, n FROM (SELECT id, b, count(*) OVER (PARTITION BY make_date(b)) AS n FROM structs) s
+WHERE b > row(1995, 1, 1)::STRUCT(year BIGINT, month BIGINT, day BIGINT) ORDER BY id
+----
+1	1
+2	2

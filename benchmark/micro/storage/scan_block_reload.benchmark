@@ -4,7 +4,7 @@
 
 name Scan With Block Reloads
 group storage
-storage persistent v2.0.0
+storage persistent v2.1.0
 
 load
 PRAGMA force_compression='uncompressed';

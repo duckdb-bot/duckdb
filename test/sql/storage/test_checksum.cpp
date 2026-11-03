@@ -70,7 +70,7 @@ void TestDataBlockDamageIsDetected(const string &name, DAMAGE damage) {
 	auto fs = FileSystem::CreateLocal();
 	auto storage_database = TestCreatePath(name);
 	auto config = GetTestConfig();
-	config->options.storage_compatibility = StorageCompatibility::FromString("v2.0.0");
+	config->options.storage_compatibility = StorageCompatibility::FromString("v2.1.0");
 
 	DeleteDatabase(storage_database);
 	idx_t block_alloc_size;
@@ -154,7 +154,7 @@ TEST_CASE("Test that the file headers keep the word XOR checksum", "[storage]") 
 	auto fs = FileSystem::CreateLocal();
 	auto storage_database = TestCreatePath("checksum_file_headers");
 	auto config = GetTestConfig();
-	config->options.storage_compatibility = StorageCompatibility::FromString("v2.0.0");
+	config->options.storage_compatibility = StorageCompatibility::FromString("v2.1.0");
 
 	DeleteDatabase(storage_database);
 	{
@@ -183,7 +183,7 @@ TEST_CASE("Test that the checksum detects two zeroed equal words in a WAL entry"
 	auto fs = FileSystem::CreateLocal();
 	auto storage_database = TestCreatePath("checksum_equal_words_wal");
 	auto config = GetTestConfig();
-	config->options.storage_compatibility = StorageCompatibility::FromString("v2.0.0");
+	config->options.storage_compatibility = StorageCompatibility::FromString("v2.1.0");
 	config->options.checkpoint_wal_size = idx_t(-1);
 	config->options.checkpoint_on_shutdown = false;
 
@@ -251,7 +251,7 @@ TEST_CASE("Test that a database keeps the checksum of the storage version it was
 	}
 	{
 		// raising the storage version keeps the checksum of the blocks that were already written
-		config->options.storage_compatibility = StorageCompatibility::FromString("v2.0.0");
+		config->options.storage_compatibility = StorageCompatibility::FromString("v2.1.0");
 		DuckDB db(storage_database, config.get());
 		Connection con(db);
 		REQUIRE_NO_FAIL(con.Query("INSERT INTO t SELECT range FROM range(100000, 200000)"));

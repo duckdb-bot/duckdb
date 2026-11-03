@@ -543,7 +543,7 @@ void SingleFileBlockManager::CreateNewDatabase(QueryContext context) {
 	db.GetStorageManager().SetStorageVersion(options.storage_version);
 	GetMetadataManager().SetStorageVersion(options.storage_version);
 	AddStorageVersionTag();
-	if (options.storage_version >= StorageVersion::V2_0_0) {
+	if (options.storage_version >= StorageVersion::V2_1_0) {
 		checksum_type = ChecksumType::XXHASH64;
 	}
 

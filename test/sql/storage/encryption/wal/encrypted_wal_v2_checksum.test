@@ -1,5 +1,5 @@
 # name: test/sql/storage/encryption/wal/encrypted_wal_v2_checksum.test
-# description: Encrypted v2.0.0 databases verify the checksums of their blocks and WAL entries after replay and checkpoint
+# description: Encrypted v2.1.0 databases verify the checksums of their blocks and WAL entries after replay and checkpoint
 # group: [wal]
 
 statement ok
@@ -14,7 +14,7 @@ SET checkpoint_threshold='1TB'
 foreach cipher GCM CTR
 
 statement ok
-ATTACH '{TEST_DIR}/encrypted_wal_v2_checksum_{cipher}.db' AS enc (ENCRYPTION_KEY 'asdf', ENCRYPTION_CIPHER '{cipher}', STORAGE_VERSION 'v2.0.0');
+ATTACH '{TEST_DIR}/encrypted_wal_v2_checksum_{cipher}.db' AS enc (ENCRYPTION_KEY 'asdf', ENCRYPTION_CIPHER '{cipher}', STORAGE_VERSION 'v2.1.0');
 
 statement ok
 CREATE TABLE enc.t AS SELECT range AS i, 'value ' || range AS s FROM range(10000);
@@ -30,7 +30,7 @@ DETACH enc
 
 # attaching replays the WAL entries of the insert
 statement ok
-ATTACH '{TEST_DIR}/encrypted_wal_v2_checksum_{cipher}.db' AS enc (ENCRYPTION_KEY 'asdf', ENCRYPTION_CIPHER '{cipher}', STORAGE_VERSION 'v2.0.0');
+ATTACH '{TEST_DIR}/encrypted_wal_v2_checksum_{cipher}.db' AS enc (ENCRYPTION_KEY 'asdf', ENCRYPTION_CIPHER '{cipher}', STORAGE_VERSION 'v2.1.0');
 
 query III
 SELECT count(*), sum(i), count(*) FILTER (WHERE s <> 'value ' || i) FROM enc.t
@@ -44,7 +44,7 @@ statement ok
 DETACH enc
 
 statement ok
-ATTACH '{TEST_DIR}/encrypted_wal_v2_checksum_{cipher}.db' AS enc (ENCRYPTION_KEY 'asdf', ENCRYPTION_CIPHER '{cipher}', STORAGE_VERSION 'v2.0.0');
+ATTACH '{TEST_DIR}/encrypted_wal_v2_checksum_{cipher}.db' AS enc (ENCRYPTION_KEY 'asdf', ENCRYPTION_CIPHER '{cipher}', STORAGE_VERSION 'v2.1.0');
 
 query III
 SELECT count(*), sum(i), count(*) FILTER (WHERE s <> 'value ' || i) FROM enc.t
@@ -54,7 +54,7 @@ SELECT count(*), sum(i), count(*) FILTER (WHERE s <> 'value ' || i) FROM enc.t
 query I
 SELECT tags['storage_version'] FROM duckdb_databases() WHERE database_name = 'enc'
 ----
-v2.0.0+
+v2.1.0+
 
 statement ok
 DETACH enc

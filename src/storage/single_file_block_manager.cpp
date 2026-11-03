@@ -652,7 +652,7 @@ void SingleFileBlockManager::LoadExistingDatabase(QueryContext context) {
 
 	MainHeader main_header = DeserializeMainHeader(header_buffer.GetDataMutable() - delta);
 	memcpy(options.db_identifier, main_header.GetDBIdentifier(), MainHeader::DB_IDENTIFIER_LEN);
-	// only files created from storage version v2.0.0, which have no main header version, can use XXH64
+	// the flag is read from files without a main header version (storage version v2.0.0 on), older files have none
 	if (static_cast<StorageVersion>(main_header.version_number) == MainHeader::DEPRECATED_VERSION_NUMBER) {
 		checksum_type = main_header.GetChecksumType();
 	}

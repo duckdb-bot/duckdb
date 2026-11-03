@@ -1,5 +1,6 @@
 #include "duckdb/planner/column_qualifier.hpp"
 
+#include "duckdb/common/string_util.hpp"
 #include "duckdb/parser/parsed_expression_iterator.hpp"
 #include "duckdb/parser/expression/columnref_expression.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
@@ -298,6 +299,10 @@ optional_ptr<CatalogEntry> ColumnQualifier::QualifyFunction(FunctionExpression &
 			// we could not find the function - bail
 			return nullptr;
 		}
+	} else if (StringUtil::CIEquals(function.GetQualifiedName().Schema().GetIdentifierName(), DEFAULT_SCHEMA)) {
+		// the parser drops a main qualification of such a name, as main.ifnull(x) is ifnull(x), so the binder does too
+		function.SetQualifiedName(QualifiedName(function.GetQualifiedName().Name()));
+		return nullptr;
 	}
 	// turn the qualification into the column the function is called on, as x.lower() is lower(x)
 	auto &path = function.GetQualifiedName().Path();

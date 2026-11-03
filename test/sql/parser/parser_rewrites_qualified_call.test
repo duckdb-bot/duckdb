@@ -159,6 +159,23 @@ SELECT s.ifnull(3, 4) FROM (SELECT 1 AS s);
 ----
 207
 
+# without a macro of the name, the main qualification of a coalesce call is dropped like that of the other names, so a
+# column named main is not the value it is called on
+query II
+SELECT main.coalesce(NULL, 5), main.ifnull(NULL, 6);
+----
+5	6
+
+query II
+SELECT main.coalesce(NULL, 5), main.ifnull(NULL, 6) FROM (SELECT 99 AS main);
+----
+5	6
+
+statement error
+SELECT main.coalesce();
+----
+COALESCE requires at least one argument
+
 # qualified with main or quoted, the rewrite outranks a macro of the name, as before, except for coalesce whose
 # function call spelling is a catalog lookup
 statement ok

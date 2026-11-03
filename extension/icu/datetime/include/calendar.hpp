@@ -86,6 +86,8 @@ public:
 
 	//! Sets the calendar to an instant, discarding all field values
 	virtual void SetTime(int64_t millis) = 0;
+	//! Unsets all fields, so that the fields set afterwards resolve with defaults for the others
+	virtual void Clear() = 0;
 	//! The instant that the calendar is set to, computing it from the fields if needed
 	virtual int64_t GetTime() = 0;
 	//! The value of a field, computing the fields from the time if needed
@@ -132,6 +134,7 @@ public:
 	bool Equals(const Calendar &other) const override;
 
 	void SetTime(int64_t millis) override;
+	void Clear() override;
 	int64_t GetTime() override;
 	int32_t Get(CalendarField field) override;
 	bool HasFailed() const override {

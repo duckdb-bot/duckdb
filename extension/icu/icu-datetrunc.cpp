@@ -132,10 +132,12 @@ struct ICUDateTrunc : public ICUDateFunc {
 	}
 
 	static void TruncEra(Calendar *calendar, uint64_t &micros) {
-		TruncYear(calendar, micros);
 		auto era = ExtractField(calendar, CAL_ERA);
-		calendar->Set(CAL_YEAR, 0);
+		// the first year of an era can start after its first month, so the month and day take the defaults
+		calendar->Clear();
 		calendar->Set(CAL_ERA, era);
+		calendar->Set(CAL_YEAR, 1);
+		micros = 0;
 	}
 
 	template <typename T>

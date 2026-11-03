@@ -173,15 +173,21 @@ void FieldCalendar::SetTimeChecked(int64_t millis) {
 	if (failed) {
 		return;
 	}
+	Clear();
 	time = MinValue<int64_t>(MaxValue<int64_t>(millis, MIN_MILLIS), MAX_MILLIS);
-	fields_set = false;
-	all_fields_set = false;
 	time_set = true;
 	fields_virtually_set = true;
+}
+
+void FieldCalendar::Clear() {
 	for (idx_t i = 0; i < CAL_FIELD_COUNT; i++) {
 		fields[i] = 0;
 		stamp[i] = STAMP_UNSET;
 	}
+	fields_set = false;
+	all_fields_set = false;
+	time_set = false;
+	fields_virtually_set = false;
 }
 
 int64_t FieldCalendar::GetTime() {

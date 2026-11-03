@@ -126,3 +126,58 @@ query I
 SELECT formatReadableSize(500*1000*1000);
 ----
 476.8 MiB
+
+# a HUGEINT, as sum gives for integers
+statement ok
+CREATE TABLE sizes AS SELECT range AS i FROM range(1000);
+
+query III
+SELECT format_bytes(sum(i)), pg_size_pretty(sum(i)), formatReadableDecimalSize(sum(i)) FROM sizes;
+----
+487.7 KiB	487.7 KiB	499.5 kB
+
+query I
+SELECT format_bytes(1024::HUGEINT);
+----
+1.0 KiB
+
+query I
+SELECT format_bytes(18446744073709551615::UBIGINT);
+----
+16383.9 PiB
+
+# beyond the range of a BIGINT, also negative, still in PiB
+query II
+SELECT format_bytes(18446744073709551616::HUGEINT), format_bytes(-18446744073709551616::HUGEINT);
+----
+16384.0 PiB	-16384.0 PiB
+
+query II
+SELECT format_bytes(170141183460469231731687303715884105727::HUGEINT), format_bytes((-170141183460469231731687303715884105727 - 1)::HUGEINT);
+----
+151115727451828646838271.9 PiB	-151115727451828646838272.0 PiB
+
+query I
+SELECT formatReadableDecimalSize(170141183460469231731687303715884105727::HUGEINT);
+----
+170141183460469231731687.3 PB
+
+query I
+SELECT formatReadableSize(sum(i)) FROM sizes;
+----
+487.7 KiB
+
+query II
+SELECT formatReadableDecimalSize(18446744073709551616::HUGEINT), formatReadableDecimalSize((-170141183460469231731687303715884105727 - 1)::HUGEINT);
+----
+18446.7 PB	-170141183460469231731687.3 PB
+
+# a column with NULL, positive and negative values
+query II
+SELECT format_bytes(v), formatReadableDecimalSize(v) FROM (VALUES (NULL::HUGEINT), (1536::HUGEINT), (-1536::HUGEINT), (18446744073709551617::HUGEINT), (-18446744073709551615::HUGEINT)) t(v);
+----
+NULL	NULL
+1.5 KiB	1.5 kB
+-1.5 KiB	-1.5 kB
+16384.0 PiB	18446.7 PB
+-16383.9 PiB	-18446.7 PB

@@ -7,8 +7,11 @@ optional<string_t> PrettyPrint(yyjson_val *val, yyjson_alc *alc, Vector &) {
 	D_ASSERT(alc);
 	size_t len_size_t;
 	auto data = yyjson_val_write_opts(val, JSONCommon::WRITE_PRETTY_FLAG, alc, &len_size_t, nullptr);
-	idx_t len = len_size_t;
-	return string_t(data, len);
+	if (len_size_t > string_t::MAX_STRING_SIZE) {
+		throw OutOfRangeException("Cannot create a string of size: '%d', the maximum supported string size is: '%d'",
+		                          len_size_t, string_t::MAX_STRING_SIZE);
+	}
+	return string_t(data, UnsafeNumericCast<uint32_t>(len_size_t));
 }
 
 static void PrettyPrintFunction(DataChunk &args, ExpressionState &state, Vector &result) {
@@ -22,6 +25,7 @@ static void GetPrettyPrintFunctionInternal(ScalarFunctionSet &set, const Logical
 	ScalarFunction fun("json_pretty", {}, LogicalType::VARCHAR, PrettyPrintFunction, nullptr, nullptr,
 	                   JSONFunctionLocalState::Init);
 	fun.GetSignature().AddParameter("json", json);
+	fun.SetFallible();
 	set.AddFunction(fun);
 }
 

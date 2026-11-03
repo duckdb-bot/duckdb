@@ -1,0 +1,20 @@
+# name: test/sql/json/scalar/test_json_pretty_size.test_slow
+# description: json_pretty raises an error for a result longer than a string can be
+# group: [scalar]
+
+require json
+
+require ram 16gb
+
+statement ok
+SET threads = 1;
+
+query I
+SELECT length(json_pretty(repeat('[', 1000) || repeat(']', 1000)));
+----
+3996002
+
+statement error
+SELECT length(json_pretty(repeat('[', 33000) || repeat(']', 33000)));
+----
+Cannot create a string of size: '4355868002'

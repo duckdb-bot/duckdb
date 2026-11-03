@@ -1,0 +1,20 @@
+# name: benchmark/micro/variant/variant_contains_object.benchmark
+# description: variant_contains of a nested object needle in an unshredded VARIANT column of objects
+# group: [variant]
+
+name variant_contains_object
+group variant
+storage persistent v2.0.0
+
+cache variant_contains_object.duckdb
+
+load
+SET variant_minimum_shredding_size = 100000000;
+CREATE TABLE tbl AS SELECT {'id': i, 'name': 'n' || (i % 100), 'tags': [i % 3, i % 5], 'meta': {'a': i % 7, 'b': 'x'}}::VARIANT v FROM range(3000000) t(i);
+CHECKPOINT;
+
+run
+SELECT count(*) FROM tbl WHERE variant_contains(v, {'meta': {'a': 3}}::VARIANT);
+
+result I
+428571

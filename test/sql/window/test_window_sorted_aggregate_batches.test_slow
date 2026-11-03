@@ -3,7 +3,8 @@
 # group: [window]
 
 # With one thread and this memory limit the window operator uses 16 hash groups, so every finalize call gets about
-# 75000 states, more than the 65535 a sort can number
+# 75000 states, more than the 65535 a sort can number. Inputs beyond about 1.9 million rows would be spread over
+# 64 hash groups and no longer reach a second batch
 statement ok
 SET threads = 1;
 

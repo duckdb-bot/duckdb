@@ -119,7 +119,9 @@ EXECUTE plain_option;
 
 # the statements that read the TimeZone keep no plan, the others keep theirs
 query II
-SELECT name, result_types IS NULL AS bound_again FROM duckdb_prepared_statements() ORDER BY name;
+SELECT name, result_types IS NULL AS bound_again FROM duckdb_prepared_statements()
+WHERE name IN ('fraction', 'fraction_desc', 'fraction_list', 'recursive_option', 'depth_option', 'plain_fraction', 'plain_option')
+ORDER BY name;
 ----
 depth_option	true
 fraction	true

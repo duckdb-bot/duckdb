@@ -66,9 +66,11 @@ ATTACH OR REPLACE '{TEST_DIR}/attach_vacuum_indexed.db' AS db1 (vacuum_rebuild_i
 ----
 Cannot re-attach with a different vacuum_rebuild_indexes setting
 
-# ATTACH OR REPLACE with the same value is a no-op
-statement ok
+# ATTACH OR REPLACE with the same value is an error, as the file is the same
+statement error
 ATTACH OR REPLACE '{TEST_DIR}/attach_vacuum_indexed.db' AS db1 (vacuum_rebuild_indexes 614400)
+----
+ATTACH OR REPLACE cannot replace it with the same file
 
 # ATTACH IF NOT EXISTS ignores the supplied options; the existing threshold (614400) remains in effect
 statement ok

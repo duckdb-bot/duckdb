@@ -167,3 +167,34 @@ query II
 EXPLAIN SELECT x > 0 OR x < 10 FROM v;
 ----
 physical_plan	<!REGEX>:.*Projections: x.*
+
+# HAS_ERROR captures errors like TRY, so folds under it keep the operands that can throw
+statement ok
+CREATE TABLE bad AS SELECT * FROM (VALUES (1, '1'), (2, 'bad'), (3, '3')) t(x, s);
+
+query I
+SELECT has_error(true OR CAST(s AS INTEGER) > 0) FROM bad ORDER BY x;
+----
+false
+true
+false
+
+query I
+SELECT has_error(x > -100 OR CAST(s AS INTEGER) > 0) FROM bad ORDER BY x;
+----
+false
+true
+false
+
+query I
+SELECT has_error((CASE WHEN CAST(s AS INTEGER) > 0 THEN x ELSE x END) > -100) FROM bad ORDER BY x;
+----
+false
+true
+false
+
+# TRY over a scalar subquery with an aggregate is planned with HAS_ERROR probes over the aggregate inputs
+query I
+SELECT TRY((SELECT count(true OR CAST(s AS INTEGER) > 0) FROM bad));
+----
+NULL

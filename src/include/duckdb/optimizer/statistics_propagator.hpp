@@ -180,7 +180,7 @@ private:
 	};
 	//! The map of CTE index -> statistics of its definition
 	unordered_map<TableIndex, CTEStatistics> cte_stats_map;
-	//! The number of TRY expressions around the expression being propagated
+	//! The number of TRY and HAS_ERROR expressions around the expression being propagated
 	idx_t try_depth = 0;
 	//! Whether any expression, filter or join condition was removed, leaving columns that may now be unused
 	bool removed_expressions = false;

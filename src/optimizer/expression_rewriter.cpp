@@ -134,7 +134,10 @@ unique_ptr<Expression> ExpressionRewriter::ApplyRules(LogicalOperator &op, const
 			frame.children_visited = true;
 			// Rewrite the subtree bottom-up so parent rules see already-simplified children.
 			CollectChildren(*current_expr, children);
-			auto children_in_try = frame.in_try || current_expr->GetExpressionType() == ExpressionType::OPERATOR_TRY;
+			// TRY and HAS_ERROR capture the errors of their child
+			auto expression_type = current_expr->GetExpressionType();
+			auto children_in_try = frame.in_try || expression_type == ExpressionType::OPERATOR_TRY ||
+			                       expression_type == ExpressionType::OPERATOR_HAS_ERROR;
 			for (idx_t i = children.size(); i > 0; i--) {
 				stack.push_back({children[i - 1], false, false, children_in_try});
 			}

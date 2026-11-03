@@ -249,6 +249,12 @@
       "paths": [
         "test/sql/json/test_execute_serialized_reexecute.test"
       ]
+    },
+    {
+      "reason": "Checks that serializer verification keeps the join filter pushdown of late materialization, which the optimizer creates",
+      "paths": [
+        "test/sql/optimizer/join_filter_pushdown_verify_serializer.test"
+      ]
     }
   ]
 }

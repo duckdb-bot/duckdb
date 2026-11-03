@@ -1,0 +1,225 @@
+# name: test/sql/optimizer/join_filter_pushdown_verify_serializer.test
+# description: The plan that serializer verification executes keeps the join filter pushdown of the plan it replaces
+# group: [optimizer]
+
+require json
+
+statement ok
+SET threads = 1;
+
+statement ok
+CREATE TABLE r (k BIGINT PRIMARY KEY, g VARCHAR, risk BIGINT, zone VARCHAR, score DOUBLE);
+
+statement ok
+INSERT INTO r
+SELECT (i * 7919) % 300000, 'geom ' || i, i % 7, 'zone ' || (i % 13), i * 0.5
+FROM range(300000) t(i);
+
+statement ok
+CHECKPOINT;
+
+statement ok
+SET enable_profiling = 'json';
+
+statement ok
+SET tracked_metrics = ['query.total_rows_scanned'];
+
+statement ok
+SET profiling_output = '{TEST_DIR}/no_verify.json';
+
+query IIIII
+SELECT k, risk, zone, score, length(g) AS d FROM r WHERE k BETWEEN 4242 AND 4300 ORDER BY d DESC, k LIMIT 3;
+----
+4242	3	zone 11	147159.0	11
+4243	2	zone 6	105998.5	11
+4244	1	zone 1	64838.0	11
+
+statement ok
+SET debug_verify_serializer = true;
+
+statement ok
+SET profiling_output = '{TEST_DIR}/verify.json';
+
+query IIIII
+SELECT k, risk, zone, score, length(g) AS d FROM r WHERE k BETWEEN 4242 AND 4300 ORDER BY d DESC, k LIMIT 3;
+----
+4242	3	zone 11	147159.0	11
+4243	2	zone 6	105998.5	11
+4244	1	zone 1	64838.0	11
+
+statement ok
+PRAGMA disable_profiling;
+
+# a join filter must not reach a scan that numbers its rows, as the window above it blocked it before verification
+statement ok
+CREATE TABLE p AS SELECT i FROM range(100) t(i);
+
+statement ok
+CREATE TABLE b AS SELECT * FROM (VALUES (10::BIGINT), (20::BIGINT)) t(i);
+
+query II
+SELECT p.i, p.rn FROM (SELECT i, row_number() OVER () AS rn FROM p) p JOIN b USING (i) ORDER BY i;
+----
+10	11
+20	21
+
+# a join with a condition that is not a comparison round trips too
+query II
+SELECT p.i, b.i FROM (VALUES (1), (2)) p(i) LEFT JOIN (VALUES (1), (2)) b(i) ON p.i = b.i AND (p.i + b.i) % 2 = 0 ORDER BY p.i;
+----
+1	1
+2	2
+
+statement ok
+SET debug_verify_serializer = false;
+
+# the join filter lets the second scan skip the row groups the index scan does not reach
+query I
+SELECT (SELECT query.total_rows_scanned FROM '{TEST_DIR}/verify.json') = (SELECT query.total_rows_scanned FROM '{TEST_DIR}/no_verify.json');
+----
+true
+
+query I
+SELECT query.total_rows_scanned < 300000 FROM '{TEST_DIR}/verify.json';
+----
+true
+
+# a cast in the join condition, which statistics propagation replaces by one that does not check, keeps its filter
+statement ok
+CREATE TABLE pc AS SELECT i::BIGINT AS k FROM range(300000) t(i);
+
+statement ok
+CREATE TABLE bc AS SELECT i::INTEGER AS k FROM range(10, 20) t(i);
+
+statement ok
+CHECKPOINT;
+
+statement ok
+SET debug_verify_serializer = true;
+
+statement ok
+RESET tracked_metrics;
+
+statement ok
+SET enable_profiling = 'json';
+
+statement ok
+SET profiling_output = '{TEST_DIR}/cast_verify.json';
+
+query I
+SELECT count(*) FROM pc JOIN bc ON CAST(pc.k AS INTEGER) = bc.k;
+----
+10
+
+statement ok
+PRAGMA disable_profiling;
+
+statement ok
+SET debug_verify_serializer = false;
+
+# the join filter leaves ten rows of the probe scan, not all 300000
+query I
+SELECT json_extract_string(j.value, '$.intermediate_rows')::BIGINT
+FROM read_text('{TEST_DIR}/cast_verify.json') t, json_tree(t.content) j
+WHERE json_extract_string(j.value, '$.extra_info.Table') LIKE '%.main.pc';
+----
+10
+
+# a type whose properties serialize in another order after the round trip keeps its filter too
+statement ok
+CREATE TABLE ps AS SELECT i AS k FROM range(300000) t(i);
+
+statement ok
+CREATE TABLE bs AS SELECT min(i) EXPORT_STATE AS s FROM range(10, 20) t(i) GROUP BY i;
+
+statement ok
+CHECKPOINT;
+
+statement ok
+SET debug_verify_serializer = true;
+
+statement ok
+SET enable_profiling = 'json';
+
+statement ok
+SET profiling_output = '{TEST_DIR}/state_verify.json';
+
+query I
+SELECT count(*) FROM ps JOIN bs ON ps.k = finalize(bs.s);
+----
+10
+
+statement ok
+PRAGMA disable_profiling;
+
+statement ok
+SET debug_verify_serializer = false;
+
+query I
+SELECT json_extract_string(j.value, '$.intermediate_rows')::BIGINT
+FROM read_text('{TEST_DIR}/state_verify.json') t, json_tree(t.content) j
+WHERE json_extract_string(j.value, '$.extra_info.Table') LIKE '%.main.ps';
+----
+10
+
+# an implicit cast that statistics propagation specialized, in a condition with such a type
+statement ok
+CREATE TABLE pi AS SELECT i::INTEGER AS k FROM range(300000) t(i);
+
+statement ok
+CHECKPOINT;
+
+statement ok
+SET debug_verify_serializer = true;
+
+statement ok
+SET enable_profiling = 'json';
+
+statement ok
+SET profiling_output = '{TEST_DIR}/state_cast_verify.json';
+
+query I
+SELECT count(*) FROM pi JOIN bs ON pi.k = finalize(bs.s);
+----
+10
+
+statement ok
+PRAGMA disable_profiling;
+
+statement ok
+SET debug_verify_serializer = false;
+
+query I
+SELECT json_extract_string(j.value, '$.intermediate_rows')::BIGINT
+FROM read_text('{TEST_DIR}/state_cast_verify.json') t, json_tree(t.content) j
+WHERE json_extract_string(j.value, '$.extra_info.Table') LIKE '%.main.pi';
+----
+10
+
+# the cast an IN subquery adds is a default cast, which the comparison keeps as such
+statement ok
+SET debug_verify_serializer = true;
+
+statement ok
+SET enable_profiling = 'json';
+
+statement ok
+SET profiling_output = '{TEST_DIR}/in_verify.json';
+
+query I
+SELECT count(*) FROM pc WHERE k IN (SELECT k FROM bc);
+----
+10
+
+statement ok
+PRAGMA disable_profiling;
+
+statement ok
+SET debug_verify_serializer = false;
+
+query I
+SELECT json_extract_string(j.value, '$.intermediate_rows')::BIGINT
+FROM read_text('{TEST_DIR}/in_verify.json') t, json_tree(t.content) j
+WHERE json_extract_string(j.value, '$.extra_info.Table') LIKE '%.main.pc';
+----
+10

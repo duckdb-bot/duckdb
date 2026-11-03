@@ -6,6 +6,7 @@
 #include "duckdb/common/file_opener.hpp"
 #include "duckdb/common/helper.hpp"
 #include "duckdb/common/memory_mapped_file.hpp"
+#include "duckdb/common/operator/add.hpp"
 #include "duckdb/common/process_util.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/thread.hpp"
@@ -241,7 +242,16 @@ static void CloseFileAndAppendError(int fd, string &extended_error) {
 static FileMetadata StatsFromStruct(struct stat s) {
 	FileMetadata file_metadata;
 	file_metadata.file_size = s.st_size;
-	file_metadata.last_modification_time = Timestamp::FromEpochSeconds(s.st_mtime);
+#ifdef __APPLE__
+	const auto &modification_time = s.st_mtimespec;
+#else
+	const auto &modification_time = s.st_mtim;
+#endif
+	// with the fraction of a second, so that a file rewritten within the same second gets another version tag
+	const auto modification_seconds = Timestamp::FromEpochSeconds(static_cast<int64_t>(modification_time.tv_sec));
+	file_metadata.last_modification_time =
+	    Timestamp::FromEpochMicroSeconds(AddOperatorOverflowCheck::Operation<int64_t, int64_t, int64_t>(
+	        modification_seconds.value, static_cast<int64_t>(modification_time.tv_nsec) / Interval::NANOS_PER_MICRO));
 	file_metadata.device_id = static_cast<idx_t>(s.st_dev);
 	file_metadata.file_id = static_cast<idx_t>(s.st_ino);
 
@@ -489,8 +499,10 @@ void LocalFileSystem::Read(FileHandle &handle, void *buffer, int64_t nr_bytes, i
 	int fd = unix_handle.fd;
 	auto read_buffer = char_ptr_cast(buffer);
 	while (nr_bytes > 0) {
+		// macOS rejects a single read above INT_MAX bytes with EINVAL and Linux silently caps it, so read in chunks
+		auto chunk = MinValue<int64_t>(nr_bytes, int64_t(1) << 30);
 		int64_t bytes_read =
-		    pread(fd, read_buffer, UnsafeNumericCast<size_t>(nr_bytes), UnsafeNumericCast<off_t>(location));
+		    pread(fd, read_buffer, UnsafeNumericCast<size_t>(chunk), UnsafeNumericCast<off_t>(location));
 		if (bytes_read == -1) {
 			throw IOException({{"errno", std::to_string(errno)}}, "Could not read from file \"%s\": %s", handle.path,
 			                  strerror(errno));
@@ -1743,7 +1755,9 @@ optional<FileMetadata> LocalFileSystem::GetStatsIfExists(const OpenFileInfo &fil
 	                              OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
 	if (raw_handle == INVALID_HANDLE_VALUE) {
 		auto error_code = GetLastError();
-		if (error_code == ERROR_FILE_NOT_FOUND || error_code == ERROR_PATH_NOT_FOUND) {
+		// a name that cannot be a local file does not exist, as for ENOENT and ENOTDIR
+		if (error_code == ERROR_FILE_NOT_FOUND || error_code == ERROR_PATH_NOT_FOUND ||
+		    error_code == ERROR_INVALID_NAME || error_code == ERROR_BAD_PATHNAME || error_code == ERROR_DIRECTORY) {
 			return nullopt;
 		}
 		SetLastError(error_code);
@@ -2159,26 +2173,42 @@ static bool IsSymbolicLink(const string &path) {
 vector<OpenFileInfo>
 LocalFileSystem::FetchFileWithoutGlob(const string &path, optional_ptr<FileOpener> opener, bool absolute_path,
                                       const std::function<bool(const string &)> &can_access_location) {
-	auto exists = [&](const string &location) {
+	vector<OpenFileInfo> result;
+	// a regular file comes with its type, size, modification time and version tag, as from a glob
+	auto add_file = [&](const string &file_path) {
+		OpenFileInfo info(file_path);
+		auto file_metadata = GetStatsIfExists(info, opener);
+		if (file_metadata) {
+			info.extended_info = make_shared_ptr<ExtendedOpenFileInfo>();
+			auto &options = info.extended_info->options;
+			options.emplace("type", Value("file"));
+			FillFileOptions(*file_metadata, options);
+		}
+		result.push_back(std::move(info));
+	};
+	// adds the regular file or the pipe at a location, when the access check allows the location
+	auto add_if_exists = [&](const string &location) {
 		// a location that the check would expand again is skipped, so that the check and the lookup see one path
 		if (can_access_location && (ExpandPath(location, opener) != location || !can_access_location(location))) {
 			return false;
 		}
-		return FileExists(location, opener) || IsPipe(location, opener);
+		if (FileExists(location, opener)) {
+			add_file(location);
+			return true;
+		}
+		if (IsPipe(location, opener)) {
+			result.emplace_back(location);
+			return true;
+		}
+		return false;
 	};
-	vector<OpenFileInfo> result;
-	if (exists(path)) {
-		result.emplace_back(path);
-	} else if (!absolute_path) {
+	if (!add_if_exists(path) && !absolute_path) {
 		Value value;
 		if (opener && opener->TryGetCurrentSetting("file_search_path", value)) {
 			auto search_paths_str = value.ToString();
 			vector<std::string> search_paths = StringUtil::Split(search_paths_str, ',');
 			for (const auto &search_path : search_paths) {
-				auto joined_path = JoinPath(can_access_location ? ExpandPath(search_path, opener) : search_path, path);
-				if (exists(joined_path)) {
-					result.emplace_back(joined_path);
-				}
+				add_if_exists(JoinPath(can_access_location ? ExpandPath(search_path, opener) : search_path, path));
 			}
 		}
 	}

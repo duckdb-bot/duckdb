@@ -1,5 +1,7 @@
 #include "duckdb/optimizer/filter_pushdown.hpp"
 #include "duckdb/optimizer/in_clause_rewriter.hpp"
+#include "duckdb/optimizer/optimizer.hpp"
+#include "duckdb/planner/column_binding_map.hpp"
 #include "duckdb/planner/expression/bound_between_expression.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
@@ -55,6 +57,109 @@ static bool HasTransitiveJoinBounds(const vector<unique_ptr<Filter>> &filters) {
 	return false;
 }
 
+static optional_ptr<const BoundColumnRefExpression> AsColumnRef(const Expression &expr) {
+	if (expr.GetExpressionType() != ExpressionType::BOUND_COLUMN_REF) {
+		return nullptr;
+	}
+	return &expr.Cast<BoundColumnRefExpression>();
+}
+
+static JoinSide GetColumnSide(const BoundColumnRefExpression &column, const unordered_set<TableIndex> &left_bindings,
+                              const unordered_set<TableIndex> &right_bindings) {
+	return JoinSide::GetJoinSide(column.Binding().table_index, left_bindings, right_bindings);
+}
+
+static bool IsUsed(const vector<reference<const BoundColumnRefExpression>> &used,
+                   const BoundColumnRefExpression &column) {
+	for (auto &entry : used) {
+		if (entry.get().Equals(column)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+//! Whether the comparison is of the given type and compares two columns
+static bool IsColumnComparison(const Expression &expr, ExpressionType type,
+                               optional_ptr<const BoundColumnRefExpression> &left,
+                               optional_ptr<const BoundColumnRefExpression> &right) {
+	if (expr.GetExpressionType() != type || !BoundComparisonExpression::IsComparison(expr)) {
+		return false;
+	}
+	auto &comparison = expr.Cast<BoundFunctionExpression>();
+	left = AsColumnRef(BoundComparisonExpression::Left(comparison));
+	right = AsColumnRef(BoundComparisonExpression::Right(comparison));
+	return left && right;
+}
+
+//! A column of an equality and the column it is compared with
+struct EqualityPartner {
+	reference<const BoundColumnRefExpression> column;
+	reference<const BoundColumnRefExpression> partner;
+};
+
+//! A row that passes `l IS NOT DISTINCT FROM r` and `l = c` has a non-NULL l, so it also passes `r = c`. With r and c
+//! on the same side of the join, that equality filters the side before the join. Each column is in one such filter at
+//! most, and the budget of the optimizer limits them, as each can connect equalities that the side combines.
+static vector<unique_ptr<Expression>> GetImpliedSideFilters(const vector<unique_ptr<Expression>> &join_expressions,
+                                                            const unordered_set<TableIndex> &left_bindings,
+                                                            const unordered_set<TableIndex> &right_bindings,
+                                                            idx_t &budget) {
+	vector<unique_ptr<Expression>> result;
+	if (budget == 0) {
+		return result;
+	}
+	column_binding_map_t<vector<EqualityPartner>> partners;
+	for (auto &equality : join_expressions) {
+		optional_ptr<const BoundColumnRefExpression> left, right;
+		if (IsColumnComparison(*equality, ExpressionType::COMPARE_EQUAL, left, right)) {
+			partners[left->Binding()].push_back(EqualityPartner {*left, *right});
+			partners[right->Binding()].push_back(EqualityPartner {*right, *left});
+		}
+	}
+	if (partners.empty()) {
+		return result;
+	}
+	vector<reference<const BoundColumnRefExpression>> used;
+	for (auto &null_safe : join_expressions) {
+		optional_ptr<const BoundColumnRefExpression> left, right;
+		if (!IsColumnComparison(*null_safe, ExpressionType::COMPARE_NOT_DISTINCT_FROM, left, right)) {
+			continue;
+		}
+		reference<const BoundColumnRefExpression> sides[] = {*left, *right};
+		for (idx_t n = 0; n < 2; n++) {
+			auto &shared = sides[n].get();
+			auto &other = sides[1 - n].get();
+			auto entry = partners.find(shared.Binding());
+			if (entry == partners.end()) {
+				continue;
+			}
+			auto side = GetColumnSide(other, left_bindings, right_bindings);
+			if (side != JoinSide::LEFT && side != JoinSide::RIGHT) {
+				continue;
+			}
+			for (auto &equality : entry->second) {
+				if (IsUsed(used, other)) {
+					break;
+				}
+				auto &partner = equality.partner.get();
+				if (!equality.column.get().Equals(shared) || partner.Equals(other) ||
+				    GetColumnSide(partner, left_bindings, right_bindings) != side || IsUsed(used, partner)) {
+					continue;
+				}
+				used.push_back(other);
+				used.push_back(partner);
+				result.push_back(
+				    BoundComparisonExpression::Create(ExpressionType::COMPARE_EQUAL, other.Copy(), partner.Copy()));
+				if (--budget == 0) {
+					return result;
+				}
+			}
+		}
+	}
+	return result;
+}
+
 unique_ptr<LogicalOperator> FilterPushdown::PushdownCrossProduct(unique_ptr<LogicalOperator> op) {
 	D_ASSERT(op->children.size() > 1);
 	FilterPushdown left_pushdown(optimizer, convert_mark_joins, projection_mode);
@@ -97,6 +202,18 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownCrossProduct(unique_ptr<Logi
 					// bindings match both: turn into join condition
 					join_expressions.push_back(std::move(f->filter));
 				}
+			}
+		}
+		for (auto &implied : GetImpliedSideFilters(join_expressions, left_bindings, right_bindings,
+		                                           optimizer.implied_join_filter_budget)) {
+			auto f = make_uniq<Filter>(std::move(implied));
+			f->ExtractBindings();
+			auto side = JoinSide::GetJoinSide(f->bindings, left_bindings, right_bindings);
+			if (side == JoinSide::LEFT) {
+				left_pushdown.filters.push_back(std::move(f));
+			} else {
+				D_ASSERT(side == JoinSide::RIGHT);
+				right_pushdown.filters.push_back(std::move(f));
 			}
 		}
 	}

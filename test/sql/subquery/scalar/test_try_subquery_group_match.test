@@ -1,0 +1,85 @@
+# name: test/sql/subquery/scalar/test_try_subquery_group_match.test
+# description: TRY over a scalar subquery whose select item is a scalar subquery that is also a GROUP BY expression
+# group: [scalar]
+
+statement ok
+CREATE TABLE t AS SELECT 1 AS x;
+
+query I
+SELECT (SELECT (SELECT x) FROM t GROUP BY (SELECT x));
+----
+1
+
+query I
+SELECT TRY((SELECT (SELECT x) FROM t GROUP BY (SELECT x)));
+----
+1
+
+# the same item written with TRY directly in the grouped select list
+query I
+SELECT TRY((SELECT x)) FROM t GROUP BY (SELECT x);
+----
+1
+
+query I
+SELECT TRY((SELECT (SELECT x) FROM (VALUES (1)) t(x) GROUP BY (SELECT x)));
+----
+1
+
+query I
+SELECT TRY((SELECT (SELECT x) AS a FROM t GROUP BY (SELECT x)));
+----
+1
+
+query I
+SELECT TRY((SELECT (SELECT x) FROM t GROUP BY (SELECT x) HAVING (SELECT x) = 1 ORDER BY (SELECT x)));
+----
+1
+
+# the group used inside a larger select item was already supported
+query I
+SELECT TRY((SELECT (SELECT x) + 1 FROM t GROUP BY (SELECT x)));
+----
+2
+
+statement ok
+CREATE TABLE t2 AS SELECT * FROM (VALUES (1), (1), (2)) v(x);
+
+query I
+SELECT TRY((SELECT (SELECT x) FROM t2 WHERE x = 1 GROUP BY (SELECT x)));
+----
+1
+
+# more than one group still fails the cardinality check of the scalar subquery
+statement error
+SELECT TRY((SELECT (SELECT x) FROM t2 GROUP BY (SELECT x)));
+----
+More than one row returned by a subquery
+
+# an error in the group expression is not masked, like without the subquery
+statement error
+SELECT TRY((SELECT (SELECT 10 // (x - 1)) FROM t GROUP BY (SELECT 10 // (x - 1))));
+----
+Division by zero
+
+statement error
+SELECT TRY((SELECT 10 // (x - 1) FROM t GROUP BY 10 // (x - 1)));
+----
+Division by zero
+
+# the group reference and the aggregate input over the same subquery stay distinct through ROLLUP
+query II
+SELECT TRY((SELECT x)), sum(TRY((SELECT x)))
+FROM (VALUES (1), (1), (2)) t(x)
+GROUP BY ROLLUP((SELECT x))
+ORDER BY ALL NULLS LAST;
+----
+1	2
+2	2
+NULL	4
+
+# an error in the rest of the select item is still masked
+query I
+SELECT TRY((SELECT TRY((SELECT x)) + 1 // 0 FROM (VALUES (1)) t(x) GROUP BY (SELECT x)));
+----
+NULL

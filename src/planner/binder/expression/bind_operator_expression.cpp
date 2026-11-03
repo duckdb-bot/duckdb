@@ -185,8 +185,10 @@ BindResult ExpressionBinder::BindExpression(OperatorExpression &op, idx_t depth)
 		D_ASSERT(op.GetChildrenMutable().size() == 1);
 		auto &try_child = op.GetChildrenMutable()[0];
 		if (try_child->GetExpressionClass() == ExpressionClass::SUBQUERY &&
-		    try_child->Cast<SubqueryExpression>().GetSubqueryType() == SubqueryType::SCALAR) {
+		    try_child->Cast<SubqueryExpression>().GetSubqueryType() == SubqueryType::SCALAR &&
+		    !MatchesGroup(*try_child)) {
 			// TRY directly over a scalar subquery binds as an ordinary subquery and lowers onto its plan
+			// a subquery that is also a GROUP BY expression binds to its group below, like any other group
 			return BindTrySubquery(op, depth);
 		}
 	}

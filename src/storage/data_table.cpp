@@ -738,7 +738,7 @@ static void DeferForeignKeyCheck(ClientContext &context, DeferredForeignKeyCheck
 	for (idx_t i = 0; i < fk_keys.size(); i++) {
 		keys.data[i].Slice(chunk.data[fk_keys[i].index], sel, rows.size());
 	}
-	keys.SetCardinality(rows.size());
+	keys.CheckCardinality(rows.size());
 
 	lock_guard<mutex> guard(deferred.lock);
 	auto &collection = deferred.keys[constraint_index];
@@ -961,7 +961,7 @@ void DataTable::VerifyDeferredForeignKeys(ClientContext &context, TableCatalogEn
 			for (idx_t i = 0; i < fk_keys.size(); i++) {
 				chunk.data[fk_keys[i].index].Reference(keys.data[i]);
 			}
-			chunk.SetCardinality(keys.size());
+			chunk.SetChildCardinality(keys.size());
 			VerifyForeignKeyConstraint(nullptr, bound_foreign_key, context, chunk, VerifyExistenceType::APPEND_FK,
 			                           nullptr, entry.first, false);
 		}

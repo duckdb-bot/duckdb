@@ -25,12 +25,7 @@
 #include "duckdb/planner/operator/logical_trigger.hpp"
 #include "duckdb/planner/operator_extension.hpp"
 #include "duckdb/planner/planner_extension.hpp"
-#include "duckdb/planner/constraints/bound_check_constraint.hpp"
 #include "duckdb/planner/logical_operator_visitor.hpp"
-#include "duckdb/planner/operator/logical_copy_to_file.hpp"
-#include "duckdb/planner/operator/logical_insert.hpp"
-#include "duckdb/planner/operator/logical_merge_into.hpp"
-#include "duckdb/planner/operator/logical_update.hpp"
 #include "duckdb/planner/logical_plan_verifier.hpp"
 #include "duckdb/planner/operator/logical_explain.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
@@ -203,49 +198,9 @@ static void RunPostBindExtensions(ClientContext &context, Binder &binder, BoundS
 	}
 }
 
-//! Whether a CHECK constraint the operator verifies has to be bound again on every execution, a DELETE verifies none
-static bool ConstraintsRequireRebind(const vector<unique_ptr<BoundConstraint>> &constraints) {
-	for (auto &constraint : constraints) {
-		if (constraint->type == ConstraintType::CHECK &&
-		    constraint->Cast<BoundCheckConstraint>().expression->RequiresRebind()) {
-			return true;
-		}
-	}
-	return false;
-}
-
-//! The expressions an operator holds outside of the ones LogicalOperatorVisitor enumerates
-static bool HiddenExpressionsRequireRebind(const LogicalOperator &op) {
-	switch (op.type) {
-	case LogicalOperatorType::LOGICAL_INSERT:
-		return ConstraintsRequireRebind(op.Cast<LogicalInsert>().bound_constraints);
-	case LogicalOperatorType::LOGICAL_UPDATE:
-		return ConstraintsRequireRebind(op.Cast<LogicalUpdate>().bound_constraints);
-	case LogicalOperatorType::LOGICAL_MERGE_INTO: {
-		// only the INSERT and UPDATE actions verify the constraints
-		auto &merge = op.Cast<LogicalMergeInto>();
-		for (auto &entry : merge.actions) {
-			for (auto &action : entry.second) {
-				if (action->action_type == MergeActionType::MERGE_INSERT ||
-				    action->action_type == MergeActionType::MERGE_UPDATE) {
-					return ConstraintsRequireRebind(merge.bound_constraints);
-				}
-			}
-		}
-		return false;
-	}
-	case LogicalOperatorType::LOGICAL_COPY_TO_FILE: {
-		auto &partition_path = op.Cast<LogicalCopyToFile>().partition_path_expression;
-		return partition_path && partition_path->RequiresRebind();
-	}
-	default:
-		return false;
-	}
-}
-
 //! Whether an expression of the plan has to be bound again on every execution, such as a cast that reads a setting
 static bool PlanRequiresRebind(const LogicalOperator &op) {
-	bool requires_rebind = HiddenExpressionsRequireRebind(op);
+	bool requires_rebind = false;
 	LogicalOperatorVisitor::EnumerateExpressions(op, [&](const unique_ptr<Expression> *expr) {
 		requires_rebind = requires_rebind || (*expr)->RequiresRebind();
 	});
@@ -320,8 +275,7 @@ void Planner::CreatePlan(SQLStatement &statement) {
 	}
 	this->properties = binder->GetStatementProperties();
 	if (this->plan && !properties.always_require_rebind && PlanRequiresRebind(*plan)) {
-		// the optimizer can fold such an expression into a constant, which no longer shows that it has to be bound
-		// again, so the statement is bound again on every execution
+		// the binder marks the expressions it binds, the casts added to the plan afterwards are found here
 		properties.always_require_rebind = true;
 	}
 	this->properties.parameter_count = parameter_count;

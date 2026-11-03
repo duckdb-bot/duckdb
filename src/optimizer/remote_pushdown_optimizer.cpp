@@ -1162,7 +1162,7 @@ RemotePushdownOptimizer::TryConstantFold(unique_ptr<ParsedExpression> &expr) {
 		auto fold_binder = Binder::CreateBinder(binder.context);
 		ConstantBinder constant_binder(*fold_binder, binder.context, "remote pushdown");
 		bound_expr = constant_binder.Bind(expr_copy);
-		// binding can fold arguments that depend on the query or on settings into constants
+		// the binder marks an expression that depends on the query or on settings, also when it folds it
 		requires_rebind = fold_binder->GetStatementProperties().always_require_rebind;
 	} catch (std::exception &) {
 		// the expression cannot be bound as a constant (e.g. no matching function overload)
@@ -1175,7 +1175,7 @@ RemotePushdownOptimizer::TryConstantFold(unique_ptr<ParsedExpression> &expr) {
 		// volatile functions (random(), ...) must be re-evaluated on every row
 		return ConstantFoldResult::NOT_FOLDABLE;
 	}
-	if (requires_rebind || bound_expr->RequiresRebind()) {
+	if (requires_rebind) {
 		// functions like now() or strftime() must be re-folded when a prepared statement is re-executed
 		binder.SetAlwaysRequireRebind();
 	}

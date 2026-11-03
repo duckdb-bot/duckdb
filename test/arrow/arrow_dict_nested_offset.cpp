@@ -153,8 +153,76 @@ struct FixedArrayColumn {
 	ArrowArray array {};
 };
 
-// Scans the column through arrow_scan as a one-column batch and compares against the query.
-bool ScanMatches(ArrowSchema &col_schema, ArrowArray &col_array, const string &query) {
+const int32_t STRING_DICT_OFFSETS[3] = {0, 4, 5};
+const char STRING_DICT_DATA[] = "10005";
+
+// ARRAY(2) column over int8 indices into the string dictionary ["1000", "5"], NULL for the given rows.
+struct StringDictArrayColumn {
+	StringDictArrayColumn(const std::vector<int8_t> &indices_p, const std::vector<idx_t> &null_rows)
+	    : indices(indices_p), validity((indices_p.size() / 2 + 7) / 8 + 2, 0xFF) {
+		for (auto row : null_rows) {
+			validity[row / 8] &= uint8_t(~(1u << (row % 8)));
+		}
+		dict_schema.format = "u";
+		dict_schema.release = ReleaseSchema;
+		child_schema.format = "c";
+		child_schema.name = "item";
+		child_schema.flags = 2; // ARROW_FLAG_NULLABLE
+		child_schema.dictionary = &dict_schema;
+		child_schema.release = ReleaseSchema;
+		schema_children[0] = &child_schema;
+		schema.format = "+w:2";
+		schema.name = "a";
+		schema.flags = 2;
+		schema.n_children = 1;
+		schema.children = schema_children;
+		schema.release = ReleaseSchema;
+
+		dict_buffers[0] = nullptr;
+		dict_buffers[1] = STRING_DICT_OFFSETS;
+		dict_buffers[2] = STRING_DICT_DATA;
+		dict_array.length = 2;
+		dict_array.n_buffers = 3;
+		dict_array.buffers = dict_buffers;
+		dict_array.release = ReleaseArray;
+		child_buffers[0] = nullptr;
+		child_buffers[1] = indices.data();
+		child_array.length = int64_t(indices.size());
+		child_array.n_buffers = 2;
+		child_array.buffers = child_buffers;
+		child_array.dictionary = &dict_array;
+		child_array.release = ReleaseArray;
+		buffers[0] = validity.data();
+		array_children[0] = &child_array;
+		array.length = int64_t(indices.size() / 2);
+		array.null_count = int64_t(null_rows.size());
+		array.n_buffers = 1;
+		array.buffers = buffers;
+		array.n_children = 1;
+		array.children = array_children;
+		array.release = ReleaseArray;
+	}
+	StringDictArrayColumn(const StringDictArrayColumn &) = delete;
+
+	std::vector<int8_t> indices;
+	std::vector<uint8_t> validity;
+	const void *dict_buffers[3];
+	const void *child_buffers[2];
+	const void *buffers[1];
+	ArrowSchema *schema_children[1];
+	ArrowArray *array_children[1];
+	ArrowSchema dict_schema {};
+	ArrowSchema child_schema {};
+	ArrowSchema schema {};
+	ArrowArray dict_array {};
+	ArrowArray child_array {};
+	ArrowArray array {};
+};
+
+// Scans the column through arrow_scan as a one-column batch and compares against the query, in order after the
+// projection when one is given.
+bool ScanMatches(ArrowSchema &col_schema, ArrowArray &col_array, const string &query,
+                 const string &projection = string()) {
 	ArrowSchema *schema_children[1] = {&col_schema};
 	ArrowSchema record_schema {};
 	record_schema.format = "+s";
@@ -179,7 +247,14 @@ bool ScanMatches(ArrowSchema &col_schema, ArrowArray &col_array, const string &q
 	}
 	DuckDB db(nullptr);
 	Connection con(db);
-	return ArrowTestHelper::RunArrowComparison(con, query, stream);
+	if (projection.empty()) {
+		return ArrowTestHelper::RunArrowComparison(con, query, stream);
+	}
+	auto result = con.TableFunction("arrow_scan", {}, {}, ArrowTestHelper::ConstructArrowScan(stream))
+	                  ->Project(projection)
+	                  ->Execute();
+	stream.release = nullptr;
+	return result->Equals(*con.Query(query), false);
 }
 
 } // namespace
@@ -235,6 +310,36 @@ TEST_CASE("Arrow scan of fixed-size ARRAY(dict int32) with nonzero array offset"
 	REQUIRE(ScanMatches(col.schema, col.array,
 	                    "SELECT (CASE WHEN r = 0 THEN [NULL, 20, 30] ELSE [10, 20, 30] END)::INT[3] "
 	                    "FROM range(4) t(r)"));
+}
+
+TEST_CASE("Arrow scan of fixed-size ARRAY(dict string) with NULL arrays", "[arrow]") {
+	// the NULL rows 0 and 2 hold the value "1000", which does not fit in a TINYINT
+	StringDictArrayColumn col({0, 0, 1, 1, 0, 1, 1, 1}, {0, 2});
+	REQUIRE(ScanMatches(col.schema, col.array,
+	                    "SELECT a::TINYINT[2] FROM (VALUES (NULL), ([5, 5]), (NULL), ([5, 5])) t(a)", "a::TINYINT[2]"));
+}
+
+TEST_CASE("Arrow scan of an empty dictionary of fixed-size ARRAY(dict int32)", "[arrow]") {
+	// the only index is NULL and selects the NULL entry after the empty dictionary
+	DictChild child(0, {});
+	FixedArrayColumn values(child, 2, 0, 0);
+	const int8_t indices[1] = {0};
+	const uint8_t validity[1] = {0x00};
+	const void *buffers[2] = {validity, indices};
+	ArrowSchema schema {};
+	schema.format = "c";
+	schema.name = "a";
+	schema.flags = 2;
+	schema.dictionary = &values.schema;
+	schema.release = ReleaseSchema;
+	ArrowArray array {};
+	array.length = 1;
+	array.null_count = 1;
+	array.n_buffers = 2;
+	array.buffers = buffers;
+	array.dictionary = &values.array;
+	array.release = ReleaseArray;
+	REQUIRE(ScanMatches(schema, array, "SELECT NULL::INTEGER[2]", "a"));
 }
 
 TEST_CASE("Arrow scan of LIST(dict string) whose first chunk holds no list elements", "[arrow]") {

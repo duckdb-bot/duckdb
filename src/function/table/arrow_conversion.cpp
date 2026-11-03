@@ -354,15 +354,21 @@ static void ArrowToDuckDBArray(Vector &vector, ArrowArray &array, idx_t chunk_of
 	auto &child_array = *array.children[0];
 	auto &child_type = array_info.GetChild();
 	bool run_end_encoded = child_type.GetPhysicalType() == ArrowArrayPhysicalType::RUN_END_ENCODED;
+	if (child_count == 0 && child_array.dictionary) {
+		// without elements there are no indices to look up, and the child vector stays empty
+		return;
+	}
 	if (child_count == 0 && child_offset == 0 && !run_end_encoded) {
 		D_ASSERT(!child_array.dictionary);
 		ArrowToDuckDBConversion::ColumnArrowToDuckDB(child_vector, child_array, chunk_offset, child_state, child_count,
 		                                             child_type, -1);
 	} else {
 		if (child_array.dictionary) {
+			// the elements of NULL arrays select the NULL entry of the dictionary
+			auto child_validity = FlatVector::Validity(child_vector);
 			ArrowToDuckDBConversion::ColumnArrowToDuckDBDictionary(child_vector, child_array, chunk_offset, child_state,
 			                                                       child_count, child_type,
-			                                                       NumericCast<int64_t>(child_offset));
+			                                                       NumericCast<int64_t>(child_offset), &child_validity);
 		} else if (run_end_encoded) {
 			ArrowToDuckDBConversion::ColumnArrowToDuckDBRunEndEncoded(child_vector, child_array, chunk_offset,
 			                                                          child_state, child_count, child_type,

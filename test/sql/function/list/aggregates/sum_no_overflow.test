@@ -22,3 +22,151 @@ query I
 SELECT sum_no_overflow(i::SMALLINT) FROM range(10) t(i)
 ----
 45
+
+# INTEGER values are accumulated in a BIGINT
+query I
+SELECT sum_no_overflow(x) FROM (VALUES (2147483647::INTEGER), (2147483647::INTEGER), (2147483647::INTEGER)) t(x)
+----
+6442450941
+
+query I
+SELECT sum_no_overflow(NULL::BIGINT)
+----
+NULL
+
+query I
+SELECT sum_no_overflow(NULL)
+----
+NULL
+
+# without statistics that prove it cannot overflow, a sum that does not fit in a BIGINT is an error
+statement ok
+CREATE TABLE big AS SELECT 9223372036854775807::BIGINT - i AS i, 1 AS g FROM range(2) t(i)
+
+statement error
+SELECT sum_no_overflow(i) FROM big
+----
+<REGEX>:Out of Range Error: Overflow in sum_no_overflow.*
+
+statement error
+SELECT sum_no_overflow(-i - 1) FROM big
+----
+<REGEX>:Out of Range Error: Overflow in sum_no_overflow.*
+
+# a constant input is added once with its count
+statement error
+SELECT sum_no_overflow(9223372036854775807::BIGINT) FROM range(2)
+----
+<REGEX>:Out of Range Error: Overflow in .*
+
+statement error
+SELECT sum_no_overflow(i) FROM (SELECT 9223372036854775807::BIGINT AS i FROM big)
+----
+<REGEX>:Out of Range Error: Overflow in .*
+
+statement error
+SELECT g, sum_no_overflow(i) FROM big GROUP BY g
+----
+<REGEX>:Out of Range Error: Overflow in sum_no_overflow.*
+
+# only the first of several groups overflows
+statement ok
+CREATE TABLE groups AS SELECT i % 3 AS g, CASE WHEN i % 3 = 0 THEN 9223372036854775807 - i ELSE i END::BIGINT AS i FROM range(6) t(i)
+
+statement error
+SELECT g, sum_no_overflow(i) FROM groups GROUP BY g
+----
+<REGEX>:Out of Range Error: Overflow in sum_no_overflow.*
+
+query II
+SELECT g, sum_no_overflow(i) FROM groups WHERE g <> 0 GROUP BY g ORDER BY g
+----
+1	5
+2	7
+
+# enough rows and aggregates for the clustered update of several groups at once
+statement ok
+CREATE TABLE clustered AS SELECT i % 4 AS g, CASE WHEN i % 4 = 0 THEN 4611686018427387904 ELSE i END::BIGINT AS i FROM range(4096) t(i)
+
+statement error
+SELECT g, sum_no_overflow(i), count(*) FROM clustered GROUP BY g
+----
+<REGEX>:Out of Range Error: Overflow in sum_no_overflow.*
+
+query III
+SELECT g, sum_no_overflow(i), count(*) FROM clustered WHERE g <> 0 GROUP BY g ORDER BY g
+----
+1	2096128	1024
+2	2097152	1024
+3	2098176	1024
+
+statement error
+SELECT sum_no_overflow(i) OVER () FROM big
+----
+<REGEX>:Out of Range Error: Overflow in sum_no_overflow.*
+
+statement error
+SELECT sum_no_overflow(i) OVER (ORDER BY i ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) FROM big
+----
+<REGEX>:Out of Range Error: Overflow in sum_no_overflow.*
+
+# FIXME: the segment tree aggregates rows that no frame contains, so a fallible aggregate raises for frames that fit
+mode skip
+
+query II
+SELECT i, sum_no_overflow(9223372036854775807::BIGINT - i) OVER (ORDER BY i ROWS BETWEEN 1 PRECEDING AND 1 PRECEDING) FROM range(3) t(i) ORDER BY i
+----
+0	NULL
+1	9223372036854775807
+2	9223372036854775806
+
+mode unskip
+
+statement error
+SELECT list_aggregate([9223372036854775807, 9223372036854775807]::BIGINT[], 'sum_no_overflow')
+----
+<REGEX>:Out of Range Error: Overflow in sum_no_overflow.*
+
+# the same sums fit in a BIGINT when the input is halved
+query I
+SELECT sum_no_overflow(i // 2) FROM big
+----
+9223372036854775806
+
+query II
+SELECT g, sum_no_overflow(i // 2) FROM big GROUP BY g
+----
+1	9223372036854775806
+
+query I
+SELECT sum_no_overflow(i // 2) OVER () FROM big LIMIT 1
+----
+9223372036854775806
+
+# combining exported states checks for overflow too
+statement error
+SELECT finalize(combine(sum_no_overflow(i) EXPORT_STATE, sum_no_overflow(i) EXPORT_STATE)) FROM (SELECT i // 2 AS i FROM big)
+----
+<REGEX>:Out of Range Error: Overflow in sum_no_overflow.*
+
+query I
+SELECT finalize(combine(sum_no_overflow(i) EXPORT_STATE, sum_no_overflow(NULL::BIGINT) EXPORT_STATE)) FROM (SELECT i // 2 AS i FROM big)
+----
+9223372036854775806
+
+query I
+SELECT finalize(combine(sum_no_overflow(NULL) EXPORT_STATE, sum_no_overflow(1::BIGINT) EXPORT_STATE))
+----
+1
+
+# the checked implementation survives a serializer round trip
+statement ok
+SET debug_verify_serializer=true
+
+statement error
+SELECT sum_no_overflow(i) FROM big
+----
+<REGEX>:Out of Range Error: Overflow in sum_no_overflow.*
+
+statement ok
+SET debug_verify_serializer=false

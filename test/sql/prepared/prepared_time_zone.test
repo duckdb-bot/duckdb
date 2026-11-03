@@ -371,6 +371,10 @@ PREPARE match_define AS SELECT count(*) FROM (SELECT c FROM (VALUES (1, to_times
 statement ok
 PREPARE match_navigation AS SELECT count(*) FROM (SELECT c FROM (VALUES (1, to_timestamp(1767225600))) t(rn, ts) MATCH_RECOGNIZE (ORDER BY rn MEASURES count(*) AS c ONE ROW PER MATCH PATTERN (A) DEFINE A AS LAST(A.ts::VARCHAR) = '2026-01-01 00:00:00+00'));
 
+# the aggregate of a DEFINE casts its argument itself, and the matcher casts again at execution, so only the plan shows it
+statement ok
+PREPARE match_aggregate_cast AS SELECT count(*) FROM (SELECT c FROM (VALUES (1, to_timestamp(1767225600))) t(rn, ts) MATCH_RECOGNIZE (ORDER BY rn MEASURES count(*) AS c ONE ROW PER MATCH PATTERN (A) DEFINE A AS string_agg(A.ts) = '2026-01-01 00:00:00+00'));
+
 query I
 EXECUTE aggregate_cast;
 ----
@@ -512,7 +516,7 @@ second
 # plan only for statements with a query result)
 query II
 SELECT name, result_types IS NULL AS bound_again FROM duckdb_prepared_statements()
-WHERE name IN ('plain_cast', 'constant_cast', 'table_function_argument', 'range_calendar', 'range_epoch', 'setop_cast', 'values_cast', 'variable_argument', 'aggregate_cast', 'window_cast', 'window_frame', 'unnest_list', 'insert_returning', 'key_aggregate', 'key_aggregate_cast', 'match_define', 'match_navigation')
+WHERE name IN ('plain_cast', 'constant_cast', 'table_function_argument', 'range_calendar', 'range_epoch', 'setop_cast', 'values_cast', 'variable_argument', 'aggregate_cast', 'window_cast', 'window_frame', 'unnest_list', 'insert_returning', 'key_aggregate', 'key_aggregate_cast', 'match_define', 'match_navigation', 'match_aggregate_cast')
 ORDER BY name;
 ----
 aggregate_cast	true
@@ -520,6 +524,7 @@ constant_cast	true
 insert_returning	true
 key_aggregate	true
 key_aggregate_cast	true
+match_aggregate_cast	true
 match_define	true
 match_navigation	true
 plain_cast	false
@@ -575,5 +580,31 @@ EXECUTE delete_checked;
 
 query I
 SELECT count(*) FROM deleted;
+----
+0
+
+# HAVING with GROUP BY ALL moves the expression of a generated column into the groups while it binds it
+statement ok
+SET TimeZone = 'UTC';
+
+statement ok
+CREATE TABLE grouped (i INTEGER, g VARCHAR GENERATED ALWAYS AS (to_timestamp(1767225600)::VARCHAR), h VARCHAR GENERATED ALWAYS AS (g));
+
+statement ok
+INSERT INTO grouped (i) VALUES (1);
+
+statement ok
+PREPARE having_generated AS SELECT count(*) FROM (SELECT count(*) FROM grouped GROUP BY ALL HAVING h = '2026-01-01 00:00:00+00') q;
+
+query I
+EXECUTE having_generated;
+----
+1
+
+statement ok
+SET TimeZone = 'Europe/Amsterdam';
+
+query I
+EXECUTE having_generated;
 ----
 0

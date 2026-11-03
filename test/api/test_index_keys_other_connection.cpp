@@ -1,5 +1,6 @@
 #include "catch.hpp"
 #include "duckdb/common/local_file_system.hpp"
+#include "duckdb/common/string_util.hpp"
 #include "duckdb/main/database.hpp"
 #include "test_helpers.hpp"
 
@@ -61,16 +62,24 @@ TEST_CASE("Test that indexes on list_sort serve connections other than the one t
 	result = con2.Query("SELECT id FROM u WHERE list_sort(l)[1] = 8");
 	REQUIRE(CHECK_COLUMN(result, 0, {5}));
 
-	// a key that another connection commits first is found when the transaction commits, which reverts its appends
+	// a key that another connection commits first is found when the transaction commits, which reverts the appends
+	// of its earlier chunks to the index
 	Connection con3(db);
 	REQUIRE_NO_FAIL(con2.Query("BEGIN"));
+	REQUIRE_NO_FAIL(con2.Query("INSERT INTO u SELECT 1000 + i, [1000 + i, 2000 + i] FROM range(3000) r(i)"));
 	REQUIRE_NO_FAIL(con2.Query("INSERT INTO u VALUES (6, [20, 30])"));
 	REQUIRE_NO_FAIL(con3.Query("INSERT INTO u VALUES (7, [20, 40])"));
-	REQUIRE_FAIL(con2.Query("COMMIT"));
+	auto commit = con2.Query("COMMIT");
+	REQUIRE(commit->HasError());
+	REQUIRE(StringUtil::Contains(StringUtil::Lower(commit->GetError()), "duplicate key"));
+	// the keys of the reverted rows are free again
+	REQUIRE_NO_FAIL(con2.Query("INSERT INTO u VALUES (8, [1000, 5000])"));
 	result = con2.Query("SELECT id FROM u WHERE list_sort(l)[1] = 20");
 	REQUIRE(CHECK_COLUMN(result, 0, {7}));
+	result = con2.Query("SELECT id FROM u WHERE list_sort(l)[1] = 1000");
+	REQUIRE(CHECK_COLUMN(result, 0, {8}));
 	result = con2.Query("SELECT id FROM u ORDER BY id");
-	REQUIRE(CHECK_COLUMN(result, 0, {3, 4, 5, 7}));
+	REQUIRE(CHECK_COLUMN(result, 0, {3, 4, 5, 7, 8}));
 }
 
 TEST_CASE("Test that the checkpoint on shutdown remaps an index on list_sort", "[api]") {

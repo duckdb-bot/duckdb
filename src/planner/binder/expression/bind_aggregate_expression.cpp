@@ -93,9 +93,14 @@ static Value NegatePercentileValue(const Value &v, const bool desc) {
 	}
 }
 
-static void NegatePercentileFractions(ClientContext &context, unique_ptr<Expression> &bound, bool desc) {
+static void NegatePercentileFractions(ClientContext &context, Binder &binder, unique_ptr<Expression> &bound,
+                                      bool desc) {
 	if (!bound->IsFoldable()) {
 		return;
+	}
+	if (bound->RequiresRebind()) {
+		// the folded fraction no longer shows that it can change across queries, like a cast that reads a setting
+		binder.SetAlwaysRequireRebind();
 	}
 
 	Value value = ExpressionExecutor::EvaluateScalar(context, *bound);
@@ -187,7 +192,7 @@ BindResult BaseSelectBinder::BindAggregate(FunctionExpression &aggr, AggregateFu
 		bound_arguments.push_back(BindChild(child.GetExpressionMutable(), 0, error));
 		// We have to negate the fractions for PERCENTILE_XXXX DESC
 		if (!error.HasError() && ordered_set_agg && i == aggr.GetArguments().size() - 1) {
-			NegatePercentileFractions(context, bound_arguments.back(), negate_fractions);
+			NegatePercentileFractions(context, binder, bound_arguments.back(), negate_fractions);
 		}
 	}
 

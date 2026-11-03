@@ -23,6 +23,11 @@ static void GetTypeFunctionsInternal(ScalarFunctionSet &set, const LogicalType &
 	                         JSONFunctionLocalState::Init);
 	unary_fun.GetSignature().AddParameter("json", input_type);
 	set.AddFunction(unary_fun);
+	ScalarFunction index_fun({}, LogicalType::VARCHAR, BinaryTypeFunction, JSONReadFunctionData::Bind, nullptr,
+	                         JSONFunctionLocalState::Init);
+	index_fun.GetSignature().AddParameter("json", input_type).AddParameter("index", LogicalType::BIGINT);
+	index_fun.SetResolveTypesCallback(JSONReadFunctionData::ResolveTypes);
+	set.AddFunction(index_fun);
 	ScalarFunction path_fun({}, LogicalType::VARCHAR, BinaryTypeFunction, JSONReadFunctionData::Bind, nullptr,
 	                        JSONFunctionLocalState::Init);
 	path_fun.GetSignature().AddParameter("json", input_type).AddParameter("path", LogicalType::VARCHAR);

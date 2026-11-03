@@ -74,6 +74,10 @@ static void *MinimumThreadStackProbe(void *) {
 	return nullptr;
 }
 
+// Thread startup code, such as sanitizer hooks, can need more stack than a minimum size probe stack has left.
+// Each probe stack gets this reserve below it, which the glibc size check does not count.
+static constexpr size_t PROBE_STACK_RESERVE = 65536;
+
 // Probes run on a stack this function maps itself to not pollute the glibc stack cache with stacks created during these
 // probes.
 static ThreadStackProbeResult TryThreadStackSize(size_t stack_size, string &error) {
@@ -84,17 +88,24 @@ static ThreadStackProbeResult TryThreadStackSize(size_t stack_size, string &erro
 		return ThreadStackProbeResult::ERROR;
 	}
 
-	auto stack = mmap(nullptr, stack_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
-	if (stack == MAP_FAILED) {
+	if (stack_size > std::numeric_limits<size_t>::max() - PROBE_STACK_RESERVE) {
+		pthread_attr_destroy(&attributes);
+		error = "Failed to map a " + to_string(stack_size) + " byte probe stack";
+		return ThreadStackProbeResult::ERROR;
+	}
+	auto mapping_size = PROBE_STACK_RESERVE + stack_size;
+	auto mapping = mmap(nullptr, mapping_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
+	if (mapping == MAP_FAILED) {
 		pthread_attr_destroy(&attributes);
 		error = "Failed to map a " + to_string(stack_size) + " byte probe stack";
 		return ThreadStackProbeResult::ERROR;
 	}
 
+	auto stack = static_cast<char *>(mapping) + PROBE_STACK_RESERVE;
 	result = pthread_attr_setstack(&attributes, stack, stack_size);
 	if (result != 0) {
 		pthread_attr_destroy(&attributes);
-		munmap(stack, stack_size);
+		munmap(mapping, mapping_size);
 		if (result == EINVAL) {
 			return ThreadStackProbeResult::TOO_SMALL;
 		}
@@ -106,7 +117,7 @@ static ThreadStackProbeResult TryThreadStackSize(size_t stack_size, string &erro
 	result = pthread_create(&probe, &attributes, MinimumThreadStackProbe, nullptr);
 	auto destroy_result = pthread_attr_destroy(&attributes);
 	if (result != 0) {
-		munmap(stack, stack_size);
+		munmap(mapping, mapping_size);
 		if (result == EINVAL) {
 			return ThreadStackProbeResult::TOO_SMALL;
 		}
@@ -115,7 +126,7 @@ static ThreadStackProbeResult TryThreadStackSize(size_t stack_size, string &erro
 	}
 	auto join_result = pthread_join(probe, nullptr);
 	// only once the thread is gone is the stack free to unmap
-	munmap(stack, stack_size);
+	munmap(mapping, mapping_size);
 	if (join_result != 0) {
 		error = PthreadError("pthread_join", join_result);
 		return ThreadStackProbeResult::ERROR;

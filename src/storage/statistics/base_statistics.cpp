@@ -568,8 +568,11 @@ BaseStatistics BaseStatistics::FromConstantType(const Value &input) {
 	switch (GetStatsType(input.type())) {
 	case StatisticsType::NUMERIC_STATS: {
 		auto result = NumericStats::CreateEmpty(input.type());
-		NumericStats::SetMin(result, input);
-		NumericStats::SetMax(result, input);
+		if (!input.IsNull()) {
+			// a NULL has no value, so its range stays empty, as for a column of only NULLs
+			NumericStats::SetMin(result, input);
+			NumericStats::SetMax(result, input);
+		}
 		return result;
 	}
 	case StatisticsType::STRING_STATS: {

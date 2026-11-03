@@ -106,7 +106,7 @@ bool CSVSniffer::EmptyOrOnlyHeader() const {
 	return (single_row_file && best_candidate->state_machine->dialect_options.header.GetValue()) || lines_sniffed == 0;
 }
 
-bool CSVSniffer::CanYouCastBignum(const char *value_ptr, idx_t value_size) {
+bool CSVSniffer::IsBignumValue(const char *&value_ptr, idx_t &value_size) {
 	while (value_size > 0 && StringUtil::CharacterIsSpace(*value_ptr)) {
 		value_ptr++;
 		value_size--;
@@ -137,12 +137,40 @@ bool CSVSniffer::CanYouCastBignum(const char *value_ptr, idx_t value_size) {
 			return false;
 		}
 	}
+	value_size = trimmed_size;
+	return true;
+}
+
+bool CSVSniffer::CanYouCastBignum(const char *value_ptr, idx_t value_size) {
+	if (!IsBignumValue(value_ptr, value_size)) {
+		return false;
+	}
 	try {
-		Bignum::VarcharToBignum(string_t(value_ptr, NumericCast<uint32_t>(trimmed_size)));
+		Bignum::VarcharToBignum(string_t(value_ptr, NumericCast<uint32_t>(value_size)));
 		return true;
 	} catch (const ConversionException &) {
 		return false;
 	}
+}
+
+bool CSVSniffer::IsAcceptedByTypeDetection(ClientContext &context, const string_t value, LogicalTypeId type,
+                                           const CSVReaderOptions &options) {
+	// A value accepted as a more specific candidate is kept when a later value makes the type less specific
+	auto &candidates = options.auto_type_candidates;
+	for (idx_t candidate_idx = candidates.size(); candidate_idx > 0; candidate_idx--) {
+		auto &candidate = candidates[candidate_idx - 1];
+		if (candidate.id() == LogicalTypeId::SQLNULL) {
+			continue;
+		}
+		if (CanYouCastIt(context, value, candidate, options.dialect_options, false, options.decimal_separator[0],
+		                 options.thousands_separator)) {
+			return true;
+		}
+		if (candidate.id() == type) {
+			return false;
+		}
+	}
+	return false;
 }
 
 bool CSVSniffer::CanYouCastIt(ClientContext &context, const string_t value, const LogicalType &type,

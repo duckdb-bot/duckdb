@@ -159,9 +159,10 @@ private:
 
 struct ParseTypeInfo {
 	ParseTypeInfo()
-	    : validate_utf8(false), type_id(LogicalTypeId::INVALID), internal_type(PhysicalType::INVALID), scale(0),
-	      width(0) {};
-	ParseTypeInfo(const LogicalType &type, const bool validate_utf_8_p) : validate_utf8(validate_utf_8_p) {
+	    : validate_utf8(false), strict(false), type_id(LogicalTypeId::INVALID), internal_type(PhysicalType::INVALID),
+	      scale(0), width(0) {};
+	ParseTypeInfo(const LogicalType &type, const bool validate_utf_8_p, const bool strict_p = false)
+	    : validate_utf8(validate_utf_8_p), strict(strict_p) {
 		type_id = type.id();
 		internal_type = type.InternalType();
 		if (type.id() == LogicalTypeId::DECIMAL) {
@@ -171,6 +172,8 @@ struct ParseTypeInfo {
 	}
 
 	bool validate_utf8;
+	//! Whether values are checked against the rules of the sniffer first, for a type the sniffer detected
+	bool strict;
 	LogicalTypeId type_id;
 	PhysicalType internal_type;
 	uint8_t scale;
@@ -285,7 +288,10 @@ public:
 	//! Force the throw of a Unicode error
 	void HandleUnicodeError(idx_t col_idx, LinePosition &error_position);
 	bool HandleTooManyColumnsError(const char *value_ptr, const idx_t size);
-	inline void AddValueToVector(const char *value_ptr, idx_t size, bool allocate = false);
+	//! Adds a value to its column, returns false if it cannot be converted to the type of the column
+	inline bool AddValueToVector(const char *value_ptr, idx_t size, bool allocate = false);
+	//! Adds a value the strict casts reject as for a type given by the user, warns if type detection rejects it
+	bool AddValueNonStrict(const char *value_ptr, idx_t size, bool allocate);
 	static inline void SetComment(StringValueResult &result, idx_t buffer_pos);
 	static inline bool UnsetComment(StringValueResult &result, idx_t buffer_pos);
 

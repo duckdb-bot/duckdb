@@ -774,6 +774,7 @@ unique_ptr<CatalogEntry> DuckTableEntry::AddField(ClientContext &context, AddFie
 
 	ChangeColumnTypeInfo change_column_type(info.GetAlterEntryData(), vector<Identifier> {info.column_path[0]},
 	                                        std::move(res.new_type), std::move(function));
+	change_column_type.bind_mode = info.bind_mode;
 	return ChangeColumnType(context, change_column_type, AlterTableType::ADD_FIELD);
 }
 
@@ -1027,6 +1028,7 @@ unique_ptr<CatalogEntry> DuckTableEntry::RemoveField(ClientContext &context, Rem
 
 	ChangeColumnTypeInfo change_column_type(info.GetAlterEntryData(), vector<Identifier> {info.column_path[0]},
 	                                        std::move(res.new_type), std::move(function));
+	change_column_type.bind_mode = info.bind_mode;
 	return ChangeColumnType(context, change_column_type, AlterTableType::REMOVE_FIELD);
 }
 
@@ -1121,6 +1123,7 @@ unique_ptr<CatalogEntry> DuckTableEntry::RenameField(ClientContext &context, Ren
 	auto function = make_uniq<FunctionExpression>("remap_struct", std::move(children));
 	ChangeColumnTypeInfo change_column_type(info.GetAlterEntryData(), vector<Identifier> {info.column_path[0]},
 	                                        std::move(res.new_type), std::move(function));
+	change_column_type.bind_mode = info.bind_mode;
 	return ChangeColumnType(context, change_column_type, AlterTableType::RENAME_FIELD);
 }
 

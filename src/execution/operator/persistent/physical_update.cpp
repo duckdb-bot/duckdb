@@ -76,7 +76,7 @@ public:
 	UpdateLocalState(ClientContext &context, DataTable &table, const vector<unique_ptr<Expression>> &expressions,
 	                 const vector<LogicalType> &table_types, const vector<unique_ptr<Expression>> &bound_defaults,
 	                 const vector<unique_ptr<BoundConstraint>> &bound_constraints, bool capture_old_rows,
-	                 bool index_update)
+	                 bool index_update, const vector<PhysicalIndex> &columns, idx_t returning_only_column_count)
 	    : table_types(table_types), bound_constraints(bound_constraints) {
 		// Only DEFAULT columns are computed into the update chunk, all other columns reference the input.
 		auto &allocator = Allocator::Get(context);
@@ -94,6 +94,14 @@ public:
 		update_chunk.Initialize(allocator, update_types, initialize);
 		if (has_default) {
 			default_executor = make_uniq<ExpressionExecutor>(context, bound_defaults);
+		}
+
+		// The written columns and chunk leave out the trailing columns that are only read for RETURNING.
+		if (returning_only_column_count > 0) {
+			auto written_column_count = columns.size() - returning_only_column_count;
+			written_columns.assign(columns.begin(), columns.begin() + NumericCast<int64_t>(written_column_count));
+			written_chunk.InitializeEmpty(vector<LogicalType>(
+			    update_types.begin(), update_types.begin() + NumericCast<int64_t>(written_column_count)));
 		}
 
 		// The mock and delete chunks only reference other vectors.
@@ -127,6 +135,8 @@ public:
 
 	vector<LogicalType> table_types;
 	DataChunk update_chunk;
+	vector<PhysicalIndex> written_columns;
+	DataChunk written_chunk;
 	DataChunk mock_chunk;
 	DataChunk delete_chunk;
 	//! Sorted unique-index key columns fetched into fetch_chunk for the delete indexes
@@ -232,7 +242,18 @@ SinkResultType PhysicalUpdate::Sink(ExecutionContext &context, DataChunk &chunk,
 			mock_chunk.CheckCardinality(update_count);
 		}
 		auto &update_state = l_state.GetUpdateState(table, tableref, context.client);
-		table.Update(update_state, context.client, tableref, update_row_ids, columns, update_chunk);
+		if (returning_only_column_count == 0) {
+			table.Update(update_state, context.client, tableref, update_row_ids, columns, update_chunk);
+		} else {
+			// the columns only read for RETURNING keep their values, so they are not written
+			auto &written_chunk = l_state.written_chunk;
+			for (idx_t i = 0; i < l_state.written_columns.size(); i++) {
+				written_chunk.data[i].Reference(update_chunk.data[i]);
+			}
+			written_chunk.CheckCardinality(update_chunk.size());
+			table.Update(update_state, context.client, tableref, update_row_ids, l_state.written_columns,
+			             written_chunk);
+		}
 
 		if (return_chunk) {
 			lock_guard<mutex> glock(g_state.lock);
@@ -327,8 +348,10 @@ unique_ptr<GlobalSinkState> PhysicalUpdate::GetGlobalSinkState(ClientContext &co
 }
 
 unique_ptr<LocalSinkState> PhysicalUpdate::GetLocalSinkState(ExecutionContext &context) const {
+	// an in-place update reads indexed columns only for RETURNING and never fetches the deleted rows
 	return make_uniq<UpdateLocalState>(context.client, table, expressions, table.GetTypes(), bound_defaults,
-	                                   bound_constraints, capture_old_rows, index_update);
+	                                   bound_constraints, capture_old_rows, update_is_del_and_insert && index_update,
+	                                   columns, returning_only_column_count);
 }
 
 SinkCombineResultType PhysicalUpdate::Combine(ExecutionContext &context, OperatorSinkCombineInput &input) const {

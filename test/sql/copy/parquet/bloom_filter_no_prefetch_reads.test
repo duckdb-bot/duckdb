@@ -56,12 +56,12 @@ SELECT count(*), sum(v), sum(l[3]), max(s.s) FROM '{TEST_DIR}/bloom_no_prefetch.
 ----
 600	8989200	8989800	str9957
 
-# bloom filters without a length, three of them probed per row group
+# bloom filters without a length, the first two filters match the row so all three are probed and the third rules it out
 statement ok
 CALL enable_logging('FileSystem')
 
 query I
-SELECT count(*) FROM '{DATA_DIR}/parquet-testing/issue6990.parquet' WHERE access_mode = 'x' AND action = 'y' AND addr = 'z'
+SELECT count(*) FROM '{DATA_DIR}/parquet-testing/issue6990.parquet' WHERE access_mode = '' AND action = '' AND addr = 'z'
 ----
 0
 
@@ -79,7 +79,7 @@ statement ok
 SET disable_parquet_prefetching=true
 
 query I
-SELECT count(*) FROM '{DATA_DIR}/parquet-testing/issue6990.parquet' WHERE access_mode = 'x' AND action = 'y' AND addr = 'z'
+SELECT count(*) FROM '{DATA_DIR}/parquet-testing/issue6990.parquet' WHERE access_mode = '' AND action = '' AND addr = 'z'
 ----
 0
 

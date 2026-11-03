@@ -12,6 +12,7 @@
 #include "duckdb/parser/parsed_data/create_window_function_info.hpp"
 #include "duckdb/main/extension_helper.hpp"
 #include "duckdb/main/config.hpp"
+#include "duckdb/main/settings.hpp"
 #include "duckdb/function/function_binder.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 
@@ -116,6 +117,12 @@ static unique_ptr<Expression> BindExtensionFunction(FunctionBindExpressionInput 
 		throw BinderException("Trying to call function %s which is present in extension \"%s\" - but the extension "
 		                      "is not loaded and could not be auto-loaded",
 		                      bound_function.GetName(), extension_name);
+	}
+	if (!db.ExtensionIsLoaded(extension_name) && !Settings::Get<AutoloadKnownExtensionsSetting>(context)) {
+		auto error_message = StringUtil::Format("Trying to call function %s which is present in extension \"%s\" - but "
+		                                        "the extension is not loaded and autoloading is disabled",
+		                                        bound_function.GetName(), extension_name);
+		throw BinderException(ExtensionHelper::AddExtensionInstallHintToErrorMsg(db, error_message, extension_name));
 	}
 	// auto-load the extension
 	ExtensionHelper::AutoLoadExtension(db, extension_name);

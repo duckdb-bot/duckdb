@@ -35,7 +35,7 @@ AdaptiveFilter::AdaptiveFilter(const TableFilterSet &table_filters, vector<idx_t
 	for (auto &entry : table_filters) {
 		auto &expr_filter = ExpressionFilter::GetExpressionFilter(entry.Filter(), "AdaptiveFilter");
 		if (expr_filter.expr->CanThrow() || ExpressionBarrier::Contains(*expr_filter.expr)) {
-			// a filter that can throw must keep the order the optimizer put it in
+			// keep the initial order of filters that can throw and of barriers
 			disable_permutations = true;
 		}
 	}

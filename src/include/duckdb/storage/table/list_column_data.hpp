@@ -31,6 +31,8 @@ public:
 	idx_t Scan(TransactionData transaction, idx_t vector_index, ColumnScanState &state, Vector &result,
 	           idx_t scan_count) override;
 	idx_t ScanCount(ColumnScanState &state, Vector &result, idx_t count, idx_t result_offset = 0) override;
+	void Select(TransactionData transaction, idx_t vector_index, ColumnScanState &state, Vector &result,
+	            SelectionVector &sel, idx_t sel_count) override;
 
 	void Skip(ColumnScanState &state, idx_t count = STANDARD_VECTOR_SIZE) override;
 
@@ -78,6 +80,8 @@ protected:
 
 private:
 	uint64_t FetchListOffset(idx_t row_idx);
+	//! Write the entries and scan the children of the lists whose offsets were scanned
+	void ScanLists(ColumnScanState &state, Vector &result, Vector &offset_vector, idx_t scan_count);
 };
 
 } // namespace duckdb

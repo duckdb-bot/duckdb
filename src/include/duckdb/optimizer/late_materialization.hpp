@@ -26,7 +26,8 @@ public:
 	unique_ptr<LogicalOperator> Optimize(unique_ptr<LogicalOperator> op);
 
 private:
-	bool TryLateMaterialization(unique_ptr<LogicalOperator> &op);
+	//! With only_deferred_lists, the rewrite is done only if it defers reading a list or array column
+	bool TryLateMaterialization(unique_ptr<LogicalOperator> &op, bool only_deferred_lists = false);
 
 	unique_ptr<LogicalGet> ConstructLHS(LogicalGet &get);
 	vector<ColumnBinding> ConstructRHS(unique_ptr<LogicalOperator> &op);

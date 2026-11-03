@@ -1,0 +1,138 @@
+# name: test/sql/storage/memory/in_memory_compress_automatic_checkpoint.test
+# description: An in-memory database with compression compresses a large load without a manual checkpoint
+# group: [memory]
+
+statement ok
+SET checkpoint_threshold = '1MB'
+
+statement ok
+ATTACH ':memory:' AS memory_compressed (COMPRESS)
+
+# a load larger than a row group is not written before the commit, so the commit checkpoints it
+statement ok
+CREATE TABLE memory_compressed.a AS SELECT range::INTEGER AS i FROM range(1000000)
+
+# uncompressed this would take 1M * 4 bytes = ~4MB
+query I
+SELECT CASE WHEN sum(memory_usage_bytes) < 1000000 THEN 'success' ELSE error(concat('Expected less than 1000000 bytes, but got ', sum(memory_usage_bytes))) END FROM duckdb_memory() WHERE tag = 'IN_MEMORY_TABLE'
+----
+success
+
+query II
+SELECT count(*), sum(i) FROM memory_compressed.a
+----
+1000000	499999500000
+
+# a copy of the database is compressed as well
+statement ok
+ATTACH ':memory:' AS memory_copy (COMPRESS)
+
+statement ok
+COPY FROM DATABASE memory_compressed TO memory_copy
+
+statement ok
+DETACH memory_compressed
+
+query I
+SELECT CASE WHEN sum(memory_usage_bytes) < 1000000 THEN 'success' ELSE error(concat('Expected less than 1000000 bytes, but got ', sum(memory_usage_bytes))) END FROM duckdb_memory() WHERE tag = 'IN_MEMORY_TABLE'
+----
+success
+
+query II
+SELECT count(*), sum(i) FROM memory_copy.a
+----
+1000000	499999500000
+
+# a rolled back load leaves the data as it was
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO memory_copy.a SELECT range FROM range(1000000)
+
+statement ok
+ROLLBACK
+
+query II
+SELECT count(*), sum(i) FROM memory_copy.a
+----
+1000000	499999500000
+
+# the same load into an in-memory database without compression keeps its values
+statement ok
+ATTACH ':memory:' AS memory_uncompressed
+
+statement ok
+CREATE TABLE memory_uncompressed.a AS SELECT range::INTEGER AS i FROM range(1000000)
+
+query II
+SELECT count(*), sum(i) FROM memory_uncompressed.a
+----
+1000000	499999500000
+
+statement ok
+DETACH memory_copy
+
+statement ok
+DETACH memory_uncompressed
+
+
+# a load of only STRUCT values counts their children
+statement ok
+ATTACH ':memory:' AS memory_nested (COMPRESS)
+
+statement ok
+CREATE TABLE memory_nested.n AS SELECT {'i': range::INTEGER} AS v FROM range(1000000)
+
+query I
+SELECT CASE WHEN sum(memory_usage_bytes) < 1000000 THEN 'success' ELSE error(concat('Expected less than 1000000 bytes, but got ', sum(memory_usage_bytes))) END FROM duckdb_memory() WHERE tag = 'IN_MEMORY_TABLE'
+----
+success
+
+query II
+SELECT count(*), sum(v.i) FROM memory_nested.n
+----
+1000000	499999500000
+
+statement ok
+DETACH memory_nested
+
+# a load of only ARRAY values counts their children
+statement ok
+ATTACH ':memory:' AS memory_nested (COMPRESS)
+
+statement ok
+CREATE TABLE memory_nested.n AS SELECT [range::INTEGER, range::INTEGER]::INTEGER[2] AS v FROM range(1000000)
+
+query I
+SELECT CASE WHEN sum(memory_usage_bytes) < 1000000 THEN 'success' ELSE error(concat('Expected less than 1000000 bytes, but got ', sum(memory_usage_bytes))) END FROM duckdb_memory() WHERE tag = 'IN_MEMORY_TABLE'
+----
+success
+
+query II
+SELECT count(*), sum(v[1]) FROM memory_nested.n
+----
+1000000	499999500000
+
+statement ok
+DETACH memory_nested
+
+# a load of only UNION values counts their children
+statement ok
+ATTACH ':memory:' AS memory_nested (COMPRESS)
+
+statement ok
+CREATE TABLE memory_nested.n AS SELECT union_value(i := range::INTEGER) AS v FROM range(1000000)
+
+query I
+SELECT CASE WHEN sum(memory_usage_bytes) < 1000000 THEN 'success' ELSE error(concat('Expected less than 1000000 bytes, but got ', sum(memory_usage_bytes))) END FROM duckdb_memory() WHERE tag = 'IN_MEMORY_TABLE'
+----
+success
+
+query II
+SELECT count(*), sum(union_extract(v, 'i')) FROM memory_nested.n
+----
+1000000	499999500000
+
+statement ok
+DETACH memory_nested

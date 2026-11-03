@@ -181,7 +181,7 @@ void ExpressionBinder::TransformCapturedLambdaColumn(unique_ptr<Expression> &ori
 			// find the matching dummy column in the lambda binding
 			for (idx_t column_idx = 0; column_idx < binding.GetColumnCount(); column_idx++) {
 				if (ProjectionIndex(column_idx) == bound_lambda_ref.Binding().column_index) {
-					// the reference has the parameter type, plus the collation a COLLATE in the lambda body adds
+					// the reference has the parameter type, with any collation the lambda body applied to it
 					D_ASSERT(binding.GetColumnTypes()[column_idx].id() == original->GetReturnType().id());
 					auto index = GetLambdaParamIndex(*lambda_bindings, bound_lambda_expr, bound_lambda_ref);
 					replacement =
@@ -194,7 +194,7 @@ void ExpressionBinder::TransformCapturedLambdaColumn(unique_ptr<Expression> &ori
 			throw InternalException("Failed to bind lambda parameter internally");
 		}
 		// refers to a lambda parameter inside the current lambda function
-		// the reference has the parameter type, plus the collation a COLLATE in the lambda body adds
+		// the reference has the parameter type, with any collation the lambda body applied to it
 		auto index = bound_lambda_expr.ParameterCount() - bound_lambda_ref.Binding().column_index - 1;
 		replacement = make_uniq<BoundReferenceExpression>(alias, original->GetReturnType(), index);
 		return;

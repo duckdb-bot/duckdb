@@ -211,3 +211,8 @@ query II
 SELECT list_transform(['a', NULL], lambda x: x.ifnull('z')), list_transform(['A'], lambda x: x.lower()) FROM (SELECT 'outer' AS x) t;
 ----
 [a, z]	[a]
+
+query I
+SELECT x FROM (SELECT 'outer' AS x) t WHERE list_transform(['a', NULL], lambda x: x.ifnull('z')) = ['a', 'z'] AND list_transform(['A'], lambda x: x.lower()) = ['a'];
+----
+outer

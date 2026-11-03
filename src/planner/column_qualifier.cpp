@@ -238,7 +238,7 @@ void ColumnQualifier::QualifyColumnNames(unique_ptr<ParsedExpression> &expr, vec
 	case ExpressionType::FUNCTION: {
 		// Special-handling for lambdas, which are inside function expressions.
 		auto &function = expr->Cast<FunctionExpression>();
-		if (!ExpressionBinder::IsUnnestFunction(function.FunctionName()) && !QualifyFunction(function)) {
+		if (!ExpressionBinder::IsUnnestFunction(function.FunctionName()) && !QualifyFunction(function, lambda_params)) {
 			// a name the parser rewrites binds as its syntax node, as x.ifnull(y) does once it is ifnull(x, y)
 			if (auto rewritten = ParserFunctionRewrite::RewriteMethodCall(function)) {
 				expr = std::move(rewritten);
@@ -263,7 +263,8 @@ void ColumnQualifier::QualifyColumnNames(unique_ptr<ParsedExpression> &expr, vec
 	});
 }
 
-optional_ptr<CatalogEntry> ColumnQualifier::QualifyFunction(FunctionExpression &function) {
+optional_ptr<CatalogEntry> ColumnQualifier::QualifyFunction(FunctionExpression &function,
+                                                            const vector<identifier_set_t> &lambda_params) {
 	D_ASSERT(!ExpressionBinder::IsUnnestFunction(function.FunctionName()));
 	// lookup the function in the catalog
 	QueryErrorContext error_context(function.GetQueryLocation());
@@ -298,12 +299,20 @@ optional_ptr<CatalogEntry> ColumnQualifier::QualifyFunction(FunctionExpression &
 			return nullptr;
 		}
 	}
-	// turn the qualification into the column the function is called on, as x.lower() is lower(x). The column is
-	// resolved with the other arguments, where a lambda parameter is found before a column of its name
+	// turn the qualification into the column the function is called on, as x.lower() is lower(x)
 	auto &path = function.GetQualifiedName().Path();
 	unique_ptr<ParsedExpression> column =
 	    make_uniq<ColumnRefExpression>(vector<Identifier>(path.begin(), path.end() - 1));
-	column->SetQueryLocation(function.GetQueryLocation());
+	auto &colref = column->Cast<ColumnRefExpression>();
+	// a lambda parameter is left for the lambda to bind, like any other reference to it
+	if (!LambdaExpression::IsLambdaParameter(lambda_params, colref.GetColumnName())) {
+		ErrorData error;
+		auto qualified_column = QualifyColumnName(colref, error);
+		if (qualified_column) {
+			column = std::move(qualified_column);
+		}
+	}
+	column->ClearAlias();
 	function.GetArgumentsMutable().insert(function.GetArgumentsMutable().begin(), std::move(column));
 	function.SetQualifiedName(QualifiedName(function.GetQualifiedName().Name()));
 	return func;

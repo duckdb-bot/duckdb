@@ -264,7 +264,7 @@ BindResult ExpressionBinder::TryBindLambdaOrJson(FunctionExpression &function, i
 optional_ptr<CatalogEntry> ExpressionBinder::BindFunction(FunctionExpression &function) {
 	QueryErrorContext error_context(function.GetQueryLocation());
 
-	ColumnQualifier qualifier(binder);
+	ColumnQualifier qualifier(binder, lambda_bindings);
 	auto func = qualifier.QualifyFunction(function);
 	if (func) {
 		return func;

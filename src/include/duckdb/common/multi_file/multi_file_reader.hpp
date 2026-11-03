@@ -213,6 +213,9 @@ public:
 
 	DUCKDB_API static void GetVirtualColumns(ClientContext &context, MultiFileReaderBindData &bind_data,
 	                                         virtual_column_map_t &result);
+	//! The hint for a column of a file that cannot be cast to the type of the column across all files
+	DUCKDB_API static string GetCastErrorHint(const BaseFileReader &reader, const Identifier &column_name,
+	                                          const LogicalType &source_type, const LogicalType &target_type);
 
 	MultiFileReaderBindData BindUnionReader(ClientContext &context, vector<LogicalType> &return_types,
 	                                        vector<Identifier> &names, MultiFileList &files, MultiFileBindData &result,

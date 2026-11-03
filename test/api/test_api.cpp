@@ -189,6 +189,49 @@ TEST_CASE("Test temp_directory defaults", "[api][.]") {
 	}
 }
 
+TEST_CASE("Test spilling without a database path and without external access", "[api]") {
+	DBConfig config;
+	config.options.use_temporary_directory = true;
+	config.options.temporary_directory = TestCreatePath("null_path_spill.tmp");
+	config.SetOptionByName("enable_external_access", Value::BOOLEAN(false));
+	config.SetOptionByName("memory_limit", Value("32MB"));
+	config.SetOptionByName("threads", Value::BIGINT(2));
+	DuckDB db(nullptr, &config);
+	Connection con(db);
+
+	// the table does not fit in memory, so the buffer manager spills to the temporary directory
+	REQUIRE_NO_FAIL(
+	    con.Query("CREATE TABLE t AS SELECT i, repeat('x', 100) || i::VARCHAR AS s FROM range(1000000) t(i)"));
+	auto result = con.Query("SELECT count(*) FROM t");
+	REQUIRE(CHECK_COLUMN(result, 0, {1000000}));
+	result = con.Query("SELECT current_setting('enable_external_access')");
+	REQUIRE(CHECK_COLUMN(result, 0, {false}));
+}
+
+TEST_CASE("Test the sandbox stays closed around the temporary directory without a database path", "[api]") {
+	auto temp_directory = TestCreatePath("sandboxed_spill.tmp");
+	auto fs = FileSystem::CreateLocal();
+	fs->CreateDirectory(temp_directory);
+
+	DBConfig config;
+	config.options.use_temporary_directory = true;
+	config.options.temporary_directory = temp_directory;
+	config.SetOptionByName("enable_external_access", Value::BOOLEAN(false));
+	DuckDB db(nullptr, &config);
+	Connection con(db);
+
+	// only the temporary directory is opened to file operations
+	auto result = con.Query("SELECT count(*) FROM duckdb_settings() WHERE name = 'allowed_directories' AND value LIKE "
+	                        "'%sandboxed_spill.tmp%'");
+	REQUIRE(CHECK_COLUMN(result, 0, {1}));
+	result = con.Query("COPY (SELECT 42) TO '" + TestCreatePath("outside_spill.csv") + "'");
+	REQUIRE(result->HasError());
+	REQUIRE(result->GetErrorType() == ExceptionType::PERMISSION);
+	result = con.Query("COPY (SELECT 42) TO '" + temp_directory + "/../outside_spill.csv'");
+	REQUIRE(result->HasError());
+	REQUIRE(result->GetErrorType() == ExceptionType::PERMISSION);
+}
+
 TEST_CASE("Test parallel usage of single client", "[api][.]") {
 	auto db = make_uniq<DuckDB>(nullptr);
 	auto conn = make_uniq<Connection>(*db);

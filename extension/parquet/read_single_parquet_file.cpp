@@ -590,6 +590,8 @@ TableFunctionMultiFileSettings ParquetScanFunction::GetMultiFileSettings() {
 	settings.schedule_io = ReadSingleParquetFileScheduleIO;
 	settings.prepare_read_ahead = ReadSingleParquetFilePrepareReadAhead;
 	settings.get_file_columns = ReadSingleParquetFileColumns;
+	// the row count the caller gives for the scan, which the first file's metadata would otherwise estimate
+	settings.explicit_cardinality_parameter = Identifier("explicit_cardinality");
 	// the order the filters are best applied in is learned while reading, and carries over to the next file
 	settings.reuses_local_state = true;
 	settings.reports_bytes_scanned = true;

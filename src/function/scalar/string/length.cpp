@@ -32,6 +32,14 @@ struct GraphemeCountOperator {
 	}
 };
 
+//! The grapheme count of a string that statistics say is ASCII
+struct AsciiGraphemeCountOperator {
+	template <class TA, class TR>
+	static inline TR Operation(TA input) {
+		return UnsafeNumericCast<TR>(AsciiGraphemeCount(input.GetData(), input.GetSize()));
+	}
+};
+
 // strlen returns the size in bytes
 struct StrLenOperator {
 	template <class TA, class TR>
@@ -70,7 +78,13 @@ unique_ptr<BaseStatistics> LengthPropagateStats(ClientContext &context, Function
 	D_ASSERT(child_stats.size() == 1);
 	const bool can_contain_unicode = StringStats::CanContainUnicode(child_stats[0]);
 	if (!can_contain_unicode) {
-		expr.FunctionMutable().SetFunctionCallback(ScalarFunction::UnaryFunction<string_t, int64_t, StrLenOperator>);
+		if (COUNTS_CODEPOINTS) {
+			expr.FunctionMutable().SetFunctionCallback(
+			    ScalarFunction::UnaryFunction<string_t, int64_t, StrLenOperator>);
+		} else {
+			expr.FunctionMutable().SetFunctionCallback(
+			    ScalarFunction::UnaryFunction<string_t, int64_t, AsciiGraphemeCountOperator>);
+		}
 	}
 	if (!StringStats::HasMaxStringLength(child_stats[0])) {
 		return nullptr;
@@ -82,8 +96,9 @@ unique_ptr<BaseStatistics> LengthPropagateStats(ClientContext &context, Function
 	auto min_string_length = StringStats::MinStringLength(child_stats[0]);
 	if (min_string_length.IsValid()) {
 		if (!can_contain_unicode) {
-			// ASCII-only: the character count is exactly the byte count
-			min_length = NumericCast<int64_t>(min_string_length.GetIndex());
+			// ASCII-only: the character count is exactly the byte count, and a CR LF is one grapheme cluster
+			auto min_bytes = min_string_length.GetIndex();
+			min_length = NumericCast<int64_t>(COUNTS_CODEPOINTS ? min_bytes : (min_bytes + 1) / 2);
 		} else if (min_string_length.GetIndex() > 0) {
 			if (COUNTS_CODEPOINTS) {
 				// every codepoint takes at most four bytes

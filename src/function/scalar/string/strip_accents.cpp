@@ -5,6 +5,8 @@
 
 #include "utf8proc.hpp"
 
+#include <cstring>
+
 namespace duckdb {
 
 idx_t FirstNonAscii(const char *input, idx_t n) {
@@ -28,6 +30,38 @@ idx_t FirstNonAscii(const char *input, idx_t n) {
 
 bool IsAscii(const char *input, idx_t n) {
 	return FirstNonAscii(input, n) == n;
+}
+
+bool ContainsCRLF(const char *input, idx_t n) {
+	idx_t pos = 0;
+	while (pos + 1 < n) {
+		auto carriage_return = static_cast<const char *>(memchr(input + pos, '\r', n - pos - 1));
+		if (!carriage_return) {
+			return false;
+		}
+		pos = NumericCast<idx_t>(carriage_return - input) + 1;
+		if (input[pos] == '\n') {
+			return true;
+		}
+	}
+	return false;
+}
+
+idx_t AsciiGraphemeCount(const char *input, idx_t n) {
+	idx_t count = n;
+	idx_t pos = 0;
+	while (pos + 1 < n) {
+		auto carriage_return = static_cast<const char *>(memchr(input + pos, '\r', n - pos - 1));
+		if (!carriage_return) {
+			break;
+		}
+		pos = NumericCast<idx_t>(carriage_return - input) + 1;
+		if (input[pos] == '\n') {
+			count--;
+			pos++;
+		}
+	}
+	return count;
 }
 
 idx_t DecodeCodepoint(const char *input, idx_t size, int32_t &codepoint) {

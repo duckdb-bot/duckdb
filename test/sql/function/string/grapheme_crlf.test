@@ -1,0 +1,92 @@
+# name: test/sql/function/string/grapheme_crlf.test
+# description: CR LF is one grapheme cluster in ASCII strings, as in other strings (UAX #29, GB3)
+# group: [string]
+
+query IT
+SELECT i, to_hex(substring_grapheme(E'a\r\nbé', i, 1)) FROM range(1, 5) t(i) ORDER BY i;
+----
+1	61
+2	0D0A
+3	62
+4	C3A9
+
+query IT
+SELECT i, to_hex(substring_grapheme(E'a\r\nb', i, 1)) FROM range(1, 5) t(i) ORDER BY i;
+----
+1	61
+2	0D0A
+3	62
+4	(empty)
+
+query TTTT
+SELECT to_hex(substring_grapheme(E'ab\r\n', -1, 1)), substring_grapheme(E'ab\r\n', -2, 1), to_hex(substring_grapheme(E'\r\nab', -3, 1)), to_hex(substring_grapheme(E'\r\nab', -4, 2));
+----
+0D0A	b	0D0A	0D0A
+
+query II
+SELECT length_grapheme(E'a\r\nb'), length_grapheme(E'a\r\nbé');
+----
+3	4
+
+query IIII
+SELECT length_grapheme(E'\r'), length_grapheme(E'\n\r'), length_grapheme(E'\r\r\n'), length_grapheme(E'\r\n\r\n');
+----
+1	2	2	2
+
+query TT
+SELECT to_hex(reverse(E'a\r\nb')), to_hex(reverse(E'a\r\nbé'));
+----
+620D0A61	C3A9620D0A61
+
+query TTTT
+SELECT to_hex(left_grapheme(E'a\r\nb', 2)), to_hex(left_grapheme(E'a\r\nb', -1)), to_hex(right_grapheme(E'a\r\nb', 2)), to_hex(right_grapheme(E'a\r\nb', -2));
+----
+610D0A	610D0A	0D0A62	62
+
+# every string of up to five of a, CR and LF gives the same answers as with a non-ASCII character next to it, which
+# takes the grapheme path; strs has ASCII statistics, mixed does not
+statement ok
+CREATE TABLE strs AS SELECT DISTINCT array_to_string([['a', chr(13), chr(10)][((k // (3 ** p)::BIGINT) % 3) + 1] for p in range(n)], '') AS s FROM range(243) t(k), range(1, 6) u(n);
+
+statement ok
+CREATE TABLE mixed AS SELECT s FROM strs UNION ALL SELECT 'é';
+
+query I
+SELECT count(*) FROM strs;
+----
+363
+
+foreach table strs mixed
+
+query I
+SELECT count(*) FROM {table} WHERE length_grapheme(s) <> length_grapheme(s || 'é') - 1 AND s <> 'é';
+----
+0
+
+query I
+SELECT count(*) FROM {table} WHERE reverse(s) <> replace(reverse(s || 'é'), 'é', '') AND s <> 'é';
+----
+0
+
+query I
+SELECT count(*) FROM {table}, range(-7, 8) o(o), range(-2, 7) l(l)
+WHERE s <> 'é' AND substring_grapheme(s, o, l) <> replace(substring_grapheme(CASE WHEN o >= 0 THEN s || 'é' ELSE 'é' || s END, o, l), 'é', '');
+----
+0
+
+query I
+SELECT count(*) FROM {table}, range(-7, 8) n(n)
+WHERE s <> 'é' AND (left_grapheme(s, n) <> replace(left_grapheme(CASE WHEN n >= 0 THEN s || 'é' ELSE 'é' || s END, n), 'é', '') OR right_grapheme(s, n) <> replace(right_grapheme(CASE WHEN n >= 0 THEN 'é' || s ELSE s || 'é' END, n), 'é', ''));
+----
+0
+
+endloop
+
+# the statistics of an ASCII column do not bound the grapheme count by the shortest string
+statement ok
+CREATE TABLE crlf AS SELECT * FROM (VALUES (E'\r\n'), ('ab')) t(s);
+
+query I
+SELECT count(*) FROM crlf WHERE length_grapheme(s) < 2;
+----
+1

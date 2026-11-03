@@ -61,16 +61,20 @@ optional_idx DefaultCasts::UnionCastTargetMember(CastFunctionSet &function_set, 
                                                  const LogicalType &target) {
 	D_ASSERT(target.id() == LogicalTypeId::UNION);
 	optional_idx selected;
-	int64_t best_cost = NumericLimits<int64_t>::Maximum();
+	int64_t best_cost = 0;
 	bool ambiguous = false;
 	for (idx_t member_idx = 0; member_idx < UnionType::GetMemberCount(target); member_idx++) {
 		auto cost = function_set.ImplicitCastCost(nullptr, source, UnionType::GetMemberType(target, member_idx));
-		if (cost < 0 || cost > best_cost) {
+		if (cost < 0) {
 			continue;
 		}
-		ambiguous = cost == best_cost;
-		best_cost = cost;
-		selected = member_idx;
+		if (!selected.IsValid() || cost < best_cost) {
+			best_cost = cost;
+			selected = member_idx;
+			ambiguous = false;
+		} else if (cost == best_cost) {
+			ambiguous = true;
+		}
 	}
 	return ambiguous ? optional_idx() : selected;
 }

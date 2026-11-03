@@ -88,11 +88,11 @@ static bool IsStructOrTuple(const LogicalType &type) {
 	return type.id() == LogicalTypeId::STRUCT || type.id() == LogicalTypeId::TUPLE;
 }
 
-static bool CastChangesOrder(ClientContext &context, const LogicalType &source, const LogicalType &target);
+static bool CastChangesOrder(const LogicalType &source, const LogicalType &target);
 
 //! The fields are paired as the STRUCT cast pairs them, by name or by position. STRUCT values compare field by field
 //! in the order of their type, so a cast that reorders the fields or drops one changes the order of the values
-static bool StructCastChangesOrder(ClientContext &context, const LogicalType &source, const LogicalType &target) {
+static bool StructCastChangesOrder(const LogicalType &source, const LogicalType &target) {
 	auto mapping = StructBoundCastData::GetFieldMapping(source, target);
 	if (mapping.kind != StructCastFieldMapping::MatchKind::VALID) {
 		return false;
@@ -108,7 +108,7 @@ static bool StructCastChangesOrder(ClientContext &context, const LogicalType &so
 		if (pair_idx > 0 && mapping.target_indexes[pair_idx] < mapping.target_indexes[pair_idx - 1]) {
 			return true;
 		}
-		if (CastChangesOrder(context, source_children[mapping.source_indexes[pair_idx]].second,
+		if (CastChangesOrder(source_children[mapping.source_indexes[pair_idx]].second,
 		                     target_children[mapping.target_indexes[pair_idx]].second)) {
 			return true;
 		}
@@ -125,18 +125,20 @@ static bool VariantCastChangesOrder(const LogicalType &source) {
 	});
 }
 
-//! A value becomes the member of the UNION that its cast selects, so the order changes when it changes for that member
-static bool UnionMemberCastChangesOrder(ClientContext &context, const LogicalType &source, const LogicalType &target) {
-	auto member_idx = DefaultCasts::UnionCastTargetMember(CastFunctionSet::Get(context), source, target);
+//! A value becomes the member of the UNION that its cast selects, so the order changes when it changes for that
+//! member. The default casts decide, as the cast the rewrite adds is a default cast
+static bool UnionMemberCastChangesOrder(const LogicalType &source, const LogicalType &target) {
+	CastFunctionSet default_set;
+	auto member_idx = DefaultCasts::UnionCastTargetMember(default_set, source, target);
 	if (!member_idx.IsValid()) {
 		return false;
 	}
-	return CastChangesOrder(context, source, UnionType::GetMemberType(target, member_idx.GetIndex()));
+	return CastChangesOrder(source, UnionType::GetMemberType(target, member_idx.GetIndex()));
 }
 
 //! The members are paired by name as the UNION cast pairs them, and a member without a counterpart makes the cast
 //! wrap the whole value into a member of the target
-static bool UnionCastChangesOrder(ClientContext &context, const LogicalType &source, const LogicalType &target) {
+static bool UnionCastChangesOrder(const LogicalType &source, const LogicalType &target) {
 	for (idx_t source_idx = 0; source_idx < UnionType::GetMemberCount(source); source_idx++) {
 		auto &member_name = UnionType::GetMemberName(source, source_idx);
 		bool found = false;
@@ -144,7 +146,7 @@ static bool UnionCastChangesOrder(ClientContext &context, const LogicalType &sou
 			if (UnionType::GetMemberName(target, target_idx) != member_name) {
 				continue;
 			}
-			if (CastChangesOrder(context, UnionType::GetMemberType(source, source_idx),
+			if (CastChangesOrder(UnionType::GetMemberType(source, source_idx),
 			                     UnionType::GetMemberType(target, target_idx))) {
 				return true;
 			}
@@ -152,7 +154,7 @@ static bool UnionCastChangesOrder(ClientContext &context, const LogicalType &sou
 			break;
 		}
 		if (!found) {
-			return UnionMemberCastChangesOrder(context, source, target);
+			return UnionMemberCastChangesOrder(source, target);
 		}
 	}
 	return false;
@@ -161,7 +163,7 @@ static bool UnionCastChangesOrder(ClientContext &context, const LogicalType &sou
 //! Whether a cast from the source type to the target type changes the order of the values, which a cast of an ENUM
 //! does, as an ENUM sorts by dictionary position, also as a member of a nested type, a STRUCT cast that pairs the
 //! fields in another order, and a cast of a STRUCT or a UNION to VARIANT
-static bool CastChangesOrder(ClientContext &context, const LogicalType &source, const LogicalType &target) {
+static bool CastChangesOrder(const LogicalType &source, const LogicalType &target) {
 	if (source == target) {
 		return false;
 	}
@@ -172,20 +174,20 @@ static bool CastChangesOrder(ClientContext &context, const LogicalType &source, 
 		return VariantCastChangesOrder(source);
 	}
 	if (IsListOrArray(source) && IsListOrArray(target)) {
-		return CastChangesOrder(context, ListOrArrayChildType(source), ListOrArrayChildType(target));
+		return CastChangesOrder(ListOrArrayChildType(source), ListOrArrayChildType(target));
 	}
 	if (IsStructOrTuple(source) && IsStructOrTuple(target)) {
-		return StructCastChangesOrder(context, source, target);
+		return StructCastChangesOrder(source, target);
 	}
 	if (source.id() == LogicalTypeId::MAP && target.id() == LogicalTypeId::MAP) {
-		return CastChangesOrder(context, MapType::KeyType(source), MapType::KeyType(target)) ||
-		       CastChangesOrder(context, MapType::ValueType(source), MapType::ValueType(target));
+		return CastChangesOrder(MapType::KeyType(source), MapType::KeyType(target)) ||
+		       CastChangesOrder(MapType::ValueType(source), MapType::ValueType(target));
 	}
 	if (source.id() == LogicalTypeId::UNION && target.id() == LogicalTypeId::UNION) {
-		return UnionCastChangesOrder(context, source, target);
+		return UnionCastChangesOrder(source, target);
 	}
 	if (target.id() == LogicalTypeId::UNION) {
-		return UnionMemberCastChangesOrder(context, source, target);
+		return UnionMemberCastChangesOrder(source, target);
 	}
 	if (source.id() != target.id()) {
 		// a cast to another kind of type, as VARIANT or a UNION member, converts the value as a whole
@@ -216,7 +218,7 @@ static unique_ptr<Expression> PlanExtremumRewrite(Binder &binder, BoundSubqueryE
 	auto min_max_child = bound_colref->Copy();
 	// the extremum is taken after the cast when the cast changes the order, except to a UNION, which turns a NULL
 	// into a member that the extremum would not ignore
-	if (compare_type.id() != LogicalTypeId::UNION && CastChangesOrder(binder.context, child_type, compare_type)) {
+	if (compare_type.id() != LogicalTypeId::UNION && CastChangesOrder(child_type, compare_type)) {
 		min_max_child = BoundCastExpression::AddDefaultCastToType(std::move(min_max_child), compare_type);
 	}
 	// the count of the rows the comparison sees as NULL, a UNION whose member is NULL becomes a NULL VARIANT

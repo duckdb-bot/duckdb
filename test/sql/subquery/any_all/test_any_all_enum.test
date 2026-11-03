@@ -111,6 +111,18 @@ SELECT ['m'] > ANY (SELECT [v] FROM t WHERE v IS NOT NULL), ['m'] > ALL (SELECT 
 ----
 true	false
 
+query II
+SELECT map(['m'], [1]) > ANY (SELECT map([v], [1]) FROM t WHERE v IS NOT NULL), map(['m'], [1]) > ALL (SELECT map([v], [1]) FROM t WHERE v IS NOT NULL)
+----
+true	false
+
+# an ENUM field that keeps its type does not cast the STRUCT before the extremum, so a sibling row the compared type
+# cannot hold does not fail the comparison
+query I
+SELECT {'n': 0.5::DECIMAL(38,37), 'tag': 'a'::e} > ANY (SELECT {'n': i, 'tag': 'a'::e} FROM (VALUES (0), (100)) rhs(i))
+----
+true
+
 # an untyped NULL subquery compared with an ENUM
 query II
 SELECT 'a'::e > ANY (SELECT NULL), 'a'::e > ALL (SELECT NULL WHERE false)
@@ -129,8 +141,7 @@ SELECT 2.5 > ANY (SELECT i FROM ints), 2.5 > ALL (SELECT i FROM ints), 0.5 < ALL
 ----
 true	false	true	false
 
-# a column of any other type keeps the extremum in its own type, and only the extremum is cast to the compared type,
-# so a row the compared type cannot hold does not fail the comparison
+# any other column keeps the extremum in its own type, so a row the compared type cannot hold does not fail
 query I
 SELECT 0.5::DECIMAL(38,37) > ANY (SELECT v FROM (VALUES (0), (100)) rhs(v))
 ----
@@ -153,3 +164,21 @@ WITH rhs(v) AS (VALUES (2), (NULL::INTEGER))
 SELECT union_value(n := 1) < ANY (SELECT v FROM rhs), union_value(n := 3) < ANY (SELECT v FROM rhs)
 ----
 true	NULL
+
+query I
+WITH rhs(v) AS (VALUES ('z'::e), (NULL::e))
+SELECT union_value(s := 'm') < ANY (SELECT v FROM rhs)
+----
+true
+
+# FIXME: a UNION compared type keeps the extremum in the dictionary order of the ENUM until the rewrite leaves UNION
+# comparisons to the mark join
+mode skip unsupported
+
+query I
+WITH rhs(v) AS (VALUES ('z'::e), ('a'::e))
+SELECT union_value(s := 'm') < ANY (SELECT v FROM rhs)
+----
+true
+
+mode unskip

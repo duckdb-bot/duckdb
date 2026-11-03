@@ -73,6 +73,43 @@ static bool IsExtremumRewriteValid(const BoundSubqueryExpression &expr) {
 	       cmp_type == ExpressionType::COMPARE_LESSTHANOREQUALTO;
 }
 
+//! Whether a cast from the source type to the target type changes the order of the values, which an ENUM does, as it
+//! sorts by dictionary position, also as a member of a nested type
+static bool CastChangesOrder(const LogicalType &source, const LogicalType &target) {
+	if (source == target) {
+		return false;
+	}
+	if (source.id() == LogicalTypeId::ENUM || source.id() != target.id()) {
+		return TypeVisitor::Contains(source, LogicalTypeId::ENUM);
+	}
+	switch (source.id()) {
+	case LogicalTypeId::LIST:
+		return CastChangesOrder(ListType::GetChildType(source), ListType::GetChildType(target));
+	case LogicalTypeId::ARRAY:
+		return CastChangesOrder(ArrayType::GetChildType(source), ArrayType::GetChildType(target));
+	case LogicalTypeId::MAP:
+		return CastChangesOrder(MapType::KeyType(source), MapType::KeyType(target)) ||
+		       CastChangesOrder(MapType::ValueType(source), MapType::ValueType(target));
+	case LogicalTypeId::STRUCT:
+	case LogicalTypeId::TUPLE:
+	case LogicalTypeId::UNION: {
+		auto &source_children = StructType::GetChildTypes(source);
+		auto &target_children = StructType::GetChildTypes(target);
+		if (source_children.size() != target_children.size()) {
+			return TypeVisitor::Contains(source, LogicalTypeId::ENUM);
+		}
+		for (idx_t child_idx = 0; child_idx < source_children.size(); child_idx++) {
+			if (CastChangesOrder(source_children[child_idx].second, target_children[child_idx].second)) {
+				return true;
+			}
+		}
+		return false;
+	}
+	default:
+		return false;
+	}
+}
+
 static unique_ptr<Expression> PlanExtremumRewrite(Binder &binder, BoundSubqueryExpression &expr,
                                                   unique_ptr<LogicalOperator> &plan) {
 	auto &child_type = expr.GetChildTypes()[0];
@@ -93,8 +130,9 @@ static unique_ptr<Expression> PlanExtremumRewrite(Binder &binder, BoundSubqueryE
 	auto &compare_type = expr.GetChildTargets()[0];
 	vector<unique_ptr<Expression>> min_max_children;
 	auto min_max_child = bound_colref->Copy();
-	// an ENUM sorts by dictionary position, so its extremum is taken after the cast to the compared type
-	if (TypeVisitor::Contains(child_type, LogicalTypeId::ENUM)) {
+	// the extremum is taken after the cast when the cast changes the order, except to a UNION, which turns a NULL
+	// into a member that the extremum would not ignore
+	if (compare_type.id() != LogicalTypeId::UNION && CastChangesOrder(child_type, compare_type)) {
 		min_max_child = BoundCastExpression::AddDefaultCastToType(std::move(min_max_child), compare_type);
 	}
 	// The comparison may carry a collation the subquery column does not, and the extremum has to be taken

@@ -1,5 +1,6 @@
 
 #include "duckdb/optimizer/rule/conjunction_simplification.hpp"
+#include "duckdb/optimizer/expression_rewriter.hpp"
 
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/planner/expression/bound_conjunction_expression.hpp"

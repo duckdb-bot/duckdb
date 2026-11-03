@@ -12,11 +12,8 @@
 #include "duckdb/main/extension_manager.hpp"
 #include "duckdb/main/extension_repository_manager.hpp"
 #include "duckdb/main/settings.hpp"
+#include "duckdb/parallel/task_executor.hpp"
 #include "mbedtls_wrapper.hpp"
-
-#ifndef DUCKDB_NO_THREADS
-#include <thread>
-#endif // DUCKDB_NO_THREADS
 
 namespace duckdb {
 
@@ -316,48 +313,45 @@ static void ComputeSHA256FileSegment(FileHandle *handle, const idx_t start, cons
 	*res = state.Finalize();
 }
 
-#ifndef DUCKDB_NO_THREADS
-//! Joins the threads when it goes out of scope, also while an exception unwinds the stack. Destroying a thread that
-//! is still joinable would terminate the process.
-struct HashThreadJoiner {
-	explicit HashThreadJoiner(vector<std::thread> &threads_p) : threads(threads_p) {
-	}
-	~HashThreadJoiner() {
-		for (auto &thread : threads) {
-			if (thread.joinable()) {
-				thread.join();
-			}
-		}
+//! Hashes one segment of an extension that is being checked for a valid signature
+template <typename T, typename F>
+class ExtensionHashTask : public BaseExecutorTask {
+public:
+	ExtensionHashTask(TaskExecutor &executor, F compute_hash_fun_p, T handle_p, idx_t start_p, idx_t end_p,
+	                  string &hash_p)
+	    : BaseExecutorTask(executor), compute_hash_fun(compute_hash_fun_p), handle(handle_p), start(start_p),
+	      end(end_p), hash(hash_p) {
 	}
 
-	vector<std::thread> &threads;
+	void ExecuteTask() override {
+		compute_hash_fun(handle, start, end, &hash);
+	}
+
+	string TaskType() const override {
+		return "ExtensionHashTask";
+	}
+
+private:
+	F compute_hash_fun;
+	T handle;
+	const idx_t start;
+	const idx_t end;
+	string &hash;
 };
-#endif // DUCKDB_NO_THREADS
 
 template <typename T, typename F>
-static void ComputeHashesOnSegments(F ComputeHashFun, T handle, const vector<idx_t> &splits,
+static void ComputeHashesOnSegments(DatabaseInstance &db, F ComputeHashFun, T handle, const vector<idx_t> &splits,
                                     vector<string> &hash_chunks) {
-#ifndef DUCKDB_NO_THREADS
-	vector<std::thread> threads;
-	threads.reserve(hash_chunks.size());
-	HashThreadJoiner joiner(threads);
-	idx_t next_chunk = 0;
-	try {
-		for (; next_chunk < hash_chunks.size(); next_chunk++) {
-			threads.emplace_back(ComputeHashFun, handle, splits[next_chunk], splits[next_chunk + 1],
-			                     &hash_chunks[next_chunk]);
-		}
-	} catch (std::exception &) {
-		// the thread could not be started, under a thread or memory limit, so this thread hashes the rest
-	}
-	for (; next_chunk < hash_chunks.size(); next_chunk++) {
-		ComputeHashFun(handle, splits[next_chunk], splits[next_chunk + 1], &hash_chunks[next_chunk]);
-	}
-#else
+	// the segments are hashed by the worker threads of the scheduler and by this thread, which waits for all of them
+	TaskExecutor executor(TaskScheduler::GetScheduler(db));
+	vector<unique_ptr<BaseExecutorTask>> tasks;
+	tasks.reserve(hash_chunks.size());
 	for (idx_t i = 0; i < hash_chunks.size(); i++) {
-		ComputeHashFun(handle, splits[i], splits[i + 1], &hash_chunks[i]);
+		tasks.push_back(make_uniq<ExtensionHashTask<T, F>>(executor, ComputeHashFun, handle, splits[i], splits[i + 1],
+		                                                   hash_chunks[i]));
 	}
-#endif // DUCKDB_NO_THREADS
+	executor.ScheduleTasks(std::move(tasks));
+	executor.WorkOnTasks();
 }
 
 static string FilterZeroAtEnd(string s) {
@@ -454,7 +448,7 @@ bool ExtensionHelper::CheckExtensionSignature(DatabaseInstance &db, FileHandle &
 	vector<idx_t> splits;
 	InitializeAncillaryData(hash_chunks, splits, signature_offset);
 
-	ComputeHashesOnSegments(ComputeSHA256FileSegment, &handle, splits, hash_chunks);
+	ComputeHashesOnSegments(db, ComputeSHA256FileSegment, &handle, splits, hash_chunks);
 
 	const string resulting_hash = ComputeFinalHash(hash_chunks);
 
@@ -472,7 +466,7 @@ bool ExtensionHelper::CheckExtensionBufferSignature(DatabaseInstance &db, const 
 	vector<idx_t> splits;
 	InitializeAncillaryData(hash_chunks, splits, buffer_length);
 
-	ComputeHashesOnSegments(ComputeSHA256Buffer, buffer, splits, hash_chunks);
+	ComputeHashesOnSegments(db, ComputeSHA256Buffer, buffer, splits, hash_chunks);
 
 	const string resulting_hash = ComputeFinalHash(hash_chunks);
 

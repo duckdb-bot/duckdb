@@ -33,8 +33,8 @@ constexpr const char *SIGNING_PUBLIC_KEY =
     "KPwqCCDPYc7OYkAncoOu9QIHVGC66urNqKTCMOUK8BZY8CBEAbeyUUdwIDAQAB";
 
 // The extension buffer of the test is BUFFER_SIZE bytes, the signature in its last 256 bytes. The signed part is
-// hashed in four 1 MiB chunks (the last one 256 bytes short), so four hashing threads start. Every byte of chunk k
-// is k, so a chunk hashed from the wrong offset changes the hash.
+// hashed in four 1 MiB chunks (the last one 256 bytes short), one task each. Every byte of chunk k is k, so a chunk
+// hashed from the wrong offset changes the hash.
 constexpr idx_t BUFFER_SIZE = 4ULL * 1024 * 1024;
 constexpr idx_t CHUNK_SIZE = 1024ULL * 1024;
 
@@ -59,6 +59,23 @@ vector<char> SignedBuffer() {
 		signature[i] = static_cast<char>(std::stoul(hex.substr(2 * i, 2), nullptr, 16));
 	}
 	return buffer;
+}
+
+//! Opens a database that trusts the signing key of the test for the repository "signed"
+unique_ptr<DuckDB> OpenDatabaseWithSigningKey(DBConfig &config, const string &repository_directory) {
+	config.SetOptionByName("extension_repository_directory", TestCreatePath(repository_directory));
+	config.SetOptionByName("allow_extension_repositories", "allowed");
+	auto db = make_uniq<DuckDB>(nullptr, &config);
+	Connection con(*db);
+	REQUIRE_NO_FAIL(con.Query(
+	    StringUtil::Format("CREATE EXTENSION REPOSITORY signed WITH PREFIX 'http://signed.test' USING PUBLIC KEY '%s'",
+	                       SIGNING_PUBLIC_KEY)));
+	return db;
+}
+
+bool SignatureVerifies(DuckDB &db, const vector<char> &buffer) {
+	return ExtensionHelper::CheckExtensionBufferSignature(*db.instance, buffer.data(), BUFFER_SIZE,
+	                                                      ExtensionRepositoryType::USER_PROVIDED, "signed");
 }
 
 //! The address space of this process in bytes, 0 when it cannot be read
@@ -146,31 +163,28 @@ private:
 
 } // namespace
 
-TEST_CASE("Test that a signature check survives a hashing thread that cannot start", "[api]") {
-	DBConfig config;
-	config.SetOptionByName("extension_repository_directory", TestCreatePath("extension_signature_check"));
-	config.SetOptionByName("allow_extension_repositories", "allowed");
-	DuckDB db(nullptr, &config);
-	Connection con(db);
-	auto &instance = *db.instance;
-	REQUIRE_NO_FAIL(con.Query(
-	    StringUtil::Format("CREATE EXTENSION REPOSITORY signed WITH PREFIX 'http://signed.test' USING PUBLIC KEY '%s'",
-	                       SIGNING_PUBLIC_KEY)));
+TEST_CASE("Test that a signature check succeeds when no new thread can start", "[api]") {
 	auto buffer = SignedBuffer();
+	// the worker threads of this database hash the chunks
+	DBConfig config;
+	auto db = OpenDatabaseWithSigningKey(config, "extension_signature_check");
+	// this database has no worker threads, so the checking thread hashes them, as it does for an extension that a
+	// starting database loads
+	DBConfig single_thread_config;
+	single_thread_config.options.maximum_threads = 1;
+	auto single_thread_db = OpenDatabaseWithSigningKey(single_thread_config, "extension_signature_check_single_thread");
 
-	// the signature verifies on the usual path, which hashes the four chunks on one thread each
-	REQUIRE(ExtensionHelper::CheckExtensionBufferSignature(instance, buffer.data(), BUFFER_SIZE,
-	                                                       ExtensionRepositoryType::USER_PROVIDED, "signed"));
+	REQUIRE(SignatureVerifies(*db, buffer));
+	REQUIRE(SignatureVerifies(*single_thread_db, buffer));
 
 	TwoMoreThreads two_more_threads;
 	if (!two_more_threads.Works()) {
 		WARN("the thread limit of this test does not take effect here, so the check under it is skipped");
 		return;
 	}
-	// the third hashing thread cannot start, so the check hashes the remaining chunks on this thread and still
-	// verifies the signature, instead of terminating the process
-	REQUIRE(ExtensionHelper::CheckExtensionBufferSignature(instance, buffer.data(), BUFFER_SIZE,
-	                                                       ExtensionRepositoryType::USER_PROVIDED, "signed"));
+	// the checks start no thread, so they verify the signature under the limit instead of terminating the process
+	REQUIRE(SignatureVerifies(*db, buffer));
+	REQUIRE(SignatureVerifies(*single_thread_db, buffer));
 }
 
 #endif

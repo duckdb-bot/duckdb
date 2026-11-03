@@ -1,0 +1,125 @@
+# name: test/sql/function/timestamp/timestamp_precision_outside_ns_range.test
+# description: TIMESTAMP_MS and TIMESTAMP_S arguments widen to TIMESTAMP, not TIMESTAMP_NS, so dates outside the TIMESTAMP_NS range work
+# group: [timestamp]
+
+statement ok
+CREATE TABLE ms(ts TIMESTAMP_MS);
+
+statement ok
+INSERT INTO ms VALUES ('2500-06-15 12:34:56.789'), ('2020-02-29 01:02:03.456');
+
+statement ok
+CREATE TABLE s(ts TIMESTAMP_S);
+
+statement ok
+INSERT INTO s VALUES ('1600-02-29 23:59:59'), ('2020-02-29 01:02:03');
+
+query IIIIIIII
+SELECT hour(ts), minute(ts), second(ts), millisecond(ts), microsecond(ts), epoch(ts), epoch_us(ts), date_part('hour', ts) FROM ms ORDER BY ts;
+----
+1	2	3	3456	3456000	1582938123.456	1582938123456000	1
+12	34	56	56789	56789000	16739526896.789	16739526896789000	12
+
+query IIIIIIII
+SELECT hour(ts), minute(ts), second(ts), millisecond(ts), microsecond(ts), epoch(ts), epoch_us(ts), date_part('hour', ts) FROM s ORDER BY ts;
+----
+23	59	59	59000	59000000	-11670912001.0	-11670912001000000	23
+1	2	3	3000	3000000	1582938123.0	1582938123000000	1
+
+query IIII
+SELECT date_part(['year', 'hour', 'minute'], ts), timezone(ts), timezone_hour(ts), nanosecond(ts) FROM ms ORDER BY ts;
+----
+{'year': 2020, 'hour': 1, 'minute': 2}	0	0	3456000000
+{'year': 2500, 'hour': 12, 'minute': 34}	0	0	56789000000
+
+query IIII
+SELECT date_part(['year', 'hour', 'minute'], ts), timezone(ts), timezone_hour(ts), nanosecond(ts) FROM s ORDER BY ts;
+----
+{'year': 1600, 'hour': 23, 'minute': 59}	0	0	59000000000
+{'year': 2020, 'hour': 1, 'minute': 2}	0	0	3000000000
+
+# the results are those of the TIMESTAMP overloads
+query I
+SELECT count(*) FROM ms WHERE hour(ts) <> hour(ts::TIMESTAMP) OR epoch(ts) <> epoch(ts::TIMESTAMP) OR nanosecond(ts) <> nanosecond(ts::TIMESTAMP) OR date_part('minute', ts) <> date_part('minute', ts::TIMESTAMP);
+----
+0
+
+query I
+SELECT count(*) FROM s WHERE hour(ts) <> hour(ts::TIMESTAMP) OR epoch(ts) <> epoch(ts::TIMESTAMP) OR nanosecond(ts) <> nanosecond(ts::TIMESTAMP) OR date_part('minute', ts) <> date_part('minute', ts::TIMESTAMP);
+----
+0
+
+# infinities still give NULL
+query IIII
+SELECT hour('infinity'::TIMESTAMP_MS), date_part('hour', '-infinity'::TIMESTAMP_S), date_part(['hour'], 'infinity'::TIMESTAMP_MS), epoch(NULL::TIMESTAMP_S);
+----
+NULL	NULL	{'hour': NULL}	NULL
+
+# the bound expression of a constant part keeps the right implementation
+statement ok
+CREATE TABLE ms_many AS SELECT (TIMESTAMP '2500-06-15 00:00:00' + to_hours(n))::TIMESTAMP_MS AS ts FROM range(0, 24) t(n);
+
+query III
+SELECT count(*) FILTER (WHERE date_part('hour', ts) = 7), count(*) FILTER (WHERE hour(ts) BETWEEN 1 AND 3), min(date_part('epoch', ts)) FROM ms_many;
+----
+1	3	16739481600.0
+
+# a part that is not a constant goes through the chunk wrapper
+query II
+SELECT part, date_part(part, ts) FROM (VALUES ('hour'), ('minute'), ('epoch'), ('year')) p(part), ms WHERE ts > TIMESTAMP_MS '2100-01-01' ORDER BY part;
+----
+epoch	16739526896.789
+hour	12.0
+minute	34.0
+year	2500.0
+
+query I
+SELECT date_part(part, ts) FROM (VALUES ('hour')) p(part), s WHERE ts < TIMESTAMP_S '1700-01-01';
+----
+23.0
+
+# statistics of a constant part over TIMESTAMP_NS, TIMESTAMP_MS and TIMESTAMP_S columns no longer read the values as microseconds
+foreach precision TIMESTAMP_NS TIMESTAMP_MS TIMESTAMP_S
+
+statement ok
+CREATE OR REPLACE TABLE two_years AS SELECT ts::{precision} AS ts FROM (VALUES (TIMESTAMP '2020-06-01 10:00:00'), (TIMESTAMP '2021-06-01 10:00:00')) v(ts);
+
+query IIII
+SELECT count(*) FILTER (WHERE date_part('year', ts) = 2020), count(*) FILTER (WHERE date_part('month', ts) = 6), count(*) FILTER (WHERE date_part('hour', ts) = 10), count(*) FILTER (WHERE date_part('epoch', ts) > 1600000000) FROM two_years;
+----
+1	2	2	1
+
+query I
+SELECT count(*) FROM two_years WHERE date_part('year', ts) = 2020;
+----
+1
+
+endloop
+
+# strftime has its own TIMESTAMP_NS overload and keeps taking it for in range values
+query I
+SELECT strftime(ts, '%Y-%m-%d %H:%M:%S.%f') FROM ms WHERE ts < TIMESTAMP_MS '2100-01-01';
+----
+2020-02-29 01:02:03.456000
+
+query II
+SELECT typeof(hour(ts)), typeof(epoch(ts)) FROM ms LIMIT 1;
+----
+BIGINT	DOUBLE
+
+# epoch_ns cannot hold these values at all
+statement error
+SELECT epoch_ns(TIMESTAMP_MS '2500-06-15 12:34:56.789');
+----
+Conversion Error
+
+query I
+SELECT epoch_ns(TIMESTAMP_MS '2020-02-29 01:02:03.456');
+----
+1582938123456000000
+
+# TIMESTAMP_NS arguments keep their own overloads
+query III
+SELECT nanosecond(TIMESTAMP_NS '2020-01-01 00:00:00.123456789'), hour(TIMESTAMP_NS '2020-01-01 13:00:00.123456789'), epoch_ns(TIMESTAMP_NS '2020-01-01 00:00:00.123456789');
+----
+123456789	13	1577836800123456789

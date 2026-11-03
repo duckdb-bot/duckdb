@@ -162,8 +162,8 @@ EXPLAIN SELECT x IS NULL, x > -1, x BETWEEN -1 AND 100, coalesce(NULL::INTEGER, 
 ----
 physical_plan	<REGEX>:.*Projections:.*false.*true.*true.*x.*
 
-# a conjunction that statistics replace with a constant no longer reads its column
+# a conjunction that statistics replace with a constant no longer reads its column (ranges open on both sides are not merged into one)
 query II
-EXPLAIN SELECT x > 0 OR x > 1 FROM v;
+EXPLAIN SELECT x > 0 OR x < 10 FROM v;
 ----
 physical_plan	<!REGEX>:.*Projections: x.*

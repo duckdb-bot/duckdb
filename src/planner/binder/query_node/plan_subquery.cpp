@@ -86,6 +86,49 @@ static bool IsStructOrTuple(const LogicalType &type) {
 	return type.id() == LogicalTypeId::STRUCT || type.id() == LogicalTypeId::TUPLE;
 }
 
+static bool CastChangesOrder(const LogicalType &source, const LogicalType &target);
+
+//! The fields are paired as the STRUCT cast pairs them, by name or by position
+static bool StructCastChangesOrder(const LogicalType &source, const LogicalType &target) {
+	auto mapping = StructBoundCastData::GetFieldMapping(source, target);
+	if (mapping.kind != StructCastFieldMapping::MatchKind::VALID) {
+		return false;
+	}
+	auto &source_children = StructType::GetChildTypes(source);
+	auto &target_children = StructType::GetChildTypes(target);
+	for (idx_t pair_idx = 0; pair_idx < mapping.source_indexes.size(); pair_idx++) {
+		if (CastChangesOrder(source_children[mapping.source_indexes[pair_idx]].second,
+		                     target_children[mapping.target_indexes[pair_idx]].second)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+//! The members are paired by name as the UNION cast pairs them, and a member without a counterpart makes the cast
+//! wrap the whole value into a member of the target
+static bool UnionCastChangesOrder(const LogicalType &source, const LogicalType &target) {
+	for (idx_t source_idx = 0; source_idx < UnionType::GetMemberCount(source); source_idx++) {
+		auto &member_name = UnionType::GetMemberName(source, source_idx);
+		bool found = false;
+		for (idx_t target_idx = 0; target_idx < UnionType::GetMemberCount(target); target_idx++) {
+			if (UnionType::GetMemberName(target, target_idx) != member_name) {
+				continue;
+			}
+			if (CastChangesOrder(UnionType::GetMemberType(source, source_idx),
+			                     UnionType::GetMemberType(target, target_idx))) {
+				return true;
+			}
+			found = true;
+			break;
+		}
+		if (!found) {
+			return TypeVisitor::Contains(source, LogicalTypeId::ENUM);
+		}
+	}
+	return false;
+}
+
 //! Whether a cast from the source type to the target type changes the order of the values, which a cast of an ENUM
 //! does, as an ENUM sorts by dictionary position, also as a member of a nested type
 static bool CastChangesOrder(const LogicalType &source, const LogicalType &target) {
@@ -99,27 +142,17 @@ static bool CastChangesOrder(const LogicalType &source, const LogicalType &targe
 		return CastChangesOrder(ListOrArrayChildType(source), ListOrArrayChildType(target));
 	}
 	if (IsStructOrTuple(source) && IsStructOrTuple(target)) {
-		// the fields are paired as the cast pairs them, by name or by position
-		auto mapping = StructBoundCastData::GetFieldMapping(source, target);
-		if (mapping.kind != StructCastFieldMapping::MatchKind::VALID) {
-			return false;
-		}
-		auto &source_children = StructType::GetChildTypes(source);
-		auto &target_children = StructType::GetChildTypes(target);
-		for (idx_t pair_idx = 0; pair_idx < mapping.source_indexes.size(); pair_idx++) {
-			if (CastChangesOrder(source_children[mapping.source_indexes[pair_idx]].second,
-			                     target_children[mapping.target_indexes[pair_idx]].second)) {
-				return true;
-			}
-		}
-		return false;
+		return StructCastChangesOrder(source, target);
 	}
 	if (source.id() == LogicalTypeId::MAP && target.id() == LogicalTypeId::MAP) {
 		return CastChangesOrder(MapType::KeyType(source), MapType::KeyType(target)) ||
 		       CastChangesOrder(MapType::ValueType(source), MapType::ValueType(target));
 	}
-	if (source.id() != target.id() || source.id() == LogicalTypeId::UNION) {
-		// a cast to another kind of type, as VARIANT, or between UNION types converts the value as a whole
+	if (source.id() == LogicalTypeId::UNION && target.id() == LogicalTypeId::UNION) {
+		return UnionCastChangesOrder(source, target);
+	}
+	if (source.id() != target.id()) {
+		// a cast to another kind of type, as VARIANT or a UNION member, converts the value as a whole
 		return TypeVisitor::Contains(source, LogicalTypeId::ENUM);
 	}
 	return false;

@@ -121,11 +121,28 @@ SELECT map([1], ['m']) > ANY (SELECT map([1], [v]) FROM t WHERE v IS NOT NULL), 
 ----
 true	false
 
-# a UNION member is cast with the whole UNION
+# the members of a nested UNION are paired by name, as the cast pairs them
 query III
 SELECT {'u': union_value(a := 'm')} > ANY (SELECT {'u': union_value(a := v)} FROM t WHERE v IS NOT NULL), {'u': union_value(a := 'm')} > ALL (SELECT {'u': union_value(a := v)} FROM t WHERE v IS NOT NULL), [union_value(a := 'm')] > ANY (SELECT [union_value(a := v)] FROM t WHERE v IS NOT NULL)
 ----
 true	false	true
+
+query II
+SELECT [union_value(tag := 'm')::UNION(n INTEGER, tag VARCHAR)] > ANY (SELECT [union_value(tag := v)::UNION(n INTEGER, tag e)] FROM t WHERE v IS NOT NULL), [union_value(tag := 'm')::UNION(n INTEGER, tag VARCHAR)] > ALL (SELECT [union_value(tag := v)::UNION(n INTEGER, tag e)] FROM t WHERE v IS NOT NULL)
+----
+true	false
+
+# a member without a counterpart makes the cast wrap the whole UNION into a member of the compared UNION
+query I
+SELECT {'u': union_value(w := union_value(a := 'm'))::UNION(w UNION(a VARCHAR, z INTEGER), z INTEGER)} > ANY (SELECT {'u': union_value(a := v)::UNION(a e, z BLOB)} FROM t WHERE v IS NOT NULL)
+----
+true
+
+# a UNION member that keeps its ENUM type does not cast the UNION before the extremum
+query I
+SELECT [union_value(n := 0.5::DECIMAL(38,37))::UNION(n DECIMAL(38,37), tag e)] > ANY (SELECT [union_value(n := i)::UNION(n INTEGER, tag e)] FROM (VALUES (0), (100)) rhs(i))
+----
+true
 
 # the fields of a STRUCT are matched by name, as the cast matches them, and by position for a TUPLE
 query III

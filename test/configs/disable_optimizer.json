@@ -87,6 +87,13 @@
       ]
     },
     {
+      "reason": "Binding an unbound index through a lookup requires filter pushdown from optimizer.",
+      "paths": [
+        "test/issues/general/test_26106.test",
+        "test/sql/storage/wal/wal_replay_unbound_index_failed_bind.test"
+      ]
+    },
+    {
       "reason": "Value-returning DISTINCT collation handling requires the multi-stage aggregate rewrite.",
       "paths": [
         "test/sql/collate/collate_distinct_aggregate.test",

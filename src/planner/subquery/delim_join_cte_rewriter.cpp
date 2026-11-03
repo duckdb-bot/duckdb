@@ -435,7 +435,7 @@ static bool PushEligibleFilterExpressionsIntoDelimJoinInputs(unique_ptr<LogicalO
 			remaining_expressions.push_back(std::move(expr));
 			continue;
 		}
-		if (FilterReferencesDelimInput(delim_join, *expr)) {
+		if (!ExpressionBarrier::Contains(*expr) && FilterReferencesDelimInput(delim_join, *expr)) {
 			AddFilterToOperator(delim_join.children[0], std::move(expr));
 			changed = true;
 			continue;

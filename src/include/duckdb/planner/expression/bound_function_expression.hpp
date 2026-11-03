@@ -49,6 +49,8 @@ public:
 		return is_operator;
 	}
 	bool RequiresOrderedExecution() const;
+	//! The lambda body this function applies to each element, or nullptr
+	optional_ptr<const Expression> GetLambdaExpression() const;
 
 	bool IsVolatile() const override;
 	bool IsConsistent() const override;

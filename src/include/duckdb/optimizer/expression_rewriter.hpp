@@ -31,7 +31,7 @@ public:
 	//! Adds a custom rule; a rewriter with custom rules skips the default rule set
 	void AddRule(unique_ptr<Rule> rule);
 
-	//! Whether the expression the rules are applied to is inside TRY
+	//! Whether the expression the rules are applied to is inside TRY or HAS_ERROR
 	bool InTry() const {
 		return in_try;
 	}
@@ -58,7 +58,7 @@ private:
 	vector<unique_ptr<Rule>> rules;
 	optional_ptr<LogicalOperator> op;
 	vector<reference<Rule>> to_apply_rules;
-	//! Whether the expression the rules are applied to is inside TRY
+	//! Whether the expression the rules are applied to is inside TRY or HAS_ERROR
 	bool in_try = false;
 };
 

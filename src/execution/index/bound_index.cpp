@@ -31,6 +31,9 @@ BoundIndex::BoundIndex(const Identifier &name, const string &index_type, IndexCo
 		unbound_expressions.emplace_back(expr->Copy());
 		bound_expressions.push_back(BindExpression(expr->Copy()));
 		executor.AddExpression(*bound_expressions.back());
+		if (bound_expressions.back()->GetExpressionType() != ExpressionType::BOUND_REF) {
+			has_expression_keys = true;
+		}
 	}
 }
 
@@ -106,17 +109,17 @@ void BoundIndex::Delete(DataChunk &entries, Vector &row_identifiers, const Query
 }
 
 void BoundIndex::Delete(IndexLock &state, DataChunk &entries, Vector &row_identifiers, const QueryContext &context) {
-	state.AssertHeld(*this);
-	auto deleted_rows = TryDelete(state, entries, row_identifiers, context, nullptr, nullptr);
-	if (deleted_rows != entries.size()) {
-		throw InvalidInputException("Failed to delete all rows from index. Only deleted %d out of %d rows.\nChunk: %s",
-		                            deleted_rows, entries.size(), entries.ToString());
-	}
+	// the virtual without the context, which extension indexes override
+	Delete(state, entries, row_identifiers);
 }
 
 void BoundIndex::Delete(IndexLock &state, DataChunk &entries, Vector &row_identifiers) {
 	state.AssertHeld(*this);
 	auto deleted_rows = TryDelete(state, entries, row_identifiers);
+	VerifyDeleteCount(deleted_rows, entries);
+}
+
+void BoundIndex::VerifyDeleteCount(idx_t deleted_rows, DataChunk &entries) {
 	if (deleted_rows != entries.size()) {
 		throw InvalidInputException("Failed to delete all rows from index. Only deleted %d out of %d rows.\nChunk: %s",
 		                            deleted_rows, entries.size(), entries.ToString());
@@ -169,7 +172,7 @@ idx_t BoundIndex::GetInMemorySize() const {
 }
 
 void BoundIndex::ExecuteExpressions(DataChunk &input, DataChunk &result, const QueryContext &context) const {
-	if (!context.Valid()) {
+	if (!has_expression_keys || !context.Valid()) {
 		executor.Execute(input, result);
 		return;
 	}

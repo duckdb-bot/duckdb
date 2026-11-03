@@ -737,6 +737,12 @@ idx_t ART::TryDelete(IndexLock &state, DataChunk &entries, Vector &row_ids, opti
 	return TryDelete(state, entries, row_ids, QueryContext(), deleted_sel, non_deleted_sel);
 }
 
+void ART::Delete(IndexLock &state, DataChunk &entries, Vector &row_ids, const QueryContext &context) {
+	state.AssertHeld(*this);
+	auto deleted_rows = TryDelete(state, entries, row_ids, context, nullptr, nullptr);
+	VerifyDeleteCount(deleted_rows, entries);
+}
+
 idx_t ART::TryDelete(IndexLock &state, DataChunk &entries, Vector &row_ids, const QueryContext &context,
                      optional_ptr<SelectionVector> deleted_sel, optional_ptr<SelectionVector> non_deleted_sel) {
 	state.AssertHeld(*this);

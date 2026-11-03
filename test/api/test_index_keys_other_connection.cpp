@@ -1,4 +1,5 @@
 #include "catch.hpp"
+#include "duckdb/common/local_file_system.hpp"
 #include "duckdb/main/database.hpp"
 #include "test_helpers.hpp"
 
@@ -45,4 +46,59 @@ TEST_CASE("Test that indexes on list_sort serve connections other than the one t
 	REQUIRE(CHECK_COLUMN(result, 0, {4}));
 	result = con2.Query("SELECT id FROM u ORDER BY id");
 	REQUIRE(CHECK_COLUMN(result, 0, {2, 3, 4}));
+
+	// a reader with an older snapshot defers the index cleanup of a delete until it finishes, and the cleanup then
+	// runs without a connection
+	Connection reader(db);
+	REQUIRE_NO_FAIL(reader.Query("BEGIN"));
+	result = reader.Query("SELECT id FROM u WHERE list_sort(l)[1] = 8");
+	REQUIRE(CHECK_COLUMN(result, 0, {2}));
+	REQUIRE_NO_FAIL(con2.Query("DELETE FROM u WHERE id = 2"));
+	result = reader.Query("SELECT id FROM u WHERE list_sort(l)[1] = 8");
+	REQUIRE(CHECK_COLUMN(result, 0, {2}));
+	REQUIRE_NO_FAIL(reader.Query("COMMIT"));
+	REQUIRE_NO_FAIL(con2.Query("INSERT INTO u VALUES (5, [8, 9])"));
+	result = con2.Query("SELECT id FROM u WHERE list_sort(l)[1] = 8");
+	REQUIRE(CHECK_COLUMN(result, 0, {5}));
+
+	// a key that another connection commits first is found when the transaction commits, which reverts its appends
+	Connection con3(db);
+	REQUIRE_NO_FAIL(con2.Query("BEGIN"));
+	REQUIRE_NO_FAIL(con2.Query("INSERT INTO u VALUES (6, [20, 30])"));
+	REQUIRE_NO_FAIL(con3.Query("INSERT INTO u VALUES (7, [20, 40])"));
+	REQUIRE_FAIL(con2.Query("COMMIT"));
+	result = con2.Query("SELECT id FROM u WHERE list_sort(l)[1] = 20");
+	REQUIRE(CHECK_COLUMN(result, 0, {7}));
+	result = con2.Query("SELECT id FROM u ORDER BY id");
+	REQUIRE(CHECK_COLUMN(result, 0, {3, 4, 5, 7}));
+}
+
+TEST_CASE("Test that the checkpoint on shutdown remaps an index on list_sort", "[api]") {
+	auto path = TestCreatePath("list_sort_index_shutdown.db");
+	DeleteDatabase(path);
+	{
+		DuckDB db(path);
+		Connection con(db);
+		REQUIRE_NO_FAIL(con.Query("CREATE TABLE t (id INTEGER, l INTEGER[])"));
+		REQUIRE_NO_FAIL(con.Query("INSERT INTO t SELECT i, [i + 1, i] FROM range(250000) r(i)"));
+		REQUIRE_NO_FAIL(con.Query("CREATE INDEX i ON t ((list_sort(l)[1]))"));
+		REQUIRE_NO_FAIL(con.Query("CHECKPOINT"));
+		// the deletes make the checkpoint on shutdown merge row groups, which remaps the row ids of the index after
+		// the connection that bound it has closed
+		REQUIRE_NO_FAIL(con.Query("DELETE FROM t WHERE id % 4 != 0"));
+	}
+
+	// the checkpoint on shutdown succeeded, so the write ahead log is gone
+	LocalFileSystem fs;
+	REQUIRE(!fs.FileExists(path + ".wal"));
+
+	DuckDB db(path);
+	Connection con(db);
+	auto result = con.Query("SELECT count(*) FROM t");
+	REQUIRE(CHECK_COLUMN(result, 0, {62500}));
+	result = con.Query("SELECT id FROM t WHERE list_sort(l)[1] = 8");
+	REQUIRE(CHECK_COLUMN(result, 0, {8}));
+	REQUIRE_NO_FAIL(con.Query("INSERT INTO t VALUES (250000, [250001, 250000])"));
+	result = con.Query("SELECT id FROM t WHERE list_sort(l)[1] = 250000");
+	REQUIRE(CHECK_COLUMN(result, 0, {250000}));
 }

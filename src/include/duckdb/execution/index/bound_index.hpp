@@ -162,8 +162,9 @@ public:
 	//! Obtains a lock and calls Delete while holding that lock
 	void Delete(DataChunk &entries, Vector &row_identifiers) DUCKDB_EXCLUDES(lock);
 	//! Delete a chunk of entries from the index with the client context of the operation, when it has one. The index
-	//! lock must be held. Throws an error if not all rows are deleted
-	void Delete(IndexLock &state, DataChunk &entries, Vector &row_identifiers, const QueryContext &context)
+	//! lock must be held. Throws an error if not all rows are deleted. Indexes that do not override this ignore the
+	//! context and delete through the virtual without it.
+	virtual void Delete(IndexLock &state, DataChunk &entries, Vector &row_identifiers, const QueryContext &context)
 	    DUCKDB_REQUIRES(state);
 	//! Obtains a lock and calls Delete with the context while holding that lock
 	void Delete(DataChunk &entries, Vector &row_identifiers, const QueryContext &context) DUCKDB_EXCLUDES(lock);
@@ -239,6 +240,8 @@ protected:
 
 	//! Creates an empty physical copy with the requested constraint type.
 	virtual unique_ptr<BoundIndex> CreateEmptyCopy(IndexConstraintType constraint_type) const;
+	//! Throws if a delete left entries of the chunk in the index.
+	static void VerifyDeleteCount(idx_t deleted_rows, DataChunk &entries);
 	//! Merges a checkpoint delta into this index.
 	virtual ErrorData MergeCheckpointDelta(IndexDeltaType type, BoundIndex &delta_index);
 
@@ -256,6 +259,8 @@ protected:
 private:
 	//! Expression executor to execute the index expressions
 	mutable ExpressionExecutor executor;
+	//! Whether a key is an expression rather than a column, so the client context of the operation can matter
+	bool has_expression_keys = false;
 
 	//! Bind the unbound expressions of the index
 	unique_ptr<Expression> BindExpression(unique_ptr<Expression> expr);

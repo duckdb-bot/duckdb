@@ -5,6 +5,7 @@
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/common/vector/list_vector.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/main/database.hpp"
 #include "core_functions/scalar/list_functions.hpp"
 #include "duckdb/common/enum_util.hpp"
 #include "duckdb/common/numeric_utils.hpp"
@@ -40,7 +41,7 @@ struct ListSortBindData : public FunctionData {
 	//! The context of the bind, which an index key outlives when its connection closes
 	weak_ptr<ClientContext> context;
 	//! The database of the bind, for a context of its own when no connection takes part
-	weak_ptr<DatabaseInstance> db;
+	DatabaseInstance &db;
 	unique_ptr<Expression> sort_key;
 	optional<string> default_collation;
 	//! Shared by the copies, building it again needs a catalog lookup in a transaction of the context
@@ -59,7 +60,7 @@ ListSortBindData::ListSortBindData(OrderType order_type_p, OrderByNullType null_
                                    ClientContext &context_p, unique_ptr<Expression> sort_key_p,
                                    optional<string> default_collation_p)
     : order_type(order_type_p), null_order(null_order_p), return_type(return_type_p), child_type(child_type_p),
-      is_grade_up(is_grade_up_p), context(context_p.shared_from_this()), db(context_p.db),
+      is_grade_up(is_grade_up_p), context(context_p.shared_from_this()), db(*context_p.db),
       default_collation(std::move(default_collation_p)) {
 	// get the vector types
 	types.emplace_back(LogicalType::USMALLINT);
@@ -161,6 +162,14 @@ static void SinkDataChunk(const Sort &sort, ExecutionContext &context, OperatorS
 	data_to_sort = true;
 }
 
+//! Builds a context for the paths without a connection, such as the cleanup after a transaction and the checkpoint on
+//! shutdown. The database outlives the bind data of its indexes, so the context need not own it, which it cannot
+//! during the shutdown of the database anyway.
+static shared_ptr<ClientContext> MakeOwnContext(DatabaseInstance &db) {
+	shared_ptr<DatabaseInstance> unowned_db(shared_ptr<DatabaseInstance>(), &db);
+	return make_shared_ptr<ClientContext>(std::move(unowned_db));
+}
+
 static void ListSortFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	D_ASSERT(args.ColumnCount() >= 1 && args.ColumnCount() <= 3);
 	auto count = args.size();
@@ -179,17 +188,18 @@ static void ListSortFunction(DataChunk &args, ExpressionState &state, Vector &re
 
 	// the Sort of the bind runs under the context of the operation, which is not the one that bound it when another
 	// connection writes to a table with an index on this function
-	auto bound_context = info.context.lock();
-	optional_ptr<ClientContext> context = state.HasContext() ? &state.GetContext() : bound_context.get();
-	shared_ptr<ClientContext> own_context;
-	if (!context) {
-		// no connection takes part, as in the cleanup after a transaction, so the sort runs with a context of its own
-		auto db = info.db.lock();
-		if (!db) {
-			throw InternalException("list_sort cannot run after its database was closed");
+	optional_ptr<ClientContext> context;
+	shared_ptr<ClientContext> fallback_context;
+	if (state.HasContext()) {
+		context = &state.GetContext();
+	} else {
+		// without a context, as in the cleanup after a transaction, the sort runs with the bind context while it
+		// lives and else with a context of its own
+		fallback_context = info.context.lock();
+		if (!fallback_context) {
+			fallback_context = MakeOwnContext(info.db);
 		}
-		own_context = make_shared_ptr<ClientContext>(std::move(db));
-		context = own_context.get();
+		context = fallback_context.get();
 	}
 
 	// initialize the global and local sorting state

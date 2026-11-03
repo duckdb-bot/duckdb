@@ -31,7 +31,9 @@ BindResult ExpressionBinder::BindExpression(TypeExpression &type_expr, idx_t dep
 	auto &type_catalog = bound_name.Catalog();
 	bool is_qualified = bound_name.Path().size() > 1;
 
-	if (type_catalog.empty() && !DatabaseManager::Get(context).HasAttachedDatabase()) {
+	// while a WAL is replayed nothing is attached yet, but the replayed database is the default
+	if (type_catalog.empty() && !DatabaseManager::Get(context).HasAttachedDatabase() &&
+	    IsInvalidCatalog(DatabaseManager::TryGetDefaultDatabase(context))) {
 		// Look in the system catalog if no catalog was specified
 		entry = binder.entry_retriever.GetEntry(
 		    EntryLookupInfo(type_lookup, bound_name.WithCatalog(Identifier::SystemCatalog())));

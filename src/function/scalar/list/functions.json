@@ -76,15 +76,6 @@
         "variants": [
             {
                 "parameters": [
-                    {"name": "string", "type": "VARCHAR"},
-                    {"name": "index", "type": "ANY"}
-                ],
-                "description": "Extracts a single character from a `string` using a (1-based) `index`.",
-                "example": "array_extract('DuckDB', 2)",
-                "categories": ["string"]
-            },
-            {
-                "parameters": [
                     {"name": "struct", "type": "STRUCT"},
                     {"name": "entry", "type": "VARCHAR"}
                 ],

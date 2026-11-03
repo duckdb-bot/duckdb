@@ -43,7 +43,7 @@ SELECT list_apply(range(5), lambda x: {x:x, w:list_filter(range(5), lambda y: ab
 
 query I
 SELECT list_apply(range(8), lambda x: list_aggr(list_apply(range(8),
-	lambda y: list_element('▁▂▃▄▅▆▇█', 1+abs(y-x))), 'string_agg', ''));
+	lambda y: '▁▂▃▄▅▆▇█'[1+abs(y-x)]), 'string_agg', ''));
 ----
 [▁▂▃▄▅▆▇█, ▂▁▂▃▄▅▆▇, ▃▂▁▂▃▄▅▆, ▄▃▂▁▂▃▄▅, ▅▄▃▂▁▂▃▄, ▆▅▄▃▂▁▂▃, ▇▆▅▄▃▂▁▂, █▇▆▅▄▃▂▁]
 

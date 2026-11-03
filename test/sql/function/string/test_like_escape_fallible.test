@@ -1,0 +1,116 @@
+# name: test/sql/function/string/test_like_escape_fallible.test
+# description: An invalid escape string of LIKE ... ESCAPE is an error TRY catches, and filters do not evaluate it early
+# group: [string]
+
+statement ok
+CREATE TABLE t AS SELECT * FROM (VALUES ('ab'), ('a'), (''), (NULL)) t(e);
+
+query II
+SELECT e, TRY('x' LIKE '%' ESCAPE e) FROM t ORDER BY e NULLS LAST
+----
+(empty)	true
+a	true
+ab	NULL
+NULL	NULL
+
+query II
+SELECT e, TRY('x' NOT LIKE '%' ESCAPE e) FROM t ORDER BY e NULLS LAST
+----
+(empty)	false
+a	false
+ab	NULL
+NULL	NULL
+
+query II
+SELECT e, TRY('X' ILIKE 'x' ESCAPE e) FROM t ORDER BY e NULLS LAST
+----
+(empty)	true
+a	true
+ab	NULL
+NULL	NULL
+
+query II
+SELECT e, TRY('X' NOT ILIKE 'x' ESCAPE e) FROM t ORDER BY e NULLS LAST
+----
+(empty)	false
+a	false
+ab	NULL
+NULL	NULL
+
+statement error
+SELECT 'x' LIKE '%' ESCAPE e FROM t
+----
+Invalid Input Error: Invalid escape string. Escape string must be empty or one character.
+
+# a constant invalid escape string, and one given as a parameter
+query I
+SELECT TRY(e ILIKE '%' ESCAPE 'ab') FROM t
+----
+NULL
+NULL
+NULL
+NULL
+
+statement ok
+PREPARE like_escape_parameter AS SELECT TRY('x' LIKE '%' ESCAPE ?)
+
+query I
+EXECUTE like_escape_parameter('ab')
+----
+NULL
+
+query I
+EXECUTE like_escape_parameter('#')
+----
+true
+
+# a pattern ending in the escape character is invalid input too
+query IIII
+SELECT TRY('abcd' LIKE 'abc#' ESCAPE '#'), TRY('abc' LIKE 'abc#' ESCAPE '#'), TRY('ABCD' ILIKE 'abc#' ESCAPE '#'), TRY('abc' NOT LIKE 'abc#' ESCAPE '#')
+----
+NULL	NULL	NULL	NULL
+
+statement error
+SELECT 'abc' LIKE 'abc#' ESCAPE '#'
+----
+Invalid Input Error: Like pattern must not end with escape character
+
+# a filter that removes the invalid escape strings runs first
+query I
+SELECT e FROM t WHERE length(e) = 1 AND 'x' LIKE '%' ESCAPE e
+----
+a
+
+query I
+SELECT e FROM (SELECT e FROM t WHERE length(e) = 1) WHERE 'x' NOT LIKE 'y%' ESCAPE e
+----
+a
+
+query I
+SELECT e FROM t WHERE length(e) = 1 AND 'X' ILIKE 'x' ESCAPE e
+----
+a
+
+query I
+SELECT e FROM t WHERE length(e) = 1 AND 'X' NOT ILIKE 'y' ESCAPE e
+----
+a
+
+# the negated functions, which NOT LIKE ... ESCAPE does not call, behave the same
+query III
+SELECT e, TRY(not_like_escape('x', '%', e)), TRY(not_ilike_escape('X', 'x', e)) FROM t ORDER BY e NULLS LAST
+----
+(empty)	false	false
+a	false	false
+ab	NULL	NULL
+NULL	NULL	NULL
+
+query I
+SELECT e FROM t WHERE length(e) = 1 AND not_like_escape('x', 'y%', e)
+----
+a
+
+query I
+SELECT e FROM t WHERE length(e) = 1 AND not_ilike_escape('X', 'y', e)
+----
+a

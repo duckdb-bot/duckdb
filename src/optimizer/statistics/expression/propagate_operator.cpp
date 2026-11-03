@@ -37,8 +37,9 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundOperat
 	bool all_have_stats = true;
 	vector<unique_ptr<BaseStatistics>> child_stats;
 	child_stats.reserve(expr.GetChildrenMutable().size());
-	// a fold under TRY must keep the operands that can throw
-	auto is_try = expr.GetExpressionType() == ExpressionType::OPERATOR_TRY;
+	// a fold under TRY or HAS_ERROR, which capture the errors of their child, must keep the operands that can throw
+	auto is_try = expr.GetExpressionType() == ExpressionType::OPERATOR_TRY ||
+	              expr.GetExpressionType() == ExpressionType::OPERATOR_HAS_ERROR;
 	if (is_try) {
 		try_depth++;
 	}

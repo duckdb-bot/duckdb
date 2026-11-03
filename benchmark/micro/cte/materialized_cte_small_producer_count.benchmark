@@ -1,0 +1,14 @@
+# name: benchmark/micro/cte/materialized_cte_small_producer_count.benchmark
+# description: Count the rows of a materialized CTE built from a cross product of small ranges
+# group: [cte]
+
+name Materialized CTE Small Producer Count
+group micro
+subgroup cte
+
+run
+WITH a AS MATERIALIZED (SELECT i, j FROM range(6000) r(i) CROSS JOIN range(6000) s(j))
+SELECT count(*) FROM a;
+
+result I
+36000000

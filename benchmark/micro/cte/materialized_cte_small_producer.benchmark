@@ -1,0 +1,15 @@
+# name: benchmark/micro/cte/materialized_cte_small_producer.benchmark
+# description: Materialized CTEs built from cross products of small ranges, then joined and aggregated
+# group: [cte]
+
+name Materialized CTE Small Producer
+group micro
+subgroup cte
+
+run
+WITH a AS MATERIALIZED (SELECT key, match, hash(key, match) % 1000 AS value FROM range(300) t(key) CROSS JOIN range(1000) c(match)),
+     b AS MATERIALIZED (SELECT key, match, hash(key, match, 1) % 1000 AS value FROM range(300) t(key) CROSS JOIN range(1000) c(match))
+SELECT count(*), sum(s) FROM (SELECT a.key, b.key, sum(a.value * b.value) AS s FROM a JOIN b ON a.match = b.match GROUP BY a.key, b.key);
+
+result II
+90000	22428297945172

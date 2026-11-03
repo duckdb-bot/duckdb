@@ -3,6 +3,7 @@
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/common/enums/expression_type.hpp"
 #include "duckdb/execution/expression_executor.hpp"
+#include "duckdb/function/lambda_functions.hpp"
 #include "duckdb/function/scalar/string_common.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
 #include "duckdb/planner/column_binding_map.hpp"
@@ -127,9 +128,33 @@ FilterResult FilterCombiner::AddConjuncts(unique_ptr<Expression> expr) {
 	return FilterResult::SUCCESS;
 }
 
+static bool HasCastThatCanThrow(const Expression &expr) {
+	if (expr.GetExpressionClass() == ExpressionClass::BOUND_FUNCTION) {
+		auto &function = expr.Cast<BoundFunctionExpression>();
+		if (BoundCastExpression::IsCast(function) &&
+		    function.Function().GetErrorMode() == FunctionErrors::CAN_THROW_RUNTIME_ERROR) {
+			return true;
+		}
+		// the body of a lambda is no child of its function
+		if (function.Function().HasBindLambdaCallback()) {
+			auto lambda = function.BindInfo()->Cast<LambdaFunctionData>().GetLambdaExpression();
+			if (lambda && HasCastThatCanThrow(*lambda)) {
+				return true;
+			}
+		}
+	}
+	bool result = false;
+	ExpressionIterator::EnumerateChildren(expr, [&](const Expression &child) { result |= HasCastThatCanThrow(child); });
+	return result;
+}
+
 void FilterCombiner::GenerateEquivalentFilters(const Expression &filter,
                                                const std::function<void(unique_ptr<Expression> filter)> &callback) {
 	if (filter.IsVolatile()) {
+		return;
+	}
+	// a copy is pushed below the join, where a cast can fail on the values that the join drops
+	if (HasCastThatCanThrow(filter)) {
 		return;
 	}
 	// collect every column reference that belongs to an equivalence set

@@ -267,6 +267,19 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundFuncti
 		return constant_stats;
 	}
 	if (func.Function().HasStatisticsCallback()) {
+		if (!CanDropExpression(func)) {
+			// a callback may replace the function with something that drops its children, so it gets a target of its
+			// own for the replacement, and when it uses it the function is restored from a copy, as the callback may
+			// also have moved its children
+			auto original = func.Copy();
+			unique_ptr<Expression> replacement;
+			FunctionStatisticsInput input(func, func.BindInfo().get(), stats, &replacement);
+			auto result = func.Function().GetStatisticsCallback()(context, input);
+			if (replacement) {
+				expr_ptr = std::move(original);
+			}
+			return result;
+		}
 		FunctionStatisticsInput input(func, func.BindInfo().get(), stats, &expr_ptr);
 		return func.Function().GetStatisticsCallback()(context, input);
 	}

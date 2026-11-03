@@ -62,6 +62,10 @@ static bool IsAfterFirstYear(const Value &value) {
 unique_ptr<Expression> DateTruncSimplificationRule::Apply(LogicalOperator &op, vector<reference<Expression>> &bindings,
                                                           bool &changes_made, bool is_root) {
 	auto &expr = bindings[0].get().Cast<BoundFunctionExpression>();
+	// the rewrite compares the column itself, which drops date_trunc and its conversion, whose error TRY would catch
+	if (rewriter.InTry() && bindings[1].get().CanThrow()) {
+		return nullptr;
+	}
 	auto comparison_type = expr.GetExpressionType();
 	auto &left = BoundComparisonExpression::LeftMutable(expr);
 	auto &right = BoundComparisonExpression::RightMutable(expr);

@@ -61,10 +61,15 @@ unique_ptr<Expression> MoveConstantsRule::Apply(LogicalOperator &op, vector<refe
 	D_ASSERT(arithmetic.GetChildren()[0]->GetReturnType().IsIntegral());
 	if (inner_constant.GetValue().IsNull() || outer_constant.GetValue().IsNull()) {
 		if (comparison.GetExpressionType() == ExpressionType::COMPARE_DISTINCT_FROM ||
-		    comparison.GetExpressionType() == ExpressionType::COMPARE_NOT_DISTINCT_FROM) {
+		    comparison.GetExpressionType() == ExpressionType::COMPARE_NOT_DISTINCT_FROM ||
+		    !rewriter.CanDropExpression(comparison)) {
 			return nullptr;
 		}
 		return make_uniq<BoundConstantExpression>(Value(comparison.GetReturnType()));
+	}
+	// moving the constant removes the arithmetic, whose overflow TRY would catch
+	if (rewriter.InTry() && arithmetic.CanThrow()) {
+		return nullptr;
 	}
 	auto &constant_type = outer_constant.GetReturnType();
 	hugeint_t outer_value = IntegralValue::Get(outer_constant.GetValue());
@@ -264,12 +269,17 @@ unique_ptr<Expression> MoveUnaryMinusRule::Apply(LogicalOperator &op, vector<ref
 	// Handle NULL values
 	if (outer_constant.GetValue().IsNull()) {
 		if (comparison.GetExpressionType() == ExpressionType::COMPARE_DISTINCT_FROM ||
-		    comparison.GetExpressionType() == ExpressionType::COMPARE_NOT_DISTINCT_FROM) {
+		    comparison.GetExpressionType() == ExpressionType::COMPARE_NOT_DISTINCT_FROM ||
+		    !rewriter.CanDropExpression(comparison)) {
 			return nullptr;
 		}
 		return make_uniq<BoundConstantExpression>(Value(comparison.GetReturnType()));
 	}
 
+	// moving the negation removes it, and its overflow TRY would catch
+	if (rewriter.InTry() && negation.CanThrow()) {
+		return nullptr;
+	}
 	auto &constant_type = outer_constant.GetReturnType();
 	unique_ptr<Expression> nan_guard;
 	bool nan_guard_disjunctive = false;

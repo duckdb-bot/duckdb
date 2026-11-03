@@ -133,7 +133,7 @@
 					"variant"
 				],
 				"description": "Returns the `field` from the `input_variant` if it's an OBJECT.",
-				"example": "variant_extract({'a': 42, 'b': [1,2,3])::VARIANT, 'b')"
+				"example": "variant_extract({'a': 42, 'b': [1,2,3]}::VARIANT, 'b')"
 			},
 			{
 				"parameters": [
@@ -150,7 +150,7 @@
 					"variant"
 				],
 				"description": "Returns the entry at `index` from the `input_variant` if it's an ARRAY.",
-				"example": "variant_extract([1,2,3])::VARIANT, 0)"
+				"example": "variant_extract([1,2,3]::VARIANT, 1)"
 			}
 		],
 		"type": "scalar_function_set"
@@ -173,7 +173,7 @@
               "variant"
             ],
             "description": "Returns the stringified representation at `path` from the `input_variant`.",
-            "example": "variant_extract_string({'a': 42, 'b': [1,2,3])::VARIANT, 'b')"
+            "example": "variant_extract_string({'a': 42, 'b': [1,2,3]}::VARIANT, 'b')"
           },
           {
             "parameters": [
@@ -190,7 +190,7 @@
               "variant"
             ],
             "description": "Returns the stringified representation for each `path` from the `input_variant`.",
-            "example": "variant_extract_string({'a': 42, 'b': [1,2,3])::VARIANT, ['a', 'b'])"
+            "example": "variant_extract_string({'a': 42, 'b': [1,2,3]}::VARIANT, ['a', 'b'])"
           }
         ],
       "type": "scalar_function_set"
@@ -199,7 +199,7 @@
 		"name": "variant_normalize",
 		"parameters": "input_variant",
 		"description": "Normalizes the `input_variant` to a canonical representation.",
-		"example": "variant_normalize({'b': [1,2,3], 'a': 42})::VARIANT)",
+		"example": "variant_normalize({'b': [1,2,3], 'a': 42}::VARIANT)",
 		"categories": [
 			"variant"
 		],
@@ -272,7 +272,7 @@
 		"name": "variant_typeof",
 		"parameters": "input_variant",
 		"description": "Returns the internal type of the `input_variant`.",
-		"example": "variant_typeof({'a': 42, 'b': [1,2,3]})::VARIANT)",
+		"example": "variant_typeof({'a': 42, 'b': [1,2,3]}::VARIANT)",
 		"categories": [
 			"variant"
 		],

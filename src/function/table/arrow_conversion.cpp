@@ -1287,6 +1287,10 @@ void ArrowToDuckDBConversion::ColumnArrowToDuckDB(Vector &vector, ArrowArray &ar
 
 		auto &validity_mask = FlatVector::ValidityMutable(vector);
 		auto &union_info = arrow_type.GetTypeInfo<ArrowStructInfo>();
+		if (NumericCast<idx_t>(array.n_children) != union_info.ChildCount()) {
+			throw InvalidInputException("Arrow union array has %d children, but its schema has %d members",
+			                            array.n_children, union_info.ChildCount());
+		}
 		const auto member_offset = parent_offset + NumericCast<uint64_t>(array.offset);
 		const auto member_nested_offset = GetChildNestedOffset(array, nested_offset);
 		duckdb::vector<Vector> children;
@@ -1325,13 +1329,7 @@ void ArrowToDuckDBConversion::ColumnArrowToDuckDB(Vector &vector, ArrowArray &ar
 		}
 
 		for (idx_t row_idx = 0; row_idx < size; row_idx++) {
-			auto tag = NumericCast<uint8_t>(type_ids[row_idx]);
-
-			auto out_of_range = tag >= array.n_children;
-			if (out_of_range) {
-				throw InvalidInputException("Arrow union tag out of range: %d", tag);
-			}
-
+			auto tag = NumericCast<uint8_t>(union_info.GetUnionMember(type_ids[row_idx]));
 			const Value &value = children[tag].GetValue(row_idx);
 			vector.SetValue(row_idx, value.IsNull() ? Value() : Value::UNION(members, tag, value));
 		}

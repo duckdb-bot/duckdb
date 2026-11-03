@@ -6,6 +6,7 @@
 #include "duckdb/common/file_opener.hpp"
 #include "duckdb/common/helper.hpp"
 #include "duckdb/common/memory_mapped_file.hpp"
+#include "duckdb/common/operator/add.hpp"
 #include "duckdb/common/process_util.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/thread.hpp"
@@ -241,7 +242,16 @@ static void CloseFileAndAppendError(int fd, string &extended_error) {
 static FileMetadata StatsFromStruct(struct stat s) {
 	FileMetadata file_metadata;
 	file_metadata.file_size = s.st_size;
-	file_metadata.last_modification_time = Timestamp::FromEpochSeconds(s.st_mtime);
+#ifdef __APPLE__
+	const auto &modification_time = s.st_mtimespec;
+#else
+	const auto &modification_time = s.st_mtim;
+#endif
+	// with the fraction of a second, so that a file rewritten within the same second gets another version tag
+	const auto modification_seconds = Timestamp::FromEpochSeconds(static_cast<int64_t>(modification_time.tv_sec));
+	file_metadata.last_modification_time =
+	    Timestamp::FromEpochMicroSeconds(AddOperatorOverflowCheck::Operation<int64_t, int64_t, int64_t>(
+	        modification_seconds.value, static_cast<int64_t>(modification_time.tv_nsec) / Interval::NANOS_PER_MICRO));
 	file_metadata.device_id = static_cast<idx_t>(s.st_dev);
 	file_metadata.file_id = static_cast<idx_t>(s.st_ino);
 
@@ -1765,7 +1775,9 @@ optional<FileMetadata> LocalFileSystem::GetStatsIfExists(const OpenFileInfo &fil
 	                              OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
 	if (raw_handle == INVALID_HANDLE_VALUE) {
 		auto error_code = GetLastError();
-		if (error_code == ERROR_FILE_NOT_FOUND || error_code == ERROR_PATH_NOT_FOUND) {
+		// a name that cannot be a local file does not exist, as for ENOENT and ENOTDIR
+		if (error_code == ERROR_FILE_NOT_FOUND || error_code == ERROR_PATH_NOT_FOUND ||
+		    error_code == ERROR_INVALID_NAME || error_code == ERROR_BAD_PATHNAME || error_code == ERROR_DIRECTORY) {
 			return nullopt;
 		}
 		SetLastError(error_code);

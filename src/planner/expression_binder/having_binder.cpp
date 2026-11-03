@@ -69,6 +69,8 @@ BindResult HavingBinder::BindColumnRef(unique_ptr<ParsedExpression> &expr_ptr, i
 		return expr;
 	}
 
+	// the expression of a generated column leaves the expression tree here, so it is checked like a root expression
+	binder.CheckRequiresRebind(*expr.expression);
 	// Return a GROUP BY column reference expression.
 	auto return_type = expr.expression->GetReturnType();
 	auto group_idx = ColumnBinding::PushExpression(node.groups.group_expressions, std::move(expr.expression));

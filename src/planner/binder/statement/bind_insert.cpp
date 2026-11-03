@@ -122,6 +122,8 @@ unique_ptr<LogicalOperator> Binder::ResolveInputProjection(LogicalInsert &insert
 		auto source_binding = source_bindings[mapped_index];
 		auto expression = table.GetDefaultExpressionForColumn(context, original_type, col.Type(), source_binding,
 		                                                      *insert.bound_defaults[storage_idx]);
+		// the catalog casts the value to the type of the column, and a cast to TIMESTAMPTZ reads the TimeZone
+		CheckRequiresRebind(*expression);
 		if (!expression->HasQueryLocation() && root->type == LogicalOperatorType::LOGICAL_PROJECTION) {
 			expression->SetQueryLocation(root->expressions[mapped_index]->GetQueryLocation());
 		}

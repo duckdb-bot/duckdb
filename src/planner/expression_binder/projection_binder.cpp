@@ -22,6 +22,8 @@ BindResult ProjectionBinder::BindColumnRef(unique_ptr<ParsedExpression> &expr_pt
 	if (result.expression->GetExpressionClass() == ExpressionClass::BOUND_LAMBDA_REF) {
 		return result;
 	}
+	// the expression of a generated column leaves the expression tree here, so it is checked like a root expression
+	binder.CheckRequiresRebind(*result.expression);
 	// we have successfully bound a column - push it into the projection and emit a reference
 	auto return_type = result.expression->GetReturnType();
 	auto alias = result.expression->GetName();

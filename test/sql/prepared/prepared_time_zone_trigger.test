@@ -1,0 +1,88 @@
+# name: test/sql/prepared/prepared_time_zone_trigger.test
+# description: A prepared RETURNING on a table with a trigger is bound again when it reads the TimeZone
+# group: [prepared]
+
+require icu
+
+require noforcestorage
+
+statement ok
+SET TimeZone = 'UTC';
+
+statement ok
+CREATE TABLE stamps (id INTEGER, ts TIMESTAMPTZ);
+
+statement ok
+CREATE TABLE log (s VARCHAR);
+
+statement ok
+CREATE TRIGGER stamps_log AFTER INSERT ON stamps FOR EACH STATEMENT INSERT INTO log VALUES ('inserted');
+
+# the RETURNING list of a statement with triggers is bound by a binder of its own
+statement ok
+PREPARE insert_returning AS INSERT INTO stamps SELECT 1, to_timestamp(1767225600) RETURNING ts::VARCHAR;
+
+query I
+EXECUTE insert_returning;
+----
+2026-01-01 00:00:00+00
+
+statement ok
+SET TimeZone = 'Europe/Amsterdam';
+
+query I
+EXECUTE insert_returning;
+----
+2026-01-01 01:00:00+01
+
+query I
+SELECT count(*) FROM log;
+----
+2
+
+# a MERGE in a trigger body projects the generated column of its condition, which reads the TimeZone
+statement ok
+PRAGMA disable_optimizer;
+
+statement ok
+SET TimeZone = 'UTC';
+
+statement ok
+CREATE TABLE merge_target (id INTEGER, flag VARCHAR);
+
+statement ok
+INSERT INTO merge_target VALUES (1, 'old');
+
+statement ok
+CREATE TABLE merge_source (id INTEGER, ts TIMESTAMPTZ, txt VARCHAR GENERATED ALWAYS AS (ts::VARCHAR));
+
+statement ok
+INSERT INTO merge_source VALUES (1, to_timestamp(1767225600));
+
+statement ok
+CREATE TABLE fire (x INTEGER);
+
+statement ok
+CREATE TRIGGER fire_merge AFTER INSERT ON fire FOR EACH STATEMENT MERGE INTO merge_target USING merge_source src ON merge_target.id = src.id WHEN MATCHED AND src.txt = '2026-01-01 00:00:00+00' THEN UPDATE SET flag = 'utc' WHEN MATCHED THEN UPDATE SET flag = 'other';
+
+statement ok
+PREPARE trigger_merge AS INSERT INTO fire VALUES (1);
+
+statement ok
+EXECUTE trigger_merge;
+
+query I
+SELECT flag FROM merge_target;
+----
+utc
+
+statement ok
+SET TimeZone = 'Europe/Amsterdam';
+
+statement ok
+EXECUTE trigger_merge;
+
+query I
+SELECT flag FROM merge_target;
+----
+other

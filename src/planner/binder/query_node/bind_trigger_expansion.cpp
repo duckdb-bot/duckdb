@@ -504,6 +504,10 @@ BoundStatement Binder::ExpandTriggers(QueryNode &node, TableCatalogEntry &table,
 		result.types.push_back(result_type);
 		proj_exprs.push_back(std::move(bound_expr));
 	}
+	if (returning_binder_owner->GetStatementProperties().always_require_rebind) {
+		// the RETURNING binder has statement properties of its own
+		SetAlwaysRequireRebind();
+	}
 
 	// Virtual columns bind to a sentinel id, but the chain materialised them as trailing columns at
 	// logical_count + k.  Remap those bindings to their real positions.

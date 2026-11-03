@@ -1,0 +1,15 @@
+# name: benchmark/micro/optimizer/constant_order_mixed_chain.benchmark
+# description: Integer additions and multiplications with constants spread over the chain
+# group: [optimizer]
+
+name Constant Order Mixed Chain
+group optimizer
+
+load
+CREATE TABLE t AS SELECT (i % 1000)::INTEGER AS a, (i % 997)::INTEGER AS b FROM range(50000000) r(i);
+
+run
+SELECT sum(a + 1 + b + 2), sum(1 * a * 2 * b * 3), sum(a + 1 + 2) FROM t;
+
+result III
+50024876925	74628899230950	25125000000

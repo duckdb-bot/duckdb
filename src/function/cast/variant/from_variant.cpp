@@ -11,6 +11,7 @@
 #include "duckdb/function/cast/default_casts.hpp"
 #include "duckdb/common/types/variant.hpp"
 #include "duckdb/function/scalar/variant_utils.hpp"
+#include "duckdb/common/operator/cast_operators.hpp"
 #include "duckdb/common/serializer/varint.hpp"
 #include "yyjson.hpp"
 
@@ -881,6 +882,36 @@ static bool TryFromShreddedCast(Vector &variant_vec, Vector &result) {
 	return false;
 }
 
+//! Casts each row on its own, so a row nested too deeply for VariantVisitor only makes its own row NULL
+static bool CastVariantRowByRow(Vector &variant_vec, Vector &result, idx_t count, optional_ptr<ClientContext> client,
+                                CastParameters &parameters, const string &depth_error) {
+	auto &target_type = result.GetType();
+	Vector cast_rows(target_type, count);
+	bool success = true;
+	SelectionVector row_sel(1);
+	for (idx_t i = 0; i < count; i++) {
+		row_sel.set_index(0, i);
+		Vector row_vec(variant_vec, row_sel, 1);
+		RecursiveUnifiedVectorFormat row_format;
+		Vector::RecursiveToUnifiedFormat(row_vec, row_format);
+		FromVariantConversionData row_data(row_format, client);
+		Vector row_result(target_type, 1);
+		try {
+			if (!CastVariant(row_data, row_result, *ConstantVector::ZeroSelectionVector(), 0, 1, optional_idx())) {
+				success = FinalizeErrorMessage(row_data, row_result, parameters);
+			}
+		} catch (const InvalidInputException &) {
+			FlatVector::SetNull(cast_rows, i, true);
+			HandleCastError::AssignError(depth_error, parameters);
+			success = false;
+			continue;
+		}
+		VectorOperations::Copy(row_result, cast_rows, 1, 0, i);
+	}
+	result.Reference(cast_rows);
+	return success;
+}
+
 static bool CastFromVARIANT(Vector &variant_vec, Vector &result, idx_t count, CastParameters &parameters) {
 	if (TryFromShreddedCast(variant_vec, result)) {
 		return true;
@@ -905,7 +936,16 @@ static bool CastFromVARIANT(Vector &variant_vec, Vector &result, idx_t count, Ca
 		sel = zero_sel;
 	}
 
-	auto success = CastVariant(conversion_data, result, sel, 0, count, optional_idx());
+	bool success;
+	try {
+		success = CastVariant(conversion_data, result, sel, 0, count, optional_idx());
+	} catch (const InvalidInputException &ex) {
+		if (!parameters.error_message) {
+			throw;
+		}
+		// the failed attempt may have left partial results, so the rows are cast again into a new vector
+		return CastVariantRowByRow(variant_vec, result, count, client, parameters, ErrorData(ex).RawMessage());
+	}
 	if (variant_vec.GetVectorType() == VectorType::CONSTANT_VECTOR) {
 		result.SetVectorType(VectorType::CONSTANT_VECTOR);
 	}

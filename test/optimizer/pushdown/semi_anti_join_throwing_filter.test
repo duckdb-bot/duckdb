@@ -24,6 +24,19 @@ query I
 SELECT l.i FROM src l SEMI JOIN dst r ON l.i = r.i WHERE l.i = 'bad';
 ----
 
+# an IS NOT DISTINCT FROM key, a BETWEEN and an IN go through the same copy, so they must not fail either
+query I
+SELECT l.i FROM src l ANTI JOIN dst r ON l.i IS NOT DISTINCT FROM r.i WHERE l.i = CAST('bad' AS INTEGER);
+----
+
+query I
+SELECT l.i FROM src l SEMI JOIN dst r ON l.i = r.i WHERE l.i BETWEEN 0 AND CAST('bad' AS INTEGER);
+----
+
+query I
+SELECT l.i FROM src l SEMI JOIN dst r ON l.i = r.i WHERE l.i IN (0, CAST('bad' AS INTEGER));
+----
+
 query I
 SELECT l.i FROM src l WHERE l.i = CAST('bad' AS INTEGER);
 ----
@@ -82,6 +95,17 @@ CREATE TABLE r(i INTEGER);
 query I
 SELECT l.i FROM l SEMI JOIN r ON l.i = r.i AND r.i = CAST('bad' AS INTEGER);
 ----
+
+# the plan keeps the one cast on r, and no copy of it reaches l
+query II
+EXPLAIN SELECT l.i FROM l SEMI JOIN r ON l.i = r.i AND r.i = CAST('bad' AS INTEGER);
+----
+physical_plan	<REGEX>:(?s).*Filters: i = CAST\('bad' AS INTEGER\).*
+
+query II
+EXPLAIN SELECT l.i FROM l SEMI JOIN r ON l.i = r.i AND r.i = CAST('bad' AS INTEGER);
+----
+physical_plan	<!REGEX>:(?s).*CAST\('bad' AS INTEGER\).*CAST\('bad' AS INTEGER\).*
 
 query I
 SELECT l.i FROM l ANTI JOIN r ON l.i = r.i AND r.i = CAST('bad' AS INTEGER);

@@ -73,8 +73,13 @@ void Binder::BindUpdateSet(TableIndex proj_index, unique_ptr<LogicalOperator> &r
 			auto expr_index = ColumnBinding::PushExpression(projection_expressions, std::move(bound_expr));
 			auto source_binding = ColumnBinding(proj_index, expr_index);
 
-			update_expressions.push_back(table.GetDefaultExpressionForColumn(
-			    context, bound_type, column.Type(), source_binding, *bound_defaults[column.StorageOid()]));
+			auto expression = table.GetDefaultExpressionForColumn(context, bound_type, column.Type(), source_binding,
+			                                                      *bound_defaults[column.StorageOid()]);
+			if (expression->RequiresRebind()) {
+				// the catalog casts the value to the type of the column, and a cast to TIMESTAMPTZ reads the TimeZone
+				SetAlwaysRequireRebind();
+			}
+			update_expressions.push_back(std::move(expression));
 		}
 	}
 }

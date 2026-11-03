@@ -145,7 +145,7 @@ BoundStatement Binder::Bind(ExpressionListRef &expr) {
 				auto source_type = ExpressionBinder::GetExpressionReturnType(*list[val_idx]);
 				auto &target_type = result.types[val_idx];
 				WarnIfDecimalScaleIsReduced(context, source_type, target_type, val_idx, warned_about_scale_reduction);
-				list[val_idx] = BoundCastExpression::AddCastToType(context, std::move(list[val_idx]), target_type);
+				list[val_idx] = AddCastToType(std::move(list[val_idx]), target_type);
 			}
 		}
 	}

@@ -25,7 +25,6 @@
 #include "duckdb/planner/operator/logical_trigger.hpp"
 #include "duckdb/planner/operator_extension.hpp"
 #include "duckdb/planner/planner_extension.hpp"
-#include "duckdb/planner/logical_operator_visitor.hpp"
 #include "duckdb/planner/logical_plan_verifier.hpp"
 #include "duckdb/planner/operator/logical_explain.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
@@ -198,18 +197,6 @@ static void RunPostBindExtensions(ClientContext &context, Binder &binder, BoundS
 	}
 }
 
-//! Whether an expression of the plan has to be bound again on every execution, such as a cast that reads a setting
-static bool PlanRequiresRebind(const LogicalOperator &op) {
-	bool requires_rebind = false;
-	LogicalOperatorVisitor::EnumerateExpressions(op, [&](const unique_ptr<Expression> *expr) {
-		requires_rebind = requires_rebind || (*expr)->RequiresRebind();
-	});
-	for (auto &child : op.children) {
-		requires_rebind = requires_rebind || PlanRequiresRebind(*child);
-	}
-	return requires_rebind;
-}
-
 void Planner::CreatePlan(SQLStatement &statement) {
 	auto &profiler = QueryProfiler::Get(context);
 	auto parameter_count = statement.named_param_map.size();
@@ -274,10 +261,6 @@ void Planner::CreatePlan(SQLStatement &statement) {
 		D_ASSERT(VerifyCanonicalComparisonJoins(*this->plan));
 	}
 	this->properties = binder->GetStatementProperties();
-	if (this->plan && !properties.always_require_rebind && PlanRequiresRebind(*plan)) {
-		// the binder marks the expressions it binds, the casts added to the plan afterwards are found here
-		properties.always_require_rebind = true;
-	}
 	this->properties.parameter_count = parameter_count;
 	properties.bound_all_parameters = !bound_parameters.rebind && parameters_resolved;
 

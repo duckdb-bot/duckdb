@@ -3771,7 +3771,9 @@ void ShellState::DetectDarkLightMode() {
 		return;
 	}
 	if (!stdout_is_console) {
-		// not printing to console - don't auto-detect
+		// not printing to console - don't auto-detect, messages on the console use the mixed palette
+		highlight_mode = HighlightMode::MIXED_MODE;
+		highlight.ToggleMode(HighlightMode::MIXED_MODE);
 		return;
 	}
 	// detect terminal colors
@@ -3784,6 +3786,7 @@ void ShellState::DetectDarkLightMode() {
 		highlight.ToggleMode(HighlightMode::LIGHT_MODE);
 	} else {
 		highlight_mode = HighlightMode::MIXED_MODE;
+		highlight.ToggleMode(HighlightMode::MIXED_MODE);
 	}
 #endif
 }

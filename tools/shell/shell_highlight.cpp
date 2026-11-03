@@ -280,6 +280,10 @@ void ShellHighlight::ToggleMode(HighlightMode mode) {
 		SetColor(HighlightElementType::DATABASE_NAME, PrintColor::ORANGE3, PrintIntensity::STANDARD, user_configured);
 		SetColor(HighlightElementType::SCHEMA_NAME, PrintColor::DEEPSKYBLUE1, PrintIntensity::STANDARD,
 		         user_configured);
+		// the error colors of the dark and light palettes go back to the defaults too
+		SetColor(HighlightElementType::ERROR_TOKEN, PrintColor::RED, PrintIntensity::STANDARD, user_configured);
+		SetColor(HighlightElementType::ERROR_EMPHASIS, PrintColor::RED, PrintIntensity::BOLD, user_configured);
+		SetColor(HighlightElementType::ERROR_SUGGESTION, PrintColor::RED, PrintIntensity::BOLD, user_configured);
 	}
 
 	if (mode == HighlightMode::DARK_MODE) {

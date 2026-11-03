@@ -74,7 +74,7 @@ def test_deprecated_highlight_constant(shell):
     result.check_stderr(".constant has been split into numeric_constant and string_constant")
     result.check_stderr(".highlight_colors numeric_constant brightred and .highlight_colors string_constant brightred")
 
-def run_in_pty(shell, arguments, term, response=None, no_color=None, extra_env=None):
+def run_in_pty(shell, arguments, term, response=None, no_color=None, extra_env=None, redirect_stdout=False):
     # runs the shell on a pseudo-terminal that either stays silent or answers the background color query
     import pty, select, time
     master, slave = pty.openpty()
@@ -89,7 +89,8 @@ def run_in_pty(shell, arguments, term, response=None, no_color=None, extra_env=N
     if term is not None:
         env['TERM'] = term
     start = time.monotonic()
-    process = subprocess.Popen([shell, '-no-init', *arguments], stdin=slave, stdout=slave, stderr=slave, env=env)
+    stdout = subprocess.DEVNULL if redirect_stdout else slave
+    process = subprocess.Popen([shell, '-no-init', *arguments], stdin=slave, stdout=stdout, stderr=slave, env=env)
     os.close(slave)
     output = b''
     answered = False
@@ -104,6 +105,17 @@ def run_in_pty(shell, arguments, term, response=None, no_color=None, extra_env=N
                 os.write(master, response)
                 answered = True
         process.wait(timeout=5)
+        # the child may exit before its last output is read, drain the terminal until it is closed
+        while time.monotonic() - start < 25:
+            if not select.select([master], [], [], 0.2)[0]:
+                break
+            try:
+                chunk = os.read(master, 4096)
+            except OSError:
+                break
+            if not chunk:
+                break
+            output += chunk
     finally:
         if process.poll() is None:
             process.kill()
@@ -167,6 +179,31 @@ def test_colorfgbg(shell, colorfgbg, error_color):
     assert b'\x1b]11;?' not in output
     assert error_color in output
     assert elapsed < 4
+
+# the fallback of automatic mode uses the mixed palette, whatever palette was set before
+@pytest.mark.skipif(os.name == 'nt', reason="requires a POSIX pseudo-terminal")
+@pytest.mark.parametrize("arguments", [
+    ['-light-mode', '-cmd', '.highlight_mode auto', '-c', 'SELECT missing_column'],
+    ['-dark-mode', '-cmd', '.highlight_mode auto', '-c', 'SELECT missing_column'],
+    ['-light-mode', '-cmd', '.highlight_mode mixed', '-c', 'SELECT missing_column'],
+])
+def test_mixed_fallback_restores_palette(shell, arguments):
+    status, output, _ = run_in_pty(shell, arguments, 'dumb')
+    assert status != 0, output
+    assert b'\x1b]11;?' not in output
+    assert b'\x1b[31m' in output  # mixed-mode error color
+    assert b'\x1b[38;5;124m' not in output  # light-mode error color
+    assert b'\x1b[38;5;203m' not in output  # dark-mode error color
+
+# with stdout redirected there is no detection either, and the messages on the terminal use the mixed palette
+@pytest.mark.skipif(os.name == 'nt', reason="requires a POSIX pseudo-terminal")
+def test_mixed_fallback_with_redirected_stdout(shell):
+    arguments = ['-light-mode', '-cmd', '.highlight_mode auto', '-c', 'SELECT missing_column']
+    status, output, _ = run_in_pty(shell, arguments, 'xterm-256color', redirect_stdout=True)
+    assert status != 0, output
+    assert b'\x1b]11;?' not in output
+    assert b'\x1b[31m' in output  # mixed-mode error color
+    assert b'\x1b[38;5;124m' not in output  # light-mode error color
 
 @pytest.mark.skipif(os.name == 'nt', reason="requires a POSIX pseudo-terminal")
 def test_color_probe_answered_by_terminal(shell):

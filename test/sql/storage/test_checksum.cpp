@@ -1,8 +1,147 @@
 #include "catch.hpp"
+#include "duckdb/common/checksum.hpp"
+#include "duckdb/common/error_data.hpp"
 #include "duckdb/common/file_system.hpp"
+#include "duckdb/common/unordered_map.hpp"
 #include "test_helpers.hpp"
 
 using namespace duckdb;
+
+namespace {
+
+//! Zero the first two equal non-zero 8-byte words of a buffer, counted from its start, optionally of a given value
+bool ZeroTwoEqualWords(data_ptr_t data, idx_t size, optional_idx value = optional_idx()) {
+	unordered_map<uint64_t, idx_t> first_offset;
+	for (idx_t offset = 0; offset + sizeof(uint64_t) <= size; offset += sizeof(uint64_t)) {
+		auto word = Load<uint64_t>(data + offset);
+		if (word == 0 || (value.IsValid() && word != value.GetIndex())) {
+			continue;
+		}
+		auto entry = first_offset.find(word);
+		if (entry == first_offset.end()) {
+			first_offset[word] = offset;
+			continue;
+		}
+		Store<uint64_t>(0, data + entry->second);
+		Store<uint64_t>(0, data + offset);
+		return true;
+	}
+	return false;
+}
+
+//! Swap the first two adjacent words with the values 42 and 43
+bool SwapTwoAdjacentValues(data_ptr_t data, idx_t size) {
+	for (idx_t offset = 0; offset + 2 * sizeof(uint64_t) <= size; offset += sizeof(uint64_t)) {
+		auto first = Load<uint64_t>(data + offset);
+		auto second = Load<uint64_t>(data + offset + sizeof(uint64_t));
+		if (first == 42 && second == 43) {
+			Store<uint64_t>(second, data + offset);
+			Store<uint64_t>(first, data + offset + sizeof(uint64_t));
+			return true;
+		}
+	}
+	return false;
+}
+
+struct ChecksumTestFile {
+	unique_ptr<FileHandle> handle;
+	unsafe_unique_array<data_t> data;
+	idx_t size;
+};
+
+ChecksumTestFile ReadChecksumTestFile(FileSystem &fs, const string &path) {
+	ChecksumTestFile contents;
+	contents.handle = fs.OpenFile(path, FileFlags::FILE_FLAGS_READ | FileFlags::FILE_FLAGS_WRITE);
+	contents.size = contents.handle->GetFileSize();
+	contents.data = make_unsafe_uniq_array<data_t>(contents.size);
+	contents.handle->Read(QueryContext(), contents.data.get(), contents.size, 0);
+	return contents;
+}
+
+void WriteChecksumTestFile(ChecksumTestFile &contents) {
+	contents.handle->Write(QueryContext(), contents.data.get(), contents.size, 0);
+	contents.handle->Sync();
+	contents.handle.reset();
+}
+
+//! The block allocation size of the named database, or of the first one listed when no name is given
+idx_t GetBlockAllocSize(Connection &con, const string &database_name = string()) {
+	string query = "SELECT block_size FROM pragma_database_size()";
+	if (!database_name.empty()) {
+		query += " WHERE database_name = '" + database_name + "'";
+	}
+	auto result = con.Query(query);
+	REQUIRE_NO_FAIL(*result);
+	return result->Collection().GetValue(0, 0).GetValue<idx_t>();
+}
+
+//! How many data blocks of a database file each checksum type verifies, a block never written verifies with none
+struct BlockChecksumCounts {
+	idx_t word_xor = 0;
+	idx_t xxhash64 = 0;
+};
+
+BlockChecksumCounts CountBlockChecksumTypes(FileSystem &fs, const string &path, idx_t block_alloc_size) {
+	BlockChecksumCounts counts;
+	auto contents = ReadChecksumTestFile(fs, path);
+	auto data_size = block_alloc_size - Storage::DEFAULT_BLOCK_HEADER_SIZE;
+	for (idx_t block_start = Storage::FILE_HEADER_SIZE * 3; block_start + block_alloc_size <= contents.size;
+	     block_start += block_alloc_size) {
+		auto block = contents.data.get() + block_start;
+		auto stored_checksum = Load<uint64_t>(block);
+		auto data = block + Storage::DEFAULT_BLOCK_HEADER_SIZE;
+		if (Checksum(data, data_size, ChecksumType::WORD_XOR) == stored_checksum) {
+			counts.word_xor++;
+		}
+		if (Checksum(data, data_size, ChecksumType::XXHASH64) == stored_checksum) {
+			counts.xxhash64++;
+		}
+	}
+	contents.handle.reset();
+	return counts;
+}
+
+//! Write a table of the values 42 and 43, damage the first data block that allows it and check that reading fails
+template <class DAMAGE>
+void TestDataBlockDamageIsDetected(const string &name, DAMAGE damage) {
+	auto fs = FileSystem::CreateLocal();
+	auto storage_database = TestCreatePath(name);
+	auto config = GetTestConfig();
+	config->options.storage_compatibility = StorageCompatibility::FromString("v2.1.0");
+
+	DeleteDatabase(storage_database);
+	idx_t block_alloc_size;
+	{
+		DuckDB db(storage_database, config.get());
+		Connection con(db);
+		REQUIRE_NO_FAIL(con.Query("PRAGMA force_compression='uncompressed'"));
+		REQUIRE_NO_FAIL(con.Query("CREATE TABLE t AS SELECT (42 + range % 2)::BIGINT AS v FROM range(10000)"));
+		REQUIRE_NO_FAIL(con.Query("CHECKPOINT"));
+		block_alloc_size = GetBlockAllocSize(con);
+	}
+
+	auto contents = ReadChecksumTestFile(*fs, storage_database);
+	bool found = false;
+	for (idx_t block_start = Storage::FILE_HEADER_SIZE * 3; !found && block_start < contents.size;
+	     block_start += block_alloc_size) {
+		auto data_start = block_start + Storage::DEFAULT_BLOCK_HEADER_SIZE;
+		auto data_end = MinValue<idx_t>(block_start + block_alloc_size, contents.size);
+		found = damage(contents.data.get() + data_start, data_end - data_start);
+	}
+	REQUIRE(found);
+	WriteChecksumTestFile(contents);
+
+	{
+		DuckDB db(storage_database, config.get());
+		Connection con(db);
+		auto result = con.Query("SELECT sum(v) FROM t");
+		REQUIRE(result->HasError());
+		REQUIRE(StringUtil::Contains(result->GetError(), "Corrupt database file: computed checksum"));
+	}
+	DeleteDatabase(storage_database);
+}
+
+} // namespace
 
 TEST_CASE("Test functioning of checksum", "[storage]") {
 	duckdb::unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
@@ -32,5 +171,185 @@ TEST_CASE("Test functioning of checksum", "[storage]") {
 	// reloading the database no longer works
 	REQUIRE_THROWS(database = make_uniq<DuckDB>(storage_database, config.get()));
 
+	DeleteDatabase(storage_database);
+}
+
+TEST_CASE("Test that the checksum detects two zeroed equal words in a block", "[storage]") {
+	TestDataBlockDamageIsDetected("checksum_equal_words_block", [](data_ptr_t data, idx_t size) {
+		// two of the stored values are equal words of a data block
+		return ZeroTwoEqualWords(data, size, 42);
+	});
+}
+
+TEST_CASE("Test that the checksum detects two swapped words in a block", "[storage]") {
+	TestDataBlockDamageIsDetected("checksum_swapped_words_block", SwapTwoAdjacentValues);
+}
+
+TEST_CASE("Test that the file headers keep the word XOR checksum", "[storage]") {
+	auto fs = FileSystem::CreateLocal();
+	auto storage_database = TestCreatePath("checksum_file_headers");
+	auto config = GetTestConfig();
+	config->options.storage_compatibility = StorageCompatibility::FromString("v2.1.0");
+
+	DeleteDatabase(storage_database);
+	{
+		DuckDB db(storage_database, config.get());
+		Connection con(db);
+		REQUIRE_NO_FAIL(con.Query("CREATE TABLE t AS SELECT range AS v FROM range(10000)"));
+		REQUIRE_NO_FAIL(con.Query("CHECKPOINT"));
+	}
+
+	// older releases verify the database headers before they read the storage version
+	auto contents = ReadChecksumTestFile(*fs, storage_database);
+	REQUIRE(contents.size >= Storage::FILE_HEADER_SIZE * 3);
+	for (idx_t header_start = 0; header_start < Storage::FILE_HEADER_SIZE * 3;
+	     header_start += Storage::FILE_HEADER_SIZE) {
+		auto header = contents.data.get() + header_start;
+		auto stored_checksum = Load<uint64_t>(header);
+		auto data_size = Storage::FILE_HEADER_SIZE - Storage::DEFAULT_BLOCK_HEADER_SIZE;
+		REQUIRE(Checksum(header + Storage::DEFAULT_BLOCK_HEADER_SIZE, data_size, ChecksumType::WORD_XOR) ==
+		        stored_checksum);
+	}
+	contents.handle.reset();
+	DeleteDatabase(storage_database);
+}
+
+TEST_CASE("Test that the checksum detects two zeroed equal words in a WAL entry", "[storage]") {
+	auto fs = FileSystem::CreateLocal();
+	auto storage_database = TestCreatePath("checksum_equal_words_wal");
+	auto config = GetTestConfig();
+	config->options.storage_compatibility = StorageCompatibility::FromString("v2.1.0");
+	config->options.checkpoint_wal_size = idx_t(-1);
+	config->options.checkpoint_on_shutdown = false;
+
+	DeleteDatabase(storage_database);
+	{
+		DuckDB db(storage_database, config.get());
+		Connection con(db);
+		REQUIRE_NO_FAIL(con.Query("CREATE TABLE t (v BIGINT)"));
+		REQUIRE_NO_FAIL(con.Query("CHECKPOINT"));
+		REQUIRE_NO_FAIL(con.Query("INSERT INTO t SELECT 42 + range % 1 FROM range(1000)"));
+	}
+
+	// after an unframed header, the WAL entries are stored as [size][checksum][payload]
+	auto contents = ReadChecksumTestFile(*fs, storage_database + ".wal");
+	idx_t largest_payload = 0;
+	idx_t largest_payload_size = 0;
+	for (idx_t header_size = 1; header_size < 256 && largest_payload_size == 0; header_size++) {
+		idx_t offset = header_size;
+		idx_t payload = 0;
+		idx_t payload_size = 0;
+		while (offset + 2 * sizeof(uint64_t) <= contents.size) {
+			auto entry_size = Load<uint64_t>(contents.data.get() + offset);
+			if (entry_size == 0 || entry_size > contents.size - offset - 2 * sizeof(uint64_t)) {
+				break;
+			}
+			if (entry_size > payload_size) {
+				payload = offset + 2 * sizeof(uint64_t);
+				payload_size = entry_size;
+			}
+			offset += 2 * sizeof(uint64_t) + entry_size;
+		}
+		if (offset == contents.size) {
+			largest_payload = payload;
+			largest_payload_size = payload_size;
+		}
+	}
+	REQUIRE(largest_payload_size > 0);
+	// the largest entry holds the inserted values
+	REQUIRE(ZeroTwoEqualWords(contents.data.get() + largest_payload, largest_payload_size));
+	WriteChecksumTestFile(contents);
+
+	bool success = false;
+	try {
+		DuckDB db(storage_database, config.get());
+		success = true;
+	} catch (std::exception &ex) {
+		ErrorData error(ex);
+		REQUIRE(error.Type() == ExceptionType::DATA_CORRUPTION);
+		REQUIRE(StringUtil::Contains(error.RawMessage(), "Corrupt WAL file"));
+	}
+	REQUIRE(!success);
+	DeleteDatabase(storage_database);
+}
+
+TEST_CASE("Test that the checksum type follows the storage version a file is created with", "[storage]") {
+	struct VersionChecksum {
+		const char *version;
+		ChecksumType checksum_type;
+	};
+	// DuckDB 2.0.0 reads storage version 69 (v2.0.0 and v2.0.1) and verifies the blocks with the word XOR checksum
+	const vector<VersionChecksum> version_checksums {{"v1.5.0", ChecksumType::WORD_XOR},
+	                                                 {"v2.0.0", ChecksumType::WORD_XOR},
+	                                                 {"v2.0.1", ChecksumType::WORD_XOR},
+	                                                 {"v2.1.0", ChecksumType::XXHASH64}};
+	auto fs = FileSystem::CreateLocal();
+	auto storage_database = TestCreatePath("checksum_storage_versions");
+	for (const auto &version_checksum : version_checksums) {
+		INFO(version_checksum.version);
+		auto config = GetTestConfig();
+		config->options.storage_compatibility = StorageCompatibility::FromString(version_checksum.version);
+
+		DeleteDatabase(storage_database);
+		idx_t block_alloc_size;
+		{
+			DuckDB db(storage_database, config.get());
+			Connection con(db);
+			REQUIRE_NO_FAIL(con.Query("CREATE TABLE t AS SELECT range AS v FROM range(10000)"));
+			REQUIRE_NO_FAIL(con.Query("CHECKPOINT"));
+			block_alloc_size = GetBlockAllocSize(con);
+		}
+
+		auto counts = CountBlockChecksumTypes(*fs, storage_database, block_alloc_size);
+		if (version_checksum.checksum_type == ChecksumType::XXHASH64) {
+			REQUIRE(counts.xxhash64 > 0);
+			REQUIRE(counts.word_xor == 0);
+		} else {
+			REQUIRE(counts.word_xor > 0);
+			REQUIRE(counts.xxhash64 == 0);
+		}
+		DeleteDatabase(storage_database);
+	}
+}
+
+TEST_CASE("Test that a database keeps the checksum of the storage version it was created with", "[storage]") {
+	auto fs = FileSystem::CreateLocal();
+	auto storage_database = TestCreatePath("checksum_storage_upgrade");
+	auto config = GetTestConfig();
+
+	DeleteDatabase(storage_database);
+	{
+		config->options.storage_compatibility = StorageCompatibility::FromString("v1.5.0");
+		DuckDB db(storage_database, config.get());
+		Connection con(db);
+		REQUIRE_NO_FAIL(con.Query("CREATE TABLE t AS SELECT range AS v FROM range(100000)"));
+	}
+	idx_t block_alloc_size;
+	{
+		// raising the storage version of the file keeps the word XOR checksum, for the blocks already written and
+		// for those written from now on
+		DuckDB db(nullptr, config.get());
+		Connection con(db);
+		REQUIRE_NO_FAIL(con.Query("ATTACH '" + storage_database + "' AS upgraded (STORAGE_VERSION 'v2.1.0')"));
+		REQUIRE_NO_FAIL(con.Query("INSERT INTO upgraded.t SELECT range FROM range(100000, 200000)"));
+		REQUIRE_NO_FAIL(con.Query("CHECKPOINT upgraded"));
+		auto result =
+		    con.Query("SELECT tags['storage_version'] FROM duckdb_databases() WHERE database_name = 'upgraded'");
+		REQUIRE(CHECK_COLUMN(*result, 0, {"v2.1.0+"}));
+		block_alloc_size = GetBlockAllocSize(con, "upgraded");
+		REQUIRE_NO_FAIL(con.Query("DETACH upgraded"));
+	}
+	auto counts = CountBlockChecksumTypes(*fs, storage_database, block_alloc_size);
+	REQUIRE(counts.word_xor > 0);
+	REQUIRE(counts.xxhash64 == 0);
+	{
+		DuckDB db(storage_database, config.get());
+		Connection con(db);
+		auto result = con.Query("SELECT count(*), sum(v) FROM t");
+		REQUIRE(CHECK_COLUMN(*result, 0, {200000}));
+		REQUIRE(CHECK_COLUMN(*result, 1, {Value::HUGEINT(19999900000)}));
+		result = con.Query("SELECT tags['storage_version'] FROM duckdb_databases() WHERE NOT internal");
+		REQUIRE(CHECK_COLUMN(*result, 0, {"v2.1.0+"}));
+	}
 	DeleteDatabase(storage_database);
 }

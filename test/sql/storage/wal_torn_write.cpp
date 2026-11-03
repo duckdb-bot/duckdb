@@ -47,7 +47,9 @@ static pair<idx_t, idx_t> GetWALCommitBoundaries(FileSystem &fs, const string &p
 			// Checksum requires aligned input, but this scan tries every possible byte offset.
 			auto entry = duckdb::unique_ptr<data_t[]>(new data_t[entry_size]);
 			memcpy(entry.get(), wal_contents.get() + offset, entry_size);
-			if (Checksum(entry.get(), entry_size) != stored_checksum) {
+			// the checksum type of the WAL follows the database file
+			if (Checksum(entry.get(), entry_size, ChecksumType::WORD_XOR) != stored_checksum &&
+			    Checksum(entry.get(), entry_size, ChecksumType::XXHASH64) != stored_checksum) {
 				break;
 			}
 			offset += entry_size;

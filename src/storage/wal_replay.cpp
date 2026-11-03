@@ -110,6 +110,10 @@ public:
 		return BufferAllocator::Get(state_p.db).Allocate(size);
 	}
 
+	static ChecksumType GetChecksumType(ReplayState &state_p) {
+		return state_p.db.GetStorageManager().GetBlockManager().Cast<SingleFileBlockManager>().GetChecksumType();
+	}
+
 	static WriteAheadLogDeserializer GetEntryDeserializer(ReplayState &state_p, BufferedFileReader &stream,
 	                                                      bool deserialize_only = false) {
 		if (state_p.wal_version == 1) {
@@ -136,7 +140,7 @@ public:
 			stream.ReadData(buffer.get(), size);
 
 			// compute and verify the checksum
-			auto computed_checksum = Checksum(buffer.get(), size);
+			auto computed_checksum = Checksum(buffer.get(), size, GetChecksumType(state_p));
 			if (stored_checksum != computed_checksum) {
 				throw DataCorruptionException(
 				    "Corrupt WAL file: entry at byte position %llu computed checksum %llu does not match "
@@ -214,7 +218,7 @@ public:
 			memcpy(out_buffer.get(), buffer.get() + sizeof(stored_checksum), size);
 
 			// compute and verify the checksum
-			auto computed_checksum = Checksum(out_buffer.get(), size);
+			auto computed_checksum = Checksum(out_buffer.get(), size, GetChecksumType(state_p));
 			if (stored_checksum != computed_checksum) {
 				throw DataCorruptionException(
 				    "Corrupt WAL file: entry at byte position %llu computed checksum %llu does not match "

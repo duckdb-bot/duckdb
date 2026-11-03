@@ -39,7 +39,7 @@ public:
 
 		auto entry = make_uniq_array<data_t>(target.entry_size);
 		memcpy(entry.get(), wal_contents.get() + target.entry_offset, target.entry_size);
-		auto checksum = Checksum(entry.get(), target.entry_size);
+		auto checksum = Checksum(entry.get(), target.entry_size, target.checksum_type);
 		Store<uint64_t>(checksum, wal_contents.get() + target.checksum_offset);
 
 		handle->Write(QueryContext(), wal_contents.get(), wal_size, 0);
@@ -53,6 +53,7 @@ private:
 		idx_t entry_size;
 		idx_t payload_offset;
 		WALType type;
+		ChecksumType checksum_type;
 	};
 
 	vector<Entry> ReadEntries() {
@@ -75,8 +76,13 @@ private:
 				// Checksum requires aligned input, but this scan tries every possible byte offset.
 				auto entry = make_uniq_array<data_t>(entry_size);
 				memcpy(entry.get(), wal_contents.get() + entry_offset, entry_size);
-				if (Checksum(entry.get(), entry_size) != stored_checksum) {
-					break;
+				// the checksum type of the WAL follows the database file
+				ChecksumType checksum_type = ChecksumType::XXHASH64;
+				if (Checksum(entry.get(), entry_size, checksum_type) != stored_checksum) {
+					checksum_type = ChecksumType::WORD_XOR;
+					if (Checksum(entry.get(), entry_size, checksum_type) != stored_checksum) {
+						break;
+					}
 				}
 
 				MemoryStream stream(entry.get(), entry_size);
@@ -90,7 +96,7 @@ private:
 				}
 
 				entries.push_back({offset + sizeof(uint64_t), entry_offset, entry_size,
-				                   entry_offset + stream.GetPosition(), entry_type});
+				                   entry_offset + stream.GetPosition(), entry_type, checksum_type});
 				offset = entry_offset + entry_size;
 			}
 			if (offset == wal_size && !entries.empty()) {

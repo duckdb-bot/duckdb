@@ -2746,6 +2746,8 @@ unique_ptr<ParsedExpression> PEGTransformerFactory::TransformSimpleCaseExpressio
 		result->CaseChecksMutable().push_back(std::move(new_case));
 	}
 	SetCaseElse(*result, std::move(case_else));
+	// the checks compare copies of the operand, the binder evaluates a volatile one once where it can
+	result->SimpleCaseMutable() = true;
 	return std::move(result);
 }
 

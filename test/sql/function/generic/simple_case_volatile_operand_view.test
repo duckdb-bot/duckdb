@@ -1,0 +1,42 @@
+# name: test/sql/function/generic/simple_case_volatile_operand_view.test
+# description: A view or macro with a simple CASE, which keeps its form until it is serialized
+# group: [generic]
+
+statement ok
+CREATE VIEW v AS SELECT count(*) FILTER (WHERE r = 'other') AS other FROM (
+	SELECT CASE (floor(random() * 3))::INTEGER WHEN 0 THEN 'zero' WHEN 1 THEN 'one' WHEN 2 THEN 'two' ELSE 'other' END AS r
+	FROM range(10000)
+)
+
+query I
+SELECT * FROM v
+----
+0
+
+# a simple CASE prints as one
+statement ok
+CREATE MACRO pick(x) AS CASE x WHEN 1 THEN 'a' WHEN 2 THEN 'b' ELSE 'c' END
+
+query I
+SELECT macro_definition FROM duckdb_functions() WHERE function_name = 'pick'
+----
+CASE x WHEN 1 THEN 'a' WHEN 2 THEN 'b' ELSE 'c' END
+
+query I
+SELECT pick(2)
+----
+b
+
+# a WHEN list and a WHEN with a comparison operator print as written
+statement ok
+CREATE MACRO pick_range(x) AS CASE x WHEN 1, 2 THEN 'a' WHEN > 5 THEN 'b' ELSE 'c' END
+
+query I
+SELECT macro_definition FROM duckdb_functions() WHERE function_name = 'pick_range'
+----
+CASE x WHEN 1, 2 THEN 'a' WHEN > 5 THEN 'b' ELSE 'c' END
+
+query III
+SELECT pick_range(2), pick_range(7), pick_range(4)
+----
+a	b	c

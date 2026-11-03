@@ -36,6 +36,7 @@
 #include "duckdb/common/types/string.hpp"
 #include "duckdb/common/types/value_map.hpp"
 #include "duckdb/function/scalar/variant_utils.hpp"
+#include "duckdb/function/variant/variant_value_convert.hpp"
 
 #include <utility>
 #include <cmath>
@@ -1731,6 +1732,60 @@ string Value::ToString() const {
 	return StringValue::Get(DefaultCastAs(LogicalType::VARCHAR));
 }
 
+//! Renders a VARIANT as SQL that gives it back, without converting its objects to STRUCT or MAP values
+struct VariantSQLStringConverter : public ValueConverter {
+	struct Result {
+		// Preserve the payload's type as well as its value (e.g. SMALLINT versus INTEGER).
+		Result(const Value &val) // NOLINT implicit, so that the primitives of ValueConverter give a Result
+		    : sql("CAST(CAST(" + val.ToSQLString() + " AS " + val.type().ToString() + ") AS VARIANT)"),
+		      is_null(val.IsNull()) {
+		}
+		explicit Result(string sql_p) : sql(std::move(sql_p)) {
+		}
+
+		string sql;
+		bool is_null = false;
+	};
+	using result_type = Result;
+
+	static string ChildSQL(const Result &child) {
+		return child.is_null ? Value(LogicalType::VARIANT()).ToSQLString() : child.sql;
+	}
+
+	static Result VisitArray(const UnifiedVariantVectorData &variant, idx_t row, const VariantNestedData &nested_data) {
+		auto items = VariantVisitor<VariantSQLStringConverter>::VisitArrayItems(variant, row, nested_data);
+		if (items.empty()) {
+			return Result("CAST(" + Value::LIST(LogicalType::VARIANT(), {}).ToSQLString() + " AS VARIANT)");
+		}
+		return Result("CAST([" + StringUtil::Join(items, items.size(), ", ", ChildSQL) + "] AS VARIANT)");
+	}
+
+	static Result VisitObject(const UnifiedVariantVectorData &variant, idx_t row,
+	                          const VariantNestedData &nested_data) {
+		auto items = VariantVisitor<VariantSQLStringConverter>::VisitObjectItems(variant, row, nested_data);
+		bool has_empty_key = false;
+		for (auto &item : items) {
+			has_empty_key |= item.first.GetIdentifierName().empty();
+		}
+		string result;
+		for (idx_t i = 0; i < items.size(); i++) {
+			auto &key = items[i].first.GetIdentifierName();
+			result += i == 0 ? "" : ", ";
+			if (has_empty_key) {
+				result += StringUtil::Format("(%d, %s, %s)", i, Value(key).ToSQLString(), ChildSQL(items[i].second));
+			} else {
+				result += "'" + StringUtil::Replace(key, "'", "''") + "': " + ChildSQL(items[i].second);
+			}
+		}
+		if (has_empty_key) {
+			// a struct literal cannot have an empty key
+			return Result("(SELECT system.main.variant_group_object(k, v ORDER BY i) FROM (VALUES " + result +
+			              ") t(i, k, v))");
+		}
+		return Result("CAST({" + result + "} AS VARIANT)");
+	}
+};
+
 string Value::ToSQLString() const {
 	if (IsNull()) {
 		auto res = ToString();
@@ -1769,23 +1824,7 @@ string Value::ToSQLString() const {
 		RecursiveUnifiedVectorFormat format;
 		Vector::RecursiveToUnifiedFormat(tmp, format);
 		UnifiedVariantVectorData vector_data(format);
-		auto val = VariantUtils::ConvertVariantToValue(vector_data, 0, 0);
-		if (val.type().id() == LogicalTypeId::STRUCT) {
-			child_list_t<Value> children;
-			auto &values = StructValue::GetChildren(val);
-			for (idx_t i = 0; i < values.size(); i++) {
-				children.emplace_back(StructType::GetChildName(val.type(), i),
-				                      values[i].DefaultCastAs(LogicalType::VARIANT()));
-			}
-			val = Value::STRUCT(std::move(children));
-			return "CAST(" + val.ToSQLString() + " AS VARIANT)";
-		}
-		if (val.type().id() == LogicalTypeId::LIST) {
-			val = Value::LIST(LogicalType::VARIANT(), ListValue::GetChildren(val));
-			return "CAST(" + val.ToSQLString() + " AS VARIANT)";
-		}
-		// Preserve the payload's type as well as its value (e.g. SMALLINT versus INTEGER).
-		return "CAST(CAST(" + val.ToSQLString() + " AS " + val.type().ToString() + ") AS VARIANT)";
+		return VariantVisitor<VariantSQLStringConverter>::Visit(vector_data, 0, 0).sql;
 	}
 	case LogicalTypeId::TUPLE:
 	case LogicalTypeId::STRUCT:

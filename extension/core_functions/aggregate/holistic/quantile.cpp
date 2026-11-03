@@ -211,7 +211,7 @@ struct QuantileScalarOperation : public QuantileOperation {
 				}
 
 				rdata[ridx] = gstate->GetWindowState().template WindowScalar<RESULT_TYPE, DISCRETE>(
-				    partition.context.client, data, frames, n, result, quantile);
+				    partition.context.client, data, frames, n, result, quantile, bind_data.desc);
 			}
 		} else {
 			auto &window_state = state.GetOrCreateWindowState();
@@ -228,8 +228,8 @@ struct QuantileScalarOperation : public QuantileOperation {
 				window_state.UpdateSkip(data, frames, included);
 
 				// Find the position(s) needed
-				rdata[ridx] = window_state.template WindowScalar<RESULT_TYPE, DISCRETE>(partition.context.client, data,
-				                                                                        frames, n, result, quantile);
+				rdata[ridx] = window_state.template WindowScalar<RESULT_TYPE, DISCRETE>(
+				    partition.context.client, data, frames, n, result, quantile, bind_data.desc);
 
 				//	Save the previous state for next time
 				window_state.prevs = frames;

@@ -64,6 +64,7 @@ static void GetStripNullsFunctionInternal(ScalarFunctionSet &set, const LogicalT
 	ScalarFunction fun("json_strip_nulls", {}, LogicalType::JSON(), StripNullsFunction, nullptr, nullptr,
 	                   JSONFunctionLocalState::Init);
 	fun.GetSignature().AddParameter("json", json);
+	fun.SetFallible();
 	set.AddFunction(fun);
 }
 

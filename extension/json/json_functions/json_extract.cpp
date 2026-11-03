@@ -60,13 +60,8 @@ ScalarFunctionSet JSONFunctions::GetExtractFunction() {
 	ScalarFunctionSet set("json_extract");
 	GetExtractFunctionsInternal(set, LogicalType::VARCHAR);
 	GetExtractFunctionsInternal(set, LogicalType::JSON());
-	set.ApplyToFunctions([](ScalarFunction &func) {
-		const auto &sig = func.GetSignature();
-		if (sig.GetParameter(0).GetType().IsJSONType() && sig.GetParameter(1).GetType().IsNumeric()) {
-			return;
-		}
-		func.SetFallible();
-	});
+	// writing an extracted value can exceed the maximum string size, also for a numeric path
+	set.SetFallible();
 	return set;
 }
 
@@ -92,13 +87,8 @@ ScalarFunctionSet JSONFunctions::GetExtractStringFunction() {
 	ScalarFunctionSet set("json_extract_string");
 	GetExtractStringFunctionsInternal(set, LogicalType::VARCHAR);
 	GetExtractStringFunctionsInternal(set, LogicalType::JSON());
-	set.ApplyToFunctions([](ScalarFunction &func) {
-		const auto &sig = func.GetSignature();
-		if (sig.GetParameter(0).GetType().IsJSONType() && sig.GetParameter(1).GetType().IsNumeric()) {
-			return;
-		}
-		func.SetFallible();
-	});
+	// writing an extracted value can exceed the maximum string size, also for a numeric path
+	set.SetFallible();
 	return set;
 }
 

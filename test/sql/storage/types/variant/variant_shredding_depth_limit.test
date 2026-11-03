@@ -48,8 +48,7 @@ SELECT count(*), sum(i) FROM deep_object;
 ----
 10	45
 
-# the unshredded over-depth value comes back whole: it equals a fresh cast of its source text,
-# and the 127 levels below its root cast to their complete text
+# the over-depth value reads back equal to a fresh cast of its source text, its 127 inner levels to their full text
 query III
 SELECT variant_typeof(d.v), d.v = s.deep_object::JSON::VARIANT,
        variant_extract(d.v, 'a')::VARCHAR = repeat('{''a'': ', 127) || '1' || repeat('}', 127)
@@ -69,11 +68,6 @@ SELECT depth, variant_typeof(v), v::VARCHAR FROM walk WHERE depth >= 127 ORDER B
 127	OBJECT(a)	{'a': 1}
 128	UINT64	1
 
-query I
-SELECT v::VARCHAR FROM deep_object WHERE i = 3;
-----
-{'a': 3}
-
 # the 500 nested arrays, far beyond the limit, come back whole too
 query III
 SELECT variant_typeof(d.v), variant_array_length(d.v), d.v = s.deep_array::JSON::VARIANT
@@ -92,19 +86,26 @@ SELECT depth, variant_typeof(v), v::VARCHAR FROM walk WHERE depth >= 499 ORDER B
 499	ARRAY(1)	[1]
 500	UINT64	1
 
+# every shallow row next to the deep ones reads back unchanged, in the two unshredded and the two shredded tables
 query I
-SELECT v::VARCHAR FROM deep_array WHERE i = 4;
+SELECT string_agg(v::VARCHAR, ' ' ORDER BY i) FROM deep_object WHERE i > 0;
 ----
-[4]
+{'a': 1} {'a': 2} {'a': 3} {'a': 4} {'a': 5} {'a': 6} {'a': 7} {'a': 8} {'a': 9}
 
-# every shallow row next to the deep ones reads back unchanged, in the unshredded and in the shredded tables
-query IIIII
-SELECT count(*), bool_and(o.v::VARCHAR = '{''a'': ' || i || '}'), bool_and(a.v::VARCHAR = '[' || i || ']'),
-       bool_and(e.v::VARCHAR = '[' || i || ']'), bool_and(b.v::VARCHAR = '{''a'': ' || i || '}')
-FROM deep_object o JOIN deep_array a USING (i) JOIN empty_at_limit e USING (i) JOIN below_limit b USING (i)
-WHERE i > 0;
+query I
+SELECT string_agg(v::VARCHAR, ' ' ORDER BY i) FROM deep_array WHERE i > 0;
 ----
-9	true	true	true	true
+[1] [2] [3] [4] [5] [6] [7] [8] [9]
+
+query I
+SELECT string_agg(v::VARCHAR, ' ' ORDER BY i) FROM empty_at_limit WHERE i > 0;
+----
+[1] [2] [3] [4] [5] [6] [7] [8] [9]
+
+query I
+SELECT string_agg(v::VARCHAR, ' ' ORDER BY i) FROM below_limit WHERE i > 0;
+----
+{'a': 1} {'a': 2} {'a': 3} {'a': 4} {'a': 5} {'a': 6} {'a': 7} {'a': 8} {'a': 9}
 
 query II
 SELECT length(v::VARCHAR), (SELECT v::VARCHAR FROM below_limit WHERE i = 5) FROM below_limit WHERE i = 0;

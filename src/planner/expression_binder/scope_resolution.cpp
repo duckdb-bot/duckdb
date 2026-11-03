@@ -124,19 +124,24 @@ static bool CombineMissingColumns(ErrorData &current, ErrorData new_error) {
 	return true;
 }
 
+static bool HasErrorSubtype(const ErrorData &error, const char *subtype) {
+	auto entry = error.ExtraInfo().find("error_subtype");
+	return entry != error.ExtraInfo().end() && entry->second == subtype;
+}
+
 void ExpressionBinder::CombineErrors(ErrorData &current, ErrorData new_error) {
 	// try to combine missing column exceptions in order to pick the most relevant one
 	if (CombineMissingColumns(current, new_error)) {
 		// keep the old info
 		return;
 	}
+	// keep the missing column of a table over an outer scope that lacks the table
+	if (HasErrorSubtype(current, "TABLE_COLUMN_NOT_FOUND") && HasErrorSubtype(new_error, "TABLE_NOT_FOUND")) {
+		return;
+	}
 
 	// override the error with the new one
-	// FIXME: the outermost scope searched always wins here, which can bury a more specific error from
-	// the scope the reference was actually written in - e.g. HAVING's "must appear in the GROUP BY
-	// clause" is replaced by an enclosing scope's "table not found". Preserving the innermost error
-	// unless the outer one is strictly more specific would read better, but it changes many existing
-	// error messages, so it is left as is here.
+	// FIXME other errors still prefer the outermost scope
 	current = std::move(new_error);
 }
 

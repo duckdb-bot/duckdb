@@ -669,8 +669,39 @@ static void CreateValuesTuple(const StructNames &names, yyjson_mut_doc *doc, yyj
 static void CreateValuesMapKeys(yyjson_mut_doc *doc, yyjson_mut_val *vals[], Vector &value_v, idx_t count,
                                 const JSONCopyFormatOptions &options);
 
+//! Whether the list entries go up without sharing children, as yyjson links a value into one array or object only.
+//! An entry that repeats the one before links the same values in the same way.
+static bool ListEntriesAscend(const Vector &list, idx_t count) {
+	auto entries = list.Values<list_entry_t>();
+	list_entry_t previous(0, 0);
+	idx_t end = 0;
+	for (idx_t i = 0; i < count; i++) {
+		auto entry = entries[i];
+		if (!entry.IsValid()) {
+			continue;
+		}
+		const auto &bounds = entry.GetValue();
+		if (bounds.length == 0 || (bounds.offset == previous.offset && bounds.length == previous.length)) {
+			continue;
+		}
+		if (bounds.offset < end) {
+			return false;
+		}
+		previous = bounds;
+		end = bounds.offset + bounds.length;
+	}
+	return true;
+}
+
 static void CreateValuesMap(const StructNames &names, yyjson_mut_doc *doc, yyjson_mut_val *vals[], Vector &value_v,
                             idx_t count, const JSONCopyFormatOptions &options) {
+	if (!ListEntriesAscend(value_v, count)) {
+		// a copy of the map gives each entry its own children
+		Vector copy(value_v.GetType(), count);
+		copy.Append(value_v, count);
+		CreateValuesMap(names, doc, vals, copy, count, options);
+		return;
+	}
 	// Create nested keys
 	auto &map_key_v = MapVector::GetKeys(value_v);
 	auto map_key_count = ListVector::GetListSize(value_v);
@@ -774,6 +805,13 @@ static void CreateValuesUnion(const StructNames &names, yyjson_mut_doc *doc, yyj
 
 static void CreateValuesList(const StructNames &names, yyjson_mut_doc *doc, yyjson_mut_val *vals[], Vector &value_v,
                              idx_t count, const JSONCopyFormatOptions &options) {
+	if (!ListEntriesAscend(value_v, count)) {
+		// a copy of the list gives each entry its own children
+		Vector copy(value_v.GetType(), count);
+		copy.Append(value_v, count);
+		CreateValuesList(names, doc, vals, copy, count, options);
+		return;
+	}
 	// Initialize array for the nested values
 	auto &child_v = ListVector::GetChildMutable(value_v);
 	auto child_count = ListVector::GetListSize(value_v);

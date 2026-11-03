@@ -34,12 +34,6 @@ CREATE INDEX i ON t ((list_contains(l::VARCHAR[], 'a' COLLATE nocase)));
 ----
 Index keys cannot contain "list_transform", which needs a client context to execute
 
-# without constant types, can_cast_implicitly looks up the casts at execution
-statement error
-CREATE INDEX i ON t ((can_cast_implicitly(id, NULL)));
-----
-Index keys cannot contain "can_cast_implicitly", which needs a client context to execute
-
 # the age of a single timestamp is taken at the start of the transaction
 statement error
 CREATE INDEX i ON t ((age(TIMESTAMP '2026-01-01' + id * INTERVAL 1 DAY)::VARCHAR));
@@ -52,12 +46,16 @@ SELECT parameter_types, stability FROM duckdb_functions() WHERE function_name = 
 [TIMESTAMP]	CONSISTENT_WITHIN_QUERY
 [TIMESTAMP, TIMESTAMP]	CONSISTENT
 
-# the age of two timestamps is arithmetic, and can_cast_implicitly folds when both types are known
+# the age of two timestamps is arithmetic
 statement ok
 CREATE INDEX i_age ON t ((age(TIMESTAMP '2026-01-01' + id * INTERVAL 1 DAY, TIMESTAMP '2026-01-01')::VARCHAR));
 
+# can_cast_implicitly is replaced by a constant when it is bound, also with a NULL argument
 statement ok
 CREATE INDEX i_cast ON t ((CASE WHEN can_cast_implicitly(id, 1.5) THEN id ELSE -id END));
+
+statement ok
+CREATE INDEX i_cast_null ON t ((CASE WHEN can_cast_implicitly(id, NULL) THEN id ELSE -id END));
 
 # list_sort keeps the Sort of its bind, so its keys need no context from the executor
 statement ok

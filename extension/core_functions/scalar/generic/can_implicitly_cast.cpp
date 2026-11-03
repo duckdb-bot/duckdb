@@ -8,41 +8,20 @@ namespace duckdb {
 
 namespace {
 
-//! The casts are looked up in the ClientContext when the types are only known at execution
-struct CanCastImplicitlyBindData : public FunctionData {
-	unique_ptr<FunctionData> Copy() const override {
-		return make_uniq<CanCastImplicitlyBindData>();
-	}
-	bool Equals(const FunctionData &other) const override {
-		return true;
-	}
-	bool NeedsClientContext() const override {
-		return true;
-	}
-};
-
-unique_ptr<FunctionData> BindCanCastImplicitly(BindScalarFunctionInput &input) {
-	return make_uniq<CanCastImplicitlyBindData>();
-}
-
 bool CanCastImplicitly(ClientContext &context, const LogicalType &source, const LogicalType &target) {
 	return CastFunctionSet::ImplicitCastCost(context, source, target) >= 0;
 }
 
 void CanCastImplicitlyFunction(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto &context = state.GetContext();
-	bool can_cast_implicitly = CanCastImplicitly(context, args.data[0].GetType(), args.data[1].GetType());
-	auto v = Value::BOOLEAN(can_cast_implicitly);
-	result.Reference(v, count_t(args.size()));
+	throw InternalException("can_cast_implicitly cannot be executed directly");
 }
 
 unique_ptr<Expression> BindCanCastImplicitlyExpression(FunctionBindExpressionInput &input) {
 	auto &source_type = input.children[0]->GetReturnType();
 	auto &target_type = input.children[1]->GetReturnType();
-	if (source_type.id() == LogicalTypeId::UNKNOWN || source_type.id() == LogicalTypeId::SQLNULL ||
-	    target_type.id() == LogicalTypeId::UNKNOWN || target_type.id() == LogicalTypeId::SQLNULL) {
+	if (source_type.id() == LogicalTypeId::UNKNOWN || target_type.id() == LogicalTypeId::UNKNOWN) {
 		// parameter - unknown return type
-		return nullptr;
+		throw ParameterNotResolvedException();
 	}
 	// emit a constant expression
 	return make_uniq<BoundConstantExpression>(
@@ -55,7 +34,6 @@ ScalarFunction CanCastImplicitlyFun::GetFunction() {
 	auto fun = ScalarFunction({}, LogicalType::BOOLEAN, CanCastImplicitlyFunction);
 	fun.GetSignature().AddParameter("source_type", LogicalType::ANY).AddParameter("target_type", LogicalType::ANY);
 	fun.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
-	fun.SetBindCallback(BindCanCastImplicitly);
 	fun.SetBindExpressionCallback(BindCanCastImplicitlyExpression);
 	return fun;
 }

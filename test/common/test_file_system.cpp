@@ -272,6 +272,39 @@ TEST_CASE("RemoveDirectoryExtended never removes directory contents in single mo
 	REQUIRE(!fs.RemoveDirectoryExtended(directory, {RemoveDirectoryMode::SINGLE}));
 }
 
+TEST_CASE("Test directory cleanup preserves a concurrently created sibling", "[file_system]") {
+	class ConcurrentDirectoryFileSystem : public LocalFileSystem {
+	public:
+		explicit ConcurrentDirectoryFileSystem(string root_p) : root(std::move(root_p)) {
+		}
+
+		bool ListFilesExtended(const string &directory, const std::function<void(OpenFileInfo &)> &callback,
+		                       optional_ptr<FileOpener> opener) override {
+			auto result = LocalFileSystem::ListFilesExtended(directory, callback, opener);
+			if (directory == root && !created_sibling) {
+				created_sibling = true;
+				auto sibling = JoinPath(root, "active_run");
+				CreateDirectory(sibling);
+				CreateDummyFile(JoinPath(sibling, "database.wal"));
+			}
+			return result;
+		}
+
+		string root;
+		bool created_sibling = false;
+	};
+
+	auto root = TestCreatePath("cleanup_ancestor");
+	ConcurrentDirectoryFileSystem fs(root);
+	auto leaf = fs.JoinPath(root, "finished_run");
+	fs.CreateDirectoriesRecursive(leaf);
+	ReclaimTestDirectoryLevels(fs, leaf, {root, leaf});
+	REQUIRE(fs.created_sibling);
+	REQUIRE(!fs.DirectoryExists(leaf));
+	REQUIRE(fs.FileExists(fs.JoinPath(root, "active_run/database.wal")));
+	fs.RemoveDirectory(root);
+}
+
 TEST_CASE("Extended directory operations report target ownership", "[file_system]") {
 	ExistingDirectoryFileSystem existing_directory_fs;
 	REQUIRE(!existing_directory_fs.CreateDirectoryExtended("virtual_directory", {CreateDirectoryMode::SINGLE}));
@@ -689,6 +722,18 @@ TEST_CASE("Test path canonicalization with symlinks", "[file_system]") {
 	test_cases.emplace_back("fake_dir/fake_file", "real_dir/real_file", "follow file symlink");
 	test_cases.emplace_back("real_dir/.././fake_dir/././fake_file", "././real_dir/././real_file",
 	                        "follow file symlink with dots");
+
+#ifndef _WIN32
+	// dangling symlinks resolve to the (non-existent) file they point to
+	TestCreateSymlink(fs->JoinPath(real_dir, "dangling_link"),
+	                  fs->JoinPath(fs->JoinPath(fs->GetWorkingDirectory(), real_dir), "missing_file"), false);
+	TestCreateSymlink(fs->JoinPath(real_dir, "dangling_chain"),
+	                  fs->JoinPath(fs->JoinPath(fs->GetWorkingDirectory(), real_dir), "dangling_link"), false);
+	test_cases.emplace_back("real_dir/dangling_link", "real_dir/missing_file", "follow dangling symlink");
+	test_cases.emplace_back("fake_dir/dangling_link", "real_dir/missing_file",
+	                        "follow dangling symlink in symlink dir");
+	test_cases.emplace_back("real_dir/dangling_chain", "real_dir/missing_file", "follow chain of dangling symlinks");
+#endif
 
 	// prepend everything with the test dir
 	for (auto &test_case : test_cases) {

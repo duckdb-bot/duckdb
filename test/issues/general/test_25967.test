@@ -1,0 +1,40 @@
+# name: test/issues/general/test_25967.test
+# description: An UPDATE to a nested VARIANT constant renders the constant as SQL once, up to the VARIANT depth limit
+# group: [general]
+
+require json
+
+# an UPDATE folds the cast into a constant, whose name renders the whole VARIANT as SQL
+statement ok
+CREATE TABLE t (id INTEGER, doc VARIANT);
+
+statement ok
+INSERT INTO t VALUES (1, NULL), (2, (repeat('[' || array_to_string(range(50), ', ') || ', {"k": "it''s", "n": null}, ', 100) || '[]' ||
+    repeat(']', 100))::JSON);
+
+statement ok
+UPDATE t SET doc = (repeat('[' || array_to_string(range(50), ', ') || ', {"k": "it''s", "n": null}, ', 100) || '[]' ||
+    repeat(']', 100))::JSON WHERE id = 1;
+
+query III
+SELECT variant_typeof(a.doc), length(a.doc::JSON::VARCHAR), a.doc::JSON::VARCHAR = b.doc::JSON::VARCHAR
+FROM t a, t b WHERE a.id = 1 AND b.id = 2;
+----
+ARRAY(52)	16402	true
+
+# an empty array inside 127 arrays or objects is the deepest value VariantVisitor accepts
+statement ok
+UPDATE t SET doc = (repeat('[', 127) || '[]' || repeat(']', 127))::JSON WHERE id = 1;
+
+query I
+SELECT doc::JSON::VARCHAR = repeat('[', 128) || repeat(']', 128) FROM t WHERE id = 1;
+----
+true
+
+statement ok
+UPDATE t SET doc = (repeat('{"a":', 127) || '[]' || repeat('}', 127))::JSON WHERE id = 1;
+
+query I
+SELECT doc::JSON::VARCHAR = repeat('{"a":', 127) || '[]' || repeat('}', 127) FROM t WHERE id = 1;
+----
+true

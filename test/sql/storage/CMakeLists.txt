@@ -8,6 +8,7 @@ add_library_unity(
   test_database_size.cpp
   test_dict_fsst_size_estimate.cpp
   test_revert_append_segments.cpp
+  index_build_concurrent_update.cpp
   wal_checkpoint_marker.cpp
   wal_prescan.cpp
   wal_torn_write.cpp)

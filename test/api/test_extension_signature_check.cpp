@@ -1,4 +1,5 @@
 #include "catch.hpp"
+#include "duckdb/common/error_data.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/optional_idx.hpp"
 #include "duckdb/main/extension_helper.hpp"
@@ -133,6 +134,20 @@ bool FileSignatureVerifies(DuckDB &db, SignedFileSystem &file_system) {
 	                                                ExtensionRepositoryType::USER_PROVIDED, "signed");
 }
 
+//! The check of a file with an unreadable chunk fails with the read error of that chunk
+void RequireReadError(DuckDB &db, SignedFileSystem &file_system) {
+	bool failed = false;
+	try {
+		FileSignatureVerifies(db, file_system);
+	} catch (std::exception &ex) {
+		ErrorData error(ex);
+		REQUIRE(error.Type() == ExceptionType::IO);
+		REQUIRE(StringUtil::Contains(error.RawMessage(), "could not be read"));
+		failed = true;
+	}
+	REQUIRE(failed);
+}
+
 #ifdef SIGNATURE_CHECK_TEST_HAS_DEFAULT_PTHREAD_ATTRIBUTES
 
 //! The address space of this process in bytes, 0 when it cannot be read
@@ -157,6 +172,7 @@ public:
 
 	NoMoreThreads() : closed(gate) {
 		// everything that can fail comes before the settings change, so the destructor always sees what it restores
+		threads.reserve(PARKED_THREADS + 1);
 		auto address_space = CurrentAddressSpace();
 		if (address_space == 0 || pthread_getattr_default_np(&old_attr) != 0) {
 			return;
@@ -174,7 +190,6 @@ public:
 			return;
 		}
 		// the parked threads wait for the gate, which the destructor opens, and one more thread must fail to start
-		threads.reserve(PARKED_THREADS + 1);
 		try {
 			for (idx_t i = 0; i <= PARKED_THREADS; i++) {
 				threads.emplace_back([this]() { std::lock_guard<std::mutex> hold(gate); });
@@ -243,8 +258,8 @@ TEST_CASE("Test that a signature check hashes the chunks of an extension without
 
 	// a chunk that cannot be read fails the check with the read error
 	SignedFileSystem unreadable_chunk(buffer, 1);
-	REQUIRE_THROWS_WITH(FileSignatureVerifies(*db, unreadable_chunk), Catch::Contains("could not be read"));
-	REQUIRE_THROWS_WITH(FileSignatureVerifies(*no_worker_db, unreadable_chunk), Catch::Contains("could not be read"));
+	RequireReadError(*db, unreadable_chunk);
+	RequireReadError(*no_worker_db, unreadable_chunk);
 
 #ifdef SIGNATURE_CHECK_TEST_HAS_DEFAULT_PTHREAD_ATTRIBUTES
 	NoMoreThreads no_more_threads;

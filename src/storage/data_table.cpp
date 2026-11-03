@@ -833,7 +833,7 @@ void DataTable::VerifyAppendConstraints(ConstraintState &constraint_state, Clien
 	}
 
 	if (HasUniqueIndexes()) {
-		info->indexes.VerifyUniqueIndexes(storage ? &storage->delete_indexes : nullptr, chunk, manager);
+		info->indexes.VerifyUniqueIndexes(context, storage ? &storage->delete_indexes : nullptr, chunk, manager);
 	}
 
 	auto &constraints = table.GetConstraints();
@@ -1238,6 +1238,8 @@ void DataTable::RevertAppend(DuckTransaction &transaction, idx_t start_row, idx_
 
 	// revert any appends to indexes
 	if (!info->indexes.Empty()) {
+		auto client_context = transaction.context.lock();
+		QueryContext context(client_context.get());
 		idx_t current_row_base = start_row;
 		row_t row_data[STANDARD_VECTOR_SIZE];
 		Vector row_identifiers(LogicalType::ROW_TYPE, data_ptr_cast(row_data), STANDARD_VECTOR_SIZE);
@@ -1249,7 +1251,7 @@ void DataTable::RevertAppend(DuckTransaction &transaction, idx_t start_row, idx_
 			for (idx_t i = 0; i < chunk.size(); i++) {
 				row_id_writer.WriteValue(NumericCast<row_t>(current_row_base + i));
 			}
-			info->indexes.RevertAppend(chunk, row_identifiers);
+			info->indexes.RevertAppend(context, chunk, row_identifiers);
 			current_row_base += chunk.size();
 		});
 	}

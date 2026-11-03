@@ -37,7 +37,10 @@ struct ListSortBindData : public FunctionData {
 
 	vector<LogicalType> types;
 
-	ClientContext &context;
+	//! The context of the bind, which an index key outlives when its connection closes
+	weak_ptr<ClientContext> context;
+	//! The database of the bind, for a context of its own when no connection takes part
+	weak_ptr<DatabaseInstance> db;
 	unique_ptr<Expression> sort_key;
 	optional<string> default_collation;
 	//! Shared by the copies, building it again needs a catalog lookup in a transaction of the context
@@ -56,7 +59,8 @@ ListSortBindData::ListSortBindData(OrderType order_type_p, OrderByNullType null_
                                    ClientContext &context_p, unique_ptr<Expression> sort_key_p,
                                    optional<string> default_collation_p)
     : order_type(order_type_p), null_order(null_order_p), return_type(return_type_p), child_type(child_type_p),
-      is_grade_up(is_grade_up_p), context(context_p), default_collation(std::move(default_collation_p)) {
+      is_grade_up(is_grade_up_p), context(context_p.shared_from_this()), db(context_p.db),
+      default_collation(std::move(default_collation_p)) {
 	// get the vector types
 	types.emplace_back(LogicalType::USMALLINT);
 	types.emplace_back(child_type);
@@ -66,7 +70,7 @@ ListSortBindData::ListSortBindData(OrderType order_type_p, OrderByNullType null_
 	// get the BoundOrderByNode
 	auto idx_col_expr = make_uniq_base<Expression, BoundReferenceExpression>(LogicalType::USMALLINT, 0U);
 	if (!sort_key_p) {
-		default_collation = Settings::Get<DefaultCollationSetting>(context);
+		default_collation = Settings::Get<DefaultCollationSetting>(context_p);
 		sort_key_p = make_uniq_base<Expression, BoundReferenceExpression>(child_type, 1U);
 		// Normalize the sort key without changing the sorted values (#25108): push the
 		// type's collation (for INTERVAL this wraps the expression in
@@ -74,7 +78,7 @@ ListSortBindData::ListSortBindData(OrderType order_type_p, OrderByNullType null_
 		// and aggregates apply) onto the key expression BEFORE constructing its
 		// BoundOrderByNode. The key then byte-compares like ORDER BY, while the list
 		// payload keeps the original (non-normalized) values.
-		ExpressionBinder::PushCollation(context, sort_key_p, child_type);
+		ExpressionBinder::PushCollation(context_p, sort_key_p, child_type);
 	}
 	sort_key = sort_key_p->Copy();
 	vector<BoundOrderByNode> orders;
@@ -86,13 +90,13 @@ ListSortBindData::ListSortBindData(OrderType order_type_p, OrderByNullType null_
 		orders.emplace_back(OrderType::ASCENDING, OrderByNullType::ORDER_DEFAULT, std::move(position_expr));
 	}
 	sort =
-	    shared_ptr<Sort>(new Sort(context, orders, {LogicalType::USMALLINT, child_type, LogicalType::UINTEGER}, {2}));
+	    shared_ptr<Sort>(new Sort(context_p, orders, {LogicalType::USMALLINT, child_type, LogicalType::UINTEGER}, {2}));
 }
 
 ListSortBindData::ListSortBindData(const ListSortBindData &other)
     : FunctionData(other), order_type(other.order_type), null_order(other.null_order), return_type(other.return_type),
       child_type(other.child_type), is_grade_up(other.is_grade_up), types(other.types), context(other.context),
-      sort_key(other.sort_key->Copy()), default_collation(other.default_collation), sort(other.sort) {
+      db(other.db), sort_key(other.sort_key->Copy()), default_collation(other.default_collation), sort(other.sort) {
 }
 
 unique_ptr<FunctionData> ListSortBindData::Copy() const {
@@ -173,10 +177,25 @@ static void ListSortFunction(DataChunk &args, ExpressionState &state, Vector &re
 	auto &func_expr = state.expr.Cast<BoundFunctionExpression>();
 	auto &info = func_expr.BindInfo()->Cast<ListSortBindData>();
 
+	// the Sort of the bind runs under the context of the operation, which is not the one that bound it when another
+	// connection writes to a table with an index on this function
+	auto bound_context = info.context.lock();
+	optional_ptr<ClientContext> context = state.HasContext() ? &state.GetContext() : bound_context.get();
+	shared_ptr<ClientContext> own_context;
+	if (!context) {
+		// no connection takes part, as in the cleanup after a transaction, so the sort runs with a context of its own
+		auto db = info.db.lock();
+		if (!db) {
+			throw InternalException("list_sort cannot run after its database was closed");
+		}
+		own_context = make_shared_ptr<ClientContext>(std::move(db));
+		context = own_context.get();
+	}
+
 	// initialize the global and local sorting state
-	auto global_sink_state = info.sort->GetGlobalSinkState(info.context);
-	ThreadContext thread_context(info.context);
-	ExecutionContext execution_context(info.context, thread_context, nullptr);
+	auto global_sink_state = info.sort->GetGlobalSinkState(*context);
+	ThreadContext thread_context(*context);
+	ExecutionContext execution_context(*context, thread_context, nullptr);
 	auto local_sink_state = info.sort->GetLocalSinkState(execution_context);
 	InterruptState interrupt_state;
 	OperatorSinkInput sink_input {*global_sink_state, *local_sink_state, interrupt_state};
@@ -266,14 +285,14 @@ static void ListSortFunction(DataChunk &args, ExpressionState &state, Vector &re
 		info.sort->Combine(execution_context, combine_input);
 
 		OperatorSinkFinalizeInput finalize_input {*global_sink_state, interrupt_state};
-		info.sort->Finalize(info.context, finalize_input);
+		info.sort->Finalize(*context, finalize_input);
 
 		// selection vector that is to be filled with the 'sorted' payload
 		SelectionVector sel_sorted(incr_payload_count);
 		idx_t sel_sorted_idx = 0;
 
 		// scan the sorted row data
-		auto global_source_state = info.sort->GetGlobalSourceState(info.context, *global_sink_state);
+		auto global_source_state = info.sort->GetGlobalSourceState(*context, *global_sink_state);
 		auto local_source_state = info.sort->GetLocalSourceState(execution_context, *global_source_state);
 		OperatorSourceInput source_input {*global_source_state, *local_source_state, interrupt_state};
 		for (;;) {

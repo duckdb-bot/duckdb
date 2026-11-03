@@ -52,9 +52,6 @@ public:
 	     vector<idx_t> projection_map, bool is_index_sort = false);
 
 public:
-	//! The client context
-	ClientContext &client_context;
-
 private:
 	//! Key orders, expressions, and layout
 	unique_ptr<Expression> create_sort_key;

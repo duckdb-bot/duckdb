@@ -74,6 +74,14 @@ Value OpenFileInfo::ToValue() const {
 	return Value::STRUCT(std::move(children));
 }
 
+optional_idx OpenFileInfo::TryGetFileSize() const {
+	idx_t file_size;
+	if (!extended_info || !extended_info->TryGetOption("file_size", file_size)) {
+		return optional_idx();
+	}
+	return file_size;
+}
+
 template <>
 bool ExtendedOpenFileInfo::TryGetOption(const string &name, bool &result) const {
 	auto entry = options.find(name);

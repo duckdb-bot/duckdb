@@ -4,6 +4,7 @@
 #include "duckdb/common/types/data_chunk.hpp"
 #include "duckdb/common/uhugeint.hpp"
 #include "duckdb/common/vector_operations/binary_executor.hpp"
+#include "duckdb/function/function_binder.hpp"
 #include "duckdb/function/scalar/nested_functions.hpp"
 #include "duckdb/function/scalar/string_common.hpp"
 #include "duckdb/function/scalar/list_functions.hpp"
@@ -152,6 +153,30 @@ static unique_ptr<FunctionData> StringExtractBind(BindScalarFunctionInput &input
 	return nullptr;
 }
 
+//! A JSON keeps its type, so that it can bind to json_extract
+static void StringExtractResolveTypes(ResolveScalarFunctionTypesInput &input) {
+	if (input.GetArgumentType(0).IsJSONType()) {
+		input.GetBoundFunction().GetArguments()[0] = input.GetArgumentType(0);
+	}
+}
+
+//! A JSON binds to json_extract, which extracts the same array element as its subscript
+static unique_ptr<Expression> StringExtractBindExpression(FunctionBindExpressionInput &input) {
+	if (!input.children[0]->GetReturnType().IsJSONType()) {
+		return nullptr;
+	}
+	FunctionBinder function_binder(input.context);
+	return function_binder.BindScalarFunction(Identifier::DefaultSchema(), "json_extract", std::move(input.children));
+}
+
+static ScalarFunction GetStringExtractFunction() {
+	ScalarFunction sfun({}, LogicalType::VARCHAR, ListExtractFunction, StringExtractBind);
+	sfun.GetSignature().AddParameter("string", LogicalType::VARCHAR).AddParameter("index", LogicalType::BIGINT);
+	sfun.SetResolveTypesCallback(StringExtractResolveTypes);
+	sfun.SetBindExpressionCallback(StringExtractBindExpression);
+	return sfun;
+}
+
 static unique_ptr<BaseStatistics> ListExtractStats(ClientContext &context, FunctionStatisticsInput &input) {
 	auto &child_stats = input.child_stats;
 	auto &list_child_stats = ListStats::GetChildStats(child_stats[0]);
@@ -174,14 +199,9 @@ ScalarFunctionSet ListExtractFun::GetFunctions() {
 	lfun.GetSignature().GetParameter(0).SetName("list");
 	lfun.GetSignature().GetParameter(1).SetName("index");
 
-	ScalarFunction sfun({LogicalType::VARCHAR, LogicalType::BIGINT}, LogicalType::VARCHAR, ListExtractFunction,
-	                    StringExtractBind);
-	sfun.GetSignature().GetParameter(0).SetName("string");
-	sfun.GetSignature().GetParameter(1).SetName("index");
-
 	lfun.SetFallible();
 	list_extract_set.AddFunction(lfun);
-	list_extract_set.AddFunction(sfun);
+	list_extract_set.AddFunction(GetStringExtractFunction());
 	return list_extract_set;
 }
 
@@ -195,11 +215,8 @@ ScalarFunctionSet ArrayExtractFun::GetFunctions() {
 	lfun.GetSignature().GetParameter(0).SetName("list");
 	lfun.GetSignature().GetParameter(1).SetName("index");
 
-	ScalarFunction sfun({}, LogicalType::VARCHAR, ListExtractFunction, StringExtractBind);
-	sfun.GetSignature().AddParameter("string", LogicalType::VARCHAR).AddParameter("index", LogicalType::BIGINT);
-
 	array_extract_set.AddFunction(lfun);
-	array_extract_set.AddFunction(sfun);
+	array_extract_set.AddFunction(GetStringExtractFunction());
 	array_extract_set.AddFunction(GetKeyExtractFunction());
 	array_extract_set.AddFunction(GetIndexExtractFunction());
 	return array_extract_set;

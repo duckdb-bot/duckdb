@@ -304,9 +304,10 @@ optional_ptr<CatalogEntry> ColumnQualifier::QualifyFunction(FunctionExpression &
 	unique_ptr<ParsedExpression> column =
 	    make_uniq<ColumnRefExpression>(vector<Identifier>(path.begin(), path.end() - 1));
 	auto &colref = column->Cast<ColumnRefExpression>();
-	// a lambda parameter is left for the lambda to bind, like any other reference to it
-	const bool lambda_parameter = LambdaExpression::IsLambdaParameter(lambda_params, colref.GetColumnName()) ||
-	                              LambdaRefExpression::FindMatchingBinding(lambda_bindings, colref.GetColumnName());
+	// a lambda parameter, which can only be the first component of the name, is left for the lambda to bind
+	const auto &first_name = colref.ColumnNames()[0];
+	const bool lambda_parameter = LambdaExpression::IsLambdaParameter(lambda_params, first_name) ||
+	                              LambdaRefExpression::FindMatchingBinding(lambda_bindings, first_name);
 	if (!lambda_parameter) {
 		ErrorData error;
 		auto qualified_column = QualifyColumnName(colref, error);

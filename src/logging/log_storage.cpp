@@ -496,41 +496,48 @@ unique_ptr<TableRef> FileLogStorage::BindReplace(ClientContext &context, TableFu
                                                  LoggingTargetTable table) {
 	lock_guard<mutex> lck(lock);
 
+	// without normalization, one file holds the entries together with their contexts, and both are read from it
+	auto file_table = normalize_contexts ? table : LoggingTargetTable::ALL_LOGS;
+
 	// We only allow scanning enabled tables
-	if (!IsEnabledInternal(table)) {
+	if (!IsEnabledInternal(file_table)) {
 		return nullptr;
 	}
 
 	// We start by flushing the table to ensure we scan the latest version
-	FlushInternal(table);
+	FlushInternal(file_table);
 
 	if (normalize_contexts && table == LoggingTargetTable::ALL_LOGS) {
 		throw InvalidConfigurationException("Can not scan ALL_LOGS table when logs are normalized");
 	}
-	if (!normalize_contexts && table != LoggingTargetTable::ALL_LOGS) {
-		throw InvalidConfigurationException("Can only scan ALL_LOGS table when logs are normalized");
-	}
 
 	string select = "SELECT *";
-	string path = tables[table].path;
+	string path = tables[file_table].path;
 
 	string columns;
-	if (table == LoggingTargetTable::LOG_ENTRIES) {
+	if (file_table == LoggingTargetTable::LOG_ENTRIES) {
 		columns = "'context_id': 'UBIGINT', 'timestamp': 'TIMESTAMP WITH TIME ZONE', 'type': 'VARCHAR', 'log_level': "
 		          "'VARCHAR' , "
 		          "'message': 'VARCHAR'";
-	} else if (table == LoggingTargetTable::LOG_CONTEXTS) {
+	} else if (file_table == LoggingTargetTable::LOG_CONTEXTS) {
 		columns = "'context_id': 'UBIGINT', 'scope': 'VARCHAR', 'connection_id': 'UBIGINT', 'transaction_id': "
 		          "'UBIGINT', 'query_id': 'UBIGINT', 'thread_id': 'UBIGINT'";
-	} else if (table == LoggingTargetTable::ALL_LOGS) {
-		select = "SELECT context_id, scope, connection_id, transaction_id, query_id, thread_id, timestamp, type, "
-		         "log_level, message ";
+	} else if (file_table == LoggingTargetTable::ALL_LOGS) {
 		columns = "'context_id': 'UBIGINT', 'scope': 'VARCHAR', 'connection_id': 'UBIGINT', 'transaction_id': "
 		          "'UBIGINT', 'query_id': 'UBIGINT', 'thread_id': 'UBIGINT', 'timestamp': 'TIMESTAMP WITH TIME ZONE', "
 		          "'type': "
 		          "'VARCHAR', 'log_level': 'VARCHAR' , 'message': 'VARCHAR'";
 	} else {
 		throw InternalException("Invalid logging target table");
+	}
+	if (table == LoggingTargetTable::ALL_LOGS) {
+		select = "SELECT context_id, scope, connection_id, transaction_id, query_id, thread_id, timestamp, type, "
+		         "log_level, message ";
+	} else if (file_table != table && table == LoggingTargetTable::LOG_ENTRIES) {
+		select = "SELECT context_id, timestamp, type, log_level, message";
+	} else if (file_table != table) {
+		// every entry repeats its context, and a file appended to by several sessions can reuse a context id
+		select = "SELECT DISTINCT context_id, scope, connection_id, transaction_id, query_id, thread_id";
 	}
 
 	return BindReplaceInternal(context, input, path, select, columns);

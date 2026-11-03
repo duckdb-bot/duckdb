@@ -167,10 +167,8 @@ BindResult UnnestBinder::Bind(FunctionExpression &function, idx_t depth, bool ro
 			if (!const_child->IsFoldable()) {
 				throw BinderException(function, "UNNEST parameter %s must be a constant", alias);
 			}
-			if (const_child->RequiresRebind()) {
-				// the folded option no longer shows that it can change across queries, like a cast that reads a setting
-				binder.SetAlwaysRequireRebind();
-			}
+			// the option is folded here and leaves the expression tree, so it is checked like a root expression
+			binder.CheckRequiresRebind(*const_child);
 			auto value = ExpressionExecutor::EvaluateScalar(context, *const_child, true);
 			if (value.IsNull()) {
 				throw BinderException(function, "UNNEST parameter %s cannot be NULL", alias);

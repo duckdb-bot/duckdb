@@ -98,10 +98,8 @@ static void NegatePercentileFractions(ClientContext &context, Binder &binder, un
 	if (!bound->IsFoldable()) {
 		return;
 	}
-	if (bound->RequiresRebind()) {
-		// the folded fraction no longer shows that it can change across queries, like a cast that reads a setting
-		binder.SetAlwaysRequireRebind();
-	}
+	// the fraction is folded here and leaves the expression tree, so it is checked like a root expression
+	binder.CheckRequiresRebind(*bound);
 
 	Value value = ExpressionExecutor::EvaluateScalar(context, *bound);
 	if (value.type().id() == LogicalTypeId::LIST) {

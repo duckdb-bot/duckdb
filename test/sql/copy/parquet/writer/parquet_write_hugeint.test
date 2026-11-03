@@ -93,6 +93,38 @@ SELECT count(*) FROM '{TEST_DIR}/hugeints_bloom.parquet' WHERE h = -999999999999
 ----
 0
 
+# when the dictionary overflows, its values seed a fallback bloom filter and the remaining values are hashed into it
+statement ok
+COPY (SELECT (((i * 7919) % 4096)::HUGEINT * 12345678901234567890123456789012 - 99999999999999999999999999999999999999) AS h FROM range(4096) t(i)) TO '{TEST_DIR}/hugeints_fallback_bloom.parquet' (FORMAT parquet, DICTIONARY_SIZE_LIMIT 100, BLOOM_FILTER_FALSE_POSITIVE_RATIO 0.0001);
+
+query IIIII
+SELECT count(*), bool_and(encodings NOT LIKE '%DICTIONARY%'), bool_and(bloom_filter_length > 1), stats_min_value::HUGEINT, stats_max_value::HUGEINT FROM parquet_metadata('{TEST_DIR}/hugeints_fallback_bloom.parquet') GROUP BY ALL
+----
+1	true	true	-99999999999999999999999999999999999999	-99949444444899444444489944444448995859
+
+# the first row seeded the filter from the dictionary, the last row was hashed after the dictionary overflowed
+query II
+SELECT (SELECT bool_and(NOT bloom_filter_excludes) FROM parquet_bloom_probe('{TEST_DIR}/hugeints_fallback_bloom.parquet', 'h', (-99999999999999999999999999999999999999)::DECIMAL(38,0))),
+	(SELECT bool_and(NOT bloom_filter_excludes) FROM parquet_bloom_probe('{TEST_DIR}/hugeints_fallback_bloom.parquet', 'h', (-99996629629659962962965996296296599723)::DECIMAL(38,0)))
+----
+true	true
+
+# a value between the minimum and the maximum that was never written
+query I
+SELECT bool_and(bloom_filter_excludes) FROM parquet_bloom_probe('{TEST_DIR}/hugeints_fallback_bloom.parquet', 'h', (-99999999999999999999999999999999999998)::DECIMAL(38,0))
+----
+true
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/hugeints_fallback_bloom.parquet' WHERE h = -99996629629659962962965996296296599723
+----
+1
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/hugeints_fallback_bloom.parquet' WHERE h = -99999999999999999999999999999999999998
+----
+0
+
 # the statistics of the file combine those of its row groups
 query IIIIIII
 COPY (SELECT CASE WHEN i < 2048 THEN 9007199254740993 + i ELSE -99999999999999999999999999999999999999 + i END::HUGEINT AS h FROM range(4096) t(i)) TO '{TEST_DIR}/hugeints_stats.parquet' (FORMAT PARQUET, ROW_GROUP_SIZE 2048, RETURN_STATS);

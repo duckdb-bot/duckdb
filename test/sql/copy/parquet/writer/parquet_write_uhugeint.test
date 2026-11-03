@@ -75,6 +75,36 @@ SELECT count(*) FROM '{TEST_DIR}/uhugeints_bloom.parquet' WHERE h = 100000000000
 ----
 0
 
+# without a dictionary, the values are hashed into a fallback bloom filter
+statement ok
+COPY (SELECT (((i * 7919) % 4096)::UHUGEINT * 12345678901234567890123456789012 + 10000000000000000000000000000000000000) AS h FROM range(4096) t(i)) TO '{TEST_DIR}/uhugeints_fallback_bloom.parquet' (FORMAT parquet, DICTIONARY_SIZE_LIMIT 0, BLOOM_FILTER_FALSE_POSITIVE_RATIO 0.0001);
+
+query IIIII
+SELECT count(*), bool_and(encodings NOT LIKE '%DICTIONARY%'), bool_and(bloom_filter_length > 1), stats_min_value::UHUGEINT, stats_max_value::UHUGEINT FROM parquet_metadata('{TEST_DIR}/uhugeints_fallback_bloom.parquet') GROUP BY ALL
+----
+1	true	true	10000000000000000000000000000000000000	10050555555100555555510055555551004140
+
+query I
+SELECT bool_and(NOT bloom_filter_excludes) FROM parquet_bloom_probe('{TEST_DIR}/uhugeints_fallback_bloom.parquet', 'h', 10000012345678901234567890123456789012::DECIMAL(38,0))
+----
+true
+
+# a value between the minimum and the maximum that was never written
+query I
+SELECT bool_and(bloom_filter_excludes) FROM parquet_bloom_probe('{TEST_DIR}/uhugeints_fallback_bloom.parquet', 'h', 10000000000000000000000000000000000001::DECIMAL(38,0))
+----
+true
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/uhugeints_fallback_bloom.parquet' WHERE h = 10000012345678901234567890123456789012
+----
+1
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/uhugeints_fallback_bloom.parquet' WHERE h = 10000000000000000000000000000000000001
+----
+0
+
 # the statistics of the file combine those of its row groups
 query IIIIIII
 COPY (SELECT CASE WHEN i < 2048 THEN 99999999999999999999999999999999999999 - i ELSE 9007199254740993 + i END::UHUGEINT AS h FROM range(4096) t(i)) TO '{TEST_DIR}/uhugeints_stats.parquet' (FORMAT PARQUET, ROW_GROUP_SIZE 2048, RETURN_STATS);

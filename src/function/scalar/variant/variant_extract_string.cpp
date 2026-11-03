@@ -54,9 +54,7 @@ private:
 
 static void VariantExtractStringFunction(DataChunk &input, ExpressionState &state, Vector &result) {
 	string error;
-	// index keys are computed without a client context, the allocator of the executor serves them
-	auto &allocator = state.HasContext() ? BufferAllocator::Get(state.GetContext()) : state.GetAllocator();
-	ConvertedJSONHolder holder(allocator);
+	ConvertedJSONHolder holder(state.GetAllocator());
 	VariantPathFunction::Execute<string_t>(input, state, result, VariantStringWriter(holder, error));
 }
 

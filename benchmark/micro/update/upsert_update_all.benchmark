@@ -1,0 +1,14 @@
+# name: benchmark/micro/update/upsert_update_all.benchmark
+# description: INSERT ... ON CONFLICT DO UPDATE with a computed value, where every row conflicts
+# group: [update]
+
+load
+CREATE TABLE t (k INTEGER PRIMARY KEY, v BIGINT);
+INSERT INTO t SELECT range, range FROM range(1000000);
+CREATE TABLE src AS SELECT range AS k, range AS v FROM range(1000000);
+
+run
+INSERT INTO t SELECT * FROM src ON CONFLICT (k) DO UPDATE SET v = EXCLUDED.v + 1
+
+result I
+1000000

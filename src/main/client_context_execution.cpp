@@ -36,6 +36,8 @@ void ClientContext::BeginQueryInternal(ClientContextLock &lock, PreprocessedStat
 	// check if we are on AutoCommit. In this case we should start a transaction
 	D_ASSERT(!active_query);
 	D_ASSERT(!statements.statements.empty());
+	// not reset on Rollback, so a statement that fails before StartQuery must not report the previous one's
+	QueryProfiler::Get(*this).ResetBytesScanned();
 	auto &db_inst = DatabaseInstance::GetDatabase(*this);
 	if (ValidChecker::IsInvalidated(db_inst)) {
 		throw ErrorManager::InvalidatedDatabase(*this, ValidChecker::InvalidatedMessage(db_inst));
@@ -104,11 +106,8 @@ enum class QueryEndErrorSeverity { NONE, ORDINARY, INTERNAL, FATAL };
 
 ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success, bool invalidate_transaction,
                                           optional_ptr<ErrorData> previous_error) {
-	if (active_query->executor) {
-		active_query->executor->CancelTasks();
-	}
-	active_query->progress_bar.reset();
 	D_ASSERT(active_query.get());
+	EndStatementInternal(lock, previous_error);
 	// a query that failed to begin ends only on the states it began on
 	const bool began_on_all_states = active_query->began_on_all_states;
 	auto begun_states = std::move(active_query->begun_states);
@@ -267,6 +266,10 @@ const string &ClientContext::GetCurrentQuery() {
 	return active_query->query;
 }
 
+bool ClientContext::ActiveQueryIsLastStatement() const {
+	return !active_query || !active_query->HasNextStatement();
+}
+
 void BindPreparedStatementParameters(ClientContext &context, PreparedStatementData &statement,
                                      const QueryParameters &parameters) {
 	identifier_map_t<BoundParameterData> owned_values;
@@ -413,7 +416,8 @@ unique_ptr<QueryResult> ClientContext::SubmitPreparedStatementInternal(
 unique_ptr<QueryResult> ClientContext::CompleteDelegatedInternal(ClientContextLock &lock, QueryResult &result) {
 	QueryResultState state;
 	while (!IsObservable(state = ExecuteTaskInternal(lock, result))) {
-		if (state == QueryResultState::BLOCKED) {
+		// As in QueryResult::CompleteInternal: wait while other threads run the remaining tasks, never spin
+		if (state == QueryResultState::BLOCKED || state == QueryResultState::NO_TASKS_AVAILABLE) {
 			WaitForTask(lock, result);
 		}
 	}
@@ -560,10 +564,13 @@ unique_ptr<QueryResult> ClientContext::AdvanceStatementInternal(ClientContextLoc
 	if (QueryDeadlinePassed()) {
 		throw InterruptException(QUERY_DEADLINE_ERROR);
 	}
-	EndStatementInternal(lock);
+	EndStatementInternal(lock, nullptr);
+	transaction.ResetActiveQuery();
+	client_data->profiler->EndQuery();
 	auto statement = active_query->TakeNextStatement();
 	BeginStatementInternal(lock, statement->query);
 	RefreshLoggerInternal();
+	NotifyStatementBeginInternal(lock);
 	QueryParameters parameters(active_query->format);
 	auto produced = SubmitStatementInternal(lock, std::move(statement), parameters);
 	// A statement that could not start fails the query; the result object of a collector already ended it
@@ -603,14 +610,25 @@ unique_ptr<QueryResult> ClientContext::RunToResultStatementInternal(ClientContex
 	return nullptr;
 }
 
-void ClientContext::EndStatementInternal(ClientContextLock &lock) {
-	active_query->executor->CancelTasks();
-	active_query->executor.reset();
+void ClientContext::EndStatementInternal(ClientContextLock &lock, optional_ptr<ErrorData> error) {
+	if (active_query->executor) {
+		active_query->executor->CancelTasks();
+		active_query->executor.reset();
+	}
 	active_query->progress_bar.reset();
 	// The plan outlives the executor
 	active_query->prepared.reset();
-	transaction.ResetActiveQuery();
-	client_data->profiler->EndQuery();
+	// a query whose begin failed started no statement, so the states see no end of one
+	if (!active_query->statement_began) {
+		return;
+	}
+	active_query->statement_began = false;
+	registered_state->ForEachState([&](ClientContextState &state) { state.StatementEnd(*this, error); });
+}
+
+void ClientContext::NotifyStatementBeginInternal(ClientContextLock &lock) {
+	active_query->statement_began = true;
+	registered_state->ForEachState([&](ClientContextState &state) { state.StatementBegin(*this); });
 }
 
 unique_ptr<QueryResult> ClientContext::TakeFinishedResultInternal(ClientContextLock &lock) {

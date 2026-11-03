@@ -1,0 +1,22 @@
+# name: benchmark/micro/join/correlated_union_mark_join.benchmark
+# description: Correlated IN and < ANY on a UNION with many members, which count the tags of each group
+# group: [join]
+
+name Correlated MARK join on a UNION
+group join
+
+load
+CREATE TYPE wide AS UNION(m0 INTEGER, m1 INTEGER, m2 INTEGER, m3 INTEGER, m4 INTEGER, m5 INTEGER, m6 INTEGER, m7 INTEGER,
+	m8 INTEGER, m9 INTEGER, m10 INTEGER, m11 INTEGER, m12 INTEGER, m13 INTEGER, m14 INTEGER, m15 INTEGER, m16 INTEGER,
+	m17 INTEGER, m18 INTEGER, m19 INTEGER, m20 INTEGER, m21 INTEGER, m22 INTEGER, m23 INTEGER, m24 INTEGER, m25 INTEGER,
+	m26 INTEGER, m27 INTEGER, m28 INTEGER, m29 INTEGER, m30 INTEGER, m31 INTEGER);
+CREATE TABLE probe AS SELECT r % 1000 AS g, union_value(m0 := (r % 50)::INTEGER)::wide AS x FROM range(1000000) t(r);
+CREATE TABLE build AS SELECT r % 1000 AS g, union_value(m0 := (r % 37)::INTEGER)::wide AS y FROM range(100000) t(r);
+
+run
+SELECT count(*) FILTER (x IN (SELECT y FROM build WHERE build.g = probe.g)),
+	count(*) FILTER (x < ANY (SELECT y FROM build WHERE build.g = probe.g))
+FROM probe;
+
+result II
+740000	720000

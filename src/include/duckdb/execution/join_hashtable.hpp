@@ -334,9 +334,16 @@ public:
 	//! Probe the HT with the given input chunk, resulting in the given result
 	void Probe(ScanStructure &scan_structure, DataChunk &keys, TupleDataChunkState &key_state, ProbeState &probe_state,
 	           optional_ptr<Vector> precomputed_hashes = nullptr);
-	//! Enable selective NULL refinement for an uncorrelated multi-column MARK join
+	//! Enable selective NULL refinement for an uncorrelated MARK join on rows or on a UNION, whose comparison can be
+	//! NULL without a NULL key
 	void InitializeUncorrelatedMarkJoin();
 	bool HasUncorrelatedMarkJoin() const;
+	//! Create the table of correlated_tag_counts from correlated_tag_aggregates
+	void CreateCorrelatedTagCounts();
+	//! Record the tags of the RHS of a MARK join on one UNION condition
+	void AddUnionMarkJoinTags(const Vector &keys, idx_t count);
+	//! Set the MARK result of the unmatched probes of a MARK join on one UNION condition that compare as UNKNOWN
+	void SetUnionMarkJoinUnknown(const Vector &keys, idx_t count, const bool found_match[], ValidityMask &mask) const;
 	//! Construct a MARK result, including selective UNKNOWN refinement when enabled
 	void ConstructMarkJoinResult(DataChunk &join_keys, DataChunk &probe_data, DataChunk &result,
 	                             optional_ptr<const bool> found_match = nullptr);
@@ -506,6 +513,21 @@ public:
 		bool uncorrelated_has_null = false;
 		//! All RHS condition rows, used only for uncorrelated row equality NULL refinement
 		unique_ptr<ColumnDataCollection> uncorrelated_condition_rows;
+		//! For one UNION condition without UNION members, which compares as UNKNOWN with a UNION of the same tag when
+		//! either member is NULL: whether the RHS has a NULL UNION, and for every tag whether the RHS has it and has it
+		//! with a NULL member, which replace the RHS condition rows
+		bool union_rhs_has_null = false;
+		vector<bool> union_rhs_tags;
+		vector<bool> union_rhs_null_member_tags;
+		//! For a correlated MARK join on a UNION, which compares as UNKNOWN with a UNION of the same tag when either
+		//! member is NULL, the rows and the rows with a NULL member per correlated group and tag (count(*) and a count)
+		vector<unique_ptr<Expression>> correlated_tag_aggregates;
+		unique_ptr<GroupedAggregateHashTable> correlated_tag_counts;
+		//! Group chunk (the correlated columns and the tag), payload, result and lookup state of correlated_tag_counts
+		DataChunk tag_group_chunk;
+		DataChunk tag_payload;
+		DataChunk tag_result_chunk;
+		unique_ptr<AggregateHTLookupState> tag_lookup_state;
 	} mark_join_info;
 
 private:

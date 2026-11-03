@@ -212,7 +212,7 @@ static unique_ptr<FunctionData> ParquetWriteBind(ClientContext &context, CopyFun
 			}
 		} else if (option_name == "field_ids") {
 			if (option_values[0].type().id() == LogicalTypeId::VARCHAR &&
-			    StringUtil::Lower(StringValue::Get(option_values[0])) == "auto") {
+			    StringUtil::CIEquals(StringValue::Get(option_values[0]), "auto")) {
 				idx_t field_id = 0;
 				FieldID::GenerateFieldIDs(bind_data->field_ids, field_id, names, sql_types);
 			} else {
@@ -229,7 +229,7 @@ static unique_ptr<FunctionData> ParquetWriteBind(ClientContext &context, CopyFun
 			}
 		} else if (option_name == "shredding") {
 			if (option_values[0].type().id() == LogicalTypeId::VARCHAR &&
-			    StringUtil::Lower(StringValue::Get(option_values[0])) == "auto") {
+			    StringUtil::CIEquals(StringValue::Get(option_values[0]), "auto")) {
 				throw NotImplementedException("The 'auto' option is not yet implemented for 'shredding'");
 			} else {
 				identifier_set_t variant_names;
@@ -1155,6 +1155,10 @@ static void LoadInternal(ExtensionLoader &loader) {
 	auto &config = DBConfig::GetConfig(db_instance);
 	config.replacement_scans.emplace_back(ParquetScanReplacement);
 	config.AddExtensionOption("binary_as_string", "In Parquet files, interpret binary data as a string.",
+	                          LogicalType::BOOLEAN, Value(false));
+	config.AddExtensionOption("parquet_can_have_nan",
+	                          "In Parquet files without a nan_count, assume FLOAT/DOUBLE columns can hold NaN outside "
+	                          "their min/max. The default for the can_have_nan option of Parquet scans.",
 	                          LogicalType::BOOLEAN, Value(false));
 	config.AddExtensionOption("disable_parquet_prefetching", "Disable the prefetching mechanism in Parquet",
 	                          LogicalType::BOOLEAN, Value(false));

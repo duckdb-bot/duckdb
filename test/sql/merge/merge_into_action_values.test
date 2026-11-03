@@ -171,3 +171,48 @@ MERGE INTO t USING (VALUES (2, '5'), (4, 'x')) v(k, s) ON t.k = v.k
 WHEN MATCHED THEN UPDATE SET u = list_sum(list_transform([1, 2], lambda x: x + v.s::INT));
 ----
 Could not convert string 'x' to INT32
+
+# a subquery under TRY re-raises its errors where the projection plans it, so its value stays below that TRY
+statement ok
+CREATE TABLE e (k INT, s VARCHAR, u INT);
+
+statement ok
+INSERT INTO e VALUES (1, 'bad', 0);
+
+query I
+MERGE INTO e USING (VALUES (1), (2)) v(k) ON e.k = v.k
+WHEN MATCHED THEN UPDATE SET u = 10 * TRY(1 + (SELECT s::INT FROM e WHERE k = 1)) + 1
+WHEN NOT MATCHED THEN INSERT VALUES (v.k, 'new', TRY(1 + (SELECT s::INT FROM e WHERE k = 1)));
+----
+2
+
+query III
+SELECT * FROM e ORDER BY k;
+----
+1	bad	NULL
+2	new	NULL
+
+query I
+MERGE INTO e USING (VALUES (1)) v(k) ON e.k = v.k
+WHEN MATCHED AND false THEN UPDATE SET u = TRY(1 + (SELECT s::INT FROM e WHERE k = 1));
+----
+0
+
+# the comparison of an ANY subquery is planned at its use site too, so its value keeps the CASE around it
+statement ok
+CREATE TABLE a (k INT, s VARCHAR, b BOOLEAN);
+
+statement ok
+INSERT INTO a VALUES (1, 'bad', false), (2, '2', false);
+
+query I
+MERGE INTO a USING (VALUES (1), (2)) v(k) ON a.k = v.k
+WHEN MATCHED THEN UPDATE SET b = CASE WHEN a.k = 1 THEN false ELSE a.s::INT > ANY (SELECT 0) END;
+----
+2
+
+query II
+SELECT k, b FROM a ORDER BY k;
+----
+1	false
+2	true

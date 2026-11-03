@@ -10,6 +10,7 @@
 #include "duckdb/planner/operator/logical_projection.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
+#include "duckdb/planner/expression/bound_subquery_expression.hpp"
 #include "duckdb/planner/expression_binder/insert_binder.hpp"
 #include "duckdb/parser/tableref/joinref.hpp"
 #include "duckdb/parser/expression/default_expression.hpp"
@@ -219,6 +220,17 @@ static void MoveValuesIntoAction(unique_ptr<Expression> &expr, TableIndex proj_i
 	expr = std::move(value);
 }
 
+//! Whether a subquery of the value plans an expression at its use site, which must keep its place in the value
+static bool HasSubqueryPlannedAtUseSite(const Expression &value) {
+	bool at_use_site = false;
+	ExpressionIterator::VisitExpression<BoundSubqueryExpression>(value, [&](const BoundSubqueryExpression &subquery) {
+		if (subquery.RethrowsTryErrors() || subquery.GetSubqueryType() == SubqueryType::ANY) {
+			at_use_site = true;
+		}
+	});
+	return at_use_site;
+}
+
 //! Moves the computed values with a single reference out of the projection below the MERGE into their actions
 static void MoveValuesIntoActions(LogicalMergeInto &merge_into, TableIndex proj_index,
                                   vector<unique_ptr<Expression>> &proj_expressions) {
@@ -232,12 +244,14 @@ static void MoveValuesIntoActions(LogicalMergeInto &merge_into, TableIndex proj_
 		    });
 	});
 	// the projection runs on every joined row, so it keeps only columns, subqueries and shared values
+	// a value whose subquery plans an expression at its use site stays too, so that the expression keeps its place
 	vector<unique_ptr<Expression>> new_expressions;
 	vector<optional_idx> kept_columns(proj_expressions.size());
 	for (idx_t i = 0; i < proj_expressions.size(); i++) {
-		auto value_class = proj_expressions[i]->GetExpressionClass();
+		auto &value = *proj_expressions[i];
+		auto value_class = value.GetExpressionClass();
 		if (value_class == ExpressionClass::BOUND_COLUMN_REF || value_class == ExpressionClass::BOUND_SUBQUERY ||
-		    reference_counts[i] != 1) {
+		    reference_counts[i] != 1 || HasSubqueryPlannedAtUseSite(value)) {
 			kept_columns[i] = new_expressions.size();
 			new_expressions.push_back(std::move(proj_expressions[i]));
 		}

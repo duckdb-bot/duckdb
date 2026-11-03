@@ -382,6 +382,10 @@ void FilterCombiner::GenerateJoinFilters(const vector<JoinCondition> &conditions
 			continue;
 		}
 		for (auto &filter : filters) {
+			// the copy runs on rows the filter itself never sees, so it must not be able to fail on them
+			if (filter.get().CanThrow()) {
+				continue;
+			}
 			auto compared = GetComparedExpression(filter.get());
 			if (compared && compared->Equals(source)) {
 				callback(ExpressionIterator::ReplaceExpression(filter.get(), source, target));

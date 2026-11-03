@@ -1,0 +1,85 @@
+# name: test/sql/tpcds/dsdgen_small_sf.test
+# description: dsdgen finishes for scale factors that give a sales table too few orders for any day (issue #26881)
+# group: [tpcds]
+
+require tpcds
+
+# every sales table has too few orders for any day to get one by its weight
+statement ok
+CALL dsdgen(sf=0.001)
+
+query III
+SELECT (SELECT count(DISTINCT ss_ticket_number) FROM store_sales), (SELECT count(DISTINCT cs_order_number) FROM catalog_sales), (SELECT count(DISTINCT ws_order_number) FROM web_sales)
+----
+240	160	60
+
+# the catalog orders are spread over the five years of sales
+query II
+SELECT min(d_date), max(d_date) FROM catalog_sales JOIN date_dim ON cs_sold_date_sk = d_date_sk
+----
+1998-01-01	2002-12-20
+
+query I
+SELECT count(DISTINCT d_year) FROM catalog_sales JOIN date_dim ON cs_sold_date_sk = d_date_sk
+----
+5
+
+statement ok
+CREATE SCHEMA mixed
+
+# only web_sales has too few orders, store_sales and catalog_sales are scaled by the calendar weights
+statement ok
+CALL dsdgen(sf=0.005, schema='mixed')
+
+query III
+SELECT (SELECT count(DISTINCT ss_ticket_number) FROM mixed.store_sales), (SELECT count(DISTINCT cs_order_number) FROM mixed.catalog_sales), (SELECT count(DISTINCT ws_order_number) FROM mixed.web_sales)
+----
+1200	800	300
+
+# catalog_sales keeps its weighted dates, which run past 2002 at this scale factor
+query II
+SELECT min(cs_sold_date_sk), max(cs_sold_date_sk) FROM mixed.catalog_sales
+----
+2450815	2452891
+
+# with 457 catalog orders no day gets one by its weight, with 458 some days do
+statement ok
+CREATE SCHEMA cut457
+
+statement ok
+CALL dsdgen(sf=0.002857, schema='cut457')
+
+statement ok
+CREATE SCHEMA cut458
+
+statement ok
+CALL dsdgen(sf=0.002863, schema='cut458')
+
+# spread evenly, the orders fall in every year including the leap year 2000
+query III
+SELECT count(DISTINCT cs_order_number), max(cs_sold_date_sk), count(DISTINCT cs_order_number) FILTER (d_year = 2000) FROM cut457.catalog_sales JOIN date_dim ON cs_sold_date_sk = d_date_sk
+----
+457	2452637	92
+
+# by weight, no day of the leap year 2000 gets an order, and the dates run past 2002
+query III
+SELECT count(DISTINCT cs_order_number), max(cs_sold_date_sk), count(DISTINCT cs_order_number) FILTER (d_year = 2000) FROM cut458.catalog_sales JOIN date_dim ON cs_sold_date_sk = d_date_sk
+----
+458	2454443	0
+
+# a single catalog order lands on the first day
+statement ok
+CREATE SCHEMA single
+
+statement ok
+CALL dsdgen(sf=0.000001, schema='single')
+
+query I
+SELECT list(DISTINCT d_date) FROM single.catalog_sales JOIN date_dim ON cs_sold_date_sk = d_date_sk
+----
+[1998-01-01]
+
+query III
+SELECT (SELECT count(DISTINCT ss_ticket_number) FROM single.store_sales), (SELECT count(DISTINCT cs_order_number) FROM single.catalog_sales), (SELECT count(DISTINCT ws_order_number) FROM single.web_sales)
+----
+1	1	1

@@ -1316,6 +1316,9 @@ TEST_CASE("V2 table: claimed filters are no longer applied by the engine", "[cap
 	REQUIRE(QueryI64(fx.conn, "SELECT count(*) FROM claim_probe(100) WHERE i < 10 AND i % 2 = 0") == 6);
 	// A comparison the callback does not recognize stays with the engine.
 	REQUIRE(QueryI64(fx.conn, "SELECT count(*) FROM claim_probe(100) WHERE i > 90") == 9);
+	// A range the optimizer folds into BETWEEN is offered as its two comparisons: the callback claims the upper bound
+	// and the engine still applies the lower one to what the scan returns.
+	REQUIRE(QueryI64(fx.conn, "SELECT count(*) FROM claim_probe(100) WHERE i > 5 AND i < 10") == 6);
 }
 
 TEST_CASE("V2 table: filter pushdown errors fail the query", "[capi_v2][table_function]") {

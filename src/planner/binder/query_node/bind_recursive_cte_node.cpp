@@ -168,6 +168,8 @@ BoundStatement Binder::BindNode(RecursiveCTENode &statement) {
 				                      result.names[aggregate_idx]);
 			}
 
+			// the function binder casts the arguments after they were bound, so the complete aggregate is checked
+			CheckRequiresRebind(*aggregate);
 			return_types[aggregate_idx] = aggregate->GetReturnType();
 			payload_references[aggregate_idx] = std::move(aggregate);
 		} else {

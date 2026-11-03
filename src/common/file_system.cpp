@@ -67,6 +67,7 @@ const FileOpenFlags FileFlags::FILE_FLAGS_MULTI_CLIENT_ACCESS =
 const FileOpenFlags FileFlags::FILE_FLAGS_DISABLE_LOGGING = FileOpenFlags(FileOpenFlags::FILE_FLAGS_DISABLE_LOGGING);
 const FileOpenFlags FileFlags::FILE_FLAGS_ENABLE_EXTENSION_INSTALL =
     FileOpenFlags(FileOpenFlags::FILE_FLAGS_ENABLE_EXTENSION_INSTALL);
+const FileOpenFlags FileFlags::FILE_FLAGS_LOCK_OPEN_FILE = FileOpenFlags(FileOpenFlags::FILE_FLAGS_LOCK_OPEN_FILE);
 
 void FileOpenFlags::Verify() {
 #ifdef DEBUG

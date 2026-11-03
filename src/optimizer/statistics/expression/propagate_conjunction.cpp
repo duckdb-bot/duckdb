@@ -76,7 +76,11 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundConjun
 		// we have a constant in a conjunction
 		// we (1) either prune the child
 		// or (2) replace the entire conjunction with a constant
-		auto constant = ExpressionExecutor::EvaluateScalar(context, *child);
+		// a constant that fails is left to the execution, where TRY can catch its error
+		Value constant;
+		if (!ExpressionExecutor::TryEvaluateScalar(context, *child, constant)) {
+			continue;
+		}
 		if (constant.IsNull()) {
 			continue;
 		}
@@ -108,7 +112,16 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundConjun
 			removed_expressions = true;
 			continue;
 		}
+		// the constant decides the conjunction, but replacing it drops the other children
+		bool can_drop_children = true;
+		for (auto &other : expr.GetChildren()) {
+			can_drop_children = can_drop_children && CanDropExpression(*other);
+		}
+		if (!can_drop_children) {
+			continue;
+		}
 		expr_ptr = make_uniq<BoundConstantExpression>(Value::BOOLEAN(constant_value));
+		removed_expressions = true;
 		return PropagateExpression(expr_ptr);
 	}
 	if (is_and) {

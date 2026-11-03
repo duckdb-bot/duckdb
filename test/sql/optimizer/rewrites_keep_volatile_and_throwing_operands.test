@@ -1,0 +1,432 @@
+# name: test/sql/optimizer/rewrites_keep_volatile_and_throwing_operands.test
+# description: Rewrites that drop an operand keep it when it is volatile, or can throw inside TRY (duckdblabs/bot-issue-tracker#694)
+# group: [optimizer]
+
+statement ok
+CREATE TABLE v AS SELECT * FROM (VALUES (1), (2), (3)) t(x);
+
+# a function statistics callback that replaces the function, as isnan over a child without NULLs
+statement ok
+CREATE SEQUENCE snan;
+
+query I
+SELECT isnan(CASE WHEN nextval('snan') > 0 THEN x::DOUBLE ELSE x::DOUBLE END) FROM v;
+----
+false
+false
+false
+
+query I
+SELECT nextval('snan');
+----
+4
+
+query I
+SELECT TRY(isnan(CASE WHEN CAST('bad' AS INTEGER) > 0 THEN x::DOUBLE ELSE x::DOUBLE END)) FROM v;
+----
+NULL
+NULL
+NULL
+
+# a comparison with NULL
+statement ok
+CREATE SEQUENCE snull;
+
+query I
+SELECT nextval('snull') > NULL FROM v;
+----
+NULL
+NULL
+NULL
+
+query I
+SELECT nextval('snull');
+----
+4
+
+# rules that move a constant or a negation first also fold a comparison with NULL
+statement ok
+CREATE SEQUENCE snull2;
+
+query III
+SELECT nextval('snull2') + 1 > NULL, -nextval('snull2') > NULL, left(nextval('snull2')::VARCHAR, 1) = NULL FROM v;
+----
+NULL	NULL	NULL
+NULL	NULL	NULL
+NULL	NULL	NULL
+
+query I
+SELECT nextval('snull2');
+----
+10
+
+query I
+SELECT TRY(((CAST(x::VARCHAR || 'bad' AS INTEGER) + 1) > NULL) IS NULL) FROM v;
+----
+NULL
+NULL
+NULL
+
+# arithmetic with NULL, which an inner rewrite produces before the comparison sees it
+statement ok
+CREATE SEQUENCE sarith;
+
+query I
+SELECT (nextval('sarith') + CASE WHEN true THEN NULL ELSE x END) > 0 FROM v;
+----
+NULL
+NULL
+NULL
+
+query I
+SELECT nextval('sarith');
+----
+4
+
+query I
+SELECT TRY(((CAST(x::VARCHAR || 'bad' AS INTEGER) + CASE WHEN true THEN NULL ELSE x END) > 0) IS NULL) FROM v;
+----
+NULL
+NULL
+NULL
+
+# struct_extract over struct_pack
+query I
+SELECT TRY(struct_extract(struct_pack(a := x, b := CAST('bad' AS INTEGER)), 'a')) FROM v;
+----
+NULL
+NULL
+NULL
+
+statement ok
+CREATE SEQUENCE sstruct;
+
+query I
+SELECT struct_extract(struct_pack(a := x, b := nextval('sstruct')), 'a') FROM v;
+----
+1
+2
+3
+
+query I
+SELECT nextval('sstruct');
+----
+4
+
+# distributivity, which absorbs (x > 0 AND y) into x > 0
+query I
+SELECT TRY(x > 0 OR (x > 0 AND CAST('bad' AS BOOLEAN))) FROM v;
+----
+NULL
+NULL
+NULL
+
+statement ok
+CREATE SEQUENCE sdist;
+
+query I
+SELECT x > 0 OR (x > 0 AND nextval('sdist') > 0) FROM v;
+----
+true
+true
+true
+
+query I
+SELECT nextval('sdist');
+----
+4
+
+# an ENUM compared with a string that is not one of its values
+statement ok
+CREATE TABLE e AS SELECT x, 'a'::ENUM('a', 'b') val FROM v;
+
+query I
+SELECT TRY((CASE WHEN CAST('bad' AS BOOLEAN) THEN val ELSE val END)::VARCHAR IS DISTINCT FROM 'z') FROM e;
+----
+NULL
+NULL
+NULL
+
+# a large IN list, whose join would evaluate the probe outside TRY
+query I
+SELECT TRY(CAST(x::VARCHAR || 'bad' AS INTEGER) IN (1, 2, 3, 4, 5, 6)) FROM v;
+----
+NULL
+NULL
+NULL
+
+query I
+SELECT TRY(CAST(x::VARCHAR || 'bad' AS INTEGER) NOT IN (1, 2, 3, 4, 5, 6)) FROM v;
+----
+NULL
+NULL
+NULL
+
+# the IN under TRY stays an IN, which evaluates its probe once
+query II
+EXPLAIN SELECT TRY(CAST(x::VARCHAR AS INTEGER) IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10)) FROM v;
+----
+physical_plan	<!REGEX>:.*MARK.*
+
+query I
+SELECT TRY(CAST(x::VARCHAR AS INTEGER) IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10)) FROM v;
+----
+true
+true
+true
+
+# nested IN expressions under TRY that stay IN expressions are planned once each
+query I
+SELECT TRY(CAST(CAST(CAST(CAST(CAST(CAST(CAST(CAST(CAST(CAST(CAST(CAST(CAST(CAST(CAST(CAST(CAST(CAST(
+	CAST(x::VARCHAR AS INTEGER)
+	IN (1, 2, 3, 4, 5, 6) AS INTEGER) IN (1, 2, 3, 4, 5, 6) AS INTEGER) IN (1, 2, 3, 4, 5, 6) AS INTEGER)
+	IN (1, 2, 3, 4, 5, 6) AS INTEGER) IN (1, 2, 3, 4, 5, 6) AS INTEGER) IN (1, 2, 3, 4, 5, 6) AS INTEGER)
+	IN (1, 2, 3, 4, 5, 6) AS INTEGER) IN (1, 2, 3, 4, 5, 6) AS INTEGER) IN (1, 2, 3, 4, 5, 6) AS INTEGER)
+	IN (1, 2, 3, 4, 5, 6) AS INTEGER) IN (1, 2, 3, 4, 5, 6) AS INTEGER) IN (1, 2, 3, 4, 5, 6) AS INTEGER)
+	IN (1, 2, 3, 4, 5, 6) AS INTEGER) IN (1, 2, 3, 4, 5, 6) AS INTEGER) IN (1, 2, 3, 4, 5, 6) AS INTEGER)
+	IN (1, 2, 3, 4, 5, 6) AS INTEGER) IN (1, 2, 3, 4, 5, 6) AS INTEGER) IN (1, 2, 3, 4, 5, 6) AS INTEGER) = 1) FROM v;
+----
+true
+true
+true
+
+# LIKE, prefix and regexp_matches with a pattern that becomes NULL
+statement ok
+CREATE SEQUENCE slike;
+
+query I
+SELECT nextval('slike')::VARCHAR LIKE CASE WHEN true THEN NULL ELSE x::VARCHAR END FROM v;
+----
+NULL
+NULL
+NULL
+
+query I
+SELECT nextval('slike');
+----
+4
+
+query I
+SELECT TRY((CAST(x::VARCHAR || 'bad' AS INTEGER)::VARCHAR LIKE CASE WHEN true THEN NULL ELSE x::VARCHAR END) IS NULL) FROM v;
+----
+NULL
+NULL
+NULL
+
+statement ok
+CREATE SEQUENCE sprefix;
+
+query I
+SELECT prefix(nextval('sprefix')::VARCHAR, CASE WHEN true THEN NULL ELSE x::VARCHAR END) FROM v;
+----
+NULL
+NULL
+NULL
+
+query I
+SELECT nextval('sprefix');
+----
+4
+
+statement ok
+CREATE SEQUENCE sregexp;
+
+query I
+SELECT regexp_matches(nextval('sregexp')::VARCHAR, CASE WHEN true THEN NULL ELSE x::VARCHAR END) FROM v;
+----
+NULL
+NULL
+NULL
+
+query I
+SELECT nextval('sregexp');
+----
+4
+
+query I
+SELECT TRY((regexp_matches(CAST(x::VARCHAR || 'bad' AS INTEGER)::VARCHAR, CASE WHEN true THEN NULL ELSE x::VARCHAR END)) IS NULL) FROM v;
+----
+NULL
+NULL
+NULL
+
+# a DATE cast to TIMESTAMP compared with a TIMESTAMP that is not at midnight
+statement ok
+CREATE SEQUENCE sdate;
+
+query I
+SELECT (DATE '2000-01-01' + nextval('sdate')::INTEGER)::TIMESTAMP IS DISTINCT FROM TIMESTAMP '2020-01-01 12:00:00' FROM v;
+----
+true
+true
+true
+
+query I
+SELECT nextval('sdate');
+----
+4
+
+query I
+SELECT TRY(CAST(x::VARCHAR || 'bad' AS DATE)::TIMESTAMP IS DISTINCT FROM TIMESTAMP '2020-01-01 12:00:00') FROM v;
+----
+NULL
+NULL
+NULL
+
+# a = b OR (a IS NULL AND b IS NULL) with a volatile side
+statement ok
+CREATE TABLE n(x BIGINT);
+
+statement ok
+INSERT INTO n VALUES (NULL), (NULL), (NULL);
+
+statement ok
+CREATE SEQUENCE sequal;
+
+query I
+SELECT x FROM n WHERE nextval('sequal') = x OR (nextval('sequal') IS NULL AND x IS NULL);
+----
+
+query I
+SELECT nextval('sequal');
+----
+7
+
+# a transform over a filter over a transform, whose rewrite skips the rejected elements
+statement ok
+CREATE TABLE lists(l VARCHAR[]);
+
+statement ok
+INSERT INTO lists VALUES (['1', 'bad']);
+
+query I
+SELECT TRY(list_transform(list_filter(list_transform(l, lambda s: struct_pack(filter := s <> 'bad', result := CAST(s AS INTEGER))),
+	lambda v: v.filter), lambda v: v.result)) FROM lists;
+----
+NULL
+
+# a field of the struct_pack besides the filter and the result
+statement ok
+CREATE TABLE ilists(l INTEGER[]);
+
+statement ok
+INSERT INTO ilists VALUES ([1, 2]);
+
+statement ok
+CREATE SEQUENCE sfield;
+
+query I
+SELECT list_transform(list_filter(list_transform(l, lambda x: struct_pack(filter := x > 0, result := x, extra := nextval('sfield'))),
+	lambda v: v.filter), lambda v: v.result) FROM ilists;
+----
+[1, 2]
+
+query I
+SELECT nextval('sfield');
+----
+3
+
+query I
+SELECT TRY(list_transform(list_filter(list_transform(l, lambda x: struct_pack(filter := x > 0, result := x,
+	extra := CAST(x::VARCHAR || 'bad' AS INTEGER))), lambda v: v.filter), lambda v: v.result)) FROM ilists;
+----
+NULL
+
+# integer division by zero without an error
+statement ok
+SET error_on_division_by_zero = false;
+
+statement ok
+CREATE SEQUENCE sdiv;
+
+query I
+SELECT nextval('sdiv') // 0 FROM v;
+----
+NULL
+NULL
+NULL
+
+query I
+SELECT nextval('sdiv');
+----
+4
+
+query I
+SELECT TRY((CAST(x::VARCHAR || 'bad' AS INTEGER) // 0) IS NULL) FROM v;
+----
+NULL
+NULL
+NULL
+
+statement ok
+RESET error_on_division_by_zero;
+
+# rewrites that remove an operation that can fail under TRY
+statement ok
+CREATE TABLE dates(d DATE);
+
+statement ok
+INSERT INTO dates VALUES (DATE '500000-01-01');
+
+query III
+SELECT TRY(d::TIMESTAMP = TIMESTAMP '2020-01-01 12:00:00'), TRY(d::TIMESTAMP <> TIMESTAMP '2020-01-01 12:00:00'),
+	TRY(d::TIMESTAMP < TIMESTAMP '2020-01-01 12:00:00') FROM dates;
+----
+NULL	NULL	NULL
+
+statement ok
+CREATE TABLE extremes(x INTEGER);
+
+statement ok
+INSERT INTO extremes VALUES (2147483647), (-2147483648), (0), (NULL);
+
+query IIIII
+SELECT x, TRY(x + 1 > 0), TRY(x * 2 = 3), TRY(-x = 0), TRY((x + 1) + (-1)) FROM extremes ORDER BY x;
+----
+-2147483648	false	NULL	NULL	-2147483648
+0	true	false	true	0
+2147483647	NULL	NULL	false	NULL
+NULL	NULL	NULL	NULL	NULL
+
+statement ok
+CREATE SEQUENCE snorm;
+
+query I
+SELECT (nextval('snorm') + CASE WHEN true THEN NULL ELSE x END) + 1 FROM v;
+----
+NULL
+NULL
+NULL
+
+query I
+SELECT nextval('snorm');
+----
+4
+
+query I
+SELECT TRY(((CAST(x::VARCHAR || 'bad' AS INTEGER) + CASE WHEN true THEN NULL ELSE x END) + 1) IS NULL) FROM v;
+----
+NULL
+NULL
+NULL
+
+# operands that can be dropped are still dropped
+query II
+EXPLAIN SELECT x > NULL, struct_extract(struct_pack(a := x, b := x + 1), 'a') FROM v;
+----
+physical_plan	<!REGEX>:.*struct_pack.*
+
+query II
+EXPLAIN SELECT val::VARCHAR IS DISTINCT FROM 'z' FROM e;
+----
+physical_plan	<REGEX>:.*Projections: true.*
+
+query II
+EXPLAIN SELECT x IN (1, 2, 3, 4, 5, 6) FROM v;
+----
+physical_plan	<REGEX>:.*MARK.*
+
+query II
+EXPLAIN SELECT isnan(x::DOUBLE) FROM v;
+----
+physical_plan	<REGEX>:.*Projections: false.*

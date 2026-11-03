@@ -220,7 +220,10 @@ unique_ptr<Expression> ComparisonSimplificationRule::Apply(LogicalOperator &op, 
 	}
 	if (constant_value.IsNull() && !(expr.GetExpressionType() == ExpressionType::COMPARE_NOT_DISTINCT_FROM ||
 	                                 expr.GetExpressionType() == ExpressionType::COMPARE_DISTINCT_FROM)) {
-		// comparison with constant NULL, return NULL
+		// comparison with constant NULL, return NULL, unless that drops the other side
+		if (!rewriter.CanDropExpression(column_ref_expr)) {
+			return nullptr;
+		}
 		return make_uniq<BoundConstantExpression>(Value(LogicalType::BOOLEAN));
 	}
 	if (BoundComparisonExpression::IsComparison(column_ref_expr) && !constant_value.IsNull() &&
@@ -242,6 +245,10 @@ unique_ptr<Expression> ComparisonSimplificationRule::Apply(LogicalOperator &op, 
 		//! invertible in practice.
 		auto &cast_expression = column_ref_expr.Cast<BoundFunctionExpression>();
 		auto target_type = BoundCastExpression::SourceType(cast_expression);
+		// moving the cast to the constant removes it, and its error TRY would catch
+		if (rewriter.InTry() && cast_expression.CanThrow()) {
+			return nullptr;
+		}
 		if (!BoundCastExpression::CastIsInvertible(target_type, cast_expression.GetReturnType()) &&
 		    !IsLosslessIntegralToFloatingCast(target_type, cast_expression.GetReturnType())) {
 			return nullptr;
@@ -262,6 +269,11 @@ unique_ptr<Expression> ComparisonSimplificationRule::Apply(LogicalOperator &op, 
 			return nullptr;
 		}
 		if (replacement) {
+			if (replacement->GetExpressionClass() == ExpressionClass::BOUND_CONSTANT &&
+			    !rewriter.CanDropExpression(cast_expression)) {
+				// the constant would drop the operand of the cast
+				return nullptr;
+			}
 			return replacement;
 		}
 

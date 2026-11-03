@@ -85,6 +85,11 @@ unique_ptr<Expression> ConstantOrderNormalizationRule::Apply(LogicalOperator &op
                                                              bool &changes_made, bool is_root) {
 	auto &root = bindings.back().get().Cast<BoundFunctionExpression>();
 	const auto expression_count = bindings.size() - 1;
+	// reordering changes the intermediate results, which can then overflow or not, and binding the new order folds a
+	// NULL operand, so an expression that cannot be dropped keeps its order
+	if (!rewriter.CanDropExpression(root)) {
+		return nullptr;
+	}
 
 	// Put all constant expressions in front.
 	vector<reference<Expression>> ordered_bindings;

@@ -1,4 +1,5 @@
 #include "duckdb/optimizer/rule/struct_extract_struct_pack_folding.hpp"
+#include "duckdb/optimizer/expression_rewriter.hpp"
 
 #include "duckdb/function/scalar/struct_utils.hpp"
 #include "duckdb/optimizer/matcher/expression_matcher.hpp"
@@ -34,7 +35,12 @@ unique_ptr<Expression> StructExtractStructPackFoldingRule::Apply(LogicalOperator
 	if (extract_data.index >= packed_children.size()) {
 		return nullptr;
 	}
-	// struct_extract(struct_pack(e0, .., en), ki) is equivalent to ei
+	// struct_extract(struct_pack(e0, .., en), ki) is equivalent to ei, which drops the other children
+	for (idx_t child_idx = 0; child_idx < packed_children.size(); child_idx++) {
+		if (child_idx != extract_data.index && !rewriter.CanDropExpression(*packed_children[child_idx])) {
+			return nullptr;
+		}
+	}
 	auto result = std::move(packed_children[extract_data.index]);
 	return BoundCastExpression::AddCastToType(GetContext(), std::move(result), extract.Function().GetReturnType());
 }

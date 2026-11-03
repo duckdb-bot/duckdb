@@ -1,4 +1,5 @@
 #include "duckdb/optimizer/rule/like_optimizations.hpp"
+#include "duckdb/optimizer/expression_rewriter.hpp"
 
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/function/builtin_function_lookup.hpp"
@@ -137,6 +138,10 @@ unique_ptr<Expression> LikeOptimizationRule::Apply(LogicalOperator &op, vector<r
 	D_ASSERT(root.GetChildren().size() == 2);
 
 	if (constant_expr.GetValue().IsNull()) {
+		// a NULL result drops the string, which must then not be volatile, nor able to throw inside TRY
+		if (!rewriter.CanDropExpression(*root.GetChildren()[0])) {
+			return nullptr;
+		}
 		return make_uniq<BoundConstantExpression>(Value(root.GetReturnType()));
 	}
 

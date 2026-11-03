@@ -7,6 +7,7 @@
 #include "duckdb/parser/expression/lambda_expression.hpp"
 #include "duckdb/parser/expression/operator_expression.hpp"
 #include "duckdb/parser/expression/positional_reference_expression.hpp"
+#include "duckdb/parser/parser_function_rewrite.hpp"
 #include "duckdb/planner/expression_binder/having_binder.hpp"
 #include "duckdb/planner/planner_extension.hpp"
 
@@ -237,8 +238,13 @@ void ColumnQualifier::QualifyColumnNames(unique_ptr<ParsedExpression> &expr, vec
 	case ExpressionType::FUNCTION: {
 		// Special-handling for lambdas, which are inside function expressions.
 		auto &function = expr->Cast<FunctionExpression>();
-		if (!ExpressionBinder::IsUnnestFunction(function.FunctionName())) {
-			QualifyFunction(function);
+		if (!ExpressionBinder::IsUnnestFunction(function.FunctionName()) && !QualifyFunction(function)) {
+			// a name the parser rewrites binds as its syntax node, as x.ifnull(y) does once it is ifnull(x, y)
+			if (auto rewritten = ParserFunctionRewrite::RewriteMethodCall(function)) {
+				expr = std::move(rewritten);
+				QualifyColumnNames(expr, lambda_params, within_function_expression);
+				return;
+			}
 		}
 		if (function.IsLambdaFunction()) {
 			return QualifyColumnNamesInLambda(function, lambda_params);
@@ -282,14 +288,17 @@ optional_ptr<CatalogEntry> ColumnQualifier::QualifyFunction(FunctionExpression &
 		return nullptr;
 	}
 	// the schema is set - check if we can turn this the schema into a column ref
-	// does this function exist in the system catalog?
-	func = binder.GetCatalogEntry(Identifier::InvalidCatalog(), Identifier::InvalidSchema(), function_lookup,
-	                              OnEntryNotFound::RETURN_NULL);
-	if (!func) {
-		// we could not find the function - bail
-		return nullptr;
+	// does this function exist in the system catalog? A name the parser rewrites into a syntax node binds as that
+	// node, not as a function of the name, so it is not looked up
+	if (!ParserFunctionRewrite::Rewrites(function.FunctionName())) {
+		func = binder.GetCatalogEntry(Identifier::InvalidCatalog(), Identifier::InvalidSchema(), function_lookup,
+		                              OnEntryNotFound::RETURN_NULL);
+		if (!func) {
+			// we could not find the function - bail
+			return nullptr;
+		}
 	}
-	// the function exists in the system catalog - turn this into a dot call
+	// the function exists - turn this into a dot call
 	ErrorData error;
 	unique_ptr<ColumnRefExpression> colref;
 	if (function.GetQualifiedName().Catalog().empty()) {

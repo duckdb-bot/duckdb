@@ -20,9 +20,11 @@ class Binder;
 class Catalog;
 class CatalogEntry;
 class ExpressionListRef;
+class CastExpression;
 class FunctionExpression;
 class JoinRef;
 class SubqueryRef;
+struct CommonTableExpressionInfo;
 class TableFunctionRef;
 class TableRef;
 class QueryNode;
@@ -172,6 +174,9 @@ private:
 	ExpressionPushdownResult AnalyzeExpression(const FunctionExpression &expr);
 	ExpressionPushdownResult AnalyzeExpression(const WindowExpression &expr);
 	ExpressionPushdownResult AnalyzeExpression(const TypeExpression &expr);
+	ExpressionPushdownResult AnalyzeExpression(const CastExpression &expr);
+	//! Keeps the scope from being pushed on its own if a cast goes to a type of a local catalog
+	void CheckCastType(const TypeExpression &type_expr);
 	ExpressionPushdownResult AnalyzeExpression(const ColumnRefExpression &expr);
 	//! Bind and evaluate an expression locally, replacing it with the resulting constant
 	ConstantFoldResult TryConstantFold(unique_ptr<ParsedExpression> &expr);
@@ -189,6 +194,8 @@ private:
 
 	void FinishPushdown(unique_ptr<SQLStatement> &statement, CatalogPushdownResult result);
 	void FinishPushdown(unique_ptr<QueryNode> &node, CatalogPushdownResult result);
+	//! Replace the node with a scan of the result of running it in the remote catalog
+	void PushdownNode(unique_ptr<QueryNode> &node, CatalogPushdownResult &result);
 	//! Wrap a table ref that produces a remote statement's result into "SELECT * FROM <ref>"
 	static unique_ptr<SelectStatement> WrapRemoteRef(unique_ptr<TableRef> ref);
 
@@ -196,7 +203,14 @@ private:
 	unique_ptr<TableRef> CreateRemoteFunctionRef(CatalogPushdownResult &result, unique_ptr<QueryNode> node);
 	bool RefersToLocalTable(const ColumnRefExpression &col_ref) const;
 
-	bool RefersToCTE(const Identifier &cte_name, CatalogPushdownResult &result) const;
+	bool RefersToCTE(const Identifier &cte_name, CatalogPushdownResult &result);
+	//! Whether the node, analyzed by this optimizer, can be pushed on its own when its parent stays local
+	bool IsSelfContained(const QueryNode &node) const;
+	//! Marks the scopes from which a column or a qualified star might refer to a table outside of them
+	void MarkOuterColumnReference();
+	//! Marks this scope and all enclosing scopes as unable to be pushed on their own
+	void MarkStaysWithParent();
+	bool IsRemoteCatalogName(const Identifier &name);
 
 private:
 	Binder &binder;
@@ -207,5 +221,21 @@ private:
 	identifier_set_t local_table_names;
 	//! CTE name to catalog pushdown result, populated as CTEs are analyzed (inner scopes restore on exit)
 	identifier_map_t<CatalogPushdownResult> cte_results;
+	//! Whether this scope refers to a CTE of a parent scope, so that it cannot be pushed on its own
+	bool refers_to_parent_cte = false;
+	//! Whether the FROM clause of this scope has tables, which later subqueries can refer to (LATERAL)
+	bool scope_has_tables = false;
+	//! Whether names of a parent scope or of a preceding FROM entry are visible here
+	bool outer_scope_has_names = false;
+	//! Whether a column of this scope might refer to such a table, so that it cannot be pushed on its own
+	bool may_refer_to_outer_column = false;
+	//! Whether this scope contains something that breaks when the scope is pushed on its own
+	bool stays_with_parent = false;
+	//! Whether this scope is part of a subquery expression, whose generated name would change with a pushdown
+	bool in_expression_subquery = false;
+	//! Subqueries in the FROM clause of the current node that a single remote catalog can run on their own
+	vector<std::pair<reference<SubqueryRef>, CatalogPushdownResult>> remote_subqueries;
+	//! CTEs of the current node that a single remote catalog can run on their own
+	vector<std::pair<reference<CommonTableExpressionInfo>, CatalogPushdownResult>> remote_ctes;
 };
 } // namespace duckdb

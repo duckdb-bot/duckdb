@@ -1,0 +1,537 @@
+# name: test/sql/attach/remote_pushdown_mixed_query.test
+# description: Subqueries and CTEs on one remote catalog are pushed down when the rest of the query stays local
+# group: [attach]
+
+require quack
+
+require httpfs
+
+statement ok
+CALL quack_serve('quack:127.0.0.1:9619', token = 'test_token');
+
+statement ok
+CREATE TABLE tbl AS SELECT range AS id FROM range(3);
+
+statement ok
+CREATE TABLE struct_tbl AS SELECT {'k': 7} AS obj;
+
+statement ok
+CREATE TABLE nested_tbl AS SELECT {'obj': {'k': 8}} AS r;
+
+statement ok
+CREATE TABLE order_tbl AS SELECT * FROM (VALUES (1, 0), (0, 1)) v(id, "(id + 1)");
+
+statement ok
+CREATE TABLE order_tbl2 AS SELECT * FROM (VALUES (1, 0), (0, 1)) v(id, "(r.order_tbl2.id + 1)");
+
+statement ok
+ATTACH 'quack:127.0.0.1:9619' AS r (TOKEN 'test_token');
+
+statement ok
+ATTACH 'quack:127.0.0.1:9619' AS r2 (TOKEN 'test_token');
+
+statement ok
+CREATE TABLE local_tbl AS SELECT 1 AS x;
+
+# a subquery in FROM next to a local table: the server computes the count
+query II
+SELECT * FROM (SELECT count(*) AS n FROM r.tbl) s, local_tbl;
+----
+3	1
+
+query II
+EXPLAIN SELECT * FROM (SELECT count(*) AS n FROM r.tbl) s, local_tbl;
+----
+physical_plan	<!REGEX>:.*Ungrouped Aggregate.*
+
+# a CTE body joined with a local table: the server computes the groups
+query II
+WITH a AS (SELECT id, count(*) AS c FROM r.tbl GROUP BY id) SELECT l.x, sum(a.c) FROM local_tbl AS l JOIN a ON a.id = l.x GROUP BY l.x;
+----
+1	1
+
+query II
+EXPLAIN WITH a AS (SELECT id, count(*) AS c FROM r.tbl GROUP BY id) SELECT l.x, sum(a.c) FROM local_tbl AS l JOIN a ON a.id = l.x GROUP BY l.x;
+----
+physical_plan	<!REGEX>:.*Aggregates: count_star.*
+
+# subqueries and CTEs on two remote catalogs are each pushed to their own catalog
+query II
+SELECT * FROM (SELECT count(*) AS a FROM r.tbl) a, (SELECT count(*) AS b FROM r2.tbl) b;
+----
+3	3
+
+query II
+EXPLAIN SELECT * FROM (SELECT count(*) AS a FROM r.tbl) a, (SELECT count(*) AS b FROM r2.tbl) b;
+----
+physical_plan	<!REGEX>:.*Ungrouped Aggregate.*
+
+query II
+WITH a AS (SELECT count(*) AS a FROM r.tbl), b AS (SELECT count(*) AS b FROM r2.tbl) SELECT * FROM a, b;
+----
+3	3
+
+query II
+EXPLAIN WITH a AS (SELECT count(*) AS a FROM r.tbl), b AS (SELECT count(*) AS b FROM r2.tbl) SELECT * FROM a, b;
+----
+physical_plan	<!REGEX>:.*Ungrouped Aggregate.*
+
+# a subquery nested in a local subquery, in UPDATE and INSERT statements
+query II
+SELECT * FROM (SELECT * FROM (SELECT count(*) AS n FROM r.tbl) s1 WHERE n > 0) s2, local_tbl;
+----
+3	1
+
+statement ok
+BEGIN;
+
+statement ok
+UPDATE local_tbl SET x = s.c FROM (SELECT count(*) AS c FROM r.tbl) s;
+
+statement ok
+INSERT INTO local_tbl SELECT s.n + local_tbl.x FROM (SELECT count(*) AS n FROM r.tbl) s, local_tbl;
+
+query I
+SELECT x FROM local_tbl ORDER BY x;
+----
+3
+6
+
+statement ok
+ROLLBACK;
+
+# a CTE that refers to another CTE stays local, the CTE it refers to is pushed
+query II
+WITH a AS (SELECT id FROM r.tbl), b AS (SELECT count(*) AS c FROM a) SELECT * FROM b, local_tbl;
+----
+3	1
+
+query II
+EXPLAIN WITH a AS (SELECT id FROM r.tbl), b AS (SELECT count(*) AS c FROM a) SELECT * FROM b, local_tbl;
+----
+physical_plan	<REGEX>:.*Ungrouped Aggregate.*
+
+# a subquery that refers to a CTE of the outer query is not pushed on its own
+query II
+WITH c AS (SELECT 1 AS y) SELECT * FROM (SELECT count(*) AS n FROM r.tbl, c WHERE id >= y) s, local_tbl;
+----
+2	1
+
+query II
+EXPLAIN WITH c AS (SELECT 1 AS y) SELECT * FROM (SELECT count(*) AS n FROM r.tbl, c WHERE id >= y) s, local_tbl;
+----
+physical_plan	<REGEX>:.*Ungrouped Aggregate.*
+
+# subqueries that refer to local columns are not pushed
+query II
+SELECT * FROM local_tbl l, LATERAL (SELECT count(*) AS n FROM r.tbl WHERE id = l.x) s;
+----
+1	1
+
+query I
+SELECT (SELECT n FROM (SELECT count(*) AS n FROM r.tbl WHERE id = l.x) s) AS v FROM local_tbl l;
+----
+1
+
+# a subquery that refers to a column of a preceding FROM entry is not pushed on its own
+query II
+SELECT l.x, s.n FROM (VALUES (1)) l(x), LATERAL (SELECT count(*) AS n FROM r.tbl WHERE id = l.x) s, local_tbl z;
+----
+1	1
+
+# a recursive CTE stays in one piece
+query II
+WITH RECURSIVE a(i) AS (SELECT min(id) FROM r.tbl UNION ALL SELECT i + 1 FROM a WHERE i < 2) SELECT * FROM a, local_tbl ORDER BY i;
+----
+0	1
+1	1
+2	1
+
+# a data-modifying CTE runs even if nothing reads it
+statement ok
+WITH a AS (INSERT INTO r.tbl VALUES (9)) SELECT * FROM local_tbl;
+
+statement ok
+WITH a AS MATERIALIZED (INSERT INTO r.tbl VALUES (10)) SELECT * FROM local_tbl;
+
+query I
+SELECT count(*) FROM tbl;
+----
+5
+
+# a data-modifying CTE inside a subquery is still rejected
+statement error
+SELECT * FROM (WITH ins AS (INSERT INTO r.tbl VALUES (11) RETURNING id) SELECT * FROM ins) s, local_tbl;
+----
+data-modifying statement
+
+query I
+SELECT count(*) FROM tbl;
+----
+5
+
+# a qualified star might refer to a preceding FROM entry
+query III
+SELECT * FROM (VALUES (1)) l(x), LATERAL (SELECT l.* FROM r.tbl) s, local_tbl z;
+----
+1	1	1
+1	1	1
+1	1	1
+1	1	1
+1	1	1
+
+# parameters stay with the statement
+statement ok
+PREPARE p AS SELECT * FROM (SELECT ?::INTEGER AS n FROM r.tbl LIMIT 1) s, local_tbl;
+
+query II
+EXECUTE p(17);
+----
+17	1
+
+statement ok
+PREPARE q AS WITH a AS (SELECT id + ?::INTEGER AS v FROM r.tbl) SELECT sum(v) FROM a, local_tbl;
+
+query I
+EXECUTE q(10);
+----
+72
+
+# a set operation subquery and a CTE that is read twice
+query II
+SELECT * FROM (SELECT count(*) AS n FROM r.tbl UNION ALL SELECT max(id) FROM r.tbl) s, local_tbl ORDER BY n;
+----
+5	1
+10	1
+
+query II
+EXPLAIN SELECT * FROM (SELECT count(*) AS n FROM r.tbl UNION ALL SELECT max(id) FROM r.tbl) s, local_tbl ORDER BY n;
+----
+physical_plan	<!REGEX>:.*Ungrouped Aggregate.*
+
+query II
+WITH a AS (SELECT count(*) AS n FROM r.tbl) SELECT x1.n, x2.n FROM a x1, a x2, local_tbl;
+----
+5	5
+
+# a subquery in an expression sees the select list aliases of the enclosing query
+query II
+SELECT 42 AS x, (SELECT n FROM (SELECT x AS n FROM r.tbl LIMIT 1) s, local_tbl) AS y;
+----
+42	42
+
+# the outer query refers to the columns of a pushed subquery by their local names
+query I
+SELECT "(r.tbl.id + 1)" FROM (SELECT r.tbl.id + 1 FROM r.tbl) s, local_tbl ORDER BY 1;
+----
+1
+2
+3
+10
+11
+
+# names of COLUMNS expressions and of nested projections
+query I
+SELECT id FROM (SELECT min(COLUMNS(*)) FROM r.tbl) s, local_tbl;
+----
+0
+
+query I
+WITH a AS (SELECT min(COLUMNS(*)) FROM r.tbl) SELECT id FROM a, local_tbl;
+----
+0
+
+query I
+SELECT "(r.tbl.id + 1)" FROM (SELECT * FROM (SELECT r.tbl.id + 1 FROM r.tbl) inner_s) outer_s, local_tbl ORDER BY 1;
+----
+1
+2
+3
+10
+11
+
+query I
+SELECT "(r.tbl.id + 1)" FROM (WITH c AS (SELECT r.tbl.id + 1 FROM r.tbl) SELECT * FROM c) s, local_tbl ORDER BY 1;
+----
+1
+2
+3
+10
+11
+
+# generated names that subqueries, recursive CTEs and unpacked stars refer to, and whole rows of catalog tables
+query II
+SELECT * FROM (SELECT (SELECT "(r.tbl.id + 1)" FROM (SELECT r.tbl.id + 1 FROM r.tbl) t ORDER BY 1 LIMIT 1) AS v) s, local_tbl;
+----
+1	1
+
+query I
+SELECT "COALESCE(r.main.tbl.id)" FROM (SELECT coalesce(*COLUMNS(*)) FROM r.tbl) s, local_tbl ORDER BY 1;
+----
+0
+1
+2
+9
+10
+
+query I
+SELECT count(*) FROM (SELECT r.tbl AS row_value FROM r.tbl) s, local_tbl;
+----
+5
+
+query I
+WITH a AS (SELECT r.tbl AS row_value FROM r.tbl) SELECT count(*) FROM a, local_tbl;
+----
+5
+
+# names that stripping the catalog would change: a CTE named like a remote table, a table aliased like the
+# catalog, qualified star modifiers and COLUMNS
+query I
+SELECT s.id FROM (WITH tbl AS (SELECT 99 AS id) SELECT * FROM r.tbl) s, local_tbl ORDER BY 1;
+----
+0
+1
+2
+9
+10
+
+query II
+SELECT * FROM (SELECT r.obj.k FROM r.struct_tbl r, (VALUES (99)) obj(k)) s, local_tbl;
+----
+7	1
+
+query I
+SELECT v FROM (SELECT r.obj.k AS v FROM r.nested_tbl, (VALUES (99)) obj(k)) s, local_tbl;
+----
+8
+
+# column aliases apply before duplicate names are made unique
+query I
+SELECT s.a FROM (SELECT id AS a, id + 1 AS a FROM r.tbl) s(b), local_tbl ORDER BY 1;
+----
+1
+2
+3
+10
+11
+
+query I
+WITH s(b) AS (SELECT id AS a, id + 1 AS a FROM r.tbl) SELECT s.a FROM s, local_tbl ORDER BY 1;
+----
+1
+2
+3
+10
+11
+
+# plain qualified columns keep their column names, also for queries pushed as a whole and set operation children
+statement ok
+CREATE TABLE copied AS SELECT r.tbl.id FROM r.tbl;
+
+query I
+SELECT id FROM copied ORDER BY 1;
+----
+0
+1
+2
+9
+10
+
+query I
+SELECT * FROM (SELECT r.tbl.id FROM r.tbl UNION ALL BY NAME SELECT x AS id FROM local_tbl) ORDER BY 1;
+----
+0
+1
+1
+2
+9
+10
+
+statement ok
+CREATE TABLE copied_columns AS SELECT coalesce(COLUMNS(*), r.tbl.id) FROM r.tbl;
+
+query I
+SELECT id FROM copied_columns ORDER BY 1;
+----
+0
+1
+2
+9
+10
+
+statement ok
+CREATE TABLE copied_order AS SELECT r.order_tbl2.id + 1 FROM r.order_tbl2 ORDER BY "(r.order_tbl2.id + 1)" LIMIT 1;
+
+query I
+SELECT * FROM copied_order;
+----
+2
+
+# a subquery whose projection names change when the catalog is stripped stays local
+query I
+SELECT s."(r.order_tbl2.id + 1)" FROM (SELECT r.order_tbl2.id + 1 FROM r.order_tbl2 ORDER BY "(r.order_tbl2.id + 1)" LIMIT 1) s, local_tbl;
+----
+2
+
+# ORDER BY still binds to the input column named like the projection
+query I
+SELECT s."(id + 1)" FROM (SELECT id + 1 FROM r.order_tbl ORDER BY "(id + 1)" LIMIT 1) s, local_tbl;
+----
+2
+
+query I
+WITH s AS (SELECT id + 1 FROM r.order_tbl ORDER BY "(id + 1)" LIMIT 1) SELECT s."(id + 1)" FROM s, local_tbl;
+----
+2
+
+# positional references are named after the column they refer to
+query I
+SELECT id FROM (SELECT #1 FROM r.tbl) s, local_tbl ORDER BY 1;
+----
+0
+1
+2
+9
+10
+
+query I
+WITH a AS (SELECT #1 FROM r.tbl) SELECT id FROM a, local_tbl ORDER BY 1;
+----
+0
+1
+2
+9
+10
+
+# the ranking expression of a NEAREST join stays local
+query III
+SELECT * FROM (SELECT * FROM (VALUES (1)) a(v) JOIN r.tbl NEAREST BY DISTANCE abs(a.v - r.tbl.id)) s, local_tbl;
+----
+1	1	1
+
+# a volatile function can depend on a local object
+statement ok
+CREATE TEMP SEQUENCE local_seq START 10;
+
+query I
+SELECT count(DISTINCT n) FROM (SELECT nextval('temp.local_seq') AS n FROM r.tbl) s, local_tbl;
+----
+5
+
+query I
+WITH a AS (SELECT nextval('temp.local_seq') AS n FROM r.tbl) SELECT min(n) FROM a, local_tbl;
+----
+15
+
+query I
+SELECT renamed FROM (SELECT * RENAME (r.main.tbl.id AS renamed) FROM r.tbl) s, local_tbl ORDER BY 1;
+----
+0
+1
+2
+9
+10
+
+query I
+SELECT "count_star() FILTER (WHERE (r.main.tbl.id > 0))" FROM (SELECT count(*) FILTER (WHERE COLUMNS('id') > 0) FROM r.tbl) s, local_tbl;
+----
+4
+
+# a subquery inside an expression keeps the generated name of the expression
+statement ok
+CREATE TABLE names AS SELECT (SELECT n FROM (SELECT count(*) AS n FROM r.tbl) s) FROM local_tbl;
+
+query I
+SELECT column_name FROM information_schema.columns WHERE table_name = 'names';
+----
+(SELECT n FROM (SELECT count_star() AS n FROM r.tbl) AS s)
+
+# casts to a type of a local catalog keep the subquery local
+statement ok
+CREATE TEMPORARY TYPE local_enum AS ENUM ('0', '1', '2', '9', '10');
+
+query I
+SELECT v FROM (SELECT id::VARCHAR::temp.local_enum AS v FROM r.tbl) s, local_tbl ORDER BY v;
+----
+0
+1
+2
+9
+10
+
+query I
+SELECT v FROM (SELECT id::VARCHAR::local_enum AS v FROM r.tbl) s, local_tbl ORDER BY v;
+----
+0
+1
+2
+9
+10
+
+# built-in and shared types still let a whole query be pushed
+query I
+SELECT id::system.main.BIGINT FROM r.tbl UNION ALL SELECT id FROM r.tbl ORDER BY 1 LIMIT 2;
+----
+0
+0
+
+statement ok
+UPDATE r.tbl SET id = id::system.main.BIGINT + 1 WHERE id = 10;
+
+query I
+SELECT max(id) FROM tbl;
+----
+11
+
+statement ok
+UPDATE r.tbl SET id = id::system.main.BIGINT - 1 WHERE id = 11;
+
+# a type that the server has too still lets a whole query be pushed
+statement ok
+CREATE TYPE shared_int AS BIGINT;
+
+statement ok
+CREATE SCHEMA r;
+
+query I
+SELECT id::r.shared_int AS v FROM r.main.tbl ORDER BY 1;
+----
+0
+1
+2
+9
+10
+
+query I
+SELECT * FROM (SELECT id::r.shared_int AS v FROM r.main.tbl UNION ALL SELECT x FROM local_tbl) ORDER BY 1;
+----
+0
+1
+1
+2
+9
+10
+
+statement ok
+DROP SCHEMA r;
+
+query I
+SELECT a.id::shared_int AS v FROM r.tbl a JOIN r.tbl b USING (id) ORDER BY 1;
+----
+0
+1
+2
+9
+10
+
+query I
+SELECT v FROM (SELECT [id::VARCHAR]::temp.local_enum[] AS v FROM r.tbl) s, local_tbl ORDER BY v;
+----
+[0]
+[1]
+[2]
+[9]
+[10]
+
+statement ok
+CALL quack_stop('quack:127.0.0.1:9619');

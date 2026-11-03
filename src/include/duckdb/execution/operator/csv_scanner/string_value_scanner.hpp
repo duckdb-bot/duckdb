@@ -34,42 +34,44 @@ public:
 	LinePosition begin;
 	LinePosition end;
 	static void SanitizeError(string &value);
+	//! Whether the line goes on over more than two buffers
+	bool SpansMoreThanTwoBuffers() const {
+		// begin is the newline that ends the line before
+		const idx_t first_buffer_idx =
+		    begin.buffer_pos + 1 >= begin.buffer_size ? begin.buffer_idx + 1 : begin.buffer_idx;
+		return end.buffer_idx > first_buffer_idx + 1;
+	}
 	//! Reconstructs the current line to be used in error messages
 	template <class T>
 	string ReconstructCurrentLine(bool &first_char_nl, T &buffer_handles, bool reconstruct_line) const {
 		if (!reconstruct_line || begin == end) {
 			return {};
 		}
+		idx_t first_buffer_idx = begin.buffer_idx;
+		idx_t start_pos = begin.buffer_pos;
+		if (begin.buffer_pos == begin.buffer_size) {
+			// the line starts in the next buffer
+			first_buffer_idx = MinValue(begin.buffer_idx + 1, end.buffer_idx);
+			start_pos = 0;
+		} else if (begin.buffer_pos > begin.buffer_size && begin.buffer_idx != end.buffer_idx) {
+			throw InternalException("CSV reader: buffer pos out of range for buffer");
+		}
 		string result;
-		if (end.buffer_idx == begin.buffer_idx || begin.buffer_pos == begin.buffer_size) {
-			idx_t buffer_idx = end.buffer_idx;
-			if (buffer_handles.find(buffer_idx) == buffer_handles.end()) {
+		for (idx_t buffer_idx = first_buffer_idx; buffer_idx <= end.buffer_idx; buffer_idx++) {
+			auto entry = buffer_handles.find(buffer_idx);
+			if (entry == buffer_handles.end()) {
 				return {};
 			}
-			idx_t start_pos = begin.buffer_pos == begin.buffer_size ? 0 : begin.buffer_pos;
-			auto buffer = buffer_handles[buffer_idx]->Ptr();
-			first_char_nl = buffer[start_pos] == '\n' || buffer[start_pos] == '\r';
-			for (idx_t i = start_pos + first_char_nl; i < end.buffer_pos; i++) {
+			auto buffer = entry->second->Ptr();
+			if (buffer_idx == first_buffer_idx) {
+				first_char_nl = buffer[start_pos] == '\n' || buffer[start_pos] == '\r';
+				start_pos += first_char_nl;
+			}
+			const idx_t end_pos = buffer_idx == end.buffer_idx ? end.buffer_pos : entry->second->actual_size;
+			for (idx_t i = start_pos; i < end_pos; i++) {
 				result += buffer[i];
 			}
-		} else {
-			if (buffer_handles.find(begin.buffer_idx) == buffer_handles.end() ||
-			    buffer_handles.find(end.buffer_idx) == buffer_handles.end()) {
-				return {};
-			}
-			if (begin.buffer_pos >= begin.buffer_size) {
-				throw InternalException("CSV reader: buffer pos out of range for buffer");
-			}
-			auto first_buffer = buffer_handles[begin.buffer_idx]->Ptr();
-			auto first_buffer_size = buffer_handles[begin.buffer_idx]->actual_size;
-			auto second_buffer = buffer_handles[end.buffer_idx]->Ptr();
-			first_char_nl = first_buffer[begin.buffer_pos] == '\n' || first_buffer[begin.buffer_pos] == '\r';
-			for (idx_t i = begin.buffer_pos + first_char_nl; i < first_buffer_size; i++) {
-				result += first_buffer[i];
-			}
-			for (idx_t i = 0; i < end.buffer_pos; i++) {
-				result += second_buffer[i];
-			}
+			start_pos = 0;
 		}
 		// sanitize borked line
 		SanitizeError(result);
@@ -413,6 +415,10 @@ private:
 	idx_t start_pos;
 	//! Pointer to the previous buffer handle, necessary for over-buffer values
 	shared_ptr<CSVBufferHandle> previous_buffer_handle;
+	//! The part read so far of a value that goes on past the end of the current buffer
+	string over_buffer_value;
+	//! The number of characters of that value the state machine went over
+	idx_t over_buffer_value_position = 0;
 	//! Strict state machine is basically a state machine with rfc 4180 set to true, used to figure out a new line.
 	shared_ptr<CSVStateMachine> state_machine_strict;
 	//! Whether this scanner is allowed to pause for I/O. sniffing/line-finding/skipping can't pause.

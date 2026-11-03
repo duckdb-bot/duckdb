@@ -45,16 +45,21 @@ JOIN t USING (id);
 ----
 0	0	0
 
-# partitions with several rows, where the order inside the partition matters
+# 1.2 million partitions of two rows and one row, where the order inside a partition matters, again about
+# 75000 states per finalize call. The last_value keeps the window from being rewritten into a grouped aggregate
 statement ok
-CREATE TABLE s AS SELECT i // 3 AS grp, i AS id, (hash(i) % 1000)::VARCHAR AS v FROM range(240000) r(i);
+CREATE TABLE s AS SELECT (i * 2) // 3 AS grp, i AS id, (hash(i) % 1000)::VARCHAR AS v FROM range(1800000) r(i);
 
-query II
-SELECT count(*) FILTER (lst IS NULL), count(*) FILTER (lst <> expected)
+query III
+SELECT
+	count(*) FILTER (lst IS NULL),
+	count(*) FILTER (lst <> expected),
+	count(*) FILTER (last_id IS DISTINCT FROM max_id)
 FROM (
-	SELECT grp, string_agg(v, ',') OVER (PARTITION BY grp ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS lst
+	SELECT grp, string_agg(v, ',') OVER win AS lst, last_value(id) OVER win AS last_id
 	FROM s
+	WINDOW win AS (PARTITION BY grp ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)
 ) w
-JOIN (SELECT grp, string_agg(v, ',' ORDER BY id) AS expected FROM s GROUP BY grp) g USING (grp);
+JOIN (SELECT grp, string_agg(v, ',' ORDER BY id) AS expected, max(id) AS max_id FROM s GROUP BY grp) g USING (grp);
 ----
-0	0
+0	0	0

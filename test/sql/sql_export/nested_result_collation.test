@@ -181,9 +181,8 @@ sql	<REGEX>:.*SELECT.*
 query TT
 SELECT v,count(*) FROM (SELECT CASE WHEN i=4 THEN NULL ELSE map(['v'],[s COLLATE NOCASE]) END v FROM (VALUES (0,'A'),(1,'a'),(2,'B'),(3,NULL),(4,'A')) t(i,s)) GROUP BY v ORDER BY v;
 ----
-{v=A}	1
+{v=A}	2
 {v=B}	1
-{v=a}	1
 {v=NULL}	1
 NULL	1
 

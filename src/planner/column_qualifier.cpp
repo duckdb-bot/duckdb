@@ -298,23 +298,13 @@ optional_ptr<CatalogEntry> ColumnQualifier::QualifyFunction(FunctionExpression &
 			return nullptr;
 		}
 	}
-	// the function exists - turn this into a dot call
-	ErrorData error;
-	unique_ptr<ColumnRefExpression> colref;
-	if (function.GetQualifiedName().Catalog().empty()) {
-		colref = make_uniq<ColumnRefExpression>(function.GetQualifiedName().Schema());
-	} else {
-		colref =
-		    make_uniq<ColumnRefExpression>(function.GetQualifiedName().Schema(), function.GetQualifiedName().Catalog());
-	}
-	auto new_colref = QualifyColumnName(*colref, error);
-	if (!new_colref) {
-		new_colref = std::move(colref);
-	}
-	new_colref->ClearAlias();
-	// we can! transform this into a function call on the column
-	// i.e. "x.lower()" becomes "lower(x)"
-	function.GetArgumentsMutable().insert(function.GetArgumentsMutable().begin(), std::move(new_colref));
+	// turn the qualification into the column the function is called on, as x.lower() is lower(x). The column is
+	// resolved with the other arguments, where a lambda parameter is found before a column of its name
+	auto &path = function.GetQualifiedName().Path();
+	unique_ptr<ParsedExpression> column =
+	    make_uniq<ColumnRefExpression>(vector<Identifier>(path.begin(), path.end() - 1));
+	column->SetQueryLocation(function.GetQueryLocation());
+	function.GetArgumentsMutable().insert(function.GetArgumentsMutable().begin(), std::move(column));
 	function.SetQualifiedName(QualifiedName(function.GetQualifiedName().Name()));
 	return func;
 }

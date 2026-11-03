@@ -24,6 +24,12 @@ SELECT col.ifnull('b') AS r FROM t WHERE col.coalesce('b') <> 'c' ORDER BY r;
 2020-01-01
 b
 
+# the whole qualification is the column, a struct field included, as for t.s.y.lower()
+query II
+SELECT t.s.x.ifnull('z'), t.s.y.lower() FROM (SELECT {'x': NULL::VARCHAR, 'y': 'Q'} AS s, 'W' AS x, 'W' AS y) t;
+----
+z	q
+
 # the column counts towards the arguments
 statement error
 SELECT col.ifnull('x', 'y') FROM t;
@@ -200,7 +206,8 @@ SELECT col.ifnull('b'), (col).ifnull('b'), ifnull(col, 'b') FROM t ORDER BY ALL;
 2020-01-01	2020-01-01	2020-01-01
 b	b	b
 
-query I
-SELECT list_transform(['a', NULL], lambda x: x.ifnull('z'));
+# a lambda parameter is the column the function is called on, also next to a column of its name, as for x.lower()
+query II
+SELECT list_transform(['a', NULL], lambda x: x.ifnull('z')), list_transform(['A'], lambda x: x.lower()) FROM (SELECT 'outer' AS x) t;
 ----
-[a, z]
+[a, z]	[a]

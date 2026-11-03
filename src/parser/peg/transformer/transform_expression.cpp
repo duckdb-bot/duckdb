@@ -133,6 +133,9 @@ static unique_ptr<ParsedExpression> TransformParserFunctionRewrite(const string 
 		if (call_form != ParserRewriteCallForm::METHOD_CHAIN) {
 			return nullptr;
 		}
+		if (function_children.empty()) {
+			throw ParserException("COALESCE requires at least one argument");
+		}
 		reject_named_arguments("COALESCE expressions");
 		auto coalesce_op = make_uniq<OperatorExpression>(ExpressionType::OPERATOR_COALESCE);
 		for (auto &arg : function_children) {

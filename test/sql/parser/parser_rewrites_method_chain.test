@@ -218,6 +218,11 @@ SELECT "coalesce"(NULL, 5);
 ----
 5
 
+statement error
+SELECT "coalesce"();
+----
+COALESCE requires at least one argument
+
 statement ok
 CREATE MACRO "coalesce"(a, b) AS 999;
 

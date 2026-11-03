@@ -331,8 +331,8 @@ bool TableIndexList::AllIndexesBoundOfType(const string &index_type) const {
 
 bool TableIndexList::HasBufferedReplays() const {
 	// contention counts as having replays, so that a commit holding the transaction lock does not wait here
-	annotated_unique_lock<annotated_mutex> lock(index_entries_lock, std::try_to_lock);
-	if (!lock.owns_lock()) {
+	annotated_unique_lock<annotated_mutex> lock(index_entries_lock, std::defer_lock);
+	if (!lock.try_lock()) {
 		return true;
 	}
 	for (const auto &entry : index_entries) {

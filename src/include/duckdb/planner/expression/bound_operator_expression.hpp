@@ -27,6 +27,8 @@ public:
 		return children;
 	}
 	string ToString() const override;
+	//! The field name of a STRUCT_EXTRACT with a constant field
+	static string GetStructExtractField(const Expression &field);
 
 	bool Equals(const BaseExpression &other) const override;
 

@@ -1,0 +1,53 @@
+# name: test/sql/types/struct/struct_extract_quoted_field_to_string.test
+# description: A struct field name with quotes is written back as SQL without extra escaping
+# group: [struct]
+
+statement ok
+CREATE TABLE t AS SELECT 1 AS id;
+
+statement ok
+CREATE VIEW v AS SELECT (struct_pack("a'b" := id))."a'b" AS x, (struct_pack("a""b" := id + 1))."a""b" AS y, (struct_pack("it's ""q""" := id + 2))."it's ""q""" AS z FROM t;
+
+query I
+SELECT sql FROM duckdb_views() WHERE view_name = 'v'
+----
+CREATE VIEW v AS SELECT (struct_pack("a'b" := id))."a'b" AS x, (struct_pack("a""b" := (id + 1)))."a""b" AS y, (struct_pack("it's ""q""" := (id + 2)))."it's ""q""" AS z FROM t;
+
+statement ok
+CREATE MACRO get_field(s) AS (s)."a'b"
+
+query I
+SELECT macro_definition FROM duckdb_functions() WHERE function_name = 'get_field'
+----
+(s)."a'b"
+
+query I
+SELECT get_field({'a''b': 42})
+----
+42
+
+# the written definitions parse back to the same view and macro
+statement ok
+EXPORT DATABASE '{TEST_DIR}/struct_extract_quoted_field'
+
+statement ok
+DROP VIEW v
+
+statement ok
+DROP TABLE t
+
+statement ok
+DROP MACRO get_field
+
+statement ok
+IMPORT DATABASE '{TEST_DIR}/struct_extract_quoted_field'
+
+query III
+SELECT * FROM v
+----
+1	2	3
+
+query I
+SELECT get_field({'a''b': 42})
+----
+42

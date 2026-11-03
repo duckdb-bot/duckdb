@@ -82,6 +82,10 @@ static const LogicalType &ListOrArrayChildType(const LogicalType &type) {
 	return type.id() == LogicalTypeId::LIST ? ListType::GetChildType(type) : ArrayType::GetChildType(type);
 }
 
+static bool IsStructOrTuple(const LogicalType &type) {
+	return type.id() == LogicalTypeId::STRUCT || type.id() == LogicalTypeId::TUPLE;
+}
+
 //! Whether a cast from the source type to the target type changes the order of the values, which a cast of an ENUM
 //! does, as an ENUM sorts by dictionary position, also as a member of a nested type
 static bool CastChangesOrder(const LogicalType &source, const LogicalType &target) {
@@ -94,17 +98,7 @@ static bool CastChangesOrder(const LogicalType &source, const LogicalType &targe
 	if (IsListOrArray(source) && IsListOrArray(target)) {
 		return CastChangesOrder(ListOrArrayChildType(source), ListOrArrayChildType(target));
 	}
-	if (source.id() != target.id()) {
-		// a cast to another kind of type, as VARIANT, converts every ENUM in the value
-		return TypeVisitor::Contains(source, LogicalTypeId::ENUM);
-	}
-	switch (source.id()) {
-	case LogicalTypeId::MAP:
-		return CastChangesOrder(MapType::KeyType(source), MapType::KeyType(target)) ||
-		       CastChangesOrder(MapType::ValueType(source), MapType::ValueType(target));
-	case LogicalTypeId::STRUCT:
-	case LogicalTypeId::TUPLE:
-	case LogicalTypeId::UNION: {
+	if (IsStructOrTuple(source) && IsStructOrTuple(target)) {
 		// the fields are paired as the cast pairs them, by name or by position
 		auto mapping = StructBoundCastData::GetFieldMapping(source, target);
 		if (mapping.kind != StructCastFieldMapping::MatchKind::VALID) {
@@ -120,9 +114,15 @@ static bool CastChangesOrder(const LogicalType &source, const LogicalType &targe
 		}
 		return false;
 	}
-	default:
-		return false;
+	if (source.id() == LogicalTypeId::MAP && target.id() == LogicalTypeId::MAP) {
+		return CastChangesOrder(MapType::KeyType(source), MapType::KeyType(target)) ||
+		       CastChangesOrder(MapType::ValueType(source), MapType::ValueType(target));
 	}
+	if (source.id() != target.id() || source.id() == LogicalTypeId::UNION) {
+		// a cast to another kind of type, as VARIANT, or between UNION types converts the value as a whole
+		return TypeVisitor::Contains(source, LogicalTypeId::ENUM);
+	}
+	return false;
 }
 
 static unique_ptr<Expression> PlanExtremumRewrite(Binder &binder, BoundSubqueryExpression &expr,

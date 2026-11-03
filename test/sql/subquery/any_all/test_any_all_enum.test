@@ -116,20 +116,33 @@ SELECT map(['m'], [1]) > ANY (SELECT map([v], [1]) FROM t WHERE v IS NOT NULL), 
 ----
 true	false
 
-# the fields of a STRUCT are matched by name, as the cast matches them
 query II
-SELECT {'b': NULL::e, 'a': 'm'} > ANY (SELECT {'a': v, 'b': NULL} FROM t WHERE v IS NOT NULL), {'B': 'm', 'g': 1} > ANY (SELECT {'b': v, 'g': 1} FROM t WHERE v IS NOT NULL)
+SELECT map([1], ['m']) > ANY (SELECT map([1], [v]) FROM t WHERE v IS NOT NULL), map([1], ['m']) > ALL (SELECT map([1], [v]) FROM t WHERE v IS NOT NULL)
 ----
-true	true
+true	false
 
-# an ENUM field that keeps its type does not cast the STRUCT before the extremum, so a sibling row the compared type
-# cannot hold does not fail the comparison, also when the compared STRUCT has more fields or an ARRAY is compared with a LIST
+# a UNION member is cast with the whole UNION
 query III
-SELECT {'n': 0.5::DECIMAL(38,37), 'tag': 'a'::e} > ANY (SELECT {'n': i, 'tag': 'a'::e} FROM (VALUES (0), (100)) rhs(i)),
-       {'n': 0.5::DECIMAL(38,37), 'tag': 'a'::e, 'extra': 0} > ANY (SELECT {'n': i, 'tag': 'a'::e} FROM (VALUES (0), (100)) rhs(i)),
-       [{'n': 0.5::DECIMAL(38,37), 'tag': 'a'::e}] > ANY (SELECT [{'n': i, 'tag': 'a'::e}]::STRUCT(n INTEGER, tag e)[1] FROM (VALUES (0), (100)) rhs(i))
+SELECT {'u': union_value(a := 'm')} > ANY (SELECT {'u': union_value(a := v)} FROM t WHERE v IS NOT NULL), {'u': union_value(a := 'm')} > ALL (SELECT {'u': union_value(a := v)} FROM t WHERE v IS NOT NULL), [union_value(a := 'm')] > ANY (SELECT [union_value(a := v)] FROM t WHERE v IS NOT NULL)
+----
+true	false	true
+
+# the fields of a STRUCT are matched by name, as the cast matches them, and by position for a TUPLE
+query III
+SELECT {'b': NULL::e, 'a': 'm'} > ANY (SELECT {'a': v, 'b': NULL} FROM t WHERE v IS NOT NULL), {'B': 'm', 'g': 1} > ANY (SELECT {'b': v, 'g': 1} FROM t WHERE v IS NOT NULL), row('m', 1) > ANY (SELECT row(v, 1) FROM t WHERE v IS NOT NULL)
 ----
 true	true	true
+
+# an ENUM field that keeps its type does not cast the STRUCT before the extremum, so a sibling row the compared type
+# cannot hold does not fail the comparison, also when the compared STRUCT has more fields, an ARRAY is compared with a
+# LIST or a TUPLE with a STRUCT
+query IIII
+SELECT {'n': 0.5::DECIMAL(38,37), 'tag': 'a'::e} > ANY (SELECT {'n': i, 'tag': 'a'::e} FROM (VALUES (0), (100)) rhs(i)),
+       {'n': 0.5::DECIMAL(38,37), 'tag': 'a'::e, 'extra': 0} > ANY (SELECT {'n': i, 'tag': 'a'::e} FROM (VALUES (0), (100)) rhs(i)),
+       [{'n': 0.5::DECIMAL(38,37), 'tag': 'a'::e}] > ANY (SELECT [{'n': i, 'tag': 'a'::e}]::STRUCT(n INTEGER, tag e)[1] FROM (VALUES (0), (100)) rhs(i)),
+       {'n': 0.5::DECIMAL(38,37), 'tag': 'a'::e} > ANY (SELECT row(i, 'a'::e) FROM (VALUES (0), (100)) rhs(i))
+----
+true	true	true	true
 
 # an untyped NULL subquery compared with an ENUM
 query II

@@ -280,6 +280,8 @@ enum class FunctionCollationHandling : uint8_t;
 
 enum class FunctionErrors : uint8_t;
 
+enum class FunctionKind : uint8_t;
+
 enum class FunctionNullHandling : uint8_t;
 
 enum class FunctionParameterKind : uint8_t;
@@ -643,6 +645,8 @@ enum class TransactionInvalidationPolicy : uint8_t;
 enum class TransactionModifierType : uint8_t;
 
 enum class TransactionType : uint8_t;
+
+enum class TransformChildKind : uint8_t;
 
 enum class TriggerEventType : uint8_t;
 
@@ -1066,6 +1070,9 @@ const char* EnumUtil::ToChars<FunctionCollationHandling>(FunctionCollationHandli
 
 template<>
 const char* EnumUtil::ToChars<FunctionErrors>(FunctionErrors value);
+
+template<>
+const char* EnumUtil::ToChars<FunctionKind>(FunctionKind value);
 
 template<>
 const char* EnumUtil::ToChars<FunctionNullHandling>(FunctionNullHandling value);
@@ -1614,6 +1621,9 @@ template<>
 const char* EnumUtil::ToChars<TransactionType>(TransactionType value);
 
 template<>
+const char* EnumUtil::ToChars<TransformChildKind>(TransformChildKind value);
+
+template<>
 const char* EnumUtil::ToChars<TriggerEventType>(TriggerEventType value);
 
 template<>
@@ -2060,6 +2070,9 @@ FunctionCollationHandling EnumUtil::FromString<FunctionCollationHandling>(const 
 
 template<>
 FunctionErrors EnumUtil::FromString<FunctionErrors>(const char *value);
+
+template<>
+FunctionKind EnumUtil::FromString<FunctionKind>(const char *value);
 
 template<>
 FunctionNullHandling EnumUtil::FromString<FunctionNullHandling>(const char *value);
@@ -2606,6 +2619,9 @@ TransactionModifierType EnumUtil::FromString<TransactionModifierType>(const char
 
 template<>
 TransactionType EnumUtil::FromString<TransactionType>(const char *value);
+
+template<>
+TransformChildKind EnumUtil::FromString<TransformChildKind>(const char *value);
 
 template<>
 TriggerEventType EnumUtil::FromString<TriggerEventType>(const char *value);

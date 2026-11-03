@@ -1,0 +1,21 @@
+# name: benchmark/micro/parquet/many_cached_files.benchmark
+# description: Scan many small Parquet files through the external file cache with a small memory limit
+# group: [parquet]
+
+name ManyCachedParquetFiles
+group micro
+subgroup parquet
+
+require parquet
+
+load
+SET partitioned_write_max_open_files = 100;
+COPY (SELECT range AS i, md5(range::VARCHAR) AS s, range % 1000 AS p FROM range(1000000)) TO '${BENCHMARK_DIR}/many_cached_files' (FORMAT parquet, PARTITION_BY p, OVERWRITE);
+SET cache_local_files = true;
+SET memory_limit = '64MB';
+
+run
+SELECT count(*), sum(length(s)) FROM read_parquet('${BENCHMARK_DIR}/many_cached_files/*/*.parquet');
+
+result II
+1000000	32000000

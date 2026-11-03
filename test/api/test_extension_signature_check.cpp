@@ -1,8 +1,10 @@
 #include "catch.hpp"
+#include "duckdb/common/file_system.hpp"
+#include "duckdb/common/optional_idx.hpp"
 #include "duckdb/main/extension_helper.hpp"
 #include "test_helpers.hpp"
 
-// the test limits the threads that can start through the default thread attributes, a glibc extension
+// the last part of the test limits the threads that can start through the default thread attributes, a glibc extension
 #if defined(__linux__) && !defined(DUCKDB_NO_THREADS) && defined(__GLIBC_PREREQ)
 #if __GLIBC_PREREQ(2, 18)
 #define SIGNATURE_CHECK_TEST_HAS_DEFAULT_PTHREAD_ATTRIBUTES
@@ -19,8 +21,6 @@
 #endif
 
 using namespace duckdb;
-
-#ifdef SIGNATURE_CHECK_TEST_HAS_DEFAULT_PTHREAD_ATTRIBUTES
 
 namespace {
 
@@ -73,10 +73,67 @@ unique_ptr<DuckDB> OpenDatabaseWithSigningKey(DBConfig &config, const string &re
 	return db;
 }
 
+//! Opens a database without worker threads, which hashes the chunks on the checking thread, as a starting database
+//! does for the extensions it loads
+unique_ptr<DuckDB> OpenDatabaseWithoutWorkers(DBConfig &config, const string &repository_directory) {
+	config.options.maximum_threads = 1;
+	config.options.async_threads = 0;
+	return OpenDatabaseWithSigningKey(config, repository_directory);
+}
+
+//! Checks the buffer as INSTALL checks a downloaded extension
 bool SignatureVerifies(DuckDB &db, const vector<char> &buffer) {
 	return ExtensionHelper::CheckExtensionBufferSignature(*db.instance, buffer.data(), BUFFER_SIZE,
 	                                                      ExtensionRepositoryType::USER_PROVIDED, "signed");
 }
+
+//! Serves the signed buffer as the file of an extension, and fails every read of one chunk when one is given
+class SignedFileSystem : public FileSystem {
+public:
+	SignedFileSystem(const vector<char> &buffer_p, optional_idx unreadable_chunk_p)
+	    : buffer(buffer_p), unreadable_chunk(unreadable_chunk_p) {
+	}
+
+public:
+	string GetName() const override {
+		return "SignedFileSystem";
+	}
+	int64_t GetFileSize(FileHandle &handle) override {
+		return NumericCast<int64_t>(buffer.size());
+	}
+	void Read(FileHandle &handle, void *target, int64_t nr_bytes, idx_t location) override {
+		if (unreadable_chunk.IsValid() && location / CHUNK_SIZE == unreadable_chunk.GetIndex()) {
+			throw IOException("the extension file could not be read");
+		}
+		memcpy(target, buffer.data() + location, NumericCast<idx_t>(nr_bytes));
+	}
+
+private:
+	const vector<char> &buffer;
+	optional_idx unreadable_chunk;
+};
+
+class SignedFileHandle : public FileHandle {
+public:
+	explicit SignedFileHandle(FileSystem &file_system)
+	    : FileHandle(file_system, "signed.duckdb_extension", FileFlags::FILE_FLAGS_READ) {
+	}
+
+public:
+	void Close() override {
+	}
+};
+
+//! Checks the file as LOAD checks an extension file
+bool FileSignatureVerifies(DuckDB &db, SignedFileSystem &file_system) {
+	SignedFileHandle handle(file_system);
+	ParsedExtensionMetaData metadata;
+	metadata.signature.resize(ParsedExtensionMetaData::SIGNATURE_SIZE);
+	return ExtensionHelper::CheckExtensionSignature(*db.instance, handle, metadata,
+	                                                ExtensionRepositoryType::USER_PROVIDED, "signed");
+}
+
+#ifdef SIGNATURE_CHECK_TEST_HAS_DEFAULT_PTHREAD_ATTRIBUTES
 
 //! The address space of this process in bytes, 0 when it cannot be read
 idx_t CurrentAddressSpace() {
@@ -90,14 +147,15 @@ idx_t CurrentAddressSpace() {
 	return pages * NumericCast<idx_t>(page_size);
 }
 
-//! Lets exactly two more threads start. Every new thread gets a 256 MiB stack and the address space limit leaves
-//! room for two of them, so the third pthread_create fails with EAGAIN, as it does under a thread limit. The
-//! destructor restores both settings.
-class TwoMoreThreads {
+//! Lets no thread start while it lives. Every new thread gets a 256 MiB stack, the address space limit leaves room
+//! for two of them, and two threads are parked on it, so the next pthread_create fails with EAGAIN, as it does under
+//! a thread limit. The destructor releases the threads and restores both settings.
+class NoMoreThreads {
 public:
 	static constexpr idx_t STACK_SIZE = 256ULL * 1024 * 1024;
+	static constexpr idx_t PARKED_THREADS = 2;
 
-	TwoMoreThreads() {
+	NoMoreThreads() : closed(gate) {
 		// everything that can fail comes before the settings change, so the destructor always sees what it restores
 		auto address_space = CurrentAddressSpace();
 		if (address_space == 0 || pthread_getattr_default_np(&old_attr) != 0) {
@@ -112,8 +170,24 @@ public:
 		new_limit.rlim_cur = address_space + STACK_SIZE * 5 / 2;
 		attr_set = pthread_setattr_default_np(&new_attr) == 0;
 		limit_set = attr_set && setrlimit(RLIMIT_AS, &new_limit) == 0;
+		if (!limit_set) {
+			return;
+		}
+		// the parked threads wait for the gate, which the destructor opens, and one more thread must fail to start
+		threads.reserve(PARKED_THREADS + 1);
+		try {
+			for (idx_t i = 0; i <= PARKED_THREADS; i++) {
+				threads.emplace_back([this]() { std::lock_guard<std::mutex> hold(gate); });
+			}
+		} catch (std::exception &) {
+			works = threads.size() == PARKED_THREADS;
+		}
 	}
-	~TwoMoreThreads() {
+	~NoMoreThreads() {
+		closed.unlock();
+		for (auto &thread : threads) {
+			thread.join();
+		}
 		if (limit_set) {
 			setrlimit(RLIMIT_AS, &old_limit);
 		}
@@ -126,65 +200,61 @@ public:
 		}
 	}
 
-	//! Whether two threads start and the third does not, which needs a platform that honors both settings
+public:
+	//! Whether two threads started and the third did not, which needs a platform that honors both settings
 	bool Works() const {
-		if (!limit_set) {
-			return false;
-		}
-		// the threads wait for the gate until the third one has been tried, nothing below can throw before they are
-		// released and joined
-		std::mutex gate;
-		std::unique_lock<std::mutex> closed(gate);
-		vector<std::thread> threads;
-		threads.reserve(3);
-		bool third_failed = false;
-		try {
-			for (idx_t i = 0; i < 3; i++) {
-				threads.emplace_back([&gate]() { std::lock_guard<std::mutex> hold(gate); });
-			}
-		} catch (std::exception &) {
-			third_failed = threads.size() == 2;
-		}
-		closed.unlock();
-		for (auto &thread : threads) {
-			thread.join();
-		}
-		return third_failed;
+		return works;
 	}
 
 private:
+	std::mutex gate;
+	std::unique_lock<std::mutex> closed;
+	vector<std::thread> threads;
 	pthread_attr_t old_attr;
 	pthread_attr_t new_attr;
 	bool attr_read = false;
 	bool attr_set = false;
 	rlimit old_limit;
 	bool limit_set = false;
+	bool works = false;
 };
+
+#endif
 
 } // namespace
 
-TEST_CASE("Test that a signature check succeeds when no new thread can start", "[api]") {
+TEST_CASE("Test that a signature check hashes the chunks of an extension without starting a thread", "[api]") {
 	auto buffer = SignedBuffer();
-	// the worker threads of this database hash the chunks
 	DBConfig config;
 	auto db = OpenDatabaseWithSigningKey(config, "extension_signature_check");
-	// this database has no worker threads, so the checking thread hashes them, as it does for an extension that a
-	// starting database loads
-	DBConfig single_thread_config;
-	single_thread_config.options.maximum_threads = 1;
-	auto single_thread_db = OpenDatabaseWithSigningKey(single_thread_config, "extension_signature_check_single_thread");
+	DBConfig no_worker_config;
+	auto no_worker_db = OpenDatabaseWithoutWorkers(no_worker_config, "extension_signature_check_no_workers");
 
 	REQUIRE(SignatureVerifies(*db, buffer));
-	REQUIRE(SignatureVerifies(*single_thread_db, buffer));
+	REQUIRE(SignatureVerifies(*no_worker_db, buffer));
+	SignedFileSystem readable_file(buffer, optional_idx());
+	REQUIRE(FileSignatureVerifies(*db, readable_file));
+	REQUIRE(FileSignatureVerifies(*no_worker_db, readable_file));
 
-	TwoMoreThreads two_more_threads;
-	if (!two_more_threads.Works()) {
-		WARN("the thread limit of this test does not take effect here, so the check under it is skipped");
+	// a changed byte fails the check
+	auto tampered = buffer;
+	tampered[2 * CHUNK_SIZE] ^= 1;
+	REQUIRE(!SignatureVerifies(*db, tampered));
+
+	// a chunk that cannot be read fails the check with the read error
+	SignedFileSystem unreadable_chunk(buffer, 1);
+	REQUIRE_THROWS_WITH(FileSignatureVerifies(*db, unreadable_chunk), Catch::Contains("could not be read"));
+	REQUIRE_THROWS_WITH(FileSignatureVerifies(*no_worker_db, unreadable_chunk), Catch::Contains("could not be read"));
+
+#ifdef SIGNATURE_CHECK_TEST_HAS_DEFAULT_PTHREAD_ATTRIBUTES
+	NoMoreThreads no_more_threads;
+	if (!no_more_threads.Works()) {
+		WARN("the thread limit of this test does not take effect here, so the checks under it are skipped");
 		return;
 	}
 	// the checks start no thread, so they verify the signature under the limit instead of terminating the process
 	REQUIRE(SignatureVerifies(*db, buffer));
-	REQUIRE(SignatureVerifies(*single_thread_db, buffer));
-}
-
+	REQUIRE(SignatureVerifies(*no_worker_db, buffer));
+	REQUIRE(FileSignatureVerifies(*db, readable_file));
 #endif
+}

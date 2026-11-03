@@ -323,6 +323,7 @@ public:
 	      end(end_p), hash(hash_p) {
 	}
 
+public:
 	void ExecuteTask() override {
 		compute_hash_fun(handle, start, end, &hash);
 	}
@@ -340,14 +341,14 @@ private:
 };
 
 template <typename T, typename F>
-static void ComputeHashesOnSegments(DatabaseInstance &db, F ComputeHashFun, T handle, const vector<idx_t> &splits,
+static void ComputeHashesOnSegments(DatabaseInstance &db, F compute_hash_fun, T handle, const vector<idx_t> &splits,
                                     vector<string> &hash_chunks) {
 	// the segments are hashed by the worker threads of the scheduler and by this thread, which waits for all of them
 	TaskExecutor executor(TaskScheduler::GetScheduler(db));
 	vector<unique_ptr<BaseExecutorTask>> tasks;
 	tasks.reserve(hash_chunks.size());
 	for (idx_t i = 0; i < hash_chunks.size(); i++) {
-		tasks.push_back(make_uniq<ExtensionHashTask<T, F>>(executor, ComputeHashFun, handle, splits[i], splits[i + 1],
+		tasks.push_back(make_uniq<ExtensionHashTask<T, F>>(executor, compute_hash_fun, handle, splits[i], splits[i + 1],
 		                                                   hash_chunks[i]));
 	}
 	executor.ScheduleTasks(std::move(tasks));

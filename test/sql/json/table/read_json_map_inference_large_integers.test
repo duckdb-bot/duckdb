@@ -1,0 +1,176 @@
+# name: test/sql/json/table/read_json_map_inference_large_integers.test
+# description: Map inference does not make a DOUBLE of integers that a DOUBLE can't hold exactly
+# group: [table]
+
+require json
+
+# one key holds a fraction, the other 199 keys hold 2^53 + 1
+statement ok
+COPY (SELECT '{"o":{"k0":1.5,' || string_agg('"k' || x || '":9007199254740993', ',') || '}}' FROM range(1, 200) t(x)) TO '{TEST_DIR}/large_integers.json' (FORMAT csv, HEADER false, QUOTE '')
+
+query II
+SELECT typeof(o)[:22], o.k1 FROM read_json('{TEST_DIR}/large_integers.json')
+----
+STRUCT(k0 DOUBLE, k1 B	9007199254740993
+
+# negative values and values above the BIGINT range
+statement ok
+COPY (SELECT '{"o":{"k0":1.5,"k1":-9007199254740993,"k2":18446744073709551615,' || string_agg('"k' || x || '":1', ',') || '}}' FROM range(3, 200) t(x)) TO '{TEST_DIR}/large_integers_signs.json' (FORMAT csv, HEADER false, QUOTE '')
+
+query III
+SELECT typeof(o)[:6], o.k1, o.k2 FROM read_json('{TEST_DIR}/large_integers_signs.json')
+----
+STRUCT	-9007199254740993	18446744073709551615
+
+# nested in lists
+statement ok
+COPY (SELECT '{"o":{"k0":[1.5],' || string_agg('"k' || x || '":[9007199254740993]', ',') || '}}' FROM range(1, 200) t(x)) TO '{TEST_DIR}/large_integers_lists.json' (FORMAT csv, HEADER false, QUOTE '')
+
+query II
+SELECT typeof(o)[:6], o.k1[1] FROM read_json('{TEST_DIR}/large_integers_lists.json')
+----
+STRUCT	9007199254740993
+
+# nested in objects
+statement ok
+COPY (SELECT '{"o":{"k0":{"a":1.5},' || string_agg('"k' || x || '":{"a":9007199254740993}', ',') || '}}' FROM range(1, 200) t(x)) TO '{TEST_DIR}/large_integers_objects.json' (FORMAT csv, HEADER false, QUOTE '')
+
+query II
+SELECT typeof(o)[:6], o.k1.a FROM read_json('{TEST_DIR}/large_integers_objects.json')
+----
+STRUCT	9007199254740993
+
+# 2^53 itself is exact, so this is still a map
+statement ok
+COPY (SELECT '{"o":{"k0":1.5,' || string_agg('"k' || x || '":9007199254740992', ',') || '}}' FROM range(1, 200) t(x)) TO '{TEST_DIR}/exact_integers.json' (FORMAT csv, HEADER false, QUOTE '')
+
+query II
+SELECT typeof(o), o['k1'] FROM read_json('{TEST_DIR}/exact_integers.json')
+----
+MAP(VARCHAR, DOUBLE)	9007199254740992.0
+
+# all keys hold large integers, so the map keeps BIGINT
+statement ok
+COPY (SELECT '{"o":{' || string_agg('"k' || x || '":9007199254740993', ',') || '}}' FROM range(0, 200) t(x)) TO '{TEST_DIR}/all_large_integers.json' (FORMAT csv, HEADER false, QUOTE '')
+
+query II
+SELECT typeof(o), o['k1'] FROM read_json('{TEST_DIR}/all_large_integers.json')
+----
+MAP(VARCHAR, BIGINT)	9007199254740993
+
+# a key that holds both a fraction and a large integer is a DOUBLE in a struct too, so this is a map
+statement ok
+COPY (SELECT '{"o":{"k0":1.5,' || string_agg('"k' || x || '":1', ',') || '}}' FROM range(1, 200) t(x) UNION ALL SELECT '{"o":{"k0":9007199254740993,' || string_agg('"k' || x || '":1', ',') || '}}' FROM range(1, 200) t(x)) TO '{TEST_DIR}/mixed_key.json' (FORMAT csv, HEADER false, QUOTE '')
+
+query I
+SELECT DISTINCT typeof(o) FROM read_json('{TEST_DIR}/mixed_key.json')
+----
+MAP(VARCHAR, DOUBLE)
+
+# 2^53 + 2 is exact as a DOUBLE, so this is still a map
+statement ok
+COPY (SELECT '{"o":{"k0":1.5,' || string_agg('"k' || x || '":9007199254740994', ',') || '}}' FROM range(1, 200) t(x)) TO '{TEST_DIR}/exact_even_integers.json' (FORMAT csv, HEADER false, QUOTE '')
+
+query II
+SELECT typeof(o), o['k1']::HUGEINT FROM read_json('{TEST_DIR}/exact_even_integers.json')
+----
+MAP(VARCHAR, DOUBLE)	9007199254740994
+
+# below the maximum depth every value is JSON, nothing is rounded
+query I
+SELECT typeof(o) FROM read_json('{TEST_DIR}/large_integers.json', maximum_depth = 2)
+----
+MAP(VARCHAR, JSON)
+
+# keys that differ only in case can't be a struct, so this stays a map
+statement ok
+COPY (SELECT '{"o":{"K":9007199254740993,"k":1.5,' || string_agg('"x' || x || '":1', ',') || '}}' FROM range(198) t(x)) TO '{TEST_DIR}/case_keys.json' (FORMAT csv, HEADER false, QUOTE '')
+
+query II
+SELECT typeof(o), cardinality(o) FROM read_json('{TEST_DIR}/case_keys.json')
+----
+MAP(VARCHAR, DOUBLE)	200
+
+# the inner map is a DOUBLE map in either case, so the outer object stays a map
+statement ok
+COPY (SELECT '{"o":{"k0":{"":1.5,"a":1.5},"k1":{"":1.5,"a":9007199254740993}}}') TO '{TEST_DIR}/inner_map.json' (FORMAT csv, HEADER false, QUOTE '')
+
+query I
+SELECT typeof(o) FROM read_json('{TEST_DIR}/inner_map.json', map_inference_threshold = 2)
+----
+MAP(VARCHAR, MAP(VARCHAR, DOUBLE))
+
+# the fields of inner objects are matched by key, not by position, and can be missing
+statement ok
+COPY (SELECT '{"o":{"x":{"m":{"a":1,"s":"v"},"n":{"s":"v","a":9007199254740993}},"y":{"m":{"a":1.5,"s":"v"},"n":{"a":1.5,"s":"v"}}}}') TO '{TEST_DIR}/reordered_fields.json' (FORMAT csv, HEADER false, QUOTE '')
+
+query II
+SELECT typeof(o)[:6], o.x.n.a FROM read_json('{TEST_DIR}/reordered_fields.json', map_inference_threshold = 2)
+----
+STRUCT	9007199254740993
+
+statement ok
+COPY (SELECT '{"o":{"x":{"0":{"a":1,"s":"v"},"1":{"a":1,"s":"v"},"2":{"a":1,"s":"v"},"3":{"a":9007199254740993}},"y":{"0":{"a":1.5,"s":"v"},"1":{"a":1.5,"s":"v"},"2":{"a":1.5,"s":"v"},"3":{"a":1.5,"s":"v"}}}}') TO '{TEST_DIR}/missing_fields.json' (FORMAT csv, HEADER false, QUOTE '')
+
+query II
+SELECT typeof(o)[:6], o.x['3'].a FROM read_json('{TEST_DIR}/missing_fields.json', map_inference_threshold = 2)
+----
+STRUCT	9007199254740993
+
+# an inner map whose values would become the DOUBLE fields of a struct
+statement ok
+COPY (SELECT * FROM (VALUES ('{"o":{"a":{"x":9007199254740993},"b":{"x":1.5,"y":1.5},"c":{"x":1.5,"y":1.5}}}'), ('{"o":{"a":{"y":9007199254740993},"b":{"x":1.5,"y":1.5},"c":{"x":1.5,"y":1.5}}}')) t(j)) TO '{TEST_DIR}/map_to_struct.json' (FORMAT csv, HEADER false, QUOTE '')
+
+query II
+SELECT typeof(o)[:6], o.a['x'] FROM read_json('{TEST_DIR}/map_to_struct.json', map_inference_threshold = 3, field_appearance_threshold = 0.6) LIMIT 1
+----
+STRUCT	9007199254740993
+
+# a struct can't hold keys that differ only in case in a nested object either, so this stays a map
+statement ok
+COPY (SELECT '{"o":{"a":{"K":9007199254740993,"k":1.5},"b":{"x":0},"c":null}}') TO '{TEST_DIR}/nested_case_keys.json' (FORMAT csv, HEADER false, QUOTE '')
+
+query II
+SELECT typeof(o), o['a']['k'] FROM read_json('{TEST_DIR}/nested_case_keys.json', map_inference_threshold = 3)
+----
+MAP(VARCHAR, MAP(VARCHAR, DOUBLE))	1.5
+
+# keeping the inner integers exact would make a struct of keys that differ only in case, so this is inferred as before
+statement ok
+COPY (SELECT '{"o":{"K":{"a":9007199254740993,"b":1.5},"k":{"c":9007199254740993,"d":1.5}}}') TO '{TEST_DIR}/case_keys_dissimilar.json' (FORMAT csv, HEADER false, QUOTE '')
+
+query II
+SELECT typeof(o), cardinality(o) FROM read_json('{TEST_DIR}/case_keys_dissimilar.json', map_inference_threshold = 2)
+----
+MAP(VARCHAR, MAP(VARCHAR, DOUBLE))	2
+
+query I
+SELECT cardinality(o) FROM read_json('{TEST_DIR}/case_keys_dissimilar.json', map_inference_threshold = 2, ignore_errors = true)
+----
+2
+
+# the flag is merged when the schema of several files is combined
+statement ok
+COPY (SELECT '{"o":{"k0":1.5,' || string_agg('"k' || x || '":1', ',') || '}}' FROM range(1, 200) t(x)) TO '{TEST_DIR}/fraction_file.json' (FORMAT csv, HEADER false, QUOTE '')
+
+statement ok
+COPY (SELECT '{"o":{"k0":1,' || string_agg('"k' || x || '":9007199254740993', ',') || '}}' FROM range(1, 200) t(x)) TO '{TEST_DIR}/large_file.json' (FORMAT csv, HEADER false, QUOTE '')
+
+query II
+SELECT typeof(o)[:6], max(o.k1) FROM read_json(['{TEST_DIR}/fraction_file.json', '{TEST_DIR}/large_file.json']) GROUP BY ALL
+----
+STRUCT	9007199254740993
+
+query II
+SELECT typeof(o)[:6], max(o.k1) FROM read_json(['{TEST_DIR}/large_file.json', '{TEST_DIR}/fraction_file.json'], union_by_name = true) GROUP BY ALL
+----
+STRUCT	9007199254740993
+
+# INT64_MIN is exact as a DOUBLE, so this is still a map
+statement ok
+COPY (SELECT '{"o":{"k0":1.5,' || string_agg('"k' || x || '":-9223372036854775808', ',') || '}}' FROM range(1, 200) t(x)) TO '{TEST_DIR}/int64_min.json' (FORMAT csv, HEADER false, QUOTE '')
+
+query II
+SELECT typeof(o), o['k1']::HUGEINT FROM read_json('{TEST_DIR}/int64_min.json')
+----
+MAP(VARCHAR, DOUBLE)	-9223372036854775808

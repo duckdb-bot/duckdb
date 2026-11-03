@@ -310,6 +310,10 @@ static int64_t ImplicitCastBignum(const LogicalType &to) {
 }
 
 static int64_t ImplicitCastVariant(const LogicalType &to) {
+	if (to.id() == LogicalTypeId::SQLNULL) {
+		// there is no cast from VARIANT to the NULL type
+		return -1;
+	}
 	return TargetTypeCost(to);
 }
 

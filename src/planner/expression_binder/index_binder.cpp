@@ -77,18 +77,18 @@ void IndexBinder::InitCreateIndexInfo(LogicalGet &get, CreateIndexInfo &info) {
 	get.AddColumnId(COLUMN_IDENTIFIER_ROW_ID);
 }
 
-//! Returns a function of the key that needs a ClientContext to execute, if any
-static optional_ptr<const BoundFunctionExpression> FindFunctionNeedingClientContext(const Expression &expr) {
+//! Returns a lambda function of the key, if any
+static optional_ptr<const BoundFunctionExpression> FindLambdaFunction(const Expression &expr) {
 	if (expr.GetExpressionClass() == ExpressionClass::BOUND_FUNCTION) {
 		auto &function = expr.Cast<BoundFunctionExpression>();
-		if (function.BindInfo() && function.BindInfo()->NeedsClientContext()) {
+		if (function.Function().HasBindLambdaCallback()) {
 			return &function;
 		}
 	}
 	optional_ptr<const BoundFunctionExpression> result;
 	ExpressionIterator::EnumerateChildren(expr, [&](const Expression &child) {
 		if (!result) {
-			result = FindFunctionNeedingClientContext(child);
+			result = FindLambdaFunction(child);
 		}
 	});
 	return result;
@@ -130,11 +130,11 @@ unique_ptr<LogicalOperator> IndexBinder::BindCreateIndex(ClientContext &context,
 			throw BinderException("Index keys cannot contain expressions with side effects. They also cannot depend on "
 			                      "settings such as TimeZone.");
 		}
-		// appends and deletes compute the keys without a ClientContext
-		auto function = FindFunctionNeedingClientContext(*expressions.back());
-		if (function) {
-			throw BinderException(*function, "Index keys cannot contain %s, which needs a client context to execute.",
-			                      function->Function().GetName());
+		// lambda functions need a ClientContext to execute, which appends and deletes do not have
+		auto lambda_function = FindLambdaFunction(*expressions.back());
+		if (lambda_function) {
+			throw BinderException(*lambda_function, "Index keys cannot contain lambda functions such as %s.",
+			                      lambda_function->Function().GetName());
 		}
 	}
 	properties.always_require_rebind = statement_requires_rebind;

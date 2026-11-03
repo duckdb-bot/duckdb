@@ -11,28 +11,28 @@ INSERT INTO t VALUES (1, [3, 1, 2], 'abc');
 statement error
 CREATE INDEX i ON t ((list_transform(l, lambda x: x + 1)[1]));
 ----
-Index keys cannot contain "list_transform", which needs a client context to execute
+Index keys cannot contain lambda functions such as "list_transform"
 
 statement error
 CREATE INDEX i ON t ((list_filter(l, lambda x: x > 1)[1]));
 ----
-Index keys cannot contain "list_filter", which needs a client context to execute
+Index keys cannot contain lambda functions such as "list_filter"
 
 statement error
 CREATE UNIQUE INDEX i ON t ((list_reduce(l, lambda a, b: a + b)));
 ----
-Index keys cannot contain "list_reduce", which needs a client context to execute
+Index keys cannot contain lambda functions such as "list_reduce"
 
 statement error
 CREATE INDEX i ON t ((invoke(lambda x: x + 1, id)));
 ----
-Index keys cannot contain "invoke", which needs a client context to execute
+Index keys cannot contain lambda functions such as "invoke"
 
 # a collated element comparison is bound as a lambda over the list
 statement error
 CREATE INDEX i ON t ((list_contains(l::VARCHAR[], 'a' COLLATE nocase)));
 ----
-Index keys cannot contain "list_transform", which needs a client context to execute
+Index keys cannot contain lambda functions such as "list_transform"
 
 # the age of a single timestamp is taken at the start of the transaction
 statement error

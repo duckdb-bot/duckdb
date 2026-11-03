@@ -1,0 +1,12 @@
+# name: test/sql/window/window_segment_tree_frame_width_stats.test
+# description: The segment tree of a window aggregate bounds its frames by the statistics of a frame bound column (issue #723)
+# group: [window]
+
+# a frame bound given by a column uses the column's statistics
+query I
+SELECT count(*) FROM (
+	SELECT i, w, sum(170141183460469231731687303715884105727::HUGEINT - i) OVER (ORDER BY i ROWS BETWEEN w PRECEDING AND w PRECEDING) AS s
+	FROM (SELECT i, 1 + i % 2 AS w FROM range(1000) t(i))
+) WHERE s - w + i = 170141183460469231731687303715884105727;
+----
+998

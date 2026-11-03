@@ -85,6 +85,38 @@ SELECT 'a'::e > ANY (SELECT v FROM t), 'z'::e >= ALL (SELECT v FROM t WHERE v IS
 ----
 true	false
 
+# an ENUM compared with an ENUM of another dictionary is compared as VARCHAR
+statement ok
+CREATE TYPE e2 AS ENUM ('b', 'y');
+
+query II
+SELECT 'y'::e2 > ANY (SELECT v FROM t), 'y'::e2 > ALL (SELECT v FROM t WHERE v IS NOT NULL)
+----
+true	false
+
+# a VARIANT comparison casts the ENUM rows too, and min/max binds its own comparator for the VARIANT
+query II
+SELECT 'm'::VARIANT > ANY (SELECT v FROM t), 'm'::VARIANT > ALL (SELECT v FROM t WHERE v IS NOT NULL)
+----
+true	false
+
+# an ENUM nested in a STRUCT or a LIST changes the order of the nested value as well
+query II
+SELECT {'f': 'm'} > ANY (SELECT {'f': v} FROM t WHERE v IS NOT NULL), {'f': 'm'} > ALL (SELECT {'f': v} FROM t WHERE v IS NOT NULL)
+----
+true	false
+
+query II
+SELECT ['m'] > ANY (SELECT [v] FROM t WHERE v IS NOT NULL), ['m'] > ALL (SELECT [v] FROM t WHERE v IS NOT NULL)
+----
+true	false
+
+# an untyped NULL subquery compared with an ENUM
+query II
+SELECT 'a'::e > ANY (SELECT NULL), 'a'::e > ALL (SELECT NULL WHERE false)
+----
+NULL	true
+
 # a numeric comparison is not affected by the cast of the subquery column
 statement ok
 CREATE TABLE ints(i INTEGER);
@@ -97,24 +129,27 @@ SELECT 2.5 > ANY (SELECT i FROM ints), 2.5 > ALL (SELECT i FROM ints), 0.5 < ALL
 ----
 true	false	true	false
 
-# every row is cast to the compared type, so a value it cannot hold raises the cast error like equality does
+# a column of any other type keeps the extremum in its own type, and only the extremum is cast to the compared type,
+# so a row the compared type cannot hold does not fail the comparison
+query I
+SELECT 0.5::DECIMAL(38,37) > ANY (SELECT v FROM (VALUES (0), (100)) rhs(v))
+----
+true
+
 statement ok
 CREATE TABLE dates(d DATE);
 
 statement ok
 INSERT INTO dates VALUES ('1990-01-01'), ('5874897-12-31');
 
-statement error
+query I
 SELECT TIMESTAMP '2000-01-01' > ANY (SELECT d FROM dates)
 ----
-<REGEX>:.*Conversion Error.*5874897-12-31.*
-
-statement error
-SELECT TIMESTAMP '2000-01-01' = ANY (SELECT d FROM dates)
-----
-<REGEX>:.*Conversion Error.*5874897-12-31.*
-
-query I
-SELECT TIMESTAMP '2000-01-01' > ANY (SELECT d FROM dates WHERE d < DATE '3000-01-01')
-----
 true
+
+# a typed NULL is not cast to a UNION member before the extremum, so it is ignored by it
+query II
+WITH rhs(v) AS (VALUES (2), (NULL::INTEGER))
+SELECT union_value(n := 1) < ANY (SELECT v FROM rhs), union_value(n := 3) < ANY (SELECT v FROM rhs)
+----
+true	NULL

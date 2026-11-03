@@ -1,0 +1,83 @@
+# name: test/sql/function/timestamp/test_strptime_full_year.test
+# description: strptime reads with %Y the years strftime writes outside 0000 to 9999
+# group: [timestamp]
+
+query III
+SELECT strptime('-43-03-15', '%Y-%m-%d'), strptime('12345-06-01', '%Y-%m-%d'), try_strptime('-43-03-15', '%Y-%m-%d')
+----
+0044-03-15 (BC) 00:00:00	12345-06-01 00:00:00	0044-03-15 (BC) 00:00:00
+
+query IIII
+SELECT strptime('0000-01-01', '%Y-%m-%d'), strptime('-0001-01-01', '%Y-%m-%d'), strptime('-2024', '%Y'), strptime('12345', '%Y')
+----
+0001-01-01 (BC) 00:00:00	0002-01-01 (BC) 00:00:00	2025-01-01 (BC) 00:00:00	12345-01-01 00:00:00
+
+# without a separator after it, %Y still reads four digits
+query II
+SELECT strptime('20240115', '%Y%m%d'), strptime('2024011512', '%Y%m%d%H')
+----
+2024-01-15 00:00:00	2024-01-15 12:00:00
+
+# strptime reads back what strftime writes, at both ends of the range
+query II
+SELECT count(*), count(*) FILTER (strptime(strftime(d, '%Y-%m-%d'), '%Y-%m-%d')::DATE = d) FROM (SELECT DATE '0001-01-01' + to_days(i * 1000003 - 106000000) AS d FROM range(0, 213) r(i) WHERE i * 1000003 - 106000000 > -106762900 AND i * 1000003 - 106000000 < 106000000)
+----
+212	212
+
+query III
+SELECT strftime(TIMESTAMP '290309-12-22 (BC)', '%Y-%m-%d'), strptime(strftime(TIMESTAMP '290309-12-22 (BC)', '%Y-%m-%d %H:%M:%S'), '%Y-%m-%d %H:%M:%S'), strptime(strftime(TIMESTAMP '294247-01-10 04:00:54', '%Y-%m-%d %H:%M:%S'), '%Y-%m-%d %H:%M:%S')
+----
+-290308-12-22	290309-12-22 (BC) 00:00:00	294247-01-10 04:00:54
+
+query II
+SELECT try_strptime('-', '%Y-%m-%d'), try_strptime('1234567890-01-01', '%Y-%m-%d')
+----
+NULL	NULL
+
+# a literal digit after %Y still ends the year after four digits
+query I
+SELECT strptime('20241', '%Y1')
+----
+2024-01-01 00:00:00
+
+# a week number or year day in a year whose days are not all valid dates is no date
+query IIII
+SELECT try_strptime('9999999-001', '%Y-%j'), try_strptime('-9999999-01', '%Y-%W'), try_strptime('5881580-365', '%Y-%j'), try_strptime('-5877641-01', '%Y-%U')
+----
+NULL	NULL	NULL	NULL
+
+query II
+SELECT strptime('294246-365', '%Y-%j'), strptime('-290307-001', '%Y-%j')
+----
+294246-12-31 00:00:00	290308-01-01 (BC) 00:00:00
+
+# a year outside the range of dates is no date
+query II
+SELECT try_strptime('-5877642-01-01', '%Y-%m-%d'), try_strptime('5881581-01-01', '%Y-%m-%d')
+----
+NULL	NULL
+
+# the CSV reader parses dates with the same code
+statement ok
+COPY (SELECT * FROM (VALUES ('-43-03-15'), ('12345-06-01'), ('2024-01-15')) t(d)) TO '{TEST_DIR}/full_years.csv' (HEADER false)
+
+query I
+SELECT * FROM read_csv('{TEST_DIR}/full_years.csv', columns = {d: 'DATE'}, dateformat = '%Y-%m-%d')
+----
+0044-03-15 (BC)
+12345-06-01
+2024-01-15
+
+require icu
+
+statement ok
+SET TimeZone = 'UTC'
+
+statement ok
+SET Calendar = 'gregorian'
+
+# with a time zone the year goes through ICU's calendar, which must not wrap a year beyond the range of dates
+query II
+SELECT try_strptime('-11759221-01-01 UTC', '%Y-%m-%d %Z'), strptime('-43-03-15 UTC', '%Y-%m-%d %Z')
+----
+NULL	0044-03-15 (BC) 00:00:00+00

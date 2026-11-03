@@ -77,7 +77,13 @@ SELECT [main.unpack(COLUMNS(*))] FROM (SELECT 1 AS a, 2 AS b);
 ----
 [1, 2]
 
-# a coalesce qualified with main is looked up in the catalog as before
+# a coalesce qualified with main is looked up in the catalog as before, and without such a macro the qualification is
+# dropped like that of the other names, a catalog before it included
+query II
+SELECT system.main.coalesce(NULL, 5), mem_db.main.coalesce(NULL, 5);
+----
+5	5
+
 statement ok
 CREATE MACRO mem_db.main.coalesce(a, b) AS 777;
 
@@ -171,6 +177,12 @@ SELECT main.coalesce(NULL, 5), main.ifnull(NULL, 6) FROM (SELECT 99 AS main);
 ----
 5	6
 
+# a WHERE clause binds the call without the select list's qualification pass
+query I
+SELECT main FROM (SELECT 99 AS main) t WHERE main.coalesce(NULL, 5) = 5;
+----
+99
+
 statement error
 SELECT main.coalesce();
 ----
@@ -215,6 +227,12 @@ query II
 SELECT main.coalesce(NULL, 5), "coalesce"(NULL, 5);
 ----
 505	505
+
+# the macro of the default catalog is not that of another catalog's main schema
+query I
+SELECT system.main.coalesce(NULL, 5);
+----
+5
 
 # a call on a column takes the rewrite like the plain and the parenthesized forms, those macros notwithstanding
 query III

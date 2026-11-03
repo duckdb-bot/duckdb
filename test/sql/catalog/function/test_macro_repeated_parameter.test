@@ -1,0 +1,316 @@
+# name: test/sql/catalog/function/test_macro_repeated_parameter.test
+# description: A macro that uses a parameter several times binds its argument once
+# group: [function]
+
+statement ok
+CREATE MACRO twice(x) AS x + x;
+
+statement ok
+CREATE MACRO diff(x) AS x - x;
+
+statement ok
+CREATE MACRO quad(x) AS twice(twice(x));
+
+statement ok
+CREATE MACRO deep(x) AS twice(x) + diff(x) + twice(x);
+
+statement ok
+CREATE TABLE t AS SELECT range AS i, range::VARCHAR AS s FROM range(5);
+
+# nesting that would bind the argument 2^40 times (no literal, which prepared statement verification would turn into a
+# parameter)
+statement ok
+SET max_execution_time = 30000;
+
+query I
+SELECT twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(twice(pi()::HUGEINT))))))))))))))))))))))))))))))))))))))));
+----
+3298534883328
+
+statement ok
+RESET max_execution_time;
+
+query II
+SELECT quad(i), deep(deep(deep(i))) FROM t ORDER BY i;
+----
+0	0
+4	64
+8	128
+12	192
+16	256
+
+# every reference still evaluates its argument
+query I
+SELECT bool_or(diff(random()) <> 0) FROM range(100);
+----
+true
+
+statement ok
+CREATE SEQUENCE seq;
+
+query I
+SELECT list(twice(nextval('seq')) ORDER BY ALL) FROM range(3);
+----
+[5, 7, 9]
+
+# arguments with subqueries, aggregates, windows, unnest and parameters
+query I
+SELECT twice((SELECT 21));
+----
+42
+
+query I
+SELECT twice(sum(i)) FROM t;
+----
+20
+
+query II
+SELECT i, twice(row_number() OVER (ORDER BY i)) FROM t ORDER BY i;
+----
+0	2
+1	4
+2	6
+3	8
+4	10
+
+query I
+SELECT twice(unnest([1, 2]));
+----
+2
+4
+
+statement ok
+PREPARE p AS SELECT twice($1);
+
+query I
+EXECUTE p(21);
+----
+42
+
+query I
+EXECUTE p(1.5);
+----
+3.0
+
+# references in a lambda or a subquery of the macro body
+statement ok
+CREATE MACRO in_lambda(x) AS list_transform([10, 20], lambda y: y + x) || [x];
+
+query II
+SELECT y, in_lambda(y) FROM (SELECT range AS y FROM range(3)) ORDER BY y;
+----
+0	[10, 20, 0]
+1	[11, 21, 1]
+2	[12, 22, 2]
+
+statement ok
+CREATE MACRO in_subquery(x) AS (SELECT x + x);
+
+query I
+SELECT in_subquery(i) FROM t ORDER BY i;
+----
+0
+2
+4
+6
+8
+
+# aliases, grouping and a CASE argument
+query II
+SELECT twice(i) AS a, twice(a) FROM t ORDER BY i;
+----
+0	0
+2	4
+4	8
+6	12
+8	16
+
+query I
+SELECT twice(i) FROM t GROUP BY i HAVING twice(i) > 2 ORDER BY 1;
+----
+4
+6
+8
+
+statement ok
+CREATE MACRO exclaim(x, y) AS CASE WHEN x > 2 THEN y || '!' ELSE y END;
+
+query I
+SELECT exclaim(i, s) FROM t ORDER BY i;
+----
+0
+1
+2
+3!
+4!
+
+statement error
+SELECT twice(CASE WHEN i > 2 THEN 'a' ELSE 'bb' END) FROM t;
+----
+<REGEX>:Binder Error.*No function matches the given name and argument types.*
+
+# an argument bound differently by where it is, or whose binding adds an operator, is bound for every reference
+statement ok
+CREATE MACRO discard(x) AS 42;
+
+statement ok
+CREATE MACRO six() AS 3 + 3;
+
+statement ok
+CREATE MACRO keep_last(x) AS discard(x) + six() + x;
+
+query I
+SELECT keep_last(7);
+----
+55
+
+statement ok
+CREATE MACRO plus_sum(x) AS x + sum(x);
+
+query I
+SELECT plus_sum(i) FROM range(3) t(i) GROUP BY i ORDER BY i;
+----
+0
+2
+4
+
+statement ok
+CREATE MACRO scalar_subquery() AS (SELECT 21);
+
+query I
+SELECT twice(scalar_subquery());
+----
+42
+
+statement ok
+CREATE SEQUENCE window_seq;
+
+query I
+SELECT diff(sum(nextval('window_seq')) OVER ()) FROM range(3);
+----
+-9
+-9
+-9
+
+statement ok
+CREATE SEQUENCE unnest_seq;
+
+statement ok
+CREATE MACRO unnest_next() AS unnest([nextval('unnest_seq')]);
+
+query I
+SELECT diff(unnest_next());
+----
+-1
+
+query I
+SELECT currval('unnest_seq');
+----
+2
+
+statement ok
+CREATE MACRO packs(x) AS [struct_pack(x), struct_pack(x)];
+
+query I
+SELECT packs(i) FROM range(1) t(i);
+----
+[{'i': 0}, {'i': 0}]
+
+statement ok
+CREATE MACRO plus_try(x) AS x + TRY(x);
+
+statement error
+SELECT plus_try(sum(i)) FROM range(3) t(i);
+----
+<REGEX>:Binder Error.*aggregates are not allowed inside the TRY expression.*
+
+statement ok
+CREATE MACRO grouped_plus_sum(x) AS sum(x) + x;
+
+query I
+SELECT grouped_plus_sum(abs(-2)) FROM range(3) GROUP BY GROUPING SETS ((abs(-2)), ()) ORDER BY ALL;
+----
+8
+NULL
+
+statement ok
+CREATE SEQUENCE typeof_seq;
+
+statement ok
+CREATE MACRO grow() AS unnest(range(nextval('typeof_seq')));
+
+statement ok
+CREATE MACRO pair(x) AS [x, x];
+
+query I
+SELECT pair(typeof(grow()));
+----
+[BIGINT, BIGINT]
+[BIGINT, BIGINT]
+
+query I
+SELECT currval('typeof_seq');
+----
+2
+
+# MATCH_RECOGNIZE binds CLASSIFIER() by name, before the catalog
+statement ok
+CREATE MACRO classifier() AS 'not_used';
+
+statement ok
+CREATE MACRO nav(x) AS x = first(x || '');
+
+statement error
+SELECT * FROM (VALUES (1)) t(i) MATCH_RECOGNIZE (
+	ORDER BY i MEASURES count(*) AS n PATTERN (A+) DEFINE A AS nav(classifier())
+);
+----
+<REGEX>:Binder Error.*CLASSIFIER\(\) only means something while the matcher is assembling a match.*
+
+# a call that fails to bind fails as before, without looking up the functions of the macro body first
+statement ok
+SET autoinstall_known_extensions = false;
+
+statement ok
+SET autoload_known_extensions = false;
+
+statement ok
+CREATE MACRO stem(x, y) AS x;
+
+statement ok
+CREATE MACRO typed(x INTEGER) AS stem(x, x);
+
+statement ok
+DROP MACRO stem;
+
+statement ok
+SET autoload_known_extensions = true;
+
+statement error
+SELECT twice(typed('oops'));
+----
+<REGEX>:Binder Error.*Macro typed\(\) does not support the supplied arguments.*
+
+# a macro body that binding never expands is not looked into either
+statement ok
+SET autoload_known_extensions = false;
+
+statement ok
+CREATE MACRO stem(x, y) AS x;
+
+statement ok
+CREATE MACRO hidden_stem() AS stem(1, 2);
+
+statement ok
+DROP MACRO stem;
+
+statement ok
+CREATE MACRO ignore_twice(x) AS discard(x) + discard(x);
+
+statement ok
+SET autoload_known_extensions = true;
+
+query I
+SELECT pair(ignore_twice(hidden_stem()));
+----
+[84, 84]

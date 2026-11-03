@@ -7,11 +7,11 @@
 #include "utf8proc.hpp"
 
 namespace duckdb {
-// Helper function to generate column names
+// Helper function to generate column names, padded to the digits of the last column number
 static string GenerateColumnName(const idx_t total_cols, const idx_t col_number, const string &prefix = "column") {
 	auto max_digits = NumericHelper::UnsignedLength(total_cols - 1);
 	auto digits = NumericHelper::UnsignedLength(col_number);
-	string leading_zeros = string(NumericCast<idx_t>(max_digits - digits), '0');
+	string leading_zeros = string(max_digits > digits ? max_digits - digits : 0, '0');
 	string value = to_string(col_number);
 	return string(prefix + leading_zeros + value);
 }
@@ -226,10 +226,12 @@ vector<Identifier> CSVSniffer::DetectHeaderInternal(
 	vector<Identifier> detected_names;
 	auto &dialect_options = state_machine.dialect_options;
 	dialect_options.num_cols = best_sql_types_candidates_per_column_idx.size();
+	// files that are combined by name get generated names that do not depend on their column count
+	const idx_t name_cols = file_options.union_by_name ? 1 : dialect_options.num_cols;
 	if (best_header_row.empty()) {
 		dialect_options.header = false;
 		for (idx_t col = 0; col < dialect_options.num_cols; col++) {
-			detected_names.emplace_back(GenerateColumnName(dialect_options.num_cols, col));
+			detected_names.emplace_back(GenerateColumnName(name_cols, col));
 		}
 		// If the user provided names, we must replace our header with the user provided names
 		ReplaceNames(detected_names, state_machine, best_sql_types_candidates_per_column_idx, options, file_options,
@@ -244,7 +246,7 @@ vector<Identifier> CSVSniffer::DetectHeaderInternal(
 		if (options.ignore_errors.GetValue()) {
 			dialect_options.header = false;
 			for (idx_t col = 0; col < dialect_options.num_cols; col++) {
-				detected_names.emplace_back(GenerateColumnName(dialect_options.num_cols, col));
+				detected_names.emplace_back(GenerateColumnName(name_cols, col));
 			}
 			dialect_options.rows_until_header += 1;
 			ReplaceNames(detected_names, state_machine, best_sql_types_candidates_per_column_idx, options, file_options,
@@ -307,7 +309,7 @@ vector<Identifier> CSVSniffer::DetectHeaderInternal(
 
 			// generate name if field is empty
 			if (EmptyHeader(col_name, best_header_row[col].is_null, options.normalize_names)) {
-				col_name = GenerateColumnName(dialect_options.num_cols, col);
+				col_name = GenerateColumnName(name_cols, col);
 			}
 
 			// normalize names or at least trim whitespace
@@ -327,7 +329,7 @@ vector<Identifier> CSVSniffer::DetectHeaderInternal(
 		}
 		if (best_header_row.size() < dialect_options.num_cols && options.null_padding) {
 			for (idx_t col = best_header_row.size(); col < dialect_options.num_cols; col++) {
-				detected_names.emplace_back(GenerateColumnName(dialect_options.num_cols, col));
+				detected_names.emplace_back(GenerateColumnName(name_cols, col));
 			}
 		} else if (best_header_row.size() < dialect_options.num_cols) {
 			throw InternalException("Detected header has number of columns inferior to dialect detection");
@@ -336,7 +338,7 @@ vector<Identifier> CSVSniffer::DetectHeaderInternal(
 	} else {
 		dialect_options.header = false;
 		for (idx_t col = 0; col < dialect_options.num_cols; col++) {
-			detected_names.emplace_back(GenerateColumnName(dialect_options.num_cols, col));
+			detected_names.emplace_back(GenerateColumnName(name_cols, col));
 		}
 	}
 

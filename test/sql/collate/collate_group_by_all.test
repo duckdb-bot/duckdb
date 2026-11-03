@@ -106,8 +106,7 @@ CREATE SEQUENCE seq2;
 query II rowsort
 SELECT (SELECT c0 || (nextval('seq2') * 0)) AS k, count(*) FROM t WHERE id < 2 GROUP BY ALL;
 ----
-A0	1
-a0	1
+A0	2
 
 query I
 SELECT currval('seq2');

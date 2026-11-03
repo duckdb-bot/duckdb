@@ -752,6 +752,7 @@ private:
 	                                              const vector<Identifier> &schema_path);
 
 	bool DebugAggregateStateExportVerify(BoundSelectNode &statement, unique_ptr<LogicalOperator> &root);
+	unique_ptr<LogicalOperator> PlanVolatileGroups(BoundSelectNode &statement, unique_ptr<LogicalOperator> root);
 
 private:
 	Binder(ClientContext &context, shared_ptr<Binder> parent, BinderType binder_type);

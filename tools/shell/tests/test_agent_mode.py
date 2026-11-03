@@ -447,7 +447,7 @@ def test_timeout_is_a_json_error(shell):
     result.check_stderr("Query exceeded maximum execution time")
 
 def test_streamed_error_is_reported(shell):
-    # an error raised while the result streams (after the header went out) is reported, not swallowed
+    # an error raised while the result streams is reported, not swallowed
     test = agent_shell(shell).statement("SELECT (1 / (r - 5))::INTEGER AS x FROM range(10) t(r)")
     result = test.run()
     assert result.status_code == 1

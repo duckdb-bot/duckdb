@@ -59,6 +59,8 @@ struct RenderingQueryResult {
 	void Drain(ShellState &state);
 	//! Whether the query failed while its rows were streamed: Fetch then returns null, like a clean end
 	bool HasError() const;
+	//! Fetches the first rows, so that a header is only printed for a query that did not fail before them
+	bool FailedBeforeFirstRow();
 
 public:
 	RenderingResultIterator begin(); // NOLINT: match stl API

@@ -271,6 +271,9 @@ SuccessState ShellState::RenderPreparedResult(ShellRenderer &renderer, Rendering
 }
 
 SuccessState ShellRenderer::RenderQueryResult(PrintStream &out, ShellState &state, RenderingQueryResult &result) {
+	if (result.FailedBeforeFirstRow()) {
+		return SuccessState::FAILURE;
+	}
 	RenderHeader(out, result.metadata);
 	for (auto &row_data : result) {
 		if (state.seenInterrupt) {
@@ -387,6 +390,13 @@ void RenderingQueryResult::Drain(ShellState &state) {
 			exhausted_result = true;
 		}
 	}
+}
+
+bool RenderingQueryResult::FailedBeforeFirstRow() {
+	if (loaded_row_count == 0) {
+		TryConvertChunk();
+	}
+	return loaded_row_count == 0 && HasError();
 }
 
 bool RenderingQueryResult::TryConvertChunk() {
@@ -618,6 +628,9 @@ public:
 	SuccessState RenderQueryResult(PrintStream &out, ShellState &state, RenderingQueryResult &result) override {
 		if (!compact) {
 			return ColumnRenderer::RenderQueryResult(out, state, result);
+		}
+		if (result.FailedBeforeFirstRow()) {
+			return SuccessState::FAILURE;
 		}
 		RenderHeader(out, result.metadata);
 		// the rows are buffered up to the cap (at most max_rows / max_bytes, which is small) so that a result that

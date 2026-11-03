@@ -397,11 +397,23 @@ void FileLogStorage::SetPaths(const string &base_path) {
 		tables[LoggingTargetTable::LOG_CONTEXTS].path = fs.JoinPath(base_path, "duckdb_log_contexts.csv");
 		tables[LoggingTargetTable::LOG_ENTRIES].path = fs.JoinPath(base_path, "duckdb_log_entries.csv");
 	} else {
+		// the denormalized log is a single file, given directly or placed in the given directory under a name that
+		// differs from the normalized files, which have other columns
 		if (StringUtil::EndsWith(base_path, ".csv")) {
 			tables[LoggingTargetTable::ALL_LOGS].path = base_path;
 		} else {
-			tables[LoggingTargetTable::LOG_ENTRIES].path = fs.JoinPath(base_path, "duckdb_log_entries.csv");
+			tables[LoggingTargetTable::ALL_LOGS].path = fs.JoinPath(base_path, "duckdb_log.csv");
 		}
+	}
+}
+
+void FileLogStorage::VerifyPath(const string &path, bool normalize) {
+	if (StringUtil::EndsWith(path, ".csv") && normalize) {
+		throw InvalidConfigurationException(
+		    "Can not set path to '%s' while normalize is true. Normalize will make DuckDB write multiple log files to "
+		    "more efficiently store log entries. Please specify a directory path instead of a csv file path, or set "
+		    "normalize to false.",
+		    path);
 	}
 }
 
@@ -433,13 +445,11 @@ void FileLogStorage::UpdateConfigInternal(DatabaseInstance &db, case_insensitive
 		}
 	}
 
-	if (StringUtil::EndsWith(new_path, ".csv") && normalize_contexts_new_value) {
-		throw InvalidConfigurationException(
-		    "Can not set path to '%s' while normalize is true. Normalize will make DuckDB write multiple log files to "
-		    "more efficiently store log entries. Please specify a directory path instead of a csv file path, or set "
-		    "normalize to false.",
-		    new_path);
+	if (new_path.empty()) {
+		// a config without a path keeps the current one
+		new_path = base_path;
 	}
+	VerifyPath(new_path, normalize_contexts_new_value);
 
 	// If any writer is initialized, we flush first:
 	// - when switching between normalized and denormalized, this is necessary since we are changing the buffer schema
@@ -453,7 +463,8 @@ void FileLogStorage::UpdateConfigInternal(DatabaseInstance &db, case_insensitive
 		FlushAllInternal();
 	}
 
-	require_reinitializing_files |= normalize_contexts != normalize_contexts_new_value;
+	bool normalize_changed = normalize_contexts != normalize_contexts_new_value;
+	require_reinitializing_files |= normalize_changed;
 	normalize_contexts = normalize_contexts_new_value;
 
 	// Reset the buffers to ensure they have the correct schema
@@ -466,8 +477,8 @@ void FileLogStorage::UpdateConfigInternal(DatabaseInstance &db, case_insensitive
 		}
 	}
 
-	// Apply any path change
-	if (new_path != base_path) {
+	// Apply any path change, the paths also depend on whether the log is normalized
+	if (new_path != base_path || normalize_changed) {
 		base_path = new_path;
 		SetPaths(new_path);
 	}

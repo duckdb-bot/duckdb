@@ -70,3 +70,22 @@ query III
 EXECUTE implicit_cast_null_parameter(1::BIGINT)
 ----
 false	true	true
+
+# a parameter that is only the target type defers binding as well
+statement ok
+PREPARE implicit_cast_target_parameter AS SELECT can_cast_implicitly(1, $1)
+
+query I
+EXECUTE implicit_cast_target_parameter(NULL)
+----
+false
+
+query I
+EXECUTE implicit_cast_target_parameter(1::BIGINT)
+----
+true
+
+query I
+EXECUTE implicit_cast_target_parameter('one')
+----
+false

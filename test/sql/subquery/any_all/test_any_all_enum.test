@@ -116,12 +116,20 @@ SELECT map(['m'], [1]) > ANY (SELECT map([v], [1]) FROM t WHERE v IS NOT NULL), 
 ----
 true	false
 
-# an ENUM field that keeps its type does not cast the STRUCT before the extremum, so a sibling row the compared type
-# cannot hold does not fail the comparison
-query I
-SELECT {'n': 0.5::DECIMAL(38,37), 'tag': 'a'::e} > ANY (SELECT {'n': i, 'tag': 'a'::e} FROM (VALUES (0), (100)) rhs(i))
+# the fields of a STRUCT are matched by name, as the cast matches them
+query II
+SELECT {'b': NULL::e, 'a': 'm'} > ANY (SELECT {'a': v, 'b': NULL} FROM t WHERE v IS NOT NULL), {'B': 'm', 'g': 1} > ANY (SELECT {'b': v, 'g': 1} FROM t WHERE v IS NOT NULL)
 ----
-true
+true	true
+
+# an ENUM field that keeps its type does not cast the STRUCT before the extremum, so a sibling row the compared type
+# cannot hold does not fail the comparison, also when the compared STRUCT has more fields or an ARRAY is compared with a LIST
+query III
+SELECT {'n': 0.5::DECIMAL(38,37), 'tag': 'a'::e} > ANY (SELECT {'n': i, 'tag': 'a'::e} FROM (VALUES (0), (100)) rhs(i)),
+       {'n': 0.5::DECIMAL(38,37), 'tag': 'a'::e, 'extra': 0} > ANY (SELECT {'n': i, 'tag': 'a'::e} FROM (VALUES (0), (100)) rhs(i)),
+       [{'n': 0.5::DECIMAL(38,37), 'tag': 'a'::e}] > ANY (SELECT [{'n': i, 'tag': 'a'::e}]::STRUCT(n INTEGER, tag e)[1] FROM (VALUES (0), (100)) rhs(i))
+----
+true	true	true
 
 # an untyped NULL subquery compared with an ENUM
 query II

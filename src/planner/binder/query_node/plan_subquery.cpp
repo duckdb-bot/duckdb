@@ -3,6 +3,7 @@
 #include "duckdb/function/aggregate/distributive_functions.hpp"
 #include "duckdb/function/aggregate/distributive_function_utils.hpp"
 #include "duckdb/function/builtin_function_lookup.hpp"
+#include "duckdb/function/cast/bound_cast_data.hpp"
 #include "duckdb/function/scalar/generic_functions.hpp"
 #include "duckdb/main/client_config.hpp"
 #include "duckdb/planner/binder.hpp"
@@ -73,33 +74,47 @@ static bool IsExtremumRewriteValid(const BoundSubqueryExpression &expr) {
 	       cmp_type == ExpressionType::COMPARE_LESSTHANOREQUALTO;
 }
 
-//! Whether a cast from the source type to the target type changes the order of the values, which an ENUM does, as it
-//! sorts by dictionary position, also as a member of a nested type
+static bool IsListOrArray(const LogicalType &type) {
+	return type.id() == LogicalTypeId::LIST || type.id() == LogicalTypeId::ARRAY;
+}
+
+static const LogicalType &ListOrArrayChildType(const LogicalType &type) {
+	return type.id() == LogicalTypeId::LIST ? ListType::GetChildType(type) : ArrayType::GetChildType(type);
+}
+
+//! Whether a cast from the source type to the target type changes the order of the values, which a cast of an ENUM
+//! does, as an ENUM sorts by dictionary position, also as a member of a nested type
 static bool CastChangesOrder(const LogicalType &source, const LogicalType &target) {
 	if (source == target) {
 		return false;
 	}
-	if (source.id() == LogicalTypeId::ENUM || source.id() != target.id()) {
+	if (source.id() == LogicalTypeId::ENUM) {
+		return true;
+	}
+	if (IsListOrArray(source) && IsListOrArray(target)) {
+		return CastChangesOrder(ListOrArrayChildType(source), ListOrArrayChildType(target));
+	}
+	if (source.id() != target.id()) {
+		// a cast to another kind of type, as VARIANT, converts every ENUM in the value
 		return TypeVisitor::Contains(source, LogicalTypeId::ENUM);
 	}
 	switch (source.id()) {
-	case LogicalTypeId::LIST:
-		return CastChangesOrder(ListType::GetChildType(source), ListType::GetChildType(target));
-	case LogicalTypeId::ARRAY:
-		return CastChangesOrder(ArrayType::GetChildType(source), ArrayType::GetChildType(target));
 	case LogicalTypeId::MAP:
 		return CastChangesOrder(MapType::KeyType(source), MapType::KeyType(target)) ||
 		       CastChangesOrder(MapType::ValueType(source), MapType::ValueType(target));
 	case LogicalTypeId::STRUCT:
 	case LogicalTypeId::TUPLE:
 	case LogicalTypeId::UNION: {
+		// the fields are paired as the cast pairs them, by name or by position
+		auto mapping = StructBoundCastData::GetFieldMapping(source, target);
+		if (mapping.kind != StructCastFieldMapping::MatchKind::VALID) {
+			return false;
+		}
 		auto &source_children = StructType::GetChildTypes(source);
 		auto &target_children = StructType::GetChildTypes(target);
-		if (source_children.size() != target_children.size()) {
-			return TypeVisitor::Contains(source, LogicalTypeId::ENUM);
-		}
-		for (idx_t child_idx = 0; child_idx < source_children.size(); child_idx++) {
-			if (CastChangesOrder(source_children[child_idx].second, target_children[child_idx].second)) {
+		for (idx_t pair_idx = 0; pair_idx < mapping.source_indexes.size(); pair_idx++) {
+			if (CastChangesOrder(source_children[mapping.source_indexes[pair_idx]].second,
+			                     target_children[mapping.target_indexes[pair_idx]].second)) {
 				return true;
 			}
 		}

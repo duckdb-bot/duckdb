@@ -1,0 +1,25 @@
+# name: test/sql/table_function/duckdb_functions_generic_types.test
+# description: Overloads with generic list, map, struct and tuple parameters get the description written for them
+# group: [table_function]
+
+query III
+SELECT function_name, parameter_types, description FROM duckdb_functions() WHERE function_name IN ('array_extract', 'contains', 'repeat') AND description IS NOT NULL ORDER BY ALL
+----
+array_extract	[STRUCT, VARCHAR]	Extracts the named `entry` from the `STRUCT`.
+array_extract	[TUPLE, BIGINT]	Extracts the entry from an unnamed `STRUCT` (tuple) using an index (1-based).
+array_extract	['T[]', BIGINT]	Extracts the `index`th (1-based) value from the `list`.
+array_extract	[VARCHAR, BIGINT]	Extracts a single character from a `string` using a (1-based) `index`.
+contains	['MAP(K, V)', K]	Checks if a `map` contains a given `key`.
+contains	['T[]', T]	Returns `true` if the `list` contains the `element`.
+contains	[VARCHAR, VARCHAR]	Returns `true` if `search_string` is found within `string`.
+repeat	[BLOB, BIGINT]	Repeats the `blob` `count` number of times.
+repeat	['T[]', BIGINT]	Repeats the `list` `count` number of times.
+repeat	[VARCHAR, BIGINT]	Repeats the `string` `count` number of times.
+
+query II
+SELECT parameter_types, examples FROM duckdb_functions() WHERE function_name = 'array_extract' ORDER BY ALL
+----
+[STRUCT, VARCHAR]	['array_extract({\'i\': 3, \'v2\': 3, \'v3\': 0}, \'i\')']
+[TUPLE, BIGINT]	['array_extract(row(42, 84), 1)']
+['T[]', BIGINT]	['array_extract([4, 5, 6], 3)']
+[VARCHAR, BIGINT]	['array_extract(\'DuckDB\', 2)']

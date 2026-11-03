@@ -156,6 +156,8 @@ public:
 public:
 	// Compare conditions for priority
 	static bool LessThan(const JoinCondition &a, const JoinCondition &b);
+	//! The smaller distinct count of the two sides of a condition, higher is more selective and zero is unknown
+	static idx_t DistinctCountBound(const JoinCondition &condition);
 
 	// Gather the result values and slice the payload columns to those values.
 	static void SliceSortedPayload(DataChunk &chunk, GlobalSortedTable &table, ExternalBlockIteratorState &state,

@@ -371,7 +371,7 @@ PREPARE match_define AS SELECT count(*) FROM (SELECT c FROM (VALUES (1, to_times
 statement ok
 PREPARE match_navigation AS SELECT count(*) FROM (SELECT c FROM (VALUES (1, to_timestamp(1767225600))) t(rn, ts) MATCH_RECOGNIZE (ORDER BY rn MEASURES count(*) AS c ONE ROW PER MATCH PATTERN (A) DEFINE A AS LAST(A.ts::VARCHAR) = '2026-01-01 00:00:00+00'));
 
-# the aggregate of a DEFINE casts its argument itself, and the matcher casts again at execution, so only the plan shows it
+# a DEFINE aggregate casts its argument itself and the matcher casts again at execution, so only the plan shows it
 statement ok
 PREPARE match_aggregate_cast AS SELECT count(*) FROM (SELECT c FROM (VALUES (1, to_timestamp(1767225600))) t(rn, ts) MATCH_RECOGNIZE (ORDER BY rn MEASURES count(*) AS c ONE ROW PER MATCH PATTERN (A) DEFINE A AS string_agg(A.ts) = '2026-01-01 00:00:00+00'));
 

@@ -128,6 +128,14 @@ SELECT [union_value(w := union_value(a := {'b': 1, 'a': 1}))::UNION(w UNION(a ST
 ----
 true
 
+# only the member the cast selects decides, so a member the value does not become does not cast the rows first and a
+# field the selected member cannot hold in another row does not fail the comparison
+query II
+SELECT [union_value(s := {'n': 0.5::DECIMAL(38,37)})::UNION(s STRUCT(n DECIMAL(38,37)), other VARIANT)] > ANY (SELECT [{'n': i}] FROM (VALUES (0), (100)) r(i)),
+       [union_value(s := {'n': 0.5::DECIMAL(38,37), 'm': 1})::UNION(s STRUCT(n DECIMAL(38,37), m INTEGER), other STRUCT(m FLOAT, n FLOAT))] > ANY (SELECT [{'n': i, 'm': 1}] FROM (VALUES (0), (100)) r(i))
+----
+true	true
+
 # a UNION whose member is NULL becomes a NULL VARIANT, which the comparison and the count of the NULL rows both see
 statement ok
 CREATE TABLE un_null(v UNION(a INTEGER));

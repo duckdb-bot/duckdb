@@ -123,6 +123,16 @@ static bool VariantCastChangesOrder(const LogicalType &source) {
 	});
 }
 
+//! A value becomes the member of the UNION that its cast selects, so the order changes when it changes for a member
+static bool UnionMemberCastChangesOrder(const LogicalType &source, const LogicalType &target) {
+	for (idx_t member_idx = 0; member_idx < UnionType::GetMemberCount(target); member_idx++) {
+		if (CastChangesOrder(source, UnionType::GetMemberType(target, member_idx))) {
+			return true;
+		}
+	}
+	return false;
+}
+
 //! The members are paired by name as the UNION cast pairs them, and a member without a counterpart makes the cast
 //! wrap the whole value into a member of the target
 static bool UnionCastChangesOrder(const LogicalType &source, const LogicalType &target) {
@@ -141,7 +151,7 @@ static bool UnionCastChangesOrder(const LogicalType &source, const LogicalType &
 			break;
 		}
 		if (!found) {
-			return TypeVisitor::Contains(source, LogicalTypeId::ENUM);
+			return UnionMemberCastChangesOrder(source, target);
 		}
 	}
 	return false;
@@ -172,6 +182,9 @@ static bool CastChangesOrder(const LogicalType &source, const LogicalType &targe
 	}
 	if (source.id() == LogicalTypeId::UNION && target.id() == LogicalTypeId::UNION) {
 		return UnionCastChangesOrder(source, target);
+	}
+	if (target.id() == LogicalTypeId::UNION) {
+		return UnionMemberCastChangesOrder(source, target);
 	}
 	if (source.id() != target.id()) {
 		// a cast to another kind of type, as VARIANT or a UNION member, converts the value as a whole
@@ -205,6 +218,8 @@ static unique_ptr<Expression> PlanExtremumRewrite(Binder &binder, BoundSubqueryE
 	if (compare_type.id() != LogicalTypeId::UNION && CastChangesOrder(child_type, compare_type)) {
 		min_max_child = BoundCastExpression::AddDefaultCastToType(std::move(min_max_child), compare_type);
 	}
+	// the count of the rows the comparison sees as NULL, a UNION whose member is NULL becomes a NULL VARIANT
+	auto count_child = min_max_child->Copy();
 	// The comparison may carry a collation the subquery column does not, and the extremum has to be taken
 	// under that collation, so it is pushed here. BIT and VARIANT are the exception: min/max pushes its own
 	// collation for those, and doing it first makes that branch a no-op, after which the aggregate falls
@@ -228,7 +243,7 @@ static unique_ptr<Expression> PlanExtremumRewrite(Binder &binder, BoundSubqueryE
 
 	// 3. count_child = COUNT(child)
 	vector<unique_ptr<Expression>> count_child_children;
-	count_child_children.push_back(bound_colref->Copy());
+	count_child_children.push_back(std::move(count_child));
 	auto count_fun =
 	    GetBuiltinAggregateFunction(binder.context, CountFun::Name, {count_child_children[0]->GetReturnType()});
 	auto count_child_aggr = function_binder.BindAggregateFunction(count_fun, std::move(count_child_children), nullptr,

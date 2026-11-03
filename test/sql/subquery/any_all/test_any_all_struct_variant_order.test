@@ -110,6 +110,36 @@ SELECT union_value(b := 5)::UNION(a VARCHAR, b INTEGER)::VARIANT > ANY (SELECT v
 ----
 true	false
 
+# a LIST of STRUCTs compared as VARIANT is cast before the extremum as well
+query II
+SELECT [{'a': 1, 'b': 1}]::VARIANT > ANY (SELECT [v] FROM u), [{'a': 1, 'b': 1}]::VARIANT > ALL (SELECT [v] FROM u)
+----
+true	false
+
+# a STRUCT that becomes the member of a UNION follows the field order of that member
+query II
+SELECT [union_value(u := {'b': 1, 'a': 1})] > ANY (SELECT [v] FROM t WHERE v IS NOT NULL), [union_value(u := {'b': 1, 'a': 1})] > ALL (SELECT [v] FROM t WHERE v IS NOT NULL)
+----
+true	false
+
+# a UNION without a counterpart for a member is wrapped as a whole into a member of the compared UNION
+query I
+SELECT [union_value(w := union_value(a := {'b': 1, 'a': 1}))::UNION(w UNION(a STRUCT(b INTEGER, a INTEGER), z INTEGER), z INTEGER)] > ANY (SELECT [union_value(a := v)::UNION(a STRUCT(a INTEGER, b INTEGER), z BLOB)] FROM t WHERE v IS NOT NULL)
+----
+true
+
+# a UNION whose member is NULL becomes a NULL VARIANT, which the comparison and the count of the NULL rows both see
+statement ok
+CREATE TABLE un_null(v UNION(a INTEGER));
+
+statement ok
+INSERT INTO un_null VALUES (union_value(a := NULL::INTEGER)), (union_value(a := 1));
+
+query III
+SELECT 0::VARIANT > ANY (SELECT v FROM un_null), 0::VARIANT < ALL (SELECT v FROM un_null), 2::VARIANT > ANY (SELECT v FROM un_null)
+----
+NULL	NULL	true
+
 # a value without a STRUCT, UNION or ENUM keeps its extremum in the column type for a VARIANT comparison
 query IIII
 SELECT 1::VARIANT > ANY (SELECT i FROM (VALUES (0), (100)) r(i)), 1::VARIANT > ALL (SELECT i FROM (VALUES (0), (100)) r(i)), [1]::VARIANT > ANY (SELECT [i] FROM (VALUES (0), (100)) r(i)), MAP {'k': 1}::VARIANT > ANY (SELECT MAP {'k': i} FROM (VALUES (0), (100)) r(i))

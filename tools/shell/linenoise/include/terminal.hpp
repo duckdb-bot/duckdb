@@ -137,7 +137,10 @@ public:
 	static bool IsAtty();
 	static int HasMoreData(int fd, idx_t timeout_micros = 0);
 	static TerminalSize GetTerminalSize();
-	static bool TryGetBackgroundColor(TerminalColor &color);
+	//! Queries the terminal for its background color. The query shares stdin with whoever reads the input, so pending
+	//! input is kept for the line editor only when it is the reader, and no query is sent while the editor holds the
+	//! terminal in raw mode
+	static bool TryGetBackgroundColor(TerminalColor &color, bool keep_pending_input);
 
 	static char *EditNoTTY();
 	static int EditRaw(char *buf, size_t buflen, const char *prompt);

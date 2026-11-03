@@ -246,6 +246,9 @@ public:
 	** is true.  Otherwise, assume stdin is connected to a file or pipe.
 	*/
 	bool stdin_is_interactive = true;
+	//! Whether statements have been read from stdin through stdio, which shares the terminal's input with the color
+	//! probe
+	bool stdin_read_through_stdio = false;
 
 	/*
 	** On Windows systems we have to know if standard output is a console

@@ -165,9 +165,9 @@ void linenoiseClearScreen(void) {
 	Terminal::ClearScreen();
 }
 
-int linenoiseGetTerminalColorMode() {
+int linenoiseGetTerminalColorMode(bool keep_pending_input) {
 	duckdb::TerminalColor background_color;
-	if (!duckdb::Terminal::TryGetBackgroundColor(background_color)) {
+	if (!duckdb::Terminal::TryGetBackgroundColor(background_color, keep_pending_input)) {
 		return LINENOISE_UNKNOWN_MODE;
 	}
 	// calculate the brightness

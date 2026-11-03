@@ -586,6 +586,9 @@ char *ShellState::OneInputLine(FILE *in, char *&zPrior, int isContinuation) {
 	if (in) {
 		// use local_getline when reading from a file
 		// don't print prompt in this scenario
+		if (in == stdin) {
+			stdin_read_through_stdio = true;
+		}
 		return local_getline(zPrior, in);
 	}
 
@@ -602,6 +605,8 @@ char *ShellState::OneInputLine(FILE *in, char *&zPrior, int isContinuation) {
 		}
 		free(zPrior);
 		zPrior = nullptr;
+		// the editor highlights as it renders, which cannot probe the terminal while the editor holds it
+		DetectDarkLightMode();
 		return linenoise(prompt_text);
 	}
 #endif
@@ -612,6 +617,7 @@ char *ShellState::OneInputLine(FILE *in, char *&zPrior, int isContinuation) {
 		Print(continuePrompt);
 	}
 	fflush(stdout);
+	stdin_read_through_stdio = true;
 	return local_getline(zPrior, stdin);
 }
 
@@ -3774,8 +3780,15 @@ void ShellState::DetectDarkLightMode() {
 		// not printing to console - don't auto-detect
 		return;
 	}
-	// detect terminal colors
-	auto terminal_color = linenoiseGetTerminalColorMode();
+	if (stdin_read_through_stdio && isatty(0)) {
+		// the statements come from the terminal through stdio, so the response to a query sent now would be read
+		// together with the statements typed ahead, and those would be lost
+		highlight_mode = HighlightMode::MIXED_MODE;
+		return;
+	}
+	// detect terminal colors, keeping the input typed ahead when the line editor is the one reading stdin
+	bool line_editor_reads_stdin = stdin_is_interactive && rl_version == ReadLineVersion::LINENOISE;
+	auto terminal_color = linenoiseGetTerminalColorMode(line_editor_reads_stdin);
 	if (terminal_color == LINENOISE_DARK_MODE) {
 		highlight_mode = HighlightMode::DARK_MODE;
 		highlight.ToggleMode(HighlightMode::DARK_MODE);
@@ -4050,6 +4063,11 @@ int RunShell(int argc, const char **argv) {
 			rc = data.ProcessInput(InputMode::STANDARD);
 		} else {
 			data.in = stdin;
+			if (isatty(0) && data.mode == RenderMode::DUCKBOX) {
+				// the results print with colors, and the color probe shares stdin with the statements read from the
+				// terminal, so probe before reading any of them
+				data.DetectDarkLightMode();
+			}
 			rc = data.ProcessInput(InputMode::STANDARD);
 		}
 	}

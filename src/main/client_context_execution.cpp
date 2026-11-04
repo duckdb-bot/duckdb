@@ -106,10 +106,6 @@ ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success,
 		success = false;
 	}
 	if (report_statement_error) {
-		if (Exception::InvalidatesDatabase(statement_error.Type()) ||
-		    statement_error.Type() == ExceptionType::INTERNAL) {
-			ValidChecker::Invalidate(DatabaseInstance::GetDatabase(*this), statement_error.RawMessage());
-		}
 		// what the statement wrote can only be dropped with the whole transaction
 		invalidate_transaction =
 		    invalidate_transaction || statement_wrote || ErrorInvalidatesQueryTransaction(statement_error.Type());
@@ -607,8 +603,13 @@ ErrorData ClientContext::EndStatementInternal(ClientContextLock &lock, optional_
 		try {
 			state.StatementEnd(*this, error);
 		} catch (std::exception &ex) {
+			ErrorData state_error(ex);
+			if (Exception::InvalidatesDatabase(state_error.Type()) || state_error.Type() == ExceptionType::INTERNAL) {
+				// a fatal failure invalidates the database also when another failure is the one reported
+				ValidChecker::Invalidate(DatabaseInstance::GetDatabase(*this), state_error.RawMessage());
+			}
 			if (!end_error.HasError()) {
-				end_error = ErrorData(ex);
+				end_error = std::move(state_error);
 			}
 		} catch (...) { // LCOV_EXCL_START
 			if (!end_error.HasError()) {

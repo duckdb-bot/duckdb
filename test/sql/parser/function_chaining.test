@@ -119,3 +119,33 @@ SELECT strftime(ci.PURCHASEDATE.nullif('1899-12-30T00:00:00'), '%Y-%m-%d')
 FROM (VALUES (TIMESTAMP '2026-01-01')) AS ci("PurchaseDate")
 ----
 2026-01-01
+
+# the column a function is called on keeps its scope, so a macro's own lambda does not capture it
+statement ok
+CREATE MACRO lambda_macro(p) AS list_transform(['inner'], lambda x: p);
+
+query I
+SELECT x FROM (SELECT 'outer' AS x) t WHERE x.lambda_macro() = ['outer'];
+----
+outer
+
+# a generated column names its field after its expression, as struct_pack(g) does
+statement ok
+CREATE TABLE generated(a INTEGER, g INTEGER GENERATED ALWAYS AS (a));
+
+statement ok
+INSERT INTO generated(a) VALUES (1);
+
+query I
+SELECT a FROM generated WHERE g.struct_pack().a = 1;
+----
+1
+
+# a lambda parameter stays the parameter, also as a macro argument, and so does a field of it
+statement ok
+CREATE MACRO identity_macro(p) AS p;
+
+query II
+SELECT list_transform([1], lambda x: x.identity_macro()), list_transform([{'a': 2}], lambda x: x.a.identity_macro()) WHERE list_transform([1], lambda x: x.identity_macro()) = [1] AND list_transform([{'a': 2}], lambda x: x.a.identity_macro()) = [2];
+----
+[1]	[2]

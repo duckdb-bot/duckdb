@@ -205,12 +205,23 @@ Scalar Function with name no_such_function_xyz does not exist
 
 # ---------------------------------------------------------------- coalesce written as a function call
 # COALESCE(...) has a grammar rule of its own, so the plain path never names it. Spelling it as a
-# quoted function call is therefore a deliberate catalog lookup that a user macro can own, and the
-# rewrite must not take it away. The method chain has no grammar form, so there the rewrite is the
-# only route, and a qualification other than main is the column the function is called on.
+# function call, quoted or schema-qualified, is therefore a catalog lookup that a user macro can own,
+# and the rewrite must not take it away. The method chain has no grammar form, so there the rewrite is
+# the only route, and the binder takes it for a function call too once the catalog has no such function.
 
 statement ok
 CREATE SCHEMA s;
+
+# without a macro of the name, the function call takes the rewrite
+query I
+SELECT "coalesce"(NULL, 5);
+----
+5
+
+statement error
+SELECT "coalesce"();
+----
+COALESCE requires at least one argument
 
 statement ok
 CREATE MACRO "coalesce"(a, b) AS 999;
@@ -219,9 +230,15 @@ statement ok
 CREATE MACRO s.coalesce(a, b) AS 777;
 
 query II
-SELECT "coalesce"(NULL, 5), s.coalesce(NULL, 5) FROM (SELECT 1 AS s);
+SELECT "coalesce"(NULL, 5), s.coalesce(NULL, 5);
 ----
-999	1
+999	777
+
+# the catalog is looked up before the qualification is taken for a column, as for s.lower()
+query I
+SELECT s.coalesce(NULL, 5) FROM (SELECT 1 AS s);
+----
+777
 
 # the grammar form ignores the macro, exactly as before
 query I

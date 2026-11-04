@@ -19,6 +19,7 @@
 #include "duckdb/parser/tableref/emptytableref.hpp"
 #include "duckdb/parser/parsed_expression_iterator.hpp"
 #include "duckdb/parser/expression/star_expression.hpp"
+#include "duckdb/parser/parser_function_rewrite.hpp"
 #include "duckdb/common/string_util.hpp"
 
 namespace duckdb {
@@ -33,29 +34,37 @@ static bool ExpressionIsUnqualifiedStar(const ParsedExpression &expr) {
 enum class ParserRewriteCallForm : uint8_t { PLAIN, METHOD_CHAIN };
 
 //! Names that the parser rewrites into a syntax node instead of a catalog function call.
-enum class ParserFunctionRewrite { NONE, UNPACK, TRY, CONSTRUCT_ARRAY, IFNULL, COALESCE, DATE };
+enum class RewrittenFunction { NONE, UNPACK, TRY, CONSTRUCT_ARRAY, IFNULL, COALESCE, DATE };
 
 //! Which rewrite the lowercase name takes, NONE for an ordinary function
-static ParserFunctionRewrite GetParserFunctionRewrite(const string &lowercase_name) {
+static RewrittenFunction GetRewrittenFunction(const string &lowercase_name) {
 	if (lowercase_name == "unpack") {
-		return ParserFunctionRewrite::UNPACK;
+		return RewrittenFunction::UNPACK;
 	}
 	if (lowercase_name == "try") {
-		return ParserFunctionRewrite::TRY;
+		return RewrittenFunction::TRY;
 	}
 	if (lowercase_name == "construct_array") {
-		return ParserFunctionRewrite::CONSTRUCT_ARRAY;
+		return RewrittenFunction::CONSTRUCT_ARRAY;
 	}
 	if (lowercase_name == "ifnull") {
-		return ParserFunctionRewrite::IFNULL;
+		return RewrittenFunction::IFNULL;
 	}
 	if (lowercase_name == "coalesce") {
-		return ParserFunctionRewrite::COALESCE;
+		return RewrittenFunction::COALESCE;
 	}
 	if (lowercase_name == "date") {
-		return ParserFunctionRewrite::DATE;
+		return RewrittenFunction::DATE;
 	}
-	return ParserFunctionRewrite::NONE;
+	return RewrittenFunction::NONE;
+}
+
+bool ParserFunctionRewrite::Rewrites(const Identifier &function_name) {
+	return GetRewrittenFunction(StringUtil::Lower(function_name.GetIdentifierName())) != RewrittenFunction::NONE;
+}
+
+bool ParserFunctionRewrite::RewritesCall(const FunctionExpression &function) {
+	return function.GetQualifiedName().Path().size() == 1 && Rewrites(function.FunctionName());
 }
 
 //! Rewrites a call of such a name into its syntax node.
@@ -72,8 +81,8 @@ static unique_ptr<ParsedExpression> TransformParserFunctionRewrite(const string 
 		}
 	};
 
-	switch (GetParserFunctionRewrite(lowercase_name)) {
-	case ParserFunctionRewrite::UNPACK: {
+	switch (GetRewrittenFunction(lowercase_name)) {
+	case RewrittenFunction::UNPACK: {
 		if (function_children.size() != 1) {
 			throw ParserException("Wrong number of arguments to the UNPACK operator");
 		}
@@ -84,7 +93,7 @@ static unique_ptr<ParsedExpression> TransformParserFunctionRewrite(const string 
 		}
 		return std::move(expr);
 	}
-	case ParserFunctionRewrite::TRY: {
+	case RewrittenFunction::TRY: {
 		if (function_children.size() != 1) {
 			throw ParserException("Wrong number of arguments provided to TRY expression");
 		}
@@ -95,7 +104,7 @@ static unique_ptr<ParsedExpression> TransformParserFunctionRewrite(const string 
 		}
 		return std::move(try_expression);
 	}
-	case ParserFunctionRewrite::CONSTRUCT_ARRAY: {
+	case RewrittenFunction::CONSTRUCT_ARRAY: {
 		reject_named_arguments("array constructors");
 		auto construct_array = make_uniq<OperatorExpression>(ExpressionType::ARRAY_CONSTRUCTOR);
 		for (auto &arg : function_children) {
@@ -103,7 +112,7 @@ static unique_ptr<ParsedExpression> TransformParserFunctionRewrite(const string 
 		}
 		return std::move(construct_array);
 	}
-	case ParserFunctionRewrite::IFNULL: {
+	case RewrittenFunction::IFNULL: {
 		if (function_children.size() != 2) {
 			throw ParserException("Wrong number of arguments to IFNULL.");
 		}
@@ -117,11 +126,15 @@ static unique_ptr<ParsedExpression> TransformParserFunctionRewrite(const string 
 	}
 	// COALESCE has a grammar rule of its own (CoalesceExpression), which is how the plain path spells
 	// it. Reaching the plain path under this name therefore means the caller wrote it as a function
-	// call - quoted, or schema-qualified - which resolves in the catalog and lets a user macro named
-	// coalesce win. The method chain has no grammar form, so the rewrite is its only route.
-	case ParserFunctionRewrite::COALESCE: {
+	// call, quoted or qualified, which stays a function call so that the binder looks it up in the
+	// catalog and lets a user macro named coalesce win. The method chain has no grammar form, so the
+	// rewrite is its only route, which the binder takes too when the catalog has no such function.
+	case RewrittenFunction::COALESCE: {
 		if (call_form != ParserRewriteCallForm::METHOD_CHAIN) {
 			return nullptr;
+		}
+		if (function_children.empty()) {
+			throw ParserException("COALESCE requires at least one argument");
 		}
 		reject_named_arguments("COALESCE expressions");
 		auto coalesce_op = make_uniq<OperatorExpression>(ExpressionType::OPERATOR_COALESCE);
@@ -130,40 +143,51 @@ static unique_ptr<ParsedExpression> TransformParserFunctionRewrite(const string 
 		}
 		return std::move(coalesce_op);
 	}
-	case ParserFunctionRewrite::DATE: {
+	case RewrittenFunction::DATE: {
 		if (function_children.size() != 1) {
 			throw ParserException("Wrong number of arguments provided to DATE function");
 		}
 		return std::move(
 		    make_uniq<CastExpression>(LogicalType::DATE, std::move(function_children[0].GetExpressionMutable())));
 	}
-	case ParserFunctionRewrite::NONE:
+	case RewrittenFunction::NONE:
 		break;
 	}
 	return nullptr;
+}
+
+unique_ptr<ParsedExpression> ParserFunctionRewrite::RewriteMethodCall(FunctionExpression &function) {
+	if (!RewritesCall(function)) {
+		return nullptr;
+	}
+	auto lowercase_name = StringUtil::Lower(function.FunctionName().GetIdentifierName());
+	auto rewritten = TransformParserFunctionRewrite(lowercase_name, function.GetArgumentsMutable(),
+	                                                ParserRewriteCallForm::METHOD_CHAIN);
+	D_ASSERT(rewritten);
+	// A method call accepts modifiers for every name, but a rewrite yields a syntax node with nowhere to put them.
+	// Reject rather than drop them silently.
+	auto upper_name = StringUtil::Upper(lowercase_name);
+	if (function.Distinct()) {
+		throw ParserException("DISTINCT is not supported in %s expressions", upper_name);
+	}
+	if (function.OrderBy() && !function.OrderBy()->orders.empty()) {
+		throw ParserException("ORDER BY is not supported in %s expressions", upper_name);
+	}
+	if (function.Filter()) {
+		throw ParserException("FILTER is not supported in %s expressions", upper_name);
+	}
+	rewritten->SetAlias(function.GetAlias());
+	rewritten->SetQueryLocation(function.GetQueryLocation());
+	return rewritten;
 }
 
 //! Makes a call on a value, as x.f(y), the call f(x, y) with the rewrites of a method call
 static unique_ptr<ParsedExpression> TransformMethodCall(unique_ptr<ParsedExpression> value,
                                                         unique_ptr<FunctionExpression> function) {
 	function->GetArgumentsMutable().insert(function->GetArgumentsMutable().begin(), std::move(value));
-	auto lowercase_name = StringUtil::Lower(function->FunctionName().GetIdentifierName());
-	auto rewritten = TransformParserFunctionRewrite(lowercase_name, function->GetArgumentsMutable(),
-	                                                ParserRewriteCallForm::METHOD_CHAIN);
+	auto rewritten = ParserFunctionRewrite::RewriteMethodCall(*function);
 	if (!rewritten) {
 		return std::move(function);
-	}
-	// A method call accepts modifiers for every name, but a rewrite yields a syntax node with nowhere to put them.
-	// Reject rather than drop them silently.
-	auto upper_name = StringUtil::Upper(lowercase_name);
-	if (function->Distinct()) {
-		throw ParserException("DISTINCT is not supported in %s expressions", upper_name);
-	}
-	if (function->OrderBy() && !function->OrderBy()->orders.empty()) {
-		throw ParserException("ORDER BY is not supported in %s expressions", upper_name);
-	}
-	if (function->Filter()) {
-		throw ParserException("FILTER is not supported in %s expressions", upper_name);
 	}
 	return rewritten;
 }
@@ -333,13 +357,13 @@ unique_ptr<ParsedExpression> PEGTransformerFactory::TransformFunctionExpression(
 		lowercase_name = "count_star";
 	}
 
-	// x.ifnull(y) parses as a call in schema x. The rewrites are not catalog functions, so for them a qualification
-	// other than main is the column the function is called on, as in (x).ifnull(y)
-	const auto &path = qualified_function.Path();
-	const bool call_on_column = path.size() > 1 &&
-	                            GetParserFunctionRewrite(lowercase_name) != ParserFunctionRewrite::NONE &&
-	                            !StringUtil::CIEquals(qualified_function.Schema().GetIdentifierName(), DEFAULT_SCHEMA);
-	if (!call_on_column) {
+	// x.ifnull(y) parses as a call in schema x. Only the binder can tell a schema holding such a function from the
+	// column x the function is called on, so a call of a rewritten name qualified with anything but main stays a
+	// function call here, which the binder rewrites. The qualification main is dropped, as main.lower() is lower()
+	const bool binder_resolves_qualification =
+	    qualified_function.Path().size() > 1 && GetRewrittenFunction(lowercase_name) != RewrittenFunction::NONE &&
+	    !StringUtil::CIEquals(qualified_function.Schema().GetIdentifierName(), DEFAULT_SCHEMA);
+	if (!binder_resolves_qualification) {
 		if (auto rewritten =
 		        TransformParserFunctionRewrite(lowercase_name, function_children, ParserRewriteCallForm::PLAIN)) {
 			return rewritten;
@@ -371,10 +395,7 @@ unique_ptr<ParsedExpression> PEGTransformerFactory::TransformFunctionExpression(
 	auto result = make_uniq<FunctionExpression>(qualified_function.WithName(Identifier(lowercase_name)),
 	                                            std::move(function_children), std::move(filter_expr),
 	                                            std::move(order_modifier), distinct, false, export_clause);
-	if (call_on_column) {
-		vector<Identifier> column_name(path.begin(), path.end() - 1);
-		return TransformMethodCall(make_uniq<ColumnRefExpression>(std::move(column_name)), std::move(result));
-	}
+
 	return std::move(result);
 }
 

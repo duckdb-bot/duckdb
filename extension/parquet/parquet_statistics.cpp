@@ -130,7 +130,7 @@ Value ParquetStatisticsUtils::ConvertValue(const LogicalType &type, const Parque
 }
 //! Statistics values that do not fit in the width of the decimal are ignored
 template <class T>
-static Value ParquetDecimalStatsValue(T value, uint8_t width, uint8_t scale) {
+static Value ParquetDecimalStatsValue(T value, uint32_t width, uint32_t scale) {
 	const auto max_value = Hugeint::POWERS_OF_TEN[width];
 	const auto hugeint_value = hugeint_t(value);
 	if (hugeint_value >= max_value || hugeint_value <= -max_value) {
@@ -1176,6 +1176,11 @@ ParquetStatisticsUtils::GetBloomFilterHashStrategy(const ParquetColumnSchema &sc
 	}
 }
 
+bool ParquetStatisticsUtils::HasBloomFilterConstants(const TableFilter &filter,
+                                                     ParquetBloomFilterHashStrategy hash_strategy) {
+	return HasFilterConstants(filter, hash_strategy);
+}
+
 static bool ReadAndApplyBloomFilter(const TableFilter &duckdb_filter,
                                     const duckdb_parquet::ColumnMetaData &column_meta_data, TProtocol &file_proto,
                                     Allocator &allocator, const ParquetColumnSchema &schema,
@@ -1204,7 +1209,10 @@ static bool ReadAndApplyBloomFilter(const TableFilter &duckdb_filter,
 
 	transport.SetLocation(bloom_filter_start);
 	if (bloom_filter_length > 0) {
-		transport.Prefetch(bloom_filter_start, bloom_filter_length);
+		auto read_head = transport.GetReadHead(bloom_filter_start, bloom_filter_length);
+		if (!read_head || !read_head->data_isset) {
+			transport.Prefetch(bloom_filter_start, bloom_filter_length);
+		}
 	} else if (!transport.IsPrefetchMode()) {
 		// without a length, read at least the header in one go
 		static constexpr idx_t ASSUMED_HEADER_SIZE = 256;

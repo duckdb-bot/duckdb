@@ -78,10 +78,7 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundConjun
 		// or (2) replace the entire conjunction with a constant
 		// a constant that fails is left to the execution, where TRY can catch its error
 		Value constant;
-		if (!ExpressionExecutor::TryEvaluateScalar(context, *child, constant)) {
-			continue;
-		}
-		if (constant.IsNull()) {
+		if (!ExpressionExecutor::TryEvaluateScalar(context, *child, constant) || constant.IsNull()) {
 			continue;
 		}
 		auto b = BooleanValue::Get(constant);

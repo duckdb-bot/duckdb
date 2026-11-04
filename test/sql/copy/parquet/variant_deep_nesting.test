@@ -1,0 +1,104 @@
+# name: test/sql/copy/parquet/variant_deep_nesting.test
+# description: Writing deeply nested VARIANT values to Parquet does not recurse on the thread stack
+# group: [parquet]
+
+require parquet
+
+require json
+
+# 40000 levels, arrays and objects with a single key alternating, built from the binary encoding as in
+# test/issues/general/test_26373.test
+statement ok
+CREATE TABLE levels AS
+WITH RECURSIVE levels(depth, child_length, width) AS (
+    SELECT 1, 1, 1
+    UNION ALL
+    SELECT depth + 1, child_length + 2 + depth % 2 + 2 * width,
+           CASE WHEN child_length + 2 + depth % 2 + 2 * width < 256 THEN 1
+                WHEN child_length + 2 + depth % 2 + 2 * width < 65536 THEN 2 ELSE 3 END
+    FROM levels WHERE depth < 40000
+)
+SELECT depth,
+       CASE WHEN depth % 2 = 1 THEN printf('%02x0100', 2 + 4 * (width - 1))
+            ELSE printf('%02x01', 3 + 4 * (width - 1)) END ||
+       repeat('00', width) ||
+       left(printf('%02x%02x%02x', child_length % 256, child_length // 256 % 256, child_length // 65536), 2 * width) AS header
+FROM levels;
+
+statement ok
+CREATE TABLE deep AS
+SELECT variant_bytes_to_variant(unhex('1101000161' || string_agg(header, '' ORDER BY depth DESC) || '04')) AS v
+FROM levels;
+
+query I
+SELECT variant_typeof(v) FROM deep;
+----
+ARRAY(1)
+
+statement ok
+COPY deep TO '{TEST_DIR}/deep_variant.parquet';
+
+query I
+SELECT variant_typeof(v) FROM '{TEST_DIR}/deep_variant.parquet';
+----
+ARRAY(1)
+
+statement ok
+COPY deep TO '{TEST_DIR}/deep_variant_shredded.parquet' (SHREDDING {v: 'BIGINT'});
+
+query I
+SELECT variant_typeof(v) FROM '{TEST_DIR}/deep_variant_shredded.parquet';
+----
+ARRAY(1)
+
+# a wide object of 300 fields, each an array of its own, written and read back exactly
+statement ok
+CREATE TABLE wide AS
+SELECT ('{' || string_agg('"k' || i || '": [' || i || ', "' || i || '", null, [' || i || '.5]]', ', ') || '}')::JSON::VARIANT AS v
+FROM range(300) t(i);
+
+statement ok
+COPY wide TO '{TEST_DIR}/wide_variant.parquet';
+
+query I
+SELECT count(*) FROM (SELECT v::VARCHAR FROM wide EXCEPT SELECT v::VARCHAR FROM '{TEST_DIR}/wide_variant.parquet');
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT v::VARCHAR FROM '{TEST_DIR}/wide_variant.parquet' EXCEPT SELECT v::VARCHAR FROM wide);
+----
+0
+
+# nested values below the visitor depth limit, with several primitive types at the leaves, round trip exactly
+statement ok
+CREATE TABLE mixed AS
+SELECT i, (repeat('[{"a":', 50) || '{"x": ' || i || ', "y": "text ' || i || '", "z": [1.5, null, true, false], "w": {"b": [], "c": {}}}' || repeat('}]', 50))::JSON::VARIANT AS v
+FROM range(3) t(i);
+
+statement ok
+COPY mixed TO '{TEST_DIR}/mixed_variant.parquet';
+
+query II
+SELECT count(*), count(DISTINCT v::VARCHAR) FROM '{TEST_DIR}/mixed_variant.parquet';
+----
+3	3
+
+query I
+SELECT count(*) FROM (SELECT v::VARCHAR FROM mixed EXCEPT SELECT v::VARCHAR FROM '{TEST_DIR}/mixed_variant.parquet');
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT v::VARCHAR FROM '{TEST_DIR}/mixed_variant.parquet' EXCEPT SELECT v::VARCHAR FROM mixed);
+----
+0
+
+# a shredded object keeps the fields that are not shredded
+statement ok
+COPY mixed TO '{TEST_DIR}/mixed_variant_shredded.parquet' (SHREDDING {v: 'STRUCT(a BIGINT)'});
+
+query I
+SELECT count(*) FROM (SELECT v::VARCHAR FROM mixed EXCEPT SELECT v::VARCHAR FROM '{TEST_DIR}/mixed_variant_shredded.parquet');
+----
+0

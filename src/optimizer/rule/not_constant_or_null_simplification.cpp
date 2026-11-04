@@ -1,5 +1,6 @@
 #include "duckdb/optimizer/rule/not_constant_or_null_simplification.hpp"
 
+#include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/function/scalar/generic_functions.hpp"
 #include "duckdb/optimizer/expression_rewriter.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
@@ -22,6 +23,34 @@ NotConstantOrNullSimplificationRule::NotConstantOrNullSimplificationRule(Express
 	root = std::move(not_matcher);
 }
 
+//! Whether the expression is a constant NULL, which folds a rebound constant_or_null call to NULL
+static bool IsConstantNull(ClientContext &context, const Expression &expr) {
+	if (expr.GetExpressionClass() == ExpressionClass::BOUND_CONSTANT) {
+		return expr.Cast<BoundConstantExpression>().GetValue().IsNull();
+	}
+	if (!expr.IsFoldable()) {
+		return false;
+	}
+	Value value;
+	return ExpressionExecutor::TryEvaluateScalar(context, expr, value) && value.IsNull();
+}
+
+//! Whether rebinding the call would fold it to NULL and drop an argument that must still run, one that is volatile or
+//! can throw. Execution evaluates the arguments in order, so a cast that fails or a nextval before the NULL still runs.
+static bool RebindingDropsArguments(ClientContext &context, const vector<unique_ptr<Expression>> &children) {
+	bool has_null = false;
+	bool has_kept = false;
+	for (idx_t child_idx = 1; child_idx < children.size(); ++child_idx) {
+		auto &child = *children[child_idx];
+		if (IsConstantNull(context, child)) {
+			has_null = true;
+		} else if (child.IsVolatile() || child.CanThrow()) {
+			has_kept = true;
+		}
+	}
+	return has_null && has_kept;
+}
+
 // NOT(constant_or_null(v, e)) => constant_or_null(!v, e)
 // the NULL check on e is preserved, only the constant is negated
 unique_ptr<Expression> NotConstantOrNullSimplificationRule::Apply(LogicalOperator &op,
@@ -34,6 +63,9 @@ unique_ptr<Expression> NotConstantOrNullSimplificationRule::Apply(LogicalOperato
 
 	auto value = value_expr.GetValue();
 	if (value.IsNull()) {
+		return nullptr;
+	}
+	if (RebindingDropsArguments(GetContext(), func.GetChildren())) {
 		return nullptr;
 	}
 

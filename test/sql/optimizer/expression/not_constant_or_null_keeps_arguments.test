@@ -1,0 +1,100 @@
+# name: test/sql/optimizer/expression/not_constant_or_null_keeps_arguments.test
+# description: NOT constant_or_null keeps a volatile or throwing argument when a later argument folds to NULL during optimization
+# group: [expression]
+
+statement ok
+CREATE TABLE t(i INTEGER, s VARCHAR);
+
+statement ok
+INSERT INTO t VALUES (1, 'bad');
+
+# the CASE folds to NULL in the optimizer, which would fold the rebound call and drop the cast
+query II
+SELECT has_error(NOT constant_or_null(false, CAST(s AS INTEGER), CASE WHEN true THEN NULL::INTEGER ELSE i END)) AS not_form,
+       has_error(constant_or_null(false, CAST(s AS INTEGER), CASE WHEN true THEN NULL::INTEGER ELSE i END)) AS plain_form
+FROM t;
+----
+true	true
+
+statement error
+SELECT NOT constant_or_null(false, CAST(s AS INTEGER), CASE WHEN true THEN NULL::INTEGER ELSE i END) FROM t;
+----
+Could not convert string 'bad' to INT32
+
+# a volatile argument still runs
+statement ok
+CREATE SEQUENCE sq;
+
+query I
+SELECT NOT constant_or_null(false, nextval('sq'), CASE WHEN true THEN NULL::INTEGER ELSE i END) AS r FROM t;
+----
+NULL
+
+query I
+SELECT currval('sq');
+----
+1
+
+statement ok
+CREATE SEQUENCE sf;
+
+query I
+SELECT count(*) FROM t WHERE NOT constant_or_null(false, nextval('sf'), CASE WHEN true THEN NULL::INTEGER ELSE i END);
+----
+0
+
+query I
+SELECT currval('sf');
+----
+1
+
+# in a join condition too
+statement ok
+CREATE TABLE u(j INTEGER);
+
+statement ok
+INSERT INTO u VALUES (1);
+
+statement ok
+CREATE SEQUENCE sj;
+
+query II
+SELECT t.i, u.j FROM t LEFT JOIN u ON t.i = u.j AND NOT constant_or_null(false, nextval('sj'), CASE WHEN true THEN NULL::INTEGER ELSE t.i END);
+----
+1	NULL
+
+query I
+SELECT currval('sj');
+----
+1
+
+# the call stays in the plan
+statement ok
+SET explain_output = 'OPTIMIZED_ONLY';
+
+query II
+EXPLAIN SELECT NOT constant_or_null(false, CAST(s AS INTEGER), CASE WHEN true THEN NULL::INTEGER ELSE i END) FROM t;
+----
+logical_opt	<REGEX>:.*NOT constant_or_null.*
+
+# arguments that cannot fail and have no side effect are still folded away
+query II
+EXPLAIN SELECT NOT constant_or_null(false, i, CASE WHEN true THEN NULL::INTEGER ELSE i END) FROM t;
+----
+logical_opt	<!REGEX>:.*constant_or_null.*
+
+query I
+SELECT NOT constant_or_null(false, i, CASE WHEN true THEN NULL::INTEGER ELSE i END) FROM t;
+----
+NULL
+
+# without a NULL argument the rewrite still negates the constant
+query I
+SELECT NOT constant_or_null(false, CAST(i AS BIGINT)) FROM t;
+----
+true
+
+query II
+EXPLAIN SELECT NOT constant_or_null(false, CAST(i AS BIGINT)) FROM t;
+----
+logical_opt	<REGEX>:.*constant_or_null\(true.*

@@ -19,6 +19,7 @@ set(TEST_API_OBJECTS
     test_scalar_function_decimal_return.cpp
     test_aggregate_state_bind_data.cpp
     test_config.cpp
+    test_context.cpp
     test_connect_prepare.cpp
     test_remote_pushdown_macro_arguments.cpp
     test_remote_pushdown_merge.cpp
@@ -28,8 +29,10 @@ set(TEST_API_OBJECTS
     test_connection_secrets.cpp
     test_copy_output_lifecycle.cpp
     test_custom_allocator.cpp
+    test_database_instance_partial_init.cpp
     test_extension_install_in_progress.cpp
     test_extension_repositories.cpp
+    test_extension_signature_check.cpp
     test_external_extension_provider.cpp
     test_extension_setting_autoload.cpp
     test_instance_cache.cpp

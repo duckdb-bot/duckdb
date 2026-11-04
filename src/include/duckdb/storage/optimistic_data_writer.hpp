@@ -35,6 +35,7 @@ enum class OptimisticWritePartialManagers { PER_COLUMN, GLOBAL };
 class OptimisticDataWriter {
 public:
 	OptimisticDataWriter(ClientContext &context, DataTable &table);
+	OptimisticDataWriter(Context &services, DataTable &table);
 	OptimisticDataWriter(DataTable &table, OptimisticDataWriter &parent);
 	~OptimisticDataWriter();
 
@@ -59,9 +60,9 @@ public:
 	//! Whether appended row groups are written to disk before the commit
 	bool WritesToDisk() const;
 
-	//! Return the client context.
-	ClientContext &GetClientContext() {
-		return context;
+	//! Return the runtime services.
+	Context &GetServices() {
+		return services;
 	}
 
 private:
@@ -72,8 +73,8 @@ private:
 	                 const vector<int64_t> &segment_indexes);
 
 private:
-	//! The client context in which we're writing the data.
-	ClientContext &context;
+	//! The services in which we're writing the data.
+	Context &services;
 	//! The table.
 	DataTable &table;
 	//! The partial block manager, if any.

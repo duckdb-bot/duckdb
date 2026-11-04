@@ -366,6 +366,18 @@ BoundStatement Binder::BindNode(MergeQueryNode &node) {
 		merge_into->actions.emplace(entry.first, std::move(bound_actions));
 	}
 
+#ifdef DEBUG
+	// the actions read the projection by position, so their subqueries must all have moved into it
+	for (auto &entry : merge_into->actions) {
+		for (auto &action : entry.second) {
+			D_ASSERT(!action->condition || !action->condition->HasSubquery());
+			for (auto &expr : action->expressions) {
+				D_ASSERT(!expr->HasSubquery());
+			}
+		}
+	}
+#endif
+
 	// plan merge action subqueries
 	for (auto &expr : projection_expressions) {
 		PlanSubqueries(expr, root);

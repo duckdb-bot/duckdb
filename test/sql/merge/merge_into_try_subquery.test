@@ -1,0 +1,161 @@
+# name: test/sql/merge/merge_into_try_subquery.test
+# description: TRY over a scalar subquery in MERGE INTO action conditions and error messages
+# group: [merge]
+
+statement ok
+CREATE TABLE t(k INTEGER, v INTEGER, txt VARCHAR);
+
+statement ok
+INSERT INTO t VALUES (1, 10, 'bad');
+
+# the subquery raises an error that TRY masks, so the condition holds in a plain query
+query I
+SELECT TRY(1 + (SELECT txt::INTEGER FROM t)) IS NULL;
+----
+true
+
+# the same condition on a WHEN MATCHED action
+statement ok
+MERGE INTO t USING (VALUES (1)) src(k) ON t.k = src.k
+  WHEN MATCHED AND TRY(1 + (SELECT txt::INTEGER FROM t)) IS NULL THEN UPDATE SET v = 0;
+
+query III
+SELECT * FROM t;
+----
+1	0	bad
+
+# a DELETE action
+statement ok
+MERGE INTO t USING (VALUES (1)) src(k) ON t.k = src.k
+  WHEN MATCHED AND TRY(1 + (SELECT txt::INTEGER FROM t)) IS NULL THEN DELETE;
+
+query I
+SELECT count(*) FROM t;
+----
+0
+
+# WHEN NOT MATCHED
+statement ok
+MERGE INTO t USING (VALUES (1)) src(k) ON t.k = src.k
+  WHEN NOT MATCHED AND TRY(1 + (SELECT 'bad'::INTEGER)) IS NULL THEN INSERT VALUES (src.k, 10, 'bad');
+
+query III
+SELECT * FROM t;
+----
+1	10	bad
+
+# WHEN NOT MATCHED BY SOURCE
+statement ok
+MERGE INTO t USING (VALUES (2)) src(k) ON t.k = src.k
+  WHEN NOT MATCHED BY SOURCE AND TRY(1 + (SELECT txt::INTEGER FROM t)) IS NULL THEN UPDATE SET v = 1;
+
+query III
+SELECT * FROM t;
+----
+1	1	bad
+
+# HAS_ERROR as the condition
+statement ok
+MERGE INTO t USING (VALUES (1)) src(k) ON t.k = src.k
+  WHEN MATCHED AND HAS_ERROR(1 + (SELECT txt::INTEGER FROM t)) THEN UPDATE SET v = 2;
+
+query III
+SELECT * FROM t;
+----
+1	2	bad
+
+# a correlated subquery, and source and target columns next to the subquery
+statement ok
+MERGE INTO t USING (VALUES (1)) src(k) ON t.k = src.k
+  WHEN MATCHED AND TRY(src.k + t.v + (SELECT s.txt::INTEGER FROM t s WHERE s.k = t.k)) IS NULL THEN UPDATE SET v = 3;
+
+query III
+SELECT * FROM t;
+----
+1	3	bad
+
+# TRY in an ERROR message
+statement error
+MERGE INTO t USING (VALUES (1)) src(k) ON t.k = src.k
+  WHEN MATCHED THEN ERROR concat('message ', TRY(1 + (SELECT txt::INTEGER FROM t))::VARCHAR);
+----
+message
+
+# a subquery that raises no error contributes its value
+statement ok
+UPDATE t SET txt = '5';
+
+statement ok
+MERGE INTO t USING (VALUES (1)) src(k) ON t.k = src.k
+  WHEN MATCHED AND TRY(1 + (SELECT txt::INTEGER FROM t)) = 6 THEN UPDATE SET v = 4;
+
+query III
+SELECT * FROM t;
+----
+1	4	5
+
+# TRY directly over the subquery
+statement ok
+MERGE INTO t USING (VALUES (1)) src(k) ON t.k = src.k
+  WHEN MATCHED AND TRY((SELECT txt::INTEGER FROM t)) = 5 THEN UPDATE SET v = 5;
+
+query III
+SELECT * FROM t;
+----
+1	5	5
+
+# the subquery value must not be read as a row id
+statement ok
+CREATE TABLE u(k INTEGER, v INTEGER);
+
+statement ok
+INSERT INTO u VALUES (1, 10), (2, 20), (3, 30);
+
+statement ok
+MERGE INTO u USING (VALUES (3)) src(k) ON u.k = src.k
+  WHEN MATCHED AND TRY((SELECT 1::BIGINT)) = 1 THEN DELETE;
+
+query II
+SELECT * FROM u ORDER BY k;
+----
+1	10
+2	20
+
+statement ok
+MERGE INTO u USING (VALUES (2)) src(k) ON u.k = src.k
+  WHEN MATCHED AND TRY((SELECT 0::BIGINT)) = 0 THEN UPDATE SET v = 0;
+
+query II
+SELECT * FROM u ORDER BY k;
+----
+1	10
+2	0
+
+statement ok
+MERGE INTO u USING (VALUES (1)) src(k) ON u.k = src.k
+  WHEN MATCHED AND TRY((SELECT 1)) = 1 THEN DELETE;
+
+query II
+SELECT * FROM u ORDER BY k;
+----
+2	0
+
+statement ok
+INSERT INTO u VALUES (1, 10), (3, 30);
+
+statement ok
+MERGE INTO u USING (VALUES (3)) src(k) ON u.k = src.k
+  WHEN MATCHED AND TRY((SELECT 1::BIGINT)) = 1 THEN UPDATE SET v = 33;
+
+query II
+SELECT * FROM u ORDER BY k;
+----
+1	10
+2	0
+3	33
+
+# the database stays usable
+query I
+SELECT 42;
+----
+42

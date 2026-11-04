@@ -41,6 +41,16 @@ BindResult ProjectionBinder::BindExpression(unique_ptr<ParsedExpression> &expr_p
 	case ExpressionClass::COLUMN_REF:
 	case ExpressionClass::SUBQUERY:
 		return BindColumnRef(expr_ptr, depth, root_expression);
+	case ExpressionClass::OPERATOR: {
+		auto type = expr.GetExpressionType();
+		if ((type == ExpressionType::OPERATOR_TRY || type == ExpressionType::OPERATOR_HAS_ERROR) &&
+		    expr.HasSubquery()) {
+			// a subquery under TRY re-raises the errors it captured at its use site, where TRY masks them, so the
+			// whole TRY moves into the projection together with the subquery
+			return BindColumnRef(expr_ptr, depth, root_expression);
+		}
+		return ExpressionBinder::BindExpression(expr_ptr, depth);
+	}
 	default:
 		return ExpressionBinder::BindExpression(expr_ptr, depth);
 	}

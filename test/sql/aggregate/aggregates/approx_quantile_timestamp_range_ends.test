@@ -108,3 +108,39 @@ query I
 SELECT bool_and(finalize(s) = q) FROM (SELECT g, approx_quantile(ts, [0.0, 0.5, 1.0]) AS q, approx_quantile(ts, [0.0, 0.5, 1.0]) EXPORT_STATE AS s FROM modes GROUP BY g);
 ----
 true
+
+# the nanosecond timestamps share the coding, so their range ends stay finite and their infinities infinite
+query III
+SELECT approx_quantile(ts, 0.5)::VARCHAR, isfinite(approx_quantile(ts, 0.5)), epoch_ns(approx_quantile(ts, 1.0)) FROM (VALUES (make_timestamp_ns(9223372036854775806)), (make_timestamp_ns(9223372036854775805))) t(ts);
+----
+2262-04-11 23:47:16.854774784	true	9223372036854774784
+
+query III
+SELECT approx_quantile(ts, 0.5)::VARCHAR, isfinite(approx_quantile(ts, 0.5)), epoch_ns(approx_quantile(ts, 0.0)) FROM (VALUES (make_timestamp_ns(-9223372036854775806)), (make_timestamp_ns(-9223372036854775805))) t(ts);
+----
+1677-09-21 00:12:43.145225216	true	-9223372036854774784
+
+query II
+SELECT approx_quantile(ts, 0.5)::VARCHAR, approx_quantile(tz, 0.5)::VARCHAR FROM (VALUES (TIMESTAMPTZ_NS '2262-04-11 23:47:16.854775806+00', TIMESTAMPTZ_NS '1677-09-21 00:12:43.145224194+00')) t(ts, tz);
+----
+2262-04-11 23:47:16.854774784+00	1677-09-21 00:12:43.145225216+00
+
+query IIII
+SELECT approx_quantile(TIMESTAMP_NS 'infinity', 0.5), approx_quantile(TIMESTAMP_NS '-infinity', 0.5), approx_quantile(TIMESTAMPTZ_NS 'infinity', 0.5) = TIMESTAMPTZ_NS 'infinity', approx_quantile(TIMESTAMPTZ_NS '-infinity', 0.5) = TIMESTAMPTZ_NS '-infinity';
+----
+infinity	-infinity	true	true
+
+query IIIII
+SELECT min, max, q25, q50, q75 FROM (SUMMARIZE (SELECT * FROM (VALUES (make_timestamp_ns(-9223372036854775806)), (make_timestamp_ns(9223372036854775806))) t(ts)));
+----
+1677-09-21 00:12:43.145224194	2262-04-11 23:47:16.854775806	1677-09-21 00:12:43.145225216	1970-01-01 00:00:00	2262-04-11 23:47:16.854774784
+
+query II
+SELECT finalize(combine_aggr(s0))::VARCHAR, finalize(combine_aggr(s1))::VARCHAR FROM (SELECT g, approx_quantile(ts, 0.0) EXPORT_STATE AS s0, approx_quantile(ts, 1.0) EXPORT_STATE AS s1 FROM (VALUES (1, make_timestamp_ns(-9223372036854775806)), (2, make_timestamp_ns(9223372036854775806)), (3, TIMESTAMP_NS 'infinity')) t(g, ts) GROUP BY g);
+----
+1677-09-21 00:12:43.145225216	infinity
+
+query III
+SELECT finalize(combine_aggr(s0))::VARCHAR, finalize(combine_aggr(s1))::VARCHAR, typeof(finalize(combine_aggr(s1))) FROM (SELECT g, approx_quantile(ts, 0.0) EXPORT_STATE AS s0, approx_quantile(ts, 1.0) EXPORT_STATE AS s1 FROM (VALUES (1, TIMESTAMPTZ_NS '1677-09-21 00:12:43.145224194+00'), (2, TIMESTAMPTZ_NS '2262-04-11 23:47:16.854775806+00')) t(g, ts) GROUP BY g);
+----
+1677-09-21 00:12:43.145225216+00	2262-04-11 23:47:16.854774784+00	TIMESTAMPTZ_NS

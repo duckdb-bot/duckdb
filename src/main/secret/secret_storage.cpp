@@ -131,6 +131,7 @@ SecretMatch SecretStorage::SelectBestMatch(SecretEntry &secret_entry, const stri
 unique_ptr<SecretEntry> CatalogSetSecretStorage::StoreSecret(unique_ptr<const BaseSecret> secret,
                                                              OnCreateConflict on_conflict,
                                                              optional_ptr<CatalogTransaction> transaction) {
+	bool replace = false;
 	if (secrets->GetEntry(GetTransactionOrDefault(transaction), secret->GetName())) {
 		if (on_conflict == OnCreateConflict::ERROR_ON_CONFLICT) {
 			string persist_string = persistent ? "Persistent" : "Temporary";
@@ -142,12 +143,15 @@ unique_ptr<SecretEntry> CatalogSetSecretStorage::StoreSecret(unique_ptr<const Ba
 		} else if (on_conflict == OnCreateConflict::ALTER_ON_CONFLICT) {
 			throw InternalException("unknown OnCreateConflict found while registering secret");
 		} else if (on_conflict == OnCreateConflict::REPLACE_ON_CONFLICT) {
-			secrets->DropEntry(GetTransactionOrDefault(transaction), secret->GetName(), true, true);
+			replace = true;
 		}
 	}
 
-	// Call write function
+	// Call write function, before the replaced secret goes, so a failed write leaves it in place
 	WriteSecret(*secret, on_conflict);
+	if (replace) {
+		secrets->DropEntry(GetTransactionOrDefault(transaction), secret->GetName(), true, true);
+	}
 
 	auto secret_name = secret->GetName();
 	auto secret_entry = make_uniq<SecretCatalogEntry>(std::move(secret), Catalog::GetSystemCatalog(db));
@@ -332,7 +336,9 @@ static void WriteSecretFileToDisk(FileSystem &fs, const string &path, const Base
 	secret.Serialize(serializer);
 	serializer.End();
 
-	file_writer.Flush();
+	// a file system can report a failed write only when the file is synced or closed
+	file_writer.Sync();
+	file_writer.Close();
 }
 
 struct SecretNameEscape {
@@ -411,16 +417,21 @@ void LocalFileSecretStorage::WriteSecret(const BaseSecret &secret, OnCreateConfl
 	}
 	string temp_path = file_path + ".tmp-" + UUID::ToString(UUID::GenerateRandomUUID());
 
-	// If persistent file already exists remove
+	// If temporary file already exists remove
+	fs.TryRemoveFile(temp_path);
+	try {
+		WriteSecretFileToDisk(fs, temp_path, secret);
+	} catch (...) {
+		// the secret is not stored, so no partial file may stay behind
+		fs.TryRemoveFile(temp_path);
+		throw;
+	}
+
+	// the new file is complete, so the file of the secret it replaces can go
 	if (!existing_path.empty()) {
 		fs.TryRemoveFile(existing_path);
 	}
 	fs.TryRemoveFile(file_path);
-	// If temporary file already exists remove
-	fs.TryRemoveFile(temp_path);
-
-	WriteSecretFileToDisk(fs, temp_path, secret);
-
 	fs.MoveFile(temp_path, file_path);
 	files->Set(secret_name, file_path);
 }

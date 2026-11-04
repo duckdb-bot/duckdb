@@ -466,9 +466,9 @@ AggregateFunction ApproxQuantileDecimalFunction(const LogicalType &type) {
 	return function;
 }
 
-//! Specialises the (stub) DECIMAL function to the implementation over the DECIMAL's physical type. The implementation
-//! only declares the input argument, so the quantile argument that BindApproxQuantile folded into the bind data is
-//! restored afterwards.
+//! Specialises a stub function, the DECIMAL ones to the implementation over the DECIMAL's physical type and the
+//! TIMESTAMP_S and TIMESTAMP_MS ones to the TIMESTAMP implementation. The implementation only declares the input
+//! argument, so the quantile argument that BindApproxQuantile folded into the bind data is restored afterwards.
 void ReplaceApproxQuantileImplementation(BoundAggregateFunction &function, const AggregateFunction &implementation) {
 	auto declared_arguments = function.GetArguments();
 	function.ReplaceImplementation(implementation);

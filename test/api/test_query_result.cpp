@@ -939,7 +939,7 @@ TEST_CASE("A query whose begin failed does not hold the connection", "[api][quer
 	REQUIRE(CHECK_COLUMN(next, 0, {42}));
 }
 
-//! Counts the queries it begins and ends, and fails the begin or the end of a query when asked
+//! Counts the queries and statements it begins and ends, and fails the begin or the end of a query when asked
 class CountingQueryState : public ClientContextState {
 public:
 	void QueryBegin(ClientContext &context) override {
@@ -968,6 +968,12 @@ public:
 			throw IOException("query end failed");
 		}
 	}
+	void StatementBegin(ClientContext &context) override {
+		statement_begins++;
+	}
+	void StatementEnd(ClientContext &context, optional_ptr<ErrorData> error) override {
+		statement_ends++;
+	}
 
 	bool fail_begin = false;
 	bool fatal = false;
@@ -976,6 +982,8 @@ public:
 	bool fail_end = false;
 	idx_t begins = 0;
 	idx_t ends = 0;
+	idx_t statement_begins = 0;
+	idx_t statement_ends = 0;
 };
 
 TEST_CASE("A query whose begin failed ends its transaction", "[api][query_result]") {
@@ -989,10 +997,19 @@ TEST_CASE("A query whose begin failed ends its transaction", "[api][query_result
 	auto require_paired = [&]() {
 		for (auto &state : states) {
 			REQUIRE(state->begins == state->ends);
+			REQUIRE(state->statement_begins == state->statement_ends);
+		}
+	};
+	// a query whose begin failed starts no statement, so the states see only the statements of the queries that began
+	auto require_statements = [&](idx_t count) {
+		for (auto &state : states) {
+			REQUIRE(state->statement_begins == count);
+			REQUIRE(state->statement_ends == count);
 		}
 	};
 	REQUIRE_NO_FAIL(con.Query("CREATE TABLE t(i INTEGER)"));
 	require_paired();
+	require_statements(1);
 
 	// whichever state fails, the query ends on the states it began on, and not on the others
 	for (idx_t failing = 0; failing < states.size(); failing++) {
@@ -1001,6 +1018,7 @@ TEST_CASE("A query whose begin failed ends its transaction", "[api][query_result
 		REQUIRE(failed->HasError());
 		REQUIRE(StringUtil::Contains(failed->GetError(), "query begin failed"));
 		require_paired();
+		require_statements(1);
 		// an autocommit query does not keep its transaction
 		REQUIRE(!con.context->transaction.HasActiveTransaction());
 	}
@@ -1015,6 +1033,7 @@ TEST_CASE("A query whose begin failed ends its transaction", "[api][query_result
 		REQUIRE(failed->HasError());
 		REQUIRE(StringUtil::Contains(failed->GetError(), "query begin failed"));
 		require_paired();
+		require_statements(1);
 		REQUIRE(!con.context->transaction.HasActiveTransaction());
 	}
 	for (auto &state : states) {
@@ -1093,6 +1112,7 @@ TEST_CASE("Every state ends a query when the end of one fails", "[api][query_res
 	auto require_paired = [&]() {
 		for (auto &state : states) {
 			REQUIRE(state->begins == state->ends);
+			REQUIRE(state->statement_begins == state->statement_ends);
 		}
 	};
 

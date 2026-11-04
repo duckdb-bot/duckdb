@@ -41,9 +41,11 @@ vector<string> SecretFiles(const string &secret_dir) {
 TEST_CASE("A persistent secret whose file cannot be synced is not created", "[api][secrets]") {
 	auto failing_fs = make_uniq<FailingSecretSyncFileSystem>();
 	auto &fs = *failing_fs;
-	DBConfig config;
-	config.file_system = make_uniq<VirtualFileSystem>(std::move(failing_fs));
-	DuckDB db(nullptr, &config);
+	auto config = GetTestConfig();
+	config->file_system = make_uniq<VirtualFileSystem>(std::move(failing_fs));
+	// the tokens are checked, which only a database started with this option shows
+	config->SetOptionByName("allow_unredacted_secrets", Value::BOOLEAN(true));
+	DuckDB db(nullptr, config.get());
 	Connection con(db);
 	auto secret_dir = TestCreatePath("persistent_secret_write_failure");
 	REQUIRE_NO_FAIL(con.Query("SET secret_directory = '" + secret_dir + "'"));
@@ -62,25 +64,32 @@ TEST_CASE("A persistent secret whose file cannot be synced is not created", "[ap
 	REQUIRE_NO_FAIL(con.Query("CREATE PERSISTENT SECRET s1 (TYPE HTTP, BEARER_TOKEN 'abc')"));
 	REQUIRE(SecretFiles(secret_dir) == vector<string> {"s1.duckdb_secret"});
 
-	// a replacement whose write fails keeps the old secret, in the catalog and in its file
+	// a replacement whose write fails keeps the old secret in its file
 	fs.fail_secret_sync = true;
 	result = con.Query("CREATE OR REPLACE PERSISTENT SECRET s1 (TYPE HTTP, BEARER_TOKEN 'xyz')");
 	REQUIRE(result->HasError());
 	REQUIRE(StringUtil::Contains(result->GetError(), "Could not fsync"));
-	result = con.Query("SELECT name FROM duckdb_secrets()");
-	REQUIRE(CHECK_COLUMN(result, 0, {"s1"}));
 	REQUIRE(SecretFiles(secret_dir) == vector<string> {"s1.duckdb_secret"});
+	result = con.Query("SELECT name, secret_string LIKE '%bearer_token=abc%' FROM duckdb_secrets(redact := false)");
+	REQUIRE(CHECK_COLUMN(result, 0, {"s1"}));
+	REQUIRE(CHECK_COLUMN(result, 1, {true}));
 
 	// the old secret is the one on disk
 	fs.fail_secret_sync = false;
-	DuckDB db2(nullptr, &config);
+	auto config2 = GetTestConfig();
+	config2->SetOptionByName("allow_unredacted_secrets", Value::BOOLEAN(true));
+	DuckDB db2(nullptr, config2.get());
 	Connection con2(db2);
 	REQUIRE_NO_FAIL(con2.Query("SET secret_directory = '" + secret_dir + "'"));
-	result = con2.Query("SELECT name, persistent FROM duckdb_secrets()");
+	result = con2.Query(
+	    "SELECT name, persistent, secret_string LIKE '%bearer_token=abc%' FROM duckdb_secrets(redact := false)");
 	REQUIRE(CHECK_COLUMN(result, 0, {"s1"}));
 	REQUIRE(CHECK_COLUMN(result, 1, {true}));
+	REQUIRE(CHECK_COLUMN(result, 2, {true}));
 
 	// a replacement that succeeds swaps the file
 	REQUIRE_NO_FAIL(con.Query("CREATE OR REPLACE PERSISTENT SECRET s1 (TYPE HTTP, BEARER_TOKEN 'xyz')"));
 	REQUIRE(SecretFiles(secret_dir) == vector<string> {"s1.duckdb_secret"});
+	result = con.Query("SELECT secret_string LIKE '%bearer_token=xyz%' FROM duckdb_secrets(redact := false)");
+	REQUIRE(CHECK_COLUMN(result, 0, {true}));
 }

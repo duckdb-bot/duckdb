@@ -131,35 +131,51 @@ SecretMatch SecretStorage::SelectBestMatch(SecretEntry &secret_entry, const stri
 unique_ptr<SecretEntry> CatalogSetSecretStorage::StoreSecret(unique_ptr<const BaseSecret> secret,
                                                              OnCreateConflict on_conflict,
                                                              optional_ptr<CatalogTransaction> transaction) {
-	bool replace = false;
-	if (secrets->GetEntry(GetTransactionOrDefault(transaction), secret->GetName())) {
+	auto secret_name = secret->GetName();
+	auto create_entry = [&](unique_ptr<const BaseSecret> entry_secret) {
+		auto secret_entry = make_uniq<SecretCatalogEntry>(std::move(entry_secret), Catalog::GetSystemCatalog(db));
+		secret_entry->temporary = !persistent;
+		secret_entry->secret->storage_mode = storage_name;
+		secret_entry->secret->persist_type = persistent ? SecretPersistType::PERSISTENT : SecretPersistType::TEMPORARY;
+		LogicalDependencyList l;
+		secrets->CreateEntry(GetTransactionOrDefault(transaction), secret_name, std::move(secret_entry), l);
+	};
+
+	unique_ptr<const BaseSecret> replaced;
+	auto existing = secrets->GetEntry(GetTransactionOrDefault(transaction), secret_name);
+	if (existing) {
 		if (on_conflict == OnCreateConflict::ERROR_ON_CONFLICT) {
 			string persist_string = persistent ? "Persistent" : "Temporary";
 			string storage_string = persistent ? " in secret storage '" + storage_name + "'" : "";
-			throw InvalidInputException("%s secret with name %s already exists%s!", persist_string, secret->GetName(),
+			throw InvalidInputException("%s secret with name %s already exists%s!", persist_string, secret_name,
 			                            storage_string);
 		} else if (on_conflict == OnCreateConflict::IGNORE_ON_CONFLICT) {
 			return nullptr;
 		} else if (on_conflict == OnCreateConflict::ALTER_ON_CONFLICT) {
 			throw InternalException("unknown OnCreateConflict found while registering secret");
 		} else if (on_conflict == OnCreateConflict::REPLACE_ON_CONFLICT) {
-			replace = true;
+			// kept so that a failed write puts the replaced secret back
+			replaced = existing->Cast<SecretCatalogEntry>().secret->secret->Clone();
+			secrets->DropEntry(GetTransactionOrDefault(transaction), secret_name, true, true);
 		}
 	}
 
-	// Call write function, before the replaced secret goes, so a failed write leaves it in place
-	WriteSecret(*secret, on_conflict);
-	if (replace) {
-		secrets->DropEntry(GetTransactionOrDefault(transaction), secret->GetName(), true, true);
+	// Call write function
+	try {
+		WriteSecret(*secret, on_conflict);
+	} catch (...) {
+		if (replaced) {
+			// the write failed, so the replaced secret stays in the catalog as it stays in its file, also when the
+			// catalog change is not undone by a transaction; the write's error is the one reported
+			try {
+				create_entry(std::move(replaced));
+			} catch (...) { // NOLINT
+			}
+		}
+		throw;
 	}
 
-	auto secret_name = secret->GetName();
-	auto secret_entry = make_uniq<SecretCatalogEntry>(std::move(secret), Catalog::GetSystemCatalog(db));
-	secret_entry->temporary = !persistent;
-	secret_entry->secret->storage_mode = storage_name;
-	secret_entry->secret->persist_type = persistent ? SecretPersistType::PERSISTENT : SecretPersistType::TEMPORARY;
-	LogicalDependencyList l;
-	secrets->CreateEntry(GetTransactionOrDefault(transaction), secret_name, std::move(secret_entry), l);
+	create_entry(std::move(secret));
 
 	auto secret_catalog_entry =
 	    &secrets->GetEntry(GetTransactionOrDefault(transaction), secret_name)->Cast<SecretCatalogEntry>();
@@ -422,8 +438,11 @@ void LocalFileSecretStorage::WriteSecret(const BaseSecret &secret, OnCreateConfl
 	try {
 		WriteSecretFileToDisk(fs, temp_path, secret);
 	} catch (...) {
-		// the secret is not stored, so no partial file may stay behind
-		fs.TryRemoveFile(temp_path);
+		// the secret is not stored, so no partial file may stay behind, and the write's error is the one reported
+		try {
+			fs.TryRemoveFile(temp_path);
+		} catch (...) { // NOLINT
+		}
 		throw;
 	}
 

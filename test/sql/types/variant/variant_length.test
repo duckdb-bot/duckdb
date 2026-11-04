@@ -74,3 +74,17 @@ query II
 SELECT len(NULL), array_length(NULL)
 ----
 NULL	NULL
+
+# a prepared statement binds the held value once and runs for every execution
+statement ok
+PREPARE lengths AS SELECT len(v), array_length(v), length(s) FROM t;
+
+query III
+EXECUTE lengths;
+----
+3	3	5
+
+query III
+EXECUTE lengths;
+----
+3	3	5

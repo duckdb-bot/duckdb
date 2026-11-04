@@ -4,6 +4,7 @@
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/main/extension_manager.hpp"
+#include "duckdb/main/query_result.hpp"
 #include "duckdb/parallel/task_notifier.hpp"
 #include "test_helpers.hpp"
 
@@ -378,6 +379,210 @@ TEST_CASE("Dropping a connection whose rollback fails does not terminate", "[api
 		REQUIRE_NO_FAIL(conn.Query("BEGIN"));
 		REQUIRE_NO_FAIL(conn.Query("SELECT 42"));
 		// leaving the scope destroys the connection with the transaction still open
+	}
+	Connection conn(db);
+	REQUIRE_NO_FAIL(conn.Query("SELECT 42"));
+}
+
+namespace {
+
+//! Counts the statement and query notifications and fails StatementEnd while the shared failures last
+struct FailingStatementEndState : ClientContextState {
+	explicit FailingStatementEndState(idx_t &failures_left_p) : failures_left(failures_left_p) {
+	}
+	using ClientContextState::QueryEnd;
+	using ClientContextState::StatementEnd;
+
+	void StatementBegin(ClientContext &) override {
+		statement_begins++;
+	}
+	void StatementEnd(ClientContext &, optional_ptr<ErrorData> error) override {
+		statement_ends++;
+		if (error && error->HasError()) {
+			statement_end_errors++;
+		}
+		if (failures_left > 0) {
+			failures_left--;
+			throw IOException("StatementEnd failed");
+		}
+	}
+	void QueryEnd(ClientContext &, optional_ptr<ErrorData> error) override {
+		query_ends++;
+		if (error && error->HasError()) {
+			query_end_errors.push_back(error->Message());
+		}
+	}
+
+	//! Shared by the states, so the first StatementEnd dispatched fails whichever state receives it
+	idx_t &failures_left;
+	idx_t statement_begins = 0;
+	idx_t statement_ends = 0;
+	idx_t statement_end_errors = 0;
+	idx_t query_ends = 0;
+	vector<string> query_end_errors;
+};
+
+//! A connection with two registered states whose StatementEnd fails the given number of times
+struct FailingStatementEnds {
+	explicit FailingStatementEnds(Connection &conn_p) : conn(conn_p) {
+		alpha = make_shared_ptr<FailingStatementEndState>(failures_left);
+		beta = make_shared_ptr<FailingStatementEndState>(failures_left);
+		conn.context->registered_state->Insert("alpha", alpha);
+		conn.context->registered_state->Insert("beta", beta);
+	}
+
+	void ResetCounts() {
+		for (auto state : {alpha.get(), beta.get()}) {
+			state->statement_begins = 0;
+			state->statement_ends = 0;
+			state->statement_end_errors = 0;
+			state->query_ends = 0;
+			state->query_end_errors.clear();
+		}
+	}
+
+	//! Every state saw the statement begin and end once, and the query end once with the hook's error
+	void RequireEndedOnce() {
+		for (auto state : {alpha.get(), beta.get()}) {
+			REQUIRE(state->statement_begins == 1);
+			REQUIRE(state->statement_ends == 1);
+			REQUIRE(state->query_ends == 1);
+			REQUIRE(state->query_end_errors.size() == 1);
+			REQUIRE_THAT(state->query_end_errors[0], Contains("StatementEnd failed"));
+		}
+		REQUIRE(!conn.context->transaction.HasActiveTransaction());
+	}
+
+	Connection &conn;
+	idx_t failures_left = 0;
+	shared_ptr<FailingStatementEndState> alpha;
+	shared_ptr<FailingStatementEndState> beta;
+};
+
+} // namespace
+
+TEST_CASE("A failing StatementEnd ends the query on every state", "[api]") {
+	DuckDB db(nullptr);
+	Connection conn(db);
+	REQUIRE_NO_FAIL(conn.Query("CREATE TABLE t(i INT)"));
+	FailingStatementEnds test(conn);
+
+	SECTION("Query reports the failure and rolls the statement back") {
+		test.failures_left = 1;
+		unique_ptr<QueryResult> result;
+		REQUIRE_NOTHROW(result = conn.Query("INSERT INTO t VALUES (1)"));
+		REQUIRE(result->HasError());
+		REQUIRE_THAT(result->GetError(), Contains("StatementEnd failed"));
+		test.RequireEndedOnce();
+		// the state that did not fail saw a statement without error
+		REQUIRE(test.alpha->statement_end_errors + test.beta->statement_end_errors == 0);
+
+		REQUIRE_NO_FAIL(conn.Query("SELECT 42"));
+		auto count = conn.Query("SELECT count(*) FROM t");
+		REQUIRE(CHECK_COLUMN(count, 0, {0}));
+	}
+
+	SECTION("Every state fails") {
+		test.failures_left = 2;
+		unique_ptr<QueryResult> result;
+		REQUIRE_NOTHROW(result = conn.Query("SELECT 42"));
+		REQUIRE(result->HasError());
+		REQUIRE_THAT(result->GetError(), Contains("StatementEnd failed"));
+		test.RequireEndedOnce();
+		REQUIRE(test.failures_left == 0);
+		REQUIRE_NO_FAIL(conn.Query("SELECT 42"));
+	}
+
+	SECTION("A statement that failed keeps its own error") {
+		test.failures_left = 1;
+		unique_ptr<QueryResult> result;
+		REQUIRE_NOTHROW(result = conn.Query("SELECT * FROM missing_table"));
+		REQUIRE(result->HasError());
+		REQUIRE_THAT(result->GetError(), Contains("missing_table"));
+		for (auto state : {test.alpha.get(), test.beta.get()}) {
+			REQUIRE(state->statement_ends == 1);
+			REQUIRE(state->statement_end_errors == 1);
+			REQUIRE(state->query_ends == 1);
+			REQUIRE(state->query_end_errors.size() == 1);
+			REQUIRE_THAT(state->query_end_errors[0], Contains("missing_table"));
+		}
+		REQUIRE(!conn.context->transaction.HasActiveTransaction());
+		REQUIRE_NO_FAIL(conn.Query("SELECT 42"));
+	}
+
+	SECTION("Stepping with ExecuteTask ends the query") {
+		auto handle = conn.Submit("SELECT 42");
+		REQUIRE_NO_FAIL(*handle);
+		handle->Materialize();
+		test.failures_left = 1;
+		QueryResultState state = QueryResultState::NOT_READY;
+		REQUIRE_NOTHROW([&]() {
+			while (!IsTerminal(state = handle->ExecuteTask())) {
+				if (state == QueryResultState::BLOCKED || state == QueryResultState::NO_TASKS_AVAILABLE) {
+					handle->WaitForTask();
+				}
+			}
+		}());
+		REQUIRE(state == QueryResultState::EXECUTION_ERROR);
+		REQUIRE(handle->HasError());
+		REQUIRE_THAT(handle->GetError(), Contains("StatementEnd failed"));
+		test.RequireEndedOnce();
+		// the connection is free before the handle is destroyed
+		REQUIRE_NO_FAIL(conn.Query("SELECT 42"));
+	}
+
+	SECTION("Inside an explicit transaction") {
+		REQUIRE_NO_FAIL(conn.Query("BEGIN"));
+		test.ResetCounts();
+		test.failures_left = 1;
+		unique_ptr<QueryResult> result;
+		REQUIRE_NOTHROW(result = conn.Query("INSERT INTO t VALUES (1)"));
+		REQUIRE(result->HasError());
+		REQUIRE_THAT(result->GetError(), Contains("StatementEnd failed"));
+		REQUIRE(conn.context->transaction.HasActiveTransaction());
+		for (auto state : {test.alpha.get(), test.beta.get()}) {
+			REQUIRE(state->statement_ends == 1);
+			REQUIRE(state->query_ends == 1);
+		}
+		REQUIRE_NO_FAIL(conn.Query("ROLLBACK"));
+		REQUIRE_NO_FAIL(conn.Query("SELECT 42"));
+	}
+
+	SECTION("Between the statements of a query that expands into several") {
+		REQUIRE_NO_FAIL(conn.Query("CREATE TABLE sales(city VARCHAR, year INTEGER, amount INTEGER)"));
+		REQUIRE_NO_FAIL(conn.Query("INSERT INTO sales VALUES ('ams', 2023, 10), ('ams', 2024, 20)"));
+		test.ResetCounts();
+		// the dynamic PIVOT runs a statement for the distinct years before the one that returns the rows
+		test.failures_left = 1;
+		unique_ptr<QueryResult> result;
+		REQUIRE_NOTHROW(result = conn.Query("PIVOT sales ON year USING sum(amount) ORDER BY city"));
+		REQUIRE(result->HasError());
+		REQUIRE_THAT(result->GetError(), Contains("StatementEnd failed"));
+		// the end that failed is not sent again when the query fails
+		test.RequireEndedOnce();
+		REQUIRE_NO_FAIL(conn.Query("SELECT 42"));
+	}
+}
+
+TEST_CASE("Destroying a connection whose StatementEnd keeps failing does not terminate", "[api]") {
+	DuckDB db(nullptr);
+	{
+		Connection conn(db);
+		FailingStatementEnds test(conn);
+		test.failures_left = 3;
+		unique_ptr<QueryResult> result;
+		REQUIRE_NOTHROW(result = conn.Query("SELECT 42"));
+		REQUIRE(result->HasError());
+		test.RequireEndedOnce();
+		// the query ended, so destroying the connection has nothing to end
+	}
+	{
+		Connection conn(db);
+		FailingStatementEnds test(conn);
+		auto handle = conn.Submit("SELECT 42");
+		REQUIRE_NO_FAIL(*handle);
+		test.failures_left = 3;
+		// the open result ends the query when it is destroyed, with the connection
 	}
 	Connection conn(db);
 	REQUIRE_NO_FAIL(conn.Query("SELECT 42"));

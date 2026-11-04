@@ -1,6 +1,8 @@
+#include "duckdb/common/enum_util.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/numeric_utils.hpp"
 #include "duckdb/common/types/bit.hpp"
+#include "duckdb/common/types/variant_iterator.hpp"
 #include "duckdb/common/vector/vector_iterator.hpp"
 #include "duckdb/common/vector/vector_writer.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
@@ -280,6 +282,83 @@ unique_ptr<FunctionData> ArrayOrListLengthBinaryBind(BindScalarFunctionInput &in
 	return nullptr;
 }
 
+//! The length of the list, string or bit string that a VARIANT holds
+void VariantLengthFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+	const VectorIterator<VectorVariantType> variants(args.data[0]);
+	auto writer = FlatVector::Writer<int64_t>(result, args.size());
+	for (idx_t row = 0; row < args.size(); row++) {
+		// a NULL row has a NULL root
+		auto node = variants[row];
+		if (node.IsNull()) {
+			writer.WriteNull();
+			continue;
+		}
+		switch (node.GetTypeId()) {
+		case VariantLogicalType::ARRAY:
+			writer.WriteValue(UnsafeNumericCast<int64_t>(node.GetArrayChildren().size()));
+			break;
+		case VariantLogicalType::VARCHAR:
+			writer.WriteValue(StringLengthOperator::Operation<string_t, int64_t>(node.GetString()));
+			break;
+		case VariantLogicalType::BITSTRING:
+			writer.WriteValue(BitStringLenOperator::Operation<string_t, int64_t>(node.GetString()));
+			break;
+		default:
+			throw InvalidInputException("length is not defined for a VARIANT holding %s, only for a list, a string or "
+			                            "a bit string",
+			                            EnumUtil::ToString(node.GetTypeId()));
+		}
+	}
+}
+
+//! The number of elements of the list that a VARIANT holds
+void VariantArrayLengthFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+	const VectorIterator<VectorVariantType> variants(args.data[0]);
+	auto writer = FlatVector::Writer<int64_t>(result, args.size());
+	for (idx_t row = 0; row < args.size(); row++) {
+		// a NULL row has a NULL root
+		auto node = variants[row];
+		if (node.IsNull()) {
+			writer.WriteNull();
+			continue;
+		}
+		if (node.GetTypeId() != VariantLogicalType::ARRAY) {
+			throw InvalidInputException("array_length can only be used on a VARIANT holding a list, not %s",
+			                            EnumUtil::ToString(node.GetTypeId()));
+		}
+		writer.WriteValue(UnsafeNumericCast<int64_t>(node.GetArrayChildren().size()));
+	}
+}
+
+//! A VARIANT argument binds to the overload with the cheapest implicit cast, which then measures the held value
+bool ResolveVariantLength(ResolveScalarFunctionTypesInput &input, scalar_function_t variant_function) {
+	auto &argument = input.GetArgument(0);
+	if (argument.GetReturnType().id() != LogicalTypeId::VARIANT) {
+		return false;
+	}
+	auto &bound_function = input.GetBoundFunction();
+	bound_function.GetArguments()[0] = argument.GetReturnType();
+	bound_function.SetFunctionCallback(variant_function);
+	bound_function.SetFallible();
+	return true;
+}
+
+void BitLengthResolveTypes(ResolveScalarFunctionTypesInput &input) {
+	ResolveVariantLength(input, VariantLengthFunction);
+}
+
+void LengthResolveTypes(ResolveScalarFunctionTypesInput &input) {
+	if (!ResolveVariantLength(input, VariantLengthFunction)) {
+		ArrayOrListLengthResolveTypes(input);
+	}
+}
+
+void ArrayLengthResolveTypes(ResolveScalarFunctionTypesInput &input) {
+	if (!ResolveVariantLength(input, VariantArrayLengthFunction)) {
+		ArrayOrListLengthResolveTypes(input);
+	}
+}
+
 } // namespace
 
 ScalarFunctionSet LengthFun::GetFunctions() {
@@ -293,11 +372,12 @@ ScalarFunctionSet LengthFun::GetFunctions() {
 
 	ScalarFunction bit_fun({}, LogicalType::BIGINT,
 	                       ScalarFunction::UnaryFunction<string_t, int64_t, BitStringLenOperator>);
+	bit_fun.SetResolveTypesCallback(BitLengthResolveTypes);
 	bit_fun.GetSignature().AddParameter("bit", LogicalType::BIT);
 	length.AddFunction(bit_fun);
 
 	ScalarFunction list_fun({}, LogicalType::BIGINT, nullptr);
-	list_fun.SetResolveTypesCallback(ArrayOrListLengthResolveTypes);
+	list_fun.SetResolveTypesCallback(LengthResolveTypes);
 	list_fun.GetSignature().AddParameter("list", LogicalType::LIST(LogicalType::ANY));
 	length.AddFunction(list_fun);
 
@@ -317,7 +397,7 @@ ScalarFunctionSet ArrayLengthFun::GetFunctions() {
 	ScalarFunctionSet array_length("array_length");
 
 	ScalarFunction unary({}, LogicalType::BIGINT, nullptr);
-	unary.SetResolveTypesCallback(ArrayOrListLengthResolveTypes);
+	unary.SetResolveTypesCallback(ArrayLengthResolveTypes);
 	unary.GetSignature().AddParameter("list", LogicalType::LIST(LogicalType::ANY));
 	array_length.AddFunction(unary);
 

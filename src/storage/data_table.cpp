@@ -1119,7 +1119,7 @@ void DataTable::ScanForIndexCreation(DuckTransaction &transaction, const vector<
 		for (idx_t i = 0; i < indexed_columns.size(); i++) {
 			table_chunk.data[indexed_columns[i]].Reference(scan_chunk.data[i]);
 		}
-		table_chunk.SetCardinality(scan_chunk.size());
+		table_chunk.SetCardinalityUnsafe(scan_chunk.size());
 		if (count < scan_chunk.size()) {
 			table_chunk.Slice(sel, count);
 			row_ids.Slice(sel, count);

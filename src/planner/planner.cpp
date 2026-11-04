@@ -270,8 +270,8 @@ void Planner::CreatePlan(SQLStatement &statement) {
 	for (auto &kv : bound_parameters.GetParameters()) {
 		auto &identifier = kv.first;
 		auto &param = kv.second;
-		// check if the type of the parameter could be resolved
-		if (!param->return_type.IsValid()) {
+		// check if the type of the parameter could be resolved, a type that still contains ANY holds no value either
+		if (!param->return_type.IsValid() || !param->return_type.IsComplete()) {
 			properties.bound_all_parameters = false;
 			continue;
 		}

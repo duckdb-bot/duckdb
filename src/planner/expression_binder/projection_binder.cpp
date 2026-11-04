@@ -1,6 +1,8 @@
 #include "duckdb/planner/expression_binder/projection_binder.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_subquery_expression.hpp"
+#include "duckdb/parser/expression/operator_expression.hpp"
+#include "duckdb/parser/expression/subquery_expression.hpp"
 
 namespace duckdb {
 
@@ -48,6 +50,20 @@ BindResult ProjectionBinder::BindExpression(unique_ptr<ParsedExpression> &expr_p
 	case ExpressionClass::COLUMN_REF:
 	case ExpressionClass::SUBQUERY:
 		return BindColumnRef(expr_ptr, depth, root_expression);
+	case ExpressionClass::OPERATOR: {
+		auto &op = expr.Cast<OperatorExpression>();
+		if (op.GetExpressionType() == ExpressionType::OPERATOR_TRY && !in_child_projection &&
+		    op.GetChildren().size() == 1 && op.GetChildren()[0]->GetExpressionClass() == ExpressionClass::SUBQUERY &&
+		    op.GetChildren()[0]->Cast<SubqueryExpression>().GetSubqueryType() == SubqueryType::SCALAR) {
+			// TRY directly over a scalar subquery binds as that subquery and stays in the expression, so the columns
+			// it correlates on bind as outer references instead of moving into the projection
+			in_child_projection = true;
+			auto result = ExpressionBinder::BindExpression(expr_ptr, depth);
+			in_child_projection = false;
+			return result;
+		}
+		return ExpressionBinder::BindExpression(expr_ptr, depth);
+	}
 	default:
 		return ExpressionBinder::BindExpression(expr_ptr, depth);
 	}

@@ -104,6 +104,22 @@ SELECT * FROM t;
 ----
 1	5	5
 
+# TRY directly over a subquery that correlates on the target and on the source
+statement ok
+MERGE INTO t USING (VALUES (1)) src(k) ON t.k = src.k
+  WHEN MATCHED AND TRY((SELECT t.k)) = 1 AND TRY((SELECT src.k + 1)) = 2 THEN UPDATE SET v = 6;
+
+query III
+SELECT * FROM t;
+----
+1	6	5
+
+statement error
+MERGE INTO t USING (VALUES (1)) src(k) ON t.k = src.k
+  WHEN MATCHED THEN ERROR concat('key ', TRY((SELECT t.k))::VARCHAR);
+----
+key 1
+
 # the subquery value must not be read as a row id
 statement ok
 CREATE TABLE u(k INTEGER, v INTEGER);

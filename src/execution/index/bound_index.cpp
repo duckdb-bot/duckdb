@@ -172,12 +172,13 @@ idx_t BoundIndex::GetInMemorySize() const {
 }
 
 void BoundIndex::ExecuteExpressions(DataChunk &input, DataChunk &result, const QueryContext &context) const {
-	if (!has_expression_keys || !context.Valid()) {
+	auto client_context = Context::TryGetClientContext(context.GetServices());
+	if (!has_expression_keys || !client_context) {
 		executor.Execute(input, result);
 		return;
 	}
 	// key expressions such as list_sort run with the client context of the operation, which the shared executor lacks
-	ExpressionExecutor context_executor(*context.GetClientContext());
+	ExpressionExecutor context_executor(*client_context);
 	for (auto &expr : bound_expressions) {
 		context_executor.AddExpression(*expr);
 	}

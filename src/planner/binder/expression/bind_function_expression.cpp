@@ -300,8 +300,7 @@ BindResult ExpressionBinder::BindHasErrorFunction(FunctionExpression &function, 
 	op->SetQueryLocation(function.GetQueryLocation());
 	op->SetAlias(function.GetAlias());
 	expr_ptr = std::move(op);
-	// bind the operator through the virtual, so a derived binder sees it as it sees a TRY written as an operator
-	return BindExpression(expr_ptr, depth);
+	return BindExpression(expr_ptr->Cast<OperatorExpression>(), depth);
 }
 
 BindResult ExpressionBinder::BindExpression(FunctionExpression &function, idx_t depth,

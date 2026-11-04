@@ -1,6 +1,6 @@
 #include "duckdb/planner/expression_binder/projection_binder.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
-#include "duckdb/parser/parsed_expression_iterator.hpp"
+#include "duckdb/planner/expression/bound_subquery_expression.hpp"
 
 namespace duckdb {
 
@@ -23,6 +23,12 @@ BindResult ProjectionBinder::BindColumnRef(unique_ptr<ParsedExpression> &expr_pt
 	if (result.expression->GetExpressionClass() == ExpressionClass::BOUND_LAMBDA_REF) {
 		return result;
 	}
+	if (result.expression->GetExpressionClass() == ExpressionClass::BOUND_SUBQUERY &&
+	    result.expression->Cast<BoundSubqueryExpression>().RethrowsTryErrors() && !lambda_bindings) {
+		// a subquery under TRY re-raises the errors it captured where it is used, so it stays under its TRY and the
+		// binder of the statement plans it there. Inside a lambda it moves out, as a lambda cannot hold a subquery
+		return result;
+	}
 	// we have successfully bound a column - push it into the projection and emit a reference
 	auto return_type = result.expression->GetReturnType();
 	auto alias = result.expression->GetName();
@@ -30,16 +36,6 @@ BindResult ProjectionBinder::BindColumnRef(unique_ptr<ParsedExpression> &expr_pt
 	auto proj_ref = make_uniq<BoundColumnRefExpression>(return_type, ColumnBinding(proj_index, proj_col_idx));
 	proj_ref->SetAlias(std::move(alias));
 	return BindResult(std::move(proj_ref));
-}
-
-static bool ContainsLambda(const ParsedExpression &expr) {
-	if (expr.GetExpressionClass() == ExpressionClass::LAMBDA) {
-		return true;
-	}
-	bool found = false;
-	ParsedExpressionIterator::EnumerateChildren(expr,
-	                                            [&](const ParsedExpression &child) { found |= ContainsLambda(child); });
-	return found;
 }
 
 BindResult ProjectionBinder::BindExpression(unique_ptr<ParsedExpression> &expr_ptr, idx_t depth, bool root_expression) {
@@ -52,17 +48,6 @@ BindResult ProjectionBinder::BindExpression(unique_ptr<ParsedExpression> &expr_p
 	case ExpressionClass::COLUMN_REF:
 	case ExpressionClass::SUBQUERY:
 		return BindColumnRef(expr_ptr, depth, root_expression);
-	case ExpressionClass::OPERATOR: {
-		auto type = expr.GetExpressionType();
-		if ((type == ExpressionType::OPERATOR_TRY || type == ExpressionType::OPERATOR_HAS_ERROR) && !lambda_bindings &&
-		    !ContainsLambda(expr)) {
-			// a subquery under TRY, also one that a macro expands to, re-raises the errors it captured at its use
-			// site, where TRY masks them, so the whole TRY moves into the projection with its subqueries. Lambdas
-			// keep the old way, in which only the subquery moves, as a lambda parameter cannot leave its lambda.
-			return BindColumnRef(expr_ptr, depth, root_expression);
-		}
-		return ExpressionBinder::BindExpression(expr_ptr, depth);
-	}
 	default:
 		return ExpressionBinder::BindExpression(expr_ptr, depth);
 	}

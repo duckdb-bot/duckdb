@@ -197,6 +197,28 @@ SELECT * FROM u ORDER BY k;
 2	0
 3	6
 
+# macros that expand to a lambda around a subquery
+statement ok
+CREATE MACRO lt(y) AS list_transform([1, 2], lambda x: x + y);
+
+statement ok
+CREATE MACRO one() AS (SELECT 1);
+
+statement ok
+MERGE INTO u USING (VALUES (3)) src(k) ON u.k = src.k
+  WHEN MATCHED AND TRY(lt(one())) = [2, 3] THEN UPDATE SET v = v + 1;
+
+statement ok
+MERGE INTO u USING (VALUES (3)) src(k) ON u.k = src.k
+  WHEN MATCHED AND TRY(lt((SELECT 1))) = [2, 3] THEN UPDATE SET v = v + 1;
+
+query II
+SELECT * FROM u ORDER BY k;
+----
+1	10
+2	0
+3	8
+
 # the database stays usable
 query I
 SELECT 42;

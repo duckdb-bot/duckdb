@@ -23,6 +23,43 @@ SELECT approx_quantile(ts, 0.5) FROM (VALUES (TIMESTAMP '294247-01-10 03:00:00')
 ----
 294247-01-10 03:00:00
 
+# the nanosecond timestamps share the coding, so their infinity stays infinite and their largest finite values finite
+query II
+SELECT approx_quantile(ts, 0.5), isfinite(approx_quantile(ts, 0.5)) FROM (VALUES (TIMESTAMP_NS '2262-04-11 23:47:16.854775806')) t(ts);
+----
+2262-04-11 23:47:16.854774784	true
+
+query II
+SELECT approx_quantile(ts, 0.0), approx_quantile(ts, 1.0) FROM (VALUES (TIMESTAMP_NS '2262-04-11 23:47:16.854775806'), (TIMESTAMP_NS 'infinity')) t(ts);
+----
+2262-04-11 23:47:16.854774784	infinity
+
+query II
+SELECT approx_quantile(ts, 0.5), approx_quantile(ts, 0.5) = TIMESTAMPTZ_NS 'infinity' FROM (VALUES (TIMESTAMPTZ_NS 'infinity')) t(ts);
+----
+infinity	true
+
+query I
+SELECT approx_quantile(ts, 0.5) FROM (VALUES (TIMESTAMPTZ_NS '2262-04-11 23:47:16.854775806+00')) t(ts);
+----
+2262-04-11 23:47:16.854774784+00
+
+query II
+SELECT approx_quantile(ts, 0.5), approx_quantile(tz, 0.5) FROM (VALUES (TIMESTAMP_NS '-infinity', TIMESTAMPTZ_NS '-infinity')) t(ts, tz);
+----
+-infinity	-infinity
+
+query II
+SELECT max, q75 FROM (SUMMARIZE (SELECT * FROM (VALUES (TIMESTAMP_NS '2000-01-01'), (TIMESTAMP_NS 'infinity')) t(ts)));
+----
+infinity	infinity
+
+# exported states of the largest finite value and of infinity combine into the same ends
+query III
+SELECT finalize(combine_aggr(s0)), finalize(combine_aggr(s1)), typeof(finalize(combine_aggr(s1))) FROM (SELECT g, approx_quantile(ts, 0.0) EXPORT_STATE AS s0, approx_quantile(ts, 1.0) EXPORT_STATE AS s1 FROM (VALUES (1, TIMESTAMP_NS '2262-04-11 23:47:16.854775806'), (2, TIMESTAMP_NS 'infinity')) t(g, ts) GROUP BY g);
+----
+2262-04-11 23:47:16.854774784	infinity	TIMESTAMP_NS
+
 query II
 SELECT approx_quantile(x, 0.5), approx_quantile(x, 0.5) <= 9223372036854775806 FROM (VALUES (9223372036854775806::BIGINT)) t(x);
 ----

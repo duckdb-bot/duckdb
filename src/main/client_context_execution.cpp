@@ -97,8 +97,12 @@ void ClientContext::RefreshLoggerInternal() {
 	logging_context.connection_id = connection_id;
 	logging_context.transaction_id = transaction.ActiveTransaction().global_transaction_id;
 	logging_context.query_id = transaction.GetActiveQuery();
-	logger = db->GetLogManager().CreateLogger(logging_context, true);
+	ResetLoggerInternal(logging_context);
 	DUCKDB_LOG(*this, QueryLogType, active_query->query);
+}
+
+void ClientContext::ResetLoggerInternal(const LoggingContext &logging_context) {
+	logger = db->GetLogManager().CreateLogger(logging_context, log_config);
 }
 
 //! Orders the errors of the steps that end a query, the most severe one is thrown after every state ended
@@ -174,7 +178,7 @@ ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success,
 	}
 	LoggingContext context(LogContextScope::CONNECTION);
 	context.connection_id = connection_id;
-	logger = db->GetLogManager().CreateLogger(context, true);
+	ResetLoggerInternal(context);
 
 	// Notify any registered state of query end
 	auto end_states = began_on_all_states ? registered_state->States() : std::move(begun_states);

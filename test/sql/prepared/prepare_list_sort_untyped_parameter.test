@@ -112,6 +112,40 @@ EXECUTE q12([3, 1, 2]);
 ----
 [2, 3, 1]
 
+statement ok
+PREPARE q12b AS SELECT list_grade_up($1, 'DESC');
+
+query I
+EXECUTE q12b([3, 1, 2]);
+----
+[1, 3, 2]
+
+statement ok
+PREPARE q12c AS SELECT list_grade_up($1, 'DESC', 'NULLS FIRST');
+
+query I
+EXECUTE q12c([3, NULL, 2]);
+----
+[2, 1, 3]
+
+statement ok
+PREPARE q9b AS SELECT list_reverse_sort($1, 'NULLS LAST');
+
+query I
+EXECUTE q9b([3, NULL, 2]);
+----
+[3, 2, NULL]
+
+# a function that folds the unresolved parameter away, which the plan verification of the test runner must not take
+# as a plan without parameters
+statement ok
+PREPARE q15 AS SELECT array_slice($1, 1, 2)[1] > 0;
+
+query I
+EXECUTE q15([3, 1, 2]);
+----
+true
+
 # another function that gives the parameter a type with ANY in it, so the plan is not optimized before EXECUTE
 statement ok
 PREPARE q14 AS SELECT list_filter($1, lambda x: x > 1)[1] > 0;

@@ -1,5 +1,6 @@
 #include "duckdb/planner/expression_binder/projection_binder.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
+#include "duckdb/parser/parsed_expression_iterator.hpp"
 
 namespace duckdb {
 
@@ -31,6 +32,16 @@ BindResult ProjectionBinder::BindColumnRef(unique_ptr<ParsedExpression> &expr_pt
 	return BindResult(std::move(proj_ref));
 }
 
+static bool ContainsLambda(const ParsedExpression &expr) {
+	if (expr.GetExpressionClass() == ExpressionClass::LAMBDA) {
+		return true;
+	}
+	bool found = false;
+	ParsedExpressionIterator::EnumerateChildren(expr,
+	                                            [&](const ParsedExpression &child) { found |= ContainsLambda(child); });
+	return found;
+}
+
 BindResult ProjectionBinder::BindExpression(unique_ptr<ParsedExpression> &expr_ptr, idx_t depth, bool root_expression) {
 	auto &expr = *expr_ptr;
 	switch (expr.GetExpressionClass()) {
@@ -43,10 +54,11 @@ BindResult ProjectionBinder::BindExpression(unique_ptr<ParsedExpression> &expr_p
 		return BindColumnRef(expr_ptr, depth, root_expression);
 	case ExpressionClass::OPERATOR: {
 		auto type = expr.GetExpressionType();
-		if ((type == ExpressionType::OPERATOR_TRY || type == ExpressionType::OPERATOR_HAS_ERROR) &&
-		    expr.HasSubquery()) {
-			// a subquery under TRY re-raises the errors it captured at its use site, where TRY masks them, so the
-			// whole TRY moves into the projection together with the subquery
+		if ((type == ExpressionType::OPERATOR_TRY || type == ExpressionType::OPERATOR_HAS_ERROR) && !lambda_bindings &&
+		    !ContainsLambda(expr)) {
+			// a subquery under TRY, also one that a macro expands to, re-raises the errors it captured at its use
+			// site, where TRY masks them, so the whole TRY moves into the projection with its subqueries. Lambdas
+			// keep the old way, in which only the subquery moves, as a lambda parameter cannot leave its lambda.
 			return BindColumnRef(expr_ptr, depth, root_expression);
 		}
 		return ExpressionBinder::BindExpression(expr_ptr, depth);

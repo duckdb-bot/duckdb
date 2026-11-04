@@ -154,6 +154,49 @@ SELECT * FROM u ORDER BY k;
 2	0
 3	33
 
+# a subquery that a macro expands to
+statement ok
+CREATE MACRO m() AS (SELECT 'bad'::INTEGER);
+
+statement ok
+MERGE INTO u USING (VALUES (3)) src(k) ON u.k = src.k
+  WHEN MATCHED AND TRY(1 + m()) IS NULL THEN UPDATE SET v = 3;
+
+query II
+SELECT * FROM u ORDER BY k;
+----
+1	10
+2	0
+3	3
+
+# TRY without a subquery
+statement ok
+MERGE INTO u USING (VALUES (3)) src(k) ON u.k = src.k
+  WHEN MATCHED AND TRY(('x' || v)::INTEGER) IS NULL THEN UPDATE SET v = 4;
+
+query II
+SELECT * FROM u ORDER BY k;
+----
+1	10
+2	0
+3	4
+
+# subqueries in lambdas keep moving out of the lambda on their own
+statement ok
+MERGE INTO u USING (VALUES (3)) src(k) ON u.k = src.k
+  WHEN MATCHED AND list_transform([1, 2], lambda x: TRY(x + (SELECT 1))) = [2, 3] THEN UPDATE SET v = 5;
+
+statement ok
+MERGE INTO u USING (VALUES (3)) src(k) ON u.k = src.k
+  WHEN MATCHED AND TRY(list_transform([1, 2], lambda x: x + (SELECT 1))) = [2, 3] THEN UPDATE SET v = v + 1;
+
+query II
+SELECT * FROM u ORDER BY k;
+----
+1	10
+2	0
+3	6
+
 # the database stays usable
 query I
 SELECT 42;

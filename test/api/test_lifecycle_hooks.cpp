@@ -388,7 +388,8 @@ namespace {
 
 //! Counts the statement and query notifications and fails StatementEnd while the shared failures last
 struct FailingStatementEndState : ClientContextState {
-	explicit FailingStatementEndState(idx_t &failures_left_p) : failures_left(failures_left_p) {
+	FailingStatementEndState(string name_p, idx_t &failures_left_p)
+	    : name(std::move(name_p)), failures_left(failures_left_p) {
 	}
 	using ClientContextState::QueryEnd;
 	using ClientContextState::StatementEnd;
@@ -403,7 +404,10 @@ struct FailingStatementEndState : ClientContextState {
 		}
 		if (failures_left > 0) {
 			failures_left--;
-			throw IOException("StatementEnd failed");
+			if (fail_with_binder_error) {
+				throw BinderException(name + " StatementEnd failed");
+			}
+			throw IOException(name + " StatementEnd failed");
 		}
 	}
 	void QueryEnd(ClientContext &, optional_ptr<ErrorData> error) override {
@@ -413,8 +417,11 @@ struct FailingStatementEndState : ClientContextState {
 		}
 	}
 
+	string name;
 	//! Shared by the states, so the first StatementEnd dispatched fails whichever state receives it
 	idx_t &failures_left;
+	//! Whether the failure is an error of a kind that does not invalidate transactions under the permissive policy
+	bool fail_with_binder_error = false;
 	idx_t statement_begins = 0;
 	idx_t statement_ends = 0;
 	idx_t statement_end_errors = 0;
@@ -422,34 +429,44 @@ struct FailingStatementEndState : ClientContextState {
 	vector<string> query_end_errors;
 };
 
-//! A connection with two registered states whose StatementEnd fails the given number of times
+//! Two registered states on a connection whose StatementEnd fails the given number of times
 struct FailingStatementEnds {
 	explicit FailingStatementEnds(Connection &conn_p) : conn(conn_p) {
-		alpha = make_shared_ptr<FailingStatementEndState>(failures_left);
-		beta = make_shared_ptr<FailingStatementEndState>(failures_left);
+		alpha = make_shared_ptr<FailingStatementEndState>("alpha", failures_left);
+		beta = make_shared_ptr<FailingStatementEndState>("beta", failures_left);
 		conn.context->registered_state->Insert("alpha", alpha);
 		conn.context->registered_state->Insert("beta", beta);
 	}
 
+	template <class CALLBACK>
+	void ForEachState(CALLBACK &&callback) {
+		callback(*alpha);
+		callback(*beta);
+	}
+
 	void ResetCounts() {
-		for (auto state : {alpha.get(), beta.get()}) {
-			state->statement_begins = 0;
-			state->statement_ends = 0;
-			state->statement_end_errors = 0;
-			state->query_ends = 0;
-			state->query_end_errors.clear();
-		}
+		ForEachState([](FailingStatementEndState &state) {
+			state.statement_begins = 0;
+			state.statement_ends = 0;
+			state.statement_end_errors = 0;
+			state.query_ends = 0;
+			state.query_end_errors.clear();
+		});
+	}
+
+	void FailWithBinderError() {
+		ForEachState([](FailingStatementEndState &state) { state.fail_with_binder_error = true; });
 	}
 
 	//! Every state saw the statement begin and end once, and the query end once with the hook's error
 	void RequireEndedOnce() {
-		for (auto state : {alpha.get(), beta.get()}) {
-			REQUIRE(state->statement_begins == 1);
-			REQUIRE(state->statement_ends == 1);
-			REQUIRE(state->query_ends == 1);
-			REQUIRE(state->query_end_errors.size() == 1);
-			REQUIRE_THAT(state->query_end_errors[0], Contains("StatementEnd failed"));
-		}
+		ForEachState([](FailingStatementEndState &state) {
+			REQUIRE(state.statement_begins == 1);
+			REQUIRE(state.statement_ends == 1);
+			REQUIRE(state.query_ends == 1);
+			REQUIRE(state.query_end_errors.size() == 1);
+			REQUIRE_THAT(state.query_end_errors[0], Contains("StatementEnd failed"));
+		});
 		REQUIRE(!conn.context->transaction.HasActiveTransaction());
 	}
 
@@ -499,13 +516,13 @@ TEST_CASE("A failing StatementEnd ends the query on every state", "[api]") {
 		REQUIRE_NOTHROW(result = conn.Query("SELECT * FROM missing_table"));
 		REQUIRE(result->HasError());
 		REQUIRE_THAT(result->GetError(), Contains("missing_table"));
-		for (auto state : {test.alpha.get(), test.beta.get()}) {
-			REQUIRE(state->statement_ends == 1);
-			REQUIRE(state->statement_end_errors == 1);
-			REQUIRE(state->query_ends == 1);
-			REQUIRE(state->query_end_errors.size() == 1);
-			REQUIRE_THAT(state->query_end_errors[0], Contains("missing_table"));
-		}
+		test.ForEachState([](FailingStatementEndState &state) {
+			REQUIRE(state.statement_ends == 1);
+			REQUIRE(state.statement_end_errors == 1);
+			REQUIRE(state.query_ends == 1);
+			REQUIRE(state.query_end_errors.size() == 1);
+			REQUIRE_THAT(state.query_end_errors[0], Contains("missing_table"));
+		});
 		REQUIRE(!conn.context->transaction.HasActiveTransaction());
 		REQUIRE_NO_FAIL(conn.Query("SELECT 42"));
 	}
@@ -531,21 +548,52 @@ TEST_CASE("A failing StatementEnd ends the query on every state", "[api]") {
 		REQUIRE_NO_FAIL(conn.Query("SELECT 42"));
 	}
 
-	SECTION("Inside an explicit transaction") {
+	SECTION("A statement that wrote aborts its explicit transaction") {
+		REQUIRE_NO_FAIL(conn.Query("SET default_transaction_invalidation_policy='SYNTACTIC_ERRORS_DO_NOT_INVALIDATE'"));
 		REQUIRE_NO_FAIL(conn.Query("BEGIN"));
 		test.ResetCounts();
+		// an error of a kind that would leave the transaction valid
+		test.FailWithBinderError();
 		test.failures_left = 1;
 		unique_ptr<QueryResult> result;
 		REQUIRE_NOTHROW(result = conn.Query("INSERT INTO t VALUES (1)"));
 		REQUIRE(result->HasError());
 		REQUIRE_THAT(result->GetError(), Contains("StatementEnd failed"));
+		test.ForEachState([](FailingStatementEndState &state) {
+			REQUIRE(state.statement_ends == 1);
+			REQUIRE(state.query_ends == 1);
+		});
+		// the row cannot be committed, since the statement reported a failure
 		REQUIRE(conn.context->transaction.HasActiveTransaction());
-		for (auto state : {test.alpha.get(), test.beta.get()}) {
-			REQUIRE(state->statement_ends == 1);
-			REQUIRE(state->query_ends == 1);
-		}
+		REQUIRE_FAIL(conn.Query("SELECT 42"));
 		REQUIRE_NO_FAIL(conn.Query("ROLLBACK"));
+		auto count = conn.Query("SELECT count(*) FROM t");
+		REQUIRE(CHECK_COLUMN(count, 0, {0}));
+	}
+
+	SECTION("A statement that read follows the invalidation policy") {
+		REQUIRE_NO_FAIL(conn.Query("SET default_transaction_invalidation_policy='SYNTACTIC_ERRORS_DO_NOT_INVALIDATE'"));
+		REQUIRE_NO_FAIL(conn.Query("BEGIN"));
+		test.FailWithBinderError();
+		test.failures_left = 1;
+		unique_ptr<QueryResult> result;
+		REQUIRE_NOTHROW(result = conn.Query("SELECT 42"));
+		REQUIRE(result->HasError());
+		REQUIRE_THAT(result->GetError(), Contains("StatementEnd failed"));
+		// a binder error does not invalidate the transaction under this policy
+		REQUIRE(conn.context->transaction.HasActiveTransaction());
 		REQUIRE_NO_FAIL(conn.Query("SELECT 42"));
+		REQUIRE_NO_FAIL(conn.Query("COMMIT"));
+
+		// an IO error does
+		REQUIRE_NO_FAIL(conn.Query("BEGIN"));
+		test.ForEachState([](FailingStatementEndState &state) { state.fail_with_binder_error = false; });
+		test.failures_left = 1;
+		REQUIRE_NOTHROW(result = conn.Query("SELECT 42"));
+		REQUIRE(result->HasError());
+		REQUIRE(conn.context->transaction.HasActiveTransaction());
+		REQUIRE_FAIL(conn.Query("SELECT 42"));
+		REQUIRE_NO_FAIL(conn.Query("ROLLBACK"));
 	}
 
 	SECTION("Between the statements of a query that expands into several") {
@@ -582,7 +630,10 @@ TEST_CASE("Destroying a connection whose StatementEnd keeps failing does not ter
 		auto handle = conn.Submit("SELECT 42");
 		REQUIRE_NO_FAIL(*handle);
 		test.failures_left = 3;
-		// the open result ends the query when it is destroyed, with the connection
+		// the open result keeps the query active while the context is destroyed
+		REQUIRE_NOTHROW(conn.context->Destroy());
+		test.ForEachState([](FailingStatementEndState &state) { REQUIRE(state.statement_ends == 1); });
+		REQUIRE(!conn.context->transaction.HasActiveTransaction());
 	}
 	Connection conn(db);
 	REQUIRE_NO_FAIL(conn.Query("SELECT 42"));

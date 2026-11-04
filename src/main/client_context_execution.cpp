@@ -96,6 +96,9 @@ void ClientContext::RefreshLoggerInternal() {
 ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success, bool invalidate_transaction,
                                           optional_ptr<ErrorData> previous_error) {
 	D_ASSERT(active_query.get());
+	// whether the statement that finished, or an earlier statement of a query that expands, modifies a database
+	const bool statement_wrote =
+	    active_query->Wrote() || (active_query->prepared && !active_query->prepared->properties.IsReadOnly());
 	auto statement_error = EndStatementInternal(lock, previous_error);
 	// a statement that a state failed to end did not succeed, the failure is the query's error unless it has one
 	const bool report_statement_error = statement_error.HasError() && !previous_error;
@@ -103,7 +106,14 @@ ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success,
 		success = false;
 	}
 	if (report_statement_error) {
-		invalidate_transaction = invalidate_transaction || ErrorInvalidatesQueryTransaction(statement_error.Type());
+		if (Exception::InvalidatesDatabase(statement_error.Type()) ||
+		    statement_error.Type() == ExceptionType::INTERNAL) {
+			ValidChecker::Invalidate(DatabaseInstance::GetDatabase(*this), statement_error.RawMessage());
+		}
+		// what the statement wrote can only be dropped with the whole transaction
+		invalidate_transaction =
+		    invalidate_transaction || statement_wrote || ErrorInvalidatesQueryTransaction(statement_error.Type());
+		ProcessError(statement_error, active_query->query);
 		previous_error = &statement_error;
 	}
 	invalidate_transaction = invalidate_transaction && !active_query->outside_local_transaction;

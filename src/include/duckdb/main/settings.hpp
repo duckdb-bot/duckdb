@@ -738,7 +738,7 @@ struct DebugForceExternalSetting {
 struct DebugForceFetchRowSetting {
 	using RETURN_TYPE = bool;
 	static constexpr const char *Name = "debug_force_fetch_row";
-	static constexpr const char *Description = "Force per-row fetching during scans.";
+	static constexpr const char *Description = "Read the rows of scans through the fetch by row id.";
 	static constexpr const char *InputType = "BOOLEAN";
 	static constexpr bool IsDebug = true;
 	static constexpr bool IsDeprecated = false;
@@ -2371,6 +2371,20 @@ struct RegexMatchOperatorSemanticsSetting {
 	static constexpr SettingScopeTarget Scope = SettingScopeTarget::LOCAL_DEFAULT;
 	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
 	static void OnSet(SettingCallbackInfo &info, Value &input);
+};
+
+struct ScalarAggregateMergeThresholdSetting {
+	using RETURN_TYPE = idx_t;
+	static constexpr const char *Name = "scalar_aggregate_merge_threshold";
+	static constexpr const char *Description =
+	    "The number of rows a table needs for sibling scalar aggregates over it to be computed in one pass. 0 computes "
+	    "them in one pass only over table functions such as read_parquet.";
+	static constexpr const char *InputType = "UBIGINT";
+	static constexpr bool IsDebug = false;
+	static constexpr bool IsDeprecated = false;
+	static constexpr const char *DefaultValue = "0";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::LOCAL_DEFAULT;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
 };
 
 struct ScalarSubqueryErrorOnMultipleRowsSetting {

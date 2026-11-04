@@ -281,12 +281,12 @@ void Planner::CreatePlan(SQLStatement &statement) {
 	}
 }
 
-shared_ptr<PreparedStatementData> Planner::PrepareSQLStatement(unique_ptr<SQLStatement> statement, BindingMode mode) {
+shared_ptr<PreparedStatementData> Planner::PrepareSQLStatement(unique_ptr<SQLStatement> statement) {
 	auto copied_statement = statement->Copy();
 	// create a plan of the underlying statement
-	// PREPARE binding mode makes $params without supplied values create placeholder slots
+	// set PREPARE binding mode so that $params without supplied values create placeholder slots
 	// instead of falling back to user variables (user variables serve as defaults at EXECUTE time)
-	binder->SetBindingMode(mode);
+	binder->SetBindingMode(BindingMode::PREPARE);
 	CreatePlan(std::move(statement));
 	// now create the logical prepare
 	auto prepared_data = make_shared_ptr<PreparedStatementData>(copied_statement->type);

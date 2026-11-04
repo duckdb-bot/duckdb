@@ -84,8 +84,10 @@ BoundStatement Binder::Bind(ExecuteStatement &stmt) {
 		Planner prepared_planner(context);
 		prepared_planner.parameter_data = bind_values;
 		// EXECUTE binds the statement to run it, unless the EXECUTE is prepared itself
-		auto mode = GetBindingMode() == BindingMode::PREPARE ? BindingMode::PREPARE : BindingMode::STANDARD_BINDING;
-		prepared = prepared_planner.PrepareSQLStatement(entry->second->unbound_statement->Copy(), mode);
+		if (IsPrepareOnly()) {
+			prepared_planner.binder->SetPrepareOnly();
+		}
+		prepared = prepared_planner.PrepareSQLStatement(entry->second->unbound_statement->Copy());
 		if (!prepared->properties.bound_all_parameters) {
 			throw ParameterNotResolvedException();
 		}

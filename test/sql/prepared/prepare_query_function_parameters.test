@@ -92,3 +92,30 @@ statement error
 PREPARE stmt_partial AS SELECT $a, * FROM query('SELECT $a + $b')
 ----
 Prepared statement parameter "$b" only appears inside query()
+
+# a PREPARE whose binding stops before it reaches query() rejects the parameter when EXECUTE binds the statement
+statement ok
+PREPARE stmt_unresolved AS SELECT * FROM (SELECT $1 IS NULL AS a) sub, query('SELECT $n AS v')
+
+statement error
+EXECUTE stmt_unresolved(42)
+----
+Prepared statement parameter "$n" only appears inside query()
+
+# the same when PREPARE delays the statement because binding it would modify the database
+statement ok
+CREATE SEQUENCE s
+
+statement ok
+PREPARE stmt_delayed AS SELECT * FROM range(nextval('s')) r, query('SELECT $n AS v')
+
+# PREPARE did not fold nextval
+statement error
+SELECT currval('s')
+----
+currval: sequence is not yet defined in this session
+
+statement error
+EXECUTE stmt_delayed
+----
+Prepared statement parameter "$n" only appears inside query()

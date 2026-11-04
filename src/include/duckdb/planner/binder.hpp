@@ -209,6 +209,8 @@ struct GlobalBinderState {
 	StatementProperties prop;
 	//! Binding mode
 	BindingMode mode = BindingMode::STANDARD_BINDING;
+	//! Whether the statement is only prepared and not run, so that a fold that modifies a database waits for EXECUTE
+	bool prepare_only = false;
 	//! Table names extracted for BindingMode::EXTRACT_NAMES or BindingMode::EXTRACT_QUALIFIED_NAMES.
 	unordered_set<string> table_names;
 	//! Replacement Scans extracted for BindingMode::EXTRACT_REPLACEMENT_SCANS
@@ -410,6 +412,9 @@ public:
 
 	void SetBindingMode(BindingMode mode);
 	BindingMode GetBindingMode();
+	//! Set by PREPARE, which binds the statement without running it, and inherited by the EXECUTE it prepares
+	void SetPrepareOnly();
+	bool IsPrepareOnly() const;
 	void AddTableName(string table_name);
 	void AddReplacementScan(const Identifier &table_name, unique_ptr<TableRef> replacement);
 	const unordered_set<string> &GetTableNames();

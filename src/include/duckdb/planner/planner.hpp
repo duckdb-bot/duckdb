@@ -46,7 +46,6 @@ public:
 
 private:
 	void CreatePlan(SQLStatement &statement);
-	shared_ptr<PreparedStatementData> PrepareSQLStatement(unique_ptr<SQLStatement> statement,
-	                                                      BindingMode mode = BindingMode::PREPARE);
+	shared_ptr<PreparedStatementData> PrepareSQLStatement(unique_ptr<SQLStatement> statement);
 };
 } // namespace duckdb

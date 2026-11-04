@@ -429,6 +429,14 @@ BindingMode Binder::GetBindingMode() {
 	return global_binder_state->mode;
 }
 
+void Binder::SetPrepareOnly() {
+	global_binder_state->prepare_only = true;
+}
+
+bool Binder::IsPrepareOnly() const {
+	return global_binder_state->prepare_only;
+}
+
 void Binder::SetCanContainNulls(bool can_contain_nulls_p) {
 	legacy_can_contain_nulls = can_contain_nulls_p;
 }
@@ -467,7 +475,7 @@ static void RegisterModifiedDatabases(ClientContext &context, const Expression &
 Value Binder::FoldExpression(const Expression &expr) {
 	StatementProperties properties;
 	RegisterModifiedDatabases(context, expr, properties);
-	if (!properties.modified_databases.empty() && GetBindingMode() == BindingMode::PREPARE) {
+	if (!properties.modified_databases.empty() && IsPrepareOnly()) {
 		// PREPARE does not run the statement, so the expression is evaluated when EXECUTE binds it again
 		throw ParameterNotResolvedException();
 	}

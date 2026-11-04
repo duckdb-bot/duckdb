@@ -388,8 +388,9 @@ namespace {
 
 //! Counts the statement and query notifications and fails StatementEnd while the shared failures last
 struct FailingStatementEndState : ClientContextState {
-	FailingStatementEndState(string name_p, idx_t &failures_left_p, string &first_failure_p)
-	    : name(std::move(name_p)), failures_left(failures_left_p), first_failure(first_failure_p) {
+	FailingStatementEndState(string name_p, idx_t &failures_left_p, string &first_failure_p, bool &fatal_after_first_p)
+	    : name(std::move(name_p)), failures_left(failures_left_p), first_failure(first_failure_p),
+	      fatal_after_first(fatal_after_first_p) {
 	}
 	using ClientContextState::QueryEnd;
 	using ClientContextState::StatementEnd;
@@ -410,7 +411,7 @@ struct FailingStatementEndState : ClientContextState {
 			if (fail_with_binder_error) {
 				throw BinderException(name + " StatementEnd failed");
 			}
-			if (fail_with_fatal_error) {
+			if (fail_with_fatal_error || (fatal_after_first && first_failure != name)) {
 				throw FatalException(name + " StatementEnd failed");
 			}
 			throw IOException(name + " StatementEnd failed");
@@ -428,6 +429,8 @@ struct FailingStatementEndState : ClientContextState {
 	idx_t &failures_left;
 	//! The name of the state that failed first, shared by the states
 	string &first_failure;
+	//! Whether the failures after the first one are fatal errors, shared by the states
+	bool &fatal_after_first;
 	//! Whether the failure is an error of a kind that does not invalidate transactions under the permissive policy
 	bool fail_with_binder_error = false;
 	//! Whether the failure is a fatal error, which invalidates the database
@@ -442,8 +445,8 @@ struct FailingStatementEndState : ClientContextState {
 //! Two registered states on a connection whose StatementEnd fails the given number of times
 struct FailingStatementEnds {
 	explicit FailingStatementEnds(Connection &conn_p) : conn(conn_p) {
-		alpha = make_shared_ptr<FailingStatementEndState>("alpha", failures_left, first_failure);
-		beta = make_shared_ptr<FailingStatementEndState>("beta", failures_left, first_failure);
+		alpha = make_shared_ptr<FailingStatementEndState>("alpha", failures_left, first_failure, fatal_after_first);
+		beta = make_shared_ptr<FailingStatementEndState>("beta", failures_left, first_failure, fatal_after_first);
 		conn.context->registered_state->Insert("alpha", alpha);
 		conn.context->registered_state->Insert("beta", beta);
 	}
@@ -489,6 +492,7 @@ struct FailingStatementEnds {
 	Connection &conn;
 	idx_t failures_left = 0;
 	string first_failure;
+	bool fatal_after_first = false;
 	shared_ptr<FailingStatementEndState> alpha;
 	shared_ptr<FailingStatementEndState> beta;
 };
@@ -688,6 +692,21 @@ TEST_CASE("A fatal StatementEnd error invalidates the database", "[api]") {
 		REQUIRE_NOTHROW(result = conn.Query("SELECT * FROM missing_table"));
 		REQUIRE(result->HasError());
 		REQUIRE_THAT(result->GetError(), Contains("missing_table"));
+	}
+
+	SECTION("Behind the failure of the state that failed first") {
+		// the first state fails with an IO error, the second fatally
+		test.ForEachState([](FailingStatementEndState &state) { state.fail_with_fatal_error = false; });
+		test.fatal_after_first = true;
+		test.failures_left = 2;
+		unique_ptr<QueryResult> result;
+		REQUIRE_NOTHROW(result = conn.Query("SELECT 42"));
+		REQUIRE(result->HasError());
+		REQUIRE_THAT(result->GetError(), Contains(test.FirstError()));
+		test.ForEachState([&](FailingStatementEndState &state) {
+			REQUIRE(state.query_end_errors.size() == 1);
+			REQUIRE_THAT(state.query_end_errors[0], Contains(test.FirstError()));
+		});
 	}
 
 	test.ForEachState([](FailingStatementEndState &state) {

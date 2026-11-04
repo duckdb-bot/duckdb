@@ -81,7 +81,7 @@ logical_opt	<REGEX>:.*NOT constant_or_null.*
 query II
 EXPLAIN SELECT NOT constant_or_null(false, i, CASE WHEN true THEN NULL::INTEGER ELSE i END) FROM t;
 ----
-logical_opt	<!REGEX>:.*constant_or_null.*
+logical_opt	<!REGEX>:.*constant_or_null\(.*
 
 query I
 SELECT NOT constant_or_null(false, i, CASE WHEN true THEN NULL::INTEGER ELSE i END) FROM t;

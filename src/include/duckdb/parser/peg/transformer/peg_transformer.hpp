@@ -617,9 +617,8 @@ public:
 	unique_ptr<SQLStatement> CreatePivotStatement(unique_ptr<SQLStatement> statement);
 	unique_ptr<SQLStatement> GenerateCreateEnumStmt(unique_ptr<CreatePivotEntry> entry);
 	void PivotEntryCheck(const string &type);
-	//! Wraps the source of a PIVOT in the enclosing WITH scopes but the outermost, which is copied into cte_map, so
-	//! that a query over the result binds the CTEs as the PIVOT does
-	unique_ptr<TableRef> WrapInEnclosingCTEScopes(unique_ptr<TableRef> source, CommonTableExpressionMap &cte_map);
+	//! Copies the enclosing WITH scopes, the innermost into cte_map and the others into outer_scopes, outermost first
+	void CollectEnclosingCTEScopes(CommonTableExpressionMap &cte_map, vector<CommonTableExpressionMap> &outer_scopes);
 	bool IsWindowFrameDefault(WindowBoundary start, WindowBoundary end);
 	unique_ptr<WindowExpression> GetWindowClause(const Identifier &window_name);
 	void SetQueryLocation(ParsedExpression &expr, QueryLocation query_location);
@@ -772,7 +771,8 @@ public:
 	static void GetValueFromExpression(unique_ptr<ParsedExpression> &expr, vector<Value> &result);
 	static bool TransformPivotInList(unique_ptr<ParsedExpression> &expr, PivotColumnEntry &entry);
 	static void AddPivotEntry(PEGTransformer &transformer, string enum_name, unique_ptr<SelectNode> base,
-	                          unique_ptr<ParsedExpression> column, unique_ptr<QueryNode> subquery, bool has_parameters);
+	                          unique_ptr<ParsedExpression> column, unique_ptr<QueryNode> subquery, bool has_parameters,
+	                          vector<CommonTableExpressionMap> outer_scopes);
 	static Value GetConstantExpressionValue(unique_ptr<ParsedExpression> &expr);
 	static void SplitGenericOptions(const vector<GenericCopyOption> &options_in,
 	                                case_insensitive_map_t<unique_ptr<ParsedExpression>> &parsed_options,

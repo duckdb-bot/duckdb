@@ -66,6 +66,37 @@ SELECT * FROM (WITH s AS (FROM q) PIVOT s ON a USING sum(v) GROUP BY g) ORDER BY
 10	1	2
 20	3	NULL
 
+# the enum query reads the source itself, so duplicate column names, rowid and macros resolve as in the PIVOT
+query II
+WITH q AS (SELECT 'left' AS a, 1 AS g) SELECT * FROM (WITH r AS (SELECT 'right' AS a, 'x' AS a_1) PIVOT (q CROSS JOIN r) ON a_1 GROUP BY g);
+----
+1	1
+
+statement ok
+CREATE TABLE t AS SELECT 'a' AS a;
+
+query I
+WITH q AS (SELECT 'a' AS a) SELECT "0" FROM (WITH s AS (FROM q) PIVOT t ON rowid);
+----
+1
+
+# the macro reads the inner CTE s, which shadows the table s
+statement ok
+CREATE TABLE s AS SELECT 'catalog' AS a;
+
+statement ok
+CREATE MACRO with_inner(x) AS x || (SELECT a FROM s);
+
+query I
+WITH q AS (SELECT 'a' AS a) SELECT aa FROM (WITH s AS (FROM q) PIVOT t ON with_inner(a));
+----
+1
+
+query I
+SELECT acatalog FROM (PIVOT t ON with_inner(a));
+----
+1
+
 # UNPIVOT in the same scopes
 query II
 WITH q AS (SELECT 1 AS a, 2 AS b) SELECT * FROM (WITH s AS (FROM q) UNPIVOT s ON a, b) ORDER BY 1;

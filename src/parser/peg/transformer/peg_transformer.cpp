@@ -425,14 +425,26 @@ unique_ptr<SQLStatement> PEGTransformer::GenerateCreateEnumStmt(unique_ptr<Creat
 		auto is_not_null =
 		    make_uniq<OperatorExpression>(ExpressionType::OPERATOR_IS_NOT_NULL, std::move(entry->column));
 		select_node->where_clause = std::move(is_not_null);
+		subselect = std::move(select_node);
+
+		// the WITH scopes around the source's own become subqueries around the query, innermost first, so that
+		// every CTE is bound in the scope that defines it, as in the PIVOT itself
+		for (idx_t i = entry->outer_scopes.size(); i > 0; i--) {
+			auto outer_select = make_uniq<SelectStatement>();
+			outer_select->node = std::move(subselect);
+			auto outer_node = make_uniq<SelectNode>();
+			outer_node->cte_map = std::move(entry->outer_scopes[i - 1]);
+			outer_node->select_list.push_back(make_uniq<StarExpression>());
+			outer_node->from_table = make_uniq<SubqueryRef>(std::move(outer_select));
+			subselect = std::move(outer_node);
+		}
 
 		// order by the column
-		select_node->modifiers.push_back(make_uniq<DistinctModifier>());
+		subselect->modifiers.push_back(make_uniq<DistinctModifier>());
 		auto modifier = make_uniq<OrderModifier>();
 		modifier->orders.emplace_back(OrderType::ASCENDING, OrderByNullType::ORDER_DEFAULT,
 		                              ConstantExpression::Integer(1));
-		select_node->modifiers.push_back(std::move(modifier));
-		subselect = std::move(select_node);
+		subselect->modifiers.push_back(std::move(modifier));
 	} else {
 		subselect = std::move(entry->subquery);
 	}
@@ -475,8 +487,8 @@ void PEGTransformer::PivotEntryCheck(const string &type) {
 	}
 }
 
-unique_ptr<TableRef> PEGTransformer::WrapInEnclosingCTEScopes(unique_ptr<TableRef> source,
-                                                              CommonTableExpressionMap &cte_map) {
+void PEGTransformer::CollectEnclosingCTEScopes(CommonTableExpressionMap &cte_map,
+                                               vector<CommonTableExpressionMap> &outer_scopes) {
 	// the scopes are stored from the outermost to the innermost, a scope without CTEs changes nothing
 	vector<reference<CommonTableExpressionMap>> scopes;
 	for (auto &scope : stored_cte_map) {
@@ -485,21 +497,12 @@ unique_ptr<TableRef> PEGTransformer::WrapInEnclosingCTEScopes(unique_ptr<TableRe
 		}
 	}
 	if (scopes.empty()) {
-		return source;
+		return;
 	}
-	// every scope but the outermost becomes a subquery with the scope's WITH clause around the source, innermost
-	// first, so that each CTE is bound in the scope that defines it and sees the scopes around it
-	for (idx_t i = scopes.size() - 1; i > 0; i--) {
-		auto select_node = make_uniq<SelectNode>();
-		select_node->cte_map = scopes[i].get().Copy();
-		select_node->select_list.push_back(make_uniq<StarExpression>());
-		select_node->from_table = std::move(source);
-		auto select = make_uniq<SelectStatement>();
-		select->node = std::move(select_node);
-		source = make_uniq<SubqueryRef>(std::move(select));
+	cte_map = scopes.back().get().Copy();
+	for (idx_t i = 0; i + 1 < scopes.size(); i++) {
+		outer_scopes.push_back(scopes[i].get().Copy());
 	}
-	cte_map = scopes[0].get().Copy();
-	return source;
 }
 
 bool PEGTransformer::IsWindowFrameDefault(WindowBoundary start, WindowBoundary end) {

@@ -1,0 +1,126 @@
+# name: test/optimizer/statistics/statistics_aggregate_grouping_sets.test
+# description: An aggregate with several grouping sets returns its groups once per set, so its statistics bound the rows per set
+# group: [statistics]
+
+statement ok
+CREATE TABLE t AS SELECT range AS i, range % 2 AS j FROM range(5);
+
+# without the grouping_sets optimizer the aggregate keeps all of its grouping sets
+statement ok
+SET disabled_optimizers = 'grouping_sets';
+
+# five rows per (i) set and one for the empty set are 11 rows, more than the input has
+query I
+SELECT count(*) FROM (SELECT i, count(*) FROM t GROUP BY GROUPING SETS ((i), (i), ()));
+----
+11
+
+# the limit above those rows must stay, as the input's row count does not bound them
+query I
+SELECT count(*) FROM (SELECT i, count(*) FROM t GROUP BY GROUPING SETS ((i), (i), ()) LIMIT 6);
+----
+6
+
+query I
+SELECT count(*) FROM (SELECT i, count(*) FROM t GROUP BY GROUPING SETS ((i), (i), ()) LIMIT 10);
+----
+10
+
+query I
+SELECT count(*) FROM (SELECT i, j, count(*) FROM t GROUP BY ROLLUP (i, j) LIMIT 7);
+----
+7
+
+query I
+SELECT count(*) FROM (SELECT i, j, count(*) FROM t GROUP BY CUBE (i, j) LIMIT 9);
+----
+9
+
+# a limit at or above the rows changes nothing
+query I
+SELECT count(*) FROM (SELECT i, count(*) FROM t GROUP BY GROUPING SETS ((i), (i), ()) LIMIT 11);
+----
+11
+
+# an ungrouped aggregate returns one row per empty grouping set
+query I
+SELECT count(*) FROM (SELECT count(*) FROM t GROUP BY GROUPING SETS ((), (), ()));
+----
+3
+
+query II
+SELECT min(i), max(i) FROM t GROUP BY GROUPING SETS ((), ());
+----
+0	4
+0	4
+
+query I
+SELECT count(*) FROM (SELECT count(*) FROM t GROUP BY GROUPING SETS ((), (), ()) LIMIT 2);
+----
+2
+
+# the same over the table function, whose row count the planner knows exactly
+query I
+SELECT count(*) FROM (SELECT i, count(*) FROM range(5) t(i) GROUP BY GROUPING SETS ((i), (i), ()) LIMIT 6);
+----
+6
+
+query I
+SELECT count(*) FROM (SELECT count(*) FROM range(5) t(i) GROUP BY GROUPING SETS ((), (), ()) LIMIT 2);
+----
+2
+
+# over empty input the empty sets still return their rows, so a limit below them stays
+query I
+SELECT count(*) FROM (SELECT i, count(*) FROM range(0) t(i) GROUP BY GROUPING SETS ((i), (), ()));
+----
+2
+
+query I
+SELECT count(*) FROM (SELECT i, count(*) FROM range(0) t(i) GROUP BY GROUPING SETS ((i), (), ()) LIMIT 1);
+----
+1
+
+query I
+SELECT count(*) FROM (SELECT i FROM range(0) t(i) GROUP BY GROUPING SETS ((i), (), ()) LIMIT 1);
+----
+1
+
+# a bound beyond the signed range is given up, so a union above it can still add the bounds
+statement ok
+EXPLAIN SELECT i FROM range(4611686018427387904) t(i) GROUP BY GROUPING SETS ((i), (i)) UNION ALL SELECT i FROM range(1) t(i);
+
+# a single grouping set keeps the input's row count as its bound
+query I
+SELECT count(*) FROM (SELECT i, count(*) FROM t GROUP BY i LIMIT 6);
+----
+5
+
+query I
+SELECT count(*) FROM (SELECT count(*) FROM t LIMIT 2);
+----
+1
+
+# the grouping_sets optimizer gives the same results
+statement ok
+SET disabled_optimizers = '';
+
+query I
+SELECT count(*) FROM (SELECT i, count(*) FROM t GROUP BY GROUPING SETS ((i), (i), ()) LIMIT 6);
+----
+6
+
+query I
+SELECT count(*) FROM (SELECT count(*) FROM t GROUP BY GROUPING SETS ((), (), ()) LIMIT 2);
+----
+2
+
+query I
+SELECT count(*) FROM (SELECT count(*) FROM t GROUP BY GROUPING SETS ((), (), ()));
+----
+3
+
+query I
+SELECT count(*) FROM (SELECT i, count(*) FROM range(0) t(i) GROUP BY GROUPING SETS ((i), (), ()) LIMIT 1);
+----
+1

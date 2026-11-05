@@ -3,6 +3,8 @@
 #include "duckdb/common/enums/expression_type.hpp"
 #include "duckdb/common/helper.hpp"
 #include "duckdb/common/numeric_utils.hpp"
+#include "duckdb/common/operator/add.hpp"
+#include "duckdb/common/operator/multiply.hpp"
 #include "duckdb/common/types.hpp"
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/common/unique_ptr.hpp"
@@ -315,6 +317,10 @@ void CapGroupedAggregateCardinalityByKeyDomain(LogicalAggregate &aggr, optional_
 void StatisticsPropagator::TryExecuteAggregates(LogicalAggregate &aggr, unique_ptr<LogicalOperator> &node_ptr) {
 	if (!aggr.groups.empty()) {
 		// not possible with groups
+		return;
+	}
+	if (aggr.grouping_sets.size() > 1) {
+		// several empty grouping sets return the same row once per set
 		return;
 	}
 	if (aggr.expressions.empty()) {
@@ -681,17 +687,52 @@ unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalAggr
 	aggr.distinct_validity = distinct_validity;
 
 	const auto is_ungrouped = aggr.groups.empty();
+	// every grouping set emits its groups once, a set with keys at most one row per input row and an empty set
+	// exactly one row, also over empty input
+	idx_t empty_set_count = 0;
+	for (auto &grouping_set : aggr.grouping_sets) {
+		if (grouping_set.empty()) {
+			empty_set_count++;
+		}
+	}
+	idx_t keyed_set_count = aggr.grouping_sets.size() - empty_set_count;
+	if (aggr.grouping_sets.empty()) {
+		// the planner leaves the sets out when there is only the one every group belongs to
+		keyed_set_count = is_ungrouped ? 0 : 1;
+		empty_set_count = is_ungrouped ? 1 : 0;
+	}
 	// after we propagate statistics - try to directly execute aggregates using statistics
 	TryExecuteAggregates(aggr, node_ptr);
 
 	if (is_ungrouped) {
-		// Ungrouped aggregate always returns exactly one row, even over empty input
+		// Ungrouped aggregate always returns exactly one row per grouping set, even over empty input
 		// node_stats holds the input cardinality: do not leak it to the parent operator
 		node_stats.reset();
-		return make_uniq<NodeStatistics>(1U, 1U);
+		return make_uniq<NodeStatistics>(empty_set_count, empty_set_count);
 	}
 	// the max cardinality of an aggregate is the max cardinality of the input (i.e. when every row is a unique
-	// group)
+	// group) for every set with keys, plus the row of every empty set
+	if (node_stats && (keyed_set_count != 1 || empty_set_count != 0)) {
+		// consumers add the cardinalities as signed numbers, so beyond that range the bound is given up
+		const idx_t ceiling = NumericCast<idx_t>(NumericLimits<int64_t>::Maximum());
+		if (node_stats->has_max_cardinality) {
+			idx_t bound;
+			if (!TryMultiplyOperator::Operation(node_stats->max_cardinality, keyed_set_count, bound) ||
+			    !TryAddOperator::Operation(bound, empty_set_count, bound) || bound > ceiling) {
+				node_stats->has_max_cardinality = false;
+			} else {
+				node_stats->max_cardinality = bound;
+			}
+		}
+		if (node_stats->has_estimated_cardinality) {
+			idx_t estimate;
+			if (!TryMultiplyOperator::Operation(node_stats->estimated_cardinality, keyed_set_count, estimate) ||
+			    !TryAddOperator::Operation(estimate, empty_set_count, estimate) || estimate > ceiling) {
+				estimate = ceiling;
+			}
+			node_stats->estimated_cardinality = estimate;
+		}
+	}
 	// The join-order optimizer bounds a group key's distinct count by its table's min/max only for keys that are
 	// a direct base-table column reference; a key that is an expression or arrives through another operator falls
 	// back to an input-proportional guess. Now that the propagated group statistics are available, tighten the

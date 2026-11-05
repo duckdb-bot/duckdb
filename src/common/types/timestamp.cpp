@@ -16,6 +16,11 @@
 
 namespace duckdb {
 
+//! Whether an instant is a finite timestamp, computed in hugeint as its local time can lie past the range
+static bool TryGetFiniteTimestamp(const hugeint_t &micros, timestamp_t &result) {
+	return Hugeint::TryCast(micros, result.value) && result.IsFinite();
+}
+
 static_assert(sizeof(timestamp_t) == sizeof(int64_t), "timestamp_t was padded");
 
 static bool CanStartTimestampSuffix(char c) {
@@ -81,9 +86,7 @@ TimestampCastResult Timestamp::TryConvertTimestampTZ(const char *str, idx_t len,
 		return TimestampCastResult::ERROR_RANGE;
 	}
 	pos += time_pos;
-	if (!Timestamp::TryFromDatetime(date, time, result)) {
-		return TimestampCastResult::ERROR_RANGE;
-	}
+	auto micros = hugeint_t(date.days) * hugeint_t(Interval::MICROS_PER_DAY) + hugeint_t(time.value);
 	if (pos < len) {
 		// skip a "Z" at the end (as per the ISO8601 specs)
 		int hh, mm, ss;
@@ -93,9 +96,8 @@ TimestampCastResult Timestamp::TryConvertTimestampTZ(const char *str, idx_t len,
 		} else if (Timestamp::TryParseUTCOffset(str, pos, len, hh, mm, ss)) {
 			const int64_t delta =
 			    hh * Interval::MICROS_PER_HOUR + mm * Interval::MICROS_PER_MINUTE + ss * Interval::MICROS_PER_SEC;
-			if (use_offset &&
-			    (!TrySubtractOperator::Operation(result.value, delta, result.value) || !result.IsFinite())) {
-				return TimestampCastResult::ERROR_RANGE;
+			if (use_offset) {
+				micros -= hugeint_t(delta);
 			}
 			has_offset = true;
 		} else {
@@ -121,6 +123,9 @@ TimestampCastResult Timestamp::TryConvertTimestampTZ(const char *str, idx_t len,
 		if (pos < len) {
 			return TimestampCastResult::ERROR_INCORRECT_FORMAT;
 		}
+	}
+	if (!TryGetFiniteTimestamp(micros, result)) {
+		return TimestampCastResult::ERROR_RANGE;
 	}
 	return TimestampCastResult::SUCCESS;
 }
@@ -398,15 +403,11 @@ bool Timestamp::TryFromDatetime(date_t date, dtime_t time, timestamp_t &result) 
 }
 
 bool Timestamp::TryFromDatetime(date_t date, dtime_tz_t timetz, timestamp_t &result) {
-	if (!TryFromDatetime(date, timetz.time(), result)) {
-		return false;
-	}
 	// Offset is in seconds
 	const auto offset = int64_t(timetz.offset() * Interval::MICROS_PER_SEC);
-	if (!TryAddOperator::Operation(result.value, -offset, result.value)) {
-		return false;
-	}
-	return result.IsFinite();
+	const auto local_micros =
+	    hugeint_t(date.days) * hugeint_t(Interval::MICROS_PER_DAY) + hugeint_t(timetz.time().value);
+	return TryGetFiniteTimestamp(local_micros - hugeint_t(offset), result);
 }
 
 timestamp_t Timestamp::FromDatetime(date_t date, dtime_t time) {

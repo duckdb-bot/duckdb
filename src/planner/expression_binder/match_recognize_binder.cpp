@@ -651,6 +651,8 @@ BindResult MatchRecognizeDefineBinder::BindAggregate(FunctionExpression &expr, A
 			return operand;
 		}
 		const auto operand_type = operand.expression->GetReturnType();
+		// the operand leaves the expression tree here, so it is checked like a root expression
+		binder.CheckRequiresRebind(*operand.expression);
 		inputs.Project(std::move(operand.expression), "__mr_agg");
 		column = inputs.projection.select_list.size() - 1;
 		children.emplace_back(Identifier(), make_uniq<BoundReferenceExpression>(operand_type, 0U));
@@ -662,6 +664,8 @@ BindResult MatchRecognizeDefineBinder::BindAggregate(FunctionExpression &expr, A
 		error.AddQueryLocation(expr);
 		error.Throw();
 	}
+	// the function binder casts the folded value, so the complete aggregate is checked too
+	binder.CheckRequiresRebind(*bound);
 	const auto return_type = bound->GetReturnType();
 	const auto slot = inputs.supplied++;
 	unique_ptr<Expression> aggregate = std::move(bound);
@@ -799,6 +803,8 @@ BindResult MatchRecognizeDefineBinder::BindNavigated(unique_ptr<ParsedExpression
 	if (bound.HasError()) {
 		return bound;
 	}
+	// the navigated expression leaves the expression tree here, so it is checked like a root expression
+	binder.CheckRequiresRebind(*bound.expression);
 	auto column = inputs.Project(std::move(bound.expression), "__mr_nav");
 	inputs.navigations.push_back(
 	    MatchRecognizeNavigation {last, std::move(symbol), inputs.projection.select_list.size() - 1, offset});

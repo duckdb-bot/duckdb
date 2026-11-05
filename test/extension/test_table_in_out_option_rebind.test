@@ -1,0 +1,101 @@
+# name: test/extension/test_table_in_out_option_rebind.test
+# description: A prepared correlated table in-out call is bound again when a named option reads the TimeZone
+# group: [extension]
+
+require skip_reload
+
+require notmingw
+
+require allow_unsigned_extensions
+
+require icu
+
+statement ok
+LOAD '{BUILD_DIRECTORY}/test/extension/loadable_extension_demo.duckdb_extension';
+
+statement ok
+SET TimeZone = 'UTC';
+
+# the comparison casts the TIMESTAMP to TIMESTAMPTZ in the TimeZone, and the option is folded when the call is bound
+statement ok
+PREPARE option_cast AS SELECT r.value FROM (VALUES (1)) t(x), LATERAL test_in_out_keywords(t.x, delta => CASE WHEN TIMESTAMP '2026-01-01 00:00:00' = to_timestamp(1767225600) THEN 4 ELSE 0 END) r;
+
+# the option chooses the overload and reads the TimeZone the same way
+statement ok
+PREPARE option_overload AS SELECT r.value FROM (VALUES (1)) t(x), LATERAL test_in_out_overloaded(t.x, delta => TIMESTAMP '2026-01-01 00:00:00' = to_timestamp(1767225600)) r;
+
+# the option itself reads no setting, the cast to the TIMESTAMPTZ of the signature is added when the function is bound
+statement ok
+PREPARE option_instant AS SELECT r.value FROM (VALUES (1)) t(x), LATERAL test_in_out_instant(t.x, at => TIMESTAMP '2026-01-01 00:00:00') r;
+
+# an option that reads no setting keeps its plan
+statement ok
+PREPARE option_plain AS SELECT r.value FROM (VALUES (1)) t(x), LATERAL test_in_out_keywords(t.x, delta => CASE WHEN TIMESTAMP '2026-01-01 00:00:00' = TIMESTAMP '2026-01-01 00:00:00' THEN 4 ELSE 0 END) r;
+
+query I
+EXECUTE option_cast;
+----
+5
+
+query I
+EXECUTE option_overload;
+----
+101
+
+query I
+EXECUTE option_instant;
+----
+1767225600000001
+
+query I
+EXECUTE option_plain;
+----
+5
+
+statement ok
+SET TimeZone = 'Europe/Amsterdam';
+
+query I
+EXECUTE option_cast;
+----
+1
+
+query I
+EXECUTE option_overload;
+----
+1
+
+query I
+EXECUTE option_instant;
+----
+1767222000000001
+
+query I
+EXECUTE option_plain;
+----
+5
+
+query II
+SELECT r.value, TIMESTAMP '2026-01-01 00:00:00' = to_timestamp(1767225600) FROM (VALUES (1)) t(x), LATERAL test_in_out_keywords(t.x, delta => CASE WHEN TIMESTAMP '2026-01-01 00:00:00' = to_timestamp(1767225600) THEN 4 ELSE 0 END) r;
+----
+1	false
+
+query I
+SELECT r.value FROM (VALUES (1)) t(x), LATERAL test_in_out_instant(t.x, at => TIMESTAMP '2026-01-01 00:00:00') r;
+----
+1767222000000001
+
+# a NULL option gives NULL results
+query I
+SELECT r.value FROM (VALUES (1), (2)) t(x), LATERAL test_in_out_instant(t.x, at => NULL::TIMESTAMP) r;
+----
+NULL
+NULL
+
+query II
+SELECT name, result_types IS NULL AS bound_again FROM duckdb_prepared_statements() WHERE name IN ('option_cast', 'option_instant', 'option_overload', 'option_plain') ORDER BY name;
+----
+option_cast	true
+option_instant	true
+option_overload	true
+option_plain	false

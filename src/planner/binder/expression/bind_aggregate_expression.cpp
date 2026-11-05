@@ -319,6 +319,9 @@ BindResult BaseSelectBinder::BindAggregate(FunctionExpression &aggr, AggregateFu
 		aggregate = ExportAggregateFunction::Bind(std::move(aggregate));
 	}
 
+	// the aggregate leaves the expression tree here, so it is checked like a root expression
+	binder.CheckRequiresRebind(*aggregate);
+
 	// check for all the aggregates if this aggregate already exists
 	ProjectionIndex aggr_index;
 	auto entry = node.aggregate_map.find(*aggregate);

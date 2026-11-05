@@ -56,11 +56,17 @@ SELECT approx_quantile(t, [0.0, 1.0]) FROM (VALUES (TIMESTAMP_NS '2000-01-01 00:
 ['2000-01-01 00:00:00', '2000-01-01 00:00:00']
 ['2000-01-01 00:00:01', '2000-01-01 00:00:01']
 
-# the coarser timestamps widen to TIMESTAMP_NS in both forms, the other types keep their overloads
+# the coarser timestamps widen to TIMESTAMP in both forms, not to the narrower TIMESTAMP_NS, the other types keep their overloads
 query IIII
 SELECT typeof(approx_quantile(TIMESTAMP_S '2000-01-01', [0.5])), typeof(approx_quantile(TIMESTAMP_MS '2000-01-01', [0.5])), typeof(approx_quantile(TIMESTAMP_S '2000-01-01', 0.5)), typeof(approx_quantile(TIMESTAMP_MS '2000-01-01', 0.5));
 ----
-TIMESTAMP_NS[]	TIMESTAMP_NS[]	TIMESTAMP_NS	TIMESTAMP_NS
+TIMESTAMP[]	TIMESTAMP[]	TIMESTAMP	TIMESTAMP
+
+# values outside the nanosecond range keep working in the list form
+query II
+SELECT approx_quantile(TIMESTAMP_S '3000-01-01', [0.5]), approx_quantile(t, [0.0, 1.0]) FROM (VALUES (TIMESTAMP_MS '1600-01-01 12:00:00.5'), (TIMESTAMP_MS '2400-01-01 12:00:00.5')) v(t);
+----
+['3000-01-01 00:00:00']	['1600-01-01 12:00:00.5', '2400-01-01 12:00:00.5']
 
 query IIIII
 SELECT typeof(approx_quantile(DATE '2000-01-01', [0.5])), typeof(approx_quantile(TIMESTAMP '2000-01-01', [0.5])), typeof(approx_quantile(TIMESTAMPTZ '2000-01-01', [0.5])), typeof(approx_quantile(TIME '12:00:00', [0.5])), typeof(approx_quantile(TIMETZ '12:00:00+00', [0.5]));

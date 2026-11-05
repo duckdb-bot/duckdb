@@ -320,8 +320,7 @@ TEST_CASE("A failed replacement through the system transaction keeps the replace
 	auto secret_dir = TestCreatePath("persistent_secret_system_transaction");
 	REQUIRE_NO_FAIL(con.Query("SET secret_directory = '" + secret_dir + "'"));
 
-	// the system transaction, used by extensions, has no rollback, so the catalog changes only after the file is in
-	// place
+	// extensions use the system transaction, which has no rollback, so the catalog changes after the file is in place
 	auto &secret_manager = SecretManager::Get(*db.instance);
 	auto transaction = CatalogTransaction::GetSystemTransaction(*db.instance);
 	auto register_secret = [&](const string &name, const string &token) {
@@ -374,9 +373,10 @@ TEST_CASE("A failed replacement through the system transaction keeps the replace
 	REQUIRE(StringUtil::Contains(error, "Could not rename"));
 	check_replaced_secret_kept();
 
-	// a drop that arrives between the rename and the catalog change waits for the store, so it removes the new entry
-	// together with its file instead of leaving the entry without a file
+	// a drop that arrives during the store waits for it, so it cannot leave the new entry without its file
 	string drop_error;
+	std::atomic<bool> drop_finished {false};
+	bool drop_finished_during_store = false;
 	std::thread drop_thread;
 	fs.on_secret_moved = [&]() {
 		drop_thread = std::thread([&]() {
@@ -386,14 +386,19 @@ TEST_CASE("A failed replacement through the system transaction keeps the replace
 			} catch (std::exception &ex) {
 				drop_error = ex.what();
 			}
+			drop_finished = true;
 		});
 		std::this_thread::sleep_for(std::chrono::milliseconds(500));
+		drop_finished_during_store = drop_finished;
 	};
 	error = register_secret("s1", "xyz");
 	fs.on_secret_moved = nullptr;
-	drop_thread.join();
+	if (drop_thread.joinable()) {
+		drop_thread.join();
+	}
 	REQUIRE(error == "");
 	REQUIRE(drop_error == "");
+	REQUIRE(!drop_finished_during_store);
 	auto result = con.Query("SELECT count(*) FROM duckdb_secrets()");
 	REQUIRE(CHECK_COLUMN(result, 0, {0}));
 	REQUIRE(SecretFiles(secret_dir).empty());

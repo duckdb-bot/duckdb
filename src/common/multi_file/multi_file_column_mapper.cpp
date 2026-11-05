@@ -315,7 +315,13 @@ static unique_ptr<Expression> CastFileColumn(ClientContext &context, unique_ptr<
 		return BoundCastExpression::AddCastToType(context, std::move(expr), target_type);
 	}
 	CastFunctionSet file_casts;
-	file_casts.RegisterCastFunction(LogicalType::ANY, LogicalType::ANY, BindDatabaseCast);
+	// a registered cast matches a DECIMAL or an ENUM through the entry of its own family, not through ANY
+	const vector<LogicalType> families {LogicalType::ANY, LogicalTypeId::DECIMAL, LogicalTypeId::ENUM};
+	for (auto &source : families) {
+		for (auto &target : families) {
+			file_casts.RegisterCastFunction(source, target, BindDatabaseCast);
+		}
+	}
 	file_casts.RegisterCastFunction(LogicalType::ANY, LogicalType::BLOB, BindTextAsBytesCast);
 	GetCastFunctionInput get_input(context);
 	auto file_cast = file_casts.GetCastFunction(source_type, target_type, get_input);

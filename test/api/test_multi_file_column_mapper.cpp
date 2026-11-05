@@ -8,6 +8,8 @@
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/common/value_operations/value_operations.hpp"
+#include "duckdb/common/vector/flat_vector.hpp"
+#include "duckdb/function/cast/cast_function_set.hpp"
 
 using namespace duckdb;
 
@@ -86,4 +88,43 @@ TEST_CASE("Field-id mapping requires a match or an explicit default", "[multifil
 	}
 	con.Rollback();
 	REQUIRE_NO_FAIL(con.Query("SELECT 42"));
+}
+
+namespace {
+//! A registered cast that marks every value it converts, so a result tells whether it ran instead of the default cast
+bool MarkDecimalAsDouble(Vector &source, Vector &result, idx_t count, CastParameters &) {
+	auto writer = FlatVector::Writer<double>(result, count);
+	for (auto entry : source.Values<int16_t>()) {
+		if (entry.IsValid()) {
+			writer.WriteValue(42.0);
+		} else {
+			writer.WriteNull();
+		}
+	}
+	return true;
+}
+} // namespace
+
+TEST_CASE("A file column whose text becomes bytes keeps the registered casts of its other fields", "[multifile]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	auto parquet = con.Query("SELECT 1 FROM duckdb_extensions() WHERE extension_name = 'parquet' AND loaded");
+	if (parquet->HasError() || parquet->RowCount() == 0) {
+		return;
+	}
+	auto text_file = TestCreatePath("text_as_bytes_text.parquet");
+	auto bytes_file = TestCreatePath("text_as_bytes_bytes.parquet");
+	REQUIRE_NO_FAIL(
+	    con.Query("COPY (SELECT 1 AS i, {'a': 'a\\x41', 'n': 1.5::DECIMAL(4,1)} AS s) TO '" + text_file + "'"));
+	REQUIRE_NO_FAIL(con.Query("COPY (SELECT 2 AS i, {'a': 'b'::BLOB, 'n': 2.5::DOUBLE} AS s) TO '" + bytes_file + "'"));
+	// from here on this database casts a DECIMAL(4,1) to DOUBLE with the registered cast, not the default one
+	CastFunctionSet::Get(*con.context)
+	    .RegisterCastFunction(LogicalType::DECIMAL(4, 1), LogicalType::DOUBLE, BoundCastInfo(MarkDecimalAsDouble));
+	auto result = con.Query("SELECT i, octet_length(s.a), s.n FROM read_parquet(['" + text_file + "', '" + bytes_file +
+	                        "'], union_by_name = true) ORDER BY i");
+	REQUIRE_NO_FAIL(*result);
+	// the text of the first file is read as its five bytes, and its decimal through the registered cast
+	REQUIRE(CHECK_COLUMN(result, 0, {1, 2}));
+	REQUIRE(CHECK_COLUMN(result, 1, {5, 1}));
+	REQUIRE(CHECK_COLUMN(result, 2, {42.0, 2.5}));
 }

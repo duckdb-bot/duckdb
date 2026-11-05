@@ -58,3 +58,4 @@ benchmark/micro/optimizer/right_semi_distinct_filter.benchmark
 benchmark/micro/order/order_external_after_early_finish.benchmark
 benchmark/micro/json/lateral_json_each.benchmark
 benchmark/micro/string/substring_grapheme_negative_offset.benchmark
+benchmark/micro/parquet/many_small_files.benchmark

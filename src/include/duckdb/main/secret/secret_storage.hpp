@@ -227,6 +227,8 @@ protected:
 	//! Held while a secret's catalog entry and file change together, and while a rollback makes a file follow the
 	//! catalog
 	mutex change_lock;
+	//! Counts the file changes, so that a statement that changed no file is not recorded in its transaction
+	idx_t file_changes = 0;
 	//! Path that is searched for secrets;
 	string secret_path;
 };

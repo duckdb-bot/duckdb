@@ -481,21 +481,44 @@ void LocalFileSecretStorage::WriteSecret(const BaseSecret &secret, OnCreateConfl
 
 	fs.MoveFile(temp_path, file_path);
 	files->Set(secret_name, file_path);
+	file_changes++;
 }
 
 unique_ptr<SecretEntry> LocalFileSecretStorage::StoreSecret(unique_ptr<const BaseSecret> secret,
                                                             OnCreateConflict on_conflict,
                                                             optional_ptr<CatalogTransaction> transaction) {
 	lock_guard<mutex> guard(change_lock);
-	StageChange(transaction, secret->GetName());
-	return CatalogSetSecretStorage::StoreSecret(std::move(secret), on_conflict, transaction);
+	auto name = secret->GetName();
+	auto changes_before = file_changes;
+	try {
+		auto result = CatalogSetSecretStorage::StoreSecret(std::move(secret), on_conflict, transaction);
+		if (file_changes != changes_before) {
+			StageChange(transaction, name);
+		}
+		return result;
+	} catch (...) {
+		if (file_changes != changes_before) {
+			StageChange(transaction, name);
+		}
+		throw;
+	}
 }
 
 void LocalFileSecretStorage::DropSecretByName(const Identifier &name, OnEntryNotFound on_entry_not_found,
                                               optional_ptr<CatalogTransaction> transaction) {
 	lock_guard<mutex> guard(change_lock);
-	StageChange(transaction, name);
-	CatalogSetSecretStorage::DropSecretByName(name, on_entry_not_found, transaction);
+	auto changes_before = file_changes;
+	try {
+		CatalogSetSecretStorage::DropSecretByName(name, on_entry_not_found, transaction);
+	} catch (...) {
+		if (file_changes != changes_before) {
+			StageChange(transaction, name);
+		}
+		throw;
+	}
+	if (file_changes != changes_before) {
+		StageChange(transaction, name);
+	}
 }
 
 void LocalFileSecretStorage::StageChange(optional_ptr<CatalogTransaction> transaction, const Identifier &name) {
@@ -511,13 +534,19 @@ void LocalFileSecretStorage::StageChange(optional_ptr<CatalogTransaction> transa
 
 void LocalFileSecretStorage::RollbackSecret(const Identifier &name) {
 	lock_guard<mutex> guard(change_lock);
-	// the file follows the committed entry that is live after the rollback. A version another transaction has not
-	// committed is left alone, that transaction wrote its file itself and repairs it on its own rollback, which can
-	// also free the version at any time. A committed version is only replaced under change_lock, so it stays alive.
-	CatalogTransaction committed(db, SYSTEM_TRANSACTION_TIMESTAMP, VisibilityBound::AllCommitted());
-	auto entry = secrets->GetEntry(committed, name);
-	if (entry) {
-		WriteSecret(*entry->Cast<SecretCatalogEntry>().secret->secret, OnCreateConflict::REPLACE_ON_CONFLICT);
+	// after the undo, the newest version of the name is the committed one the transaction changed, none, or one that
+	// another transaction made since and has not committed. The file follows the committed one. A version of another
+	// transaction is left alone, that transaction wrote its file itself and could free the version at any time, so it
+	// is never dereferenced. A committed version is only superseded under change_lock, so it stays alive here.
+	CatalogTransaction any_version(db, SYSTEM_TRANSACTION_TIMESTAMP, VisibilityBound::IncludingUncommitted());
+	CatalogTransaction committed_version(db, SYSTEM_TRANSACTION_TIMESTAMP, VisibilityBound::AllCommitted());
+	auto newest = secrets->GetEntry(any_version, name);
+	auto committed = secrets->GetEntry(committed_version, name);
+	if (newest.get() != committed.get()) {
+		return;
+	}
+	if (committed) {
+		WriteSecret(*committed->Cast<SecretCatalogEntry>().secret->secret, OnCreateConflict::REPLACE_ON_CONFLICT);
 		return;
 	}
 	// only a file registered for the name is the secret's own, the file its name encodes to can be another secret's
@@ -541,6 +570,7 @@ void LocalFileSecretStorage::RemoveSecret(const string &secret, OnEntryNotFound 
 	}
 	files->Remove(Identifier(secret));
 	persistent_secrets.erase(Identifier(secret));
+	file_changes++;
 	try {
 		fs.RemoveFile(file);
 	} catch (std::exception &ex) {

@@ -8,6 +8,9 @@ require-env LOCAL_EXTENSION_REPO
 
 require icu
 
+# a restart forced by a test configuration would unload icu again between a call and the check that it is loaded
+require skip_reload
+
 statement ok
 set extension_directory='{TEST_DIR}/autoloading_table_function_overloads'
 

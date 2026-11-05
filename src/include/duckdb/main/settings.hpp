@@ -13,6 +13,8 @@
 
 namespace duckdb {
 
+class Context;
+
 struct Settings {
 	template <class OP, class SOURCE>
 	static typename std::enable_if<std::is_enum<typename OP::RETURN_TYPE>::value, typename OP::RETURN_TYPE>::type
@@ -88,6 +90,7 @@ private:
 	static bool TryGetSettingInternal(const DatabaseInstance &db, idx_t setting_index, Value &result);
 	static bool TryGetSettingInternal(const DBConfig &config, idx_t setting_index, Value &result);
 	static bool TryGetSettingInternal(const ClientContext &context, idx_t setting_index, Value &result);
+	static bool TryGetSettingInternal(const Context &services, idx_t setting_index, Value &result);
 
 	static void SetSettingInternal(DatabaseInstance &db, idx_t setting_index, SetScope scope, Value target_value);
 	static void SetSettingInternal(DBConfig &config, idx_t setting_index, SetScope scope, Value target_value);
@@ -2371,6 +2374,20 @@ struct RegexMatchOperatorSemanticsSetting {
 	static constexpr SettingScopeTarget Scope = SettingScopeTarget::LOCAL_DEFAULT;
 	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
 	static void OnSet(SettingCallbackInfo &info, Value &input);
+};
+
+struct ScalarAggregateMergeThresholdSetting {
+	using RETURN_TYPE = idx_t;
+	static constexpr const char *Name = "scalar_aggregate_merge_threshold";
+	static constexpr const char *Description =
+	    "The number of rows a table needs for sibling scalar aggregates over it to be computed in one pass. 0 computes "
+	    "them in one pass only over table functions such as read_parquet.";
+	static constexpr const char *InputType = "UBIGINT";
+	static constexpr bool IsDebug = false;
+	static constexpr bool IsDeprecated = false;
+	static constexpr const char *DefaultValue = "0";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::LOCAL_DEFAULT;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
 };
 
 struct ScalarSubqueryErrorOnMultipleRowsSetting {

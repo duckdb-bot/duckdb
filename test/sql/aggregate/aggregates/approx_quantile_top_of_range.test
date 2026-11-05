@@ -60,6 +60,12 @@ SELECT finalize(combine_aggr(s0)), finalize(combine_aggr(s1)), typeof(finalize(c
 ----
 2262-04-11 23:47:16.854774784	infinity	TIMESTAMP_NS
 
+# TIMESTAMP_S and TIMESTAMP_MS widen to TIMESTAMP, so their infinity reaches the same exception
+query III
+SELECT approx_quantile(TIMESTAMP_S 'infinity', 0.5), approx_quantile(TIMESTAMP_MS 'infinity', 0.5), typeof(approx_quantile(TIMESTAMP_S 'infinity', 0.5));
+----
+infinity	infinity	TIMESTAMP
+
 query II
 SELECT approx_quantile(x, 0.5), approx_quantile(x, 0.5) <= 9223372036854775806 FROM (VALUES (9223372036854775806::BIGINT)) t(x);
 ----

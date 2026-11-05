@@ -141,11 +141,12 @@ static Value ParquetDecimalStatsValue(T value, uint32_t width, uint32_t scale) {
 
 Value ParquetStatisticsUtils::ConvertValueInternal(const LogicalType &type, const ParquetColumnSchema &schema_ele,
                                                    const std::string &stats) {
+	// statistics of a size the type cannot have are not decodable and are ignored, like values out of range
 	auto stats_data = const_data_ptr_cast(stats.c_str());
 	switch (type.id()) {
 	case LogicalTypeId::BOOLEAN: {
 		if (stats.size() != sizeof(bool)) {
-			throw InvalidInputException("Incorrect stats size for type BOOLEAN");
+			return Value();
 		}
 		return Value::BOOLEAN(Load<uint8_t>(stats_data) != 0);
 	}
@@ -153,36 +154,36 @@ Value ParquetStatisticsUtils::ConvertValueInternal(const LogicalType &type, cons
 	case LogicalTypeId::USMALLINT:
 	case LogicalTypeId::UINTEGER:
 		if (stats.size() != sizeof(uint32_t)) {
-			throw InvalidInputException("Incorrect stats size for type UINTEGER");
+			return Value();
 		}
 		return Value::UINTEGER(Load<uint32_t>(stats_data));
 	case LogicalTypeId::UBIGINT:
 		if (stats.size() != sizeof(uint64_t)) {
-			throw InvalidInputException("Incorrect stats size for type UBIGINT");
+			return Value();
 		}
 		return Value::UBIGINT(Load<uint64_t>(stats_data));
 	case LogicalTypeId::TINYINT:
 	case LogicalTypeId::SMALLINT:
 	case LogicalTypeId::INTEGER:
 		if (stats.size() != sizeof(int32_t)) {
-			throw InvalidInputException("Incorrect stats size for type INTEGER");
+			return Value();
 		}
 		return Value::INTEGER(Load<int32_t>(stats_data));
 	case LogicalTypeId::BIGINT:
 		if (stats.size() != sizeof(int64_t)) {
-			throw InvalidInputException("Incorrect stats size for type BIGINT");
+			return Value();
 		}
 		return Value::BIGINT(Load<int64_t>(stats_data));
 	case LogicalTypeId::FLOAT: {
 		float val;
 		if (schema_ele.type_info == ParquetExtraTypeInfo::FLOAT16) {
 			if (stats.size() != sizeof(uint16_t)) {
-				throw InvalidInputException("Incorrect stats size for type FLOAT16");
+				return Value();
 			}
 			val = Float16ToFloat32(Load<uint16_t>(stats_data));
 		} else {
 			if (stats.size() != sizeof(float)) {
-				throw InvalidInputException("Incorrect stats size for type FLOAT");
+				return Value();
 			}
 			val = Load<float>(stats_data);
 		}
@@ -197,7 +198,7 @@ Value ParquetStatisticsUtils::ConvertValueInternal(const LogicalType &type, cons
 			return Value::DOUBLE(ParquetDecimalUtils::ReadDecimalValue<double>(stats_data, stats.size(), schema_ele));
 		}
 		if (stats.size() != sizeof(double)) {
-			throw InvalidInputException("Incorrect stats size for type DOUBLE");
+			return Value();
 		}
 		auto val = Load<double>(stats_data);
 		if (!Value::DoubleIsFinite(val)) {
@@ -211,12 +212,12 @@ Value ParquetStatisticsUtils::ConvertValueInternal(const LogicalType &type, cons
 		switch (schema_ele.type_info) {
 		case ParquetExtraTypeInfo::DECIMAL_INT32:
 			if (stats.size() != sizeof(int32_t)) {
-				throw InvalidInputException("Incorrect stats size for type %s", type.ToString());
+				return Value();
 			}
 			return ParquetDecimalStatsValue(Load<int32_t>(stats_data), width, scale);
 		case ParquetExtraTypeInfo::DECIMAL_INT64:
 			if (stats.size() != sizeof(int64_t)) {
-				throw InvalidInputException("Incorrect stats size for type %s", type.ToString());
+				return Value();
 			}
 			return ParquetDecimalStatsValue(Load<int64_t>(stats_data), width, scale);
 		case ParquetExtraTypeInfo::DECIMAL_BYTE_ARRAY:
@@ -249,7 +250,7 @@ Value ParquetStatisticsUtils::ConvertValueInternal(const LogicalType &type, cons
 		return Value(stats);
 	case LogicalTypeId::DATE:
 		if (stats.size() != sizeof(int32_t)) {
-			throw InvalidInputException("Incorrect stats size for type DATE");
+			return Value();
 		}
 		return Value::DATE(date_t(Load<int32_t>(stats_data)));
 	case LogicalTypeId::TIME: {
@@ -259,7 +260,7 @@ Value ParquetStatisticsUtils::ConvertValueInternal(const LogicalType &type, cons
 		} else if (stats.size() == sizeof(int64_t)) {
 			val = Load<int64_t>(stats_data);
 		} else {
-			throw InvalidInputException("Incorrect stats size for type TIME");
+			return Value();
 		}
 		switch (schema_ele.type_info) {
 		case ParquetExtraTypeInfo::UNIT_MS:
@@ -277,7 +278,7 @@ Value ParquetStatisticsUtils::ConvertValueInternal(const LogicalType &type, cons
 	}
 	case LogicalTypeId::TIME_NS: {
 		if (stats.size() != sizeof(int64_t)) {
-			throw InvalidInputException("Incorrect stats size for type TIME_NS");
+			return Value();
 		}
 		if (schema_ele.type_info != ParquetExtraTypeInfo::UNIT_NS) {
 			throw InternalException("TIME_NS requires nanosecond type info");
@@ -295,7 +296,7 @@ Value ParquetStatisticsUtils::ConvertValueInternal(const LogicalType &type, cons
 		} else if (stats.size() == sizeof(int64_t)) {
 			val = Load<int64_t>(stats_data);
 		} else {
-			throw InvalidInputException("Incorrect stats size for type TIMETZ");
+			return Value();
 		}
 		switch (schema_ele.type_info) {
 		case ParquetExtraTypeInfo::UNIT_MS:
@@ -312,12 +313,12 @@ Value ParquetStatisticsUtils::ConvertValueInternal(const LogicalType &type, cons
 		timestamp_t timestamp_value;
 		if (schema_ele.type_info == ParquetExtraTypeInfo::IMPALA_TIMESTAMP) {
 			if (stats.size() != sizeof(Int96)) {
-				throw InvalidInputException("Incorrect stats size for type TIMESTAMP");
+				return Value();
 			}
 			timestamp_value = ImpalaTimestampToTimestamp(Load<Int96>(stats_data));
 		} else {
 			if (stats.size() != sizeof(int64_t)) {
-				throw InvalidInputException("Incorrect stats size for type TIMESTAMP");
+				return Value();
 			}
 			auto val = Load<int64_t>(stats_data);
 			switch (schema_ele.type_info) {
@@ -340,12 +341,12 @@ Value ParquetStatisticsUtils::ConvertValueInternal(const LogicalType &type, cons
 		timestamp_ns_t timestamp_value;
 		if (schema_ele.type_info == ParquetExtraTypeInfo::IMPALA_TIMESTAMP) {
 			if (stats.size() != sizeof(Int96)) {
-				throw InvalidInputException("Incorrect stats size for type TIMESTAMP_NS");
+				return Value();
 			}
 			timestamp_value = ImpalaTimestampToTimestampNS(Load<Int96>(stats_data));
 		} else {
 			if (stats.size() != sizeof(int64_t)) {
-				throw InvalidInputException("Incorrect stats size for type TIMESTAMP_NS");
+				return Value();
 			}
 			auto val = Load<int64_t>(stats_data);
 			switch (schema_ele.type_info) {
@@ -368,7 +369,7 @@ Value ParquetStatisticsUtils::ConvertValueInternal(const LogicalType &type, cons
 	}
 	case LogicalTypeId::UUID: {
 		if (stats.size() != 16) {
-			throw InvalidInputException("Incorrect stats size for type UUID");
+			return Value();
 		}
 		auto uuid_val = UUIDValueConversion::ReadParquetUUID(const_data_ptr_cast(stats.c_str()));
 		return Value::UUID(uuid_val);

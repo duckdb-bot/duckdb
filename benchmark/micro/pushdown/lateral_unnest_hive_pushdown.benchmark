@@ -1,0 +1,19 @@
+# name: benchmark/micro/pushdown/lateral_unnest_hive_pushdown.benchmark
+# description: Filter on a hive partition of the input of a lateral UNNEST
+# group: [pushdown]
+
+name Lateral UNNEST hive partition filter
+group micro
+subgroup pushdown
+
+require parquet
+
+load
+CREATE TABLE src AS SELECT i, CASE WHEN i < 500000 THEN 'a' ELSE 'b' END AS part, [{'a': i, 'b': repeat(md5(i::VARCHAR), 4)}] AS xs FROM range(1000000) t(i);
+COPY src TO '${BENCHMARK_DIR}/lateral_unnest_parts' (FORMAT parquet, PARTITION_BY (part), OVERWRITE);
+
+run
+SELECT count(*), sum(v.a) FROM read_parquet('${BENCHMARK_DIR}/lateral_unnest_parts/*/*.parquet', hive_partitioning = true) p, UNNEST(xs) u(v) WHERE part = 'a';
+
+result II
+500000	124999750000

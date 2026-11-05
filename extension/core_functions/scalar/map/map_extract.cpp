@@ -114,6 +114,7 @@ ScalarFunction MapExtractValueFun::GetFunction() {
 
 	ScalarFunction fun({}, val_type, MapExtractValueFunc);
 	fun.GetSignature().AddParameter("map", LogicalType::MAP(key_type, val_type)).AddParameter("key", key_type);
+	fun.SetCollationHandling(FunctionCollationHandling::PUSH_COMBINABLE_COLLATIONS);
 	fun.SetStatisticsCallback(MapExtractValueStats);
 	fun.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	return fun;
@@ -125,6 +126,7 @@ ScalarFunction MapExtractFun::GetFunction() {
 
 	ScalarFunction fun({}, LogicalType::LIST(val_type), MapExtractListFunc);
 	fun.GetSignature().AddParameter("map", LogicalType::MAP(key_type, val_type)).AddParameter("key", key_type);
+	fun.SetCollationHandling(FunctionCollationHandling::PUSH_COMBINABLE_COLLATIONS);
 	fun.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	return fun;
 }

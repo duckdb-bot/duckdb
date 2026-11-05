@@ -226,6 +226,74 @@ static bool PushNestedCollation(ClientContext &context, unique_ptr<Expression> &
 	return true;
 }
 
+//! Pushes the collation of the keys of a MAP by rebuilding it with normalized keys, keeping only the first of the
+//! entries whose keys normalize to the same value. The values are not normalized, as lookups return them as stored.
+//! Returns false if the keys do not require collation, or if the map functions are not available (i.e. the
+//! core_functions extension is not loaded).
+static bool PushMapCollation(ClientContext &context, unique_ptr<Expression> &source, const LogicalType &sql_type,
+                             CollationType type, const CollationBinding &binding) {
+	auto &catalog = Catalog::GetSystemCatalog(context);
+	auto map_entries = catalog.GetEntry<ScalarFunctionCatalogEntry>(
+	    context, QualifiedName(catalog.GetName(), Identifier::DefaultSchema(), "map_entries"),
+	    OnEntryNotFound::RETURN_NULL);
+	auto list_transform = catalog.GetEntry<ScalarFunctionCatalogEntry>(
+	    context, QualifiedName(catalog.GetName(), Identifier::DefaultSchema(), "list_transform"),
+	    OnEntryNotFound::RETURN_NULL);
+	auto map_from_entries = catalog.GetEntry<ScalarFunctionCatalogEntry>(
+	    context,
+	    QualifiedName(catalog.GetName(), Identifier::DefaultSchema(), "__internal_map_from_entries_keep_first"),
+	    OnEntryNotFound::RETURN_NULL);
+	if (!map_entries || !list_transform || !map_from_entries) {
+		return false;
+	}
+
+	auto &entry_type = ListType::GetChildType(sql_type);
+	const Identifier lambda_parameter("x");
+	auto lambda_parameter_expr = make_uniq<BoundReferenceExpression>(lambda_parameter, entry_type, idx_t(0));
+	FunctionBinder function_binder(context);
+
+	vector<unique_ptr<Expression>> arguments;
+	arguments.push_back(lambda_parameter_expr->Copy());
+	arguments.push_back(make_uniq<BoundConstantExpression>(Value::BIGINT(1)));
+	auto key =
+	    function_binder.BindScalarFunction(Identifier::DefaultSchema(), "struct_extract_at", std::move(arguments));
+	if (!binding.PushCollation(context, key, MapType::KeyType(sql_type), type)) {
+		return false;
+	}
+
+	arguments.push_back(lambda_parameter_expr->Copy());
+	arguments.push_back(make_uniq<BoundConstantExpression>(Value::BIGINT(2)));
+	auto value =
+	    function_binder.BindScalarFunction(Identifier::DefaultSchema(), "struct_extract_at", std::move(arguments));
+	arguments.push_back(std::move(key));
+	arguments.push_back(std::move(value));
+	auto entry = function_binder.BindScalarFunction(Identifier::DefaultSchema(), "row", std::move(arguments));
+	auto lambda =
+	    make_uniq<BoundLambdaExpression>(ExpressionType::LAMBDA, LogicalType::LAMBDA, std::move(entry), idx_t(1));
+	lambda->SetParameterNames({lambda_parameter});
+
+	auto source_alias = source->GetAlias();
+	ErrorData error;
+	arguments.push_back(std::move(source));
+	auto entries = function_binder.BindScalarFunction(*map_entries, std::move(arguments), error);
+	if (!entries) {
+		error.Throw();
+	}
+	arguments.push_back(std::move(entries));
+	arguments.push_back(std::move(lambda));
+	auto normalized = function_binder.BindScalarFunction(*list_transform, std::move(arguments), error);
+	if (!normalized) {
+		error.Throw();
+	}
+	arguments.push_back(std::move(normalized));
+	source = function_binder.BindScalarFunction(*map_from_entries, std::move(arguments), error);
+	if (!source) {
+		error.Throw();
+	}
+	source->SetAlias(source_alias);
+	return true;
+}
+
 bool CollationBinding::PushCollation(ClientContext &context, unique_ptr<Expression> &source,
                                      const LogicalType &sql_type, CollationType type) const {
 	// Leave collation of aliased structs, lists and arrays to the registered callbacks.
@@ -238,6 +306,9 @@ bool CollationBinding::PushCollation(ClientContext &context, unique_ptr<Expressi
 		}
 		if (sql_type.id() == LogicalTypeId::ARRAY) {
 			return PushNestedCollation(context, source, ArrayType::GetChildType(sql_type), type, *this);
+		}
+		if (sql_type.id() == LogicalTypeId::MAP) {
+			return PushMapCollation(context, source, sql_type, type, *this);
 		}
 	}
 	for (auto &collation : collations) {

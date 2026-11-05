@@ -14,6 +14,7 @@
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/expression/bound_operator_expression.hpp"
+#include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/planner/expression/bound_subquery_expression.hpp"
 #include "duckdb/planner/expression/bound_window_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
@@ -96,8 +97,16 @@ static unique_ptr<Expression> PlanExtremumRewrite(Binder &binder, BoundSubqueryE
 	// under that collation, so it is pushed here. BIT and VARIANT are the exception: min/max pushes its own
 	// collation for those, and doing it first makes that branch a no-op, after which the aggregate falls
 	// through to its binary-key implementation whose return type is BLOB.
+	bool extremum_normalized = false;
 	if (compare_type.id() != LogicalTypeId::BIT && compare_type.id() != LogicalTypeId::VARIANT) {
-		ExpressionBinder::PushCollation(binder.context, min_max_child, compare_type);
+		// a probe of the compared type tells whether its values are normalized
+		unique_ptr<Expression> probe = make_uniq<BoundReferenceExpression>(compare_type, idx_t(0));
+		if (ExpressionBinder::PushCollation(binder.context, probe, compare_type)) {
+			// the extremum is taken over the compared type, so that it normalizes to the same type as X
+			min_max_child = BoundCastExpression::AddDefaultCastToType(std::move(min_max_child), compare_type);
+			ExpressionBinder::PushCollation(binder.context, min_max_child, compare_type);
+			extremum_normalized = true;
+		}
 	}
 	min_max_children.push_back(std::move(min_max_child));
 
@@ -152,17 +161,23 @@ static unique_ptr<Expression> PlanExtremumRewrite(Binder &binder, BoundSubqueryE
 
 	// 3. WHEN X > MIN(Y) THEN TRUE
 	auto x_cast = BoundCastExpression::AddDefaultCastToType(x_expr.Copy(), compare_type);
-	auto extremum_cast = BoundCastExpression::AddDefaultCastToType(std::move(extremum_ref), compare_type);
-	unique_ptr<Expression> x_op_min =
-	    BoundComparisonExpression::Create(cmp_type, std::move(x_cast), std::move(extremum_cast));
+	unique_ptr<Expression> x_op_min;
+	if (extremum_normalized) {
+		// the extremum holds normalized values, which may not cast back to the compared type, so X is normalized too
+		ExpressionBinder::PushCollation(binder.context, x_cast, compare_type);
+		x_op_min = BoundComparisonExpression::Create(cmp_type, std::move(x_cast), std::move(extremum_ref));
+	} else {
+		auto extremum_cast = BoundCastExpression::AddDefaultCastToType(std::move(extremum_ref), compare_type);
+		x_op_min = BoundComparisonExpression::Create(cmp_type, std::move(x_cast), std::move(extremum_cast));
 
-	// Push collations for the comparison
-	ExpressionBinder::PushCollation(binder.context,
-	                                BoundComparisonExpression::LeftMutable(x_op_min->Cast<BoundFunctionExpression>()),
-	                                compare_type);
-	ExpressionBinder::PushCollation(binder.context,
-	                                BoundComparisonExpression::RightMutable(x_op_min->Cast<BoundFunctionExpression>()),
-	                                compare_type);
+		// Push collations for the comparison
+		ExpressionBinder::PushCollation(
+		    binder.context, BoundComparisonExpression::LeftMutable(x_op_min->Cast<BoundFunctionExpression>()),
+		    compare_type);
+		ExpressionBinder::PushCollation(
+		    binder.context, BoundComparisonExpression::RightMutable(x_op_min->Cast<BoundFunctionExpression>()),
+		    compare_type);
+	}
 
 	current_else = make_uniq<BoundCaseExpression>(std::move(x_op_min), true_val->Copy(), std::move(current_else));
 

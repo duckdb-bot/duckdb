@@ -106,3 +106,67 @@ query I
 SELECT 5 > ALL (SELECT x FROM (VALUES (1)) s(x) WHERE x > 100);
 ----
 true
+
+# values that are normalized to another type, such as TIME WITH TIME ZONE, compare against the normalized extremum
+
+query II
+SELECT '12:00:00+00'::TIMETZ > ANY (SELECT '11:00:00+00'::TIMETZ), '12:00:00+00'::TIMETZ <= ALL (SELECT '11:00:00+00'::TIMETZ);
+----
+true	false
+
+query I
+SELECT x FROM (VALUES ('12:00:00+00'::TIMETZ), ('09:00:00+00'::TIMETZ)) t(x) WHERE x > ANY (SELECT '10:00:00+00'::TIMETZ);
+----
+12:00:00+00
+
+query I
+SELECT ['12:00:00+00'::TIMETZ] > ANY (SELECT ['11:00:00+00'::TIMETZ]);
+----
+true
+
+query II
+SELECT ['10:00:00+00'::TIMETZ] > ALL (SELECT x FROM (VALUES (['11:00:00+00'::TIMETZ]), (['09:00:00+00'::TIMETZ])) s(x)),
+       ['10:00:00+00'::TIMETZ] >= ANY (SELECT x FROM (VALUES (['11:00:00+00'::TIMETZ]), (['09:00:00+00'::TIMETZ])) s(x));
+----
+false	true
+
+query III
+SELECT map(['12:00:00+00'::TIMETZ], [1]) > ANY (SELECT map(['11:00:00+00'::TIMETZ], [1])),
+       map(['10:00:00+00'::TIMETZ], [1]) > ALL (SELECT x FROM (VALUES (map(['11:00:00+00'::TIMETZ], [1])), (map(['09:00:00+00'::TIMETZ], [1]))) s(x)),
+       map(['10:00:00+00'::TIMETZ], [1]) >= ANY (SELECT x FROM (VALUES (map(['11:00:00+00'::TIMETZ], [1])), (map(['09:00:00+00'::TIMETZ], [1]))) s(x));
+----
+true	false	true
+
+# a subquery without rows or with untyped NULLs is compared in the type of the left side
+
+query II
+SELECT i, ['a' COLLATE NOCASE] > ANY (SELECT NULL WHERE i = 1) FROM range(2) t(i) ORDER BY i;
+----
+0	false
+1	NULL
+
+query II
+SELECT 'b' COLLATE NOCASE > ANY (SELECT NULL), '12:00:00+00'::TIMETZ > ALL (SELECT NULL WHERE false);
+----
+NULL	true
+
+# without a collation the subquery values are cast to the compared type after the extremum is taken, as before,
+# so a typed NULL does not become a UNION member and a value that does not fit the compared type is not cast
+
+query I
+WITH rhs(v) AS (VALUES (2), (NULL::INTEGER)) SELECT union_value(n := 1) < ANY (SELECT v FROM rhs);
+----
+true
+
+query I
+SELECT 0.5::DECIMAL(38,37) > ANY (SELECT v FROM (VALUES (0), (100)) rhs(v));
+----
+true
+
+# maps with collated keys take their extremum under the collation, so 'b' > ALL('A', 'Z') is false under NOCASE
+
+query II
+SELECT map(['b' COLLATE NOCASE], [1]) > ANY (SELECT map(['A' COLLATE NOCASE], [1])),
+       map(['b' COLLATE NOCASE], [1]) > ALL (SELECT x FROM (VALUES (map(['A'], [1])), (map(['Z'], [1]))) s(x));
+----
+true	false

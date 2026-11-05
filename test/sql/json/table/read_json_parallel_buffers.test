@@ -99,22 +99,22 @@ SELECT count(*) FROM read_json('{DATA_DIR}/json/whitespace_only.json', format='n
 statement error
 SELECT * FROM read_json('{DATA_DIR}/json/unterminated_quotes.ndjson', format='newline_delimited', columns={id: 'INTEGER', name: 'VARCHAR'})
 ----
-Malformed JSON in file "{DATA_DIR}/json/unterminated_quotes.ndjson", at byte 26 in line 4: unexpected control character in string.
+Malformed JSON in file "{DATA_DIR}/json/unterminated_quotes.ndjson", at byte 26 in line 3: unexpected control character in string.
 
 statement error
 SELECT * FROM read_json('{DATA_DIR}/json/unterminated_quotes.ndjson', format='newline_delimited', columns={id: 'INTEGER', name: 'VARCHAR'}, maximum_object_size=64)
 ----
-Malformed JSON in file "{DATA_DIR}/json/unterminated_quotes.ndjson", at byte 26 in line 4: unexpected control character in string.
+Malformed JSON in file "{DATA_DIR}/json/unterminated_quotes.ndjson", at byte 26 in line 3: unexpected control character in string.
 
 statement error
 SELECT * FROM read_json('{DATA_DIR}/json/malformed_last_line.ndjson', format='newline_delimited', columns={a: 'INTEGER'})
 ----
-Malformed JSON in file "{DATA_DIR}/json/malformed_last_line.ndjson", at byte 6 in line 4: unexpected end of data.
+Malformed JSON in file "{DATA_DIR}/json/malformed_last_line.ndjson", at byte 6 in line 3: unexpected end of data.
 
 statement error
 SELECT * FROM read_json('{DATA_DIR}/json/malformed_last_line.ndjson', format='newline_delimited', columns={a: 'INTEGER'}, maximum_object_size=64)
 ----
-Malformed JSON in file "{DATA_DIR}/json/malformed_last_line.ndjson", at byte 6 in line 4: unexpected end of data.
+Malformed JSON in file "{DATA_DIR}/json/malformed_last_line.ndjson", at byte 6 in line 3: unexpected end of data.
 
 query I
 SELECT a FROM read_json('{DATA_DIR}/json/malformed_last_line.ndjson', format='newline_delimited', columns={a: 'INTEGER'}, ignore_errors=true) ORDER BY a NULLS LAST

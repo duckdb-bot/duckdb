@@ -157,7 +157,7 @@ TEST_CASE("The finished progress bar shows the time since the query started incl
 		// the display is destroyed with the query, so it copies its times out
 		double finished_seconds = -1;
 		double bar_seconds = -1;
-		con.context->config.display_create_func = [&]() -> unique_ptr<ProgressBarDisplay> {
+		ClientConfig::GetConfig(*con.context).display_create_func = [&]() -> unique_ptr<ProgressBarDisplay> {
 			class CopyingDisplay : public RecordingDisplay {
 			public:
 				CopyingDisplay(double &finished_p, double &bar_p) : finished(finished_p), bar(bar_p) {
@@ -174,7 +174,7 @@ TEST_CASE("The finished progress bar shows the time since the query started incl
 		REQUIRE_NO_FAIL(con.Query("SELECT count(slow_bind(range)) FROM range(10000000)"));
 		REQUIRE(bar_seconds >= 0);
 		REQUIRE(finished_seconds - bar_seconds >= 0.5);
-		con.context->config.display_create_func = nullptr;
+		ClientConfig::GetConfig(*con.context).display_create_func = nullptr;
 	}
 }
 

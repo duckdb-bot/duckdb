@@ -5,6 +5,12 @@
   "inherit_skip_tests": "test/configs/stats_dependent_tests.json",
   "skip_tests": [
     {
+      "reason": "Checks dependencies of tables on types that serialization discards",
+      "paths": [
+        "test/sql/catalog/dependencies/test_drop_type_table_dependency.test"
+      ]
+    },
+    {
       "reason": "Measures CTE restrictions using planner dependencies deliberately discarded by serialization",
       "paths": [
         "test/optimizer/pushdown/cte_domain_join_filter.test"
@@ -17,9 +23,9 @@
       ]
     },
     {
-      "reason": "Plan serialization loses an explicitly empty filename pattern and the re-planned COPY writes a different file name, independent of SQL export",
+      "reason": "Plan serialization discards cardinality estimates, so the probe consumer is kept materialized by cost and no cycle demotion occurs.",
       "paths": [
-        "test/sql/sql_export/copy_empty_filename_pattern.test"
+        "test/sql/cte/materialized/cte_buffered_consumer_cycle_demotion.test"
       ]
     }
   ]

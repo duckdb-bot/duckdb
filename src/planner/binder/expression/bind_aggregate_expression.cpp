@@ -102,7 +102,8 @@ static void NegatePercentileFractions(ClientContext &context, Binder &binder, un
 	binder.CheckRequiresRebind(*bound);
 
 	Value value = ExpressionExecutor::EvaluateScalar(context, *bound);
-	if (value.type().id() == LogicalTypeId::LIST) {
+	// a NULL list stays NULL, the quantile binder rejects it
+	if (value.type().id() == LogicalTypeId::LIST && !value.IsNull()) {
 		vector<Value> values;
 		for (const auto &element_val : ListValue::GetChildren(value)) {
 			values.push_back(NegatePercentileValue(element_val, desc));

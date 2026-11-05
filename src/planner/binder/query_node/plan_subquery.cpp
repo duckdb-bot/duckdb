@@ -3,6 +3,9 @@
 #include "duckdb/function/aggregate/distributive_functions.hpp"
 #include "duckdb/function/aggregate/distributive_function_utils.hpp"
 #include "duckdb/function/builtin_function_lookup.hpp"
+#include "duckdb/function/cast/bound_cast_data.hpp"
+#include "duckdb/function/cast/cast_function_set.hpp"
+#include "duckdb/function/cast/default_casts.hpp"
 #include "duckdb/function/scalar/generic_functions.hpp"
 #include "duckdb/main/client_config.hpp"
 #include "duckdb/planner/binder.hpp"
@@ -27,6 +30,7 @@
 #include "duckdb/function/function_binder.hpp"
 #include "duckdb/planner/subquery/flatten_dependent_join.hpp"
 #include "duckdb/common/enums/logical_operator_type.hpp"
+#include "duckdb/common/type_visitor.hpp"
 #include "duckdb/planner/operator/logical_dependent_join.hpp"
 #include "duckdb/planner/subquery/recursive_dependent_join_planner.hpp"
 #include "duckdb/function/scalar/generic_functions.hpp"
@@ -72,6 +76,133 @@ static bool IsExtremumRewriteValid(const BoundSubqueryExpression &expr) {
 	       cmp_type == ExpressionType::COMPARE_LESSTHANOREQUALTO;
 }
 
+static bool IsListOrArray(const LogicalType &type) {
+	return type.id() == LogicalTypeId::LIST || type.id() == LogicalTypeId::ARRAY;
+}
+
+static const LogicalType &ListOrArrayChildType(const LogicalType &type) {
+	return type.id() == LogicalTypeId::LIST ? ListType::GetChildType(type) : ArrayType::GetChildType(type);
+}
+
+static bool IsStructOrTuple(const LogicalType &type) {
+	return type.id() == LogicalTypeId::STRUCT || type.id() == LogicalTypeId::TUPLE;
+}
+
+static bool CastChangesOrder(const LogicalType &source, const LogicalType &target);
+
+//! The fields are paired as the STRUCT cast pairs them, by name or by position. STRUCT values compare field by field
+//! in the order of their type, so a cast that reorders the fields or drops one changes the order of the values
+static bool StructCastChangesOrder(const LogicalType &source, const LogicalType &target) {
+	auto mapping = StructBoundCastData::GetFieldMapping(source, target);
+	if (mapping.kind != StructCastFieldMapping::MatchKind::VALID) {
+		return false;
+	}
+	auto &source_children = StructType::GetChildTypes(source);
+	auto &target_children = StructType::GetChildTypes(target);
+	// a dropped source field decided the order of values that are equal in the fields before it
+	if (mapping.source_indexes.size() != source_children.size()) {
+		return true;
+	}
+	for (idx_t pair_idx = 0; pair_idx < mapping.source_indexes.size(); pair_idx++) {
+		// the pairs are in source order, so the target fields have to follow the same order
+		if (pair_idx > 0 && mapping.target_indexes[pair_idx] < mapping.target_indexes[pair_idx - 1]) {
+			return true;
+		}
+		if (CastChangesOrder(source_children[mapping.source_indexes[pair_idx]].second,
+		                     target_children[mapping.target_indexes[pair_idx]].second)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+//! A VARIANT compares the keys of an object in name order and the value of a UNION without its tag, so a STRUCT or a
+//! UNION changes its order when it becomes a VARIANT, as an ENUM does
+static bool VariantCastChangesOrder(const LogicalType &source) {
+	return TypeVisitor::Contains(source, [](const LogicalType &type) {
+		return type.id() == LogicalTypeId::STRUCT || type.id() == LogicalTypeId::UNION ||
+		       type.id() == LogicalTypeId::ENUM;
+	});
+}
+
+//! A value becomes the member of the UNION that its cast selects, so the order changes when it changes for that
+//! member. The default casts decide, as the cast the rewrite adds is a default cast
+static bool UnionMemberCastChangesOrder(const LogicalType &source, const LogicalType &target) {
+	CastFunctionSet default_set;
+	auto member_idx = DefaultCasts::UnionCastTargetMember(default_set, source, target);
+	if (!member_idx.IsValid()) {
+		return false;
+	}
+	return CastChangesOrder(source, UnionType::GetMemberType(target, member_idx.GetIndex()));
+}
+
+//! The members are paired by name as the UNION cast pairs them, when every member has a counterpart. A member
+//! without one makes the cast wrap the whole value into a member of the target instead, whatever the other pairs
+static bool UnionCastChangesOrder(const LogicalType &source, const LogicalType &target) {
+	vector<idx_t> target_indexes;
+	for (idx_t source_idx = 0; source_idx < UnionType::GetMemberCount(source); source_idx++) {
+		auto &member_name = UnionType::GetMemberName(source, source_idx);
+		optional_idx target_idx;
+		for (idx_t candidate_idx = 0; candidate_idx < UnionType::GetMemberCount(target); candidate_idx++) {
+			if (UnionType::GetMemberName(target, candidate_idx) == member_name) {
+				target_idx = candidate_idx;
+				break;
+			}
+		}
+		if (!target_idx.IsValid()) {
+			return UnionMemberCastChangesOrder(source, target);
+		}
+		target_indexes.push_back(target_idx.GetIndex());
+	}
+	for (idx_t source_idx = 0; source_idx < target_indexes.size(); source_idx++) {
+		// UNION values order by their tag first, so the members have to keep their order in the target
+		if (source_idx > 0 && target_indexes[source_idx] < target_indexes[source_idx - 1]) {
+			return true;
+		}
+		if (CastChangesOrder(UnionType::GetMemberType(source, source_idx),
+		                     UnionType::GetMemberType(target, target_indexes[source_idx]))) {
+			return true;
+		}
+	}
+	return false;
+}
+
+//! Whether a cast from the source type to the target type changes the order of the values, which a cast of an ENUM
+//! does, as an ENUM sorts by dictionary position, also as a member of a nested type, a STRUCT cast that pairs the
+//! fields in another order, and a cast of a STRUCT or a UNION to VARIANT
+static bool CastChangesOrder(const LogicalType &source, const LogicalType &target) {
+	if (source == target) {
+		return false;
+	}
+	if (source.id() == LogicalTypeId::ENUM) {
+		return true;
+	}
+	if (target.id() == LogicalTypeId::VARIANT) {
+		return VariantCastChangesOrder(source);
+	}
+	if (IsListOrArray(source) && IsListOrArray(target)) {
+		return CastChangesOrder(ListOrArrayChildType(source), ListOrArrayChildType(target));
+	}
+	if (IsStructOrTuple(source) && IsStructOrTuple(target)) {
+		return StructCastChangesOrder(source, target);
+	}
+	if (source.id() == LogicalTypeId::MAP && target.id() == LogicalTypeId::MAP) {
+		return CastChangesOrder(MapType::KeyType(source), MapType::KeyType(target)) ||
+		       CastChangesOrder(MapType::ValueType(source), MapType::ValueType(target));
+	}
+	if (source.id() == LogicalTypeId::UNION && target.id() == LogicalTypeId::UNION) {
+		return UnionCastChangesOrder(source, target);
+	}
+	if (target.id() == LogicalTypeId::UNION) {
+		return UnionMemberCastChangesOrder(source, target);
+	}
+	if (source.id() != target.id()) {
+		// a cast to another kind of type, as VARIANT or a UNION member, converts the value as a whole
+		return TypeVisitor::Contains(source, LogicalTypeId::ENUM);
+	}
+	return false;
+}
+
 static unique_ptr<Expression> PlanExtremumRewrite(Binder &binder, BoundSubqueryExpression &expr,
                                                   unique_ptr<LogicalOperator> &plan) {
 	auto &child_type = expr.GetChildTypes()[0];
@@ -92,6 +223,13 @@ static unique_ptr<Expression> PlanExtremumRewrite(Binder &binder, BoundSubqueryE
 	auto &compare_type = expr.GetChildTargets()[0];
 	vector<unique_ptr<Expression>> min_max_children;
 	auto min_max_child = bound_colref->Copy();
+	// the extremum is taken after the cast when the cast changes the order, except to a UNION, which turns a NULL
+	// into a member that the extremum would not ignore
+	if (compare_type.id() != LogicalTypeId::UNION && CastChangesOrder(child_type, compare_type)) {
+		min_max_child = BoundCastExpression::AddDefaultCastToType(std::move(min_max_child), compare_type);
+	}
+	// the count of the rows the comparison sees as NULL, a UNION whose member is NULL becomes a NULL VARIANT
+	auto count_child = min_max_child->Copy();
 	// The comparison may carry a collation the subquery column does not, and the extremum has to be taken
 	// under that collation, so it is pushed here. BIT and VARIANT are the exception: min/max pushes its own
 	// collation for those, and doing it first makes that branch a no-op, after which the aggregate falls
@@ -115,7 +253,7 @@ static unique_ptr<Expression> PlanExtremumRewrite(Binder &binder, BoundSubqueryE
 
 	// 3. count_child = COUNT(child)
 	vector<unique_ptr<Expression>> count_child_children;
-	count_child_children.push_back(bound_colref->Copy());
+	count_child_children.push_back(std::move(count_child));
 	auto count_fun =
 	    GetBuiltinAggregateFunction(binder.context, CountFun::Name, {count_child_children[0]->GetReturnType()});
 	auto count_child_aggr = function_binder.BindAggregateFunction(count_fun, std::move(count_child_children), nullptr,

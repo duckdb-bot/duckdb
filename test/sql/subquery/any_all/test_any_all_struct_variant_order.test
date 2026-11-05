@@ -1,0 +1,185 @@
+# name: test/sql/subquery/any_all/test_any_all_struct_variant_order.test
+# description: ANY and ALL take the extremum of a STRUCT subquery in the field order of the compared type and of a VARIANT comparison in VARIANT order
+# group: [any_all]
+
+statement ok
+CREATE TABLE t(g INTEGER, v STRUCT(a INTEGER, b INTEGER));
+
+statement ok
+INSERT INTO t VALUES (1, {'a': 0, 'b': 2}), (1, {'a': 2, 'b': 0});
+
+# STRUCT values compare field by field, so the compared type STRUCT(b, a) orders the rows differently from the column
+query III
+SELECT bool_or({'b': 1, 'a': 1} > v), min(v), min(v::STRUCT(b INTEGER, a INTEGER)) FROM t
+----
+true	{'a': 0, 'b': 2}	{'b': 0, 'a': 2}
+
+query IIII
+SELECT {'b': 1, 'a': 1} > ANY (SELECT v FROM t), {'b': 1, 'a': 1} >= ANY (SELECT v FROM t), {'b': 1, 'a': 1} < ANY (SELECT v FROM t), {'b': 1, 'a': 1} <= ANY (SELECT v FROM t)
+----
+true	true	true	true
+
+query IIII
+SELECT {'b': 1, 'a': 1} > ALL (SELECT v FROM t), {'b': 1, 'a': 1} >= ALL (SELECT v FROM t), {'b': 1, 'a': 1} < ALL (SELECT v FROM t), {'b': 1, 'a': 1} <= ALL (SELECT v FROM t)
+----
+false	false	false	false
+
+query IIII
+SELECT {'b': 3, 'a': 3} > ALL (SELECT v FROM t), {'b': -1, 'a': -1} < ALL (SELECT v FROM t), {'b': 3, 'a': 3} < ANY (SELECT v FROM t), {'b': -1, 'a': -1} > ANY (SELECT v FROM t)
+----
+true	true	false	false
+
+# the same field order keeps the extremum in the column type
+query II
+SELECT {'a': 1, 'b': 1} > ANY (SELECT v FROM t), {'a': 1, 'b': 1} > ALL (SELECT v FROM t)
+----
+true	false
+
+# equality pairs the fields by name through the mark join
+query II
+SELECT {'b': 2, 'a': 0} = ANY (SELECT v FROM t), {'b': 0, 'a': 0} = ANY (SELECT v FROM t)
+----
+true	false
+
+# a compared type without the first field of the column compares the remaining field alone
+query IIII
+SELECT {'b': 1} > ANY (SELECT v FROM t), {'b': 1} > ALL (SELECT v FROM t), {'a': 1} > ANY (SELECT v FROM t), {'a': 1} > ALL (SELECT v FROM t)
+----
+true	false	true	false
+
+# a LIST of such STRUCTs
+query II
+SELECT [{'b': 1, 'a': 1}] > ANY (SELECT [v] FROM t), [{'b': 1, 'a': 1}] > ALL (SELECT [v] FROM t)
+----
+true	false
+
+# a NULL in the subquery
+statement ok
+INSERT INTO t VALUES (1, NULL);
+
+query IIII
+SELECT {'b': 1, 'a': 1} > ANY (SELECT v FROM t), {'b': 1, 'a': 1} < ALL (SELECT v FROM t), {'b': 3, 'a': 3} > ALL (SELECT v FROM t), {'b': -1, 'a': -1} < ALL (SELECT v FROM t)
+----
+true	false	NULL	NULL
+
+# correlated subqueries
+statement ok
+CREATE TABLE o(g INTEGER, s STRUCT(b INTEGER, a INTEGER));
+
+statement ok
+INSERT INTO o VALUES (1, {'b': 1, 'a': 1}), (1, {'b': 3, 'a': 3}), (2, {'b': 1, 'a': 1});
+
+query IIII
+SELECT g, s, s > ANY (SELECT v FROM t WHERE t.g = o.g), s > ALL (SELECT v FROM t WHERE t.g = o.g) FROM o ORDER BY g, s
+----
+1	{'b': 1, 'a': 1}	true	false
+1	{'b': 3, 'a': 3}	true	NULL
+2	{'b': 1, 'a': 1}	false	true
+
+# a VARIANT compares the keys of an object in name order, so the compared type VARIANT orders STRUCT(b, a) rows by a
+statement ok
+CREATE TABLE u(v STRUCT(b INTEGER, a INTEGER));
+
+statement ok
+INSERT INTO u VALUES ({'b': 0, 'a': 2}), ({'b': 2, 'a': 0});
+
+query III
+SELECT bool_or({'a': 1, 'b': 1}::VARIANT > v), min(v), min(v::VARIANT) FROM u
+----
+true	{'b': 0, 'a': 2}	{'a': 0, 'b': 2}
+
+query IIII
+SELECT {'a': 1, 'b': 1}::VARIANT > ANY (SELECT v FROM u), {'a': 1, 'b': 1}::VARIANT < ANY (SELECT v FROM u), {'a': 1, 'b': 1}::VARIANT >= ALL (SELECT v FROM u), {'a': 1, 'b': 1}::VARIANT <= ALL (SELECT v FROM u)
+----
+true	true	false	false
+
+# a VARIANT compares the value of a UNION without its tag
+statement ok
+CREATE TABLE un(v UNION(a VARCHAR, b INTEGER));
+
+statement ok
+INSERT INTO un VALUES (union_value(a := 'x')), (union_value(b := 1));
+
+query III
+SELECT bool_or(union_value(b := 5)::UNION(a VARCHAR, b INTEGER)::VARIANT > v), min(v), min(v::VARIANT) FROM un
+----
+true	x	1
+
+query II
+SELECT union_value(b := 5)::UNION(a VARCHAR, b INTEGER)::VARIANT > ANY (SELECT v FROM un), union_value(b := 5)::UNION(a VARCHAR, b INTEGER)::VARIANT > ALL (SELECT v FROM un)
+----
+true	false
+
+# a LIST of STRUCTs compared as VARIANT is cast before the extremum as well
+query II
+SELECT [{'a': 1, 'b': 1}]::VARIANT > ANY (SELECT [v] FROM u), [{'a': 1, 'b': 1}]::VARIANT > ALL (SELECT [v] FROM u)
+----
+true	false
+
+# a STRUCT that becomes the member of a UNION follows the field order of that member
+query II
+SELECT [union_value(u := {'b': 1, 'a': 1})] > ANY (SELECT [v] FROM t WHERE v IS NOT NULL), [union_value(u := {'b': 1, 'a': 1})] > ALL (SELECT [v] FROM t WHERE v IS NOT NULL)
+----
+true	false
+
+# a UNION without a counterpart for a member is wrapped as a whole into a member of the compared UNION
+query I
+SELECT [union_value(w := union_value(a := {'b': 1, 'a': 1}))::UNION(w UNION(a STRUCT(b INTEGER, a INTEGER), z INTEGER), z INTEGER)] > ANY (SELECT [union_value(a := v)::UNION(a STRUCT(a INTEGER, b INTEGER), z BLOB)] FROM t WHERE v IS NOT NULL)
+----
+true
+
+# only the member the cast selects decides, so a member the value does not become does not cast the rows first and a
+# field the selected member cannot hold in another row does not fail the comparison
+query II
+SELECT [union_value(s := {'n': 0.5::DECIMAL(38,37)})::UNION(s STRUCT(n DECIMAL(38,37)), other VARIANT)] > ANY (SELECT [{'n': i}] FROM (VALUES (0), (100)) r(i)),
+       [union_value(s := {'n': 0.5::DECIMAL(38,37), 'm': 1})::UNION(s STRUCT(n DECIMAL(38,37), m INTEGER), other STRUCT(m FLOAT, n FLOAT))] > ANY (SELECT [{'n': i, 'm': 1}] FROM (VALUES (0), (100)) r(i))
+----
+true	true
+
+# a source member without a counterpart wraps the whole value into a member of the compared UNION, so the pairs of the
+# other members do not decide the cast before the extremum
+query I
+SELECT [union_value(w := union_value(a := {'n': 0.5::DECIMAL(38,37), 'm': 1}))::UNION(a STRUCT(m FLOAT, n FLOAT), w UNION(a STRUCT(n DECIMAL(38,37), m INTEGER), z BLOB, d INTEGER), z INTEGER)] > ANY (SELECT [union_value(a := {'n': i, 'm': 1})::UNION(a STRUCT(n INTEGER, m INTEGER), z BLOB, d INTEGER)] FROM (VALUES (0), (100)) r(i))
+----
+true
+
+# UNION values order by their tag first, so members paired in another order change the order of the values
+statement ok
+CREATE TABLE un_perm(v UNION(a INTEGER, b VARCHAR));
+
+statement ok
+INSERT INTO un_perm VALUES (union_value(a := 1)), (union_value(b := 'x'));
+
+query III
+SELECT bool_or([union_value(a := 0)::UNION(b VARCHAR, a INTEGER)] > [v]), union_tag(min(v)), union_tag(min(v::UNION(b VARCHAR, a INTEGER))) FROM un_perm
+----
+true	a	b
+
+query II
+SELECT [union_value(a := 0)::UNION(b VARCHAR, a INTEGER)] > ANY (SELECT [v] FROM un_perm), [union_value(a := 0)::UNION(b VARCHAR, a INTEGER)] > ALL (SELECT [v] FROM un_perm)
+----
+true	false
+
+# a UNION whose member is NULL becomes a NULL VARIANT, which the comparison and the count of the NULL rows both see
+statement ok
+CREATE TABLE un_null(v UNION(a INTEGER));
+
+statement ok
+INSERT INTO un_null VALUES (union_value(a := NULL::INTEGER)), (union_value(a := 1));
+
+query III
+SELECT 0::VARIANT > ANY (SELECT v FROM un_null), 0::VARIANT < ALL (SELECT v FROM un_null), 2::VARIANT > ANY (SELECT v FROM un_null)
+----
+NULL	NULL	true
+
+# a value without a STRUCT, UNION or ENUM keeps its extremum in the column type for a VARIANT comparison
+query IIII
+SELECT 1::VARIANT > ANY (SELECT i FROM (VALUES (0), (100)) r(i)), 1::VARIANT > ALL (SELECT i FROM (VALUES (0), (100)) r(i)), [1]::VARIANT > ANY (SELECT [i] FROM (VALUES (0), (100)) r(i)), MAP {'k': 1}::VARIANT > ANY (SELECT MAP {'k': i} FROM (VALUES (0), (100)) r(i))
+----
+true	false	true	true
+
+# the rows are cast to the compared type before the extremum, so a field the compared type cannot hold raises the cast error
+statement error
+SELECT {'b': 0.5::DECIMAL(38,37), 'a': 1} > ANY (SELECT {'a': 1, 'b': i} FROM (VALUES (0), (100)) r(i))
+----
+<REGEX>:.*Conversion Error.*

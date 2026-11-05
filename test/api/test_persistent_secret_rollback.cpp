@@ -184,3 +184,27 @@ TEST_CASE("A replacement that removed the old file and failed to write the new o
 	REQUIRE_NO_FAIL(con.Query("CREATE OR REPLACE PERSISTENT SECRET \"a%2Fb\" (TYPE http, SCOPE 'http://old')"));
 	REQUIRE(SecretFiles(secret_dir) == vector<string> {"a%252Fb.duckdb_secret"});
 }
+
+TEST_CASE("A rollback does not read the other files of the secret directory", "[api][secrets]") {
+	auto secret_dir = TestCreatePath("persistent_secret_rollback_unrelated_file");
+	LocalFileSystem local;
+	{
+		auto config = GetTestConfig();
+		DuckDB db(nullptr, config.get());
+		Connection con(db);
+		REQUIRE_NO_FAIL(con.Query("SET secret_directory = '" + secret_dir + "'"));
+		REQUIRE_NO_FAIL(con.Query("CREATE PERSISTENT SECRET s1 (TYPE http)"));
+	}
+	// an empty file that cannot be read as a secret
+	local.OpenFile(local.JoinPath(secret_dir, "unrelated.duckdb_secret"),
+	               FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE);
+
+	auto config = GetTestConfig();
+	DuckDB db(nullptr, config.get());
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("SET secret_directory = '" + secret_dir + "'"));
+	REQUIRE_NO_FAIL(con.Query("BEGIN"));
+	REQUIRE_NO_FAIL(con.Query("CREATE PERSISTENT SECRET s2 (TYPE http)"));
+	REQUIRE_NO_FAIL(con.Query("ROLLBACK"));
+	REQUIRE(SecretFiles(secret_dir) == vector<string> {"s1.duckdb_secret", "unrelated.duckdb_secret"});
+}

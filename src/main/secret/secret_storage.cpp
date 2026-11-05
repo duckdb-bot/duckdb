@@ -539,11 +539,11 @@ void LocalFileSecretStorage::RollbackSecret(const Identifier &name) {
 	// after the undo, the newest version of the name is the committed one the transaction changed, none, or one that
 	// another transaction made since and has not committed. The file follows the committed one, copied under the
 	// catalog set's lock, which also guards the undo and the commit of versions. A version of another transaction is
-	// left alone, that transaction wrote its file itself and repairs it on its own rollback.
+	// left alone, that transaction wrote its file itself and repairs it on its own rollback. The scan loads no secret
+	// file, the names it is asked for are in the catalog set already.
 	unique_ptr<const BaseSecret> committed;
 	bool uncommitted = false;
-	CatalogTransaction any_version(db, SYSTEM_TRANSACTION_TIMESTAMP, VisibilityBound::IncludingUncommitted());
-	secrets->Scan(any_version, [&](CatalogEntry &entry) {
+	secrets->Scan(VisibilityBound::IncludingUncommitted(), [&](CatalogEntry &entry) {
 		if (!(entry.name == name)) {
 			return;
 		}

@@ -375,11 +375,13 @@ TEST_CASE("A failed replacement through the system transaction keeps the replace
 
 	// a drop that arrives during the store waits for it, so it cannot leave the new entry without its file
 	string drop_error;
+	std::atomic<bool> drop_started {false};
 	std::atomic<bool> drop_finished {false};
 	bool drop_finished_during_store = false;
 	std::thread drop_thread;
 	fs.on_secret_moved = [&]() {
 		drop_thread = std::thread([&]() {
+			drop_started = true;
 			try {
 				secret_manager.DropSecretByName(transaction, Identifier("s1"), OnEntryNotFound::THROW_EXCEPTION,
 				                                SecretPersistType::PERSISTENT);
@@ -388,6 +390,9 @@ TEST_CASE("A failed replacement through the system transaction keeps the replace
 			}
 			drop_finished = true;
 		});
+		while (!drop_started) {
+			std::this_thread::yield();
+		}
 		std::this_thread::sleep_for(std::chrono::milliseconds(500));
 		drop_finished_during_store = drop_finished;
 	};

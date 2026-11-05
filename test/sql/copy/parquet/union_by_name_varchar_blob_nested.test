@@ -1,0 +1,127 @@
+# name: test/sql/copy/parquet/union_by_name_varchar_blob_nested.test
+# description: Nested VARCHAR columns read as BLOB through union_by_name keep their UTF-8 bytes
+# group: [parquet]
+
+require parquet
+
+statement ok
+COPY (SELECT ['café', NULL, ''] AS l, {'a': 'café', 'n': 1} AS s, [{'a': 'café'}] AS ls, {'l': ['café']} AS sl, MAP {'k': 'café'} AS m, 1 AS i) TO '{TEST_DIR}/nested_text.parquet';
+
+statement ok
+COPY (SELECT [encode('café')] AS l, {'a': encode('café'), 'n': 2} AS s, [{'a': encode('café')}] AS ls, {'l': [encode('café')]} AS sl, MAP {'k': encode('café')} AS m, 2 AS i) TO '{TEST_DIR}/nested_bytes.parquet';
+
+# a list, a struct, a list of structs, a struct of lists and a map
+query IIIIII
+SELECT i, l, s, ls, sl, m FROM read_parquet(['{TEST_DIR}/nested_text.parquet', '{TEST_DIR}/nested_bytes.parquet'], union_by_name = true) ORDER BY i;
+----
+1	['caf\\xC3\\xA9', NULL, '']	{'a': 'caf\\xC3\\xA9', 'n': 1}	[{'a': 'caf\\xC3\\xA9'}]	{'l': ['caf\\xC3\\xA9']}	{k='caf\\xC3\\xA9'}
+2	['caf\\xC3\\xA9']	{'a': 'caf\\xC3\\xA9', 'n': 2}	[{'a': 'caf\\xC3\\xA9'}]	{'l': ['caf\\xC3\\xA9']}	{k='caf\\xC3\\xA9'}
+
+query IIIII
+SELECT typeof(l), typeof(s), typeof(ls), typeof(sl), typeof(m) FROM read_parquet(['{TEST_DIR}/nested_text.parquet', '{TEST_DIR}/nested_bytes.parquet'], union_by_name = true) LIMIT 1;
+----
+BLOB[]	STRUCT(a BLOB, n INTEGER)	STRUCT(a BLOB)[]	STRUCT(l BLOB[])	MAP(VARCHAR, BLOB)
+
+# the text is read as its bytes, so it equals the bytes the other file holds
+query IIIIII
+SELECT i, l IS NOT DISTINCT FROM [encode('café'), NULL, encode('')], s.a = encode('café'), ls[1].a = encode('café'), sl.l[1] = encode('café'), m['k'] = encode('café') FROM read_parquet(['{TEST_DIR}/nested_text.parquet', '{TEST_DIR}/nested_bytes.parquet'], union_by_name = true) ORDER BY i;
+----
+1	true	true	true	true	true
+2	false	true	true	true	true
+
+# the order of the files does not matter
+query III
+SELECT i, l, s FROM read_parquet(['{TEST_DIR}/nested_bytes.parquet', '{TEST_DIR}/nested_text.parquet'], union_by_name = true) ORDER BY i;
+----
+1	['caf\\xC3\\xA9', NULL, '']	{'a': 'caf\\xC3\\xA9', 'n': 1}
+2	['caf\\xC3\\xA9']	{'a': 'caf\\xC3\\xA9', 'n': 2}
+
+# a field that is pushed down into the reader
+query III
+SELECT i, s.a, sl.l FROM read_parquet(['{TEST_DIR}/nested_text.parquet', '{TEST_DIR}/nested_bytes.parquet'], union_by_name = true) ORDER BY i;
+----
+1	caf\xC3\xA9	['caf\\xC3\\xA9']
+2	caf\xC3\xA9	['caf\\xC3\\xA9']
+
+# filters on the bytes
+query I
+SELECT i FROM read_parquet(['{TEST_DIR}/nested_text.parquet', '{TEST_DIR}/nested_bytes.parquet'], union_by_name = true) WHERE s.a = encode('café') ORDER BY i;
+----
+1
+2
+
+query I
+SELECT i FROM read_parquet(['{TEST_DIR}/nested_text.parquet', '{TEST_DIR}/nested_bytes.parquet'], union_by_name = true) WHERE l[1] = encode('café') ORDER BY i;
+----
+1
+2
+
+# struct fields that differ between the files are remapped, the text still becomes bytes
+statement ok
+COPY (SELECT {'a': 'café', 'x': 1} AS s, 1 AS i) TO '{TEST_DIR}/remap_text.parquet';
+
+statement ok
+COPY (SELECT {'a': encode('café'), 'y': 2} AS s, 2 AS i) TO '{TEST_DIR}/remap_bytes.parquet';
+
+query III
+SELECT i, s, typeof(s) FROM read_parquet(['{TEST_DIR}/remap_text.parquet', '{TEST_DIR}/remap_bytes.parquet'], union_by_name = true) ORDER BY i;
+----
+1	{'a': 'caf\\xC3\\xA9', 'x': 1, 'y': NULL}	STRUCT(a BLOB, x INTEGER, y INTEGER)
+2	{'a': 'caf\\xC3\\xA9', 'x': NULL, 'y': 2}	STRUCT(a BLOB, x INTEGER, y INTEGER)
+
+query II
+SELECT i, s.a FROM read_parquet(['{TEST_DIR}/remap_text.parquet', '{TEST_DIR}/remap_bytes.parquet'], union_by_name = true) ORDER BY i;
+----
+1	caf\xC3\xA9
+2	caf\xC3\xA9
+
+# a backslash in the text is a byte, not the start of an escape
+statement ok
+COPY (SELECT ['a\x41'] AS l, {'a': 'a\x41'} AS s, 3 AS i) TO '{TEST_DIR}/nested_backslash.parquet';
+
+query IIII
+SELECT i, l, s, octet_length(l[1]) FROM read_parquet(['{TEST_DIR}/nested_backslash.parquet', '{TEST_DIR}/nested_bytes.parquet'], union_by_name = true) ORDER BY i;
+----
+2	['caf\\xC3\\xA9']	{'a': 'caf\\xC3\\xA9', 'n': 2}	5
+3	['a\\x5Cx41']	{'a': 'a\\x5Cx41', 'n': NULL}	5
+
+# text keys and values of a map
+statement ok
+COPY (SELECT MAP {'café': 'café'} AS m, 1 AS i) TO '{TEST_DIR}/map_text.parquet';
+
+statement ok
+COPY (SELECT MAP {encode('k'): encode('v')} AS m, 2 AS i) TO '{TEST_DIR}/map_bytes.parquet';
+
+query III
+SELECT i, m, typeof(m) FROM read_parquet(['{TEST_DIR}/map_text.parquet', '{TEST_DIR}/map_bytes.parquet'], union_by_name = true) ORDER BY i;
+----
+1	{'caf\\xC3\\xA9'='caf\\xC3\\xA9'}	MAP(BLOB, BLOB)
+2	{k=v}	MAP(BLOB, BLOB)
+
+# the other casts of a column stay as they are
+statement ok
+COPY (SELECT [1, 2] AS li, 'x' AS t, 1 AS i) TO '{TEST_DIR}/nested_ints.parquet';
+
+statement ok
+COPY (SELECT [3000000000] AS li, encode('y') AS t, 2 AS i) TO '{TEST_DIR}/nested_bigints.parquet';
+
+query IIIII
+SELECT i, li, typeof(li), t, typeof(t) FROM read_parquet(['{TEST_DIR}/nested_ints.parquet', '{TEST_DIR}/nested_bigints.parquet'], union_by_name = true) ORDER BY i;
+----
+1	[1, 2]	BIGINT[]	x	BLOB
+2	[3000000000]	BIGINT[]	y	BLOB
+
+# COPY into nested BLOB columns reads the text of the file as its bytes as well
+statement ok
+CREATE TABLE blobs (l BLOB[], s STRUCT(a BLOB), m MAP(VARCHAR, BLOB));
+
+statement ok
+COPY (SELECT ['café'] AS l, {'a': 'café'} AS s, MAP {'k': 'café'} AS m) TO '{TEST_DIR}/copy_text.parquet';
+
+statement ok
+COPY blobs FROM '{TEST_DIR}/copy_text.parquet';
+
+query IIII
+SELECT l, s, m, l[1] = encode('café') FROM blobs;
+----
+['caf\\xC3\\xA9']	{'a': 'caf\\xC3\\xA9'}	{k='caf\\xC3\\xA9'}	true

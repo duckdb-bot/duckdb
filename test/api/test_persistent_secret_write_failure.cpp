@@ -248,11 +248,11 @@ TEST_CASE("A replaced secret keeps the file it was loaded from", "[api][secrets]
 	REQUIRE(SecretFiles(secret_dir).empty());
 }
 
-TEST_CASE("A replacement that the catalog rejects does not touch the committed secret's file", "[api][secrets]") {
+TEST_CASE("A write the catalog rejects leaves its file, and the catalog the committed secret", "[api][secrets]") {
 	auto config = UnredactedConfig();
 	DuckDB db(nullptr, config.get());
 	Connection con(db);
-	auto secret_dir = TestCreatePath("persistent_secret_rejected_replacement");
+	auto secret_dir = TestCreatePath("persistent_secret_rejected_write");
 	REQUIRE_NO_FAIL(con.Query("SET secret_directory = '" + secret_dir + "'"));
 	REQUIRE_NO_FAIL(con.Query("CREATE PERSISTENT SECRET s1 (TYPE HTTP, BEARER_TOKEN 'first')"));
 
@@ -267,12 +267,15 @@ TEST_CASE("A replacement that the catalog rejects does not touch the committed s
 	REQUIRE(StringUtil::Contains(result->GetError(), "conflict"));
 	REQUIRE_NO_FAIL(reader.Query("ROLLBACK"));
 
-	// the committed replacement is in the catalog and in the file, and the rejected one left no file
+	// the catalog keeps the committed secret, while the file, written before the conflict was found, holds the
+	// rejected one until the next replacement
 	result = con.Query("SELECT secret_string LIKE '%bearer_token=winner%' FROM duckdb_secrets(redact := false)");
 	REQUIRE(result->RowCount() == 1);
 	REQUIRE(CHECK_COLUMN(result, 0, {true}));
 	REQUIRE(SecretFiles(secret_dir) == vector<string> {"s1.duckdb_secret"});
-	CheckFreshDatabaseReadsToken(secret_dir, "s1", "winner");
+	CheckFreshDatabaseReadsToken(secret_dir, "s1", "loser");
+	REQUIRE_NO_FAIL(con.Query("CREATE OR REPLACE PERSISTENT SECRET s1 (TYPE HTTP, BEARER_TOKEN 'third')"));
+	CheckFreshDatabaseReadsToken(secret_dir, "s1", "third");
 
 	// a creation conflicts the same way when another connection created the secret after the transaction's snapshot
 	REQUIRE_NO_FAIL(reader.Query("BEGIN"));
@@ -288,7 +291,9 @@ TEST_CASE("A replacement that the catalog rejects does not touch the committed s
 	REQUIRE(result->RowCount() == 1);
 	REQUIRE(CHECK_COLUMN(result, 0, {true}));
 	REQUIRE(SecretFiles(secret_dir) == vector<string> {"s1.duckdb_secret", "s2.duckdb_secret"});
-	CheckFreshDatabaseReadsToken(secret_dir, "s2", "first");
+	CheckFreshDatabaseReadsToken(secret_dir, "s2", "second");
+	REQUIRE_NO_FAIL(con.Query("DROP PERSISTENT SECRET s2"));
+	REQUIRE(SecretFiles(secret_dir) == vector<string> {"s1.duckdb_secret"});
 }
 
 TEST_CASE("A failed replacement through the system transaction keeps the replaced secret", "[api][secrets]") {
@@ -301,7 +306,7 @@ TEST_CASE("A failed replacement through the system transaction keeps the replace
 	REQUIRE_NO_FAIL(con.Query("SET secret_directory = '" + secret_dir + "'"));
 
 	// secrets registered with the system transaction, as an extension does, have no transaction undoing a catalog
-	// change, so the catalog may only change once the new file is complete
+	// change, so the catalog may only change once the new file is complete and in place
 	auto &secret_manager = SecretManager::Get(*db.instance);
 	auto transaction = CatalogTransaction::GetSystemTransaction(*db.instance);
 	auto register_secret = [&](const string &name, const string &token) {
@@ -318,6 +323,17 @@ TEST_CASE("A failed replacement through the system transaction keeps the replace
 	};
 	REQUIRE(register_secret("s1", "abc").empty());
 	REQUIRE(SecretFiles(secret_dir) == vector<string> {"s1.duckdb_secret"});
+	auto check_replaced_secret_kept = [&]() {
+		auto result =
+		    con.Query("SELECT name, persistent, secret_string LIKE '%bearer_token=abc%' FROM duckdb_secrets(redact "
+		              ":= false)");
+		REQUIRE(result->RowCount() == 1);
+		REQUIRE(CHECK_COLUMN(result, 0, {"s1"}));
+		REQUIRE(CHECK_COLUMN(result, 1, {true}));
+		REQUIRE(CHECK_COLUMN(result, 2, {true}));
+		REQUIRE(SecretFiles(secret_dir) == vector<string> {"s1.duckdb_secret"});
+		CheckFreshDatabaseReadsToken(secret_dir, "s1", "abc");
+	};
 
 	// while the new file is written, the replaced secret is still in the catalog with its token
 	unique_ptr<QueryResult> secret_during_write;
@@ -334,13 +350,12 @@ TEST_CASE("A failed replacement through the system transaction keeps the replace
 	REQUIRE(StringUtil::Contains(error, "Could not fsync"));
 	REQUIRE(secret_during_write);
 	REQUIRE(CHECK_COLUMN(secret_during_write, 0, {true}));
-	auto result =
-	    con.Query("SELECT name, persistent, secret_string LIKE '%bearer_token=abc%' FROM duckdb_secrets(redact "
-	              ":= false)");
-	REQUIRE(result->RowCount() == 1);
-	REQUIRE(CHECK_COLUMN(result, 0, {"s1"}));
-	REQUIRE(CHECK_COLUMN(result, 1, {true}));
-	REQUIRE(CHECK_COLUMN(result, 2, {true}));
-	REQUIRE(SecretFiles(secret_dir) == vector<string> {"s1.duckdb_secret"});
-	CheckFreshDatabaseReadsToken(secret_dir, "s1", "abc");
+	check_replaced_secret_kept();
+
+	// a rename that fails changes nothing either, as the catalog changes only after the file is in place
+	fs.fail_secret_move = true;
+	error = register_secret("s1", "xyz");
+	fs.fail_secret_move = false;
+	REQUIRE(StringUtil::Contains(error, "Could not rename"));
+	check_replaced_secret_kept();
 }

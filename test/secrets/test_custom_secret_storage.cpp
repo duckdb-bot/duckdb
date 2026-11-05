@@ -60,11 +60,9 @@ public:
 	bool include_in_lookups;
 
 protected:
-	duckdb::unique_ptr<PendingSecretWrite> WriteSecret(const BaseSecret &secret,
-	                                                   OnCreateConflict on_conflict) override {
+	void WriteSecret(const BaseSecret &secret, OnCreateConflict on_conflict) override {
 		duckdb::lock_guard<duckdb::mutex> lock(logger.lock);
 		logger.write_secret_requests.emplace_back(secret.GetName());
-		return nullptr;
 	};
 	virtual void RemoveSecret(const string &secret, OnEntryNotFound on_entry_not_found) override {
 		duckdb::lock_guard<duckdb::mutex> lock(logger.lock);

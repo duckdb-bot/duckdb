@@ -123,17 +123,6 @@ public:
 	unique_ptr<SecretEntry> secret;
 };
 
-//! A secret that a storage has written but that is not the stored secret of its name until it is published. A write
-//! that goes unpublished is discarded.
-class PendingSecretWrite {
-public:
-	virtual ~PendingSecretWrite() = default;
-
-public:
-	//! Puts the written secret in the place of the stored secret of its name
-	virtual void Publish() = 0;
-};
-
 //! Base Implementation for catalog set based secret storage
 class CatalogSetSecretStorage : public SecretStorage {
 public:
@@ -157,9 +146,8 @@ public:
 	                                        optional_ptr<CatalogTransaction> transaction = nullptr) override;
 
 protected:
-	//! Writes the secret where the storage persists it, without replacing the stored secret of its name yet, and
-	//! returns the write to publish once the catalog holds the secret, or nullptr when the storage writes nothing
-	virtual unique_ptr<PendingSecretWrite> WriteSecret(const BaseSecret &secret, OnCreateConflict on_conflict);
+	//! Callback called on Store to allow child classes to implement persistence.
+	virtual void WriteSecret(const BaseSecret &secret, OnCreateConflict on_conflict);
 	virtual void RemoveSecret(const string &name, OnEntryNotFound on_entry_not_found);
 	//! Returns the CatalogTransaction in `transaction` if not set, return the System transaction
 	CatalogTransaction GetTransactionOrDefault(optional_ptr<CatalogTransaction> transaction);
@@ -213,8 +201,8 @@ public:
 	static string SecretNameFromFileName(const string &file_name);
 
 protected:
-	//! Writes the secret to a temporary file, which replaces the secret's file when the write is published
-	unique_ptr<PendingSecretWrite> WriteSecret(const BaseSecret &secret, OnCreateConflict on_conflict) override;
+	//! Implements the writes to disk
+	void WriteSecret(const BaseSecret &secret, OnCreateConflict on_conflict) override;
 	//! Implements the deletes from disk
 	void RemoveSecret(const string &secret, OnEntryNotFound on_entry_not_found) override;
 

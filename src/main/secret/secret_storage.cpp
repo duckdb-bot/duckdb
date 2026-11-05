@@ -146,10 +146,8 @@ unique_ptr<SecretEntry> CatalogSetSecretStorage::StoreSecret(unique_ptr<const Ba
 		}
 	}
 
-	// a failed write leaves the catalog as it was
-	auto write = WriteSecret(*secret, on_conflict);
-	// a change of the entry that conflicts with another transaction's is found by the drop or the creation, before the
-	// stored secret is replaced
+	// the secret is written completely before the catalog changes, so a failed write leaves the catalog as it was
+	WriteSecret(*secret, on_conflict);
 	if (existing) {
 		secrets->DropEntry(GetTransactionOrDefault(transaction), secret_name, true, true);
 	}
@@ -159,9 +157,6 @@ unique_ptr<SecretEntry> CatalogSetSecretStorage::StoreSecret(unique_ptr<const Ba
 	secret_entry->secret->persist_type = persistent ? SecretPersistType::PERSISTENT : SecretPersistType::TEMPORARY;
 	LogicalDependencyList l;
 	secrets->CreateEntry(GetTransactionOrDefault(transaction), secret_name, std::move(secret_entry), l);
-	if (write) {
-		write->Publish();
-	}
 
 	auto secret_catalog_entry =
 	    &secrets->GetEntry(GetTransactionOrDefault(transaction), secret_name)->Cast<SecretCatalogEntry>();
@@ -310,10 +305,8 @@ LocalFileSecretStorage::LocalFileSecretStorage(SecretManager &manager, DatabaseI
 	                                make_uniq<DefaultSecretGenerator>(catalog, manager, persistent_secrets, files));
 }
 
-unique_ptr<PendingSecretWrite> CatalogSetSecretStorage::WriteSecret(const BaseSecret &secret,
-                                                                    OnCreateConflict on_conflict) {
+void CatalogSetSecretStorage::WriteSecret(const BaseSecret &secret, OnCreateConflict on_conflict) {
 	// By default, this writes nothing
-	return nullptr;
 }
 void CatalogSetSecretStorage::RemoveSecret(const string &name, OnEntryNotFound on_entry_not_found) {
 	// By default, this writes nothing
@@ -392,44 +385,7 @@ string LocalFileSecretStorage::SecretNameFromFileName(const string &file_name) {
 	return result;
 }
 
-//! The temporary file of a secret, renamed over the secret's file when published and removed when it is not
-class PendingSecretFile : public PendingSecretWrite {
-public:
-	PendingSecretFile(FileSystem &fs, string temp_path, string file_path, Identifier secret_name,
-	                  shared_ptr<PersistentSecretFiles> files)
-	    : fs(fs), temp_path(std::move(temp_path)), file_path(std::move(file_path)), secret_name(std::move(secret_name)),
-	      files(std::move(files)) {
-	}
-	~PendingSecretFile() override {
-		if (published) {
-			return;
-		}
-		// the secret is not stored, so the temporary file goes, and its error cannot replace the one being reported
-		try {
-			fs.TryRemoveFile(temp_path);
-		} catch (...) { // NOLINT
-		}
-	}
-
-public:
-	void Publish() override {
-		// the rename replaces the secret's file in one step, so a crash leaves either the old file or the new one
-		fs.MoveFile(temp_path, file_path);
-		published = true;
-		files->Set(secret_name, file_path);
-	}
-
-private:
-	FileSystem &fs;
-	const string temp_path;
-	const string file_path;
-	const Identifier secret_name;
-	shared_ptr<PersistentSecretFiles> files;
-	bool published = false;
-};
-
-unique_ptr<PendingSecretWrite> LocalFileSecretStorage::WriteSecret(const BaseSecret &secret,
-                                                                   OnCreateConflict on_conflict) {
+void LocalFileSecretStorage::WriteSecret(const BaseSecret &secret, OnCreateConflict on_conflict) {
 	auto &fs = FileSystem::GetLocal(db);
 
 	// We may need to create the secret dir here if the directory was not present during LocalFileSecretStorage
@@ -462,10 +418,20 @@ unique_ptr<PendingSecretWrite> LocalFileSecretStorage::WriteSecret(const BaseSec
 	}
 	string temp_path = file_path + ".tmp-" + UUID::ToString(UUID::GenerateRandomUUID());
 
-	// the complete file is written next to the secret's file, which it replaces when the write is published
-	auto pending = make_uniq<PendingSecretFile>(fs, temp_path, file_path, secret_name, files);
-	WriteSecretFileToDisk(fs, temp_path, secret);
-	return std::move(pending);
+	// the complete file is written beside the secret's file and renamed over it in one step, so a crash leaves either
+	// the old file or the new one
+	try {
+		WriteSecretFileToDisk(fs, temp_path, secret);
+		fs.MoveFile(temp_path, file_path);
+	} catch (...) {
+		// the secret is not stored, so the temporary file goes, and its error cannot replace the one being reported
+		try {
+			fs.TryRemoveFile(temp_path);
+		} catch (...) { // NOLINT
+		}
+		throw;
+	}
+	files->Set(secret_name, file_path);
 }
 
 void LocalFileSecretStorage::RemoveSecret(const string &secret, OnEntryNotFound on_entry_not_found) {

@@ -470,21 +470,7 @@ static unique_ptr<ParsedExpression> ListSortUnbind(FunctionUnbindInput &input) {
 	return make_uniq<FunctionExpression>(QualifiedName("system", "main", "cast_to_type"), std::move(result));
 }
 
-//! An unresolved parameter stays unresolved, so the statement binds again once its type is known
-static bool KeepUnresolvedListArgument(ResolveScalarFunctionTypesInput &input) {
-	if (input.GetArgumentType(0).id() != LogicalTypeId::UNKNOWN) {
-		return false;
-	}
-	auto &bound_function = input.GetBoundFunction();
-	bound_function.GetArguments()[0] = LogicalType::UNKNOWN;
-	bound_function.SetReturnType(LogicalType::SQLNULL);
-	return true;
-}
-
 static void ListSortResolveTypes(ResolveScalarFunctionTypesInput &input) {
-	if (KeepUnresolvedListArgument(input)) {
-		return;
-	}
 	auto list_type = input.GetArgumentType(0);
 	if (list_type.id() == LogicalTypeId::ARRAY) {
 		list_type = LogicalType::LIST(ArrayType::GetChildType(list_type));
@@ -492,10 +478,6 @@ static void ListSortResolveTypes(ResolveScalarFunctionTypesInput &input) {
 	if (list_type.id() == LogicalTypeId::LIST) {
 		input.GetBoundFunction().SetReturnType(list_type);
 	}
-}
-
-static void ListGradeUpResolveTypes(ResolveScalarFunctionTypesInput &input) {
-	KeepUnresolvedListArgument(input);
 }
 
 static void SetListSortSerialization(ScalarFunction &function) {
@@ -522,11 +504,11 @@ ScalarFunctionSet ListSortFun::GetFunctions() {
 	    .AddParameter("sort_order", LogicalType::VARCHAR)
 	    .AddParameter("null_order", LogicalType::VARCHAR);
 	SetListSortSerialization(sort);
-	sort.SetResolveTypesCallback(ListSortResolveTypes);
+	sort.SetResolveTypesCallback(ScalarFunction::DeferUnresolvedParameters<ListSortResolveTypes>);
 	SetListSortSerialization(sort_order);
-	sort_order.SetResolveTypesCallback(ListSortResolveTypes);
+	sort_order.SetResolveTypesCallback(ScalarFunction::DeferUnresolvedParameters<ListSortResolveTypes>);
 	SetListSortSerialization(sort_orders);
-	sort_orders.SetResolveTypesCallback(ListSortResolveTypes);
+	sort_orders.SetResolveTypesCallback(ScalarFunction::DeferUnresolvedParameters<ListSortResolveTypes>);
 
 	ScalarFunctionSet list_sort;
 	list_sort.AddFunction(sort);
@@ -553,11 +535,11 @@ ScalarFunctionSet ListGradeUpFun::GetFunctions() {
 	    .AddParameter("sort_order", LogicalType::VARCHAR)
 	    .AddParameter("null_order", LogicalType::VARCHAR);
 	SetListSortSerialization(sort);
-	sort.SetResolveTypesCallback(ListGradeUpResolveTypes);
+	sort.SetResolveTypesCallback(ScalarFunction::DeferUnresolvedParameters<>);
 	SetListSortSerialization(sort_order);
-	sort_order.SetResolveTypesCallback(ListGradeUpResolveTypes);
+	sort_order.SetResolveTypesCallback(ScalarFunction::DeferUnresolvedParameters<>);
 	SetListSortSerialization(sort_orders);
-	sort_orders.SetResolveTypesCallback(ListGradeUpResolveTypes);
+	sort_orders.SetResolveTypesCallback(ScalarFunction::DeferUnresolvedParameters<>);
 
 	ScalarFunctionSet list_grade_up;
 	list_grade_up.AddFunction(sort);
@@ -578,9 +560,9 @@ ScalarFunctionSet ListReverseSortFun::GetFunctions() {
 	    .AddParameter("list", LogicalType::LIST(LogicalType::ANY))
 	    .AddParameter("null_order", LogicalType::VARCHAR);
 	SetListSortSerialization(sort_reverse);
-	sort_reverse.SetResolveTypesCallback(ListSortResolveTypes);
+	sort_reverse.SetResolveTypesCallback(ScalarFunction::DeferUnresolvedParameters<ListSortResolveTypes>);
 	SetListSortSerialization(sort_reverse_null_order);
-	sort_reverse_null_order.SetResolveTypesCallback(ListSortResolveTypes);
+	sort_reverse_null_order.SetResolveTypesCallback(ScalarFunction::DeferUnresolvedParameters<ListSortResolveTypes>);
 
 	ScalarFunctionSet list_reverse_sort;
 	list_reverse_sort.AddFunction(sort_reverse);

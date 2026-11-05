@@ -136,6 +136,20 @@ EXECUTE q9b([3, NULL, 2]);
 ----
 [3, 2, NULL]
 
+# parameters in every position, the list stays unresolved and the sort orders are read when the statement is executed
+statement ok
+PREPARE q16 AS SELECT list_sort($1, $2, $3), list_grade_up($1, $2, $3), list_reverse_sort($1, $3);
+
+query III
+EXECUTE q16([3, NULL, 1], 'DESC', 'NULLS FIRST');
+----
+[NULL, 3, 1]	[2, 1, 3]	[NULL, 3, 1]
+
+query III
+EXECUTE q16([3, NULL, 1], 'ASC', 'NULLS LAST');
+----
+[1, 3, NULL]	[3, 1, 2]	[3, 1, NULL]
+
 # a function that folds the unresolved parameter away, which the plan verification of the test runner must not take
 # as a plan without parameters
 statement ok

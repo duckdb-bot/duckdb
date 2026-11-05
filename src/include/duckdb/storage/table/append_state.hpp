@@ -8,6 +8,9 @@
 
 #pragma once
 
+#include "duckdb/common/mutex.hpp"
+#include "duckdb/common/types/column/column_data_collection.hpp"
+#include "duckdb/common/unordered_map.hpp"
 #include "duckdb/common/vector.hpp"
 #include "duckdb/function/compression_function.hpp"
 #include "duckdb/planner/bound_constraint.hpp"
@@ -114,6 +117,13 @@ struct TableAppendState {
 	Vector hashes;
 };
 
+//! The keys of foreign keys that reference their own table, checked once the statement has appended all its rows
+struct DeferredForeignKeyChecks {
+	mutex lock;
+	//! The keys to check of each such foreign key, by the index of its bound constraint
+	unordered_map<idx_t, unique_ptr<ColumnDataCollection>> keys;
+};
+
 struct ConstraintState {
 	explicit ConstraintState(TableCatalogEntry &table_p, const vector<unique_ptr<BoundConstraint>> &bound_constraints)
 	    : table(table_p), bound_constraints(bound_constraints) {
@@ -121,6 +131,8 @@ struct ConstraintState {
 
 	TableCatalogEntry &table;
 	const vector<unique_ptr<BoundConstraint>> &bound_constraints;
+	//! Where an insert that checks foreign keys referencing its own table at its end collects their missing keys
+	optional_ptr<DeferredForeignKeyChecks> deferred_foreign_keys;
 };
 
 struct LocalAppendState {

@@ -34,6 +34,9 @@ public:
 	vector<unique_ptr<Expression>> duplicate_eliminated_columns;
 	//! If this is a DelimJoin, whether it has been flipped to de-duplicating the RHS instead
 	bool delim_flipped = false;
+	//! If this is a DelimJoin, whether it de-duplicates a row_number() OVER () window that it puts on its LHS instead
+	//! of the LHS columns. Set while planning only.
+	bool delim_row_number = false;
 	//! (If join_type == MARK) can this comparison join be converted from a mark join to semi
 	bool convert_mark_to_semi = true;
 	//! Scans where we should push generated filters into (if any)

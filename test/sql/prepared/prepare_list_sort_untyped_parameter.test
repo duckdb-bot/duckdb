@@ -291,16 +291,37 @@ EXECUTE q26b(['b', 'a']);
 ----
 Cannot deduce template type
 
-# aggregate and window functions with an ANY parameter
+# an aggregate function with an ANY parameter, a list aggregate and a window function, each prepared on its own
 statement ok
-PREPARE q27 AS SELECT count($1), list($1)[1], first($1) OVER ();
+PREPARE q27 AS SELECT count($1);
 
-query III
+query I
 EXECUTE q27(3);
 ----
-1	3	3
+1
 
-query III
-EXECUTE q27('x');
+statement ok
+PREPARE q27b AS SELECT list($1)[1];
+
+query I
+EXECUTE q27b(3);
 ----
-1	x	x
+3
+
+query I
+EXECUTE q27b('x');
+----
+x
+
+statement ok
+PREPARE q27c AS SELECT first($1) OVER ();
+
+query I
+EXECUTE q27c(3);
+----
+3
+
+query I
+EXECUTE q27c('x');
+----
+x

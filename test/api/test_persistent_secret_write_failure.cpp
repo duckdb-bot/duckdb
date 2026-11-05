@@ -10,14 +10,15 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <functional>
+#include <thread>
 
 using namespace duckdb;
 
 namespace {
 
-//! Observes the operations on secret files and fails them while enabled, the sync the way a file system reports a
-//! delayed write failure, the rename of the new file into place and the removal of a file
+//! Observes the operations on secret files and fails the sync, the rename or the removal while enabled
 class SecretFileSystem : public LocalFileSystem {
 public:
 	std::atomic<bool> fail_secret_sync {false};
@@ -25,6 +26,8 @@ public:
 	std::atomic<bool> fail_secret_remove {false};
 	//! Runs when a secret file is synced, with the file complete and nothing replaced yet
 	std::function<void()> on_secret_sync;
+	//! Runs when a secret file was renamed into place, before the catalog changes
+	std::function<void()> on_secret_moved;
 	//! Renames of a secret file over an existing file
 	std::atomic<idx_t> moves_over_existing_file {0};
 	//! Removals of the file of a stored secret, as opposed to a temporary file
@@ -53,6 +56,9 @@ public:
 			}
 		}
 		LocalFileSystem::MoveFile(source, target, opener);
+		if (IsSecretFile(target) && on_secret_moved) {
+			on_secret_moved();
+		}
 	}
 
 	bool TryRemoveFile(const string &filename, optional_ptr<FileOpener> opener) override {
@@ -178,6 +184,16 @@ TEST_CASE("A persistent secret whose file cannot be synced is not created", "[ap
 	result = con.Query("SELECT secret_string LIKE '%bearer_token=xyz%' FROM duckdb_secrets(redact := false)");
 	REQUIRE(CHECK_COLUMN(result, 0, {true}));
 	CheckFreshDatabaseReadsToken(secret_dir, "s1", "xyz");
+
+	// a creation of an existing name is refused or ignored before anything is written
+	fs.fail_secret_sync = true;
+	result = con.Query("CREATE PERSISTENT SECRET s1 (TYPE HTTP, BEARER_TOKEN 'other')");
+	REQUIRE(result->HasError());
+	REQUIRE(StringUtil::Contains(result->GetError(), "already exists"));
+	REQUIRE_NO_FAIL(con.Query("CREATE PERSISTENT SECRET IF NOT EXISTS s1 (TYPE HTTP, BEARER_TOKEN 'other')"));
+	fs.fail_secret_sync = false;
+	REQUIRE(SecretFiles(secret_dir) == vector<string> {"s1.duckdb_secret"});
+	CheckFreshDatabaseReadsToken(secret_dir, "s1", "xyz");
 }
 
 TEST_CASE("A replacement renames the new file over the old one and removes no file", "[api][secrets]") {
@@ -267,8 +283,7 @@ TEST_CASE("A write the catalog rejects leaves its file, and the catalog the comm
 	REQUIRE(StringUtil::Contains(result->GetError(), "conflict"));
 	REQUIRE_NO_FAIL(reader.Query("ROLLBACK"));
 
-	// the catalog keeps the committed secret, while the file, written before the conflict was found, holds the
-	// rejected one until the next replacement
+	// the catalog keeps the committed secret, the file holds the rejected one until the next replacement
 	result = con.Query("SELECT secret_string LIKE '%bearer_token=winner%' FROM duckdb_secrets(redact := false)");
 	REQUIRE(result->RowCount() == 1);
 	REQUIRE(CHECK_COLUMN(result, 0, {true}));
@@ -305,8 +320,8 @@ TEST_CASE("A failed replacement through the system transaction keeps the replace
 	auto secret_dir = TestCreatePath("persistent_secret_system_transaction");
 	REQUIRE_NO_FAIL(con.Query("SET secret_directory = '" + secret_dir + "'"));
 
-	// secrets registered with the system transaction, as an extension does, have no transaction undoing a catalog
-	// change, so the catalog may only change once the new file is complete and in place
+	// the system transaction, used by extensions, has no rollback, so the catalog changes only after the file is in
+	// place
 	auto &secret_manager = SecretManager::Get(*db.instance);
 	auto transaction = CatalogTransaction::GetSystemTransaction(*db.instance);
 	auto register_secret = [&](const string &name, const string &token) {
@@ -358,4 +373,28 @@ TEST_CASE("A failed replacement through the system transaction keeps the replace
 	fs.fail_secret_move = false;
 	REQUIRE(StringUtil::Contains(error, "Could not rename"));
 	check_replaced_secret_kept();
+
+	// a drop that arrives between the rename and the catalog change waits for the store, so it removes the new entry
+	// together with its file instead of leaving the entry without a file
+	string drop_error;
+	std::thread drop_thread;
+	fs.on_secret_moved = [&]() {
+		drop_thread = std::thread([&]() {
+			try {
+				secret_manager.DropSecretByName(transaction, Identifier("s1"), OnEntryNotFound::THROW_EXCEPTION,
+				                                SecretPersistType::PERSISTENT);
+			} catch (std::exception &ex) {
+				drop_error = ex.what();
+			}
+		});
+		std::this_thread::sleep_for(std::chrono::milliseconds(500));
+	};
+	error = register_secret("s1", "xyz");
+	fs.on_secret_moved = nullptr;
+	drop_thread.join();
+	REQUIRE(error == "");
+	REQUIRE(drop_error == "");
+	auto result = con.Query("SELECT count(*) FROM duckdb_secrets()");
+	REQUIRE(CHECK_COLUMN(result, 0, {0}));
+	REQUIRE(SecretFiles(secret_dir).empty());
 }

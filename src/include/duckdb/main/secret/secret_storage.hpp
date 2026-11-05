@@ -156,6 +156,8 @@ protected:
 	unique_ptr<CatalogSet> secrets;
 	//! DB instance for accessing the system catalog transaction
 	DatabaseInstance &db;
+	//! Serializes stores and drops, so that a secret's file and its catalog entry change together
+	mutex store_lock;
 };
 
 class TemporarySecretStorage : public CatalogSetSecretStorage {

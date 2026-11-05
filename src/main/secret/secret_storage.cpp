@@ -131,6 +131,7 @@ SecretMatch SecretStorage::SelectBestMatch(SecretEntry &secret_entry, const stri
 unique_ptr<SecretEntry> CatalogSetSecretStorage::StoreSecret(unique_ptr<const BaseSecret> secret,
                                                              OnCreateConflict on_conflict,
                                                              optional_ptr<CatalogTransaction> transaction) {
+	lock_guard<mutex> guard(store_lock);
 	auto secret_name = secret->GetName();
 	auto existing = secrets->GetEntry(GetTransactionOrDefault(transaction), secret_name);
 	if (existing) {
@@ -175,6 +176,7 @@ vector<SecretEntry> CatalogSetSecretStorage::AllSecrets(optional_ptr<CatalogTran
 
 void CatalogSetSecretStorage::DropSecretByName(const Identifier &name, OnEntryNotFound on_entry_not_found,
                                                optional_ptr<CatalogTransaction> transaction) {
+	lock_guard<mutex> guard(store_lock);
 	auto entry = secrets->GetEntry(GetTransactionOrDefault(transaction), Identifier(name));
 	if (!entry) {
 		if (on_entry_not_found == OnEntryNotFound::THROW_EXCEPTION) {
@@ -323,7 +325,7 @@ static void WriteSecretFileToDisk(FileSystem &fs, const string &path, const Base
 	auto open_flags = FileFlags::FILE_FLAGS_WRITE;
 	// Ensure we are writing to a private file with 600 permission
 	open_flags |= FileFlags::FILE_FLAGS_PRIVATE;
-	// Ensure we overwrite anything that may be at the path
+	// Create the file, which must not exist yet
 	open_flags |= FileFlags::FILE_FLAGS_FILE_CREATE_NEW;
 
 	auto file_writer = BufferedFileWriter(fs, path, open_flags);
@@ -404,8 +406,7 @@ void LocalFileSecretStorage::WriteSecret(const BaseSecret &secret, OnCreateConfl
 	}
 
 	auto &secret_name = secret.GetName();
-	// a replaced secret keeps its file, which can be named before names were escaped, and a new secret gets the file
-	// of its escaped name
+	// a replaced secret keeps its file, which can predate escaped names, and a new secret gets its escaped name
 	string file_path = files->Get(secret_name);
 	if (file_path.empty()) {
 		file_path = fs.JoinPath(secret_path, SecretFileName(secret_name.GetIdentifierName()));
@@ -418,8 +419,7 @@ void LocalFileSecretStorage::WriteSecret(const BaseSecret &secret, OnCreateConfl
 	}
 	string temp_path = file_path + ".tmp-" + UUID::ToString(UUID::GenerateRandomUUID());
 
-	// the complete file is written beside the secret's file and renamed over it in one step, so a crash leaves either
-	// the old file or the new one
+	// the complete file is renamed over the secret's file in one step, so a crash leaves the old file or the new one
 	try {
 		WriteSecretFileToDisk(fs, temp_path, secret);
 		fs.MoveFile(temp_path, file_path);

@@ -151,8 +151,7 @@ PEGTransformerFactory::FinalizePivotStatementTrampoline(PEGTransformer &transfor
 		auto enum_name = "__pivot_enum_" + UUID::ToString(UUID::GenerateRandomUUID());
 
 		auto new_select = make_uniq<SelectNode>();
-		transformer.ExtractCTEsRecursive(new_select->cte_map);
-		new_select->from_table = source->Copy();
+		new_select->from_table = transformer.WrapInEnclosingCTEScopes(source->Copy(), new_select->cte_map);
 		AddPivotEntry(transformer, enum_name, std::move(new_select), col.pivot_expressions[0]->Copy(),
 		              std::move(col.subquery), has_parameters);
 		col.pivot_enum = Identifier(enum_name);
@@ -280,8 +279,7 @@ PEGTransformerFactory::FinalizeUnpivotStatementTrampoline(PEGTransformer &transf
 		auto enum_name = "__pivot_enum_" + UUID::ToString(UUID::GenerateRandomUUID());
 
 		auto new_select = make_uniq<SelectNode>();
-		transformer.ExtractCTEsRecursive(new_select->cte_map);
-		new_select->from_table = source->Copy();
+		new_select->from_table = transformer.WrapInEnclosingCTEScopes(source->Copy(), new_select->cte_map);
 		AddPivotEntry(transformer, enum_name, std::move(new_select), col.pivot_expressions[0]->Copy(),
 		              std::move(col.subquery), has_parameters);
 		col.pivot_enum = Identifier(enum_name);

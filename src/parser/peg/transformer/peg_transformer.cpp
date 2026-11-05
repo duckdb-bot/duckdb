@@ -2,9 +2,12 @@
 
 #include "duckdb/parser/peg/compiled_grammar.hpp"
 #include "duckdb/parser/statement/multi_statement.hpp"
+#include "duckdb/parser/statement/select_statement.hpp"
 #include "duckdb/parser/query_node/select_node.hpp"
 #include "duckdb/parser/expression/cast_expression.hpp"
 #include "duckdb/parser/expression/operator_expression.hpp"
+#include "duckdb/parser/expression/star_expression.hpp"
+#include "duckdb/parser/tableref/subqueryref.hpp"
 
 namespace duckdb {
 
@@ -472,18 +475,31 @@ void PEGTransformer::PivotEntryCheck(const string &type) {
 	}
 }
 
-void PEGTransformer::ExtractCTEsRecursive(CommonTableExpressionMap &cte_map) {
-	// Traverse the stack from the most recent scope back to the global scope
-	// Use reverse iterator if you push new scopes to the back
-	for (auto it = stored_cte_map.rbegin(); it != stored_cte_map.rend(); ++it) {
-		auto &current_scope = it->get();
-		for (auto &entry : current_scope.map) {
-			// Check if this CTE name is already in our result map
-			if (cte_map.map.find(entry.first) == cte_map.map.end()) {
-				cte_map.map[entry.first] = entry.second->Copy();
-			}
+unique_ptr<TableRef> PEGTransformer::WrapInEnclosingCTEScopes(unique_ptr<TableRef> source,
+                                                              CommonTableExpressionMap &cte_map) {
+	// the scopes are stored from the outermost to the innermost, a scope without CTEs changes nothing
+	vector<reference<CommonTableExpressionMap>> scopes;
+	for (auto &scope : stored_cte_map) {
+		if (!scope.get().map.empty()) {
+			scopes.push_back(scope);
 		}
 	}
+	if (scopes.empty()) {
+		return source;
+	}
+	// every scope but the outermost becomes a subquery with the scope's WITH clause around the source, innermost
+	// first, so that each CTE is bound in the scope that defines it and sees the scopes around it
+	for (idx_t i = scopes.size() - 1; i > 0; i--) {
+		auto select_node = make_uniq<SelectNode>();
+		select_node->cte_map = scopes[i].get().Copy();
+		select_node->select_list.push_back(make_uniq<StarExpression>());
+		select_node->from_table = std::move(source);
+		auto select = make_uniq<SelectStatement>();
+		select->node = std::move(select_node);
+		source = make_uniq<SubqueryRef>(std::move(select));
+	}
+	cte_map = scopes[0].get().Copy();
+	return source;
 }
 
 bool PEGTransformer::IsWindowFrameDefault(WindowBoundary start, WindowBoundary end) {

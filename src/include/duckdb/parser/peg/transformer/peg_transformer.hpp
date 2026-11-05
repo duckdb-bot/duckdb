@@ -617,7 +617,9 @@ public:
 	unique_ptr<SQLStatement> CreatePivotStatement(unique_ptr<SQLStatement> statement);
 	unique_ptr<SQLStatement> GenerateCreateEnumStmt(unique_ptr<CreatePivotEntry> entry);
 	void PivotEntryCheck(const string &type);
-	void ExtractCTEsRecursive(CommonTableExpressionMap &cte_map);
+	//! Wraps the source of a PIVOT in the enclosing WITH scopes but the outermost, which is copied into cte_map, so
+	//! that a query over the result binds the CTEs as the PIVOT does
+	unique_ptr<TableRef> WrapInEnclosingCTEScopes(unique_ptr<TableRef> source, CommonTableExpressionMap &cte_map);
 	bool IsWindowFrameDefault(WindowBoundary start, WindowBoundary end);
 	unique_ptr<WindowExpression> GetWindowClause(const Identifier &window_name);
 	void SetQueryLocation(ParsedExpression &expr, QueryLocation query_location);

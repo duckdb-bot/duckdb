@@ -76,6 +76,10 @@ public:
 	virtual bool Persistent() const {
 		return persistent;
 	}
+	//! Makes what the storage keeps outside the catalog follow the catalog again after the rollback of a transaction
+	//! that changed the secret; a storage with nothing outside the catalog has nothing to do
+	virtual void RollbackSecret(const Identifier &name) {
+	}
 
 protected:
 	//! Helper function to select the best matching secret within a storage. Tie-breaks within a storage are broken
@@ -200,7 +204,16 @@ public:
 	//! The secret name for a persistent secret file name (reverses SecretFileName)
 	static string SecretNameFromFileName(const string &file_name);
 
+	unique_ptr<SecretEntry> StoreSecret(unique_ptr<const BaseSecret> secret, OnCreateConflict on_conflict,
+	                                    optional_ptr<CatalogTransaction> transaction = nullptr) override;
+	void DropSecretByName(const Identifier &name, OnEntryNotFound on_entry_not_found,
+	                      optional_ptr<CatalogTransaction> transaction = nullptr) override;
+	//! Rewrites or removes the file of the secret, as the catalog has or lacks the secret after the rollback
+	void RollbackSecret(const Identifier &name) override;
+
 protected:
+	//! Records the secret in the connection's active transaction, so that a rollback makes its file follow the catalog
+	void StageChange(optional_ptr<CatalogTransaction> transaction, const Identifier &name);
 	//! Implements the writes to disk
 	void WriteSecret(const BaseSecret &secret, OnCreateConflict on_conflict) override;
 	//! Implements the deletes from disk

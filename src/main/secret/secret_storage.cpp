@@ -4,6 +4,7 @@
 #include "duckdb/common/local_file_system.hpp"
 #include "duckdb/main/database_file_opener.hpp"
 #include "duckdb/common/mutex.hpp"
+#include "duckdb/common/reference_map.hpp"
 #include "duckdb/common/serializer/binary_deserializer.hpp"
 #include "duckdb/common/serializer/binary_serializer.hpp"
 #include "duckdb/common/serializer/buffered_file_reader.hpp"
@@ -266,6 +267,52 @@ static bool TryReadSecretName(FileSystem &fs, const string &path, string &name) 
 	}
 }
 
+namespace {
+
+constexpr const char *PERSISTENT_SECRET_UNDO_STATE_KEY = "persistent_secret_undo";
+
+//! The persistent secrets changed by a connection's active transaction. Their files change when the statement runs
+//! and the catalog when the transaction commits, so after a rollback the files are made to follow the catalog again.
+struct PersistentSecretUndoState : public ClientContextState {
+	void StageChange(MetaTransaction &transaction, SecretStorage &storage, const Identifier &name) {
+		lock_guard<mutex> guard(lock);
+		if (undo_transaction_id != transaction.global_transaction_id) {
+			// the first change of a new transaction, what is left belongs to a transaction that already ended
+			changes.clear();
+			undo_transaction_id = transaction.global_transaction_id;
+		}
+		changes[storage].insert(name);
+	}
+
+	void TransactionCommit(MetaTransaction &transaction, ClientContext &context) override {
+		lock_guard<mutex> guard(lock);
+		changes.clear();
+	}
+
+	void TransactionRollback(MetaTransaction &transaction, ClientContext &context) override {
+		reference_map_t<SecretStorage, identifier_set_t> rolled_back;
+		{
+			lock_guard<mutex> guard(lock);
+			rolled_back = std::move(changes);
+			changes.clear();
+		}
+		for (auto &storage_changes : rolled_back) {
+			for (auto &name : storage_changes.second) {
+				storage_changes.first.get().RollbackSecret(name);
+			}
+		}
+	}
+
+private:
+	mutex lock;
+	//! The names changed by the active transaction, per storage; a storage lives as long as the database
+	reference_map_t<SecretStorage, identifier_set_t> changes;
+	//! The transaction the changes belong to
+	transaction_t undo_transaction_id = 0;
+};
+
+} // namespace
+
 LocalFileSecretStorage::LocalFileSecretStorage(SecretManager &manager, DatabaseInstance &db_p, const string &name_p,
                                                const string &secret_path_p)
     : CatalogSetSecretStorage(db_p, name_p, LOCAL_FILE_STORAGE_OFFSET), files(make_shared_ptr<PersistentSecretFiles>()),
@@ -423,6 +470,51 @@ void LocalFileSecretStorage::WriteSecret(const BaseSecret &secret, OnCreateConfl
 
 	fs.MoveFile(temp_path, file_path);
 	files->Set(secret_name, file_path);
+}
+
+unique_ptr<SecretEntry> LocalFileSecretStorage::StoreSecret(unique_ptr<const BaseSecret> secret,
+                                                            OnCreateConflict on_conflict,
+                                                            optional_ptr<CatalogTransaction> transaction) {
+	StageChange(transaction, secret->GetName());
+	return CatalogSetSecretStorage::StoreSecret(std::move(secret), on_conflict, transaction);
+}
+
+void LocalFileSecretStorage::DropSecretByName(const Identifier &name, OnEntryNotFound on_entry_not_found,
+                                              optional_ptr<CatalogTransaction> transaction) {
+	StageChange(transaction, name);
+	CatalogSetSecretStorage::DropSecretByName(name, on_entry_not_found, transaction);
+}
+
+void LocalFileSecretStorage::StageChange(optional_ptr<CatalogTransaction> transaction, const Identifier &name) {
+	if (!transaction || !transaction->HasContext()) {
+		// the system transaction is not rolled back
+		return;
+	}
+	auto &context = transaction->GetContext();
+	auto state = context.Services().GetRegisteredState().GetOrCreate<PersistentSecretUndoState>(
+	    PERSISTENT_SECRET_UNDO_STATE_KEY);
+	state->StageChange(MetaTransaction::Get(context), *this, name);
+}
+
+void LocalFileSecretStorage::RollbackSecret(const Identifier &name) {
+	// the file follows the entry that is live after the rollback, whichever transaction made it
+	CatalogTransaction all_versions(db, SYSTEM_TRANSACTION_TIMESTAMP, VisibilityBound::IncludingUncommitted());
+	auto entry = secrets->GetEntry(all_versions, name);
+	if (entry) {
+		WriteSecret(*entry->Cast<SecretCatalogEntry>().secret->secret, OnCreateConflict::REPLACE_ON_CONFLICT);
+		return;
+	}
+	auto &fs = FileSystem::GetLocal(db);
+	auto file = files->Get(name);
+	if (file.empty()) {
+		file = fs.JoinPath(secret_path, SecretFileName(name.GetIdentifierName()));
+	}
+	if (fs.FileExists(file)) {
+		RemoveSecret(name.GetIdentifierName(), OnEntryNotFound::RETURN_NULL);
+		return;
+	}
+	files->Remove(name);
+	persistent_secrets.erase(name);
 }
 
 void LocalFileSecretStorage::RemoveSecret(const string &secret, OnEntryNotFound on_entry_not_found) {

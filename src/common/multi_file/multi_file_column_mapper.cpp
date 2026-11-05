@@ -1,4 +1,6 @@
 #include "duckdb/common/multi_file/multi_file_column_mapper.hpp"
+#include "duckdb/function/cast/bound_cast_data.hpp"
+#include "duckdb/function/cast/cast_function_set.hpp"
 #include "duckdb/function/cast/default_casts.hpp"
 #include "duckdb/function/builtin_function_lookup.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
@@ -247,6 +249,80 @@ static ColumnMapResult MapColumn(ClientContext &context, const MultiFileColumnDe
                                  const vector<MultiFileColumnDefinition> &local_columns, const ColumnMapper &mapper,
                                  MultiFileLocalIndex top_level_index = MultiFileLocalIndex());
 
+//! Whether reading a file column of the source type as the target type turns text into bytes somewhere, a VARCHAR
+//! into a BLOB at the top level or inside a nested type
+static bool ReadsTextAsBytes(const LogicalType &source, const LogicalType &target) {
+	if (source.id() == LogicalTypeId::VARCHAR) {
+		return target.id() == LogicalTypeId::BLOB;
+	}
+	if (source.id() != target.id()) {
+		return false;
+	}
+	switch (source.id()) {
+	case LogicalTypeId::LIST:
+		return ReadsTextAsBytes(ListType::GetChildType(source), ListType::GetChildType(target));
+	case LogicalTypeId::ARRAY:
+		return ReadsTextAsBytes(ArrayType::GetChildType(source), ArrayType::GetChildType(target));
+	case LogicalTypeId::MAP:
+		return ReadsTextAsBytes(MapType::KeyType(source), MapType::KeyType(target)) ||
+		       ReadsTextAsBytes(MapType::ValueType(source), MapType::ValueType(target));
+	case LogicalTypeId::STRUCT: {
+		// the fields pair up the way the struct cast pairs them, by name, or by position for unnamed structs
+		auto mapping = StructBoundCastData::GetFieldMapping(source, target);
+		auto &source_children = StructType::GetChildTypes(source);
+		auto &target_children = StructType::GetChildTypes(target);
+		for (idx_t i = 0; i < mapping.source_indexes.size(); i++) {
+			if (ReadsTextAsBytes(source_children[mapping.source_indexes[i]].second,
+			                     target_children[mapping.target_indexes[i]].second)) {
+				return true;
+			}
+		}
+		return false;
+	}
+	default:
+		return false;
+	}
+}
+
+//! The cast of a leaf of a file column. The text in a file becomes its UTF-8 bytes when it is read as BLOB, it is not a
+//! blob literal with \x escapes. Every other leaf takes the cast of the database, those of the extensions included.
+//! Nested types never reach this, so the built-in nested casts bind their children through the set of the file column
+static BoundCastInfo BindFileColumnCast(BindCastInput &input, const LogicalType &source, const LogicalType &target) {
+	if (source.id() == LogicalTypeId::VARCHAR && target.id() == LogicalTypeId::BLOB) {
+		return BoundCastInfo(DefaultCasts::ReinterpretCast);
+	}
+	if (!input.context) {
+		return nullptr;
+	}
+	GetCastFunctionInput get_input(input.context);
+	get_input.query_location = input.query_location;
+	return CastFunctionSet::Get(*input.context).GetCastFunction(source, target, get_input);
+}
+
+//! Casts a file column to the type it is read as. Where that turns text into bytes, at any nesting level, the cast is
+//! bound in a set of its own, in which text read as BLOB becomes its bytes, the other leaves keep the casts of the
+//! database and the built-in nested casts bind their children through the set. Every other column keeps the casts of
+//! the database
+static unique_ptr<Expression> CastFileColumn(ClientContext &context, unique_ptr<Expression> expr,
+                                             const LogicalType &target_type) {
+	auto &source_type = expr->GetReturnType();
+	if (!ReadsTextAsBytes(source_type, target_type)) {
+		return BoundCastExpression::AddCastToType(context, std::move(expr), target_type);
+	}
+	CastFunctionSet file_casts;
+	// every pair of leaf types reaches the registration of ANY, except that a DECIMAL or an ENUM, aliased or not,
+	// matches an entry of its own family only
+	const vector<LogicalType> families {LogicalType::ANY, LogicalTypeId::DECIMAL, LogicalTypeId::ENUM};
+	for (auto &source : families) {
+		for (auto &target : families) {
+			file_casts.RegisterCastFunction(source, target, BindFileColumnCast);
+		}
+	}
+	GetCastFunctionInput get_input(context);
+	auto file_cast = file_casts.GetCastFunction(source_type, target_type, get_input);
+	return BoundCastExpression::Create(std::move(expr), target_type, std::move(file_cast));
+}
+
 static ColumnMapResult MapColumnList(ClientContext &context, const MultiFileColumnDefinition &global_column,
                                      const ColumnIndex &global_index, const MultiFileColumnDefinition &local_column,
                                      const MultiFileLocalIndex &local_id, const ColumnMapper &mapper,
@@ -488,6 +564,12 @@ static ColumnMapResult MapColumnStruct(ClientContext &context, const MultiFileCo
 					auto map_entry = StructValue::GetChildren(child_mapping.column_map)[1];
 					child_mapping.column_map = std::move(map_entry);
 				}
+			} else if (child_mapping.local_column && !child_column_index.IsPushdownExtract() &&
+			           child_column_index.HasType() &&
+			           ReadsTextAsBytes(child_mapping.local_column->type, child_column_index.GetType())) {
+				// the extracted field is read with the type it has in this file, so that its text becomes bytes in
+				// the cast of the mapping instead of in the reader
+				child_column_index.SetType(child_mapping.local_column->type);
 			}
 			vector<ColumnIndex> single_child;
 			single_child.push_back(std::move(*child_mapping.column_index));
@@ -651,12 +733,8 @@ static unique_ptr<Expression> ConstructMapExpression(ClientContext &context, Mul
 	    !is_trivially_mappable && local_column_type.IsNested();
 	if (!can_use_remap_struct) {
 		// not a struct - potentially add a cast
-		if (local_column_type.id() == LogicalTypeId::VARCHAR && global_column_type.id() == LogicalTypeId::BLOB) {
-			// the text in a file becomes its UTF-8 bytes, it is not a blob literal with \x escapes
-			expr = BoundCastExpression::Create(std::move(expr), global_column_type,
-			                                   BoundCastInfo(DefaultCasts::ReinterpretCast));
-		} else if (local_column_type != global_column_type) {
-			expr = BoundCastExpression::AddCastToType(context, std::move(expr), global_column_type);
+		if (local_column_type != global_column_type) {
+			expr = CastFileColumn(context, std::move(expr), global_column_type);
 		}
 		return expr;
 	}
@@ -670,7 +748,17 @@ static unique_ptr<Expression> ConstructMapExpression(ClientContext &context, Mul
 	} else {
 		children.push_back(std::move(mapping.default_value));
 	}
-	return BindBuiltinScalarFunction(context, RemapStructFun::Name, std::move(children));
+	auto remap = BindBuiltinScalarFunction(context, RemapStructFun::Name, std::move(children));
+	auto &source = remap->GetChildrenMutable()[0];
+	if (BoundCastExpression::IsCast(*source)) {
+		// remap_struct cast the column to the types of the fields it maps to, with the text of the file read as bytes
+		auto &cast = source->Cast<BoundFunctionExpression>();
+		if (ReadsTextAsBytes(BoundCastExpression::SourceType(cast), BoundCastExpression::TargetType(cast))) {
+			auto target_type = BoundCastExpression::TargetType(cast);
+			source = CastFileColumn(context, std::move(BoundCastExpression::ChildMutable(cast)), target_type);
+		}
+	}
+	return std::move(remap);
 }
 
 ResultColumnMapping MultiFileColumnMapper::CreateColumnMappingByMapper(const ColumnMapper &mapper) {

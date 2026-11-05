@@ -817,6 +817,37 @@ SELECT TRY((SELECT i FROM integers WHERE div_shift(i) > -100))
 ----
 Division by zero
 
+# a macro that expands to the subquery is bound in the argument slot of TRY, so it takes the direct lowering, which
+# covers result modifiers, while the nested form keeps rejecting them
+statement ok
+CREATE MACRO first_div(a) AS (SELECT 10 // (i - a) FROM integers ORDER BY i LIMIT 1);
+
+query I
+SELECT TRY(first_div(1))
+----
+NULL
+
+query I
+SELECT TRY(first_div(0))
+----
+10
+
+statement error
+SELECT TRY(1 + first_div(1))
+----
+TRY over a subquery with result modifiers is only supported when the subquery is the direct argument of TRY
+
+# an alias expanded in HAVING is bound in the argument slot of TRY as well
+query I
+SELECT (SELECT 1 ORDER BY 1) AS a HAVING TRY(a) = 1
+----
+1
+
+statement error
+SELECT (SELECT 1 ORDER BY 1) AS a HAVING TRY(1 + a) = 2
+----
+TRY over a subquery with result modifiers is only supported when the subquery is the direct argument of TRY
+
 # regression: a dot call in the subquery select list resolves in the subquery scope,
 # exactly as without TRY
 query I

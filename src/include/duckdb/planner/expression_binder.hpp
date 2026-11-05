@@ -291,8 +291,8 @@ protected:
 	BindResult BindOperatorAsFunction(OperatorExpression &op, const Identifier &function_name,
 	                                  vector<unique_ptr<Expression>> children);
 	BindResult BindExpression(ParameterExpression &expr, idx_t depth);
-	//! try_argument marks the subquery that is the argument of TRY itself, which lowers TRY onto its own plan
-	BindResult BindExpression(SubqueryExpression &expr, idx_t depth, bool try_argument);
+	//! is_try_argument says the subquery is bound in the argument slot of TRY and lowers TRY onto its own plan
+	BindResult BindExpression(SubqueryExpression &expr, idx_t depth, bool is_try_argument);
 	//! Rewrite a call that resolved to the built-in has_error into the HAS_ERROR operator and bind that
 	BindResult BindHasErrorFunction(FunctionExpression &function, idx_t depth, unique_ptr<ParsedExpression> &expr_ptr);
 	//! Throw when the subquery is not a plain SELECT node, the only shape the TRY lowering covers
@@ -359,8 +359,8 @@ protected:
 	ClientContext &context;
 	vector<BoundColumnReferenceInfo> bound_columns;
 	bool inside_try = false;
-	//! Set by TRY for the one expression bound as its argument, which lowers TRY itself when it is a scalar subquery
-	bool binding_try_argument = false;
+	//! The argument slot of the TRY being bound, the scalar subquery bound in it lowers TRY onto its own plan
+	optional_ptr<unique_ptr<ParsedExpression>> try_argument;
 	//! Set while binding the select item of a TRY subquery, see SetTransportTryErrors
 	bool transport_try_errors = false;
 

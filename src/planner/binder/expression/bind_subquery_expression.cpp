@@ -59,15 +59,15 @@ static void ExtractSubqueryChildren(unique_ptr<Expression> &child, vector<unique
 	}
 }
 
-BindResult ExpressionBinder::BindExpression(SubqueryExpression &expr, idx_t depth, bool try_argument) {
+BindResult ExpressionBinder::BindExpression(SubqueryExpression &expr, idx_t depth, bool is_try_argument) {
 	bool rethrow_try_errors = false;
 	bool tolerant_lowering = false;
-	if (try_argument || inside_try) {
+	if (is_try_argument || inside_try) {
 		if (expr.GetSubqueryType() != SubqueryType::SCALAR) {
 			throw BinderException("TRY can not be used in combination with EXISTS/IN/ANY/ALL subqueries");
 		}
 		CheckTrySubqueryNode(expr, expr);
-		if (try_argument) {
+		if (is_try_argument) {
 			// the argument of TRY lowers TRY onto its own plan, and a bare subquery item takes the same path
 			PushTryIntoBareSubqueryItem(expr);
 		} else {
@@ -87,7 +87,7 @@ BindResult ExpressionBinder::BindExpression(SubqueryExpression &expr, idx_t dept
 	auto subquery_binder = Binder::CreateBinder(context, binder);
 	subquery_binder->SetCanContainNulls(true);
 	subquery_binder->SetInsideSubquery();
-	if (try_argument || rethrow_try_errors) {
+	if (is_try_argument || rethrow_try_errors) {
 		// TRY is lowered onto the bound plan of this subquery after binding
 		subquery_binder->SetBindingTrySubquery();
 	}
@@ -95,7 +95,7 @@ BindResult ExpressionBinder::BindExpression(SubqueryExpression &expr, idx_t dept
 	subquery_binder->BeginSubqueryBind(binder, *this);
 	// the argument of TRY binds as without TRY, so its correlated references resolve as they do outside TRY
 	const auto was_inside_try = inside_try;
-	if (try_argument) {
+	if (is_try_argument) {
 		inside_try = false;
 	}
 	auto bound_node = subquery_binder->BindNode(*expr.Subquery()->node);
@@ -160,12 +160,12 @@ BindResult ExpressionBinder::BindExpression(SubqueryExpression &expr, idx_t dept
 	}
 	LogicalType return_type =
 	    expr.GetSubqueryType() == SubqueryType::SCALAR ? bound_node.types[0] : LogicalType(LogicalTypeId::BOOLEAN);
-	if ((try_argument || rethrow_try_errors) && bound_node.plan) {
+	if ((is_try_argument || rethrow_try_errors) && bound_node.plan) {
 		auto &indexes = subquery_binder->GetTrySubqueryPlanIndexes();
 		if (!indexes.recorded) {
 			throw InternalException("TRY subquery: no plan indexes were recorded for the top select node");
 		}
-		if (try_argument) {
+		if (is_try_argument) {
 			// the TRY above has nothing else to mask, so the plan masks its errors without exposing a flag
 			LowerTrySubquery(expr, indexes, *bound_node.plan, false, false);
 		} else {

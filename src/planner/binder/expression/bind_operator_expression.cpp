@@ -183,11 +183,14 @@ BindResult ExpressionBinder::BindExpression(OperatorExpression &op, idx_t depth)
 	if (operator_type == ExpressionType::OPERATOR_TRY || operator_type == ExpressionType::OPERATOR_HAS_ERROR) {
 		D_ASSERT(op.GetChildrenMutable().size() == 1);
 		const auto was_inside_try = inside_try;
+		const auto was_try_argument = try_argument;
 		inside_try = true;
-		// a scalar subquery that is the argument of TRY lowers TRY onto its own plan
-		binding_try_argument = operator_type == ExpressionType::OPERATOR_TRY;
+		if (operator_type == ExpressionType::OPERATOR_TRY) {
+			// the scalar subquery bound in the argument slot of TRY lowers TRY onto its own plan
+			try_argument = &op.GetChildrenMutable()[0];
+		}
 		children.push_back(BindChild(op.GetChildrenMutable()[0], depth, error));
-		binding_try_argument = false;
+		try_argument = was_try_argument;
 		inside_try = was_inside_try;
 	} else {
 		for (idx_t i = 0; i < op.GetChildrenMutable().size(); i++) {

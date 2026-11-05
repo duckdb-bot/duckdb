@@ -167,6 +167,8 @@ BindResult UnnestBinder::Bind(FunctionExpression &function, idx_t depth, bool ro
 			if (!const_child->IsFoldable()) {
 				throw BinderException(function, "UNNEST parameter %s must be a constant", alias);
 			}
+			// the option is folded here and leaves the expression tree, so it is checked like a root expression
+			binder.CheckRequiresRebind(*const_child);
 			auto value = ExpressionExecutor::EvaluateScalar(context, *const_child, true);
 			if (value.IsNull()) {
 				throw BinderException(function, "UNNEST parameter %s cannot be NULL", alias);
@@ -276,6 +278,8 @@ BindResult UnnestBinder::Bind(FunctionExpression &function, idx_t depth, bool ro
 		result->ChildMutable() = std::move(unnest_expr);
 		Identifier alias = function.GetAlias().empty() ? Identifier(result->ToString()) : function.GetAlias();
 
+		// the unnest leaves the expression tree here, so it is checked like a root expression
+		binder.CheckRequiresRebind(*result);
 		auto current_level = outer_unnest_level + list_unnests - current_depth - 1;
 		TableIndex unnest_table_index;
 		ProjectionIndex unnest_column_index;

@@ -429,6 +429,8 @@ public:
 	void SetCanContainNulls(bool can_contain_nulls);
 	bool CanContainNulls() const;
 	void SetAlwaysRequireRebind();
+	//! Requires a rebind when the expression contains a function or cast whose result can change between queries
+	void CheckRequiresRebind(const Expression &expr);
 	void SetInsideSubquery();
 	bool IsInsideSubquery() const;
 	//! Set while binding the key expressions of an index
@@ -680,6 +682,8 @@ private:
 	unique_ptr<LogicalOperator> CastLogicalOperatorToTypes(const vector<LogicalType> &source_types,
 	                                                       const vector<LogicalType> &target_types,
 	                                                       unique_ptr<LogicalOperator> op);
+	//! Casts a bound expression to the target type and requires a rebind when the cast reads a setting such as TimeZone
+	unique_ptr<Expression> AddCastToType(unique_ptr<Expression> expr, const LogicalType &target_type);
 
 	BindingAlias FindBinding(const Identifier &using_column, const string &join_side);
 	bool TryFindBinding(const Identifier &using_column, const string &join_side, BindingAlias &result);

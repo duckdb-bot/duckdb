@@ -180,6 +180,8 @@ BoundStatement Binder::BindNode(RecursiveCTENode &statement) {
 				                      result.names[aggregate_idx]);
 			}
 
+			// the function binder casts the arguments after they were bound, so the complete aggregate is checked
+			CheckRequiresRebind(*aggregate);
 			return_types[aggregate_idx] = aggregate->GetReturnType();
 			payload_references[aggregate_idx] = std::move(aggregate);
 		} else {
@@ -193,6 +195,10 @@ BoundStatement Binder::BindNode(RecursiveCTENode &statement) {
 
 	if (key_targets.empty() && !payload_references.empty()) {
 		throw BinderException("USING KEY clause requires at least one key column.");
+	}
+	if (aggregate_binder->GetStatementProperties().always_require_rebind) {
+		// the binder of the USING KEY aggregates has statement properties of its own
+		SetAlwaysRequireRebind();
 	}
 
 	// Now that we have finished binding all aggregates, we can update the operator types

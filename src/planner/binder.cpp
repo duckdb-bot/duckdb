@@ -24,6 +24,7 @@
 #include "duckdb/parser/tableref/table_function_ref.hpp"
 #include "duckdb/planner/bound_query_node.hpp"
 #include "duckdb/planner/expression.hpp"
+#include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression_binder/returning_binder.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
@@ -441,6 +442,25 @@ void Binder::SetAlwaysRequireRebind() {
 	properties.always_require_rebind = true;
 }
 
+void Binder::CheckRequiresRebind(const Expression &expr) {
+	if (!GetStatementProperties().always_require_rebind && expr.RequiresRebind()) {
+		SetAlwaysRequireRebind();
+	}
+}
+
+unique_ptr<Expression> Binder::AddCastToType(unique_ptr<Expression> expr, const LogicalType &target_type) {
+	auto result = BoundCastExpression::AddCastToType(context, std::move(expr), target_type);
+	if (!BoundCastExpression::IsCast(*result)) {
+		return result;
+	}
+	auto &cast_function = result->Cast<BoundFunctionExpression>().Function();
+	if (cast_function.GetStability() == FunctionStability::CONSISTENT_WITHIN_QUERY) {
+		// the expression was checked when it was bound, so only the cast added on top of it is checked here
+		SetAlwaysRequireRebind();
+	}
+	return result;
+}
+
 void Binder::AddTableName(string table_name) {
 	global_binder_state->table_names.insert(std::move(table_name));
 }
@@ -648,6 +668,10 @@ BoundStatement Binder::BindReturning(vector<unique_ptr<ParsedExpression>> return
 	}
 	if (new_returning_list.empty()) {
 		throw BinderException("RETURNING list is empty!");
+	}
+	if (binder->GetStatementProperties().always_require_rebind) {
+		// the RETURNING binder has statement properties of its own
+		SetAlwaysRequireRebind();
 	}
 	auto projection = make_uniq<LogicalProjection>(GenerateTableIndex(), std::move(projection_expressions));
 	projection->AddChild(std::move(child_operator));

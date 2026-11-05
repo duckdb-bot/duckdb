@@ -44,8 +44,7 @@ unique_ptr<LogicalOperator> Binder::CastLogicalOperatorToTypes(const vector<Logi
 			if (source_types[i] != target_types[i]) {
 				// differing types, have to add a cast
 				auto cur_alias = node->expressions[i]->GetAlias();
-				node->expressions[i] =
-				    BoundCastExpression::AddCastToType(context, std::move(node->expressions[i]), target_types[i]);
+				node->expressions[i] = AddCastToType(std::move(node->expressions[i]), target_types[i]);
 				node->expressions[i]->SetAlias(cur_alias);
 			}
 		}
@@ -67,7 +66,7 @@ unique_ptr<LogicalOperator> Binder::CastLogicalOperatorToTypes(const vector<Logi
 			unique_ptr<Expression> result = make_uniq<BoundColumnRefExpression>(source_types[i], setop_columns[i]);
 			if (source_types[i] != target_types[i]) {
 				// add a cast only if the source and target types are not equivalent
-				result = BoundCastExpression::AddCastToType(context, std::move(result), target_types[i]);
+				result = AddCastToType(std::move(result), target_types[i]);
 			}
 			select_list.push_back(std::move(result));
 		}

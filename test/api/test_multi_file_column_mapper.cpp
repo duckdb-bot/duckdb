@@ -10,6 +10,7 @@
 #include "duckdb/common/value_operations/value_operations.hpp"
 #include "duckdb/common/vector/flat_vector.hpp"
 #include "duckdb/function/cast/cast_function_set.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 
 using namespace duckdb;
 
@@ -120,11 +121,25 @@ TEST_CASE("A file column whose text becomes bytes keeps the registered casts of 
 	// from here on this database casts a DECIMAL(4,1) to DOUBLE with the registered cast, not the default one
 	CastFunctionSet::Get(*con.context)
 	    .RegisterCastFunction(LogicalType::DECIMAL(4, 1), LogicalType::DOUBLE, BoundCastInfo(MarkDecimalAsDouble));
-	auto result = con.Query("SELECT i, octet_length(s.a), s.n FROM read_parquet(['" + text_file + "', '" + bytes_file +
-	                        "'], union_by_name = true) ORDER BY i");
+	// the whole struct is read, so its fields are cast together, the text of the first file as its five bytes and its
+	// decimal through the registered cast
+	auto result = con.Query("SELECT i, octet_length(s.a), s.n, s FROM read_parquet(['" + text_file + "', '" +
+	                        bytes_file + "'], union_by_name = true) ORDER BY i");
 	REQUIRE_NO_FAIL(*result);
-	// the text of the first file is read as its five bytes, and its decimal through the registered cast
 	REQUIRE(CHECK_COLUMN(result, 0, {1, 2}));
 	REQUIRE(CHECK_COLUMN(result, 1, {5, 1}));
 	REQUIRE(CHECK_COLUMN(result, 2, {42.0, 2.5}));
+
+	// the BLOB type of an extension carries an alias, the text becomes its bytes all the same
+	ExtensionLoader loader(*db.instance, "text_as_bytes_test");
+	loader.RegisterType("byte_alias", LogicalType(LogicalType::BLOB).WithAlias("byte_alias"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE aliased (i INTEGER, s STRUCT(a byte_alias, n DOUBLE))"));
+	REQUIRE_NO_FAIL(con.Query("COPY aliased FROM '" + text_file + "'"));
+	result = con.Query("SELECT i, s.n, s FROM aliased");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(CHECK_COLUMN(result, 0, {1}));
+	REQUIRE(CHECK_COLUMN(result, 1, {42.0}));
+	auto aliased_text = StructValue::GetChildren(result->Collection().GetRows().GetValue(2, 0))[0];
+	REQUIRE(aliased_text.type().id() == LogicalTypeId::BLOB);
+	REQUIRE(StringValue::Get(aliased_text) == "a\\x41");
 }

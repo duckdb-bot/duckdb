@@ -284,24 +284,19 @@ static bool ReadsTextAsBytes(const LogicalType &source, const LogicalType &targe
 	}
 }
 
-//! The cast of a leaf of a file column is the database's, those of the extensions included. Nested types never reach
-//! this, so the built-in nested casts bind their children through the set of the file column
-static BoundCastInfo BindDatabaseCast(BindCastInput &input, const LogicalType &source, const LogicalType &target) {
+//! The cast of a leaf of a file column. The text in a file becomes its UTF-8 bytes when it is read as BLOB, it is not a
+//! blob literal with \x escapes. Every other leaf takes the cast of the database, those of the extensions included.
+//! Nested types never reach this, so the built-in nested casts bind their children through the set of the file column
+static BoundCastInfo BindFileColumnCast(BindCastInput &input, const LogicalType &source, const LogicalType &target) {
+	if (source.id() == LogicalTypeId::VARCHAR && target.id() == LogicalTypeId::BLOB) {
+		return BoundCastInfo(DefaultCasts::ReinterpretCast);
+	}
 	if (!input.context) {
 		return nullptr;
 	}
 	GetCastFunctionInput get_input(input.context);
 	get_input.query_location = input.query_location;
 	return CastFunctionSet::Get(*input.context).GetCastFunction(source, target, get_input);
-}
-
-//! The text in a file becomes its UTF-8 bytes when the column is read as BLOB, it is not a blob literal with \x
-//! escapes
-static BoundCastInfo BindTextAsBytesCast(BindCastInput &input, const LogicalType &source, const LogicalType &target) {
-	if (source.id() == LogicalTypeId::VARCHAR) {
-		return BoundCastInfo(DefaultCasts::ReinterpretCast);
-	}
-	return BindDatabaseCast(input, source, target);
 }
 
 //! Casts a file column to the type it is read as. Where that turns text into bytes, at any nesting level, the cast is
@@ -315,14 +310,14 @@ static unique_ptr<Expression> CastFileColumn(ClientContext &context, unique_ptr<
 		return BoundCastExpression::AddCastToType(context, std::move(expr), target_type);
 	}
 	CastFunctionSet file_casts;
-	// a registered cast matches a DECIMAL or an ENUM through the entry of its own family, not through ANY
+	// every pair of leaf types reaches the registration of ANY, except that a DECIMAL or an ENUM, aliased or not,
+	// matches an entry of its own family only
 	const vector<LogicalType> families {LogicalType::ANY, LogicalTypeId::DECIMAL, LogicalTypeId::ENUM};
 	for (auto &source : families) {
 		for (auto &target : families) {
-			file_casts.RegisterCastFunction(source, target, BindDatabaseCast);
+			file_casts.RegisterCastFunction(source, target, BindFileColumnCast);
 		}
 	}
-	file_casts.RegisterCastFunction(LogicalType::ANY, LogicalType::BLOB, BindTextAsBytesCast);
 	GetCastFunctionInput get_input(context);
 	auto file_cast = file_casts.GetCastFunction(source_type, target_type, get_input);
 	return BoundCastExpression::Create(std::move(expr), target_type, std::move(file_cast));

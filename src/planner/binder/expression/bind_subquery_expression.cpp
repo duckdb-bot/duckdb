@@ -59,21 +59,23 @@ static void ExtractSubqueryChildren(unique_ptr<Expression> &child, vector<unique
 	}
 }
 
-BindResult ExpressionBinder::BindExpression(SubqueryExpression &expr, idx_t depth) {
-	// consume the one-shot marker BindTrySubquery sets for the subquery it is about to bind
-	const bool try_subquery = bind_try_subquery;
-	bind_try_subquery = false;
+BindResult ExpressionBinder::BindExpression(SubqueryExpression &expr, idx_t depth, bool try_argument) {
 	bool rethrow_try_errors = false;
 	bool tolerant_lowering = false;
-	if (inside_try) {
+	if (try_argument || inside_try) {
 		if (expr.GetSubqueryType() != SubqueryType::SCALAR) {
 			throw BinderException("TRY can not be used in combination with EXISTS/IN/ANY/ALL subqueries");
 		}
-		// a scalar subquery nested deeper inside a TRY argument: lower TRY onto it like a direct TRY
-		// subquery, and re-raise captured errors at the use site where the enclosing TRY masks them
 		CheckTrySubqueryNode(expr, expr);
-		rethrow_try_errors = true;
-	} else if (!try_subquery && transport_try_errors && expr.GetSubqueryType() == SubqueryType::SCALAR &&
+		if (try_argument) {
+			// the argument of TRY lowers TRY onto its own plan, and a bare subquery item takes the same path
+			PushTryIntoBareSubqueryItem(expr);
+		} else {
+			// a scalar subquery nested deeper inside a TRY argument: lower TRY onto it like a direct TRY
+			// subquery, and re-raise captured errors at the use site where the enclosing TRY masks them
+			rethrow_try_errors = true;
+		}
+	} else if (transport_try_errors && expr.GetSubqueryType() == SubqueryType::SCALAR &&
 	           expr.Subquery()->node->type == QueryNodeType::SELECT_NODE) {
 		// a scalar subquery inside the select item of a TRY subquery: lower it with an exposed error
 		// flag, so the enclosing lowering masks its errors like those of the surrounding expression;
@@ -85,13 +87,19 @@ BindResult ExpressionBinder::BindExpression(SubqueryExpression &expr, idx_t dept
 	auto subquery_binder = Binder::CreateBinder(context, binder);
 	subquery_binder->SetCanContainNulls(true);
 	subquery_binder->SetInsideSubquery();
-	if (try_subquery || rethrow_try_errors) {
+	if (try_argument || rethrow_try_errors) {
 		// TRY is lowered onto the bound plan of this subquery after binding
 		subquery_binder->SetBindingTrySubquery();
 	}
 
 	subquery_binder->BeginSubqueryBind(binder, *this);
+	// the argument of TRY binds as without TRY, so its correlated references resolve as they do outside TRY
+	const auto was_inside_try = inside_try;
+	if (try_argument) {
+		inside_try = false;
+	}
 	auto bound_node = subquery_binder->BindNode(*expr.Subquery()->node);
+	inside_try = was_inside_try;
 	subquery_binder->FinishSubqueryBind();
 
 	// check the correlated columns of the subquery for correlated columns with depth > 1
@@ -152,19 +160,24 @@ BindResult ExpressionBinder::BindExpression(SubqueryExpression &expr, idx_t dept
 	}
 	LogicalType return_type =
 	    expr.GetSubqueryType() == SubqueryType::SCALAR ? bound_node.types[0] : LogicalType(LogicalTypeId::BOOLEAN);
-	if (rethrow_try_errors && bound_node.plan) {
-		// lower TRY onto the plan and expose the error flag in a struct next to the masked value;
-		// the expression keeps the value type, the struct is unpacked again when the subquery is planned
+	if ((try_argument || rethrow_try_errors) && bound_node.plan) {
 		auto &indexes = subquery_binder->GetTrySubqueryPlanIndexes();
 		if (!indexes.recorded) {
 			throw InternalException("TRY subquery: no plan indexes were recorded for the top select node");
 		}
-		auto struct_type = LowerTrySubquery(expr, indexes, *bound_node.plan, true, tolerant_lowering);
-		if (struct_type) {
-			bound_node.types[0] = *struct_type;
+		if (try_argument) {
+			// the TRY above has nothing else to mask, so the plan masks its errors without exposing a flag
+			LowerTrySubquery(expr, indexes, *bound_node.plan, false, false);
 		} else {
-			// fall back to the plain subquery, whose errors propagate
-			rethrow_try_errors = false;
+			// lower TRY onto the plan and expose the error flag in a struct next to the masked value;
+			// the expression keeps the value type, the struct is unpacked again when the subquery is planned
+			auto struct_type = LowerTrySubquery(expr, indexes, *bound_node.plan, true, tolerant_lowering);
+			if (struct_type) {
+				bound_node.types[0] = *struct_type;
+			} else {
+				// fall back to the plain subquery, whose errors propagate
+				rethrow_try_errors = false;
+			}
 		}
 	}
 	if (return_type.id() == LogicalTypeId::UNKNOWN) {

@@ -1,5 +1,4 @@
 #include "duckdb/planner/expression_binder/projection_binder.hpp"
-#include "duckdb/parser/expression/operator_expression.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_subquery_expression.hpp"
 
@@ -55,12 +54,6 @@ BindResult ProjectionBinder::BindExpression(unique_ptr<ParsedExpression> &expr_p
 	case ExpressionClass::COLUMN_REF:
 	case ExpressionClass::SUBQUERY:
 		return BindColumnRef(expr_ptr, depth, root_expression);
-	case ExpressionClass::OPERATOR:
-		if (IsTryOverScalarSubquery(expr.Cast<OperatorExpression>())) {
-			// TRY directly over a scalar subquery is lowered onto its plan, so it moves into the projection whole
-			return BindColumnRef(expr_ptr, depth, root_expression);
-		}
-		return ExpressionBinder::BindExpression(expr_ptr, depth);
 	default:
 		return ExpressionBinder::BindExpression(expr_ptr, depth);
 	}

@@ -1,6 +1,5 @@
 #include "duckdb/parser/expression/function_expression.hpp"
 #include "duckdb/parser/expression/operator_expression.hpp"
-#include "duckdb/parser/expression/subquery_expression.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/expression/bound_case_expression.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
@@ -181,15 +180,14 @@ BindResult ExpressionBinder::BindExpression(OperatorExpression &op, idx_t depth)
 	// Only those children that trigger an error are not yet bound.
 	ErrorData error;
 	vector<unique_ptr<Expression>> children;
-	if (IsTryOverScalarSubquery(op)) {
-		// TRY directly over a scalar subquery binds as an ordinary subquery and lowers onto its plan
-		return BindTrySubquery(op, depth);
-	}
 	if (operator_type == ExpressionType::OPERATOR_TRY || operator_type == ExpressionType::OPERATOR_HAS_ERROR) {
 		D_ASSERT(op.GetChildrenMutable().size() == 1);
 		const auto was_inside_try = inside_try;
 		inside_try = true;
+		// a scalar subquery that is the argument of TRY lowers TRY onto its own plan
+		binding_try_argument = operator_type == ExpressionType::OPERATOR_TRY;
 		children.push_back(BindChild(op.GetChildrenMutable()[0], depth, error));
+		binding_try_argument = false;
 		inside_try = was_inside_try;
 	} else {
 		for (idx_t i = 0; i < op.GetChildrenMutable().size(); i++) {
@@ -307,7 +305,7 @@ BindResult ExpressionBinder::BindExpression(OperatorExpression &op, idx_t depth)
 		if (operator_type == ExpressionType::OPERATOR_TRY &&
 		    expr.GetExpressionClass() == ExpressionClass::BOUND_SUBQUERY &&
 		    !expr.Cast<BoundSubqueryExpression>().RethrowsTryErrors()) {
-			// a directly nested TRY over a scalar subquery was already lowered onto the subquery plan
+			// the subquery that is the argument of TRY lowered it onto its own plan, nothing is left to mask
 			return BindResult(std::move(children[0]));
 		}
 		// a rethrowing subquery can surface as the direct child when a binder simplification (such as a

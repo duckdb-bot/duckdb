@@ -291,15 +291,14 @@ protected:
 	BindResult BindOperatorAsFunction(OperatorExpression &op, const Identifier &function_name,
 	                                  vector<unique_ptr<Expression>> children);
 	BindResult BindExpression(ParameterExpression &expr, idx_t depth);
-	BindResult BindExpression(SubqueryExpression &expr, idx_t depth);
+	//! try_argument marks the subquery that is the argument of TRY itself, which lowers TRY onto its own plan
+	BindResult BindExpression(SubqueryExpression &expr, idx_t depth, bool try_argument);
 	//! Rewrite a call that resolved to the built-in has_error into the HAS_ERROR operator and bind that
 	BindResult BindHasErrorFunction(FunctionExpression &function, idx_t depth, unique_ptr<ParsedExpression> &expr_ptr);
-	//! Whether the operator is TRY directly over a scalar subquery, the shape BindTrySubquery lowers
-	static bool IsTryOverScalarSubquery(const OperatorExpression &op);
-	//! Bind TRY over a scalar subquery as an ordinary subquery, then lower the TRY onto its bound plan
-	BindResult BindTrySubquery(OperatorExpression &op, idx_t depth);
 	//! Throw when the subquery is not a plain SELECT node, the only shape the TRY lowering covers
 	void CheckTrySubqueryNode(const SubqueryExpression &subquery_expr, const ParsedExpression &location);
+	//! Wrap a select item that is itself a scalar subquery in TRY, so it takes the direct lowering recursively
+	static void PushTryIntoBareSubqueryItem(SubqueryExpression &subquery_expr);
 	//! Lower TRY onto the maskable positions of a bound subquery plan, before the subquery is flattened.
 	//! With expose_error_flag the output column becomes a struct of the masked value and the error flag,
 	//! so the use site can re-raise captured errors. Returns the resulting output type, or an empty
@@ -360,8 +359,8 @@ protected:
 	ClientContext &context;
 	vector<BoundColumnReferenceInfo> bound_columns;
 	bool inside_try = false;
-	//! Set while binding the subquery of a TRY, so the subquery binder knows TRY is lowered onto its plan
-	bool bind_try_subquery = false;
+	//! Set by TRY for the one expression bound as its argument, which lowers TRY itself when it is a scalar subquery
+	bool binding_try_argument = false;
 	//! Set while binding the select item of a TRY subquery, see SetTransportTryErrors
 	bool transport_try_errors = false;
 

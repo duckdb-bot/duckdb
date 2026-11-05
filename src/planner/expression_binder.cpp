@@ -51,6 +51,9 @@ StackChecker<ExpressionBinder> ExpressionBinder::StackCheck(const ParsedExpressi
 
 BindResult ExpressionBinder::BindExpression(unique_ptr<ParsedExpression> &expr, idx_t depth, bool root_expression) {
 	auto stack_checker = StackCheck(*expr);
+	// the argument of TRY is the expression bound right after TRY set the marker, deeper expressions are not
+	const bool try_argument = binding_try_argument;
+	binding_try_argument = false;
 
 	if (binder.HasEnclosingScope()) {
 		// an expression an enclosing query groups by is a reference to that group, e.g. `(SELECT x::DATE)`
@@ -110,7 +113,7 @@ BindResult ExpressionBinder::BindExpression(unique_ptr<ParsedExpression> &expr, 
 	case ExpressionClass::OPERATOR:
 		return BindExpression(expr_ref.Cast<OperatorExpression>(), depth);
 	case ExpressionClass::SUBQUERY:
-		return BindExpression(expr_ref.Cast<SubqueryExpression>(), depth);
+		return BindExpression(expr_ref.Cast<SubqueryExpression>(), depth, try_argument);
 	case ExpressionClass::PARAMETER:
 		return BindExpression(expr_ref.Cast<ParameterExpression>(), depth);
 	case ExpressionClass::POSITIONAL_REFERENCE:

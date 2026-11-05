@@ -298,6 +298,38 @@ SELECT * FROM w;
 ----
 1	4	bad
 
+# TRY directly over a subquery with result modifiers is lowered onto the subquery plan, also through the projection
+statement ok
+MERGE INTO w USING (VALUES (1)) src(k) ON w.k = src.k
+  WHEN MATCHED AND TRY((SELECT txt::INTEGER FROM w ORDER BY k LIMIT 1)) IS NULL THEN UPDATE SET v = v + 1;
+
+statement ok
+MERGE INTO w USING (VALUES (1)) src(k) ON w.k = src.k
+  WHEN MATCHED AND TRY((SELECT DISTINCT txt::INTEGER FROM w)) IS NULL THEN UPDATE SET v = v + 1;
+
+# HAS_ERROR directly over the subquery sees its error
+statement ok
+MERGE INTO w USING (VALUES (1)) src(k) ON w.k = src.k
+  WHEN MATCHED AND HAS_ERROR((SELECT txt::INTEGER FROM w)) THEN UPDATE SET v = v + 1;
+
+query III
+SELECT * FROM w;
+----
+1	7	bad
+
+statement error
+MERGE INTO w USING (VALUES (1)) src(k) ON w.k = src.k
+  WHEN MATCHED THEN ERROR concat('ordered ', TRY((SELECT txt::INTEGER FROM w ORDER BY k LIMIT 1))::VARCHAR, 'end');
+----
+Merge error condition WHEN MATCHED: ordered end
+
+# the nested form rejects result modifiers as it does in a SELECT
+statement error
+MERGE INTO w USING (VALUES (1)) src(k) ON w.k = src.k
+  WHEN MATCHED AND TRY(1 + (SELECT txt::INTEGER FROM w ORDER BY k LIMIT 1)) IS NULL THEN UPDATE SET v = 0;
+----
+TRY over a subquery with result modifiers is only supported when the subquery is the direct argument of TRY
+
 # target rows whose correlated lookup errors, succeeds, is NULL or has no row, with earlier actions taking some rows,
 # so every row sees its own error flag
 statement ok

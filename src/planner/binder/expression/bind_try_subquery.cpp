@@ -14,7 +14,6 @@
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/expression/bound_operator_expression.hpp"
-#include "duckdb/planner/expression/bound_subquery_expression.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/expression_binder.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
@@ -179,6 +178,20 @@ bool ExpressionBinder::GateTryAggregates(const ParsedExpression &location, Logic
 	return true;
 }
 
+//! TRY over a scalar subquery is lowered onto the bound plan before the subquery is flattened, after the
+//! subquery was bound as an ordinary subquery, so names, types, overloads and aggregate ownership resolve
+//! exactly as without TRY. In the plain projection case, TRY moves onto the projected expression, which yields
+//! a NULL result under the one-row contract of a scalar subquery. In the aggregate case, the projected
+//! expression is gated on HAS_ERROR probes of the aggregate inputs, so that an input error anywhere turns the
+//! aggregated result into NULL instead of a partially aggregated value. The probes cover the aggregate inputs
+//! only: an error raised inside aggregate execution itself (state update, combine, finalize) propagates.
+//! Scalar subqueries nested inside the select item are lowered with an exposed error flag, so their errors
+//! turn the whole result into NULL as well; shapes whose flag cannot be transported fall back to the plain
+//! subquery. Errors raised outside the maskable positions, such as in the WHERE clause, in aggregate or
+//! window arguments or by the one-row cardinality check, propagate deliberately. Volatile computation inside
+//! a maskable position is rejected. A volatile value computed by a nested subquery is evaluated once in its
+//! flattened subplan and referenced as a column, so the TRY input and its HAS_ERROR probe observe one
+//! consistent value.
 optional<LogicalType> ExpressionBinder::LowerTrySubquery(const ParsedExpression &location,
                                                          const TrySubqueryPlanIndexes &indexes, LogicalOperator &root,
                                                          bool expose_error_flag, bool tolerant) {
@@ -369,7 +382,7 @@ void ExpressionBinder::CheckTrySubqueryNode(const SubqueryExpression &subquery_e
 
 //! A select item that is itself a scalar subquery takes the direct TRY lowering recursively: unlike the
 //! exposed-flag transport, the direct form also covers result modifiers inside the nested subquery
-static void PushTryIntoBareSubqueryItem(SubqueryExpression &subquery_expr) {
+void ExpressionBinder::PushTryIntoBareSubqueryItem(SubqueryExpression &subquery_expr) {
 	auto &node = *subquery_expr.SubqueryMutable()->node;
 	D_ASSERT(node.type == QueryNodeType::SELECT_NODE);
 	auto &select_node = node.Cast<SelectNode>();
@@ -389,57 +402,6 @@ static void PushTryIntoBareSubqueryItem(SubqueryExpression &subquery_expr) {
 		try_item->SetAlias(alias);
 	}
 	select_item = std::move(try_item);
-}
-
-bool ExpressionBinder::IsTryOverScalarSubquery(const OperatorExpression &op) {
-	if (op.GetExpressionType() != ExpressionType::OPERATOR_TRY) {
-		return false;
-	}
-	D_ASSERT(op.GetChildren().size() == 1);
-	auto &child = *op.GetChildren()[0];
-	return child.GetExpressionClass() == ExpressionClass::SUBQUERY &&
-	       child.Cast<SubqueryExpression>().GetSubqueryType() == SubqueryType::SCALAR;
-}
-
-//! TRY over a scalar subquery binds the subquery as an ordinary subquery and lowers the TRY onto the bound
-//! plan before the subquery is flattened, so names, types, overloads and aggregate ownership resolve exactly
-//! as without TRY. In the plain projection case, TRY moves onto the projected expression, which yields a NULL
-//! result under the one-row contract of a scalar subquery. In the aggregate case, the projected expression is
-//! gated on HAS_ERROR probes of the aggregate inputs, so that an input error anywhere turns the aggregated
-//! result into NULL instead of a partially aggregated value. The probes cover the aggregate inputs only: an
-//! error raised inside aggregate execution itself (state update, combine, finalize) propagates. Scalar
-//! subqueries nested inside the select item are lowered with an exposed error flag, so their errors turn the
-//! whole result into NULL as well; shapes whose flag cannot be transported fall back to the plain subquery.
-//! Errors raised outside the maskable positions, such as in the WHERE clause, in aggregate or window
-//! arguments or by the one-row cardinality check, propagate deliberately. Volatile computation inside a
-//! maskable position is rejected. A volatile value computed by a nested subquery is evaluated once in its
-//! flattened subplan and referenced as a column, so the TRY input and its HAS_ERROR probe observe one
-//! consistent value.
-BindResult ExpressionBinder::BindTrySubquery(OperatorExpression &op, idx_t depth) {
-	D_ASSERT(IsTryOverScalarSubquery(op));
-	auto &subquery_expr = op.GetChildrenMutable()[0]->Cast<SubqueryExpression>();
-	CheckTrySubqueryNode(subquery_expr, op);
-	PushTryIntoBareSubqueryItem(subquery_expr);
-
-	// bind as an ordinary scalar subquery, so inner scopes, overload resolution and aggregate
-	// ownership resolve exactly as without TRY
-	const auto was_inside_try = inside_try;
-	inside_try = false;
-	bind_try_subquery = true;
-	auto result = BindExpression(subquery_expr, depth);
-	inside_try = was_inside_try;
-	if (result.HasError()) {
-		return result;
-	}
-	auto &bound_subquery = result.expression->Cast<BoundSubqueryExpression>();
-	if (bound_subquery.SubqueryMutable().plan) {
-		auto &indexes = bound_subquery.GetBinder()->GetTrySubqueryPlanIndexes();
-		if (!indexes.recorded) {
-			throw InternalException("TRY subquery: no plan indexes were recorded for the top select node");
-		}
-		LowerTrySubquery(op, indexes, *bound_subquery.SubqueryMutable().plan, false, false);
-	}
-	return result;
 }
 
 } // namespace duckdb

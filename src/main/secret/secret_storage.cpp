@@ -146,9 +146,10 @@ unique_ptr<SecretEntry> CatalogSetSecretStorage::StoreSecret(unique_ptr<const Ba
 		}
 	}
 
-	// the secret is written before the catalog changes, so a failed write leaves the catalog as it was, and published
-	// after them, so a change the catalog rejects leaves the stored secret as it was
+	// a failed write leaves the catalog as it was
 	auto write = WriteSecret(*secret, on_conflict);
+	// a change of the entry that conflicts with another transaction's is found by the drop or the creation, before the
+	// stored secret is replaced
 	if (existing) {
 		secrets->DropEntry(GetTransactionOrDefault(transaction), secret_name, true, true);
 	}

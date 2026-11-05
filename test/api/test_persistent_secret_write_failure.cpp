@@ -16,9 +16,20 @@ using namespace duckdb;
 
 namespace {
 
-//! Observes the operations on secret files and fails them while enabled: the sync, the way a file system reports a
-//! delayed write failure, the rename of the new file into place, and the removal of a file
+//! Observes the operations on secret files and fails them while enabled, the sync the way a file system reports a
+//! delayed write failure, the rename of the new file into place and the removal of a file
 class SecretFileSystem : public LocalFileSystem {
+public:
+	std::atomic<bool> fail_secret_sync {false};
+	std::atomic<bool> fail_secret_move {false};
+	std::atomic<bool> fail_secret_remove {false};
+	//! Runs when a secret file is synced, with the file complete and nothing replaced yet
+	std::function<void()> on_secret_sync;
+	//! Renames of a secret file over an existing file
+	std::atomic<idx_t> moves_over_existing_file {0};
+	//! Removals of the file of a stored secret, as opposed to a temporary file
+	std::atomic<idx_t> stored_secret_files_removed {0};
+
 public:
 	void FileSync(FileHandle &handle) override {
 		if (IsSecretFile(handle.GetPath())) {
@@ -57,16 +68,6 @@ public:
 		}
 		LocalFileSystem::RemoveFile(filename, opener);
 	}
-
-	std::atomic<bool> fail_secret_sync {false};
-	std::atomic<bool> fail_secret_move {false};
-	std::atomic<bool> fail_secret_remove {false};
-	//! Runs when a secret file is synced, with the file complete and nothing replaced yet
-	std::function<void()> on_secret_sync;
-	//! Renames of a secret file over an existing file
-	std::atomic<idx_t> moves_over_existing_file {0};
-	//! Removals of the file of a stored secret, as opposed to a temporary file
-	std::atomic<idx_t> stored_secret_files_removed {0};
 
 private:
 	static bool IsSecretFile(const string &path) {
@@ -108,11 +109,11 @@ void CheckFreshDatabaseReadsToken(const string &secret_dir, const string &name, 
 	DuckDB db(nullptr, config.get());
 	Connection con(db);
 	REQUIRE_NO_FAIL(con.Query("SET secret_directory = '" + secret_dir + "'"));
-	auto result = con.Query("SELECT name, persistent, secret_string LIKE '%bearer_token=" + token +
-	                        "%' FROM duckdb_secrets(redact := false)");
-	REQUIRE(CHECK_COLUMN(result, 0, {Value(name)}));
+	auto result = con.Query("SELECT persistent, secret_string LIKE '%bearer_token=" + token +
+	                        "%' FROM duckdb_secrets(redact := false) WHERE name = '" + name + "'");
+	REQUIRE(result->RowCount() == 1);
+	REQUIRE(CHECK_COLUMN(result, 0, {true}));
 	REQUIRE(CHECK_COLUMN(result, 1, {true}));
-	REQUIRE(CHECK_COLUMN(result, 2, {true}));
 }
 
 } // namespace
@@ -147,6 +148,7 @@ TEST_CASE("A persistent secret whose file cannot be synced is not created", "[ap
 	REQUIRE(StringUtil::Contains(result->GetError(), "Could not fsync"));
 	REQUIRE(SecretFiles(secret_dir) == vector<string> {"s1.duckdb_secret"});
 	result = con.Query("SELECT name, secret_string LIKE '%bearer_token=abc%' FROM duckdb_secrets(redact := false)");
+	REQUIRE(result->RowCount() == 1);
 	REQUIRE(CHECK_COLUMN(result, 0, {"s1"}));
 	REQUIRE(CHECK_COLUMN(result, 1, {true}));
 
@@ -232,6 +234,7 @@ TEST_CASE("A replaced secret keeps the file it was loaded from", "[api][secrets]
 	Connection con(db);
 	REQUIRE_NO_FAIL(con.Query("SET secret_directory = '" + secret_dir + "'"));
 	auto result = con.Query("SELECT name FROM duckdb_secrets()");
+	REQUIRE(result->RowCount() == 1);
 	REQUIRE(CHECK_COLUMN(result, 0, {"legacy%name"}));
 
 	// the replacement is renamed over that file, so no step leaves the secret without a file
@@ -266,9 +269,26 @@ TEST_CASE("A replacement that the catalog rejects does not touch the committed s
 
 	// the committed replacement is in the catalog and in the file, and the rejected one left no file
 	result = con.Query("SELECT secret_string LIKE '%bearer_token=winner%' FROM duckdb_secrets(redact := false)");
+	REQUIRE(result->RowCount() == 1);
 	REQUIRE(CHECK_COLUMN(result, 0, {true}));
 	REQUIRE(SecretFiles(secret_dir) == vector<string> {"s1.duckdb_secret"});
 	CheckFreshDatabaseReadsToken(secret_dir, "s1", "winner");
+
+	// a creation conflicts the same way when another connection created the secret after the transaction's snapshot
+	REQUIRE_NO_FAIL(reader.Query("BEGIN"));
+	result = reader.Query("SELECT count(*) FROM duckdb_secrets() WHERE name = 's2'");
+	REQUIRE(CHECK_COLUMN(result, 0, {0}));
+	REQUIRE_NO_FAIL(con.Query("CREATE PERSISTENT SECRET s2 (TYPE HTTP, BEARER_TOKEN 'first')"));
+	result = reader.Query("CREATE PERSISTENT SECRET s2 (TYPE HTTP, BEARER_TOKEN 'second')");
+	REQUIRE(result->HasError());
+	REQUIRE(StringUtil::Contains(result->GetError(), "conflict"));
+	REQUIRE_NO_FAIL(reader.Query("ROLLBACK"));
+	result = con.Query("SELECT secret_string LIKE '%bearer_token=first%' FROM duckdb_secrets(redact := false) WHERE "
+	                   "name = 's2'");
+	REQUIRE(result->RowCount() == 1);
+	REQUIRE(CHECK_COLUMN(result, 0, {true}));
+	REQUIRE(SecretFiles(secret_dir) == vector<string> {"s1.duckdb_secret", "s2.duckdb_secret"});
+	CheckFreshDatabaseReadsToken(secret_dir, "s2", "first");
 }
 
 TEST_CASE("A failed replacement through the system transaction keeps the replaced secret", "[api][secrets]") {
@@ -284,37 +304,40 @@ TEST_CASE("A failed replacement through the system transaction keeps the replace
 	// change, so the catalog may only change once the new file is complete
 	auto &secret_manager = SecretManager::Get(*db.instance);
 	auto transaction = CatalogTransaction::GetSystemTransaction(*db.instance);
-	auto register_token = [&](const string &token) {
-		auto secret = make_uniq<KeyValueSecret>(vector<string> {"http://"}, "http", "config", "s1");
+	auto register_secret = [&](const string &name, const string &token) {
+		auto secret = make_uniq<KeyValueSecret>(vector<string> {"http://"}, "http", "config", Identifier(name));
 		secret->secret_map["bearer_token"] = Value(token);
-		secret_manager.RegisterSecret(transaction, std::move(secret), OnCreateConflict::REPLACE_ON_CONFLICT,
-		                              SecretPersistType::PERSISTENT);
+		string error;
+		try {
+			secret_manager.RegisterSecret(transaction, std::move(secret), OnCreateConflict::REPLACE_ON_CONFLICT,
+			                              SecretPersistType::PERSISTENT);
+		} catch (std::exception &ex) {
+			error = ex.what();
+		}
+		return error;
 	};
-	register_token("abc");
+	REQUIRE(register_secret("s1", "abc").empty());
 	REQUIRE(SecretFiles(secret_dir) == vector<string> {"s1.duckdb_secret"});
 
-	// while the new file is written, the replaced secret is still in the catalog
-	unique_ptr<QueryResult> secrets_during_write;
+	// while the new file is written, the replaced secret is still in the catalog with its token
+	unique_ptr<QueryResult> secret_during_write;
 	fs.on_secret_sync = [&]() {
-		secrets_during_write = con.Query("SELECT count(*) FROM duckdb_secrets() WHERE name = 's1'");
+		secret_during_write = con.Query("SELECT secret_string LIKE '%bearer_token=abc%' FROM duckdb_secrets(redact := "
+		                                "false) WHERE name = 's1'");
 	};
 
 	// the replacement's write fails, so the replaced secret stays in the catalog and in its file
 	fs.fail_secret_sync = true;
-	string error;
-	try {
-		register_token("xyz");
-	} catch (std::exception &ex) {
-		error = ex.what();
-	}
+	auto error = register_secret("s1", "xyz");
 	fs.fail_secret_sync = false;
 	fs.on_secret_sync = nullptr;
 	REQUIRE(StringUtil::Contains(error, "Could not fsync"));
-	REQUIRE(secrets_during_write);
-	REQUIRE(CHECK_COLUMN(secrets_during_write, 0, {1}));
+	REQUIRE(secret_during_write);
+	REQUIRE(CHECK_COLUMN(secret_during_write, 0, {true}));
 	auto result =
 	    con.Query("SELECT name, persistent, secret_string LIKE '%bearer_token=abc%' FROM duckdb_secrets(redact "
 	              ":= false)");
+	REQUIRE(result->RowCount() == 1);
 	REQUIRE(CHECK_COLUMN(result, 0, {"s1"}));
 	REQUIRE(CHECK_COLUMN(result, 1, {true}));
 	REQUIRE(CHECK_COLUMN(result, 2, {true}));

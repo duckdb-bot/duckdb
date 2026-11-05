@@ -43,18 +43,44 @@ SELECT i, s.a, sl.l FROM read_parquet(['{TEST_DIR}/nested_text.parquet', '{TEST_
 1	caf\xC3\xA9	['caf\\xC3\\xA9']
 2	caf\xC3\xA9	['caf\\xC3\\xA9']
 
-# filters on the bytes
+# filters on the bytes, with a third file whose text differs and lacks the other columns
+statement ok
+COPY (SELECT ['autre'] AS l, {'a': 'autre', 'n': 3} AS s, 3 AS i) TO '{TEST_DIR}/nested_other.parquet';
+
 query I
-SELECT i FROM read_parquet(['{TEST_DIR}/nested_text.parquet', '{TEST_DIR}/nested_bytes.parquet'], union_by_name = true) WHERE s.a = encode('café') ORDER BY i;
+SELECT i FROM read_parquet(['{TEST_DIR}/nested_text.parquet', '{TEST_DIR}/nested_bytes.parquet', '{TEST_DIR}/nested_other.parquet'], union_by_name = true) WHERE s.a = encode('café') ORDER BY i;
 ----
 1
 2
 
 query I
-SELECT i FROM read_parquet(['{TEST_DIR}/nested_text.parquet', '{TEST_DIR}/nested_bytes.parquet'], union_by_name = true) WHERE l[1] = encode('café') ORDER BY i;
+SELECT i FROM read_parquet(['{TEST_DIR}/nested_text.parquet', '{TEST_DIR}/nested_bytes.parquet', '{TEST_DIR}/nested_other.parquet'], union_by_name = true) WHERE l[1] = encode('café') ORDER BY i;
 ----
 1
 2
+
+query II
+SELECT i, s.a FROM read_parquet(['{TEST_DIR}/nested_text.parquet', '{TEST_DIR}/nested_bytes.parquet', '{TEST_DIR}/nested_other.parquet'], union_by_name = true) WHERE s.a <> encode('café') ORDER BY i;
+----
+3	autre
+
+query II
+SELECT i, l FROM read_parquet(['{TEST_DIR}/nested_text.parquet', '{TEST_DIR}/nested_bytes.parquet', '{TEST_DIR}/nested_other.parquet'], union_by_name = true) WHERE m IS NULL ORDER BY i;
+----
+3	[autre]
+
+# fields added or reordered between the files pair up by name, inside a list and inside a map
+statement ok
+COPY (SELECT 1 AS i, [{'a': 'a\x41', 'x': 1}] AS l, MAP {'k': {'a': 'a\x41', 'x': 1}} AS m) TO '{TEST_DIR}/evolve_text.parquet';
+
+statement ok
+COPY (SELECT 2 AS i, [{'y': 2, 'a': encode('a\x41')}] AS l, MAP {'k': {'y': 2, 'a': encode('a\x41')}} AS m) TO '{TEST_DIR}/evolve_bytes.parquet';
+
+query IIII
+SELECT i, l, m, octet_length(l[1].a) FROM read_parquet(['{TEST_DIR}/evolve_text.parquet', '{TEST_DIR}/evolve_bytes.parquet'], union_by_name = true) ORDER BY i;
+----
+1	[{'a': 'a\\x5Cx41', 'x': 1, 'y': NULL}]	{k={'a': 'a\\x5Cx41', 'x': 1, 'y': NULL}}	5
+2	[{'a': 'a\\x5Cx41', 'x': NULL, 'y': 2}]	{k={'a': 'a\\x5Cx41', 'x': NULL, 'y': 2}}	5
 
 # struct fields that differ between the files are remapped, the text still becomes bytes
 statement ok

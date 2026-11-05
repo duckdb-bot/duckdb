@@ -1,4 +1,5 @@
 #include "duckdb/common/multi_file/multi_file_column_mapper.hpp"
+#include "duckdb/function/cast/bound_cast_data.hpp"
 #include "duckdb/function/cast/cast_function_set.hpp"
 #include "duckdb/function/cast/default_casts.hpp"
 #include "duckdb/function/builtin_function_lookup.hpp"
@@ -266,13 +267,13 @@ static bool ReadsTextAsBytes(const LogicalType &source, const LogicalType &targe
 		return ReadsTextAsBytes(MapType::KeyType(source), MapType::KeyType(target)) ||
 		       ReadsTextAsBytes(MapType::ValueType(source), MapType::ValueType(target));
 	case LogicalTypeId::STRUCT: {
+		// the fields pair up the way the struct cast pairs them, by name, or by position for unnamed structs
+		auto mapping = StructBoundCastData::GetFieldMapping(source, target);
 		auto &source_children = StructType::GetChildTypes(source);
 		auto &target_children = StructType::GetChildTypes(target);
-		if (source_children.size() != target_children.size()) {
-			return false;
-		}
-		for (idx_t i = 0; i < source_children.size(); i++) {
-			if (ReadsTextAsBytes(source_children[i].second, target_children[i].second)) {
+		for (idx_t i = 0; i < mapping.source_indexes.size(); i++) {
+			if (ReadsTextAsBytes(source_children[mapping.source_indexes[i]].second,
+			                     target_children[mapping.target_indexes[i]].second)) {
 				return true;
 			}
 		}
@@ -283,18 +284,30 @@ static bool ReadsTextAsBytes(const LogicalType &source, const LogicalType &targe
 	}
 }
 
-//! The text in a file becomes its UTF-8 bytes when the column is read as BLOB, it is not a blob literal with \x
-//! escapes. Any other source declines, so the default cast applies
-static BoundCastInfo BindTextAsBytesCast(BindCastInput &input, const LogicalType &source, const LogicalType &target) {
-	if (source.id() != LogicalTypeId::VARCHAR) {
+//! The cast of a leaf of a file column is the database's, those of the extensions included. Nested types never reach
+//! this, so the built-in nested casts bind their children through the set of the file column
+static BoundCastInfo BindDatabaseCast(BindCastInput &input, const LogicalType &source, const LogicalType &target) {
+	if (!input.context) {
 		return nullptr;
 	}
-	return BoundCastInfo(DefaultCasts::ReinterpretCast);
+	GetCastFunctionInput get_input(input.context);
+	get_input.query_location = input.query_location;
+	return CastFunctionSet::Get(*input.context).GetCastFunction(source, target, get_input);
 }
 
-//! Casts a file column to the type it is read as. Where that turns text into bytes, at any nesting level, the nested
-//! casts bind their children in a cast set that reads text as bytes. Every other column keeps the casts of the
-//! database, those of the extensions included
+//! The text in a file becomes its UTF-8 bytes when the column is read as BLOB, it is not a blob literal with \x
+//! escapes
+static BoundCastInfo BindTextAsBytesCast(BindCastInput &input, const LogicalType &source, const LogicalType &target) {
+	if (source.id() == LogicalTypeId::VARCHAR) {
+		return BoundCastInfo(DefaultCasts::ReinterpretCast);
+	}
+	return BindDatabaseCast(input, source, target);
+}
+
+//! Casts a file column to the type it is read as. Where that turns text into bytes, at any nesting level, the cast is
+//! bound in a set of its own, in which text read as BLOB becomes its bytes, the other leaves keep the casts of the
+//! database and the built-in nested casts bind their children through the set. Every other column keeps the casts of
+//! the database
 static unique_ptr<Expression> CastFileColumn(ClientContext &context, unique_ptr<Expression> expr,
                                              const LogicalType &target_type) {
 	auto &source_type = expr->GetReturnType();
@@ -302,6 +315,7 @@ static unique_ptr<Expression> CastFileColumn(ClientContext &context, unique_ptr<
 		return BoundCastExpression::AddCastToType(context, std::move(expr), target_type);
 	}
 	CastFunctionSet file_casts;
+	file_casts.RegisterCastFunction(LogicalType::ANY, LogicalType::ANY, BindDatabaseCast);
 	file_casts.RegisterCastFunction(LogicalType::ANY, LogicalType::BLOB, BindTextAsBytesCast);
 	GetCastFunctionInput get_input(context);
 	auto file_cast = file_casts.GetCastFunction(source_type, target_type, get_input);

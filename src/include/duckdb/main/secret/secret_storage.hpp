@@ -77,7 +77,8 @@ public:
 		return persistent;
 	}
 	//! Makes what the storage keeps outside the catalog follow the catalog again after the rollback of a transaction
-	//! that changed the secret; a storage with nothing outside the catalog has nothing to do
+	//! that changed the secret. A storage with nothing outside the catalog has nothing to do, one with such state also
+	//! has to record its changes in the connection's transaction, as LocalFileSecretStorage does
 	virtual void RollbackSecret(const Identifier &name) {
 	}
 

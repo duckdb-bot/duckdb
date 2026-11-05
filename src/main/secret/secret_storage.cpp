@@ -271,8 +271,8 @@ namespace {
 
 constexpr const char *PERSISTENT_SECRET_UNDO_STATE_KEY = "persistent_secret_undo";
 
-//! The persistent secrets changed by a connection's active transaction. Their files change when the statement runs
-//! and the catalog when the transaction commits, so after a rollback the files are made to follow the catalog again.
+//! The persistent secrets changed by a connection's active transaction. Their files change when the statement runs,
+//! while a rollback undoes their catalog entries, so after a rollback the files are made to follow the catalog again.
 struct PersistentSecretUndoState : public ClientContextState {
 	void StageChange(MetaTransaction &transaction, SecretStorage &storage, const Identifier &name) {
 		lock_guard<mutex> guard(lock);
@@ -511,9 +511,11 @@ void LocalFileSecretStorage::StageChange(optional_ptr<CatalogTransaction> transa
 
 void LocalFileSecretStorage::RollbackSecret(const Identifier &name) {
 	lock_guard<mutex> guard(change_lock);
-	// the file follows the entry that is live after the rollback, whichever transaction made it
-	CatalogTransaction all_versions(db, SYSTEM_TRANSACTION_TIMESTAMP, VisibilityBound::IncludingUncommitted());
-	auto entry = secrets->GetEntry(all_versions, name);
+	// the file follows the committed entry that is live after the rollback. A version another transaction has not
+	// committed is left alone, that transaction wrote its file itself and repairs it on its own rollback, which can
+	// also free the version at any time. A committed version is only replaced under change_lock, so it stays alive.
+	CatalogTransaction committed(db, SYSTEM_TRANSACTION_TIMESTAMP, VisibilityBound::AllCommitted());
+	auto entry = secrets->GetEntry(committed, name);
 	if (entry) {
 		WriteSecret(*entry->Cast<SecretCatalogEntry>().secret->secret, OnCreateConflict::REPLACE_ON_CONFLICT);
 		return;

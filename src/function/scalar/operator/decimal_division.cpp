@@ -2,7 +2,9 @@
 #include "duckdb/common/hugeint.hpp"
 #include "duckdb/common/operator/cast_operators.hpp"
 #include "duckdb/common/types/cast_helpers.hpp"
+#include "duckdb/common/type_util.hpp"
 #include "duckdb/common/types/decimal.hpp"
+#include "duckdb/common/vector_operations/unary_executor.hpp"
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/function/scalar/operator_functions.hpp"
 #include "duckdb/function/scalar_function.hpp"
@@ -36,13 +38,47 @@ struct DecimalDivBindData : public FunctionData {
 // Execute functions
 //
 // COMPUTE_TYPE controls intermediate arithmetic:
-//   int64_t   -- when input_max_width + |scale_exp| < CACHED_POWERS_OF_TEN (product fits in int64_t)
+//   int64_t   -- when the width of the input tier + |scale_exp| < CACHED_POWERS_OF_TEN (product fits in int64_t)
 //   hugeint_t -- otherwise
 //===--------------------------------------------------------------------===//
+
+//! The arguments keep the types they have in the query, also when they sit in different physical tiers. The narrower
+//! one is widened here to the tier the division computes in, instead of by a cast to a wider DECIMAL type in the
+//! binder, so that binding the plan again derives the same result type from the same argument types
+template <class INPUT_TYPE>
+static Vector &WidenDecimalInput(Vector &input, unique_ptr<Vector> &widened, idx_t count) {
+	auto input_physical = input.GetType().InternalType();
+	if (input_physical == GetTypeId<INPUT_TYPE>()) {
+		return input;
+	}
+	auto widened_type = LogicalType::DECIMAL(DecimalWidth<INPUT_TYPE>::max, DecimalType::GetScale(input.GetType()));
+	widened = make_uniq<Vector>(widened_type);
+	switch (input_physical) {
+	case PhysicalType::INT16:
+		UnaryExecutor::Execute<int16_t, INPUT_TYPE>(input, *widened, count,
+		                                            [](int16_t value) { return INPUT_TYPE(int64_t(value)); });
+		break;
+	case PhysicalType::INT32:
+		UnaryExecutor::Execute<int32_t, INPUT_TYPE>(input, *widened, count,
+		                                            [](int32_t value) { return INPUT_TYPE(int64_t(value)); });
+		break;
+	case PhysicalType::INT64:
+		UnaryExecutor::Execute<int64_t, INPUT_TYPE>(input, *widened, count,
+		                                            [](int64_t value) { return INPUT_TYPE(value); });
+		break;
+	default:
+		throw InternalException("decimal_division: unexpected physical type of a narrower argument");
+	}
+	return *widened;
+}
 
 template <class INPUT_TYPE, class RESULT_TYPE, class COMPUTE_TYPE>
 static void DecimalDivExecute(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &bind_data = state.expr.Cast<BoundFunctionExpression>().BindInfo()->Cast<DecimalDivBindData>();
+	unique_ptr<Vector> widened_lhs;
+	unique_ptr<Vector> widened_rhs;
+	auto &lhs = WidenDecimalInput<INPUT_TYPE>(args.data[0], widened_lhs, args.size());
+	auto &rhs = WidenDecimalInput<INPUT_TYPE>(args.data[1], widened_rhs, args.size());
 
 	bool scale_divisor = bind_data.scale_exp < 0;
 	uint32_t abs_exp = UnsafeNumericCast<uint32_t>(AbsValue(bind_data.scale_exp));
@@ -56,7 +92,7 @@ static void DecimalDivExecute(DataChunk &args, ExpressionState &state, Vector &r
 	auto result_width = DecimalType::GetWidth(result.GetType());
 
 	BinaryExecutor::Execute<INPUT_TYPE, INPUT_TYPE, RESULT_TYPE>(
-	    args.data[0], args.data[1], result, args.size(), [&](INPUT_TYPE a, INPUT_TYPE b) -> RESULT_TYPE {
+	    lhs, rhs, result, args.size(), [&](INPUT_TYPE a, INPUT_TYPE b) -> RESULT_TYPE {
 		    if (b == INPUT_TYPE(0)) {
 			    throw InvalidInputException("decimal_division: division by zero");
 		    }
@@ -229,30 +265,10 @@ static void DecimalDivisionResolveTypes(ResolveScalarFunctionTypesInput &input) 
 	int32_t scale_exp = int32_t(s2) + int32_t(result_scale) - int32_t(s1);
 	int32_t abs_scale_exp = scale_exp < 0 ? -scale_exp : scale_exp;
 
-	uint32_t input_max_width;
-	switch (wider) {
-	case PhysicalType::INT16:
-		input_max_width = Decimal::MAX_WIDTH_INT16;
-		break;
-	case PhysicalType::INT32:
-		input_max_width = Decimal::MAX_WIDTH_INT32;
-		break;
-	case PhysicalType::INT64:
-		input_max_width = Decimal::MAX_WIDTH_INT64;
-		break;
-	case PhysicalType::INT128:
-		input_max_width = Decimal::MAX_WIDTH_DECIMAL;
-		break;
-	default:
-		throw InternalException("decimal_division: unexpected physical type");
-	}
-
-	// For same-tier inputs, preserve the original argument type so bind is idempotent
-	// during plan deserialization (bind is re-called with the stored argument types, and
-	// changing p changes the result-width formula).
-	// For cross-tier inputs, promote the narrower argument to the wider physical tier.
-	bound_function.GetArguments()[0] = (lhs_physical != wider) ? LogicalType::DECIMAL(input_max_width, s1) : lhs_type;
-	bound_function.GetArguments()[1] = (rhs_physical != wider) ? LogicalType::DECIMAL(input_max_width, s2) : rhs_type;
+	// The arguments keep their types, in different physical tiers too, so that binding the plan again, as reading it
+	// back from its serialized form does, derives the same result type. The execution widens the narrower argument
+	bound_function.GetArguments()[0] = lhs_type;
+	bound_function.GetArguments()[1] = rhs_type;
 
 	switch (wider) {
 	case PhysicalType::INT16:

@@ -195,3 +195,89 @@ statement error
 SELECT decimal_division(1.0::DECIMAL(4,1), 3.0::DECIMAL(4,1), 39);
 ----
 <REGEX>:.*scale must be between.*
+
+# Arguments in different physical tiers keep their types, so binding the plan again gives the same result type
+# p1=19 s1=0 p2=10 s2=0: result_scale=max(6,0+10+1)=11, result_width=19-0+0+11=30 -> DECIMAL(30,11)
+statement ok
+CREATE TABLE dd(x DECIMAL(19,0), y DECIMAL(10,0));
+
+statement ok
+INSERT INTO dd VALUES (10, 4), (NULL, 4), (10, NULL), (-7, 2);
+
+query II
+SELECT decimal_division(x, y), typeof(decimal_division(x, y)) FROM dd ORDER BY x, y;
+----
+-3.50000000000	DECIMAL(30,11)
+2.50000000000	DECIMAL(30,11)
+NULL	DECIMAL(30,11)
+NULL	DECIMAL(30,11)
+
+# the narrower argument on the left: p1=10 s1=0 p2=19 s2=0: result_scale=max(6,0+19+1)=20, result_width=10+20=30
+query II
+SELECT decimal_division(y, x), typeof(decimal_division(y, x)) FROM dd WHERE x = 10 AND y = 4;
+----
+0.40000000000000000000	DECIMAL(30,20)
+
+query I
+SELECT decimal_division(x, y, 2) FROM dd WHERE x = 10 AND y = 4;
+----
+2.50
+
+statement ok
+EXPLAIN SELECT decimal_division(x, y) FROM dd;
+
+statement ok
+PREPARE dd_div AS SELECT decimal_division(x, y) FROM dd WHERE x = $1 AND y IS NOT NULL;
+
+query I
+EXECUTE dd_div(10);
+----
+2.50000000000
+
+# every pair of tiers, as columns and as constants
+statement ok
+CREATE TABLE tiers(a DECIMAL(4,1), b DECIMAL(9,2), c DECIMAL(18,3), d DECIMAL(20,4));
+
+statement ok
+INSERT INTO tiers VALUES (12.5, 2.25, 3.125, 0.0625);
+
+# a/b: scale=max(6,1+9+1)=11, width=4-1+2+11=16; a/c: scale=max(6,1+18+1)=20, width=4-1+3+20=26
+# a/d: scale=max(6,1+20+1)=22, width=4-1+4+22=29
+query III
+SELECT decimal_division(a, b), decimal_division(a, c), decimal_division(a, d) FROM tiers;
+----
+5.55555555556	4.00000000000000000000	200.0000000000000000000000
+
+query III
+SELECT typeof(decimal_division(a, b)), typeof(decimal_division(a, c)), typeof(decimal_division(a, d)) FROM tiers;
+----
+DECIMAL(16,11)	DECIMAL(26,20)	DECIMAL(29,22)
+
+# b/c: scale=max(6,2+18+1)=21, width=9-2+3+21=31; b/d: scale=max(6,2+20+1)=23, width=9-2+4+23=34
+# c/d: scale=max(6,3+20+1)=24, width=18-3+4+24=43 > 38 -> error
+query II
+SELECT decimal_division(b, c), decimal_division(b, d) FROM tiers;
+----
+0.720000000000000000000	36.00000000000000000000000
+
+statement error
+SELECT decimal_division(c, d) FROM tiers;
+----
+<REGEX>:.*could not perform an accurate division.*
+
+# the wider argument on the left: d/a: scale=max(6,4+4+1)=9, width=20-4+1+9=26; c/b: scale=max(6,3+9+1)=13, width=18-3+2+13=30
+query IIII
+SELECT decimal_division(d, a), typeof(decimal_division(d, a)), decimal_division(c, b), typeof(decimal_division(c, b)) FROM tiers;
+----
+0.005000000	DECIMAL(26,9)	1.3888888888889	DECIMAL(30,13)
+
+query II
+SELECT decimal_division(10::DECIMAL(19,0), 4::DECIMAL(10,0)), decimal_division(12.5::DECIMAL(4,1), 0.0625::DECIMAL(20,4));
+----
+2.50000000000	200.0000000000000000000000
+
+statement ok
+DROP TABLE dd;
+
+statement ok
+DROP TABLE tiers;

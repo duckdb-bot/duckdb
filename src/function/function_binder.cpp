@@ -734,17 +734,17 @@ Value FunctionBinder::CastToParameterType(ClientContext &context, Value value, c
 
 //! Fold an argument to the constant it was bound to. A constant expression carries its value directly - evaluating
 //! one is both wasteful and impossible for the types that have no vector representation, such as TABLE
-static Value FoldArgument(ClientContext &context, Expression &expr) {
+static Value FoldArgument(Binder &binder, Expression &expr) {
 	if (expr.GetExpressionClass() == ExpressionClass::BOUND_CONSTANT) {
 		return expr.Cast<BoundConstantExpression>().GetValue();
 	}
-	return ExpressionExecutor::EvaluateScalar(context, expr, true);
+	return binder.FoldExpression(expr);
 }
 
 //! Fold an option to a constant and cast it to its type like an explicit cast - overload selection never checked it.
 //! A failed cast names the option, as the cast alone cannot tell which one it was
-static Value PlaceOption(ClientContext &context, Expression &expr, const TypedKwarg &option) {
-	auto value = FoldArgument(context, expr);
+static Value PlaceOption(ClientContext &context, Binder &binder, Expression &expr, const TypedKwarg &option) {
+	auto value = FoldArgument(binder, expr);
 	if (RequiresCast(value.type(), option.type) != LogicalTypeComparisonResult::DIFFERENT_TYPES) {
 		return value;
 	}
@@ -815,8 +815,9 @@ static ResolvedArguments ResolveArguments(const SimpleFunction &function, const 
 //! position fill "parameters", so "range(1, col1 := 5)" reaches the callback exactly as "range(1, 5)" does. The
 //! keyword-only and "**kwargs" arguments go into "named_parameters" - an option "**kwargs" declares by the name of the
 //! option, cast to its type like an explicit cast, as it takes no part in selection
-static void FoldArguments(ClientContext &context, const SimpleFunction &function, ResolvedArguments &resolved,
-                          vector<Value> &parameters, named_argument_map_t &named_parameters) {
+static void FoldArguments(ClientContext &context, Binder &binder, const SimpleFunction &function,
+                          ResolvedArguments &resolved, vector<Value> &parameters,
+                          named_argument_map_t &named_parameters) {
 	auto &signature = function.GetSignature();
 	auto option_schema = signature.GetTypedKwargs();
 	for (idx_t i = 0; i < resolved.arguments.size(); i++) {
@@ -825,12 +826,12 @@ static void FoldArguments(ClientContext &context, const SimpleFunction &function
 			// A TABLE parameter is filled by the subquery itself rather than by a value, so its slot holds a plain
 			// NULL. A NULL of type TABLE would not do: TABLE has no physical type, so it cannot be deserialized
 			parameters.push_back(resolved.types[i].id() == LogicalTypeId::TABLE ? Value()
-			                                                                    : FoldArgument(context, argument));
+			                                                                    : FoldArgument(binder, argument));
 			continue;
 		}
 		auto &name = resolved.named_argument_names[i - resolved.positional_count];
 		if (!option_schema || signature.GetParameterIndexByName(name).IsValid()) {
-			named_parameters.insert(make_pair(name, FoldArgument(context, argument)));
+			named_parameters.insert(make_pair(name, FoldArgument(binder, argument)));
 			continue;
 		}
 		auto option_ptr = option_schema->Find(name);
@@ -856,7 +857,7 @@ static void FoldArguments(ClientContext &context, const SimpleFunction &function
 			                      "Named parameter %s was passed more than once in function call to %s", option.name,
 			                      function.GetName().GetIdentifierName());
 		}
-		named_parameters.insert(make_pair(option.name, PlaceOption(context, argument, option)));
+		named_parameters.insert(make_pair(option.name, PlaceOption(context, binder, argument, option)));
 	}
 }
 
@@ -876,7 +877,7 @@ FunctionBinder::BindTableFunction(const TableFunctionSet &functions,
 	CastToFunctionArguments(definition->GetName(), resolved.types, resolved.arguments);
 	vector<Value> parameters;
 	named_argument_map_t named_parameters;
-	FoldArguments(context, *definition, resolved, parameters, named_parameters);
+	FoldArguments(context, *binder, *definition, resolved, parameters, named_parameters);
 	// copied out of the set: binding the table function fills in the bound return types
 	return make_uniq<ResolvedTableFunction>(BoundTableFunction(definition), std::move(parameters),
 	                                        std::move(named_parameters));
@@ -915,7 +916,7 @@ FunctionBinder::BindTableInOutFunction(const TableFunctionSet &functions, const 
 	CastToFunctionArguments(definition->GetName(), resolved.types, resolved.arguments);
 	vector<Value> parameters;
 	named_argument_map_t named_parameters;
-	FoldArguments(context, *definition, resolved, parameters, named_parameters);
+	FoldArguments(context, *binder, *definition, resolved, parameters, named_parameters);
 	return make_uniq<ResolvedTableFunction>(BoundTableFunction(definition), std::move(parameters),
 	                                        std::move(named_parameters));
 }
@@ -935,7 +936,7 @@ unique_ptr<BoundPragmaInfo> FunctionBinder::BindPragmaFunction(
 	CastToFunctionArguments(definition->GetName(), resolved.types, resolved.arguments);
 	vector<Value> parameters;
 	named_argument_map_t named_parameters;
-	FoldArguments(context, *definition, resolved, parameters, named_parameters);
+	FoldArguments(context, *binder, *definition, resolved, parameters, named_parameters);
 	return make_uniq<BoundPragmaInfo>(*definition, std::move(parameters), std::move(named_parameters));
 }
 

@@ -540,7 +540,7 @@ void LocalFileSecretStorage::RollbackSecret(const Identifier &name) {
 	// another transaction made since and has not committed. The file follows the committed one, copied under the
 	// catalog set's lock, which also guards the undo and the commit of versions. A version of another transaction is
 	// left alone, that transaction wrote its file itself and repairs it on its own rollback. The scan loads no secret
-	// file, the names it is asked for are in the catalog set already.
+	// file: the statement that changed the file looked the entry up before, or the entry is gone with its creation.
 	unique_ptr<const BaseSecret> committed;
 	bool uncommitted = false;
 	secrets->Scan(VisibilityBound::IncludingUncommitted(), [&](CatalogEntry &entry) {

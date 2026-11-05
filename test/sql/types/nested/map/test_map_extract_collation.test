@@ -370,25 +370,14 @@ EXECUTE p('pear');
 ----
 NULL	[]
 
-# an index cannot evaluate a collated lookup for new rows, as for map_contains, and a binary collation needs none
+# an index key cannot hold a collated lookup, which rebuilds the map with a lambda, and a binary collation needs none
 statement ok
 CREATE TABLE indexed (m MAP(VARCHAR, INTEGER));
 
-statement ok
+statement error
 CREATE INDEX collated_idx ON indexed ((m['Apple' COLLATE NOCASE]));
-
-statement error
-INSERT INTO indexed VALUES (MAP {'Apple': 7});
 ----
-Cannot use "list_transform" in this context
-
-statement error
-INSERT INTO indexed VALUES (MAP {'Apple': 7});
-----
-Cannot use "list_transform" in this context
-
-statement ok
-DROP INDEX collated_idx;
+Index keys cannot contain lambda functions such as "list_transform"
 
 statement ok
 CREATE INDEX binary_idx ON indexed ((m['Apple' COLLATE "binary"]));

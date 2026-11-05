@@ -391,8 +391,8 @@ TEST_CASE("V2 db option: startup options are applied when the instance is create
 	}
 
 	SECTION("an option that needs a running instance is written through the config instead") {
-		auto name_str = Convert("allowed_directories");
-		auto value_str = Convert("[]");
+		auto name_str = Convert("enable_logging");
+		auto value_str = Convert("true");
 		duckdb_v2_instance_handle instance = nullptr;
 		REQUIRE(duckdb_v2_instance_create_with_options(env, &name_str, &value_str, 1, &instance, nullptr) ==
 		        DUCKDB_V2_ERROR_INPUT_INVALID);

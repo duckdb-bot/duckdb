@@ -325,11 +325,8 @@ void AllowedDirectoriesSetting::SetGlobal(DatabaseInstance *db, DBConfig &config
 	if (input.IsNull()) {
 		throw InvalidInputException("%s setting cannot be NULL", AllowedDirectoriesSetting::Name);
 	}
-	if (!Settings::Get<EnableExternalAccessSetting>(config)) {
+	if (!config.IsUserConfig() && !Settings::Get<EnableExternalAccessSetting>(config)) {
 		throw InvalidInputException("Cannot change allowed_directories when enable_external_access is disabled");
-	}
-	if (!config.file_system) {
-		throw InvalidInputException("Cannot change/set allowed_directories before the database is started");
 	}
 	vector<string> directories;
 	for (auto &val : ListValue::GetChildren(input)) {
@@ -339,7 +336,7 @@ void AllowedDirectoriesSetting::SetGlobal(DatabaseInstance *db, DBConfig &config
 }
 
 void AllowedDirectoriesSetting::ResetGlobal(DatabaseInstance *db, DBConfig &config) {
-	if (!Settings::Get<EnableExternalAccessSetting>(config)) {
+	if (!config.IsUserConfig() && !Settings::Get<EnableExternalAccessSetting>(config)) {
 		throw InvalidInputException("Cannot change allowed_directories when enable_external_access is disabled");
 	}
 	config.ResetAllowedDirectories();
@@ -361,11 +358,8 @@ void AllowedPathsSetting::SetGlobal(DatabaseInstance *db, DBConfig &config, cons
 	if (input.IsNull()) {
 		throw InvalidInputException("%s setting cannot be NULL", AllowedPathsSetting::Name);
 	}
-	if (!Settings::Get<EnableExternalAccessSetting>(config)) {
+	if (!config.IsUserConfig() && !Settings::Get<EnableExternalAccessSetting>(config)) {
 		throw InvalidInputException("Cannot change allowed_paths when enable_external_access is disabled");
-	}
-	if (!config.file_system) {
-		throw InvalidInputException("Cannot change/set allowed_paths before the database is started");
 	}
 
 	vector<string> paths;
@@ -376,7 +370,7 @@ void AllowedPathsSetting::SetGlobal(DatabaseInstance *db, DBConfig &config, cons
 }
 
 void AllowedPathsSetting::ResetGlobal(DatabaseInstance *db, DBConfig &config) {
-	if (!Settings::Get<EnableExternalAccessSetting>(config)) {
+	if (!config.IsUserConfig() && !Settings::Get<EnableExternalAccessSetting>(config)) {
 		throw InvalidInputException("Cannot change allowed_paths when enable_external_access is disabled");
 	}
 	config.ResetAllowedPaths();

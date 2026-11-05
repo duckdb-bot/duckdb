@@ -9,12 +9,15 @@ TEST_CASE("Test parse logical type", "[parse_logical_type]") {
 	SECTION("simple types") {
 		REQUIRE(DBConfig::ParseLogicalType("integer") == LogicalType::INTEGER);
 		REQUIRE(DBConfig::ParseLogicalType("any") == LogicalType::ANY);
+		REQUIRE(DBConfig::ParseLogicalType("VARIANT") == LogicalType::VARIANT());
+		REQUIRE(DBConfig::ParseLogicalType("variant") == LogicalType::VARIANT());
 	}
 
 	SECTION("nested types") {
 		// list
 		REQUIRE(DBConfig::ParseLogicalType("ANY[]") == LogicalType::LIST(LogicalType::ANY));
 		REQUIRE(DBConfig::ParseLogicalType("VARCHAR[]") == LogicalType::LIST(LogicalType::VARCHAR));
+		REQUIRE(DBConfig::ParseLogicalType("VARIANT[]") == LogicalType::LIST(LogicalType::VARIANT()));
 
 		// array
 		REQUIRE(DBConfig::ParseLogicalType("ANY[3]") == LogicalType::ARRAY(LogicalType::ANY, 3));

@@ -10,6 +10,7 @@
 #include "duckdb/common/serializer/serializer.hpp"
 #include "duckdb/common/serializer/deserializer.hpp"
 
+#include <cmath>
 #include <stdlib.h>
 
 namespace duckdb {
@@ -57,6 +58,28 @@ struct ApproxQuantileCoding {
 	}
 };
 
+//! A double rounds the largest values of a wide integer up past the end of the type, which decodes to its maximum,
+//! above every input. Those values are rounded down instead
+template <typename INPUT_TYPE>
+static double EncodeWithinType(const INPUT_TYPE &input) {
+	static const auto past_maximum = Cast::Operation<INPUT_TYPE, double>(NumericLimits<INPUT_TYPE>::Maximum());
+	auto result = Cast::Operation<INPUT_TYPE, double>(input);
+	if (result >= past_maximum) {
+		result = std::nextafter(past_maximum, 0.0);
+	}
+	return result;
+}
+
+template <>
+double ApproxQuantileCoding::Encode(const int64_t &input) {
+	return EncodeWithinType(input);
+}
+
+template <>
+double ApproxQuantileCoding::Encode(const hugeint_t &input) {
+	return EncodeWithinType(input);
+}
+
 template <>
 double ApproxQuantileCoding::Encode(const dtime_t &input) {
 	return Encode<int64_t, double>(input.value);
@@ -100,6 +123,10 @@ bool ApproxQuantileCoding::Decode(const double &source, dtime_tz_t &target) {
 
 template <>
 double ApproxQuantileCoding::Encode(const timestamp_t &input) {
+	if (input == timestamp_t::infinity()) {
+		// the only value that decodes to infinity, which finite timestamps next to it are rounded below
+		return Cast::Operation<int64_t, double>(input.value);
+	}
 	return Encode<int64_t, double>(input.value);
 }
 

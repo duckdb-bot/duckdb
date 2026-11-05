@@ -567,8 +567,13 @@ AggregateFunction GetApproxQuantileListAggregateFunction(const LogicalType &type
 		return GetTypedApproxQuantileListAggregateFunction<int64_t, int64_t>(type);
 	case LogicalTypeId::TIME:
 		return GetTypedApproxQuantileListAggregateFunction<dtime_t, dtime_t>(type);
+	case LogicalTypeId::TIME_NS:
+		// a count of nanoseconds, which the dtime_t decoding would clamp to the microseconds of a day
+		return GetTypedApproxQuantileListAggregateFunction<int64_t, int64_t>(type);
 	case LogicalTypeId::TIMESTAMP:
 	case LogicalTypeId::TIMESTAMP_TZ:
+	case LogicalTypeId::TIMESTAMP_NS:
+	case LogicalTypeId::TIMESTAMP_TZ_NS:
 		return GetTypedApproxQuantileListAggregateFunction<timestamp_t, timestamp_t>(type);
 	case LogicalTypeId::TIME_TZ:
 		//	Not binary comparable
@@ -681,6 +686,37 @@ AggregateFunction GetApproxQuantileWidenedTimestamp(const LogicalType &type) {
 	return fun;
 }
 
+//! The TIMESTAMP list implementation, which TIMESTAMP_S and TIMESTAMP_MS arguments are widened to
+AggregateFunction ApproxQuantileTimestampListFunction() {
+	auto function = GetApproxQuantileListAggregateFunction(LogicalType::TIMESTAMP);
+	function.SetName("approx_quantile");
+	function.SetSerializeCallback(ApproximateQuantileBindData::Serialize);
+	function.SetDeserializeCallback(ApproximateQuantileBindData::Deserialize);
+	function.SetStateExportCallbacks(ApproxQuantileGetStateType, ApproxQuantileExportState, ApproxQuantileImportState);
+	return function;
+}
+
+unique_ptr<FunctionData> BindApproxQuantileWidenedTimestampList(BindAggregateFunctionInput &input) {
+	auto &function = input.GetBoundFunction();
+	auto bind_data = BindApproxQuantile(input);
+	ReplaceApproxQuantileImplementation(function, ApproxQuantileTimestampListFunction());
+	function.GetArguments()[0] = LogicalType::TIMESTAMP;
+	function.SetReturnType(LogicalType::LIST(LogicalType::TIMESTAMP));
+	return bind_data;
+}
+
+//! The list form has a TIMESTAMP_NS overload too, so TIMESTAMP_S and TIMESTAMP_MS need the same widening as the
+//! scalar form to keep their range
+AggregateFunction GetApproxQuantileWidenedTimestampList(const LogicalType &type) {
+	// stub function, the bind sets the TIMESTAMP list implementation and the argument type it casts to
+	AggregateFunction fun({}, LogicalType::LIST(LogicalType::TIMESTAMP), nullptr, nullptr, nullptr, nullptr, nullptr,
+	                      nullptr, BindApproxQuantileWidenedTimestampList);
+	fun.GetSignature().AddParameter("x", type).AddParameter("pos", LogicalType::LIST(LogicalType::FLOAT));
+	fun.SetSerializeCallback(ApproximateQuantileBindData::Serialize);
+	fun.SetDeserializeCallback(ApproximateQuantileBindData::Deserialize);
+	return fun;
+}
+
 AggregateFunction GetApproxQuantileDecimalList() {
 	// stub function - the actual function is set during bind or deserialize
 	AggregateFunction fun({}, LogicalType::LIST(LogicalTypeId::DECIMAL), nullptr, nullptr, nullptr, nullptr, nullptr,
@@ -728,9 +764,14 @@ AggregateFunctionSet ApproxQuantileFun::GetFunctions() {
 
 	approx_quantile.AddFunction(GetApproxQuantileListAggregate(LogicalType::DATE));
 	approx_quantile.AddFunction(GetApproxQuantileListAggregate(LogicalType::TIME));
+	approx_quantile.AddFunction(GetApproxQuantileListAggregate(LogicalType::TIME_NS));
 	approx_quantile.AddFunction(GetApproxQuantileListAggregate(LogicalType::TIME_TZ));
 	approx_quantile.AddFunction(GetApproxQuantileListAggregate(LogicalType::TIMESTAMP));
+	approx_quantile.AddFunction(GetApproxQuantileListAggregate(LogicalType::TIMESTAMP_NS));
 	approx_quantile.AddFunction(GetApproxQuantileListAggregate(LogicalType::TIMESTAMP_TZ));
+	approx_quantile.AddFunction(GetApproxQuantileListAggregate(LogicalType::TIMESTAMP_TZ_NS));
+	approx_quantile.AddFunction(GetApproxQuantileWidenedTimestampList(LogicalType::TIMESTAMP_S));
+	approx_quantile.AddFunction(GetApproxQuantileWidenedTimestampList(LogicalType::TIMESTAMP_MS));
 
 	return approx_quantile;
 }

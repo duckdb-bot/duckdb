@@ -1,0 +1,20 @@
+# name: benchmark/micro/parquet/bloom_filter_no_prefetch.benchmark
+# description: Filter on a column with bloom filters with parquet prefetching disabled
+# group: [parquet]
+
+name Bloom Filter No Prefetch
+group micro
+subgroup parquet
+
+require parquet
+
+load
+COPY (SELECT 'key' || (range % 50) AS k, range AS v, 'str' || range AS s FROM range(10000000))
+TO '${BENCHMARK_DIR}/bloom_filter_no_prefetch.parquet' (ROW_GROUP_SIZE 10000);
+SET disable_parquet_prefetching = true;
+
+run
+SELECT count(*), sum(v), max(s) FROM '${BENCHMARK_DIR}/bloom_filter_no_prefetch.parquet' WHERE k = 'key7';
+
+result III
+200000	999996400000	str9999957

@@ -223,6 +223,9 @@ protected:
 	identifier_set_t persistent_secrets;
 	//! The files of the persistent secrets, shared with the generator that loads them
 	shared_ptr<PersistentSecretFiles> files;
+	//! Held while a secret's catalog entry and file change together, and while a rollback makes a file follow the
+	//! catalog
+	mutex change_lock;
 	//! Path that is searched for secrets;
 	string secret_path;
 };

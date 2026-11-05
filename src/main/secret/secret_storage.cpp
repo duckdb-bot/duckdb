@@ -296,10 +296,21 @@ struct PersistentSecretUndoState : public ClientContextState {
 			rolled_back = std::move(changes);
 			changes.clear();
 		}
+		// every name is handled, the first failure is reported
+		ErrorData first_error;
 		for (auto &storage_changes : rolled_back) {
 			for (auto &name : storage_changes.second) {
-				storage_changes.first.get().RollbackSecret(name);
+				try {
+					storage_changes.first.get().RollbackSecret(name);
+				} catch (std::exception &ex) {
+					if (!first_error.HasError()) {
+						first_error = ErrorData(ex);
+					}
+				}
 			}
+		}
+		if (first_error.HasError()) {
+			first_error.Throw();
 		}
 	}
 
@@ -475,12 +486,14 @@ void LocalFileSecretStorage::WriteSecret(const BaseSecret &secret, OnCreateConfl
 unique_ptr<SecretEntry> LocalFileSecretStorage::StoreSecret(unique_ptr<const BaseSecret> secret,
                                                             OnCreateConflict on_conflict,
                                                             optional_ptr<CatalogTransaction> transaction) {
+	lock_guard<mutex> guard(change_lock);
 	StageChange(transaction, secret->GetName());
 	return CatalogSetSecretStorage::StoreSecret(std::move(secret), on_conflict, transaction);
 }
 
 void LocalFileSecretStorage::DropSecretByName(const Identifier &name, OnEntryNotFound on_entry_not_found,
                                               optional_ptr<CatalogTransaction> transaction) {
+	lock_guard<mutex> guard(change_lock);
 	StageChange(transaction, name);
 	CatalogSetSecretStorage::DropSecretByName(name, on_entry_not_found, transaction);
 }
@@ -497,6 +510,7 @@ void LocalFileSecretStorage::StageChange(optional_ptr<CatalogTransaction> transa
 }
 
 void LocalFileSecretStorage::RollbackSecret(const Identifier &name) {
+	lock_guard<mutex> guard(change_lock);
 	// the file follows the entry that is live after the rollback, whichever transaction made it
 	CatalogTransaction all_versions(db, SYSTEM_TRANSACTION_TIMESTAMP, VisibilityBound::IncludingUncommitted());
 	auto entry = secrets->GetEntry(all_versions, name);
@@ -504,12 +518,12 @@ void LocalFileSecretStorage::RollbackSecret(const Identifier &name) {
 		WriteSecret(*entry->Cast<SecretCatalogEntry>().secret->secret, OnCreateConflict::REPLACE_ON_CONFLICT);
 		return;
 	}
-	auto &fs = FileSystem::GetLocal(db);
+	// only a file registered for the name is the secret's own, the file its name encodes to can be another secret's
 	auto file = files->Get(name);
 	if (file.empty()) {
-		file = fs.JoinPath(secret_path, SecretFileName(name.GetIdentifierName()));
+		return;
 	}
-	if (fs.FileExists(file)) {
+	if (FileSystem::GetLocal(db).FileExists(file)) {
 		RemoveSecret(name.GetIdentifierName(), OnEntryNotFound::RETURN_NULL);
 		return;
 	}

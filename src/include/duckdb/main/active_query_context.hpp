@@ -54,7 +54,7 @@ public:
 	bool began_on_all_states = false;
 	//! States whose QueryBegin completed, cleared after all of them completed
 	vector<shared_ptr<ClientContextState>> begun_states;
-	//! Whether the states were notified that the statement that runs began, so that only then they see its end
+	//! Whether the registered states saw the begin of the running statement and not yet its end
 	bool statement_began = false;
 
 public:

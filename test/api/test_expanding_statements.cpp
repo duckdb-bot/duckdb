@@ -1130,6 +1130,16 @@ TEST_CASE("Registered states see a StatementBegin and StatementEnd per statement
 		REQUIRE(recorder->events == vector<string> {"QueryBegin", "StatementBegin", "StatementEnd", "StatementBegin",
 		                                            "StatementEnd error", "QueryEnd error"});
 	}
+	SECTION("a statement that expands and fails between two of its statements") {
+		// the profile of the finished statement cannot be written, so the query fails before its next statement begins
+		REQUIRE_NO_FAIL(con.Query("SET enable_profiling = 'json'"));
+		REQUIRE_NO_FAIL(con.Query("SET profiling_output = '" + TestCreatePath("missing_directory/profile.json") + "'"));
+		recorder->events.clear();
+		auto failed = con.Query(MultiOf(con, {"INSERT INTO t SELECT 1", "SELECT 2"}));
+		REQUIRE(failed->HasError());
+		REQUIRE(StringUtil::Contains(failed->GetError(), "profile.json"));
+		REQUIRE(recorder->events == vector<string> {"QueryBegin", "StatementBegin", "StatementEnd", "QueryEnd error"});
+	}
 }
 
 //===--------------------------------------------------------------------===//

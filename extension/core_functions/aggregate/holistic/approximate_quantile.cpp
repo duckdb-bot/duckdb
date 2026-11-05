@@ -98,9 +98,23 @@ bool ApproxQuantileCoding::Decode(const double &source, dtime_tz_t &target) {
 	return decoded;
 }
 
+//! The finite timestamps next to the ends of the int64 range round to the doubles of the infinity sentinels, so they
+//! are kept one double inside the finite range and only the sentinels themselves reach its ends
+static constexpr double TIMESTAMP_LARGEST_FINITE_DOUBLE = 9223372036854774784.0;
+
 template <>
 double ApproxQuantileCoding::Encode(const timestamp_t &input) {
-	return Encode<int64_t, double>(input.value);
+	const auto encoded = Encode<int64_t, double>(input.value);
+	if (!input.IsFinite()) {
+		return encoded;
+	}
+	if (encoded >= TIMESTAMP_LARGEST_FINITE_DOUBLE) {
+		return TIMESTAMP_LARGEST_FINITE_DOUBLE;
+	}
+	if (encoded <= -TIMESTAMP_LARGEST_FINITE_DOUBLE) {
+		return -TIMESTAMP_LARGEST_FINITE_DOUBLE;
+	}
+	return encoded;
 }
 
 template <>

@@ -87,8 +87,7 @@ public:
 	void SetRethrowTryErrors() {
 		rethrow_try_errors = true;
 	}
-	//! Make the packed value and error flag the result of this TRY subquery, for a use site in another operator
-	//! that re-raises the error itself
+	//! Make the packed value and error flag the result, for a use site that re-raises the error itself
 	void ExposeTryErrorFlag();
 
 	string ToString() const override;

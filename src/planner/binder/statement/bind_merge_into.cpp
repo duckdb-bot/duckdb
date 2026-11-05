@@ -372,8 +372,7 @@ BoundStatement Binder::BindNode(MergeQueryNode &node) {
 	}
 
 #ifdef DEBUG
-	// the actions read the projection by position, which a join that a later planner adds for a subquery left in an
-	// action would shift, so every subquery must have moved into the projection
+	// a subquery left in an action would be planned above the projection, whose columns the actions read by position
 	for (auto &entry : merge_into->actions) {
 		for (auto &action : entry.second) {
 			D_ASSERT(!action->condition || !action->condition->HasSubquery());

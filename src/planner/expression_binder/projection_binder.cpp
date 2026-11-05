@@ -28,8 +28,7 @@ BindResult ProjectionBinder::BindColumnRef(unique_ptr<ParsedExpression> &expr_pt
 	if (result.expression->GetExpressionClass() == ExpressionClass::BOUND_SUBQUERY) {
 		auto &subquery = result.expression->Cast<BoundSubqueryExpression>();
 		if (subquery.RethrowsTryErrors()) {
-			// the subquery was lowered under the enclosing TRY with its error flag exposed. The projection computes
-			// the packed value and flag, and the error is re-raised here, where that TRY masks it
+			// the projection carries the packed value and error flag, and the error is re-raised here under the TRY
 			subquery.ExposeTryErrorFlag();
 			rethrow_try_errors = true;
 		}
@@ -58,8 +57,7 @@ BindResult ProjectionBinder::BindExpression(unique_ptr<ParsedExpression> &expr_p
 		return BindColumnRef(expr_ptr, depth, root_expression);
 	case ExpressionClass::OPERATOR:
 		if (IsTryOverScalarSubquery(expr.Cast<OperatorExpression>())) {
-			// TRY directly over a scalar subquery is lowered onto the subquery plan, so it moves into the projection
-			// as one column, like the subquery alone would
+			// TRY directly over a scalar subquery is lowered onto its plan, so it moves into the projection whole
 			return BindColumnRef(expr_ptr, depth, root_expression);
 		}
 		return ExpressionBinder::BindExpression(expr_ptr, depth);

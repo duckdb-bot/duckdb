@@ -74,12 +74,12 @@ SELECT * FROM t;
 ----
 1	3	bad
 
-# TRY in an ERROR message
+# TRY in an ERROR message, which the error reports with the masked value gone
 statement error
 MERGE INTO t USING (VALUES (1)) src(k) ON t.k = src.k
-  WHEN MATCHED THEN ERROR concat('message ', TRY(1 + (SELECT txt::INTEGER FROM t))::VARCHAR);
+  WHEN MATCHED THEN ERROR concat('masked ', TRY(1 + (SELECT txt::INTEGER FROM t))::VARCHAR, 'end');
 ----
-message
+Merge error condition WHEN MATCHED: masked end
 
 # a subquery that raises no error contributes its value
 statement ok
@@ -235,8 +235,8 @@ SELECT * FROM u ORDER BY k;
 2	0
 3	8
 
-# the condition keeps the semantics of SELECT: an error in the subquery turns the whole TRY into NULL, also when
-# the expression around the subquery tolerates NULL, and HAS_ERROR sees the error
+# the condition keeps the semantics of SELECT, where an error in the subquery turns the whole TRY into NULL, also
+# when the expression around the subquery tolerates NULL, and HAS_ERROR sees the error
 statement ok
 CREATE TABLE w(k INTEGER, v INTEGER, txt VARCHAR);
 
@@ -297,6 +297,60 @@ query III
 SELECT * FROM w;
 ----
 1	4	bad
+
+# target rows whose correlated lookup errors, succeeds, is NULL or has no row, with earlier actions taking some rows,
+# so every row sees its own error flag
+statement ok
+CREATE TABLE lookup(k INTEGER, txt VARCHAR);
+
+statement ok
+INSERT INTO lookup VALUES (1, 'bad'), (2, '5'), (3, NULL), (5, '7');
+
+statement ok
+CREATE TABLE tgt(k INTEGER, v INTEGER);
+
+statement ok
+INSERT INTO tgt VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50);
+
+query III
+SELECT k, TRY(coalesce((SELECT l.txt::INTEGER FROM lookup l WHERE l.k = tgt.k), 5)),
+       HAS_ERROR(1 + (SELECT l.txt::INTEGER FROM lookup l WHERE l.k = tgt.k)) FROM tgt ORDER BY k;
+----
+1	NULL	true
+2	5	false
+3	5	false
+4	5	false
+5	7	false
+
+statement ok
+MERGE INTO tgt USING (VALUES (1), (2), (3), (4), (5)) src(k) ON tgt.k = src.k
+  WHEN MATCHED AND TRY((SELECT l.txt::INTEGER FROM lookup l WHERE l.k = tgt.k)) = 5 THEN UPDATE SET v = 1
+  WHEN MATCHED AND HAS_ERROR(1 + (SELECT l.txt::INTEGER FROM lookup l WHERE l.k = tgt.k)) THEN UPDATE SET v = -1
+  WHEN MATCHED AND TRY(coalesce((SELECT l.txt::INTEGER FROM lookup l WHERE l.k = tgt.k), 5)) = 5 THEN UPDATE SET v = 0;
+
+query II
+SELECT * FROM tgt ORDER BY k;
+----
+1	-1
+2	1
+3	0
+4	0
+5	50
+
+# the same rows through lambdas
+statement ok
+MERGE INTO tgt USING (VALUES (1), (2), (3), (4), (5)) src(k) ON tgt.k = src.k
+  WHEN MATCHED AND list_transform([1], lambda x: TRY(x + (SELECT l.txt::INTEGER FROM lookup l WHERE l.k = tgt.k))) = [6] THEN UPDATE SET v = v + 100
+  WHEN MATCHED AND TRY(list_transform([1], lambda x: x + (SELECT l.txt::INTEGER FROM lookup l WHERE l.k = tgt.k))) IS NULL THEN UPDATE SET v = v - 100;
+
+query II
+SELECT * FROM tgt ORDER BY k;
+----
+1	-101
+2	101
+3	0
+4	0
+5	50
 
 # the database stays usable
 query I

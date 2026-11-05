@@ -97,6 +97,24 @@ SELECT acatalog FROM (PIVOT t ON with_inner(a));
 ----
 1
 
+# a whole row alias as the pivot column
+query I
+WITH q AS (SELECT 1 AS x) SELECT "{'x': 1}" FROM (WITH s AS (FROM q) PIVOT s v ON v);
+----
+1
+
+# the values are ordered as text and NULL is left out
+query II
+WITH q AS (SELECT * FROM (VALUES (10), (9), (NULL)) t(x)) SELECT * FROM (WITH s AS (FROM q) PIVOT s ON x);
+----
+1	1
+
+query I
+SELECT column_name FROM (DESCRIBE WITH q AS (SELECT * FROM (VALUES (10), (9), (NULL)) t(x)) SELECT * FROM (WITH s AS (FROM q) PIVOT s ON x)) ORDER BY 1;
+----
+10
+9
+
 # UNPIVOT in the same scopes
 query II
 WITH q AS (SELECT 1 AS a, 2 AS b) SELECT * FROM (WITH s AS (FROM q) UNPIVOT s ON a, b) ORDER BY 1;

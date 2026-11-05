@@ -20,6 +20,12 @@ set autoinstall_known_extensions=true
 statement ok
 set autoinstall_extension_repository='{LOCAL_EXTENSION_REPO}';
 
+# icu is not loaded yet, so binding epoch(TIMESTAMPTZ) below autoloads it
+query I
+SELECT loaded FROM duckdb_extensions() WHERE extension_name = 'icu'
+----
+false
+
 # epoch(TIMESTAMPTZ) is an icu function, so binding it autoloads icu, which adds its own overloads to range and
 # replaces the catalog entry of range while its parameters are bound
 query I
@@ -27,6 +33,11 @@ SELECT * FROM range(epoch('1970-01-01 00:00:02+00'::TIMESTAMPTZ)::BIGINT)
 ----
 0
 1
+
+query I
+SELECT loaded FROM duckdb_extensions() WHERE extension_name = 'icu'
+----
+true
 
 # icu is loaded now, so the same query binds against the new entry from the start
 query I
@@ -132,12 +143,22 @@ set autoinstall_known_extensions=true
 statement ok
 set autoinstall_extension_repository='{LOCAL_EXTENSION_REPO}';
 
+query I
+SELECT loaded FROM duckdb_extensions() WHERE extension_name = 'icu'
+----
+false
+
 # a correlated call binds its input expression as a subquery, which autoloads icu in the same way
 query I
 SELECT r.* FROM (VALUES ('1970-01-01 00:00:02+00'::TIMESTAMPTZ)) t(ts), LATERAL range(epoch(t.ts)::BIGINT) r ORDER BY 1
 ----
 0
 1
+
+query I
+SELECT loaded FROM duckdb_extensions() WHERE extension_name = 'icu'
+----
+true
 
 restart
 

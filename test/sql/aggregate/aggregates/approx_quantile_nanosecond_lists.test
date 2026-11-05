@@ -1,0 +1,68 @@
+# name: test/sql/aggregate/aggregates/approx_quantile_nanosecond_lists.test
+# description: The list form of approx_quantile keeps TIME_NS, TIMESTAMP_NS and TIMESTAMPTZ_NS like the scalar form
+# group: [aggregates]
+
+# values whose nanoseconds a double holds exactly round-trip through the digest
+query II
+SELECT approx_quantile(t, [0.0, 1.0]), typeof(approx_quantile(t, [0.0, 1.0])) FROM (VALUES (TIMESTAMP_NS '1970-01-01 00:00:00.000000001'), (TIMESTAMP_NS '1970-01-01 00:00:00.000000003')) v(t);
+----
+['1970-01-01 00:00:00.000000001', '1970-01-01 00:00:00.000000003']	TIMESTAMP_NS[]
+
+query II
+SELECT approx_quantile(t, [0.0, 1.0]), typeof(approx_quantile(t, [0.0, 1.0])) FROM (VALUES (TIME_NS '12:00:00.000000001'), (TIME_NS '12:00:00.000000003')) v(t);
+----
+['12:00:00.000000001', '12:00:00.000000003']	TIME_NS[]
+
+query II
+SELECT approx_quantile(t, [0.0, 1.0]), typeof(approx_quantile(t, [0.0, 1.0])) FROM (VALUES (TIMESTAMPTZ_NS '1970-01-01 00:00:00.000000001+00'), (TIMESTAMPTZ_NS '1970-01-01 00:00:00.000000003+00')) v(t);
+----
+['1970-01-01 00:00:00.000000001+00', '1970-01-01 00:00:00.000000003+00']	TIMESTAMPTZ_NS[]
+
+# the list form returns the value the scalar form returns, at the digest's double precision
+query II
+SELECT approx_quantile(t, [0.5])[1] = approx_quantile(t, 0.5), approx_quantile(t, [0.5]) FROM (VALUES (TIMESTAMP_NS '2000-01-01 00:00:00.123456789'), (TIMESTAMP_NS '2000-01-01 00:00:00.123456791')) v(t);
+----
+true	['2000-01-01 00:00:00.123456768']
+
+query II
+SELECT approx_quantile(t, [0.5])[1] = approx_quantile(t, 0.5), approx_quantile(t, [0.5]) FROM (VALUES (TIME_NS '23:59:59.999999999'), (TIME_NS '23:59:59.999999997')) v(t);
+----
+true	['23:59:59.999999998']
+
+query II
+SELECT approx_quantile(t, [0.5])[1] = approx_quantile(t, 0.5), approx_quantile(t, [0.5]) FROM (VALUES (TIMESTAMPTZ_NS '2000-01-01 00:00:00.123456789+00'), (TIMESTAMPTZ_NS '2000-01-01 00:00:00.123456791+00')) v(t);
+----
+true	['2000-01-01 00:00:00.123456768+00']
+
+# the infinities stay the infinities
+query I
+SELECT approx_quantile(t, [0.1, 0.9]) FROM (VALUES ('-infinity'::TIMESTAMP_NS), ('infinity'::TIMESTAMP_NS)) v(t);
+----
+[-infinity, infinity]
+
+query I
+SELECT approx_quantile(t, [0.1, 0.9]) FROM (VALUES ('-infinity'::TIMESTAMPTZ_NS), ('infinity'::TIMESTAMPTZ_NS)) v(t);
+----
+[-infinity, infinity]
+
+query II
+SELECT approx_quantile(NULL::TIMESTAMP_NS, [0.5]), approx_quantile(NULL::TIME_NS, [0.5]);
+----
+NULL	NULL
+
+query I
+SELECT approx_quantile(t, [0.0, 1.0]) FROM (VALUES (TIMESTAMP_NS '2000-01-01 00:00:00'), (TIMESTAMP_NS '2000-01-01 00:00:01')) v(t) GROUP BY t ORDER BY t;
+----
+['2000-01-01 00:00:00', '2000-01-01 00:00:00']
+['2000-01-01 00:00:01', '2000-01-01 00:00:01']
+
+# the coarser timestamps widen to TIMESTAMP_NS in both forms, the other types keep their overloads
+query IIII
+SELECT typeof(approx_quantile(TIMESTAMP_S '2000-01-01', [0.5])), typeof(approx_quantile(TIMESTAMP_MS '2000-01-01', [0.5])), typeof(approx_quantile(TIMESTAMP_S '2000-01-01', 0.5)), typeof(approx_quantile(TIMESTAMP_MS '2000-01-01', 0.5));
+----
+TIMESTAMP_NS[]	TIMESTAMP_NS[]	TIMESTAMP_NS	TIMESTAMP_NS
+
+query IIIII
+SELECT typeof(approx_quantile(DATE '2000-01-01', [0.5])), typeof(approx_quantile(TIMESTAMP '2000-01-01', [0.5])), typeof(approx_quantile(TIMESTAMPTZ '2000-01-01', [0.5])), typeof(approx_quantile(TIME '12:00:00', [0.5])), typeof(approx_quantile(TIMETZ '12:00:00+00', [0.5]));
+----
+DATE[]	TIMESTAMP[]	TIMESTAMP WITH TIME ZONE[]	TIME[]	TIME WITH TIME ZONE[]

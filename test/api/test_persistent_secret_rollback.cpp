@@ -142,3 +142,45 @@ TEST_CASE("A failed commit rolls back every connection state even when a secret 
 	REQUIRE_NO_FAIL(con.Query("CREATE OR REPLACE PERSISTENT SECRET s1 (TYPE http)"));
 	REQUIRE(SecretFiles(secret_dir) == vector<string> {"s1.duckdb_secret"});
 }
+
+TEST_CASE("A replacement that removed the old file and failed to write the new one is reported by the rollback",
+          "[api][secrets]") {
+	auto secret_dir = TestCreatePath("persistent_secret_rollback_failed_replacement");
+	LocalFileSystem local;
+	{
+		auto config = GetTestConfig();
+		DuckDB db(nullptr, config.get());
+		Connection con(db);
+		REQUIRE_NO_FAIL(con.Query("SET secret_directory = '" + secret_dir + "'"));
+		REQUIRE_NO_FAIL(con.Query("CREATE PERSISTENT SECRET \"a%2Fb\" (TYPE http, SCOPE 'http://old')"));
+	}
+	// the file of the secret has the name used before secret names were escaped
+	local.MoveFile(local.JoinPath(secret_dir, "a%252Fb.duckdb_secret"),
+	               local.JoinPath(secret_dir, "a%2Fb.duckdb_secret"));
+	auto config = GetTestConfig();
+	DuckDB db(nullptr, config.get());
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("SET secret_directory = '" + secret_dir + "'"));
+	auto result = con.Query("SELECT scope[1] FROM duckdb_secrets() WHERE name = 'a%2Fb'");
+	REQUIRE(CHECK_COLUMN(result, 0, {"http://old"}));
+
+	// the replacement removes the old file and cannot write the new one, which has a directory in its way
+	auto obstruction = local.JoinPath(secret_dir, "a%252Fb.duckdb_secret");
+	local.CreateDirectory(obstruction);
+	REQUIRE_NO_FAIL(con.Query("BEGIN"));
+	result = con.Query("CREATE OR REPLACE PERSISTENT SECRET \"a%2Fb\" (TYPE http, SCOPE 'http://new')");
+	REQUIRE(result->HasError());
+	REQUIRE(SecretFiles(secret_dir) == vector<string> {"a%252Fb.duckdb_secret"});
+
+	// the rollback cannot restore the file either and says so, instead of claiming success
+	result = con.Query("ROLLBACK");
+	REQUIRE(result->HasError());
+	REQUIRE(StringUtil::Contains(result->GetError(), "a%252Fb.duckdb_secret"));
+	result = con.Query("SELECT scope[1] FROM duckdb_secrets() WHERE name = 'a%2Fb'");
+	REQUIRE(CHECK_COLUMN(result, 0, {"http://old"}));
+
+	// once the directory is gone the secret can be written again
+	local.RemoveDirectory(obstruction);
+	REQUIRE_NO_FAIL(con.Query("CREATE OR REPLACE PERSISTENT SECRET \"a%2Fb\" (TYPE http, SCOPE 'http://old')"));
+	REQUIRE(SecretFiles(secret_dir) == vector<string> {"a%252Fb.duckdb_secret"});
+}

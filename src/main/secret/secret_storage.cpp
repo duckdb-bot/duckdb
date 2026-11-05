@@ -470,10 +470,12 @@ void LocalFileSecretStorage::WriteSecret(const BaseSecret &secret, OnCreateConfl
 	string temp_path = file_path + ".tmp-" + UUID::ToString(UUID::GenerateRandomUUID());
 
 	// If persistent file already exists remove
-	if (!existing_path.empty()) {
-		fs.TryRemoveFile(existing_path);
+	if (!existing_path.empty() && fs.TryRemoveFile(existing_path)) {
+		file_changes++;
 	}
-	fs.TryRemoveFile(file_path);
+	if (fs.TryRemoveFile(file_path)) {
+		file_changes++;
+	}
 	// If temporary file already exists remove
 	fs.TryRemoveFile(temp_path);
 
@@ -535,18 +537,27 @@ void LocalFileSecretStorage::StageChange(optional_ptr<CatalogTransaction> transa
 void LocalFileSecretStorage::RollbackSecret(const Identifier &name) {
 	lock_guard<mutex> guard(change_lock);
 	// after the undo, the newest version of the name is the committed one the transaction changed, none, or one that
-	// another transaction made since and has not committed. The file follows the committed one. A version of another
-	// transaction is left alone, that transaction wrote its file itself and could free the version at any time, so it
-	// is never dereferenced. A committed version is only superseded under change_lock, so it stays alive here.
+	// another transaction made since and has not committed. The file follows the committed one, copied under the
+	// catalog set's lock, which also guards the undo and the commit of versions. A version of another transaction is
+	// left alone, that transaction wrote its file itself and repairs it on its own rollback.
+	unique_ptr<const BaseSecret> committed;
+	bool uncommitted = false;
 	CatalogTransaction any_version(db, SYSTEM_TRANSACTION_TIMESTAMP, VisibilityBound::IncludingUncommitted());
-	CatalogTransaction committed_version(db, SYSTEM_TRANSACTION_TIMESTAMP, VisibilityBound::AllCommitted());
-	auto newest = secrets->GetEntry(any_version, name);
-	auto committed = secrets->GetEntry(committed_version, name);
-	if (newest.get() != committed.get()) {
+	secrets->Scan(any_version, [&](CatalogEntry &entry) {
+		if (!(entry.name == name)) {
+			return;
+		}
+		if (entry.timestamp.load() >= TRANSACTION_ID_START) {
+			uncommitted = true;
+			return;
+		}
+		committed = entry.Cast<SecretCatalogEntry>().secret->secret->Clone();
+	});
+	if (uncommitted) {
 		return;
 	}
 	if (committed) {
-		WriteSecret(*committed->Cast<SecretCatalogEntry>().secret->secret, OnCreateConflict::REPLACE_ON_CONFLICT);
+		WriteSecret(*committed, OnCreateConflict::REPLACE_ON_CONFLICT);
 		return;
 	}
 	// only a file registered for the name is the secret's own, the file its name encodes to can be another secret's

@@ -31,7 +31,7 @@ statement ok
 CALL enable_logging('PhysicalOperator');
 
 # a page whose min value has the wrong length for its type is read without its bounds, like a column chunk whose
-# statistics cannot be decoded; the bounds of the other pages still prune
+# statistics cannot be decoded, and the bounds of the other pages still prune
 query II
 SELECT count(*), sum(v) = (SELECT sum(r % 7) FROM range(600, 701) t(r)) FROM 'data/parquet-testing/page_index/corrupt_min_length.parquet' WHERE id BETWEEN 600 AND 700
 ----

@@ -150,8 +150,7 @@ EXECUTE q16([3, NULL, 1], 'ASC', 'NULLS LAST');
 ----
 [1, 3, NULL]	[3, 1, 2]	[3, 1, NULL]
 
-# a function that folds the unresolved parameter away, which the plan verification of the test runner must not take
-# as a plan without parameters
+# a function whose own type resolution keeps the parameter UNKNOWN
 statement ok
 PREPARE q15 AS SELECT array_slice($1, 1, 2)[1] > 0;
 
@@ -160,7 +159,7 @@ EXECUTE q15([3, 1, 2]);
 ----
 true
 
-# another function that gives the parameter a type with ANY in it, so the plan is not optimized before EXECUTE
+# a lambda function with an ANY[] parameter
 statement ok
 PREPARE q14 AS SELECT list_filter($1, lambda x: x > 1)[1] > 0;
 
@@ -263,3 +262,45 @@ query I
 EXECUTE q25('DESC');
 ----
 [3, 2, 1]
+
+# a templated list parameter, T[], left to EXECUTE when the arguments do not determine T
+statement ok
+PREPARE q26 AS SELECT list_sort(list_distinct($1)), list_contains($1, $2);
+
+query II
+EXECUTE q26([3, 1, 2, 1], 2);
+----
+[1, 2, 3]	true
+
+query II
+EXECUTE q26(['b', 'a', 'b'], 'c');
+----
+[a, b]	false
+
+# the other argument determines T, so the parameter takes INTEGER[] when the statement is prepared
+statement ok
+PREPARE q26b AS SELECT list_contains($1, 1);
+
+query I
+EXECUTE q26b([3, 1, 2]);
+----
+true
+
+statement error
+EXECUTE q26b(['b', 'a']);
+----
+Cannot deduce template type
+
+# aggregate and window functions with an ANY parameter
+statement ok
+PREPARE q27 AS SELECT count($1), list($1)[1], first($1) OVER ();
+
+query III
+EXECUTE q27(3);
+----
+1	3	3
+
+query III
+EXECUTE q27('x');
+----
+1	x	x

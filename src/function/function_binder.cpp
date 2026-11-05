@@ -957,15 +957,14 @@ void FunctionBinder::CastToFunctionArguments(const Identifier &function_name, ve
 			    "Function %s returned a STRING_LITERAL or INTEGER_LITERAL type - return an explicit type instead",
 			    function_name);
 		}
+		if (children[i]->GetReturnType().id() == LogicalTypeId::UNKNOWN && !target_type.IsComplete()) {
+			// an unresolved parameter cannot take an incomplete type, the statement is bound again at EXECUTE
+			throw ParameterNotResolvedException();
+		}
 		target_type.Verify();
 		// don't cast lambda children, their slot only ever holds a placeholder
 		if (children[i]->GetReturnType().id() == LogicalTypeId::LAMBDA) {
 			continue;
-		}
-		if (children[i]->GetReturnType().id() == LogicalTypeId::UNKNOWN && !target_type.IsComplete()) {
-			// an unresolved parameter takes the type of the argument it fills, which an incomplete type (a template
-			// or ANY the function left unresolved) cannot give it, so the statement is bound again once it has a type
-			throw ParameterNotResolvedException();
 		}
 		const bool target_has_any = TypeVisitor::Contains(target_type, LogicalTypeId::ANY);
 		if (target_has_any && children[i]->GetReturnType().id() == LogicalTypeId::ARRAY &&

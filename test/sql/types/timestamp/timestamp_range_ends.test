@@ -104,7 +104,7 @@ require parquet
 statement error
 COPY (SELECT TIMESTAMP '4714-11-23 (BC) 23:59:59' AS ts) TO '{TEST_DIR}/int96_before_julian_day_0.parquet' (FORMAT PARQUET, write_timestamp_as_int96 true);
 ----
-cannot be written as an INT96 timestamp
+Conversion Error: Timestamp 4714-11-23 (BC) 23:59:59 cannot be written as INT96
 
 statement ok
 COPY (SELECT TIMESTAMP '4714-11-24 (BC) 00:00:00' AS ts) TO '{TEST_DIR}/int96_julian_day_0.parquet' (FORMAT PARQUET, write_timestamp_as_int96 true);

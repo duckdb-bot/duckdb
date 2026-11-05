@@ -235,6 +235,69 @@ SELECT * FROM u ORDER BY k;
 2	0
 3	8
 
+# the condition keeps the semantics of SELECT: an error in the subquery turns the whole TRY into NULL, also when
+# the expression around the subquery tolerates NULL, and HAS_ERROR sees the error
+statement ok
+CREATE TABLE w(k INTEGER, v INTEGER, txt VARCHAR);
+
+statement ok
+INSERT INTO w VALUES (1, 10, 'bad');
+
+query IIII
+SELECT TRY((SELECT txt::INTEGER FROM w) IS NULL), TRY(coalesce((SELECT txt::INTEGER FROM w), 5)),
+       HAS_ERROR(1 + (SELECT txt::INTEGER FROM w)), HAS_ERROR(TRY((SELECT txt::INTEGER FROM w))) FROM w;
+----
+NULL	NULL	true	false
+
+# NULL is not true, so these actions do not run
+statement ok
+MERGE INTO w USING (VALUES (1)) src(k) ON w.k = src.k
+  WHEN MATCHED AND TRY((SELECT txt::INTEGER FROM w) IS NULL) THEN UPDATE SET v = 0;
+
+statement ok
+MERGE INTO w USING (VALUES (1)) src(k) ON w.k = src.k
+  WHEN MATCHED AND TRY(coalesce((SELECT txt::INTEGER FROM w), 5)) = 5 THEN UPDATE SET v = 0;
+
+query III
+SELECT * FROM w;
+----
+1	10	bad
+
+statement ok
+MERGE INTO w USING (VALUES (1)) src(k) ON w.k = src.k
+  WHEN MATCHED AND TRY(coalesce((SELECT txt::INTEGER FROM w), 5)) IS NULL THEN UPDATE SET v = 1;
+
+# TRY directly over the subquery masks the error before HAS_ERROR sees it
+statement ok
+MERGE INTO w USING (VALUES (1)) src(k) ON w.k = src.k
+  WHEN MATCHED AND NOT HAS_ERROR(TRY((SELECT txt::INTEGER FROM w))) THEN UPDATE SET v = v + 1;
+
+query III
+SELECT * FROM w;
+----
+1	2	bad
+
+# HAS_ERROR in an error message
+statement error
+MERGE INTO w USING (VALUES (1)) src(k) ON w.k = src.k
+  WHEN MATCHED THEN ERROR concat('has error ', HAS_ERROR(1 + (SELECT txt::INTEGER FROM w))::VARCHAR);
+----
+has error true
+
+# an erroring subquery in a lambda body is masked by the TRY in the body, or by the TRY around the lambda
+statement ok
+MERGE INTO w USING (VALUES (1)) src(k) ON w.k = src.k
+  WHEN MATCHED AND list_transform([1, 2], lambda x: TRY(x + (SELECT txt::INTEGER FROM w))) = [NULL, NULL] THEN UPDATE SET v = 3;
+
+statement ok
+MERGE INTO w USING (VALUES (1)) src(k) ON w.k = src.k
+  WHEN MATCHED AND TRY(list_transform([1, 2], lambda x: x + (SELECT txt::INTEGER FROM w))) IS NULL THEN UPDATE SET v = v + 1;
+
+query III
+SELECT * FROM w;
+----
+1	4	bad
+
 # the database stays usable
 query I
 SELECT 42;

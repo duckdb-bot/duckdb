@@ -27,6 +27,12 @@ bool BoundSubqueryExpression::PropagatesNullValues() const {
 	return false;
 }
 
+void BoundSubqueryExpression::ExposeTryErrorFlag() {
+	D_ASSERT(rethrow_try_errors);
+	rethrow_try_errors = false;
+	SetReturnType(subquery.types[0]);
+}
+
 bool BoundSubqueryExpression::IsVolatile() const {
 	if (Expression::IsVolatile()) {
 		return true;

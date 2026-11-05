@@ -826,29 +826,29 @@ static unique_ptr<Expression> BindTryRethrowFunction(Binder &binder, const char 
 	return result;
 }
 
-//! Replace a TRY subquery that was lowered with an exposed error flag by
+//! Wrap the packed result of a TRY subquery that was lowered with an exposed error flag in
 //! __internal_try_rethrow(<error flag>, <masked value>), so that errors captured inside the subquery
 //! are re-raised at the use site, where the enclosing TRY, HAS_ERROR or subquery lowering consumes them.
 //! Only a re-raise in a conditionally evaluated position of an aggregate select item escapes to the
 //! user; the original message is not available here, since HAS_ERROR captures only the fact that an
 //! error occurred, so the fixed message states that.
-static unique_ptr<Expression> CreateTryErrorRethrow(Binder &binder, unique_ptr<Expression> subquery_result) {
-	auto flag_input = subquery_result->Copy();
+unique_ptr<Expression> Binder::CreateTryErrorRethrow(unique_ptr<Expression> packed) {
+	auto flag_input = packed->Copy();
 
 	vector<unique_ptr<Expression>> value_children;
-	value_children.push_back(std::move(subquery_result));
+	value_children.push_back(std::move(packed));
 	value_children.push_back(make_uniq<BoundConstantExpression>(Value("value")));
-	auto value = BindTryRethrowFunction(binder, "struct_extract", std::move(value_children));
+	auto value = BindTryRethrowFunction(*this, "struct_extract", std::move(value_children));
 
 	vector<unique_ptr<Expression>> flag_children;
 	flag_children.push_back(std::move(flag_input));
 	flag_children.push_back(make_uniq<BoundConstantExpression>(Value("error")));
-	auto flag = BindTryRethrowFunction(binder, "struct_extract", std::move(flag_children));
+	auto flag = BindTryRethrowFunction(*this, "struct_extract", std::move(flag_children));
 
 	vector<unique_ptr<Expression>> rethrow_children;
 	rethrow_children.push_back(std::move(flag));
 	rethrow_children.push_back(std::move(value));
-	return BindTryRethrowFunction(binder, TryRethrowFun::Name, std::move(rethrow_children));
+	return BindTryRethrowFunction(*this, TryRethrowFun::Name, std::move(rethrow_children));
 }
 
 unique_ptr<Expression> Binder::PlanSubquery(BoundSubqueryExpression &expr, unique_ptr<LogicalOperator> &root) {
@@ -873,7 +873,7 @@ unique_ptr<Expression> Binder::PlanSubquery(BoundSubqueryExpression &expr, uniqu
 		result_expression = PlanCorrelatedSubquery(*this, expr, root, std::move(plan));
 	}
 	if (expr.RethrowsTryErrors()) {
-		result_expression = CreateTryErrorRethrow(*this, std::move(result_expression));
+		result_expression = CreateTryErrorRethrow(std::move(result_expression));
 	}
 	IncreaseDepth();
 	return result_expression;

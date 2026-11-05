@@ -437,6 +437,9 @@ public:
 	bool IsBindingTrySubquery() const;
 	const TrySubqueryPlanIndexes &GetTrySubqueryPlanIndexes() const;
 	TrySubqueryPlanIndexes &GetTrySubqueryPlanIndexesMutable();
+	//! Re-raise the error flag that a TRY subquery packed next to its masked value, at the use site where the
+	//! enclosing TRY or HAS_ERROR consumes it
+	unique_ptr<Expression> CreateTryErrorRethrow(unique_ptr<Expression> packed);
 
 	StatementProperties &GetStatementProperties();
 	static void ReplaceStarExpression(unique_ptr<ParsedExpression> &expr, unique_ptr<ParsedExpression> &replacement);

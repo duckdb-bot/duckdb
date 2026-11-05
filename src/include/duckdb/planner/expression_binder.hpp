@@ -294,6 +294,8 @@ protected:
 	BindResult BindExpression(SubqueryExpression &expr, idx_t depth);
 	//! Rewrite a call that resolved to the built-in has_error into the HAS_ERROR operator and bind that
 	BindResult BindHasErrorFunction(FunctionExpression &function, idx_t depth, unique_ptr<ParsedExpression> &expr_ptr);
+	//! Whether the operator is TRY directly over a scalar subquery, the shape BindTrySubquery lowers
+	static bool IsTryOverScalarSubquery(const OperatorExpression &op);
 	//! Bind TRY over a scalar subquery as an ordinary subquery, then lower the TRY onto its bound plan
 	BindResult BindTrySubquery(OperatorExpression &op, idx_t depth);
 	//! Throw when the subquery is not a plain SELECT node, the only shape the TRY lowering covers

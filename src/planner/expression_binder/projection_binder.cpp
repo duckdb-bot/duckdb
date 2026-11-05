@@ -1,8 +1,7 @@
 #include "duckdb/planner/expression_binder/projection_binder.hpp"
+#include "duckdb/parser/expression/operator_expression.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_subquery_expression.hpp"
-#include "duckdb/parser/expression/operator_expression.hpp"
-#include "duckdb/parser/expression/subquery_expression.hpp"
 
 namespace duckdb {
 
@@ -25,11 +24,15 @@ BindResult ProjectionBinder::BindColumnRef(unique_ptr<ParsedExpression> &expr_pt
 	if (result.expression->GetExpressionClass() == ExpressionClass::BOUND_LAMBDA_REF) {
 		return result;
 	}
-	if (result.expression->GetExpressionClass() == ExpressionClass::BOUND_SUBQUERY &&
-	    result.expression->Cast<BoundSubqueryExpression>().RethrowsTryErrors() && !lambda_bindings) {
-		// a subquery under TRY re-raises the errors it captured where it is used, so it stays under its TRY and the
-		// binder of the statement plans it there. Inside a lambda it moves out, as a lambda cannot hold a subquery
-		return result;
+	bool rethrow_try_errors = false;
+	if (result.expression->GetExpressionClass() == ExpressionClass::BOUND_SUBQUERY) {
+		auto &subquery = result.expression->Cast<BoundSubqueryExpression>();
+		if (subquery.RethrowsTryErrors()) {
+			// the subquery was lowered under the enclosing TRY with its error flag exposed. The projection computes
+			// the packed value and flag, and the error is re-raised here, where that TRY masks it
+			subquery.ExposeTryErrorFlag();
+			rethrow_try_errors = true;
+		}
 	}
 	// we have successfully bound a column - push it into the projection and emit a reference
 	auto return_type = result.expression->GetReturnType();
@@ -37,6 +40,9 @@ BindResult ProjectionBinder::BindColumnRef(unique_ptr<ParsedExpression> &expr_pt
 	auto proj_col_idx = ColumnBinding::PushExpression(proj_expressions, std::move(result.expression));
 	auto proj_ref = make_uniq<BoundColumnRefExpression>(return_type, ColumnBinding(proj_index, proj_col_idx));
 	proj_ref->SetAlias(std::move(alias));
+	if (rethrow_try_errors) {
+		return BindResult(binder.CreateTryErrorRethrow(std::move(proj_ref)));
+	}
 	return BindResult(std::move(proj_ref));
 }
 
@@ -50,20 +56,13 @@ BindResult ProjectionBinder::BindExpression(unique_ptr<ParsedExpression> &expr_p
 	case ExpressionClass::COLUMN_REF:
 	case ExpressionClass::SUBQUERY:
 		return BindColumnRef(expr_ptr, depth, root_expression);
-	case ExpressionClass::OPERATOR: {
-		auto &op = expr.Cast<OperatorExpression>();
-		if (op.GetExpressionType() == ExpressionType::OPERATOR_TRY && !in_child_projection &&
-		    op.GetChildren().size() == 1 && op.GetChildren()[0]->GetExpressionClass() == ExpressionClass::SUBQUERY &&
-		    op.GetChildren()[0]->Cast<SubqueryExpression>().GetSubqueryType() == SubqueryType::SCALAR) {
-			// TRY directly over a scalar subquery binds as that subquery and stays in the expression, so the columns
-			// it correlates on bind as outer references instead of moving into the projection
-			in_child_projection = true;
-			auto result = ExpressionBinder::BindExpression(expr_ptr, depth);
-			in_child_projection = false;
-			return result;
+	case ExpressionClass::OPERATOR:
+		if (IsTryOverScalarSubquery(expr.Cast<OperatorExpression>())) {
+			// TRY directly over a scalar subquery is lowered onto the subquery plan, so it moves into the projection
+			// as one column, like the subquery alone would
+			return BindColumnRef(expr_ptr, depth, root_expression);
 		}
 		return ExpressionBinder::BindExpression(expr_ptr, depth);
-	}
 	default:
 		return ExpressionBinder::BindExpression(expr_ptr, depth);
 	}

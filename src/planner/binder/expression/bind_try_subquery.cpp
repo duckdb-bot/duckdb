@@ -391,6 +391,16 @@ static void PushTryIntoBareSubqueryItem(SubqueryExpression &subquery_expr) {
 	select_item = std::move(try_item);
 }
 
+bool ExpressionBinder::IsTryOverScalarSubquery(const OperatorExpression &op) {
+	if (op.GetExpressionType() != ExpressionType::OPERATOR_TRY) {
+		return false;
+	}
+	D_ASSERT(op.GetChildren().size() == 1);
+	auto &child = *op.GetChildren()[0];
+	return child.GetExpressionClass() == ExpressionClass::SUBQUERY &&
+	       child.Cast<SubqueryExpression>().GetSubqueryType() == SubqueryType::SCALAR;
+}
+
 //! TRY over a scalar subquery binds the subquery as an ordinary subquery and lowers the TRY onto the bound
 //! plan before the subquery is flattened, so names, types, overloads and aggregate ownership resolve exactly
 //! as without TRY. In the plain projection case, TRY moves onto the projected expression, which yields a NULL
@@ -406,9 +416,8 @@ static void PushTryIntoBareSubqueryItem(SubqueryExpression &subquery_expr) {
 //! flattened subplan and referenced as a column, so the TRY input and its HAS_ERROR probe observe one
 //! consistent value.
 BindResult ExpressionBinder::BindTrySubquery(OperatorExpression &op, idx_t depth) {
-	D_ASSERT(op.GetChildrenMutable().size() == 1);
+	D_ASSERT(IsTryOverScalarSubquery(op));
 	auto &subquery_expr = op.GetChildrenMutable()[0]->Cast<SubqueryExpression>();
-	D_ASSERT(subquery_expr.GetSubqueryType() == SubqueryType::SCALAR);
 	CheckTrySubqueryNode(subquery_expr, op);
 	PushTryIntoBareSubqueryItem(subquery_expr);
 

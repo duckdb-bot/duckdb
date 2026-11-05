@@ -181,14 +181,9 @@ BindResult ExpressionBinder::BindExpression(OperatorExpression &op, idx_t depth)
 	// Only those children that trigger an error are not yet bound.
 	ErrorData error;
 	vector<unique_ptr<Expression>> children;
-	if (operator_type == ExpressionType::OPERATOR_TRY) {
-		D_ASSERT(op.GetChildrenMutable().size() == 1);
-		auto &try_child = op.GetChildrenMutable()[0];
-		if (try_child->GetExpressionClass() == ExpressionClass::SUBQUERY &&
-		    try_child->Cast<SubqueryExpression>().GetSubqueryType() == SubqueryType::SCALAR) {
-			// TRY directly over a scalar subquery binds as an ordinary subquery and lowers onto its plan
-			return BindTrySubquery(op, depth);
-		}
+	if (IsTryOverScalarSubquery(op)) {
+		// TRY directly over a scalar subquery binds as an ordinary subquery and lowers onto its plan
+		return BindTrySubquery(op, depth);
 	}
 	if (operator_type == ExpressionType::OPERATOR_TRY || operator_type == ExpressionType::OPERATOR_HAS_ERROR) {
 		D_ASSERT(op.GetChildrenMutable().size() == 1);

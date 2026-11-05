@@ -17,7 +17,6 @@
 #include "duckdb/planner/operator/logical_update.hpp"
 #include "duckdb/planner/expression_binder/projection_binder.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
-#include "duckdb/planner/column_binding_map.hpp"
 #include "duckdb/optimizer/column_binding_replacer.hpp"
 #include "duckdb/storage/data_table.hpp"
 #include <algorithm>
@@ -372,46 +371,18 @@ BoundStatement Binder::BindNode(MergeQueryNode &node) {
 		PlanSubqueries(expr, root);
 	}
 
-	// subqueries under TRY stay in the actions, where the TRY masks the errors they re-raise. Plan them on the join
-	// and pass their columns through the projection, which is all that the actions read
-	column_binding_map_t<ColumnBinding> passed_through;
-	auto plan_action_subqueries = [&](unique_ptr<Expression> &expr) {
-		if (!expr->HasSubquery()) {
-			return;
-		}
-		PlanSubqueries(expr, root);
-		ExpressionIterator::VisitExpressionMutable<BoundColumnRefExpression>(
-		    expr, [&](BoundColumnRefExpression &colref, unique_ptr<Expression> &child) {
-			    auto &binding = colref.Binding();
-			    if (binding.table_index == proj_index) {
-				    return;
-			    }
-			    auto entry = passed_through.find(binding);
-			    if (entry == passed_through.end()) {
-				    auto proj_col_idx = ColumnBinding::PushExpression(projection_expressions, colref.Copy());
-				    entry = passed_through.emplace(binding, ColumnBinding(proj_index, proj_col_idx)).first;
-			    }
-			    child = make_uniq<BoundColumnRefExpression>(colref.GetAlias(), colref.GetReturnType(), entry->second);
-		    });
-	};
+#ifdef DEBUG
+	// the actions read the projection by position, which a join that a later planner adds for a subquery left in an
+	// action would shift, so every subquery must have moved into the projection
 	for (auto &entry : merge_into->actions) {
 		for (auto &action : entry.second) {
-			if (action->condition) {
-				plan_action_subqueries(action->condition);
-			}
-			for (auto &expr : action->expressions) {
-				plan_action_subqueries(expr);
-			}
-#ifdef DEBUG
-			// the actions read the projection by position, which a join that a later planner adds for a subquery
-			// left in an action would shift
 			D_ASSERT(!action->condition || !action->condition->HasSubquery());
 			for (auto &expr : action->expressions) {
 				D_ASSERT(!expr->HasSubquery());
 			}
-#endif
 		}
 	}
+#endif
 
 	if (has_not_matched_by_source) {
 		// if we have "has_not_matched_by_source" we need to push an extra marker into the source

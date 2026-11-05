@@ -483,17 +483,6 @@ public:
 
 public:
 	DUCKDB_API static void NopFunction(DataChunk &input, ExpressionState &state, Vector &result);
-	//! A resolve_types callback that keeps the types of the signature
-	static void NopResolveTypes(ResolveScalarFunctionTypesInput &) {
-	}
-
-	//! A resolve_types callback for functions with a parameter whose type is not complete, such as ANY[]. A prepared
-	//! statement parameter whose type is not known yet is kept unresolved instead of receiving that type, and the
-	//! return type becomes NULL, so the statement is bound again once the type is known. When no argument is deferred,
-	//! RESOLVE_TYPES resolves the types. A parameter passed to a complete type is still UNKNOWN at that point and
-	//! receives that type afterwards
-	template <resolve_scalar_types_t RESOLVE_TYPES = NopResolveTypes>
-	static void DeferUnresolvedParameters(ResolveScalarFunctionTypesInput &input);
 
 	template <class TA, class TR, class OP>
 	static void UnaryFunction(DataChunk &input, ExpressionState &state, Vector &result) {
@@ -734,24 +723,5 @@ private:
 	BoundScalarFunction &bound_function;
 	const vector<unique_ptr<Expression>> &arguments;
 };
-
-template <resolve_scalar_types_t RESOLVE_TYPES>
-void ScalarFunction::DeferUnresolvedParameters(ResolveScalarFunctionTypesInput &input) {
-	auto &bound_function = input.GetBoundFunction();
-	auto &argument_types = bound_function.GetArguments();
-	bool deferred = false;
-	for (idx_t arg_idx = 0; arg_idx < input.GetArgumentCount(); arg_idx++) {
-		if (input.GetArgumentType(arg_idx).id() != LogicalTypeId::UNKNOWN || argument_types[arg_idx].IsComplete()) {
-			continue;
-		}
-		argument_types[arg_idx] = LogicalType::UNKNOWN;
-		deferred = true;
-	}
-	if (deferred) {
-		bound_function.SetReturnType(LogicalType::SQLNULL);
-		return;
-	}
-	RESOLVE_TYPES(input);
-}
 
 } // namespace duckdb

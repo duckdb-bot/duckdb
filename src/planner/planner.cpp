@@ -197,11 +197,6 @@ static void RunPostBindExtensions(ClientContext &context, Binder &binder, BoundS
 	}
 }
 
-//! Whether a parameter type can hold a value, a type that still contains ANY cannot
-static bool ParameterTypeResolved(const LogicalType &type) {
-	return type.IsValid() && type.IsComplete();
-}
-
 void Planner::CreatePlan(SQLStatement &statement) {
 	auto &profiler = QueryProfiler::Get(context);
 	auto parameter_count = statement.named_param_map.size();
@@ -269,13 +264,6 @@ void Planner::CreatePlan(SQLStatement &statement) {
 	this->properties = binder->GetStatementProperties();
 	this->properties.parameter_count = parameter_count;
 	properties.bound_all_parameters = !bound_parameters.rebind && parameters_resolved;
-	// a parameter whose type could not be resolved, or still contains ANY, holds no value. Check this before the
-	// plan verification, which rebuilds the parameters from the plan and loses one that the binder folded away
-	for (auto &kv : bound_parameters.GetParameters()) {
-		if (!ParameterTypeResolved(kv.second->return_type)) {
-			properties.bound_all_parameters = false;
-		}
-	}
 
 	Planner::VerifyPlan(context, plan, bound_parameters.GetParametersPtr());
 
@@ -283,7 +271,8 @@ void Planner::CreatePlan(SQLStatement &statement) {
 	for (auto &kv : bound_parameters.GetParameters()) {
 		auto &identifier = kv.first;
 		auto &param = kv.second;
-		if (!ParameterTypeResolved(param->return_type)) {
+		// check if the type of the parameter could be resolved
+		if (!param->return_type.IsValid()) {
 			properties.bound_all_parameters = false;
 			continue;
 		}

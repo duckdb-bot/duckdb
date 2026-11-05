@@ -962,6 +962,11 @@ void FunctionBinder::CastToFunctionArguments(const Identifier &function_name, ve
 		if (children[i]->GetReturnType().id() == LogicalTypeId::LAMBDA) {
 			continue;
 		}
+		if (children[i]->GetReturnType().id() == LogicalTypeId::UNKNOWN && !target_type.IsComplete()) {
+			// an unresolved parameter takes the type of the argument it fills, which an incomplete type (a template
+			// or ANY the function left unresolved) cannot give it, so the statement is bound again once it has a type
+			throw ParameterNotResolvedException();
+		}
 		const bool target_has_any = TypeVisitor::Contains(target_type, LogicalTypeId::ANY);
 		if (target_has_any && children[i]->GetReturnType().id() == LogicalTypeId::ARRAY &&
 		    target_type.id() == LogicalTypeId::LIST) {
@@ -974,9 +979,9 @@ void FunctionBinder::CastToFunctionArguments(const Identifier &function_name, ve
 		// except for one special case: if the function accepts ANY argument
 		// in that case we don't add a cast
 		if (cast_result == LogicalTypeComparisonResult::DIFFERENT_TYPES) {
-			if (target_has_any && children[i]->GetReturnType().id() != LogicalTypeId::UNKNOWN) {
+			if (target_has_any) {
 				// a type that is not concrete cannot be cast to (e.g. a NULL or a VARIANT passed to LIST(ANY)) - the
-				// function has to handle the argument as-is. Unresolved parameters are still assigned the type.
+				// function has to handle the argument as-is
 				continue;
 			}
 			if (IsIncompleteCastTarget(target_type)) {

@@ -161,10 +161,6 @@ Value ExpressionExecutor::EvaluateScalar(ClientContext &context, const Expressio
 }
 
 bool ExpressionExecutor::TryEvaluateScalar(ClientContext &context, const Expression &expr, Value &result) {
-	if (!expr.GetReturnType().IsComplete()) {
-		// no vector can hold the result of an expression whose type still contains ANY
-		return false;
-	}
 	try {
 		result = EvaluateScalar(context, expr);
 		return true;

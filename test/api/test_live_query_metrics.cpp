@@ -80,8 +80,8 @@ struct AllocateAtQueryBeginState : public ClientContextState {
 TEST_CASE("Test live query metrics keep the memory a statement allocates before it is planned", "[api]") {
 	DuckDB db(nullptr);
 	Connection con(db);
-	con.context->Services().GetRegisteredState().Insert("allocate_at_query_begin",
-	                                                    make_shared_ptr<AllocateAtQueryBeginState>());
+	con.context->GetContext().GetRegisteredState().Insert("allocate_at_query_begin",
+	                                                      make_shared_ptr<AllocateAtQueryBeginState>());
 
 	SECTION("profiling disabled") {
 	}
@@ -96,8 +96,8 @@ TEST_CASE("Test live query metrics keep the memory a parsed or prepared statemen
           "[api]") {
 	DuckDB db(nullptr);
 	Connection con(db);
-	con.context->Services().GetRegisteredState().Insert("allocate_at_query_begin",
-	                                                    make_shared_ptr<AllocateAtQueryBeginState>());
+	con.context->GetContext().GetRegisteredState().Insert("allocate_at_query_begin",
+	                                                      make_shared_ptr<AllocateAtQueryBeginState>());
 	auto prepared = con.Prepare("SELECT 42");
 	REQUIRE(!prepared->HasError());
 

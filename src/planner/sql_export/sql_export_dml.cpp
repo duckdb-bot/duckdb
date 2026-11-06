@@ -308,7 +308,8 @@ static LogicalPlanSQLExportResult ExportMergeNode(LogicalMergeInto &op, LogicalP
 				}
 				auto set_info = make_uniq<UpdateSetInfo>();
 				auto written_column_count = bound_action->columns.size() - bound_action->returning_only_column_count;
-				if (written_column_count == 0) {
+				if (written_column_count == 0 && bound_action->returning_only_column_count > 0) {
+					// DO NOTHING returns no rows, so an update kept only for its RETURNING columns cannot be exported
 					return LogicalPlanSQLExportResult::Failure({UnsupportedDML(
 					    path, "merge_update", "A MERGE update action that assigns no column cannot be exported")});
 				}

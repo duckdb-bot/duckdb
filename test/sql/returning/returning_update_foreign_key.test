@@ -97,7 +97,7 @@ UPDATE checked SET value = 2 RETURNING *;
 ----
 1	2
 
-# an INSERT OR REPLACE that writes no column cannot be exported
+# an INSERT OR REPLACE that writes no column exports as DO NOTHING, which would not return the matched row
 statement ok
 CREATE TABLE replaced (id INTEGER PRIMARY KEY, v INTEGER);
 

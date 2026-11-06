@@ -1,3 +1,4 @@
+#include "duckdb/main/context.hpp"
 #include "duckdb/common/local_file_system.hpp"
 
 #include "duckdb/common/checksum.hpp"
@@ -2298,8 +2299,8 @@ private:
 
 LocalGlobResult::LocalGlobResult(LocalFileSystem &fs, const string &path_p, const FileGlobInput &input,
                                  optional_ptr<FileOpener> opener)
-    : LazyMultiFileList(FileOpener::TryGetClientContext(opener)), fs(fs), path(fs.ExpandPath(path_p, opener)),
-      opener(opener), can_access_location(input.can_access_location) {
+    : LazyMultiFileList(FileOpener::TryGetContext(opener)), fs(fs), path(fs.ExpandPath(path_p, opener)), opener(opener),
+      can_access_location(input.can_access_location) {
 	if (path.empty()) {
 		finished = true;
 		return;

@@ -624,7 +624,7 @@ TEST_CASE("Local paths looked up without listing their directory", "[file_system
 	REQUIRE(!fs.FileExists("local_path_lookup.csv"));
 	DuckDB db(nullptr);
 	Connection con(db);
-	ClientContextFileOpener opener(*con.context);
+	ClientContextFileOpener opener(con.context->GetContext());
 	auto missing_dir = fs.JoinPath(dir, "missing");
 	REQUIRE_NO_FAIL(con.Query(StringUtil::Format("SET file_search_path = '%s,%s'", missing_dir, sub_dir)));
 	files = fs.Glob("local_path_lookup.csv", &opener);

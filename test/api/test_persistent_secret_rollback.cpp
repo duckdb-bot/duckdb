@@ -16,12 +16,7 @@ vector<string> SecretFiles(const string &secret_dir) {
 	if (!local.DirectoryExists(secret_dir)) {
 		return result;
 	}
-	local.ListFiles(secret_dir, [&](const string &name, bool is_dir) {
-		// a write that fails leaves its temporary file behind
-		if (!StringUtil::Contains(name, ".tmp-")) {
-			result.push_back(name);
-		}
-	});
+	local.ListFiles(secret_dir, [&](const string &name, bool is_dir) { result.push_back(name); });
 	std::sort(result.begin(), result.end());
 	return result;
 }
@@ -143,9 +138,66 @@ TEST_CASE("A failed commit rolls back every connection state even when a secret 
 	REQUIRE(SecretFiles(secret_dir) == vector<string> {"s1.duckdb_secret"});
 }
 
-TEST_CASE("A replacement that removed the old file and failed to write the new one is reported by the rollback",
-          "[api][secrets]") {
-	auto secret_dir = TestCreatePath("persistent_secret_rollback_failed_replacement");
+TEST_CASE("A failed secret write that changes no file leaves nothing for rollback to repair", "[api][secrets]") {
+	auto secret_dir = TestCreatePath("persistent_secret_rollback_failed_write");
+	LocalFileSystem local;
+	{
+		auto config = GetTestConfig();
+		DuckDB db(nullptr, config.get());
+		Connection con(db);
+		REQUIRE_NO_FAIL(con.Query("SET secret_directory = '" + secret_dir + "'"));
+		REQUIRE_NO_FAIL(con.Query("CREATE PERSISTENT SECRET \"a%2Fb\" (TYPE http, SCOPE 'http://old')"));
+	}
+	// the file of the secret has the name used before secret names were escaped
+	auto legacy_file = local.JoinPath(secret_dir, "a%2Fb.duckdb_secret");
+	local.MoveFile(local.JoinPath(secret_dir, "a%252Fb.duckdb_secret"), legacy_file);
+	auto config = GetTestConfig();
+	DuckDB db(nullptr, config.get());
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("SET secret_directory = '" + secret_dir + "'"));
+	auto result = con.Query("SELECT scope[1] FROM duckdb_secrets() WHERE name = 'a%2Fb'");
+	REQUIRE(CHECK_COLUMN(result, 0, {"http://old"}));
+
+	// a directory where the file of a new secret goes, so the write fails after nothing was changed
+	auto obstruction = local.JoinPath(secret_dir, "s1.duckdb_secret");
+	local.CreateDirectory(obstruction);
+	REQUIRE_NO_FAIL(con.Query("BEGIN"));
+	result = con.Query("CREATE PERSISTENT SECRET s1 (TYPE http)");
+	REQUIRE(result->HasError());
+	REQUIRE(StringUtil::Contains(result->GetError(), "s1.duckdb_secret"));
+	// the rollback has nothing to repair, and leaves the directory where the file never arrived
+	REQUIRE_NO_FAIL(con.Query("ROLLBACK"));
+	REQUIRE(local.DirectoryExists(obstruction));
+	result = con.Query("SELECT count(*) FROM duckdb_secrets() WHERE name = 's1'");
+	REQUIRE(CHECK_COLUMN(result, 0, {0}));
+
+	// a replacement is renamed over the secret's own file, where a directory is now in its way
+	local.RemoveFile(legacy_file);
+	local.CreateDirectory(legacy_file);
+	REQUIRE_NO_FAIL(con.Query("BEGIN"));
+	result = con.Query("CREATE OR REPLACE PERSISTENT SECRET \"a%2Fb\" (TYPE http, SCOPE 'http://new')");
+	REQUIRE(result->HasError());
+	REQUIRE(StringUtil::Contains(result->GetError(), "a%2Fb.duckdb_secret"));
+	REQUIRE_NO_FAIL(con.Query("ROLLBACK"));
+	REQUIRE(local.DirectoryExists(legacy_file));
+	result = con.Query("SELECT scope[1] FROM duckdb_secrets() WHERE name = 'a%2Fb'");
+	REQUIRE(CHECK_COLUMN(result, 0, {"http://old"}));
+	REQUIRE(SecretFiles(secret_dir) == vector<string> {"a%2Fb.duckdb_secret", "s1.duckdb_secret"});
+
+	// once the directories are gone both secrets are written, the replaced one to its own file
+	local.RemoveDirectory(obstruction);
+	local.RemoveDirectory(legacy_file);
+	REQUIRE_NO_FAIL(con.Query("CREATE PERSISTENT SECRET s1 (TYPE http)"));
+	REQUIRE_NO_FAIL(con.Query("CREATE OR REPLACE PERSISTENT SECRET \"a%2Fb\" (TYPE http, SCOPE 'http://new')"));
+	REQUIRE(local.FileExists(legacy_file));
+	REQUIRE(local.FileExists(obstruction));
+	REQUIRE(SecretFiles(secret_dir) == vector<string> {"a%2Fb.duckdb_secret", "s1.duckdb_secret"});
+	result = con.Query("SELECT scope[1] FROM duckdb_secrets() WHERE name = 'a%2Fb'");
+	REQUIRE(CHECK_COLUMN(result, 0, {"http://new"}));
+}
+
+TEST_CASE("Rolling back a secret replacement restores the old secret in the same legacy file", "[api][secrets]") {
+	auto secret_dir = TestCreatePath("persistent_secret_rollback_legacy_replacement");
 	LocalFileSystem local;
 	{
 		auto config = GetTestConfig();
@@ -161,28 +213,23 @@ TEST_CASE("A replacement that removed the old file and failed to write the new o
 	DuckDB db(nullptr, config.get());
 	Connection con(db);
 	REQUIRE_NO_FAIL(con.Query("SET secret_directory = '" + secret_dir + "'"));
+
+	// the replacement is renamed over the legacy file, and the rollback writes the old secret back into it
+	REQUIRE_NO_FAIL(con.Query("BEGIN"));
+	REQUIRE_NO_FAIL(con.Query("CREATE OR REPLACE PERSISTENT SECRET \"a%2Fb\" (TYPE http, SCOPE 'http://new')"));
+	REQUIRE(SecretFiles(secret_dir) == vector<string> {"a%2Fb.duckdb_secret"});
+	REQUIRE_NO_FAIL(con.Query("ROLLBACK"));
+	REQUIRE(SecretFiles(secret_dir) == vector<string> {"a%2Fb.duckdb_secret"});
 	auto result = con.Query("SELECT scope[1] FROM duckdb_secrets() WHERE name = 'a%2Fb'");
 	REQUIRE(CHECK_COLUMN(result, 0, {"http://old"}));
 
-	// the replacement removes the old file and cannot write the new one, which has a directory in its way
-	auto obstruction = local.JoinPath(secret_dir, "a%252Fb.duckdb_secret");
-	local.CreateDirectory(obstruction);
-	REQUIRE_NO_FAIL(con.Query("BEGIN"));
-	result = con.Query("CREATE OR REPLACE PERSISTENT SECRET \"a%2Fb\" (TYPE http, SCOPE 'http://new')");
-	REQUIRE(result->HasError());
-	REQUIRE(SecretFiles(secret_dir) == vector<string> {"a%252Fb.duckdb_secret"});
-
-	// the rollback cannot restore the file either and says so, instead of claiming success
-	result = con.Query("ROLLBACK");
-	REQUIRE(result->HasError());
-	REQUIRE(StringUtil::Contains(result->GetError(), "a%252Fb.duckdb_secret"));
-	result = con.Query("SELECT scope[1] FROM duckdb_secrets() WHERE name = 'a%2Fb'");
+	// a new instance reads the old secret from the legacy file
+	auto fresh_config = GetTestConfig();
+	DuckDB fresh_db(nullptr, fresh_config.get());
+	Connection fresh_con(fresh_db);
+	REQUIRE_NO_FAIL(fresh_con.Query("SET secret_directory = '" + secret_dir + "'"));
+	result = fresh_con.Query("SELECT scope[1] FROM duckdb_secrets() WHERE name = 'a%2Fb'");
 	REQUIRE(CHECK_COLUMN(result, 0, {"http://old"}));
-
-	// once the directory is gone the secret can be written again
-	local.RemoveDirectory(obstruction);
-	REQUIRE_NO_FAIL(con.Query("CREATE OR REPLACE PERSISTENT SECRET \"a%2Fb\" (TYPE http, SCOPE 'http://old')"));
-	REQUIRE(SecretFiles(secret_dir) == vector<string> {"a%252Fb.duckdb_secret"});
 }
 
 TEST_CASE("A rollback does not read the other files of the secret directory", "[api][secrets]") {

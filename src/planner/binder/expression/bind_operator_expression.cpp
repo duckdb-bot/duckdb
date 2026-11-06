@@ -162,11 +162,14 @@ BindResult ExpressionBinder::BindGroupingInEnclosingScope(OperatorExpression &op
 //! Whether the capture of TRY or HAS_ERROR would re-evaluate a volatile value. A subquery's plan runs once however
 //! often the capture retries, and the positions TRY masks inside it are checked when TRY is pushed into the subquery
 static bool CaptureReevaluatesVolatileValue(const Expression &expr) {
+	if (!expr.HasSubquery()) {
+		return expr.IsVolatile();
+	}
 	switch (expr.GetExpressionClass()) {
 	case ExpressionClass::BOUND_SUBQUERY:
 		return false;
 	case ExpressionClass::BOUND_LAMBDA:
-		// a lambda body holds no subquery
+		// the body of a lambda whose function holds a subquery, the body itself holds none
 		return expr.Cast<BoundLambdaExpression>().LambdaExpr()->IsVolatile();
 	case ExpressionClass::BOUND_FUNCTION:
 		if (expr.Cast<BoundFunctionExpression>().Function().GetStability() == FunctionStability::VOLATILE) {
@@ -174,9 +177,6 @@ static bool CaptureReevaluatesVolatileValue(const Expression &expr) {
 		}
 		break;
 	default:
-		if (!expr.HasSubquery()) {
-			return expr.IsVolatile();
-		}
 		break;
 	}
 	bool result = false;

@@ -79,6 +79,8 @@ public:
 		return false;
 	}
 	bool IsVolatile() const override;
+	//! Whether TRY can be pushed into this subquery, which needs the plan indexes its binder records under TRY
+	bool CanLowerTry() const;
 
 	string ToString() const override;
 

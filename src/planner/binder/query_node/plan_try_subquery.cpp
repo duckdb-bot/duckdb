@@ -176,16 +176,6 @@ static bool GateTryAggregates(ClientContext &context, const Expression &location
 	return true;
 }
 
-//! Whether the expression is a scalar subquery whose plan can take a TRY lowering
-static bool IsLowerableSubquery(const Expression &expr) {
-	if (expr.GetExpressionClass() != ExpressionClass::BOUND_SUBQUERY) {
-		return false;
-	}
-	auto &subquery = expr.Cast<BoundSubqueryExpression>();
-	return subquery.GetSubqueryType() == SubqueryType::SCALAR && subquery.GetBinder()->IsUnderTry() &&
-	       subquery.GetBinder()->GetTrySubqueryPlanIndexes().recorded;
-}
-
 //! The select item of a subquery under TRY, located in its plan
 struct TrySubquerySelectItem {
 	//! The select list projection of the select node
@@ -262,7 +252,7 @@ static optional<LogicalType> LowerTrySubquery(ClientContext &context, Binder &bi
 	const bool strict = lowering != TrySubqueryLowering::TRANSPORT || indexes.nested_transport;
 	const bool expose_error_flag = lowering != TrySubqueryLowering::DIRECT;
 	if (expose_error_flag && item.has_result_modifiers) {
-		// the modifiers reference or deduplicate the select list column; a struct transport would leave their
+		// the modifiers reference or deduplicate the select list column. A struct transport would leave their
 		// references scalar or change DISTINCT semantics (an error-masked NULL must not be distinguishable from a
 		// plain NULL)
 		if (strict) {
@@ -397,7 +387,8 @@ optional<LogicalType> Binder::PlanTrySubquery(const BoundSubqueryExpression &exp
 	auto &item_expr = select_projection.expressions[item.binding.column_index];
 	auto &item_root = select_projection.children[0];
 	// plan the subqueries of the item, which CreatePlan left for this point
-	if (lowering == TrySubqueryLowering::DIRECT && IsLowerableSubquery(*item_expr)) {
+	if (lowering == TrySubqueryLowering::DIRECT && item_expr->GetExpressionClass() == ExpressionClass::BOUND_SUBQUERY &&
+	    item_expr->Cast<BoundSubqueryExpression>().CanLowerTry()) {
 		// a select item that is itself a scalar subquery takes the direct lowering as well, which also covers
 		// result modifiers inside it, and leaves nothing for TRY to mask in this node
 		item_expr = PlanSubquery(item_expr->Cast<BoundSubqueryExpression>(), item_root, TrySubqueryLowering::DIRECT);

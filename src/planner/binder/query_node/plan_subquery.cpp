@@ -848,10 +848,11 @@ unique_ptr<Expression> Binder::PlanSubquery(BoundSubqueryExpression &expr, uniqu
 	auto plan = std::move(expr.SubqueryMutable().plan);
 	D_ASSERT(plan);
 
+	// a subquery bound beyond the reach of TRY, such as an alias expanded in an enclosing scope, is planned as it is
 	bool exposes_error_flag = false;
 	auto &subquery_binder = *expr.GetBinder();
 	if (subquery_binder.IsUnderTry() && subquery_binder.GetTrySubqueryPlanIndexes().recorded) {
-		if (expr.GetSubqueryType() != SubqueryType::SCALAR) {
+		if (!expr.CanLowerTry()) {
 			// TRY masks the value of a scalar subquery only
 			lowering = TrySubqueryLowering::NONE;
 		}
@@ -866,8 +867,6 @@ unique_ptr<Expression> Binder::PlanSubquery(BoundSubqueryExpression &expr, uniqu
 				try_subquery_plan_indexes.nested_transport = true;
 			}
 		}
-	} else if (lowering == TrySubqueryLowering::DIRECT || lowering == TrySubqueryLowering::NESTED) {
-		throw InternalException("TRY subquery: the subquery was not bound under TRY");
 	}
 
 	// now we actually flatten the subquery
@@ -914,7 +913,7 @@ void Binder::PlanSubqueries(unique_ptr<Expression> &expr_ptr, const subquery_roo
 		auto &argument = op.GetChildrenMutable()[0];
 		if (expression_type == ExpressionType::OPERATOR_TRY &&
 		    argument->GetExpressionClass() == ExpressionClass::BOUND_SUBQUERY &&
-		    argument->Cast<BoundSubqueryExpression>().GetSubqueryType() == SubqueryType::SCALAR) {
+		    argument->Cast<BoundSubqueryExpression>().CanLowerTry()) {
 			// TRY over a scalar subquery is pushed into the subquery, whose plan masks the errors itself
 			auto &subquery = argument->Cast<BoundSubqueryExpression>();
 			auto result = PlanSubquery(subquery, get_root(subquery), TrySubqueryLowering::DIRECT);

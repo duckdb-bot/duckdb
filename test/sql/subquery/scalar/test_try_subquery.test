@@ -1402,6 +1402,33 @@ SELECT TRY((SELECT (SELECT DISTINCT 10 // i FROM (VALUES (1)) t(i))))
 ----
 10
 
+# an alias that expands to a subquery in an enclosing scope is planned as it is, TRY masks nothing inside it
+query I
+SELECT (SELECT 1) AS a WHERE (SELECT TRY(a)) = 1
+----
+1
+
+query I
+SELECT TRY((SELECT (SELECT 1 UNION ALL SELECT 2 LIMIT 1) AS a WHERE (SELECT TRY(a)) = 1))
+----
+1
+
+query I
+SELECT TRY((SELECT (SELECT 1 UNION ALL SELECT 2 LIMIT 1) AS a WHERE (SELECT HAS_ERROR(a)) = false))
+----
+1
+
+# the volatile check of TRY looks into lambda bodies as before, but not into subquery plans
+query II
+SELECT TRY(list_transform(NULL, lambda x: random())), HAS_ERROR(list_transform(NULL, lambda x: random()))
+----
+NULL	false
+
+statement error
+SELECT TRY(list_transform((SELECT [1]), lambda x: random()))
+----
+TRY can not be used in combination with a volatile function
+
 # a bare item that is not a plain SELECT is planned as it is, so its errors propagate
 query I
 SELECT TRY((SELECT (SELECT 1 UNION ALL SELECT 2 LIMIT 1)))

@@ -308,10 +308,22 @@ MERGE INTO w USING (VALUES (1)) src(k) ON w.k = src.k
 ----
 Could not convert string 'bad'
 
-# a TRY next to such a lambda keeps its own subquery
+# a TRY next to such a lambda keeps its own subquery, while the TRY around the lambda does not reach a subquery next
+# to the lambda either
 statement ok
 MERGE INTO w USING (VALUES (1)) src(k) ON w.k = src.k
   WHEN MATCHED AND TRY(list_transform([1], lambda x: x + (SELECT 0))[1] + TRY((SELECT txt::INTEGER FROM w))) IS NULL THEN UPDATE SET v = 5;
+
+statement error
+MERGE INTO w USING (VALUES (1)) src(k) ON w.k = src.k
+  WHEN MATCHED AND TRY(list_transform([1], lambda x: x + (SELECT 0))[1] + (SELECT txt::INTEGER FROM w)) IS NULL THEN UPDATE SET v = 0;
+----
+Could not convert string 'bad'
+
+# a subquery in a nested lambda body moves out as well
+statement ok
+MERGE INTO w USING (VALUES (1)) src(k) ON w.k = src.k
+  WHEN MATCHED AND list_transform([[1]], lambda l: list_transform(l, lambda x: x + (SELECT v FROM w)))[1][1] = 6 THEN UPDATE SET v = v + 0;
 
 query III
 SELECT * FROM w;

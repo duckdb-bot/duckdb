@@ -913,14 +913,19 @@ void Binder::PlanSubqueries(unique_ptr<Expression> &expr_ptr, const subquery_roo
 		auto &argument = op.GetChildrenMutable()[0];
 		if (expression_type == ExpressionType::OPERATOR_TRY &&
 		    argument->GetExpressionClass() == ExpressionClass::BOUND_SUBQUERY) {
-			// TRY over a scalar subquery is pushed into the subquery, whose plan masks the errors itself, and the
-			// planned column raises nothing TRY could mask, whether or not TRY reached the subquery
+			// TRY over a scalar subquery is pushed into the subquery, whose plan masks the errors itself
 			auto &subquery = argument->Cast<BoundSubqueryExpression>();
 			for (auto &child : subquery.GetChildrenMutable()) {
 				PlanSubqueries(child, get_root, TrySubqueryLowering::NONE);
 			}
 			auto lowering = subquery.CanLowerTry() ? TrySubqueryLowering::DIRECT : TrySubqueryLowering::NONE;
 			auto result = PlanSubquery(subquery, get_root(subquery), lowering);
+			if (result->GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
+				// a subquery TRY could not reach may plan into a computation, which TRY keeps masking
+				argument = std::move(result);
+				return;
+			}
+			// a planned column raises nothing TRY could mask, whether or not TRY reached the subquery
 			if (op.HasAlias()) {
 				result->SetAlias(op.GetAlias());
 			}

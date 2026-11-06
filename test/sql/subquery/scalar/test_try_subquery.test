@@ -1423,6 +1423,16 @@ SELECT (SELECT 1 // 0) AS a WHERE (SELECT TRY(a)) IS NULL
 ----
 Division by zero
 
+# an alias that expands to an ordered ANY plans into a computation, which TRY keeps masking
+query I
+SELECT (1 // 0 > ANY (SELECT 1)) AS a WHERE (SELECT TRY(a)) IS NOT NULL
+----
+
+query I
+SELECT (1 > ANY (SELECT 0)) AS a WHERE (SELECT TRY(a))
+----
+true
+
 # the volatile check of TRY looks into lambda bodies as before, but not into subquery plans
 query II
 SELECT TRY(list_transform(NULL, lambda x: random())), HAS_ERROR(list_transform(NULL, lambda x: random()))

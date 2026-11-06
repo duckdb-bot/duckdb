@@ -38,7 +38,10 @@ SELECT index_key({'catalog': 'db113', 'table': 'test', 'index': 'idx_id_date'}, 
 ----
 Cannot use index "idx_id_date", because the database file holds no data for it
 
-# a checkpoint keeps the index without data
+# a checkpoint keeps the index without data, and writes an index with data on the same table
+statement ok
+CREATE UNIQUE INDEX idx_value ON db113.test (value);
+
 statement ok
 CREATE TABLE db113.other AS SELECT 1 AS x;
 
@@ -50,6 +53,16 @@ DETACH db113;
 
 statement ok
 ATTACH '{TEST_DIR}/index_without_data_v1_1_3.db' AS db113;
+
+query I
+SELECT index_key({'catalog': 'db113', 'table': 'test', 'index': 'idx_value'}, 3);
+----
+\x80\x00\x00\x03
+
+statement error
+SELECT index_key({'catalog': 'db113', 'table': 'test', 'index': 'idx_id_date'}, 'id1', DATE '2020-01-02');
+----
+Cannot use index "idx_id_date", because the database file holds no data for it
 
 statement error
 INSERT INTO db113.test VALUES ('id1', DATE '2020-01-02', 1);
@@ -67,6 +80,12 @@ statement error
 INSERT INTO db113.test VALUES ('id1', DATE '2020-01-02', 1);
 ----
 Duplicate key
+
+# the index written beside it was read back with its data
+statement error
+INSERT INTO db113.test VALUES ('id12', DATE '2020-01-13', 3);
+----
+Duplicate key "value: 3"
 
 statement ok
 INSERT INTO db113.test VALUES ('id10', DATE '2020-01-11', 10);

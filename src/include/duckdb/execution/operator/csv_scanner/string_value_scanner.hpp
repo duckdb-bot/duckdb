@@ -34,21 +34,16 @@ public:
 	LinePosition begin;
 	LinePosition end;
 	static void SanitizeError(string &value);
-	//! The length of the newline at a position, 2 for \r\n, 1 for a lone \r or \n, 0 for any other byte. A line begins
-	//! where the newline that ended the line before starts, except the first line of a chunk, so the newline is skipped
+	//! The number of newline bytes at a position, the newline that ended the line before and the blank lines after it.
+	//! A line begins where that newline starts, except the first line of a chunk, so these bytes are skipped
 	static idx_t NewlineBytes(const char *buffer, idx_t pos, idx_t end) {
-		if (pos >= end) {
-			return 0;
+		idx_t count = 0;
+		while (pos + count < end && (buffer[pos + count] == '\n' || buffer[pos + count] == '\r')) {
+			count++;
 		}
-		if (buffer[pos] == '\n') {
-			return 1;
-		}
-		if (buffer[pos] != '\r') {
-			return 0;
-		}
-		return pos + 1 < end && buffer[pos + 1] == '\n' ? 2 : 1;
+		return count;
 	}
-	//! Reconstructs the current line to be used in error messages. newline_bytes is the length of the newline the
+	//! Reconstructs the current line to be used in error messages. newline_bytes is the number of newline bytes the
 	//! line's begin still points at, which the reconstruction skips
 	template <class T>
 	string ReconstructCurrentLine(idx_t &newline_bytes, T &buffer_handles, bool reconstruct_line) const {
@@ -79,16 +74,14 @@ public:
 			auto first_buffer = buffer_handles[begin.buffer_idx]->Ptr();
 			auto first_buffer_size = buffer_handles[begin.buffer_idx]->actual_size;
 			auto second_buffer = buffer_handles[end.buffer_idx]->Ptr();
-			newline_bytes = NewlineBytes(first_buffer, begin.buffer_pos, first_buffer_size);
+			idx_t first_count = NewlineBytes(first_buffer, begin.buffer_pos, first_buffer_size);
 			idx_t second_start = 0;
-			if (newline_bytes == 1 && first_buffer[begin.buffer_pos] == '\r' &&
-			    begin.buffer_pos + 1 == first_buffer_size && end.buffer_pos > 0 && second_buffer[0] == '\n') {
-				// the \r\n is split over the two buffers
-				newline_bytes = 2;
-				second_start = 1;
+			if (begin.buffer_pos + first_count == first_buffer_size) {
+				// the newline goes on in the second buffer, a \r\n split over the two buffers or blank lines
+				second_start = NewlineBytes(second_buffer, 0, end.buffer_pos);
 			}
-			for (idx_t i = MinValue<idx_t>(begin.buffer_pos + newline_bytes, first_buffer_size); i < first_buffer_size;
-			     i++) {
+			newline_bytes = first_count + second_start;
+			for (idx_t i = begin.buffer_pos + first_count; i < first_buffer_size; i++) {
 				result += first_buffer[i];
 			}
 			for (idx_t i = second_start; i < end.buffer_pos; i++) {

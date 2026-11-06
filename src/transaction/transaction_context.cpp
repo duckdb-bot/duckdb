@@ -69,12 +69,24 @@ void TransactionContext::Commit() {
 	auto error = transaction->Commit();
 	// Notify any registered state of transaction commit
 	if (error.HasError()) {
+		// every registered state is told, also when one of them fails; the commit's error is the one reported
+		ErrorData state_error;
 		for (auto const &s : context.GetContext().GetRegisteredState().States()) {
-			s->TransactionRollback(*transaction, context, error);
+			try {
+				s->TransactionRollback(*transaction, context, error);
+			} catch (std::exception &ex) {
+				if (!state_error.HasError()) {
+					state_error = ErrorData(ex);
+				}
+			}
 		}
 		if (Exception::InvalidatesDatabase(error.Type()) || error.Type() == ExceptionType::INTERNAL) {
 			// throw fatal / internal exceptions directly
 			error.Throw();
+		}
+		if (state_error.HasError()) {
+			throw TransactionException("Failed to commit: %s\nRolling back a connection state failed as well: %s",
+			                           error.RawMessage(), state_error.RawMessage());
 		}
 		throw TransactionException("Failed to commit: %s", error.RawMessage());
 	}

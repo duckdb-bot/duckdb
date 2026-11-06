@@ -4,6 +4,7 @@
 #include "duckdb/common/local_file_system.hpp"
 #include "duckdb/main/database_file_opener.hpp"
 #include "duckdb/common/mutex.hpp"
+#include "duckdb/common/reference_map.hpp"
 #include "duckdb/common/serializer/binary_deserializer.hpp"
 #include "duckdb/common/serializer/binary_serializer.hpp"
 #include "duckdb/common/serializer/buffered_file_reader.hpp"
@@ -269,6 +270,63 @@ static bool TryReadSecretName(FileSystem &fs, const string &path, string &name) 
 	}
 }
 
+namespace {
+
+constexpr const char *PERSISTENT_SECRET_UNDO_STATE_KEY = "persistent_secret_undo";
+
+//! The persistent secrets changed by a connection's active transaction. Their files change when the statement runs,
+//! while a rollback undoes their catalog entries, so after a rollback the files are made to follow the catalog again.
+struct PersistentSecretUndoState : public ClientContextState {
+	void StageChange(MetaTransaction &transaction, SecretStorage &storage, const Identifier &name) {
+		lock_guard<mutex> guard(lock);
+		if (undo_transaction_id != transaction.global_transaction_id) {
+			// the first change of a new transaction, what is left belongs to a transaction that already ended
+			changes.clear();
+			undo_transaction_id = transaction.global_transaction_id;
+		}
+		changes[storage].insert(name);
+	}
+
+	void TransactionCommit(MetaTransaction &transaction, ClientContext &context) override {
+		lock_guard<mutex> guard(lock);
+		changes.clear();
+	}
+
+	void TransactionRollback(MetaTransaction &transaction, ClientContext &context) override {
+		reference_map_t<SecretStorage, identifier_set_t> rolled_back;
+		{
+			lock_guard<mutex> guard(lock);
+			rolled_back = std::move(changes);
+			changes.clear();
+		}
+		// every name is handled, the first failure is reported
+		ErrorData first_error;
+		for (auto &storage_changes : rolled_back) {
+			for (auto &name : storage_changes.second) {
+				try {
+					storage_changes.first.get().RollbackSecret(name);
+				} catch (std::exception &ex) {
+					if (!first_error.HasError()) {
+						first_error = ErrorData(ex);
+					}
+				}
+			}
+		}
+		if (first_error.HasError()) {
+			first_error.Throw();
+		}
+	}
+
+private:
+	mutex lock;
+	//! The names changed by the active transaction, per storage; a storage lives as long as the database
+	reference_map_t<SecretStorage, identifier_set_t> changes;
+	//! The transaction the changes belong to
+	transaction_t undo_transaction_id = 0;
+};
+
+} // namespace
+
 LocalFileSecretStorage::LocalFileSecretStorage(SecretManager &manager, DatabaseInstance &db_p, const string &name_p,
                                                const string &secret_path_p)
     : CatalogSetSecretStorage(db_p, name_p, LOCAL_FILE_STORAGE_OFFSET), files(make_shared_ptr<PersistentSecretFiles>()),
@@ -432,6 +490,94 @@ void LocalFileSecretStorage::WriteSecret(const BaseSecret &secret, OnCreateConfl
 		throw;
 	}
 	files->Set(secret_name, file_path);
+	file_changes++;
+}
+
+unique_ptr<SecretEntry> LocalFileSecretStorage::StoreSecret(unique_ptr<const BaseSecret> secret,
+                                                            OnCreateConflict on_conflict,
+                                                            optional_ptr<CatalogTransaction> transaction) {
+	lock_guard<mutex> guard(change_lock);
+	auto name = secret->GetName();
+	auto changes_before = file_changes;
+	try {
+		auto result = CatalogSetSecretStorage::StoreSecret(std::move(secret), on_conflict, transaction);
+		if (file_changes != changes_before) {
+			StageChange(transaction, name);
+		}
+		return result;
+	} catch (...) {
+		if (file_changes != changes_before) {
+			StageChange(transaction, name);
+		}
+		throw;
+	}
+}
+
+void LocalFileSecretStorage::DropSecretByName(const Identifier &name, OnEntryNotFound on_entry_not_found,
+                                              optional_ptr<CatalogTransaction> transaction) {
+	lock_guard<mutex> guard(change_lock);
+	auto changes_before = file_changes;
+	try {
+		CatalogSetSecretStorage::DropSecretByName(name, on_entry_not_found, transaction);
+	} catch (...) {
+		if (file_changes != changes_before) {
+			StageChange(transaction, name);
+		}
+		throw;
+	}
+	if (file_changes != changes_before) {
+		StageChange(transaction, name);
+	}
+}
+
+void LocalFileSecretStorage::StageChange(optional_ptr<CatalogTransaction> transaction, const Identifier &name) {
+	if (!transaction || !transaction->HasContext()) {
+		// the system transaction is not rolled back
+		return;
+	}
+	auto &context = transaction->GetContext();
+	auto state = context.GetContext().GetRegisteredState().GetOrCreate<PersistentSecretUndoState>(
+	    PERSISTENT_SECRET_UNDO_STATE_KEY);
+	state->StageChange(MetaTransaction::Get(context), *this, name);
+}
+
+void LocalFileSecretStorage::RollbackSecret(const Identifier &name) {
+	lock_guard<mutex> guard(change_lock);
+	// after the undo, the newest version of the name is the committed one the transaction changed, none, or one that
+	// another transaction made since and has not committed. The file follows the committed one, copied under the
+	// catalog set's lock, which also guards the undo and the commit of versions. A version of another transaction is
+	// left alone, that transaction wrote its file itself and repairs it on its own rollback. The scan loads no secret
+	// file: the statement that changed the file looked the entry up before, or the entry is gone with its creation.
+	unique_ptr<const BaseSecret> committed;
+	bool uncommitted = false;
+	secrets->Scan(VisibilityBound::IncludingUncommitted(), [&](CatalogEntry &entry) {
+		if (!(entry.name == name)) {
+			return;
+		}
+		if (entry.timestamp.load() >= TRANSACTION_ID_START) {
+			uncommitted = true;
+			return;
+		}
+		committed = entry.Cast<SecretCatalogEntry>().secret->secret->Clone();
+	});
+	if (uncommitted) {
+		return;
+	}
+	if (committed) {
+		WriteSecret(*committed, OnCreateConflict::REPLACE_ON_CONFLICT);
+		return;
+	}
+	// only a file registered for the name is the secret's own, the file its name encodes to can be another secret's
+	auto file = files->Get(name);
+	if (file.empty()) {
+		return;
+	}
+	if (FileSystem::GetLocal(db).FileExists(file)) {
+		RemoveSecret(name.GetIdentifierName(), OnEntryNotFound::RETURN_NULL);
+		return;
+	}
+	files->Remove(name);
+	persistent_secrets.erase(name);
 }
 
 void LocalFileSecretStorage::RemoveSecret(const string &secret, OnEntryNotFound on_entry_not_found) {
@@ -442,6 +588,7 @@ void LocalFileSecretStorage::RemoveSecret(const string &secret, OnEntryNotFound 
 	}
 	files->Remove(Identifier(secret));
 	persistent_secrets.erase(Identifier(secret));
+	file_changes++;
 	try {
 		fs.RemoveFile(file);
 	} catch (std::exception &ex) {

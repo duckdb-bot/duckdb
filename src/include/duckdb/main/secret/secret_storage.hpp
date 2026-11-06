@@ -76,6 +76,11 @@ public:
 	virtual bool Persistent() const {
 		return persistent;
 	}
+	//! Makes what the storage keeps outside the catalog follow the catalog again after the rollback of a transaction
+	//! that changed the secret. A storage with nothing outside the catalog has nothing to do, one with such state also
+	//! has to record its changes in the connection's transaction, as LocalFileSecretStorage does
+	virtual void RollbackSecret(const Identifier &name) {
+	}
 
 protected:
 	//! Helper function to select the best matching secret within a storage. Tie-breaks within a storage are broken
@@ -202,7 +207,16 @@ public:
 	//! The secret name for a persistent secret file name (reverses SecretFileName)
 	static string SecretNameFromFileName(const string &file_name);
 
+	unique_ptr<SecretEntry> StoreSecret(unique_ptr<const BaseSecret> secret, OnCreateConflict on_conflict,
+	                                    optional_ptr<CatalogTransaction> transaction = nullptr) override;
+	void DropSecretByName(const Identifier &name, OnEntryNotFound on_entry_not_found,
+	                      optional_ptr<CatalogTransaction> transaction = nullptr) override;
+	//! Rewrites or removes the file of the secret, as the catalog has or lacks the secret after the rollback
+	void RollbackSecret(const Identifier &name) override;
+
 protected:
+	//! Records the secret in the connection's active transaction, so that a rollback makes its file follow the catalog
+	void StageChange(optional_ptr<CatalogTransaction> transaction, const Identifier &name);
 	//! Implements the writes to disk
 	void WriteSecret(const BaseSecret &secret, OnCreateConflict on_conflict) override;
 	//! Implements the deletes from disk
@@ -212,6 +226,11 @@ protected:
 	identifier_set_t persistent_secrets;
 	//! The files of the persistent secrets, shared with the generator that loads them
 	shared_ptr<PersistentSecretFiles> files;
+	//! Held while a secret's catalog entry and file change together, and while a rollback makes a file follow the
+	//! catalog
+	mutex change_lock;
+	//! Counts the file changes, so that a statement that changed no file is not recorded in its transaction
+	idx_t file_changes = 0;
 	//! Path that is searched for secrets;
 	string secret_path;
 };

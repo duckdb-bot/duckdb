@@ -264,7 +264,7 @@ TEST_CASE("A replaced secret keeps the file it was loaded from", "[api][secrets]
 	REQUIRE(SecretFiles(secret_dir).empty());
 }
 
-TEST_CASE("A write the catalog rejects leaves its file, and the catalog the committed secret", "[api][secrets]") {
+TEST_CASE("A rollback restores the committed secret to its file after a write conflict", "[api][secrets]") {
 	auto config = UnredactedConfig();
 	DuckDB db(nullptr, config.get());
 	Connection con(db);
@@ -281,14 +281,15 @@ TEST_CASE("A write the catalog rejects leaves its file, and the catalog the comm
 	result = reader.Query("CREATE OR REPLACE PERSISTENT SECRET s1 (TYPE HTTP, BEARER_TOKEN 'loser')");
 	REQUIRE(result->HasError());
 	REQUIRE(StringUtil::Contains(result->GetError(), "conflict"));
-	REQUIRE_NO_FAIL(reader.Query("ROLLBACK"));
 
-	// the catalog keeps the committed secret, the file holds the rejected one until the next replacement
+	// the rejected write replaced the file, and the rollback of its transaction puts the committed secret back
+	CheckFreshDatabaseReadsToken(secret_dir, "s1", "loser");
+	REQUIRE_NO_FAIL(reader.Query("ROLLBACK"));
 	result = con.Query("SELECT secret_string LIKE '%bearer_token=winner%' FROM duckdb_secrets(redact := false)");
 	REQUIRE(result->RowCount() == 1);
 	REQUIRE(CHECK_COLUMN(result, 0, {true}));
 	REQUIRE(SecretFiles(secret_dir) == vector<string> {"s1.duckdb_secret"});
-	CheckFreshDatabaseReadsToken(secret_dir, "s1", "loser");
+	CheckFreshDatabaseReadsToken(secret_dir, "s1", "winner");
 	REQUIRE_NO_FAIL(con.Query("CREATE OR REPLACE PERSISTENT SECRET s1 (TYPE HTTP, BEARER_TOKEN 'third')"));
 	CheckFreshDatabaseReadsToken(secret_dir, "s1", "third");
 
@@ -300,13 +301,14 @@ TEST_CASE("A write the catalog rejects leaves its file, and the catalog the comm
 	result = reader.Query("CREATE PERSISTENT SECRET s2 (TYPE HTTP, BEARER_TOKEN 'second')");
 	REQUIRE(result->HasError());
 	REQUIRE(StringUtil::Contains(result->GetError(), "conflict"));
+	CheckFreshDatabaseReadsToken(secret_dir, "s2", "second");
 	REQUIRE_NO_FAIL(reader.Query("ROLLBACK"));
 	result = con.Query("SELECT secret_string LIKE '%bearer_token=first%' FROM duckdb_secrets(redact := false) WHERE "
 	                   "name = 's2'");
 	REQUIRE(result->RowCount() == 1);
 	REQUIRE(CHECK_COLUMN(result, 0, {true}));
 	REQUIRE(SecretFiles(secret_dir) == vector<string> {"s1.duckdb_secret", "s2.duckdb_secret"});
-	CheckFreshDatabaseReadsToken(secret_dir, "s2", "second");
+	CheckFreshDatabaseReadsToken(secret_dir, "s2", "first");
 	REQUIRE_NO_FAIL(con.Query("DROP PERSISTENT SECRET s2"));
 	REQUIRE(SecretFiles(secret_dir) == vector<string> {"s1.duckdb_secret"});
 }

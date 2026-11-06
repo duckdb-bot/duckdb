@@ -28,6 +28,7 @@ namespace duckdb {
 
 class QueryResult;
 class ClientContextLock;
+class Executor;
 
 //! A blocked sink. Holds the InterruptState and owns the finished unit it could not append.
 struct BlockedSink {
@@ -109,6 +110,18 @@ public:
 	virtual bool HasObservableUnit() = 0;
 	//! Debug assert that no blocked sinks exist.
 	virtual void AssertNoBlockedSinks() = 0;
+	//! Wakes the consumer if it waits in Executor::WaitForTask, after a producer queued a unit or parked with one.
+	//! Producers call it without holding the buffer's lock, as the waiting consumer checks the buffer under the
+	//! executor's lock
+	void SignalConsumer();
+	//! The executor whose producers fill the buffer, set before they start. Producers reach it through this pointer
+	//! rather than the context, which the consumer resets when it closes the result
+	void SetExecutor(Executor &executor_p) {
+		executor = &executor_p;
+	}
+	//! Whether the blocking replenish can stop: a unit is poppable, and the buffer will
+	//! not accept more input right now
+	virtual bool ReplenishSatisfied() = 0;
 	//! An owned, exactly-sized copy: the producer reuses its output chunk, and the copy's GetDataSize is what the
 	//! cap counts
 	static unique_ptr<DataChunk> CopyForBuffering(DataChunk &chunk);
@@ -144,9 +157,6 @@ protected:
 	//! Record on the result that it is no longer the connection's active query, and report it as an
 	//! error state
 	static QueryResultState Cancelled(QueryResult &result);
-	//! Whether the blocking replenish can stop: a unit is poppable, and the buffer will
-	//! not accept more input right now
-	virtual bool ReplenishSatisfied() = 0;
 	//! Pops below this mark restart blocked sinks. The floor keeps it reachable for tiny buffers
 	static idx_t LowWaterMark(idx_t capacity);
 
@@ -158,6 +168,9 @@ protected:
 	const idx_t total_buffer_size;
 	//! Protect against populate/fetch race condition
 	annotated_mutex glock;
+	//! Set while the consumer waits for a unit or a task, so that producers only wake it then
+	atomic<bool> consumer_waiting {false};
+	optional_ptr<Executor> executor;
 	//! Read unlocked on the producers' fast path; written once, under glock, by Decide
 	atomic<ResultLifetime> lifetime;
 	//! Producers parked with their first chunk unconsumed, until the retention is decided

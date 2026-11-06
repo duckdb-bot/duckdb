@@ -148,11 +148,16 @@ bool PhysicalResultSink::FlushUnits(ResultSinkGlobalState &gstate, ResultSinkLoc
 bool PhysicalResultSink::HandOver(ResultSinkGlobalState &gstate, ResultSinkLocalState &lstate,
                                   unique_ptr<ResultUnit> unit, const InterruptState &interrupt) const {
 	D_ASSERT(unit->row_count > 0);
+	bool blocked;
 	if (BatchOrdered()) {
-		return gstate.buffered_data->Cast<BatchedBufferedData>().AppendOrBlock(std::move(unit), lstate.current_batch,
-		                                                                       interrupt);
+		blocked = gstate.buffered_data->Cast<BatchedBufferedData>().AppendOrBlock(std::move(unit), lstate.current_batch,
+		                                                                          interrupt);
+	} else {
+		blocked = gstate.buffered_data->Cast<SimpleBufferedData>().AppendOrBlock(std::move(unit), interrupt);
 	}
-	return gstate.buffered_data->Cast<SimpleBufferedData>().AppendOrBlock(std::move(unit), interrupt);
+	// the unit was queued, or the producer parked with it on a full buffer, which also lets the consumer go on
+	gstate.buffered_data->SignalConsumer();
+	return blocked;
 }
 
 SinkResultType PhysicalResultSink::SinkDraining(ResultSinkGlobalState &gstate, ResultSinkLocalState &lstate,

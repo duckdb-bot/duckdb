@@ -157,6 +157,26 @@ QueryResultState BufferedData::Poll(ClientContextLock &context_lock, QueryResult
 	return execution_result;
 }
 
+void BufferedData::SignalConsumer() {
+	if (!consumer_waiting || !executor) {
+		return;
+	}
+	// producers run as tasks of the executor, which drains them before it goes away
+	executor->SignalResultUnit();
+}
+
+//! Sets the consumer's waiting flag for the scope of its wait, and clears it also when the wait throws
+struct ConsumerWaitingGuard {
+	explicit ConsumerWaitingGuard(atomic<bool> &consumer_waiting_p) : consumer_waiting(consumer_waiting_p) {
+		consumer_waiting = true;
+	}
+	~ConsumerWaitingGuard() {
+		consumer_waiting = false;
+	}
+
+	atomic<bool> &consumer_waiting;
+};
+
 QueryResultState BufferedData::ReplenishBuffer(ClientContextLock &context_lock, QueryResult &result) {
 	auto cc = context.lock();
 	if (!cc) {
@@ -167,8 +187,14 @@ QueryResultState BufferedData::ReplenishBuffer(ClientContextLock &context_lock, 
 	while (!IsObservable(execution_result = Participate(context_lock, result))) {
 		if (execution_result == QueryResultState::BLOCKED) {
 			UnblockSinks();
-			cc->WaitForTask(context_lock, result);
+		} else if (execution_result != QueryResultState::NO_TASKS_AVAILABLE) {
+			// a task ran on this thread, so the next step can make progress
+			continue;
 		}
+		// Nothing runs on this thread until a worker finishes or reschedules a task, or queues a unit or parks with
+		// one. The flag is set before WaitForTask checks the buffer, so a producer that comes after that check wakes us
+		ConsumerWaitingGuard waiting(consumer_waiting);
+		cc->WaitForTask(context_lock, result, true);
 	}
 	if (result.HasError()) {
 		Close();

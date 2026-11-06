@@ -1,0 +1,44 @@
+# name: test/sql/trigger/trigger_row_before_statement.test
+# description: A FOR EACH ROW trigger inserts into a table whose BEFORE statement trigger body becomes a materialized CTE
+# group: [trigger]
+
+require noforcestorage
+
+statement ok
+CREATE TABLE t(a INT);
+
+statement ok
+CREATE TABLE u(a INT);
+
+statement ok
+CREATE TABLE l(x INT);
+
+statement ok
+CREATE TRIGGER b BEFORE INSERT ON u FOR EACH STATEMENT INSERT INTO l VALUES (1);
+
+statement ok
+CREATE TRIGGER r AFTER INSERT ON t FOR EACH ROW INSERT INTO u VALUES (NEW.a);
+
+statement ok
+INSERT INTO t VALUES (1);
+
+query III
+SELECT (SELECT count(*) FROM t), (SELECT count(*) FROM u), (SELECT count(*) FROM l);
+----
+1	1	1
+
+# one insert of several rows fires the row trigger per row and the statement trigger once
+statement ok
+INSERT INTO t VALUES (2), (3);
+
+query I
+SELECT a FROM u ORDER BY a;
+----
+1
+2
+3
+
+query I
+SELECT count(*) FROM l;
+----
+2

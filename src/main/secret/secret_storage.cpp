@@ -529,7 +529,7 @@ void LocalFileSecretStorage::StageChange(optional_ptr<CatalogTransaction> transa
 		return;
 	}
 	auto &context = transaction->GetContext();
-	auto state = context.Services().GetRegisteredState().GetOrCreate<PersistentSecretUndoState>(
+	auto state = context.GetContext().GetRegisteredState().GetOrCreate<PersistentSecretUndoState>(
 	    PERSISTENT_SECRET_UNDO_STATE_KEY);
 	state->StageChange(MetaTransaction::Get(context), *this, name);
 }
@@ -661,12 +661,12 @@ optional_ptr<ConnectionSecretState> GetConnectionState(optional_ptr<CatalogTrans
 	}
 	auto &context = transaction->GetContext();
 	if (create) {
-		return context.Services()
+		return context.GetContext()
 		    .GetRegisteredState()
 		    .GetOrCreate<ConnectionSecretState>(CONNECTION_SECRET_STATE_KEY)
 		    .get();
 	}
-	return context.Services().GetRegisteredState().Get<ConnectionSecretState>(CONNECTION_SECRET_STATE_KEY).get();
+	return context.GetContext().GetRegisteredState().Get<ConnectionSecretState>(CONNECTION_SECRET_STATE_KEY).get();
 }
 
 } // namespace

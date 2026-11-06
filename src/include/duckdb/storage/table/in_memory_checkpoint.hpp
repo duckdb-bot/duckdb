@@ -25,9 +25,6 @@ public:
 	MetadataWriter &GetMetadataWriter() override;
 	MetadataManager &GetMetadataManager() override;
 	unique_ptr<TableDataWriter> GetTableDataWriter(TableCatalogEntry &table) override;
-	optional_ptr<ClientContext> GetClientContext() const {
-		return context;
-	}
 	CheckpointOptions GetCheckpointOptions() const {
 		return options;
 	}
@@ -39,7 +36,6 @@ public:
 	void WriteTable(TableCatalogEntry &table, Serializer &serializer) override;
 
 private:
-	optional_ptr<ClientContext> context;
 	PartialBlockManager partial_block_manager;
 	StorageManager &storage_manager;
 	CheckpointOptions options;
@@ -54,7 +50,7 @@ public:
 	                         idx_t total_rows, idx_t next_row_id) override;
 	void FinalizeTable(const TableStatistics &global_stats, DataTableInfo &info, RowGroupCollection &collection,
 	                   const vector<shared_ptr<const IndexStorageInfo>> &index_infos, Serializer &serializer) override;
-	unique_ptr<RowGroupWriter> GetRowGroupWriter(RowGroup &row_group) override;
+	unique_ptr<RowGroupWriter> GetRowGroupWriter() override;
 	unique_ptr<TableIndexWriter> GetTableIndexWriter(StorageVersion version) override;
 	void FlushPartialBlocks() override;
 	CheckpointOptions GetCheckpointOptions() const override;

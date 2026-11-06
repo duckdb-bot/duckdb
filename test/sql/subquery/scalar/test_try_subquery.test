@@ -1418,11 +1418,21 @@ SELECT TRY((SELECT (SELECT 1 UNION ALL SELECT 2 LIMIT 1) AS a WHERE (SELECT HAS_
 ----
 1
 
+statement error
+SELECT (SELECT 1 // 0) AS a WHERE (SELECT TRY(a)) IS NULL
+----
+Division by zero
+
 # the volatile check of TRY looks into lambda bodies as before, but not into subquery plans
 query II
 SELECT TRY(list_transform(NULL, lambda x: random())), HAS_ERROR(list_transform(NULL, lambda x: random()))
 ----
 NULL	false
+
+query I
+SELECT TRY(list_reduce(NULL, lambda a, b: random(), (SELECT 1)))
+----
+NULL
 
 statement error
 SELECT TRY(list_transform((SELECT [1]), lambda x: random()))

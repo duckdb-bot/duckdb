@@ -323,12 +323,12 @@ Could not convert string 'bad'
 # a subquery in a nested lambda body moves out as well
 statement ok
 MERGE INTO w USING (VALUES (1)) src(k) ON w.k = src.k
-  WHEN MATCHED AND list_transform([[1]], lambda l: list_transform(l, lambda x: x + (SELECT v FROM w)))[1][1] = 6 THEN UPDATE SET v = v + 0;
+  WHEN MATCHED AND list_transform([[1]], lambda l: list_transform(l, lambda x: x + (SELECT v FROM w)))[1][1] = 6 THEN UPDATE SET v = 6;
 
 query III
 SELECT * FROM w;
 ----
-1	5	bad
+1	6	bad
 
 # TRY directly over a subquery with result modifiers is lowered onto the subquery plan, also through the projection
 statement ok
@@ -347,7 +347,7 @@ MERGE INTO w USING (VALUES (1)) src(k) ON w.k = src.k
 query III
 SELECT * FROM w;
 ----
-1	8	bad
+1	9	bad
 
 statement error
 MERGE INTO w USING (VALUES (1)) src(k) ON w.k = src.k

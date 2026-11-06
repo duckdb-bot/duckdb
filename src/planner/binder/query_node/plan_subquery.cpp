@@ -912,11 +912,15 @@ void Binder::PlanSubqueries(unique_ptr<Expression> &expr_ptr, const subquery_roo
 		auto &op = expr.Cast<BoundOperatorExpression>();
 		auto &argument = op.GetChildrenMutable()[0];
 		if (expression_type == ExpressionType::OPERATOR_TRY &&
-		    argument->GetExpressionClass() == ExpressionClass::BOUND_SUBQUERY &&
-		    argument->Cast<BoundSubqueryExpression>().CanLowerTry()) {
-			// TRY over a scalar subquery is pushed into the subquery, whose plan masks the errors itself
+		    argument->GetExpressionClass() == ExpressionClass::BOUND_SUBQUERY) {
+			// TRY over a scalar subquery is pushed into the subquery, whose plan masks the errors itself, and the
+			// planned column raises nothing TRY could mask, whether or not TRY reached the subquery
 			auto &subquery = argument->Cast<BoundSubqueryExpression>();
-			auto result = PlanSubquery(subquery, get_root(subquery), TrySubqueryLowering::DIRECT);
+			for (auto &child : subquery.GetChildrenMutable()) {
+				PlanSubqueries(child, get_root, TrySubqueryLowering::NONE);
+			}
+			auto lowering = subquery.CanLowerTry() ? TrySubqueryLowering::DIRECT : TrySubqueryLowering::NONE;
+			auto result = PlanSubquery(subquery, get_root(subquery), lowering);
 			if (op.HasAlias()) {
 				result->SetAlias(op.GetAlias());
 			}

@@ -10,7 +10,6 @@
 #include "duckdb/planner/expression/bound_subquery_expression.hpp"
 #include "duckdb/planner/expression_binder.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
-#include "duckdb/planner/expression/bound_lambda_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/catalog/catalog_entry/scalar_function_catalog_entry.hpp"
 #include "duckdb/function/function_binder.hpp"
@@ -168,10 +167,8 @@ static bool CaptureReevaluatesVolatileValue(const Expression &expr) {
 	switch (expr.GetExpressionClass()) {
 	case ExpressionClass::BOUND_SUBQUERY:
 		return false;
-	case ExpressionClass::BOUND_LAMBDA:
-		// the body of a lambda whose function holds a subquery, the body itself holds none
-		return expr.Cast<BoundLambdaExpression>().LambdaExpr()->IsVolatile();
 	case ExpressionClass::BOUND_FUNCTION:
+		// a function with a volatile lambda body is volatile itself
 		if (expr.Cast<BoundFunctionExpression>().Function().GetStability() == FunctionStability::VOLATILE) {
 			return true;
 		}

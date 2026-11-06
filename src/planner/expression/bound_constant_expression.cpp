@@ -55,12 +55,9 @@ static bool SameRepresentation(const Value &left, const Value &right) {
 		return VectorOperations::NotDistinctFrom(left_vector, right_vector, nullptr, 1, nullptr, nullptr) == 1;
 	}
 	switch (left.type().InternalType()) {
-	case PhysicalType::INTERVAL: {
-		auto left_interval = left.GetValueUnsafe<interval_t>();
-		auto right_interval = right.GetValueUnsafe<interval_t>();
-		return left_interval.months == right_interval.months && left_interval.days == right_interval.days &&
-		       left_interval.micros == right_interval.micros;
-	}
+	case PhysicalType::INTERVAL:
+		// INTERVAL 1 MONTH and INTERVAL 30 DAY are equal after normalization but add differently
+		return left.GetValueUnsafe<interval_t>().SameFields(right.GetValueUnsafe<interval_t>());
 	case PhysicalType::FLOAT: {
 		auto left_float = left.GetValueUnsafe<float>();
 		auto right_float = right.GetValueUnsafe<float>();
@@ -87,11 +84,21 @@ bool BoundConstantExpression::Equals(const BaseExpression &other_p) const {
 		return false;
 	}
 	auto &other = other_p.Cast<BoundConstantExpression>();
-	return value.type() == other.value.type() && SameRepresentation(value, other.value);
+	if (value.type() != other.value.type()) {
+		return false;
+	}
+	return SameRepresentation(value, other.value);
 }
 
 hash_t BoundConstantExpression::Hash() const {
 	hash_t result = Expression::Hash();
+	if (value.type().id() == LogicalTypeId::INTERVAL && !value.IsNull()) {
+		// Hash by the raw (months, days, micros) fields: Value::Hash normalizes first, which would put intervals
+		// that are only equal after normalization in the same bucket and make Equals the deciding factor
+		auto interval = value.GetValueUnsafe<interval_t>();
+		return CombineHash(duckdb::Hash(interval.months) ^ duckdb::Hash(interval.days) ^ duckdb::Hash(interval.micros),
+		                   result);
+	}
 	return CombineHash(value.Hash(), result);
 }
 

@@ -104,7 +104,7 @@ TEST_CASE("Read-ahead keeps room for one file open without async threads", "[api
 	Connection con(db);
 	REQUIRE_NO_FAIL(con.Query("SET async_threads=0"));
 	ScanReadAhead read_ahead(*con.context, NumericLimits<idx_t>::Maximum(),
-	                         make_uniq<ManagedAsyncMemoryGovernor>(con.context->Services()));
+	                         make_uniq<ManagedAsyncMemoryGovernor>(con.context->GetContext()));
 	REQUIRE(read_ahead.CanScheduleOpen(0));
 	REQUIRE_FALSE(read_ahead.CanScheduleOpen(1));
 }

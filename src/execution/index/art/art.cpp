@@ -696,7 +696,7 @@ ErrorData ART::Append(IndexLock &l, DataChunk &chunk, Vector &row_ids, IndexAppe
 	// Execute all column expressions before inserting the data chunk.
 	DataChunk expr_chunk;
 	expr_chunk.Initialize(Allocator::DefaultAllocator(), logical_types);
-	ExecuteExpressions(chunk, expr_chunk);
+	ExecuteExpressions(chunk, expr_chunk, info.context);
 
 	// Now insert the data chunk.
 	return Insert(l, expr_chunk, row_ids, info);
@@ -734,6 +734,17 @@ void ART::DisownStorage(IndexLock &index_lock) {
 
 idx_t ART::TryDelete(IndexLock &state, DataChunk &entries, Vector &row_ids, optional_ptr<SelectionVector> deleted_sel,
                      optional_ptr<SelectionVector> non_deleted_sel) {
+	return TryDelete(state, entries, row_ids, QueryContext(), deleted_sel, non_deleted_sel);
+}
+
+void ART::Delete(IndexLock &state, DataChunk &entries, Vector &row_ids, const QueryContext &context) {
+	state.AssertHeld(*this);
+	auto deleted_rows = TryDelete(state, entries, row_ids, context, nullptr, nullptr);
+	VerifyDeleteCount(deleted_rows, entries);
+}
+
+idx_t ART::TryDelete(IndexLock &state, DataChunk &entries, Vector &row_ids, const QueryContext &context,
+                     optional_ptr<SelectionVector> deleted_sel, optional_ptr<SelectionVector> non_deleted_sel) {
 	state.AssertHeld(*this);
 	// FIXME: We could pass a row_count in here, as we sometimes don't have to delete all row IDs in the chunk,
 	// FIXME: but rather all row IDs up to the conflicting row.
@@ -741,7 +752,7 @@ idx_t ART::TryDelete(IndexLock &state, DataChunk &entries, Vector &row_ids, opti
 
 	DataChunk expr_chunk;
 	expr_chunk.Initialize(Allocator::DefaultAllocator(), logical_types);
-	ExecuteExpressions(entries, expr_chunk);
+	ExecuteExpressions(entries, expr_chunk, context);
 
 	ArenaAllocator allocator(BufferAllocator::Get(db));
 	unsafe_vector<ARTKey> keys(row_count);
@@ -1090,7 +1101,7 @@ void ART::VerifyConstraint(DataChunk &chunk, IndexAppendInfo &info, ConflictMana
 
 	DataChunk expr_chunk;
 	expr_chunk.Initialize(Allocator::DefaultAllocator(), logical_types);
-	ExecuteExpressions(chunk, expr_chunk);
+	ExecuteExpressions(chunk, expr_chunk, info.context);
 
 	ArenaAllocator arena_allocator(BufferAllocator::Get(db));
 	unsafe_vector<ARTKey> keys(expr_chunk.size());

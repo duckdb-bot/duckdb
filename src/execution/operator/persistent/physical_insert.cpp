@@ -418,7 +418,7 @@ static void VerifyOnConflictCondition(ExecutionContext &context, DataChunk &comb
 
 	auto &indexes = local_storage.GetIndexes(data_table);
 	auto storage = local_storage.GetStorage(data_table);
-	indexes.VerifyUniqueIndexes(storage ? &storage->delete_indexes : nullptr, tuples, nullptr);
+	indexes.VerifyUniqueIndexes(context.client, storage ? &storage->delete_indexes : nullptr, tuples, nullptr);
 	throw InternalException("VerifyUniqueIndexes was expected to throw but didn't");
 }
 
@@ -440,7 +440,8 @@ static idx_t HandleInsertConflicts(DuckTableEntry &table, ExecutionContext &cont
 		data_table.VerifyAppendConstraints(constraint_state, context.client, tuples, storage, &conflict_manager);
 	} else {
 		auto &indexes = local_storage.GetIndexes(data_table);
-		indexes.VerifyUniqueIndexes(storage ? &storage->delete_indexes : nullptr, tuples, &conflict_manager);
+		indexes.VerifyUniqueIndexes(context.client, storage ? &storage->delete_indexes : nullptr, tuples,
+		                            &conflict_manager);
 	}
 
 	if (!conflict_manager.HasConflicts()) {

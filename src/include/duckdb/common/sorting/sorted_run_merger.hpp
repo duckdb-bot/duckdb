@@ -26,8 +26,8 @@ class SortedRunMerger {
 	friend class SortedRunMergerGlobalState;
 
 public:
-	SortedRunMerger(const Sort &sort, vector<unique_ptr<SortedRun>> &&sorted_runs, idx_t partition_size, bool external,
-	                bool is_index_sort);
+	SortedRunMerger(ClientContext &context, const Sort &sort, vector<unique_ptr<SortedRun>> &&sorted_runs,
+	                idx_t partition_size, bool external, bool is_index_sort);
 	~SortedRunMerger();
 
 public:
@@ -62,6 +62,8 @@ private:
 	TaskScheduler &scheduler;
 
 public:
+	//! The context of the operation that merges, which need not be the one the Sort was built with
+	ClientContext &context;
 	const Sort &sort;
 	vector<unique_ptr<SortedRun>> sorted_runs;
 	const idx_t total_count;

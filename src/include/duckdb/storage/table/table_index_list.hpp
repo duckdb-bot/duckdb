@@ -48,17 +48,17 @@ public:
 	//! Appends a chunk to all index entries.
 	void Append(DataChunk &chunk, Vector &row_ids);
 	//! Appends a table chunk with generated row IDs, using delete and checkpoint indexes where required.
-	ErrorData Append(optional_ptr<TableIndexList> delete_indexes, DataChunk &chunk, row_t row_start,
-	                 IndexAppendMode append_mode, optional_idx active_checkpoint);
+	ErrorData Append(const QueryContext &context, optional_ptr<TableIndexList> delete_indexes, DataChunk &chunk,
+	                 row_t row_start, IndexAppendMode append_mode, optional_idx active_checkpoint);
 	//! Reverts an append to all index entries.
-	void RevertAppend(DataChunk &chunk, Vector &row_ids);
+	void RevertAppend(const QueryContext &context, DataChunk &chunk, Vector &row_ids);
 	//! Reverts an append with generated row IDs starting at row_start.
-	void RevertAppend(DataChunk &chunk, row_t row_start);
+	void RevertAppend(const QueryContext &context, DataChunk &chunk, row_t row_start);
 	//! Appends deleted rows to all unique indexes.
-	void AppendToDeleteIndexes(DataChunk &chunk, Vector &row_ids);
+	void AppendToDeleteIndexes(const QueryContext &context, DataChunk &chunk, Vector &row_ids);
 	//! Applies a removal or removal rollback to all index entries.
-	void RemoveFromIndexes(DataChunk &chunk, Vector &row_ids, IndexRemovalType removal_type,
-	                       optional_idx active_checkpoint = optional_idx());
+	void RemoveFromIndexes(const QueryContext &context, DataChunk &chunk, Vector &row_ids,
+	                       IndexRemovalType removal_type, optional_idx active_checkpoint = optional_idx());
 	//! Removes an index entry from the list of index entries and release any storage the index owns.
 	void RemoveIndex(idx_t index_oid);
 	//! Returns the entry matching the index OID.
@@ -85,8 +85,8 @@ public:
 	//! Returns true, if there are unique indexes.
 	bool HasUniqueIndexes() const;
 	//! Verifies all unique ART indexes that are not deferred, optionally recording conflicts.
-	void VerifyUniqueIndexes(optional_ptr<const TableIndexList> delete_indexes, DataChunk &chunk,
-	                         optional_ptr<ConflictManager> manager) const;
+	void VerifyUniqueIndexes(const QueryContext &context, optional_ptr<const TableIndexList> delete_indexes,
+	                         DataChunk &chunk, optional_ptr<ConflictManager> manager) const;
 	//! Vacuums all bound indexes.
 	void Vacuum();
 	//! Rebuilds all indexes with chunks supplied by the scan callback.

@@ -64,7 +64,7 @@ LogicalDependency LogicalDependency::Deserialize(Deserializer &deserializer) {
 }
 
 void LogicalDependencyList::Serialize(Serializer &serializer) const {
-	serializer.WriteProperty<create_info_set_t>(100, "set", set);
+	serializer.WriteProperty<create_info_set_t>(100, "set", SerializedSet());
 }
 
 LogicalDependencyList LogicalDependencyList::Deserialize(Deserializer &deserializer) {

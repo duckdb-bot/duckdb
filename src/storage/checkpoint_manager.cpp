@@ -42,6 +42,7 @@
 #include "duckdb/transaction/meta_transaction.hpp"
 #include "duckdb/storage/data_table.hpp"
 #include "duckdb/parser/parsed_data/create_view_info.hpp"
+#include "duckdb/common/algorithm.hpp"
 #include "duckdb/main/database.hpp"
 
 namespace duckdb {
@@ -152,6 +153,8 @@ unique_ptr<TableDataWriter> SingleFileCheckpointWriter::GetTableDataWriter(Table
 
 static catalog_entry_vector_t GetCatalogEntries(vector<reference<DuckSchemaEntry>> &schemas, VisibilityBound bound) {
 	catalog_entry_vector_t entries;
+	catalog_entry_vector_t macros;
+	catalog_entry_vector_t views;
 	for (auto &schema_p : schemas) {
 		auto &schema = schema_p.get();
 		entries.push_back(schema);
@@ -170,7 +173,6 @@ static catalog_entry_vector_t GetCatalogEntries(vector<reference<DuckSchemaEntry
 		});
 
 		catalog_entry_vector_t tables;
-		vector<reference<ViewCatalogEntry>> views;
 		schema.Scan(CatalogType::TABLE_ENTRY, bound, [&](CatalogEntry &entry) {
 			if (entry.internal) {
 				return;
@@ -178,7 +180,7 @@ static catalog_entry_vector_t GetCatalogEntries(vector<reference<DuckSchemaEntry
 			if (entry.type == CatalogType::TABLE_ENTRY) {
 				tables.push_back(entry.Cast<TableCatalogEntry>());
 			} else if (entry.type == CatalogType::VIEW_ENTRY) {
-				views.push_back(entry.Cast<ViewCatalogEntry>());
+				views.push_back(entry);
 			} else {
 				throw NotImplementedException("Catalog type for entries");
 			}
@@ -187,9 +189,6 @@ static catalog_entry_vector_t GetCatalogEntries(vector<reference<DuckSchemaEntry
 		ReorderTableEntries(tables);
 		for (auto &table : tables) {
 			entries.push_back(table.get());
-		}
-		for (auto &view : views) {
-			entries.push_back(view.get());
 		}
 
 		// Scan triggers from each table directly (triggers are nested under their table)
@@ -211,7 +210,7 @@ static catalog_entry_vector_t GetCatalogEntries(vector<reference<DuckSchemaEntry
 				return;
 			}
 			if (entry.type == CatalogType::MACRO_ENTRY) {
-				entries.push_back(entry);
+				macros.push_back(entry);
 			}
 		});
 
@@ -220,7 +219,7 @@ static catalog_entry_vector_t GetCatalogEntries(vector<reference<DuckSchemaEntry
 				return;
 			}
 			if (entry.type == CatalogType::TABLE_MACRO_ENTRY) {
-				entries.push_back(entry);
+				macros.push_back(entry);
 			}
 		});
 
@@ -229,6 +228,14 @@ static catalog_entry_vector_t GetCatalogEntries(vector<reference<DuckSchemaEntry
 			entries.push_back(entry);
 		});
 	}
+	// Write views and macros in creation order, which loading keeps and EXPORT DATABASE follows
+	auto creation_order = [](const reference<CatalogEntry> &lhs, const reference<CatalogEntry> &rhs) {
+		return lhs.get().oid < rhs.get().oid;
+	};
+	std::sort(macros.begin(), macros.end(), creation_order);
+	std::sort(views.begin(), views.end(), creation_order);
+	entries.insert(entries.end(), macros.begin(), macros.end());
+	entries.insert(entries.end(), views.begin(), views.end());
 	return entries;
 }
 

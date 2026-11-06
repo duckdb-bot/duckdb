@@ -94,7 +94,8 @@
 			{
 				"id": 100,
 				"name": "set",
-				"type": "create_info_set_t"
+				"type": "create_info_set_t",
+				"serialize_property": "SerializedSet()"
 			}
 		],
 		"pointer_type": "none"

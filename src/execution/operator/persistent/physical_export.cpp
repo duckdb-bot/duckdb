@@ -182,11 +182,12 @@ catalog_entry_vector_t PhysicalExport::GetNaiveExportOrder(ClientContext &contex
 
 	ReorderTableEntries(entries.tables);
 
-	// order macro's by timestamp so nested macro's are imported nicely
-	sort(entries.macros.begin(), entries.macros.end(),
-	     [](const reference<CatalogEntry> &lhs, const reference<CatalogEntry> &rhs) {
-		     return lhs.get().oid < rhs.get().oid;
-	     });
+	// order views and macros by creation, which a checkpoint keeps
+	auto creation_order = [](const reference<CatalogEntry> &lhs, const reference<CatalogEntry> &rhs) {
+		return lhs.get().oid < rhs.get().oid;
+	};
+	sort(entries.views.begin(), entries.views.end(), creation_order);
+	sort(entries.macros.begin(), entries.macros.end(), creation_order);
 
 	catalog_entry_vector_t catalog_entries;
 	idx_t size = 0;

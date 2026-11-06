@@ -160,7 +160,7 @@ void ViewCatalogEntry::BindView(ClientContext &context, BindViewAction action) {
 	try {
 		auto columns = make_shared_ptr<ViewColumnInfo>();
 		Binder::BindView(context, GetQuery(), ParentCatalog().GetName(), ParentSchema().GetSchemaPath(), nullptr,
-		                 aliases, columns->types, columns->names);
+		                 DependencyDependentFlags(), aliases, columns->types, columns->names);
 		view_columns.atomic_store(columns);
 	} catch (...) {
 		bind_state = prev_bind_state;

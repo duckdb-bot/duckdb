@@ -1,0 +1,16 @@
+# name: benchmark/micro/pushdown/row_comparison_constant.benchmark
+# description: Row equality with a constant row, which can prune row groups like the equalities of its fields
+# group: [pushdown]
+
+name RowComparisonConstant
+group micro
+subgroup pushdown
+
+load
+CREATE TABLE facts AS SELECT r::BIGINT id, (r % 10)::INT b FROM range(50_000_000) tbl(r) ORDER BY r;
+
+run
+SELECT count(*) FROM facts WHERE (id, b) = (42, 2);
+
+result I
+1

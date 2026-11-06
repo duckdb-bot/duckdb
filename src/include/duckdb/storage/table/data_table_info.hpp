@@ -28,6 +28,8 @@ public:
 	//! Bind unknown indexes throwing an exception if binding fails.
 	//! Only binds the specified index type, or all if no type is specified.
 	void BindIndexes(ClientContext &context, const optional<string> &index_type = {});
+	//! Binds all indexes before the table is modified, and throws if one of them can never be bound.
+	void BindIndexesToModify(ClientContext &context);
 
 	//! Whether or not the table is temporary
 	bool IsTemporary() const;
@@ -45,6 +47,8 @@ public:
 	}
 	//! Find and move out an IndexStorageInfo by name from the stored collection.
 	IndexStorageInfo ExtractIndexStorageInfo(const Identifier &name);
+	//! Whether the stored index data holds an entry for the index with this name
+	bool HasIndexStorageInfo(const Identifier &name) const;
 	bool AppendRequiresNewRowGroup(RowGroupCollection &collection, optional_idx checkpoint_id);
 	optional_idx CheckpointRowGroupCount(const CheckpointOptions &options) const;
 	void VerifyIndexBuffers() const;

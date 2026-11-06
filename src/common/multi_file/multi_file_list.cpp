@@ -248,11 +248,11 @@ optional_idx MultiFileList::EstimateRowsPerFile(idx_t bytes_per_row) const {
 	idx_t file_count = 0;
 	idx_t row_count = 0;
 	while (Scan(scan_data, file)) {
-		idx_t file_size;
-		if (!file.extended_info || !file.extended_info->TryGetOption("file_size", file_size)) {
+		auto file_size = file.TryGetFileSize();
+		if (!file_size.IsValid()) {
 			return optional_idx();
 		}
-		row_count += MaxValue<idx_t>(file_size / bytes_per_row, 1);
+		row_count += MaxValue<idx_t>(file_size.GetIndex() / bytes_per_row, 1);
 		file_count++;
 	}
 	if (file_count == 0) {

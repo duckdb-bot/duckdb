@@ -42,6 +42,9 @@ Grammar extensions are not included in any of these benchmarks.
 | `ParserWideSelect` | 128 arithmetic projection expressions and aliases | 55 | 1 |
 | `ParserNestedExpressions` | 32 nested `coalesce` calls | 250 | 1 |
 | `ParserMalformedSelect` | `select (((((((((((((;` (13 unmatched opening parentheses) | 400 | Expected syntax error |
+| `ParserNestedCTEs` | 8 nested data-modifying CTEs, `WITH a AS (WITH a AS (... DELETE FROM t) DELETE FROM t) DELETE FROM t` | 9000 | 1 |
+| `ParserMalformedCTEs` | `WITH a AS (` 8 times, then `;` | 16000 | Expected syntax error |
+| `ParserNestedParens` | `SELECT * FROM ((...(t)...))` with 1024 nested parentheses | 190 | 1 |
 | `ParserStatements` | 32 SELECT statements, quoted aliases and comments | 700 | 32 |
 | `ParserTPCH` | All 22 TPC-H queries, repeated 12 times | 264 | 1 |
 | `ParserTPCDS` | All 99 TPC-DS query files, parsed once | 99 | 1 |
@@ -131,6 +134,16 @@ Every call must throw `ParserException`. Unexpected success fails verification, 
 other exception types are not counted as expected syntax errors. Timing includes
 tokenization, failed matching, error construction/exception handling, and cleanup;
 this is not an isolated measurement of cache lookups or a packrat-on/off comparison.
+
+### Nested CTEs and parentheses
+
+`ParserNestedCTEs`, `ParserMalformedCTEs` and `ParserNestedParens` cover inputs where
+several alternatives start with the same nested rule. A CTE body is tried as a SELECT
+before the data-modifying statements, all of which start with a `WITH` clause, and a
+parenthesis in `FROM` is tried as a subquery before a parenthesized table reference.
+Without memoization of `WithClause` and `SelectParens`, each level parses the nesting
+below it again: exponential in the number of CTE levels, quadratic in the number of
+parentheses.
 
 ## Build and run
 

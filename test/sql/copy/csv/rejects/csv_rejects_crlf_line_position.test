@@ -1,0 +1,64 @@
+# name: test/sql/copy/csv/rejects/csv_rejects_crlf_line_position.test
+# description: The rejects table reports the position and text of a row of a CRLF file the same way for every row, the first row of a chunk included
+# group: [rejects]
+
+statement ok
+SET threads = 1;
+
+# 2047 good rows, a bad row on each side of the first chunk boundary of 2048 rows, ten more good rows
+statement ok
+COPY (SELECT string_agg(l, chr(13) || chr(10) ORDER BY ord) FROM (SELECT i AS ord, i || ',x,y,z' AS l FROM range(2047) t(i) UNION ALL SELECT 2047, '8,b,x' UNION ALL SELECT 2048, '9,b,x,y,extra' UNION ALL SELECT 2049 + i, i || ',x,y,z' FROM range(10) t(i))) TO '__TEST_DIR__/crlf_chunk.csv' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '', NEW_LINE '\r\n');
+
+statement ok
+CREATE TABLE crlf_chunk AS SELECT * FROM read_csv('__TEST_DIR__/crlf_chunk.csv', delim=',', quote='"', escape='"', header=false, new_line='\r\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'VARCHAR'}, store_rejects=true, rejects_table='rejects_crlf_chunk', rejects_scan='scans_crlf_chunk');
+
+# the position is the first byte of the row, one based, and the text has no newline bytes
+query IIIII
+SELECT line, line_byte_position, byte_position, error_type, replace(replace(csv_line, chr(13), '<CR>'), chr(10), '<LF>') FROM rejects_crlf_chunk ORDER BY line;
+----
+2048	23455	23461	MISSING COLUMNS	8,b,x
+2049	23462	23469	TOO MANY COLUMNS	9,b,x,y,extra
+
+query II
+SELECT line, line_byte_position = position(csv_line IN content) FROM rejects_crlf_chunk, read_text('__TEST_DIR__/crlf_chunk.csv') ORDER BY line;
+----
+2048	true
+2049	true
+
+# one more good row moves the chunk boundary between the two bad rows the other way
+statement ok
+COPY (SELECT string_agg(l, chr(13) || chr(10) ORDER BY ord) FROM (SELECT i AS ord, i || ',x,y,z' AS l FROM range(2048) t(i) UNION ALL SELECT 2048, '8,b,x' UNION ALL SELECT 2049, '9,b,x,y,extra' UNION ALL SELECT 2050 + i, i || ',x,y,z' FROM range(10) t(i))) TO '__TEST_DIR__/crlf_chunk_2048.csv' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '', NEW_LINE '\r\n');
+
+statement ok
+CREATE TABLE crlf_chunk_2048 AS SELECT * FROM read_csv('__TEST_DIR__/crlf_chunk_2048.csv', delim=',', quote='"', escape='"', header=false, new_line='\r\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'VARCHAR'}, store_rejects=true, rejects_table='rejects_crlf_chunk_2048', rejects_scan='scans_crlf_chunk_2048');
+
+query IIIII
+SELECT line, line_byte_position, byte_position, error_type, replace(replace(csv_line, chr(13), '<CR>'), chr(10), '<LF>') FROM rejects_crlf_chunk_2048 ORDER BY line;
+----
+2049	23467	23473	MISSING COLUMNS	8,b,x
+2050	23474	23481	TOO MANY COLUMNS	9,b,x,y,extra
+
+# a file with LF newlines reports the same way as before
+statement ok
+COPY (SELECT string_agg(l, chr(10) ORDER BY ord) FROM (SELECT i AS ord, i || ',x,y,z' AS l FROM range(2047) t(i) UNION ALL SELECT 2047, '8,b,x' UNION ALL SELECT 2048, '9,b,x,y,extra' UNION ALL SELECT 2049 + i, i || ',x,y,z' FROM range(10) t(i))) TO '__TEST_DIR__/lf_chunk.csv' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+statement ok
+CREATE TABLE lf_chunk AS SELECT * FROM read_csv('__TEST_DIR__/lf_chunk.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'VARCHAR'}, store_rejects=true, rejects_table='rejects_lf_chunk', rejects_scan='scans_lf_chunk');
+
+query IIIII
+SELECT line, line_byte_position, byte_position, error_type, replace(replace(csv_line, chr(13), '<CR>'), chr(10), '<LF>') FROM rejects_lf_chunk ORDER BY line;
+----
+2048	21408	21413	MISSING COLUMNS	8,b,x
+2049	21414	21421	TOO MANY COLUMNS	9,b,x,y,extra
+
+# many bad rows read with small buffers, so that rows and their CRLF fall on buffer and chunk boundaries
+statement ok
+COPY (SELECT string_agg(l, chr(13) || chr(10) ORDER BY ord) FROM (SELECT i AS ord, CASE WHEN i % 7 = 3 THEN i || ',b,x' WHEN i % 11 = 5 THEN i || ',b,x,y,extra' ELSE i || ',x,y,z' END AS l FROM range(3000) t(i))) TO '__TEST_DIR__/crlf_many_bad.csv' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '', NEW_LINE '\r\n');
+
+statement ok
+CREATE TABLE crlf_many_bad AS SELECT * FROM read_csv('__TEST_DIR__/crlf_many_bad.csv', delim=',', quote='"', escape='"', header=false, new_line='\r\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'VARCHAR'}, store_rejects=true, rejects_table='rejects_crlf_many_bad', rejects_scan='scans_crlf_many_bad', buffer_size=1000);
+
+query III
+SELECT count(*), count(*) FILTER (WHERE line_byte_position = position(csv_line IN content)), count(*) FILTER (WHERE csv_line LIKE chr(10) || '%' OR csv_line LIKE chr(13) || '%') FROM rejects_crlf_many_bad, read_text('__TEST_DIR__/crlf_many_bad.csv');
+----
+663	663	0

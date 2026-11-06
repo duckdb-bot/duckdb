@@ -682,7 +682,7 @@ void StringValueResult::AddValue(StringValueResult &result, const idx_t buffer_p
 }
 
 void StringValueResult::HandleUnicodeError(idx_t col_idx, LinePosition &error_position) {
-	bool first_nl = false;
+	idx_t first_nl = 0;
 	auto borked_line = current_line_position.ReconstructCurrentLine(first_nl, buffer_handles, PrintErrorLine());
 	LinesPerBoundary lines_per_batch(iterator.GetBoundaryIdx(), lines_read);
 	if (current_line_position.begin == error_position) {
@@ -715,7 +715,7 @@ bool LineError::HandleErrors(StringValueResult &result) {
 	// Reconstruct CSV Line
 	for (auto &cur_error : current_errors) {
 		LinesPerBoundary lines_per_batch(result.iterator.GetBoundaryIdx(), result.lines_read);
-		bool first_nl = false;
+		idx_t first_nl = 0;
 		auto borked_line = result.current_line_position.ReconstructCurrentLine(first_nl, result.buffer_handles,
 		                                                                       result.PrintErrorLine());
 		CSVError csv_error;
@@ -914,7 +914,7 @@ bool StringValueResult::AddRowInternal() {
 		} else {
 			// If we are not null-padding this is an error
 			if (!state_machine.options.IgnoreErrors()) {
-				bool first_nl = false;
+				idx_t first_nl = 0;
 				auto borked_line =
 				    current_line_position.ReconstructCurrentLine(first_nl, buffer_handles, PrintErrorLine());
 				LinesPerBoundary lines_per_batch(iterator.GetBoundaryIdx(), lines_read);
@@ -984,7 +984,7 @@ void StringValueResult::InvalidState(StringValueResult &result) {
 		result.current_errors.Insert(UNTERMINATED_QUOTES, result.cur_col_id, result.chunk_col_id, result.last_position);
 	} else {
 		LinesPerBoundary lines_per_batch(result.iterator.GetBoundaryIdx(), result.lines_read);
-		bool first_nl = false;
+		idx_t first_nl = 0;
 		auto borked_line = result.current_line_position.ReconstructCurrentLine(first_nl, result.buffer_handles,
 		                                                                       result.PrintErrorLine());
 		CSVError csv_error;
@@ -1172,7 +1172,7 @@ void StringValueScanner::Flush(DataChunk &insert_chunk) {
 					if (!state_machine->options.IgnoreErrors()) {
 						LinesPerBoundary lines_per_batch(iterator.GetBoundaryIdx(),
 						                                 lines_read - parse_chunk.size() + line_error);
-						bool first_nl = false;
+						idx_t first_nl = 0;
 						auto borked_line = result.line_positions_per_row[line_error].ReconstructCurrentLine(
 						    first_nl, result.buffer_handles, result.PrintErrorLine());
 						std::ostringstream error;
@@ -1205,7 +1205,7 @@ void StringValueScanner::Flush(DataChunk &insert_chunk) {
 						if (!state_machine->options.IgnoreErrors()) {
 							LinesPerBoundary lines_per_batch(iterator.GetBoundaryIdx(),
 							                                 lines_read - parse_chunk.size() + line_error);
-							bool first_nl = false;
+							idx_t first_nl = 0;
 							auto borked_line = result.line_positions_per_row[line_error].ReconstructCurrentLine(
 							    first_nl, result.buffer_handles, result.PrintErrorLine());
 							std::ostringstream error;

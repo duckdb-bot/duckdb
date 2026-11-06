@@ -258,6 +258,10 @@ public:
 	shared_ptr<DatabaseFilePathManager> path_manager;
 	//! Database configuration variables as controlled by SET
 	GlobalUserSettings user_settings;
+	//! The grammar extensions sessions parse with when active_grammar_extensions is not set: an
+	//! immutable snapshot replaced on SET GLOBAL and loaded atomically because sessions read it at
+	//! parse time without the config lock (nullptr when unset)
+	shared_ptr<const vector<string>> default_grammar_extensions;
 
 public:
 	DUCKDB_API static DBConfig &GetConfig(ClientContext &context);
@@ -266,6 +270,10 @@ public:
 	DUCKDB_API static const DBConfig &GetConfig(const ClientContext &context);
 	DUCKDB_API static const DBConfig &GetConfig(const DatabaseInstance &db);
 	DUCKDB_API static vector<ConfigurationOption> GetOptions();
+	//! The amount of unflushed row group data after which the optimistic writer flushes (reads under the config lock)
+	DUCKDB_API idx_t GetWriteBufferMemoryLimit() const;
+	//! A copy of the configured extension directories (read under the config lock)
+	DUCKDB_API vector<string> GetExtensionDirectories() const;
 	DUCKDB_API static vector<ConfigurationAlias> GetAliases();
 	DUCKDB_API static idx_t GetOptionCount();
 	DUCKDB_API static idx_t GetAliasCount();
@@ -393,12 +401,16 @@ public:
 	HTTPUtil &GetHTTPUtil() const;
 	//! Replace how external extensions are installed and loaded, before the database runs queries
 	DUCKDB_API void SetExternalExtensionProvider(const shared_ptr<ExternalExtensionProvider> &new_provider);
+	//! Returns a copy of the forced variant shredding type (INVALID if unset), safe to call while it is being modified
+	DUCKDB_API LogicalType GetForceVariantShredding() const;
+	//! Returns a copy of the allowed_configs set, safe to call while it is being modified
+	DUCKDB_API identifier_set_t GetAllowedConfigs() const;
 	DUCKDB_API ExternalExtensionProvider &GetExternalExtensionProvider() const;
 	DUCKDB_API HTTPTransportManager &GetHTTPTransportManager();
 	DUCKDB_API const HTTPTransportManager &GetHTTPTransportManager() const;
 
 private:
-	mutable mutex config_lock;
+	mutable std::recursive_mutex config_lock;
 	//! Guards allowed_paths and allowed_directories, which a running instance can extend while files are being opened
 	mutable mutex allowed_paths_lock;
 	//! Guards disabled_optimizers, which can be changed while other connections plan queries

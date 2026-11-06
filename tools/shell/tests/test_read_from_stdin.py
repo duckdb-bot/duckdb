@@ -1,5 +1,6 @@
 # fmt: off
 
+import gzip
 import pytest
 import subprocess
 import sys
@@ -394,5 +395,108 @@ class TestReadFromStdin(object):
         )
         result = test.run()
         result.check_stdout('9999')
+
+    @pytest.mark.parametrize("compression", ['gzip', 'zstd'])
+    def test_read_compressed_stdin_csv(self, shell, tmp_path, compression):
+        input_file = tmp_path / 'compressed.csv.gz'
+        input_file.write_bytes(gzip.compress(b'id\n1\n2\n'))
+        test = (
+            ShellTest(shell)
+            .input_file(input_file)
+            .statement(f"SELECT count(*) FROM read_csv('/dev/stdin', compression = '{compression}')")
+            .add_argument(
+                '-csv',
+                ':memory:'
+            )
+        )
+        result = test.run()
+        result.check_stderr('Cannot read compressed data from the pipe "/dev/stdin"')
+
+    def test_read_compressed_stdin_json(self, shell, tmp_path, json_extension):
+        input_file = tmp_path / 'compressed.json.gz'
+        input_file.write_bytes(gzip.compress(b'{"id": 1}\n{"id": 2}\n'))
+        test = (
+            ShellTest(shell)
+            .input_file(input_file)
+            .statement("SELECT count(*) FROM read_json('/dev/stdin', compression = 'gzip')")
+            .add_argument(
+                '-csv',
+                ':memory:'
+            )
+        )
+        result = test.run()
+        result.check_stderr('Cannot read compressed data from the pipe "/dev/stdin"')
+
+    def run_shell(self, shell, sql):
+        return subprocess.run(
+            [shell, '--no-init', '-c', sql],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=ShellTest(shell).get_environment(),
+            timeout=30,
+        )
+
+    def test_copy_compressed_csv_to_stdout(self, shell, tmp_path):
+        # the compression option applies to a pipe as it does to a file
+        res = self.run_shell(shell, "COPY (SELECT 42 AS x) TO '/dev/stdout' (FORMAT csv, COMPRESSION gzip)")
+        assert res.returncode == 0
+        assert gzip.decompress(res.stdout) == b'x\n42\n'
+        res = self.run_shell(shell, "COPY (SELECT 42 AS x) TO '/dev/stdout' (FORMAT csv, COMPRESSION zstd)")
+        assert res.returncode == 0
+        zstd_file = tmp_path / 'out.csv.zst'
+        zstd_file.write_bytes(res.stdout)
+        res = self.run_shell(shell, f"SELECT x FROM read_csv('{zstd_file.as_posix()}')")
+        assert res.returncode == 0
+        assert b'42' in res.stdout
+
+    @pytest.mark.parametrize("name, compression, expected", [
+        ('named.csv.gz', '', None),
+        ('named.csv.gz', ', COMPRESSION uncompressed', b'x\n42\n'),
+        # a suffix whose compression has no filesystem is written as is, as for a file
+        ('named.csv.xz', '', b'x\n42\n'),
+    ])
+    def test_copy_to_named_compressed_fifo(self, shell, tmp_path, name, compression, expected):
+        # the suffix of a named pipe selects the compression as it does for a file
+        fifo = tmp_path / name
+        os.mkfifo(fifo)
+        # an open read end lets the shell open the pipe for writing, the small output stays in the pipe buffer
+        read_fd = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
+        try:
+            res = self.run_shell(shell, f"COPY (SELECT 42 AS x) TO '{fifo.as_posix()}' (FORMAT csv{compression})")
+            received = b''
+            while True:
+                try:
+                    chunk = os.read(read_fd, 65536)
+                except BlockingIOError:
+                    break
+                if not chunk:
+                    break
+                received += chunk
+        finally:
+            os.close(read_fd)
+        assert res.returncode == 0
+        if expected is None:
+            assert gzip.decompress(received) == b'x\n42\n'
+        else:
+            assert received == expected
+
+    @pytest.mark.parametrize("name, error", [
+        ('named.csv.gz', b'Cannot read compressed data from the pipe'),
+        # a suffix whose compression has no filesystem is refused, as for a file
+        ('named.csv.bz2', b'compression type is not supported (compression type "bzip2")'),
+    ])
+    def test_read_named_compressed_fifo(self, shell, tmp_path, name, error):
+        fifo = tmp_path / name
+        os.mkfifo(fifo)
+        # an open write end lets the shell open the pipe for reading, the data waits in the pipe buffer
+        read_fd = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
+        write_fd = os.open(fifo, os.O_WRONLY)
+        try:
+            os.write(write_fd, gzip.compress(b'id\n1\n2\n'))
+            res = self.run_shell(shell, f"SELECT count(*) FROM read_csv('{fifo.as_posix()}')")
+        finally:
+            os.close(write_fd)
+            os.close(read_fd)
+        assert error in res.stderr
 
 # fmt: on

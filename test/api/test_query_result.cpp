@@ -928,12 +928,12 @@ public:
 TEST_CASE("A query whose begin failed does not hold the connection", "[api][query_result]") {
 	DuckDB db(nullptr);
 	Connection con(db);
-	con.context->Services().GetRegisteredState().Insert("failing_query_begin", make_shared_ptr<FailingQueryBegin>());
+	con.context->GetContext().GetRegisteredState().Insert("failing_query_begin", make_shared_ptr<FailingQueryBegin>());
 
 	auto failed = con.Query("SELECT 42");
 	REQUIRE(failed->HasError());
 	REQUIRE(StringUtil::Contains(failed->GetError(), "query begin failed"));
-	con.context->Services().GetRegisteredState().Remove("failing_query_begin");
+	con.context->GetContext().GetRegisteredState().Remove("failing_query_begin");
 
 	auto next = con.Query("SELECT 42");
 	REQUIRE(CHECK_COLUMN(next, 0, {42}));
@@ -992,7 +992,7 @@ TEST_CASE("A query whose begin failed ends its transaction", "[api][query_result
 	vector<shared_ptr<CountingQueryState>> states;
 	for (idx_t i = 0; i < 4; i++) {
 		states.push_back(make_shared_ptr<CountingQueryState>());
-		con.context->Services().GetRegisteredState().Insert("counting_query_state_" + to_string(i), states.back());
+		con.context->GetContext().GetRegisteredState().Insert("counting_query_state_" + to_string(i), states.back());
 	}
 	auto require_paired = [&]() {
 		for (auto &state : states) {
@@ -1097,11 +1097,11 @@ TEST_CASE("Every state ends a query when the end of one fails", "[api][query_res
 	vector<shared_ptr<CountingQueryState>> states;
 	for (idx_t i = 0; i < 4; i++) {
 		states.push_back(make_shared_ptr<CountingQueryState>());
-		con.context->Services().GetRegisteredState().Insert("counting_query_state_" + to_string(i), states.back());
+		con.context->GetContext().GetRegisteredState().Insert("counting_query_state_" + to_string(i), states.back());
 	}
 	// the counting state whose QueryBegin runs last, after all others completed
 	shared_ptr<CountingQueryState> last;
-	for (auto &state : con.context->Services().GetRegisteredState().States()) {
+	for (auto &state : con.context->GetContext().GetRegisteredState().States()) {
 		for (auto &counting : states) {
 			if (state.get() == counting.get()) {
 				last = counting;
@@ -1201,11 +1201,11 @@ TEST_CASE("Every state ends a query when an end error is internal or the log fai
 		Connection con(db);
 		auto a = make_shared_ptr<CountingQueryState>();
 		auto b = make_shared_ptr<CountingQueryState>();
-		con.context->Services().GetRegisteredState().Insert("a", a);
-		con.context->Services().GetRegisteredState().Insert("b", b);
+		con.context->GetContext().GetRegisteredState().Insert("a", a);
+		con.context->GetContext().GetRegisteredState().Insert("b", b);
 		auto first = a;
 		auto second = b;
-		for (auto &state : con.context->Services().GetRegisteredState().States()) {
+		for (auto &state : con.context->GetContext().GetRegisteredState().States()) {
 			if (state.get() == b.get()) {
 				std::swap(first, second);
 				break;
@@ -1242,7 +1242,7 @@ TEST_CASE("Every state ends a query when an end error is internal or the log fai
 	DuckDB db(nullptr);
 	Connection con(db);
 	auto state = make_shared_ptr<CountingQueryState>();
-	con.context->Services().GetRegisteredState().Insert("counting_query_state", state);
+	con.context->GetContext().GetRegisteredState().Insert("counting_query_state", state);
 	auto log_storage = make_shared_ptr<FailingLogStorage>();
 	duckdb::shared_ptr<LogStorage> base_storage = log_storage;
 	db.instance->GetLogManager().RegisterLogStorage("failing_log_storage", base_storage);
@@ -1267,7 +1267,7 @@ TEST_CASE("An internal error of the profiler at the end of a query invalidates t
 	DuckDB db(nullptr);
 	Connection con(db);
 	auto state = make_shared_ptr<CountingQueryState>();
-	con.context->Services().GetRegisteredState().Insert("counting_query_state", state);
+	con.context->GetContext().GetRegisteredState().Insert("counting_query_state", state);
 	auto log_storage = make_shared_ptr<FailingLogStorage>();
 	duckdb::shared_ptr<LogStorage> base_storage = log_storage;
 	db.instance->GetLogManager().RegisterLogStorage("failing_log_storage", base_storage);
@@ -1352,8 +1352,8 @@ TEST_CASE("A query whose begin failed emits its profile and its live metrics", "
 	Connection reader(db);
 	auto failing = make_shared_ptr<CountingQueryState>();
 	auto allocating = make_shared_ptr<AllocatingQueryState>();
-	con.context->Services().GetRegisteredState().Insert("counting_query_state", failing);
-	con.context->Services().GetRegisteredState().Insert("allocating_query_state", allocating);
+	con.context->GetContext().GetRegisteredState().Insert("counting_query_state", failing);
+	con.context->GetContext().GetRegisteredState().Insert("allocating_query_state", allocating);
 	auto profile_path = TestCreatePath("begin_failed_profile.json");
 	REQUIRE_NO_FAIL(con.Query("PRAGMA enable_profiling = 'json'"));
 	REQUIRE_NO_FAIL(con.Query("PRAGMA profiling_output = '" + profile_path + "'"));

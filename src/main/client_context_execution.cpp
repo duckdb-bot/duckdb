@@ -71,7 +71,7 @@ void ClientContext::BeginQueryInternal(ClientContextLock &lock, PreprocessedStat
 		query_deadline.SetInvalid();
 	}
 	// Notify any registered state of query begin
-	auto states = services->GetRegisteredState().States();
+	auto states = context->GetRegisteredState().States();
 	active_query->begun_states.reserve(states.size());
 	for (auto &state : states) {
 		state->QueryBegin(*this);
@@ -90,7 +90,7 @@ void ClientContext::BeginStatementInternal(ClientContextLock &lock, const string
 
 void ClientContext::RefreshLoggerInternal() {
 	// Flush the old logger.
-	services->GetLogger().Flush();
+	context->GetLogger().Flush();
 
 	// Refresh the logger to ensure we are in sync with the global log settings.
 	LoggingContext logging_context(LogContextScope::CONNECTION);
@@ -102,7 +102,7 @@ void ClientContext::RefreshLoggerInternal() {
 }
 
 void ClientContext::ResetLoggerInternal(const LoggingContext &logging_context) {
-	services->SetLogger(db->GetLogManager().CreateLogger(logging_context, log_config));
+	context->SetLogger(db->GetLogManager().CreateLogger(logging_context, log_config));
 }
 
 //! Orders the errors of the steps that end a query, the most severe one is thrown after every state ended
@@ -187,13 +187,13 @@ ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success,
 
 	// Refresh the logger
 	try {
-		services->GetLogger().Flush();
+		context->GetLogger().Flush();
 	} catch (std::exception &ex) {
 		add_end_error(ex);
 	}
-	LoggingContext context(LogContextScope::CONNECTION);
-	context.connection_id = connection_id;
-	ResetLoggerInternal(context);
+	LoggingContext logging_context(LogContextScope::CONNECTION);
+	logging_context.connection_id = connection_id;
+	ResetLoggerInternal(logging_context);
 
 	if (!error.HasError() && report_statement_error) {
 		// the failure to end the statement is reported on the result the way a failed commit is
@@ -201,7 +201,7 @@ ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success,
 	}
 
 	// Notify any registered state of query end
-	auto end_states = began_on_all_states ? services->GetRegisteredState().States() : std::move(begun_states);
+	auto end_states = began_on_all_states ? context->GetRegisteredState().States() : std::move(begun_states);
 	for (auto const &s : end_states) {
 		try {
 			if (error.HasError()) {
@@ -222,7 +222,7 @@ ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success,
 void ClientContext::EndQueryProfiling(ErrorData &error) {
 	// this also runs while a connection with an open result is destroyed, so it must not throw
 	try {
-		QueryProfiler::Get(*services).EndQuery();
+		QueryProfiler::Get(*context).EndQuery();
 	} catch (std::exception &ex) {
 		ErrorData profiler_error(ex);
 		if (Exception::InvalidatesDatabase(profiler_error.Type()) || profiler_error.Type() == ExceptionType::INTERNAL) {
@@ -547,7 +547,7 @@ void ClientContext::AbandonActiveQuery(ClientContextLock &lock) {
 		AbortInternal(lock);
 	}
 	interrupt_state = ClientInterruptState::NOT_INTERRUPTED;
-	QueryProfiler::Get(*services).ResetQueryStart();
+	QueryProfiler::Get(*context).ResetQueryStart();
 }
 
 unique_ptr<QueryResult> ClientContext::CompleteInternal(ClientContextLock &lock, unique_ptr<QueryResult> result) {
@@ -595,7 +595,7 @@ unique_ptr<QueryResult> ClientContext::AdvanceStatementInternal(ClientContextLoc
 		end_error.Throw();
 	}
 	transaction.ResetActiveQuery();
-	QueryProfiler::Get(*services).EndQuery();
+	QueryProfiler::Get(*context).EndQuery();
 	auto statement = active_query->TakeNextStatement();
 	BeginStatementInternal(lock, statement->query);
 	RefreshLoggerInternal();
@@ -654,7 +654,7 @@ ErrorData ClientContext::EndStatementInternal(ClientContextLock &lock, optional_
 	}
 	active_query->statement_began = false;
 	// every state sees the end of the statement, also when one of them fails, and the first failure is reported
-	services->GetRegisteredState().ForEachState([&](ClientContextState &state) {
+	context->GetRegisteredState().ForEachState([&](ClientContextState &state) {
 		try {
 			state.StatementEnd(*this, error);
 		} catch (std::exception &ex) {
@@ -677,7 +677,7 @@ ErrorData ClientContext::EndStatementInternal(ClientContextLock &lock, optional_
 
 void ClientContext::NotifyStatementBeginInternal(ClientContextLock &lock) {
 	active_query->statement_began = true;
-	services->GetRegisteredState().ForEachState([&](ClientContextState &state) { state.StatementBegin(*this); });
+	context->GetRegisteredState().ForEachState([&](ClientContextState &state) { state.StatementBegin(*this); });
 }
 
 unique_ptr<QueryResult> ClientContext::TakeFinishedResultInternal(ClientContextLock &lock) {

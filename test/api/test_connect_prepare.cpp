@@ -198,7 +198,7 @@ TEST_CASE("A statement rejected by a QueryBegin hook while CONNECT-ed ends its q
 	DuckDB db(nullptr, &config);
 	Connection con(db);
 	auto state = make_shared_ptr<RejectingQueryState>();
-	con.context->Services().GetRegisteredState().Insert("rejecting_query_state", state);
+	con.context->GetContext().GetRegisteredState().Insert("rejecting_query_state", state);
 	REQUIRE_NO_FAIL(con.Query("CREATE TABLE t (i INTEGER)"));
 	REQUIRE_NO_FAIL(con.Query("ATTACH 'routed' AS remote (TYPE connect_routing_test)"));
 	REQUIRE_NO_FAIL(con.Query("CREATE TABLE remote.r (i INTEGER)"));

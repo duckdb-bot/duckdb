@@ -20,7 +20,36 @@ unique_ptr<Expression> ProjectionBinder::ProjectExpression(unique_ptr<Expression
 	return std::move(proj_ref);
 }
 
+bool ProjectionBinder::ReferencesProjection(const Expression &expr) const {
+	switch (expr.GetExpressionClass()) {
+	case ExpressionClass::BOUND_COLUMN_REF:
+		return expr.Cast<BoundColumnRefExpression>().Binding().table_index == proj_index;
+	case ExpressionClass::BOUND_LAMBDA: {
+		auto &lambda = expr.Cast<BoundLambdaExpression>();
+		for (auto &capture : lambda.Captures()) {
+			if (ReferencesProjection(*capture)) {
+				return true;
+			}
+		}
+		return ReferencesProjection(*lambda.LambdaExpr());
+	}
+	default: {
+		bool result = false;
+		ExpressionIterator::EnumerateChildren(
+		    expr, [&](const Expression &child) { result = result || ReferencesProjection(child); });
+		return result;
+	}
+	}
+}
+
 void ProjectionBinder::ProjectLeaves(unique_ptr<Expression> &expr) {
+	auto type = expr->GetExpressionType();
+	if ((type == ExpressionType::OPERATOR_TRY || type == ExpressionType::OPERATOR_HAS_ERROR) && expr->HasSubquery() &&
+	    !ReferencesProjection(*expr)) {
+		// the operator moves with its argument, so the subquery stays under the TRY that masks its errors
+		expr = ProjectExpression(std::move(expr));
+		return;
+	}
 	switch (expr->GetExpressionClass()) {
 	case ExpressionClass::BOUND_COLUMN_REF:
 		if (expr->Cast<BoundColumnRefExpression>().Binding().table_index != proj_index) {
@@ -48,23 +77,17 @@ void ProjectionBinder::ProjectLeaves(unique_ptr<Expression> &expr) {
 BindResult ProjectionBinder::BindProjectedExpression(unique_ptr<ParsedExpression> &expr_ptr, idx_t depth) {
 	// bind the nested column references and subqueries in place, except in lambda bodies, which cannot hold a subquery
 	const auto was_in_child_projection = in_child_projection;
-	const auto projected_count = proj_expressions.size();
 	in_child_projection = true;
 	auto result = ExpressionBinder::BindExpression(expr_ptr, depth);
 	in_child_projection = was_in_child_projection;
 	if (result.HasError()) {
 		return result;
 	}
-	if (result.expression->GetExpressionClass() == ExpressionClass::BOUND_LAMBDA_REF) {
-		return result;
-	}
-	if (proj_expressions.size() != projected_count) {
-		// a lambda body moved its subqueries into the projection, which only the action can reference, so the
-		// expression stays there and its remaining column references and subqueries move into the projection alone
-		ProjectLeaves(result.expression);
-		return result;
-	}
-	return BindResult(ProjectExpression(std::move(result.expression)));
+	// a TRY or HAS_ERROR over a subquery moves with its argument, unless a lambda body in the argument moved its
+	// subquery into the projection, which only the action can reference, and other expressions stay in the action
+	// with their column references and subqueries projected
+	ProjectLeaves(result.expression);
+	return result;
 }
 
 BindResult ProjectionBinder::BindExpression(unique_ptr<ParsedExpression> &expr_ptr, idx_t depth, bool root_expression) {
@@ -89,9 +112,9 @@ BindResult ProjectionBinder::BindExpression(unique_ptr<ParsedExpression> &expr_p
 		auto type = expr.GetExpressionType();
 		if ((type == ExpressionType::OPERATOR_TRY || type == ExpressionType::OPERATOR_HAS_ERROR) &&
 		    !in_child_projection && !lambda_bindings) {
-			// the operator is projected together with its argument, so a subquery in the argument is planned under
-			// the TRY that masks its errors. Inside a lambda body the argument can reference lambda parameters,
-			// which the projection cannot see
+			// the operator is bound with its argument, so a subquery in the argument can be projected under the TRY
+			// that masks its errors. Inside a lambda body the argument can reference lambda parameters, which the
+			// projection cannot see
 			return BindProjectedExpression(expr_ptr, depth);
 		}
 		return ExpressionBinder::BindExpression(expr_ptr, depth);

@@ -176,6 +176,16 @@ static bool GateTryAggregates(ClientContext &context, const Expression &location
 	return true;
 }
 
+//! Whether the expression is a scalar subquery whose plan can take a TRY lowering
+static bool IsLowerableSubquery(const Expression &expr) {
+	if (expr.GetExpressionClass() != ExpressionClass::BOUND_SUBQUERY) {
+		return false;
+	}
+	auto &subquery = expr.Cast<BoundSubqueryExpression>();
+	return subquery.GetSubqueryType() == SubqueryType::SCALAR && subquery.GetBinder()->IsUnderTry() &&
+	       subquery.GetBinder()->GetTrySubqueryPlanIndexes().recorded;
+}
+
 //! The select item of a subquery under TRY, located in its plan
 struct TrySubquerySelectItem {
 	//! The select list projection of the select node
@@ -234,20 +244,16 @@ static TrySubquerySelectItem FindTrySubquerySelectItem(LogicalOperator &root, co
 	return result;
 }
 
-//! Push TRY onto the maskable positions of the select item, before the subquery is flattened. In the plain
-//! projection case, TRY moves onto the projected expression, which yields a NULL result under the one-row contract
-//! of a scalar subquery. In the aggregate case, the projected expression is gated on HAS_ERROR probes of the
-//! aggregate inputs, so that an input error anywhere turns the aggregated result into NULL instead of a partially
-//! aggregated value. The probes cover the aggregate inputs only: an error raised inside aggregate execution itself
-//! (state update, combine, finalize) propagates. Scalar subqueries nested inside the select item were planned with
-//! an exposed error flag, so their errors turn the whole result into NULL as well; shapes whose flag cannot be
-//! transported fell back to the plain subquery. Errors raised outside the maskable positions, such as in the WHERE
-//! clause, in aggregate or window arguments or by the one-row cardinality check, propagate deliberately. Volatile
-//! computation inside a maskable position is rejected. A volatile value computed by a nested subquery is evaluated
-//! once in its flattened subplan and referenced as a column, so the TRY input and its HAS_ERROR probe observe one
-//! consistent value. With an exposed error flag the item becomes a struct of the masked value and the flag, so the
-//! use site can re-raise captured errors, and that struct type is returned. The optional stays empty without a
-//! flag, and when the shape is not coverable and the lowering may fall back to the plain subquery.
+//! Push TRY onto the maskable positions of the select item, before the subquery is flattened. A plain projection
+//! gets TRY on the projected expression, which yields NULL under the one-row contract of a scalar subquery. An
+//! aggregating item is gated on HAS_ERROR probes of the aggregate inputs, so an input error anywhere turns the
+//! aggregated result into NULL instead of a partially aggregated value, while an error inside aggregate execution
+//! itself propagates. Nested scalar subqueries were planned with an exposed error flag and re-raise their errors
+//! into these positions, unless their shape made them fall back to the plain subquery. Errors outside the maskable
+//! positions (the WHERE clause, aggregate or window arguments, the one-row cardinality check) propagate deliberately,
+//! and volatile computation inside a maskable position is rejected. With an exposed error flag the item becomes a
+//! struct of the masked value and the flag for the use site to re-raise, and that struct type is returned. The
+//! optional stays empty without a flag, and when the shape is not coverable and the lowering may fall back.
 static optional<LogicalType> LowerTrySubquery(ClientContext &context, Binder &binder, const Expression &location,
                                               const TrySubqueryPlanIndexes &indexes, TrySubquerySelectItem &item,
                                               TrySubqueryLowering lowering) {
@@ -391,8 +397,7 @@ optional<LogicalType> Binder::PlanTrySubquery(const BoundSubqueryExpression &exp
 	auto &item_expr = select_projection.expressions[item.binding.column_index];
 	auto &item_root = select_projection.children[0];
 	// plan the subqueries of the item, which CreatePlan left for this point
-	if (lowering == TrySubqueryLowering::DIRECT && item_expr->GetExpressionClass() == ExpressionClass::BOUND_SUBQUERY &&
-	    item_expr->Cast<BoundSubqueryExpression>().GetSubqueryType() == SubqueryType::SCALAR) {
+	if (lowering == TrySubqueryLowering::DIRECT && IsLowerableSubquery(*item_expr)) {
 		// a select item that is itself a scalar subquery takes the direct lowering as well, which also covers
 		// result modifiers inside it, and leaves nothing for TRY to mask in this node
 		item_expr = PlanSubquery(item_expr->Cast<BoundSubqueryExpression>(), item_root, TrySubqueryLowering::DIRECT);

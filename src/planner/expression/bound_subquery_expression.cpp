@@ -1,6 +1,7 @@
 #include "duckdb/planner/expression/bound_subquery_expression.hpp"
 
 #include "duckdb/common/exception.hpp"
+#include "duckdb/planner/logical_operator.hpp"
 
 namespace duckdb {
 
@@ -27,9 +28,10 @@ bool BoundSubqueryExpression::PropagatesNullValues() const {
 }
 
 bool BoundSubqueryExpression::IsVolatile() const {
-	// the plan is evaluated once by its own operators, so it does not make the expression that reads its result
-	// volatile. The positions TRY masks inside it are checked when TRY is pushed into the subquery
-	return Expression::IsVolatile();
+	if (Expression::IsVolatile()) {
+		return true;
+	}
+	return subquery.plan && subquery.plan->HasVolatileExpressions();
 }
 
 } // namespace duckdb

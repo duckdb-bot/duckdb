@@ -109,8 +109,8 @@ struct TrySubqueryPlanIndexes {
 	TableIndex window_index;
 	//! The unnest nodes of the select node
 	vector<TableIndex> unnest_indexes;
-	//! Whether the select item contains a nested scalar subquery planned with an exposed error flag;
-	//! its re-raise at the use site relies on this node's lowering to consume it
+	//! Whether the select item contains a nested scalar subquery planned with an exposed error flag, whose
+	//! re-raise at the use site relies on this node's lowering to consume it
 	bool nested_transport = false;
 };
 

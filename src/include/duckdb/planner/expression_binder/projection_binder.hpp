@@ -26,12 +26,15 @@ protected:
 
 	string UnsupportedAggregateMessage() override;
 
-	//! Bind the expression and move it into the projection, leaving a reference to its column
+	//! Bind the expression, then move it or its leaves into the projection, see ProjectLeaves
 	BindResult BindProjectedExpression(unique_ptr<ParsedExpression> &expr_ptr, idx_t depth);
 	//! Move a bound expression into the projection and return the reference to its column
 	unique_ptr<Expression> ProjectExpression(unique_ptr<Expression> expr);
-	//! Move the column references and subqueries of a bound expression that stays in the action into the projection
+	//! Move the column references and subqueries of a bound expression into the projection, a TRY or HAS_ERROR over
+	//! a subquery as a whole, the rest of the expression stays where it is
 	void ProjectLeaves(unique_ptr<Expression> &expr);
+	//! Whether the expression references a column of the projection
+	bool ReferencesProjection(const Expression &expr) const;
 
 private:
 	TableIndex proj_index;

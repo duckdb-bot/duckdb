@@ -10,6 +10,7 @@
 #include "duckdb/planner/expression/bound_subquery_expression.hpp"
 #include "duckdb/planner/expression_binder.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
+#include "duckdb/planner/expression/bound_lambda_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/catalog/catalog_entry/scalar_function_catalog_entry.hpp"
 #include "duckdb/function/function_binder.hpp"
@@ -158,6 +159,32 @@ BindResult ExpressionBinder::BindGroupingInEnclosingScope(OperatorExpression &op
 	return BindResult(std::move(bind_error));
 }
 
+//! Whether the capture of TRY or HAS_ERROR would re-evaluate a volatile value. A subquery's plan runs once however
+//! often the capture retries, and the positions TRY masks inside it are checked when TRY is pushed into the subquery
+static bool CaptureReevaluatesVolatileValue(const Expression &expr) {
+	switch (expr.GetExpressionClass()) {
+	case ExpressionClass::BOUND_SUBQUERY:
+		return false;
+	case ExpressionClass::BOUND_LAMBDA:
+		// a lambda body holds no subquery
+		return expr.Cast<BoundLambdaExpression>().LambdaExpr()->IsVolatile();
+	case ExpressionClass::BOUND_FUNCTION:
+		if (expr.Cast<BoundFunctionExpression>().Function().GetStability() == FunctionStability::VOLATILE) {
+			return true;
+		}
+		break;
+	default:
+		if (!expr.HasSubquery()) {
+			return expr.IsVolatile();
+		}
+		break;
+	}
+	bool result = false;
+	ExpressionIterator::EnumerateChildren(
+	    expr, [&](const Expression &child) { result = result || CaptureReevaluatesVolatileValue(child); });
+	return result;
+}
+
 BindResult ExpressionBinder::BindExpression(OperatorExpression &op, idx_t depth) {
 	auto operator_type = op.GetExpressionType();
 	if (operator_type == ExpressionType::GROUPING_FUNCTION) {
@@ -298,9 +325,8 @@ BindResult ExpressionBinder::BindExpression(OperatorExpression &op, idx_t depth)
 		break;
 	case ExpressionType::OPERATOR_TRY:
 	case ExpressionType::OPERATOR_HAS_ERROR: {
-		// the scalar subqueries in the argument stay in place, TRY is pushed into them when they are planned,
-		// which also checks the positions it masks inside them for volatile computation
-		if (children[0]->IsVolatile()) {
+		// the scalar subqueries in the argument stay in place, TRY is pushed into them when they are planned
+		if (CaptureReevaluatesVolatileValue(*children[0])) {
 			throw BinderException("%s can not be used in combination with a volatile function",
 			                      ExpressionTypeToString(operator_type));
 		}

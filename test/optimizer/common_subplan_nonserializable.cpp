@@ -261,6 +261,8 @@ TEST_CASE("Common subplan skips table functions that keep pushed filters in thei
 	DuckDB db(nullptr);
 	Connection con(db);
 	RegisterBoundedRangeTableFunction(db);
+	// the scalar aggregate merger would compute the sibling aggregates in one scan before the filter pushdown
+	REQUIRE_NO_FAIL(con.Query("SET disabled_optimizers = 'scalar_aggregate_merge'"));
 
 	const string query = "SELECT (SELECT count(*) FROM bounded_range(10) WHERE x < 3) AS below, "
 	                     "(SELECT count(*) FROM bounded_range(10) WHERE x >= 3) AS above";

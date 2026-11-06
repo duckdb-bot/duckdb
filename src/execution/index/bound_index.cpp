@@ -172,7 +172,7 @@ idx_t BoundIndex::GetInMemorySize() const {
 }
 
 void BoundIndex::ExecuteExpressions(DataChunk &input, DataChunk &result, const QueryContext &context) const {
-	auto client_context = Context::TryGetClientContext(context.GetServices());
+	auto client_context = Context::TryGetClientContext(context.GetContext());
 	if (!has_expression_keys || !client_context) {
 		executor.Execute(input, result);
 		return;

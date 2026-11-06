@@ -183,14 +183,8 @@ BindResult ExpressionBinder::BindExpression(OperatorExpression &op, idx_t depth)
 	if (operator_type == ExpressionType::OPERATOR_TRY || operator_type == ExpressionType::OPERATOR_HAS_ERROR) {
 		D_ASSERT(op.GetChildrenMutable().size() == 1);
 		const auto was_inside_try = inside_try;
-		const auto was_try_argument = try_argument;
 		inside_try = true;
-		if (operator_type == ExpressionType::OPERATOR_TRY) {
-			// the scalar subquery bound in the argument slot of TRY lowers TRY onto its own plan
-			try_argument = &op.GetChildrenMutable()[0];
-		}
 		children.push_back(BindChild(op.GetChildrenMutable()[0], depth, error));
-		try_argument = was_try_argument;
 		inside_try = was_inside_try;
 	} else {
 		for (idx_t i = 0; i < op.GetChildrenMutable().size(); i++) {
@@ -304,18 +298,9 @@ BindResult ExpressionBinder::BindExpression(OperatorExpression &op, idx_t depth)
 		break;
 	case ExpressionType::OPERATOR_TRY:
 	case ExpressionType::OPERATOR_HAS_ERROR: {
-		auto &expr = *children[0];
-		if (operator_type == ExpressionType::OPERATOR_TRY &&
-		    expr.GetExpressionClass() == ExpressionClass::BOUND_SUBQUERY &&
-		    !expr.Cast<BoundSubqueryExpression>().RethrowsTryErrors()) {
-			// the subquery that is the argument of TRY lowered it onto its own plan, nothing is left to mask
-			return BindResult(std::move(children[0]));
-		}
-		// a rethrowing subquery can surface as the direct child when a binder simplification (such as a
-		// same-type cast or single-argument COALESCE) unwrapped to it: TRY must stay to consume the re-raise
-		// scalar subqueries deeper inside the argument were lowered during binding and re-raise their
-		// captured errors at the use site, so they need no rejection here
-		if (expr.IsVolatile()) {
+		// the scalar subqueries in the argument stay in place, TRY is pushed into them when they are planned,
+		// which also checks the positions it masks inside them for volatile computation
+		if (children[0]->IsVolatile()) {
 			throw BinderException("%s can not be used in combination with a volatile function",
 			                      ExpressionTypeToString(operator_type));
 		}

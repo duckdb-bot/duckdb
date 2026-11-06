@@ -26,7 +26,12 @@ protected:
 
 	string UnsupportedAggregateMessage() override;
 
-	BindResult BindColumnRef(unique_ptr<ParsedExpression> &expr_ptr, idx_t depth, bool root_expression);
+	//! Bind the expression and move it into the projection, leaving a reference to its column
+	BindResult BindProjectedExpression(unique_ptr<ParsedExpression> &expr_ptr, idx_t depth);
+	//! Move a bound expression into the projection and return the reference to its column
+	unique_ptr<Expression> ProjectExpression(unique_ptr<Expression> expr);
+	//! Move the column references and subqueries of a bound expression that stays in the action into the projection
+	void ProjectLeaves(unique_ptr<Expression> &expr);
 
 private:
 	TableIndex proj_index;

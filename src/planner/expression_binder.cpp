@@ -110,8 +110,7 @@ BindResult ExpressionBinder::BindExpression(unique_ptr<ParsedExpression> &expr, 
 	case ExpressionClass::OPERATOR:
 		return BindExpression(expr_ref.Cast<OperatorExpression>(), depth);
 	case ExpressionClass::SUBQUERY:
-		// the subquery bound in the argument slot of TRY lowers TRY onto its own plan
-		return BindExpression(expr_ref.Cast<SubqueryExpression>(), depth, try_argument.get() == &expr);
+		return BindExpression(expr_ref.Cast<SubqueryExpression>(), depth);
 	case ExpressionClass::PARAMETER:
 		return BindExpression(expr_ref.Cast<ParameterExpression>(), depth);
 	case ExpressionClass::POSITIONAL_REFERENCE:

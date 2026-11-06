@@ -80,16 +80,6 @@ public:
 	}
 	bool IsVolatile() const override;
 
-	//! Whether errors captured inside this TRY subquery are re-raised at the use site after flattening
-	bool RethrowsTryErrors() const {
-		return rethrow_try_errors;
-	}
-	void SetRethrowTryErrors() {
-		rethrow_try_errors = true;
-	}
-	//! Make the packed value and error flag the result, for a use site that re-raises the error itself
-	void ExposeTryErrorFlag();
-
 	string ToString() const override;
 
 	bool Equals(const BaseExpression &other) const override;
@@ -114,7 +104,5 @@ private:
 	//! The target LogicalType of the subquery result (i.e. to which type it should be casted, if child_type <>
 	//! child_target). Only used for ANY expressions.
 	vector<LogicalType> child_targets;
-	//! Whether this is a TRY subquery whose captured errors are re-raised at the use site
-	bool rethrow_try_errors = false;
 };
 } // namespace duckdb

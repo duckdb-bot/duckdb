@@ -71,8 +71,12 @@ FROM read_csv_auto('{file}', header=false, auto_detect=true, names=getvariable('
 statement ok
 set variable max_line_size=(SELECT COALESCE(MAX(strlen(csv_line)), 0) FROM reject_errors)
 
+# csv_line has no newline, the size of the newline is the gap between the end of a line and the start of the next
 statement ok
-set variable potential_buffer_sizes=(SELECT range(getvariable('max_line_size') + 3, getvariable('max_line_size') + 8))
+set variable newline_size=(SELECT COALESCE(MIN(next_line - line_byte_position - strlen(csv_line)), 1) FROM (SELECT line_byte_position, csv_line, lead(line_byte_position) OVER (ORDER BY line_byte_position) AS next_line FROM (SELECT DISTINCT line_byte_position, csv_line FROM reject_errors)))
+
+statement ok
+set variable potential_buffer_sizes=(SELECT range(getvariable('max_line_size') + getvariable('newline_size') + 2, getvariable('max_line_size') + getvariable('newline_size') + 7))
 
 statement ok
 create or replace table ground_truth as SELECT * FROM read_csv_auto('{file}') ORDER BY ALL;

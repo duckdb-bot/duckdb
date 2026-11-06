@@ -10,13 +10,14 @@ namespace duckdb {
 
 void PEGTransformerFactory::AddPivotEntry(PEGTransformer &transformer, string enum_name, unique_ptr<SelectNode> base,
                                           unique_ptr<ParsedExpression> column, unique_ptr<QueryNode> subquery,
-                                          bool has_parameters) {
+                                          bool has_parameters, vector<CommonTableExpressionMap> outer_scopes) {
 	auto result = make_uniq<CreatePivotEntry>();
 	result->enum_name = std::move(enum_name);
 	result->base = std::move(base);
 	result->column = std::move(column);
 	result->subquery = std::move(subquery);
 	result->has_parameters = has_parameters;
+	result->outer_scopes = std::move(outer_scopes);
 	transformer.pivot_entries.push_back(std::move(result));
 }
 
@@ -151,10 +152,11 @@ PEGTransformerFactory::FinalizePivotStatementTrampoline(PEGTransformer &transfor
 		auto enum_name = "__pivot_enum_" + UUID::ToString(UUID::GenerateRandomUUID());
 
 		auto new_select = make_uniq<SelectNode>();
-		transformer.ExtractCTEsRecursive(new_select->cte_map);
+		vector<CommonTableExpressionMap> outer_scopes;
+		transformer.CollectEnclosingCTEScopes(new_select->cte_map, outer_scopes);
 		new_select->from_table = source->Copy();
 		AddPivotEntry(transformer, enum_name, std::move(new_select), col.pivot_expressions[0]->Copy(),
-		              std::move(col.subquery), has_parameters);
+		              std::move(col.subquery), has_parameters, std::move(outer_scopes));
 		col.pivot_enum = Identifier(enum_name);
 	}
 
@@ -280,10 +282,11 @@ PEGTransformerFactory::FinalizeUnpivotStatementTrampoline(PEGTransformer &transf
 		auto enum_name = "__pivot_enum_" + UUID::ToString(UUID::GenerateRandomUUID());
 
 		auto new_select = make_uniq<SelectNode>();
-		transformer.ExtractCTEsRecursive(new_select->cte_map);
+		vector<CommonTableExpressionMap> outer_scopes;
+		transformer.CollectEnclosingCTEScopes(new_select->cte_map, outer_scopes);
 		new_select->from_table = source->Copy();
 		AddPivotEntry(transformer, enum_name, std::move(new_select), col.pivot_expressions[0]->Copy(),
-		              std::move(col.subquery), has_parameters);
+		              std::move(col.subquery), has_parameters, std::move(outer_scopes));
 		col.pivot_enum = Identifier(enum_name);
 	}
 

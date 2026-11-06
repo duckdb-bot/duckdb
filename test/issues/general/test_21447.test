@@ -77,9 +77,9 @@ statement ok
 CREATE UNIQUE INDEX idx_id_date ON db113.test (id, date);
 
 statement error
-INSERT INTO db113.test VALUES ('id1', DATE '2020-01-02', 1);
+INSERT INTO db113.test VALUES ('id1', DATE '2020-01-02', 11);
 ----
-Duplicate key
+Duplicate key "id: id1, date: 2020-01-02"
 
 # the index written beside it was read back with its data
 statement error
@@ -102,6 +102,6 @@ SELECT count(*) FROM db113.test;
 11
 
 statement error
-INSERT INTO db113.test VALUES ('id10', DATE '2020-01-11', 10);
+INSERT INTO db113.test VALUES ('id10', DATE '2020-01-11', 12);
 ----
-Duplicate key
+Duplicate key "id: id10, date: 2020-01-11"

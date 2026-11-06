@@ -31,6 +31,12 @@ SELECT * FROM read_json(['{TEMP_DIR}/lazy_list*.json' FOR x IN range(10000)] || 
 ----
 42
 
+# the files opened for statistics are counted up to the option, and the rest of the list is not expanded to compare
+query I
+SELECT * FROM read_parquet(['{TEMP_DIR}/lazy_list*.parquet' FOR x IN range(10000)] || ['{TEMP_DIR}/missing*.parquet'], maximum_files_for_stats = 2) LIMIT 1
+----
+42
+
 # a scan that reads every file expands every pattern
 statement error
 SELECT count(*) FROM read_parquet(['{TEMP_DIR}/lazy_list*.parquet' FOR x IN range(1000)] || ['{TEMP_DIR}/missing*.parquet'])

@@ -1,5 +1,5 @@
 # name: test/sql/subquery/scalar/test_try_subquery.test
-# description: TRY over scalar subqueries binds the subquery normally and lowers TRY onto the bound plan.
+# description: TRY over scalar subqueries binds the subquery normally and pushes TRY into its plan when the subquery is planned.
 # group: [scalar]
 
 # Plain projections get TRY pushed onto the projected expression. Aggregate projections
@@ -349,6 +349,43 @@ query I
 SELECT i FROM integers o WHERE TRY((SELECT 10 // (o.i - 2))) IS NULL
 ----
 2
+
+# TRY over a subquery in a join condition is pushed into the subquery when the join is planned
+query II
+SELECT a.x, b.y FROM (VALUES (1)) a(x) JOIN (VALUES (2)) b(y) ON TRY((SELECT 10 // (a.x - 1))) IS NULL
+----
+1	2
+
+query II
+SELECT a.x, b.y FROM (VALUES (1)) a(x) JOIN (VALUES (2)) b(y) ON TRY(b.y + (SELECT 10 // (a.x - 1))) IS NULL
+----
+1	2
+
+query II
+SELECT a.x, b.y FROM (VALUES (1)) a(x) JOIN (VALUES (2)) b(y) ON TRY((SELECT 10 // (a.x - 1))) IS NULL AND TRY((SELECT 10 // (b.y - 2))) IS NULL
+----
+1	2
+
+# a subquery in the condition of an outer join is planned on the side it references, as without TRY
+query II
+SELECT a.x, b.y FROM (VALUES (1), (2)) a(x) LEFT JOIN (VALUES (1)) b(y) ON a.x = b.y AND TRY((SELECT 10 // (a.x - 1))) IS NULL ORDER BY a.x
+----
+1	1
+2	NULL
+
+query II
+SELECT a.x, b.y FROM (VALUES (1), (2)) a(x) FULL JOIN (VALUES (1), (3)) b(y) ON a.x = b.y AND TRY((SELECT 10 // (a.x - 1))) IS NULL ORDER BY a.x NULLS LAST, b.y NULLS LAST
+----
+1	1
+2	NULL
+NULL	3
+
+query II
+SELECT a.x, b.y FROM (VALUES (1), (2)) a(x) FULL JOIN (VALUES (1), (3)) b(y) ON TRY(a.x + b.y + (SELECT 10 // (a.x - 1))) IS NULL ORDER BY a.x NULLS LAST, b.y NULLS LAST
+----
+1	1
+1	3
+2	NULL
 
 # TRY subquery inside an aggregate argument of the outer query
 query I
@@ -720,6 +757,13 @@ SELECT TRY((SELECT random()))
 ----
 TRY can not be used in combination with a volatile function
 
+# a volatile expression outside the maskable positions is evaluated once by the subquery plan, which TRY accepts in
+# the direct and in the nested form
+query II
+SELECT TRY((SELECT max(i) FROM integers WHERE random() <= 1)), TRY(1 + (SELECT max(i) FROM integers WHERE random() <= 1))
+----
+3	4
+
 # a star expression is expanded during binding, so TRY lowers onto the expanded select item
 query I
 SELECT TRY((SELECT * FROM integers WHERE i = 2))
@@ -816,6 +860,37 @@ statement error
 SELECT TRY((SELECT i FROM integers WHERE div_shift(i) > -100))
 ----
 Division by zero
+
+# a macro that expands to the subquery leaves TRY directly over the bound subquery, which takes the direct lowering
+# and covers result modifiers, while the nested form keeps rejecting them
+statement ok
+CREATE MACRO first_div(a) AS (SELECT 10 // (i - a) FROM integers ORDER BY i LIMIT 1);
+
+query I
+SELECT TRY(first_div(1))
+----
+NULL
+
+query I
+SELECT TRY(first_div(0))
+----
+10
+
+statement error
+SELECT TRY(1 + first_div(1))
+----
+TRY over a subquery with result modifiers is only supported when the subquery is the direct argument of TRY
+
+# an alias expanded in HAVING leaves TRY directly over the bound subquery as well
+query I
+SELECT (SELECT 1 ORDER BY 1) AS a HAVING TRY(a) = 1
+----
+1
+
+statement error
+SELECT (SELECT 1 ORDER BY 1) AS a HAVING TRY(1 + a) = 2
+----
+TRY over a subquery with result modifiers is only supported when the subquery is the direct argument of TRY
 
 # regression: a dot call in the subquery select list resolves in the subquery scope,
 # exactly as without TRY
@@ -1188,17 +1263,24 @@ SELECT TRY((SELECT 1 + (SELECT 1//x UNION ALL SELECT 2 LIMIT 1))) FROM (VALUES (
 ----
 Division by zero
 
-# GROUP BY ALL may turn the item into a group expression, so the item does not transport
-statement error
+# GROUP BY ALL leaves an item without columns of the subquery in the select list, so a nested subquery in it
+# transports its flag, and a bare item takes the direct lowering
+query I
 SELECT TRY((SELECT 1 + (SELECT 1//x) FROM (VALUES (0)) t(y) GROUP BY ALL)) FROM (VALUES (0)) v(x)
 ----
-Division by zero
+NULL
 
-# a bare item under GROUP BY ALL takes the direct lowering, which masks inside the nested plan
 query I
 SELECT TRY((SELECT (SELECT 1//x) FROM (VALUES (0)) t(y) GROUP BY ALL)) FROM (VALUES (0)) v(x)
 ----
 NULL
+
+# an item that GROUP BY ALL turns into a group expression is computed by the grouping, outside the maskable
+# positions, so its error propagates
+statement error
+SELECT TRY((SELECT y + (SELECT 1//x) FROM (VALUES (0)) t(y) GROUP BY ALL)) FROM (VALUES (0)) v(x)
+----
+Division by zero
 
 # the comparison child of IN lands in the join condition of the flattened subquery and does not
 # transport
@@ -1319,6 +1401,64 @@ query I
 SELECT TRY((SELECT (SELECT DISTINCT 10 // i FROM (VALUES (1)) t(i))))
 ----
 10
+
+# an alias that expands to a subquery in an enclosing scope is planned as it is, TRY masks nothing inside it
+query I
+SELECT (SELECT 1) AS a WHERE (SELECT TRY(a)) = 1
+----
+1
+
+query I
+SELECT TRY((SELECT (SELECT 1 UNION ALL SELECT 2 LIMIT 1) AS a WHERE (SELECT TRY(a)) = 1))
+----
+1
+
+query I
+SELECT TRY((SELECT (SELECT 1 UNION ALL SELECT 2 LIMIT 1) AS a WHERE (SELECT HAS_ERROR(a)) = false))
+----
+1
+
+statement error
+SELECT (SELECT 1 // 0) AS a WHERE (SELECT TRY(a)) IS NULL
+----
+Division by zero
+
+# an alias that expands to an ordered ANY plans into a computation, which TRY keeps masking
+query I
+SELECT (1 // 0 > ANY (SELECT 1)) AS a WHERE (SELECT TRY(a)) IS NOT NULL
+----
+
+query I
+SELECT (1 > ANY (SELECT 0)) AS a WHERE (SELECT TRY(a))
+----
+true
+
+# the volatile check of TRY looks into lambda bodies as before, but not into subquery plans
+query II
+SELECT TRY(list_transform(NULL, lambda x: random())), HAS_ERROR(list_transform(NULL, lambda x: random()))
+----
+NULL	false
+
+query I
+SELECT TRY(list_reduce(NULL, lambda a, b: random(), (SELECT 1)))
+----
+NULL
+
+statement error
+SELECT TRY(list_transform((SELECT [1]), lambda x: random()))
+----
+TRY can not be used in combination with a volatile function
+
+# a bare item that is not a plain SELECT is planned as it is, so its errors propagate
+query I
+SELECT TRY((SELECT (SELECT 1 UNION ALL SELECT 2 LIMIT 1)))
+----
+1
+
+statement error
+SELECT TRY((SELECT (SELECT 1 // 0 UNION ALL SELECT 2 LIMIT 1)))
+----
+Division by zero
 
 # the stranding rejection triggers on the tolerant path itself: the intermediate subquery is
 # transported, its deeper subquery has already transported, and the fallback is refused

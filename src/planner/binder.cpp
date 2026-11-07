@@ -302,12 +302,12 @@ bool Binder::IsBindingIndexKey() const {
 	return binding_index_key;
 }
 
-void Binder::SetBindingTrySubquery() {
-	binding_try_subquery = true;
+void Binder::SetUnderTry() {
+	under_try = true;
 }
 
-bool Binder::IsBindingTrySubquery() const {
-	return binding_try_subquery;
+bool Binder::IsUnderTry() const {
+	return under_try;
 }
 
 const TrySubqueryPlanIndexes &Binder::GetTrySubqueryPlanIndexes() const {

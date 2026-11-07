@@ -663,19 +663,10 @@ static bool HasJoinConditionExpressions(LogicalOperatorType type) {
 
 void RecursiveDependentJoinPlanner::PlanJoinSubqueries(LogicalJoin &join, unique_ptr<Expression> &expr,
                                                        JoinSide uncorrelated_side) {
-	if (!expr) {
-		return;
-	}
-	ExpressionIterator::EnumerateChildren(
-	    *expr, [&](unique_ptr<Expression> &child) { PlanJoinSubqueries(join, child, uncorrelated_side); });
-	if (expr->GetExpressionClass() != ExpressionClass::BOUND_SUBQUERY) {
-		return;
-	}
-
-	auto side = GetCurrentJoinSide(join, *expr);
-	auto &root = GetJoinSideRoot(join, side, uncorrelated_side);
-	auto &subquery = expr->Cast<BoundSubqueryExpression>();
-	expr = binder.PlanSubquery(subquery, root);
+	binder.PlanSubqueries(expr, [&](const BoundSubqueryExpression &subquery) -> unique_ptr<LogicalOperator> & {
+		auto side = GetCurrentJoinSide(join, subquery);
+		return GetJoinSideRoot(join, side, uncorrelated_side);
+	});
 }
 
 void RecursiveDependentJoinPlanner::PlanJoinExpressions(LogicalOperator &op) {
@@ -803,9 +794,8 @@ void RecursiveDependentJoinPlanner::Plan(Binder &binder, unique_ptr<LogicalOpera
 	planner.PlanOperator(op);
 }
 
-unique_ptr<Expression> RecursiveDependentJoinPlanner::VisitReplace(BoundSubqueryExpression &expr,
-                                                                   unique_ptr<Expression> *expr_ptr) {
-	return binder.PlanSubquery(expr, root);
+void RecursiveDependentJoinPlanner::VisitExpression(unique_ptr<Expression> *expression) {
+	binder.PlanSubqueries(*expression, root);
 }
 
 static unique_ptr<Expression> BindTryRethrowFunction(Binder &binder, const char *name,
@@ -826,7 +816,7 @@ static unique_ptr<Expression> BindTryRethrowFunction(Binder &binder, const char 
 	return result;
 }
 
-//! Replace a TRY subquery that was lowered with an exposed error flag by
+//! Wrap the packed result of a subquery planned with an exposed error flag in
 //! __internal_try_rethrow(<error flag>, <masked value>), so that errors captured inside the subquery
 //! are re-raised at the use site, where the enclosing TRY, HAS_ERROR or subquery lowering consumes them.
 //! Only a re-raise in a conditionally evaluated position of an aggregate select item escapes to the
@@ -851,48 +841,103 @@ static unique_ptr<Expression> CreateTryErrorRethrow(Binder &binder, unique_ptr<E
 	return BindTryRethrowFunction(binder, TryRethrowFun::Name, std::move(rethrow_children));
 }
 
-unique_ptr<Expression> Binder::PlanSubquery(BoundSubqueryExpression &expr, unique_ptr<LogicalOperator> &root) {
+unique_ptr<Expression> Binder::PlanSubquery(BoundSubqueryExpression &expr, unique_ptr<LogicalOperator> &root,
+                                            TrySubqueryLowering lowering) {
 	D_ASSERT(root);
 	// first we translate the QueryNode of the subquery into a logical plan
-	auto subquery_root = std::move(expr.SubqueryMutable().plan);
-	D_ASSERT(subquery_root);
+	auto plan = std::move(expr.SubqueryMutable().plan);
+	D_ASSERT(plan);
 
-	if (expr.RethrowsTryErrors()) {
-		// the plan outputs a struct of the masked value and the error flag; the flattened result column
-		// carries that struct until the rethrow wrapper unpacks it below
-		expr.SetReturnType(expr.Subquery().types[0]);
+	// a subquery bound beyond the reach of TRY, such as an alias expanded in an enclosing scope, is planned as it is
+	bool exposes_error_flag = false;
+	auto &subquery_binder = *expr.GetBinder();
+	if (subquery_binder.IsUnderTry() && subquery_binder.GetTrySubqueryPlanIndexes().recorded) {
+		if (!expr.CanLowerTry()) {
+			// TRY masks the value of a scalar subquery only
+			lowering = TrySubqueryLowering::NONE;
+		}
+		auto struct_type = subquery_binder.PlanTrySubquery(expr, *plan, lowering);
+		if (struct_type) {
+			// the flattened result carries the packed value and error flag until the re-raise below unpacks it
+			expr.SetReturnType(*struct_type);
+			exposes_error_flag = true;
+			if (lowering == TrySubqueryLowering::TRANSPORT) {
+				// the re-raise relies on the lowering of the select node that holds it, so that lowering must not
+				// fall back to the plain subquery
+				try_subquery_plan_indexes.nested_transport = true;
+			}
+		}
 	}
 
 	// now we actually flatten the subquery
-	auto plan = std::move(subquery_root);
-
 	unique_ptr<Expression> result_expression;
 	if (!expr.IsCorrelated()) {
 		result_expression = PlanUncorrelatedSubquery(*this, expr, root, std::move(plan));
 	} else {
 		result_expression = PlanCorrelatedSubquery(*this, expr, root, std::move(plan));
 	}
-	if (expr.RethrowsTryErrors()) {
+	if (exposes_error_flag) {
 		result_expression = CreateTryErrorRethrow(*this, std::move(result_expression));
 	}
 	IncreaseDepth();
 	return result_expression;
 }
 
-void Binder::PlanSubqueries(unique_ptr<Expression> &expr_ptr, unique_ptr<LogicalOperator> &root) {
+void Binder::PlanSubqueries(unique_ptr<Expression> &expr_ptr, unique_ptr<LogicalOperator> &root,
+                            TrySubqueryLowering lowering) {
+	PlanSubqueries(
+	    expr_ptr, [&](const BoundSubqueryExpression &) -> unique_ptr<LogicalOperator> & { return root; }, lowering);
+}
+
+void Binder::PlanSubqueries(unique_ptr<Expression> &expr_ptr, const subquery_root_t &get_root,
+                            TrySubqueryLowering lowering) {
 	if (!expr_ptr) {
 		return;
 	}
+	// a subquery that is the argument of TRY is planned below, not through a walk of its children
+	D_ASSERT(lowering != TrySubqueryLowering::DIRECT);
 	auto &expr = *expr_ptr;
-	// first visit the children of the node, if any
-	ExpressionIterator::EnumerateChildren(expr, [&](unique_ptr<Expression> &expr) { PlanSubqueries(expr, root); });
-
-	// check if this is a subquery node
 	if (expr.GetExpressionClass() == ExpressionClass::BOUND_SUBQUERY) {
 		auto &subquery = expr.Cast<BoundSubqueryExpression>();
-		// subquery node! plan it
-		expr_ptr = PlanSubquery(subquery, root);
+		// the comparison children of IN, ANY and ALL land in the join condition of the flattened subquery, where a
+		// re-raised error has no consumer
+		for (auto &child : subquery.GetChildrenMutable()) {
+			PlanSubqueries(child, get_root, TrySubqueryLowering::NONE);
+		}
+		expr_ptr = PlanSubquery(subquery, get_root(subquery), lowering);
+		return;
 	}
+	auto expression_type = expr.GetExpressionType();
+	if (expression_type == ExpressionType::OPERATOR_TRY || expression_type == ExpressionType::OPERATOR_HAS_ERROR) {
+		auto &op = expr.Cast<BoundOperatorExpression>();
+		auto &argument = op.GetChildrenMutable()[0];
+		if (expression_type == ExpressionType::OPERATOR_TRY &&
+		    argument->GetExpressionClass() == ExpressionClass::BOUND_SUBQUERY) {
+			// TRY over a scalar subquery is pushed into the subquery, whose plan masks the errors itself
+			auto &subquery = argument->Cast<BoundSubqueryExpression>();
+			for (auto &child : subquery.GetChildrenMutable()) {
+				PlanSubqueries(child, get_root, TrySubqueryLowering::NONE);
+			}
+			auto lowering = subquery.CanLowerTry() ? TrySubqueryLowering::DIRECT : TrySubqueryLowering::NONE;
+			auto result = PlanSubquery(subquery, get_root(subquery), lowering);
+			if (result->GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
+				// a subquery TRY could not reach may plan into a computation, which TRY keeps masking
+				argument = std::move(result);
+				return;
+			}
+			// a planned column raises nothing TRY could mask, whether or not TRY reached the subquery
+			if (op.HasAlias()) {
+				result->SetAlias(op.GetAlias());
+			}
+			expr_ptr = std::move(result);
+			return;
+		}
+		// the subqueries nested in the argument expose their error flag, which is re-raised under the operator
+		PlanSubqueries(argument, get_root, TrySubqueryLowering::NESTED);
+		return;
+	}
+	ExpressionIterator::EnumerateChildren(
+	    expr, [&](unique_ptr<Expression> &child) { PlanSubqueries(child, get_root, lowering); });
 }
 
 unique_ptr<LogicalOperator> Binder::PlanLateralJoin(unique_ptr<LogicalOperator> left, unique_ptr<LogicalOperator> right,

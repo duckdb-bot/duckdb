@@ -35,6 +35,9 @@
 #include "duckdb/catalog/catalog_entry/trigger_catalog_entry.hpp"
 #include "duckdb/common/enums/copy_option_mode.hpp"
 #include "duckdb/common/enums/trigger_type.hpp"
+#include "duckdb/common/optional.hpp"
+
+#include <functional>
 
 //! fwd declare
 namespace duckdb_re2 {
@@ -92,8 +95,8 @@ enum class CopyToType : uint8_t;
 template <class T, class INDEX_TYPE>
 class IndexVector;
 
-//! Table indexes of the top select node of a TRY subquery, recorded while planning that node, so that
-//! TRY can be lowered onto exactly that node's projection without crossing into other query levels
+//! Table indexes of the top select node of a subquery under TRY, recorded while planning that node, so that
+//! TRY can be pushed onto exactly that node's projection without crossing into other query levels
 struct TrySubqueryPlanIndexes {
 	bool recorded = false;
 	//! The select list projection
@@ -106,9 +109,23 @@ struct TrySubqueryPlanIndexes {
 	TableIndex window_index;
 	//! The unnest nodes of the select node
 	vector<TableIndex> unnest_indexes;
-	//! Whether the select item contains a nested scalar subquery lowered with an exposed error flag;
-	//! its re-raise at the use site relies on this node's lowering to consume it
+	//! Whether the select item contains a nested scalar subquery planned with an exposed error flag, whose
+	//! re-raise at the use site relies on this node's lowering to consume it
 	bool nested_transport = false;
+};
+
+//! How TRY reaches a scalar subquery when the subquery is planned
+enum class TrySubqueryLowering {
+	//! No TRY covers the subquery
+	NONE,
+	//! The subquery is the argument of TRY, so its plan masks the errors of its maskable positions as NULL
+	DIRECT,
+	//! The subquery is nested in the argument of TRY or HAS_ERROR, so its plan exposes an error flag next to the
+	//! masked value, which is re-raised at the use site for the operator to consume
+	NESTED,
+	//! The subquery is nested in the select item of a subquery under TRY, which consumes the flag like NESTED, but
+	//! shapes the flag cannot cover fall back to the plain subquery
+	TRANSPORT
 };
 
 enum class BindingMode : uint8_t {
@@ -434,8 +451,9 @@ public:
 	//! Set while binding the key expressions of an index
 	void SetBindingIndexKey(bool binding_index_key);
 	bool IsBindingIndexKey() const;
-	void SetBindingTrySubquery();
-	bool IsBindingTrySubquery() const;
+	//! Mark the query node this binder binds as under TRY, see TrySubqueryLowering
+	void SetUnderTry();
+	bool IsUnderTry() const;
 	const TrySubqueryPlanIndexes &GetTrySubqueryPlanIndexes() const;
 	TrySubqueryPlanIndexes &GetTrySubqueryPlanIndexesMutable();
 
@@ -472,9 +490,10 @@ private:
 	bool inside_subquery = false;
 	//! Whether the key expressions of an index are being bound
 	bool binding_index_key = false;
-	//! Whether this binder binds a TRY subquery, which lowers TRY onto the bound plan after binding
-	bool binding_try_subquery = false;
-	//! The plan indexes of the TRY subquery's top select node, recorded while planning it
+	//! Whether the query node this binder binds is under TRY, so that the subqueries of its select item are planned
+	//! together with the TRY lowering, when the subquery itself is planned
+	bool under_try = false;
+	//! The plan indexes of the top select node of a subquery under TRY, recorded while planning it
 	TrySubqueryPlanIndexes try_subquery_plan_indexes;
 	//! The set of bound views
 	reference_set_t<ViewCatalogEntry> bound_views;
@@ -670,8 +689,21 @@ private:
 
 	unique_ptr<LogicalOperator> PlanFilter(unique_ptr<Expression> condition, unique_ptr<LogicalOperator> root);
 
-	void PlanSubqueries(unique_ptr<Expression> &expr, unique_ptr<LogicalOperator> &root);
-	unique_ptr<Expression> PlanSubquery(BoundSubqueryExpression &expr, unique_ptr<LogicalOperator> &root);
+	//! Selects the plan a subquery is joined into
+	using subquery_root_t = std::function<unique_ptr<LogicalOperator> &(const BoundSubqueryExpression &subquery)>;
+	//! Plan the subqueries of an expression, pushing TRY into the scalar subqueries it covers, with lowering saying how
+	//! a TRY above the expression reaches them
+	void PlanSubqueries(unique_ptr<Expression> &expr, unique_ptr<LogicalOperator> &root,
+	                    TrySubqueryLowering lowering = TrySubqueryLowering::NONE);
+	void PlanSubqueries(unique_ptr<Expression> &expr, const subquery_root_t &get_root,
+	                    TrySubqueryLowering lowering = TrySubqueryLowering::NONE);
+	unique_ptr<Expression> PlanSubquery(BoundSubqueryExpression &expr, unique_ptr<LogicalOperator> &root,
+	                                    TrySubqueryLowering lowering = TrySubqueryLowering::NONE);
+	//! Plan the select item of the subquery bound by this binder, left unplanned for TRY to reach its subqueries, and
+	//! push TRY onto the plan as the lowering says. Returns the type of the packed value and error flag when the flag
+	//! is exposed, an empty optional otherwise.
+	optional<LogicalType> PlanTrySubquery(const BoundSubqueryExpression &expr, LogicalOperator &root,
+	                                      TrySubqueryLowering lowering);
 	unique_ptr<LogicalOperator> PlanLateralJoin(unique_ptr<LogicalOperator> left, unique_ptr<LogicalOperator> right,
 	                                            CorrelatedColumns &correlated_columns,
 	                                            JoinType join_type = JoinType::INNER,

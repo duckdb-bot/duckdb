@@ -371,6 +371,18 @@ BoundStatement Binder::BindNode(MergeQueryNode &node) {
 		PlanSubqueries(expr, root);
 	}
 
+#ifdef DEBUG
+	// a subquery left in an action would be planned above the projection, whose columns the actions read by position
+	for (auto &entry : merge_into->actions) {
+		for (auto &action : entry.second) {
+			D_ASSERT(!action->condition || !action->condition->HasSubquery());
+			for (auto &expr : action->expressions) {
+				D_ASSERT(!expr->HasSubquery());
+			}
+		}
+	}
+#endif
+
 	if (has_not_matched_by_source) {
 		// if we have "has_not_matched_by_source" we need to push an extra marker into the source
 		// this marker tells us if we have found a source match or not

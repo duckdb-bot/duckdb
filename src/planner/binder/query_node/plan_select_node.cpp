@@ -26,8 +26,8 @@ bool Binder::DebugAggregateStateExportVerify(BoundSelectNode &statement, unique_
 	if (!Settings::Get<DebugVerifyAggregateStateExportSetting>(context)) {
 		return false;
 	}
-	if (IsBindingTrySubquery()) {
-		// TRY is lowered onto these aggregates after planning; the verification rewrite would hide
+	if (IsUnderTry()) {
+		// TRY is pushed onto these aggregates when the subquery is planned. The verification rewrite would hide
 		// them behind an aggregate-state export, so the error capture could no longer reach them
 		return false;
 	}
@@ -137,8 +137,8 @@ bool Binder::DebugAggregateStateExportVerify(BoundSelectNode &statement, unique_
 
 unique_ptr<LogicalOperator> Binder::CreatePlan(BoundSelectNode &statement) {
 	D_ASSERT(statement.from_table.plan);
-	if (IsBindingTrySubquery()) {
-		// record the indexes of this node, so TRY can be lowered onto exactly this node's projection
+	if (IsUnderTry()) {
+		// record the indexes of this node, so TRY can be pushed onto exactly this node's projection
 		auto &try_indexes = GetTrySubqueryPlanIndexesMutable();
 		try_indexes.recorded = true;
 		try_indexes.projection_index = statement.projection_index;
@@ -239,8 +239,13 @@ unique_ptr<LogicalOperator> Binder::CreatePlan(BoundSelectNode &statement) {
 
 	plan_unnests(statement.unnests.SelectList());
 
-	for (auto &expr : statement.select_list) {
-		PlanSubqueries(expr, root);
+	for (idx_t i = 0; i < statement.select_list.size(); i++) {
+		if (i == 0 && IsUnderTry()) {
+			// the subqueries of the select item of a subquery under TRY are planned when TRY is pushed into the
+			// subquery, since that decides how their errors are masked, see PlanTrySubquery
+			continue;
+		}
+		PlanSubqueries(statement.select_list[i], root);
 	}
 
 	auto proj = make_uniq<LogicalProjection>(statement.projection_index, std::move(statement.select_list));

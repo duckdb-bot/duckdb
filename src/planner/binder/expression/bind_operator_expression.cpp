@@ -1,6 +1,5 @@
 #include "duckdb/parser/expression/function_expression.hpp"
 #include "duckdb/parser/expression/operator_expression.hpp"
-#include "duckdb/parser/expression/subquery_expression.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/expression/bound_case_expression.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
@@ -159,6 +158,30 @@ BindResult ExpressionBinder::BindGroupingInEnclosingScope(OperatorExpression &op
 	return BindResult(std::move(bind_error));
 }
 
+//! Whether the capture of TRY or HAS_ERROR would re-evaluate a volatile value. A subquery's plan runs once however
+//! often the capture retries, and the positions TRY masks inside it are checked when TRY is pushed into the subquery
+static bool CaptureReevaluatesVolatileValue(const Expression &expr) {
+	if (!expr.HasSubquery()) {
+		return expr.IsVolatile();
+	}
+	switch (expr.GetExpressionClass()) {
+	case ExpressionClass::BOUND_SUBQUERY:
+		return false;
+	case ExpressionClass::BOUND_FUNCTION:
+		// a function with a volatile lambda body is volatile itself
+		if (expr.Cast<BoundFunctionExpression>().Function().GetStability() == FunctionStability::VOLATILE) {
+			return true;
+		}
+		break;
+	default:
+		break;
+	}
+	bool result = false;
+	ExpressionIterator::EnumerateChildren(
+	    expr, [&](const Expression &child) { result = result || CaptureReevaluatesVolatileValue(child); });
+	return result;
+}
+
 BindResult ExpressionBinder::BindExpression(OperatorExpression &op, idx_t depth) {
 	auto operator_type = op.GetExpressionType();
 	if (operator_type == ExpressionType::GROUPING_FUNCTION) {
@@ -181,15 +204,6 @@ BindResult ExpressionBinder::BindExpression(OperatorExpression &op, idx_t depth)
 	// Only those children that trigger an error are not yet bound.
 	ErrorData error;
 	vector<unique_ptr<Expression>> children;
-	if (operator_type == ExpressionType::OPERATOR_TRY) {
-		D_ASSERT(op.GetChildrenMutable().size() == 1);
-		auto &try_child = op.GetChildrenMutable()[0];
-		if (try_child->GetExpressionClass() == ExpressionClass::SUBQUERY &&
-		    try_child->Cast<SubqueryExpression>().GetSubqueryType() == SubqueryType::SCALAR) {
-			// TRY directly over a scalar subquery binds as an ordinary subquery and lowers onto its plan
-			return BindTrySubquery(op, depth);
-		}
-	}
 	if (operator_type == ExpressionType::OPERATOR_TRY || operator_type == ExpressionType::OPERATOR_HAS_ERROR) {
 		D_ASSERT(op.GetChildrenMutable().size() == 1);
 		const auto was_inside_try = inside_try;
@@ -308,18 +322,8 @@ BindResult ExpressionBinder::BindExpression(OperatorExpression &op, idx_t depth)
 		break;
 	case ExpressionType::OPERATOR_TRY:
 	case ExpressionType::OPERATOR_HAS_ERROR: {
-		auto &expr = *children[0];
-		if (operator_type == ExpressionType::OPERATOR_TRY &&
-		    expr.GetExpressionClass() == ExpressionClass::BOUND_SUBQUERY &&
-		    !expr.Cast<BoundSubqueryExpression>().RethrowsTryErrors()) {
-			// a directly nested TRY over a scalar subquery was already lowered onto the subquery plan
-			return BindResult(std::move(children[0]));
-		}
-		// a rethrowing subquery can surface as the direct child when a binder simplification (such as a
-		// same-type cast or single-argument COALESCE) unwrapped to it: TRY must stay to consume the re-raise
-		// scalar subqueries deeper inside the argument were lowered during binding and re-raise their
-		// captured errors at the use site, so they need no rejection here
-		if (expr.IsVolatile()) {
+		// the scalar subqueries in the argument stay in place, TRY is pushed into them when they are planned
+		if (CaptureReevaluatesVolatileValue(*children[0])) {
 			throw BinderException("%s can not be used in combination with a volatile function",
 			                      ExpressionTypeToString(operator_type));
 		}

@@ -15,6 +15,7 @@
 #include "duckdb/planner/expression/bound_parameter_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/planner/joinside.hpp"
+#include "duckdb/planner/logical_operator_visitor.hpp"
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
 #include "duckdb/transaction/meta_transaction.hpp"
 #include "duckdb/main/attached_database.hpp"
@@ -179,6 +180,26 @@ static bool VerifyPlannedExpressions(const LogicalOperator &plan) {
 }
 #endif
 
+//! Whether the plan holds a parameter occurrence that kept the unknown type it was bound with
+static bool HasUntypedParameter(const LogicalOperator &plan) {
+	bool untyped = false;
+	LogicalOperatorVisitor::EnumerateExpressions(plan, [&](const unique_ptr<Expression> *expression) {
+		ExpressionIterator::VisitExpression<BoundParameterExpression>(
+		    **expression, [&](const BoundParameterExpression &parameter) {
+			    untyped |= parameter.GetReturnType().id() == LogicalTypeId::UNKNOWN;
+		    });
+	});
+	if (untyped) {
+		return true;
+	}
+	for (auto &child : plan.children) {
+		if (HasUntypedParameter(*child)) {
+			return true;
+		}
+	}
+	return false;
+}
+
 static void RunPreBindExtensions(ClientContext &context, Binder &binder, SQLStatement &statement) {
 	for (auto &planner_extension : PlannerExtension::Iterate(context)) {
 		if (planner_extension.pre_bind_function) {
@@ -264,6 +285,12 @@ void Planner::CreatePlan(SQLStatement &statement) {
 	this->properties = binder->GetStatementProperties();
 	this->properties.parameter_count = parameter_count;
 	properties.bound_all_parameters = !bound_parameters.rebind && parameters_resolved;
+	// an untyped occurrence cannot execute, so the statement is bound again with its values at EXECUTE. This happens
+	// when a cast around a later occurrence of the same parameter set its type, which the earlier occurrence never got
+	if (properties.bound_all_parameters && plan && !bound_parameters.GetParameters().empty() &&
+	    HasUntypedParameter(*plan)) {
+		properties.bound_all_parameters = false;
+	}
 
 	Planner::VerifyPlan(context, plan, bound_parameters.GetParametersPtr());
 

@@ -128,6 +128,12 @@ EXECUTE q10(42::INTEGER);
 ----
 42
 
+# both occurrences are typed, so the plan is kept and its result types are known
+query I
+SELECT result_types FROM duckdb_prepared_statements() WHERE name = 'q10';
+----
+[INTEGER]
+
 # a function with an ANY argument next to a typed occurrence
 statement ok
 PREPARE q11 AS SELECT typeof($1) AS r, $1::INTEGER AS c;

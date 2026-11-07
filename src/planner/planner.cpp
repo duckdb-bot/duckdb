@@ -17,6 +17,7 @@
 #include "duckdb/planner/joinside.hpp"
 #include "duckdb/planner/logical_operator_visitor.hpp"
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
+#include "duckdb/planner/operator/logical_copy_to_file.hpp"
 #include "duckdb/transaction/meta_transaction.hpp"
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/parser/statement/multi_statement.hpp"
@@ -183,12 +184,20 @@ static bool VerifyPlannedExpressions(const LogicalOperator &plan) {
 //! Whether the plan holds a parameter occurrence that kept the unknown type it was bound with
 static bool HasUntypedParameter(const LogicalOperator &plan) {
 	bool untyped = false;
-	LogicalOperatorVisitor::EnumerateExpressions(plan, [&](const unique_ptr<Expression> *expression) {
+	auto check = [&](const Expression &expression) {
 		ExpressionIterator::VisitExpression<BoundParameterExpression>(
-		    **expression, [&](const BoundParameterExpression &parameter) {
+		    expression, [&](const BoundParameterExpression &parameter) {
 			    untyped |= parameter.GetReturnType().id() == LogicalTypeId::UNKNOWN;
 		    });
-	});
+	};
+	LogicalOperatorVisitor::EnumerateExpressions(
+	    plan, [&](const unique_ptr<Expression> *expression) { check(**expression); });
+	if (plan.type == LogicalOperatorType::LOGICAL_COPY_TO_FILE) {
+		// the sort expressions of COPY TO are not enumerated with the other expressions
+		for (auto &order : plan.Cast<LogicalCopyToFile>().order_columns) {
+			check(*order.expression);
+		}
+	}
 	if (untyped) {
 		return true;
 	}

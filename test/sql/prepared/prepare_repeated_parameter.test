@@ -143,6 +143,20 @@ EXECUTE q11(42::INTEGER);
 ----
 INTEGER	42
 
+# the sort expressions of COPY TO are held by the copy operator itself
+statement ok
+PREPARE q13 AS COPY (SELECT 1 AS c) TO '{TEST_DIR}/prepare_repeated_parameter.csv' (FORMAT CSV, ORDER_BY (c + has_error($1)::INTEGER, $1::INTEGER));
+
+query I
+EXECUTE q13(42::INTEGER);
+----
+1
+
+query I
+SELECT c FROM '{TEST_DIR}/prepare_repeated_parameter.csv';
+----
+1
+
 # the error of the argument is reported when the statement is executed
 statement ok
 PREPARE q12 AS SELECT has_error($1::INTEGER) AS r, $1::VARCHAR AS c;

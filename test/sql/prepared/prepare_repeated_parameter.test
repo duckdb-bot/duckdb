@@ -1,0 +1,152 @@
+# name: test/sql/prepared/prepare_repeated_parameter.test
+# description: A parameter used more than once, where an occurrence that no cast reaches stays untyped while another occurrence sets the type
+# group: [prepared]
+
+# has_error keeps its argument as it is, so the first occurrence has no type when the cast around the second one sets INTEGER
+statement ok
+PREPARE q1 AS SELECT has_error($1) AS r, $1::INTEGER AS c;
+
+query II
+EXECUTE q1(42::INTEGER);
+----
+false	42
+
+# the statement is executed again
+query II
+EXECUTE q1(43::INTEGER);
+----
+false	43
+
+# values of another type were already bound again at EXECUTE
+query II
+EXECUTE q1(NULL);
+----
+false	NULL
+
+query II
+EXECUTE q1('44');
+----
+false	44
+
+# the other order, where the second occurrence is bound after the cast set the type
+statement ok
+PREPARE q2 AS SELECT $1::INTEGER AS c, has_error($1) AS r;
+
+query II
+EXECUTE q2(42::INTEGER);
+----
+42	false
+
+# TRY keeps the type of its argument
+statement ok
+PREPARE q3 AS SELECT has_error(TRY($1)) AS r, $1::INTEGER AS c;
+
+query II
+EXECUTE q3(42::INTEGER);
+----
+false	42
+
+# a named parameter
+statement ok
+PREPARE q4 AS SELECT has_error($p) AS r, $p::INTEGER AS c;
+
+query II
+EXECUTE q4(p := 42::INTEGER);
+----
+false	42
+
+# three occurrences with the typed one in the middle
+statement ok
+PREPARE q5 AS SELECT has_error($1) AS r1, $1::VARCHAR AS c, has_error($1) AS r2;
+
+query III
+EXECUTE q5('x');
+----
+false	x	false
+
+# an occurrence in a subquery and one in the outer query
+statement ok
+PREPARE q6 AS SELECT (SELECT has_error($1)) AS r, $1::INTEGER AS c;
+
+query II
+EXECUTE q6(42::INTEGER);
+----
+false	42
+
+# the WHERE clause is bound before the SELECT list, so its occurrence stays untyped when the cast in the list sets the type
+statement ok
+PREPARE q7 AS SELECT i, $1::INTEGER AS c FROM range(3) t(i) WHERE NOT has_error($1) AND i = 2;
+
+query II
+EXECUTE q7(7::INTEGER);
+----
+2	7
+
+# the typed occurrence in the WHERE clause is bound first
+statement ok
+CREATE TABLE t(a INTEGER, b INTEGER);
+
+statement ok
+INSERT INTO t VALUES (1, 2), (2, 3);
+
+statement ok
+PREPARE q7b AS SELECT a, has_error($1) AS r FROM t WHERE b = $1::INTEGER;
+
+query II
+EXECUTE q7b(3::INTEGER);
+----
+2	false
+
+# a parameter with a single occurrence that no cast reaches is resolved at EXECUTE
+statement ok
+PREPARE q8 AS SELECT has_error($1) AS r;
+
+query I
+EXECUTE q8(42::INTEGER);
+----
+false
+
+query I
+EXECUTE q8('x');
+----
+false
+
+# a repeated parameter whose occurrences are both typed
+statement ok
+PREPARE q9 AS SELECT count(*) FROM t WHERE a = $1 OR b = $1;
+
+query I
+EXECUTE q9(2::INTEGER);
+----
+2
+
+statement ok
+PREPARE q10 AS SELECT coalesce($1, $1::INTEGER) AS c;
+
+query I
+EXECUTE q10(42::INTEGER);
+----
+42
+
+# a function with an ANY argument next to a typed occurrence
+statement ok
+PREPARE q11 AS SELECT typeof($1) AS r, $1::INTEGER AS c;
+
+query II
+EXECUTE q11(42::INTEGER);
+----
+INTEGER	42
+
+# the error of the argument is reported when the statement is executed
+statement ok
+PREPARE q12 AS SELECT has_error($1::INTEGER) AS r, $1::VARCHAR AS c;
+
+query II
+EXECUTE q12('x');
+----
+true	x
+
+query II
+EXECUTE q12('5');
+----
+false	5

@@ -46,6 +46,13 @@ unique_ptr<BoundParameterExpression> BoundParameterMap::BindParameterExpression(
 	auto &identifier = expr.Identifier();
 	D_ASSERT(!parameter_data.count(identifier));
 
+	// an occurrence is bound with an unknown type and gets its type from the cast around it, which also sets the type
+	// of the parameter. The casts around the other occurrences of the identifier do not reach this one, whether they
+	// are bound before or after it, so a repeated parameter is bound again with its values at EXECUTE
+	if (parameters.find(identifier) != parameters.end()) {
+		rebind = true;
+	}
+
 	// No value has been supplied yet,
 	// We return a shared pointer to an object that will get populated with a Value later
 	// When the BoundParameterExpression gets executed, this will be used to get the corresponding value
@@ -54,18 +61,7 @@ unique_ptr<BoundParameterExpression> BoundParameterMap::BindParameterExpression(
 
 	bound_expr->ParameterDataMutable() = param_data;
 	bound_expr->SetAlias(expr.GetAlias());
-
-	auto param_type = param_data->return_type;
-	auto identifier_type = GetReturnType(identifier);
-
-	// we found a type for this bound parameter, but now we found another occurrence with the same identifier,
-	// a CAST around this consecutive occurrence might swallow the unknown type of this consecutive occurrence,
-	// then, if we do not rebind, we potentially have unknown data types during execution
-	if (identifier_type == LogicalType::UNKNOWN && param_type != LogicalType::UNKNOWN) {
-		rebind = true;
-	}
-
-	bound_expr->SetReturnType(identifier_type);
+	bound_expr->SetReturnType(GetReturnType(identifier));
 	return bound_expr;
 }
 

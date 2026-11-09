@@ -59,6 +59,10 @@ static unique_ptr<Expression> TryRewriteEqualOrIsNull(Expression &equal_expr, Ex
 
 	auto &equal_cast = equal_expr.Cast<BoundFunctionExpression>();
 	auto &and_cast = and_expr.Cast<BoundConjunctionExpression>();
+	// the IS NULL tests evaluate a volatile operand again, so the rewrite would merge two evaluations into one
+	if (equal_cast.IsVolatile()) {
+		return nullptr;
+	}
 
 	if (and_cast.GetChildren().size() != 2) {
 		return nullptr;
@@ -67,10 +71,6 @@ static unique_ptr<Expression> TryRewriteEqualOrIsNull(Expression &equal_expr, Ex
 	// Make sure on the AND conjunction the relevant conditions appear
 	auto &a_exp = BoundComparisonExpression::Left(equal_cast);
 	auto &b_exp = BoundComparisonExpression::Right(equal_cast);
-	// the rewrite evaluates each side once instead of twice, which changes a volatile one
-	if (a_exp.IsVolatile() || b_exp.IsVolatile()) {
-		return nullptr;
-	}
 	bool a_is_null_found = false;
 	bool b_is_null_found = false;
 

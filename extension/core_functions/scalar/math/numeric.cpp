@@ -751,9 +751,19 @@ unique_ptr<FunctionData> ResolveDecimalRoundPrecision(BoundScalarFunction &bound
 
 template <typename NEGOP, typename POSOP, bool CAN_CARRY = false>
 void DecimalRoundPrecisionResolveTypes(ResolveScalarFunctionTypesInput &input) {
-	auto val = input.GetNonNullConstant(1).CastAs(input.GetClientContext(), LogicalType::INTEGER);
-	ResolveDecimalRoundPrecision<NEGOP, POSOP, CAN_CARRY>(input.GetBoundFunction(), input.GetArgumentType(0),
-	                                                      IntegerValue::Get(val));
+	auto &bound_function = input.GetBoundFunction();
+	auto &decimal_type = input.GetArgumentType(0);
+	auto val = input.GetConstant(1);
+	if (val.IsNull()) {
+		// a NULL precision gives a NULL result, which the binder emits as a constant of the type resolved here
+		// no digits can be dropped for an unknown precision, so the result keeps the type of the input
+		bound_function.SetFunctionCallback(ScalarFunction::NopFunction);
+		bound_function.GetArguments()[0] = decimal_type;
+		bound_function.SetReturnType(decimal_type);
+		return;
+	}
+	ResolveDecimalRoundPrecision<NEGOP, POSOP, CAN_CARRY>(
+	    bound_function, decimal_type, IntegerValue::Get(val.CastAs(input.GetClientContext(), LogicalType::INTEGER)));
 }
 
 //! The bind data is derived from the type the function was called with, before it was cast

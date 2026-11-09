@@ -165,7 +165,7 @@ static unique_ptr<BaseStatistics> PropagateAbsStats(ClientContext &context, Func
 			}
 
 			double min_val, max_val;
-			if (current_min == 0 || current_max == 0) {
+			if (current_min == 0) {
 				// Unlike integers, floating point abs cannot be removed for zero: abs(-0.0) clears the sign bit.
 				min_val = AbsOperator::Operation<double, double>(current_min);
 				max_val = AbsOperator::Operation<double, double>(current_max);
@@ -546,7 +546,7 @@ static void GenericRoundFunctionDecimalResolveTypes(ResolveScalarFunctionTypesIn
 namespace {
 struct CeilDecimalOperator {
 	template <class T, class POWERS_OF_TEN_CLASS>
-	static void Operation(DataChunk &input, uint8_t scale, Vector &result) {
+	static void Operation(DataChunk &input, uint32_t scale, Vector &result) {
 		T power_of_ten = UnsafeNumericCast<T>(POWERS_OF_TEN_CLASS::POWERS_OF_TEN[scale]);
 		UnaryExecutor::Execute<T, T>(input.data[0], result, [&](T input) {
 			if (input <= 0) {
@@ -604,7 +604,7 @@ struct FloorOperator {
 
 struct FloorDecimalOperator {
 	template <class T, class POWERS_OF_TEN_CLASS>
-	static void Operation(DataChunk &input, uint8_t scale, Vector &result) {
+	static void Operation(DataChunk &input, uint32_t scale, Vector &result) {
 		T power_of_ten = UnsafeNumericCast<T>(POWERS_OF_TEN_CLASS::POWERS_OF_TEN[scale]);
 		UnaryExecutor::Execute<T, T>(input.data[0], result, [&](T input) {
 			if (input < 0) {
@@ -655,12 +655,12 @@ ScalarFunctionSet FloorFun::GetFunctions() {
 namespace {
 
 struct RoundPrecisionFunctionData : public FunctionData {
-	RoundPrecisionFunctionData(int32_t target_scale, uint8_t source_width, bool check_overflow)
+	RoundPrecisionFunctionData(int32_t target_scale, uint32_t source_width, bool check_overflow)
 	    : target_scale(target_scale), source_width(source_width), check_overflow(check_overflow) {
 	}
 
 	int32_t target_scale;
-	uint8_t source_width;
+	uint32_t source_width;
 	bool check_overflow;
 
 	unique_ptr<FunctionData> Copy() const override {
@@ -688,7 +688,7 @@ unique_ptr<FunctionData> ResolveDecimalRoundPrecision(BoundScalarFunction &bound
 	// but ONLY if the round value is positive
 	// if it is negative the scale becomes zero
 	// i.e. ROUND(DECIMAL(18,3), -1) -> DECIMAL(18,0)
-	uint8_t target_scale;
+	uint32_t target_scale;
 	auto width = DecimalType::GetWidth(decimal_type);
 	auto scale = DecimalType::GetScale(decimal_type);
 	auto result_width = width;
@@ -727,7 +727,7 @@ unique_ptr<FunctionData> ResolveDecimalRoundPrecision(BoundScalarFunction &bound
 			bound_function.SetFunctionCallback(ScalarFunction::NopFunction);
 			target_scale = scale;
 		} else {
-			target_scale = NumericCast<uint8_t>(round_value);
+			target_scale = NumericCast<uint32_t>(round_value);
 			switch (decimal_type.InternalType()) {
 			case PhysicalType::INT16:
 				bound_function.SetFunctionCallback(GenericRoundPrecisionDecimal<int16_t, NumericHelper, POSOP>);
@@ -762,15 +762,15 @@ void DecimalRoundPrecisionResolveTypes(ResolveScalarFunctionTypesInput &input) {
 		bound_function.SetReturnType(decimal_type);
 		return;
 	}
-	ResolveDecimalRoundPrecision<NEGOP, POSOP, CAN_CARRY>(bound_function, decimal_type,
-	                                                      IntegerValue::Get(val.DefaultCastAs(LogicalType::INTEGER)));
+	ResolveDecimalRoundPrecision<NEGOP, POSOP, CAN_CARRY>(
+	    bound_function, decimal_type, IntegerValue::Get(val.CastAs(input.GetClientContext(), LogicalType::INTEGER)));
 }
 
 //! The bind data is derived from the type the function was called with, before it was cast
 template <typename NEGOP, typename POSOP, bool CAN_CARRY = false>
 unique_ptr<FunctionData> BindDecimalRoundPrecision(BindScalarFunctionInput &input) {
 	auto &bound_function = input.GetBoundFunction();
-	auto val = input.GetNonNullConstant(1).DefaultCastAs(LogicalType::INTEGER);
+	auto val = input.GetNonNullConstant(1).CastAs(input.GetClientContext(), LogicalType::INTEGER);
 	return ResolveDecimalRoundPrecision<NEGOP, POSOP, CAN_CARRY>(
 	    bound_function, bound_function.GetLogicalArguments()[0], IntegerValue::Get(val));
 }
@@ -806,7 +806,7 @@ struct TruncOperator {
 
 struct TruncDecimalOperator {
 	template <class T, class POWERS_OF_TEN_CLASS>
-	static void Operation(DataChunk &input, uint8_t scale, Vector &result) {
+	static void Operation(DataChunk &input, uint32_t scale, Vector &result) {
 		T power_of_ten = UnsafeNumericCast<T>(POWERS_OF_TEN_CLASS::POWERS_OF_TEN[scale]);
 		UnaryExecutor::Execute<T, T>(input.data[0], result, [&](T input) {
 			//	Always floor
@@ -823,9 +823,8 @@ struct TruncDecimalNegativePrecisionOperator {
 		auto source_scale = DecimalType::GetScale(func_expr.GetChildren()[0]->GetReturnType());
 		auto width = DecimalType::GetWidth(func_expr.GetChildren()[0]->GetReturnType());
 		if (info.target_scale <= -int32_t(width - source_scale)) {
-			// scale too big for width
-			result.SetVectorType(VectorType::CONSTANT_VECTOR);
-			result.SetValue(0, Value::INTEGER(0));
+			// scale too big for width: every value truncates to zero, NULL stays NULL
+			UnaryExecutor::Execute<T, T>(input.data[0], result, [](T) { return T(0); });
 			return;
 		}
 		T divide_power_of_ten =
@@ -988,7 +987,7 @@ struct RoundHalfAwayFromZero {
 	static constexpr const char *Name = "ROUND";
 
 	static double Nearest(double value) {
-		return std::round(value);
+		return RoundToNearestAwayFromZero(value);
 	}
 	template <class T>
 	static bool RoundsAway(T) {
@@ -1063,7 +1062,7 @@ struct RoundOperatorPrecision {
 struct RoundOperator {
 	template <class TA, class TR>
 	static inline TR Operation(TA input) {
-		double rounded_value = round(input);
+		double rounded_value = RoundToNearestAwayFromZero(static_cast<double>(input));
 		if (std::isinf(rounded_value) || std::isnan(rounded_value)) {
 			return input;
 		}
@@ -1073,7 +1072,7 @@ struct RoundOperator {
 
 struct RoundDecimalOperator {
 	template <class T, class POWERS_OF_TEN_CLASS>
-	static void Operation(DataChunk &input, uint8_t scale, Vector &result) {
+	static void Operation(DataChunk &input, uint32_t scale, Vector &result) {
 		T power_of_ten = UnsafeNumericCast<T>(POWERS_OF_TEN_CLASS::POWERS_OF_TEN[scale]);
 		T addition = power_of_ten / 2;
 		// regular round rounds towards the nearest number
@@ -1145,9 +1144,8 @@ struct DecimalRoundNegativePrecisionOperator {
 		auto &info = func_expr.BindInfo()->Cast<RoundPrecisionFunctionData>();
 		auto source_scale = DecimalType::GetScale(func_expr.GetChildren()[0]->GetReturnType());
 		if (info.target_scale < -int32_t(info.source_width - source_scale)) {
-			// scale too big for width
-			result.SetVectorType(VectorType::CONSTANT_VECTOR);
-			result.SetValue(0, Value::INTEGER(0));
+			// scale too big for width: every value rounds to zero, NULL stays NULL
+			UnaryExecutor::Execute<T, T>(input.data[0], result, [](T) { return T(0); });
 			return;
 		}
 		T divide_power_of_ten =

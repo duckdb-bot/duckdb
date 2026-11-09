@@ -189,8 +189,14 @@ void PartialBlock::Flush(QueryContext context, PartialBlockType type) {
 		if (fetch_new_block) {
 			block_id = block_manager.GetFreeBlockId();
 		}
-		block_handle =
-		    block_manager.ConvertToPersistent(context, block_id, std::move(block_handle), std::move(buffer_handle));
+		// a scan of the appending transaction can still read the packed buffer through a segment that points into
+		// it, so the buffer is copied instead of moved while another pin is active
+		auto mode = ConvertToPersistentMode::DESTRUCTIVE;
+		if (type == PartialBlockType::APPEND_TO_TABLE && block_handle->GetMemory().GetReaders() > 1) {
+			mode = ConvertToPersistentMode::THREAD_SAFE;
+		}
+		block_handle = block_manager.ConvertToPersistent(context, block_id, std::move(block_handle),
+		                                                 std::move(buffer_handle), mode);
 
 		if (fetch_new_block) {
 			for (idx_t i = 1; i < UseCount(); i++) {

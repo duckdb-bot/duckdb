@@ -1,0 +1,74 @@
+# name: test/sql/storage/optimistic_write/optimistic_write_flush_under_scan.test
+# description: A self-referencing INSERT on the serial path flushes partial blocks of the optimistic writer while the scan of the same transaction still reads from them
+# group: [optimistic_write]
+
+require skip_reload
+
+load {TEST_DIR}/optimistic_write_flush_under_scan.db
+
+# one thread, so the scan and the append share the pipeline
+statement ok
+SET threads = 1;
+
+statement ok
+CREATE TABLE test (a INTEGER);
+
+statement ok
+BEGIN;
+
+statement ok
+INSERT INTO test SELECT CASE WHEN i % 2 = 0 THEN NULL ELSE i END FROM range(1000000) t(i);
+
+statement ok
+INSERT INTO test SELECT * FROM test;
+
+query III
+SELECT count(*), count(a), sum(a) FROM test;
+----
+2000000	1000000	500000000000
+
+statement ok
+COMMIT;
+
+query III
+SELECT count(*), count(a), sum(a) FROM test;
+----
+2000000	1000000	500000000000
+
+restart
+
+query III
+SELECT count(*), count(a), sum(a) FROM test;
+----
+2000000	1000000	500000000000
+
+# RETURNING takes the serial path with several threads too
+statement ok
+SET threads = 4;
+
+statement ok
+CREATE TABLE test2 (a INTEGER);
+
+statement ok
+BEGIN;
+
+statement ok
+INSERT INTO test2 SELECT i % 2 FROM range(1000000) t(i);
+
+statement ok
+INSERT INTO test2 SELECT * FROM test2 RETURNING NULL;
+
+query II
+SELECT count(*), sum(a) FROM test2;
+----
+2000000	1000000
+
+statement ok
+COMMIT;
+
+restart
+
+query II
+SELECT count(*), sum(a) FROM test2;
+----
+2000000	1000000

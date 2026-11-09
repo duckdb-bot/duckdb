@@ -239,7 +239,7 @@ void ColumnQualifier::QualifyColumnNames(unique_ptr<ParsedExpression> &expr, vec
 	case ExpressionType::FUNCTION: {
 		// Special-handling for lambdas, which are inside function expressions.
 		auto &function = expr->Cast<FunctionExpression>();
-		if (!ExpressionBinder::IsUnnestFunction(function.FunctionName()) && !QualifyFunction(function)) {
+		if (!ExpressionBinder::IsUnnestFunction(function.FunctionName()) && !QualifyFunction(function, lambda_params)) {
 			// a name the parser rewrites binds as its syntax node, as x.ifnull(y) does once it is ifnull(x, y)
 			if (auto rewritten = ParserFunctionRewrite::RewriteMethodCall(function)) {
 				expr = std::move(rewritten);
@@ -273,7 +273,8 @@ bool ColumnQualifier::IsActiveLambdaParameter(const Identifier &name) {
 	return LambdaRefExpression::FindMatchingBinding(lambda_bindings, name) != nullptr;
 }
 
-optional_ptr<CatalogEntry> ColumnQualifier::QualifyFunction(FunctionExpression &function) {
+optional_ptr<CatalogEntry> ColumnQualifier::QualifyFunction(FunctionExpression &function,
+                                                            const vector<identifier_set_t> &lambda_params) {
 	D_ASSERT(!ExpressionBinder::IsUnnestFunction(function.FunctionName()));
 	// lookup the function in the catalog
 	QueryErrorContext error_context(function.GetQueryLocation());
@@ -336,8 +337,12 @@ optional_ptr<CatalogEntry> ColumnQualifier::QualifyFunction(FunctionExpression &
 	unique_ptr<ParsedExpression> column =
 	    make_uniq<ColumnRefExpression>(vector<Identifier>(path.begin(), path.end() - 1));
 	auto &colref = column->Cast<ColumnRefExpression>();
-	// a lambda parameter, which can only be the first component of the name, is left for the lambda to bind
-	if (!IsActiveLambdaParameter(colref.ColumnNames()[0])) {
+	// a lambda parameter, which can only be the first component of the name, is left for the lambda to bind. An arrow
+	// parameter counts here too, the schema interpretation of the qualifier has been tried above
+	const auto &first_name = colref.ColumnNames()[0];
+	const bool lambda_parameter = LambdaExpression::IsLambdaParameter(lambda_params, first_name) ||
+	                              LambdaRefExpression::FindMatchingBinding(lambda_bindings, first_name);
+	if (!lambda_parameter) {
 		ErrorData error;
 		auto qualified_column = QualifyColumnName(colref, error);
 		if (qualified_column) {

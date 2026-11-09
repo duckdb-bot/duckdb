@@ -251,3 +251,17 @@ query I
 SELECT x FROM (SELECT 'outer' AS x) t WHERE list_transform(['a', NULL], lambda x: x.ifnull('z')) = ['a', 'z'] AND list_transform(['A'], lambda x: x.lower()) = ['a'];
 ----
 outer
+
+# an arrow lambda's parameter is left for the lambda too, although an arrow is only known to be a lambda once it is bound
+statement ok
+SET lambda_syntax='ENABLE_SINGLE_ARROW'
+
+query II
+SELECT list_transform(['a', NULL], x -> x.ifnull('z')), list_transform(['A'], x -> x.lower()) FROM (SELECT 'outer' AS x) t;
+----
+[a, z]	[a]
+
+query I
+SELECT x FROM (SELECT 'outer' AS x) t WHERE list_transform(['a', NULL], x -> x.ifnull('z')) = ['a', 'z'] AND list_transform(['A'], x -> x.lower()) = ['a'];
+----
+outer

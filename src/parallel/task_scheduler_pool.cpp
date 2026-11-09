@@ -168,23 +168,26 @@ void TaskSchedulerPool::RelaunchThreads(TaskScheduler &scheduler, bool destroy) 
 	if (threads.size() < new_thread_count) {
 		// we are increasing the number of threads: launch them and run tasks on them
 		idx_t create_new_threads = new_thread_count - threads.size();
+		// registering a started thread must not allocate, since a failure there would destroy a joinable thread or
+		// free the marker the thread reads, so everything a thread needs is allocated before it starts
+		threads.reserve(new_thread_count);
+		markers.reserve(new_thread_count);
 
 		const auto available_cpus = GetAvailableCPUsForPinning(pool_type, pin_thread_mode, new_thread_count);
 		for (idx_t i = 0; i < create_new_threads; i++) {
 			// launch a thread and assign it a cancellation marker
 			auto marker = unique_ptr<atomic<bool>>(new atomic<bool>(true));
-			unique_ptr<thread> worker_thread;
+			auto thread_wrapper = make_uniq<TaskSchedulerThread>(nullptr);
 			try {
 				const auto cpu = threads.size() < available_cpus.size() ? optional_idx(available_cpus[threads.size()])
 				                                                        : optional_idx();
-				worker_thread =
+				thread_wrapper->internal_thread =
 				    make_uniq<thread>(&TaskScheduler::ExecuteForever, &scheduler, marker.get(), pool_type, cpu);
 			} catch (std::exception &ex) {
 				// thread constructor failed - this can happen when the system has too many threads allocated
 				// in this case we cannot allocate more threads - stop launching them
 				break;
 			}
-			auto thread_wrapper = make_uniq<TaskSchedulerThread>(std::move(worker_thread));
 
 			threads.push_back(std::move(thread_wrapper));
 			markers.push_back(std::move(marker));

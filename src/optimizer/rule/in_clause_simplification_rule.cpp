@@ -24,6 +24,10 @@ unique_ptr<Expression> InClauseSimplificationRule::Apply(LogicalOperator &op, ve
 		return nullptr;
 	}
 	auto &cast_expression = expr.GetChildrenMutable()[0]->Cast<BoundFunctionExpression>();
+	if (BoundCastExpression::IsTryCast(cast_expression)) {
+		// a TRY_CAST turns failing values into NULL, which is lost when the cast is removed
+		return nullptr;
+	}
 	if (BoundCastExpression::Child(cast_expression).GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
 		return nullptr;
 	}
@@ -46,7 +50,7 @@ unique_ptr<Expression> InClauseSimplificationRule::Apply(LogicalOperator &op, ve
 		if (!BoundCastExpression::CastIsInvertible(constant_value.type(), target_type)) {
 			return nullptr;
 		}
-		auto new_constant = constant_value.DefaultTryCastAs(target_type);
+		auto new_constant = constant_value.TryCastAs(GetContext(), target_type);
 		if (!new_constant) {
 			return nullptr;
 		} else {

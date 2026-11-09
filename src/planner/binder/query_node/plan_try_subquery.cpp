@@ -196,8 +196,7 @@ static TrySubquerySelectItem FindTrySubquerySelectItem(LogicalOperator &root, co
 		switch (current_op.type) {
 		case LogicalOperatorType::LOGICAL_ORDER_BY:
 		case LogicalOperatorType::LOGICAL_TOP_N:
-		case LogicalOperatorType::LOGICAL_DISTINCT:
-			// these modifiers reference or deduplicate the select list column
+			// these modifiers reference the select list column
 			result.has_result_modifiers = true;
 			current = *current_op.children[0];
 			continue;
@@ -219,6 +218,23 @@ static TrySubquerySelectItem FindTrySubquerySelectItem(LogicalOperator &root, co
 				result.binding =
 				    projection.expressions[result.binding.column_index]->Cast<BoundColumnRefExpression>().Binding();
 				current = *projection.children[0];
+				continue;
+			}
+			if (indexes.distinct_index.IsValid() && projection.table_index == indexes.distinct_index) {
+				// DISTINCT: a projection over the aggregate that deduplicates the select list
+				result.has_result_modifiers = true;
+				// look through the DISTINCT to the select list column it forwards
+				auto &distinct_aggregate = projection.children[0]->Cast<LogicalAggregate>();
+				auto distinct_binding =
+				    projection.expressions[result.binding.column_index]->Cast<BoundColumnRefExpression>().Binding();
+				reference<Expression> source(distinct_binding.table_index == distinct_aggregate.group_index
+				                                 ? *distinct_aggregate.groups[distinct_binding.column_index]
+				                                 : *distinct_aggregate.expressions[distinct_binding.column_index]);
+				if (source.get().GetExpressionClass() == ExpressionClass::BOUND_AGGREGATE) {
+					source = *source.get().Cast<BoundAggregateExpression>().GetChildren()[0];
+				}
+				result.binding = source.get().Cast<BoundColumnRefExpression>().Binding();
+				current = *distinct_aggregate.children[0];
 				continue;
 			}
 			if (projection.table_index != indexes.projection_index) {

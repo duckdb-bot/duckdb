@@ -452,6 +452,12 @@ EXPLAIN SELECT b::BIGINT IN (1, 2) FROM bignums;
 ----
 physical_plan	<!REGEX>:.*CAST.*
 
+# a probe cast that cannot throw is moved onto the constants under TRY as well
+query II
+EXPLAIN SELECT TRY(x::BIGNUM IN (1, 2)) FROM v;
+----
+physical_plan	<!REGEX>:.*CAST.*
+
 query II
 EXPLAIN SELECT isnan(x::DOUBLE) FROM v;
 ----

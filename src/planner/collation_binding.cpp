@@ -308,7 +308,7 @@ static bool PushUnionCollation(ClientContext &context, unique_ptr<Expression> &s
 	unique_ptr<Expression> body = make_uniq<BoundConstantExpression>(Value(collated_type));
 	for (idx_t i = member_count; i > 0; i--) {
 		auto &member_name = UnionType::GetMemberName(sql_type, i - 1);
-		auto tag_value = Value(member_name.GetIdentifierName()).DefaultCastAs(tag->GetReturnType());
+		auto tag_value = Value(member_name.GetIdentifierName()).CastAs(context, tag->GetReturnType());
 		auto is_member = BoundComparisonExpression::Create(ExpressionType::COMPARE_EQUAL, tag->Copy(),
 		                                                   make_uniq<BoundConstantExpression>(std::move(tag_value)));
 		vector<pair<Identifier, unique_ptr<Expression>>> value_arguments;

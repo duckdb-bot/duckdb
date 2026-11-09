@@ -330,10 +330,11 @@ SELECT * FROM w;
 ----
 1	6	bad
 
-# TRY directly over a subquery with result modifiers is lowered onto the subquery plan, also through the projection
+# TRY directly over a subquery with result modifiers or over a grouped bare subquery item is lowered onto the subquery
+# plan, also through the projection
 statement ok
 MERGE INTO w USING (VALUES (1)) src(k) ON w.k = src.k
-  WHEN MATCHED AND TRY((SELECT txt::INTEGER FROM w ORDER BY k LIMIT 1)) IS NULL THEN UPDATE SET v = v + 1;
+  WHEN MATCHED AND TRY((SELECT txt::INTEGER FROM w ORDER BY k LIMIT 1)) IS NULL AND TRY((SELECT (SELECT txt::INTEGER FROM w) GROUP BY 1)) IS NULL THEN UPDATE SET v = v + 1;
 
 statement ok
 MERGE INTO w USING (VALUES (1)) src(k) ON w.k = src.k

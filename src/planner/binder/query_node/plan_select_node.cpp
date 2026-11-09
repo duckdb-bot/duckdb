@@ -1,6 +1,7 @@
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
+#include "duckdb/planner/expression/bound_subquery_expression.hpp"
 #include "duckdb/planner/operator/list.hpp"
 #include "duckdb/planner/operator/logical_dummy_scan.hpp"
 #include "duckdb/planner/operator/logical_limit.hpp"
@@ -153,6 +154,19 @@ unique_ptr<LogicalOperator> Binder::CreatePlan(BoundSelectNode &statement) {
 		for (auto &entry : statement.unnests.GroupBy()) {
 			try_indexes.unnest_indexes.push_back(entry.second.index);
 		}
+		// GROUP BY can move a scalar subquery item into a group, which the item then references. The group is
+		// planned with the item, since it takes the lowering of a bare item, see PlanTrySubquery
+		auto &item = *statement.select_list[0];
+		if (item.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
+			auto &binding = item.Cast<BoundColumnRefExpression>().Binding();
+			if (binding.table_index == statement.group_index) {
+				auto &group = *statement.groups.group_expressions[binding.column_index];
+				if (group.GetExpressionClass() == ExpressionClass::BOUND_SUBQUERY &&
+				    group.Cast<BoundSubqueryExpression>().CanLowerTry()) {
+					try_indexes.item_group = binding.column_index;
+				}
+			}
+		}
 	}
 	auto root = std::move(statement.from_table.plan);
 
@@ -182,8 +196,13 @@ unique_ptr<LogicalOperator> Binder::CreatePlan(BoundSelectNode &statement) {
 	if (!statement.aggregates.empty() || !statement.groups.group_expressions.empty() || statement.having) {
 		if (!statement.groups.group_expressions.empty()) {
 			// visit the groups
-			for (auto &group : statement.groups.group_expressions) {
-				PlanSubqueries(group, root);
+			auto &item_group = GetTrySubqueryPlanIndexes().item_group;
+			for (idx_t group_idx = 0; group_idx < statement.groups.group_expressions.size(); group_idx++) {
+				if (item_group.IsValid() && item_group == ProjectionIndex(group_idx)) {
+					// the group holding the select item of a subquery under TRY is planned with the item
+					continue;
+				}
+				PlanSubqueries(statement.groups.group_expressions[group_idx], root);
 			}
 		}
 		// now visit all aggregate expressions

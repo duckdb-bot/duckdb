@@ -112,6 +112,9 @@ struct TrySubqueryPlanIndexes {
 	//! Whether the select item contains a nested scalar subquery planned with an exposed error flag, whose
 	//! re-raise at the use site relies on this node's lowering to consume it
 	bool nested_transport = false;
+	//! The group computing the select item when GROUP BY moved a scalar subquery item into a group, which is planned
+	//! with the item, see PlanTrySubquery
+	ProjectionIndex item_group;
 };
 
 //! How TRY reaches a scalar subquery when the subquery is planned

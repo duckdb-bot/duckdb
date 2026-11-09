@@ -386,6 +386,19 @@ optional<LogicalType> Binder::PlanTrySubquery(const BoundSubqueryExpression &exp
 	auto &select_projection = *item.projection;
 	auto &item_expr = select_projection.expressions[item.binding.column_index];
 	auto &item_root = select_projection.children[0];
+	if (indexes.item_group.IsValid()) {
+		// GROUP BY moved a scalar subquery item into this group, which takes the direct lowering like a bare item.
+		// Any other lowering plans the group as it is, since a group is computed outside the maskable positions
+		auto aggregate = FindAggregateOperator(*item_root, indexes.aggregate_index);
+		if (!aggregate) {
+			throw InternalException(
+			    "TRY subquery: the aggregate node holding the group of the select item was not found");
+		}
+		auto &group = aggregate->groups[indexes.item_group];
+		auto group_lowering =
+		    lowering == TrySubqueryLowering::DIRECT ? TrySubqueryLowering::DIRECT : TrySubqueryLowering::NONE;
+		group = PlanSubquery(group->Cast<BoundSubqueryExpression>(), aggregate->children[0], group_lowering);
+	}
 	// plan the subqueries of the item, which CreatePlan left for this point
 	if (lowering == TrySubqueryLowering::DIRECT && item_expr->GetExpressionClass() == ExpressionClass::BOUND_SUBQUERY &&
 	    item_expr->Cast<BoundSubqueryExpression>().CanLowerTry()) {

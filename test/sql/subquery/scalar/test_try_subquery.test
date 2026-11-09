@@ -926,6 +926,45 @@ SELECT TRY((SELECT max(10 // (i - 10)) + max(o.x) FROM (VALUES (10)) q(i))) FROM
 ----
 NULL
 
+# an aggregate of the outer query in the argument of TRY is computed outside the subquery, where TRY does not reach
+# its errors. The argument of TRY binds as without TRY and accepts it, while a subquery nested deeper in the argument
+# rejects it like TRY(1 + sum(...))
+query I
+SELECT TRY((SELECT sum(o.i))) FROM integers o
+----
+6
+
+statement error
+SELECT TRY((SELECT sum(10 // (o.i - 2)))) FROM integers o
+----
+Division by zero
+
+statement error
+SELECT TRY(1 + (SELECT sum(o.i))) FROM integers o
+----
+aggregates are not allowed inside the TRY expression
+
+statement error
+SELECT TRY(1 + (SELECT sum(10 // (o.i - 2)))) FROM integers o
+----
+aggregates are not allowed inside the TRY expression
+
+statement error
+SELECT HAS_ERROR((SELECT sum(o.i))) FROM integers o
+----
+aggregates are not allowed inside the TRY expression
+
+# the node of the argument binds without TRY, so a subquery nested in its select item accepts the outer aggregate too
+query I
+SELECT TRY((SELECT 1 + (SELECT sum(o.i)))) FROM integers o
+----
+7
+
+statement error
+SELECT TRY(1 + sum(o.i)) FROM integers o
+----
+aggregates are not allowed inside the TRY expression
+
 # regression: literal arguments keep their coercion through overload resolution
 query I
 SELECT TRY((SELECT bool_and('true')))

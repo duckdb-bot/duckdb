@@ -1,5 +1,6 @@
 #include "duckdb/parser/expression/function_expression.hpp"
 #include "duckdb/parser/expression/operator_expression.hpp"
+#include "duckdb/parser/expression/subquery_expression.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/expression/bound_case_expression.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
@@ -206,9 +207,14 @@ BindResult ExpressionBinder::BindExpression(OperatorExpression &op, idx_t depth)
 	vector<unique_ptr<Expression>> children;
 	if (operator_type == ExpressionType::OPERATOR_TRY || operator_type == ExpressionType::OPERATOR_HAS_ERROR) {
 		D_ASSERT(op.GetChildrenMutable().size() == 1);
+		auto &argument = op.GetChildrenMutable()[0];
 		const auto was_inside_try = inside_try;
 		inside_try = true;
-		children.push_back(BindChild(op.GetChildrenMutable()[0], depth, error));
+		binding_try_subquery = operator_type == ExpressionType::OPERATOR_TRY &&
+		                       argument->GetExpressionClass() == ExpressionClass::SUBQUERY &&
+		                       argument->Cast<SubqueryExpression>().GetSubqueryType() == SubqueryType::SCALAR;
+		children.push_back(BindChild(argument, depth, error));
+		binding_try_subquery = false;
 		inside_try = was_inside_try;
 	} else {
 		for (idx_t i = 0; i < op.GetChildrenMutable().size(); i++) {

@@ -60,6 +60,9 @@ static void ExtractSubqueryChildren(unique_ptr<Expression> &child, vector<unique
 }
 
 BindResult ExpressionBinder::BindExpression(SubqueryExpression &expr, idx_t depth) {
+	// the marker names this subquery only, not the subqueries nested in it
+	const bool is_try_argument = binding_try_subquery;
+	binding_try_subquery = false;
 	if (inside_try) {
 		if (expr.GetSubqueryType() != SubqueryType::SCALAR) {
 			throw BinderException("TRY can not be used in combination with EXISTS/IN/ANY/ALL subqueries");
@@ -78,10 +81,13 @@ BindResult ExpressionBinder::BindExpression(SubqueryExpression &expr, idx_t dept
 	}
 
 	subquery_binder->BeginSubqueryBind(binder, *this);
-	// the subquery binds as without TRY, so the aggregates and names it resolves in this scope bind as they do
-	// outside TRY, and TRY reaches the subquery through the flag of its binder
+	// the argument of TRY binds as without TRY, so an aggregate it resolves in this scope binds as it does outside
+	// TRY, while a subquery nested deeper in the argument keeps rejecting such an aggregate, whose errors TRY would
+	// not mask
 	const auto was_inside_try = inside_try;
-	inside_try = false;
+	if (is_try_argument) {
+		inside_try = false;
+	}
 	auto bound_node = subquery_binder->BindNode(*expr.Subquery()->node);
 	inside_try = was_inside_try;
 	subquery_binder->FinishSubqueryBind();

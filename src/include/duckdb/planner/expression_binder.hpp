@@ -334,6 +334,9 @@ protected:
 	vector<BoundColumnReferenceInfo> bound_columns;
 	//! Set while binding the argument of TRY or HAS_ERROR
 	bool inside_try = false;
+	//! Set while binding a scalar subquery that is the argument of TRY, which binds its node as without TRY since TRY
+	//! is pushed into its plan, while the node of a subquery nested deeper in the argument binds under TRY
+	bool binding_try_subquery = false;
 
 	BindResult TryBindLambdaOrJson(FunctionExpression &function, idx_t depth, CatalogEntry &func,
 	                               const LambdaSyntaxType syntax_type);

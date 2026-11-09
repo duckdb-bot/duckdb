@@ -1133,6 +1133,38 @@ SELECT TRY((SELECT EXISTS(SELECT 1 FROM (VALUES (0)) t(i) WHERE 10 // i > 0)))
 ----
 Division by zero
 
+# subqueries in positions TRY does not reach, such as WHERE, HAVING, IN and EXISTS, are bound and planned as they
+# are, in the direct and in the nested form
+query I
+SELECT TRY((SELECT 10 // (i - 1) FROM integers WHERE i IN (SELECT 1 WHERE (SELECT 1) = 1) OR EXISTS (SELECT 1 WHERE (SELECT i) = 0)))
+----
+NULL
+
+query I
+SELECT TRY(1 + (SELECT 10 // (i - 2) FROM integers WHERE i IN (SELECT 2 FROM integers ORDER BY i LIMIT 1 OFFSET 1) AND EXISTS (SELECT DISTINCT ON (i) i FROM integers i2 WHERE i2.i = integers.i)))
+----
+NULL
+
+query I
+SELECT TRY((SELECT max(10 // (i - 3)) FROM integers HAVING max(i) IN (SELECT 3 ORDER BY 1 LIMIT 1)))
+----
+NULL
+
+query I
+SELECT TRY((SELECT 10 // (i - 3) FROM integers WHERE i = (SELECT max(i2.i) FROM integers i2 ORDER BY 1 LIMIT 1) AND i IN (SELECT i3.i FROM integers i3 WHERE (SELECT i3.i) = i)))
+----
+NULL
+
+statement error
+SELECT TRY((SELECT i FROM integers WHERE i IN (SELECT 10 // (i2.i - 3) FROM integers i2)))
+----
+Division by zero
+
+statement error
+SELECT TRY((SELECT i FROM integers WHERE EXISTS (SELECT 1 WHERE (SELECT 10 // (i - 3)) > 0)))
+----
+Division by zero
+
 # a group column in the select item is masked by the projection TRY, the group key itself is not
 query I
 SELECT TRY((SELECT 10 // g FROM (VALUES (0)) t(g) GROUP BY g))

@@ -75,8 +75,10 @@ BindResult ExpressionBinder::BindExpression(SubqueryExpression &expr, idx_t dept
 	auto subquery_binder = Binder::CreateBinder(context, binder);
 	subquery_binder->SetCanContainNulls(true);
 	subquery_binder->SetInsideSubquery();
-	if (inside_try || binder.IsUnderTry()) {
-		// TRY is pushed into the plan when the subquery is planned, see PlanTrySubquery
+	if (inside_try || (binding_try_select_item && expr.GetSubqueryType() == SubqueryType::SCALAR &&
+	                   expr.Subquery()->node->type == QueryNodeType::SELECT_NODE)) {
+		// TRY reaches a scalar subquery in its argument or in the select item of a subquery under TRY, and is pushed
+		// into its plan when the subquery is planned, see PlanTrySubquery
 		subquery_binder->SetUnderTry();
 	}
 

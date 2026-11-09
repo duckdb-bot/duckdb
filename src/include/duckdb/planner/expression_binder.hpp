@@ -253,6 +253,12 @@ public:
 	//! Continues the expression depth of the binder this one binds a nested expression for
 	void ContinueStackDepth(const ExpressionBinder &parent);
 
+	//! While set, the scalar subqueries this binder binds are in the select item of a subquery under TRY, which TRY
+	//! reaches when that subquery is planned, so they are marked under TRY as well
+	void SetBindingTrySelectItem(bool binding_try_select_item_p) {
+		binding_try_select_item = binding_try_select_item_p;
+	}
+
 private:
 	//! Current stack depth
 	idx_t stack_depth = DConstants::INVALID_INDEX;
@@ -337,6 +343,8 @@ protected:
 	//! Set while binding a scalar subquery that is the argument of TRY, which binds its node as without TRY since TRY
 	//! is pushed into its plan, while the node of a subquery nested deeper in the argument binds under TRY
 	bool binding_try_subquery = false;
+	//! Set while binding the select item of a subquery under TRY, see SetBindingTrySelectItem
+	bool binding_try_select_item = false;
 
 	BindResult TryBindLambdaOrJson(FunctionExpression &function, idx_t depth, CatalogEntry &func,
 	                               const LambdaSyntaxType syntax_type);

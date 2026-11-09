@@ -33,8 +33,6 @@ protected:
 	//! Move the column references and subqueries of a bound expression into the projection, a TRY or HAS_ERROR over
 	//! a subquery as a whole, the rest of the expression stays where it is
 	void ProjectLeaves(unique_ptr<Expression> &expr);
-	//! Whether the expression references a column of the projection
-	bool ReferencesProjection(const Expression &expr) const;
 
 private:
 	TableIndex proj_index;

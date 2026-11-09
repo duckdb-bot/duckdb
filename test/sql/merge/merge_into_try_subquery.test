@@ -197,14 +197,14 @@ SELECT * FROM u ORDER BY k;
 2	0
 3	4
 
-# subqueries in lambdas keep moving out of the lambda on their own
+# a lambda in the condition works under TRY, as long as it holds no subquery
 statement ok
 MERGE INTO u USING (VALUES (3)) src(k) ON u.k = src.k
-  WHEN MATCHED AND list_transform([1, 2], lambda x: TRY(x + (SELECT 1))) = [2, 3] THEN UPDATE SET v = 5;
+  WHEN MATCHED AND TRY(list_transform([1, 2], lambda x: x + 1)) = [2, 3] THEN UPDATE SET v = 5;
 
 statement ok
 MERGE INTO u USING (VALUES (3)) src(k) ON u.k = src.k
-  WHEN MATCHED AND TRY(list_transform([1, 2], lambda x: x + (SELECT 1))) = [2, 3] THEN UPDATE SET v = v + 1;
+  WHEN MATCHED AND list_transform([1, 2], lambda x: TRY(x + 1)) = [2, 3] THEN UPDATE SET v = v + 1;
 
 query II
 SELECT * FROM u ORDER BY k;
@@ -213,27 +213,85 @@ SELECT * FROM u ORDER BY k;
 2	0
 3	6
 
-# macros that expand to a lambda around a subquery
+# a subquery in a lambda body is rejected when the condition is bound, as it is in SELECT, with or without a TRY
+# inside or around the lambda
+statement error
+MERGE INTO u USING (VALUES (3)) src(k) ON u.k = src.k
+  WHEN MATCHED AND list_transform([1, 2], lambda x: x + (SELECT 1)) = [2, 3] THEN UPDATE SET v = 0;
+----
+subqueries in lambda expressions are not supported
+
+statement error
+MERGE INTO u USING (VALUES (3)) src(k) ON u.k = src.k
+  WHEN MATCHED AND list_transform([1, 2], lambda x: x + (SELECT x + 1)) = [3, 5] THEN UPDATE SET v = 0;
+----
+subqueries in lambda expressions are not supported
+
+statement error
+MERGE INTO u USING (VALUES (3)) src(k) ON u.k = src.k
+  WHEN MATCHED AND list_transform([1, 2], lambda x: TRY((SELECT x + 1))) = [2, 3] THEN UPDATE SET v = 0;
+----
+subqueries in lambda expressions are not supported
+
+statement error
+MERGE INTO u USING (VALUES (3)) src(k) ON u.k = src.k
+  WHEN MATCHED AND list_transform([1], lambda x: TRY((SELECT 'z'::INT))) = [NULL] THEN UPDATE SET v = 0;
+----
+subqueries in lambda expressions are not supported
+
+statement error
+MERGE INTO u USING (VALUES (3)) src(k) ON u.k = src.k
+  WHEN MATCHED AND list_transform([1, 2], lambda x: TRY(x + (SELECT 1))) = [2, 3] THEN UPDATE SET v = 0;
+----
+subqueries in lambda expressions are not supported
+
+statement error
+MERGE INTO u USING (VALUES (3)) src(k) ON u.k = src.k
+  WHEN MATCHED AND TRY(list_transform([1, 2], lambda x: x + (SELECT 1))) = [2, 3] THEN UPDATE SET v = 0;
+----
+subqueries in lambda expressions are not supported
+
+statement error
+MERGE INTO u USING (VALUES (3)) src(k) ON u.k = src.k
+  WHEN MATCHED AND HAS_ERROR(list_transform([1, 2], lambda x: x + (SELECT 1))) THEN UPDATE SET v = 0;
+----
+subqueries in lambda expressions are not supported
+
+statement error
+MERGE INTO u USING (VALUES (3)) src(k) ON u.k = src.k
+  WHEN MATCHED AND list_transform([[1]], lambda l: list_transform(l, lambda x: x + (SELECT 1)))[1][1] = 2 THEN UPDATE SET v = 0;
+----
+subqueries in lambda expressions are not supported
+
+# macros that expand to a lambda around a subquery are rejected the same way, a lambda without a subquery works
 statement ok
 CREATE MACRO lt(y) AS list_transform([1, 2], lambda x: x + y);
 
 statement ok
 CREATE MACRO one() AS (SELECT 1);
 
-statement ok
+statement error
 MERGE INTO u USING (VALUES (3)) src(k) ON u.k = src.k
-  WHEN MATCHED AND TRY(lt(one())) = [2, 3] THEN UPDATE SET v = v + 1;
+  WHEN MATCHED AND TRY(lt(one())) = [2, 3] THEN UPDATE SET v = 0;
+----
+subqueries in lambda expressions are not supported
+
+statement error
+MERGE INTO u USING (VALUES (3)) src(k) ON u.k = src.k
+  WHEN MATCHED AND TRY(lt((SELECT 1))) = [2, 3] THEN UPDATE SET v = 0;
+----
+subqueries in lambda expressions are not supported
 
 statement ok
 MERGE INTO u USING (VALUES (3)) src(k) ON u.k = src.k
-  WHEN MATCHED AND TRY(lt((SELECT 1))) = [2, 3] THEN UPDATE SET v = v + 1;
+  WHEN MATCHED AND TRY(lt(1)) = [2, 3] THEN UPDATE SET v = v + 1;
 
 query II
 SELECT * FROM u ORDER BY k;
 ----
 1	10
 2	0
-3	8
+3	7
 
 # the condition keeps the semantics of SELECT, where an error in the subquery turns the whole TRY into NULL, also
 # when the expression around the subquery tolerates NULL, and HAS_ERROR sees the error
@@ -294,36 +352,34 @@ SELECT * FROM w;
 ----
 1	4	bad
 
-# a subquery in a lambda body moves out of the lambda on its own, so a TRY inside or around the lambda does not reach
-# its error
+# a subquery in a lambda body is rejected when the condition is bound, with or without a TRY inside or around the
+# lambda
 statement error
 MERGE INTO w USING (VALUES (1)) src(k) ON w.k = src.k
   WHEN MATCHED AND list_transform([1, 2], lambda x: TRY(x + (SELECT txt::INTEGER FROM w))) = [NULL, NULL] THEN UPDATE SET v = 0;
 ----
-Could not convert string 'bad'
+subqueries in lambda expressions are not supported
 
 statement error
 MERGE INTO w USING (VALUES (1)) src(k) ON w.k = src.k
   WHEN MATCHED AND TRY(list_transform([1, 2], lambda x: x + (SELECT txt::INTEGER FROM w))) IS NULL THEN UPDATE SET v = 0;
 ----
-Could not convert string 'bad'
-
-# a TRY next to such a lambda keeps its own subquery, while the TRY around the lambda does not reach a subquery next
-# to the lambda either
-statement ok
-MERGE INTO w USING (VALUES (1)) src(k) ON w.k = src.k
-  WHEN MATCHED AND TRY(list_transform([1], lambda x: x + (SELECT 0))[1] + TRY((SELECT txt::INTEGER FROM w))) IS NULL THEN UPDATE SET v = 5;
+subqueries in lambda expressions are not supported
 
 statement error
 MERGE INTO w USING (VALUES (1)) src(k) ON w.k = src.k
   WHEN MATCHED AND TRY(list_transform([1], lambda x: x + (SELECT 0))[1] + (SELECT txt::INTEGER FROM w)) IS NULL THEN UPDATE SET v = 0;
 ----
-Could not convert string 'bad'
+subqueries in lambda expressions are not supported
 
-# a subquery in a nested lambda body moves out as well
+# a lambda without a subquery leaves the TRY whole, so a subquery next to the lambda is masked like any other
 statement ok
 MERGE INTO w USING (VALUES (1)) src(k) ON w.k = src.k
-  WHEN MATCHED AND list_transform([[1]], lambda l: list_transform(l, lambda x: x + (SELECT v FROM w)))[1][1] = 6 THEN UPDATE SET v = 6;
+  WHEN MATCHED AND TRY(list_transform([1], lambda x: x + 0)[1] + (SELECT txt::INTEGER FROM w)) IS NULL THEN UPDATE SET v = 5;
+
+statement ok
+MERGE INTO w USING (VALUES (1)) src(k) ON w.k = src.k
+  WHEN MATCHED AND list_transform([[1]], lambda l: list_transform(l, lambda x: x + w.v))[1][1] = 6 THEN UPDATE SET v = 6;
 
 query III
 SELECT * FROM w;
@@ -402,12 +458,12 @@ SELECT * FROM tgt ORDER BY k;
 4	0
 5	50
 
-# the correlated lookup in a lambda body moves out of the lambda, where the TRY around the lambda does not reach it
+# the correlated lookup in a lambda body is rejected when the condition is bound
 statement error
 MERGE INTO tgt USING (VALUES (1), (2), (3), (4), (5)) src(k) ON tgt.k = src.k
   WHEN MATCHED AND TRY(list_transform([1], lambda x: x + (SELECT l.txt::INTEGER FROM lookup l WHERE l.k = tgt.k))) = [6] THEN UPDATE SET v = v + 100;
 ----
-Could not convert string 'bad'
+subqueries in lambda expressions are not supported
 
 query II
 SELECT * FROM tgt ORDER BY k;

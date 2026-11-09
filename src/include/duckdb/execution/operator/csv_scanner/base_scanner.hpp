@@ -447,6 +447,7 @@ protected:
 						states.states[0] = states.states[1];
 						states.states[1] = new_line_state ? CSVState::QUOTED_NEW_LINE : CSVState::QUOTED;
 						iterator.pos.buffer_pos = at;
+						ever_quoted_new_line = true;
 						if (new_line_state) {
 							T::QuotedNewLine(result);
 						} else {

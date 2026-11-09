@@ -17,6 +17,7 @@
         "test/fuzzer/pedro/vacuum_table_with_generated_column.test",
         "test/fuzzer/duckfuzz/bitstring_agg_uhugeint.test",
         "test/sql/aggregate/aggregates/test_bitstring_agg_small_types.test",
+        "test/sql/aggregate/aggregates/test_bitstring_agg_null_branch.test",
         "test/parquet/parquet_stats_function.test",
         "test/sql/copy/parquet/parquet_pruned_file_stats.test",
         "test/sql/copy/parquet/read_single_parquet_file.test",

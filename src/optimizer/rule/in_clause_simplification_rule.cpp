@@ -61,6 +61,10 @@ unique_ptr<Expression> InClauseSimplificationRule::Apply(LogicalOperator &op, ve
 		// a TRY_CAST turns failing values into NULL, which is lost when the cast is removed
 		return nullptr;
 	}
+	// moving the cast to the constants removes it, and its error TRY would catch
+	if (rewriter.InTry() && cast_expression.CanThrow()) {
+		return nullptr;
+	}
 	auto target_type = BoundCastExpression::SourceType(cast_expression);
 	if (BoundCastExpression::CastIsInvertibleForEquality(target_type, cast_expression.GetReturnType())) {
 		return SimplifyEqualityCast(GetContext(), expr, cast_expression, changes_made);

@@ -1,0 +1,33 @@
+# name: test/extension/custom_cast_kept_under_try.test
+# description: Comparisons and IN lists under TRY keep a custom type's cast, which can throw
+# group: [extension]
+
+require skip_reload
+
+require notmingw
+
+require allow_unsigned_extensions
+
+statement ok
+LOAD '{BUILD_DIRECTORY}/test/extension/loadable_extension_demo.duckdb_extension';
+
+statement ok
+CREATE TABLE ints(i INTEGER);
+
+statement ok
+INSERT INTO ints VALUES (1), (11), (NULL);
+
+# the cast to BOUNDED(10) fails for 11, which TRY turns into NULL
+query IIII
+SELECT i, TRY(i::BOUNDED(10) = 1::BOUNDED(10)), TRY(i::BOUNDED(10) IN (1::BOUNDED(10), 2::BOUNDED(10))),
+	TRY(i::BOUNDED(10) NOT IN (1::BOUNDED(10), 2::BOUNDED(10))) FROM ints ORDER BY i;
+----
+1	true	true	false
+11	NULL	NULL	NULL
+NULL	NULL	NULL	NULL
+
+# outside TRY the cast is removed
+query II
+EXPLAIN SELECT i::BOUNDED(10) IN (1::BOUNDED(10), 2::BOUNDED(10)) FROM ints;
+----
+physical_plan	<!REGEX>:.*CAST.*

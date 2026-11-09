@@ -87,16 +87,16 @@ SELECT count(*) FROM bad, UNNEST(l) u(v) WHERE s::INT > 0 AND random() < 0;
 statement ok
 RESET delim_join_as_cte;
 
-# a filter on a projected cast takes the cast below a volatile filter of the input, with or without the lateral join
-statement error
+# a filter on a projected cast joins the volatile filter of the input and runs after it, with or without the lateral join
+query I
 SELECT count(*) FROM (SELECT s::INT AS n, l FROM bad WHERE random() < 0) q WHERE n > 0;
 ----
-Could not convert string 'bad' to INT32
+0
 
-statement error
+query I
 SELECT count(*) FROM (SELECT s::INT AS n, l FROM bad WHERE random() < 0) q, UNNEST(l) u(v) WHERE n > 0;
 ----
-Could not convert string 'bad' to INT32
+0
 
 # filters of the input below the numbering run as they do without the lateral join
 statement ok

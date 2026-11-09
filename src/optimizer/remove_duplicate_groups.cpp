@@ -14,6 +14,23 @@ namespace duckdb {
 RemoveDuplicateGroups::RemoveDuplicateGroups(Optimizer &optimizer_p) : optimizer(optimizer_p) {
 }
 
+// Bases where SQL `=` doesn't imply bit-equality are unsafe: 0e0 == -0e0 (signbit distinguishes),
+// '1 day' == '24 hour' (datepart distinguishes). INTERVAL today gets wrapped in
+// normalized_interval(...) by the binder, so it shouldn't reach here, but we exclude it
+// defensively in case that wrapping ever changes.
+bool BaseTypeAllowsCollapse(const LogicalType &type) {
+	return !TypeVisitor::Contains(type, [](const LogicalType &t) {
+		switch (t.id()) {
+		case LogicalTypeId::FLOAT:
+		case LogicalTypeId::DOUBLE:
+		case LogicalTypeId::INTERVAL:
+			return true;
+		default:
+			return false;
+		}
+	});
+}
+
 namespace {
 
 // derived_expr null for same-binding duplicates, set for FD-derived
@@ -36,23 +53,6 @@ bool CollectColumnRefBindings(const Expression &expr, column_binding_set_t &resu
 		}
 	});
 	return ok;
-}
-
-// Bases where SQL `=` doesn't imply bit-equality are unsafe: 0e0 == -0e0 (signbit distinguishes),
-// '1 day' == '24 hour' (datepart distinguishes). INTERVAL today gets wrapped in
-// normalized_interval(...) by the binder, so it shouldn't reach here, but we exclude it
-// defensively in case that wrapping ever changes.
-bool BaseTypeAllowsCollapse(const LogicalType &type) {
-	return !TypeVisitor::Contains(type, [](const LogicalType &t) {
-		switch (t.id()) {
-		case LogicalTypeId::FLOAT:
-		case LogicalTypeId::DOUBLE:
-		case LogicalTypeId::INTERVAL:
-			return true;
-		default:
-			return false;
-		}
-	});
 }
 
 // Derived groups must reference a single bare column-ref base; non-colref bases would need a

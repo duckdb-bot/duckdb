@@ -133,3 +133,27 @@ SELECT count(DISTINCT m) FROM (VALUES
 ) t(m);
 ----
 1
+
+# SELECT DISTINCT deduplicates by the collation as well, grouping on the collated contents
+query I
+SELECT count(*) FROM (SELECT DISTINCT m FROM (VALUES (MAP {'k': 'A' COLLATE NOCASE}), (MAP {'k': 'a' COLLATE NOCASE}), (MAP {'k': 'b' COLLATE NOCASE})) t(m));
+----
+2
+
+query I
+SELECT count(*) FROM (SELECT DISTINCT u FROM (VALUES (union_value(s := 'A' COLLATE NOCASE)), (union_value(s := 'a' COLLATE NOCASE)), (union_value(s := 'b' COLLATE NOCASE))) t(u));
+----
+2
+
+# DISTINCT ON takes the first row of each collated group in its ORDER BY
+query I
+SELECT i FROM (SELECT DISTINCT ON (m) i, m FROM (VALUES (1, MAP {'k': 'A' COLLATE NOCASE}), (2, MAP {'k': 'a' COLLATE NOCASE}), (3, MAP {'k': 'b' COLLATE NOCASE})) t(i, m) ORDER BY i DESC) ORDER BY i;
+----
+2
+3
+
+query I
+SELECT i FROM (SELECT DISTINCT ON (u) i, u FROM (VALUES (1, union_value(s := 'A' COLLATE NOCASE)), (2, union_value(s := 'a' COLLATE NOCASE)), (3, union_value(s := 'b' COLLATE NOCASE))) t(i, u) ORDER BY i DESC) ORDER BY i;
+----
+2
+3

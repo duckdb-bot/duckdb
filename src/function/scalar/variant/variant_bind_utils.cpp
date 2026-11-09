@@ -101,13 +101,13 @@ unique_ptr<FunctionData> VariantBindUtils::VariantPathBind(BindScalarFunctionInp
 	throw BinderException("%s received an unexpected type for the second argument", function_name);
 }
 
-void VariantBindUtils::BindExtractIndex(Expression &index) {
+void VariantBindUtils::BindExtractIndex(ClientContext &context, Expression &index) {
 	if (index.GetExpressionClass() != ExpressionClass::BOUND_CONSTANT) {
 		return;
 	}
 	auto &constant = index.Cast<BoundConstantExpression>();
 	if (!constant.GetValue().IsNull() && constant.GetReturnType().IsIntegral()) {
-		constant.SetValue(constant.GetValue().DefaultCastAs(LogicalType::UINTEGER, true));
+		constant.SetValue(constant.GetValue().CastAs(context, LogicalType::UINTEGER, true));
 		constant.SetReturnType(LogicalType::UINTEGER);
 	}
 }

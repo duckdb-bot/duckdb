@@ -31,6 +31,12 @@
       ]
     },
     {
+      "reason": "Checks that the optimizer pulls an empty result up through a grouped aggregate.",
+      "paths": [
+        "test/optimizer/empty_result_pullup_aggregate.test"
+      ]
+    },
+    {
       "reason": "Checks barrier ordering and scan pushdown performed by the optimizer.",
       "paths": [
         "test/sql/optimizer/barrier_projection_siblings.test"

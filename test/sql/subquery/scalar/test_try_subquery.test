@@ -633,6 +633,11 @@ SELECT TRY((SELECT DISTINCT ON (i) 10 // i FROM (VALUES (0)) t(i)))
 NULL
 
 query I
+SELECT TRY((SELECT DISTINCT ON (i) 10 // i FROM (VALUES (0), (1)) t(i) ORDER BY i LIMIT 1))
+----
+NULL
+
+query I
 SELECT TRY((SELECT 10 // i FROM (VALUES (0)) t(i) ORDER BY ALL))
 ----
 NULL
@@ -1416,6 +1421,17 @@ query I
 SELECT TRY((WITH c AS MATERIALIZED (SELECT 1 AS k) SELECT (SELECT 1 // 0) FROM c GROUP BY 1))
 ----
 NULL
+
+# a DISTINCT above the group deduplicates the select list as an aggregate, which the lowering looks through
+query I
+SELECT TRY((SELECT DISTINCT (SELECT 1 // 0) GROUP BY 1))
+----
+NULL
+
+query I
+SELECT TRY((SELECT DISTINCT (SELECT 10 // i FROM (VALUES (2)) t(i)) GROUP BY 1))
+----
+5
 
 # the nested form plans such a group as it is, since a group is computed outside the maskable positions
 statement error

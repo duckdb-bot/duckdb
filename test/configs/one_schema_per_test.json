@@ -131,7 +131,8 @@
     {
       "reason": "Creates VARIANT columns, which this config's v1.4.0 storage version does not support",
       "paths": [
-        "test/sql/unnest/unnest_constant_reference_types.test"
+        "test/sql/unnest/unnest_constant_reference_types.test",
+        "test/sql/collate/test_map_union_collations.test"
       ]
     }
   ]

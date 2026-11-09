@@ -190,6 +190,27 @@ true
 true
 true
 
+# an IN whose probe cast can fail, which moving the cast onto the constants would drop
+statement ok
+CREATE TABLE bignums(b BIGNUM);
+
+statement ok
+INSERT INTO bignums VALUES (1::BIGNUM), (9223372036854775808::BIGNUM), (NULL);
+
+query II
+SELECT b, TRY(b::BIGINT IN (1, 2)) FROM bignums ORDER BY b;
+----
+1	true
+9223372036854775808	NULL
+NULL	NULL
+
+query II
+SELECT b, TRY(b::BIGINT NOT IN (1, 2)) FROM bignums ORDER BY b;
+----
+1	false
+9223372036854775808	NULL
+NULL	NULL
+
 # LIKE, prefix and regexp_matches with a pattern that becomes NULL
 statement ok
 CREATE SEQUENCE slike;
@@ -425,6 +446,11 @@ query II
 EXPLAIN SELECT x IN (1, 2, 3, 4, 5, 6) FROM v;
 ----
 physical_plan	<REGEX>:.*MARK.*
+
+query II
+EXPLAIN SELECT b::BIGINT IN (1, 2) FROM bignums;
+----
+physical_plan	<!REGEX>:.*CAST.*
 
 query II
 EXPLAIN SELECT isnan(x::DOUBLE) FROM v;

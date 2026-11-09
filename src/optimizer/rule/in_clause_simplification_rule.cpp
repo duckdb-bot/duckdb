@@ -65,6 +65,10 @@ unique_ptr<Expression> InClauseSimplificationRule::Apply(LogicalOperator &op, ve
 	if (BoundCastExpression::CastIsInvertibleForEquality(target_type, cast_expression.GetReturnType())) {
 		return SimplifyEqualityCast(GetContext(), expr, cast_expression, changes_made);
 	}
+	// moving the cast to the constants removes it, and its error TRY would catch
+	if (rewriter.InTry() && cast_expression.CanThrow()) {
+		return nullptr;
+	}
 	if (BoundCastExpression::Child(cast_expression).GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
 		return nullptr;
 	}

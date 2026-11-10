@@ -163,7 +163,10 @@ ClientContext::~ClientContext() {
 	}
 	// destroy the client context and rollback if there is an active transaction
 	// but only if we are not destroying this client context as part of an exception stack unwind
-	Destroy();
+	try {
+		Destroy();
+	} catch (...) { // NOLINT
+	}
 }
 
 unique_ptr<ClientContextLock> ClientContext::LockContext() {
@@ -214,7 +217,9 @@ static unique_ptr<SQLStatement> WrapAsSelect(unique_ptr<TableRef> from_ref) {
 }
 
 void ClientContext::Destroy() {
-	auto lock = LockContext();
+	// the lock lives on the stack, since the destructor of a connection that ran out of memory comes here too, and the
+	// heap allocation of LockContext fails then
+	ClientContextLock lock(context_lock);
 	if (transaction.HasActiveTransaction()) {
 		transaction.ResetActiveQuery();
 		if (!transaction.IsAutoCommit()) {
@@ -225,7 +230,7 @@ void ClientContext::Destroy() {
 			}
 		}
 	}
-	CleanupInternal(*lock);
+	CleanupInternal(lock);
 }
 
 void ClientContext::ProcessError(ErrorData &error, const string &query) const {

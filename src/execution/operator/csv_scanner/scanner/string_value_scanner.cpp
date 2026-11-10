@@ -1722,18 +1722,22 @@ StringValueScanner::MoveBufferResult StringValueScanner::TryMoveToNextBuffer() {
 	// This means we reached the end of the file, we must add a last line if there is any to be added
 	if (states.EmptyLine() || states.NewRow() || result.added_last_line || states.IsCurrentNewRow() ||
 	    states.IsNotSet()) {
+		if (result.cur_col_id > 0) {
+			// the row is still open, as the file ended without a newline, so its errors need its position
+			result.current_line_position.begin = result.current_line_position.end;
+			result.current_line_position.end = {iterator.pos.buffer_idx, previous_buffer_handle->actual_size,
+			                                    result.buffer_size};
+		}
 		if (result.cur_col_id == result.number_of_columns && !result.IsStateCurrent(CSVState::INVALID)) {
 			// the last value was already added: this row ends at the end of the file
-			LinePosition line_end = {iterator.pos.buffer_idx, previous_buffer_handle->actual_size, result.buffer_size};
-			result.current_line_position.begin = result.current_line_position.end;
-			result.current_line_position.end = line_end;
 			// handle the errors recorded for the row before counting it, as AddRowInternal does
 			const auto chunk_col_id_before = result.chunk_col_id;
 			if (result.current_errors.HandleErrors(result)) {
 				result.InvalidateUnwrittenColumns(chunk_col_id_before);
 			}
-			result.line_positions_per_row[static_cast<idx_t>(result.number_of_rows)] = result.current_line_position;
+			result.StoreLinePosition();
 			result.number_of_rows++;
+			lines_read++;
 		}
 		result.cur_col_id = 0;
 		result.chunk_col_id = 0;
@@ -1753,7 +1757,10 @@ StringValueScanner::MoveBufferResult StringValueScanner::TryMoveToNextBuffer() {
 		LinePosition current_line_start = {iterator.pos.buffer_idx, iterator.pos.buffer_pos, result.buffer_size};
 		result.current_line_position.begin = result.current_line_position.end;
 		result.current_line_position.end = current_line_start;
-		result.InvalidState(result);
+		if (!result.current_errors.HasErrorType(UNTERMINATED_QUOTES, result.cur_col_id)) {
+			// ProcessOverBufferValue records the unterminated quotes of a value the file ends in
+			result.InvalidState(result);
+		}
 	} else {
 		if (result.IsCommentSet(result)) {
 			result.UnsetComment(result, iterator.pos.buffer_pos);
@@ -2078,11 +2085,13 @@ void StringValueScanner::FinishBoundaryScan(const bool moved) {
 			                             result.last_position);
 		}
 	}
-	// the errors all belong to the row being finished, so this appends at most one row
+	// the errors all belong to the row being finished, so this appends at most one row, which counts as a line
 	const auto chunk_col_id_before = result.chunk_col_id;
 	if (result.current_errors.HandleErrors(result)) {
 		result.InvalidateUnwrittenColumns(chunk_col_id_before);
+		result.StoreLinePosition();
 		result.number_of_rows++;
+		lines_read++;
 	}
 	if (!iterator.done) {
 		if (iterator.pos.buffer_pos >= iterator.GetEndPos() || iterator.pos.buffer_idx > iterator.GetBufferIdx() ||

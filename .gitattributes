@@ -2,3 +2,15 @@
 # byte-exact fixtures: the tests assert byte positions and a buffer layout that CRLF conversion would change
 data/csv/last_value_error_no_newline.csv -text
 data/csv/unterminated_quote_cast_error_eof.csv -text
+# byte exact fixtures, the tests assert byte positions and a final line without a newline that CRLF conversion would change
+data/csv/cast_then_unterminated_quote.csv -text
+data/csv/two_casts_then_unterminated_quote.csv -text
+data/csv/cast_then_unterminated_quote_two_columns.csv -text
+data/csv/escaped_quote_then_unterminated.csv -text
+data/csv/cast_then_unterminated_quote_three_columns.csv -text
+data/csv/malformed_quotes_two_columns.csv -text
+data/csv/malformed_quote_then_unterminated.csv -text
+data/csv/unterminated_quote_at_vector_end.csv -text
+data/csv/header_then_cast_error_at_eof.csv -text
+data/csv/cast_error_at_eof.csv -text
+data/csv/cast_error_at_eof_after_full_vector.csv -text

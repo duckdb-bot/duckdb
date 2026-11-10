@@ -36,6 +36,10 @@ public:
 	                     StatisticsPropagationMode mode = StatisticsPropagationMode::FULL);
 
 	unique_ptr<NodeStatistics> PropagateStatistics(unique_ptr<LogicalOperator> &node_ptr);
+	//! Propagate statistics through a standalone expression, given the statistics of the columns it references
+	unique_ptr<BaseStatistics>
+	PropagateExpressionStatistics(unique_ptr<Expression> &expr,
+	                              column_binding_map_t<unique_ptr<BaseStatistics>> column_statistics);
 	//! Whether a fold may drop the expression from the plan, which must not be volatile, nor able to throw inside TRY
 	//! or HAS_ERROR, as TRY would then return a value instead of NULL and HAS_ERROR false instead of true
 	bool CanDropExpression(const Expression &expr) const;
@@ -87,6 +91,7 @@ private:
 	unique_ptr<NodeStatistics> PropagateStatistics(LogicalLimit &op, unique_ptr<LogicalOperator> &node_ptr);
 	unique_ptr<NodeStatistics> PropagateStatistics(LogicalOrder &op, unique_ptr<LogicalOperator> &node_ptr);
 	unique_ptr<NodeStatistics> PropagateStatistics(LogicalWindow &op, unique_ptr<LogicalOperator> &node_ptr);
+	unique_ptr<NodeStatistics> PropagateStatistics(LogicalUnnest &op, unique_ptr<LogicalOperator> &node_ptr);
 
 	unique_ptr<NodeStatistics> PropagateChildren(LogicalOperator &node, unique_ptr<LogicalOperator> &node_ptr);
 

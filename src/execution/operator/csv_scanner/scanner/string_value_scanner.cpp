@@ -1525,10 +1525,11 @@ void StringValueScanner::ProcessOverBufferValue() {
 		}
 		j++;
 	}
-	// the column and position of this value, for an error recorded once the value is added
-	const auto value_col_id = result.cur_col_id;
-	const auto value_chunk_col_id = result.chunk_col_id;
-	const auto value_position = result.last_position;
+	if (cur_buffer_handle->is_last_buffer && iterator.pos.buffer_pos >= cur_buffer_handle->actual_size &&
+	    states.IsQuotedCurrent() && state_machine->dialect_options.state_machine_options.strict_mode.GetValue()) {
+		// the file ended inside a quoted value: record that before the value itself is added
+		result.current_errors.Insert(UNTERMINATED_QUOTES, result.cur_col_id, result.chunk_col_id, result.last_position);
+	}
 	bool skip_value = false;
 	if (result.projecting_columns) {
 		if (result.cur_col_id < result.number_of_columns && !result.projected_columns[result.cur_col_id]) {
@@ -1648,10 +1649,6 @@ void StringValueScanner::ProcessOverBufferValue() {
 
 	if (iterator.pos.buffer_pos >= cur_buffer_handle->actual_size && cur_buffer_handle->is_last_buffer) {
 		result.added_last_line = true;
-		if (states.IsQuotedCurrent() && state_machine->dialect_options.state_machine_options.strict_mode.GetValue()) {
-			// the file ended inside this quoted value, the row is finished at the end of the file with this error
-			result.current_errors.Insert(UNTERMINATED_QUOTES, value_col_id, value_chunk_col_id, value_position);
-		}
 	}
 	if (states.IsCarriageReturn() &&
 	    state_machine->dialect_options.state_machine_options.new_line == NewLineIdentifier::CARRY_ON) {
@@ -1699,8 +1696,8 @@ StringValueScanner::MoveBufferResult StringValueScanner::TryMoveToNextBuffer() {
 			                                    result.buffer_size};
 		}
 		if (result.cur_col_id == result.number_of_columns && !result.IsStateCurrent(CSVState::INVALID)) {
-			// the values of the row are added but the row itself is not
-			// finish it like AddRowInternal does, with its errors handled first and its line counted
+			// the last value was already added: this row ends at the end of the file
+			// handle the errors recorded for the row before counting it, as AddRowInternal does
 			const auto chunk_col_id_before = result.chunk_col_id;
 			if (result.current_errors.HandleErrors(result)) {
 				result.InvalidateUnwrittenColumns(chunk_col_id_before);
@@ -1727,7 +1724,10 @@ StringValueScanner::MoveBufferResult StringValueScanner::TryMoveToNextBuffer() {
 		LinePosition current_line_start = {iterator.pos.buffer_idx, iterator.pos.buffer_pos, result.buffer_size};
 		result.current_line_position.begin = result.current_line_position.end;
 		result.current_line_position.end = current_line_start;
-		result.InvalidState(result);
+		if (!result.current_errors.HasErrorType(UNTERMINATED_QUOTES, result.cur_col_id)) {
+			// ProcessOverBufferValue records the unterminated quotes of a value the file ends in
+			result.InvalidState(result);
+		}
 	} else {
 		if (result.IsCommentSet(result)) {
 			result.UnsetComment(result, iterator.pos.buffer_pos);
@@ -2046,13 +2046,13 @@ void StringValueScanner::FinishBoundaryScan(const bool moved) {
 		if (!state_machine->dialect_options.state_machine_options.strict_mode.GetValue()) {
 			used_unstrictness = true;
 		} else if (cur_buffer_handle) {
-			// the buffer ended inside a quoted value, so the open row has unterminated quotes
-			// without a buffer the file has ended and TryMoveToNextBuffer has finished that row already
+			// a row still open in a quoted state after its buffer has unterminated quotes; once the file has ended,
+			// the end-of-file handling in TryMoveToNextBuffer has already finished that row
 			result.current_errors.Insert(UNTERMINATED_QUOTES, result.cur_col_id, result.chunk_col_id,
 			                             result.last_position);
 		}
 	}
-	// the pending errors all belong to the open row, which is added once and is a line of the file like every row
+	// the errors all belong to the row being finished, so this appends at most one row, which counts as a line
 	const auto chunk_col_id_before = result.chunk_col_id;
 	if (result.current_errors.HandleErrors(result)) {
 		result.InvalidateUnwrittenColumns(chunk_col_id_before);

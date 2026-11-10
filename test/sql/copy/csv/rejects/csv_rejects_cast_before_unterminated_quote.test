@@ -234,7 +234,7 @@ DROP TABLE reject_scans;
 foreach parallel true false
 
 query II
-SELECT count(*), sum(a) FROM read_csv('data/csv/unterminated_quote_at_vector_end.csv', auto_detect=false, header=false, columns={'a': 'INTEGER', 'b': 'VARCHAR'}, buffer_size=10239, parallel=${parallel}, strict_mode=true, store_rejects=true);
+SELECT count(*), sum(a) FROM read_csv('data/csv/unterminated_quote_at_vector_end.csv', auto_detect=false, header=false, columns={'a': 'INTEGER', 'b': 'VARCHAR'}, buffer_size=10239, parallel={parallel}, strict_mode=true, store_rejects=true);
 ----
 2047	2047
 

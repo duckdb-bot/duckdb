@@ -1,5 +1,6 @@
 #include "catch.hpp"
 #include "duckdb/common/local_file_system.hpp"
+#include "duckdb/main/settings.hpp"
 #include "test_helpers.hpp"
 
 using namespace duckdb;
@@ -61,8 +62,8 @@ void DamageTransaction(const string &wal_path, idx_t start, idx_t end) {
 duckdb::unique_ptr<DBConfig> TornWALConfig(bool abort_on_wal_failure) {
 	auto config = GetTestConfig();
 	config->options.checkpoint_wal_size = idx_t(-1);
-	config->options.checkpoint_on_shutdown = false;
-	config->options.abort_on_wal_failure = abort_on_wal_failure;
+	config->SetOption(CheckpointOnShutdownSetting::SettingIndex, Value::BOOLEAN(false));
+	config->SetOption(DebugAbortOnWalFailureSetting::SettingIndex, Value::BOOLEAN(abort_on_wal_failure));
 	return config;
 }
 

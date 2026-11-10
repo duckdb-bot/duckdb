@@ -634,10 +634,11 @@ unique_ptr<WriteAheadLog> WriteAheadLogReplayer::ReplayLog(unique_ptr<FileHandle
 		// a checkpoint WAL continues the main WAL, then the end of the main WAL is not the end of the log
 		bool log_continues = replay_state == WALReplayState::MAIN_WAL &&
 		                     FileSystem::Get(database).FileExists(database.GetStorageManager().GetCheckpointWALPath());
-		if (!torn_wal && checkpoint_state.checksum_mismatch && !config.options.abort_on_wal_failure && !log_continues) {
+		const bool abort_on_wal_failure = Settings::Get<DebugAbortOnWalFailureSetting>(config);
+		if (!torn_wal && checkpoint_state.checksum_mismatch && !abort_on_wal_failure && !log_continues) {
 			torn_wal = IsTornEntry(checkpoint_state, reader, wal_path, checkpoint_state.current_position.GetIndex());
 		}
-		if (config.options.abort_on_wal_failure || !torn_wal) {
+		if (abort_on_wal_failure || !torn_wal) {
 			con.Rollback();
 			error.Throw("Failure while replaying WAL file \"" + wal_path + "\": ");
 		}
@@ -800,7 +801,7 @@ unique_ptr<WriteAheadLog> WriteAheadLogReplayer::ReplayLog(unique_ptr<FileHandle
 		// serialization failure means a truncated WAL
 		// these failures are ignored unless abort_on_wal_failure is true
 		// other failures always result in an error
-		if (config.options.abort_on_wal_failure || error.Type() != ExceptionType::SERIALIZATION) {
+		if (Settings::Get<DebugAbortOnWalFailureSetting>(config) || error.Type() != ExceptionType::SERIALIZATION) {
 			error.Throw("Failure while replaying WAL file \"" + wal_path + "\": ");
 		}
 	} catch (...) {

@@ -93,6 +93,15 @@ idx_t BufferedData::LowWaterMark(idx_t capacity) {
 	return MaxValue<idx_t>(capacity / 2, 1);
 }
 
+QueryResultState BufferedData::Ready(ClientContext &cc) {
+	// a unit is poppable without the engine being asked, so an execution that finished meanwhile reports its progress
+	// here, since no update comes until the unit is popped
+	if (cc.GetExecutor().ExecutionIsFinished()) {
+		cc.UpdateProgressInternal(QueryResultState::READY);
+	}
+	return QueryResultState::READY;
+}
+
 QueryResultState BufferedData::Participate(ClientContextLock &context_lock, QueryResult &result) {
 	auto cc = context.lock();
 	if (!cc) {
@@ -109,7 +118,7 @@ QueryResultState BufferedData::Participate(ClientContextLock &context_lock, Quer
 		throw InterruptException();
 	}
 	if (!interrupted && ReplenishSatisfied()) {
-		return QueryResultState::READY;
+		return Ready(*cc);
 	}
 	UnblockSinks();
 	// Let the executor run until the buffer is no longer empty
@@ -120,7 +129,7 @@ QueryResultState BufferedData::Participate(ClientContextLock &context_lock, Quer
 		return QueryResultState::EXECUTION_ERROR;
 	}
 	if (ReplenishSatisfied()) {
-		return QueryResultState::READY;
+		return Ready(*cc);
 	}
 	// Engine READY means a parked producer with a unit to pop, which satisfies the replenish above
 	D_ASSERT(execution_result != QueryResultState::READY);
@@ -142,7 +151,7 @@ QueryResultState BufferedData::Poll(ClientContextLock &context_lock, QueryResult
 		throw InterruptException();
 	}
 	if (!interrupted && HasObservableUnit()) {
-		return QueryResultState::READY;
+		return Ready(*cc);
 	}
 	auto execution_result = cc->PollInternal(context_lock, result);
 	if (execution_result == QueryResultState::EXECUTION_ERROR) {
@@ -150,7 +159,7 @@ QueryResultState BufferedData::Poll(ClientContextLock &context_lock, QueryResult
 		return QueryResultState::EXECUTION_ERROR;
 	}
 	if (HasObservableUnit()) {
-		return QueryResultState::READY;
+		return Ready(*cc);
 	}
 	// Engine READY means a parked producer with a unit to pop, which the check above would have seen
 	D_ASSERT(execution_result != QueryResultState::READY);

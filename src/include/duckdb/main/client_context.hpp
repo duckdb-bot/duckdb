@@ -93,7 +93,7 @@ enum class ClientInterruptState : uint8_t { NOT_INTERRUPTED, INTERRUPTED, INTERR
 //! during execution
 class ClientContext : public enable_shared_from_this<ClientContext> {
 	friend class QueryResult;         // LockContext
-	friend class BufferedData;        // ExecuteTaskInternal, PollInternal
+	friend class BufferedData;        // ExecuteTaskInternal, PollInternal, UpdateProgressInternal
 	friend class SimpleBufferedData;  // ExecuteTaskInternal, PollInternal
 	friend class BatchedBufferedData; // ExecuteTaskInternal, PollInternal
 	friend class ResultStreamBase;    // drives a statement that expands before its result buffer exists

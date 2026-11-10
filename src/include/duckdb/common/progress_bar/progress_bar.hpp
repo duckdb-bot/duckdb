@@ -69,6 +69,8 @@ private:
 	unique_ptr<ProgressBarDisplay> display;
 	//! Whether or not profiling is supported for the current query
 	bool supported = true;
+	//! Whether a running update found the counted pipelines done, so the final update reports 100 once they are gone
+	bool counted_pipelines_done = false;
 	//! Whether the bar has already finished
 	bool finished = false;
 };

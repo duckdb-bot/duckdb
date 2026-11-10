@@ -124,10 +124,11 @@ __attribute__((destructor)) static void report(void) {
 """
 
 STARTUP_SQL = "SELECT 42"
-# with file system logging at TRACE level every file handle logs its close, also when it is destroyed while an
-# exception unwinds, and the copy allocates far more than startup, so every budget below exhausts the heap inside it
+# with file system logging at TRACE level every file handle logs its close, also when it is destroyed while the failed
+# query is cleaned up. The copy runs on the main thread, since a worker thread that first touches a thread local
+# while the heap is exhausted is ended by glibc when it cannot register the destructor
 TRACE_COPY_SQL = (
-    "SET enable_logging = true;\nSET logging_level = 'TRACE';\n"
+    "SET threads = 1;\nSET enable_logging = true;\nSET logging_level = 'TRACE';\n"
     "COPY (SELECT range AS i, 'row ' || range AS s FROM range(200000)) TO '{path}';\nSELECT 42;"
 )
 # needs far more memory than startup, so every budget below exhausts the heap inside the query
@@ -237,12 +238,15 @@ def trace_copy_bytes(request, malloc_shim, tmp_path_factory):
     return int(match.group(1))
 
 
-# the heap runs out while the copy writes the file, so the file handle is destroyed while the error unwinds and logs
-# its close, and the shell must report the error rather than abort
-@pytest.mark.parametrize("fraction", [0.5, 0.6, 0.7, 0.8, 0.9, 0.95])
-def test_malloc_failure_trace_logging_file_close(shell, malloc_shim, trace_copy_bytes, tmp_path, fraction):
+# the heap runs out after startup, while the copy opens or writes its file, so the file handle is destroyed while the
+# failed query is cleaned up and logs its close, and the shell must report the error rather than abort. The budgets
+# are placed between the startup bytes and the complete run, since the share of startup differs between machines
+@pytest.mark.parametrize("fraction", [0.1, 0.3, 0.5, 0.7, 0.8, 0.9])
+def test_malloc_failure_trace_logging_file_close(
+    shell, malloc_shim, startup_bytes, trace_copy_bytes, tmp_path, fraction
+):
     path = str(tmp_path / "failmalloc.csv")
-    budget = int(trace_copy_bytes * fraction)
+    budget = startup_bytes + int((trace_copy_bytes - startup_bytes) * fraction)
     result = run_with_malloc_budget(shell, malloc_shim, TRACE_COPY_SQL.format(path=path), budget=budget)
     assert result.returncode in (0, 1), (result.returncode, result.stderr)
     assert b"terminate called" not in result.stderr, result.stderr

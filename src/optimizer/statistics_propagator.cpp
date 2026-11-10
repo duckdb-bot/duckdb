@@ -120,9 +120,7 @@ unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalOper
 		result = PropagateStatistics(node.Cast<LogicalWindow>(), node_ptr);
 		break;
 	case LogicalOperatorType::LOGICAL_UNNEST:
-		result = PropagateChildren(node, node_ptr);
-		// unnest emits its input row once per unnested entry
-		ResetAdditiveStatistics(node.children[0]->GetColumnBindings());
+		result = PropagateStatistics(node.Cast<LogicalUnnest>(), node_ptr);
 		break;
 	default:
 		result = PropagateChildren(node, node_ptr);
@@ -146,10 +144,27 @@ unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(unique_ptr<
 unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalCopyToFile &op,
                                                                      unique_ptr<LogicalOperator> &node_ptr) {
 	auto stats = PropagateChildren(op, node_ptr);
-	if (!op.function.copy_to_propagate_statistics || !op.bind_data || op.children.empty()) {
+	if (op.children.empty()) {
 		return stats;
 	}
 	auto bindings = op.children[0]->GetColumnBindings();
+	if (op.partition_output) {
+		// the partition column statistics let the partitioned write pick its partitioning scheme
+		op.partition_stats.clear();
+		for (auto &col : op.partition_columns) {
+			unique_ptr<BaseStatistics> partition_stats;
+			if (col < bindings.size()) {
+				auto entry = statistics_map.find(bindings[col]);
+				if (entry != statistics_map.end() && entry->second) {
+					partition_stats = entry->second->ToUnique();
+				}
+			}
+			op.partition_stats.push_back(std::move(partition_stats));
+		}
+	}
+	if (!op.function.copy_to_propagate_statistics || !op.bind_data) {
+		return stats;
+	}
 	vector<optional_ptr<BaseStatistics>> column_stats(bindings.size());
 	for (idx_t i = 0; i < bindings.size(); i++) {
 		auto entry = statistics_map.find(bindings[i]);
@@ -192,7 +207,7 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(unique_ptr<
 #endif
 	auto stats = PropagateExpression(*expr, expr);
 	D_ASSERT(expr->GetReturnType() != return_type || expr->GetReturnType().EqualsIncludingCollation(return_type));
-	if (Settings::Get<DebugVerifyStatsSetting>(context) && stats) {
+	if (attach_verification_stats && stats && Settings::Get<DebugVerifyStatsSetting>(context)) {
 		expr->SetVerificationStats(stats->ToUnique());
 	}
 	return stats;

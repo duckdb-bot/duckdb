@@ -10,6 +10,7 @@
 
 #include "duckdb/function/cast/default_casts.hpp"
 #include "duckdb/function/combine_types_rule.hpp"
+#include "duckdb/main/context.hpp"
 
 namespace duckdb {
 struct MapCastInfo;
@@ -24,6 +25,8 @@ struct GetCastFunctionInput {
 	explicit GetCastFunctionInput(optional_ptr<ClientContext> context = nullptr) : context(context) {
 	}
 	explicit GetCastFunctionInput(ClientContext &context) : context(&context) {
+	}
+	explicit GetCastFunctionInput(Context &context) : context(context.TryGetClientContext()) {
 	}
 
 	optional_ptr<ClientContext> context;
@@ -47,6 +50,7 @@ public:
 	DUCKDB_API static CastFunctionSet &Get(ClientContext &context);
 	DUCKDB_API static const CastFunctionSet &Get(const ClientContext &context);
 	DUCKDB_API static CastFunctionSet &Get(DatabaseInstance &db);
+	DUCKDB_API static CastFunctionSet &Get(Context &context);
 
 	//! Returns a cast function (from source -> target)
 	//! Note that this always returns a function - since a cast is ALWAYS possible if the value is NULL
@@ -68,6 +72,9 @@ public:
 	//! Whether a registered cast can change this default conversion, including nested casts.
 	//! Data-dependent VARIANT conversions are treated conservatively.
 	DUCKDB_API bool CanOverrideDefaultCast(const LogicalType &source, const LogicalType &target) const;
+
+	//! Returns registered source types that can match this target, without invoking bind callbacks.
+	DUCKDB_API vector<LogicalType> GetRegisteredCastSourceTypes(const LogicalType &target) const;
 
 	//! Register a combine rule for LogicalType::TryGetMaxLogicalType, consulted before previously registered rules
 	//! and the built-in rules

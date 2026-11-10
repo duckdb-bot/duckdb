@@ -2062,6 +2062,14 @@ void StringValueScanner::ProcessRemainingBuffers() {
 		}
 	}
 	iterator.done = FinishedFile();
+	if (iterator.done) {
+		// a row cut off by the end of the file has its errors pending, as no boundary scan finishes it here
+		const auto chunk_col_id_before = result.chunk_col_id;
+		if (result.current_errors.HandleErrors(result)) {
+			result.InvalidateUnwrittenColumns(chunk_col_id_before);
+			result.number_of_rows++;
+		}
+	}
 	if (result.null_padding && result.number_of_rows < STANDARD_VECTOR_SIZE && result.chunk_col_id > 0) {
 		while (result.chunk_col_id < result.parse_chunk.ColumnCount()) {
 			result.validity_mask[result.chunk_col_id++]->SetInvalid(static_cast<idx_t>(result.number_of_rows));

@@ -1,0 +1,179 @@
+# name: test/sql/copy/csv/csv_unterminated_quote_eof_single_threaded.test
+# description: A single-threaded scan reports a file that ends inside a quoted value, as the parallel scan does
+# group: [csv]
+
+# the files are written without quoting, so the last value keeps its opening quote and gets no closing one
+statement ok
+COPY (SELECT * FROM (VALUES ('1'), ('2'), ('"abc')) t(a)) TO '{TEST_DIR}/unterminated_quote_eof.csv' (HEADER false, QUOTE '');
+
+statement ok
+COPY (SELECT * FROM (VALUES ('1', 'x'), ('2', 'y'), ('3', '"zz')) t(a, b)) TO '{TEST_DIR}/unterminated_quote_eof_two_columns.csv' (HEADER false, QUOTE '');
+
+# the quoted value swallows the rows after it
+statement ok
+COPY (SELECT * FROM (VALUES ('1'), ('2'), ('"abc'), ('def')) t(a)) TO '{TEST_DIR}/unterminated_quote_eof_newline.csv' (HEADER false, QUOTE '');
+
+# with 2047 rows before it the cut off row fills the chunk, with 2048 rows it is left for the next chunk
+statement ok
+COPY (SELECT CASE WHEN i = 2047 THEN '"abc' ELSE i::VARCHAR END FROM range(2048) t(i) ORDER BY i) TO '{TEST_DIR}/unterminated_quote_eof_2047.csv' (HEADER false, QUOTE '');
+
+statement ok
+COPY (SELECT CASE WHEN i = 2048 THEN '"abc' ELSE i::VARCHAR END FROM range(2049) t(i) ORDER BY i) TO '{TEST_DIR}/unterminated_quote_eof_2048.csv' (HEADER false, QUOTE '');
+
+statement ok
+COPY (SELECT * FROM (VALUES ('5'), ('6')) t(a)) TO '{TEST_DIR}/terminated_a.csv' (HEADER false);
+
+statement ok
+COPY (SELECT * FROM (VALUES ('7'), ('8')) t(a)) TO '{TEST_DIR}/terminated_b.csv' (HEADER false);
+
+statement ok
+CREATE TABLE copied(a INTEGER);
+
+foreach parallel false true
+
+statement error
+SELECT count(*), sum(a) FROM read_csv('{TEST_DIR}/unterminated_quote_eof.csv', auto_detect=false, header=false, columns={'a': 'INTEGER'}, parallel={parallel}, strict_mode=true);
+----
+Value with unterminated quote found.
+
+statement error
+COPY copied FROM '{TEST_DIR}/unterminated_quote_eof.csv' (AUTO_DETECT false, HEADER false, PARALLEL {parallel}, STRICT_MODE true);
+----
+Value with unterminated quote found.
+
+query I
+SELECT count(*) FROM copied;
+----
+0
+
+query II
+SELECT count(*), sum(a) FROM read_csv('{TEST_DIR}/unterminated_quote_eof.csv', auto_detect=false, header=false, columns={'a': 'INTEGER'}, parallel={parallel}, strict_mode=true, store_rejects=true);
+----
+2	3
+
+query IIIIIIII
+SELECT line, line_byte_position, byte_position, column_idx, column_name, error_type, replace(csv_line, chr(10), '\n'), error_message FROM reject_errors;
+----
+3	5	5	1	a	UNQUOTED VALUE	"abc\n	Value with unterminated quote found.
+
+statement ok
+DROP TABLE reject_errors;
+
+statement ok
+DROP TABLE reject_scans;
+
+query II
+SELECT count(*), sum(a) FROM read_csv('{TEST_DIR}/unterminated_quote_eof.csv', auto_detect=false, header=false, columns={'a': 'INTEGER'}, parallel={parallel}, strict_mode=true, ignore_errors=true);
+----
+2	3
+
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/unterminated_quote_eof_two_columns.csv', auto_detect=false, header=false, columns={'a': 'INTEGER', 'b': 'VARCHAR'}, parallel={parallel}, strict_mode=true);
+----
+Value with unterminated quote found.
+
+# the cut off row is not padded into a row either
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/unterminated_quote_eof_two_columns.csv', auto_detect=false, header=false, columns={'a': 'INTEGER', 'b': 'VARCHAR'}, parallel={parallel}, strict_mode=true, null_padding=true);
+----
+Value with unterminated quote found.
+
+query II
+SELECT count(*), sum(a) FROM read_csv('{TEST_DIR}/unterminated_quote_eof_two_columns.csv', auto_detect=false, header=false, columns={'a': 'INTEGER', 'b': 'VARCHAR'}, parallel={parallel}, strict_mode=true, store_rejects=true);
+----
+2	3
+
+query IIIIIIII
+SELECT line, line_byte_position, byte_position, column_idx, column_name, error_type, replace(csv_line, chr(10), '\n'), error_message FROM reject_errors;
+----
+3	9	11	2	b	UNQUOTED VALUE	3,"zz\n	Value with unterminated quote found.
+
+statement ok
+DROP TABLE reject_errors;
+
+statement ok
+DROP TABLE reject_scans;
+
+statement error
+SELECT count(*), sum(a) FROM read_csv('{TEST_DIR}/unterminated_quote_eof_newline.csv', auto_detect=false, header=false, columns={'a': 'INTEGER'}, parallel={parallel}, strict_mode=true);
+----
+Value with unterminated quote found.
+
+query II
+SELECT count(*), sum(a) FROM read_csv('{TEST_DIR}/unterminated_quote_eof_newline.csv', auto_detect=false, header=false, columns={'a': 'INTEGER'}, parallel={parallel}, strict_mode=true, store_rejects=true);
+----
+2	3
+
+query III
+SELECT line, error_type, replace(csv_line, chr(10), '\n') FROM reject_errors;
+----
+3	UNQUOTED VALUE	"abc\ndef\n
+
+statement ok
+DROP TABLE reject_errors;
+
+statement ok
+DROP TABLE reject_scans;
+
+statement error
+SELECT count(*), sum(a) FROM read_csv('{TEST_DIR}/unterminated_quote_eof_2047.csv', auto_detect=false, header=false, columns={'a': 'INTEGER'}, parallel={parallel}, strict_mode=true);
+----
+Value with unterminated quote found.
+
+query II
+SELECT count(*), sum(a) FROM read_csv('{TEST_DIR}/unterminated_quote_eof_2047.csv', auto_detect=false, header=false, columns={'a': 'INTEGER'}, parallel={parallel}, strict_mode=true, store_rejects=true);
+----
+2047	2094081
+
+query II
+SELECT line, error_type FROM reject_errors;
+----
+2048	UNQUOTED VALUE
+
+statement ok
+DROP TABLE reject_errors;
+
+statement ok
+DROP TABLE reject_scans;
+
+statement error
+SELECT count(*), sum(a) FROM read_csv('{TEST_DIR}/unterminated_quote_eof_2048.csv', auto_detect=false, header=false, columns={'a': 'INTEGER'}, parallel={parallel}, strict_mode=true);
+----
+Value with unterminated quote found.
+
+query II
+SELECT count(*), sum(a) FROM read_csv('{TEST_DIR}/unterminated_quote_eof_2048.csv', auto_detect=false, header=false, columns={'a': 'INTEGER'}, parallel={parallel}, strict_mode=true, store_rejects=true);
+----
+2048	2096128
+
+query II
+SELECT line, error_type FROM reject_errors;
+----
+2049	UNQUOTED VALUE
+
+statement ok
+DROP TABLE reject_errors;
+
+statement ok
+DROP TABLE reject_scans;
+
+endloop
+
+# more files than twice the threads are read one at a time as well
+statement ok
+SET threads=1;
+
+statement error
+SELECT count(*), sum(a) FROM read_csv(['{TEST_DIR}/terminated_a.csv', '{TEST_DIR}/terminated_b.csv', '{TEST_DIR}/unterminated_quote_eof.csv'], auto_detect=false, header=false, columns={'a': 'INTEGER'}, parallel=true, strict_mode=true);
+----
+Value with unterminated quote found.
+
+query II
+SELECT count(*), sum(a) FROM read_csv(['{TEST_DIR}/terminated_a.csv', '{TEST_DIR}/terminated_b.csv', '{TEST_DIR}/unterminated_quote_eof.csv'], auto_detect=false, header=false, columns={'a': 'INTEGER'}, parallel=true, strict_mode=true, store_rejects=true);
+----
+6	29
+
+query III
+SELECT file_id, line, error_type FROM reject_errors;
+----
+2	3	UNQUOTED VALUE

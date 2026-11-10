@@ -48,7 +48,23 @@
         "test/sql/topn/top_n_pruning.test",
         "test/sql/topn/topn_nulls_first.test",
         "test/optimizer/remove_redundant_order_keys.test",
-        "test/sql/optimizer/secure_view_join_filter_pushdown.test"
+        "test/sql/optimizer/secure_view_join_filter_pushdown.test",
+        "test/optimizer/compressed_materialization.test_slow",
+        "test/optimizer/compressed_materialization_variant.test",
+        "test/optimizer/partitioned_execution.test_slow",
+        "test/optimizer/partitioned_execution_coverage.test",
+        "test/optimizer/pushdown/join_filter_pushdown_any_join.test",
+        "test/optimizer/remove_redundant_order_keys_deferred.test",
+        "test/sql/multi_file/multi_file_schema_filter_casts.test"
+      ]
+    },
+    {
+      "reason": "These tests assert the Parquet prefetch log of a Top-N query; the Top-N dynamic filter is not pushed into the scan when the sort key is the injected CAST to VARIANT, so no filter runs and nothing is logged.",
+      "paths": [
+        "test/sql/copy/parquet/read_ahead/readahead_dynamic_pruning.test",
+        "test/sql/copy/parquet/read_ahead/readahead_dynamic_pruning.test_slow",
+        "test/sql/copy/parquet/read_ahead/readahead_dynamic_pruning_nulls_first.test",
+        "test/sql/copy/parquet/read_ahead/recheck_prefetch_log.test"
       ]
     },
     {

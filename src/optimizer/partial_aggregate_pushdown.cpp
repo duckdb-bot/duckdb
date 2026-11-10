@@ -23,7 +23,8 @@
 
 namespace duckdb {
 
-PartialAggregatePushdown::PartialAggregatePushdown(Optimizer &optimizer_p) : optimizer(optimizer_p) {
+PartialAggregatePushdown::PartialAggregatePushdown(Optimizer &optimizer_p, bool statistics_propagation_follows_p)
+    : optimizer(optimizer_p), statistics_propagation_follows(statistics_propagation_follows_p) {
 }
 
 //===--------------------------------------------------------------------===//
@@ -168,9 +169,15 @@ static unique_ptr<BaseStatistics> GetBaseColumnStatistics(ClientContext &context
 }
 
 // An argument that can throw is safe when the bounds of the base table columns it references prove it cannot fail
-static bool ArgumentCanThrow(Optimizer &optimizer, unique_ptr<LogicalOperator> &aggr, const Expression &argument) {
+static bool ArgumentCanThrow(Optimizer &optimizer, unique_ptr<LogicalOperator> &aggr, const Expression &argument,
+                             bool statistics_propagation_follows) {
 	if (!argument.CanThrow()) {
 		return false;
+	}
+	if (!statistics_propagation_follows) {
+		// the proof certifies the argument as statistics propagation rewrites it, with the statistics it uses, so
+		// without the propagation the plan keeps an argument that can throw
+		return true;
 	}
 	column_binding_map_t<unique_ptr<BaseStatistics>> column_statistics;
 	ExpressionIterator::VisitExpression<BoundColumnRefExpression>(argument, [&](const BoundColumnRefExpression &ref) {
@@ -192,11 +199,12 @@ static bool ArgumentCanThrow(Optimizer &optimizer, unique_ptr<LogicalOperator> &
 }
 
 // Below an inner join a throwing argument would also run on the rows the join removes
-static bool AggregateArgumentsCanThrow(Optimizer &optimizer, unique_ptr<LogicalOperator> &op) {
+static bool AggregateArgumentsCanThrow(Optimizer &optimizer, unique_ptr<LogicalOperator> &op,
+                                       bool statistics_propagation_follows) {
 	auto &aggr = op->Cast<LogicalAggregate>();
 	for (auto &expr : aggr.expressions) {
 		for (auto &child : expr->Cast<BoundAggregateExpression>().GetChildren()) {
-			if (ArgumentCanThrow(optimizer, op, *child)) {
+			if (ArgumentCanThrow(optimizer, op, *child, statistics_propagation_follows)) {
 				return true;
 			}
 		}
@@ -927,7 +935,7 @@ bool PartialAggregatePushdown::TryDoubleEagerPushdown(unique_ptr<LogicalOperator
 	if (!DECollectJoinKeys(join, side_bindings, join_keys, join_key_types) || !DEValidateGroups(aggr, side_bindings)) {
 		return false;
 	}
-	if (AggregateArgumentsCanThrow(optimizer, op)) {
+	if (AggregateArgumentsCanThrow(optimizer, op, statistics_propagation_follows)) {
 		return false;
 	}
 
@@ -1213,7 +1221,8 @@ bool PartialAggregatePushdown::TryPushdownAggregate(unique_ptr<LogicalOperator> 
 		return false;
 	}
 	// A preserved side of an outer join keeps every row, so the argument is evaluated on all of them either way.
-	if (join->join_type == JoinType::INNER && AggregateArgumentsCanThrow(optimizer, op)) {
+	if (join->join_type == JoinType::INNER &&
+	    AggregateArgumentsCanThrow(optimizer, op, statistics_propagation_follows)) {
 		return false;
 	}
 

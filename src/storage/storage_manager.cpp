@@ -781,8 +781,13 @@ static vector<reference<DuckTableEntry>> GetCommittedTables(AttachedDatabase &db
 	auto bound = VisibilityBound::AllCommitted();
 	catalog.ScanSchemas(bound, [&](DuckSchemaEntry &schema) {
 		schema.Scan(CatalogType::TABLE_ENTRY, bound, [&](CatalogEntry &entry) {
-			if (!entry.internal && entry.type == CatalogType::TABLE_ENTRY) {
-				tables.push_back(entry.Cast<DuckTableEntry>());
+			if (entry.internal || entry.type != CatalogType::TABLE_ENTRY) {
+				return;
+			}
+			// a table that an extension owns has no storage
+			auto duck_table = entry.Cast<TableCatalogEntry>().TryGetDuckTableEntry();
+			if (duck_table) {
+				tables.push_back(*duck_table);
 			}
 		});
 	});

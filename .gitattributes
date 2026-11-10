@@ -1,4 +1,7 @@
 *.test linguist-language=sql
+# byte-exact fixtures: the tests assert byte positions and a buffer layout that CRLF conversion would change
+data/csv/last_value_error_no_newline.csv -text
+data/csv/unterminated_quote_cast_error_eof.csv -text
 # byte exact fixtures, the tests assert byte positions that CRLF conversion would change
 data/csv/list_cast_errors_second_buffer.csv -text
 data/csv/list_cast_error_two_columns_second_buffer.csv -text

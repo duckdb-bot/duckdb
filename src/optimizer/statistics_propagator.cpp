@@ -120,13 +120,7 @@ unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalOper
 		result = PropagateStatistics(node.Cast<LogicalWindow>(), node_ptr);
 		break;
 	case LogicalOperatorType::LOGICAL_UNNEST:
-		// unlike the default handler, also propagate into the unnest expressions
-		result = PropagateChildren(node, node_ptr);
-		for (auto &expr : node.expressions) {
-			PropagateExpression(expr);
-		}
-		// unnest emits its input row once per unnested entry
-		ResetAdditiveStatistics(node.children[0]->GetColumnBindings());
+		result = PropagateStatistics(node.Cast<LogicalUnnest>(), node_ptr);
 		break;
 	default:
 		result = PropagateChildren(node, node_ptr);

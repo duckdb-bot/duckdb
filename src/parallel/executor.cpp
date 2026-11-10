@@ -383,13 +383,16 @@ void Executor::SignalTaskRescheduled(lock_guard<mutex> &) {
 
 void Executor::UnregisterTask() {
 #ifndef DUCKDB_NO_THREADS
-	lock_guard<mutex> l(executor_lock);
+	// a task is destroyed also while an event schedules it under executor_lock, when storing it throws, so this must
+	// not take that lock. The waiter in WaitForTask has a bounded wait, so a wakeup that lands between its checks and
+	// its wait only delays it by that bound
 	{
 		const annotated_lock_guard<annotated_mutex> producer_lock(producer->producer_lock);
 		executor_tasks--;
 		producer->producer_cv.notify_all();
+		// still under this lock, since CancelTasks lets the executor be destroyed once it sees no task left under it
+		task_reschedule.notify_all();
 	}
-	task_reschedule.notify_all();
 #else
 	executor_tasks--;
 #endif

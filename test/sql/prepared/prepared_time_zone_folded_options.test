@@ -30,12 +30,16 @@ PREPARE depth_option AS SELECT UNNEST([[[1]]], max_depth := CASE WHEN to_timesta
 statement ok
 PREPARE names_option AS SELECT alias(COLUMNS(*)) FROM (SELECT UNNEST({'b': {'c': 1}}, recursive := true, keep_parent_names := to_timestamp(1767225600)::TIMESTAMP = TIMESTAMP '2026-01-01 00:00:00'));
 
-# the options decide the type of UNNEST, which typeof keeps after it drops the subquery, so they mark the statement at once
+# the options decide the type of UNNEST, kept by typeof when it drops the subquery, so they mark the statement at once
 statement ok
 PREPARE dropped_recursive_type AS SELECT typeof((SELECT UNNEST([[1]], recursive := to_timestamp(1767225600)::TIMESTAMP = TIMESTAMP '2026-01-01 00:00:00')));
 
 statement ok
 PREPARE dropped_depth_type AS SELECT typeof((SELECT UNNEST([[[1]]], max_depth := CASE WHEN to_timestamp(1767225600)::TIMESTAMP = TIMESTAMP '2026-01-01 00:00:00' THEN 1 ELSE 2 END)));
+
+# the names keep_parent_names decides become the field names of a struct
+statement ok
+PREPARE dropped_names_type AS SELECT typeof((SELECT s FROM (SELECT UNNEST({'b': {'c': 1}}, recursive := true, keep_parent_names := to_timestamp(1767225600)::TIMESTAMP = TIMESTAMP '2026-01-01 00:00:00')) s));
 
 # a fraction decides no type, so a subquery that typeof drops takes the rebind of its fraction along
 statement ok
@@ -87,6 +91,11 @@ query I
 EXECUTE dropped_depth_type;
 ----
 INTEGER[][]
+
+query I
+EXECUTE dropped_names_type;
+----
+STRUCT("b.c" INTEGER)
 
 query I
 EXECUTE dropped_fraction_type;
@@ -162,6 +171,11 @@ EXECUTE dropped_depth_type;
 INTEGER[]
 
 query I
+EXECUTE dropped_names_type;
+----
+STRUCT(c INTEGER)
+
+query I
 EXECUTE dropped_fraction_type;
 ----
 DOUBLE
@@ -176,15 +190,16 @@ EXECUTE plain_option;
 ----
 1
 
-# the statements that read the TimeZone keep no plan, the others keep theirs
+# the statements whose results follow the TimeZone keep no plan, the others keep theirs
 query II
 SELECT name, result_types IS NULL AS bound_again FROM duckdb_prepared_statements()
-WHERE name IN ('fraction', 'fraction_desc', 'fraction_list', 'recursive_option', 'depth_option', 'names_option', 'dropped_recursive_type', 'dropped_depth_type', 'dropped_fraction_type', 'plain_fraction', 'plain_option')
+WHERE name IN ('fraction', 'fraction_desc', 'fraction_list', 'recursive_option', 'depth_option', 'names_option', 'dropped_recursive_type', 'dropped_depth_type', 'dropped_names_type', 'dropped_fraction_type', 'plain_fraction', 'plain_option')
 ORDER BY name;
 ----
 depth_option	true
 dropped_depth_type	true
 dropped_fraction_type	false
+dropped_names_type	true
 dropped_recursive_type	true
 fraction	true
 fraction_desc	true

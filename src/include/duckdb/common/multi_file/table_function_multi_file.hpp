@@ -208,6 +208,8 @@ struct TableFunctionMultiFileSettings {
 	//! TableFunctionFileInitInput::cast_map. The function then reports the schema of its own file, and still
 	//! produces the types of the scan
 	bool supports_cast_map = false;
+	//! Whether the function counts the bytes it scans, reported as operator.bytes_scanned of the scan
+	bool reports_bytes_scanned = false;
 };
 
 //! The function info of a multi-file wrapper - holds the single-file function that is wrapped
@@ -237,6 +239,7 @@ public:
 		return cardinality;
 	}
 	unique_ptr<BaseStatistics> GetStatistics(ClientContext &context, const Identifier &name) override;
+	unique_ptr<BaseStatistics> GetVirtualColumnStatistics(ClientContext &context, column_t virtual_column_id) override;
 };
 
 //! Reads a single file by binding and executing the wrapped table function over that file
@@ -393,6 +396,9 @@ public:
 
 public:
 	void InitializeFileOptions(MultiFileOptions &file_options) override;
+	bool ReportsBytesScanned() const override {
+		return settings.reports_bytes_scanned;
+	}
 	unique_ptr<BaseFileReaderOptions> InitializeOptions(ClientContext &context,
 	                                                    optional_ptr<TableFunctionInfo> info) override;
 	bool ParseCopyOption(ClientContext &context, const Identifier &key, const vector<Value> &values,
@@ -410,6 +416,7 @@ public:
 	                MultiFileBindData &bind_data) override;
 	void CombineSchemas(ClientContext &context, const vector<shared_ptr<BaseUnionData>> &union_data, bool union_by_name,
 	                    vector<LogicalType> &return_types, vector<Identifier> &names) override;
+	void ReadFilesForStatistics(ClientContext &context, MultiFileBindData &bind_data) override;
 	void FinalizeBindData(MultiFileBindData &multi_file_data) override;
 	void GetVirtualColumns(ClientContext &context, MultiFileBindData &bind_data, virtual_column_map_t &result) override;
 	unique_ptr<GlobalTableFunctionState> InitializeGlobalState(ClientContext &context, MultiFileBindData &bind_data,

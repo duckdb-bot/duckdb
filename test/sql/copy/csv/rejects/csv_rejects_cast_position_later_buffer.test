@@ -1,0 +1,48 @@
+# name: test/sql/copy/csv/rejects/csv_rejects_cast_position_later_buffer.test
+# description: The byte position of a cast error found after parsing is right for rows beyond the first buffer
+# group: [rejects]
+
+# the fixtures are -text in .gitattributes, the positions below are byte offsets into them counted from 1
+
+foreach parallel true false
+
+# the first failing row and the one after it both start in the second buffer
+query I
+SELECT * FROM read_csv('data/csv/list_cast_errors_second_buffer.csv', auto_detect=false, header=false, columns={'a': 'INTEGER[]'}, buffer_size=8, parallel={parallel}, store_rejects=true);
+----
+[1]
+[2]
+[3]
+
+query IIII
+SELECT line, line_byte_position, error_type, csv_line FROM reject_errors ORDER BY line;
+----
+4	13	CAST	x
+5	15	CAST	y
+
+statement ok
+DROP TABLE reject_errors;
+
+statement ok
+DROP TABLE reject_scans;
+
+# two columns, the failing row starts in the second buffer
+query II
+SELECT * FROM read_csv('data/csv/list_cast_error_two_columns_second_buffer.csv', auto_detect=false, header=false, columns={'a': 'INTEGER[]', 'b': 'VARCHAR'}, buffer_size=16, parallel={parallel}, store_rejects=true);
+----
+[1]	ok
+[1]	ok
+[1]	ok
+
+query IIII
+SELECT line, line_byte_position, error_type, csv_line FROM reject_errors;
+----
+4	22	CAST	x,ok
+
+statement ok
+DROP TABLE reject_errors;
+
+statement ok
+DROP TABLE reject_scans;
+
+endloop

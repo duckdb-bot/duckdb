@@ -595,11 +595,15 @@ vector<shared_ptr<AttachedDatabase>> DatabaseManager::GetDatabases() {
 }
 
 void DatabaseManager::ResetDatabases() {
-	// the destructor of the instance calls this and cannot throw, so the databases are closed from the map itself
-	// instead of a copy of their pointers, which would allocate. Nothing else uses the manager while the instance is
-	// destroyed, so the map does not change under the loop and the lock is not needed
-	for (auto &entry : databases) {
+	// the instance destructor runs this, so take the map instead of allocating a copy
+	identifier_map_t<shared_ptr<AttachedDatabase>> attached;
+	{
+		lock_guard<mutex> guard(databases_lock);
+		attached = std::move(databases);
+	}
+	for (auto &entry : attached) {
 		entry.second->Close(DatabaseCloseAction::TRY_CHECKPOINT);
+		entry.second.reset();
 	}
 	system->Close(DatabaseCloseAction::TRY_CHECKPOINT);
 }

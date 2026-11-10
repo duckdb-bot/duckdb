@@ -140,6 +140,12 @@ public:
 		return reinterpret_cast<const TARGET &>(*this);
 	}
 
+private:
+	//! The ready state of a poppable unit. Participate and Poll return through it, under the context lock they hold
+	//! and after the result was found active, so an execution that finished reports its progress before the unit is
+	//! popped
+	QueryResultState Ready(ClientContext &context);
+
 protected:
 	//! Record on the result that it is no longer the connection's active query, and report it as an
 	//! error state

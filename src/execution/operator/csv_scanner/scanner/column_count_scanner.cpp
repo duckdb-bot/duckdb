@@ -171,7 +171,7 @@ void ColumnCountScanner::FinalizeChunkProcess() {
 
 			if (!cur_buffer_handle) {
 				buffer_handle_ptr = nullptr;
-				if (states.IsQuotedCurrent() && !states.IsUnquoted()) {
+				if (states.IsQuotedOrEscapedCurrent() && !states.IsUnquoted()) {
 					// We are finishing our file on a quoted value that is never unquoted, straight to jail.
 					result.error = true;
 					return;

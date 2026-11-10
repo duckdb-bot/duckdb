@@ -231,16 +231,17 @@ static ErrorData CommitStepError(const std::exception &ex, ErrorData &prepared) 
 //! the commit ran out of memory, and the database is invalidated with as much of it as could be built then
 static void InvalidateAfterFailedRevert(AttachedDatabase &db, const ErrorData &commit_error,
                                         optional_ptr<const std::exception> revert_error) noexcept {
+	// the message grows piece by piece, so that the pieces built before an allocation fails are kept
 	string message;
 	try {
+		message = "Failed to revert transaction commit";
+		message += revert_error ? ", database is in an undefined state. "
+		                        : " (unknown error), database is in an undefined state. ";
+		message += "Original commit error: ";
+		message += commit_error.RawMessage();
 		if (revert_error) {
-			message =
-			    "Failed to revert transaction commit, database is in an undefined state. Original commit error: " +
-			    commit_error.RawMessage() + ". RevertCommit error: " + ErrorData(*revert_error).RawMessage();
-		} else {
-			message = "Failed to revert transaction commit (unknown error), database is in an undefined state. "
-			          "Original commit error: " +
-			          commit_error.RawMessage();
+			message += ". RevertCommit error: ";
+			message += ErrorData(*revert_error).RawMessage();
 		}
 	} catch (...) { // NOLINT
 	}

@@ -20,6 +20,10 @@ COPY (SELECT CASE WHEN i = 2047 THEN '"abc' ELSE i::VARCHAR END FROM range(2048)
 statement ok
 COPY (SELECT CASE WHEN i = 2048 THEN '"abc' ELSE i::VARCHAR END FROM range(2049) t(i) ORDER BY i) TO '{TEST_DIR}/unterminated_quote_eof_2048.csv' (HEADER false, QUOTE '');
 
+# a file holding nothing but the cut off row
+statement ok
+COPY (SELECT '"abc' AS a) TO '{TEST_DIR}/unterminated_quote_eof_only_row.csv' (HEADER false, QUOTE '');
+
 statement ok
 COPY (SELECT * FROM (VALUES ('5'), ('6')) t(a)) TO '{TEST_DIR}/terminated_a.csv' (HEADER false);
 
@@ -156,6 +160,22 @@ DROP TABLE reject_errors;
 
 statement ok
 DROP TABLE reject_scans;
+
+# the cut off row ignore_errors removes is the first row of its chunk
+query II
+SELECT count(*), sum(a) FROM read_csv('{TEST_DIR}/unterminated_quote_eof_2048.csv', auto_detect=false, header=false, columns={'a': 'INTEGER'}, parallel={parallel}, strict_mode=true, ignore_errors=true);
+----
+2048	2096128
+
+query II
+SELECT count(*), sum(a) FROM read_csv('{TEST_DIR}/unterminated_quote_eof_only_row.csv', auto_detect=false, header=false, columns={'a': 'INTEGER'}, parallel={parallel}, strict_mode=true, ignore_errors=true);
+----
+0	NULL
+
+statement error
+SELECT count(*), sum(a) FROM read_csv('{TEST_DIR}/unterminated_quote_eof_only_row.csv', auto_detect=false, header=false, columns={'a': 'INTEGER'}, parallel={parallel}, strict_mode=true);
+----
+Value with unterminated quote found.
 
 endloop
 

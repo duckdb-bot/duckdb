@@ -10,6 +10,7 @@
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/storage/statistics/list_stats.hpp"
+#include "duckdb/storage/statistics/string_stats.hpp"
 
 namespace duckdb {
 
@@ -100,6 +101,12 @@ static void ExecuteStringExtract(Vector &result, const Vector &input_vector, con
 	    [&](string_t input_string, int64_t subscript) { return SubstringUnicode(result, input_string, subscript, 1); });
 }
 
+static void StringExtractFunctionASCII(DataChunk &args, ExpressionState &state, Vector &result) {
+	BinaryExecutor::Execute<string_t, int64_t, string_t>(
+	    args.data[0], args.data[1], result,
+	    [&](string_t input_string, int64_t subscript) { return SubstringASCII(result, input_string, subscript, 1); });
+}
+
 static void ListExtractFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	D_ASSERT(args.ColumnCount() == 2);
 	const auto count = args.size();
@@ -152,6 +159,14 @@ static unique_ptr<FunctionData> StringExtractBind(BindScalarFunctionInput &input
 	return nullptr;
 }
 
+//! Characters and bytes coincide in a string without unicode characters, so the extract can slice its bytes
+static unique_ptr<BaseStatistics> StringExtractStats(ClientContext &context, FunctionStatisticsInput &input) {
+	if (!StringStats::CanContainUnicode(input.child_stats[0])) {
+		input.expr.FunctionMutable().SetFunctionCallback(StringExtractFunctionASCII);
+	}
+	return nullptr;
+}
+
 static unique_ptr<BaseStatistics> ListExtractStats(ClientContext &context, FunctionStatisticsInput &input) {
 	auto &child_stats = input.child_stats;
 	auto &list_child_stats = ListStats::GetChildStats(child_stats[0]);
@@ -175,7 +190,7 @@ ScalarFunctionSet ListExtractFun::GetFunctions() {
 	lfun.GetSignature().GetParameter(1).SetName("index");
 
 	ScalarFunction sfun({LogicalType::VARCHAR, LogicalType::BIGINT}, LogicalType::VARCHAR, ListExtractFunction,
-	                    StringExtractBind);
+	                    StringExtractBind, StringExtractStats);
 	sfun.GetSignature().GetParameter(0).SetName("string");
 	sfun.GetSignature().GetParameter(1).SetName("index");
 
@@ -195,7 +210,7 @@ ScalarFunctionSet ArrayExtractFun::GetFunctions() {
 	lfun.GetSignature().GetParameter(0).SetName("list");
 	lfun.GetSignature().GetParameter(1).SetName("index");
 
-	ScalarFunction sfun({}, LogicalType::VARCHAR, ListExtractFunction, StringExtractBind);
+	ScalarFunction sfun({}, LogicalType::VARCHAR, ListExtractFunction, StringExtractBind, StringExtractStats);
 	sfun.GetSignature().AddParameter("string", LogicalType::VARCHAR).AddParameter("index", LogicalType::BIGINT);
 
 	array_extract_set.AddFunction(lfun);

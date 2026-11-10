@@ -1,0 +1,145 @@
+# name: test/sql/function/list/lambdas/lambda_statistics.test
+# description: Lambda bodies that statistics propagate into, over list elements and captured columns with and without unicode characters
+# group: [lambdas]
+
+# every column has exact statistics, so the statistics of the wrong lambda input would cut a unicode character
+statement ok
+CREATE TABLE caps AS SELECT 'abc' AS a1, 'áéí' AS u1, 'def' AS a2, ['xyz', 'uvw'] AS al, ['óúü', 'ñçà'] AS ul;
+
+query I
+SELECT list_transform([1, 2, 3], lambda i: substring(a1, i, 1) || substring(u1, i, 1) || substring(a2, i, 1) || a1[i] || u1[i] || a2[i]) FROM caps;
+----
+[aádaád, béebée, cífcíf]
+
+query I
+SELECT list_transform(ul, lambda x, i: x[i] || substring(a1, i, 1) || u1[i] || substring(x, i, 2)) FROM caps;
+----
+[óaáóú, çbéçà]
+
+query I
+SELECT list_transform(al, lambda x, i: x[i] || u1[i] || substring(x, i, 2) || substring(u1, i, 2)) FROM caps;
+----
+[xáxyáé, vévwéí]
+
+query II
+SELECT list_filter(ul, lambda x: x[1] = 'ñ'), list_filter([1, 2, 3], lambda i: u1[i] <> 'é' AND a1[i] <> 'a') FROM caps;
+----
+[ñçà]	[3]
+
+query II
+SELECT list_reduce(ul, lambda acc, x: acc || substring(x, 2, 1) || u1[2] || a1[2]), list_reduce(ul, lambda acc, x, i: acc || x[i] || u1[i] || a2[i], 'Q') FROM caps;
+----
+óúüçéb	Qóádçée
+
+# the accumulator has no statistics, whatever the statistics of the elements and the initial value
+query II
+SELECT list_reduce(al || ['rst'], lambda acc, x: substring(acc, 1, 2) || u1[1] || substring(acc, 3, 1) || x[1]), list_reduce(al, lambda acc, x: substring(acc, 1, 2) || x[2], 'é') FROM caps;
+----
+xyáár	éyv
+
+# the string variants of list_extract and array_extract
+query IIII
+SELECT list_extract(a1, 2), list_extract(u1, 2), array_extract(a1, -1), list_transform([1, 3], lambda i: list_extract(u1, i) || list_extract(a1, i) || array_extract(a1, i)) FROM caps;
+----
+b	é	c	[áaa, ícc]
+
+query I
+SELECT list_transform(ul, lambda x: list_transform([1, 2, 3], lambda i: substring(a1, i, 1) || u1[i] || x[i])) FROM caps;
+----
+[[aáó, béú, cíü], [aáñ, béç, cíà]]
+
+query I
+SELECT unnest(list_transform([3, 1], lambda i: u1[i] || a1[i])) FROM caps;
+----
+íc
+áa
+
+query I
+SELECT [x[2] FOR x IN ul IF x[1] <> u1[1]] FROM caps;
+----
+[ú, ç]
+
+query I
+SELECT list_transform(['óúü', 'xyz']::VARCHAR[2], lambda x: x[2] || substring(x, 2, 2));
+----
+[úúü, yyz]
+
+# NULL and empty lists, NULL elements and NULL captures
+statement ok
+CREATE TABLE nulls AS SELECT NULL::VARCHAR AS n, 'abc' AS a;
+
+statement ok
+CREATE TABLE stored_lists AS SELECT * FROM (VALUES (1, ['ab', NULL]), (2, NULL), (3, []), (4, ['é', 'xy'])) t(id, l);
+
+query II
+SELECT id, list_transform(l, lambda x: x[2] || a[2]) FROM stored_lists, nulls ORDER BY id;
+----
+1	[bb, NULL]
+2	NULL
+3	[]
+4	[b, yb]
+
+query IIII
+SELECT list_transform([1, 2], lambda i: n[i] || a[i]), list_transform(NULL::VARCHAR[], lambda x: x[1] || a[1]), list_transform([]::VARCHAR[], lambda x: x[1]), list_transform(['ab', NULL], lambda x: x[2] || a[2]) FROM nulls;
+----
+[NULL, NULL]	NULL	[]	[bb, NULL]
+
+# a long string without unicode characters, chunked with substring and read with subscripts in every position
+statement ok
+CREATE TABLE ascii AS SELECT repeat('abcdefgh', 100) AS s;
+
+statement ok
+CREATE TABLE mixed AS SELECT * FROM (VALUES (repeat('abcdefgh', 100)), ('é')) t(s);
+
+query IIII
+SELECT count(*), count(DISTINCT chunk), min(chunk), max(chunk) FROM (SELECT unnest(list_transform(range(0, length(s) // 8), lambda i: substring(s, i * 8 + 1, 8))) AS chunk FROM ascii);
+----
+100	1	abcdefgh	abcdefgh
+
+query I
+SELECT list_transform([1, 8, 793, 800, 801, 0, -1, -800, -801], lambda i: s[i]) FROM ascii;
+----
+[a, h, a, h, '', '', h, a, '']
+
+query I
+SELECT (SELECT list_transform(range(-802, 803), lambda i: s[i] || substring(s, i, 3) || substring(s, i)) FROM ascii) = (SELECT list_transform(range(-802, 803), lambda i: s[i] || substring(s, i, 3) || substring(s, i)) FROM mixed WHERE s <> 'é');
+----
+true
+
+statement error
+SELECT a1[5000000000] FROM caps;
+----
+Out of Range Error: Substring offset outside of supported range
+
+statement error
+SELECT u1[5000000000] FROM caps;
+----
+Out of Range Error: Substring offset outside of supported range
+
+# a constant that fails to evaluate raises its error only when the lambda body runs
+statement ok
+CREATE TABLE lists(l INTEGER[]);
+
+statement ok
+INSERT INTO lists VALUES ([]), (NULL);
+
+query II
+SELECT list_transform(l, lambda x: CAST('bad' AS INTEGER) > 0 AND x > 0), list_filter(l, lambda x: x > 0 OR CAST('bad' AS INTEGER) > 0) FROM lists ORDER BY l NULLS LAST;
+----
+[]	[]
+NULL	NULL
+
+statement ok
+CREATE TABLE no_rows(x INTEGER);
+
+query I
+SELECT CAST('bad' AS INTEGER) > 0 AND x > 0 FROM no_rows;
+----
+
+statement ok
+INSERT INTO lists VALUES ([1]);
+
+statement error
+SELECT list_transform(l, lambda x: CAST('bad' AS INTEGER) > 0 AND x > 0) FROM lists;
+----
+Could not convert string 'bad' to INT32

@@ -1,0 +1,15 @@
+# name: benchmark/micro/lambdas/list_transform_subscript_capture.benchmark
+# description: Take every 16 KB character of a 64 MB ASCII string with a subscript in a lambda that captures it
+# group: [lambdas]
+
+name list_transform subscript of a captured string
+group lambdas
+
+load
+CREATE TABLE t AS SELECT repeat('x', 64 * 1024 * 1024) AS s;
+
+run
+SELECT count(*) FROM (SELECT unnest(list_transform(range(0, length(s) // 16384), lambda i: s[i * 16384 + 1])) FROM t);
+
+result I
+4096

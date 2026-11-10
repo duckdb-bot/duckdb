@@ -194,6 +194,8 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(Expression 
 		return PropagateExpression(expr.Cast<BoundColumnRefExpression>(), expr_ptr);
 	case ExpressionClass::BOUND_OPERATOR:
 		return PropagateExpression(expr.Cast<BoundOperatorExpression>(), expr_ptr);
+	case ExpressionClass::BOUND_REF:
+		return PropagateExpression(expr.Cast<BoundReferenceExpression>(), expr_ptr);
 	default:
 		break;
 	}

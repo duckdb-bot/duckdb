@@ -2068,6 +2068,7 @@ void StringValueScanner::ProcessRemainingBuffers() {
 		if (result.current_errors.HandleErrors(result)) {
 			result.InvalidateUnwrittenColumns(chunk_col_id_before);
 			result.number_of_rows++;
+			lines_read++;
 		}
 	}
 	if (result.null_padding && result.number_of_rows < STANDARD_VECTOR_SIZE && result.chunk_col_id > 0) {

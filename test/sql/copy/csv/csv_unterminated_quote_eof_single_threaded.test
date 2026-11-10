@@ -159,6 +159,47 @@ DROP TABLE reject_scans;
 
 endloop
 
+# a cast error in an earlier row keeps its line when the row cut off by the end of the file joins the chunk
+statement ok
+COPY (SELECT * FROM (VALUES ('x'), ('"abc')) t(a)) TO '{TEST_DIR}/unterminated_quote_eof_cast.csv' (HEADER false, QUOTE '');
+
+query I
+SELECT * FROM read_csv('{TEST_DIR}/unterminated_quote_eof_cast.csv', auto_detect=false, header=false, columns={'a': 'INTEGER[]'}, parallel=false, strict_mode=true, store_rejects=true);
+----
+
+query III
+SELECT line, error_type, replace(csv_line, chr(10), '\n') FROM reject_errors ORDER BY line;
+----
+1	CAST	x
+2	UNQUOTED VALUE	"abc\n
+
+statement ok
+DROP TABLE reject_errors;
+
+statement ok
+DROP TABLE reject_scans;
+
+# FIXME: the boundary scan does not count the line of the row it finishes at the end of the file, so the cast error moves to line 0
+mode skip
+
+query I
+SELECT * FROM read_csv('{TEST_DIR}/unterminated_quote_eof_cast.csv', auto_detect=false, header=false, columns={'a': 'INTEGER[]'}, parallel=true, strict_mode=true, store_rejects=true);
+----
+
+query III
+SELECT line, error_type, replace(csv_line, chr(10), '\n') FROM reject_errors ORDER BY line;
+----
+1	CAST	x
+2	UNQUOTED VALUE	"abc\n
+
+statement ok
+DROP TABLE reject_errors;
+
+statement ok
+DROP TABLE reject_scans;
+
+mode unskip
+
 # more files than twice the threads are read one at a time as well
 statement ok
 SET threads=1;

@@ -1298,10 +1298,6 @@ void ShellState::OpenDB(ShellOpenFlags flags) {
 			db = make_uniq<duckdb::DuckDB>(zDbFilename.c_str(), &config);
 			RegisterShellLogger(*db, storage_ptr);
 			conn = make_uniq<duckdb::Connection>(*db);
-		} catch (std::bad_alloc &) {
-			// formatting the error through ErrorData needs memory, which is what ran out
-			fprintf(stderr, "Out of Memory Error: could not allocate memory while opening the database\n");
-			ShellState::Exit(1);
 		} catch (std::exception &ex) {
 			PrintDatabaseError(duckdb::ErrorData(ex));
 			if (flags == ShellOpenFlags::KEEP_ALIVE_ON_FAILURE) {
@@ -3550,18 +3546,14 @@ void ShellState::PrintExitHint(int rc) {
 		return;
 	}
 	exit_hint_printed = true;
-	try {
-		string name, marker;
-		if (DetectAgentEnvironment(name, marker)) {
-			// an agent that chose its output format itself (-csv, ...) needs no hint
-			return;
-		}
-		PrintF(PrintOutput::STDERR,
-		       "hint: -agent renders errors as JSON and results compactly for AI coding agents (duckdb -help lists all "
-		       "options)\n");
-	} catch (std::bad_alloc &) {
-		// the hint needs memory for its text, which a run that ended for lack of memory does not have
+	string name, marker;
+	if (DetectAgentEnvironment(name, marker)) {
+		// an agent that chose its output format itself (-csv, ...) needs no hint
+		return;
 	}
+	PrintF(PrintOutput::STDERR,
+	       "hint: -agent renders errors as JSON and results compactly for AI coding agents (duckdb -help lists all "
+	       "options)\n");
 }
 
 struct ScanEstimate {

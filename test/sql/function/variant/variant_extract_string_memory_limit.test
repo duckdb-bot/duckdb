@@ -1,0 +1,26 @@
+# name: test/sql/function/variant/variant_extract_string_memory_limit.test
+# description: The JSON that variant_extract_string builds for a nested value counts against memory_limit
+# group: [variant]
+
+statement ok
+SET memory_limit = '2MB';
+
+# a string value is returned as it is
+query I
+SELECT variant_extract_string({'a': 'duck'}::VARIANT, 'a');
+----
+duck
+
+# building the JSON of a list of a hundred thousand elements exceeds the limit
+statement error
+SELECT length(variant_extract_string({'a': range(100000)}::VARIANT, 'a'));
+----
+<REGEX>:.*Out of Memory Error.*failed to allocate data of size.*
+
+statement ok
+SET memory_limit = '1GB';
+
+query I
+SELECT length(variant_extract_string({'a': range(100000)}::VARIANT, 'a'));
+----
+588891

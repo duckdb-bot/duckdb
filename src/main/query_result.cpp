@@ -191,7 +191,11 @@ QueryResult::QueryResult(ErrorData error)
 }
 
 QueryResult::~QueryResult() {
-	Close();
+	// aborting an abandoned query allocates, which fails when memory ran out, and a destructor cannot throw
+	try {
+		Close();
+	} catch (...) { // NOLINT
+	}
 }
 
 void QueryResult::DeduplicateColumns(vector<string> &names) {
@@ -435,22 +439,23 @@ void QueryResult::CompleteInternal(ClientContextLock &lock) {
 			EndFinishedInternal(lock);
 		}
 	} catch (std::exception &ex) {
-		AbandonAfterThrowInternal(lock, ErrorData(ex));
+		AbandonAfterThrowInternal(lock, &ex);
 		throw;
 	} catch (...) { // LCOV_EXCL_START
-		AbandonAfterThrowInternal(lock, ErrorData("Unhandled exception while completing the query"));
+		AbandonAfterThrowInternal(lock, nullptr);
 		throw;
 	} // LCOV_EXCL_STOP
 	context.reset();
 }
 
-void QueryResult::AbandonAfterThrowInternal(ClientContextLock &lock, ErrorData error) {
+void QueryResult::AbandonAfterThrowInternal(ClientContextLock &lock, optional_ptr<const std::exception> ex) {
 	// the caller holds the context lock - clean up with it here, as closing this result would lock it again
 	try {
 		if (context->IsActiveResult(lock, *this)) {
 			if (!HasError()) {
-				// Ended as failed, so nothing the query ran is committed
-				SetError(std::move(error));
+				// Ended as failed, so nothing the query ran is committed. Building the error data allocates, and a
+				// query that cannot be ended stays active until the next statement aborts it
+				SetError(ex ? ErrorData(*ex) : ErrorData("Unhandled exception while completing the query"));
 			}
 			context->CleanupInternal(lock, this, true);
 		}

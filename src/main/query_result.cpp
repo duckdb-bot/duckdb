@@ -191,10 +191,10 @@ QueryResult::QueryResult(ErrorData error)
 }
 
 QueryResult::~QueryResult() {
-	// aborting an abandoned query allocates, which fails when memory ran out, and a destructor cannot throw
 	try {
 		Close();
-	} catch (...) { // NOLINT
+	} catch (...) {
+		// a destructor cannot throw, and locking the context allocates
 	}
 }
 

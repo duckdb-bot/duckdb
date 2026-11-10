@@ -218,6 +218,14 @@ void TaskScheduler::ExecuteForever(atomic<bool> *marker, const TaskSchedulerType
 	unique_ptr<ConsumerToken> consumer;
 	WorkerTask worker_task;
 
+	// The first setting a thread reads registers the destructor of its thread_local settings cache with the runtime,
+	// which ends the process when it cannot allocate that registration. So the cache is created here, while the thread
+	// starts and memory is available, and not by the first task the thread runs under memory pressure
+	try {
+		Settings::Get<SchedulerProcessPartialSetting>(config);
+	} catch (...) { // NOLINT
+	}
+
 	// An exception that leaves this thread ends the process. When the bookkeeping of the thread throws, for example
 	// because it cannot allocate, the thread waits and continues where it was, with the task it holds, up to
 	// MAX_TASK_RETRIES times

@@ -3,6 +3,7 @@
 #include "duckdb/common/error_data.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/unordered_map.hpp"
+#include "duckdb/main/settings.hpp"
 #include "test_helpers.hpp"
 
 using namespace duckdb;
@@ -220,7 +221,7 @@ TEST_CASE("Test that the checksum detects two zeroed equal words in a WAL entry"
 	auto config = GetTestConfig();
 	config->options.storage_compatibility = StorageCompatibility::FromString("v2.1.0");
 	config->options.checkpoint_wal_size = idx_t(-1);
-	config->options.checkpoint_on_shutdown = false;
+	config->SetOption(CheckpointOnShutdownSetting::SettingIndex, Value::BOOLEAN(false));
 
 	DeleteDatabase(storage_database);
 	{

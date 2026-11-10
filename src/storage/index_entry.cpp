@@ -31,7 +31,10 @@ void IndexEntry::Append(DataChunk &chunk, Vector &row_ids) {
 		return;
 	}
 	auto &bound_index = owned_index->Cast<BoundIndex>();
-	bound_index.Append(chunk, row_ids);
+	auto error = bound_index.Append(chunk, row_ids);
+	if (error.HasError()) {
+		error.Throw();
+	}
 }
 
 ErrorData IndexEntry::Append(const QueryContext &context, DataChunk &chunk, Vector &row_ids,
@@ -62,7 +65,6 @@ ErrorData IndexEntry::Append(const QueryContext &context, DataChunk &chunk, Vect
 		}
 	}
 
-	ErrorData error;
 	try {
 		if (lookup_main_index) {
 			IndexAppendInfo lookup_append_info;
@@ -75,21 +77,20 @@ ErrorData IndexEntry::Append(const QueryContext &context, DataChunk &chunk, Vect
 			}
 			bound_index.VerifyAppend(chunk, lookup_append_info, optional_ptr<ConflictManager>());
 		}
-
-		IndexAppendInfo index_append_info(append_mode, nullptr);
-		index_append_info.context = context;
-		if (delete_index) {
-			index_append_info.delete_indexes.push_back(*delete_index);
-		}
-		if (append_index) {
-			error = append_index->Append(chunk, row_ids, index_append_info);
-		} else {
-			error = bound_index.Append(chunk, row_ids, index_append_info);
-		}
 	} catch (std::exception &ex) {
-		error = ErrorData(ex);
+		// the lookup is read-only: nothing was inserted yet
+		return ErrorData(ex);
 	}
-	return error;
+
+	IndexAppendInfo index_append_info(append_mode, nullptr);
+	index_append_info.context = context;
+	if (delete_index) {
+		index_append_info.delete_indexes.push_back(*delete_index);
+	}
+	if (append_index) {
+		return append_index->Append(chunk, row_ids, index_append_info);
+	}
+	return bound_index.Append(chunk, row_ids, index_append_info);
 }
 
 void IndexEntry::RevertAppend(const QueryContext &context, DataChunk &chunk, Vector &row_ids) {
@@ -141,6 +142,9 @@ void IndexEntry::AppendToDeleteIndexes(const QueryContext &context, DataChunk &c
 	index_append_info.context = context;
 	auto result = bound_index.Append(chunk, row_ids, index_append_info);
 	if (result.HasError()) {
+		if (result.Type() != ExceptionType::CONSTRAINT) {
+			result.Throw();
+		}
 		throw InternalException("unexpected constraint violation on delete ART: ", result.Message());
 	}
 }
@@ -150,6 +154,9 @@ static void AppendIndexEntries(BoundIndex &index, DataChunk &chunk, Vector &row_
 	append_info.context = context;
 	const auto error = index.Append(chunk, row_ids, append_info);
 	if (error.HasError()) {
+		if (error.Type() != ExceptionType::CONSTRAINT) {
+			error.Throw();
+		}
 		throw InternalException("Failed to append to %s: %s", index.GetIndexName(), error.Message());
 	}
 }
@@ -451,6 +458,9 @@ void IndexEntry::Rebuild(const IndexRebuildScan &scan) {
 	IndexRebuildAppend append = [&](DataChunk &chunk, Vector &row_ids) {
 		auto error = bound_index.Append(chunk, row_ids);
 		if (error.HasError()) {
+			if (error.Type() != ExceptionType::CONSTRAINT) {
+				error.Throw();
+			}
 			throw InternalException("Failed to rebuild index %s after vacuum: %s", bound_index.GetIndexName(),
 			                        error.Message());
 		}

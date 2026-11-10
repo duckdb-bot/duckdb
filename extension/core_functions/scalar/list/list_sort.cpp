@@ -190,8 +190,8 @@ static void ListSortFunction(DataChunk &args, ExpressionState &state, Vector &re
 	// connection writes to a table with an index on this function
 	optional_ptr<ClientContext> context;
 	shared_ptr<ClientContext> fallback_context;
-	if (state.HasContext()) {
-		context = &state.GetContext();
+	if (state.HasClientContext()) {
+		context = &state.GetClientContext();
 	} else {
 		// without a context, as in the cleanup after a transaction, the sort runs with the bind context while it
 		// lives and else with a context of its own
@@ -347,20 +347,11 @@ static void ListSortFunction(DataChunk &args, ExpressionState &state, Vector &re
 static unique_ptr<FunctionData> ListSortBind(ClientContext &context, BoundScalarFunction &bound_function,
                                              vector<unique_ptr<Expression>> &arguments, OrderType &order,
                                              OrderByNullType &null_order) {
-	LogicalType child_type;
-	if (arguments[0]->GetReturnType() == LogicalTypeId::UNKNOWN) {
-		bound_function.GetArguments()[0] = LogicalTypeId::UNKNOWN;
-		bound_function.SetReturnType(LogicalType::SQLNULL);
-		child_type = bound_function.GetReturnType();
-		return make_uniq<ListSortBindData>(order, null_order, false, bound_function.GetReturnType(), child_type,
-		                                   context);
-	}
-
 	arguments[0] = BoundCastExpression::AddArrayCastToList(context, std::move(arguments[0]));
 	if (arguments[0]->GetReturnType().id() != LogicalTypeId::LIST) {
 		throw BinderException("list_sort can only operate on LISTs");
 	}
-	child_type = ListType::GetChildType(arguments[0]->GetReturnType());
+	auto child_type = ListType::GetChildType(arguments[0]->GetReturnType());
 
 	bound_function.GetArguments()[0] = arguments[0]->GetReturnType();
 	bound_function.SetReturnType(arguments[0]->GetReturnType());
@@ -393,13 +384,6 @@ static unique_ptr<FunctionData> ListGradeUpBind(BindScalarFunctionInput &input) 
 	auto &config = DBConfig::GetConfig(context);
 	order = config.ResolveOrder(context, order);
 	null_order = config.ResolveNullOrder(context, order, null_order);
-
-	if (arguments[0]->GetReturnType().id() == LogicalTypeId::UNKNOWN) {
-		bound_function.GetArguments()[0] = LogicalTypeId::UNKNOWN;
-		bound_function.SetReturnType(LogicalType::SQLNULL);
-		return make_uniq<ListSortBindData>(order, null_order, true, bound_function.GetReturnType(),
-		                                   bound_function.GetReturnType(), context);
-	}
 
 	arguments[0] = BoundCastExpression::AddArrayCastToList(context, std::move(arguments[0]));
 	if (arguments[0]->GetReturnType().id() != LogicalTypeId::LIST) {

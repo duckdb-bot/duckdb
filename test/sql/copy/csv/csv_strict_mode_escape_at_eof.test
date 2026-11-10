@@ -1,0 +1,53 @@
+# name: test/sql/copy/csv/csv_strict_mode_escape_at_eof.test
+# description: Strict mode rejects a quoted value that the file ends in right after its escape character
+# group: [csv]
+
+# data/csv/strict_mode_escape_at_eof.csv is the ten bytes 1,a<newline>2,"ab\ without a final newline, so the last
+# quoted value ends in the escape character and is never closed
+
+# the single-threaded scan does not report a quoted value cut off by the end of the file yet, so the parallel scan is tested
+foreach buffer_size 8 1024
+
+statement error
+SELECT * FROM read_csv('data/csv/strict_mode_escape_at_eof.csv', auto_detect=false, header=false, columns={'a': 'INTEGER', 'b': 'VARCHAR'}, escape='\', strict_mode=true, parallel=true, buffer_size={buffer_size});
+----
+Value with unterminated quote found
+
+endloop
+
+# the sniffer does not accept a dialect whose scan ends inside such a value either
+statement error
+SELECT * FROM sniff_csv('data/csv/strict_mode_escape_at_eof.csv', header=false, delim=',', quote='"', escape='\', strict_mode=true);
+----
+It was not possible to automatically detect the CSV parsing dialect
+
+# with store_rejects the row goes to the reject table instead
+statement ok
+SELECT * FROM read_csv('data/csv/strict_mode_escape_at_eof.csv', auto_detect=false, header=false, columns={'a': 'INTEGER', 'b': 'VARCHAR'}, escape='\', strict_mode=true, store_rejects=true);
+
+query III
+SELECT line, error_type, csv_line FROM reject_errors;
+----
+2	UNQUOTED VALUE	2,"ab\
+
+# the first row is still read
+query II
+SELECT * FROM read_csv('data/csv/strict_mode_escape_at_eof.csv', auto_detect=false, header=false, columns={'a': 'INTEGER', 'b': 'VARCHAR'}, escape='\', strict_mode=true, ignore_errors=true);
+----
+1	a
+
+# without strict mode the value is read as before
+query II
+SELECT * FROM read_csv('data/csv/strict_mode_escape_at_eof.csv', auto_detect=false, header=false, columns={'a': 'INTEGER', 'b': 'VARCHAR'}, escape='\', strict_mode=false);
+----
+1	a
+2	ab
+
+# a quoted value closed after an escaped character is fine in strict mode
+statement ok
+COPY (SELECT '1,"a\"b"' AS l) TO '{TEST_DIR}/escaped_then_closed.csv' (HEADER false, QUOTE '', ESCAPE '');
+
+query II
+SELECT * FROM read_csv('{TEST_DIR}/escaped_then_closed.csv', auto_detect=false, header=false, columns={'a': 'INTEGER', 'b': 'VARCHAR'}, escape='\', strict_mode=true);
+----
+1	a"b

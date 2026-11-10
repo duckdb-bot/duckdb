@@ -542,7 +542,10 @@ BlockAllocator::~BlockAllocator() {
 		annotated_lock_guard<annotated_mutex> guard(lifetime_state->lock);
 		lifetime_state->alive = false;
 	}
-	GetBlockAllocatorThreadLocalState(*this).Clear();
+	// a thread without local state has no blocks to give back, and creating the state here can fail to allocate
+	if (ThreadHasLocalState()) {
+		GetBlockAllocatorThreadLocalState(*this).Clear();
+	}
 	if (IsInitialized()) {
 		try {
 			FreeVirtualMemory(pool_base, pool_size);

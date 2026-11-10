@@ -28,6 +28,10 @@ int wmain(int argc, wchar_t **wargv) {
 		rc = RunShell(argc, argv);
 	} catch (const ShellExitException &ex) {
 		rc = ex.exit_code;
+	} catch (std::bad_alloc &) {
+		// formatting the error through ErrorData needs memory, which is what ran out
+		rc = 1;
+		fprintf(stderr, "Exited due to error: Out of Memory Error\n");
 	} catch (std::exception &ex) {
 		rc = 1;
 		ErrorData error(ex);

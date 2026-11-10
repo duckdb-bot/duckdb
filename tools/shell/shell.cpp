@@ -1298,6 +1298,10 @@ void ShellState::OpenDB(ShellOpenFlags flags) {
 			db = make_uniq<duckdb::DuckDB>(zDbFilename.c_str(), &config);
 			RegisterShellLogger(*db, storage_ptr);
 			conn = make_uniq<duckdb::Connection>(*db);
+		} catch (std::bad_alloc &) {
+			// formatting the error through ErrorData needs memory, which is what ran out
+			fprintf(stderr, "Out of Memory Error: could not allocate memory while opening the database\n");
+			ShellState::Exit(1);
 		} catch (std::exception &ex) {
 			PrintDatabaseError(duckdb::ErrorData(ex));
 			if (flags == ShellOpenFlags::KEEP_ALIVE_ON_FAILURE) {

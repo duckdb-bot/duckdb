@@ -662,8 +662,10 @@ SingleFileStorageCommitState::~SingleFileStorageCommitState() {
 		// Truncate the WAL in case of a destructor.
 		RevertCommit();
 	} catch (std::exception &ex) {
-		ErrorData data(ex);
+		// a destructor cannot throw, and building the error data allocates, which fails as well when the commit ran
+		// out of memory
 		try {
+			ErrorData data(ex);
 			DUCKDB_LOG_ERROR(wal.GetDatabase().GetDatabase(),
 			                 "SingleFileStorageCommitState::~SingleFileStorageCommitState()\t\t" + data.Message());
 		} catch (...) { // NOLINT

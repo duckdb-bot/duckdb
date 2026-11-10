@@ -247,6 +247,25 @@ DROP TABLE reject_errors;
 statement ok
 DROP TABLE reject_scans;
 
+# with the errors ignored and no rejects table the row is removed, when it is the first row of its chunk and when
+# it crosses into the last buffer
+query I
+SELECT * FROM read_csv('data/csv/escaped_quote_then_unterminated.csv', auto_detect=false, header=false, columns={'a': 'INTEGER'}, parallel=true, strict_mode=true, ignore_errors=true);
+----
+
+query I
+SELECT * FROM read_csv('data/csv/escaped_quote_then_unterminated.csv', auto_detect=false, header=false, columns={'a': 'INTEGER'}, buffer_size=3, parallel=true, strict_mode=true, ignore_errors=true);
+----
+
+query II
+SELECT * FROM read_csv('data/csv/malformed_quote_then_unterminated.csv', auto_detect=false, header=false, columns={'a': 'VARCHAR', 'b': 'VARCHAR'}, buffer_size=6, parallel=false, strict_mode=true, ignore_errors=true);
+----
+
+query II
+SELECT * FROM read_csv('data/csv/cast_then_unterminated_quote_two_columns.csv', auto_detect=false, header=false, columns={'a': 'INTEGER', 'b': 'VARCHAR'}, buffer_size=8, parallel=true, strict_mode=true, ignore_errors=true);
+----
+1	a
+
 # the row with the unterminated value is the 2048th row of its chunk and crosses into the last buffer
 foreach parallel true false
 

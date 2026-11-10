@@ -1735,7 +1735,7 @@ StringValueScanner::MoveBufferResult StringValueScanner::TryMoveToNextBuffer() {
 			if (result.current_errors.HandleErrors(result)) {
 				result.InvalidateUnwrittenColumns(chunk_col_id_before);
 			}
-			result.line_positions_per_row[static_cast<idx_t>(result.number_of_rows)] = result.current_line_position;
+			result.StoreLinePosition();
 			result.number_of_rows++;
 			lines_read++;
 		}
@@ -2089,7 +2089,7 @@ void StringValueScanner::FinishBoundaryScan(const bool moved) {
 	const auto chunk_col_id_before = result.chunk_col_id;
 	if (result.current_errors.HandleErrors(result)) {
 		result.InvalidateUnwrittenColumns(chunk_col_id_before);
-		result.line_positions_per_row[static_cast<idx_t>(result.number_of_rows)] = result.current_line_position;
+		result.StoreLinePosition();
 		result.number_of_rows++;
 		lines_read++;
 	}

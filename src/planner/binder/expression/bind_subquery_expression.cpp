@@ -85,7 +85,7 @@ BindResult ExpressionBinder::BindExpression(SubqueryExpression &expr, idx_t dept
 	auto subquery_binder = Binder::CreateBinder(context, binder);
 	subquery_binder->SetCanContainNulls(true);
 	subquery_binder->SetInsideSubquery();
-	subquery_binder->SetBindingSubqueryExpression();
+	subquery_binder->SetDefersRebinds();
 	if (try_subquery || rethrow_try_errors) {
 		// TRY is lowered onto the bound plan of this subquery after binding
 		subquery_binder->SetBindingTrySubquery();
@@ -216,7 +216,7 @@ BindResult ExpressionBinder::BindExpression(SubqueryExpression &expr, idx_t dept
 			}
 		}
 	}
-	if (subquery_binder->SubqueryRequiresRebind()) {
+	if (subquery_binder->HasDeferredRebind()) {
 		result->SetRequiresRebind();
 	}
 	result->GetBinderMutable() = std::move(subquery_binder);

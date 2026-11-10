@@ -311,12 +311,12 @@ bool Binder::IsBindingTrySubquery() const {
 	return binding_try_subquery;
 }
 
-void Binder::SetBindingSubqueryExpression() {
-	binding_subquery_expression = true;
+void Binder::SetDefersRebinds() {
+	defers_rebinds = true;
 }
 
-bool Binder::SubqueryRequiresRebind() const {
-	return subquery_requires_rebind;
+bool Binder::HasDeferredRebind() const {
+	return deferred_rebind;
 }
 
 const TrySubqueryPlanIndexes &Binder::GetTrySubqueryPlanIndexes() const {
@@ -459,8 +459,8 @@ void Binder::CheckRequiresRebind(const Expression &expr) {
 void Binder::RequireRebind() {
 	// the expressions of a subquery leave the tree when it is planned, which a fold such as typeof can prevent
 	for (optional_ptr<Binder> binder = this; binder; binder = binder->parent) {
-		if (binder->binding_subquery_expression) {
-			binder->subquery_requires_rebind = true;
+		if (binder->defers_rebinds) {
+			binder->deferred_rebind = true;
 			return;
 		}
 	}

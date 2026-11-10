@@ -6,7 +6,7 @@ require icu
 
 require exact_vector_size 2048
 
-# Created with DuckDB main c8ef5ee51f9 (LOAD icu, SET TimeZone = 'UTC'):
+# Created with DuckDB main c8ef5ee51f9 after LOAD icu and SET TimeZone = 'UTC'
 # CREATE TABLE t (i INTEGER)
 # INSERT INTO t VALUES (1), (2)
 # CREATE INDEX i_folded_subquery ON t ((i + length(typeof(TRY((SELECT '2026-01-01 00:00:00'::TIMESTAMPTZ))))))

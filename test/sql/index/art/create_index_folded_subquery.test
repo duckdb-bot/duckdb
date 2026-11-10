@@ -38,6 +38,10 @@ CREATE INDEX i_folded_nested ON t ((i + length(typeof(TRY((SELECT (SELECT TIMEST
 statement ok
 CREATE INDEX i_folded_derived ON t ((i + length(typeof(TRY((SELECT v FROM (SELECT TIMESTAMPTZ '2026-01-01 00:00:00'::VARCHAR AS v) x))))));
 
+# the aggregates of USING KEY are bound by a binder of their own, whose rebinds the CTE passes on
+statement ok
+CREATE INDEX i_folded_key_aggregate ON t ((i + length(typeof(TRY((WITH RECURSIVE r(k, n, s, txt) USING KEY (k, last(s::VARCHAR) AS txt) AS (SELECT 1, 0, TIMESTAMPTZ '2026-01-01 00:00:00', '' UNION SELECT k, n + 1, s, txt FROM r WHERE n < 1) SELECT txt FROM r))))));
+
 # a function whose type or value follows the session still rejects the key
 statement error
 CREATE INDEX i ON t ((i + length(typeof(TRY((SELECT getvariable('x')))))));
@@ -58,7 +62,7 @@ Index keys cannot contain expressions with side effects. They also cannot depend
 query I
 SELECT count(*) FROM duckdb_indexes() WHERE table_name = 't';
 ----
-6
+7
 
 # the stored keys are bound again when the indexes are loaded, under another TimeZone
 restart

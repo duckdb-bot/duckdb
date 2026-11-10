@@ -115,15 +115,17 @@ void TransactionContext::Rollback(optional_ptr<ErrorData> error) {
 		rollback_error = ErrorData(ex);
 	}
 	// Notify any registered state of transaction rollback - all of them, also when one of them fails
-	for (auto const &s : context.GetContext().GetRegisteredState().States()) {
+	// The states are visited through their snapshot and not a copy, which would allocate, since this also runs while
+	// a connection that ran out of memory is destroyed
+	context.GetContext().GetRegisteredState().ForEachState([&](ClientContextState &state) {
 		try {
-			s->TransactionRollback(*transaction, context, error);
+			state.TransactionRollback(*transaction, context, error);
 		} catch (std::exception &ex) {
 			if (!rollback_error.HasError()) {
 				rollback_error = ErrorData(ex);
 			}
 		}
-	}
+	});
 	if (rollback_error.HasError()) {
 		rollback_error.Throw();
 	}

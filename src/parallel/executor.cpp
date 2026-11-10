@@ -390,8 +390,9 @@ void Executor::UnregisterTask() {
 		const annotated_lock_guard<annotated_mutex> producer_lock(producer->producer_lock);
 		executor_tasks--;
 		producer->producer_cv.notify_all();
+		// still under this lock, since CancelTasks lets the executor be destroyed once it sees no task left under it
+		task_reschedule.notify_all();
 	}
-	task_reschedule.notify_all();
 #else
 	executor_tasks--;
 #endif

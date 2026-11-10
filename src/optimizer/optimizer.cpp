@@ -1,4 +1,5 @@
 #include "duckdb/optimizer/optimizer.hpp"
+#include "duckdb/optimizer/duplicate_eliminated_domain_optimizer.hpp"
 
 #include "duckdb/common/enums/optimizer_type.hpp"
 #include "duckdb/function/function_binder.hpp"
@@ -32,6 +33,7 @@
 #include "duckdb/optimizer/remove_unused_columns.hpp"
 #include "duckdb/optimizer/row_group_pruner.hpp"
 #include "duckdb/optimizer/sampling_pushdown.hpp"
+#include "duckdb/optimizer/scalar_aggregate_merger.hpp"
 #include "duckdb/optimizer/scalar_fn_pushdown.hpp"
 #include "duckdb/optimizer/self_join_aggregate.hpp"
 #include "duckdb/optimizer/statistics_propagator.hpp"
@@ -227,6 +229,12 @@ void Optimizer::RunBuiltInOptimizers() {
 		plan = self_join_aggregate.Optimize(std::move(plan));
 	});
 
+	// computes sibling scalar aggregates over the same table(s) in one pass, while their predicates are still filters
+	RunOptimizer(OptimizerType::SCALAR_AGGREGATE_MERGE, [&]() {
+		ScalarAggregateMerger scalar_aggregate_merger(*this);
+		scalar_aggregate_merger.Optimize(plan);
+	});
+
 	// Rewrites AVG(x) -> SUM(x)/COUNT(x) and SUM(x+C) -> SUM(x) + C*COUNT(x)
 	RunOptimizer(OptimizerType::AGGREGATE_FUNCTION_REWRITER, [&]() {
 		AggregateFunctionRewriter aggregate_function_rewriter(*this);
@@ -254,6 +262,11 @@ void Optimizer::RunBuiltInOptimizers() {
 	});
 
 	if (!CTEContainsDML(*plan)) {
+		RunOptimizer(OptimizerType::DUPLICATE_ELIMINATED_DOMAIN, [&]() {
+			DuplicateEliminatedDomainOptimizer domain_optimizer(*this);
+			domain_optimizer.Optimize(plan);
+		});
+
 		FilterStatisticsOptimizer filter_statistics(*this);
 		filter_statistics.Optimize(plan);
 	}

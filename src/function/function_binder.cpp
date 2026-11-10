@@ -822,9 +822,9 @@ static void FoldArguments(ClientContext &context, optional_ptr<Binder> binder, c
 	auto option_schema = signature.GetTypedKwargs();
 	for (idx_t i = 0; i < resolved.arguments.size(); i++) {
 		auto &argument = *resolved.arguments[i];
-		if (binder && argument.RequiresRebind()) {
+		if (binder) {
 			// the folded value no longer shows that it can change across queries, like a cast that reads a setting
-			binder->SetAlwaysRequireRebind();
+			binder->CheckRequiresRebind(argument);
 		}
 		if (i < resolved.positional_count) {
 			// A TABLE parameter is filled by the subquery itself rather than by a value, so its slot holds a plain

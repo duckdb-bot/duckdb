@@ -1,0 +1,35 @@
+# name: test/sql/storage/index_folded_subquery_key.test
+# description: Index keys with a subquery that typeof folds away are bound again when an existing database loads them
+# group: [storage]
+
+require icu
+
+require exact_vector_size 2048
+
+# Created with DuckDB main c8ef5ee51f9 (LOAD icu, SET TimeZone = 'UTC'):
+# CREATE TABLE t (i INTEGER)
+# INSERT INTO t VALUES (1), (2)
+# CREATE INDEX i_folded_subquery ON t ((i + length(typeof(TRY((SELECT '2026-01-01 00:00:00'::TIMESTAMPTZ))))))
+# CREATE INDEX i_folded_range ON t ((i + length(typeof(TRY((SELECT count(*) FROM range(TIMESTAMPTZ '2026-01-01 00:00:00', TIMESTAMPTZ '2026-01-02 00:00:00', INTERVAL 1 DAY)))))))
+unzip data/storage/index_folded_subquery.db.gz {TEST_DIR}/index_folded_subquery.db
+
+statement ok
+ATTACH '{TEST_DIR}/index_folded_subquery.db' AS db2
+
+statement ok
+SET TimeZone = 'Europe/Amsterdam'
+
+# the indexes are bound when the table is modified
+statement ok
+INSERT INTO db2.t VALUES (3)
+
+query I
+SELECT count(*) FROM db2.t WHERE i + 24 = 27
+----
+1
+
+query I
+SELECT index_name FROM duckdb_indexes() WHERE database_name = 'db2' ORDER BY index_name
+----
+i_folded_range
+i_folded_subquery

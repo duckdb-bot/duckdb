@@ -23,7 +23,7 @@ TransactionContext::~TransactionContext() {
 		try {
 			Rollback(nullptr);
 		} catch (std::exception &ex) {
-			// building the error data allocates, which fails as well when the rollback ran out of memory
+			// a destructor cannot throw, and building the error message allocates
 			try {
 				ErrorData data(ex);
 				DUCKDB_LOG_ERROR(context, "TransactionContext::~TransactionContext()\t\t" + data.Message());

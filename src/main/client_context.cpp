@@ -165,7 +165,8 @@ ClientContext::~ClientContext() {
 	// but only if we are not destroying this client context as part of an exception stack unwind
 	try {
 		Destroy();
-	} catch (...) { // NOLINT
+	} catch (...) {
+		// a destructor cannot throw, and locking the context allocates
 	}
 }
 

@@ -34,13 +34,14 @@ DebugVerificationMode DBConfigOptions::global_verification_mode = DebugVerificat
 #define DUCKDB_SETTING(_PARAM)                                                                                         \
 	{                                                                                                                  \
 		_PARAM::Name, _PARAM::Description, _PARAM::InputType, nullptr, nullptr, nullptr, nullptr, nullptr,             \
-		    _PARAM::Scope, _PARAM::DefaultValue, nullptr, _PARAM::SettingIndex, _PARAM::IsDebug, _PARAM::IsDeprecated  \
+		    _PARAM::Scope, _PARAM::DefaultValue, nullptr, _PARAM::SettingIndex, _PARAM::IsDebug, _PARAM::IsDeprecated, \
+		    Settings::GetDefaultValue<_PARAM>                                                                          \
 	}
 #define DUCKDB_SETTING_CALLBACK(_PARAM)                                                                                \
 	{                                                                                                                  \
 		_PARAM::Name, _PARAM::Description, _PARAM::InputType, nullptr, nullptr, nullptr, nullptr, nullptr,             \
 		    _PARAM::Scope, _PARAM::DefaultValue, _PARAM::OnSet, _PARAM::SettingIndex, _PARAM::IsDebug,                 \
-		    _PARAM::IsDeprecated                                                                                       \
+		    _PARAM::IsDeprecated, Settings::GetDefaultValue<_PARAM>                                                    \
 	}
 #define DUCKDB_GLOBAL(_PARAM)                                                                                          \
 	{                                                                                                                  \
@@ -122,6 +123,7 @@ static const ConfigurationOption internal_options[] = {
     DUCKDB_SETTING(DebugForceCommitRevertFailureSetting),
     DUCKDB_SETTING(DebugForceExternalSetting),
     DUCKDB_SETTING(DebugForceFetchRowSetting),
+    DUCKDB_SETTING(DebugForceFlushAppendFailureSetting),
     DUCKDB_GLOBAL(ForceMbedtlsUnsafeSetting),
     DUCKDB_SETTING(DebugForceNoCrossProductSetting),
     DUCKDB_SETTING(ForceUpdateToDelAndInsertSetting),
@@ -146,6 +148,7 @@ static const ConfigurationOption internal_options[] = {
     DUCKDB_SETTING_CALLBACK(DebugWindowModeSetting),
     DUCKDB_SETTING_CALLBACK(DefaultBlockSizeSetting),
     DUCKDB_SETTING_CALLBACK(DefaultCollationSetting),
+    DUCKDB_GLOBAL(DefaultGrammarExtensionsSetting),
     DUCKDB_SETTING_CALLBACK(DefaultNullOrderSetting),
     DUCKDB_SETTING_CALLBACK(DefaultOrderSetting),
     DUCKDB_GLOBAL(DefaultSecretStorageSetting),
@@ -198,6 +201,8 @@ static const ConfigurationOption internal_options[] = {
     DUCKDB_GLOBAL(HTTPProxySetting),
     DUCKDB_SETTING(HTTPProxyPasswordSetting),
     DUCKDB_SETTING(HTTPProxyUsernameSetting),
+    DUCKDB_SETTING(HTTPRetryQuotaThrottledSetting),
+    DUCKDB_SETTING(HTTPRetryThrottledWaitMsSetting),
     DUCKDB_SETTING(IeeeFloatingPointOpsSetting),
     DUCKDB_SETTING(IgnoreUnknownCrsSetting),
     DUCKDB_SETTING(ImmediateTransactionModeSetting),
@@ -260,7 +265,7 @@ static const ConfigurationOption internal_options[] = {
     DUCKDB_GLOBAL(TempDirectorySetting),
     DUCKDB_SETTING_CALLBACK(TempFileEncryptionSetting),
     DUCKDB_GLOBAL(ThreadsSetting),
-    DUCKDB_LOCAL(TrackedMetricsSetting),
+    DUCKDB_SETTING_CALLBACK(TrackedMetricsSetting),
     DUCKDB_SETTING(UsernameSetting),
     DUCKDB_SETTING_CALLBACK(VacuumRebuildIndexesSetting),
     DUCKDB_SETTING_CALLBACK(ValidateExternalFileCacheSetting),
@@ -894,8 +899,10 @@ SettingLookupResult DBConfig::TryGetDefaultValue(optional_ptr<const Configuratio
 	if (!option || !option->default_value) {
 		return SettingLookupResult();
 	}
-	auto input_type = ParseLogicalType(option->parameter_type);
-	result = Value(option->default_value).DefaultCastAs(input_type);
+	if (!option->get_default_value) {
+		throw InternalException("Generic setting \"%s\" has no typed default value", option->name);
+	}
+	result = option->get_default_value();
 	return SettingLookupResult(SettingScope::GLOBAL);
 }
 

@@ -126,9 +126,11 @@ __attribute__((destructor)) static void report(void) {
 STARTUP_SQL = "SELECT 42"
 # needs far more memory than startup, so every budget below exhausts the heap inside the query
 LARGE_SQL = "SELECT " + ",".join(["1"] * 200000)
+# writes a table, so the shutdown checkpoint of a file database has work to do
+FILE_DATABASE_SQL = "CREATE TABLE t AS SELECT range AS i FROM range(1000); SELECT 42"
 
 
-def run_with_malloc_budget(shell, shim, sql, budget=None, report=False):
+def run_with_malloc_budget(shell, shim, sql, budget=None, report=False, database=":memory:"):
     env = dict(os.environ)
     # agent-mode variables of the runner must not switch the shell under test into agent mode
     for key in ShellTest.AGENT_ENVIRONMENT_VARIABLES:
@@ -142,7 +144,7 @@ def run_with_malloc_budget(shell, shim, sql, budget=None, report=False):
         env["FAILMALLOC_REPORT"] = "1"
     # the SQL goes through stdin: the large query does not fit in an argument
     return subprocess.run(
-        [shell, "--batch", "--no-init", ":memory:"],
+        [shell, "--batch", "--no-init", database],
         input=sql.encode(),
         capture_output=True,
         env=env,
@@ -211,6 +213,35 @@ def test_malloc_failure_large_query(shell, malloc_shim, startup_bytes, factor):
 @pytest.mark.parametrize("fraction", [0.96, 0.97, 0.98, 0.99])
 def test_malloc_failure_tail(shell, malloc_shim, startup_bytes, fraction):
     result = run_with_malloc_budget(shell, malloc_shim, STARTUP_SQL, budget=int(startup_bytes * fraction))
+    assert result.returncode in (0, 1), (result.returncode, result.stderr)
+    assert b"terminate called" not in result.stderr, result.stderr
+    if result.returncode == 1:
+        assert b"Out of Memory" in result.stderr, result.stderr
+
+
+# the bytes a run against a file database requests, so the budgets below scale with the build
+@pytest.fixture(scope="module")
+def file_database_bytes(request, malloc_shim, tmp_path_factory):
+    shell = request.config.getoption("--shell-binary")
+    if not shell:
+        raise ValueError("Please provide a shell binary path to the tester, using '--shell-binary <path_to_cli>'")
+    database = tmp_path_factory.mktemp("filedb") / "measure.db"
+    result = run_with_malloc_budget(shell, malloc_shim, FILE_DATABASE_SQL, report=True, database=str(database))
+    assert result.returncode == 0, result.stderr
+    assert b"42" in result.stdout, result.stdout
+    match = re.search(rb"failmalloc_total_bytes=(\d+)", result.stderr)
+    if not match or int(match.group(1)) == 0:
+        pytest.skip("the malloc shim does not intercept the allocations of this shell binary")
+    return int(match.group(1))
+
+
+# the heap runs out while a file database checkpoints at shutdown, which the shell must report instead of aborting
+@pytest.mark.parametrize("fraction", [0.82, 0.86, 0.9])
+def test_malloc_failure_file_database_shutdown(shell, malloc_shim, file_database_bytes, tmp_path, fraction):
+    database = tmp_path / "shutdown.db"
+    result = run_with_malloc_budget(
+        shell, malloc_shim, FILE_DATABASE_SQL, budget=int(file_database_bytes * fraction), database=str(database)
+    )
     assert result.returncode in (0, 1), (result.returncode, result.stderr)
     assert b"terminate called" not in result.stderr, result.stderr
     if result.returncode == 1:

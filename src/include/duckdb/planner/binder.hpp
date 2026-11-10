@@ -433,11 +433,12 @@ public:
 	void SetAlwaysRequireRebind();
 	//! Requires a rebind when the expression contains a function or cast whose result can change between queries
 	void CheckRequiresRebind(const Expression &expr);
-	//! Requires a rebind, recorded on the subquery expression being bound so a fold that drops it drops the rebind too
+	//! Requires a rebind, kept by the nearest binder that defers rebinds, whose owner passes it on or drops it
 	void RequireRebind();
-	//! Set for the binder of a subquery expression, which carries the rebinds its expressions require
-	void SetBindingSubqueryExpression();
-	bool SubqueryRequiresRebind() const;
+	//! Set for a binder whose owner decides whether the rebinds its expressions require reach the statement
+	void SetDefersRebinds();
+	//! Whether an expression of a binder that defers rebinds, or of one below it, requires a rebind
+	bool HasDeferredRebind() const;
 	void SetInsideSubquery();
 	bool IsInsideSubquery() const;
 	//! Set while binding the key expressions of an index
@@ -483,10 +484,10 @@ private:
 	bool binding_index_key = false;
 	//! Whether this binder binds a TRY subquery, which lowers TRY onto the bound plan after binding
 	bool binding_try_subquery = false;
-	//! Whether this binder binds the node of a subquery expression
-	bool binding_subquery_expression = false;
-	//! Whether an expression of the subquery expression this binder binds requires a rebind
-	bool subquery_requires_rebind = false;
+	//! Whether the rebinds the expressions of this binder require are kept here for its owner
+	bool defers_rebinds = false;
+	//! Whether an expression of this binder, or of one below it, requires a rebind
+	bool deferred_rebind = false;
 	//! The plan indexes of the TRY subquery's top select node, recorded while planning it
 	TrySubqueryPlanIndexes try_subquery_plan_indexes;
 	//! The set of bound views

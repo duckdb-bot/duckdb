@@ -53,6 +53,7 @@ BoundStatement Binder::BindNode(RecursiveCTENode &statement) {
 
 	// Create temporary binder to bind expressions
 	auto aggregate_binder = Binder::CreateBinder(context, nullptr);
+	aggregate_binder->SetDefersRebinds();
 	FunctionBinder function_binder(*aggregate_binder);
 	aggregate_binder->bind_context.AddGenericBinding(setop_index, statement.ctename, result.names, result.types);
 	ExpressionBinder expression_binder(*aggregate_binder, context);
@@ -196,8 +197,11 @@ BoundStatement Binder::BindNode(RecursiveCTENode &statement) {
 	if (key_targets.empty() && !payload_references.empty()) {
 		throw BinderException("USING KEY clause requires at least one key column.");
 	}
+	// the binder of the USING KEY aggregates has statement properties of its own and keeps the rebinds it defers
+	if (aggregate_binder->HasDeferredRebind()) {
+		RequireRebind();
+	}
 	if (aggregate_binder->GetStatementProperties().always_require_rebind) {
-		// the binder of the USING KEY aggregates has statement properties of its own
 		SetAlwaysRequireRebind();
 	}
 

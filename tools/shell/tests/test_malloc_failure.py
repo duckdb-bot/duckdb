@@ -124,6 +124,12 @@ __attribute__((destructor)) static void report(void) {
 """
 
 STARTUP_SQL = "SELECT 42"
+# with file system logging at TRACE level every file handle logs its close, also when it is destroyed while an
+# exception unwinds, and the copy allocates far more than startup, so every budget below exhausts the heap inside it
+TRACE_COPY_SQL = (
+    "SET enable_logging = true;\nSET logging_level = 'TRACE';\n"
+    "COPY (SELECT range AS i, 'row ' || range AS s FROM range(200000)) TO '{path}';\nSELECT 42;"
+)
 # needs far more memory than startup, so every budget below exhausts the heap inside the query
 LARGE_SQL = "SELECT " + ",".join(["1"] * 200000)
 
@@ -211,6 +217,33 @@ def test_malloc_failure_large_query(shell, malloc_shim, startup_bytes, factor):
 @pytest.mark.parametrize("fraction", [0.96, 0.97, 0.98, 0.99])
 def test_malloc_failure_tail(shell, malloc_shim, startup_bytes, fraction):
     result = run_with_malloc_budget(shell, malloc_shim, STARTUP_SQL, budget=int(startup_bytes * fraction))
+    assert result.returncode in (0, 1), (result.returncode, result.stderr)
+    assert b"terminate called" not in result.stderr, result.stderr
+    if result.returncode == 1:
+        assert b"Out of Memory" in result.stderr, result.stderr
+
+
+# the bytes a run that copies a result to a file with file system logging at TRACE level requests through the shim
+@pytest.fixture(scope="module")
+def trace_copy_bytes(request, malloc_shim, tmp_path_factory):
+    shell = request.config.getoption("--shell-binary")
+    path = str(tmp_path_factory.mktemp("failmalloc_trace") / "report.csv")
+    result = run_with_malloc_budget(shell, malloc_shim, TRACE_COPY_SQL.format(path=path), report=True)
+    assert result.returncode == 0, result.stderr
+    assert b"42" in result.stdout, result.stdout
+    match = re.search(rb"failmalloc_total_bytes=(\d+)", result.stderr)
+    if not match or int(match.group(1)) == 0:
+        pytest.skip("the malloc shim does not intercept the allocations of this shell binary")
+    return int(match.group(1))
+
+
+# the heap runs out while the copy writes the file, so the file handle is destroyed while the error unwinds and logs
+# its close, and the shell must report the error rather than abort
+@pytest.mark.parametrize("fraction", [0.5, 0.6, 0.7, 0.8, 0.9, 0.95])
+def test_malloc_failure_trace_logging_file_close(shell, malloc_shim, trace_copy_bytes, tmp_path, fraction):
+    path = str(tmp_path / "failmalloc.csv")
+    budget = int(trace_copy_bytes * fraction)
+    result = run_with_malloc_budget(shell, malloc_shim, TRACE_COPY_SQL.format(path=path), budget=budget)
     assert result.returncode in (0, 1), (result.returncode, result.stderr)
     assert b"terminate called" not in result.stderr, result.stderr
     if result.returncode == 1:

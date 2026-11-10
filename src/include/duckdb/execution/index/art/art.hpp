@@ -126,6 +126,13 @@ public:
 	idx_t TryDelete(IndexLock &state, DataChunk &entries, Vector &row_identifiers,
 	                optional_ptr<SelectionVector> deleted_sel, optional_ptr<SelectionVector> non_deleted_sel) override
 	    DUCKDB_REQUIRES(state);
+	//! Delete a chunk from the ART with the client context of the operation, when it has one.
+	idx_t TryDelete(IndexLock &state, DataChunk &entries, Vector &row_identifiers, const QueryContext &context,
+	                optional_ptr<SelectionVector> deleted_sel, optional_ptr<SelectionVector> non_deleted_sel) override
+	    DUCKDB_REQUIRES(state);
+	//! Delete a chunk from the ART with the client context of the operation, throwing if a row is not deleted.
+	void Delete(IndexLock &state, DataChunk &entries, Vector &row_identifiers, const QueryContext &context) override
+	    DUCKDB_REQUIRES(state);
 	//! Delete keys and row_ids from the ART.
 	idx_t DeleteKeys(unsafe_vector<ARTKey> &keys, unsafe_vector<ARTKey> &row_id_keys, idx_t count,
 	                 optional_ptr<SelectionVector> deleted_sel = nullptr,

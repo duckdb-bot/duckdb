@@ -941,7 +941,7 @@ template <class SORT_KEY>
 static idx_t CollectMergeByteSamples(const SortedRunMerger &merger, const TupleDataLayout &payload_layout,
                                      unsafe_array_ptr<MergeByteSample<SORT_KEY>> samples) {
 	static constexpr idx_t NEIGHBORS = 32;
-	auto &context = merger.sort.client_context;
+	auto &context = merger.context;
 	const auto row_width = payload_layout.GetRowWidth();
 	const auto heap_size_offset = payload_layout.GetHeapSizeOffset();
 
@@ -1079,7 +1079,7 @@ optional_idx SortedRunMerger::TemplatedFindSkewedPartitionSplit() const {
 	static_assert(std::is_trivially_destructible<SAMPLE>::value, "Merge byte samples must not own resources");
 	D_ASSERT(SORT_KEY::CONSTANT_SIZE && SORT_KEY::HAS_PAYLOAD);
 
-	auto sample_buffer = BufferAllocator::Get(sort.client_context).Allocate(MAX_BYTE_SAMPLES * sizeof(SAMPLE));
+	auto sample_buffer = BufferAllocator::Get(context).Allocate(MAX_BYTE_SAMPLES * sizeof(SAMPLE));
 	unsafe_array_ptr<SAMPLE> samples(reinterpret_cast<SAMPLE *>(sample_buffer.get()), MAX_BYTE_SAMPLES);
 	const auto sample_count = CollectMergeByteSamples(*this, *sort.payload_layout, samples);
 	std::sort(samples.data(), samples.data() + sample_count);
@@ -1134,9 +1134,10 @@ optional_idx SortedRunMerger::FindSkewedPartitionSplit() const {
 //===--------------------------------------------------------------------===//
 // Sorted Run Merger
 //===--------------------------------------------------------------------===//
-SortedRunMerger::SortedRunMerger(const Sort &sort_p, vector<unique_ptr<SortedRun>> &&sorted_runs_p,
-                                 idx_t partition_size_p, bool external_p, bool is_index_sort_p)
-    : scheduler(TaskScheduler::GetScheduler(*sort_p.client_context.db)), sort(sort_p),
+SortedRunMerger::SortedRunMerger(ClientContext &context_p, const Sort &sort_p,
+                                 vector<unique_ptr<SortedRun>> &&sorted_runs_p, idx_t partition_size_p, bool external_p,
+                                 bool is_index_sort_p)
+    : scheduler(TaskScheduler::GetScheduler(*context_p.db)), context(context_p), sort(sort_p),
       sorted_runs(std::move(sorted_runs_p)), total_count(SortedRunsTotalCount(sorted_runs)),
       partition_size(partition_size_p), external(external_p), is_index_sort(is_index_sort_p),
       extra_partition_end(FindSkewedPartitionSplit()) {

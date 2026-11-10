@@ -20,10 +20,10 @@ namespace duckdb {
 
 Sort::Sort(ClientContext &client_context_p, const vector<BoundOrderByNode> &orders,
            const vector<LogicalType> &input_types, vector<idx_t> projection_map, bool is_index_sort_p)
-    : client_context(client_context_p), key_layout(make_shared_ptr<TupleDataLayout>()),
-      payload_layout(make_shared_ptr<TupleDataLayout>()), is_index_sort(is_index_sort_p) {
+    : key_layout(make_shared_ptr<TupleDataLayout>()), payload_layout(make_shared_ptr<TupleDataLayout>()),
+      is_index_sort(is_index_sort_p) {
 	// Convert orders to a single "create_sort_key" expression (and corresponding "decode_sort_key")
-	FunctionBinder binder(client_context);
+	FunctionBinder binder(client_context_p);
 	vector<unique_ptr<Expression>> create_children;
 	child_list_t<LogicalType> decode_columns;
 	vector<OrderModifiers> decode_modifiers;
@@ -438,7 +438,7 @@ ProgressData Sort::GetSinkProgress(const ProgressData &source_progress, idx_t so
 class SortGlobalSourceState : public GlobalSourceState {
 public:
 	SortGlobalSourceState(const Sort &sort, ClientContext &context, SortGlobalSinkState &sink_p)
-	    : sink(sink_p), merger(sort, std::move(sink.sorted_runs), sink.partition_size, sink.external, false),
+	    : sink(sink_p), merger(context, sort, std::move(sink.sorted_runs), sink.partition_size, sink.external, false),
 	      merger_global_state(merger.total_count == 0 ? nullptr : merger.GetGlobalSourceState(context)), registered(0) {
 	}
 

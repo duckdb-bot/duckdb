@@ -118,14 +118,15 @@ public:
 	//! Append a chunk to the physical index, buffering it while the index is unbound.
 	void Append(DataChunk &chunk, Vector &row_ids);
 	//! Appends a chunk using delete and checkpoint indexes where required.
-	ErrorData Append(DataChunk &chunk, Vector &row_ids, const shared_ptr<IndexEntry> &delete_entry,
-	                 IndexAppendMode append_mode, optional_idx active_checkpoint);
+	ErrorData Append(const QueryContext &context, DataChunk &chunk, Vector &row_ids,
+	                 const shared_ptr<IndexEntry> &delete_entry, IndexAppendMode append_mode,
+	                 optional_idx active_checkpoint);
 	//! Reverts an append to the physical index or its checkpoint delta.
-	void RevertAppend(DataChunk &chunk, Vector &row_ids);
+	void RevertAppend(const QueryContext &context, DataChunk &chunk, Vector &row_ids);
 	//! Appends deleted rows to the bound physical index if it enforces uniqueness.
-	void AppendToDeleteIndexes(DataChunk &chunk, Vector &row_ids);
+	void AppendToDeleteIndexes(const QueryContext &context, DataChunk &chunk, Vector &row_ids);
 	//! Applies a removal or removal rollback to the physical index and its deltas.
-	void RemoveFromIndex(DataChunk &chunk, Vector &row_ids, IndexRemovalType removal_type,
+	void RemoveFromIndex(const QueryContext &context, DataChunk &chunk, Vector &row_ids, IndexRemovalType removal_type,
 	                     optional_idx active_checkpoint);
 	//! Returns whether the physical index enforces a unique constraint.
 	bool IsUnique() const;
@@ -146,7 +147,7 @@ public:
 	//! Replaces the unbound physical index with its bound representation.
 	void CommitBind(unique_ptr<BoundIndex> bound_index);
 	//! Verifies that rows can be appended to the bound physical index.
-	void VerifyAppend(const shared_ptr<IndexEntry> &delete_entry, DataChunk &chunk,
+	void VerifyAppend(const QueryContext &context, const shared_ptr<IndexEntry> &delete_entry, DataChunk &chunk,
 	                  optional_ptr<ConflictManager> manager);
 	//! Verifies a foreign key constraint against the physical index and its checkpoint deltas.
 	void VerifyForeignKey(const shared_ptr<IndexEntry> &delete_entry, DataChunk &chunk,

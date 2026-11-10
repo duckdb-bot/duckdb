@@ -196,6 +196,23 @@ DROP TABLE reject_errors;
 statement ok
 DROP TABLE reject_scans;
 
+# the same file in one buffer, the unterminated value at the end of the file is reported next to the malformed one
+query II
+SELECT * FROM read_csv('data/csv/malformed_quote_then_unterminated.csv', auto_detect=false, header=false, columns={'a': 'VARCHAR', 'b': 'VARCHAR'}, buffer_size=16, parallel=true, strict_mode=true, store_rejects=true);
+----
+
+query IIIII
+SELECT line, column_idx, byte_position, error_type, csv_line FROM reject_errors ORDER BY column_idx;
+----
+1	1	1	UNQUOTED VALUE	"a"b,"c
+1	2	6	UNQUOTED VALUE	"a"b,"c
+
+statement ok
+DROP TABLE reject_errors;
+
+statement ok
+DROP TABLE reject_scans;
+
 # only one of the two columns is read
 query I
 SELECT a FROM read_csv('data/csv/cast_then_unterminated_quote_two_columns.csv', auto_detect=false, header=false, columns={'a': 'INTEGER', 'b': 'VARCHAR'}, buffer_size=8, parallel=true, strict_mode=true, store_rejects=true);

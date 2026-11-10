@@ -59,6 +59,10 @@ public:
 	bool IsOpenResult(BaseQueryResult &result) {
 		return open_result == &result;
 	}
+	//! Drops the registration of a result whose query could not be ended, so that the next statement aborts it
+	void ClearOpenResult() {
+		open_result = nullptr;
+	}
 	bool HasOpenResult() const {
 		return open_result != nullptr;
 	}

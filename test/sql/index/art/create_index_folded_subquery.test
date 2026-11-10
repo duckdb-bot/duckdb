@@ -1,0 +1,88 @@
+# name: test/sql/index/art/create_index_folded_subquery.test
+# description: A subquery that a bind-time fold drops leaves no setting dependency in an index key
+# group: [art]
+
+require icu
+
+load {TEST_DIR}/create_index_folded_subquery.db
+
+statement ok
+SET TimeZone = 'UTC';
+
+statement ok
+SET VARIABLE x = 1;
+
+statement ok
+CREATE TABLE t (i INTEGER, ts TIMESTAMPTZ);
+
+statement ok
+INSERT INTO t VALUES (1, '2026-01-01 00:00:00+00'), (2, '2026-01-02 00:00:00+00');
+
+# typeof replaces the subquery with its type, which does not depend on the TimeZone its cast reads
+statement ok
+CREATE INDEX i_folded_cast ON t ((i + length(typeof(TRY((SELECT TIMESTAMPTZ '2026-01-01 00:00:00'))))));
+
+# nor do the arguments a table function folds, the casts of a set operation or a VALUES list, or nested subqueries
+statement ok
+CREATE INDEX i_folded_range ON t ((i + length(typeof(TRY((SELECT min(r) FROM range(TIMESTAMPTZ '2026-01-01 00:00:00', TIMESTAMPTZ '2026-01-02 00:00:00', INTERVAL 1 DAY) x(r)))))));
+
+statement ok
+CREATE INDEX i_folded_setop ON t ((i + length(typeof(TRY((SELECT min(v) FROM (SELECT TIMESTAMP '2026-01-01 00:00:00' UNION ALL SELECT TIMESTAMPTZ '2026-01-01 00:00:00+00') x(v)))))));
+
+statement ok
+CREATE INDEX i_folded_values ON t ((i + length(typeof(TRY((SELECT min(v) FROM (VALUES (TIMESTAMP '2026-01-01 00:00:00'), (TIMESTAMPTZ '2026-01-01 00:00:00+00')) x(v)))))));
+
+statement ok
+CREATE INDEX i_folded_nested ON t ((i + length(typeof(TRY((SELECT (SELECT TIMESTAMPTZ '2026-01-01 00:00:00'::VARCHAR)))))));
+
+statement ok
+CREATE INDEX i_folded_derived ON t ((i + length(typeof(TRY((SELECT v FROM (SELECT TIMESTAMPTZ '2026-01-01 00:00:00'::VARCHAR AS v) x))))));
+
+# a function whose type or value follows the session still rejects the key
+statement error
+CREATE INDEX i ON t ((i + length(typeof(TRY((SELECT getvariable('x')))))));
+----
+Index keys cannot contain expressions with side effects. They also cannot depend on settings such as TimeZone
+
+statement error
+CREATE INDEX i ON t ((i + length(typeof(TRY((SELECT hour(TIMESTAMPTZ '2026-01-01 00:00:00')))))));
+----
+Index keys cannot contain expressions with side effects. They also cannot depend on settings such as TimeZone
+
+# a subquery that stays in the key keeps the dependency of its cast
+statement error
+CREATE INDEX i ON t ((i + length(TRY((SELECT TIMESTAMPTZ '2026-01-01 00:00:00'::VARCHAR)))));
+----
+Index keys cannot contain expressions with side effects. They also cannot depend on settings such as TimeZone
+
+query I
+SELECT count(*) FROM duckdb_indexes() WHERE table_name = 't';
+----
+6
+
+# the stored keys are bound again when the indexes are loaded, under another TimeZone
+restart
+
+statement ok
+SET TimeZone = 'Europe/Amsterdam';
+
+statement ok
+INSERT INTO t VALUES (3, '2026-01-03 00:00:00+00');
+
+query I
+SELECT count(*) FROM t WHERE i + 24 = 27;
+----
+1
+
+query I
+SELECT count(*) FROM t WHERE i + 24 = 26;
+----
+1
+
+statement ok
+DELETE FROM t WHERE i = 1;
+
+query I
+SELECT count(*) FROM t;
+----
+2

@@ -6,6 +6,7 @@
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/function/function_set.hpp"
 #include "duckdb/function/table_function.hpp"
+#include "duckdb/planner/binder.hpp"
 #include "include/icu-datefunc.hpp"
 #include "tz_calendar.hpp"
 
@@ -52,11 +53,6 @@ struct ICUTableRange {
 			}
 
 			cardinality = idx_t(delta / increment);
-		}
-
-		//! The calendar follows the TimeZone and Calendar settings of the bind, so a prepared statement binds again
-		bool SupportStatementCache() const override {
-			return false;
 		}
 
 		string tz_setting;
@@ -170,6 +166,10 @@ struct ICUTableRange {
 	static unique_ptr<FunctionData> Bind(ClientContext &context, TableFunctionBindInput &input,
 	                                     vector<LogicalType> &return_types, vector<Identifier> &names) {
 		auto result = make_uniq<ICURangeBindData>(context, input.inputs);
+		if (input.binder) {
+			// the calendar follows the TimeZone and Calendar settings of the bind, so a prepared statement binds again
+			input.binder->RequireRebind();
+		}
 
 		return_types.push_back(LogicalType::TIMESTAMP_TZ);
 		if (GENERATE_SERIES) {

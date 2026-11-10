@@ -311,6 +311,14 @@ bool Binder::IsBindingTrySubquery() const {
 	return binding_try_subquery;
 }
 
+void Binder::SetBindingSubqueryExpression() {
+	binding_subquery_expression = true;
+}
+
+bool Binder::SubqueryRequiresRebind() const {
+	return subquery_requires_rebind;
+}
+
 const TrySubqueryPlanIndexes &Binder::GetTrySubqueryPlanIndexes() const {
 	return try_subquery_plan_indexes;
 }
@@ -444,8 +452,19 @@ void Binder::SetAlwaysRequireRebind() {
 
 void Binder::CheckRequiresRebind(const Expression &expr) {
 	if (!GetStatementProperties().always_require_rebind && expr.RequiresRebind()) {
-		SetAlwaysRequireRebind();
+		RequireRebind();
 	}
+}
+
+void Binder::RequireRebind() {
+	// the expressions of a subquery leave the tree when it is planned, which a fold such as typeof can prevent
+	for (optional_ptr<Binder> binder = this; binder; binder = binder->parent) {
+		if (binder->binding_subquery_expression) {
+			binder->subquery_requires_rebind = true;
+			return;
+		}
+	}
+	SetAlwaysRequireRebind();
 }
 
 unique_ptr<Expression> Binder::AddCastToType(unique_ptr<Expression> expr, const LogicalType &target_type) {
@@ -456,7 +475,7 @@ unique_ptr<Expression> Binder::AddCastToType(unique_ptr<Expression> expr, const 
 	auto &cast_function = result->Cast<BoundFunctionExpression>().Function();
 	if (cast_function.GetStability() == FunctionStability::CONSISTENT_WITHIN_QUERY) {
 		// the expression was checked when it was bound, so only the cast added on top of it is checked here
-		SetAlwaysRequireRebind();
+		RequireRebind();
 	}
 	return result;
 }

@@ -179,7 +179,28 @@ DROP TABLE reject_errors;
 statement ok
 DROP TABLE reject_scans;
 
-# FIXME: the boundary scan does not count the line of the row it finishes at the end of the file, so the cast error moves to line 0
+# a cast error in a field of the cut off row itself names that row
+statement ok
+COPY (SELECT * FROM (VALUES ('[1]', 'ok'), ('x', '"abc')) t(a, b)) TO '{TEST_DIR}/unterminated_quote_eof_cast_same_row.csv' (HEADER false, QUOTE '');
+
+query II
+SELECT * FROM read_csv('{TEST_DIR}/unterminated_quote_eof_cast_same_row.csv', auto_detect=false, header=false, columns={'a': 'INTEGER[]', 'b': 'VARCHAR'}, parallel=false, strict_mode=true, store_rejects=true);
+----
+[1]	ok
+
+query IIIIII
+SELECT line, line_byte_position, byte_position, column_name, error_type, replace(csv_line, chr(10), '\n') FROM reject_errors ORDER BY error_type;
+----
+2	8	NULL	a	CAST	x,"abc\n
+2	8	10	b	UNQUOTED VALUE	x,"abc\n
+
+statement ok
+DROP TABLE reject_errors;
+
+statement ok
+DROP TABLE reject_scans;
+
+# FIXME: the boundary scan does not count the line of the row it finishes at the end of the file nor keep its position, so the cast error moves to line 0 and loses the line text
 mode skip
 
 query I
@@ -191,6 +212,23 @@ SELECT line, error_type, replace(csv_line, chr(10), '\n') FROM reject_errors ORD
 ----
 1	CAST	x
 2	UNQUOTED VALUE	"abc\n
+
+statement ok
+DROP TABLE reject_errors;
+
+statement ok
+DROP TABLE reject_scans;
+
+query II
+SELECT * FROM read_csv('{TEST_DIR}/unterminated_quote_eof_cast_same_row.csv', auto_detect=false, header=false, columns={'a': 'INTEGER[]', 'b': 'VARCHAR'}, parallel=true, strict_mode=true, store_rejects=true);
+----
+[1]	ok
+
+query IIIIII
+SELECT line, line_byte_position, byte_position, column_name, error_type, replace(csv_line, chr(10), '\n') FROM reject_errors ORDER BY error_type;
+----
+2	8	NULL	a	CAST	x,"abc\n
+2	8	10	b	UNQUOTED VALUE	x,"abc\n
 
 statement ok
 DROP TABLE reject_errors;

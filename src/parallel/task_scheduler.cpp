@@ -210,8 +210,7 @@ void TaskScheduler::ExecuteForever(atomic<bool> *marker, const TaskSchedulerType
 
 	// Only a thread that ran a task since its last flush has allocations to flush, both blocks and the jemalloc cache
 	// of the allocator, so other threads skip the flush and leave the trim of the system heap to the threads that ran
-	// tasks. Reading the settings would be the first use of their thread_local cache in a thread that never ran one,
-	// and glibc ends the process when it cannot allocate the registration of a thread_local destructor
+	// tasks
 	bool flush_pending = false;
 	bool ran_task = false;
 

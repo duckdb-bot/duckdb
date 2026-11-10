@@ -25,7 +25,6 @@ class ClientContext;
 class ColumnSegment;
 class DatabaseInstance;
 class Deserializer;
-class Connection;
 class DuckTransaction;
 class DuckTransactionManager;
 class IndexCatalogEntry;
@@ -46,25 +45,22 @@ class PendingPublication;
 struct BoundCreateTableInfo;
 struct CheckpointOptions;
 
-//! Wrapper to manage the lifetime of a checkpoint connection and transaction.
+//! Wrapper to manage the lifetime of a checkpoint transaction.
 class ActiveCheckpointWrapper {
 public:
-	//! Creates a connection if we have a context.
-	//! If there is no context, we are on shutdown and a checkpoint connection/transaction is not created.
-	ActiveCheckpointWrapper(Context &services, AttachedDatabase &db, DuckTransactionManager &transaction_manager);
+	//! Without a checkpoint context, we are on shutdown and a checkpoint transaction is not created.
+	ActiveCheckpointWrapper(optional_ptr<ClientContext> checkpoint_context, AttachedDatabase &db,
+	                        DuckTransactionManager &transaction_manager);
 
 	~ActiveCheckpointWrapper();
 
 	//! Registers the checkpoint (id, bound, active checkpoint), through a checkpoint transaction if there is a context
 	void Begin(CheckpointOptions &options);
 	void Commit();
-	//! The context of the checkpoint connection, null when there is none (shutdown path)
-	optional_ptr<ClientContext> GetCheckpointContext() const;
 
 private:
 	AttachedDatabase &db;
 	DuckTransactionManager &transaction_manager;
-	unique_ptr<Connection> checkpoint_connection;
 	optional_ptr<ClientContext> checkpoint_context;
 	optional_ptr<DuckTransaction> checkpoint_transaction;
 	//! Whether Begin registered an active checkpoint that Commit has not reset yet
@@ -73,15 +69,20 @@ private:
 
 class CheckpointWriter {
 public:
-	CheckpointWriter(AttachedDatabase &db, QueryContext context);
+	CheckpointWriter(AttachedDatabase &db, QueryContext context,
+	                 optional_ptr<ClientContext> checkpoint_context = nullptr);
 	virtual ~CheckpointWriter();
 
 	//! The database
 	AttachedDatabase &db;
 
 	//! The services of the query that triggered the checkpoint, or database-wide services if there is none
-	Context &GetServices() const {
-		return services;
+	Context &GetContext() const {
+		return context;
+	}
+	//! The context the checkpoint transaction runs in (null on shutdown and DETACH)
+	optional_ptr<ClientContext> GetCheckpointContext() const {
+		return checkpoint_context;
 	}
 
 	virtual void CreateCheckpoint() = 0;
@@ -90,8 +91,9 @@ public:
 	virtual unique_ptr<TableDataWriter> GetTableDataWriter(TableCatalogEntry &table) = 0;
 
 private:
-	shared_ptr<Context> owned_services;
-	Context &services;
+	shared_ptr<Context> owned_context;
+	Context &context;
+	optional_ptr<ClientContext> checkpoint_context;
 
 protected:
 	virtual void WriteEntry(CatalogEntry &entry, Serializer &serializer);
@@ -153,7 +155,7 @@ class SingleFileCheckpointWriter final : public CheckpointWriter {
 
 public:
 	SingleFileCheckpointWriter(QueryContext context, AttachedDatabase &db, BlockManager &block_manager,
-	                           CheckpointOptions options);
+	                           CheckpointOptions options, optional_ptr<ClientContext> checkpoint_context = nullptr);
 	~SingleFileCheckpointWriter() override;
 
 	void CreateCheckpoint() override;
@@ -177,9 +179,6 @@ private:
 	void AddPendingPublication(unique_ptr<PendingPublication> publication);
 
 private:
-	//! Context of the checkpoint transaction, used for catalog lookups during the checkpoint.
-	//! Only set while CreateCheckpoint runs, which owns the connection it belongs to.
-	optional_ptr<ClientContext> checkpoint_context;
 	//! The metadata writer is responsible for writing schema information
 	unique_ptr<MetadataWriter> metadata_writer;
 	//! The table data writer is responsible for writing the DataPointers used by the table chunks

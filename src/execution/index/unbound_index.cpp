@@ -2,11 +2,13 @@
 
 #include "duckdb/common/types/column/column_data_collection.hpp"
 #include "duckdb/execution/index/bound_index.hpp"
+#include "duckdb/main/attached_database.hpp"
 #include "duckdb/parser/parsed_data/create_index_info.hpp"
 #include "duckdb/planner/expression_binder/index_binder.hpp"
 #include "duckdb/storage/block_manager.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
 #include "duckdb/storage/index_storage_info.hpp"
+#include "duckdb/storage/storage_manager.hpp"
 #include "duckdb/storage/table_io_manager.hpp"
 #include "duckdb/storage/checkpoint/table_index_writer.hpp"
 
@@ -57,6 +59,10 @@ void UnboundIndex::ResetStorage() {
 }
 
 IndexCheckpointResult UnboundIndex::Checkpoint(PartialBlockManager &, StorageVersion) {
+	if (HasBufferedReplays()) {
+		throw InternalException("Cannot checkpoint index %s: it has buffered operations that were not applied",
+		                        GetIndexName());
+	}
 	if (storage_missing) {
 		// write no data, so that the next load also finds the index without it
 		return {nullptr, nullptr};
@@ -87,6 +93,8 @@ void UnboundIndex::BufferChunk(DataChunk &table_chunk, Vector &row_ids, const Bu
 		// the index is never bound, so its replays would never be applied
 		return;
 	}
+
+	db.GetStorageManager().MarkBufferedIndexReplays();
 
 	// table_chunk is in physical table layout: data[j] holds the data of physical column j.
 	// Reference this index's own columns directly by their physical offset.

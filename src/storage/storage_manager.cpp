@@ -166,8 +166,8 @@ StorageManager::StorageManager(AttachedDatabase &db, string path_p, AttachOption
 	auto &fs = FileSystem::Get(db);
 	path = fs.ExpandPath(path);
 
-	auto services = db.GetDatabase().Services();
-	storage_options.Initialize(*services, options.options);
+	auto &services = db.GetDatabase().GetContext();
+	storage_options.Initialize(services, options.options);
 }
 
 StorageManager::~StorageManager() {
@@ -263,6 +263,10 @@ bool StorageManager::WALStartCheckpoint(MetaBlockPointer meta_block, CheckpointO
 	if (!options.commit_lock) {
 		// not holding the commit lock yet - grab it
 		guard = GetCommitLock();
+	}
+	if (ValidChecker::IsInvalidated(db.GetDatabase())) {
+		// a commit that failed while we waited for the commit lock invalidated the database
+		throw IOException("%s", ValidChecker::InvalidatedMessage(db.GetDatabase()));
 	}
 	// drain under the commit lock before the checkpoint transaction starts: its snapshot would
 	// otherwise be bounded below commits whose WAL this checkpoint deletes

@@ -81,7 +81,7 @@ statement ok
 INSERT INTO routes VALUES (1, NULL);
 
 statement error
-INSERT INTO routes VALUES (2, 2);
+INSERT INTO routes VALUES (2, 3);
 ----
 
 statement ok

@@ -1,0 +1,226 @@
+# name: test/sql/constraints/foreignkey/test_fk_self_reference_delete.test
+# description: Rows of a table with a self-referencing foreign key can reference themselves, and be updated and deleted
+# group: [foreignkey]
+
+# duckdb/duckdb#16436
+statement ok
+CREATE TABLE sid (sid INTEGER PRIMARY KEY, sid_name VARCHAR NOT NULL UNIQUE, currency_sid INTEGER, FOREIGN KEY (currency_sid) REFERENCES sid(sid));
+
+statement ok
+INSERT INTO sid (sid, sid_name) VALUES (1, 'TEST_SID');
+
+statement ok
+UPDATE sid SET currency_sid = 1 WHERE sid = 1;
+
+query III
+SELECT * FROM sid
+----
+1	TEST_SID	1
+
+# the update deletes and appends the row, which references only itself
+statement ok
+UPDATE sid SET currency_sid = NULL WHERE sid = 1;
+
+statement ok
+UPDATE sid SET currency_sid = 1;
+
+statement ok
+DELETE FROM sid WHERE sid = 1;
+
+query I
+SELECT count(*) FROM sid
+----
+0
+
+statement ok
+INSERT INTO sid VALUES (1, 'a', 2), (2, 'b', 1), (3, 'c', 3), (4, 'd', 1);
+
+statement ok
+DELETE FROM sid WHERE sid = 3;
+
+statement error
+DELETE FROM sid WHERE sid = 2
+----
+<REGEX>:Constraint Error.*key "currency_sid: 2" is still referenced.*
+
+# the delete keeps a row that references 1
+statement error
+DELETE FROM sid WHERE sid IN (1, 2)
+----
+<REGEX>:Constraint Error.*key "currency_sid: 1" is still referenced.*
+
+# a key that several rows reference stays referenced, even when the delete removes all of them
+statement error
+DELETE FROM sid WHERE sid IN (1, 2, 4)
+----
+<REGEX>:Constraint Error.*key "currency_sid: 1" is still referenced.*
+
+statement ok
+DELETE FROM sid WHERE sid = 4;
+
+# rows that reference each other are deleted together
+statement ok
+DELETE FROM sid WHERE sid IN (1, 2);
+
+query I
+SELECT count(*) FROM sid
+----
+0
+
+# rows of the transaction
+statement ok
+BEGIN;
+
+statement ok
+INSERT INTO sid VALUES (7, 'g', 7), (8, 'h', 7);
+
+statement error
+DELETE FROM sid WHERE sid = 7
+----
+<REGEX>:Constraint Error.*key "currency_sid: 7" is still referenced.*
+
+statement ok
+ROLLBACK;
+
+statement ok
+BEGIN;
+
+statement ok
+INSERT INTO sid VALUES (7, 'g', 7);
+
+statement ok
+DELETE FROM sid WHERE sid = 7;
+
+statement ok
+COMMIT;
+
+statement ok
+INSERT INTO sid VALUES (5, 'e', 5), (6, 'f', 5);
+
+statement error
+DELETE FROM sid WHERE sid = 5
+----
+<REGEX>:Constraint Error.*key "currency_sid: 5" is still referenced.*
+
+statement error
+UPDATE sid SET currency_sid = NULL WHERE sid = 5
+----
+<REGEX>:Constraint Error.*key "currency_sid: 5" is still referenced.*
+
+statement ok
+DELETE FROM sid WHERE sid = 6;
+
+statement ok
+DELETE FROM sid WHERE sid = 5;
+
+query I
+SELECT count(*) FROM sid
+----
+0
+
+# a referencing row that the transaction deleted before keeps the key until it is committed, as for other foreign keys
+statement ok
+INSERT INTO sid VALUES (1, 'a', 1);
+
+statement ok
+BEGIN;
+
+statement ok
+UPDATE sid SET currency_sid = NULL;
+
+statement error
+DELETE FROM sid
+----
+<REGEX>:Constraint Error.*key "currency_sid: 1" is still referenced.*
+
+statement ok
+ROLLBACK;
+
+statement ok
+UPDATE sid SET currency_sid = NULL;
+
+statement ok
+DELETE FROM sid;
+
+statement ok
+INSERT INTO sid VALUES (1, 'a', NULL);
+
+statement ok
+INSERT INTO sid VALUES (2, 'b', 1), (3, 'c', 1);
+
+statement ok
+BEGIN;
+
+statement ok
+DELETE FROM sid WHERE sid IN (2, 3);
+
+statement error
+DELETE FROM sid WHERE sid = 1
+----
+<REGEX>:Constraint Error.*key "currency_sid: 1" is still referenced.*
+
+statement ok
+ROLLBACK;
+
+statement ok
+DELETE FROM sid WHERE sid IN (2, 3);
+
+statement ok
+DELETE FROM sid WHERE sid = 1;
+
+query I
+SELECT count(*) FROM sid
+----
+0
+
+# a reference committed after the deleting transaction started keeps the key
+statement ok con1
+INSERT INTO sid VALUES (1, 'a', NULL);
+
+statement ok con1
+BEGIN;
+
+query I con1
+SELECT count(*) FROM sid
+----
+1
+
+statement ok con2
+INSERT INTO sid VALUES (2, 'b', 1);
+
+statement error con1
+DELETE FROM sid WHERE sid = 1
+----
+<REGEX>:Constraint Error.*key "currency_sid: 1" is still referenced.*
+
+statement ok con1
+ROLLBACK;
+
+query I
+SELECT count(*) FROM sid WHERE currency_sid IS NOT NULL AND currency_sid NOT IN (SELECT sid FROM sid)
+----
+0
+
+statement ok
+DELETE FROM sid WHERE sid = 2;
+
+statement ok
+DELETE FROM sid WHERE sid = 1;
+
+# a table that references another table keeps the immediate check
+statement ok
+CREATE TABLE p (id INTEGER PRIMARY KEY);
+
+statement ok
+CREATE TABLE c (id INTEGER PRIMARY KEY, pid INTEGER REFERENCES p(id));
+
+statement ok
+INSERT INTO p VALUES (1);
+
+statement ok
+INSERT INTO c VALUES (1, 1);
+
+statement error
+DELETE FROM p WHERE id = 1
+----
+<REGEX>:Constraint Error.*key "pid: 1" is still referenced.*

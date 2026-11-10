@@ -46,10 +46,13 @@ bool ConflictManager::IsConflict(LookupResultType type) {
 void ConflictManager::AddRowId(const idx_t index_in_chunk, const row_t row_id) {
 	// Only ON CONFLICT DO NOTHING can have multiple conflict targets,
 	// which can cause multiple row IDs per index_in_chunk.
-	// We ignore later row IDs, as we don't need them.
+	// We ignore later row IDs, as we don't need them, except to note that a foreign key has several references.
 	auto &data = GetConflictData(FIRST);
 	if (!data.validity.RowIsValid(index_in_chunk)) {
 		data.Insert(index_in_chunk, row_id);
+	} else if (verify_existence_type == VerifyExistenceType::DELETE_FK && data.GetRowId(index_in_chunk) != row_id) {
+		// rows of several indexes reference the key, so no single row does
+		data.SetRowId(index_in_chunk, static_cast<row_t>(DConstants::INVALID_INDEX));
 	}
 }
 

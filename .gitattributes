@@ -11,3 +11,6 @@ data/csv/cast_then_unterminated_quote_three_columns.csv -text
 data/csv/malformed_quotes_two_columns.csv -text
 data/csv/malformed_quote_then_unterminated.csv -text
 data/csv/unterminated_quote_at_vector_end.csv -text
+data/csv/header_then_cast_error_at_eof.csv -text
+data/csv/cast_error_at_eof.csv -text
+data/csv/cast_error_at_eof_after_full_vector.csv -text

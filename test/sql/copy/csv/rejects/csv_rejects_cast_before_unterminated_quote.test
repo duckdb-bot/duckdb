@@ -1,5 +1,5 @@
 # name: test/sql/copy/csv/rejects/csv_rejects_cast_before_unterminated_quote.test
-# description: Cast errors before a last row that ends inside a quoted value keep their line numbers in reject_errors
+# description: Cast errors before a last row that ends inside a quoted value keep their line numbers in reject_errors, and ignore_errors removes a last row whose cast fails as it crosses into the last buffer
 # group: [rejects]
 
 # the files end inside a quoted value without a newline (they are -text in .gitattributes), the scanner adds
@@ -284,5 +284,52 @@ DROP TABLE reject_errors;
 
 statement ok
 DROP TABLE reject_scans;
+
+endloop
+
+# with the errors ignored and no rejects table, a last row whose cast fails and which crosses into the last buffer is
+# removed when it is the first row of its chunk, and the connection stays usable afterwards
+foreach parallel true false
+
+# a header line and the row abc, which crosses into the last buffer
+query I
+SELECT a FROM read_csv('data/csv/header_then_cast_error_at_eof.csv', auto_detect=false, header=true, columns={'a': 'INTEGER'}, buffer_size=32, parallel={parallel}, strict_mode=true, ignore_errors=true);
+----
+
+query I
+SELECT 42;
+----
+42
+
+# the row abc is the whole file
+query I
+SELECT a FROM read_csv('data/csv/cast_error_at_eof.csv', auto_detect=false, header=false, columns={'a': 'INTEGER'}, buffer_size=2, parallel={parallel}, strict_mode=true, ignore_errors=true);
+----
+
+query I
+SELECT 42;
+----
+42
+
+query II
+SELECT count(*), sum(a) FROM read_csv('data/csv/cast_error_at_eof.csv', auto_detect=false, header=false, columns={'a': 'INTEGER'}, buffer_size=2, parallel={parallel}, strict_mode=true, ignore_errors=true);
+----
+0	NULL
+
+query I
+SELECT 42;
+----
+42
+
+# the row abc follows 2048 rows, so with the default vector size it starts the second chunk
+query II
+SELECT count(*), sum(a) FROM read_csv('data/csv/cast_error_at_eof_after_full_vector.csv', auto_detect=false, header=false, columns={'a': 'INTEGER'}, buffer_size=4097, parallel={parallel}, strict_mode=true, ignore_errors=true);
+----
+2048	2048
+
+query I
+SELECT 42;
+----
+42
 
 endloop

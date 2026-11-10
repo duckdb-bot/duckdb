@@ -681,14 +681,24 @@ static AdbcStatusCode CommitTransaction(duckdb::DuckDBAdbcConnectionWrapper &con
 	// Reading an open stream into memory can fail, which invalidates the transaction
 	conn_wrapper.MaterializeStreams();
 	auto &context = *reinterpret_cast<duckdb::Connection *>(conn_wrapper.connection)->context;
-	std::string invalidated;
+	// A query whose abort ran out of memory is aborted by the next statement, which would be the COMMIT itself, after
+	// the check below. So it is abandoned first, which invalidates the transaction when the query wrote
+	context.CancelTransaction();
+	bool invalidated = false;
+	std::string invalidated_message;
 	if (context.transaction.HasActiveTransaction() &&
 	    duckdb::ValidChecker::IsInvalidated(context.ActiveTransaction())) {
-		invalidated = duckdb::ValidChecker::InvalidatedMessage(context.ActiveTransaction());
+		// the message is empty when the invalidation could not allocate it
+		invalidated = true;
+		invalidated_message = duckdb::ValidChecker::InvalidatedMessage(context.ActiveTransaction());
 	}
 	auto status = ExecuteQuery(conn_wrapper, "COMMIT", error);
-	if (status == ADBC_STATUS_OK && !invalidated.empty()) {
-		SetError(error, "Failed to commit, the transaction was rolled back after an earlier error: " + invalidated);
+	if (status == ADBC_STATUS_OK && invalidated) {
+		std::string message = "Failed to commit, the transaction was rolled back after an earlier error";
+		if (!invalidated_message.empty()) {
+			message += ": " + invalidated_message;
+		}
+		SetError(error, message);
 		return ADBC_STATUS_INVALID_STATE;
 	}
 	return status;

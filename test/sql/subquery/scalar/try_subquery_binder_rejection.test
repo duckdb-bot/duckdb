@@ -84,3 +84,20 @@ statement error
 MERGE INTO m USING s ON m.i = s.i WHEN NOT MATCHED THEN ERROR TRY((SELECT 'boom'));
 ----
 boom
+
+# a TRY subquery that matches a GROUP BY expression resolves to the group like the bare subquery
+query I
+SELECT TRY((SELECT i)) FROM (VALUES (1)) t(i) GROUP BY (SELECT i);
+----
+1
+
+# the group match does not bind the subquery, so the marker must not leak into the next subquery
+statement error
+SELECT TRY((SELECT i)), (SELECT 1 // 0) FROM (VALUES (1)) t(i) GROUP BY (SELECT i);
+----
+Division by zero
+
+query II
+SELECT TRY((SELECT i)), TRY((SELECT 1 // 0)) FROM (VALUES (1)) t(i) GROUP BY (SELECT i);
+----
+1	NULL

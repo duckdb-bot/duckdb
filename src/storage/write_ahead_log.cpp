@@ -107,6 +107,10 @@ public:
 		memory_stream.WriteData(buffer, write_size);
 	}
 
+	ChecksumType GetChecksumType() const {
+		return wal.GetDatabase().GetStorageManager().GetBlockManager().Cast<SingleFileBlockManager>().GetChecksumType();
+	}
+
 	void Flush() {
 		if (!stream) {
 			stream = wal.Initialize();
@@ -124,7 +128,7 @@ public:
 		auto data = memory_stream.GetData();
 		auto size = memory_stream.GetPosition();
 		// compute the checksum over the entry
-		auto checksum = Checksum(data, size);
+		auto checksum = Checksum(data, size, GetChecksumType());
 		// write the checksum and the length of the entry
 		stream->Write<uint64_t>(size);
 		stream->Write<uint64_t>(checksum);
@@ -142,7 +146,7 @@ public:
 		auto size = memory_stream.GetPosition();
 
 		// compute the checksum over the entry
-		auto checksum = Checksum(data, size);
+		auto checksum = Checksum(data, size, GetChecksumType());
 
 		auto &db = wal.GetDatabase();
 		auto &keys = EncryptionKeyManager::Get(db.GetDatabase());

@@ -1,6 +1,8 @@
 #include "duckdb/common/checksum.hpp"
 
+#include "duckdb/common/exception.hpp"
 #include "duckdb/common/helper.hpp"
+#include "zstd/common/xxhash.hpp"
 
 namespace duckdb {
 
@@ -76,6 +78,17 @@ uint64_t Checksum(const uint8_t *buffer, size_t size) {
 		result ^= ChecksumRemainder(buffer + i * 8, size - i * 8);
 	}
 	return result;
+}
+
+uint64_t Checksum(const uint8_t *buffer, size_t size, ChecksumType type) {
+	switch (type) {
+	case ChecksumType::WORD_XOR:
+		return Checksum(buffer, size);
+	case ChecksumType::XXHASH64:
+		return duckdb_zstd::XXH64(buffer, size, 0);
+	default:
+		throw InternalException("Unsupported checksum type");
+	}
 }
 
 } // namespace duckdb

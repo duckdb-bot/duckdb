@@ -166,7 +166,7 @@ ClientContext::~ClientContext() {
 	try {
 		Destroy();
 	} catch (...) {
-		// a destructor cannot throw, and locking the context allocates
+		// a destructor cannot throw, and the cleanup can fail when the heap is exhausted
 	}
 }
 

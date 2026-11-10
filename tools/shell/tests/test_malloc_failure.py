@@ -173,19 +173,23 @@ def malloc_shim(tmp_path_factory):
     return str(shim)
 
 
-# the bytes a plain `SELECT 42` run requests through the shim, so the budgets below scale with the build
-@pytest.fixture(scope="module")
-def startup_bytes(request, malloc_shim):
+# the bytes a complete run requests through the shim, so the budgets of the tests scale with the build
+def requested_bytes(request, shim, sql, database=":memory:"):
     shell = request.config.getoption("--shell-binary")
     if not shell:
         raise ValueError("Please provide a shell binary path to the tester, using '--shell-binary <path_to_cli>'")
-    result = run_with_malloc_budget(shell, malloc_shim, STARTUP_SQL, report=True)
+    result = run_with_malloc_budget(shell, shim, sql, report=True, database=database)
     assert result.returncode == 0, result.stderr
     assert b"42" in result.stdout, result.stdout
     match = re.search(rb"failmalloc_total_bytes=(\d+)", result.stderr)
     if not match or int(match.group(1)) == 0:
         pytest.skip("the malloc shim does not intercept the allocations of this shell binary")
     return int(match.group(1))
+
+
+@pytest.fixture(scope="module")
+def startup_bytes(request, malloc_shim):
+    return requested_bytes(request, malloc_shim, STARTUP_SQL)
 
 
 def check_out_of_memory_exit(result):
@@ -219,23 +223,13 @@ def test_malloc_failure_tail(shell, malloc_shim, startup_bytes, fraction):
         assert b"Out of Memory" in result.stderr, result.stderr
 
 
-# the bytes a run against a file database requests, so the budgets below scale with the build
 @pytest.fixture(scope="module")
 def file_database_bytes(request, malloc_shim, tmp_path_factory):
-    shell = request.config.getoption("--shell-binary")
-    if not shell:
-        raise ValueError("Please provide a shell binary path to the tester, using '--shell-binary <path_to_cli>'")
     database = tmp_path_factory.mktemp("filedb") / "measure.db"
-    result = run_with_malloc_budget(shell, malloc_shim, FILE_DATABASE_SQL, report=True, database=str(database))
-    assert result.returncode == 0, result.stderr
-    assert b"42" in result.stdout, result.stdout
-    match = re.search(rb"failmalloc_total_bytes=(\d+)", result.stderr)
-    if not match or int(match.group(1)) == 0:
-        pytest.skip("the malloc shim does not intercept the allocations of this shell binary")
-    return int(match.group(1))
+    return requested_bytes(request, malloc_shim, FILE_DATABASE_SQL, database=str(database))
 
 
-# the heap runs out while a file database checkpoints at shutdown, which the shell must report instead of aborting
+# the heap runs out while a file database checkpoints at shutdown, which must not abort the shell
 @pytest.mark.parametrize("fraction", [0.82, 0.86, 0.9])
 def test_malloc_failure_file_database_shutdown(shell, malloc_shim, file_database_bytes, tmp_path, fraction):
     database = tmp_path / "shutdown.db"

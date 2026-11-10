@@ -96,12 +96,7 @@ ParserCache &DatabaseInstance::GetParserCache() {
 DatabaseInstance::~DatabaseInstance() {
 	// destroy all attached databases
 	if (db_manager) {
-		// the copy of their pointers can fail to allocate while a failed open unwinds, and a destructor cannot throw,
-		// so the databases are then closed by their own destructors with the manager
-		try {
-			db_manager->ResetDatabases();
-		} catch (...) { // NOLINT
-		}
+		db_manager->ResetDatabases();
 	}
 	// an instance whose initialization failed may not have every member yet, and a destructor cannot throw
 	if (config.http_transport_manager) {

@@ -595,11 +595,17 @@ vector<shared_ptr<AttachedDatabase>> DatabaseManager::GetDatabases() {
 }
 
 void DatabaseManager::ResetDatabases() {
-	auto shared_db_pointers = GetDatabases();
-	for (auto &entry : shared_db_pointers) {
-		entry->Close(DatabaseCloseAction::TRY_CHECKPOINT);
-		entry.reset();
+	// the destructor of the instance calls this and cannot throw, so the databases are taken out of the map instead
+	// of being copied into a vector, which would allocate
+	identifier_map_t<shared_ptr<AttachedDatabase>> closing;
+	{
+		lock_guard<mutex> guard(databases_lock);
+		closing = std::move(databases);
 	}
+	for (auto &entry : closing) {
+		entry.second->Close(DatabaseCloseAction::TRY_CHECKPOINT);
+	}
+	system->Close(DatabaseCloseAction::TRY_CHECKPOINT);
 }
 
 Catalog &DatabaseManager::GetSystemCatalog() {

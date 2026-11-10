@@ -49,6 +49,9 @@ int wmain(int argc, wchar_t **wargv) {
 			delete shell_state;
 		}
 		shell_state = nullptr;
+	} catch (std::bad_alloc &) {
+		rc = 1;
+		fprintf(stderr, "Error during clean-up due to error: Out of Memory Error\n");
 	} catch (std::exception &ex) {
 		rc = 1;
 		ErrorData error(ex);

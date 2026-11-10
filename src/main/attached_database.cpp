@@ -423,13 +423,15 @@ void AttachedDatabase::Close(const DatabaseCloseAction action) {
 			}
 		}
 	} catch (std::exception &ex) {
-		ErrorData data(ex);
 		if (action == DatabaseCloseAction::TRY_CHECKPOINT) {
+			// building the error data allocates, which fails as well when the checkpoint ran out of memory
 			try {
+				ErrorData data(ex);
 				DUCKDB_LOG_ERROR(db, "Silent exception in AttachedDatabase::Close():\t" + data.Message());
 			} catch (...) { // NOLINT
 			}
 		} else {
+			ErrorData data(ex);
 			Cleanup();
 			data.Throw("Detached database '" + name + "', but CHECKPOINT during DETACH failed. \n");
 		}

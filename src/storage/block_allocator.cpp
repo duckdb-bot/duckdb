@@ -542,9 +542,13 @@ BlockAllocator::~BlockAllocator() {
 		annotated_lock_guard<annotated_mutex> guard(lifetime_state->lock);
 		lifetime_state->alive = false;
 	}
-	// a thread without local state has no blocks to give back, and creating the state here can fail to allocate
+	// a thread without local state has no blocks to give back, and creating the state can fail to allocate
 	if (ThreadHasLocalState()) {
-		GetBlockAllocatorThreadLocalState(*this).Clear();
+		try {
+			GetBlockAllocatorThreadLocalState(*this).Clear();
+		} catch (...) {
+			// Not allowed to throw in destructor!
+		}
 	}
 	if (IsInitialized()) {
 		try {

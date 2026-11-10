@@ -3550,14 +3550,18 @@ void ShellState::PrintExitHint(int rc) {
 		return;
 	}
 	exit_hint_printed = true;
-	string name, marker;
-	if (DetectAgentEnvironment(name, marker)) {
-		// an agent that chose its output format itself (-csv, ...) needs no hint
-		return;
+	try {
+		string name, marker;
+		if (DetectAgentEnvironment(name, marker)) {
+			// an agent that chose its output format itself (-csv, ...) needs no hint
+			return;
+		}
+		PrintF(PrintOutput::STDERR,
+		       "hint: -agent renders errors as JSON and results compactly for AI coding agents (duckdb -help lists all "
+		       "options)\n");
+	} catch (std::bad_alloc &) {
+		// the hint needs memory for its text, which a run that ended for lack of memory does not have
 	}
-	PrintF(PrintOutput::STDERR,
-	       "hint: -agent renders errors as JSON and results compactly for AI coding agents (duckdb -help lists all "
-	       "options)\n");
 }
 
 struct ScanEstimate {

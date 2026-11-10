@@ -1,1 +1,10 @@
 *.test linguist-language=sql
+# byte exact fixtures, the tests assert byte positions and a final line without a newline that CRLF conversion would change
+data/csv/cast_then_unterminated_quote.csv -text
+data/csv/two_casts_then_unterminated_quote.csv -text
+data/csv/cast_then_unterminated_quote_two_columns.csv -text
+data/csv/escaped_quote_then_unterminated.csv -text
+data/csv/cast_then_unterminated_quote_three_columns.csv -text
+data/csv/malformed_quotes_two_columns.csv -text
+data/csv/malformed_quote_then_unterminated.csv -text
+data/csv/unterminated_quote_at_vector_end.csv -text

@@ -35,9 +35,10 @@ ScanVectorType StandardColumnData::GetVectorScanType(ColumnScanState &state, idx
 	return validity->GetVectorScanType(state.child_states[0], scan_count, result);
 }
 
-void StandardColumnData::InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t rows) {
-	ColumnData::InitializePrefetch(prefetch_state, scan_state, rows);
-	validity->InitializePrefetch(prefetch_state, scan_state.child_states[0], rows);
+void StandardColumnData::InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t start_row,
+                                            idx_t end_row) {
+	ColumnData::InitializePrefetch(prefetch_state, scan_state, start_row, end_row);
+	validity->InitializePrefetch(prefetch_state, scan_state.child_states[0], start_row, end_row);
 }
 
 void StandardColumnData::InitializeScan(ColumnScanState &state) {
@@ -115,6 +116,13 @@ void StandardColumnData::Select(TransactionData transaction, idx_t vector_index,
 	auto scan_type = GetVectorScanType(state, target_count, result);
 	if (!has_select || !validity_has_select || HasUpdates() || validity->HasUpdates()) {
 		// the updates need to be merged into the entire vector, so we cannot select
+		ColumnData::Select(transaction, vector_index, state, result, sel, sel_count);
+		return;
+	}
+	// a scan references uncompressed data without copying it: slicing beats gathering unless few rows are selected
+	static constexpr idx_t UNCOMPRESSED_SELECT_DENSITY = 5;
+	if (compression->type == CompressionType::COMPRESSION_UNCOMPRESSED &&
+	    sel_count * UNCOMPRESSED_SELECT_DENSITY > target_count) {
 		ColumnData::Select(transaction, vector_index, state, result, sel, sel_count);
 		return;
 	}

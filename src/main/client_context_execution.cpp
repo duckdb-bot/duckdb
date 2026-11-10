@@ -162,14 +162,15 @@ ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success,
 		error = statement_error;
 	}
 
-	// Notify any registered state of query end
-	for (auto const &s : context->GetRegisteredState().States()) {
+	// Notify any registered state of query end, through their snapshot and not a copy, which would allocate, since
+	// this also runs while a connection that ran out of memory is destroyed
+	context->GetRegisteredState().ForEachState([&](ClientContextState &state) {
 		if (error.HasError()) {
-			s->QueryEnd(*this, &error);
+			state.QueryEnd(*this, &error);
 		} else {
-			s->QueryEnd(*this, previous_error);
+			state.QueryEnd(*this, previous_error);
 		}
-	}
+	});
 	return error;
 }
 

@@ -79,10 +79,12 @@ private:
 	//! Whether persistent blocks referenced by `storage_info` have been reclaimed
 	//! or handed off to a bound index.
 	bool storage_reclaimed = false;
+	//! Whether the database file holds no data for this index, so that it cannot be bound
+	bool storage_missing = false;
 
 public:
 	UnboundIndex(unique_ptr<CreateInfo> create_info, IndexStorageInfo storage_info, TableIOManager &table_io_manager,
-	             AttachedDatabase &db);
+	             AttachedDatabase &db, bool storage_missing = false);
 	~UnboundIndex() override;
 
 public:
@@ -105,6 +107,9 @@ public:
 	}
 	const IndexStorageInfo &GetStorageInfo() const {
 		return *storage_info;
+	}
+	bool IsStorageMissing() const {
+		return storage_missing;
 	}
 	const vector<unique_ptr<ParsedExpression>> &GetParsedExpressions() const {
 		return GetCreateInfo().parsed_expressions;

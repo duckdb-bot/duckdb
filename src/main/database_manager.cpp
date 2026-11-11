@@ -103,6 +103,18 @@ bool RequiresTrackingAttaches(const string &path, const string &db_type) {
 	return true;
 }
 
+//! Throws when an attach that finds the database attached asks for another access mode
+static void CheckAccessMode(AttachedDatabase &existing_db, const AttachInfo &info, const AttachOptions &options) {
+	if ((existing_db.IsReadOnly() && options.access_mode == AccessMode::READ_WRITE) ||
+	    (!existing_db.IsReadOnly() && options.access_mode == AccessMode::READ_ONLY)) {
+		auto existing_mode = existing_db.IsReadOnly() ? AccessMode::READ_ONLY : AccessMode::READ_WRITE;
+		auto existing_mode_str = EnumUtil::ToString(existing_mode);
+		auto attached_mode = EnumUtil::ToString(options.access_mode);
+		throw BinderException("Database %s is already attached in %s mode, cannot re-attach in %s mode", info.name,
+		                      existing_mode_str, attached_mode);
+	}
+}
+
 shared_ptr<AttachedDatabase> DatabaseManager::AttachDatabase(ClientContext &context, AttachInfo &info,
                                                              AttachOptions &options) {
 	string extension = "";
@@ -130,14 +142,7 @@ shared_ptr<AttachedDatabase> DatabaseManager::AttachDatabase(ClientContext &cont
 		// constant-time lookup in the catalog for the db name
 		auto existing_db = GetDatabase(info.name);
 		if (existing_db) {
-			if ((existing_db->IsReadOnly() && options.access_mode == AccessMode::READ_WRITE) ||
-			    (!existing_db->IsReadOnly() && options.access_mode == AccessMode::READ_ONLY)) {
-				auto existing_mode = existing_db->IsReadOnly() ? AccessMode::READ_ONLY : AccessMode::READ_WRITE;
-				auto existing_mode_str = EnumUtil::ToString(existing_mode);
-				auto attached_mode = EnumUtil::ToString(options.access_mode);
-				throw BinderException("Database %s is already attached in %s mode, cannot re-attach in %s mode",
-				                      info.name, existing_mode_str, attached_mode);
-			}
+			CheckAccessMode(*existing_db, info, options);
 			if (!options.default_table.Name().empty()) {
 				existing_db->GetCatalog().SetDefaultTable(options.default_table.Schema(), options.default_table.Name());
 			}
@@ -172,6 +177,7 @@ shared_ptr<AttachedDatabase> DatabaseManager::AttachDatabase(ClientContext &cont
 			auto &meta_transaction = MetaTransaction::Get(context);
 			if (auto existing_db = meta_transaction.GetReferencedDatabaseOwning(info.name)) {
 				// it does! return it
+				CheckAccessMode(*existing_db, info, options);
 				return existing_db;
 			}
 
@@ -181,6 +187,7 @@ shared_ptr<AttachedDatabase> DatabaseManager::AttachDatabase(ClientContext &cont
 			auto entry = databases.find(info.name);
 			if (entry != databases.end()) {
 				// The database ACTUALLY exists, so we return it.
+				CheckAccessMode(*entry->second, info, options);
 				return entry->second;
 			}
 			context.InterruptCheck();
@@ -384,6 +391,8 @@ void DatabaseManager::RenameDatabase(ClientContext &context, const Identifier &o
 		if (default_database == old_name) {
 			default_database = new_name;
 		}
+		// under the lock, so that renames reach the file path registry in the order they happen
+		attached_db->OnRename(new_name);
 	}
 }
 

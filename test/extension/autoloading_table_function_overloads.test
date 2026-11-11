@@ -12,7 +12,7 @@ require icu
 require skip_reload
 
 statement ok
-set extension_directory='{TEST_DIR}/autoloading_table_function_overloads'
+set extension_directories=['{TEST_DIR}/autoloading_table_function_overloads']
 
 statement ok
 set autoload_known_extensions=true
@@ -52,7 +52,7 @@ SELECT * FROM range(epoch('1970-01-01 00:00:02+00'::TIMESTAMPTZ)::BIGINT)
 restart
 
 statement ok
-set extension_directory='{TEST_DIR}/autoloading_table_function_overloads'
+set extension_directories=['{TEST_DIR}/autoloading_table_function_overloads']
 
 statement ok
 set autoload_known_extensions=true
@@ -73,7 +73,7 @@ SELECT * FROM range(epoch('1970-01-01 00:00:02+00'::TIMESTAMPTZ)::BIGINT, 4)
 restart
 
 statement ok
-set extension_directory='{TEST_DIR}/autoloading_table_function_overloads'
+set extension_directories=['{TEST_DIR}/autoloading_table_function_overloads']
 
 statement ok
 set autoload_known_extensions=true
@@ -94,7 +94,7 @@ SELECT * FROM generate_series(0, epoch('1970-01-01 00:00:02+00'::TIMESTAMPTZ)::B
 restart
 
 statement ok
-set extension_directory='{TEST_DIR}/autoloading_table_function_overloads'
+set extension_directories=['{TEST_DIR}/autoloading_table_function_overloads']
 
 statement ok
 set autoload_known_extensions=true
@@ -114,7 +114,7 @@ SELECT count(*) FROM range(TIMESTAMPTZ '1970-01-01 00:00:00+00', to_timestamp(ep
 restart
 
 statement ok
-set extension_directory='{TEST_DIR}/autoloading_table_function_overloads'
+set extension_directories=['{TEST_DIR}/autoloading_table_function_overloads']
 
 statement ok
 set autoload_known_extensions=true
@@ -135,7 +135,7 @@ SELECT * FROM repeat_row(epoch('1970-01-01 00:00:02+00'::TIMESTAMPTZ)::BIGINT, n
 restart
 
 statement ok
-set extension_directory='{TEST_DIR}/autoloading_table_function_overloads'
+set extension_directories=['{TEST_DIR}/autoloading_table_function_overloads']
 
 statement ok
 set autoload_known_extensions=true
@@ -166,7 +166,7 @@ true
 restart
 
 statement ok
-set extension_directory='{TEST_DIR}/autoloading_table_function_overloads'
+set extension_directories=['{TEST_DIR}/autoloading_table_function_overloads']
 
 statement ok
 set autoload_known_extensions=true

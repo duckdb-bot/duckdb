@@ -30,11 +30,14 @@ class CatalogEntryRetriever {
 public:
 	explicit CatalogEntryRetriever(ClientContext &context) : context(context) {
 	}
-	CatalogEntryRetriever(const CatalogEntryRetriever &other) : callback(other.callback), context(other.context) {
+	CatalogEntryRetriever(const CatalogEntryRetriever &other)
+	    : callback(other.callback), callback_in_views(other.callback_in_views), context(other.context) {
 	}
 
 public:
 	void Inherit(const CatalogEntryRetriever &parent);
+	//! Inherit from the retriever of a query, to bind the query of a view that it reads
+	void InheritForView(const CatalogEntryRetriever &parent);
 	ClientContext &GetContext() {
 		return context;
 	}
@@ -73,6 +76,8 @@ public:
 	void SetSearchPath(vector<CatalogSearchEntry> entries);
 
 	void SetCallback(catalog_entry_callback_t callback);
+	//! Set a callback that is not called while binding the queries of the views that are read
+	void SetDirectReadCallback(catalog_entry_callback_t callback);
 	catalog_entry_callback_t GetCallback();
 
 	optional_ptr<BoundAtClause> GetAtClause() const;
@@ -84,6 +89,8 @@ private:
 private:
 	//! (optional) callback, called on every successful entry retrieval
 	catalog_entry_callback_t callback = nullptr;
+	//! Whether the callback is also called while binding the queries of the views that are read
+	bool callback_in_views = true;
 	ClientContext &context;
 	shared_ptr<CatalogSearchPath> search_path;
 	optional_ptr<BoundAtClause> at_clause;

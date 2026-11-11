@@ -87,8 +87,16 @@ optional_ptr<CatalogEntry> CatalogEntryRetriever::ReturnAndCallback(optional_ptr
 
 void CatalogEntryRetriever::Inherit(const CatalogEntryRetriever &parent) {
 	this->callback = parent.callback;
+	this->callback_in_views = parent.callback_in_views;
 	this->search_path = parent.search_path;
 	this->at_clause = parent.at_clause;
+}
+
+void CatalogEntryRetriever::InheritForView(const CatalogEntryRetriever &parent) {
+	Inherit(parent);
+	if (!callback_in_views) {
+		callback = nullptr;
+	}
 }
 
 const CatalogSearchPath &CatalogEntryRetriever::GetSearchPath() const {
@@ -137,6 +145,12 @@ void CatalogEntryRetriever::SetAtClause(optional_ptr<BoundAtClause> at_clause_p)
 
 void CatalogEntryRetriever::SetCallback(catalog_entry_callback_t callback) {
 	this->callback = std::move(callback);
+	callback_in_views = true;
+}
+
+void CatalogEntryRetriever::SetDirectReadCallback(catalog_entry_callback_t callback) {
+	this->callback = std::move(callback);
+	callback_in_views = false;
 }
 
 catalog_entry_callback_t CatalogEntryRetriever::GetCallback() {

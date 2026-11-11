@@ -37,6 +37,7 @@
         "test/optimizer/arithmetic_simplification.test",
         "test/optimizer/deliminator.test",
         "test/optimizer/deliminator_nullability.test",
+        "test/optimizer/pushdown/lateral_join_row_number_pushdown.test",
         "test/sql/aggregate/aggregates/test_arg_min_max.test",
         "test/sql/binder/legacy_null_type.test",
         "test/sql/binder/old_implicit_cast.test",

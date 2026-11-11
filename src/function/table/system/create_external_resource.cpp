@@ -167,6 +167,8 @@ static void CreateExternalResourceFunction(ClientContext &context, TableFunction
 	if (state.done) {
 		return;
 	}
+	// the create and status callbacks reach outside the database, and a prepared call runs long after it was bound
+	CheckExternalResourceAccess(context);
 	auto &bind_data = data_p.bind_data->Cast<CreateExternalResourceBindData>();
 
 	// An unknown type autoloads the extension known to provide it, like an unknown function or file format does
@@ -438,6 +440,8 @@ static void DestroyExternalResourceFunction(ClientContext &context, TableFunctio
 	if (state.done) {
 		return;
 	}
+	// the deleter callback reaches outside the database, and a prepared call runs long after it was bound
+	CheckExternalResourceAccess(context);
 	auto &bind_data = data_p.bind_data->Cast<DestroyExternalResourceBindData>();
 
 	// CALL <deleter_function>(<deleter_payload>) on a separate internal connection.

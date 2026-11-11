@@ -66,6 +66,9 @@ SourceResultType PhysicalAttach::GetDataInternal(ExecutionContext &context, Data
 	string resource_type, resource_name, borrowed_resource_name;
 	bool owns_resource = false;
 	if (attach_info->external_resource) {
+		// provisioning or borrowing runs the resource type's callbacks, and a prepared statement runs long after it
+		// was bound
+		CheckExternalResourceAccess(context.client);
 		auto &external_resource = *attach_info->external_resource;
 		if (!external_resource.reference_name.empty()) {
 			auto instance = ExternalResourcesManager::Get(context.client).Lookup(external_resource.reference_name);

@@ -312,7 +312,7 @@ SELECT recursive_rows();
 # A selective filter on another column of the outer scan restricts the partitions through a semi join
 
 statement ok
-PRAGMA enable_profiling='json';
+SET enable_profiling='json';
 
 query III
 SELECT count(*), sum(q.x), max(q.x)
@@ -364,7 +364,7 @@ SELECT recursive_rows();
 # Transitive restriction through nested lateral joins is deferred to cost-based domain placement
 
 statement ok
-PRAGMA enable_profiling='json';
+SET enable_profiling='json';
 
 query III
 SELECT count(*), sum(q.x), max(q.x) FROM person o, LATERAL (
@@ -422,7 +422,7 @@ SELECT recursive_rows();
 # Only the lateral joined directly with the selective scan is restricted
 
 statement ok
-PRAGMA enable_profiling='json';
+SET enable_profiling='json';
 
 query II
 SELECT max(a.x), max(b.y) FROM person o, LATERAL (
@@ -549,7 +549,7 @@ SELECT recursive_rows();
 # A selective filter on another column of the large table does not make it a key domain either
 
 statement ok
-PRAGMA enable_profiling='json';
+SET enable_profiling='json';
 
 query I
 SELECT max(q.x) FROM big o, LATERAL (

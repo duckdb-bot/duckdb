@@ -1,0 +1,55 @@
+# name: test/sql/copy/parquet/parquet_filter_cast_error.test
+# description: A cast error of a filtered column names the file and the column, as for a projected column
+# group: [parquet]
+
+require parquet
+
+statement ok
+COPY (SELECT 1 AS x, 1 AS y) TO '{TEST_DIR}/filter_cast_error_a.parquet';
+
+statement ok
+COPY (SELECT 'foo' AS x, 2 AS y) TO '{TEST_DIR}/filter_cast_error_b.parquet';
+
+# the filter is evaluated on the cast values inside the reader
+statement error
+SELECT DISTINCT y FROM read_parquet(['{TEST_DIR}/filter_cast_error_a.parquet', '{TEST_DIR}/filter_cast_error_b.parquet']) WHERE x = 1;
+----
+<REGEX>:Conversion Error: Error while reading file ".*filter_cast_error_b.parquet": failed to cast column "x" from type VARCHAR to INTEGER: Could not convert string 'foo' to INT32.*In file ".*filter_cast_error_b.parquet" the column "x" has type VARCHAR, but we are trying to read it as type INTEGER.*union_by_name.*
+
+# also when the filtered column is projected
+statement error
+SELECT x, y FROM read_parquet(['{TEST_DIR}/filter_cast_error_a.parquet', '{TEST_DIR}/filter_cast_error_b.parquet']) WHERE x = 1;
+----
+<REGEX>:Conversion Error: Error while reading file ".*filter_cast_error_b.parquet": failed to cast column "x" from type VARCHAR to INTEGER.*union_by_name.*
+
+# the same message as for a projected column that is cast outside the reader
+statement error
+SELECT x FROM read_parquet(['{TEST_DIR}/filter_cast_error_a.parquet', '{TEST_DIR}/filter_cast_error_b.parquet']);
+----
+<REGEX>:Conversion Error: Error while reading file ".*filter_cast_error_b.parquet": failed to cast column "x" from type VARCHAR to INTEGER: Could not convert string 'foo' to INT32.*union_by_name.*
+
+query I
+SELECT DISTINCT y FROM read_parquet(['{TEST_DIR}/filter_cast_error_a.parquet', '{TEST_DIR}/filter_cast_error_b.parquet'], union_by_name = true) WHERE x = '1';
+----
+1
+
+# several rows, with another filter that leaves some of them, and an overflow
+statement ok
+COPY (SELECT range::BIGINT AS x, range AS y FROM range(10)) TO '{TEST_DIR}/filter_cast_error_c.parquet';
+
+statement ok
+COPY (SELECT (range * 1000)::BIGINT AS x, range AS y FROM range(10)) TO '{TEST_DIR}/filter_cast_error_d.parquet';
+
+statement ok
+COPY (SELECT range::TINYINT AS x, range AS y FROM range(10)) TO '{TEST_DIR}/filter_cast_error_e.parquet';
+
+statement error
+SELECT y FROM read_parquet(['{TEST_DIR}/filter_cast_error_e.parquet', '{TEST_DIR}/filter_cast_error_d.parquet']) WHERE y > 3 AND x = 1;
+----
+<REGEX>:Conversion Error: Error while reading file ".*filter_cast_error_d.parquet": failed to cast column "x" from type BIGINT to TINYINT.*out of range.*union_by_name.*
+
+query I
+SELECT y FROM read_parquet(['{TEST_DIR}/filter_cast_error_e.parquet', '{TEST_DIR}/filter_cast_error_c.parquet']) WHERE y > 3 AND x = 5 ORDER BY ALL;
+----
+5
+5

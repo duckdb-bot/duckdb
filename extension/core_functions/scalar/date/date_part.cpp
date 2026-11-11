@@ -2260,8 +2260,9 @@ static function_statistics_t DatePartUnaryStatistics(LogicalTypeId type) {
 	case LogicalType::TIMESTAMP:
 	case LogicalType::TIMESTAMP_S:
 	case LogicalType::TIMESTAMP_MS:
-	case LogicalType::TIMESTAMP_NS:
 		return OP::template PropagateStatistics<timestamp_t>;
+	case LogicalType::TIMESTAMP_NS:
+		return OP::template PropagateStatistics<timestamp_ns_t>;
 	case LogicalType::DATE:
 		return OP::template PropagateStatistics<date_t>;
 	case LogicalType::INTERVAL:

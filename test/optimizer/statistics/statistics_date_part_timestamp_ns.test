@@ -1,0 +1,96 @@
+# name: test/optimizer/statistics/statistics_date_part_timestamp_ns.test
+# description: date_part with a constant part name propagates TIMESTAMP_NS statistics as nanoseconds
+# group: [statistics]
+
+statement ok
+CREATE TABLE ts_ns AS SELECT * FROM (VALUES (TIMESTAMP_NS '2020-06-01 12:34:56.123456789'), (TIMESTAMP_NS '2021-09-15 01:02:03.5')) v(ts);
+
+# the year bounds are [2020, 2021], so both years match a row
+query I
+SELECT count(*) FROM ts_ns WHERE date_part('year', ts) = 2020
+----
+1
+
+query I
+SELECT count(*) FROM ts_ns WHERE extract(year FROM ts) = 2021
+----
+1
+
+query I
+SELECT date_part('year', ts) FROM ts_ns ORDER BY ts
+----
+2020
+2021
+
+# a year outside the bounds matches no row, and the correct bounds still prune the scan
+query I
+SELECT count(*) FROM ts_ns WHERE date_part('year', ts) = 1971
+----
+0
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+statement ok
+SET explain_output = 'OPTIMIZED_ONLY';
+
+query II
+EXPLAIN SELECT count(*) FROM ts_ns WHERE date_part('year', ts) = 1971
+----
+logical_opt	<REGEX>:.*EMPTY_RESULT.*
+
+query II
+EXPLAIN SELECT count(*) FROM ts_ns WHERE date_part('year', ts) = 2020
+----
+logical_opt	<!REGEX>:.*EMPTY_RESULT.*
+
+query II
+EXPLAIN SELECT count(*) FROM ts_ns WHERE date_part('decade', ts) = 197
+----
+logical_opt	<REGEX>:.*EMPTY_RESULT.*
+
+# every part keeps the row whose part the constant was computed from
+foreach part year month day quarter dayofweek isodow dayofyear week isoyear yearweek microsecond millisecond second minute hour epoch julian
+
+query I
+SELECT count(*) FROM ts_ns WHERE date_part('{part}', ts) = date_part('{part}', TIMESTAMP_NS '2020-06-01 12:34:56.123456789')
+----
+1
+
+endloop
+
+# both rows share these parts
+foreach part decade century millennium era
+
+query I
+SELECT count(*) FROM ts_ns WHERE date_part('{part}', ts) = date_part('{part}', TIMESTAMP_NS '2020-06-01 12:34:56.123456789')
+----
+2
+
+endloop
+
+# TIMESTAMP_MS and TIMESTAMP_S arguments are cast to TIMESTAMP_NS before the part is extracted
+statement ok
+CREATE TABLE ts_ms AS SELECT ts::TIMESTAMP_MS AS ts FROM ts_ns;
+
+statement ok
+CREATE TABLE ts_s AS SELECT * FROM (VALUES (TIMESTAMP_S '2020-06-01 12:34:56'), (TIMESTAMP_S '2021-09-15 01:02:03')) v(ts);
+
+query I
+SELECT count(*) FROM ts_ms WHERE date_part('year', ts) = 2020
+----
+1
+
+query I
+SELECT count(*) FROM ts_s WHERE date_part('month', ts) = 9
+----
+1
+
+# NULL and infinite values give NULL parts
+statement ok
+CREATE TABLE ts_ns_null AS SELECT ts FROM ts_ns UNION ALL SELECT NULL UNION ALL SELECT TIMESTAMP_NS 'infinity';
+
+query II
+SELECT count(*) FILTER (date_part('year', ts) = 2020), count(*) FILTER (date_part('year', ts) IS NULL) FROM ts_ns_null
+----
+1	2

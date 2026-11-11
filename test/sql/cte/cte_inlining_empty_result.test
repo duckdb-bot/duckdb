@@ -52,7 +52,7 @@ statement ok
 SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 
 statement ok
-PRAGMA explain_output='physical_only';
+SET explain_output='physical_only';
 
 # the empty LIMIT on both sides of the join empties the join as well
 query II

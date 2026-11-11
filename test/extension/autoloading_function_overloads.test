@@ -10,7 +10,7 @@ require icu
 
 # Ensure we have a clean extension directory without any preinstalled extensions
 statement ok
-set extension_directory='{TEST_DIR}/autoloading_function_overloads'
+set extension_directories=['{TEST_DIR}/autoloading_function_overloads']
 
 statement ok
 set custom_extension_repository='{LOCAL_EXTENSION_REPO}'

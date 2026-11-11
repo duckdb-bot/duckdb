@@ -563,6 +563,10 @@ unique_ptr<BaseStatistics> ParquetStatisticsUtils::TransformParquetStatistics(
 		    max_stats_type == StringStatsType::EXACT_STATS && min_stats == max_stats) {
 			auto constant_stats = StringStats::CreateEmpty(type);
 			StringStats::FromConstant(constant_stats, string_t(min_stats));
+			// min/max statistics do not tell us whether the chunk also contains NULL values. CreateEmpty
+			// leaves the validity mask as "no rows at all", which lets an IS NULL filter prune pages that
+			// do contain nulls. Keep the validity unknown here; callers that know the null count refine it.
+			constant_stats.Set(StatsInfo::CAN_HAVE_NULL_AND_VALID_VALUES);
 			return constant_stats.ToUnique();
 		}
 		auto string_stats = StringStats::CreateUnknown(type);
@@ -1187,6 +1191,11 @@ ParquetStatisticsUtils::GetBloomFilterHashStrategy(const ParquetColumnSchema &sc
 	}
 }
 
+bool ParquetStatisticsUtils::HasBloomFilterConstants(const TableFilter &filter,
+                                                     ParquetBloomFilterHashStrategy hash_strategy) {
+	return HasFilterConstants(filter, hash_strategy);
+}
+
 bool ParquetStatisticsUtils::BloomFilterExcludes(const TableFilter &duckdb_filter,
                                                  const duckdb_parquet::ColumnMetaData &column_meta_data,
                                                  TProtocol &file_proto, Allocator &allocator,
@@ -1216,7 +1225,10 @@ bool ParquetStatisticsUtils::BloomFilterExcludes(const TableFilter &duckdb_filte
 
 	transport.SetLocation(bloom_filter_start);
 	if (bloom_filter_length > 0) {
-		transport.Prefetch(bloom_filter_start, bloom_filter_length);
+		auto read_head = transport.GetReadHead(bloom_filter_start, bloom_filter_length);
+		if (!read_head || !read_head->data_isset) {
+			transport.Prefetch(bloom_filter_start, bloom_filter_length);
+		}
 	}
 
 	duckdb_parquet::BloomFilterHeader filter_header;
@@ -1247,7 +1259,7 @@ bool ParquetStatisticsUtils::BloomFilterExcludes(const TableFilter &duckdb_filte
 	}
 
 	auto new_buffer = make_uniq<ResizeableBuffer>(allocator, bloom_filter_data_size);
-	transport.read(new_buffer->ptr, UnsafeNumericCast<uint32_t>(bloom_filter_data_size));
+	transport.read(new_buffer->GetCurrentLoc(), UnsafeNumericCast<uint32_t>(bloom_filter_data_size));
 	ParquetBloomFilter bloom_filter(std::move(new_buffer));
 	return ApplyBloomFilter(duckdb_filter, bloom_filter, schema, hash_strategy);
 }
@@ -1292,7 +1304,7 @@ static optional_idx BloomFilterSize(idx_t num_entries, double target) {
 
 static unique_ptr<ResizeableBuffer> AllocateBloomFilter(Allocator &allocator, idx_t size) {
 	auto buffer = make_uniq<ResizeableBuffer>(allocator, size);
-	buffer->zero();
+	buffer->Zero();
 	return buffer;
 }
 
@@ -1309,7 +1321,7 @@ unique_ptr<ParquetBloomFilter> ParquetBloomFilter::Create(Allocator &allocator, 
 }
 
 unique_ptr<ParquetBloomFilter> ParquetBloomFilter::TryCreate(Allocator &allocator, idx_t num_entries, double target,
-                                                             shared_ptr<ParquetBloomFilterMemory> memory) {
+                                                             const shared_ptr<ParquetBloomFilterMemory> &memory) {
 	if (!num_entries) {
 		return nullptr;
 	}
@@ -1347,21 +1359,21 @@ void ParquetBloomFilter::ReleaseReservation() {
 }
 
 ParquetBloomFilter::ParquetBloomFilter(unique_ptr<ResizeableBuffer> data_p) {
-	D_ASSERT(data_p->len % sizeof(ParquetBloomBlock) == 0);
+	D_ASSERT(data_p->GetLength() % sizeof(ParquetBloomBlock) == 0);
 	data = std::move(data_p);
-	block_count = data->len / sizeof(ParquetBloomBlock);
-	D_ASSERT(data->len % sizeof(ParquetBloomBlock) == 0);
+	block_count = data->GetLength() / sizeof(ParquetBloomBlock);
+	D_ASSERT(data->GetLength() % sizeof(ParquetBloomBlock) == 0);
 }
 
 void ParquetBloomFilter::FilterInsert(uint64_t x) {
-	auto blocks = reinterpret_cast<ParquetBloomBlock *>(data->ptr);
+	auto blocks = reinterpret_cast<ParquetBloomBlock *>(data->GetCurrentLoc());
 	uint64_t i = ((x >> 32) * block_count) >> 32;
 	auto &b = blocks[i];
 	ParquetBloomBlock::BlockInsert(b, x);
 }
 
 bool ParquetBloomFilter::FilterCheck(uint64_t x) {
-	auto blocks = reinterpret_cast<ParquetBloomBlock *>(data->ptr);
+	auto blocks = reinterpret_cast<ParquetBloomBlock *>(data->GetCurrentLoc());
 	auto i = ((x >> 32) * block_count) >> 32;
 	return ParquetBloomBlock::BlockCheck(blocks[i], x);
 }
@@ -1376,19 +1388,20 @@ static uint8_t PopCnt64(uint64_t n) {
 }
 
 double ParquetBloomFilter::OneRatio() {
-	auto bloom_ptr = reinterpret_cast<uint64_t *>(data->ptr);
+	auto bloom_ptr = reinterpret_cast<uint64_t *>(data->GetCurrentLoc());
 	idx_t one_count = 0;
-	for (idx_t b_idx = 0; b_idx < data->len / sizeof(uint64_t); ++b_idx) {
+	for (idx_t b_idx = 0; b_idx < data->GetLength() / sizeof(uint64_t); ++b_idx) {
 		one_count += PopCnt64(bloom_ptr[b_idx]);
 	}
-	return LossyNumericCast<double>(one_count) / (LossyNumericCast<double>(data->len) * 8.0);
+	return LossyNumericCast<double>(one_count) / (LossyNumericCast<double>(data->GetLength()) * 8.0);
 }
 
 void ParquetBloomFilter::Shrink(Allocator &allocator, idx_t new_block_count) {
 	D_ASSERT(new_block_count > 0 && block_count % new_block_count == 0);
 	auto folded = AllocateBloomFilter(allocator, new_block_count * sizeof(ParquetBloomBlock));
-	array_ptr<ParquetBloomBlock> source(reinterpret_cast<ParquetBloomBlock *>(data->ptr), block_count);
-	array_ptr<ParquetBloomBlock> target(reinterpret_cast<ParquetBloomBlock *>(folded->ptr), new_block_count);
+	array_ptr<ParquetBloomBlock> source(reinterpret_cast<ParquetBloomBlock *>(data->GetCurrentLoc()), block_count);
+	array_ptr<ParquetBloomBlock> target(reinterpret_cast<ParquetBloomBlock *>(folded->GetCurrentLoc()),
+	                                    new_block_count);
 	const auto factor = block_count / new_block_count;
 	for (idx_t i = 0; i < new_block_count; i++) {
 		auto &merged = target[i];
@@ -1417,8 +1430,8 @@ void ParquetBloomFilter::FoldToTarget(Allocator &allocator, double target) {
 		Shrink(allocator, new_block_count);
 	}
 	if (memory) {
-		memory->Release(reserved_bytes - data->len);
-		reserved_bytes = data->len;
+		memory->Release(reserved_bytes - data->GetLength());
+		reserved_bytes = data->GetLength();
 	}
 }
 

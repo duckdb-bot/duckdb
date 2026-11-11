@@ -10,6 +10,7 @@
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/external_resource_type_registry.hpp"
 #include "duckdb/main/external_resources_manager.hpp"
+#include "duckdb/main/settings.hpp"
 #include "duckdb/logging/log_type.hpp"
 #include "duckdb/logging/logger.hpp"
 #include "duckdb/parser/qualified_name.hpp"
@@ -110,6 +111,11 @@ struct CreateExternalResourceState : public GlobalTableFunctionState {
 static unique_ptr<FunctionData> CreateExternalResourceBind(ClientContext &context, TableFunctionBindInput &input,
                                                            vector<LogicalType> &return_types,
                                                            vector<Identifier> &names) {
+	// the create and status callbacks reach outside the database, refused up front like the EXTERNAL RESOURCE
+	// statements are
+	if (!Settings::Get<EnableExternalAccessSetting>(context)) {
+		throw PermissionException("External resources are disabled through configuration");
+	}
 	auto result = make_uniq<CreateExternalResourceBindData>();
 	if (input.inputs[0].IsNull()) {
 		throw InvalidInputException("create_external_resource: the type name must not be NULL");
@@ -416,6 +422,10 @@ struct DestroyExternalResourceState : public GlobalTableFunctionState {
 static unique_ptr<FunctionData> DestroyExternalResourceBind(ClientContext &context, TableFunctionBindInput &input,
                                                             vector<LogicalType> &return_types,
                                                             vector<Identifier> &names) {
+	// the deleter callback reaches outside the database
+	if (!Settings::Get<EnableExternalAccessSetting>(context)) {
+		throw PermissionException("External resources are disabled through configuration");
+	}
 	auto result = make_uniq<DestroyExternalResourceBindData>();
 	if (input.inputs[0].IsNull() || StringValue::Get(input.inputs[0]).empty()) {
 		throw InvalidInputException("destroy_external_resource: the deleter function must not be NULL or empty");

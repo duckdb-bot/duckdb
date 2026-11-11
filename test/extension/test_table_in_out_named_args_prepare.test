@@ -1,0 +1,84 @@
+# name: test/extension/test_table_in_out_named_args_prepare.test
+# description: A named option of a correlated table in-out call that modifies the database is folded when the statement runs
+# group: [extension]
+
+require skip_reload
+
+require notmingw
+
+require allow_unsigned_extensions
+
+statement ok
+LOAD '{BUILD_DIRECTORY}/test/extension/loadable_extension_demo.duckdb_extension';
+
+statement ok
+CREATE SEQUENCE s;
+
+# A direct call folds the option once while binding.
+query I
+SELECT r.value FROM (VALUES (1), (2)) t(x), LATERAL test_in_out_keywords(t.x, delta => nextval('s')) r ORDER BY r.value;
+----
+2
+3
+
+query I
+SELECT currval('s');
+----
+1
+
+# PREPARE does not run the statement, so the option is folded when each EXECUTE binds it.
+statement ok
+PREPARE p AS SELECT r.value FROM (VALUES (1), (2)) t(x), LATERAL test_in_out_keywords(t.x, delta => nextval('s')) r ORDER BY r.value;
+
+query I
+SELECT currval('s');
+----
+1
+
+query I
+EXECUTE p;
+----
+3
+4
+
+query I
+EXECUTE p;
+----
+4
+5
+
+query I
+SELECT currval('s');
+----
+3
+
+# The legacy name = expression form behaves the same.
+statement ok
+PREPARE p2 AS SELECT r.value FROM (VALUES (1)) t(x), test_in_out_keywords(t.x, delta = nextval('s')) r;
+
+query I
+SELECT currval('s');
+----
+3
+
+query I
+EXECUTE p2;
+----
+5
+
+# A read-only transaction refuses the fold before the sequence advances.
+statement ok
+BEGIN TRANSACTION READ ONLY;
+
+statement error
+SELECT r.value FROM (VALUES (1)) t(x), test_in_out_keywords(t.x, delta => nextval('s')) r;
+----
+transaction is launched in read-only mode
+
+statement ok
+ROLLBACK;
+
+query I
+SELECT currval('s');
+----
+4

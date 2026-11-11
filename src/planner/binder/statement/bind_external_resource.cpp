@@ -1,4 +1,3 @@
-#include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/parser/statement/external_resource_statement.hpp"
 #include "duckdb/planner/binder.hpp"
@@ -11,7 +10,7 @@ namespace duckdb {
 Value Binder::BindExternalResourceValue(unique_ptr<ParsedExpression> &expr) {
 	TableFunctionBinder binder(*this, context, "External resource", "External resource parameter");
 	auto bound = binder.Bind(expr);
-	return ExpressionExecutor::EvaluateScalar(context, *bound, true);
+	return FoldExpression(*bound);
 }
 
 void Binder::BindExternalResourceParams(case_insensitive_map_t<unique_ptr<ParsedExpression>> &parsed_params,

@@ -18,6 +18,7 @@
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
+#include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/planner/expression/bound_window_expression.hpp"
 #include "duckdb/planner/expression_binder.hpp"
 #include "duckdb/planner/binder.hpp"
@@ -1327,6 +1328,44 @@ static string ExtractCollation(const vector<unique_ptr<Expression>> &children) {
 	return collation;
 }
 
+//! Returns the element type of (nested) LIST and ARRAY types, or the type itself
+static const LogicalType &GetElementType(const LogicalType &type) {
+	if (type.HasAlias()) {
+		return type;
+	}
+	switch (type.id()) {
+	case LogicalTypeId::LIST:
+		return GetElementType(ListType::GetChildType(type));
+	case LogicalTypeId::ARRAY:
+		return GetElementType(ArrayType::GetChildType(type));
+	default:
+		return type;
+	}
+}
+
+//! Whether a collation applies to a value of the type, which fails for a LIST without list_transform
+static bool CollationApplies(ClientContext &context, const LogicalType &type, CollationType collation_type) {
+	unique_ptr<Expression> value = make_uniq<BoundReferenceExpression>(type, idx_t(0));
+	return ExpressionBinder::PushCollation(context, value, type, collation_type);
+}
+
+//! Whether each LIST or ARRAY argument whose elements take a comparison key can receive it, which needs list_transform
+static bool ComparisonKeysApply(ClientContext &context, const BoundSimpleFunction &bound_function,
+                                const vector<unique_ptr<Expression>> &children, CollationType type) {
+	auto &argument_types = bound_function.GetArguments();
+	for (idx_t i = 0; i < children.size(); i++) {
+		auto &target_type = argument_types[i].IsComplete() ? argument_types[i] : children[i]->GetReturnType();
+		auto &element_type = GetElementType(target_type);
+		if (element_type == target_type) {
+			continue;
+		}
+		if (CollationApplies(context, element_type, type) && !CollationApplies(context, target_type, type)) {
+			return false;
+		}
+	}
+	return true;
+}
+
 //! Pushes the collations of the arguments into the children, returns the collation to propagate to the return type
 static string PushCollations(ClientContext &context, BoundSimpleFunction &bound_function,
                              vector<unique_ptr<Expression>> &children, CollationType type, bool is_index_key) {
@@ -1337,9 +1376,15 @@ static string PushCollations(ClientContext &context, BoundSimpleFunction &bound_
 		auto &target_type = argument_types[i].IsComplete() ? argument_types[i] : source_type;
 		ExtractCollationFromType(source_type, target_type, collations);
 	}
-	if (is_index_key && collations.collation.empty() && collations.fields.empty()) {
-		// index keys only use explicit collations, comparison keys and the default collation would change them
-		return string();
+	if (collations.collation.empty() && collations.fields.empty()) {
+		if (is_index_key) {
+			// index keys only use explicit collations, comparison keys and the default collation would change them
+			return string();
+		}
+		if (!ComparisonKeysApply(context, bound_function, children, type)) {
+			// a LIST without list_transform cannot receive its key, so no argument gets one
+			return string();
+		}
 	}
 	// push collations to the children
 	for (idx_t i = 0; i < children.size(); i++) {

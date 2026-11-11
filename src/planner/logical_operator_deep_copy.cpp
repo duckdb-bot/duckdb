@@ -26,7 +26,7 @@ static void CopyBindData(LogicalOperator &op, LogicalOperator &copy) {
 	}
 }
 
-unique_ptr<LogicalOperator> LogicalOperatorDeepCopy::DeepCopy(unique_ptr<duckdb::LogicalOperator> &op) {
+unique_ptr<LogicalOperator> LogicalOperatorDeepCopy::DeepCopy(const unique_ptr<duckdb::LogicalOperator> &op) {
 	auto copy = op->Copy(binder.context);
 	CopyBindData(*op, *copy);
 	VisitOperator(*copy);

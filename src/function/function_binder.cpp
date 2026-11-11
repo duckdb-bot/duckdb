@@ -1274,6 +1274,12 @@ static void ExtractCollationFromType(const LogicalType &source_type, const Logic
 		}
 		break;
 	}
+	case LogicalTypeId::MAP: {
+		// map lookups compare the keys, the values are returned as they are stored
+		auto &target_key = target.id() == LogicalTypeId::MAP ? MapType::KeyType(target) : MapType::KeyType(source_type);
+		ExtractCollationFromType(MapType::KeyType(source_type), target_key, collations);
+		break;
+	}
 	default:
 		break;
 	}
@@ -1293,6 +1299,8 @@ static LogicalType ApplyCollationToType(const LogicalType &type, const FunctionC
 	case LogicalTypeId::ARRAY:
 		return LogicalType::ARRAY(ApplyCollationToType(ArrayType::GetChildType(type), collations),
 		                          ArrayType::GetSize(type));
+	case LogicalTypeId::MAP:
+		return LogicalType::MAP(ApplyCollationToType(MapType::KeyType(type), collations), MapType::ValueType(type));
 	case LogicalTypeId::STRUCT:
 	case LogicalTypeId::TUPLE: {
 		auto children = StructType::GetChildTypes(type);

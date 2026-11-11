@@ -1,0 +1,78 @@
+# name: test/sql/types/nested/list_array_null_child_combination.test
+# description: Combining a LIST and an ARRAY whose MAP or UNION elements hold an untyped NULL
+# group: [nested]
+
+query II
+SELECT r, typeof(r) FROM (SELECT [[map(['k'], [1])], array_value(map(['k'], [NULL]))] AS r);
+----
+[[{k=1}], [{k=NULL}]]	MAP(VARCHAR, INTEGER)[][]
+
+query I
+SELECT [array_value(map(['k'], [NULL])), [map(['k'], [1])]];
+----
+[[{k=NULL}], [{k=1}]]
+
+query II
+SELECT r, typeof(r) FROM (SELECT [[union_value(a := 1)], array_value(union_value(a := NULL))] AS r);
+----
+[[1], [NULL]]	UNION(a INTEGER)[][]
+
+query I
+SELECT [array_value(union_value(a := NULL)), [union_value(a := 1)]];
+----
+[[NULL], [1]]
+
+# the shapes that already combined
+query I
+SELECT [[map(['k'], [1])], [map(['k'], [NULL])]];
+----
+[[{k=1}], [{k=NULL}]]
+
+query I
+SELECT [array_value(map(['k'], [1])), array_value(map(['k'], [NULL]))];
+----
+[[{k=1}], [{k=NULL}]]
+
+query I
+SELECT [[{'a': 1}], array_value({'a': NULL})];
+----
+[[{'a': 1}], [{'a': NULL}]]
+
+query I
+SELECT [[1], array_value(NULL)];
+----
+[[1], [NULL]]
+
+# the cost of a MAP or UNION cast follows its children
+query IIII
+SELECT can_cast_implicitly(map([1], [1]), NULL::MAP(INTEGER, BIGINT)),
+       can_cast_implicitly(map([1], [1]), NULL::MAP(DATE, INTEGER)),
+       can_cast_implicitly(map([1], [1]), NULL::MAP(INTEGER, DATE)),
+       can_cast_implicitly(union_value(a := 1)::UNION(a INTEGER, b INTEGER), NULL::UNION(a INTEGER, b DATE));
+----
+true	false	false	false
+
+# a typed MAP overload still wins over an untyped one, also when its children need a cast
+statement ok
+CREATE MACRO which(x) AS 'any', (x MAP(VARCHAR, INTEGER)) AS 'map';
+
+query II
+SELECT which(map(['k'], [1])), which(map(['k'], [1::SMALLINT]));
+----
+map	map
+
+query I
+SELECT which(42);
+----
+any
+
+# maps and unions whose children cannot be cast do not combine
+statement error
+SELECT [[map(['k'], [1])], array_value(map(['k'], [DATE '2000-01-01']))];
+----
+No function matches the given name and argument types
+
+statement error
+SELECT [[union_value(a := 1)], array_value(union_value(a := DATE '2000-01-01'))];
+----
+No function matches the given name and argument types

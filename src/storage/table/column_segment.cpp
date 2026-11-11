@@ -49,11 +49,16 @@ unique_ptr<ColumnSegment> ColumnSegment::CreatePersistentSegment(DatabaseInstanc
 unique_ptr<ColumnSegment> ColumnSegment::CreateTransientSegment(DatabaseInstance &db,
                                                                 const CompressionFunction &function,
                                                                 const LogicalType &type, const idx_t segment_size,
-                                                                BlockManager &block_manager) {
+                                                                BlockManager &block_manager, bool zero_initialize) {
 	// Allocate a buffer for the uncompressed segment.
 	auto &buffer_manager = BufferManager::GetBufferManager(db);
 	D_ASSERT(&buffer_manager == &block_manager.buffer_manager);
 	auto block = buffer_manager.RegisterTransientMemory(segment_size, block_manager);
+	// we want to zero initialize segments that end up on disk
+	if (zero_initialize) {
+		auto handle = buffer_manager.Pin(block);
+		memset(handle.GetDataMutable(), 0, segment_size);
+	}
 
 	return make_uniq<ColumnSegment>(db, std::move(block), ColumnSegmentType::TRANSIENT, 0U, function,
 	                                BaseStatistics::CreateEmpty(type), INVALID_BLOCK, 0U, segment_size);
@@ -179,16 +184,6 @@ void ColumnSegment::ScanPartial(ColumnScanState &state, idx_t scan_count, Vector
 }
 
 //===--------------------------------------------------------------------===//
-// Fetch
-//===--------------------------------------------------------------------===//
-void ColumnSegment::FetchRow(ColumnFetchState &state, row_t row_id, Vector &result, idx_t result_idx) {
-	if (row_id < 0 || NumericCast<idx_t>(row_id) >= count) {
-		throw InternalException("ColumnSegment::FetchRow - row_id out of range for segment");
-	}
-	function.get().fetch_row(*this, state, row_id, result, result_idx);
-}
-
-//===--------------------------------------------------------------------===//
 // Append
 //===--------------------------------------------------------------------===//
 idx_t ColumnSegment::SegmentSize() const {
@@ -265,6 +260,12 @@ void ColumnSegment::MarkAsPersistent(shared_ptr<BlockHandle> block_p, uint32_t o
 	D_ASSERT(segment_type == ColumnSegmentType::TRANSIENT);
 	block_id = block_p->BlockId();
 	SetBlock(std::move(block_p), offset_p);
+}
+
+void ColumnSegment::UsePackedCopy(const shared_ptr<BlockHandle> &block_p, uint32_t offset_p) {
+	D_ASSERT(segment_type == ColumnSegmentType::TRANSIENT);
+	offset = offset_p;
+	block = block_p;
 }
 
 void ColumnSegment::SetBlock(shared_ptr<BlockHandle> block_p, uint32_t offset_p) {

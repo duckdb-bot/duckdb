@@ -67,6 +67,7 @@
         "test/sql/subquery/any_all/test_correlated_cte_in.test",
         "test/sql/subquery/exists/test_correlated_exists.test",
         "test/sql/subquery/exists/test_issue_23979.test",
+        "test/sql/subquery/lateral/lateral_barrier_filter.test",
         "test/sql/subquery/lateral/lateral_empty_grouping_sets.test",
         "test/sql/subquery/lateral/lateral_left_join.test",
         "test/sql/types/bignum/test_bignum_divide.test",

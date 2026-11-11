@@ -123,7 +123,7 @@ void WindowValueLocalState::Finalizer(ExecutionContext &context, CollectionPtr c
 	if (local_value) {
 		auto &value_state = local_value->Cast<WindowIndexTreeLocalState>();
 		value_state.Finalize(context, sink.interrupt_state);
-		value_state.index_tree.Build();
+		value_state.index_tree.Build(context.client);
 	}
 
 	// Prepare to scan
@@ -347,7 +347,7 @@ void WindowLeadLagLocalState::Finalizer(ExecutionContext &context, CollectionPtr
 	if (local_row) {
 		auto &row_state = local_row->Cast<WindowMergeSortTreeLocalState>();
 		row_state.Finalize(context, sink.interrupt_state);
-		row_state.window_tree.Build();
+		row_state.window_tree.Build(context.client);
 	}
 }
 
@@ -363,11 +363,11 @@ public:
 			if (offset_expr->HasParameter() || !offset_expr->IsFoldable()) {
 				return false;
 			}
-			auto offset_value = ExpressionExecutor::EvaluateScalar(client, *offset_expr);
-			if (offset_value.IsNull()) {
+			Value offset_value;
+			if (!ExpressionExecutor::TryEvaluateScalar(client, *offset_expr, offset_value) || offset_value.IsNull()) {
 				return false;
 			}
-			auto bigint_value = offset_value.DefaultTryCastAs(LogicalType::BIGINT);
+			auto bigint_value = offset_value.TryCastAs(client, LogicalType::BIGINT);
 			if (!bigint_value) {
 				return false;
 			}
@@ -394,8 +394,11 @@ public:
 		if (default_expr && (default_expr->HasParameter() || !default_expr->IsFoldable())) {
 			return false;
 		}
-		auto dflt_value = ExpressionExecutor::EvaluateScalar(client, *default_expr);
-		auto cast_value = dflt_value.DefaultTryCastAs(wexpr.GetReturnType());
+		Value dflt_value;
+		if (!ExpressionExecutor::TryEvaluateScalar(client, *default_expr, dflt_value)) {
+			return false;
+		}
+		auto cast_value = dflt_value.TryCastAs(client, wexpr.GetReturnType());
 		if (!cast_value) {
 			return false;
 		}
@@ -610,6 +613,7 @@ WindowFunction LeadFun::GetTypedFunction(const LogicalType &type, idx_t nargs) {
 	if (nargs > 2) {
 		func.GetSignature().GetParameter(2).SetType(type);
 	}
+	func.GetSignature().SetReturnType(type);
 	return func;
 }
 
@@ -682,7 +686,19 @@ void WindowLeadLagExecutor::GetData(ExecutionContext &context, DataChunk &eval_c
 			frame = FrameBounds(frame_begin[i], MaxValue(frame_end[i], frame_begin[i]));
 			const auto own_row = glstate.row_tree->Rank(frame.start, frame.end, row_idx) - 1;
 			// (2) adjust the row number by adding or subtracting an offset
-			const auto val_idx = LeadLagIndex(wexpr.GetExpressionType(), NumericCast<int64_t>(own_row), offset);
+			auto val_idx = LeadLagIndex(wexpr.GetExpressionType(), NumericCast<int64_t>(own_row), offset);
+			const auto is_lead = (wexpr.GetExpressionType() == ExpressionType::WINDOW_LEAD);
+			if (row_idx < frame.start || frame.end <= row_idx) {
+				//	An own row outside the frame ranks just before own_row instead of at it,
+				//	so a zero shift is the own row itself and a forward shift lands one row earlier.
+				if (!offset) {
+					cursor.CopyCell(0, row_idx, result, i);
+					continue;
+				}
+				if (is_lead == (offset > 0)) {
+					--val_idx;
+				}
+			}
 			const auto frame_width = NumericCast<int64_t>(frame.end - frame.start);
 			if (val_idx >= 0 && val_idx < frame_width) {
 				// (3) find the row at that offset
@@ -740,13 +756,21 @@ void WindowLeadLagExecutor::GetData(ExecutionContext &context, DataChunk &eval_c
 
 		idx_t delta = 0;
 		if (val_idx < (int64_t)row_idx) {
-			// Count backwards
+			// Count backwards, starting from the last row at or before the own row
 			delta = idx_t(row_idx - idx_t(val_idx));
-			val_idx = int64_t(WindowBoundariesState::FindPrevStart(*ignore_nulls, partition_begin[i], row_idx, delta));
+			const auto lo = partition_begin[i];
+			const auto hi = MinValue(row_idx, partition_end[i]);
+			if (lo < hi) {
+				val_idx = int64_t(WindowBoundariesState::FindPrevStart(*ignore_nulls, lo, hi, delta));
+			}
 		} else if (val_idx > (int64_t)row_idx) {
+			// Count forwards, starting from the first row at or after the own row
 			delta = idx_t(idx_t(val_idx) - row_idx);
-			val_idx =
-			    int64_t(WindowBoundariesState::FindNextStart(*ignore_nulls, row_idx + 1, partition_end[i], delta));
+			const auto lo = MaxValue(row_idx + 1, partition_begin[i]);
+			const auto hi = partition_end[i];
+			if (lo < hi) {
+				val_idx = int64_t(WindowBoundariesState::FindNextStart(*ignore_nulls, lo, hi, delta));
+			}
 		}
 		// else offset is zero, so don't move.
 
@@ -1066,11 +1090,11 @@ public:
 		if (nth_expr && (nth_expr->HasParameter() || !nth_expr->IsFoldable())) {
 			return false;
 		}
-		auto nth_value = ExpressionExecutor::EvaluateScalar(client, *nth_expr);
-		if (nth_value.IsNull()) {
+		Value nth_value;
+		if (!ExpressionExecutor::TryEvaluateScalar(client, *nth_expr, nth_value) || nth_value.IsNull()) {
 			return false;
 		}
-		auto bigint_value = nth_value.DefaultTryCastAs(LogicalType::BIGINT);
+		auto bigint_value = nth_value.TryCastAs(client, LogicalType::BIGINT);
 		if (!bigint_value) {
 			return false;
 		}

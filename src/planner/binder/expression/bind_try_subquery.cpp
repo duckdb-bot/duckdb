@@ -415,6 +415,24 @@ static void PushTryIntoBareSubqueryItem(SubqueryExpression &subquery_expr) {
 	select_item = std::move(try_item);
 }
 
+//! Marks the subquery bind of a TRY argument and restores the binder state on exit, also when a binder
+//! rejects the subquery with an exception
+struct TrySubqueryBindState {
+	TrySubqueryBindState(bool &inside_try_p, bool &bind_try_subquery_p)
+	    : inside_try(inside_try_p), bind_try_subquery(bind_try_subquery_p), was_inside_try(inside_try_p) {
+		inside_try = false;
+		bind_try_subquery = true;
+	}
+	~TrySubqueryBindState() {
+		inside_try = was_inside_try;
+		bind_try_subquery = false;
+	}
+
+	bool &inside_try;
+	bool &bind_try_subquery;
+	bool was_inside_try;
+};
+
 //! TRY over a scalar subquery binds the subquery as an ordinary subquery and lowers the TRY onto the bound
 //! plan before the subquery is flattened, so names, types, overloads and aggregate ownership resolve exactly
 //! as without TRY. In the plain projection case, TRY moves onto the projected expression, which yields a NULL
@@ -431,30 +449,18 @@ static void PushTryIntoBareSubqueryItem(SubqueryExpression &subquery_expr) {
 //! consistent value.
 BindResult ExpressionBinder::BindTrySubquery(OperatorExpression &op, idx_t depth) {
 	D_ASSERT(op.GetChildrenMutable().size() == 1);
-	auto &subquery_expr = op.GetChildrenMutable()[0]->Cast<SubqueryExpression>();
+	auto &child = op.GetChildrenMutable()[0];
+	auto &subquery_expr = child->Cast<SubqueryExpression>();
 	D_ASSERT(subquery_expr.GetSubqueryType() == SubqueryType::SCALAR);
 	CheckTrySubqueryNode(subquery_expr, op);
 	PushTryIntoBareSubqueryItem(subquery_expr);
 
-	// bind as an ordinary scalar subquery, so inner scopes, overload resolution and aggregate
-	// ownership resolve exactly as without TRY
-	const auto was_inside_try = inside_try;
-	inside_try = false;
-	bind_try_subquery = true;
-	auto result = BindExpression(subquery_expr, depth);
-	inside_try = was_inside_try;
-	if (result.HasError()) {
-		return result;
-	}
-	auto &bound_subquery = result.expression->Cast<BoundSubqueryExpression>();
-	if (bound_subquery.SubqueryMutable().plan) {
-		auto &indexes = bound_subquery.GetBinder()->GetTrySubqueryPlanIndexes();
-		if (!indexes.recorded) {
-			throw InternalException("TRY subquery: no plan indexes were recorded for the top select node");
-		}
-		LowerTrySubquery(op, indexes, *bound_subquery.SubqueryMutable().plan, false, false);
-	}
-	return result;
+	// bind the subquery like any other child, through the entry point a derived binder overrides, so that a
+	// binder which rejects subqueries or relocates them into a projection treats this one the same way. The
+	// marker makes the subquery bind lower TRY onto the bound plan, so inner scopes, overload resolution and
+	// aggregate ownership resolve exactly as without TRY
+	TrySubqueryBindState state(inside_try, bind_try_subquery);
+	return Bind(child, depth);
 }
 
 } // namespace duckdb

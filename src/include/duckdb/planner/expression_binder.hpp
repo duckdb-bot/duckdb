@@ -358,7 +358,7 @@ protected:
 	ClientContext &context;
 	vector<BoundColumnReferenceInfo> bound_columns;
 	bool inside_try = false;
-	//! Set while binding the subquery of a TRY, so the subquery binder knows TRY is lowered onto its plan
+	//! Set while binding the direct subquery argument of a TRY, whose bind lowers TRY onto the bound plan
 	bool bind_try_subquery = false;
 	//! Set while binding the select item of a TRY subquery, see SetTransportTryErrors
 	bool transport_try_errors = false;

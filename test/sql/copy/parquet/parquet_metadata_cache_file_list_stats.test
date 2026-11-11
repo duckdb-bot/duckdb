@@ -24,7 +24,7 @@ SELECT count(*) FROM read_parquet('{TEST_DIR}/list_stats_[12].parquet');
 100000
 
 statement ok
-PRAGMA explain_output = 'physical_only';
+SET explain_output = 'physical_only';
 
 # a glob is answered from the cached metadata
 query II
@@ -33,7 +33,7 @@ EXPLAIN SELECT min(x), max(x), count(*) FROM read_parquet('{TEST_DIR}/list_stats
 physical_plan	<!REGEX>:.*READ_PARQUET.*
 
 statement ok
-PRAGMA explain_output = 'all';
+SET explain_output = 'all';
 
 query III
 SELECT min(x), max(x), count(*) FROM read_parquet('{TEST_DIR}/list_stats_[12].parquet');
@@ -214,7 +214,7 @@ but could not be found in file
 require notwindows
 
 statement ok
-PRAGMA explain_output = 'physical_only';
+SET explain_output = 'physical_only';
 
 # a list of files is answered from the cached metadata as well
 query II

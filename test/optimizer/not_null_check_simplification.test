@@ -9,7 +9,7 @@ statement ok
 INSERT INTO t VALUES (1), (NULL), (3);
 
 statement ok
-PRAGMA explain_output = 'OPTIMIZED_ONLY';
+SET explain_output = 'OPTIMIZED_ONLY';
 
 query II
 EXPLAIN SELECT * FROM t WHERE NOT (a IS NULL);

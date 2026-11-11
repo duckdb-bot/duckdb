@@ -6,7 +6,7 @@ statement ok
 CREATE TABLE t AS SELECT i % 100 AS g, i % 10 AS v FROM range(10000) AS r(i);
 
 statement ok
-PRAGMA explain_output = 'OPTIMIZED_ONLY';
+SET explain_output = 'OPTIMIZED_ONLY';
 
 # a join with an ordered subquery whose HAVING can never be true
 query II

@@ -1,0 +1,43 @@
+# name: test/sql/attach/external_resource_prepared_discovery.test
+# description: A prepared discovery is bound again at each execution, so it sees the resource types registered since
+# group: [attach]
+
+statement ok
+CREATE MACRO local_list(p) AS TABLE SELECT MAP {'id': 'x'} AS handle, 'remote' AS name, 'ref' AS reference, 'ready' AS state;
+
+# prepared while no resource type is registered
+statement ok
+PREPARE discover_later AS SELECT name, type, managed, state, reference, handle FROM duckdb_external_resources(discover := true) ORDER BY name;
+
+query I
+SELECT count(*) FROM duckdb_external_resources(discover := true);
+----
+0
+
+# registering a type changes the registry of resource types, not the catalog, so only a new binding sees it
+statement ok
+CALL register_external_resource_type('mock@local', kind := 'catalog', create_function := 'unused', list_function := 'local_list');
+
+query TTTTTT
+EXECUTE discover_later;
+----
+remote	mock@local	false	ready	ref	{id=x}
+
+query TTTTTT
+EXECUTE discover_later;
+----
+remote	mock@local	false	ready	ref	{id=x}
+
+# a discovered resource registered locally is listed once, as the managed one
+statement ok
+CALL register_external_resource('mock@local', 'managed', MAP {'id': 'x'});
+
+query TTTTTT
+EXECUTE discover_later;
+----
+managed	mock@local	true	NULL	NULL	{id=x}
+
+query TTTTTT
+SELECT name, type, managed, state, reference, handle FROM duckdb_external_resources(discover := true) ORDER BY name;
+----
+managed	mock@local	true	NULL	NULL	{id=x}

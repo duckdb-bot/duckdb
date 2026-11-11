@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "duckdb/common/unordered_map.hpp"
 #include "duckdb/parser/column_definition.hpp"
 #include "duckdb/planner/expression_binder.hpp"
 
@@ -19,6 +20,9 @@ class AlterBinder : public ExpressionBinder {
 public:
 	AlterBinder(Binder &binder, ClientContext &context, TableCatalogEntry &table, vector<LogicalIndex> &bound_columns,
 	            LogicalType target_type);
+
+	//! The type each bound cast resolved to, by the SQL of its target type
+	unordered_map<string, LogicalType> bound_cast_types;
 
 protected:
 	BindResult BindLambdaReference(LambdaRefExpression &expr, idx_t depth);

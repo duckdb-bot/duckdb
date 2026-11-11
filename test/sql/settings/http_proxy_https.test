@@ -3,7 +3,7 @@
 # group: [settings]
 
 statement ok
-SET extension_directory = '{TEST_DIR}/http_proxy_https';
+SET extension_directories = ['{TEST_DIR}/http_proxy_https'];
 
 statement ok
 SET http_proxy = 'https://proxy.example.com:3128';

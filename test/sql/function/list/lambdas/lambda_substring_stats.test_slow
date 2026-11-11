@@ -2,9 +2,6 @@
 # description: substring chunking a large captured string in a lambda must stay linear (issue #23229)
 # group: [lambdas]
 
-statement ok
-SET lambda_syntax='DISABLE_SINGLE_ARROW'
-
 # quadratic (~12s instead of ~0.2s) if statistics do not reach the lambda body
 
 statement ok

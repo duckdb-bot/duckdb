@@ -4,9 +4,6 @@
 
 # wrongly seeded "no unicode" statistics would make substring corrupt multi-byte characters
 
-statement ok
-SET lambda_syntax='DISABLE_SINGLE_ARROW'
-
 # ordered ASCII, unicode, ASCII, so that shifted capture statistics in either direction corrupt the unicode capture
 # offsets are lambda parameters: constant arguments would skip the fast path for these single-row captures
 statement ok

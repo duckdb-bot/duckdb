@@ -42,7 +42,7 @@ SELECT id, has8 FROM v_mark WHERE customer_id = 7 AND id = 1007;
 1007	true
 
 statement ok
-PRAGMA profiling_output = '{TEMP_DIR}/view_filter_two.json';
+SET profiling_output = '{TEMP_DIR}/view_filter_two.json';
 
 query III
 SELECT id, dim_names, dim_count FROM v_two WHERE customer_id = 7 AND id = 1007;

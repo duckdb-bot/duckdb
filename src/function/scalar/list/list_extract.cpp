@@ -134,7 +134,7 @@ static void VariantExtractResolveTypes(ResolveScalarFunctionTypesInput &input) {
 
 //! A VARIANT binds to variant_extract, as its subscript does
 static unique_ptr<Expression> BindVariantExtract(FunctionBindExpressionInput &input) {
-	VariantBindUtils::BindExtractIndex(input.context, *input.children[1]);
+	VariantBindUtils::BindExtractIndex(input.context, input.children[1]);
 	FunctionBinder function_binder(input.context);
 	return function_binder.BindScalarFunction(Identifier::DefaultSchema(), VariantExtractFun::Name,
 	                                          std::move(input.children));

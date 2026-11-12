@@ -40,6 +40,9 @@ public:
 	unique_ptr<BaseStatistics>
 	PropagateExpressionStatistics(unique_ptr<Expression> &expr,
 	                              column_binding_map_t<unique_ptr<BaseStatistics>> column_statistics);
+	//! Whether a fold may drop the expression from the plan, which must not be volatile, nor able to throw inside TRY
+	//! or HAS_ERROR, as TRY would then return a value instead of NULL and HAS_ERROR false instead of true
+	bool CanDropExpression(const Expression &expr) const;
 
 	column_binding_map_t<unique_ptr<BaseStatistics>> GetStatisticsMap() {
 		return std::move(statistics_map);
@@ -182,6 +185,8 @@ private:
 	};
 	//! The map of CTE index -> statistics of its definition
 	unordered_map<TableIndex, CTEStatistics> cte_stats_map;
+	//! The number of TRY and HAS_ERROR expressions around the expression being propagated
+	idx_t try_depth = 0;
 	//! Whether any expression, filter or join condition was removed, leaving columns that may now be unused
 	bool removed_expressions = false;
 	//! Node stats for the current node

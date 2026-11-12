@@ -43,8 +43,8 @@ struct PreparedStatementInfo {
 
 //! A handle to a prepared statement that lives in the client context. The statement itself is prepared through
 //! `PREPARE <name> AS ...` and executed through `EXECUTE <name>(...)` - this class only holds the name.
-//! A statement that expands into several, or one prepared while CONNECT-ed, is not prepared in the client context,
-//! and each execution submits it anew.
+//! A statement that expands into several, one whose expansion read a setting or a variable, or one prepared while
+//! CONNECT-ed, is not prepared in the client context, and each execution submits it anew.
 class PreparedStatement {
 public:
 	//! Create a handle to the prepared statement with the given name in the client context
@@ -94,6 +94,8 @@ public:
 	DUCKDB_API case_insensitive_map_t<LogicalType> GetExpectedParameterTypes() const;
 	//! Whether the result names, types and properties are known before execution; runs nothing
 	DUCKDB_API bool MetadataAvailable() const;
+	//! Whether each execution submits the statement as written, instead of an EXECUTE of the prepared statement
+	DUCKDB_API bool SubmitsAsWritten() const;
 
 	//! Non-blocking. Submits the prepared statement with the given arguments and returns its handle
 	template <typename... ARGS>

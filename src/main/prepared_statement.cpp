@@ -112,6 +112,10 @@ bool PreparedStatement::MetadataAvailable() const {
 	return !written_statement && info.properties.bound_all_parameters;
 }
 
+bool PreparedStatement::SubmitsAsWritten() const {
+	return written_statement != nullptr;
+}
+
 unique_ptr<SQLStatement> PreparedStatement::CreateStatement(identifier_map_t<BoundParameterData> &named_values,
                                                             QueryParameters &parameters) const {
 	if (written_statement) {

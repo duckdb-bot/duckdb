@@ -304,6 +304,113 @@ DROP MACRO dep_typed;
 statement ok
 DROP TYPE dep_mood;
 
+# the declared types and the default values of every member are dependencies, the first member's too
+statement ok
+CREATE TYPE first_mood AS ENUM ('ok', 'sad');
+
+statement ok
+CREATE MACRO first_typed(x first_mood) AS 1, (x INTEGER) AS 2;
+
+statement error
+DROP TYPE first_mood;
+----
+<REGEX>:.*depend.*
+
+statement ok
+DROP MACRO first_typed(first_mood);
+
+# the member drop keeps the type
+statement error
+DROP TYPE first_mood;
+----
+<REGEX>:.*depend.*
+
+statement ok
+DROP MACRO first_typed;
+
+# a declared return type
+statement ok
+CREATE MACRO returns_typed(x) RETURNS first_mood AS x;
+
+statement error
+DROP TYPE first_mood;
+----
+<REGEX>:.*depend.*
+
+statement ok
+DROP MACRO returns_typed;
+
+# the declared type of a table macro parameter
+statement ok
+CREATE MACRO typed_table(x first_mood) AS TABLE SELECT 1 AS i;
+
+statement error
+DROP TYPE first_mood;
+----
+<REGEX>:.*depend.*
+
+statement ok
+DROP MACRO TABLE typed_table;
+
+statement ok
+DROP TYPE first_mood;
+
+# a default value registers what it calls
+statement ok
+CREATE MACRO default_helper() AS 7;
+
+statement ok
+CREATE MACRO with_default(x := default_helper()) AS x;
+
+statement error
+DROP MACRO default_helper;
+----
+<REGEX>:.*depend.*
+
+statement ok
+DROP MACRO with_default;
+
+statement ok
+DROP MACRO default_helper;
+
+# with dependency tracking off nothing is registered
+statement ok
+SET enable_macro_dependencies = false;
+
+statement ok
+CREATE TYPE off_mood AS ENUM ('ok');
+
+statement ok
+CREATE MACRO off_typed(x off_mood) AS 1;
+
+statement ok
+DROP TYPE off_mood;
+
+statement ok
+DROP MACRO off_typed;
+
+statement ok
+SET enable_macro_dependencies = true;
+
+# a type of another catalog is not registered
+statement ok
+ATTACH ':memory:' AS other_types;
+
+statement ok
+CREATE TYPE other_types.other_mood AS ENUM ('ok');
+
+statement ok
+CREATE MACRO other_typed(x other_types.other_mood) AS 1;
+
+statement ok
+DROP TYPE other_types.other_mood;
+
+statement ok
+DROP MACRO other_typed;
+
+statement ok
+DETACH other_types;
+
 # the entry dependencies re-root through COPY FROM DATABASE and survive a member drop on the copy
 statement ok
 ATTACH ':memory:' AS cpd_src;

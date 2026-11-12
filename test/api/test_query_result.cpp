@@ -13,7 +13,7 @@
 #include "duckdb/main/prepared_statement_data.hpp"
 #include "duckdb/main/query_result_stream.hpp"
 #include "duckdb/logging/log_manager.hpp"
-#include "duckdb/logging/log_storage.hpp"
+#include "duckdb/logging/log_sink.hpp"
 #include "duckdb/logging/log_type.hpp"
 #include "duckdb/main/profiler/metrics.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
@@ -1163,8 +1163,8 @@ TEST_CASE("Every state ends a query when the end of one fails", "[api][query_res
 	REQUIRE(StringUtil::Contains(invalidated->GetError(), "database has been invalidated"));
 }
 
-//! A log storage whose flush fails once, at the flush it is asked to fail, and that can fail on the profiler metrics
-class FailingLogStorage : public LogStorage {
+//! A log sink whose flush fails once, at the flush it is asked to fail, and that can fail on the profiler metrics
+class FailingLogSink : public LogSink {
 public:
 	void WriteLogEntry(timestamp_t timestamp, LogLevel level, const string &log_type, const string &log_message,
 	                   const RegisteredLoggingContext &context) override {
@@ -1185,8 +1185,8 @@ public:
 	bool IsEnabled(LoggingTargetTable table) override {
 		return table == LoggingTargetTable::ALL_LOGS;
 	}
-	const string GetStorageName() override {
-		return "FailingLogStorage";
+	const string GetSinkName() override {
+		return "FailingLogSink";
 	}
 
 	idx_t flushes = 0;
@@ -1243,20 +1243,20 @@ TEST_CASE("Every state ends a query when an end error is internal or the log fai
 	Connection con(db);
 	auto state = make_shared_ptr<CountingQueryState>();
 	con.context->GetContext().GetRegisteredState().Insert("counting_query_state", state);
-	auto log_storage = make_shared_ptr<FailingLogStorage>();
-	duckdb::shared_ptr<LogStorage> base_storage = log_storage;
-	db.instance->GetLogManager().RegisterLogStorage("failing_log_storage", base_storage);
+	auto log_sink = make_shared_ptr<FailingLogSink>();
+	duckdb::shared_ptr<LogSink> base_sink = log_sink;
+	db.instance->GetLogManager().RegisterLogSink("failing_log_sink", base_sink);
 	REQUIRE_NO_FAIL(con.Query("SET enable_logging = true"));
-	REQUIRE_NO_FAIL(con.Query("SET logging_storage = 'failing_log_storage'"));
+	REQUIRE_NO_FAIL(con.Query("SET logging_sink = 'failing_log_sink'"));
 	// a query flushes the log when it begins and when it ends, and the second flush fails
-	log_storage->fail_at_flush = log_storage->flushes + 2;
+	log_sink->fail_at_flush = log_sink->flushes + 2;
 	string flush_error;
 	try {
 		con.Query("SELECT 42");
 	} catch (std::exception &ex) {
 		flush_error = ex.what();
 	}
-	REQUIRE(log_storage->flushes == log_storage->fail_at_flush);
+	REQUIRE(log_sink->flushes == log_sink->fail_at_flush);
 	REQUIRE(StringUtil::Contains(flush_error, "log flush failed"));
 	REQUIRE(state->begins == state->ends);
 	auto next = con.Query("SELECT 42");
@@ -1268,14 +1268,14 @@ TEST_CASE("An internal error of the profiler at the end of a query invalidates t
 	Connection con(db);
 	auto state = make_shared_ptr<CountingQueryState>();
 	con.context->GetContext().GetRegisteredState().Insert("counting_query_state", state);
-	auto log_storage = make_shared_ptr<FailingLogStorage>();
-	duckdb::shared_ptr<LogStorage> base_storage = log_storage;
-	db.instance->GetLogManager().RegisterLogStorage("failing_log_storage", base_storage);
+	auto log_sink = make_shared_ptr<FailingLogSink>();
+	duckdb::shared_ptr<LogSink> base_sink = log_sink;
+	db.instance->GetLogManager().RegisterLogSink("failing_log_sink", base_sink);
 	REQUIRE_NO_FAIL(con.Query("SET enable_logging = true"));
-	REQUIRE_NO_FAIL(con.Query("SET logging_storage = 'failing_log_storage'"));
+	REQUIRE_NO_FAIL(con.Query("SET logging_sink = 'failing_log_sink'"));
 	REQUIRE_NO_FAIL(con.Query("PRAGMA enable_profiling = 'no_output'"));
 	// the profiler logs its metrics when the query ends
-	log_storage->fail_metrics = true;
+	log_sink->fail_metrics = true;
 	auto failed = con.Query("SELECT 42");
 	REQUIRE(failed->HasError());
 	REQUIRE(failed->GetErrorType() == ExceptionType::INTERNAL);

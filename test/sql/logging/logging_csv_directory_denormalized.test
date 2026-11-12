@@ -127,7 +127,7 @@ EXECUTE csv_normalize;
 Can not set path to
 
 query I
-SELECT current_setting('logging_storage');
+SELECT current_setting('logging_sink');
 ----
 memory
 

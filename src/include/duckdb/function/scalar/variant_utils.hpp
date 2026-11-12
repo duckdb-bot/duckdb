@@ -165,6 +165,8 @@ struct VariantUtils {
 
 struct VariantBindUtils {
 	DUCKDB_API static unique_ptr<FunctionData> VariantPathBind(BindScalarFunctionInput &input);
+	//! Reads an integer constant subscript of a VARIANT as the UINTEGER index of variant_extract
+	DUCKDB_API static void BindExtractIndex(ClientContext &context, unique_ptr<Expression> &index);
 };
 
 } // namespace duckdb

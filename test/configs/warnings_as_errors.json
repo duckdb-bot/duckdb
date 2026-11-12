@@ -50,6 +50,7 @@
         "test/sql/function/operator/test_division_by_zero.test",
         "test/sql/function/string/regex_operators.test",
         "test/sql/function/string/regex_operators_v1_5_view.test",
+        "test/sql/function/string/test_array_extract.test",
         "test/sql/join/delim_join_reuse.test",
         "test/sql/join/non_inner_decorrelation_regressions.test",
         "test/sql/optimizer/divide_zonemap_pruning.test",

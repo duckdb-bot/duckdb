@@ -856,6 +856,13 @@ unique_ptr<QueryResult> ClientContext::SubmitStatement(ClientContextLock &lock, 
 			result = std::move(handle);
 		}
 	} catch (std::exception &ex) {
+		if (handle) { // NOLINT(bugprone-use-after-move)
+			// A failed query never hands the handle out. It is forgotten and released before the error data allocates,
+			// so that a failure there never destroys it holding the context lock, and the next statement aborts the
+			// query when this call cannot end it
+			ForgetResultInternal(lock, *handle);
+			handle->context.reset();
+		}
 		ErrorData error(ex);
 		if (!ErrorInvalidatesQueryTransaction(error.Type())) {
 			// standard exceptions do not invalidate the current transaction

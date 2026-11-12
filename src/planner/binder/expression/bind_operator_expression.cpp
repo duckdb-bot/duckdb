@@ -113,14 +113,14 @@ BindResult ExpressionBinder::BindOperatorAsFunction(OperatorExpression &op, cons
 	}
 	FunctionExpression lookup(function_name, vector<unique_ptr<ParsedExpression>>());
 	lookup.SetQueryLocation(op.GetQueryLocation());
-	auto &func = BindFunction(lookup);
-	if (func.type != CatalogType::SCALAR_FUNCTION_ENTRY) {
+	auto func = BindFunction(lookup);
+	if (!func || func->type != CatalogType::SCALAR_FUNCTION_ENTRY) {
 		throw BinderException(op, "%s is not a scalar function", function_name.GetIdentifierName());
 	}
 
 	ErrorData error;
 	FunctionBinder function_binder(binder);
-	auto result = function_binder.BindScalarFunction(func.Cast<ScalarFunctionCatalogEntry>(), std::move(children),
+	auto result = function_binder.BindScalarFunction(func->Cast<ScalarFunctionCatalogEntry>(), std::move(children),
 	                                                 error, false, &binder);
 	if (!result) {
 		error.AddQueryLocation(op);
@@ -210,7 +210,8 @@ BindResult ExpressionBinder::BindExpression(OperatorExpression &op, idx_t depth)
 	string function_name;
 	switch (op.GetExpressionType()) {
 	case ExpressionType::OPERATOR_UNPACK:
-		return BindResult("UNPACK not allowed here, should have been resolved earlier");
+		// an UNPACK of a star is resolved when the stars are expanded, so this one wraps something else
+		return BindResult("UNPACK can only be used in combination with a STAR (*) expression or COLUMNS expression");
 	case ExpressionType::ARRAY_EXTRACT: {
 		auto &b_exp = *children[0];
 		const auto &b_exp_type = b_exp.GetReturnType();

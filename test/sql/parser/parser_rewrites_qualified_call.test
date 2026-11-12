@@ -17,6 +17,19 @@ SELECT col.date(), col.try(), col.construct_array('x') FROM t ORDER BY ALL;
 2020-01-01	2020-01-01	[2020-01-01, x]
 NULL	NULL	[NULL, x]
 
+# the alias stays with the call, and a WHERE clause binds it without the select list's qualification pass
+query I
+SELECT col.ifnull('b') AS r FROM t WHERE col.coalesce('b') <> 'c' ORDER BY r;
+----
+2020-01-01
+b
+
+# the whole qualification is the column, a struct field included, as for t.s.y.lower()
+query II
+SELECT t.s.x.ifnull('z'), t.s.y.lower() FROM (SELECT {'x': NULL::VARCHAR, 'y': 'Q'} AS s, 'W' AS x, 'W' AS y) t;
+----
+z	q
+
 # the column counts towards the arguments
 statement error
 SELECT col.ifnull('x', 'y') FROM t;
@@ -64,7 +77,13 @@ SELECT [main.unpack(COLUMNS(*))] FROM (SELECT 1 AS a, 2 AS b);
 ----
 [1, 2]
 
-# a coalesce qualified with main is looked up in the catalog as before
+# a coalesce qualified with main is looked up in the catalog as before, and without such a macro the qualification is
+# dropped like that of the other names, a catalog before it included
+query II
+SELECT system.main.coalesce(NULL, 5), mem_db.main.coalesce(NULL, 5);
+----
+5	5
+
 statement ok
 CREATE MACRO mem_db.main.coalesce(a, b) AS 777;
 
@@ -73,8 +92,13 @@ SELECT mem_db.main.coalesce(NULL, 5);
 ----
 777
 
-# any other qualification is the column the function is called on, also when a schema or a database of that name
-# exists
+# a qualification that names a database is a catalog qualification, as for mem_db.lower()
+statement error
+SELECT mem_db.ifnull(2) FROM (SELECT 1 AS mem_db);
+----
+does not exist
+
+# a schema without such a function leaves the qualification to be the column, as for s.lower()
 statement ok
 CREATE SCHEMA s;
 
@@ -83,11 +107,6 @@ SELECT s.ifnull('z'), s.lower() FROM (VALUES (NULL), ('A')) v(s) ORDER BY ALL;
 ----
 A	a
 z	NULL
-
-query I
-SELECT mem_db.ifnull(2) FROM (SELECT 1 AS mem_db);
-----
-1
 
 statement error
 SELECT s.ifnull(NULL, 'z');
@@ -105,3 +124,144 @@ query II
 SELECT or_z(NULL), or_z('q');
 ----
 z	q
+
+# a schema-qualified call of a user macro named like a rewritten function is a catalog lookup, and the macro wins
+statement ok
+CREATE MACRO s.coalesce(a, b) AS a + b + 100;
+
+query I
+SELECT s.coalesce(1, 2);
+----
+103
+
+statement ok
+CREATE MACRO s.ifnull(a, b) AS a + b + 200;
+
+query I
+SELECT s.ifnull(3, 4);
+----
+207
+
+statement ok
+CREATE MACRO s.date(x) AS 'macro ' || x;
+
+statement ok
+CREATE MACRO s.try(x) AS x + 300;
+
+statement ok
+CREATE MACRO s.construct_array(a, b) AS a * b;
+
+statement ok
+CREATE MACRO s.unpack(x) AS x + 400;
+
+query IIII
+SELECT s.date('2020-01-01'), s.try(1), s.construct_array(2, 3), s.unpack(1);
+----
+macro 2020-01-01	301	6	401
+
+# the catalog is looked up first, so the macro also wins over a column of the schema's name, as s.lower() would
+query I
+SELECT s.ifnull(3, 4) FROM (SELECT 1 AS s);
+----
+207
+
+# without a macro of the name, the main qualification of a coalesce call is dropped like that of the other names, so a
+# column named main is not the value it is called on
+query II
+SELECT main.coalesce(NULL, 5), main.ifnull(NULL, 6);
+----
+5	6
+
+query II
+SELECT main.coalesce(NULL, 5), main.ifnull(NULL, 6) FROM (SELECT 99 AS main);
+----
+5	6
+
+# a WHERE clause binds the call without the select list's qualification pass
+query I
+SELECT main FROM (SELECT 99 AS main) t WHERE main.coalesce(NULL, 5) = 5;
+----
+99
+
+statement error
+SELECT main.coalesce();
+----
+COALESCE requires at least one argument
+
+# qualified with main or quoted, the rewrite outranks a macro of the name, as before, except for coalesce whose
+# function call spelling is a catalog lookup
+statement ok
+CREATE MACRO main.ifnull(a, b) AS 500;
+
+statement ok
+CREATE MACRO main.try(x) AS 501;
+
+statement ok
+CREATE MACRO main.date(x) AS 502;
+
+statement ok
+CREATE MACRO main.construct_array(a, b) AS 503;
+
+statement ok
+CREATE MACRO main.unpack(x) AS 504;
+
+statement ok
+CREATE MACRO main.coalesce(a, b) AS 505;
+
+query IIII
+SELECT main.ifnull(NULL, 'z'), main.try('x'::INTEGER), main.date('2020-01-01'), main.construct_array(1, 2);
+----
+z	NULL	2020-01-01	[1, 2]
+
+query IIII
+SELECT "ifnull"(NULL, 'z'), "try"('x'::INTEGER), "date"('2020-01-01'), "construct_array"(1, 2);
+----
+z	NULL	2020-01-01	[1, 2]
+
+query II
+SELECT [main.unpack(COLUMNS(*))], ["unpack"(COLUMNS(*))] FROM (SELECT 1 AS a, 2 AS b);
+----
+[1, 2]	[1, 2]
+
+query II
+SELECT main.coalesce(NULL, 5), "coalesce"(NULL, 5);
+----
+505	505
+
+# the macro of the default catalog is not that of another catalog's main schema
+query I
+SELECT system.main.coalesce(NULL, 5);
+----
+5
+
+# a call on a column takes the rewrite like the plain and the parenthesized forms, those macros notwithstanding
+query III
+SELECT col.ifnull('b'), (col).ifnull('b'), ifnull(col, 'b') FROM t ORDER BY ALL;
+----
+2020-01-01	2020-01-01	2020-01-01
+b	b	b
+
+# a lambda parameter is the column the function is called on, also next to a column of its name, as for x.lower()
+query II
+SELECT list_transform(['a', NULL], lambda x: x.ifnull('z')), list_transform(['A'], lambda x: x.lower()) FROM (SELECT 'outer' AS x) t;
+----
+[a, z]	[a]
+
+query I
+SELECT x FROM (SELECT 'outer' AS x) t WHERE list_transform(['a', NULL], lambda x: x.ifnull('z')) = ['a', 'z'] AND list_transform(['A'], lambda x: x.lower()) = ['a'];
+----
+outer
+
+# an arrow lambda's parameter is left for the lambda too, although an arrow is only known to be a lambda once it is bound
+statement ok
+SET lambda_syntax='ENABLE_SINGLE_ARROW'
+
+query II
+SELECT list_transform(['a', NULL], x -> x.ifnull('z')), list_transform(['A'], x -> x.lower()) FROM (SELECT 'outer' AS x) t;
+----
+[a, z]	[a]
+
+query I
+SELECT x FROM (SELECT 'outer' AS x) t WHERE list_transform(['a', NULL], x -> x.ifnull('z')) = ['a', 'z'] AND list_transform(['A'], x -> x.lower()) = ['a'];
+----
+outer

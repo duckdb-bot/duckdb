@@ -10,6 +10,7 @@
 #include "duckdb/parser/expression/function_expression.hpp"
 #include "duckdb/parser/expression/lambda_expression.hpp"
 #include "duckdb/parser/expression/operator_expression.hpp"
+#include "duckdb/parser/parser_function_rewrite.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
@@ -260,27 +261,31 @@ BindResult ExpressionBinder::TryBindLambdaOrJson(FunctionExpression &function, i
 	                  json_bind_result.error.RawMessage());
 }
 
-CatalogEntry &ExpressionBinder::BindFunction(FunctionExpression &function) {
+optional_ptr<CatalogEntry> ExpressionBinder::BindFunction(FunctionExpression &function) {
 	QueryErrorContext error_context(function.GetQueryLocation());
 
 	ColumnQualifier qualifier(binder, lambda_bindings);
 	auto func = qualifier.QualifyFunction(function);
-	if (!func) {
-		// function was not found - check if we this is a table function (to throw a more helpful error message)
-		EntryLookupInfo table_function_lookup(CatalogType::TABLE_FUNCTION_ENTRY, function.GetQualifiedName(),
-		                                      error_context);
-		auto table_func = GetCatalogEntry(table_function_lookup, OnEntryNotFound::RETURN_NULL);
-		if (table_func) {
-			throw BinderException(function,
-			                      "Function %s is a table function but it was used as a scalar function. This "
-			                      "function has to be called in a FROM clause (similar to a table).",
-			                      function.FunctionName());
-		}
-		// not a table function - rebind to throw an error
-		EntryLookupInfo function_lookup(CatalogType::SCALAR_FUNCTION_ENTRY, function.GetQualifiedName(), error_context);
-		func = GetCatalogEntry(function_lookup, OnEntryNotFound::THROW_EXCEPTION);
+	if (func) {
+		return func;
 	}
-	return *func;
+	if (ParserFunctionRewrite::RewritesCall(function)) {
+		// a name the parser rewrites into a syntax node, which the caller binds instead
+		return nullptr;
+	}
+	// function was not found - check if we this is a table function (to throw a more helpful error message)
+	EntryLookupInfo table_function_lookup(CatalogType::TABLE_FUNCTION_ENTRY, function.GetQualifiedName(),
+	                                      error_context);
+	auto table_func = GetCatalogEntry(table_function_lookup, OnEntryNotFound::RETURN_NULL);
+	if (table_func) {
+		throw BinderException(function,
+		                      "Function %s is a table function but it was used as a scalar function. This "
+		                      "function has to be called in a FROM clause (similar to a table).",
+		                      function.FunctionName());
+	}
+	// not a table function - rebind to throw an error
+	EntryLookupInfo function_lookup(CatalogType::SCALAR_FUNCTION_ENTRY, function.GetQualifiedName(), error_context);
+	return GetCatalogEntry(function_lookup, OnEntryNotFound::THROW_EXCEPTION);
 }
 
 //! Rewrite a call that resolved to the built-in has_error into the HAS_ERROR operator and bind that.
@@ -305,7 +310,14 @@ BindResult ExpressionBinder::BindHasErrorFunction(FunctionExpression &function, 
 
 BindResult ExpressionBinder::BindExpression(FunctionExpression &function, idx_t depth,
                                             unique_ptr<ParsedExpression> &expr_ptr) {
-	auto &func = BindFunction(function);
+	auto func_entry = BindFunction(function);
+	if (!func_entry) {
+		// x.ifnull(y) reaches the binder as a call in schema x. Without such a function in the catalog, x is the
+		// column the function is called on, made its first argument by BindFunction, and the parser's rewrite applies
+		expr_ptr = ParserFunctionRewrite::RewriteMethodCall(function);
+		return BindExpression(expr_ptr, depth);
+	}
+	auto &func = *func_entry;
 
 	switch (func.type) {
 	case CatalogType::AGGREGATE_FUNCTION_ENTRY:

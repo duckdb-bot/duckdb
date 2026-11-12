@@ -1,5 +1,6 @@
 
 #include "duckdb/optimizer/rule/conjunction_simplification.hpp"
+#include "duckdb/optimizer/expression_rewriter.hpp"
 
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/planner/expression/bound_conjunction_expression.hpp"
@@ -31,6 +32,16 @@ unique_ptr<Expression> ConjunctionSimplificationRule::RemoveExpression(BoundConj
 	return nullptr;
 }
 
+//! Replacing a conjunction with a constant drops its other children
+static bool CanReplaceWithConstant(const BoundConjunctionExpression &conjunction, const ExpressionRewriter &rewriter) {
+	for (auto &child : conjunction.GetChildren()) {
+		if (!rewriter.CanDropExpression(*child)) {
+			return false;
+		}
+	}
+	return true;
+}
+
 unique_ptr<Expression> ConjunctionSimplificationRule::Apply(LogicalOperator &op,
                                                             vector<reference<Expression>> &bindings, bool &changes_made,
                                                             bool is_root) {
@@ -57,6 +68,9 @@ unique_ptr<Expression> ConjunctionSimplificationRule::Apply(LogicalOperator &op,
 	if (conjunction.GetExpressionType() == ExpressionType::CONJUNCTION_AND) {
 		if (!BooleanValue::Get(constant_value)) {
 			// FALSE in AND, result of expression is false
+			if (!CanReplaceWithConstant(conjunction, rewriter)) {
+				return nullptr;
+			}
 			return make_uniq<BoundConstantExpression>(Value::BOOLEAN(false));
 		} else {
 			// TRUE in AND, remove the expression from the set
@@ -69,6 +83,9 @@ unique_ptr<Expression> ConjunctionSimplificationRule::Apply(LogicalOperator &op,
 			return RemoveExpression(conjunction, constant_expr);
 		} else {
 			// TRUE in OR, result of expression is true
+			if (!CanReplaceWithConstant(conjunction, rewriter)) {
+				return nullptr;
+			}
 			return make_uniq<BoundConstantExpression>(Value::BOOLEAN(true));
 		}
 	}

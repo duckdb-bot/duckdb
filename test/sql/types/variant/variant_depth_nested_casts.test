@@ -1,0 +1,69 @@
+# name: test/sql/types/variant/variant_depth_nested_casts.test
+# description: Casts of nested types holding a VARIANT nested too deeply raise the depth error of the VARIANT
+# group: [variant]
+
+# arrays nested 126 and 127 levels deep, which still convert
+statement ok
+CREATE VIEW t AS WITH RECURSIVE r(d, v) AS (
+	SELECT 1, [1]::VARIANT
+	UNION ALL
+	SELECT d + 1, [v]::VARIANT FROM r WHERE d < 127
+)
+SELECT d, v FROM r WHERE d IN (126, 127);
+
+# one more level, added in the expression that casts it
+statement ok
+CREATE MACRO deeper(x) AS [x]::VARIANT;
+
+query I
+SELECT length([deeper(v)]::VARCHAR) FROM t WHERE d = 126;
+----
+257
+
+# the VARIANT itself, and each nested type holding it
+foreach container deeper(v) [deeper(v)] [deeper(v)]::VARIANT[1] {'a':deeper(v)} row(deeper(v)) MAP{'k':deeper(v)} union_value(u:=deeper(v))
+
+statement error
+SELECT {container}::VARCHAR FROM t WHERE d = 127;
+----
+Invalid Input Error: VARIANT exceeds maximum recursion depth of 128
+
+statement error
+SELECT TRY_CAST({container} AS VARCHAR) FROM t WHERE d = 127;
+----
+Invalid Input Error: VARIANT exceeds maximum recursion depth of 128
+
+query II
+SELECT d, TRY({container}::VARCHAR) IS NULL FROM t ORDER BY d;
+----
+126	false
+127	true
+
+endloop
+
+statement error
+SELECT TRY_CAST([deeper(v)] AS INTEGER[]) FROM t WHERE d = 127;
+----
+Invalid Input Error: VARIANT exceeds maximum recursion depth of 128
+
+statement error
+SELECT TRY_CAST({'a': deeper(v)} AS STRUCT(a VARCHAR)) FROM t WHERE d = 127;
+----
+Invalid Input Error: VARIANT exceeds maximum recursion depth of 128
+
+statement error
+SELECT TRY_CAST(MAP {'k': deeper(v)} AS MAP(VARCHAR, VARCHAR)) FROM t WHERE d = 127;
+----
+Invalid Input Error: VARIANT exceeds maximum recursion depth of 128
+
+# an implicit cast to VARCHAR
+statement error
+SELECT format('{}', [deeper(v)]) FROM t WHERE d = 127;
+----
+Invalid Input Error: VARIANT exceeds maximum recursion depth of 128
+
+query I
+SELECT d FROM t ORDER BY d;
+----
+126
+127

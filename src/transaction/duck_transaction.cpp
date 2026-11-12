@@ -231,21 +231,29 @@ static ErrorData CommitStepError(const std::exception &ex, ErrorData &prepared) 
 //! the commit ran out of memory, and the database is invalidated with as much of it as could be built then
 static void InvalidateAfterFailedRevert(AttachedDatabase &db, const ErrorData &commit_error,
                                         optional_ptr<const std::exception> revert_error) noexcept {
-	// the message grows piece by piece, so that the pieces built before an allocation fails are kept
-	string message;
+	// the texts grow piece by piece, so that the pieces built before an allocation fails are kept
+	string cause;
+	string error;
 	try {
-		message = "Failed to revert transaction commit";
-		message += revert_error ? ", database is in an undefined state. "
-		                        : " (unknown error), database is in an undefined state. ";
-		message += "Original commit error: ";
-		message += commit_error.RawMessage();
+		cause = "reverting a failed commit failed, leaving it in an undefined state";
+		error = "commit error: ";
+		error += commit_error.RawMessage();
+		error += ". RevertCommit error: ";
 		if (revert_error) {
-			message += ". RevertCommit error: ";
-			message += ErrorData(*revert_error).RawMessage();
+			error += ErrorData(*revert_error).RawMessage();
+		} else {
+			error += "unknown error";
 		}
 	} catch (...) { // NOLINT
 	}
-	ValidChecker::Invalidate(db.GetDatabase(), std::move(message));
+	try {
+		// scoped to this database when it can be detached, otherwise the whole instance is invalidated
+		db.Invalidate(cause, error);
+	} catch (...) { // NOLINT
+		// formatting the scoped message allocates too, and when that fails the instance is invalidated with the text
+		// built so far, which allocates nothing
+		ValidChecker::Invalidate(db.GetDatabase(), std::move(error));
+	}
 }
 
 ErrorData DuckTransaction::PreFlushOptimisticBlocks(AttachedDatabase &db) noexcept {

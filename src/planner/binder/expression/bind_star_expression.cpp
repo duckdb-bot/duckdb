@@ -344,9 +344,16 @@ static unique_ptr<ParsedExpression> AnyColumnNotNull(vector<unique_ptr<ParsedExp
 	for (auto &column : columns) {
 		checks.push_back(make_uniq<OperatorExpression>(ExpressionType::OPERATOR_IS_NOT_NULL, std::move(column)));
 	}
+	unique_ptr<ParsedExpression> any_not_null;
+	if (checks.size() == 1) {
+		// a conjunction needs at least two children
+		any_not_null = std::move(checks[0]);
+	} else {
+		any_not_null = make_uniq<ConjunctionExpression>(ExpressionType::CONJUNCTION_OR, std::move(checks));
+	}
 	auto case_expr = make_uniq<CaseExpression>();
 	CaseCheck case_check;
-	case_check.when_expr = make_uniq<ConjunctionExpression>(ExpressionType::CONJUNCTION_OR, std::move(checks));
+	case_check.when_expr = std::move(any_not_null);
 	case_check.then_expr = ConstantExpression::FromValue(Value::BIGINT(1));
 	case_expr->CaseChecksMutable().push_back(std::move(case_check));
 	case_expr->ElseMutable() = ConstantExpression::FromValue(Value());

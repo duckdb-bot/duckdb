@@ -63,7 +63,7 @@ physical_plan	<REGEX>:.*Filter.*Expression: k1 = k0.*
 query II
 EXPLAIN SELECT count(*) FROM keys JOIN wide ON keys.k = wide.k0 AND keys.k IS NOT DISTINCT FROM wide.k1 AND keys.k IS NOT DISTINCT FROM wide.k2 AND keys.k IS NOT DISTINCT FROM wide.k3 AND keys.k IS NOT DISTINCT FROM wide.k4
 ----
-physical_plan	<!REGEX>:.*(k2 =|= k2).*
+physical_plan	<!REGEX>:.*(k[234] = k[0-4]|k[0-4] = k[234]).*
 
 query I
 SELECT count(*) FROM keys JOIN wide ON keys.k = wide.k0 AND keys.k IS NOT DISTINCT FROM wide.k1 AND keys.k IS NOT DISTINCT FROM wide.k2 AND keys.k IS NOT DISTINCT FROM wide.k3 AND keys.k IS NOT DISTINCT FROM wide.k4

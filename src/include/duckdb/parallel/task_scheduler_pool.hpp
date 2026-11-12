@@ -34,6 +34,8 @@ public:
 #ifndef DUCKDB_NO_THREADS
 	void Wait();
 	bool Wait(int64_t timeout_usecs);
+	//! Runs the calling thread on the launch CPUs of the pool, if it has them
+	void RunOnLaunchCPUs();
 #endif
 
 private:
@@ -48,6 +50,8 @@ private:
 	atomic<idx_t> requested_thread_count;
 	//! The amount of threads currently running
 	atomic<idx_t> current_thread_count;
+	//! The CPUs of the thread that created the pool, which async threads run on wherever they are launched from
+	vector<int> launch_cpus;
 #ifndef DUCKDB_NO_THREADS
 	//! Semaphore to signal threads in this pool to wake up and execute a task
 	unique_ptr<LightWeightSemaphoreWrapper> semaphore;

@@ -262,8 +262,8 @@ public:
 	using Visitor = VariantVisitor<VariantVarcharSerializer>;
 
 	explicit VariantVarcharSerializer(const UnifiedVariantVectorData &variant)
-	    : variant(variant), object_entries(VariantUtils::MAX_NESTING_DEPTH),
-	      first_entries(VariantUtils::MAX_NESTING_DEPTH), other_entries(VariantUtils::MAX_NESTING_DEPTH) {
+	    : variant(variant), object_entries(Visitor::MAX_RECURSION_DEPTH), first_entries(Visitor::MAX_RECURSION_DEPTH),
+	      other_entries(Visitor::MAX_RECURSION_DEPTH) {
 	}
 
 	bool Serialize(idx_t row, uint32_t values_index) {
@@ -311,7 +311,7 @@ private:
 	//! A LIST casts its elements to the type of the first one, which renames STRUCT fields whose names only differ in
 	//! case. Returns true if that can rename a field of `other`.
 	bool NamesDifferInCase(idx_t row, uint32_t first, uint32_t other, idx_t depth) {
-		if (depth >= VariantUtils::MAX_NESTING_DEPTH) {
+		if (depth >= Visitor::MAX_RECURSION_DEPTH) {
 			return true;
 		}
 		auto first_type = variant.GetTypeId(row, first);

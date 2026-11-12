@@ -105,7 +105,7 @@ struct VariantStatsVisitor {
 	}
 
 	static bool ChildrenTooDeep(const VariantNestedData &nested_data, idx_t depth, VariantShreddingStats &stats) {
-		if (!nested_data.child_count || depth + 1 < VariantUtils::MAX_NESTING_DEPTH) {
+		if (!nested_data.child_count || depth + 1 < VariantVisitor<VariantStatsVisitor>::MAX_RECURSION_DEPTH) {
 			return false;
 		}
 		stats.SetTooDeep();

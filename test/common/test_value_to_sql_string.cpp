@@ -117,11 +117,30 @@ TEST_CASE("Value::ToSQLString round-trips typed VARIANT payloads", "[api][value_
 	                                 "{'it''s': 7::SMALLINT, 'nested': ['x',NULL]}",
 	                                 "{'slash\\key': {'🦆': 12.34::DECIMAL(9,2)}}",
 	                                 "{'items': [1::SMALLINT::VARIANT, {'key': 'value'}::VARIANT]}"};
+	// objects with an empty key, which no struct literal can write
+	duckdb::vector<string> empty_key_payloads {
+	    "(SELECT variant_group_object(k, v) FROM (VALUES ('', 1::SMALLINT::VARIANT)) t(k, v))",
+	    "(SELECT variant_group_object(k, v) FROM (VALUES ('', 1::SMALLINT::VARIANT), ('a', 'x'::VARIANT), ('b', "
+	    "NULL::VARIANT)) t(k, v))",
+	    "{'a': (SELECT variant_group_object(k, v) FROM (VALUES ('', [2::TINYINT]::VARIANT)) t(k, v))}",
+	    "[(SELECT variant_group_object(k, v) FROM (VALUES ('', 'it''s'::VARIANT)) t(k, v)), NULL::VARIANT]",
+	    "(SELECT variant_group_object(k, v) FROM (VALUES ('', (SELECT variant_group_object(k, v) FROM (VALUES ('', "
+	    "3::VARIANT)) t(k, v)))) t(k, v))"};
+	payloads.insert(payloads.end(), empty_key_payloads.begin(), empty_key_payloads.end());
+	// the values under an empty key keep their types, also when a macro shadows the aggregate that builds the object
+	auto flat = EvalScalar(con, "(" + empty_key_payloads[0] + ")::VARIANT").ToSQLString();
+	auto nested = EvalScalar(con, "(" + empty_key_payloads[2] + ")::VARIANT").ToSQLString();
+	REQUIRE_NO_FAIL(con.Query("CREATE MACRO variant_group_object(k, v) AS NULL::VARIANT"));
+	REQUIRE(EvalScalar(con, "variant_typeof(variant_extract(" + flat + ", ''))") == Value("INT16"));
+	REQUIRE(EvalScalar(con, "variant_typeof(variant_extract(variant_extract(variant_extract(" + nested +
+	                            ", 'a'), ''), 1))") == Value("INT8"));
+	REQUIRE_NO_FAIL(con.Query("DROP MACRO variant_group_object"));
 	for (auto &payload : payloads) {
 		INFO(payload);
 		auto expression = "(" + payload + ")::VARIANT";
 		auto original = EvalScalar(con, expression);
 		auto rendered = original.ToSQLString();
+		INFO(rendered);
 		auto rebound = EvalScalar(con, rendered);
 		REQUIRE(rebound.type() == original.type());
 		REQUIRE(EvalScalar(con, "(" + expression + ") IS NOT DISTINCT FROM (" + rendered + ")") ==

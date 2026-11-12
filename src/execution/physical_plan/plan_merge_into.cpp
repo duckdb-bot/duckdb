@@ -73,6 +73,7 @@ unique_ptr<MergeIntoOperator> PlanMergeIntoAction(ClientContext &context, Logica
 		                                          /*capture_old_rows=*/false, /*old_row_columns=*/vector<idx_t>());
 		auto &cast_update = result->op->Cast<PhysicalUpdate>();
 		cast_update.update_is_del_and_insert = action.update_is_del_and_insert;
+		cast_update.returning_only_column_count = action.returning_only_column_count;
 		result->op->children.push_back(action_input);
 		break;
 	}
@@ -243,6 +244,7 @@ static unique_ptr<MergeIntoOperator> PlanGenericMergeIntoAction(ClientContext &c
 		update.columns = std::move(action.columns);
 		update.expressions = std::move(update_expressions);
 		update.update_is_del_and_insert = action.update_is_del_and_insert;
+		update.returning_only_column_count = action.returning_only_column_count;
 		update.bound_constraints = CopyBoundConstraints(op);
 		for (auto &def : op.bound_defaults) {
 			update.bound_defaults.push_back(def->Copy());

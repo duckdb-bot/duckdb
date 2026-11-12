@@ -39,6 +39,8 @@ public:
 	vector<unique_ptr<Expression>> bound_defaults;
 	vector<unique_ptr<BoundConstraint>> bound_constraints;
 	bool update_is_del_and_insert;
+	//! The number of trailing columns only read for the returned rows, which an in-place update does not write
+	idx_t returning_only_column_count = 0;
 
 public:
 	void Serialize(Serializer &serializer) const override;

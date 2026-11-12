@@ -8,6 +8,11 @@ SelectBinder::SelectBinder(Binder &binder, ClientContext &context, BoundSelectNo
     : BaseSelectBinder(binder, context, node) {
 }
 
+bool SelectBinder::CanBindMacroArgumentsOnce() const {
+	// an argument that matches a group binds to it in some places only
+	return node.bind_state.group_map.empty() && node.bind_state.group_alias_map.empty();
+}
+
 bool SelectBinder::TryResolveAliasReference(ColumnRefExpression &colref, idx_t depth, bool root_expression,
                                             BindResult &result, unique_ptr<ParsedExpression> &expr_ptr) {
 	// must be a qualified alias.<name>

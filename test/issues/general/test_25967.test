@@ -1,10 +1,10 @@
 # name: test/issues/general/test_25967.test
-# description: An UPDATE to a nested VARIANT constant renders the constant as SQL once, up to the VARIANT depth limit
+# description: An UPDATE to a nested VARIANT constant stores the value an INSERT stores, whatever the nesting
 # group: [general]
 
 require json
 
-# an UPDATE folds the cast into a constant, whose name renders the whole VARIANT as SQL
+# the optimizer folds the cast into a VARIANT constant, which the relation statistics do not render as SQL
 statement ok
 CREATE TABLE t (id INTEGER, doc VARIANT);
 
@@ -22,7 +22,22 @@ FROM t a, t b WHERE a.id = 1 AND b.id = 2;
 ----
 ARRAY(52)	16402	true
 
-# an empty array inside 127 arrays or objects is the deepest value VariantVisitor accepts
+# the issue's values, nested deeper than the 128 levels at which rendering a VARIANT as SQL fails
+statement ok
+UPDATE t SET doc = (repeat('[', 1000) || repeat(']', 1000))::JSON WHERE id = 1;
+
+statement ok
+UPDATE t SET doc = (repeat('[', 2000) || repeat(']', 2000))::JSON WHERE id = 1;
+
+statement ok
+INSERT INTO t VALUES (3, (repeat('[', 2000) || repeat(']', 2000))::JSON);
+
+query II
+SELECT variant_typeof(a.doc), a.doc = b.doc FROM t a, t b WHERE a.id = 1 AND b.id = 3;
+----
+ARRAY(1)	true
+
+# an empty array inside 127 arrays or objects is the deepest value that casts back to JSON
 statement ok
 UPDATE t SET doc = (repeat('[', 127) || '[]' || repeat(']', 127))::JSON WHERE id = 1;
 

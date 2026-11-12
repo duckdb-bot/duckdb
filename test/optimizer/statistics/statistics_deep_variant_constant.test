@@ -1,0 +1,40 @@
+# name: test/optimizer/statistics/statistics_deep_variant_constant.test
+# description: Relation statistics name no column by rendering a VARIANT constant as SQL, which fails for deep values
+# group: [statistics]
+
+require json
+
+statement ok
+CREATE TABLE t (id INTEGER, doc VARIANT);
+
+statement ok
+INSERT INTO t VALUES (1, NULL);
+
+statement ok
+CREATE TABLE s AS SELECT range AS x FROM range(3);
+
+# the constant nests 1,000 levels, far beyond the 128 levels at which rendering a VARIANT as SQL fails
+statement ok
+UPDATE t SET doc = (repeat('[', 1000) || repeat(']', 1000))::JSON::VARIANT WHERE id = 1;
+
+query II
+SELECT id, variant_typeof(doc) FROM t;
+----
+1	ARRAY(1)
+
+query I
+SELECT variant_typeof(first((repeat('[', 1000) || repeat(']', 1000))::JSON::VARIANT)) FROM s;
+----
+ARRAY(1)
+
+statement ok
+INSERT INTO t SELECT x + 2, (repeat('[', 1000) || repeat(']', 1000))::JSON::VARIANT FROM s;
+
+# an INSERT of the constant itself never named it, and stores the same value
+statement ok
+INSERT INTO t VALUES (5, (repeat('[', 1000) || repeat(']', 1000))::JSON::VARIANT);
+
+query III
+SELECT count(*), count(DISTINCT doc), count(*) FILTER (variant_typeof(doc) = 'ARRAY(1)') FROM t;
+----
+5	1	5

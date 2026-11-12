@@ -130,6 +130,13 @@ bool Binder::BindTableFunctionParameters(TableFunctionCatalogEntry &table_functi
 	if (bind_type == TableFunctionBindType::TABLE_IN_OUT_FUNCTION && !HasTableInputBesidesNamedArguments(arguments)) {
 		bind_type = TableFunctionBindType::STANDARD_TABLE_FUNCTION;
 	}
+	// binding a parameter can autoload an extension that replaces this entry, so the loop below does not use it
+	auto function_name = table_function.name.GetIdentifierName();
+	shared_ptr<const TableFunction> table_parameter_function;
+	if (bind_type == TableFunctionBindType::TABLE_PARAMETER_FUNCTION) {
+		D_ASSERT(table_function.functions.Size() == 1);
+		table_parameter_function = table_function.functions.GetFunctionByOffset(0);
+	}
 	vector<unique_ptr<ParsedExpression>> input_expressions;
 	bool seen_subquery = false;
 	for (auto &argument : arguments) {
@@ -163,12 +170,10 @@ bool Binder::BindTableFunctionParameters(TableFunctionCatalogEntry &table_functi
 		}
 		if (bind_type == TableFunctionBindType::TABLE_PARAMETER_FUNCTION && parameter_name.empty() &&
 		    child->GetExpressionType() == ExpressionType::SUBQUERY) {
-			D_ASSERT(table_function.functions.Size() == 1);
-			const auto &fun = *table_function.functions.GetFunctionByOffset(0);
-			if (table_function.functions.Size() != 1 || fun.GetSignature().GetPositionalParameterCount() == 0) {
+			if (table_parameter_function->GetSignature().GetPositionalParameterCount() == 0) {
 				throw BinderException(
 				    "Only table-in-out functions can have subquery parameters - %s only accepts constant parameters",
-				    fun.GetName());
+				    table_parameter_function->GetName());
 			}
 			if (seen_subquery) {
 				error = ErrorData("Table function can have at most one subquery parameter");
@@ -184,7 +189,7 @@ bool Binder::BindTableFunctionParameters(TableFunctionCatalogEntry &table_functi
 			continue;
 		}
 
-		TableFunctionBinder binder(*this, context, table_function.name.GetIdentifierName());
+		TableFunctionBinder binder(*this, context, function_name);
 		// a NULL argument keeps the NULL type, so that it can still match any overload
 		auto prev_can_contain_nulls = CanContainNulls();
 		SetCanContainNulls(true);
@@ -505,6 +510,9 @@ BoundStatement Binder::Bind(TableFunctionRef &ref) {
 	}
 	D_ASSERT(func_catalog.type == CatalogType::TABLE_FUNCTION_ENTRY);
 	auto &function = func_catalog.Cast<TableFunctionCatalogEntry>();
+	// binding the parameters can autoload an extension that replaces this entry, so it is looked up again afterwards
+	auto &schema = function.ParentSchema();
+	auto function_name = function.name;
 
 	// bind the input parameters to the function - they are folded to constants after the overload is chosen
 	vector<unique_ptr<Expression>> positional_arguments;
@@ -520,11 +528,13 @@ BoundStatement Binder::Bind(TableFunctionRef &ref) {
 	}
 
 	// selection, named-argument checking, folding and casting all happen in the function binder
+	auto &current_function = LookupFunctionEntryAgain(schema, CatalogType::TABLE_FUNCTION_ENTRY, function_name)
+	                             .Cast<TableFunctionCatalogEntry>();
 	FunctionBinder function_binder(*this);
-	auto resolved =
-	    table_in_out
-	        ? function_binder.BindTableInOutFunction(function.functions, subquery.types, named_arguments, error)
-	        : function_binder.BindTableFunction(function.functions, positional_arguments, named_arguments, error);
+	auto resolved = table_in_out ? function_binder.BindTableInOutFunction(current_function.functions, subquery.types,
+	                                                                      named_arguments, error)
+	                             : function_binder.BindTableFunction(current_function.functions, positional_arguments,
+	                                                                 named_arguments, error);
 	if (!resolved) {
 		error.AddQueryLocation(ref);
 		error.Throw();

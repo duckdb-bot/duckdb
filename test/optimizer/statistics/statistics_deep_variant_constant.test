@@ -27,6 +27,13 @@ SELECT variant_typeof(first((repeat('[', 1000) || repeat(']', 1000))::JSON::VARI
 ----
 ARRAY(1)
 
+query I
+SELECT count(*) FROM s GROUP BY [x, (repeat('[', 1000) || repeat(']', 1000))::JSON::VARIANT];
+----
+1
+1
+1
+
 statement ok
 INSERT INTO t SELECT x + 2, (repeat('[', 1000) || repeat(']', 1000))::JSON::VARIANT FROM s;
 

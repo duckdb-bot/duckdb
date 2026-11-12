@@ -472,6 +472,19 @@ SchemaCatalogEntry &Binder::BindCreateFunctionInfo(CreateInfo &info) {
 	vector_of_logical_type_set_t type_overloads;
 	auto &base = info.Cast<CreateMacroInfo>();
 	CheckMacroStorageVersion(catalog, base);
+	// Every member's declared types, default values and body are bound with this binder or with a child of it, which
+	// inherits the callback, so every entry they look up becomes a dependency of the macro
+	auto &dependencies = base.dependencies;
+	if (Settings::Get<EnableMacroDependenciesSetting>(context)) {
+		SetCatalogLookupCallback([&dependencies, &catalog](CatalogEntry &entry) {
+			if (&catalog != &entry.ParentCatalog()) {
+				// Don't register any cross-catalog dependencies
+				return;
+			}
+			// Register any catalog entry required to bind the macro function
+			dependencies.AddDependency(entry);
+		});
+	}
 	for (auto &function : base.macros) {
 		if (!store_types) {
 			for (const auto &type : function->types) {
@@ -582,25 +595,11 @@ SchemaCatalogEntry &Binder::BindCreateFunctionInfo(CreateInfo &info) {
 		    make_uniq<DummyBinding>(dummy_types, dummy_names, base.GetFunctionName().GetIdentifierName());
 		macro_binding = this_macro_binding.get();
 
-		auto &dependencies = base.dependencies;
-		const auto should_create_dependencies = Settings::Get<EnableMacroDependenciesSetting>(context);
-		const auto binder_callback = [&dependencies, &catalog](CatalogEntry &entry) {
-			if (&catalog != &entry.ParentCatalog()) {
-				// Don't register any cross-catalog dependencies
-				return;
-			}
-			// Register any catalog entry required to bind the macro function
-			dependencies.AddDependency(entry);
-		};
-
 		// bind it to verify the function was defined correctly
 		ErrorData error;
 		if (info.type == CatalogType::MACRO_ENTRY) {
 			BoundSelectNode sel_node;
 			SelectBinder binder(*this, context, sel_node);
-			if (should_create_dependencies) {
-				binder.SetCatalogLookupCallback(binder_callback);
-			}
 
 			// create a copy of the expression because we do not want to alter the original
 			auto expression = function->Cast<ScalarMacroFunction>().expression->Copy();
@@ -617,9 +616,6 @@ SchemaCatalogEntry &Binder::BindCreateFunctionInfo(CreateInfo &info) {
 		} else {
 			D_ASSERT(info.type == CatalogType::TABLE_MACRO_ENTRY);
 			auto dummy_binder = CreateBinder(context, this);
-			if (should_create_dependencies) {
-				dummy_binder->SetCatalogLookupCallback(binder_callback);
-			}
 
 			// create a copy of the query node because we do not want to alter the original
 			auto query_node = function->Cast<TableMacroFunction>().query_node->Copy();

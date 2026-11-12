@@ -481,7 +481,7 @@ static optional<RelationStats> ExtractAggregationStatsInternal(LogicalAggregate 
 		result.columns.emplace_back(bindings[result.columns.size()], distinct_count, current_domain, Identifier(),
 		                            semi_anti_join_domain_evidence);
 	}
-	for (auto &expression : aggregate.expressions) {
+	for (idx_t aggregate_idx = 0; aggregate_idx < aggregate.expressions.size(); aggregate_idx++) {
 		result.columns.emplace_back(bindings[result.columns.size()],
 		                            DistinctCount(result.cardinality, DistinctCountSource::CARDINALITY), Identifier());
 	}

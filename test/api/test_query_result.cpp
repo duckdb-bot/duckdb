@@ -1136,8 +1136,8 @@ TEST_CASE("Every state ends a query when the end of one fails", "[api][query_res
 
 	// a profile that cannot be written does not keep the states from ending
 	auto profile_path = TestCreatePath("missing_directory/profile.json");
-	REQUIRE_NO_FAIL(con.Query("PRAGMA enable_profiling = 'json'"));
-	REQUIRE_NO_FAIL(con.Query("PRAGMA profiling_output = '" + profile_path + "'"));
+	REQUIRE_NO_FAIL(con.Query("SET enable_profiling = 'json'"));
+	REQUIRE_NO_FAIL(con.Query("SET profiling_output = '" + profile_path + "'"));
 	REQUIRE_NO_FAIL(con.Query("BEGIN TRANSACTION"));
 	auto unwritten_profile = con.Query("SELECT 42");
 	REQUIRE(unwritten_profile->HasError());
@@ -1273,7 +1273,7 @@ TEST_CASE("An internal error of the profiler at the end of a query invalidates t
 	db.instance->GetLogManager().RegisterLogSink("failing_log_sink", base_sink);
 	REQUIRE_NO_FAIL(con.Query("SET enable_logging = true"));
 	REQUIRE_NO_FAIL(con.Query("SET logging_sink = 'failing_log_sink'"));
-	REQUIRE_NO_FAIL(con.Query("PRAGMA enable_profiling = 'no_output'"));
+	REQUIRE_NO_FAIL(con.Query("SET enable_profiling = 'no_output'"));
 	// the profiler logs its metrics when the query ends
 	log_sink->fail_metrics = true;
 	auto failed = con.Query("SELECT 42");
@@ -1306,9 +1306,8 @@ TEST_CASE("An internal error of the profiler after a parse error invalidates the
 	DuckDB db(nullptr);
 	Connection con(db);
 	FileSystem::GetFileSystem(*con.context).RegisterSubSystem(make_uniq<FailingProfileFileSystem>());
-	REQUIRE_NO_FAIL(con.Query("PRAGMA enable_profiling = 'json'"));
-	REQUIRE_NO_FAIL(
-	    con.Query("PRAGMA profiling_output = '" + string(FailingProfileFileSystem::PREFIX) + "profile.json'"));
+	REQUIRE_NO_FAIL(con.Query("SET enable_profiling = 'json'"));
+	REQUIRE_NO_FAIL(con.Query("SET profiling_output = '" + string(FailingProfileFileSystem::PREFIX) + "profile.json'"));
 	// the error of the parser is reported, and the profile of the query fails when it is written
 	ErrorData parse_error;
 	SECTION("Query") {
@@ -1355,8 +1354,8 @@ TEST_CASE("A query whose begin failed emits its profile and its live metrics", "
 	con.context->GetContext().GetRegisteredState().Insert("counting_query_state", failing);
 	con.context->GetContext().GetRegisteredState().Insert("allocating_query_state", allocating);
 	auto profile_path = TestCreatePath("begin_failed_profile.json");
-	REQUIRE_NO_FAIL(con.Query("PRAGMA enable_profiling = 'json'"));
-	REQUIRE_NO_FAIL(con.Query("PRAGMA profiling_output = '" + profile_path + "'"));
+	REQUIRE_NO_FAIL(con.Query("SET enable_profiling = 'json'"));
+	REQUIRE_NO_FAIL(con.Query("SET profiling_output = '" + profile_path + "'"));
 	auto read_profile = [&]() {
 		auto profile = reader.Query("SELECT content FROM read_text('" + profile_path + "')");
 		REQUIRE(!profile->HasError());
@@ -1396,7 +1395,7 @@ TEST_CASE("A query whose begin failed emits its profile and its live metrics", "
 	REQUIRE(memory_allocated() < AllocatingQueryState::ALLOCATION_SIZE);
 
 	// a profile that cannot be written does not replace the error of the begin
-	REQUIRE_NO_FAIL(con.Query("PRAGMA profiling_output = '" + TestCreatePath("missing_directory/profile.json") + "'"));
+	REQUIRE_NO_FAIL(con.Query("SET profiling_output = '" + TestCreatePath("missing_directory/profile.json") + "'"));
 	failing->fail_begin = true;
 	auto unwritten_profile = run("SELECT 44");
 	REQUIRE(unwritten_profile->HasError());

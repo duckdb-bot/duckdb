@@ -124,11 +124,17 @@ __attribute__((destructor)) static void report(void) {
 """
 
 STARTUP_SQL = "SELECT 42"
+# a write to a file database commits through the write ahead log, on the main thread, and the database does not
+# checkpoint at exit, so the budgets below end in the commit or earlier
+WAL_COMMIT_SQL = (
+    "SET threads = 1;\nPRAGMA disable_checkpoint_on_shutdown;\n"
+    "CREATE TABLE t AS SELECT range AS i FROM range(1000);\nSELECT 42;"
+)
 # needs far more memory than startup, so every budget below exhausts the heap inside the query
 LARGE_SQL = "SELECT " + ",".join(["1"] * 200000)
 
 
-def run_with_malloc_budget(shell, shim, sql, budget=None, report=False):
+def run_with_malloc_budget(shell, shim, sql, budget=None, report=False, database=":memory:"):
     env = dict(os.environ)
     # agent-mode variables of the runner must not switch the shell under test into agent mode
     for key in ShellTest.AGENT_ENVIRONMENT_VARIABLES:
@@ -142,7 +148,7 @@ def run_with_malloc_budget(shell, shim, sql, budget=None, report=False):
         env["FAILMALLOC_REPORT"] = "1"
     # the SQL goes through stdin: the large query does not fit in an argument
     return subprocess.run(
-        [shell, "--batch", "--no-init", ":memory:"],
+        [shell, "--batch", "--no-init", database],
         input=sql.encode(),
         capture_output=True,
         env=env,
@@ -211,6 +217,35 @@ def test_malloc_failure_large_query(shell, malloc_shim, startup_bytes, factor):
 @pytest.mark.parametrize("fraction", [0.96, 0.97, 0.98, 0.99])
 def test_malloc_failure_tail(shell, malloc_shim, startup_bytes, fraction):
     result = run_with_malloc_budget(shell, malloc_shim, STARTUP_SQL, budget=int(startup_bytes * fraction))
+    assert result.returncode in (0, 1), (result.returncode, result.stderr)
+    assert b"terminate called" not in result.stderr, result.stderr
+    if result.returncode == 1:
+        assert b"Out of Memory" in result.stderr, result.stderr
+
+
+# the bytes a run that writes a file database and commits it through the write ahead log requests through the shim
+@pytest.fixture(scope="module")
+def wal_commit_bytes(request, malloc_shim, tmp_path_factory):
+    shell = request.config.getoption("--shell-binary")
+    database = str(tmp_path_factory.mktemp("failmalloc_wal") / "report.db")
+    result = run_with_malloc_budget(shell, malloc_shim, WAL_COMMIT_SQL, report=True, database=database)
+    assert result.returncode == 0, result.stderr
+    assert b"42" in result.stdout, result.stdout
+    match = re.search(rb"failmalloc_total_bytes=(\d+)", result.stderr)
+    if not match or int(match.group(1)) == 0:
+        pytest.skip("the malloc shim does not intercept the allocations of this shell binary")
+    return int(match.group(1))
+
+
+# the heap runs out after startup, while the table is built or while it is written to the write ahead log and
+# committed, and the shell must report the error rather than abort. The budgets are placed in the lower part of the
+# span between the startup bytes and the complete run, since the share of startup differs between machines and the
+# upper part reaches the rollback of the failed commit and the shutdown, which have failures of their own
+@pytest.mark.parametrize("fraction", [0.2, 0.3, 0.4, 0.5, 0.6])
+def test_malloc_failure_wal_commit(shell, malloc_shim, startup_bytes, wal_commit_bytes, tmp_path, fraction):
+    database = str(tmp_path / "failmalloc.db")
+    budget = startup_bytes + int((wal_commit_bytes - startup_bytes) * fraction)
+    result = run_with_malloc_budget(shell, malloc_shim, WAL_COMMIT_SQL, budget=budget, database=database)
     assert result.returncode in (0, 1), (result.returncode, result.stderr)
     assert b"terminate called" not in result.stderr, result.stderr
     if result.returncode == 1:

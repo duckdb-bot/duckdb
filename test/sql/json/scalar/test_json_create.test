@@ -496,3 +496,19 @@ query I
 SELECT json_array_length(to_json(range(1024)::VARIANT));
 ----
 1024
+
+# json_build_object is the PostgreSQL name of json_object
+query I
+SELECT json_build_object('name', 'C', 'schema', NULL, 'n', 42, 'nested', {'a': [1, 2]});
+----
+{"name":"C","schema":null,"n":42,"nested":{"a":[1,2]}}
+
+query I
+SELECT json_build_object() = json_object();
+----
+true
+
+statement error
+SELECT json_build_object('name');
+----
+json_object() requires an even number of arguments

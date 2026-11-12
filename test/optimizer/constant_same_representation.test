@@ -1,0 +1,84 @@
+# name: test/optimizer/constant_same_representation.test
+# description: Expressions whose constants compare equal but have a different representation are not merged
+# group: [optimizer]
+
+statement ok
+CREATE TABLE d AS SELECT DATE '2025-01-31' AS d, []::INTERVAL[] AS l, 0.0::DOUBLE AS x, []::DOUBLE[] AS dl;
+
+query II
+SELECT d + INTERVAL '1 month' AS plus_month, d + INTERVAL '30 days' AS plus_30_days FROM d;
+----
+2025-02-28 00:00:00	2025-03-02 00:00:00
+
+query II
+SELECT d + INTERVAL '30 days' AS plus_30_days, d + INTERVAL '1 month' AS plus_month FROM d;
+----
+2025-03-02 00:00:00	2025-02-28 00:00:00
+
+query I
+SELECT count(*) FROM d WHERE d + INTERVAL '1 month' = DATE '2025-02-28' AND d + INTERVAL '30 days' = DATE '2025-03-02';
+----
+1
+
+query II
+SELECT d + to_months(1), d + to_days(30) FROM d;
+----
+2025-02-28 00:00:00	2025-03-02 00:00:00
+
+query III
+SELECT d + INTERVAL '1 month', d + INTERVAL '30 days', count(*) FROM d GROUP BY d + INTERVAL '1 month', d + INTERVAL '30 days';
+----
+2025-02-28 00:00:00	2025-03-02 00:00:00	1
+
+# constants nested in a list
+query II
+SELECT d + (l || [INTERVAL '1 month'])[1], d + (l || [INTERVAL '30 days'])[1] FROM d;
+----
+2025-02-28 00:00:00	2025-03-02 00:00:00
+
+# constants nested in an array, a struct, a list with NULL and a list of VARIANT
+query II
+SELECT d + (CASE WHEN x = 0 THEN [INTERVAL '1 month']::INTERVAL[1] END)[1], d + (CASE WHEN x = 0 THEN [INTERVAL '30 days']::INTERVAL[1] END)[1] FROM d;
+----
+2025-02-28 00:00:00	2025-03-02 00:00:00
+
+query II
+SELECT d + (CASE WHEN x = 0 THEN {'i': INTERVAL '1 month'} END).i, d + (CASE WHEN x = 0 THEN {'i': INTERVAL '30 days'} END).i FROM d;
+----
+2025-02-28 00:00:00	2025-03-02 00:00:00
+
+query II
+SELECT d + (CASE WHEN x = 0 THEN [NULL, INTERVAL '1 month'] END)[2], d + (CASE WHEN x = 0 THEN [NULL, INTERVAL '30 days'] END)[2] FROM d;
+----
+2025-02-28 00:00:00	2025-03-02 00:00:00
+
+query II
+SELECT d + (CASE WHEN x = 0 THEN [INTERVAL '1 month'::VARIANT] END)[1]::INTERVAL, d + (CASE WHEN x = 0 THEN [INTERVAL '30 days'::VARIANT] END)[1]::INTERVAL FROM d;
+----
+2025-02-28 00:00:00	2025-03-02 00:00:00
+
+# -0.0 and 0.0
+query II
+SELECT atan2(x, -0.0::DOUBLE), atan2(x, 0.0::DOUBLE) FROM d;
+----
+3.141592653589793	0.0
+
+query II
+SELECT atan2(x, (dl || [-0.0::DOUBLE])[1]), atan2(x, (dl || [0.0::DOUBLE])[1]) FROM d;
+----
+3.141592653589793	0.0
+
+query II
+SELECT (x::FLOAT * -0.0::FLOAT)::VARCHAR, (x::FLOAT * 0.0::FLOAT)::VARCHAR FROM d;
+----
+-0.0	0.0
+
+require icu
+
+statement ok
+SET timezone = 'Europe/Amsterdam';
+
+query II
+SELECT a + INTERVAL '1 day', a + INTERVAL '24 hours' FROM (SELECT TIMESTAMPTZ '2025-10-25 03:30:00+02' AS a FROM d);
+----
+2025-10-26 03:30:00+01	2025-10-26 02:30:00+01

@@ -1,0 +1,14 @@
+# name: benchmark/micro/update/merge_conditional_update.benchmark
+# description: MERGE INTO with a conditional update that computes its value, for a tenth of the rows
+# group: [update]
+
+load
+CREATE TABLE target AS SELECT range AS k, range::VARCHAR AS v FROM range(1000000);
+CREATE TABLE source AS SELECT range AS k, range::VARCHAR AS v FROM range(1000000);
+
+run
+MERGE INTO target USING source ON target.k = source.k
+WHEN MATCHED AND target.k % 10 = 0 THEN UPDATE SET v = md5(source.v)
+
+result I
+100000

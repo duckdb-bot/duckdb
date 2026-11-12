@@ -68,11 +68,14 @@ static void CastActionExpressionsToColumnTypes(ClientContext &context, TableCata
 static vector<unique_ptr<Expression>> PlanMergeUpdateValues(ClientContext &context, LogicalMergeInto &op,
                                                             PhysicalOperator &plan, BoundMergeIntoAction &action,
                                                             MergeIntoOperator &result) {
+	//! Deprecated: plans serialized before v2.0 keep SET col = DEFAULT as a placeholder that the update operator
+	//! resolved, now the binder resolves it - resolve it here, as it cannot be evaluated in the projection
 	for (idx_t i = 0; i < action.expressions.size(); i++) {
-		// plans of older versions set a column to its default with a placeholder that only PhysicalUpdate runs
-		if (action.expressions[i]->GetExpressionType() == ExpressionType::VALUE_DEFAULT) {
-			action.expressions[i] = op.bound_defaults[action.columns[i].index]->Copy();
+		if (action.expressions[i]->GetExpressionType() != ExpressionType::VALUE_DEFAULT) {
+			continue;
 		}
+		auto storage_idx = op.table.GetColumns().GetColumn(action.columns[i]).StorageOid();
+		action.expressions[i] = op.bound_defaults[storage_idx]->Copy();
 	}
 	CastActionExpressionsToColumnTypes(context, op.table, action.expressions, action.columns);
 	vector<unique_ptr<Expression>> select_list;

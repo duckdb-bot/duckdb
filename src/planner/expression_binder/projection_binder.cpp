@@ -15,9 +15,7 @@ unique_ptr<Expression> ProjectionBinder::ProjectExpression(unique_ptr<Expression
 	auto return_type = expr->GetReturnType();
 	auto alias = expr->GetName();
 	auto proj_col_idx = ColumnBinding::PushExpression(proj_expressions, std::move(expr));
-	auto proj_ref = make_uniq<BoundColumnRefExpression>(return_type, ColumnBinding(proj_index, proj_col_idx));
-	proj_ref->SetAlias(std::move(alias));
-	return std::move(proj_ref);
+	return make_uniq<BoundColumnRefExpression>(std::move(alias), return_type, ColumnBinding(proj_index, proj_col_idx));
 }
 
 void ProjectionBinder::ProjectLeaves(unique_ptr<Expression> &expr) {
@@ -58,6 +56,9 @@ BindResult ProjectionBinder::BindProjectedExpression(unique_ptr<ParsedExpression
 	auto result = ExpressionBinder::BindExpression(expr_ptr, depth);
 	in_child_projection = was_in_child_projection;
 	if (result.HasError()) {
+		return result;
+	}
+	if (result.expression->GetExpressionClass() == ExpressionClass::BOUND_LAMBDA_REF) {
 		return result;
 	}
 	// a TRY or HAS_ERROR over a subquery moves with its argument, other expressions stay in the action with their

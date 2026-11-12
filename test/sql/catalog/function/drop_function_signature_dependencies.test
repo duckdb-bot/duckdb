@@ -163,16 +163,18 @@ statement ok
 CREATE SCHEMA amb_s2;
 
 statement ok
-CREATE TABLE amb_s1.src(i INTEGER);
-
-statement ok
 CREATE TABLE amb_s2.src(i INTEGER);
 
 statement ok
 SET schema = 'amb_s2';
 
+# the body looks src up in amb_s1 first, which has none yet, so it binds the caller's amb_s2.src
 statement ok
 CREATE MACRO amb_s1.holder(x INTEGER) AS TABLE (SELECT i FROM src), (x VARCHAR) AS TABLE (SELECT 0 AS i);
+
+# a src in the macro's schema is what a fresh resolution would pick now
+statement ok
+CREATE TABLE amb_s1.src(i INTEGER);
 
 statement ok
 DROP MACRO TABLE amb_s1.holder(VARCHAR);
@@ -201,9 +203,6 @@ statement ok
 CREATE SCHEMA sh_s2;
 
 statement ok
-CREATE TABLE sh_s1.src(i INTEGER);
-
-statement ok
 CREATE TABLE sh_s2.src(i INTEGER);
 
 statement ok
@@ -211,6 +210,10 @@ SET schema = 'sh_s2';
 
 statement ok
 CREATE MACRO sh_s1.holder(x INTEGER) AS TABLE (SELECT i FROM src), (x VARCHAR) AS TABLE (SELECT i FROM sh_s2.src);
+
+# with a src in the macro's schema, the survivor's unqualified src resolves to sh_s1.src from now on
+statement ok
+CREATE TABLE sh_s1.src(i INTEGER);
 
 statement ok
 DROP MACRO TABLE sh_s1.holder(VARCHAR);
@@ -252,13 +255,13 @@ CREATE MACRO at_a.f(x INTEGER) AS TABLE (SELECT * FROM src), (x VARCHAR) AS TABL
 statement ok
 DROP MACRO at_a.f(VARCHAR);
 
-# the survivor bound at_b.src at CREATE: still protected
+# at_b.src belonged only to the removed member, and is kept too
 statement error
 DROP TABLE at_b.src;
 ----
 <REGEX>:.*depend.*
 
-# at_a.src belonged only to the removed member, and is kept too
+# the survivor bound at_a.src at CREATE, the macro's own schema comes first: still protected
 statement error
 DROP TABLE at_a.src;
 ----

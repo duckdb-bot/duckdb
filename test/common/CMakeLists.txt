@@ -9,7 +9,6 @@ add_library_unity(
   test_cast.cpp
   test_checked_integer.cpp
   test_checksum.cpp
-  test_concurrentqueue.cpp
   test_count_zeros.cpp
   test_dictionary_hash_cache.cpp
   test_vector_hash.cpp
@@ -71,6 +70,9 @@ add_library_unity(
   test_vector_buffer_validity.cpp
   test_lazy_vector.cpp
   test_musl_stack_size.cpp)
+
+# Keep platform semaphore headers separate from DuckDB using-directives.
+target_sources(test_common PRIVATE test_concurrentqueue.cpp)
 
 set(UNITTEST_OBJECT_FILES
     ${UNITTEST_OBJECT_FILES} $<TARGET_OBJECTS:test_common>

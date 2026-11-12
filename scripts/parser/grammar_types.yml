@@ -2004,6 +2004,8 @@ packrat_memoized_rules:
   - Expression
   - TableRef
   - ParensTableRef
+  - WithClause
+  - SelectParens
   - Identifier
   - ColId
   - CatalogQualification

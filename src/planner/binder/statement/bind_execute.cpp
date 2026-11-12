@@ -58,7 +58,7 @@ BoundStatement Binder::Bind(ExecuteStatement &stmt) {
 			} else {
 				return_type = constant.GetValue().type();
 			}
-			parameter_data = BoundParameterData(constant.TakeValue(), std::move(return_type));
+			parameter_data = BoundParameterData(constant.GetValue(), std::move(return_type));
 		} else {
 			auto value = ExpressionExecutor::EvaluateScalar(context, *bound_expr, true);
 			auto value_type = value.type();
@@ -73,7 +73,7 @@ BoundStatement Binder::Bind(ExecuteStatement &stmt) {
 	if (prepared->RequireRebind(context, bind_values)) {
 		rebind = RebindQueryInfo::ATTEMPT_TO_REBIND;
 	}
-	for (auto &state : context.Services().GetRegisteredState().States()) {
+	for (auto &state : context.GetContext().GetRegisteredState().States()) {
 		BindPreparedStatementCallbackInfo info {*prepared, bind_values};
 		auto new_rebind = state->OnRebindPreparedStatement(context, info, rebind);
 		if (new_rebind == RebindQueryInfo::ATTEMPT_TO_REBIND) {

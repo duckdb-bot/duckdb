@@ -158,7 +158,8 @@ public:
 		case ParserWorkload::MALFORMED_CTES:
 			return StringUtil::Repeat("WITH a AS (", 8) + ";";
 		case ParserWorkload::NESTED_PARENS:
-			return "SELECT * FROM " + StringUtil::Repeat("(", 1024) + "t" + StringUtil::Repeat(")", 1024);
+			return "SELECT * FROM " + StringUtil::Repeat("(", 1024) + "t a CROSS JOIN t b" +
+			       StringUtil::Repeat(")", 1024);
 		case ParserWorkload::STATEMENTS: {
 			string query;
 			for (idx_t i = 0; i < 32; i++) {

@@ -33,14 +33,14 @@ SELECT split_part(j->>'error_message', chr(10), 1), j->>'position' FROM (SELECT 
 syntax error at or near "WHERE"	4112
 
 query II
-SELECT split_part(j->>'error_message', chr(10), 1), j->>'position' FROM (SELECT json_serialize_sql('SELECT * FROM ' || repeat('(', 4096) || 't' || repeat(')', 4097))::JSON AS j)
+SELECT split_part(j->>'error_message', chr(10), 1), j->>'position' FROM (SELECT json_serialize_sql('SELECT * FROM ' || repeat('(', 4096) || 't a CROSS JOIN t b' || repeat(')', 4097))::JSON AS j)
 ----
-syntax error at or near ")"	8207
+syntax error at or near ")"	8224
 
 query II
-SELECT split_part(j->>'error_message', chr(10), 1), j->>'position' FROM (SELECT json_serialize_sql('SELECT * FROM ' || repeat('(', 4096) || '(SELECT 1) sq' || repeat(')', 4096) || ' WHERE')::JSON AS j)
+SELECT split_part(j->>'error_message', chr(10), 1), j->>'position' FROM (SELECT json_serialize_sql('SELECT * FROM ' || repeat('(', 4096) || '(SELECT 1) sq CROSS JOIN (SELECT 2) sq2' || repeat(')', 4096) || ' WHERE')::JSON AS j)
 ----
-syntax error at end of input	8220
+syntax error at end of input	8246
 
 query II
 SELECT split_part(j->>'error_message', chr(10), 1), j->>'position' FROM (SELECT json_serialize_sql('SELECT * FROM ' || repeat('(', 4096) || '((SELECT 1)) sq, ' || repeat(')', 4096))::JSON AS j)

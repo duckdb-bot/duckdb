@@ -44,7 +44,7 @@ Grammar extensions are not included in any of these benchmarks.
 | `ParserMalformedSelect` | `select (((((((((((((;` (13 unmatched opening parentheses) | 400 | Expected syntax error |
 | `ParserNestedCTEs` | 8 nested data-modifying CTEs, `WITH a AS (WITH a AS (... DELETE FROM t) DELETE FROM t) DELETE FROM t` | 9000 | 1 |
 | `ParserMalformedCTEs` | `WITH a AS (` 8 times, then `;` | 16000 | Expected syntax error |
-| `ParserNestedParens` | `SELECT * FROM ((...(t)...))` with 1024 nested parentheses | 190 | 1 |
+| `ParserNestedParens` | `SELECT * FROM ((...(t a CROSS JOIN t b)...))` with 1024 nested parentheses | 190 | 1 |
 | `ParserStatements` | 32 SELECT statements, quoted aliases and comments | 700 | 32 |
 | `ParserTPCH` | All 22 TPC-H queries, repeated 12 times | 264 | 1 |
 | `ParserTPCDS` | All 99 TPC-DS query files, parsed once | 99 | 1 |

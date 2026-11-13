@@ -79,6 +79,11 @@ public:
 		return false;
 	}
 	bool IsVolatile() const override;
+	bool RequiresRebind() const override;
+	//! Marks that an expression of the subquery requires a rebind, which the statement needs once it is planned
+	void SetRequiresRebind() {
+		requires_rebind = true;
+	}
 
 	//! Whether errors captured inside this TRY subquery are re-raised at the use site after flattening
 	bool RethrowsTryErrors() const {
@@ -114,5 +119,7 @@ private:
 	vector<LogicalType> child_targets;
 	//! Whether this is a TRY subquery whose captured errors are re-raised at the use site
 	bool rethrow_try_errors = false;
+	//! Whether an expression of the subquery requires a rebind
+	bool requires_rebind = false;
 };
 } // namespace duckdb

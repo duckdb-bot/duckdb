@@ -93,10 +93,13 @@ static Value NegatePercentileValue(const Value &v, const bool desc) {
 	}
 }
 
-static void NegatePercentileFractions(ClientContext &context, unique_ptr<Expression> &bound, bool desc) {
+static void NegatePercentileFractions(ClientContext &context, Binder &binder, unique_ptr<Expression> &bound,
+                                      bool desc) {
 	if (!bound->IsFoldable()) {
 		return;
 	}
+	// the fraction is folded here and leaves the expression tree, so it is checked like a root expression
+	binder.CheckRequiresRebind(*bound);
 
 	Value value = ExpressionExecutor::EvaluateScalar(context, *bound);
 	// a NULL list stays NULL, the quantile binder rejects it
@@ -190,7 +193,7 @@ BindResult BaseSelectBinder::BindAggregate(FunctionExpression &aggr, AggregateFu
 		bound_arguments.push_back(BindChild(child.GetExpressionMutable(), 0, error, child.GetName()));
 		// We have to negate the fractions for PERCENTILE_XXXX DESC
 		if (!error.HasError() && ordered_set_agg && i == aggr.GetArguments().size() - 1) {
-			NegatePercentileFractions(context, bound_arguments.back(), negate_fractions);
+			NegatePercentileFractions(context, binder, bound_arguments.back(), negate_fractions);
 		}
 	}
 
@@ -324,6 +327,9 @@ BindResult BaseSelectBinder::BindAggregate(FunctionExpression &aggr, AggregateFu
 	if (aggr.ExportState()) {
 		aggregate = ExportAggregateFunction::Bind(std::move(aggregate));
 	}
+
+	// the aggregate leaves the expression tree here, so it is checked like a root expression
+	binder.CheckRequiresRebind(*aggregate);
 
 	// check for all the aggregates if this aggregate already exists
 	ProjectionIndex aggr_index;

@@ -452,6 +452,8 @@ BindResult BaseSelectBinder::BindWindowExpression(WindowExpression &window, idx_
 	result->WindowEndMutable() = window.WindowEnd();
 	result->WindowExcludeMutable() = window.WindowExclude();
 
+	// the window leaves the expression tree here, so it is checked like a root expression
+	binder.CheckRequiresRebind(*result);
 	// move the WINDOW expression into the set of bound windows
 	auto &window_type = result->GetReturnType();
 	auto window_idx = ColumnBinding::PushExpression(node.windows, std::move(result));

@@ -21,8 +21,8 @@
 namespace duckdb {
 
 static unique_ptr<Expression> WrapInTry(unique_ptr<Expression> child) {
-	auto result = make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_TRY, child->GetReturnType());
-	result->GetChildrenMutable().push_back(std::move(child));
+	auto result =
+	    make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_TRY, child->GetReturnType(), std::move(child));
 	return std::move(result);
 }
 
@@ -147,8 +147,8 @@ static bool GateTryAggregates(ClientContext &context, const Expression &location
 	for (auto position : aggregate_positions) {
 		auto &aggr_expr = aggregate.expressions[position]->Cast<BoundAggregateExpression>();
 		for (auto &child : aggr_expr.GetChildrenMutable()) {
-			auto probe = make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_HAS_ERROR, LogicalType::BOOLEAN);
-			probe->GetChildrenMutable().push_back(child->Copy());
+			auto probe = make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_HAS_ERROR, LogicalType::BOOLEAN,
+			                                                child->Copy());
 			gate = OrErrorFlags(std::move(gate), std::move(probe));
 			child = WrapInTry(std::move(child));
 		}
@@ -361,8 +361,8 @@ static optional<LogicalType> LowerTrySubquery(ClientContext &context, Binder &bi
 			return optional<LogicalType>();
 		}
 		if (expose_error_flag) {
-			auto probe = make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_HAS_ERROR, LogicalType::BOOLEAN);
-			probe->GetChildrenMutable().push_back(expr->Copy());
+			auto probe = make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_HAS_ERROR, LogicalType::BOOLEAN,
+			                                                expr->Copy());
 			error_flag = std::move(probe);
 		}
 		expr = WrapInTry(std::move(expr));

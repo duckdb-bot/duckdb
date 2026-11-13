@@ -1,0 +1,247 @@
+# name: test/sql/subquery/any_all/test_union_null_member_quantified.test
+# description: Quantified comparisons of a UNION whose active member is NULL are NULL, as its comparison is (duckdblabs/bot-issue-tracker#688)
+# group: [any_all]
+
+statement ok
+CREATE TABLE u(x UNION(s VARCHAR));
+
+statement ok
+INSERT INTO u VALUES (union_value(s := NULL::VARCHAR)), ('a');
+
+statement ok
+CREATE TABLE v(y UNION(s VARCHAR));
+
+statement ok
+INSERT INTO v VALUES ('b'), ('c');
+
+query TIIIII
+SELECT x, x < 'b'::UNION(s VARCHAR), x < ANY (SELECT y FROM v), x IN (SELECT y FROM v), x < ALL (SELECT y FROM v),
+       x <> ALL (SELECT y FROM v)
+FROM u ORDER BY x;
+----
+a	true	true	false	true	true
+NULL	NULL	NULL	NULL	NULL	NULL
+
+query I
+SELECT count(*) FROM u WHERE x NOT IN (SELECT y FROM v);
+----
+1
+
+query I
+SELECT count(*) FROM u WHERE NOT (x < ANY (SELECT y FROM v));
+----
+0
+
+# every quantified comparison against the three-valued result of its comparisons, for UNIONs with NULL members, other
+# tags, NULL values and empty sets
+statement ok
+CREATE TABLE l(id INTEGER, x UNION(i INTEGER, s VARCHAR));
+
+statement ok
+INSERT INTO l VALUES (1, union_value(s := NULL::VARCHAR)), (2, union_value(s := 'a')), (3, union_value(i := NULL::INTEGER)),
+	(4, union_value(i := 1)), (5, NULL);
+
+statement ok
+CREATE TABLE r(g INTEGER, y UNION(i INTEGER, s VARCHAR));
+
+statement ok
+INSERT INTO r VALUES (1, union_value(s := 'b')), (1, union_value(s := 'c')), (2, union_value(s := 'b')), (2, NULL),
+	(3, union_value(i := 2)), (4, union_value(s := NULL::VARCHAR)), (4, union_value(i := 0)), (6, union_value(s := 'a'));
+
+loop g 1 7
+
+foreach op < <= > >= = <>
+
+query I
+SELECT count(*) FROM l
+WHERE (l.x {op} ANY (SELECT y FROM r WHERE r.g = {g})) IS DISTINCT FROM
+	(SELECT CASE WHEN bool_or(l.x {op} y) THEN true WHEN bool_or((l.x {op} y) IS NULL) THEN NULL ELSE false END
+	 FROM r WHERE r.g = {g});
+----
+0
+
+query I
+SELECT count(*) FROM l
+WHERE (l.x {op} ALL (SELECT y FROM r WHERE r.g = {g})) IS DISTINCT FROM
+	(SELECT CASE WHEN bool_or(NOT (l.x {op} y)) THEN false WHEN bool_or((l.x {op} y) IS NULL) THEN NULL ELSE true END
+	 FROM r WHERE r.g = {g});
+----
+0
+
+endloop
+
+endloop
+
+# IN and NOT IN
+query II
+SELECT id, x IN (SELECT y FROM r WHERE r.g = 1) FROM l ORDER BY id;
+----
+1	NULL
+2	false
+3	false
+4	false
+5	NULL
+
+query I
+SELECT list(id ORDER BY id) FROM l WHERE x NOT IN (SELECT y FROM r WHERE r.g = 1);
+----
+[2, 3, 4]
+
+# inputs above the nested loop join threshold, which a range join would compare by the order of the UNIONs
+statement ok
+CREATE TABLE ones AS SELECT union_value(i := 1)::UNION(i INTEGER, s VARCHAR) x FROM range(10);
+
+statement ok
+CREATE TABLE null_members AS SELECT union_value(i := NULL::INTEGER)::UNION(i INTEGER, s VARCHAR) y FROM range(10);
+
+query III
+SELECT count(*) FILTER (m), count(*) FILTER (NOT m), count(*) FILTER (m IS NULL)
+FROM (SELECT x < ANY (SELECT y FROM null_members) m FROM ones);
+----
+0	0	10
+
+query I
+SELECT count(*) FROM ones WHERE x < ANY (SELECT y FROM null_members);
+----
+0
+
+query I
+SELECT count(*) FROM ones JOIN null_members ON ones.x < null_members.y;
+----
+0
+
+# joins on an inequality of UNIONs against the comparison of every pair
+statement ok
+CREATE TABLE jl AS SELECT CASE i % 4 WHEN 0 THEN union_value(i := NULL::INTEGER) WHEN 1 THEN union_value(i := i)
+	WHEN 2 THEN union_value(s := i::VARCHAR) ELSE NULL END::UNION(i INTEGER, s VARCHAR) x FROM range(40) t(i);
+
+statement ok
+CREATE TABLE jr AS SELECT CASE i % 5 WHEN 0 THEN union_value(s := NULL::VARCHAR) WHEN 1 THEN union_value(i := i)
+	WHEN 2 THEN union_value(s := i::VARCHAR) WHEN 3 THEN union_value(i := NULL::INTEGER) ELSE union_value(i := -i)
+	END::UNION(i INTEGER, s VARCHAR) y FROM range(50) t(i);
+
+foreach op < <= > >=
+
+query I
+SELECT (SELECT count(*) FROM jl JOIN jr ON jl.x {op} jr.y) - (SELECT count(*) FROM jl, jr WHERE (jl.x {op} jr.y) IS TRUE);
+----
+0
+
+query I
+SELECT count(*) FROM jl
+WHERE (x {op} ANY (SELECT y FROM jr)) IS DISTINCT FROM
+	(SELECT CASE WHEN bool_or(jl.x {op} y) THEN true WHEN bool_or((jl.x {op} y) IS NULL) THEN NULL ELSE false END FROM jr);
+----
+0
+
+query I
+SELECT (SELECT count(*) FROM jl WHERE x {op} ANY (SELECT y FROM jr)) -
+	(SELECT count(*) FROM jl WHERE (SELECT bool_or(jl.x {op} y) FROM jr));
+----
+0
+
+endloop
+
+# IN of a large right side: only a NULL member of the same tag makes a missing UNION UNKNOWN
+statement ok
+CREATE TABLE many AS SELECT union_value(i := r::INTEGER)::UNION(i INTEGER, s VARCHAR) y FROM range(100000) t(r)
+UNION ALL SELECT union_value(s := NULL::VARCHAR);
+
+statement ok
+CREATE TABLE probes AS SELECT union_value(i := (r * 2)::INTEGER)::UNION(i INTEGER, s VARCHAR) x FROM range(100000) t(r)
+UNION ALL SELECT union_value(s := 'a') UNION ALL SELECT union_value(i := NULL::INTEGER);
+
+query III
+SELECT count(*) FILTER (m), count(*) FILTER (NOT m), count(*) FILTER (m IS NULL)
+FROM (SELECT x IN (SELECT y FROM many) m FROM probes);
+----
+50000	50000	2
+
+query I
+SELECT count(*) FROM probes WHERE x NOT IN (SELECT y FROM many);
+----
+50000
+
+
+# a join with other conditions next to a UNION inequality keeps its plan
+statement ok
+CREATE TABLE ml AS SELECT i k, i a, i + 1 b, union_value(i := 1)::UNION(i INTEGER, s VARCHAR) x,
+	union_value(i := 1)::UNION(i INTEGER, s VARCHAR) z FROM range(10) t(i);
+
+statement ok
+CREATE TABLE mr AS SELECT i k, i + 1 a, i b, union_value(i := NULL::INTEGER)::UNION(i INTEGER, s VARCHAR) y,
+	union_value(i := NULL::INTEGER)::UNION(i INTEGER, s VARCHAR) w FROM range(10) t(i);
+
+statement ok
+SET prefer_range_joins = true;
+
+statement ok
+SET merge_join_threshold = 0;
+
+query I
+SELECT count(*) FROM ml JOIN mr ON ml.k = mr.k AND ml.a < mr.a AND ml.b > mr.b AND ml.x < mr.y;
+----
+0
+
+query I
+SELECT count(*) FROM ml JOIN mr ON ml.k = mr.k AND ml.a < mr.a AND ml.x < mr.y AND ml.z < mr.w;
+----
+0
+
+statement ok
+RESET prefer_range_joins;
+
+statement ok
+RESET merge_join_threshold;
+
+# members that are a STRUCT, compared as a STRUCT, or a UNION, which can itself compare as NULL
+statement ok
+CREATE TABLE nested_members(id INTEGER, x UNION(m STRUCT(n INTEGER), u UNION(j INTEGER), i INTEGER));
+
+statement ok
+INSERT INTO nested_members VALUES (0, union_value(m := NULL::STRUCT(n INTEGER))), (1, union_value(m := {'n': NULL::INTEGER})),
+	(2, union_value(m := {'n': 1})), (3, union_value(u := NULL::UNION(j INTEGER))),
+	(4, union_value(u := union_value(j := NULL::INTEGER))), (5, union_value(u := union_value(j := 1))),
+	(6, union_value(i := NULL::INTEGER)), (7, union_value(i := 1)), (8, NULL);
+
+foreach op = < <>
+
+loop k 0 10
+
+query I
+SELECT count(*) FROM nested_members a
+WHERE (x {op} ANY (SELECT x FROM nested_members WHERE id = {k} OR {k} = 9)) IS DISTINCT FROM
+	(SELECT CASE WHEN bool_or(a.x {op} b.x) THEN true WHEN bool_or((a.x {op} b.x) IS NULL) THEN NULL ELSE false END
+	 FROM nested_members b WHERE b.id = {k} OR {k} = 9);
+----
+0
+
+endloop
+
+endloop
+
+# a recursive CTE runs the MARK join again in every iteration, against a right side that changes
+statement ok
+CREATE TABLE p(x UNION(i INTEGER, s VARCHAR));
+
+statement ok
+INSERT INTO p VALUES (union_value(i := NULL::INTEGER)), (union_value(i := 9)), (union_value(s := NULL::VARCHAR)),
+	(union_value(s := 'z')), (NULL);
+
+query II
+WITH RECURSIVE rec(n, err) AS (
+	SELECT 0, 0::BIGINT
+	UNION ALL
+	SELECT n + 1, (SELECT count(*) FROM
+		(SELECT x IN (SELECT CASE n % 5 WHEN 0 THEN NULL::UNION(i INTEGER, s VARCHAR)
+			WHEN 1 THEN union_value(i := NULL::INTEGER)::UNION(i INTEGER, s VARCHAR)
+			WHEN 2 THEN union_value(s := 'a')::UNION(i INTEGER, s VARCHAR)
+			ELSE union_value(i := 1)::UNION(i INTEGER, s VARCHAR) END FROM rec r WHERE r.n % 5 <> 4) got, x FROM p) a
+		WHERE got IS DISTINCT FROM CASE WHEN rec.n % 5 = 4 THEN false WHEN rec.n % 5 = 0 OR x IS NULL THEN NULL
+			WHEN rec.n % 5 = 1 AND union_tag(x) = 'i' THEN NULL WHEN rec.n % 5 = 2 AND union_tag(x) = 's' AND x.s IS NULL THEN NULL
+			WHEN rec.n % 5 = 3 AND union_tag(x) = 'i' AND x.i IS NULL THEN NULL ELSE false END)
+	FROM rec WHERE n < 14
+)
+SELECT count(*), sum(err) FROM rec;
+----
+15	0

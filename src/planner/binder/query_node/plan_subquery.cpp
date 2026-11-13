@@ -186,7 +186,7 @@ static unique_ptr<Expression> PlanExtremumRewrite(Binder &binder, BoundSubqueryE
 	// the extremum is taken after the cast when the cast changes the order, except to a UNION, which turns a NULL
 	// into a member that the extremum would not ignore
 	if (compare_type.id() != LogicalTypeId::UNION && CastChangesOrder(child_type, compare_type)) {
-		min_max_child = BoundCastExpression::AddDefaultCastToType(std::move(min_max_child), compare_type);
+		min_max_child = BoundCastExpression::AddCastToType(binder.context, std::move(min_max_child), compare_type);
 	}
 	// The comparison may carry a collation the subquery column does not, and the extremum has to be taken
 	// under that collation, so it is pushed here. BIT and VARIANT are the exception: min/max pushes its own

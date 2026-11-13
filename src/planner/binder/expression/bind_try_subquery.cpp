@@ -26,8 +26,8 @@
 namespace duckdb {
 
 static unique_ptr<Expression> WrapInTry(unique_ptr<Expression> child) {
-	auto result = make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_TRY, child->GetReturnType());
-	result->GetChildrenMutable().push_back(std::move(child));
+	auto result =
+	    make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_TRY, child->GetReturnType(), std::move(child));
 	return std::move(result);
 }
 
@@ -150,8 +150,8 @@ bool ExpressionBinder::GateTryAggregates(const ParsedExpression &location, Logic
 	for (auto position : aggregate_positions) {
 		auto &aggr_expr = aggregate.expressions[position]->Cast<BoundAggregateExpression>();
 		for (auto &child : aggr_expr.GetChildrenMutable()) {
-			auto probe = make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_HAS_ERROR, LogicalType::BOOLEAN);
-			probe->GetChildrenMutable().push_back(child->Copy());
+			auto probe = make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_HAS_ERROR, LogicalType::BOOLEAN,
+			                                                child->Copy());
 			gate = OrErrorFlags(std::move(gate), std::move(probe));
 			child = WrapInTry(std::move(child));
 		}
@@ -352,8 +352,8 @@ optional<LogicalType> ExpressionBinder::LowerTrySubquery(const ParsedExpression 
 			return optional<LogicalType>();
 		}
 		if (expose_error_flag) {
-			auto probe = make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_HAS_ERROR, LogicalType::BOOLEAN);
-			probe->GetChildrenMutable().push_back(expr->Copy());
+			auto probe = make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_HAS_ERROR, LogicalType::BOOLEAN,
+			                                                expr->Copy());
 			error_flag = std::move(probe);
 		}
 		expr = WrapInTry(std::move(expr));
@@ -448,7 +448,7 @@ struct TrySubqueryBindState {
 //! flattened subplan and referenced as a column, so the TRY input and its HAS_ERROR probe observe one
 //! consistent value.
 BindResult ExpressionBinder::BindTrySubquery(OperatorExpression &op, idx_t depth) {
-	D_ASSERT(op.GetChildrenMutable().size() == 1);
+	D_ASSERT(op.GetChildren().size() == 1);
 	auto &child = op.GetChildrenMutable()[0];
 	auto &subquery_expr = child->Cast<SubqueryExpression>();
 	D_ASSERT(subquery_expr.GetSubqueryType() == SubqueryType::SCALAR);

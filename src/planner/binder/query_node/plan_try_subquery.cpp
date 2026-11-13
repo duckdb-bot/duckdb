@@ -3,10 +3,7 @@
 #include "duckdb/catalog/catalog_entry/scalar_function_catalog_entry.hpp"
 #include "duckdb/function/function_binder.hpp"
 #include "duckdb/function/scalar/generic_functions.hpp"
-#include "duckdb/parser/expression/operator_expression.hpp"
-#include "duckdb/parser/expression/subquery_expression.hpp"
-#include "duckdb/parser/query_node/select_node.hpp"
-#include "duckdb/parser/statement/select_statement.hpp"
+#include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
 #include "duckdb/planner/expression/bound_case_expression.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
@@ -15,8 +12,6 @@
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/expression/bound_operator_expression.hpp"
 #include "duckdb/planner/expression/bound_subquery_expression.hpp"
-#include "duckdb/planner/binder.hpp"
-#include "duckdb/planner/expression_binder.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/planner/operator/logical_aggregate.hpp"
 #include "duckdb/planner/operator/logical_projection.hpp"
@@ -31,7 +26,7 @@ static unique_ptr<Expression> WrapInTry(unique_ptr<Expression> child) {
 	return std::move(result);
 }
 
-//! Match the use-site re-raise PlanSubquery creates for a subquery lowered with an exposed error flag
+//! Match the use-site re-raise PlanSubquery creates for a subquery planned with an exposed error flag
 static bool IsTryErrorRethrow(const Expression &expr) {
 	if (expr.GetExpressionClass() != ExpressionClass::BOUND_FUNCTION) {
 		return false;
@@ -93,7 +88,7 @@ static unique_ptr<Expression> OrErrorFlags(unique_ptr<Expression> gate, unique_p
 	return make_uniq<BoundConjunctionExpression>(ExpressionType::CONJUNCTION_OR, std::move(gate), std::move(flag));
 }
 
-//! Find the aggregate node of the TRY select node by its recorded table index. The search traverses
+//! Find the aggregate node of the select node by its recorded table index. The search traverses
 //! joins that subquery flattening may have inserted between the select list and the aggregate.
 static optional_ptr<LogicalAggregate> FindAggregateOperator(LogicalOperator &op, TableIndex aggregate_index) {
 	if (op.type == LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY) {
@@ -111,9 +106,11 @@ static optional_ptr<LogicalAggregate> FindAggregateOperator(LogicalOperator &op,
 	return nullptr;
 }
 
-bool ExpressionBinder::GateTryAggregates(const ParsedExpression &location, LogicalAggregate &aggregate,
-                                         const vector<idx_t> &aggregate_positions, bool strict,
-                                         unique_ptr<Expression> &gate) {
+//! Wrap the inputs of the gated aggregates in TRY and aggregate HAS_ERROR probes over them. Sets gate to a column
+//! reference to the probe aggregate, or to nullptr when the aggregates have no inputs. Returns false when a shape
+//! cannot be gated and strict is unset (throws otherwise).
+static bool GateTryAggregates(ClientContext &context, const Expression &location, LogicalAggregate &aggregate,
+                              const vector<idx_t> &aggregate_positions, bool strict, unique_ptr<Expression> &gate) {
 	// validate every position before mutating anything, so a non-strict caller can still fall back to
 	// the plain subquery
 	for (auto position : aggregate_positions) {
@@ -170,7 +167,7 @@ bool ExpressionBinder::GateTryAggregates(const ParsedExpression &location, Logic
 	FunctionBinder function_binder(context);
 	auto gate_aggregate = function_binder.BindAggregateFunction(bool_or, std::move(gate_children), error);
 	if (!gate_aggregate) {
-		error.AddQueryLocation(location);
+		error.AddQueryLocation(location.GetQueryLocation());
 		error.Throw();
 	}
 	ColumnBinding gate_binding(aggregate.aggregate_index, ProjectionIndex(aggregate.expressions.size()));
@@ -179,39 +176,34 @@ bool ExpressionBinder::GateTryAggregates(const ParsedExpression &location, Logic
 	return true;
 }
 
-optional<LogicalType> ExpressionBinder::LowerTrySubquery(const ParsedExpression &location,
-                                                         const TrySubqueryPlanIndexes &indexes, LogicalOperator &root,
-                                                         bool expose_error_flag, bool tolerant) {
-	D_ASSERT(indexes.recorded);
-	// a fallback to the plain subquery would strand the re-raises of nested subqueries that were already
-	// lowered with an exposed flag, so such shapes are reported even when a fallback is allowed
-	const bool strict = !tolerant || indexes.nested_transport;
-	// walk from the plan root to the select list projection of the TRY select node
-	auto binding = root.GetColumnBindings()[0];
+//! The select item of a subquery under TRY, located in its plan
+struct TrySubquerySelectItem {
+	//! The select list projection of the select node
+	optional_ptr<LogicalProjection> projection;
+	//! The column of the item in that projection
+	ColumnBinding binding;
+	//! Whether ORDER BY, DISTINCT or a prune projection above the projection references its columns
+	bool has_result_modifiers = false;
+};
+
+//! Walk from the plan root to the select list projection recorded for the select node
+static TrySubquerySelectItem FindTrySubquerySelectItem(LogicalOperator &root, const TrySubqueryPlanIndexes &indexes) {
+	TrySubquerySelectItem result;
+	result.binding = root.GetColumnBindings()[0];
 	reference<LogicalOperator> current(root);
-	optional_ptr<LogicalProjection> select_projection;
-	while (!select_projection) {
+	while (!result.projection) {
 		auto &current_op = current.get();
 		switch (current_op.type) {
 		case LogicalOperatorType::LOGICAL_ORDER_BY:
 		case LogicalOperatorType::LOGICAL_TOP_N:
-			if (expose_error_flag) {
-				// these modifiers reference or deduplicate the select list column; a struct transport
-				// would leave their references scalar or change DISTINCT semantics (an error-masked
-				// NULL must not be distinguishable from a plain NULL)
-				if (strict) {
-					throw BinderException(location, "TRY over a subquery with result modifiers is only supported "
-					                                "when the subquery is the direct argument of TRY");
-				}
-				return optional<LogicalType>();
-			}
+			// these modifiers reference the select list column
+			result.has_result_modifiers = true;
 			current = *current_op.children[0];
 			continue;
 		case LogicalOperatorType::LOGICAL_LIMIT:
-			// constant LIMIT and OFFSET forward the child columns without referencing them; a LIMIT
-			// computed by a scalar subquery adds a hidden select list entry and is handled by the
-			// prune rejection below. USING SAMPLE attaches below the select list projection and never
-			// appears on this path
+			// constant LIMIT and OFFSET forward the child columns without referencing them. A LIMIT computed by a
+			// scalar subquery adds a hidden select list entry and prunes. USING SAMPLE attaches below the select
+			// list projection and never appears on this path
 			current = *current_op.children[0];
 			continue;
 		case LogicalOperatorType::LOGICAL_MATERIALIZED_CTE:
@@ -220,59 +212,76 @@ optional<LogicalType> ExpressionBinder::LowerTrySubquery(const ParsedExpression 
 		case LogicalOperatorType::LOGICAL_PROJECTION: {
 			auto &projection = current_op.Cast<LogicalProjection>();
 			if (projection.table_index == indexes.prune_index) {
-				if (expose_error_flag) {
-					// pruning accompanies hidden select list entries (ORDER BY columns or a LIMIT
-					// computed by a scalar subquery), whose references would stay typed scalar
-					if (strict) {
-						throw BinderException(location, "TRY over a subquery with result modifiers is only supported "
-						                                "when the subquery is the direct argument of TRY");
-					}
-					return optional<LogicalType>();
-				}
-				// the prune projection forwards the select list columns
-				binding = projection.expressions[binding.column_index]->Cast<BoundColumnRefExpression>().Binding();
+				// pruning accompanies hidden select list entries (ORDER BY columns or a LIMIT computed by a scalar
+				// subquery), the prune projection forwards the select list columns
+				result.has_result_modifiers = true;
+				result.binding =
+				    projection.expressions[result.binding.column_index]->Cast<BoundColumnRefExpression>().Binding();
 				current = *projection.children[0];
 				continue;
 			}
 			if (indexes.distinct_index.IsValid() && projection.table_index == indexes.distinct_index) {
 				// DISTINCT: a projection over the aggregate that deduplicates the select list
-				if (expose_error_flag) {
-					// a struct transport would change DISTINCT semantics (an error-masked NULL must not be
-					// distinguishable from a plain NULL)
-					if (strict) {
-						throw BinderException(location, "TRY over a subquery with result modifiers is only supported "
-						                                "when the subquery is the direct argument of TRY");
-					}
-					return optional<LogicalType>();
-				}
+				result.has_result_modifiers = true;
 				// look through the DISTINCT to the select list column it forwards
 				auto &distinct_aggregate = projection.children[0]->Cast<LogicalAggregate>();
 				auto distinct_binding =
-				    projection.expressions[binding.column_index]->Cast<BoundColumnRefExpression>().Binding();
+				    projection.expressions[result.binding.column_index]->Cast<BoundColumnRefExpression>().Binding();
 				reference<Expression> source(distinct_binding.table_index == distinct_aggregate.group_index
 				                                 ? *distinct_aggregate.groups[distinct_binding.column_index]
 				                                 : *distinct_aggregate.expressions[distinct_binding.column_index]);
 				if (source.get().GetExpressionClass() == ExpressionClass::BOUND_AGGREGATE) {
 					source = *source.get().Cast<BoundAggregateExpression>().GetChildren()[0];
 				}
-				binding = source.get().Cast<BoundColumnRefExpression>().Binding();
+				result.binding = source.get().Cast<BoundColumnRefExpression>().Binding();
 				current = *distinct_aggregate.children[0];
 				continue;
 			}
 			if (projection.table_index != indexes.projection_index) {
 				throw InternalException("TRY subquery: unexpected projection above the select list");
 			}
-			select_projection = &projection;
+			result.projection = &projection;
 			continue;
 		}
 		default:
 			throw InternalException("TRY subquery: unexpected operator above the select list projection");
 		}
 	}
+	return result;
+}
 
-	// classify the projected expression against the recorded indexes of the TRY select node, so that
-	// the lowering never crosses into derived tables, flattened subqueries or other query levels
-	auto &expr = select_projection->expressions[binding.column_index];
+//! Push TRY onto the maskable positions of the select item, before the subquery is flattened. A plain projection
+//! gets TRY on the projected expression, which yields NULL under the one-row contract of a scalar subquery. An
+//! aggregating item is gated on HAS_ERROR probes of the aggregate inputs, so an input error anywhere turns the
+//! aggregated result into NULL instead of a partially aggregated value, while an error inside aggregate execution
+//! itself propagates. Nested scalar subqueries were planned with an exposed error flag and re-raise their errors
+//! into these positions, unless their shape made them fall back to the plain subquery. Errors outside the maskable
+//! positions (the WHERE clause, aggregate or window arguments, the one-row cardinality check) propagate deliberately,
+//! and volatile computation inside a maskable position is rejected. With an exposed error flag the item becomes a
+//! struct of the masked value and the flag for the use site to re-raise, and that struct type is returned. The
+//! optional stays empty without a flag, and when the shape is not coverable and the lowering may fall back.
+static optional<LogicalType> LowerTrySubquery(ClientContext &context, Binder &binder, const Expression &location,
+                                              const TrySubqueryPlanIndexes &indexes, TrySubquerySelectItem &item,
+                                              TrySubqueryLowering lowering) {
+	// a fallback to the plain subquery would strand the re-raises of nested subqueries that were already planned
+	// with an exposed flag, so such shapes are reported even when a fallback is allowed
+	const bool strict = lowering != TrySubqueryLowering::TRANSPORT || indexes.nested_transport;
+	const bool expose_error_flag = lowering != TrySubqueryLowering::DIRECT;
+	if (expose_error_flag && item.has_result_modifiers) {
+		// the modifiers reference or deduplicate the select list column. A struct transport would leave their
+		// references scalar or change DISTINCT semantics (an error-masked NULL must not be distinguishable from a
+		// plain NULL)
+		if (strict) {
+			throw BinderException(location, "TRY over a subquery with result modifiers is only supported when the "
+			                                "subquery is the direct argument of TRY");
+		}
+		return optional<LogicalType>();
+	}
+
+	// classify the projected expression against the recorded indexes of the select node, so that the lowering
+	// never crosses into derived tables, flattened subqueries or other query levels
+	auto &select_projection = *item.projection;
+	auto &expr = select_projection.expressions[item.binding.column_index];
 	vector<ColumnBinding> refs;
 	ExpressionIterator::VisitExpression<BoundColumnRefExpression>(*expr, [&](const BoundColumnRefExpression &colref) {
 		if (colref.Depth() == 0) {
@@ -301,11 +310,11 @@ optional<LogicalType> ExpressionBinder::LowerTrySubquery(const ParsedExpression 
 			aggregate_positions.push_back(ref.column_index);
 		}
 	}
-	// error_flag is only produced when the caller re-raises captured errors at the use site
+	// error_flag is only produced when the use site re-raises captured errors
 	unique_ptr<Expression> error_flag;
 	if (!aggregate_positions.empty()) {
 		// the select item aggregates in this node: gate it on HAS_ERROR probes of the aggregate inputs
-		auto aggregate = FindAggregateOperator(*select_projection->children[0], indexes.aggregate_index);
+		auto aggregate = FindAggregateOperator(*select_projection.children[0], indexes.aggregate_index);
 		if (!aggregate) {
 			throw InternalException("TRY subquery: the aggregate node was not found below the select list");
 		}
@@ -313,7 +322,7 @@ optional<LogicalType> ExpressionBinder::LowerTrySubquery(const ParsedExpression 
 		aggregate_positions.erase(std::unique(aggregate_positions.begin(), aggregate_positions.end()),
 		                          aggregate_positions.end());
 		unique_ptr<Expression> gate;
-		if (!GateTryAggregates(location, *aggregate, aggregate_positions, strict, gate)) {
+		if (!GateTryAggregates(context, location, *aggregate, aggregate_positions, strict, gate)) {
 			return optional<LogicalType>();
 		}
 		// re-raises of nested subqueries next to the aggregates have no consuming TRY above them: their
@@ -359,7 +368,7 @@ optional<LogicalType> ExpressionBinder::LowerTrySubquery(const ParsedExpression 
 		expr = WrapInTry(std::move(expr));
 	}
 	if (!expose_error_flag) {
-		return expr->GetReturnType();
+		return optional<LogicalType>();
 	}
 	if (!error_flag) {
 		error_flag = make_uniq<BoundConstantExpression>(Value::BOOLEAN(false));
@@ -377,84 +386,51 @@ optional<LogicalType> ExpressionBinder::LowerTrySubquery(const ParsedExpression 
 	FunctionBinder function_binder(context);
 	auto packed = function_binder.BindScalarFunction(struct_pack, std::move(pack_children), error, false, &binder);
 	if (!packed) {
-		error.AddQueryLocation(location);
+		error.AddQueryLocation(location.GetQueryLocation());
 		error.Throw();
 	}
 	auto struct_type = packed->GetReturnType();
-	select_projection->expressions[binding.column_index] = std::move(packed);
+	select_projection.expressions[item.binding.column_index] = std::move(packed);
 	return struct_type;
 }
 
-void ExpressionBinder::CheckTrySubqueryNode(const SubqueryExpression &subquery_expr, const ParsedExpression &location) {
-	if (subquery_expr.Subquery()->node->type != QueryNodeType::SELECT_NODE) {
-		throw BinderException(location, "TRY over a subquery is only supported for plain SELECT subqueries");
-	}
-}
-
-//! A select item that is itself a scalar subquery takes the direct TRY lowering recursively: unlike the
-//! exposed-flag transport, the direct form also covers result modifiers inside the nested subquery
-static void PushTryIntoBareSubqueryItem(SubqueryExpression &subquery_expr) {
-	auto &node = *subquery_expr.SubqueryMutable()->node;
-	D_ASSERT(node.type == QueryNodeType::SELECT_NODE);
-	auto &select_node = node.Cast<SelectNode>();
-	if (select_node.select_list.size() != 1) {
-		return;
-	}
-	auto &select_item = select_node.select_list[0];
-	if (select_item->GetExpressionClass() != ExpressionClass::SUBQUERY ||
-	    select_item->Cast<SubqueryExpression>().GetSubqueryType() != SubqueryType::SCALAR) {
-		return;
-	}
-	auto alias = select_item->GetAlias();
-	auto try_item = make_uniq<OperatorExpression>(ExpressionType::OPERATOR_TRY);
-	try_item->SetQueryLocation(select_item->GetQueryLocation());
-	try_item->GetChildrenMutable().push_back(std::move(select_item));
-	if (!alias.empty()) {
-		try_item->SetAlias(alias);
-	}
-	select_item = std::move(try_item);
-}
-
-//! TRY over a scalar subquery binds the subquery as an ordinary subquery and lowers the TRY onto the bound
-//! plan before the subquery is flattened, so names, types, overloads and aggregate ownership resolve exactly
-//! as without TRY. In the plain projection case, TRY moves onto the projected expression, which yields a NULL
-//! result under the one-row contract of a scalar subquery. In the aggregate case, the projected expression is
-//! gated on HAS_ERROR probes of the aggregate inputs, so that an input error anywhere turns the aggregated
-//! result into NULL instead of a partially aggregated value. The probes cover the aggregate inputs only: an
-//! error raised inside aggregate execution itself (state update, combine, finalize) propagates. Scalar
-//! subqueries nested inside the select item are lowered with an exposed error flag, so their errors turn the
-//! whole result into NULL as well; shapes whose flag cannot be transported fall back to the plain subquery.
-//! Errors raised outside the maskable positions, such as in the WHERE clause, in aggregate or window
-//! arguments or by the one-row cardinality check, propagate deliberately. Volatile computation inside a
-//! maskable position is rejected. A volatile value computed by a nested subquery is evaluated once in its
-//! flattened subplan and referenced as a column, so the TRY input and its HAS_ERROR probe observe one
-//! consistent value.
-BindResult ExpressionBinder::BindTrySubquery(OperatorExpression &op, idx_t depth) {
-	D_ASSERT(op.GetChildrenMutable().size() == 1);
-	auto &subquery_expr = op.GetChildrenMutable()[0]->Cast<SubqueryExpression>();
-	D_ASSERT(subquery_expr.GetSubqueryType() == SubqueryType::SCALAR);
-	CheckTrySubqueryNode(subquery_expr, op);
-	PushTryIntoBareSubqueryItem(subquery_expr);
-
-	// bind as an ordinary scalar subquery, so inner scopes, overload resolution and aggregate
-	// ownership resolve exactly as without TRY
-	const auto was_inside_try = inside_try;
-	inside_try = false;
-	bind_try_subquery = true;
-	auto result = BindExpression(subquery_expr, depth);
-	inside_try = was_inside_try;
-	if (result.HasError()) {
-		return result;
-	}
-	auto &bound_subquery = result.expression->Cast<BoundSubqueryExpression>();
-	if (bound_subquery.SubqueryMutable().plan) {
-		auto &indexes = bound_subquery.GetBinder()->GetTrySubqueryPlanIndexes();
-		if (!indexes.recorded) {
-			throw InternalException("TRY subquery: no plan indexes were recorded for the top select node");
+optional<LogicalType> Binder::PlanTrySubquery(const BoundSubqueryExpression &expr, LogicalOperator &root,
+                                              TrySubqueryLowering lowering) {
+	auto &indexes = try_subquery_plan_indexes;
+	D_ASSERT(IsUnderTry() && indexes.recorded);
+	auto item = FindTrySubquerySelectItem(root, indexes);
+	auto &select_projection = *item.projection;
+	auto &item_expr = select_projection.expressions[item.binding.column_index];
+	auto &item_root = select_projection.children[0];
+	if (indexes.item_group.IsValid()) {
+		// GROUP BY moved a scalar subquery item into this group, which takes the direct lowering like a bare item.
+		// Any other lowering plans the group as it is, since a group is computed outside the maskable positions
+		auto aggregate = FindAggregateOperator(*item_root, indexes.aggregate_index);
+		if (!aggregate) {
+			throw InternalException(
+			    "TRY subquery: the aggregate node holding the group of the select item was not found");
 		}
-		LowerTrySubquery(op, indexes, *bound_subquery.SubqueryMutable().plan, false, false);
+		auto &group = aggregate->groups[indexes.item_group];
+		auto group_lowering =
+		    lowering == TrySubqueryLowering::DIRECT ? TrySubqueryLowering::DIRECT : TrySubqueryLowering::NONE;
+		group = PlanSubquery(group->Cast<BoundSubqueryExpression>(), aggregate->children[0], group_lowering);
 	}
-	return result;
+	// plan the subqueries of the item, which CreatePlan left for this point
+	if (lowering == TrySubqueryLowering::DIRECT && item_expr->GetExpressionClass() == ExpressionClass::BOUND_SUBQUERY &&
+	    item_expr->Cast<BoundSubqueryExpression>().CanLowerTry()) {
+		// a select item that is itself a scalar subquery takes the direct lowering as well, which also covers
+		// result modifiers inside it, and leaves nothing for TRY to mask in this node
+		item_expr = PlanSubquery(item_expr->Cast<BoundSubqueryExpression>(), item_root, TrySubqueryLowering::DIRECT);
+	} else {
+		// the nested subqueries transport their error flag to the lowering of this node, if there is one
+		auto item_lowering =
+		    lowering == TrySubqueryLowering::NONE ? TrySubqueryLowering::NONE : TrySubqueryLowering::TRANSPORT;
+		PlanSubqueries(item_expr, item_root, item_lowering);
+	}
+	if (lowering == TrySubqueryLowering::NONE) {
+		return optional<LogicalType>();
+	}
+	return LowerTrySubquery(context, *this, expr, indexes, item, lowering);
 }
 
 } // namespace duckdb

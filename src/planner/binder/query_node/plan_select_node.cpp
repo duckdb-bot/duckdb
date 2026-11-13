@@ -1,6 +1,7 @@
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
+#include "duckdb/planner/expression/bound_subquery_expression.hpp"
 #include "duckdb/planner/operator/list.hpp"
 #include "duckdb/planner/operator/logical_dummy_scan.hpp"
 #include "duckdb/planner/operator/logical_limit.hpp"
@@ -26,8 +27,8 @@ bool Binder::DebugAggregateStateExportVerify(BoundSelectNode &statement, unique_
 	if (!Settings::Get<DebugVerifyAggregateStateExportSetting>(context)) {
 		return false;
 	}
-	if (IsBindingTrySubquery()) {
-		// TRY is lowered onto these aggregates after planning; the verification rewrite would hide
+	if (IsUnderTry()) {
+		// TRY is pushed onto these aggregates when the subquery is planned. The verification rewrite would hide
 		// them behind an aggregate-state export, so the error capture could no longer reach them
 		return false;
 	}
@@ -137,8 +138,8 @@ bool Binder::DebugAggregateStateExportVerify(BoundSelectNode &statement, unique_
 
 unique_ptr<LogicalOperator> Binder::CreatePlan(BoundSelectNode &statement) {
 	D_ASSERT(statement.from_table.plan);
-	if (IsBindingTrySubquery()) {
-		// record the indexes of this node, so TRY can be lowered onto exactly this node's projection
+	if (IsUnderTry()) {
+		// record the indexes of this node, so TRY can be pushed onto exactly this node's projection
 		auto &try_indexes = GetTrySubqueryPlanIndexesMutable();
 		try_indexes.recorded = true;
 		try_indexes.projection_index = statement.projection_index;
@@ -152,6 +153,19 @@ unique_ptr<LogicalOperator> Binder::CreatePlan(BoundSelectNode &statement) {
 		}
 		for (auto &entry : statement.unnests.GroupBy()) {
 			try_indexes.unnest_indexes.push_back(entry.second.index);
+		}
+		// GROUP BY can move a scalar subquery item into a group, which the item then references. The group is
+		// planned with the item, since it takes the lowering of a bare item, see PlanTrySubquery
+		auto &item = *statement.select_list[0];
+		if (item.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
+			auto &binding = item.Cast<BoundColumnRefExpression>().Binding();
+			if (binding.table_index == statement.group_index) {
+				auto &group = *statement.groups.group_expressions[binding.column_index];
+				if (group.GetExpressionClass() == ExpressionClass::BOUND_SUBQUERY &&
+				    group.Cast<BoundSubqueryExpression>().CanLowerTry()) {
+					try_indexes.item_group = binding.column_index;
+				}
+			}
 		}
 	}
 	auto root = std::move(statement.from_table.plan);
@@ -182,8 +196,13 @@ unique_ptr<LogicalOperator> Binder::CreatePlan(BoundSelectNode &statement) {
 	if (!statement.aggregates.empty() || !statement.groups.group_expressions.empty() || statement.having) {
 		if (!statement.groups.group_expressions.empty()) {
 			// visit the groups
-			for (auto &group : statement.groups.group_expressions) {
-				PlanSubqueries(group, root);
+			auto &item_group = GetTrySubqueryPlanIndexes().item_group;
+			for (idx_t group_idx = 0; group_idx < statement.groups.group_expressions.size(); group_idx++) {
+				if (item_group.IsValid() && item_group == ProjectionIndex(group_idx)) {
+					// the group holding the select item of a subquery under TRY is planned with the item
+					continue;
+				}
+				PlanSubqueries(statement.groups.group_expressions[group_idx], root);
 			}
 		}
 		// now visit all aggregate expressions
@@ -239,8 +258,13 @@ unique_ptr<LogicalOperator> Binder::CreatePlan(BoundSelectNode &statement) {
 
 	plan_unnests(statement.unnests.SelectList());
 
-	for (auto &expr : statement.select_list) {
-		PlanSubqueries(expr, root);
+	for (idx_t i = 0; i < statement.select_list.size(); i++) {
+		if (i == 0 && IsUnderTry()) {
+			// the subqueries of the select item of a subquery under TRY are planned when TRY is pushed into the
+			// subquery, since that decides how their errors are masked, see PlanTrySubquery
+			continue;
+		}
+		PlanSubqueries(statement.select_list[i], root);
 	}
 
 	auto proj = make_uniq<LogicalProjection>(statement.projection_index, std::move(statement.select_list));

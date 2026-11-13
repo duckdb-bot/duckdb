@@ -167,10 +167,9 @@ BindResult BaseSelectBinder::BindWindowExpression(WindowExpression &window, idx_
 	// bind inside the children of the window function
 	// we set the inside_window flag to true to prevent binding nested window functions
 	inside_window = true;
-	// window arguments are evaluated by the window operator, where a transported error flag has no
-	// consumer; nested subqueries in them bind as plain subqueries
-	const auto save_transport_try_errors = transport_try_errors;
-	transport_try_errors = false;
+	// window arguments are computed by the window operator, where TRY does not reach their subqueries
+	const auto was_binding_try_select_item = binding_try_select_item;
+	binding_try_select_item = false;
 	ErrorData error;
 	vector<unique_ptr<Expression>> bound_args;
 	for (auto &child : window.GetArgumentsMutable()) {
@@ -217,7 +216,7 @@ BindResult BaseSelectBinder::BindWindowExpression(WindowExpression &window, idx_
 	}
 
 	inside_window = false;
-	transport_try_errors = save_transport_try_errors;
+	binding_try_select_item = was_binding_try_select_item;
 	if (error.HasError()) {
 		// failed to bind children of window function
 		return BindResult(std::move(error));

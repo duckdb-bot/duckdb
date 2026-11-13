@@ -7,6 +7,7 @@
 #include "duckdb/common/serializer/binary_serializer.hpp"
 #include "duckdb/common/serializer/memory_stream.hpp"
 #include "duckdb/execution/expression_executor.hpp"
+#include "duckdb/function/cast/cast_function_set.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/client_data.hpp"
 #include "duckdb/main/database.hpp"
@@ -407,7 +408,11 @@ static unique_ptr<Expression> WithReboundCasts(ClientContext &context, unique_pt
 	auto try_cast = BoundCastExpression::IsTryCast(cast);
 	auto child = std::move(BoundCastExpression::ChildMutable(cast));
 	if (BoundCastExpression::IsDefaultCast(cast)) {
-		return BoundCastExpression::AddDefaultCastToType(std::move(child), target_type, try_cast);
+		// a default cast is bound anew from the built-in casts alone, as its deserialization binds it
+		CastFunctionSet default_casts;
+		auto get_input = GetCastFunctionInput::Default();
+		auto bound_cast = default_casts.GetCastFunction(child->GetReturnType(), target_type, get_input);
+		return BoundCastExpression::CreateDefault(std::move(child), target_type, std::move(bound_cast), try_cast);
 	}
 	return BoundCastExpression::AddCastToType(context, std::move(child), target_type, try_cast);
 }

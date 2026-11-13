@@ -261,7 +261,7 @@ void Executor::InitializeInternal(PhysicalOperator &plan) {
 		lock_guard<mutex> elock(executor_lock);
 		physical_plan = &plan;
 
-		this->profiler = context.services->GetQueryProfilerPtr();
+		this->profiler = context.GetContext().GetQueryProfilerPtr();
 		this->producer = scheduler.CreateProducer();
 
 		auto verify_progress = Settings::Get<DebugVerifyProgressSetting>(context);
@@ -484,7 +484,11 @@ QueryResultState Executor::ExecuteTask() {
 		}
 		if (task) {
 			// partially process the task
-			auto result = task->Execute(TaskExecutionMode::PROCESS_PARTIAL);
+			TaskExecutionResult result;
+			{
+				PipelineTask::PartialChunkBound bound(PartialChunkCount());
+				result = task->Execute(TaskExecutionMode::PROCESS_PARTIAL);
+			}
 			if (result == TaskExecutionResult::TASK_BLOCKED) {
 				task->Deschedule();
 				task.reset();
@@ -671,6 +675,11 @@ idx_t Executor::GetPipelinesProgress(ProgressData &progress) { // LCOV_EXCL_STAR
 	progress.total = 0;
 	idx_t count_invalid = 0;
 	for (auto &pipeline : pipelines) {
+		if (pipeline->GetSource()->type == PhysicalOperatorType::RESULT_COLLECTOR) {
+			// this pipeline only holds the result collector as the root of the plan: it never runs, so including it
+			// would add a row that never completes to the total
+			continue;
+		}
 		ProgressData p;
 		if (!pipeline->GetProgress(p)) {
 			count_invalid++;
@@ -710,6 +719,21 @@ bool Executor::ResultStoreCanPark() {
 	auto buffer = GetResultBuffer();
 	// The store was settled on retained at submission: producers append and never park
 	return !buffer || buffer->Lifetime() != ResultLifetime::RETAINED;
+}
+
+idx_t Executor::PartialChunkCount() {
+	// A thread that runs tasks here while worker threads produce a streaming result is that result's consumer: the
+	// producers park as soon as the buffer is full, and only its pop frees them. When a unit nearly fills the buffer,
+	// one unit fits at a time, so after every pop the consumer reschedules a producer, finds the buffer empty and
+	// takes a task - often the one it just rescheduled, before the woken worker gets to it. A full slice then stalls
+	// the whole pipeline for its length while every worker finishes its unit and parks. The consumer therefore runs
+	// one chunk per slice and returns to its buffer. A thread with no workers to wait for keeps the full slice:
+	// NumberOfThreads counts the external threads too, so only a count above them means workers exist
+	auto external_threads = Settings::Get<ExternalThreadsSetting>(context);
+	if (TaskScheduler::GetScheduler(context).NumberOfThreads() > external_threads && ResultStoreCanPark()) {
+		return 1;
+	}
+	return PipelineTask::PARTIAL_CHUNK_COUNT;
 }
 
 bool Executor::ResultCollectorIsBlocked() {

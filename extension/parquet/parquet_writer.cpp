@@ -118,11 +118,11 @@ public:
 	}
 
 	data_ptr_t Ptr() override {
-		return bloom_filter->Get()->ptr;
+		return bloom_filter->Get()->GetCurrentLoc();
 	}
 
 	idx_t Size() const override {
-		return bloom_filter->Get()->len;
+		return bloom_filter->Get()->GetLength();
 	}
 
 private:
@@ -536,7 +536,7 @@ ParquetWriter::ParquetWriter(ClientContext &context, FileSystem &fs, ParquetWrit
     : context(context), options(std::move(options_p)), metadata_arena(BufferAllocator::Get(context)),
       file_meta_data(metadata_arena) {
 	// initialize the file writer
-	writer = make_uniq<AsyncFileWriter>(context.Services(), fs, options.file_name.c_str(), options.open_flags);
+	writer = make_uniq<AsyncFileWriter>(context.GetContext(), fs, options.file_name.c_str(), options.open_flags);
 
 	if (options.encryption_config) {
 		// Get the encryption util
@@ -1485,7 +1485,7 @@ void ParquetWriter::FlushBloomFilters() {
 		D_ASSERT(!options.encryption_config);
 		// write nonsense bloom filter header
 		duckdb_parquet::BloomFilterHeader filter_header;
-		const auto bloom_filter_size = bloom_filter_entry.bloom_filter->Get()->len;
+		const auto bloom_filter_size = bloom_filter_entry.bloom_filter->Get()->GetLength();
 		filter_header.numBytes = NumericCast<int32_t>(bloom_filter_size);
 		filter_header.algorithm.__set_BLOCK(duckdb_parquet::SplitBlockAlgorithm());
 		filter_header.compression.__set_UNCOMPRESSED(duckdb_parquet::Uncompressed());
@@ -1550,7 +1550,7 @@ void ParquetWriter::Finalize() {
 	}
 
 	// Add geoparquet metadata to the file metadata
-	if (geoparquet_data && GeoParquetFileMetadata::IsGeoParquetConversionEnabled(context.Services()) &&
+	if (geoparquet_data && GeoParquetFileMetadata::IsGeoParquetConversionEnabled(context.GetContext()) &&
 	    GetGeoParquetVersion() != GeoParquetVersion::NONE) {
 		geoparquet_data->Write(file_meta_data);
 	}

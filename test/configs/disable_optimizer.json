@@ -284,6 +284,12 @@
       "reason": "Without optimizer cardinality estimates the probe consumer is kept materialized by cost, so no cycle demotion occurs.",
       "paths": [
         "test/sql/cte/materialized/cte_buffered_consumer_cycle_demotion.test"      ]
+    },
+    {
+      "reason": "Checks that serializer verification keeps the join filter pushdown of late materialization, which the optimizer creates",
+      "paths": [
+        "test/sql/optimizer/join_filter_pushdown_verify_serializer.test"
+      ]
     }
   ]
 }

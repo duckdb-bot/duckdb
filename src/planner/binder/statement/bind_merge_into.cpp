@@ -212,7 +212,8 @@ static void MoveValuesIntoAction(unique_ptr<Expression> &expr, TableIndex proj_i
 	}
 	auto old_index = column_ref.Binding().column_index.GetIndex();
 	if (kept_columns[old_index].IsValid()) {
-		column_ref.BindingMutable().column_index = ProjectionIndex(kept_columns[old_index].GetIndex());
+		ColumnBinding kept_binding(proj_index, ProjectionIndex(kept_columns[old_index].GetIndex()));
+		expr = column_ref.WithBinding(kept_binding);
 		return;
 	}
 	auto value = std::move(old_expressions[old_index]);

@@ -70,3 +70,5 @@ benchmark/micro/pushdown/multi_key_join_filter.benchmark
 benchmark/micro/pushdown/multi_key_join_filter_covered.benchmark
 benchmark/micro/pushdown/multi_key_join_filter_holes.benchmark
 benchmark/micro/pushdown/multi_key_join_filter_wide.benchmark
+benchmark/micro/join/iejoin_band_between.benchmark
+benchmark/micro/join/iejoin_band_low_cardinality.benchmark

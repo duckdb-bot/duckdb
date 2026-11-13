@@ -244,13 +244,17 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundFuncti
 		return PropagateComparison(func, expr_ptr);
 	}
 	vector<BaseStatistics> stats;
-	stats.reserve(func.GetChildrenMutable().size());
+	stats.reserve(func.GetChildren().size());
 	bool has_invalidated_parameter = false;
 	for (auto &child : func.GetChildrenMutable()) {
 		auto stat = PropagateExpression(child);
 		// an invalidated parameter has no statistics until it is rebound at execution
 		if (child->GetExpressionType() == ExpressionType::VALUE_PARAMETER &&
 		    child->GetReturnType().id() == LogicalTypeId::SQLNULL) {
+			has_invalidated_parameter = true;
+		}
+		// neither does an input whose type depends on an unresolved parameter
+		if (!child->GetReturnType().IsComplete()) {
 			has_invalidated_parameter = true;
 		}
 		if (!stat) {

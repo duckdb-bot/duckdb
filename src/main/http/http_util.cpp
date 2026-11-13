@@ -31,6 +31,13 @@ void HTTPParams::SetTransportReuseDomain(idx_t transport_reuse_domain_p) {
 	transport_reuse_domain = transport_reuse_domain_p;
 }
 
+void HTTPParams::RequireServerCertificateVerification() {
+	override_verify_ssl = true;
+	verify_ssl = true;
+	// the domain captured at initialization described the unforced parameters; a provider recaptures a cleared one
+	transport_reuse_domain = 0;
+}
+
 HTTPHeaders::HTTPHeaders(DatabaseInstance &db) {
 	headers.insert({"User-Agent", StringUtil::Format("%s %s", db.config.UserAgent(), DuckDB::SourceID())});
 }
@@ -574,11 +581,18 @@ void HTTPParams::Initialize(optional_ptr<FileOpener> opener) {
 		}
 		http_proxy_username = Settings::Get<HTTPProxyUsernameSetting>(*db);
 		http_proxy_password = Settings::Get<HTTPProxyPasswordSetting>(*db);
+		retry_quota_throttled = Settings::Get<HTTPRetryQuotaThrottledSetting>(*db);
+		retry_throttled_wait_ms = Settings::Get<HTTPRetryThrottledWaitMsSetting>(*db);
 	}
 
 	auto context = FileOpener::TryGetContext(opener);
 	if (context && context->IsClient()) {
 		logger = context->GetLoggerPtr();
+	}
+	if (context) {
+		// A session's own value wins over the database's
+		retry_quota_throttled = Settings::Get<HTTPRetryQuotaThrottledSetting>(*context);
+		retry_throttled_wait_ms = Settings::Get<HTTPRetryThrottledWaitMsSetting>(*context);
 	}
 }
 

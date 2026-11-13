@@ -196,7 +196,7 @@ WHERE json_extract_string(j.value, '$.extra_info.Table') LIKE '%.main.pi';
 ----
 10
 
-# the cast an IN subquery adds is a default cast, which the comparison keeps as such
+# the cast an IN subquery adds to its comparison keeps the filter too
 statement ok
 SET debug_verify_serializer = true;
 

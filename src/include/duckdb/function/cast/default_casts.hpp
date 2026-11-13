@@ -12,6 +12,7 @@
 #include "duckdb/common/types/vector.hpp"
 #include "duckdb/common/helper.hpp"
 #include "duckdb/common/optional_ptr.hpp"
+#include "duckdb/common/optional_idx.hpp"
 #include "duckdb/common/query_location.hpp"
 #include "duckdb/function/scalar_function.hpp"
 
@@ -227,6 +228,10 @@ struct DefaultCasts {
 	DUCKDB_API static bool NopCast(Vector &source, Vector &result, idx_t count, CastParameters &parameters);
 	DUCKDB_API static bool TryVectorNullCast(Vector &source, Vector &result, idx_t count, CastParameters &parameters);
 	DUCKDB_API static bool ReinterpretCast(Vector &source, Vector &result, idx_t count, CastParameters &parameters);
+	//! The member of a UNION that the cast of a value into it selects, the one member with the lowest implicit cast
+	//! cost, or no index when no member or several members have it
+	DUCKDB_API static optional_idx UnionCastTargetMember(CastFunctionSet &function_set, const LogicalType &source,
+	                                                     const LogicalType &target);
 
 private:
 	static BoundCastInfo BlobCastSwitch(BindCastInput &input, const LogicalType &source, const LogicalType &target);

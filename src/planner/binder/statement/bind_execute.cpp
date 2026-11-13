@@ -83,7 +83,7 @@ PreparedExecution Binder::ResolveExecute(ExecuteStatement &stmt) {
 	result.rebind = rebind == RebindQueryInfo::ATTEMPT_TO_REBIND;
 	result.parameter_count = parameter_count;
 	// the parameters are evaluated by the EXECUTE statement itself
-	result.parameter_properties = constant_binder->GetStatementProperties();
+	result.parameter_properties = std::move(constant_binder->GetStatementProperties());
 	return result;
 }
 

@@ -264,9 +264,10 @@ bool StorageManager::WALStartCheckpoint(MetaBlockPointer meta_block, CheckpointO
 		// not holding the commit lock yet - grab it
 		guard = GetCommitLock();
 	}
-	if (ValidChecker::IsInvalidated(db.GetDatabase())) {
-		// a commit that failed while we waited for the commit lock invalidated the database
-		throw IOException("%s", ValidChecker::InvalidatedMessage(db.GetDatabase()));
+	// a commit that failed while we waited for the commit lock may have invalidated the database
+	auto invalidation_error = db.InvalidationError("checkpoint");
+	if (invalidation_error.HasError()) {
+		invalidation_error.Throw();
 	}
 	// drain under the commit lock before the checkpoint transaction starts: its snapshot would
 	// otherwise be bounded below commits whose WAL this checkpoint deletes
@@ -450,7 +451,7 @@ void SingleFileStorageManager::LoadDatabase(QueryContext context) {
 	}
 	options.io_mode = resolved_io_mode;
 	options.mmap_reserve_size = storage_options.mmap_reserve_size;
-	options.debug_initialize = config.options.debug_initialize;
+	options.debug_initialize = Settings::Get<DebugInitializeSetting>(config);
 	options.storage_version = storage_options.storage_version;
 
 	if (storage_options.encryption) {
@@ -708,8 +709,7 @@ idx_t SingleFileStorageCommitState::FlushCommit(bool sync_now) {
 		auto &writer = wal.Initialize();
 		writer.Sync();
 		storage.SetWALSize(writer.GetFileSize());
-		ValidChecker::Invalidate(storage.GetDatabase(), "Simulated crash before WAL_FLUSH write");
-		ValidChecker::Invalidate(storage.GetAttached(), "Simulated crash before WAL_FLUSH write");
+		storage.GetAttached().Invalidate("of a simulated crash", "Simulated crash before WAL_FLUSH write");
 		// Prevent `RevertCommit` from truncating the WAL so the torn records are kept for crash recovery
 		state = WALCommitState::FLUSHED;
 		throw FatalException("Simulated crash before WAL_FLUSH write");
@@ -914,8 +914,8 @@ void SingleFileStorageManager::CreateCheckpoint(QueryContext context, Checkpoint
 	auto &config = DBConfig::Get(db);
 	// We only need to checkpoint if there is anything in the WAL.
 	auto wal_size = GetWALSize();
-	auto should_checkpoint =
-	    wal_size > 0 || config.options.force_checkpoint || options.action == CheckpointAction::ALWAYS_CHECKPOINT;
+	auto should_checkpoint = wal_size > 0 || Settings::Get<DebugForceCheckpointSetting>(config) ||
+	                         options.action == CheckpointAction::ALWAYS_CHECKPOINT;
 	// Shared by the index binds before the checkpoint and by the checkpoint transaction.
 	unique_ptr<Connection> checkpoint_connection;
 	optional_ptr<ClientContext> checkpoint_context;
@@ -944,12 +944,12 @@ void SingleFileStorageManager::CreateCheckpoint(QueryContext context, Checkpoint
 
 		} catch (std::exception &ex) {
 			ErrorData error(ex);
-			if (db.IsInitialDatabase()) {
+			if (!db.SupportsScopedInvalidation()) {
 				ValidChecker::Invalidate(db.GetDatabase(), error.RawMessage());
 				throw FatalException("Failed to create checkpoint because of error: %s", error.RawMessage());
 			}
 			// A non-initial database can be detached and reattached, so scope invalidation to this db.
-			db.Invalidate(error.RawMessage());
+			db.Invalidate("checkpointing failed", error.RawMessage());
 			throw IOException("Checkpoint failed for database %s. The database has been invalidated. Original "
 			                  "error: %s",
 			                  db.GetName(), error.RawMessage());

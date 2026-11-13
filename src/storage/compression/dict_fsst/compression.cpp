@@ -97,6 +97,14 @@ idx_t DictFSSTCompressionState::Finalize() {
 	auto string_lengths_dest = AlignValue<idx_t>(symbol_table_dest + symbol_table_size);
 	auto dictionary_indices_dest = AlignValue<idx_t>(string_lengths_dest + string_lengths_space);
 
+	auto clear_gap = [&](idx_t start, idx_t end) {
+		memset(base_ptr + start, 0, end - start);
+	};
+	clear_gap(0, dictionary_dest);
+	clear_gap(dictionary_dest + dictionary_offset, symbol_table_dest);
+	clear_gap(symbol_table_dest + symbol_table_size, string_lengths_dest);
+	clear_gap(string_lengths_dest + string_lengths_space, dictionary_indices_dest);
+
 	header_ptr->mode = ConvertToMode(append_state);
 	header_ptr->symbol_table_size = NumericCast<uint32_t>(symbol_table_size);
 	header_ptr->dict_size = NumericCast<uint32_t>(dictionary_offset);
@@ -126,23 +134,6 @@ idx_t DictFSSTCompressionState::Finalize() {
 #endif
 	D_ASSERT(base_ptr + required_space == base_ptr + dictionary_indices_dest + dictionary_indices_space);
 	D_ASSERT((uint64_t)*max_element(std::begin(dictionary_indices), std::end(dictionary_indices)) == dict_count - 1);
-	return required_space;
-}
-
-idx_t DictFSSTCompressionState::CalculateRequiredSpace() const {
-	idx_t required_space = 0;
-	required_space += sizeof(dict_fsst_compression_header_t);
-	required_space = AlignValue<idx_t>(required_space);
-	required_space += dictionary_offset + to_encode_string_sum;
-	required_space = AlignValue<idx_t>(required_space);
-	if (IsEncoded(append_state)) {
-		required_space += symbol_table_size;
-		required_space = AlignValue<idx_t>(required_space);
-	}
-	required_space += string_lengths_space;
-	required_space = AlignValue<idx_t>(required_space);
-	required_space += dictionary_indices_space;
-
 	return required_space;
 }
 
@@ -878,10 +869,6 @@ void DictFSSTCompressionState::Compress(const Vector &scan_vector) {
 		}
 		tuple_count++;
 	}
-}
-
-void DictFSSTCompressionState::FinalizeCompress() {
-	Flush(true);
 }
 
 } // namespace dict_fsst

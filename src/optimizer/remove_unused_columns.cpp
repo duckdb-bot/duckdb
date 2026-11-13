@@ -1176,8 +1176,7 @@ void RemoveUnusedColumns::RewriteExpressions(LogicalProjection &proj, idx_t expr
 				    return new_binding_entry->second;
 			    }
 			    // binding does not exist - create it
-			    auto target = make_uniq<BoundColumnRefExpression>(column_type, original_binding);
-			    target->SetAlias(expr.GetAlias());
+			    auto target = make_uniq<BoundColumnRefExpression>(expr.GetAlias(), column_type, original_binding);
 			    auto new_extract = ConstructStructExtractFromPath(context, std::move(target), extract_path);
 			    if (cast_type) {
 				    auto cast = BoundCastExpression::AddCastToType(context, std::move(new_extract), *cast_type);
@@ -1827,7 +1826,8 @@ static bool TryGetCastChild(unique_ptr<Expression> &expr, optional_ptr<unique_pt
 	}
 	D_ASSERT(BoundCastExpression::IsCast(*expr));
 	auto &cast = expr->Cast<BoundFunctionExpression>();
-	if (BoundCastExpression::IsTryCast(cast)) {
+	//! A pushed-down cast runs on every row of the child, including rows that are later filtered out
+	if (BoundCastExpression::IsTryCast(cast) || cast.CanThrow()) {
 		return false;
 	}
 	child = BoundCastExpression::ChildMutable(cast);
@@ -1835,21 +1835,9 @@ static bool TryGetCastChild(unique_ptr<Expression> &expr, optional_ptr<unique_pt
 }
 
 void BaseColumnPruner::VisitExpression(unique_ptr<Expression> *expression) {
-	if ((*expression)->GetExpressionType() == ExpressionType::OPERATOR_TRY ||
-	    (*expression)->GetExpressionType() == ExpressionType::OPERATOR_HAS_ERROR) {
-		const auto was_inside_try = inside_try;
-		inside_try = true;
-		LogicalOperatorVisitor::VisitExpression(expression);
-		inside_try = was_inside_try;
-		return;
-	}
-
-	//! Check if this is a struct extract wrapped in a cast. TRY_CAST is already
-	//! skipped by TryGetCastChild. A throwing CAST under TRY must also stay put:
-	//! unused-columns would otherwise emit CAST(struct_extract) in a child
-	//! projection and leave TRY wrapping only the already-cast column (#25236).
+	//! Check if this is a struct extract wrapped in a cast
 	optional_ptr<unique_ptr<Expression>> cast_child;
-	if (!inside_try && TryGetCastChild(*expression, cast_child)) {
+	if (TryGetCastChild(*expression, cast_child)) {
 		if (HandleExtractExpression(cast_child.get(), expression)) {
 			// already handled
 			return;

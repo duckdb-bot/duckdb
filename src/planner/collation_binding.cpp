@@ -118,10 +118,8 @@ static unique_ptr<Expression> ApplyCollationFunction(ClientContext &context, con
 	vector<unique_ptr<Expression>> children;
 	children.push_back(std::move(source));
 	FunctionBinder function_binder(context);
-	auto function =
-	    function_binder.BindScalarFunction(Identifier::DefaultSchema(), Identifier(function_name), std::move(children));
-	function->SetAlias(source_alias);
-	return function;
+	return function_binder.BindScalarFunction(Identifier::DefaultSchema(), Identifier(function_name),
+	                                          std::move(children), false, nullptr, std::move(source_alias));
 }
 
 //! Whether the system catalog has the scalar function, which core_functions may not provide
@@ -191,8 +189,8 @@ static bool PushStructCollation(ClientContext &context, unique_ptr<Expression> &
 	vector<unique_ptr<Expression>> arguments;
 	arguments.push_back(std::move(lambda));
 	arguments.push_back(std::move(source));
-	source = function_binder.BindScalarFunction(Identifier::DefaultSchema(), "invoke", std::move(arguments));
-	source->SetAlias(source_alias);
+	source = function_binder.BindScalarFunction(Identifier::DefaultSchema(), "invoke", std::move(arguments), false,
+	                                            nullptr, std::move(source_alias));
 	return true;
 }
 

@@ -43,6 +43,7 @@ class RE2;
 
 namespace duckdb {
 class BoundResultModifier;
+struct PreparedExecution;
 class BoundSelectNode;
 class ClientContext;
 class ExpressionBinder;
@@ -98,6 +99,8 @@ struct TrySubqueryPlanIndexes {
 	bool recorded = false;
 	//! The select list projection
 	TableIndex projection_index;
+	//! The projection that restores the select list above the aggregate of a DISTINCT, only set for DISTINCT
+	TableIndex distinct_index;
 	//! The prune projection above the result modifiers, only set when pruning is needed
 	TableIndex prune_index;
 	//! The aggregate node of the select node
@@ -275,6 +278,11 @@ public:
 public:
 	DUCKDB_API BoundStatement Bind(SQLStatement &statement);
 	DUCKDB_API BoundStatement Bind(QueryNode &node);
+
+	//! Resolve the prepared statement and the parameter values of an EXECUTE statement
+	PreparedExecution ResolveExecute(ExecuteStatement &stmt);
+	//! Plan the prepared statement of an EXECUTE from its unbound statement, using the resolved parameter values
+	BoundStatement BindExecute(PreparedExecution &execution);
 
 	unique_ptr<BoundCreateTableInfo> BindCreateTableInfo(unique_ptr<CreateInfo> info);
 	unique_ptr<BoundCreateTableInfo> BindCreateTableInfo(unique_ptr<CreateInfo> info, SchemaCatalogEntry &schema,
@@ -609,6 +617,9 @@ private:
 	BoundStatement BindNode(CopyQueryNode &node);
 
 	unique_ptr<LogicalOperator> VisitQueryNode(BoundQueryNode &node, unique_ptr<LogicalOperator> root);
+	//! Plans a DISTINCT (ON) as an aggregate that groups on the targets and takes the first value of other columns
+	unique_ptr<LogicalOperator> PlanDistinct(BoundDistinctModifier &distinct, optional_ptr<BoundOrderModifier> order,
+	                                         unique_ptr<LogicalOperator> root);
 	unique_ptr<LogicalOperator> CreatePlan(BoundSelectNode &statement);
 	unique_ptr<LogicalOperator> CreatePlan(BoundSetOperationNode &node);
 	unique_ptr<LogicalOperator> CreatePlan(BoundQueryNode &node);

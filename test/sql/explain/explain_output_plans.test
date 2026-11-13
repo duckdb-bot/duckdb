@@ -1,0 +1,37 @@
+# name: test/sql/explain/explain_output_plans.test
+# description: EXPLAIN returns the plans that explain_output selects
+# group: [explain]
+
+statement ok
+CREATE TABLE t AS SELECT range AS i FROM range(10);
+
+statement ok
+SET explain_output = 'all';
+
+query II
+EXPLAIN SELECT i FROM t WHERE i > 5;
+----
+logical_plan	<REGEX>:.*Filter.*CAST\(5 AS BIGINT\).*Seq Scan.*
+logical_opt	<REGEX>:.*Projection.*Seq Scan.*Filters: i > 5.*
+physical_plan	<REGEX>:.*Seq Scan.*Projections: i.*Filters: i > 5.*
+
+query II
+EXPLAIN ANALYZE SELECT i FROM t WHERE i > 5;
+----
+analyzed_plan	<REGEX>:.*Table Scan.*
+
+statement ok
+SET explain_output = 'optimized_only';
+
+query II
+EXPLAIN SELECT i FROM t WHERE i > 5;
+----
+logical_opt	<REGEX>:.*Projection.*Seq Scan.*Filters: i > 5.*
+
+statement ok
+SET explain_output = 'physical_only';
+
+query II
+EXPLAIN SELECT i FROM t WHERE i > 5;
+----
+physical_plan	<REGEX>:.*Seq Scan.*Projections: i.*Filters: i > 5.*

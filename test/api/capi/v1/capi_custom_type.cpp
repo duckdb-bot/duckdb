@@ -318,13 +318,26 @@ TEST_CASE("Test UNION member selection with a registered cast", "[capi]") {
 	REQUIRE_NO_FAIL(*result);
 	REQUIRE(result->Fetch<string>(0, 0) == "other");
 
-	// the comparison with a subquery casts its rows with the default casts, which select the member s, whose field
-	// order the extremum of the rows keeps, so the row the DECIMAL cannot hold does not fail the comparison
-	result = tester.Query("SELECT [union_value(s := {'n': 0.5::DECIMAL(38,37), 'm': 1})::UNION(s STRUCT(n "
-	                      "DECIMAL(38,37), m INTEGER), other STRUCT(m FLOAT, n FLOAT))] > ANY (SELECT [{'n': i, 'm': "
-	                      "1}] FROM (VALUES (0), (100)) r(i))");
+	// the registered cast can override the default cast of the rows, so the rewrite is skipped and every row is cast
+	// with the registered cast, which selects the member other, whose tag orders after s
+	const string any_query =
+	    "SELECT [union_value(s := {'n': 0.5::DECIMAL(38,37), 'm': 1})::UNION(s STRUCT(n "
+	    "DECIMAL(38,37), m INTEGER), other STRUCT(m FLOAT, n FLOAT))] > ANY (SELECT [{'n': i, 'm': "
+	    "1}] FROM (VALUES (0), (100)) r(i))";
+	result = tester.Query("EXPLAIN " + any_query);
 	REQUIRE_NO_FAIL(*result);
-	REQUIRE(result->Fetch<bool>(0, 0));
+	REQUIRE(result->Fetch<string>(1, 0).find("min(") == string::npos);
+	result = tester.Query(any_query);
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(!result->IsNull(0, 0));
+	REQUIRE(!result->Fetch<bool>(0, 0));
+	// the comparison of every row with the same cast
+	result = tester.Query("SELECT bool_or([union_value(s := {'n': 0.5::DECIMAL(38,37), 'm': 1})::UNION(s STRUCT(n "
+	                      "DECIMAL(38,37), m INTEGER), other STRUCT(m FLOAT, n FLOAT))] > [{'n': i, 'm': 1}]) FROM "
+	                      "(VALUES (0), (100)) r(i)");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(!result->IsNull(0, 0));
+	REQUIRE(!result->Fetch<bool>(0, 0));
 }
 
 TEST_CASE("Test UNION member selection with the largest implicit cast cost", "[capi]") {

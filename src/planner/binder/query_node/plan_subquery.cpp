@@ -9,7 +9,6 @@
 #include "duckdb/function/scalar/generic_functions.hpp"
 #include "duckdb/main/client_config.hpp"
 #include "duckdb/planner/binder.hpp"
-#include "duckdb/function/cast/cast_function_set.hpp"
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
 #include "duckdb/planner/expression/bound_case_expression.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
@@ -131,7 +130,7 @@ static bool VariantCastChangesOrder(const LogicalType &source) {
 }
 
 //! A value becomes the member of the UNION that its cast selects, so the order changes when it changes for that
-//! member. The default casts decide, as the cast the rewrite adds is a default cast
+//! member. The default casts decide, as the rewrite runs only when no registered cast can override them
 static bool UnionMemberCastChangesOrder(const LogicalType &source, const LogicalType &target) {
 	CastFunctionSet default_set;
 	auto member_idx = DefaultCasts::UnionCastTargetMember(default_set, source, target);

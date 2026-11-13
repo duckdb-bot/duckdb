@@ -2486,7 +2486,7 @@ void ScanStructure::NextMarkJoin(DataChunk &keys, DataChunk &probe_data, DataChu
 			}
 			FlatVector::SetSize(found_addresses, found_count);
 			info.tag_result_chunk.Reset();
-			info.tag_result_chunk.SetCardinality(found_count);
+			info.tag_result_chunk.SetChildCardinality(found_count);
 			ArenaAllocator arena(BufferAllocator::Get(ht.context));
 			RowOperationsState row_state(arena);
 			RowOperations::FinalizeStates(row_state, *info.correlated_tag_counts->GetLayoutPtr(), found_addresses,

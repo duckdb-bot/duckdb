@@ -1,5 +1,7 @@
 #include "catch.hpp"
 #include "test_helpers.hpp"
+#include "duckdb/planner/planner_extension.hpp"
+#include "duckdb/parser/sql_statement.hpp"
 
 using namespace duckdb;
 
@@ -764,4 +766,56 @@ TEST_CASE("Prepared CREATE VIEW stores the values of its parameters", "[api]") {
 	REQUIRE(CHECK_COLUMN(result, 1, {"y"}));
 	result = con.Query("SELECT * FROM d");
 	REQUIRE(CHECK_COLUMN(result, 0, {3}));
+}
+
+static atomic<idx_t> execute_pre_binds {0};
+static atomic<idx_t> post_binds {0};
+
+static void CountExecutePreBind(PlannerExtensionInput &input, SQLStatement &statement) {
+	if (statement.type == StatementType::EXECUTE_STATEMENT) {
+		execute_pre_binds++;
+	}
+}
+
+static void CountPostBind(PlannerExtensionInput &input, BoundStatement &statement) {
+	post_binds++;
+}
+
+TEST_CASE("Planner extension hooks run for EXECUTE", "[api]") {
+	DBConfig config;
+	PlannerExtension extension;
+	extension.pre_bind_function = CountExecutePreBind;
+	extension.post_bind_function = CountPostBind;
+	PlannerExtension::Register(config, extension);
+	DuckDB db(nullptr, &config);
+	Connection con(db);
+
+	// a statement without a data source re-uses its cached plan: only the pre-bind hook sees the EXECUTE
+	REQUIRE_NO_FAIL(con.Query("PREPARE constant AS SELECT $1::INTEGER + 1"));
+	execute_pre_binds = 0;
+	post_binds = 0;
+	auto result = con.Query("EXECUTE constant(41)");
+	REQUIRE(CHECK_COLUMN(result, 0, {42}));
+	REQUIRE(execute_pre_binds == 1);
+	REQUIRE(post_binds == 0);
+
+	auto prepared = con.Prepare("SELECT $1::INTEGER + 1");
+	REQUIRE(!prepared->HasError());
+	execute_pre_binds = 0;
+	post_binds = 0;
+	result = prepared->Execute(41);
+	REQUIRE(CHECK_COLUMN(result, 0, {42}));
+	REQUIRE(execute_pre_binds == 1);
+	REQUIRE(post_binds == 0);
+
+	// a statement reading a table is planned again: the post-bind hooks see the re-planned statement and the EXECUTE
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE t(i INTEGER)"));
+	REQUIRE_NO_FAIL(con.Query("INSERT INTO t VALUES (42)"));
+	REQUIRE_NO_FAIL(con.Query("PREPARE scan AS SELECT i FROM t"));
+	execute_pre_binds = 0;
+	post_binds = 0;
+	result = con.Query("EXECUTE scan");
+	REQUIRE(CHECK_COLUMN(result, 0, {42}));
+	REQUIRE(execute_pre_binds == 1);
+	REQUIRE(post_binds == 2);
 }

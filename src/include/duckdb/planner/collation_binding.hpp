@@ -40,6 +40,8 @@ public:
 	DUCKDB_API void RegisterCollation(CollationCallback callback);
 	DUCKDB_API bool PushCollation(ClientContext &context, unique_ptr<Expression> &source, const LogicalType &sql_type,
 	                              CollationType type) const;
+	//! Whether PushCollation pushes a collation for the type, decided from the type without binding anything
+	DUCKDB_API bool RequiresCollation(ClientContext &context, const LogicalType &sql_type, CollationType type) const;
 
 private:
 	vector<CollationCallback> collations;

@@ -313,7 +313,9 @@ static unique_ptr<Expression> ListValueBindExpression(FunctionBindExpressionInpu
 		auto &element = BoundCastExpression::IsCast(*child)
 		                    ? BoundCastExpression::Child(child->Cast<BoundFunctionExpression>())
 		                    : *child;
-		if (element.GetExpressionClass() != ExpressionClass::BOUND_CONSTANT || child->GetReturnType() != child_type) {
+		// a volatile cast runs where the list is evaluated, so the list keeps it
+		if (element.GetExpressionClass() != ExpressionClass::BOUND_CONSTANT || child->GetReturnType() != child_type ||
+		    !child->IsFoldable()) {
 			return nullptr;
 		}
 	}

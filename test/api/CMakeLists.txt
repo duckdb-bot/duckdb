@@ -21,6 +21,7 @@ set(TEST_API_OBJECTS
     test_aggregate_state_bind_data.cpp
     test_config.cpp
     test_context.cpp
+    test_list_literal_cast.cpp
     test_connect_prepare.cpp
     test_remote_pushdown_macro_arguments.cpp
     test_remote_pushdown_merge.cpp

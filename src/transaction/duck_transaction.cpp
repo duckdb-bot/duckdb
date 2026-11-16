@@ -202,17 +202,72 @@ bool DuckTransaction::ShouldWriteToWAL(AttachedDatabase &db) {
 	return true;
 }
 
+//! The error a step of the commit reports when it cannot build one after an allocation failure. It is built before the
+//! step runs, while memory is available, since the step cannot throw and must never look successful
+static ErrorData PrepareAllocationFailure() noexcept {
+	try {
+		return ErrorData(ExceptionType::OUT_OF_MEMORY, "Allocation failure");
+	} catch (...) {
+		return ErrorData();
+	}
+}
+
+//! Builds the error data of an exception a step of the commit caught. Building it allocates, which fails as well when
+//! the step ran out of memory, and then the prepared error is reported instead
+static ErrorData CommitStepError(const std::exception &ex, ErrorData &prepared) noexcept {
+	try {
+		return ErrorData(ex);
+	} catch (...) { // NOLINT
+	}
+	if (!prepared.HasError()) {
+		// not even the prepared error could be built, and without any error the commit would continue as if the
+		// step had succeeded, so the process ends here as it did before
+		std::terminate();
+	}
+	return std::move(prepared);
+}
+
+//! Invalidates the database after the revert of a failed commit failed too. The message allocates, which can fail when
+//! the commit ran out of memory, and the database is invalidated with as much of it as could be built then
+static void InvalidateAfterFailedRevert(AttachedDatabase &db, const ErrorData &commit_error,
+                                        optional_ptr<const std::exception> revert_error) noexcept {
+	// the texts grow piece by piece, so that the pieces built before an allocation fails are kept
+	string cause;
+	string error;
+	try {
+		cause = "reverting a failed commit failed, leaving it in an undefined state";
+		error = "commit error: ";
+		error += commit_error.RawMessage();
+		error += ". RevertCommit error: ";
+		if (revert_error) {
+			error += ErrorData(*revert_error).RawMessage();
+		} else {
+			error += "unknown error";
+		}
+	} catch (...) { // NOLINT
+	}
+	try {
+		// scoped to this database when it can be detached, otherwise the whole instance is invalidated
+		db.Invalidate(cause, error);
+	} catch (...) { // NOLINT
+		// formatting the scoped message allocates too, and when that fails the instance is invalidated with the text
+		// built so far, which allocates nothing
+		ValidChecker::Invalidate(db.GetDatabase(), std::move(error));
+	}
+}
+
 ErrorData DuckTransaction::PreFlushOptimisticBlocks(AttachedDatabase &db) noexcept {
 	ErrorData error;
 	if (!ShouldWriteToWAL(db)) {
 		return error;
 	}
+	auto allocation_failure = PrepareAllocationFailure();
 	try {
 		storage->FlushBulkAppendBlocksAndSync(db);
 	} catch (std::exception &ex) {
 		// fail the commit: the flush machinery cannot safely be re-run after an error, and a failed
 		// fsync must not be retried (the retry can succeed without the data being durable)
-		error = ErrorData(ex);
+		error = CommitStepError(ex, allocation_failure);
 	}
 	return error;
 }
@@ -229,6 +284,7 @@ static void RevertCommitState(unique_ptr<StorageCommitState> &commit_state) noex
 ErrorData DuckTransaction::AppendLocalStorage(ClientContext &context, AttachedDatabase &db,
                                               unique_ptr<StorageCommitState> &commit_state) noexcept {
 	ErrorData error_data;
+	auto allocation_failure = PrepareAllocationFailure();
 	try {
 		if (ShouldWriteToWAL(db)) {
 			auto &storage_manager = db.GetStorageManager();
@@ -240,7 +296,7 @@ ErrorData DuckTransaction::AppendLocalStorage(ClientContext &context, AttachedDa
 		commit_timer.EndTimer();
 	} catch (std::exception &ex) {
 		// Call RevertCommit() outside this try-catch as it itself may throw
-		error_data = ErrorData(ex);
+		error_data = CommitStepError(ex, allocation_failure);
 	}
 	if (commit_state && error_data.HasError()) {
 		RevertCommitState(commit_state);
@@ -251,6 +307,7 @@ ErrorData DuckTransaction::AppendLocalStorage(ClientContext &context, AttachedDa
 ErrorData DuckTransaction::WriteToWAL(ClientContext &context, AttachedDatabase &db,
                                       unique_ptr<StorageCommitState> &commit_state) noexcept {
 	ErrorData error_data;
+	auto allocation_failure = PrepareAllocationFailure();
 	try {
 		// the append may have consumed the last local change: do not ask ShouldWriteToWAL again here
 		D_ASSERT(commit_state);
@@ -265,7 +322,7 @@ ErrorData DuckTransaction::WriteToWAL(ClientContext &context, AttachedDatabase &
 		D_ASSERT(!commit_state->HasRowGroupData() || storage->SyncedFlushedBlocks());
 	} catch (std::exception &ex) {
 		// Call RevertCommit() outside this try-catch as it itself may throw
-		error_data = ErrorData(ex);
+		error_data = CommitStepError(ex, allocation_failure);
 	}
 	if (commit_state && error_data.HasError()) {
 		RevertCommitState(commit_state);
@@ -291,6 +348,7 @@ ErrorData DuckTransaction::Commit(AttachedDatabase &db, CommitInfo &commit_info,
 	commit_info.drop_state = &drop_state;
 
 	ErrorData error_data;
+	auto allocation_failure = PrepareAllocationFailure();
 	try {
 		storage->Commit(commit_state.get());
 		undo_buffer.Commit(iterator_state, commit_info);
@@ -310,7 +368,7 @@ ErrorData DuckTransaction::Commit(AttachedDatabase &db, CommitInfo &commit_info,
 		// Record the error and run RevertCommit() outside this try-catch: RevertCommit() iterates the
 		// undo buffer and may itself throw (e.g. Pin() failing under memory pressure), which would
 		// escape this noexcept function and trigger std::terminate.
-		error_data = ErrorData(ex);
+		error_data = CommitStepError(ex, allocation_failure);
 	}
 
 	try {
@@ -326,13 +384,10 @@ ErrorData DuckTransaction::Commit(AttachedDatabase &db, CommitInfo &commit_info,
 	} catch (std::exception &ex) {
 		// If we fail to revert the commit, the database is left in an undefined state - invalidate it.
 		// Record both the original commit error and the revert error so the root cause stays visible.
-		db.Invalidate("reverting a failed commit failed, leaving it in an undefined state",
-		              "commit error: " + error_data.RawMessage() +
-		                  ". RevertCommit error: " + ErrorData(ex).RawMessage());
+		InvalidateAfterFailedRevert(db, error_data, &ex);
 	} catch (...) {
 		// last line of defense: this is a noexcept function, nothing may escape
-		db.Invalidate("reverting a failed commit failed, leaving it in an undefined state",
-		              "commit error: " + error_data.RawMessage() + ". RevertCommit error: unknown error");
+		InvalidateAfterFailedRevert(db, error_data, nullptr);
 	}
 	return error_data;
 }

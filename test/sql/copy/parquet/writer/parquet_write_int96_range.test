@@ -1,0 +1,55 @@
+# name: test/sql/copy/parquet/writer/parquet_write_int96_range.test
+# description: A timestamp before the first INT96 day is rejected by the writer instead of wrapping its day
+# group: [writer]
+
+require parquet
+
+# the first day INT96 can store
+statement ok
+COPY (SELECT TIMESTAMP '4714-11-24 (BC) 00:00:00' AS ts) TO '{TEST_DIR}/int96_first_day.parquet' (write_timestamp_as_int96 true);
+
+query I
+SELECT ts FROM '{TEST_DIR}/int96_first_day.parquet';
+----
+4714-11-24 (BC) 00:00:00
+
+# one microsecond earlier has a negative day, which INT96 cannot store
+statement error
+COPY (SELECT TIMESTAMP '4714-11-23 (BC) 23:59:59.999999' AS ts) TO '{TEST_DIR}/int96_before.parquet' (write_timestamp_as_int96 true);
+----
+Conversion Error: Timestamp 4714-11-23 (BC) 23:59:59.999999 cannot be written as INT96
+
+statement error
+COPY (SELECT TIMESTAMP_S '4714-11-23 (BC) 23:59:59' AS ts) TO '{TEST_DIR}/int96_before.parquet' (write_timestamp_as_int96 true);
+----
+cannot be written as INT96
+
+statement error
+COPY (SELECT TIMESTAMP_MS '4714-11-23 (BC) 23:59:59.999' AS ts) TO '{TEST_DIR}/int96_before.parquet' (write_timestamp_as_int96 true);
+----
+cannot be written as INT96
+
+statement error
+COPY (SELECT TIMESTAMP '0001-01-01 00:00:00' AS ts UNION ALL SELECT TIMESTAMP '5000-01-01 (BC) 00:00:00') TO '{TEST_DIR}/int96_before.parquet' (write_timestamp_as_int96 true);
+----
+Timestamp 5000-01-01 (BC) 00:00:00 cannot be written as INT96
+
+# the last timestamp fits
+statement ok
+COPY (SELECT TIMESTAMP '294247-01-10 04:00:54.775806' AS ts) TO '{TEST_DIR}/int96_last.parquet' (write_timestamp_as_int96 true);
+
+query I
+SELECT ts FROM '{TEST_DIR}/int96_last.parquet';
+----
+294247-01-10 04:00:54.775806
+
+# infinite timestamps are rejected as before
+statement error
+COPY (SELECT TIMESTAMP 'infinity' AS ts) TO '{TEST_DIR}/int96_infinity.parquet' (write_timestamp_as_int96 true);
+----
+infinite
+
+statement error
+COPY (SELECT TIMESTAMP '-infinity' AS ts) TO '{TEST_DIR}/int96_infinity.parquet' (write_timestamp_as_int96 true);
+----
+infinite

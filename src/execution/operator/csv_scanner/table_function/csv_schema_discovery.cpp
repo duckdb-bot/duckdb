@@ -23,7 +23,9 @@ CSVSchema CSVSchemaDiscovery::SchemaDiscovery(ClientContext &context, shared_ptr
 	idx_t current_file = 0;
 	options.file_path = file_paths[current_file].path;
 
-	buffer_manager = CSVBufferManager::Open(context, options, file_paths[current_file], false);
+	if (!buffer_manager) {
+		buffer_manager = CSVBufferManager::Open(context, options, file_paths[current_file], false);
+	}
 	idx_t only_header_or_empty_files = 0;
 
 	{

@@ -137,7 +137,8 @@
         "test/sql/function/list/lambdas/lambda_dot_calls_nested_schema.test",
         "test/sql/function/list/lambdas/reduce_initial.test_slow",
         "test/sql/function/list/lambdas/reduce_on_larger_data.test_slow",
-        "test/sql/json/scalar/test_json_arrow_chain_precedence.test"
+        "test/sql/json/scalar/test_json_arrow_chain_precedence.test",
+        "test/sql/parser/parser_rewrites_qualified_call.test"
       ]
     },
     {

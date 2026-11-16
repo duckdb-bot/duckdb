@@ -1,5 +1,6 @@
 #include "duckdb/planner/column_qualifier.hpp"
 
+#include "duckdb/common/string_util.hpp"
 #include "duckdb/parser/parsed_expression_iterator.hpp"
 #include "duckdb/parser/expression/columnref_expression.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
@@ -7,6 +8,7 @@
 #include "duckdb/parser/expression/lambda_expression.hpp"
 #include "duckdb/parser/expression/operator_expression.hpp"
 #include "duckdb/parser/expression/positional_reference_expression.hpp"
+#include "duckdb/parser/parser_function_rewrite.hpp"
 #include "duckdb/planner/expression_binder/having_binder.hpp"
 #include "duckdb/planner/planner_extension.hpp"
 
@@ -237,8 +239,13 @@ void ColumnQualifier::QualifyColumnNames(unique_ptr<ParsedExpression> &expr, vec
 	case ExpressionType::FUNCTION: {
 		// Special-handling for lambdas, which are inside function expressions.
 		auto &function = expr->Cast<FunctionExpression>();
-		if (!ExpressionBinder::IsUnnestFunction(function.FunctionName())) {
-			QualifyFunction(function);
+		if (!ExpressionBinder::IsUnnestFunction(function.FunctionName()) && !QualifyFunction(function, lambda_params)) {
+			// a name the parser rewrites binds as its syntax node, as x.ifnull(y) does once it is ifnull(x, y)
+			if (auto rewritten = ParserFunctionRewrite::RewriteMethodCall(function)) {
+				expr = std::move(rewritten);
+				QualifyColumnNames(expr, lambda_params, within_function_expression);
+				return;
+			}
 		}
 		if (function.IsLambdaFunction()) {
 			return QualifyColumnNamesInLambda(function, lambda_params);
@@ -266,16 +273,19 @@ bool ColumnQualifier::IsActiveLambdaParameter(const Identifier &name) {
 	return LambdaRefExpression::FindMatchingBinding(lambda_bindings, name) != nullptr;
 }
 
-optional_ptr<CatalogEntry> ColumnQualifier::QualifyFunction(FunctionExpression &function) {
+optional_ptr<CatalogEntry> ColumnQualifier::QualifyFunction(FunctionExpression &function,
+                                                            const vector<identifier_set_t> &lambda_params) {
 	D_ASSERT(!ExpressionBinder::IsUnnestFunction(function.FunctionName()));
 	// lookup the function in the catalog
 	QueryErrorContext error_context(function.GetQueryLocation());
 	EntryLookupInfo function_lookup(CatalogType::SCALAR_FUNCTION_ENTRY, QualifiedName(function.FunctionName()),
 	                                error_context);
 
-	// a lone qualifier that names a lambda parameter and a search-path function is a dot call on that parameter
+	// a lone qualifier that names a lambda parameter and a search-path function is a dot call on that parameter. A
+	// name the parser rewrites is not looked up, a call of it on the parameter takes the rewrite below
 	if (function.GetQualifiedName().Catalog().empty() && !function.GetQualifiedName().Schema().empty() &&
-	    IsActiveLambdaParameter(function.GetQualifiedName().Schema())) {
+	    IsActiveLambdaParameter(function.GetQualifiedName().Schema()) &&
+	    !ParserFunctionRewrite::Rewrites(function.FunctionName())) {
 		auto func = binder.GetCatalogEntry(Identifier::InvalidCatalog(), Identifier::InvalidSchema(), function_lookup,
 		                                   OnEntryNotFound::RETURN_NULL);
 		if (func) {
@@ -308,30 +318,39 @@ optional_ptr<CatalogEntry> ColumnQualifier::QualifyFunction(FunctionExpression &
 		return nullptr;
 	}
 	// the schema is set - check if we can turn this the schema into a column ref
-	// does this function exist in the system catalog?
-	func = binder.GetCatalogEntry(Identifier::InvalidCatalog(), Identifier::InvalidSchema(), function_lookup,
-	                              OnEntryNotFound::RETURN_NULL);
-	if (!func) {
-		// we could not find the function - bail
+	// does this function exist in the system catalog? A name the parser rewrites into a syntax node binds as that
+	// node, not as a function of the name, so it is not looked up
+	if (!ParserFunctionRewrite::Rewrites(function.FunctionName())) {
+		func = binder.GetCatalogEntry(Identifier::InvalidCatalog(), Identifier::InvalidSchema(), function_lookup,
+		                              OnEntryNotFound::RETURN_NULL);
+		if (!func) {
+			// we could not find the function - bail
+			return nullptr;
+		}
+	} else if (StringUtil::CIEquals(function.GetQualifiedName().Schema().GetIdentifierName(), DEFAULT_SCHEMA)) {
+		// the parser drops a main qualification of such a name, as main.ifnull(x) is ifnull(x), so the binder does too
+		function.SetQualifiedName(QualifiedName(function.GetQualifiedName().Name()));
 		return nullptr;
 	}
-	// the function exists in the system catalog - turn this into a dot call
-	ErrorData error;
-	unique_ptr<ColumnRefExpression> colref;
-	if (function.GetQualifiedName().Catalog().empty()) {
-		colref = make_uniq<ColumnRefExpression>(function.GetQualifiedName().Schema());
-	} else {
-		colref =
-		    make_uniq<ColumnRefExpression>(function.GetQualifiedName().Schema(), function.GetQualifiedName().Catalog());
+	// turn the qualification into the column the function is called on, as x.lower() is lower(x)
+	auto &path = function.GetQualifiedName().Path();
+	unique_ptr<ParsedExpression> column =
+	    make_uniq<ColumnRefExpression>(vector<Identifier>(path.begin(), path.end() - 1));
+	auto &colref = column->Cast<ColumnRefExpression>();
+	// a lambda parameter, which can only be the first component of the name, is left for the lambda to bind. An arrow
+	// parameter counts here too, the schema interpretation of the qualifier has been tried above
+	const auto &first_name = colref.ColumnNames()[0];
+	const bool lambda_parameter = LambdaExpression::IsLambdaParameter(lambda_params, first_name) ||
+	                              LambdaRefExpression::FindMatchingBinding(lambda_bindings, first_name);
+	if (!lambda_parameter) {
+		ErrorData error;
+		auto qualified_column = QualifyColumnName(colref, error);
+		if (qualified_column) {
+			column = std::move(qualified_column);
+		}
 	}
-	auto new_colref = QualifyColumnName(*colref, error);
-	if (!new_colref) {
-		new_colref = std::move(colref);
-	}
-	new_colref->ClearAlias();
-	// we can! transform this into a function call on the column
-	// i.e. "x.lower()" becomes "lower(x)"
-	function.GetArgumentsMutable().insert(function.GetArgumentsMutable().begin(), std::move(new_colref));
+	column->ClearAlias();
+	function.GetArgumentsMutable().insert(function.GetArgumentsMutable().begin(), std::move(column));
 	function.SetQualifiedName(QualifiedName(function.GetQualifiedName().Name()));
 	return func;
 }

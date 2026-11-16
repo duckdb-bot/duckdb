@@ -1,0 +1,63 @@
+# name: test/sql/aggregate/aggregates/quantile_timestamp_sentinel_midpoint.test
+# description: Interpolating between the two finite timestamps next to the -infinity sentinel must not produce -infinity
+# group: [aggregates]
+
+# the smallest finite TIMESTAMP is one step below the -infinity sentinel, so the exact midpoint of INT64_MIN and
+# INT64_MIN + 2 is the sentinel's encoding
+
+query I
+SELECT isfinite(ts) FROM (VALUES (make_timestamp(-9223372036854775808)), (make_timestamp(-9223372036854775806))) t(ts) ORDER BY ts;
+----
+true
+true
+
+query II
+SELECT median(ts)::VARCHAR, quantile_cont(ts, 0.5)::VARCHAR FROM (VALUES (make_timestamp(-9223372036854775808)), (make_timestamp(-9223372036854775806))) t(ts);
+----
+290309-12-21 (BC) 19:59:05.224194	290309-12-21 (BC) 19:59:05.224194
+
+query II
+SELECT isinf(median(ts)), epoch_us(median(ts)) FROM (VALUES (make_timestamp(-9223372036854775808)), (make_timestamp(-9223372036854775806))) t(ts);
+----
+false	-9223372036854775806
+
+query I
+SELECT median(ts)::VARCHAR FROM (VALUES (make_timestamp_ns(-9223372036854775808)), (make_timestamp_ns(-9223372036854775806))) t(ts);
+----
+1677-09-21 00:12:43.145224194
+
+query I
+SELECT quantile_cont(ts, [0.5, 1.0])::VARCHAR FROM (VALUES (make_timestamp(-9223372036854775808)), (make_timestamp(-9223372036854775806))) t(ts);
+----
+['290309-12-21 (BC) 19:59:05.224194', '290309-12-21 (BC) 19:59:05.224194']
+
+# a midpoint that is not the sentinel is left alone
+query I
+SELECT median(ts)::VARCHAR FROM (VALUES (make_timestamp_ns(-9223372036854775808)), (make_timestamp_ns(-9223372036854775805))) t(ts);
+----
+1677-09-21 00:12:43.145224194
+
+query I
+SELECT median(ts)::VARCHAR FROM (VALUES (make_timestamp_ns(-9223372036854775808)), (make_timestamp_ns(-9223372036854775804))) t(ts);
+----
+1677-09-21 00:12:43.145224194
+
+# the window form interpolates the same way
+query II
+SELECT i, (median(ts) OVER (ORDER BY i ROWS BETWEEN 1 PRECEDING AND CURRENT ROW))::VARCHAR FROM (VALUES (1, make_timestamp_ns(-9223372036854775808)), (2, make_timestamp_ns(-9223372036854775806)), (3, make_timestamp_ns(0))) t(i, ts) ORDER BY i;
+----
+1	1677-09-21 00:12:43.145224192
+2	1677-09-21 00:12:43.145224194
+3	1823-11-12 00:06:21.572612098
+
+# the discrete quantile picks an input
+query I
+SELECT quantile_disc(ts, 0.5)::VARCHAR FROM (VALUES (make_timestamp_ns(-9223372036854775808)), (make_timestamp_ns(-9223372036854775806))) t(ts);
+----
+1677-09-21 00:12:43.145224192
+
+# infinite inputs are still refused
+statement error
+SELECT median(ts) FROM (VALUES ('-infinity'::TIMESTAMP), (make_timestamp(-9223372036854775806))) t(ts);
+----
+Cannot interpolate infinite TIMESTAMP values

@@ -218,7 +218,7 @@ t3
 statement ok
 RESET default_collation;
 
-# names that are only equal after lower()
+# names that are only equal after lower(), SHOW TABLES FROM resolves the one schema it names
 statement ok
 CREATE SCHEMA "Ä";
 
@@ -234,7 +234,6 @@ CREATE TABLE "ä".lower_t (i INTEGER);
 query I
 SHOW TABLES FROM memory."Ä";
 ----
-lower_t
 upper_t
 
 query I

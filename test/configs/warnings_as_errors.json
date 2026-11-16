@@ -55,6 +55,7 @@
         "test/sql/optimizer/divide_zonemap_pruning.test",
         "test/sql/optimizer/expression/test_nop_arithmetic.test",
         "test/sql/optimizer/modulo_zonemap_pruning.test",
+        "test/sql/optimizer/rewrites_keep_volatile_and_throwing_operands.test",
         "test/sql/pragma/profiling/test_legacy_metrics_format.test",
         "test/sql/pragma/profiling/test_profiling_operator_name.test",
         "test/sql/settings/setting_profiling_mode.test",

@@ -30,8 +30,11 @@ unique_ptr<Expression> ArithmeticSimplificationRule::Apply(LogicalOperator &op, 
 	idx_t constant_child = root.GetChildren()[0].get() == &constant ? 0 : 1;
 	D_ASSERT(root.GetChildren().size() == 2);
 	(void)root;
-	// any arithmetic operator involving NULL is always NULL
+	// any arithmetic operator involving NULL is always NULL, which drops the other operand
 	if (constant.GetValue().IsNull()) {
+		if (!rewriter.CanDropExpression(*root.GetChildren()[1 - constant_child])) {
+			return nullptr;
+		}
 		return make_uniq<BoundConstantExpression>(Value(root.GetReturnType()));
 	}
 	auto &func_name = root.Function().GetName();
@@ -77,7 +80,8 @@ unique_ptr<Expression> ArithmeticSimplificationRule::Apply(LogicalOperator &op, 
 				// divide by 1, replace with non-constant child
 				return Expression::PreserveReturnType(root.GetReturnType(),
 				                                      std::move(root.GetChildrenMutable()[1 - constant_child]));
-			} else if (constant.GetValue() == 0 && !Settings::Get<ErrorOnDivisionByZeroSetting>(rewriter.context)) {
+			} else if (constant.GetValue() == 0 && !Settings::Get<ErrorOnDivisionByZeroSetting>(rewriter.context) &&
+			           rewriter.CanDropExpression(*root.GetChildren()[1 - constant_child])) {
 				// divide by 0, replace with NULL
 				return make_uniq<BoundConstantExpression>(Value(root.GetReturnType()));
 			}

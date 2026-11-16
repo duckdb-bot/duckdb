@@ -182,6 +182,10 @@ unique_ptr<Expression> RegexOptimizationRule::Apply(LogicalOperator &op, vector<
 	duckdb_re2::RE2::Options parsed_options = regexp_bind_data.options;
 
 	if (constant_expr.GetValue().IsNull()) {
+		// a NULL result drops the string, which must then not be volatile, nor able to throw inside TRY
+		if (!rewriter.CanDropExpression(*root.GetChildren()[0])) {
+			return nullptr;
+		}
 		return make_uniq<BoundConstantExpression>(Value(root.GetReturnType()));
 	}
 	auto patt_str = StringValue::Get(constant_value);

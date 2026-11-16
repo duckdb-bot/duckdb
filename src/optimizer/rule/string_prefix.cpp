@@ -72,9 +72,11 @@ unique_ptr<Expression> StringPrefixRule::Apply(LogicalOperator &op, vector<refer
 	auto &func = bindings[1].get().Cast<BoundFunctionExpression>();
 	const auto &constant = bindings[4].get().Cast<BoundConstantExpression>();
 	auto &children = func.GetChildrenMutable();
+	// a NULL result drops the operands, which must then not be volatile, nor able to throw inside TRY
+	const bool can_rewrite_as_null = rewriter.CanDropExpression(comparison);
 
 	if (constant.GetValue().IsNull()) {
-		return make_uniq<BoundConstantExpression>(Value(comparison.GetReturnType()));
+		return can_rewrite_as_null ? RewriteAsNull(comparison) : nullptr;
 	}
 
 	int64_t num_characters;
@@ -83,7 +85,7 @@ unique_ptr<Expression> StringPrefixRule::Apply(LogicalOperator &op, vector<refer
 		D_ASSERT(children.size() == 2);
 		auto &count = children[1]->Cast<BoundConstantExpression>().GetValue();
 		if (count.IsNull()) {
-			return RewriteAsNull(comparison);
+			return can_rewrite_as_null ? RewriteAsNull(comparison) : nullptr;
 		}
 		num_characters = count.GetValue<int64_t>();
 		// Left counts from the end for negative values. Larger values must preserve the error.
@@ -94,7 +96,7 @@ unique_ptr<Expression> StringPrefixRule::Apply(LogicalOperator &op, vector<refer
 		D_ASSERT(children.size() == 2 || children.size() == 3);
 		auto &start = children[1]->Cast<BoundConstantExpression>().GetValue();
 		if (start.IsNull()) {
-			return RewriteAsNull(comparison);
+			return can_rewrite_as_null ? RewriteAsNull(comparison) : nullptr;
 		}
 		if (start.GetValue<int64_t>() != 1) {
 			return nullptr;
@@ -108,7 +110,7 @@ unique_ptr<Expression> StringPrefixRule::Apply(LogicalOperator &op, vector<refer
 		}
 		auto &length = children[2]->Cast<BoundConstantExpression>().GetValue();
 		if (length.IsNull()) {
-			return RewriteAsNull(comparison);
+			return can_rewrite_as_null ? RewriteAsNull(comparison) : nullptr;
 		}
 		num_characters = length.GetValue<int64_t>();
 		if (num_characters < 0 || num_characters > NumericLimits<uint32_t>::Maximum()) {
@@ -124,7 +126,7 @@ unique_ptr<Expression> StringPrefixRule::Apply(LogicalOperator &op, vector<refer
 
 		auto &begin = children[1]->Cast<BoundConstantExpression>().GetValue();
 		if (begin.IsNull()) {
-			return RewriteAsNull(comparison);
+			return can_rewrite_as_null ? RewriteAsNull(comparison) : nullptr;
 		}
 		if (begin.type().id() != LogicalTypeId::LIST) {
 			// s[0:] == s[1:]
@@ -136,7 +138,7 @@ unique_ptr<Expression> StringPrefixRule::Apply(LogicalOperator &op, vector<refer
 
 		auto &end = children[2]->Cast<BoundConstantExpression>().GetValue();
 		if (end.IsNull()) {
-			return RewriteAsNull(comparison);
+			return can_rewrite_as_null ? RewriteAsNull(comparison) : nullptr;
 		}
 		if (end.type().id() == LogicalTypeId::LIST) {
 			return RewriteAsEquality(std::move(children[0]), constant.GetValue());

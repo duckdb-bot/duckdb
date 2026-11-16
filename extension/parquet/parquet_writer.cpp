@@ -1,4 +1,6 @@
 #include "parquet_writer.hpp"
+#include "duckdb/common/bignum.hpp"
+#include "duckdb/common/types/decimal.hpp"
 
 #include <functional>
 #include <limits>
@@ -111,6 +113,24 @@ private:
 	idx_t size;
 };
 
+class ParquetBloomFilterWriteBuffer : public AsyncWriteBuffer {
+public:
+	explicit ParquetBloomFilterWriteBuffer(unique_ptr<ParquetBloomFilter> bloom_filter_p)
+	    : bloom_filter(std::move(bloom_filter_p)) {
+	}
+
+	data_ptr_t Ptr() override {
+		return bloom_filter->Get()->GetCurrentLoc();
+	}
+
+	idx_t Size() const override {
+		return bloom_filter->Get()->GetLength();
+	}
+
+private:
+	unique_ptr<ParquetBloomFilter> bloom_filter;
+};
+
 bool ParquetWriter::TryGetParquetType(const LogicalType &duckdb_type, optional_ptr<Type::type> parquet_type_ptr,
                                       bool write_timestamp_as_int96) {
 	Type::type parquet_type;
@@ -181,6 +201,10 @@ bool ParquetWriter::TryGetParquetType(const LogicalType &duckdb_type, optional_p
 			parquet_type = Type::INT64;
 			break;
 		case PhysicalType::INT128:
+			parquet_type = Type::FIXED_LEN_BYTE_ARRAY;
+			break;
+		case PhysicalType::VARCHAR:
+			// wide decimals are written as big-endian two's complement bytes
 			parquet_type = Type::FIXED_LEN_BYTE_ARRAY;
 			break;
 		default:
@@ -336,14 +360,23 @@ void ParquetWriter::SetSchemaProperties(const LogicalType &duckdb_type, duckdb_p
 		schema_ele.logicalType.__isset.UUID = true;
 		break;
 	case LogicalTypeId::DECIMAL:
+		if (DecimalType::GetWidth(duckdb_type) > idx_t(NumericLimits<int32_t>::Maximum())) {
+			throw NotImplementedException("Parquet DECIMAL precision is a 32-bit integer, %s cannot be written",
+			                              duckdb_type.ToString());
+		}
 		schema_ele.converted_type = ConvertedType::DECIMAL;
-		schema_ele.precision = DecimalType::GetWidth(duckdb_type);
-		schema_ele.scale = DecimalType::GetScale(duckdb_type);
+		schema_ele.precision = NumericCast<int32_t>(DecimalType::GetWidth(duckdb_type));
+		schema_ele.scale = NumericCast<int32_t>(DecimalType::GetScale(duckdb_type));
 		schema_ele.__isset.converted_type = true;
 		schema_ele.__isset.precision = true;
 		schema_ele.__isset.scale = true;
 		if (duckdb_type.InternalType() == PhysicalType::INT128) {
 			schema_ele.type_length = 16;
+			schema_ele.__isset.type_length = true;
+		} else if (duckdb_type.InternalType() == PhysicalType::VARCHAR) {
+			// wide decimal
+			schema_ele.type_length =
+			    NumericCast<int32_t>(ParquetDecimalUtils::WideDecimalByteLength(DecimalType::GetWidth(duckdb_type)));
 			schema_ele.__isset.type_length = true;
 		}
 		schema_ele.__isset.logicalType = true;
@@ -518,7 +551,7 @@ ParquetWriter::ParquetWriter(ClientContext &context, FileSystem &fs, ParquetWrit
     : context(context), options(std::move(options_p)), metadata_arena(BufferAllocator::Get(context)),
       file_meta_data(metadata_arena) {
 	// initialize the file writer
-	writer = make_uniq<AsyncFileWriter>(context, fs, options.file_name.c_str(), options.open_flags);
+	writer = make_uniq<AsyncFileWriter>(context.GetContext(), fs, options.file_name.c_str(), options.open_flags);
 
 	if (options.encryption_config) {
 		// Get the encryption util
@@ -565,6 +598,15 @@ ParquetWriter::ParquetWriter(ClientContext &context, FileSystem &fs, ParquetWrit
 		}
 	}
 
+	bloom_filter_fallback_memory =
+	    make_shared_ptr<ParquetBloomFilterMemory>(options.bloom_filter_fallback_max_bytes, [this]() {
+		    auto batch_guard = writer->StartBatch();
+		    {
+			    lock_guard<mutex> glock(lock);
+			    FlushBloomFilters();
+		    }
+		    batch_guard.Finish();
+	    });
 	InitializeColumnWriters();
 }
 
@@ -586,6 +628,9 @@ void ParquetWriter::InitializeColumnWriters() {
 		column_writers.push_back(ColumnWriter::CreateWriterRecursive(
 		    context, *this, path_in_schema, types[i], Identifier(unique_names[i]), allow_geometry, &options.field_ids,
 		    &options.shredding_types, 0, 1, can_have_nulls));
+		auto &column_writer = *column_writers.back();
+		column_writer.bloom_filter_fallback =
+		    options.enable_bloom_filters && !options.encryption_config && column_writer.SupportsBloomFilterFallback();
 	}
 }
 
@@ -616,7 +661,7 @@ void ParquetWriter::AnalyzeSchema(ColumnDataCollection &buffer, vector<unique_pt
 	}
 
 	for (auto &chunk : buffer.Chunks(column_ids)) {
-		// the column writers assume flat vectors, scans can return compact representations
+		// schema analysis traverses nested values through the flat layout
 		chunk.Flatten();
 		idx_t index = 0;
 		for (idx_t i = 0; i < column_writers.size(); i++) {
@@ -761,8 +806,11 @@ void ParquetWriter::PrepareRowGroup(ColumnDataCollection &raw_buffer, PreparedRo
 		}
 
 		for (auto &chunk : buffer.Chunks(column_ids)) {
-			// the column writers assume flat vectors, scans can return compact representations
-			chunk.Flatten();
+			for (idx_t i = 0; i < next; i++) {
+				if (!col_writers[i].get().HandlesCompactVectors()) {
+					chunk.data[i].Flatten();
+				}
+			}
 			for (idx_t i = 0; i < next; i++) {
 				if (col_writers[i].get().HasAnalyze()) {
 					col_writers[i].get().Analyze(*write_states[i], nullptr, chunk.data[i], chunk.size());
@@ -782,7 +830,7 @@ void ParquetWriter::PrepareRowGroup(ColumnDataCollection &raw_buffer, PreparedRo
 		}
 
 		for (auto &chunk : buffer.Chunks({column_ids})) {
-			// the column writers assume flat vectors, scans can return compact representations
+			// page size estimation and definition levels read rows through the flat layout
 			chunk.Flatten();
 			for (idx_t i = 0; i < next; i++) {
 				col_writers[i].get().Prepare(*write_states[i], nullptr, chunk.data[i], chunk.size(), true);
@@ -794,8 +842,11 @@ void ParquetWriter::PrepareRowGroup(ColumnDataCollection &raw_buffer, PreparedRo
 		}
 
 		for (auto &chunk : buffer.Chunks({column_ids})) {
-			// the column writers assume flat vectors, scans can return compact representations
-			chunk.Flatten();
+			for (idx_t i = 0; i < next; i++) {
+				if (!col_writers[i].get().HandlesCompactVectors()) {
+					chunk.data[i].Flatten();
+				}
+			}
 			for (idx_t i = 0; i < next; i++) {
 				col_writers[i].get().Write(*write_states[i], chunk.data[i], chunk.size());
 			}
@@ -954,11 +1005,11 @@ struct TimeTZStatsUnifier : public BaseNumericStatsUnifier<int64_t> {
 
 template <class T>
 struct DecimalStatsUnifier : public NumericStatsUnifier<T> {
-	DecimalStatsUnifier(uint8_t width, uint8_t scale) : width(width), scale(scale) {
+	DecimalStatsUnifier(uint32_t width, uint32_t scale) : width(width), scale(scale) {
 	}
 
-	uint8_t width;
-	uint8_t scale;
+	uint32_t width;
+	uint32_t scale;
 
 	string StatsToString(const string &stats) override {
 		if (stats.empty()) {
@@ -1111,6 +1162,40 @@ struct UUIDStatsUnifier : public BaseStringStatsUnifier {
 		return result;
 	}
 };
+//! Wide decimal statistics are the big-endian two's complement bytes of the FIXED_LEN_BYTE_ARRAY column; they are
+//! compared as BIGNUM blobs, whose byte order is the numeric order
+struct WideDecimalStatsUnifier : public ColumnStatsUnifier {
+	WideDecimalStatsUnifier(uint32_t width, uint32_t scale) : width(width), scale(scale) {
+	}
+
+	uint32_t width;
+	uint32_t scale;
+
+	static string Decode(const string &stats) {
+		return ParquetDecimalUtils::ReadWideDecimalValue(const_data_ptr_cast(stats.data()), stats.size());
+	}
+
+	string StatsToString(const string &stats) override {
+		if (stats.empty()) {
+			return string();
+		}
+		auto blob = Decode(stats);
+		return Value::DECIMAL(bignum_t(string_t(blob)), width, scale).ToString();
+	}
+
+	void UnifyMinMax(const string &new_min, const string &new_max) override {
+		// the byte order of the BIGNUM blobs is their numeric order
+		if (!min_is_set || LessThan::Operation(string_t(Decode(new_min)), string_t(Decode(global_min)))) {
+			global_min = new_min;
+			min_is_set = true;
+		}
+		if (!max_is_set || GreaterThan::Operation(string_t(Decode(new_max)), string_t(Decode(global_max)))) {
+			global_max = new_max;
+			max_is_set = true;
+		}
+	}
+};
+
 struct NullStatsUnifier : public ColumnStatsUnifier {
 	void UnifyMinMax(const string &new_min, const string &new_max) override {
 	}
@@ -1172,6 +1257,9 @@ static unique_ptr<ColumnStatsUnifier> GetBaseStatsUnifier(const LogicalType &typ
 			return make_uniq<DecimalStatsUnifier<int64_t>>(width, scale);
 		case PhysicalType::INT128:
 			return make_uniq<DecimalStatsUnifier<hugeint_t>>(width, scale);
+		case PhysicalType::VARCHAR:
+			// wide decimal stored as a BIGNUM blob
+			return make_uniq<WideDecimalStatsUnifier>(width, scale);
 		default:
 			return make_uniq<NullStatsUnifier>();
 		}
@@ -1439,17 +1527,18 @@ void ParquetWriter::InitializeSchemaFromPreparedRowGroup(const PreparedRowGroup 
 	InitializeStatsUnifiers();
 }
 
-void ParquetWriter::Finalize() {
-	InitializeSchemaElements();
-
-	// dump the bloom filters right before footer, not if stuff is encrypted
-
+void ParquetWriter::FlushBloomFilters() {
+	std::sort(bloom_filters.begin(), bloom_filters.end(),
+	          [](const ParquetBloomFilterEntry &a, const ParquetBloomFilterEntry &b) {
+		          return a.column_idx < b.column_idx ||
+		                 (a.column_idx == b.column_idx && a.row_group_idx < b.row_group_idx);
+	          });
 	for (auto &bloom_filter_entry : bloom_filters) {
 		D_ASSERT(!options.encryption_config);
 		// write nonsense bloom filter header
 		duckdb_parquet::BloomFilterHeader filter_header;
-		auto bloom_filter_bytes = bloom_filter_entry.bloom_filter->Get();
-		filter_header.numBytes = NumericCast<int32_t>(bloom_filter_bytes->len);
+		const auto bloom_filter_size = bloom_filter_entry.bloom_filter->Get()->GetLength();
+		filter_header.numBytes = NumericCast<int32_t>(bloom_filter_size);
 		filter_header.algorithm.__set_BLOCK(duckdb_parquet::SplitBlockAlgorithm());
 		filter_header.compression.__set_UNCOMPRESSED(duckdb_parquet::Uncompressed());
 		filter_header.hash.__set_XXHASH(duckdb_parquet::XxHash());
@@ -1462,13 +1551,21 @@ void ParquetWriter::Finalize() {
 		column_chunk.meta_data.bloom_filter_offset = NumericCast<int64_t>(writer->GetTotalWritten());
 
 		auto bloom_filter_header_size = Write(filter_header);
-		// write actual data
-		WriteData(bloom_filter_bytes->ptr, bloom_filter_bytes->len);
+		// the async writer accounts for the bytes it queues, so the filter no longer needs the budget
+		bloom_filter_entry.bloom_filter->ReleaseReservation();
+		WriteData(make_uniq<ParquetBloomFilterWriteBuffer>(std::move(bloom_filter_entry.bloom_filter)));
 
 		column_chunk.meta_data.__isset.bloom_filter_length = true;
-		column_chunk.meta_data.bloom_filter_length =
-		    NumericCast<int32_t>(bloom_filter_header_size + bloom_filter_bytes->len);
+		column_chunk.meta_data.bloom_filter_length = NumericCast<int32_t>(bloom_filter_header_size + bloom_filter_size);
 	}
+	bloom_filters.clear();
+}
+
+void ParquetWriter::Finalize() {
+	InitializeSchemaElements();
+
+	// dump the remaining bloom filters right before footer, not if stuff is encrypted
+	FlushBloomFilters();
 
 	// the page index goes right in front of the footer, after the bloom filters, so that it is part of the tail of the
 	// file a reader fetches together with the footer: first the ColumnIndex of every column chunk, then the
@@ -1505,7 +1602,7 @@ void ParquetWriter::Finalize() {
 	}
 
 	// Add geoparquet metadata to the file metadata
-	if (geoparquet_data && GeoParquetFileMetadata::IsGeoParquetConversionEnabled(context) &&
+	if (geoparquet_data && GeoParquetFileMetadata::IsGeoParquetConversionEnabled(context.GetContext()) &&
 	    GetGeoParquetVersion() != GeoParquetVersion::NONE) {
 		geoparquet_data->Write(file_meta_data);
 	}

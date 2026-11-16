@@ -39,7 +39,7 @@ DuckTransaction::DuckTransaction(DuckTransactionManager &manager, ClientContext 
                                  SnapshotView view_p, idx_t catalog_version_p)
     : Transaction(manager, context_p), start_time(start_time), view(view_p), commit_id(0),
       catalog_version(catalog_version_p), awaiting_cleanup(false), undo_buffer(*this, context_p),
-      storage(make_uniq<LocalStorage>(context_p, *this)) {
+      storage(make_uniq<LocalStorage>(context_p.GetContext(), *this)) {
 	D_ASSERT(IsCommitted(start_time) && !IsCommitted(view.transaction_id));
 }
 
@@ -234,7 +234,7 @@ ErrorData DuckTransaction::AppendLocalStorage(ClientContext &context, AttachedDa
 			auto &storage_manager = db.GetStorageManager();
 			commit_state = storage_manager.GenStorageCommitState(*storage_manager.GetWAL());
 		}
-		auto &profiler = *context.client_data->profiler;
+		auto &profiler = QueryProfiler::Get(context.GetContext());
 		auto commit_timer = profiler.StartTimer<MetricStorageCommitLocalStorageLatency>();
 		storage->Commit(commit_state.get());
 		commit_timer.EndTimer();
@@ -255,7 +255,7 @@ ErrorData DuckTransaction::WriteToWAL(ClientContext &context, AttachedDatabase &
 		// the append may have consumed the last local change: do not ask ShouldWriteToWAL again here
 		D_ASSERT(commit_state);
 		auto wal = db.GetStorageManager().GetWAL();
-		auto &profiler = *context.client_data->profiler;
+		auto &profiler = QueryProfiler::Get(context.GetContext());
 		auto wal_timer = profiler.StartTimer<MetricStorageWriteToWALLatency>();
 		undo_buffer.WriteToWAL(*wal, commit_state.get());
 		wal_timer.EndTimer();
@@ -326,16 +326,13 @@ ErrorData DuckTransaction::Commit(AttachedDatabase &db, CommitInfo &commit_info,
 	} catch (std::exception &ex) {
 		// If we fail to revert the commit, the database is left in an undefined state - invalidate it.
 		// Record both the original commit error and the revert error so the root cause stays visible.
-		ValidChecker::Invalidate(db.GetDatabase(),
-		                         "Failed to revert transaction commit, database is in an undefined state. "
-		                         "Original commit error: " +
-		                             error_data.RawMessage() + ". RevertCommit error: " + ErrorData(ex).RawMessage());
+		db.Invalidate("reverting a failed commit failed, leaving it in an undefined state",
+		              "commit error: " + error_data.RawMessage() +
+		                  ". RevertCommit error: " + ErrorData(ex).RawMessage());
 	} catch (...) {
 		// last line of defense: this is a noexcept function, nothing may escape
-		ValidChecker::Invalidate(db.GetDatabase(),
-		                         "Failed to revert transaction commit (unknown error), database is in an "
-		                         "undefined state. Original commit error: " +
-		                             error_data.RawMessage());
+		db.Invalidate("reverting a failed commit failed, leaving it in an undefined state",
+		              "commit error: " + error_data.RawMessage() + ". RevertCommit error: unknown error");
 	}
 	return error_data;
 }
@@ -352,6 +349,13 @@ ErrorData DuckTransaction::Rollback() {
 
 void DuckTransaction::Cleanup(VisibilityBound lowest_visibility_bound) {
 	undo_buffer.Cleanup(lowest_visibility_bound);
+}
+
+unique_ptr<StorageLockKey> DuckTransaction::GetCheckpointLockForStatement() {
+	if (checkpoint_lock) {
+		return nullptr;
+	}
+	return GetTransactionManager().SharedCheckpointLock();
 }
 
 void DuckTransaction::SetModifications(DatabaseModificationType type) {

@@ -991,8 +991,8 @@ static optional<uint64_t> ValueXXH64(const Value &constant, const ParquetColumnS
 		} else if (schema.parquet_type == duckdb_parquet::Type::INT64) {
 			return ValueXH64FixedWidth<int64_t>(constant);
 		} else if (schema.parquet_type == duckdb_parquet::Type::FIXED_LEN_BYTE_ARRAY &&
-		           schema.type_length == sizeof(hugeint_t)) {
-			// the unscaled value always fits DECIMAL(38,0), so it is hashed as the writer hashes HUGEINT
+		           schema.type_length == sizeof(hugeint_t) && constant.type().InternalType() == PhysicalType::INT128) {
+			// a 16-byte decimal of the fixed-size tier is hashed as the writer hashes HUGEINT
 			auto bytes =
 			    ParquetHugeintOperator::Operation<hugeint_t, ParquetHugeintTargetType>(IntegralValue::Get(constant));
 			return ParquetHugeintOperator::XXHash64<hugeint_t, ParquetHugeintTargetType>(bytes);
@@ -1178,8 +1178,9 @@ ParquetStatisticsUtils::GetBloomFilterHashStrategy(const ParquetColumnSchema &sc
 		if (schema.parquet_type == duckdb_parquet::Type::INT32 || schema.parquet_type == duckdb_parquet::Type::INT64) {
 			return ParquetBloomFilterHashStrategy::STANDARD;
 		}
+		// a 16-byte decimal is probed only when it is the fixed-size tier, a wider decimal is a BIGNUM blob
 		if (schema.parquet_type == duckdb_parquet::Type::FIXED_LEN_BYTE_ARRAY &&
-		    schema.type_length == sizeof(hugeint_t)) {
+		    schema.type_length == sizeof(hugeint_t) && schema.type.InternalType() == PhysicalType::INT128) {
 			return ParquetBloomFilterHashStrategy::STANDARD;
 		}
 		return nullopt;

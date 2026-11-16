@@ -1,0 +1,32 @@
+# name: test/sql/copy/parquet/bloom_filter_wide_decimal.test
+# description: A 16-byte decimal column wider than 38 digits is a BIGNUM blob, so its bloom filter is not probed
+# group: [parquet]
+
+require parquet
+
+# decimal(39,0) stored as a 16-byte FIXED_LEN_BYTE_ARRAY with a bloom filter, holding 0 to 19 ten times each
+query I
+SELECT typeof(h) FROM 'data/parquet-testing/decimal/wide_decimal_flba16_bloom.parquet' LIMIT 1
+----
+DECIMAL(39,0)
+
+query I
+SELECT count(*) FROM 'data/parquet-testing/decimal/wide_decimal_flba16_bloom.parquet' WHERE h = 5
+----
+10
+
+query I
+SELECT count(*) FROM 'data/parquet-testing/decimal/wide_decimal_flba16_bloom.parquet' WHERE h IN (3, 1000)
+----
+10
+
+query I
+SELECT count(*) FROM 'data/parquet-testing/decimal/wide_decimal_flba16_bloom.parquet' WHERE h = 1000
+----
+0
+
+# the bloom filter is only probed for the fixed-size decimal tier
+query I
+SELECT bloom_filter_excludes FROM parquet_bloom_probe('data/parquet-testing/decimal/wide_decimal_flba16_bloom.parquet', 'h', 1000)
+----
+false

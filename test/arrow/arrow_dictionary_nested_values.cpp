@@ -158,96 +158,101 @@ bool ScanMatches(Node &column, const string &query) {
 
 } // namespace arrow_dictionary_nested_values_test
 
-using arrow_dictionary_nested_values_test::Builder;
-using arrow_dictionary_nested_values_test::ScanMatches;
-
 TEST_CASE("Arrow scan of a dictionary whose values are a struct", "[arrow]") {
-	Builder b;
+	arrow_dictionary_nested_values_test::Builder b;
 	auto &values = b.Struct("", {&b.Int32("d", {30, 20, 10})});
 	auto &column = b.Dictionary("s", {0, 2, -1, 1, 0}, values);
-	REQUIRE(ScanMatches(column, "SELECT s::STRUCT(d INT) FROM (VALUES ({'d': 30}), ({'d': 10}), (NULL), ({'d': 20}), "
-	                            "({'d': 30})) t(s)"));
+	REQUIRE(arrow_dictionary_nested_values_test::ScanMatches(
+	    column, "SELECT s::STRUCT(d INT) FROM (VALUES ({'d': 30}), ({'d': 10}), (NULL), ({'d': 20}), "
+	            "({'d': 30})) t(s)"));
 }
 
 TEST_CASE("Arrow scan of a dictionary whose values are a nested struct", "[arrow]") {
-	Builder b;
+	arrow_dictionary_nested_values_test::Builder b;
 	auto &inner = b.Struct("e", {&b.Int32("i", {1, 2, 3}), &b.Int32("j", {10, 20, 30})});
 	auto &values = b.Struct("", {&inner});
 	auto &column = b.Dictionary("s", {2, -1, 0}, values);
-	REQUIRE(ScanMatches(column, "SELECT s::STRUCT(e STRUCT(i INT, j INT)) FROM (VALUES ({'e': {'i': 3, 'j': 30}}), "
-	                            "(NULL), ({'e': {'i': 1, 'j': 10}})) t(s)"));
+	REQUIRE(arrow_dictionary_nested_values_test::ScanMatches(
+	    column, "SELECT s::STRUCT(e STRUCT(i INT, j INT)) FROM (VALUES ({'e': {'i': 3, 'j': 30}}), "
+	            "(NULL), ({'e': {'i': 1, 'j': 10}})) t(s)"));
 }
 
 TEST_CASE("Arrow scan of a dictionary whose values are fixed-size lists", "[arrow]") {
-	Builder b;
+	arrow_dictionary_nested_values_test::Builder b;
 	auto &values = b.FixedSizeList("+w:2", "", 3, b.Int32("item", {1, 2, 3, 4, 5, 6}));
 	auto &column = b.Dictionary("a", {1, -1, 2, 0}, values);
-	REQUIRE(ScanMatches(column, "SELECT a::INT[2] FROM (VALUES ([3, 4]), (NULL), ([5, 6]), ([1, 2])) t(a)"));
+	REQUIRE(arrow_dictionary_nested_values_test::ScanMatches(
+	    column, "SELECT a::INT[2] FROM (VALUES ([3, 4]), (NULL), ([5, 6]), ([1, 2])) t(a)"));
 
 	// a struct with a fixed-size list field
-	Builder c;
+	arrow_dictionary_nested_values_test::Builder c;
 	auto &list = c.FixedSizeList("+w:2", "l", 3, c.Int32("item", {1, 2, 3, 4, 5, 6}));
 	auto &struct_values = c.Struct("", {&list});
 	auto &struct_column = c.Dictionary("s", {2, 0, -1}, struct_values);
-	REQUIRE(ScanMatches(struct_column,
-	                    "SELECT s::STRUCT(l INT[2]) FROM (VALUES ({'l': [5, 6]}), ({'l': [1, 2]}), (NULL)) t(s)"));
+	REQUIRE(arrow_dictionary_nested_values_test::ScanMatches(
+	    struct_column, "SELECT s::STRUCT(l INT[2]) FROM (VALUES ({'l': [5, 6]}), ({'l': [1, 2]}), (NULL)) t(s)"));
 }
 
 TEST_CASE("Arrow scan of a dictionary of structs across several chunks", "[arrow]") {
-	Builder b;
+	arrow_dictionary_nested_values_test::Builder b;
 	auto &values = b.Struct("", {&b.Int32("d", {30, 20, 10})});
 	vector<int8_t> indices;
 	for (idx_t i = 0; i < 5000; i++) {
 		indices.push_back(i % 7 == 0 ? int8_t(-1) : int8_t(i % 3));
 	}
 	auto &column = b.Dictionary("s", std::move(indices), values);
-	REQUIRE(ScanMatches(column, "SELECT CASE WHEN i % 7 = 0 THEN NULL ELSE {'d': ([30, 20, 10])[i % 3 + 1]} "
-	                            "END::STRUCT(d INT) FROM range(5000) t(i)"));
+	REQUIRE(arrow_dictionary_nested_values_test::ScanMatches(
+	    column, "SELECT CASE WHEN i % 7 = 0 THEN NULL ELSE {'d': ([30, 20, 10])[i % 3 + 1]} "
+	            "END::STRUCT(d INT) FROM range(5000) t(i)"));
 }
 
 TEST_CASE("Arrow scan of a dictionary of structs with NULL entries and fields", "[arrow]") {
-	Builder b;
+	arrow_dictionary_nested_values_test::Builder b;
 	// entry 1 is a NULL struct, and the field of entry 2 is NULL
 	auto &values = b.Struct("", {&b.Int32("d", {30, 20, 10}, {2})}, {1});
 	auto &column = b.Dictionary("s", {0, 1, 2, -1, 0}, values);
-	REQUIRE(ScanMatches(column, "SELECT s::STRUCT(d INT) FROM (VALUES ({'d': 30}), (NULL), ({'d': NULL}), (NULL), "
-	                            "({'d': 30})) t(s)"));
+	REQUIRE(arrow_dictionary_nested_values_test::ScanMatches(
+	    column, "SELECT s::STRUCT(d INT) FROM (VALUES ({'d': 30}), (NULL), ({'d': NULL}), (NULL), "
+	            "({'d': 30})) t(s)"));
 }
 
 TEST_CASE("Arrow scan of a dictionary of structs with a dictionary field", "[arrow]") {
-	Builder b;
+	arrow_dictionary_nested_values_test::Builder b;
 	// the field has int8 values, the type of its indices
 	auto &field = b.Dictionary("f", {2, 0, 1}, b.Int8("", {7, 8, 9}));
 	auto &values = b.Struct("", {&field});
 	auto &column = b.Dictionary("s", {1, -1, 0, 2}, values);
-	REQUIRE(ScanMatches(column, "SELECT s::STRUCT(f TINYINT) FROM (VALUES ({'f': 7}), (NULL), ({'f': 9}), ({'f': 8})) "
-	                            "t(s)"));
+	REQUIRE(arrow_dictionary_nested_values_test::ScanMatches(
+	    column, "SELECT s::STRUCT(f TINYINT) FROM (VALUES ({'f': 7}), (NULL), ({'f': 9}), ({'f': 8})) "
+	            "t(s)"));
 }
 
 TEST_CASE("Arrow scan of an empty dictionary of structs and fixed-size lists", "[arrow]") {
-	Builder b;
+	arrow_dictionary_nested_values_test::Builder b;
 	auto &values = b.Struct("", {&b.Int32("d", {})});
 	auto &column = b.Dictionary("s", {-1, -1}, values);
-	REQUIRE(ScanMatches(column, "SELECT s::STRUCT(d INT) FROM (VALUES (NULL), (NULL)) t(s)"));
+	REQUIRE(arrow_dictionary_nested_values_test::ScanMatches(
+	    column, "SELECT s::STRUCT(d INT) FROM (VALUES (NULL), (NULL)) t(s)"));
 
-	Builder c;
+	arrow_dictionary_nested_values_test::Builder c;
 	auto &list_values = c.FixedSizeList("+w:2", "", 0, c.Int32("item", {}));
 	auto &list_column = c.Dictionary("a", {-1, -1}, list_values);
-	REQUIRE(ScanMatches(list_column, "SELECT a::INT[2] FROM (VALUES (NULL), (NULL)) t(a)"));
+	REQUIRE(arrow_dictionary_nested_values_test::ScanMatches(list_column,
+	                                                         "SELECT a::INT[2] FROM (VALUES (NULL), (NULL)) t(a)"));
 }
 
 TEST_CASE("Arrow scan of a dictionary of structs with string and list fields", "[arrow]") {
-	Builder b;
+	arrow_dictionary_nested_values_test::Builder b;
 	auto &strings =
 	    b.Utf8("v", {"a string longer than the inlined length", "short", "another string that is not inlined"});
 	// entry 1 holds an empty list and entry 2 a NULL list
 	auto &list = b.List("l", {0, 2, 2, 2}, b.Utf8("item", {"a list element that is not inlined", "second"}), {2});
 	auto &values = b.Struct("", {&strings, &list});
 	auto &column = b.Dictionary("s", {0, -1, 2, 1, 0}, values);
-	REQUIRE(ScanMatches(column,
-	                    "SELECT s::STRUCT(v VARCHAR, l VARCHAR[]) FROM (VALUES "
-	                    "({'v': 'a string longer than the inlined length', 'l': ['a list element that is not "
-	                    "inlined', 'second']}), (NULL), ({'v': 'another string that is not inlined', 'l': NULL}), "
-	                    "({'v': 'short', 'l': []::VARCHAR[]}), ({'v': 'a string longer than the inlined length', "
-	                    "'l': ['a list element that is not inlined', 'second']})) t(s)"));
+	REQUIRE(arrow_dictionary_nested_values_test::ScanMatches(
+	    column, "SELECT s::STRUCT(v VARCHAR, l VARCHAR[]) FROM (VALUES "
+	            "({'v': 'a string longer than the inlined length', 'l': ['a list element that is not "
+	            "inlined', 'second']}), (NULL), ({'v': 'another string that is not inlined', 'l': NULL}), "
+	            "({'v': 'short', 'l': []::VARCHAR[]}), ({'v': 'a string longer than the inlined length', "
+	            "'l': ['a list element that is not inlined', 'second']})) t(s)"));
 }

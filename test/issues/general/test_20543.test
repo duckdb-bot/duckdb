@@ -1,0 +1,258 @@
+# name: test/issues/general/test_20543.test
+# description: ALTER TABLE ... SET TYPE ... USING with a cast to a user type replays from the WAL
+# group: [general]
+
+load {TEST_DIR}/alter_type_using_replay.db
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown;
+
+statement ok
+SET wal_autocheckpoint = '1GB';
+
+statement ok
+CREATE TYPE e AS ENUM ('a', 'b');
+
+statement ok
+CREATE SCHEMA s;
+
+statement ok
+CREATE TYPE s.e2 AS ENUM ('x', 'y');
+
+statement ok
+CREATE TABLE t (p VARCHAR, q VARCHAR);
+
+statement ok
+INSERT INTO t VALUES ('a', 'x');
+
+statement ok
+ALTER TABLE t ALTER p SET TYPE USING p::e;
+
+statement ok
+ALTER TABLE t ALTER q SET TYPE USING q::s.e2;
+
+# a function of the default schema keeps precedence over one of the table's schema
+statement ok
+CREATE MACRO f(x) AS x + 1;
+
+statement ok
+CREATE MACRO s.f(x) AS x + 100;
+
+statement ok
+CREATE TABLE s.t2 (q INTEGER);
+
+statement ok
+INSERT INTO s.t2 VALUES (1);
+
+statement ok
+ALTER TABLE s.t2 ALTER q SET TYPE INTEGER USING f(q);
+
+# and so does a builtin function
+statement ok
+CREATE MACRO s.nullif(x, y) AS x + 100;
+
+statement ok
+CREATE TABLE s.t3 (q INTEGER);
+
+statement ok
+INSERT INTO s.t3 VALUES (1);
+
+statement ok
+ALTER TABLE s.t3 ALTER q SET TYPE INTEGER USING nullif(q, 0);
+
+# a type of the main schema used for a table of another schema
+statement ok
+CREATE TABLE s.w (p VARCHAR);
+
+statement ok
+INSERT INTO s.w VALUES ('b');
+
+statement ok
+ALTER TABLE s.w ALTER p SET TYPE USING p::e;
+
+# a type found through the search path of the session, with a type of the same name in the main schema
+statement ok
+CREATE TYPE s.e AS ENUM ('a', 'x');
+
+statement ok
+SET search_path = 's,main';
+
+statement ok
+CREATE TABLE main.t4 (p VARCHAR);
+
+statement ok
+INSERT INTO main.t4 VALUES ('x');
+
+statement ok
+ALTER TABLE main.t4 ALTER p SET TYPE USING p::e;
+
+statement ok
+RESET search_path;
+
+# a cast in a macro argument, which the macro uses or drops
+statement ok
+CREATE MACRO ident(x) AS x;
+
+statement ok
+CREATE MACRO keep_one(x) AS 1;
+
+statement ok
+CREATE TABLE t5 (p VARCHAR, q INTEGER, r INTEGER, s INTEGER, u INTEGER);
+
+statement ok
+INSERT INTO t5 VALUES ('b', 5, 6, 7, 8);
+
+statement ok
+ALTER TABLE t5 ALTER p SET TYPE USING ident(p::e);
+
+statement ok
+ALTER TABLE t5 ALTER q SET TYPE INTEGER USING keep_one(q::missing_type);
+
+statement ok
+ALTER TABLE t5 ALTER r SET TYPE INTEGER USING keep_one(r::DECIMAL(50, 2));
+
+statement ok
+ALTER TABLE t5 ALTER s SET TYPE INTEGER USING keep_one(s::ENUM('a', 'a'));
+
+# and does not load the extension of a type that only a dropped argument names
+statement ok
+SET autoinstall_known_extensions = false;
+
+statement ok
+SET autoload_known_extensions = true;
+
+statement ok
+ALTER TABLE t5 ALTER u SET TYPE INTEGER USING keep_one(u::INET);
+
+statement ok
+RESET autoload_known_extensions;
+
+statement ok
+RESET autoinstall_known_extensions;
+
+# user types nested in other types, in nested casts, TRY_CAST and CASE, and a type defined as another type
+statement ok
+CREATE TYPE myint AS INTEGER;
+
+statement ok
+CREATE TABLE t6 (a VARCHAR, b VARCHAR, c VARCHAR, d VARCHAR, f VARCHAR, g VARCHAR);
+
+statement ok
+INSERT INTO t6 VALUES ('a', 'b', 'a', 'z', 'q', '7');
+
+statement ok
+ALTER TABLE t6 ALTER a SET TYPE USING {'k': a}::STRUCT(k e);
+
+statement ok
+ALTER TABLE t6 ALTER b SET TYPE USING b::e::UNION(k e, n INTEGER);
+
+statement ok
+ALTER TABLE t6 ALTER c SET TYPE USING (c::e)::VARCHAR || '!';
+
+statement ok
+ALTER TABLE t6 ALTER d SET TYPE USING TRY_CAST(d AS e);
+
+statement ok
+ALTER TABLE t6 ALTER f SET TYPE USING CASE WHEN f = 'a' THEN f::e ELSE 'b'::e END;
+
+statement ok
+ALTER TABLE t6 ALTER g SET TYPE USING g::myint;
+
+restart
+
+query IIIIII
+SELECT p, typeof(p), q, r, s, u FROM t5;
+----
+b	ENUM('a', 'b')	1	1	1	1
+
+query IIIIII
+SELECT typeof(COLUMNS(*)) FROM t6;
+----
+STRUCT(k ENUM('a', 'b'))	UNION(k ENUM('a', 'b'), n INTEGER)	VARCHAR	ENUM('a', 'b')	ENUM('a', 'b')	INTEGER
+
+query IIIIII
+SELECT * FROM t6;
+----
+{'k': a}	b	a!	NULL	b	7
+
+query II
+SELECT p, typeof(p) FROM t4;
+----
+x	ENUM('a', 'x')
+
+query IIII
+SELECT p, typeof(p), q, typeof(q) FROM t;
+----
+a	ENUM('a', 'b')	x	ENUM('x', 'y')
+
+query II
+SELECT p, typeof(p) FROM s.w;
+----
+b	ENUM('a', 'b')
+
+query II
+SELECT (SELECT q FROM s.t2), (SELECT q FROM s.t3);
+----
+2	1
+
+# attaching a file replays its WAL in a session with another default database
+statement ok
+ATTACH '{TEST_DIR}/alter_type_using_attach.db' AS d2;
+
+statement ok
+USE d2;
+
+statement ok
+CREATE TYPE e3 AS ENUM ('m', 'n');
+
+statement ok
+CREATE MACRO f(x) AS x + 1000;
+
+statement ok
+CREATE TABLE v (p VARCHAR);
+
+statement ok
+INSERT INTO v VALUES ('n');
+
+# a type that only the attached database has
+statement ok
+ALTER TABLE v ALTER p SET TYPE USING p::e3;
+
+statement ok
+USE alter_type_using_replay;
+
+# a name that the default database has as well resolves there, as when the WAL was written
+statement ok
+CREATE TABLE d2.v2 (q INTEGER);
+
+statement ok
+INSERT INTO d2.v2 VALUES (1);
+
+statement ok
+ALTER TABLE d2.v2 ALTER q SET TYPE INTEGER USING f(q);
+
+# a type qualified with the name the database had when the WAL was written
+statement ok
+CREATE TABLE d2.w (p VARCHAR);
+
+statement ok
+INSERT INTO d2.w VALUES ('m');
+
+statement ok
+ALTER TABLE d2.w ALTER p SET TYPE USING p::d2.e3;
+
+statement ok
+DETACH d2;
+
+statement ok
+ATTACH '{TEST_DIR}/alter_type_using_attach.db' AS d3;
+
+query III
+SELECT p, typeof(p), (SELECT q FROM d3.v2) FROM d3.v;
+----
+n	ENUM('m', 'n')	2
+
+query II
+SELECT p, typeof(p) FROM d3.w;
+----
+m	ENUM('m', 'n')

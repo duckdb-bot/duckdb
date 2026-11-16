@@ -1,0 +1,63 @@
+# name: test/sql/parser/function_chaining_struct_field.test
+# description: A method call on a struct field written with the table name keeps the whole column path
+# group: [parser]
+
+statement ok
+CREATE TABLE t AS SELECT 'Ab' AS c, {'f': 'Cd', 'n': {'g': 'Ef'}} AS s;
+
+query I
+SELECT t.c.lower() FROM t;
+----
+ab
+
+query I
+SELECT s.f.lower() FROM t;
+----
+cd
+
+query I
+SELECT (t.s.f).lower() FROM t;
+----
+cd
+
+# the qualification of the call is the column path t.s.f, not column f of table t
+query I
+SELECT t.s.f.lower() FROM t;
+----
+cd
+
+query I
+SELECT t.s.n.g.upper() FROM t;
+----
+EF
+
+query I
+SELECT t.s.f.lower().upper() FROM t;
+----
+CD
+
+query I
+SELECT tt.s.f.lower() FROM t AS tt;
+----
+cd
+
+statement ok
+CREATE SCHEMA sch;
+
+statement ok
+CREATE TABLE sch.t2 AS SELECT {'f': 'Gh'} AS s;
+
+query I
+SELECT sch.t2.s.f.lower() FROM sch.t2;
+----
+gh
+
+query I
+SELECT t.s.f.lower() FROM t WHERE t.s.f.lower() = 'cd';
+----
+cd
+
+statement error
+SELECT t.s.x.lower() FROM t;
+----
+x

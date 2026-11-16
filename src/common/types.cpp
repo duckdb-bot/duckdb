@@ -1353,7 +1353,7 @@ static LogicalType ForceMaxLogicalTypeInternal(optional_ptr<ClientContext> conte
 	auto &other_type = left_score < right_score ? left : right;
 	if (max_type.id() == LogicalTypeId::DECIMAL && other_type.id() == LogicalTypeId::BOOLEAN) {
 		// the DECIMAL must be wide enough to hold true
-		return DecimalSizeCheck(other_type, max_type);
+		return DecimalSizeCheck(logical_type_resolver, other_type, max_type);
 	}
 	return max_type;
 }

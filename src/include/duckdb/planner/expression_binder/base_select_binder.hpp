@@ -36,6 +36,8 @@ public:
 	static bool IsFunctionallyDependent(const unique_ptr<Expression> &expr, const vector<reference<Expression>> &deps);
 
 protected:
+	//! Not with groups, which match the comparisons of a simple CASE and resolve names before a lambda does
+	bool CanBindCaseOperandOnce() const override;
 	BindResult BindExpression(unique_ptr<ParsedExpression> &expr_ptr, idx_t depth,
 	                          bool root_expression = false) override;
 

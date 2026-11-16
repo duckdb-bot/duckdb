@@ -122,6 +122,10 @@ public:
 protected:
 	BindResult BindExpression(unique_ptr<ParsedExpression> &expr_ptr, idx_t depth, bool root_expression) override;
 	BindResult BindAggregate(FunctionExpression &expr, AggregateFunctionCatalogEntry &function, idx_t depth) override;
+	//! Functions such as CLASSIFIER() bind by their name and where they are, not as the body of a lambda
+	bool CanBindCaseOperandOnce() const override {
+		return false;
+	}
 	string UnsupportedAggregateMessage() override;
 
 public:
@@ -164,6 +168,10 @@ public:
 protected:
 	BindResult BindExpression(unique_ptr<ParsedExpression> &expr_ptr, idx_t depth, bool root_expression) override;
 	BindResult BindAggregate(FunctionExpression &expr, AggregateFunctionCatalogEntry &function, idx_t depth) override;
+	//! Functions such as CLASSIFIER() bind by their name and where they are, not as the body of a lambda
+	bool CanBindCaseOperandOnce() const override {
+		return false;
+	}
 
 private:
 	//! An aggregate in MEASURES aggregates the rows of the match, which is a window over them

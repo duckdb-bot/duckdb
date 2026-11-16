@@ -1,13 +1,13 @@
 # name: test/sql/copy/parquet/bloom_filter_decimal_flba16.test
-# description: Bloom filters of 16-byte decimal columns are probed for the fixed-size tiers, a wide decimal is not probed
+# description: Bloom filters of 16-byte decimal columns are probed for the fixed-size tiers, not for a wide decimal
 # group: [parquet]
 
 require parquet
 
-# both fixtures hold 0 to 19 ten times each in a 16-byte FIXED_LEN_BYTE_ARRAY with a dictionary and a bloom filter,
-# written by DuckDB as DECIMAL(38,0) with the declared precision changed in the footer
+# the fixtures hold the unscaled values 0 to 19 ten times each in a 16-byte FIXED_LEN_BYTE_ARRAY with a bloom filter
+# DuckDB wrote them as DECIMAL(38,0), the declared precision and scale were changed in the footer
 
-# decimal(18,0), which is read through the INT64 tier, is hashed like the 16 bytes the writer hashed
+# decimal(18,0) is read through the INT64 tier and hashed like the 16 bytes the writer hashed
 query I
 SELECT typeof(h) FROM 'data/parquet-testing/decimal/decimal18_flba16_bloom.parquet' LIMIT 1
 ----
@@ -24,12 +24,37 @@ SELECT count(*) FROM 'data/parquet-testing/decimal/decimal18_flba16_bloom.parque
 10
 
 query I
-SELECT bloom_filter_excludes FROM parquet_bloom_probe('data/parquet-testing/decimal/decimal18_flba16_bloom.parquet', 'h', 5)
+SELECT bloom_filter_excludes
+FROM parquet_bloom_probe('data/parquet-testing/decimal/decimal18_flba16_bloom.parquet', 'h', 5)
 ----
 false
 
 query I
-SELECT bloom_filter_excludes FROM parquet_bloom_probe('data/parquet-testing/decimal/decimal18_flba16_bloom.parquet', 'h', 1000)
+SELECT bloom_filter_excludes
+FROM parquet_bloom_probe('data/parquet-testing/decimal/decimal18_flba16_bloom.parquet', 'h', 1000)
+----
+true
+
+# decimal(9,2) is read through the INT32 tier, the unscaled value is hashed
+query I
+SELECT typeof(h) FROM 'data/parquet-testing/decimal/decimal9s2_flba16_bloom.parquet' LIMIT 1
+----
+DECIMAL(9,2)
+
+query I
+SELECT count(*) FROM 'data/parquet-testing/decimal/decimal9s2_flba16_bloom.parquet' WHERE h = 0.05
+----
+10
+
+query I
+SELECT bloom_filter_excludes
+FROM parquet_bloom_probe('data/parquet-testing/decimal/decimal9s2_flba16_bloom.parquet', 'h', 0.05)
+----
+false
+
+query I
+SELECT bloom_filter_excludes
+FROM parquet_bloom_probe('data/parquet-testing/decimal/decimal9s2_flba16_bloom.parquet', 'h', 10.00)
 ----
 true
 
@@ -55,6 +80,7 @@ SELECT count(*) FROM 'data/parquet-testing/decimal/wide_decimal_flba16_bloom.par
 0
 
 query I
-SELECT bloom_filter_excludes FROM parquet_bloom_probe('data/parquet-testing/decimal/wide_decimal_flba16_bloom.parquet', 'h', 1000)
+SELECT bloom_filter_excludes
+FROM parquet_bloom_probe('data/parquet-testing/decimal/wide_decimal_flba16_bloom.parquet', 'h', 1000)
 ----
 false

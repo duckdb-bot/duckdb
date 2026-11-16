@@ -1,0 +1,106 @@
+# name: test/optimizer/empty_result_pullup_aggregate.test
+# description: An empty result is pulled up through a grouped aggregate, DISTINCT included, but not through an aggregate that produces a row without input
+# group: [optimizer]
+
+statement ok
+CREATE TABLE t AS SELECT i % 100 AS g, i % 10 AS v FROM range(10000) AS r(i);
+
+statement ok
+SET explain_output = 'optimized_only';
+
+# DISTINCT over an empty input empties the cross product above it
+query II
+EXPLAIN SELECT * FROM (SELECT DISTINCT g FROM t WHERE false) q, t;
+----
+logical_opt	<!REGEX>:(?is).*(Cross Product|Aggregate|Seq Scan).*
+
+query I
+SELECT count(*) FROM (SELECT DISTINCT g FROM t WHERE false) q, t;
+----
+0
+
+# so does GROUP BY
+query II
+EXPLAIN SELECT * FROM (SELECT g FROM t WHERE false GROUP BY g) q, t;
+----
+logical_opt	<!REGEX>:(?is).*(Cross Product|Aggregate|Seq Scan).*
+
+query I
+SELECT count(*) FROM (SELECT g, count(*) AS c FROM t WHERE false GROUP BY g) q, t;
+----
+0
+
+# and an inner join
+query II
+EXPLAIN SELECT * FROM (SELECT DISTINCT g FROM t WHERE false) q JOIN t ON q.g = t.g;
+----
+logical_opt	<!REGEX>:(?is).*(Join|Aggregate|Seq Scan).*
+
+query I
+SELECT count(*) FROM (SELECT DISTINCT g FROM t WHERE false) q JOIN t ON q.g = t.g;
+----
+0
+
+# a DISTINCT on its own
+query II
+EXPLAIN SELECT DISTINCT g FROM t WHERE false;
+----
+logical_opt	<!REGEX>:(?is).*(Aggregate|Seq Scan).*
+
+query I
+SELECT DISTINCT g FROM t WHERE false;
+----
+
+# DISTINCT ON keeps the first value of the other columns, and is empty on empty input too
+query II
+EXPLAIN SELECT * FROM (SELECT DISTINCT ON (g) g, v FROM t WHERE false) q, t;
+----
+logical_opt	<!REGEX>:(?is).*(Cross Product|Aggregate|Seq Scan).*
+
+# an aggregate without groups produces a row from no input, so it stays
+query II
+EXPLAIN SELECT * FROM (SELECT count(*) AS c FROM t WHERE false) q, t;
+----
+logical_opt	<REGEX>:(?is).*Aggregate.*
+
+query I
+SELECT count(*) FROM (SELECT count(*) AS c FROM t WHERE false) q, t;
+----
+10000
+
+query I
+SELECT c FROM (SELECT count(*) AS c FROM t WHERE false) q;
+----
+0
+
+# so does an aggregate with an empty grouping set
+query II
+EXPLAIN SELECT * FROM (SELECT g, count(*) AS c FROM t WHERE false GROUP BY GROUPING SETS ((g), ())) q, t;
+----
+logical_opt	<REGEX>:(?is).*Aggregate.*
+
+query II
+SELECT g, c FROM (SELECT g, count(*) AS c FROM t WHERE false GROUP BY GROUPING SETS ((g), ())) q;
+----
+NULL	0
+
+query II
+SELECT g, c FROM (SELECT g, count(*) AS c FROM t WHERE false GROUP BY ROLLUP (g)) q;
+----
+NULL	0
+
+query I
+SELECT count(*) FROM (SELECT g, count(*) AS c FROM t WHERE false GROUP BY CUBE (g)) q, t;
+----
+10000
+
+# an empty grouped side does not empty an outer or anti join
+query I
+SELECT count(*) FROM t LEFT JOIN (SELECT DISTINCT g FROM t WHERE false) q ON t.g = q.g;
+----
+10000
+
+query I
+SELECT count(*) FROM t ANTI JOIN (SELECT g FROM t WHERE false GROUP BY g) q ON t.g = q.g;
+----
+10000

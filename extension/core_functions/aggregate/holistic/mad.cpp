@@ -206,12 +206,12 @@ struct MedianAbsoluteDeviationOperation : QuantileOperation {
 			}
 
 			if (gstate && gstate->HasTree()) {
-				med = gstate->GetWindowState().template WindowScalar<MEDIAN_TYPE, false>(partition.context.client, data,
-				                                                                         frames, n, result, quantile);
+				med = gstate->GetWindowState().template WindowScalar<MEDIAN_TYPE, false>(
+				    partition.context.client, data, frames, n, result, quantile, bind_data.desc);
 			} else {
 				window_state.UpdateSkip(data, frames, included);
 				med = window_state.template WindowScalar<MEDIAN_TYPE, false>(partition.context.client, data, frames, n,
-				                                                             result, quantile);
+				                                                             result, quantile, bind_data.desc);
 			}
 
 			QuantileInterpolator<false> interp(quantile, n, false);

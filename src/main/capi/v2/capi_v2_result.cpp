@@ -386,7 +386,15 @@ auto ExecutePreparedStatementV2(const shared_ptr<ClientContext> &context, Prepar
 	wrapper->context = context;
 	wrapper->format = std::move(format);
 	// The engine refuses the submission while another statement on the connection is running
-	wrapper->BeginPending(prepared.Submit(values, QueryParameters(wrapper->format)), prepared.GetStatementType());
+	auto handle = prepared.Submit(values, QueryParameters(wrapper->format));
+	if (prepared.SubmitsAsWritten()) {
+		// The engine expands the statement again, so its result reports what it expands into and streams as that,
+		// as the result of a stateless execution does
+		const auto result_type = handle->GetStatementType();
+		wrapper->BeginPending(std::move(handle), result_type);
+		return wrapper;
+	}
+	wrapper->BeginPending(std::move(handle), prepared.GetStatementType());
 	// The engine runs a prepared statement through an internal EXECUTE, whose statement type
 	// would otherwise be what the result reports. Report the type of the statement that was
 	// prepared instead, so a prepared result is indistinguishable from a stateless one.

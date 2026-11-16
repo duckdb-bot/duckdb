@@ -23,7 +23,8 @@ BaseQueryResult::BaseQueryResult(StatementType statement_type, StatementProperti
 	D_ASSERT(types.size() == names.size());
 }
 
-BaseQueryResult::BaseQueryResult(ErrorData error) : success(false), error(std::move(error)) {
+BaseQueryResult::BaseQueryResult(ErrorData error)
+    : statement_type(StatementType::INVALID_STATEMENT), success(false), error(std::move(error)) {
 	// Assert that the error object is initialized
 	D_ASSERT(this->error.HasError());
 }

@@ -49,10 +49,15 @@ public:
 	const BoundUnnestMap &GroupBy() const {
 		return group_by;
 	}
+	//! The structs that the SELECT list unnests and that are evaluated once, below its other unnests
+	BoundUnnestMap &StructSources() {
+		return struct_sources;
+	}
 
 private:
 	BoundUnnestMap select_list;
 	BoundUnnestMap group_by;
+	BoundUnnestMap struct_sources;
 };
 
 //! Bound equivalent of SelectNode

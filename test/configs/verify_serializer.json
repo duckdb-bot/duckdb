@@ -17,9 +17,15 @@
       ]
     },
     {
-      "reason": "Plan serialization loses an explicitly empty filename pattern and the re-planned COPY writes a different file name, independent of SQL export",
+      "reason": "Deserialized plans lose the join filters that late materialization pushes into its scan, see https://github.com/duckdblabs/bot-issue-tracker/issues/715",
       "paths": [
-        "test/sql/sql_export/copy_empty_filename_pattern.test"
+        "test/sql/optimizer/test_rowid_vector_pruning.test"
+      ]
+    },
+    {
+      "reason": "Plan serialization discards cardinality estimates, so the probe consumer is kept materialized by cost and no cycle demotion occurs.",
+      "paths": [
+        "test/sql/cte/materialized/cte_buffered_consumer_cycle_demotion.test"
       ]
     }
   ]

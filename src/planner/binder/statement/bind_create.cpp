@@ -250,7 +250,8 @@ QualifiedName Binder::ResolveCatalog(CatalogEntryRetriever &retriever, const Qua
 	return QualifiedName(std::move(path), std::move(trailing));
 }
 
-QualifiedName Binder::BindTableName(CatalogEntryRetriever &retriever, const QualifiedName &name) {
+QualifiedName Binder::BindTableName(CatalogEntryRetriever &retriever, const QualifiedName &name,
+                                    bool check_nested_schema_support) {
 	auto resolved = ResolveCatalog(retriever, name, false);
 	auto &path = resolved.Path();
 	if (path.size() < 2) {
@@ -277,9 +278,11 @@ QualifiedName Binder::BindTableName(CatalogEntryRetriever &retriever, const Qual
 		}
 	}
 	auto result = QualifiedName::FromCatalogSchema(std::move(catalog), std::move(schema_path), resolved.Name());
-	auto catalog_entry = Catalog::GetCatalogEntry(retriever, result.Catalog());
-	if (catalog_entry) {
-		catalog_entry->CheckNestedSchemaSupport(result, CatalogType::TABLE_ENTRY);
+	if (check_nested_schema_support) {
+		auto catalog_entry = Catalog::GetCatalogEntry(retriever, result.Catalog());
+		if (catalog_entry) {
+			catalog_entry->CheckNestedSchemaSupport(result, CatalogType::TABLE_ENTRY);
+		}
 	}
 	return result;
 }

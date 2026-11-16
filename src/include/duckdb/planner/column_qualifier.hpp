@@ -58,6 +58,9 @@ private:
 	                                                                   idx_t &struct_extract_start);
 	//! Whether the given (possibly nested) table qualification matches a binding in the current bind context
 	bool TableBindingExists(const BindingAlias &alias);
+	//! Whether a two part function qualification, "t.c" in "t.c.lower()", resolved to a nested schema path of a
+	//! catalog without nested schemas, which cannot name a function there, so only the dot call reading is left
+	bool IsTableColumnPathInFlatCatalog(const QualifiedName &name, const QualifiedName &bound_name);
 	//! Whether any binding in the current bind context has the given table name (ignoring catalog/schema)
 	bool TableNameExists(const Identifier &table_name);
 	//! Whether the name is a lambda parameter of an enclosing lambda (while qualifying or binding its body)

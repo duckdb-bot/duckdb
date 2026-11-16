@@ -266,6 +266,16 @@ bool ColumnQualifier::IsActiveLambdaParameter(const Identifier &name) {
 	return LambdaRefExpression::FindMatchingBinding(lambda_bindings, name) != nullptr;
 }
 
+bool ColumnQualifier::IsTableColumnPathInFlatCatalog(const QualifiedName &name, const QualifiedName &bound_name) {
+	// two parts as written that resolved to a nested schema path, deeper qualifications keep the lookup since the
+	// dot call rewrite keeps only their first and last part
+	if (name.Path().size() != 3 || bound_name.SchemaPath().size() != 2) {
+		return false;
+	}
+	auto catalog = Catalog::GetCatalogEntry(binder.EntryRetriever(), bound_name.Catalog());
+	return catalog && !catalog->SupportsNestedSchemas();
+}
+
 optional_ptr<CatalogEntry> ColumnQualifier::QualifyFunction(FunctionExpression &function) {
 	D_ASSERT(!ExpressionBinder::IsUnnestFunction(function.FunctionName()));
 	// lookup the function in the catalog
@@ -295,9 +305,14 @@ optional_ptr<CatalogEntry> ColumnQualifier::QualifyFunction(FunctionExpression &
 
 	// resolve the qualification: this decides whether a leading component (e.g. "s1" in "s1.s2.my_macro()") is a
 	// catalog or the outermost schema of a nested schema path. The name as written is left alone - the dot-call
-	// rewrite below turns the qualification into a column reference and needs it unresolved.
-	auto bound_name = Binder::BindTableName(binder.EntryRetriever(), function.GetQualifiedName());
-	auto func = binder.GetCatalogEntry(EntryLookupInfo(function_lookup, bound_name), OnEntryNotFound::RETURN_NULL);
+	// rewrite below turns the qualification into a column reference and needs it unresolved. The lookup is
+	// tentative, so "t.c.lower()" in a catalog without nested schemas skips it, "t.c" cannot name a function there
+	// and the dot call reading lower(t.c) applies as in any other catalog.
+	auto bound_name = Binder::BindTableName(binder.EntryRetriever(), function.GetQualifiedName(), false);
+	optional_ptr<CatalogEntry> func;
+	if (!IsTableColumnPathInFlatCatalog(function.GetQualifiedName(), bound_name)) {
+		func = binder.GetCatalogEntry(EntryLookupInfo(function_lookup, bound_name), OnEntryNotFound::RETURN_NULL);
+	}
 	if (func) {
 		// found the function - we are done
 		return func;

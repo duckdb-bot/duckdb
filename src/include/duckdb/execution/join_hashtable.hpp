@@ -485,6 +485,10 @@ public:
 	//! Peak allocation estimate, or zero when materialized dictionary emission is unsuitable.
 	idx_t GetDictionaryReservationSize(const PhysicalHashJoin &op, bool external, idx_t probe_cardinality) const;
 	idx_t GetMaterializedDictionarySize() const;
+	//! Whether RHS output dictionaries have been materialized from the build rows
+	bool HasMaterializedDictionary() const {
+		return materialized_dictionary != nullptr;
+	}
 
 	struct {
 		mutex mj_lock;

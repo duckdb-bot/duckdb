@@ -1,0 +1,25 @@
+# name: test/sql/join/right_outer/right_join_dictionary_emission_cached.test
+# description: A right join that emits dictionaries keeps them valid for a caching operator above it
+# group: [right_outer]
+
+statement ok
+CREATE TABLE probe AS SELECT i AS id, 'K' || ((i % 10) + 1)::VARCHAR AS k FROM range(262200) t(i);
+
+statement ok
+CREATE TABLE build AS SELECT 'K' || i::VARCHAR AS k, repeat('long build payload ', 3) || i::VARCHAR AS payload
+FROM range(1, 13) t(i);
+
+# K11 and K12 have no match, so the scan of the unmatched build rows emits them after the probe
+query III
+SELECT b.k, b.payload, count(p.id) FROM probe p RIGHT JOIN build b ON p.k = b.k
+WHERE p.id IS NULL OR p.id % 1000 = 0 GROUP BY ALL ORDER BY ALL;
+----
+K1	long build payload long build payload long build payload 1	263
+K11	long build payload long build payload long build payload 11	0
+K12	long build payload long build payload long build payload 12	0
+
+query II
+SELECT b.payload, p.id FROM probe p FULL OUTER JOIN build b ON p.k = b.k WHERE p.id IS NULL ORDER BY ALL;
+----
+long build payload long build payload long build payload 11	NULL
+long build payload long build payload long build payload 12	NULL

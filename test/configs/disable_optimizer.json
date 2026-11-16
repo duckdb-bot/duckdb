@@ -5,6 +5,12 @@
   "inherit_skip_tests": "test/configs/stats_dependent_tests.json",
   "skip_tests": [
     {
+      "reason": "Relies on the optimizer rewriting constant IN lists into MARK joins, without it every row scans lists of 250,000 values.",
+      "paths": [
+        "test/sql/join/hash_join/mark_join_constant_lists_memory_limit.test"
+      ]
+    },
+    {
       "reason": "Checks the plan of an executed query through the profiler output.",
       "paths": [
         "test/optimizer/partial_aggregate_pushdown_serialized_plan.test"

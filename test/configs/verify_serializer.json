@@ -5,6 +5,12 @@
   "inherit_skip_tests": "test/configs/stats_dependent_tests.json",
   "skip_tests": [
     {
+      "reason": "The plan serialization check keeps another copy of the folded lists of 250,000 values, which does not fit the test's 32 MB memory limit.",
+      "paths": [
+        "test/sql/join/hash_join/mark_join_constant_lists_memory_limit.test"
+      ]
+    },
+    {
       "reason": "Measures CTE restrictions using planner dependencies deliberately discarded by serialization",
       "paths": [
         "test/optimizer/pushdown/cte_domain_join_filter.test"

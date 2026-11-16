@@ -5,6 +5,12 @@
   "skip_compiled": true,
   "skip_tests": [
     {
+      "reason": "The SQL round trip renders the folded lists of 250,000 values as literals, which does not fit the test's 32 MB memory limit.",
+      "paths": [
+        "test/sql/join/hash_join/mark_join_constant_lists_memory_limit.test"
+      ]
+    },
+    {
       "reason": "The generated SQL changes the query pipelines whose tasks the fixture counts",
       "paths": [
         "test/sql/json/table/json_table_in_out_threads.test"

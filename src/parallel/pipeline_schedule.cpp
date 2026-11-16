@@ -1,7 +1,9 @@
 #include "duckdb/parallel/pipeline_schedule.hpp"
 
 #include "duckdb/execution/operator/scan/physical_table_scan.hpp"
+#include "duckdb/execution/executor.hpp"
 #include "duckdb/parallel/meta_pipeline.hpp"
+#include "duckdb/storage/buffer_manager.hpp"
 
 namespace duckdb {
 
@@ -230,6 +232,25 @@ static void AddMetaPipeline(PipelineSchedule &result, MetaPipeline &meta_pipelin
 	}
 }
 
+//! Builds of at least this many estimated rows coordinate their memory reservations with their siblings
+static constexpr idx_t COORDINATED_BUILD_CARDINALITY = 1000000;
+//! Smaller builds coordinate as well when their estimated size is at least this fraction of the memory limit
+static constexpr idx_t COORDINATED_BUILD_MEMORY_FRACTION = 16;
+
+//! Whether a join build is large enough that several of them could exceed the memory limit together
+static bool BuildCoordinatesWithSiblings(const PhysicalOperator &build, ClientContext &context) {
+	if (build.estimated_cardinality >= COORDINATED_BUILD_CARDINALITY) {
+		return true;
+	}
+	idx_t row_width = sizeof(data_ptr_t) + sizeof(hash_t);
+	for (auto &type : build.GetTypes()) {
+		row_width += GetTypeIdSize(type.InternalType());
+	}
+	const auto estimated_size = build.estimated_cardinality * row_width;
+	return estimated_size >=
+	       BufferManager::GetBufferManager(context).GetMaxMemory() / COORDINATED_BUILD_MEMORY_FRACTION;
+}
+
 unique_ptr<PipelineSchedule> BuildPipelineSchedule(const vector<shared_ptr<MetaPipeline>> &meta_pipelines,
                                                    PipelineScheduleMode mode) {
 	auto result = make_uniq<PipelineSchedule>();
@@ -293,7 +314,7 @@ unique_ptr<PipelineSchedule> BuildPipelineSchedule(const vector<shared_ptr<MetaP
 				continue;
 			}
 			// Small builds can finalize without coordinating memory reservations with their siblings.
-			if (child1->GetSink()->children[1].get().estimated_cardinality < 1000000) {
+			if (!BuildCoordinatesWithSiblings(child1->GetSink()->children[1].get(), child1->GetExecutor().context)) {
 				continue;
 			}
 			auto child1_entry = stage_map.find(*child1->GetBasePipeline());

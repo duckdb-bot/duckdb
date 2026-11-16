@@ -104,6 +104,8 @@ MacroBindResult MacroFunction::BindMacroFunction(
 	// Check for each macro function if it matches the number of positional arguments
 	auto lowest_cost = NumericLimits<idx_t>::Maximum();
 	vector<idx_t> result_indices;
+	//! For each result, whether every supplied argument has exactly the type of its parameter
+	vector<bool> result_exact_matches;
 	for (idx_t function_idx = 0; function_idx < functions.size(); function_idx++) {
 		auto &function = functions[function_idx];
 
@@ -139,6 +141,7 @@ MacroBindResult MacroFunction::BindMacroFunction(
 		// Loop through arguments, positionals first, then named, summing up cost for best matching macro as we go
 		idx_t param_idx = 0;
 		idx_t macro_cost = 0;
+		bool exact_match = true;
 
 		// Figure out best function fit, bail if any positional arguments are duplicated in named arguments
 		for (; param_idx < positional_arguments.size(); param_idx++) {
@@ -150,6 +153,7 @@ MacroBindResult MacroFunction::BindMacroFunction(
 			const auto &param_type = parameter_types[param_idx];
 			if (param_type == LogicalType::UNKNOWN) {
 				macro_cost += 1000000;
+				exact_match = false;
 			} else {
 				const auto cast_cost =
 				    CastFunctionSet::ImplicitCastCost(binder.context, positional_arg_types[param_idx], param_type);
@@ -158,6 +162,7 @@ MacroBindResult MacroFunction::BindMacroFunction(
 					break;
 				}
 				macro_cost += NumericCast<idx_t>(cast_cost);
+				exact_match = exact_match && positional_arg_types[param_idx] == param_type;
 			}
 		}
 		if (bail) {
@@ -180,6 +185,7 @@ MacroBindResult MacroFunction::BindMacroFunction(
 			const auto &param_type = parameter_types[param_idx];
 			if (param_type == LogicalType::UNKNOWN) {
 				macro_cost += 1000000;
+				exact_match = false;
 			} else {
 				const auto cast_cost =
 				    CastFunctionSet::ImplicitCastCost(binder.context, named_arg_types[param_name], param_type);
@@ -187,6 +193,7 @@ MacroBindResult MacroFunction::BindMacroFunction(
 					break; // No cast possible
 				}
 				macro_cost += NumericCast<idx_t>(cast_cost);
+				exact_match = exact_match && named_arg_types[param_name] == param_type;
 			}
 		}
 
@@ -195,8 +202,23 @@ MacroBindResult MacroFunction::BindMacroFunction(
 			if (macro_cost < lowest_cost) {
 				lowest_cost = macro_cost;
 				result_indices.clear();
+				result_exact_matches.clear();
 			}
 			result_indices.push_back(function_idx);
+			result_exact_matches.push_back(exact_match);
+		}
+	}
+
+	if (result_indices.size() > 1) {
+		// prefer a unique exact match among overloads with equal cast costs
+		vector<idx_t> exact_indices;
+		for (idx_t i = 0; i < result_indices.size(); i++) {
+			if (result_exact_matches[i]) {
+				exact_indices.push_back(result_indices[i]);
+			}
+		}
+		if (exact_indices.size() == 1) {
+			result_indices = std::move(exact_indices);
 		}
 	}
 

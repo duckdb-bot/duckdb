@@ -86,6 +86,124 @@ struct RunEndColumn {
 	ArrowArray array {};
 };
 
+const int32_t STRING_DICT_OFFSETS[3] = {0, 1, 2};
+const char STRING_DICT_DATA[] = "xy";
+const int32_t DICT_RUN_ENDS[2] = {1, 2};
+
+// Run-end encoded column of int8 indices into the string dictionary ["x", "y"], NULL for the given runs.
+struct RunEndDictionaryColumn {
+	RunEndDictionaryColumn(const std::vector<int32_t> &run_ends_p, const std::vector<int8_t> &indices_p,
+	                       const std::vector<idx_t> &null_runs, bool run_end_dictionary = false)
+	    : run_ends(run_ends_p), indices(indices_p), validity((indices_p.size() + 7) / 8 + 2, 0xFF) {
+		for (auto run : null_runs) {
+			validity[run / 8] &= uint8_t(~(1u << (run % 8)));
+		}
+		auto run_count = int64_t(run_ends.size());
+
+		run_ends_schema.format = "i";
+		run_ends_schema.name = "run_ends";
+		run_ends_schema.release = ReleaseSchema;
+		dict_schema.format = "u";
+		dict_schema.release = ReleaseSchema;
+		values_schema.format = "c";
+		values_schema.name = "values";
+		values_schema.flags = 2; // ARROW_FLAG_NULLABLE
+		values_schema.dictionary = &dict_schema;
+		values_schema.release = ReleaseSchema;
+		schema_children[0] = &run_ends_schema;
+		schema_children[1] = &values_schema;
+		schema.format = "+r";
+		schema.name = "item";
+		schema.flags = 2;
+		schema.n_children = 2;
+		schema.children = schema_children;
+		schema.release = ReleaseSchema;
+
+		run_ends_buffers[0] = nullptr;
+		run_ends_buffers[1] = run_ends.data();
+		run_ends_array.length = run_count;
+		run_ends_array.n_buffers = 2;
+		run_ends_array.buffers = run_ends_buffers;
+		run_ends_array.release = ReleaseArray;
+		dict_buffers[0] = nullptr;
+		dict_buffers[1] = STRING_DICT_OFFSETS;
+		dict_buffers[2] = STRING_DICT_DATA;
+		dict_array.length = 2;
+		dict_array.n_buffers = 3;
+		dict_array.buffers = dict_buffers;
+		dict_array.release = ReleaseArray;
+		if (run_end_dictionary) {
+			// the same dictionary as two runs of one value each
+			dict_values_schema = dict_schema;
+			dict_values_schema.name = "values";
+			dict_run_ends_schema.format = "i";
+			dict_run_ends_schema.name = "run_ends";
+			dict_run_ends_schema.release = ReleaseSchema;
+			dict_schema_children[0] = &dict_run_ends_schema;
+			dict_schema_children[1] = &dict_values_schema;
+			dict_schema.format = "+r";
+			dict_schema.n_children = 2;
+			dict_schema.children = dict_schema_children;
+			dict_values_array = dict_array;
+			dict_run_ends_buffers[0] = nullptr;
+			dict_run_ends_buffers[1] = DICT_RUN_ENDS;
+			dict_run_ends_array.length = 2;
+			dict_run_ends_array.n_buffers = 2;
+			dict_run_ends_array.buffers = dict_run_ends_buffers;
+			dict_run_ends_array.release = ReleaseArray;
+			dict_array_children[0] = &dict_run_ends_array;
+			dict_array_children[1] = &dict_values_array;
+			dict_array.n_buffers = 1;
+			dict_array.buffers = dict_ree_buffers;
+			dict_array.n_children = 2;
+			dict_array.children = dict_array_children;
+		}
+		values_buffers[0] = validity.data();
+		values_buffers[1] = indices.data();
+		values_array.length = run_count;
+		values_array.null_count = int64_t(null_runs.size());
+		values_array.n_buffers = 2;
+		values_array.buffers = values_buffers;
+		values_array.dictionary = &dict_array;
+		values_array.release = ReleaseArray;
+		array_children[0] = &run_ends_array;
+		array_children[1] = &values_array;
+		array.length = run_ends.empty() ? 0 : run_ends.back();
+		array.n_buffers = 1;
+		array.buffers = buffers;
+		array.n_children = 2;
+		array.children = array_children;
+		array.release = ReleaseArray;
+	}
+	RunEndDictionaryColumn(const RunEndDictionaryColumn &) = delete;
+
+	std::vector<int32_t> run_ends;
+	std::vector<int8_t> indices;
+	std::vector<uint8_t> validity;
+	const void *run_ends_buffers[2];
+	const void *dict_buffers[3];
+	const void *dict_run_ends_buffers[2];
+	const void *dict_ree_buffers[1] = {nullptr};
+	ArrowSchema *dict_schema_children[2];
+	ArrowArray *dict_array_children[2];
+	ArrowSchema dict_run_ends_schema {};
+	ArrowSchema dict_values_schema {};
+	ArrowArray dict_run_ends_array {};
+	ArrowArray dict_values_array {};
+	const void *values_buffers[2];
+	const void *buffers[1] = {nullptr};
+	ArrowSchema *schema_children[2];
+	ArrowArray *array_children[2];
+	ArrowSchema run_ends_schema {};
+	ArrowSchema dict_schema {};
+	ArrowSchema values_schema {};
+	ArrowSchema schema {};
+	ArrowArray run_ends_array {};
+	ArrowArray dict_array {};
+	ArrowArray values_array {};
+	ArrowArray array {};
+};
+
 // LIST column over a run-end encoded or fixed-size list child with the given offsets.
 struct ListColumn {
 	template <class CHILD>
@@ -120,7 +238,8 @@ struct ListColumn {
 // FIXED_SIZE_LIST column of list_size elements over a run-end encoded child, starting at row offset, NULL for the
 // given rows.
 struct FixedSizeListColumn {
-	FixedSizeListColumn(RunEndColumn &child, idx_t list_size, int64_t length, int64_t offset,
+	template <class CHILD>
+	FixedSizeListColumn(CHILD &child, idx_t list_size, int64_t length, int64_t offset,
 	                    const std::vector<idx_t> &null_rows = {})
 	    : format("+w:" + std::to_string(list_size)), validity((length + offset + 7) / 8 + 1, 0xFF) {
 		for (auto row : null_rows) {
@@ -148,6 +267,41 @@ struct FixedSizeListColumn {
 	FixedSizeListColumn(const FixedSizeListColumn &) = delete;
 
 	std::string format;
+	std::vector<uint8_t> validity;
+	ArrowSchema *schema_children[1];
+	ArrowArray *array_children[1];
+	const void *buffers[1];
+	ArrowSchema schema {};
+	ArrowArray array {};
+};
+
+// STRUCT column s whose only field is the given child, NULL for the given rows.
+struct StructColumn {
+	template <class CHILD>
+	StructColumn(CHILD &child, const std::vector<idx_t> &null_rows)
+	    : validity(idx_t(child.array.length + 7) / 8 + 1, 0xFF) {
+		for (auto row : null_rows) {
+			validity[row / 8] &= uint8_t(~(1u << (row % 8)));
+		}
+		schema_children[0] = &child.schema;
+		schema.format = "+s";
+		schema.name = "s";
+		schema.flags = 2;
+		schema.n_children = 1;
+		schema.children = schema_children;
+		schema.release = ReleaseSchema;
+		buffers[0] = validity.data();
+		array_children[0] = &child.array;
+		array.length = child.array.length;
+		array.null_count = int64_t(null_rows.size());
+		array.n_buffers = 1;
+		array.buffers = buffers;
+		array.n_children = 1;
+		array.children = array_children;
+		array.release = ReleaseArray;
+	}
+	StructColumn(const StructColumn &) = delete;
+
 	std::vector<uint8_t> validity;
 	ArrowSchema *schema_children[1];
 	ArrowArray *array_children[1];
@@ -358,6 +512,59 @@ TEST_CASE("Arrow scan of LIST(run-end encoded) across chunks with a leading chil
 	    col.schema, col.array,
 	    "SELECT [CASE WHEN s // 1000 = 1 THEN NULL ELSE LEAST(s // 1000, 5) + 1 END::INT FOR s IN [3 + 2 * r, 4 + 2 * "
 	    "r]] FROM range(3000) t(r)"));
+}
+
+TEST_CASE("Arrow scan of a run-end encoded dictionary column with NULL runs across chunks", "[arrow]") {
+	arrow_run_end_encoded_test::RunEndDictionaryColumn col({1000, 3000, 5000}, {1, 0, 0}, {1});
+	REQUIRE(arrow_run_end_encoded_test::QueryMatches(
+	    col.schema, col.array, "SELECT * FROM arrow_view",
+	    "SELECT CASE WHEN r < 1000 THEN 'y' WHEN r < 3000 THEN NULL ELSE 'x' END FROM range(5000) t(r)"));
+}
+
+TEST_CASE("Arrow scan of a run-end encoded dictionary column whose dictionary is run-end encoded", "[arrow]") {
+	arrow_run_end_encoded_test::RunEndDictionaryColumn col({2, 4, 6}, {0, 1, 0}, {}, true);
+	REQUIRE(
+	    arrow_run_end_encoded_test::QueryMatches(col.schema, col.array, "SELECT * FROM arrow_view",
+	                                             "SELECT * FROM (VALUES ('x'), ('x'), ('y'), ('y'), ('x'), ('x'))"));
+}
+
+TEST_CASE("Arrow scan of STRUCT(run-end encoded) with NULL rows", "[arrow]") {
+	// the field holds x, x, y, y, x and x, and rows 0 and 3 are NULL
+	arrow_run_end_encoded_test::RunEndDictionaryColumn dictionary_child({2, 4, 6}, {0, 1, 0}, {});
+	arrow_run_end_encoded_test::StructColumn dictionary_col(dictionary_child, {0, 3});
+	REQUIRE(arrow_run_end_encoded_test::QueryMatches(
+	    dictionary_col.schema, dictionary_col.array, "SELECT s IS NULL, s.item FROM arrow_view",
+	    "SELECT * FROM (VALUES (true, NULL), (false, 'x'), (false, 'y'), (true, NULL), (false, 'x'), (false, 'x'))"));
+
+	// the field holds 1, NULL and 3, and row 0 is NULL
+	arrow_run_end_encoded_test::RunEndColumn child({1, 2, 3}, {1, 2, 3}, {1});
+	arrow_run_end_encoded_test::StructColumn col(child, {0});
+	REQUIRE(arrow_run_end_encoded_test::QueryMatches(
+	    col.schema, col.array, "SELECT s IS NULL, s.item FROM arrow_view",
+	    "SELECT * FROM (VALUES (true, NULL::INT), (false, NULL), (false, 3))"));
+}
+
+TEST_CASE("Arrow scan of FIXED_SIZE_LIST(run-end encoded dictionary) with an offset and NULL rows", "[arrow]") {
+	// the child holds y, y, x, NULL, NULL, x, x and x, row r covers child slots 2 + 2r and 3 + 2r, and row 1 is NULL
+	arrow_run_end_encoded_test::RunEndDictionaryColumn child({2, 3, 5, 8}, {1, 0, 0, 0}, {2});
+	arrow_run_end_encoded_test::FixedSizeListColumn col(child, 2, 3, 1, {1});
+	REQUIRE(arrow_run_end_encoded_test::QueryMatches(
+	    col.schema, col.array, "SELECT * FROM arrow_view",
+	    "SELECT * FROM (VALUES (['x', NULL]::VARCHAR[2]), (NULL), (['x', 'x']))"));
+}
+
+TEST_CASE("Arrow run-end encoded dictionary column of lists binds as the list type", "[arrow]") {
+	// the dictionary holds the lists [7] and [8]
+	arrow_run_end_encoded_test::Int32Column elements("item", {7, 8});
+	arrow_run_end_encoded_test::ListColumn dictionary(elements, {0, 1, 2});
+	arrow_run_end_encoded_test::RunEndDictionaryColumn col({1, 2}, {0, 1}, {});
+	col.values_schema.dictionary = &dictionary.schema;
+	col.values_array.dictionary = &dictionary.array;
+	DuckDB db(nullptr);
+	Connection con(db);
+	ArrowTableSchema table;
+	table.AddColumn(0, ArrowType::GetArrowLogicalType(*con.context, col.schema), "item");
+	REQUIRE(table.GetTypes()[0] == LogicalType::LIST(LogicalType::INTEGER));
 }
 
 TEST_CASE("Arrow scan of LIST(run-end encoded) whose first chunk holds no list elements", "[arrow]") {

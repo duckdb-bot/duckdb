@@ -81,6 +81,52 @@ struct FlatStorageExtension : StorageExtension {
 
 } // namespace
 
+TEST_CASE("Method calls on qualified columns in a catalog without nested schemas", "[api][nested_schema]") {
+	DBConfig config;
+	StorageExtension::Register(config, "flat_schema_test", make_shared_ptr<FlatStorageExtension>());
+	DuckDB db(nullptr, &config);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("ATTACH 'standard' AS flat (TYPE flat_schema_test)"));
+	REQUIRE_NO_FAIL(con.Query("USE flat"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE t AS SELECT 'Ab' AS c, {'f': 'Cd'} AS s"));
+	REQUIRE_NO_FAIL(con.Query("CREATE SCHEMA b"));
+	REQUIRE_NO_FAIL(con.Query("CREATE MACRO b.f(x) AS x + 1"));
+
+	// a qualification naming a table and a column is a method call on that column, as in a DuckDB catalog
+	auto result = con.Query("SELECT t.c.lower() FROM t");
+	REQUIRE(CHECK_COLUMN(result, 0, {"ab"}));
+	result = con.Query("SELECT c.lower() FROM t");
+	REQUIRE(CHECK_COLUMN(result, 0, {"ab"}));
+	result = con.Query("SELECT t.c.ifnull('d') FROM t");
+	REQUIRE(CHECK_COLUMN(result, 0, {"Ab"}));
+	result = con.Query("SELECT t.s.f.ifnull('d') FROM t");
+	REQUIRE(CHECK_COLUMN(result, 0, {"Cd"}));
+	result = con.Query("SELECT t.c.lower() FROM t WHERE t.c.upper() = 'AB'");
+	REQUIRE(CHECK_COLUMN(result, 0, {"ab"}));
+
+	// a function in a schema still resolves through the one schema level the catalog has
+	result = con.Query("SELECT b.f(1)");
+	REQUIRE(CHECK_COLUMN(result, 0, {2}));
+	result = con.Query("SELECT flat.b.f(1)");
+	REQUIRE(CHECK_COLUMN(result, 0, {2}));
+
+	// a nested schema path that is no column path keeps reporting the missing support
+	result = con.Query("SELECT flat.a.b.f(1)");
+	REQUIRE_FAIL(result);
+	REQUIRE(StringUtil::Contains(result->GetError(), "Catalog \"flat\" does not support nested schemas: a.b"));
+	result = con.Query("SELECT a.b.f(1)");
+	REQUIRE_FAIL(result);
+	REQUIRE(StringUtil::Contains(result->GetError(), "does not support nested schemas"));
+
+	// a deeper qualification keeps the error too, the dot call rewrite would bind flat.c instead of flat.b.c
+	result = con.Query("SELECT flat.b.c.lower() FROM (SELECT 'Outer' AS c, {'c': 'Inner'} AS b) AS flat");
+	REQUIRE_FAIL(result);
+	REQUIRE(StringUtil::Contains(result->GetError(), "Catalog \"flat\" does not support nested schemas: b.c"));
+	result = con.Query("SELECT t.s.f.lower() FROM t");
+	REQUIRE_FAIL(result);
+	REQUIRE(StringUtil::Contains(result->GetError(), "Catalog \"flat\" does not support nested schemas: t.s.f"));
+}
+
 TEST_CASE("Unsupported catalogs reject nested schemas", "[api][nested_schema]") {
 	string mode = "standard";
 	bool remote = false;

@@ -333,7 +333,10 @@ public:
 	//! Resolve the (possibly nested) name of a table into a name that can be looked up in the catalog. Unqualified
 	//! names and names with a single schema level keep the (catalog, schema, name) shape so that the search path
 	//! applies; a nested schema path yields a fully resolved [catalog, schema path..., name].
-	static QualifiedName BindTableName(CatalogEntryRetriever &retriever, const QualifiedName &name);
+	//! Resolves the catalog of a (possibly nested) qualified name. A nested schema path in a catalog without
+	//! nested schemas is an error unless check_nested_schema_support is false.
+	static QualifiedName BindTableName(CatalogEntryRetriever &retriever, const QualifiedName &name,
+	                                   bool check_nested_schema_support = true);
 	//! Register a read of the catalog owning the entry - required when bind data holds a reference to the entry,
 	//! so that cached prepared statement plans are invalidated when the catalog changes
 	static void RegisterEntryRead(optional_ptr<Binder> binder, ClientContext &context, CatalogEntry &entry);

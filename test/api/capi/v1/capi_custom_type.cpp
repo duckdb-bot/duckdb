@@ -258,6 +258,113 @@ TEST_CASE("Test Custom Type Function", "[capi]") {
 	REQUIRE(result->Fetch<bool>(0, 0) == true);
 }
 
+static bool ReorderStructCastFunction(duckdb_function_info info, idx_t count, duckdb_vector input,
+                                      duckdb_vector output) {
+	// STRUCT(n INTEGER, m INTEGER) to STRUCT(m FLOAT, n FLOAT)
+	const auto n_input = static_cast<int32_t *>(duckdb_vector_get_data(duckdb_struct_vector_get_child(input, 0)));
+	const auto m_input = static_cast<int32_t *>(duckdb_vector_get_data(duckdb_struct_vector_get_child(input, 1)));
+	const auto m_output = static_cast<float *>(duckdb_vector_get_data(duckdb_struct_vector_get_child(output, 0)));
+	const auto n_output = static_cast<float *>(duckdb_vector_get_data(duckdb_struct_vector_get_child(output, 1)));
+	for (idx_t i = 0; i < count; i++) {
+		m_output[i] = static_cast<float>(m_input[i]);
+		n_output[i] = static_cast<float>(n_input[i]);
+	}
+	return true;
+}
+
+static bool WidenIntegerCastFunction(duckdb_function_info info, idx_t count, duckdb_vector input,
+                                     duckdb_vector output) {
+	const auto input_data = static_cast<int32_t *>(duckdb_vector_get_data(input));
+	const auto output_data = static_cast<int64_t *>(duckdb_vector_get_data(output));
+	for (idx_t i = 0; i < count; i++) {
+		output_data[i] = input_data[i];
+	}
+	return true;
+}
+
+TEST_CASE("Test UNION member selection with a registered cast", "[capi]") {
+	CAPITester tester;
+	duckdb::unique_ptr<CAPIResult> result;
+
+	REQUIRE(tester.OpenDatabase(nullptr));
+
+	// a registered cast of STRUCT(n INTEGER, m INTEGER) to STRUCT(m FLOAT, n FLOAT) that is cheaper than any default
+	// cast
+	auto integer_type = duckdb_create_logical_type(DUCKDB_TYPE_INTEGER);
+	auto float_type = duckdb_create_logical_type(DUCKDB_TYPE_FLOAT);
+	duckdb_logical_type source_members[] = {integer_type, integer_type};
+	const char *source_names[] = {"n", "m"};
+	auto source_type = duckdb_create_struct_type(source_members, source_names, 2);
+	duckdb_logical_type target_members[] = {float_type, float_type};
+	const char *target_names[] = {"m", "n"};
+	auto target_type = duckdb_create_struct_type(target_members, target_names, 2);
+
+	auto cast_function = duckdb_create_cast_function();
+	duckdb_cast_function_set_implicit_cast_cost(cast_function, 0);
+	duckdb_cast_function_set_source_type(cast_function, source_type);
+	duckdb_cast_function_set_target_type(cast_function, target_type);
+	duckdb_cast_function_set_function(cast_function, ReorderStructCastFunction);
+	REQUIRE(duckdb_register_cast_function(tester.connection, cast_function) == DuckDBSuccess);
+
+	duckdb_destroy_cast_function(&cast_function);
+	duckdb_destroy_logical_type(&source_type);
+	duckdb_destroy_logical_type(&target_type);
+	duckdb_destroy_logical_type(&integer_type);
+	duckdb_destroy_logical_type(&float_type);
+
+	// an explicit cast into the UNION selects the member of the registered cast
+	result = tester.Query("SELECT union_tag({'n': 0, 'm': 1}::UNION(s STRUCT(n DECIMAL(38,37), m INTEGER), other "
+	                      "STRUCT(m FLOAT, n FLOAT)))::VARCHAR");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->Fetch<string>(0, 0) == "other");
+
+	// the registered cast can override the default cast of the rows, so the rewrite is skipped and every row is cast
+	// with the registered cast, which selects the member other, whose tag orders after s
+	const string any_query =
+	    "SELECT [union_value(s := {'n': 0.5::DECIMAL(38,37), 'm': 1})::UNION(s STRUCT(n "
+	    "DECIMAL(38,37), m INTEGER), other STRUCT(m FLOAT, n FLOAT))] > ANY (SELECT [{'n': i, 'm': "
+	    "1}] FROM (VALUES (0), (100)) r(i))";
+	result = tester.Query("EXPLAIN " + any_query);
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->Fetch<string>(1, 0).find("min(") == string::npos);
+	result = tester.Query(any_query);
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(!result->IsNull(0, 0));
+	REQUIRE(!result->Fetch<bool>(0, 0));
+	// the comparison of every row with the same cast
+	result = tester.Query("SELECT bool_or([union_value(s := {'n': 0.5::DECIMAL(38,37), 'm': 1})::UNION(s STRUCT(n "
+	                      "DECIMAL(38,37), m INTEGER), other STRUCT(m FLOAT, n FLOAT))] > [{'n': i, 'm': 1}]) FROM "
+	                      "(VALUES (0), (100)) r(i)");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(!result->IsNull(0, 0));
+	REQUIRE(!result->Fetch<bool>(0, 0));
+}
+
+TEST_CASE("Test UNION member selection with the largest implicit cast cost", "[capi]") {
+	CAPITester tester;
+	duckdb::unique_ptr<CAPIResult> result;
+
+	REQUIRE(tester.OpenDatabase(nullptr));
+
+	auto integer_type = duckdb_create_logical_type(DUCKDB_TYPE_INTEGER);
+	auto bigint_type = duckdb_create_logical_type(DUCKDB_TYPE_BIGINT);
+	auto cast_function = duckdb_create_cast_function();
+	duckdb_cast_function_set_implicit_cast_cost(cast_function, NumericLimits<int64_t>::Maximum());
+	duckdb_cast_function_set_source_type(cast_function, integer_type);
+	duckdb_cast_function_set_target_type(cast_function, bigint_type);
+	duckdb_cast_function_set_function(cast_function, WidenIntegerCastFunction);
+	REQUIRE(duckdb_register_cast_function(tester.connection, cast_function) == DuckDBSuccess);
+
+	duckdb_destroy_cast_function(&cast_function);
+	duckdb_destroy_logical_type(&integer_type);
+	duckdb_destroy_logical_type(&bigint_type);
+
+	// the one member that the value can be cast to is selected whatever its cost
+	result = tester.Query("SELECT (42::INTEGER::UNION(v BIGINT)).v");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->Fetch<int64_t>(0, 0) == 42);
+}
+
 static bool TimestampToDatePlusOneDay(duckdb_function_info info, idx_t count, duckdb_vector input,
                                       duckdb_vector output) {
 	auto input_data = static_cast<duckdb_timestamp *>(duckdb_vector_get_data(input));

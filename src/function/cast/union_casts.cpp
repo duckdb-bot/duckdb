@@ -57,33 +57,62 @@ public:
 //--------------------------------------------------------------------------------------------------
 // if the source can be implicitly cast to a member of the target union, the cast is valid
 
+optional_idx DefaultCasts::UnionCastTargetMember(CastFunctionSet &function_set, const LogicalType &source,
+                                                 const LogicalType &target) {
+	D_ASSERT(target.id() == LogicalTypeId::UNION);
+	optional_idx selected;
+	int64_t best_cost = 0;
+	bool ambiguous = false;
+	for (idx_t member_idx = 0; member_idx < UnionType::GetMemberCount(target); member_idx++) {
+		auto cost = function_set.ImplicitCastCost(nullptr, source, UnionType::GetMemberType(target, member_idx));
+		if (cost < 0) {
+			continue;
+		}
+		if (!selected.IsValid() || cost < best_cost) {
+			best_cost = cost;
+			selected = member_idx;
+			ambiguous = false;
+		} else if (cost == best_cost) {
+			ambiguous = true;
+		}
+	}
+	return ambiguous ? optional_idx() : selected;
+}
+
 static unique_ptr<BoundCastData> BindToUnionMemberCast(BindCastInput &input, const LogicalType &source,
                                                        const LogicalType &target) {
 	D_ASSERT(target.id() == LogicalTypeId::UNION);
 
-	// Vector of names/candidates that are optimal for cost
+	auto selected = DefaultCasts::UnionCastTargetMember(input.function_set, source, target);
+	if (selected.IsValid()) {
+		// the selected cast is the only member cast that is applied
+		auto &member_type = UnionType::GetMemberType(target, selected.GetIndex());
+		auto member_cast = input.GetCastFunction(source, member_type);
+		input.stability = member_cast.GetStability();
+		return make_uniq<UnionMemberBoundCastData>(NumericCast<union_tag_t>(selected.GetIndex()),
+		                                           std::move(member_cast), member_type);
+	}
+
+	// the members with the lowest cost, for the error message
 	vector<string> names;
-	vector<UnionMemberBoundCastData> candidates;
-
-	int64_t best_cost = std::numeric_limits<int64_t>::max();
-
+	vector<LogicalType> types;
+	int64_t best_cost = NumericLimits<int64_t>::Maximum();
 	for (idx_t member_idx = 0; member_idx < UnionType::GetMemberCount(target); member_idx++) {
-		auto member_type = UnionType::GetMemberType(target, member_idx);
-		auto member_name = UnionType::GetMemberName(target, member_idx);
+		auto &member_type = UnionType::GetMemberType(target, member_idx);
 		auto member_cast_cost = input.function_set.ImplicitCastCost(nullptr, source, member_type);
 		if (member_cast_cost >= 0 && member_cast_cost <= best_cost) {
 			if (member_cast_cost != best_cost) {
 				names.clear();
-				candidates.clear();
+				types.clear();
 				best_cost = member_cast_cost;
 			}
-			names.emplace_back(member_name);
-			candidates.emplace_back(member_idx, input.GetCastFunction(source, member_type), member_type);
+			names.emplace_back(UnionType::GetMemberName(target, member_idx));
+			types.push_back(member_type);
 		}
-	};
+	}
 
 	// no possible casts found!
-	if (candidates.empty()) {
+	if (names.empty()) {
 		auto message = StringUtil::Format(
 		    "Type %s can't be cast as %s. %s can't be implicitly cast to any of the union member types: ",
 		    source.ToString(), target.ToString(), source.ToString());
@@ -99,26 +128,18 @@ static unique_ptr<BoundCastData> BindToUnionMemberCast(BindCastInput &input, con
 		throw ConversionException(message);
 	}
 
-	// check if the cast is ambiguous (2 or more casts have the same cost)
-	if (candidates.size() > 1) {
-		// collect all the ambiguous types
-		auto message = StringUtil::Format(
-		    "Type %s can't be cast as %s. The cast is ambiguous, multiple possible members in target: ", source,
-		    target);
-		for (size_t i = 0; i < candidates.size(); i++) {
-			message += StringUtil::Format("'%s (%s)'", names[i], candidates[i].type.ToString());
-			if (i < candidates.size() - 1) {
-				message += ", ";
-			}
+	// the cast is ambiguous (2 or more casts have the same cost)
+	auto message = StringUtil::Format(
+	    "Type %s can't be cast as %s. The cast is ambiguous, multiple possible members in target: ", source, target);
+	for (idx_t i = 0; i < names.size(); i++) {
+		message += StringUtil::Format("'%s (%s)'", names[i], types[i].ToString());
+		if (i < names.size() - 1) {
+			message += ", ";
 		}
-		message += ". Disambiguate the target type by using the 'union_value(<tag> := <arg>)' function to promote the "
-		           "source value to a single member union before casting.";
-		throw ConversionException(message);
 	}
-
-	// otherwise, return the selected cast, which is the only member cast that is applied
-	input.stability = candidates[0].member_casts[0].GetStability();
-	return make_uniq<UnionMemberBoundCastData>(std::move(candidates[0]));
+	message += ". Disambiguate the target type by using the 'union_value(<tag> := <arg>)' function to promote the "
+	           "source value to a single member union before casting.";
+	throw ConversionException(message);
 }
 
 //--------------------------------------------------------------------------------------------------

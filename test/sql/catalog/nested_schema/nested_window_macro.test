@@ -1,0 +1,98 @@
+# name: test/sql/catalog/nested_schema/nested_window_macro.test
+# description: A macro in a nested schema is found as a window function without naming the catalog
+# group: [nested_schema]
+
+statement ok
+CREATE SCHEMA s1;
+
+statement ok
+CREATE SCHEMA s1.s2;
+
+statement ok
+CREATE MACRO s1.s2.w(x) AS max(x);
+
+statement ok
+CREATE MACRO s1.s2.sc(x) AS x + 1;
+
+query I
+SELECT s1.s2.sc(1);
+----
+2
+
+query I
+SELECT s1.s2.w(i) FROM range(3) r(i);
+----
+2
+
+query I
+SELECT memory.s1.s2.w(i) OVER (ORDER BY i) FROM range(3) r(i);
+----
+0
+1
+2
+
+# the leading name is the outer schema, not a catalog
+query I
+SELECT s1.s2.w(i) OVER (ORDER BY i) FROM range(3) r(i);
+----
+0
+1
+2
+
+query I
+SELECT s1.s2.w(i) OVER (ORDER BY i DESC) FROM range(3) r(i) ORDER BY i;
+----
+2
+2
+2
+
+statement error
+SELECT s1.s2.nope(i) OVER (ORDER BY i) FROM range(3) r(i);
+----
+nope
+
+statement error
+SELECT s1.s3.w(i) OVER (ORDER BY i) FROM range(3) r(i);
+----
+s3
+
+# an attached database made current
+statement ok
+ATTACH ':memory:' AS db;
+
+statement ok
+CREATE SCHEMA db.a;
+
+statement ok
+CREATE SCHEMA db.a.b;
+
+statement ok
+CREATE MACRO db.a.b.w(x) AS max(x);
+
+# the database name alone qualifies a macro in its default schema
+statement ok
+CREATE MACRO db.w2(x) AS max(x);
+
+query I
+SELECT db.w2(i) OVER (ORDER BY i) FROM range(3) r(i);
+----
+0
+1
+2
+
+statement ok
+USE db;
+
+query I
+SELECT a.b.w(i) OVER (ORDER BY i) FROM range(3) r(i);
+----
+0
+1
+2
+
+query I
+SELECT db.a.b.w(i) OVER (ORDER BY i) FROM range(3) r(i);
+----
+0
+1
+2

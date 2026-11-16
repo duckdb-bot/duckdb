@@ -249,10 +249,22 @@ Multiplication needs a DECIMAL of 76 digits, the maximum DECIMAL width is 39
 statement ok
 SET max_decimal_width = 1;
 
-query III
-SELECT typeof(1::DECIMAL(38,2) + 1::DECIMAL(38,2)), typeof(1::DECIMAL(38,2) * 1::DECIMAL(38,2)), typeof(CASE WHEN true THEN 1::DECIMAL(38,10) ELSE 1::DECIMAL(38,0) END)
+query II
+SELECT typeof(1::DECIMAL(38,2) + 1::DECIMAL(38,2)), typeof(1::DECIMAL(38,2) * 1::DECIMAL(38,2))
 ----
-DECIMAL(38,2)	DECIMAL(38,4)	DECIMAL(38,0)
+DECIMAL(38,2)	DECIMAL(38,4)
+
+# the common type of a CASE stays within 38 digits by dropping the scale, which is warned about
+statement ok
+SET enable_logging = true;
+
+statement ok
+SET warnings_as_errors = true;
+
+statement error
+SELECT typeof(CASE WHEN true THEN 1::DECIMAL(38,10) ELSE 1::DECIMAL(38,0) END)
+----
+type DECIMAL(38,10) is being cast to DECIMAL(38,0), reducing the scale from 10 to 0
 
 statement error
 SELECT 1::DECIMAL(39,0)

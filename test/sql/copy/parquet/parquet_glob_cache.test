@@ -28,3 +28,34 @@ query I
 select count(*) from parquet_scan('{DATA_DIR}/parquet-testing/glob/*')
 ----
 2
+
+# files named without a glob are validated against the cache the same way
+statement ok
+COPY (SELECT 1 AS i) TO '{TEST_DIR}/glob_cache_literal_1.parquet';
+
+statement ok
+COPY (SELECT 2 AS i) TO '{TEST_DIR}/glob_cache_literal_2.parquet';
+
+query I
+SELECT count(*) FROM parquet_scan(['{TEST_DIR}/glob_cache_literal_1.parquet', '{TEST_DIR}/glob_cache_literal_2.parquet'])
+----
+2
+
+query II
+EXPLAIN SELECT count(*) FROM parquet_scan(['{TEST_DIR}/glob_cache_literal_1.parquet', '{TEST_DIR}/glob_cache_literal_2.parquet'])
+----
+physical_plan	<!REGEX>:.*PARQUET_SCAN.*
+
+# a file that changed is read again
+statement ok
+COPY (SELECT i FROM range(5) t(i)) TO '{TEST_DIR}/glob_cache_literal_2.parquet';
+
+query II
+EXPLAIN SELECT count(*) FROM parquet_scan(['{TEST_DIR}/glob_cache_literal_1.parquet', '{TEST_DIR}/glob_cache_literal_2.parquet'])
+----
+physical_plan	<REGEX>:.*PARQUET_SCAN.*
+
+query I
+SELECT count(*) FROM parquet_scan(['{TEST_DIR}/glob_cache_literal_1.parquet', '{TEST_DIR}/glob_cache_literal_2.parquet'])
+----
+6

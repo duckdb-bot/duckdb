@@ -1,0 +1,92 @@
+# name: test/sql/copy/csv/csv_cardinality_without_auto_detect.test
+# description: A CSV file read without auto-detection is estimated from its size, as with it
+# group: [csv]
+
+statement ok
+COPY (SELECT i AS id, repeat('x', 100) AS payload FROM range(20000) t(i)) TO '{TEST_DIR}/sized.csv';
+
+statement ok
+SET explain_output = 'OPTIMIZED_ONLY';
+
+foreach auto_detect true false
+
+query II
+EXPLAIN SELECT count(*) FROM read_csv('{TEST_DIR}/sized.csv', auto_detect = {auto_detect}, header = true, columns = {'id': 'BIGINT', 'payload': 'VARCHAR'});
+----
+logical_opt	<REGEX>:.*~212,890 rows.*
+
+query II
+SELECT count(*), sum(id) FROM read_csv('{TEST_DIR}/sized.csv', auto_detect = {auto_detect}, header = true, columns = {'id': 'BIGINT', 'payload': 'VARCHAR'});
+----
+20000	199990000
+
+endloop
+
+# a glob, whose files get their size from the directory listing
+query II
+EXPLAIN SELECT count(*) FROM read_csv('{TEST_DIR}/sized*.csv', auto_detect = false, header = true, columns = {'id': 'BIGINT', 'payload': 'VARCHAR'});
+----
+logical_opt	<REGEX>:.*~212,890 rows.*
+
+# a glob whose last component is not a pattern
+statement ok
+COPY (SELECT i AS id, repeat('x', 100) AS payload, 1 AS part FROM range(20000) t(i)) TO '{TEST_DIR}/sized_partitioned' (FORMAT csv, PARTITION_BY (part));
+
+query II
+EXPLAIN SELECT count(*) FROM read_csv('{TEST_DIR}/sized_partitioned/*/data_0.csv', auto_detect = false, header = true, hive_partitioning = false, columns = {'id': 'BIGINT', 'payload': 'VARCHAR'});
+----
+logical_opt	<REGEX>:.*~212,890 rows.*
+
+# a file found through the file search path
+statement ok
+SET file_search_path = '{TEST_DIR}';
+
+query II
+EXPLAIN SELECT count(*) FROM read_csv('sized.csv', auto_detect = false, header = true, columns = {'id': 'BIGINT', 'payload': 'VARCHAR'});
+----
+logical_opt	<REGEX>:.*~212,890 rows.*
+
+statement ok
+RESET file_search_path;
+
+# a list of two files, estimated as the first file times the number of files
+statement ok
+COPY (SELECT i AS id, repeat('x', 100) AS payload FROM range(20000) t(i)) TO '{TEST_DIR}/sized_2.csv';
+
+query II
+EXPLAIN SELECT count(*) FROM read_csv(['{TEST_DIR}/sized.csv', '{TEST_DIR}/sized_2.csv'], auto_detect = false, header = true, columns = {'id': 'BIGINT', 'payload': 'VARCHAR'});
+----
+logical_opt	<REGEX>:.*~425,780 rows.*
+
+# the size the file list gives is used instead of the size on disk
+query II
+EXPLAIN SELECT count(*) FROM read_csv([{'filename': '{TEST_DIR}/sized.csv', 'file_size': 10000}], auto_detect = false, header = true, columns = {'id': 'BIGINT', 'payload': 'VARCHAR'});
+----
+logical_opt	<REGEX>:.*~1,000 rows.*
+
+# a file entry without a size keeps the default estimate, the file itself is not inspected
+query II
+EXPLAIN SELECT count(*) FROM read_csv([{'filename': '{TEST_DIR}/sized.csv'}], auto_detect = false, header = true, columns = {'id': 'BIGINT', 'payload': 'VARCHAR'});
+----
+logical_opt	<REGEX>:.*~42 rows.*
+
+# a size that is not a number is an error
+statement error
+EXPLAIN SELECT count(*) FROM read_csv([{'filename': '{TEST_DIR}/sized.csv', 'file_size': 'big'}], auto_detect = false, header = true, columns = {'id': 'BIGINT', 'payload': 'VARCHAR'});
+----
+<REGEX>:.*Invalid value for file option "file_size".*
+
+# a sniffed file is estimated from the file it opened
+query II
+EXPLAIN SELECT count(*) FROM read_csv([{'filename': '{TEST_DIR}/sized.csv', 'file_size': 10000}], auto_detect = true, header = true, columns = {'id': 'BIGINT', 'payload': 'VARCHAR'});
+----
+logical_opt	<REGEX>:.*~212,890 rows.*
+
+# an empty file keeps the default estimate
+statement ok
+COPY (SELECT 1 AS id WHERE false) TO '{TEST_DIR}/empty_sized.csv' (HEADER false);
+
+query II
+EXPLAIN SELECT count(*) FROM read_csv('{TEST_DIR}/empty_sized.csv', auto_detect = false, header = false, columns = {'id': 'BIGINT', 'payload': 'VARCHAR'});
+----
+logical_opt	<REGEX>:.*~42 rows.*

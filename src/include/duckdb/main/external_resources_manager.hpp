@@ -24,6 +24,13 @@ class Connection;
 DUCKDB_API unique_ptr<Connection> CreateExternalResourceCallbackConnection(DatabaseInstance &db,
                                                                            optional_ptr<ClientContext> caller);
 
+//! Throws when enable_external_access is false and the context is a user's connection. The binder refuses external
+//! resource calls up front, but a prepared statement keeps the plan it was bound with, so the places that run the
+//! callbacks check the setting again. The internal connections the callbacks themselves run on are not checked, since
+//! their operation was checked where the user issued it, or is the cleanup of a resource attached while access was
+//! allowed
+DUCKDB_API void CheckExternalResourceAccess(ClientContext &context);
+
 //! An external resource this instance tracks, registered under a local name (from CREATE/REGISTER EXTERNAL
 //! RESOURCE). `name` is the local alias and the only key enforced here: `(type, handle)` identifies the
 //! external thing, but the handle is opaque - two different maps may well denote the same resource, and only

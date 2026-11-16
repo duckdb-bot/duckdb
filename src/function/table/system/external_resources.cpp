@@ -11,6 +11,7 @@
 #include "duckdb/parser/qualified_name.hpp"
 #include "duckdb/parser/statement/select_statement.hpp"
 #include "duckdb/parser/tableref/subqueryref.hpp"
+#include "duckdb/planner/binder.hpp"
 
 namespace duckdb {
 
@@ -76,6 +77,11 @@ static unique_ptr<TableRef> ExternalResourcesBindReplace(ClientContext &context,
 	auto params = ReadParameters(input);
 	if (!params.discover) {
 		return nullptr; // the registry scan below
+	}
+	// the list callbacks are expanded into the plan here, so a prepared discovery is bound again at each execution,
+	// which keeps the expansion, and the checks made while binding, current
+	if (input.binder) {
+		input.binder->SetAlwaysRequireRebind();
 	}
 	vector<string> branches;
 	branches.push_back("SELECT name, type, managed, NULL::VARCHAR AS state, NULL::VARCHAR AS reference, uri, "

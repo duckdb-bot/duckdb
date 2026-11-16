@@ -1,0 +1,73 @@
+# name: test/sql/json/table/read_json_error_line.test
+# description: JSON parse errors report the line or record that is malformed
+# group: [table]
+
+require json
+
+statement ok
+COPY (SELECT * FROM (VALUES ('{"a":1}'), ('{"a":x}'), ('{"a":3}')) t(l)) TO '{TEST_DIR}/parse_error.jsonl' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '', DELIMITER '\t')
+
+statement ok
+COPY (SELECT * FROM (VALUES ('{"a":1}'), ('{"a":"x"}'), ('{"a":3}')) t(l)) TO '{TEST_DIR}/transform_error.jsonl' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '', DELIMITER '\t')
+
+statement ok
+COPY (SELECT * FROM (VALUES ('{"a":x}'), ('{"a":2}')) t(l)) TO '{TEST_DIR}/first_line.jsonl' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '', DELIMITER '\t')
+
+statement ok
+COPY (SELECT * FROM (VALUES ('{"a":1}'), ('{"a":2}{"a":3}'), ('{"a":4}')) t(l)) TO '{TEST_DIR}/trailing_content.jsonl' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '', DELIMITER '\t')
+
+statement ok
+COPY (SELECT * FROM (VALUES ('{"a":1}'), ('{"a":2}'), ('{"a":"unterminated')) t(l)) TO '{TEST_DIR}/unterminated.jsonl' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '', DELIMITER '\t')
+
+statement ok
+COPY (SELECT * FROM (VALUES ('[{"a":1},{"a":x},{"a":3}]')) t(l)) TO '{TEST_DIR}/parse_error_array.json' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '', DELIMITER '\t')
+
+statement ok
+COPY (SELECT * FROM (VALUES ('[{"a":1}{"a":2},{"a":3}]')) t(l)) TO '{TEST_DIR}/missing_comma.json' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '', DELIMITER '\t')
+
+statement error
+SELECT * FROM read_json('{TEST_DIR}/parse_error.jsonl', format = 'newline_delimited', columns = {a: 'INT'})
+----
+at byte 6 in line 2: unexpected character
+
+# a transform error reports the same line
+statement error
+SELECT * FROM read_json('{TEST_DIR}/transform_error.jsonl', format = 'newline_delimited', columns = {a: 'INT'})
+----
+in line 2: Failed to cast value to numerical
+
+statement error
+SELECT * FROM read_json('{TEST_DIR}/parse_error.jsonl')
+----
+at byte 6 in line 2: unexpected character
+
+statement error
+SELECT * FROM read_json_objects('{TEST_DIR}/parse_error.jsonl', format = 'newline_delimited')
+----
+at byte 6 in line 2: unexpected character
+
+statement error
+SELECT * FROM read_json('{TEST_DIR}/first_line.jsonl', format = 'newline_delimited', columns = {a: 'INT'})
+----
+at byte 6 in line 1: unexpected character
+
+statement error
+SELECT * FROM read_json('{TEST_DIR}/trailing_content.jsonl', format = 'newline_delimited', columns = {a: 'INT'})
+----
+at byte 8 in line 2: unexpected content after document
+
+statement error
+SELECT * FROM read_json('{TEST_DIR}/unterminated.jsonl', format = 'newline_delimited', columns = {a: 'VARCHAR'})
+----
+in line 3: unexpected control character in string
+
+statement error
+SELECT * FROM read_json('{TEST_DIR}/parse_error_array.json', format = 'array', columns = {a: 'INT'})
+----
+at byte 6 in record/value 2: unexpected character
+
+# the byte offset of a missing comma counts from the start of the value before it
+statement error
+SELECT * FROM read_json('{TEST_DIR}/missing_comma.json', format = 'array', columns = {a: 'INT'})
+----
+at byte 8 in record/value 1: unexpected character

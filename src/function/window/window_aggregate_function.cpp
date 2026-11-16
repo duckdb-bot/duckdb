@@ -2,6 +2,7 @@
 #include "duckdb/function/window/window_aggregate_function.hpp"
 
 #include "duckdb/common/enums/window_aggregation_mode.hpp"
+#include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/function/window/window_constant_aggregator.hpp"
 #include "duckdb/function/window/window_custom_aggregator.hpp"
 #include "duckdb/function/window/window_distinct_aggregator.hpp"
@@ -11,6 +12,7 @@
 #include "duckdb/main/settings.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/planner/expression/bound_window_expression.hpp"
+#include "duckdb/storage/statistics/numeric_stats.hpp"
 
 namespace duckdb {
 
@@ -200,6 +202,10 @@ static void ApplyWindowStats(const WindowBoundary &boundary, FrameDelta &delta, 
 			if (base_stats.end < delta.end) {
 				delta.end = base_stats.end + 1;
 			}
+			if (is_start && delta.begin < base_stats.begin && base_stats.begin < delta.end) {
+				// the frame starts at the current row at the earliest
+				delta.begin = MaxValue<int64_t>(base_stats.begin, 0);
+			}
 		}
 		return;
 
@@ -223,6 +229,18 @@ static void ApplyWindowStats(const WindowBoundary &boundary, FrameDelta &delta, 
 	}
 }
 
+//! The statistics of a frame bound that is a constant, for a plan the optimizer did not annotate with statistics
+static unique_ptr<BaseStatistics> ConstantBoundStats(ClientContext &client, const Expression &expr) {
+	if (!expr.IsFoldable() || expr.GetReturnType().id() != LogicalTypeId::BIGINT) {
+		return nullptr;
+	}
+	Value value;
+	if (!ExpressionExecutor::TryEvaluateScalar(client, expr, value) || value.IsNull()) {
+		return nullptr;
+	}
+	return BaseStatistics::FromConstant(value).ToUnique();
+}
+
 void WindowAggregateExecutor::Finalize(ExecutionContext &context, CollectionPtr collection,
                                        OperatorSinkInput &sink) const {
 	WindowExecutor::Finalize(context, collection, sink);
@@ -239,11 +257,21 @@ void WindowAggregateExecutor::Finalize(ExecutionContext &context, CollectionPtr 
 	//	First entry is the frame start
 	stats[0] = FrameDelta(-count, count);
 	auto base = wexpr.ExprStats().empty() ? nullptr : wexpr.ExprStats()[0].get();
+	unique_ptr<BaseStatistics> start_stats;
+	if (!base && wexpr.StartExpr()) {
+		start_stats = ConstantBoundStats(context.client, *wexpr.StartExpr());
+		base = start_stats.get();
+	}
 	ApplyWindowStats(wexpr.WindowStart(), stats[0], base, true);
 
 	//	Second entry is the frame end
 	stats[1] = FrameDelta(-count, count);
 	base = wexpr.ExprStats().empty() ? nullptr : wexpr.ExprStats()[1].get();
+	unique_ptr<BaseStatistics> end_stats;
+	if (!base && wexpr.EndExpr()) {
+		end_stats = ConstantBoundStats(context.client, *wexpr.EndExpr());
+		base = end_stats.get();
+	}
 	ApplyWindowStats(wexpr.WindowEnd(), stats[1], base, false);
 
 	auto &lastate = sink.local_state.Cast<WindowAggregateExecutorLocalState>();

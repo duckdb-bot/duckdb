@@ -16,6 +16,7 @@
 #include "writer/parquet_write_operators.hpp"
 #include "zstd/common/xxhash.hpp"
 #include "duckdb/common/types/blob.hpp"
+#include "duckdb/common/types/decimal.hpp"
 #include "duckdb/common/types/decimal_helper.hpp"
 #include "duckdb/common/types/time.hpp"
 #include "duckdb/common/types/uuid.hpp"
@@ -991,8 +992,9 @@ static optional<uint64_t> ValueXXH64(const Value &constant, const ParquetColumnS
 		} else if (schema.parquet_type == duckdb_parquet::Type::INT64) {
 			return ValueXH64FixedWidth<int64_t>(constant);
 		} else if (schema.parquet_type == duckdb_parquet::Type::FIXED_LEN_BYTE_ARRAY &&
-		           schema.type_length == sizeof(hugeint_t) && constant.type().InternalType() == PhysicalType::INT128) {
-			// a 16-byte decimal of the fixed-size tier is hashed as the writer hashes HUGEINT
+		           schema.type_length == sizeof(hugeint_t) &&
+		           !Decimal::IsWide(DecimalType::GetWidth(constant.type()))) {
+			// a 16-byte decimal of a fixed-size tier is hashed as the writer hashes HUGEINT
 			auto bytes =
 			    ParquetHugeintOperator::Operation<hugeint_t, ParquetHugeintTargetType>(IntegralValue::Get(constant));
 			return ParquetHugeintOperator::XXHash64<hugeint_t, ParquetHugeintTargetType>(bytes);
@@ -1178,9 +1180,9 @@ ParquetStatisticsUtils::GetBloomFilterHashStrategy(const ParquetColumnSchema &sc
 		if (schema.parquet_type == duckdb_parquet::Type::INT32 || schema.parquet_type == duckdb_parquet::Type::INT64) {
 			return ParquetBloomFilterHashStrategy::STANDARD;
 		}
-		// a 16-byte decimal is probed only when it is the fixed-size tier, a wider decimal is a BIGNUM blob
+		// a 16-byte decimal is probed when it is a fixed-size tier, a wide decimal is a BIGNUM blob without that form
 		if (schema.parquet_type == duckdb_parquet::Type::FIXED_LEN_BYTE_ARRAY &&
-		    schema.type_length == sizeof(hugeint_t) && schema.type.InternalType() == PhysicalType::INT128) {
+		    schema.type_length == sizeof(hugeint_t) && !Decimal::IsWide(DecimalType::GetWidth(schema.type))) {
 			return ParquetBloomFilterHashStrategy::STANDARD;
 		}
 		return nullopt;

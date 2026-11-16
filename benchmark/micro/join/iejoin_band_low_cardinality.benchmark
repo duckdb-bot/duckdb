@@ -1,0 +1,17 @@
+# name: benchmark/micro/join/iejoin_band_low_cardinality.benchmark
+# description: IEJoin with a band on a column of three values next to more selective inequalities
+# group: [join]
+
+name IEJoinBandLowCardinality
+group micro
+subgroup join
+
+load
+CREATE TABLE r AS SELECT i::INTEGER AS x, i::INTEGER AS y, (i % 3)::INTEGER AS b FROM range(10000) t(i);
+CREATE TABLE d AS SELECT i::INTEGER AS x, i::INTEGER AS y, (i % 3)::INTEGER AS b FROM range(10000) t(i);
+
+run
+SELECT count(*) FROM r JOIN d ON r.x <= d.x AND r.y >= d.y AND r.b >= d.b - 1 AND r.b <= d.b + 1;
+
+result I
+10000

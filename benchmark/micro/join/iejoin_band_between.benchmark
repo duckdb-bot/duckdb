@@ -1,0 +1,17 @@
+# name: benchmark/micro/join/iejoin_band_between.benchmark
+# description: IEJoin on two BETWEEN conditions, whose lower bounds come before their upper bounds
+# group: [join]
+
+name IEJoinBandBetween
+group micro
+subgroup join
+
+load
+CREATE TABLE r AS SELECT i AS id, (hash(i, 1) % 1000)::INTEGER AS gx, (hash(i, 2) % 1000)::INTEGER AS gy FROM range(30000) t(i);
+CREATE TABLE d AS SELECT i AS id, (hash(i, 3) % 1000)::INTEGER AS gx, (hash(i, 4) % 1000)::INTEGER AS gy FROM range(30000) t(i);
+
+run
+SELECT count(*) FROM r JOIN d ON d.gx BETWEEN r.gx - 1 AND r.gx + 1 AND d.gy BETWEEN r.gy - 1 AND r.gy + 1;
+
+result I
+14393

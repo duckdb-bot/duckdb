@@ -1,0 +1,54 @@
+# name: test/sql/join/iejoin/iejoin_semi_predicate.test
+# description: SEMI and ANTI IEJoins with more than two inequalities and another predicate
+# group: [iejoin]
+
+statement ok
+CREATE TABLE r AS SELECT i AS id, (i * 3) % 11 AS x, CASE WHEN i % 11 = 0 THEN NULL ELSE (i % 7)::INTEGER END AS a FROM range(43) t(i);
+
+statement ok
+CREATE TABLE d AS SELECT i AS id, (i * 3 + 3) % 11 AS x, CASE WHEN i % 11 = 0 THEN NULL ELSE ((i + 3) % 7 - 1)::INTEGER END AS lo, CASE WHEN i % 11 = 0 THEN NULL ELSE ((i + 3) % 7 + 1)::INTEGER END AS hi FROM range(43) t(i);
+
+# the nested loop join gives the expected rows
+statement ok
+SET nested_loop_join_threshold = 1000000;
+
+statement ok
+SET merge_join_threshold = 1000000;
+
+statement ok
+CREATE TABLE expected AS
+SELECT 'semi' AS kind, list(id ORDER BY id) AS ids FROM (SELECT r.id FROM r SEMI JOIN d ON r.x <= d.x AND r.a >= d.lo AND r.a <= d.hi AND (r.id + d.id) % 3 <> 0)
+UNION ALL
+SELECT 'anti', list(id ORDER BY id) FROM (SELECT r.id FROM r ANTI JOIN d ON r.x <= d.x AND r.a >= d.lo AND r.a <= d.hi AND (r.id + d.id) % 3 <> 0);
+
+statement ok
+SET nested_loop_join_threshold = 0;
+
+statement ok
+SET merge_join_threshold = 0;
+
+query II
+EXPLAIN SELECT r.id FROM r SEMI JOIN d ON r.x <= d.x AND r.a >= d.lo AND r.a <= d.hi AND (r.id + d.id) % 3 <> 0;
+----
+physical_plan	<REGEX>:.*IE Join.*
+
+query II
+EXPLAIN SELECT r.id FROM r ANTI JOIN d ON r.x <= d.x AND r.a >= d.lo AND r.a <= d.hi AND (r.id + d.id) % 3 <> 0;
+----
+physical_plan	<REGEX>:.*IE Join.*
+
+query I
+SELECT ids = (SELECT ids FROM expected WHERE kind = 'semi') FROM (SELECT list(id ORDER BY id) AS ids FROM (SELECT r.id FROM r SEMI JOIN d ON r.x <= d.x AND r.a >= d.lo AND r.a <= d.hi AND (r.id + d.id) % 3 <> 0));
+----
+true
+
+query I
+SELECT ids = (SELECT ids FROM expected WHERE kind = 'anti') FROM (SELECT list(id ORDER BY id) AS ids FROM (SELECT r.id FROM r ANTI JOIN d ON r.x <= d.x AND r.a >= d.lo AND r.a <= d.hi AND (r.id + d.id) % 3 <> 0));
+----
+true
+
+query I
+SELECT len(ids) FROM expected ORDER BY kind;
+----
+6
+37

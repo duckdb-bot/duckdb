@@ -254,6 +254,12 @@ void PhysicalRangeJoin::GlobalSortedTable::Materialize(ExecutionContext &context
 	GetSortedRun(context.client);
 }
 
+idx_t PhysicalRangeJoin::DistinctCountBound(const JoinCondition &condition) {
+	const auto left = condition.GetLeftStats() ? condition.GetLeftStats()->GetDistinctCount() : 0;
+	const auto right = condition.GetRightStats() ? condition.GetRightStats()->GetDistinctCount() : 0;
+	return MinValue(left, right);
+}
+
 bool PhysicalRangeJoin::LessThan(const JoinCondition &a, const JoinCondition &b) {
 	//	Comparisons come before non-comparisons
 	if (!b.IsComparison()) {
@@ -264,14 +270,12 @@ bool PhysicalRangeJoin::LessThan(const JoinCondition &a, const JoinCondition &b)
 
 	//	Both are comparisons, so use distinct counts to compare selectivities
 	//	(higher is more selective, zero is unknown/completely unselective)
-	const auto a_left = a.GetLeftStats() ? a.GetLeftStats()->GetDistinctCount() : 0;
 	const auto a_right = a.GetRightStats() ? a.GetRightStats()->GetDistinctCount() : 0;
-	const auto a_min = MinValue(a_left, a_right);
+	const auto a_min = DistinctCountBound(a);
 	const auto a_type = a.GetRHS().GetReturnType().InternalType();
 
-	const auto b_left = b.GetLeftStats() ? b.GetLeftStats()->GetDistinctCount() : 0;
 	const auto b_right = b.GetRightStats() ? b.GetRightStats()->GetDistinctCount() : 0;
-	const auto b_min = MinValue(b_left, b_right);
+	const auto b_min = DistinctCountBound(b);
 	const auto b_type = b.GetRHS().GetReturnType().InternalType();
 
 	switch (a.GetComparisonType()) {

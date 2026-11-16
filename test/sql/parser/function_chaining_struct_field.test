@@ -41,10 +41,16 @@ SELECT tt.s.f.lower() FROM t AS tt;
 ----
 cd
 
+statement ok
+CREATE SCHEMA sch;
+
+statement ok
+CREATE TABLE sch.t2 AS SELECT {'f': 'Gh'} AS s;
+
 query I
-SELECT main.t.s.f.lower() FROM t;
+SELECT sch.t2.s.f.lower() FROM sch.t2;
 ----
-cd
+gh
 
 query I
 SELECT t.s.f.lower() FROM t WHERE t.s.f.lower() = 'cd';

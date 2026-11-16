@@ -1,0 +1,21 @@
+# name: benchmark/micro/parquet/metadata_cache_file_list_min_max.benchmark
+# description: MIN, MAX and COUNT over a list of Parquet files whose metadata is cached
+# group: [parquet]
+
+name MIN and MAX over a file list with cached metadata
+group micro
+subgroup parquet
+
+require parquet
+
+load
+COPY (SELECT i AS x FROM range(10000000) t(i)) TO '${BENCHMARK_DIR}/metadata_cache_list_1.parquet';
+COPY (SELECT i + 10000000 AS x FROM range(10000000) t(i)) TO '${BENCHMARK_DIR}/metadata_cache_list_2.parquet';
+SET parquet_metadata_cache = true;
+SELECT count(*) FROM read_parquet('${BENCHMARK_DIR}/metadata_cache_list_[12].parquet');
+
+run
+SELECT min(x), max(x), count(*) FROM read_parquet('${BENCHMARK_DIR}/metadata_cache_list_[12].parquet');
+
+result III
+0	19999999	20000000

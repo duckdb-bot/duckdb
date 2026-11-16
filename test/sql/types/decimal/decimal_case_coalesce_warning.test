@@ -14,6 +14,10 @@ SELECT typeof(COALESCE(NULL::DECIMAL(38,0), 1.5::DECIMAL(38,20))), typeof(CASE W
 ----
 DECIMAL(58,20)	DECIMAL(58,20)
 
+# A wider scale is never a reduction, also beyond 255 digits
+statement ok
+SELECT COALESCE(NULL::DECIMAL(300,255), 1::DECIMAL(300,256)), CASE WHEN true THEN 1::DECIMAL(300,255) ELSE 1::DECIMAL(300,256) END;
+
 # The scale is only reduced within the fixed-size tiers, under the 38-digit bound of the engines before wide decimals
 statement ok
 SET max_decimal_width = 38;

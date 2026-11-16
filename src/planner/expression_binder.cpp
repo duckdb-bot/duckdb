@@ -363,8 +363,8 @@ static optional_ptr<const LogicalType> GetListOrArrayChildType(const LogicalType
 	}
 }
 
-static bool IsDecimalScaleReduced(const LogicalType &source_type, const LogicalType &target_type, uint8_t &source_scale,
-                                  uint8_t &target_scale) {
+static bool IsDecimalScaleReduced(const LogicalType &source_type, const LogicalType &target_type,
+                                  uint32_t &source_scale, uint32_t &target_scale) {
 	if (source_type == target_type) {
 		return false;
 	}
@@ -416,8 +416,8 @@ static bool IsDecimalScaleReduced(const LogicalType &source_type, const LogicalT
 
 bool ExpressionBinder::WarnIfDecimalScaleIsReduced(ClientContext &context, const LogicalType &source_type,
                                                    const LogicalType &target_type, const string &resolving) {
-	uint8_t source_scale;
-	uint8_t target_scale;
+	uint32_t source_scale;
+	uint32_t target_scale;
 	if (!IsDecimalScaleReduced(source_type, target_type, source_scale, target_scale)) {
 		return false;
 	}

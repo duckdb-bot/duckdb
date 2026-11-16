@@ -1,0 +1,146 @@
+# name: test/sql/aggregate/aggregates/approx_quantile_timestamp_range_ends.test
+# description: approx_quantile keeps finite timestamps next to the ends of the range finite and the infinities infinite
+# group: [aggregates]
+
+# the smallest finite timestamp lies below the -infinity sentinel and shares its double with it, so the digest keeps
+# finite values one double inside the range (1024 microseconds) and the quantile stays finite
+query III
+SELECT approx_quantile(ts, 0.5)::VARCHAR, approx_quantile(ts, [0.5])::VARCHAR, epoch_us(approx_quantile(ts, 0.5)) FROM (VALUES (make_timestamp(-9223372036854775808)), (make_timestamp(-9223372036854775806))) t(ts);
+----
+290309-12-21 (BC) 19:59:05.225216	['290309-12-21 (BC) 19:59:05.225216']	-9223372036854774784
+
+query II
+SELECT isfinite(approx_quantile(ts, 0.5)), isfinite(approx_quantile(ts, 1.0)) FROM (VALUES (make_timestamp(-9223372036854775808)), (make_timestamp(-9223372036854775806))) t(ts);
+----
+true	true
+
+# the largest finite timestamps round up to the +infinity sentinel's double
+query II
+SELECT approx_quantile(ts, 0.5)::VARCHAR, epoch_us(approx_quantile(ts, 0.0)) FROM (VALUES (make_timestamp(9223372036854775806)), (make_timestamp(9223372036854775805))) t(ts);
+----
+294247-01-10 04:00:54.774784	9223372036854774784
+
+query II
+SELECT approx_quantile(make_timestamp(-9223372036854775808), 0.5)::VARCHAR, approx_quantile(make_timestamp(9223372036854775806), 0.5)::VARCHAR;
+----
+290309-12-21 (BC) 19:59:05.225216	294247-01-10 04:00:54.774784
+
+query II
+SELECT approx_quantile(ts, 0.5)::VARCHAR, isfinite(approx_quantile(ts, 0.5)) FROM (VALUES (make_timestamp(-9223372036854775808)::TIMESTAMPTZ), (make_timestamp(-9223372036854775806)::TIMESTAMPTZ)) t(ts);
+----
+290309-12-21 (BC) 19:59:05.225216+00	true
+
+# the infinities themselves are still returned as infinities
+query IIII
+SELECT approx_quantile('-infinity'::TIMESTAMP, 0.5), approx_quantile('infinity'::TIMESTAMP, 0.5), approx_quantile('-infinity'::TIMESTAMPTZ, 0.5) = '-infinity'::TIMESTAMPTZ, approx_quantile(ts, [0.0, 1.0]) FROM (VALUES ('-infinity'::TIMESTAMP), ('infinity'::TIMESTAMP)) t(ts);
+----
+-infinity	infinity	true	[-infinity, infinity]
+
+query I
+SELECT approx_quantile(ts, [0.0, 0.5, 1.0])::VARCHAR FROM (VALUES ('-infinity'::TIMESTAMP), (TIMESTAMP '2000-01-01'), ('infinity'::TIMESTAMP)) t(ts);
+----
+[-infinity, '2000-01-01 00:00:00', infinity]
+
+# an infinity among finite values does not pull the finite quantiles to the ends
+query I
+SELECT approx_quantile(ts, 0.5)::VARCHAR FROM (VALUES ('-infinity'::TIMESTAMP), (make_timestamp(0)), (make_timestamp(0))) t(ts);
+----
+1970-01-01 00:00:00
+
+# the same through a table, grouped states and SUMMARIZE
+statement ok
+CREATE TABLE ends AS SELECT * FROM (VALUES (1, make_timestamp(-9223372036854775808)), (1, make_timestamp(-9223372036854775806)), (2, '-infinity'::TIMESTAMP), (2, make_timestamp(-9223372036854775806)), (3, make_timestamp(9223372036854775806)), (3, make_timestamp(9223372036854775805))) t(g, ts);
+
+query III
+SELECT g, isfinite(approx_quantile(ts, 0.5)), approx_quantile(ts, 0.0)::VARCHAR FROM ends GROUP BY g ORDER BY g;
+----
+1	true	290309-12-21 (BC) 19:59:05.225216
+2	false	-infinity
+3	true	294247-01-10 04:00:54.774784
+
+query IIIII
+SELECT min, max, q25, q50, q75 FROM (SUMMARIZE (SELECT ts FROM ends WHERE g = 1));
+----
+290309-12-21 (BC) 19:59:05.224192	290309-12-21 (BC) 19:59:05.224194	290309-12-21 (BC) 19:59:05.225216	290309-12-21 (BC) 19:59:05.225216	290309-12-21 (BC) 19:59:05.225216
+
+query IIIII
+SELECT min, max, q25, q50, q75 FROM (SUMMARIZE (SELECT ts FROM ends WHERE g = 2));
+----
+-infinity	290309-12-21 (BC) 19:59:05.224194	-infinity	-infinity	290309-12-21 (BC) 19:59:05.225216
+
+query IIIII
+SELECT min, max, q25, q50, q75 FROM (SUMMARIZE (SELECT ts FROM ends WHERE g = 3));
+----
+294247-01-10 04:00:54.775805	294247-01-10 04:00:54.775806	294247-01-10 04:00:54.774784	294247-01-10 04:00:54.774784	294247-01-10 04:00:54.774784
+
+# many values at the lower end stay finite through repeated compression and grouped states
+statement ok
+CREATE TABLE big AS SELECT make_timestamp(-9223372036854775808 + i) AS ts, i % 7 AS g FROM range(0, 3000, 2) t(i);
+
+query III
+SELECT isfinite(approx_quantile(ts, 0.0)), isfinite(approx_quantile(ts, 0.5)), isfinite(approx_quantile(ts, 1.0)) FROM big;
+----
+true	true	true
+
+query II
+SELECT bool_and(isfinite(q)), count(*) FROM (SELECT approx_quantile(ts, 0.5) AS q FROM big GROUP BY g);
+----
+true	7
+
+query I
+SELECT list_bool_and(list_transform(approx_quantile(ts, [0.0, 0.25, 0.5, 0.75, 1.0]), lambda x: isfinite(x))) FROM big;
+----
+true
+
+# exported states with infinities and finite ends combine and finalize the same way
+statement ok
+CREATE TABLE modes AS SELECT i, i % 9 AS g, CASE WHEN i % 3 = 0 THEN '-infinity'::TIMESTAMP WHEN i % 3 = 1 THEN 'infinity'::TIMESTAMP ELSE make_timestamp(-9223372036854775808) END AS ts FROM range(30000) t(i);
+
+statement ok
+CREATE TABLE mode_states AS SELECT g, i // 1000 AS batch, approx_quantile(ts, 0.5) EXPORT_STATE AS s FROM modes GROUP BY g, batch;
+
+query I
+SELECT count(*) FROM (SELECT g, finalize(combine_aggr(s)) AS q FROM mode_states GROUP BY g) WHERE (g % 3 = 0 AND q = '-infinity'::TIMESTAMP) OR (g % 3 = 1 AND q = 'infinity'::TIMESTAMP) OR (g % 3 = 2 AND epoch_us(q) = -9223372036854774784);
+----
+9
+
+query I
+SELECT bool_and(finalize(s) = q) FROM (SELECT g, approx_quantile(ts, [0.0, 0.5, 1.0]) AS q, approx_quantile(ts, [0.0, 0.5, 1.0]) EXPORT_STATE AS s FROM modes GROUP BY g);
+----
+true
+
+# the nanosecond timestamps share the coding, so their range ends stay finite and their infinities infinite
+query III
+SELECT approx_quantile(ts, 0.5)::VARCHAR, isfinite(approx_quantile(ts, 0.5)), epoch_ns(approx_quantile(ts, 1.0)) FROM (VALUES (make_timestamp_ns(9223372036854775806)), (make_timestamp_ns(9223372036854775805))) t(ts);
+----
+2262-04-11 23:47:16.854774784	true	9223372036854774784
+
+query III
+SELECT approx_quantile(ts, 0.5)::VARCHAR, isfinite(approx_quantile(ts, 0.5)), epoch_ns(approx_quantile(ts, 0.0)) FROM (VALUES (make_timestamp_ns(-9223372036854775806)), (make_timestamp_ns(-9223372036854775805))) t(ts);
+----
+1677-09-21 00:12:43.145225216	true	-9223372036854774784
+
+query II
+SELECT approx_quantile(ts, 0.5)::VARCHAR, approx_quantile(tz, 0.5)::VARCHAR FROM (VALUES (TIMESTAMPTZ_NS '2262-04-11 23:47:16.854775806+00', TIMESTAMPTZ_NS '1677-09-21 00:12:43.145224194+00')) t(ts, tz);
+----
+2262-04-11 23:47:16.854774784+00	1677-09-21 00:12:43.145225216+00
+
+query IIII
+SELECT approx_quantile(TIMESTAMP_NS 'infinity', 0.5), approx_quantile(TIMESTAMP_NS '-infinity', 0.5), approx_quantile(TIMESTAMPTZ_NS 'infinity', 0.5) = TIMESTAMPTZ_NS 'infinity', approx_quantile(TIMESTAMPTZ_NS '-infinity', 0.5) = TIMESTAMPTZ_NS '-infinity';
+----
+infinity	-infinity	true	true
+
+query IIIII
+SELECT min, max, q25, q50, q75 FROM (SUMMARIZE (SELECT * FROM (VALUES (make_timestamp_ns(-9223372036854775806)), (make_timestamp_ns(9223372036854775806))) t(ts)));
+----
+1677-09-21 00:12:43.145224194	2262-04-11 23:47:16.854775806	1677-09-21 00:12:43.145225216	1970-01-01 00:00:00	2262-04-11 23:47:16.854774784
+
+query II
+SELECT finalize(combine_aggr(s0))::VARCHAR, finalize(combine_aggr(s1))::VARCHAR FROM (SELECT g, approx_quantile(ts, 0.0) EXPORT_STATE AS s0, approx_quantile(ts, 1.0) EXPORT_STATE AS s1 FROM (VALUES (1, make_timestamp_ns(-9223372036854775806)), (2, make_timestamp_ns(9223372036854775806)), (3, TIMESTAMP_NS 'infinity')) t(g, ts) GROUP BY g);
+----
+1677-09-21 00:12:43.145225216	infinity
+
+query III
+SELECT finalize(combine_aggr(s0))::VARCHAR, finalize(combine_aggr(s1))::VARCHAR, typeof(finalize(combine_aggr(s1))) FROM (SELECT g, approx_quantile(ts, 0.0) EXPORT_STATE AS s0, approx_quantile(ts, 1.0) EXPORT_STATE AS s1 FROM (VALUES (1, TIMESTAMPTZ_NS '1677-09-21 00:12:43.145224194+00'), (2, TIMESTAMPTZ_NS '2262-04-11 23:47:16.854775806+00')) t(g, ts) GROUP BY g);
+----
+1677-09-21 00:12:43.145225216+00	2262-04-11 23:47:16.854774784+00	TIMESTAMPTZ_NS

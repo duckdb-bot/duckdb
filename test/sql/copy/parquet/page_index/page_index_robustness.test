@@ -1,5 +1,5 @@
 # name: test/sql/copy/parquet/page_index/page_index_robustness.test
-# description: Corrupt page indexes: fall back to reading without them, or fail loudly, never return wrong rows
+# description: Corrupt page indexes: fall back to reading without them or without the corrupt bounds, or fail loudly, never return wrong rows
 # group: [page_index]
 
 require parquet
@@ -30,7 +30,8 @@ CALL truncate_duckdb_logs();
 statement ok
 CALL enable_logging('PhysicalOperator');
 
-# a ColumnIndex whose min value has the wrong length for its type is ignored, the file is read without it
+# a page whose min value has the wrong length for its type is read without its bounds, like a column chunk whose
+# statistics cannot be decoded, and the bounds of the other pages still prune
 query II
 SELECT count(*), sum(v) = (SELECT sum(r % 7) FROM range(600, 701) t(r)) FROM 'data/parquet-testing/page_index/corrupt_min_length.parquet' WHERE id BETWEEN 600 AND 700
 ----
@@ -41,7 +42,22 @@ SELECT count(*), sum(v) FROM 'data/parquet-testing/page_index/corrupt_min_length
 ----
 1	0
 
-# an OffsetIndex whose first row indexes do not increase is ignored as well
+statement ok
+CALL disable_logging();
+
+# the first page has no usable bounds and is read by both queries, the other pages still prune
+query II
+SELECT count(*), sum(info['rows_skipped']::BIGINT) FROM duckdb_logs_parsed('PhysicalOperator') WHERE class = 'ParquetReader' AND event = 'SkipPages'
+----
+2	4464
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+# an OffsetIndex whose first row indexes do not increase is ignored, the file is read without it
 query II
 SELECT count(*), sum(v) = (SELECT sum(r % 7) FROM range(600, 701) t(r)) FROM 'data/parquet-testing/page_index/corrupt_non_monotonic.parquet' WHERE id BETWEEN 600 AND 700
 ----

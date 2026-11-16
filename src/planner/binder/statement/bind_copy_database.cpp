@@ -27,6 +27,11 @@ unique_ptr<LogicalOperator> Binder::BindCopyDatabaseSchema(Catalog &from_databas
                                                            const Identifier &target_database_name) {
 	catalog_entry_vector_t catalog_entries;
 	catalog_entries = PhysicalExport::GetNaiveExportOrder(context, from_database);
+	// create every entry after the entries it depends on, as EXPORT DATABASE writes them
+	auto dependency_manager = from_database.GetDependencyManager();
+	if (dependency_manager) {
+		dependency_manager->ReorderEntries(catalog_entries, context);
+	}
 
 	auto info = make_uniq<CopyDatabaseInfo>(target_database_name);
 	auto &target_catalog = Catalog::GetCatalog(context, target_database_name);

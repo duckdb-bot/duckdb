@@ -62,7 +62,11 @@ Binder::Binder(ClientContext &context, shared_ptr<Binder> parent_p, BinderType b
       entry_retriever(context), depth(parent ? parent->GetBinderDepth() : 1) {
 	IncreaseDepth();
 	if (parent) {
-		entry_retriever.Inherit(parent->entry_retriever);
+		if (binder_type == BinderType::VIEW_BINDER) {
+			entry_retriever.InheritForView(parent->entry_retriever);
+		} else {
+			entry_retriever.Inherit(parent->entry_retriever);
+		}
 		inside_subquery = parent->inside_subquery;
 
 		// We have to inherit macro and lambda parameter bindings and from the parent binder, if there is a parent.

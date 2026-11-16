@@ -3,7 +3,10 @@
 #include "catch.hpp"
 #include "duckdb/common/progress_bar/display/terminal_progress_bar_display.hpp"
 #include "duckdb/common/progress_bar/progress_bar.hpp"
+#include "duckdb/main/client_config.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/main/query_result_stream.hpp"
+#include "duckdb/parallel/task_scheduler.hpp"
 #include "test_helpers.hpp"
 
 #include <duckdb/execution/executor.hpp>
@@ -341,6 +344,163 @@ TEST_CASE("Test progress is not capped by a low cardinality estimate", "[progres
 	check_progress("SELECT i FROM tbl WHERE j = 12345 ORDER BY i");
 	check_progress("SELECT a.i FROM tbl a JOIN tbl b USING (i) WHERE a.j = 12345");
 	check_progress("CREATE TEMP TABLE ctas AS SELECT i FROM tbl WHERE j = 12345");
+}
+
+//! Counts the calls a progress bar display gets
+struct CountingProgressBarDisplay : public ProgressBarDisplay {
+	CountingProgressBarDisplay(idx_t &updates, idx_t &finishes, idx_t &updates_after_finish)
+	    : updates(updates), finishes(finishes), updates_after_finish(updates_after_finish) {
+	}
+	void Update(double percentage) override {
+		updates++;
+		if (finishes > 0) {
+			updates_after_finish++;
+		}
+	}
+	void Finish() override {
+		finishes++;
+	}
+	idx_t &updates;
+	idx_t &finishes;
+	idx_t &updates_after_finish;
+};
+
+TEST_CASE("Test progress stays below 100 until the result is ready", "[progress-bar]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+
+	REQUIRE_NO_FAIL(con.Query("SET threads=1"));
+	REQUIRE_NO_FAIL(con.Query("SET enable_progress_bar=true"));
+	REQUIRE_NO_FAIL(con.Query("SET enable_progress_bar_print=false"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE tbl AS SELECT i, (i * 7919) % 1000000 AS j FROM range(1000000) t(i)"));
+
+	// the source of the only counted pipeline reports every row done before the result collector finishes, so the
+	// progress of a running query must stay below 100
+	auto check_progress = [&](const string &query) {
+		INFO(query);
+		auto result = con.Submit(query);
+		result->Materialize();
+		bool saw_progress = false;
+		while (!IsTerminal(result->ExecuteTask())) {
+			auto percentage = con.context->GetQueryProgress().GetPercentage();
+			if (percentage >= 0) {
+				saw_progress = true;
+				CHECK(percentage < 100);
+			}
+		}
+		REQUIRE(!result->HasError());
+		CHECK(saw_progress);
+	};
+	check_progress("SELECT i FROM tbl WHERE j = 12345");
+	check_progress("SELECT count(*) FROM tbl WHERE j = 12345");
+	check_progress("CREATE TEMP TABLE ctas AS SELECT i FROM tbl WHERE j = 12345");
+
+	// once the query is complete its progress is 100, also before the result is read
+	auto check_completion = [&](const string &query) {
+		INFO(query);
+		QueryResultStream<> stream(con.Submit(query));
+		QueryResultState state;
+		idx_t steps = 0;
+		do {
+			state = stream.ExecuteTask();
+			if (state == QueryResultState::BLOCKED || state == QueryResultState::NO_TASKS_AVAILABLE) {
+				stream.WaitForTask();
+			}
+			REQUIRE(++steps < 100000);
+		} while (!IsTerminal(state));
+		REQUIRE(!stream.HasError());
+		CHECK(con.context->GetQueryProgress().GetPercentage() == 100);
+	};
+	check_completion("SELECT i FROM tbl WHERE j = 12345");
+	check_completion("SELECT count(*) FROM tbl WHERE j = 12345");
+
+	// a result that is ready while its query still runs, here waiting for its retention decision, keeps the real
+	// progress
+	auto check_partial_ready = [&](const string &query) {
+		INFO(query);
+		auto result = con.Submit(query);
+		QueryResultState state;
+		idx_t steps = 0;
+		do {
+			state = result->ExecuteTask();
+			if (state == QueryResultState::BLOCKED || state == QueryResultState::NO_TASKS_AVAILABLE) {
+				result->WaitForTask();
+			}
+			REQUIRE(++steps < 100000);
+		} while (state != QueryResultState::READY && !IsTerminal(state));
+		REQUIRE(state == QueryResultState::READY);
+		auto percentage = con.context->GetQueryProgress().GetPercentage();
+		CHECK(percentage > 0);
+		CHECK(percentage < 100);
+	};
+	check_partial_ready("SELECT i FROM tbl");
+
+	// a stream whose execution a worker completes while its result waits in the buffer reports 100 when polled
+	auto check_buffered_completion = [&](const string &query) {
+		INFO(query);
+		REQUIRE_NO_FAIL(con.Query("SET streaming_buffer_size='1B'"));
+		QueryResultStream<> stream(con.Submit(query));
+		QueryResultState state;
+		idx_t steps = 0;
+		do {
+			state = stream.ExecuteTask();
+			if (state == QueryResultState::BLOCKED || state == QueryResultState::NO_TASKS_AVAILABLE) {
+				stream.WaitForTask();
+			}
+			REQUIRE(++steps < 100000);
+		} while (state != QueryResultState::READY && !IsTerminal(state));
+		REQUIRE(state == QueryResultState::READY);
+		// the remaining tasks, as a worker thread would run them
+		TaskScheduler::GetScheduler(*con.context).ExecuteTasks(100000);
+		REQUIRE(con.context->GetExecutor().ExecutionIsFinished());
+		CHECK(stream.Poll() == QueryResultState::READY);
+		CHECK(con.context->GetQueryProgress().GetPercentage() == 100);
+		CHECK(stream.ExecuteTask() == QueryResultState::READY);
+		CHECK(con.context->GetQueryProgress().GetPercentage() == 100);
+		while (stream.Fetch()) {
+		}
+		REQUIRE(!stream.HasError());
+		REQUIRE_NO_FAIL(con.Query("RESET streaming_buffer_size"));
+	};
+	check_buffered_completion("SELECT count(*) FROM tbl WHERE j = 12345");
+
+	// with printing enabled, a result that is buffered while its execution runs leaves the display running, and the
+	// display finishes once, at the end
+	REQUIRE_NO_FAIL(con.Query("SET enable_progress_bar_print=true"));
+	REQUIRE_NO_FAIL(con.Query("SET progress_bar_time=0"));
+	REQUIRE_NO_FAIL(con.Query("SET streaming_buffer_size='1B'"));
+	idx_t display_updates = 0;
+	idx_t display_finishes = 0;
+	idx_t display_updates_after_finish = 0;
+	auto &config = ClientConfig::GetConfig(*con.context);
+	config.display_create_func = [&]() -> unique_ptr<ProgressBarDisplay> {
+		return make_uniq<CountingProgressBarDisplay>(display_updates, display_finishes, display_updates_after_finish);
+	};
+	{
+		QueryResultStream<> stream(con.Submit("SELECT i FROM tbl"));
+		QueryResultState state;
+		idx_t steps = 0;
+		do {
+			state = stream.ExecuteTask();
+			if (state == QueryResultState::BLOCKED || state == QueryResultState::NO_TASKS_AVAILABLE) {
+				stream.WaitForTask();
+			}
+			REQUIRE(++steps < 100000);
+		} while (state != QueryResultState::READY && !IsTerminal(state));
+		REQUIRE(state == QueryResultState::READY);
+		REQUIRE(!con.context->GetExecutor().ExecutionIsFinished());
+		CHECK(display_finishes == 0);
+		while (stream.Fetch()) {
+		}
+		REQUIRE(!stream.HasError());
+	}
+	CHECK(display_updates > 0);
+	CHECK(display_finishes == 1);
+	CHECK(display_updates_after_finish == 0);
+	REQUIRE_NO_FAIL(con.Query("RESET enable_progress_bar_print"));
+	REQUIRE_NO_FAIL(con.Query("RESET progress_bar_time"));
+	REQUIRE_NO_FAIL(con.Query("RESET streaming_buffer_size"));
+	config.display_create_func = nullptr;
 }
 
 #endif

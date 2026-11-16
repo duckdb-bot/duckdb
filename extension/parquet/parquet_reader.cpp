@@ -1,4 +1,5 @@
 #include "parquet_reader.hpp"
+#include "duckdb/common/types/decimal.hpp"
 
 #include <string.h>
 #include <unordered_map>
@@ -79,6 +80,7 @@
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_operator_expression.hpp"
+#include "duckdb/storage/buffer_manager.hpp"
 
 namespace duckdb {
 
@@ -334,14 +336,15 @@ LoadMetadata(ClientContext &context, Allocator &allocator, CachingFileHandle &fi
 		}
 
 		ResizeableBuffer buf;
-		buf.resize(allocator, 8);
-		buf.zero();
+		buf.Resize(allocator, 8);
+		buf.Zero();
 
 		transport.Prefetch(file_size - prefetch_size, prefetch_size);
 		transport.SetLocation(file_size - 8);
-		transport.read(buf.ptr, 8);
+		transport.read(buf.GetCurrentLoc(), 8);
 
-		ParseParquetFooter(buf.ptr, file_handle.GetPath(), file_size, encryption_config, footer_len, footer_encrypted);
+		ParseParquetFooter(buf.GetCurrentLoc(), file_handle.GetPath(), file_size, encryption_config, footer_len,
+		                   footer_encrypted);
 
 		auto metadata_pos = file_size - (footer_len + 8);
 		transport.SetLocation(metadata_pos);
@@ -581,8 +584,13 @@ LogicalType ParquetReader::DeriveLogicalType(const SchemaElement &s_ele, const P
 				throw IOException("Invalid DECIMAL precision %d and scale %d", s_ele.precision, s_ele.scale);
 			}
 			schema.type_scale = NumericCast<uint32_t>(s_ele.scale);
-			if (s_ele.precision > DecimalType::MaxWidth()) {
+			if (s_ele.precision > Decimal::MAX_WIDTH_INT128) {
+				// precisions above 38 become wide (BIGNUM-backed) decimals, other physical types fall back to DOUBLE
 				schema.type_info = ParquetExtraTypeInfo::DECIMAL_BYTE_ARRAY;
+				if (s_ele.type == Type::BYTE_ARRAY || s_ele.type == Type::FIXED_LEN_BYTE_ARRAY) {
+					return LogicalType::DECIMAL(NumericCast<uint32_t>(s_ele.precision),
+					                            NumericCast<uint32_t>(s_ele.scale));
+				}
 				return LogicalType::DOUBLE;
 			}
 			switch (s_ele.type) {
@@ -1441,8 +1449,8 @@ ParquetReader::ParquetReader(ClientContext &context_p, OpenFileInfo file_p, Parq
                              shared_ptr<ParquetFileMetadataCache> metadata_p,
                              unordered_map<idx_t, ParquetReaderProjectionExpression> projection_expressions_p)
     : BaseFileReader(std::move(file_p)), fs(CachingFileSystem::Get(context_p)),
-      allocator(BufferAllocator::Get(context_p)), parquet_options(std::move(parquet_options_p)),
-      projection_expressions(std::move(projection_expressions_p)) {
+      allocator(BufferAllocator::Get(context_p)), buffer_manager(BufferManager::GetBufferManager(context_p)),
+      parquet_options(std::move(parquet_options_p)), projection_expressions(std::move(projection_expressions_p)) {
 	auto flags = FileFlags::FILE_FLAGS_READ;
 	flags.SetRequestSizing(RequestSizing::BY_READER);
 	file_handle = fs.OpenFile(context_p, file, flags);
@@ -1552,7 +1560,8 @@ unique_ptr<BaseStatistics> ParquetUnionData::GetStatistics(ClientContext &contex
 ParquetReader::ParquetReader(ClientContext &context_p, ParquetOptions parquet_options_p,
                              shared_ptr<ParquetFileMetadataCache> metadata_p)
     : BaseFileReader(string()), fs(CachingFileSystem::Get(context_p)), allocator(BufferAllocator::Get(context_p)),
-      metadata(std::move(metadata_p)), parquet_options(std::move(parquet_options_p)), rows_read(0) {
+      buffer_manager(BufferManager::GetBufferManager(context_p)), metadata(std::move(metadata_p)),
+      parquet_options(std::move(parquet_options_p)), rows_read(0) {
 	can_use_metadata_statistics = CanUseParquetMetadataStatistics(context_p, metadata, parquet_options);
 	interval_bloom_filter_version = ParquetStatisticsUtils::GetIntervalBloomFilterVersion(*GetFileMetadata());
 	InitializeSchema(context_p);
@@ -2545,8 +2554,8 @@ void ParquetReader::InitializeScan(ClientContext &context, ParquetReaderScanStat
 		}
 	}
 
-	state.define_buf.resize(allocator, STANDARD_VECTOR_SIZE);
-	state.repeat_buf.resize(allocator, STANDARD_VECTOR_SIZE);
+	state.define_buf.Resize(allocator, STANDARD_VECTOR_SIZE);
+	state.repeat_buf.Resize(allocator, STANDARD_VECTOR_SIZE);
 }
 
 shared_ptr<ParquetReader> ParquetReader::CreateMetadataReader(ClientContext &context, ParquetOptions parquet_options,
@@ -3078,11 +3087,11 @@ AsyncResult ParquetReader::Process(ClientContext &context, ParquetReaderScanStat
 
 	auto &deletion_filter = this->deletion_filter;
 
-	state.define_buf.zero();
-	state.repeat_buf.zero();
+	state.define_buf.Zero();
+	state.repeat_buf.Zero();
 
-	auto define_ptr = (uint8_t *)state.define_buf.ptr;
-	auto repeat_ptr = (uint8_t *)state.repeat_buf.ptr;
+	auto define_ptr = (uint8_t *)state.define_buf.GetCurrentLoc();
+	auto repeat_ptr = (uint8_t *)state.repeat_buf.GetCurrentLoc();
 
 	if (filters || deletion_filter) {
 		auto res = ProcessFilters(state, result, scan_count, define_ptr, repeat_ptr, log_prefetch);

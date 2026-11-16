@@ -5,8 +5,273 @@
 #include "duckdb/parser/statement/select_statement.hpp"
 #include "duckdb/common/types/uuid.hpp"
 #include "duckdb/parser/expression/operator_expression.hpp"
+#include "duckdb/parser/tableref/basetableref.hpp"
+#include "duckdb/parser/query_node/recursive_cte_node.hpp"
+#include "duckdb/parser/query_node/set_operation_node.hpp"
+#include "duckdb/parser/query_node/insert_query_node.hpp"
+#include "duckdb/parser/query_node/update_query_node.hpp"
+#include "duckdb/parser/query_node/delete_query_node.hpp"
+#include "duckdb/parser/query_node/merge_query_node.hpp"
+#include "duckdb/parser/query_node/copy_query_node.hpp"
+#include "duckdb/parser/tableref/pivotref.hpp"
+#include "duckdb/parser/tableref/subqueryref.hpp"
+#include "duckdb/parser/tableref/showref.hpp"
+#include "duckdb/common/reference_map.hpp"
+#include "duckdb/parser/tableref/joinref.hpp"
+#include "duckdb/parser/expression/subquery_expression.hpp"
+#include "duckdb/parser/parsed_expression_iterator.hpp"
 
 namespace duckdb {
+
+//! Finds a parameter in a PIVOT source, also in the CTEs it reads, which the query of the pivot values copies
+struct PivotSourceParameterFinder {
+	struct CTEScope {
+		CTEScope(CommonTableExpressionMap &ctes, idx_t begin, idx_t end) : ctes(ctes), begin(begin), end(end) {
+		}
+		reference<CommonTableExpressionMap> ctes;
+		//! the visible CTEs, as a CTE only sees those declared before it in its WITH clause
+		idx_t begin;
+		idx_t end;
+	};
+	//! the CTEs in scope, the innermost last
+	vector<CTEScope> scopes;
+	reference_set_t<CommonTableExpressionInfo> visited_ctes;
+	bool found = false;
+
+	void Visit(unique_ptr<ParsedExpression> &expr) {
+		if (expr->GetExpressionClass() == ExpressionClass::PARAMETER) {
+			found = true;
+			return;
+		}
+		if (expr->GetExpressionClass() == ExpressionClass::SUBQUERY) {
+			Visit(*expr->Cast<SubqueryExpression>().SubqueryMutable()->node);
+		}
+		ParsedExpressionIterator::EnumerateChildren(*expr, [&](unique_ptr<ParsedExpression> &child) { Visit(child); });
+	}
+
+	void Visit(vector<unique_ptr<ParsedExpression>> &expressions) {
+		for (auto &expr : expressions) {
+			Visit(expr);
+		}
+	}
+
+	void Visit(UpdateSetInfo &info) {
+		Visit(info.expressions);
+		if (info.condition) {
+			Visit(info.condition);
+		}
+	}
+
+	//! the bodies of the CTEs of a node are only visited when they are read
+	void Visit(QueryNode &node) {
+		scopes.emplace_back(node.cte_map, 0, node.cte_map.map.size());
+		switch (node.type) {
+		case QueryNodeType::SELECT_NODE: {
+			auto &select = node.Cast<SelectNode>();
+			Visit(select.select_list);
+			Visit(select.groups.group_expressions);
+			for (auto expr : {&select.where_clause, &select.having, &select.qualify}) {
+				if (*expr) {
+					Visit(*expr);
+				}
+			}
+			if (select.from_table) {
+				Visit(*select.from_table);
+			}
+			break;
+		}
+		case QueryNodeType::SET_OPERATION_NODE:
+			for (auto &child : node.Cast<SetOperationNode>().children) {
+				Visit(*child);
+			}
+			break;
+		case QueryNodeType::RECURSIVE_CTE_NODE: {
+			auto &recursive = node.Cast<RecursiveCTENode>();
+			Visit(*recursive.left);
+			// the recursive part also sees the CTE itself, which ends the scope it is defined in, but the CTEs it
+			// reads do not
+			D_ASSERT(scopes.size() >= 2);
+			auto defining_scope = scopes[scopes.size() - 2];
+			scopes.emplace_back(defining_scope.ctes, defining_scope.end, defining_scope.end + 1);
+			Visit(*recursive.right);
+			scopes.pop_back();
+			break;
+		}
+		// a DML statement with RETURNING can be read as a CTE, its target table is not read
+		case QueryNodeType::INSERT_QUERY_NODE: {
+			auto &insert = node.Cast<InsertQueryNode>();
+			if (insert.select_statement) {
+				Visit(*insert.select_statement->node);
+			}
+			if (insert.on_conflict_info) {
+				if (insert.on_conflict_info->set_info) {
+					Visit(*insert.on_conflict_info->set_info);
+				}
+				if (insert.on_conflict_info->condition) {
+					Visit(insert.on_conflict_info->condition);
+				}
+			}
+			Visit(insert.returning_list);
+			break;
+		}
+		case QueryNodeType::UPDATE_QUERY_NODE: {
+			auto &update = node.Cast<UpdateQueryNode>();
+			if (update.from_table) {
+				Visit(*update.from_table);
+			}
+			if (update.set_info) {
+				Visit(*update.set_info);
+			}
+			Visit(update.returning_list);
+			break;
+		}
+		case QueryNodeType::DELETE_QUERY_NODE: {
+			auto &del = node.Cast<DeleteQueryNode>();
+			for (auto &ref : del.using_clauses) {
+				Visit(*ref);
+			}
+			if (del.condition) {
+				Visit(del.condition);
+			}
+			Visit(del.returning_list);
+			break;
+		}
+		case QueryNodeType::MERGE_QUERY_NODE: {
+			auto &merge = node.Cast<MergeQueryNode>();
+			if (merge.source) {
+				Visit(*merge.source);
+			}
+			if (merge.join_condition) {
+				Visit(merge.join_condition);
+			}
+			for (auto &entry : merge.actions) {
+				for (auto &action : entry.second) {
+					if (action->condition) {
+						Visit(action->condition);
+					}
+					if (action->update_info) {
+						Visit(*action->update_info);
+					}
+					Visit(action->expressions);
+				}
+			}
+			Visit(merge.returning_list);
+			break;
+		}
+		case QueryNodeType::COPY_QUERY_NODE: {
+			auto &info = *node.Cast<CopyQueryNode>().info;
+			if (info.select_statement) {
+				Visit(*info.select_statement);
+			} else if (!info.is_from) {
+				VisitCTE(info.GetQualifiedName());
+			}
+			if (info.file_path_expression) {
+				Visit(info.file_path_expression);
+			}
+			for (auto &option : info.parsed_options) {
+				if (option.second) {
+					Visit(option.second);
+				}
+			}
+			break;
+		}
+		default:
+			break;
+		}
+		ParsedExpressionIterator::EnumerateQueryNodeModifiers(
+		    node, [&](unique_ptr<ParsedExpression> &child) { Visit(child); });
+		scopes.pop_back();
+	}
+
+	void Visit(TableRef &ref) {
+		switch (ref.type) {
+		case TableReferenceType::BASE_TABLE:
+			VisitCTE(ref.Cast<BaseTableRef>().GetQualifiedName());
+			break;
+		case TableReferenceType::JOIN: {
+			auto &join = ref.Cast<JoinRef>();
+			Visit(*join.left);
+			Visit(*join.right);
+			if (join.condition) {
+				Visit(join.condition);
+			}
+			break;
+		}
+		case TableReferenceType::SUBQUERY:
+			Visit(*ref.Cast<SubqueryRef>().subquery->node);
+			break;
+		case TableReferenceType::PIVOT: {
+			auto &pivot = ref.Cast<PivotRef>();
+			Visit(*pivot.source);
+			Visit(pivot.aggregates);
+			for (auto &column : pivot.pivots) {
+				Visit(column.pivot_expressions);
+				for (auto &entry : column.entries) {
+					if (entry.expr) {
+						Visit(entry.expr);
+					}
+				}
+			}
+			break;
+		}
+		case TableReferenceType::SHOW_REF: {
+			auto &show = ref.Cast<ShowRef>();
+			if (show.query) {
+				Visit(*show.query);
+			}
+			break;
+		}
+		default:
+			// the other references hold expressions, and MATCH_RECOGNIZE also an input table
+			ParsedExpressionIterator::EnumerateTableRefChildren(
+			    ref, [&](unique_ptr<ParsedExpression> &child) { Visit(child); },
+			    [&](TableRef &child) {
+				    if (&child != &ref) {
+					    Visit(child);
+				    }
+			    });
+			break;
+		}
+	}
+
+	//! visits the CTE a table name reads, with the CTEs in scope where it is defined
+	void VisitCTE(const QualifiedName &name) {
+		if (!name.Catalog().empty() || !name.Schema().empty()) {
+			return;
+		}
+		for (idx_t i = scopes.size(); i > 0; i--) {
+			auto &scope = scopes[i - 1];
+			auto &ctes = scope.ctes.get();
+			auto entry = ctes.map.find(name.Name());
+			if (entry == ctes.map.end()) {
+				continue;
+			}
+			auto index = NumericCast<idx_t>(entry - ctes.map.begin());
+			if (index < scope.begin || index >= scope.end) {
+				continue;
+			}
+			auto &cte = *entry->second;
+			if (!visited_ctes.insert(cte).second || !cte.query_node) {
+				return;
+			}
+			auto outer_scopes = scopes;
+			scopes.erase(scopes.begin() + NumericCast<int64_t>(i - 1), scopes.end());
+			scopes.emplace_back(ctes, 0, index);
+			Visit(*cte.query_node);
+			scopes = std::move(outer_scopes);
+			return;
+		}
+	}
+};
+
+static bool SourceHasParameter(PEGTransformer &transformer, TableRef &source) {
+	PivotSourceParameterFinder finder;
+	for (auto &ctes : transformer.stored_cte_map) {
+		finder.scopes.emplace_back(ctes.get(), 0, ctes.get().map.size());
+	}
+	finder.Visit(source);
+	return finder.found;
+}
 
 void PEGTransformerFactory::AddPivotEntry(PEGTransformer &transformer, string enum_name, unique_ptr<SelectNode> base,
                                           unique_ptr<ParsedExpression> column, unique_ptr<QueryNode> subquery,
@@ -112,7 +377,8 @@ PEGTransformerFactory::FinalizePivotStatementTrampoline(PEGTransformer &transfor
 		}
 	}
 	auto source = process.TakeResult<unique_ptr<TableRef>>(0);
-	auto has_parameters = process.TakeResult<bool>(4);
+	// a parameter in a CTE that the source reads is not counted while the source is transformed
+	auto has_parameters = process.TakeResult<bool>(4) || SourceHasParameter(transformer, *source);
 	auto select_node = make_uniq<SelectNode>();
 	if (!pivot_columns.HasResult()) {
 		select_node->from_table = std::move(source);

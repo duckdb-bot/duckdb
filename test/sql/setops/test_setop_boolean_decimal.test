@@ -1,0 +1,77 @@
+# name: test/sql/setops/test_setop_boolean_decimal.test
+# description: A set operation of BOOLEAN and DECIMAL widens the DECIMAL to hold true
+# group: [setops]
+
+query I
+SELECT typeof(x) FROM (SELECT true AS x UNION ALL SELECT 0.5::DECIMAL(1,1)) LIMIT 1
+----
+DECIMAL(2,1)
+
+query I
+SELECT typeof(x) FROM (SELECT 0.5::DECIMAL(1,1) AS x UNION ALL SELECT true) LIMIT 1
+----
+DECIMAL(2,1)
+
+query I
+SELECT true AS x UNION ALL SELECT 0.5::DECIMAL(1,1) UNION ALL SELECT false UNION ALL SELECT NULL::BOOLEAN ORDER BY x NULLS LAST
+----
+0.0
+0.5
+1.0
+NULL
+
+query I
+SELECT true AS x UNION SELECT 0.1::DECIMAL(1,1) UNION SELECT true ORDER BY x
+----
+0.1
+1.0
+
+query I
+SELECT x FROM (SELECT true AS x) UNION ALL BY NAME SELECT x FROM (SELECT 0.5::DECIMAL(1,1) AS x) ORDER BY x
+----
+0.5
+1.0
+
+query I
+SELECT true AS x INTERSECT SELECT 0.1::DECIMAL(1,1)
+----
+
+query I
+SELECT true AS x EXCEPT SELECT 0.1::DECIMAL(1,1)
+----
+1.0
+
+# the other internal widths of DECIMAL
+query II
+SELECT typeof(x), x FROM (SELECT true AS x UNION ALL SELECT 0.5::DECIMAL(4,4)) ORDER BY x
+----
+DECIMAL(5,4)	0.5000
+DECIMAL(5,4)	1.0000
+
+query II
+SELECT typeof(x), x FROM (SELECT true AS x UNION ALL SELECT 0.5::DECIMAL(18,18)) ORDER BY x
+----
+DECIMAL(19,18)	0.500000000000000000
+DECIMAL(19,18)	1.000000000000000000
+
+# a DECIMAL that already holds true is unchanged
+query II
+SELECT typeof(x), x FROM (SELECT true AS x UNION ALL SELECT 0.5::DECIMAL(3,1)) ORDER BY x
+----
+DECIMAL(3,1)	0.5
+DECIMAL(3,1)	1.0
+
+# merging the schemas of files by name widens the DECIMAL the same way
+require parquet
+
+statement ok
+COPY (SELECT true AS x) TO '{TEST_DIR}/boolean_column.parquet'
+
+statement ok
+COPY (SELECT 0.5::DECIMAL(1,1) AS x) TO '{TEST_DIR}/decimal_column.parquet'
+
+query II
+SELECT typeof(x), x FROM read_parquet(['{TEST_DIR}/boolean_column.parquet', '{TEST_DIR}/decimal_column.parquet'], union_by_name = true) ORDER BY x
+----
+DECIMAL(2,1)	0.5
+DECIMAL(2,1)	1.0

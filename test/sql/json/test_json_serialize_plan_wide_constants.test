@@ -1,0 +1,44 @@
+# name: test/sql/json/test_json_serialize_plan_wide_constants.test
+# description: Plans and catalog entries with wide decimal or BIGNUM constants serialize, their digits escaped like a blob
+# group: [json]
+
+require json
+
+load {TEST_DIR}/wide_constants.db readwrite latest
+
+# the digits of a BIGNUM are bytes, which yyjson refuses as a raw string
+query IIII
+SELECT json_serialize_plan('SELECT 1234567890123456789012345678901234567890.5')::JSON->>'error' AS wide_literal,
+       json_serialize_plan('SELECT 1234567890123456789012345678901234567890::BIGNUM')::JSON->>'error' AS big_bignum,
+       json_serialize_plan('SELECT 12.5')::JSON->>'error' AS narrow,
+       json_serialize_plan('SELECT 1::BIGNUM')::JSON->>'error' AS small_bignum;
+----
+false	false	false	false
+
+query II
+SELECT json_serialize_plan('SELECT * FROM (VALUES (1234567890123456789012345678901234567890::BIGNUM)) v(b)')::JSON->>'error' AS values_list,
+       json_serialize_plan('SELECT [1234567890123456789012345678901234567890.5, 1.5]')::JSON->>'error' AS list_constant;
+----
+false	false
+
+# the escaped digits round trip through the binary format of a stored default and a macro
+statement ok
+CREATE TABLE t (d DECIMAL(50, 4) DEFAULT 1234567890123456789012345678901234567890.5, b BIGNUM DEFAULT 12345678901234567890123456789012345678901);
+
+statement ok
+CREATE MACRO wide() AS 1234567890123456789012345678901234567890.5 + 1;
+
+restart
+
+statement ok
+INSERT INTO t DEFAULT VALUES;
+
+query II
+SELECT d, b FROM t;
+----
+1234567890123456789012345678901234567890.5000	12345678901234567890123456789012345678901
+
+query I
+SELECT wide();
+----
+1234567890123456789012345678901234567891.5

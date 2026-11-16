@@ -2382,6 +2382,15 @@ void Value::SerializeInternal(Serializer &serializer, bool serialize_type) const
 				serializer.WriteProperty(102, "value", text);
 				serializer.WriteProperty(103, "geometry_format", GeometryStorageType::WKB);
 			}
+		} else if (type_.id() == LogicalTypeId::BIGNUM || type_.id() == LogicalTypeId::DECIMAL) {
+			// the digits of a BIGNUM, which also holds the unscaled value of a wide decimal, are bytes rather than text
+			if (serializer.ShouldSerialize(StorageVersion::V2_1_0)) {
+				auto text = Blob::ToString(StringValue::Get(*this));
+				serializer.WriteProperty(102, "value", text);
+				serializer.WriteProperty(103, "escaped", true);
+			} else {
+				serializer.WriteProperty(102, "value", StringValue::Get(*this));
+			}
 		} else {
 			serializer.WriteProperty(102, "value", StringValue::Get(*this));
 		}
@@ -2647,6 +2656,10 @@ Value Value::Deserialize(Deserializer &deserializer) {
 			} else {
 				throw InternalException("Unknown geometry format in value deserialization");
 			}
+		} else if (type.id() == LogicalTypeId::BIGNUM || type.id() == LogicalTypeId::DECIMAL) {
+			auto str = deserializer.ReadProperty<string>(102, "value");
+			auto escaped = deserializer.ReadPropertyWithExplicitDefault<bool>(103, "escaped", false);
+			new_value.value_info_ = make_shared_ptr<StringValueInfo>(escaped ? Blob::ToBlob(str) : std::move(str));
 		} else {
 			auto str = deserializer.ReadProperty<string>(102, "value");
 			new_value.value_info_ = make_shared_ptr<StringValueInfo>(std::move(str));

@@ -48,3 +48,19 @@ query I
 SELECT count(*) FROM (SELECT NULL::DOUBLE AS x UNION ALL SELECT 2.5) WHERE x > 2;
 ----
 1
+
+# a DECIMAL wider than 38 digits keeps its range as BIGNUM bounds, which a NULL constant leaves to the other branch too
+query II
+SELECT stats(x).min::VARCHAR, stats(x).max::VARCHAR FROM (SELECT NULL::DECIMAL(50,4) AS x UNION ALL SELECT 5::DECIMAL(50,4)) LIMIT 1;
+----
+5.0000	5.0000
+
+query II
+SELECT stats(x).min::VARCHAR, stats(x).max::VARCHAR FROM (SELECT 5::DECIMAL(50,4) AS x UNION ALL SELECT NULL) LIMIT 1;
+----
+5.0000	5.0000
+
+query I
+SELECT count(*) FROM (SELECT NULL::DECIMAL(50,4) AS x UNION ALL SELECT 5::DECIMAL(50,4)) WHERE x > 1;
+----
+1

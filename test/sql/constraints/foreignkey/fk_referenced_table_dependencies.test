@@ -1,0 +1,97 @@
+# name: test/sql/constraints/foreignkey/fk_referenced_table_dependencies.test
+# description: Creating, renaming or dropping a table with a foreign key keeps what the referenced table depends on
+# group: [foreignkey]
+
+load {TEST_DIR}/fk_referenced_table_dependencies.db
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown;
+
+statement ok
+SET wal_autocheckpoint = '1GB';
+
+# read from a checkpoint
+statement ok
+CREATE SEQUENCE seq_create;
+
+statement ok
+CREATE TABLE p_create (id BIGINT DEFAULT nextval('seq_create') PRIMARY KEY);
+
+statement ok
+CREATE TABLE c_create (pid BIGINT REFERENCES p_create (id));
+
+statement ok
+CREATE SEQUENCE seq_default;
+
+statement ok
+CREATE TABLE p_default (id BIGINT PRIMARY KEY);
+
+statement ok
+CREATE TABLE c_default (pid BIGINT REFERENCES p_default (id));
+
+statement ok
+ALTER TABLE p_default ALTER COLUMN id SET DEFAULT nextval('seq_default');
+
+statement ok
+ALTER TABLE c_default RENAME TO c_default2;
+
+statement ok
+CHECKPOINT;
+
+# replayed from the WAL
+statement ok
+CREATE SEQUENCE seq_rename;
+
+statement ok
+CREATE TABLE p_rename (id BIGINT DEFAULT nextval('seq_rename') PRIMARY KEY);
+
+statement ok
+CREATE TABLE c_rename (pid BIGINT REFERENCES p_rename (id));
+
+statement ok
+ALTER TABLE c_rename RENAME TO c_rename2;
+
+statement ok
+CREATE SEQUENCE seq_drop;
+
+statement ok
+CREATE TABLE p_drop (id BIGINT DEFAULT nextval('seq_drop') PRIMARY KEY);
+
+statement ok
+CREATE TABLE c_drop (pid BIGINT REFERENCES p_drop (id));
+
+statement ok
+DROP TABLE c_drop;
+
+loop i 0 2
+
+restart
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown;
+
+foreach name create default rename drop
+
+statement error
+DROP SEQUENCE seq_{name};
+----
+<REGEX>:Dependency Error: Cannot drop entry "seq_\w+" because there are entries that depend on it.*table "p_\w+" depends on sequence "seq_\w+".*
+
+endloop
+
+statement ok
+CHECKPOINT;
+
+endloop
+
+foreach name create default rename drop
+
+statement ok
+INSERT INTO p_{name} DEFAULT VALUES;
+
+query I
+SELECT id FROM p_{name};
+----
+1
+
+endloop

@@ -70,6 +70,38 @@ static void FindForeignKeyInformation(TableCatalogEntry &table, AlterForeignKeyT
 	}
 }
 
+//! The tables a renamed table references name it in their foreign key constraints, which are replaced by ones with the
+//! new name. All of them are dropped before any is added again, as dropping removes every constraint with the old name
+static void FindForeignKeyRenames(TableCatalogEntry &table, const Identifier &new_name,
+                                  vector<unique_ptr<AlterForeignKeyInfo>> &fk_arrays) {
+	vector<unique_ptr<AlterForeignKeyInfo>> additions;
+	vector<QualifiedName> dropped_tables;
+	for (auto &cond : table.GetConstraints()) {
+		if (cond->type != ConstraintType::FOREIGN_KEY) {
+			continue;
+		}
+		auto &fk = cond->Cast<ForeignKeyConstraint>();
+		if (fk.info.type != ForeignKeyType::FK_TYPE_FOREIGN_KEY_TABLE) {
+			continue;
+		}
+		auto qualified_name = table.schema.GetQualifiedName(fk.info.table);
+		if (std::find(dropped_tables.begin(), dropped_tables.end(), qualified_name) == dropped_tables.end()) {
+			dropped_tables.push_back(qualified_name);
+			AlterEntryData drop_data(qualified_name, OnEntryNotFound::THROW_EXCEPTION);
+			fk_arrays.push_back(make_uniq<AlterForeignKeyInfo>(std::move(drop_data), table.name, fk.pk_columns,
+			                                                   fk.fk_columns, fk.info.pk_keys, fk.info.fk_keys,
+			                                                   AlterForeignKeyType::AFT_DELETE));
+		}
+		AlterEntryData add_data(qualified_name, OnEntryNotFound::THROW_EXCEPTION);
+		additions.push_back(make_uniq<AlterForeignKeyInfo>(std::move(add_data), new_name, fk.pk_columns, fk.fk_columns,
+		                                                   fk.info.pk_keys, fk.info.fk_keys,
+		                                                   AlterForeignKeyType::AFT_ADD));
+	}
+	for (auto &addition : additions) {
+		fk_arrays.push_back(std::move(addition));
+	}
+}
+
 DuckSchemaEntry::DuckSchemaEntry(Catalog &catalog, CreateSchemaInfo &info,
                                  optional_ptr<SchemaCatalogEntry> parent_schema_p)
     : SchemaCatalogEntry(catalog, info, parent_schema_p), schemas(catalog),
@@ -330,8 +362,20 @@ void DuckSchemaEntry::Alter(CatalogTransaction transaction, AlterInfo &info) {
 		}
 	} else {
 		auto &name = info.GetQualifiedName().Name();
+		vector<unique_ptr<AlterForeignKeyInfo>> fk_arrays;
+		if (info.type == AlterType::ALTER_TABLE &&
+		    info.Cast<AlterTableInfo>().alter_table_type == AlterTableType::RENAME_TABLE) {
+			auto entry = set.GetEntry(transaction, name);
+			if (entry && entry->type == CatalogType::TABLE_ENTRY) {
+				FindForeignKeyRenames(entry->Cast<TableCatalogEntry>(), info.Cast<RenameTableInfo>().new_table_name,
+				                      fk_arrays);
+			}
+		}
 		if (!set.AlterEntry(transaction, name, info)) {
 			throw CatalogException::MissingEntry(type, name, string());
+		}
+		for (auto &fk_info : fk_arrays) {
+			Alter(transaction, *fk_info);
 		}
 	}
 }

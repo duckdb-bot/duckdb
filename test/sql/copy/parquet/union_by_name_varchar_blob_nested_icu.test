@@ -1,0 +1,56 @@
+# name: test/sql/copy/parquet/union_by_name_varchar_blob_nested_icu.test
+# description: The other fields of a nested column whose text is read as BLOB keep the casts of the extensions
+# group: [parquet]
+
+require parquet
+
+require icu
+
+statement ok
+SET TimeZone = 'America/New_York';
+
+# no text becomes bytes here, the fields pair up by name and the timestamp keeps the ICU cast
+statement ok
+COPY (SELECT 1 AS i, [{'a': 'ok', 'b': encode('ok'), 't': TIMESTAMPTZ '2024-01-01 12:00:00-05'}] AS l) TO '{TEST_DIR}/order_one.parquet';
+
+statement ok
+COPY (SELECT 2 AS i, [{'b': encode('ok'), 'a': 'ok', 't': TIMESTAMP '2024-01-01 12:00:00'}] AS l) TO '{TEST_DIR}/order_two.parquet';
+
+query III
+SELECT i, typeof(l), l[1].t = TIMESTAMPTZ '2024-01-01 12:00:00-05' FROM read_parquet(['{TEST_DIR}/order_one.parquet', '{TEST_DIR}/order_two.parquet'], union_by_name = true) ORDER BY i;
+----
+1	STRUCT(a VARCHAR, b BLOB, t TIMESTAMP WITH TIME ZONE)[]	true
+2	STRUCT(a VARCHAR, b BLOB, t TIMESTAMP WITH TIME ZONE)[]	true
+
+# the text beside the timestamp becomes bytes, and the timestamp still takes the ICU cast
+statement ok
+COPY (SELECT 1 AS i, {'a': 'café', 't': TIMESTAMP '2024-01-01 12:00:00'} AS s) TO '{TEST_DIR}/icu_text.parquet';
+
+statement ok
+COPY (SELECT 2 AS i, {'a': encode('café'), 't': TIMESTAMPTZ '2024-01-01 12:00:00-05'} AS s) TO '{TEST_DIR}/icu_bytes.parquet';
+
+query IIII
+SELECT i, typeof(s), s.a = encode('café'), s.t = TIMESTAMPTZ '2024-01-01 12:00:00-05' FROM read_parquet(['{TEST_DIR}/icu_text.parquet', '{TEST_DIR}/icu_bytes.parquet'], union_by_name = true) ORDER BY i;
+----
+1	STRUCT(a BLOB, t TIMESTAMP WITH TIME ZONE)	true	true
+2	STRUCT(a BLOB, t TIMESTAMP WITH TIME ZONE)	true	true
+
+query II
+SELECT i, s.t = TIMESTAMPTZ '2024-01-01 12:00:00-05' FROM read_parquet(['{TEST_DIR}/icu_text.parquet', '{TEST_DIR}/icu_bytes.parquet'], union_by_name = true) ORDER BY i;
+----
+1	true
+2	true
+
+statement ok
+CREATE TABLE target (s STRUCT(a BLOB, t TIMESTAMPTZ));
+
+statement ok
+COPY (SELECT {'a': 'café', 't': TIMESTAMP '2024-01-01 12:00:00'} AS s) TO '{TEST_DIR}/icu_copy.parquet';
+
+statement ok
+COPY target FROM '{TEST_DIR}/icu_copy.parquet';
+
+query II
+SELECT s.a = encode('café'), s.t = TIMESTAMPTZ '2024-01-01 12:00:00-05' FROM target;
+----
+true	true

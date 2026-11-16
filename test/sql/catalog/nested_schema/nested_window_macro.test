@@ -98,3 +98,53 @@ SELECT db.a.b.w(i) OVER (ORDER BY i) FROM range(3) r(i);
 0
 1
 2
+
+# a view resolves the macro through its own catalog's search path, as a scalar call does
+statement ok
+CREATE SCHEMA p;
+
+statement ok
+CREATE SCHEMA p.s;
+
+statement ok
+CREATE MACRO p.s.w(x) AS min(x);
+
+statement ok
+CREATE SCHEMA nested_window_macro.p;
+
+statement ok
+CREATE SCHEMA nested_window_macro.p.s;
+
+statement ok
+CREATE MACRO nested_window_macro.p.s.w(x) AS max(x);
+
+statement ok
+CREATE VIEW nested_window_macro.v_scalar AS SELECT p.s.w(i) AS x FROM range(3) r(i);
+
+query I
+SELECT x FROM nested_window_macro.v_scalar;
+----
+2
+
+statement ok
+CREATE VIEW nested_window_macro.v_window AS SELECT i, p.s.w(i) OVER (ORDER BY i) AS x FROM range(3) r(i);
+
+query I
+SELECT x FROM nested_window_macro.v_window ORDER BY i;
+----
+0
+1
+2
+
+statement ok
+CREATE VIEW nested_window_macro.v_window_only AS SELECT i, p.s.w(i) OVER (ORDER BY i DESC) AS x FROM range(3) r(i);
+
+statement ok
+DROP MACRO p.s.w;
+
+query I
+SELECT x FROM nested_window_macro.v_window_only ORDER BY i;
+----
+2
+2
+2

@@ -121,7 +121,7 @@ BindResult BaseSelectBinder::BindWindowExpression(WindowExpression &window, idx_
 
 	//	Check for macros pretending to be aggregates
 	// resolve the qualification as scalar calls do, so that a nested schema path is not read as a catalog and a schema
-	auto bound_name = binder.BindTableName(window.GetQualifiedName());
+	auto bound_name = Binder::BindTableName(binder.EntryRetriever(), window.GetQualifiedName());
 	EntryLookupInfo function_lookup(CatalogType::SCALAR_FUNCTION_ENTRY, bound_name, error_context);
 	auto entry = GetCatalogEntry(function_lookup, OnEntryNotFound::RETURN_NULL);
 	if (entry && entry->type == CatalogType::MACRO_ENTRY) {

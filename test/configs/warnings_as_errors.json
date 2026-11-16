@@ -76,7 +76,8 @@
         "test/sql/types/bignum/test_bignum_modulo.test",
         "test/sql/types/float/ieee_floating_points.test",
         "test/sql/types/interval/test_interval.test",
-        "test/sql/types/null/test_null.test"
+        "test/sql/types/null/test_null.test",
+        "test/sql/types/variant/variant_list_in_lambda_and_unnest.test"
       ]
     },
     {

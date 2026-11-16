@@ -126,6 +126,10 @@ idx_t WindowTokenTree::Rank(const idx_t lower, const idx_t upper, const idx_t ro
 	}
 }
 
+idx_t WindowTokenTree::Token(const idx_t row_idx) const {
+	return mst32 ? mst32->LowestLevel()[row_idx] : mst64->LowestLevel()[row_idx];
+}
+
 template <typename TREE>
 static idx_t NextPeer(const TREE &tree, const idx_t lower, const idx_t upper, const idx_t row_idx) {
 	// We return an index, not a relative position

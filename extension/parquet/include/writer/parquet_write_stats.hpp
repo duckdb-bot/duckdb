@@ -351,6 +351,74 @@ public:
 	}
 };
 
+//! A HUGEINT or UHUGEINT value written as DECIMAL(39, 0), 17 bytes of big-endian two's complement
+struct ParquetHugeintDecimalTargetType {
+	static constexpr const idx_t SIZE = 17;
+	data_t bytes[SIZE];
+
+	//! The numeric order of two's complement values of one length, the sign bit of the leading byte inverted
+	static int Compare(const ParquetHugeintDecimalTargetType &a, const ParquetHugeintDecimalTargetType &b) {
+		const auto a_lead = a.bytes[0] ^ 0x80;
+		const auto b_lead = b.bytes[0] ^ 0x80;
+		if (a_lead != b_lead) {
+			return a_lead < b_lead ? -1 : 1;
+		}
+		return memcmp(a.bytes + 1, b.bytes + 1, SIZE - 1);
+	}
+};
+
+class HugeintDecimalStatisticsState : public ColumnWriterStatistics {
+public:
+	bool has_stats = false;
+	ParquetHugeintDecimalTargetType min;
+	ParquetHugeintDecimalTargetType max;
+
+public:
+	bool HasStats() override {
+		return has_stats;
+	}
+
+	void Update(const ParquetHugeintDecimalTargetType &value) {
+		if (!has_stats || ParquetHugeintDecimalTargetType::Compare(value, min) < 0) {
+			min = value;
+		}
+		if (!has_stats || ParquetHugeintDecimalTargetType::Compare(value, max) > 0) {
+			max = value;
+		}
+		has_stats = true;
+	}
+
+	string GetMin() override {
+		return GetMinValue();
+	}
+	string GetMax() override {
+		return GetMaxValue();
+	}
+	string GetMinValue() override {
+		return HasStats() ? string(char_ptr_cast(min.bytes), ParquetHugeintDecimalTargetType::SIZE) : string();
+	}
+	string GetMaxValue() override {
+		return HasStats() ? string(char_ptr_cast(max.bytes), ParquetHugeintDecimalTargetType::SIZE) : string();
+	}
+
+	void Merge(const ColumnWriterStatistics &other_p) override {
+		auto &other = other_p.Cast<HugeintDecimalStatisticsState>();
+		if (!other.has_stats) {
+			return;
+		}
+		Update(other.min);
+		Update(other.max);
+	}
+	int CompareMin(const ColumnWriterStatistics &other_p) const override {
+		auto &other = other_p.Cast<HugeintDecimalStatisticsState>();
+		return ParquetHugeintDecimalTargetType::Compare(min, other.min);
+	}
+	int CompareMax(const ColumnWriterStatistics &other_p) const override {
+		auto &other = other_p.Cast<HugeintDecimalStatisticsState>();
+		return ParquetHugeintDecimalTargetType::Compare(max, other.max);
+	}
+};
+
 class GeoStatisticsState final : public ColumnWriterStatistics {
 public:
 	explicit GeoStatisticsState() : has_stats(false) {

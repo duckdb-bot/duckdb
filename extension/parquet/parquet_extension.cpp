@@ -992,6 +992,8 @@ static bool IsTypeNotSupported(const LogicalType &type) {
 	return !ParquetWriter::TryGetParquetType(type);
 }
 
+//! Types EXPORT DATABASE writes as VARCHAR. HUGEINT and UHUGEINT are written as DECIMAL(39, 0) otherwise, which
+//! loses nothing, but a reader without wide decimals could not import such a file.
 static bool IsTypeLossy(const LogicalType &type) {
 	return type.id() == LogicalTypeId::HUGEINT || type.id() == LogicalTypeId::UHUGEINT;
 }

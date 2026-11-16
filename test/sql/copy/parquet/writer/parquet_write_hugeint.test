@@ -21,8 +21,172 @@ SELECT * FROM '{TEST_DIR}/hugeints.parquet'
 NULL
 1180591620717411303424
 
+# a HUGEINT is written as a 17 byte DECIMAL(39,0), which holds every value of the type
 query I
 SELECT typeof(h) FROM '{TEST_DIR}/hugeints.parquet' LIMIT 1
 ----
-DOUBLE
+DECIMAL(39,0)
 
+query IIIII
+SELECT type, type_length, converted_type, precision, scale FROM parquet_schema('{TEST_DIR}/hugeints.parquet') WHERE name = 'h'
+----
+FIXED_LEN_BYTE_ARRAY	17	DECIMAL	39	0
+
+query II
+SELECT stats_min_value, stats_max_value FROM parquet_metadata('{TEST_DIR}/hugeints.parquet')
+----
+-1180591620717411303424	1180591620717411303424
+
+# the limits of the type and values beyond 2^53, which a DOUBLE would round
+statement ok
+CREATE TABLE limits AS SELECT * FROM (VALUES
+	((-170141183460469231731687303715884105728)::HUGEINT),
+	(-9007199254740993::HUGEINT),
+	(9007199254740993::HUGEINT),
+	(42540766411282592856903984951653826561::HUGEINT),
+	(170141183460469231731687303715884105727::HUGEINT)) t(h)
+
+statement ok
+COPY limits TO '{TEST_DIR}/hugeint_limits.parquet' (FORMAT 'parquet');
+
+query I
+SELECT h::HUGEINT FROM '{TEST_DIR}/hugeint_limits.parquet' ORDER BY h
+----
+-170141183460469231731687303715884105728
+-9007199254740993
+9007199254740993
+42540766411282592856903984951653826561
+170141183460469231731687303715884105727
+
+query I
+SELECT count(*) FROM (SELECT h FROM '{TEST_DIR}/hugeint_limits.parquet' EXCEPT SELECT h FROM limits)
+----
+0
+
+query II
+SELECT stats_min_value, stats_max_value FROM parquet_metadata('{TEST_DIR}/hugeint_limits.parquet')
+----
+-170141183460469231731687303715884105728	170141183460469231731687303715884105727
+
+# a HUGEINT inside a struct, as the inet extension stores an IPv6 address
+statement ok
+COPY (SELECT 42540766411282592856903984951653826561::HUGEINT AS h, {'ip_type': 2::UTINYINT, 'address': 42540766411282592856903984951653826561::HUGEINT, 'mask': 128::USMALLINT} AS s) TO '{TEST_DIR}/hugeint_struct.parquet' (FORMAT 'parquet');
+
+query II
+SELECT h::HUGEINT = 42540766411282592856903984951653826561, s.address::HUGEINT FROM '{TEST_DIR}/hugeint_struct.parquet'
+----
+true	42540766411282592856903984951653826561
+
+query I
+SELECT typeof(s) FROM '{TEST_DIR}/hugeint_struct.parquet'
+----
+STRUCT(ip_type UTINYINT, address DECIMAL(39,0), mask USMALLINT)
+
+# a filter on the column still prunes with the statistics
+query I
+SELECT count(*) FROM '{TEST_DIR}/hugeint_limits.parquet' WHERE h > 170141183460469231731687303715884105726::HUGEINT
+----
+1
+
+# dictionary encoding and a bloom filter, as for every other integer type
+statement ok
+COPY (SELECT (i % 10)::HUGEINT * 1180591620717411303424 AS h FROM range(5000) t(i)) TO '{TEST_DIR}/hugeint_dict.parquet' (FORMAT 'parquet');
+
+query II
+SELECT encodings, bloom_filter_length > 0 FROM parquet_metadata('{TEST_DIR}/hugeint_dict.parquet')
+----
+PLAIN_DICTIONARY	true
+
+query I
+SELECT bloom_filter_excludes FROM parquet_bloom_probe('{TEST_DIR}/hugeint_dict.parquet', 'h', 1180591620717411303425::HUGEINT)
+----
+true
+
+query I
+SELECT bloom_filter_excludes FROM parquet_bloom_probe('{TEST_DIR}/hugeint_dict.parquet', 'h', 1180591620717411303424::HUGEINT)
+----
+false
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/hugeint_dict.parquet' WHERE h = 1180591620717411303424::HUGEINT
+----
+500
+
+# negative values, a present one is kept by the bloom filter and an absent one excluded
+statement ok
+COPY (SELECT ((i % 10) - 5)::HUGEINT * 1180591620717411303424 AS h FROM range(5000) t(i)) TO '{TEST_DIR}/hugeint_dict_neg.parquet' (FORMAT 'parquet');
+
+query I
+SELECT bloom_filter_excludes FROM parquet_bloom_probe('{TEST_DIR}/hugeint_dict_neg.parquet', 'h', (-5902958103587056517120)::HUGEINT)
+----
+false
+
+query I
+SELECT bloom_filter_excludes FROM parquet_bloom_probe('{TEST_DIR}/hugeint_dict_neg.parquet', 'h', (-5902958103587056517121)::HUGEINT)
+----
+true
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/hugeint_dict_neg.parquet' WHERE h = (-5902958103587056517120)::HUGEINT
+----
+500
+
+# several row groups of several pages each with the page index, values on both sides of zero and NULLs
+statement ok
+CREATE TABLE groups AS SELECT i, CASE WHEN i % 7 = 0 THEN NULL ELSE (i - 5000)::HUGEINT * 1180591620717411303424 END AS h FROM range(10000) t(i)
+
+statement ok
+COPY (SELECT h FROM groups ORDER BY i) TO '{TEST_DIR}/hugeint_groups.parquet' (FORMAT 'parquet', ROW_GROUP_SIZE 2048, WRITE_PAGE_INDEX true, DATA_PAGE_SIZE_LIMIT 4096);
+
+# the pages of the index are ordered, their bounds are in order and their NULL counts add up
+query IIII
+SELECT count(*) > 10, count(DISTINCT row_group_id), bool_and(null_page OR min_value::HUGEINT <= max_value::HUGEINT), sum(null_count)
+FROM parquet_page_index('{TEST_DIR}/hugeint_groups.parquet')
+----
+true	5	true	1429
+
+query I
+SELECT count(DISTINCT boundary_order) FROM parquet_page_index('{TEST_DIR}/hugeint_groups.parquet')
+----
+1
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+# the statistics of every row group are the minimum and maximum of its rows
+query I
+SELECT count(*) FROM parquet_metadata('{TEST_DIR}/hugeint_groups.parquet') m
+JOIN (SELECT i // 2048 AS g, min(h) AS mn, max(h) AS mx, count(*) - count(h) AS nulls FROM groups GROUP BY g) e
+ON m.row_group_id = e.g AND m.stats_min_value::HUGEINT = e.mn AND m.stats_max_value::HUGEINT = e.mx AND m.stats_null_count = e.nulls
+----
+5
+
+query I nosort negatives
+SELECT count(*), min(h), max(h) FROM groups WHERE h < (-1000)::HUGEINT * 1180591620717411303424
+----
+
+query I nosort negatives
+SELECT count(*), min(h), max(h) FROM '{TEST_DIR}/hugeint_groups.parquet' WHERE h < (-1000)::HUGEINT * 1180591620717411303424
+----
+
+query I nosort positives
+SELECT count(*), min(h), max(h) FROM groups WHERE h >= 0 AND h < 3000::HUGEINT * 1180591620717411303424
+----
+
+query I nosort positives
+SELECT count(*), min(h), max(h) FROM '{TEST_DIR}/hugeint_groups.parquet' WHERE h >= 0 AND h < 3000::HUGEINT * 1180591620717411303424
+----
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/hugeint_groups.parquet' WHERE h IS NULL
+----
+1429
+
+statement ok
+CALL disable_logging();
+
+# the selective filters skipped pages through the page index
+query I
+SELECT count(*) > 0 FROM duckdb_logs_parsed('PhysicalOperator') WHERE class = 'ParquetReader' AND event = 'SkipPages'
+----
+true

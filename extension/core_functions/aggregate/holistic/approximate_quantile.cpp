@@ -642,6 +642,12 @@ unique_ptr<FunctionData> ApproxQuantileDecimalDeserialize(Deserializer &deserial
                                                           BoundAggregateFunction &function) {
 	auto bind_data = ApproximateQuantileBindData::Deserialize(deserializer, function);
 	auto &return_type = deserializer.Get<const LogicalType &>();
+	// Plans written before the DECIMAL type was kept cast the input to the integer type of the DECIMAL's physical
+	// type, and record that integer type as the argument of the implementation, so the input expression decides
+	auto &children = deserializer.Get<const const_expression_list_t &>();
+	if (!children.empty() && children[0].get().GetReturnType() != function.GetArguments()[0]) {
+		function.GetArguments()[0] = children[0].get().GetReturnType();
+	}
 	if (return_type.id() == LogicalTypeId::LIST) {
 		ReplaceApproxQuantileImplementation(function, ApproxQuantileDecimalListFunction(function.GetArguments()[0]));
 	} else {

@@ -15,9 +15,10 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalExplain &op) {
 	auto renderer = TreeRenderer::CreateRenderer(context, op.format);
 	bool single_plan = renderer && renderer->RendersSinglePlan();
 	bool analyze = op.explain_type == ExplainType::EXPLAIN_ANALYZE;
+	auto output = Settings::Get<ExplainOutputSetting>(context);
 	// render the optimized logical plan before physical planning consumes it - but only when it will be shown
 	string logical_plan_opt;
-	if (!analyze && !single_plan) {
+	if (!analyze && !single_plan && output != ExplainOutputType::PHYSICAL_ONLY) {
 		logical_plan_opt = op.children[0]->ToString(context, op.format);
 	}
 	auto &plan = CreatePlan(*op.children[0]);
@@ -34,7 +35,7 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalExplain &op) {
 		keys = {"physical_plan"};
 		values = {op.physical_plan};
 	} else {
-		switch (Settings::Get<ExplainOutputSetting>(context)) {
+		switch (output) {
 		case ExplainOutputType::OPTIMIZED_ONLY:
 			keys = {"logical_opt"};
 			values = {logical_plan_opt};

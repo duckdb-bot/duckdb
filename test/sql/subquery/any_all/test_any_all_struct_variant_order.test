@@ -180,6 +180,6 @@ true	false	true	true
 
 # the rows are cast to the compared type before the extremum, so a field the compared type cannot hold raises the cast error
 statement error
-SELECT {'b': 0.5::DECIMAL(38,37), 'a': 1} > ANY (SELECT {'a': 1, 'b': i} FROM (VALUES (0), (100)) r(i))
+SELECT {'b': TIMESTAMP '2000-01-01', 'a': 1} > ANY (SELECT {'a': 1, 'b': d} FROM (VALUES (DATE '1990-01-01'), (DATE '5874897-12-31')) r(d))
 ----
 <REGEX>:.*Conversion Error.*

@@ -138,9 +138,10 @@ SELECT {'u': union_value(w := union_value(a := 'm'))::UNION(w UNION(a VARCHAR, z
 ----
 true
 
-# a UNION member that keeps its ENUM type does not cast the UNION before the extremum
+# a UNION member that keeps its ENUM type does not cast the UNION before the extremum, so a DATE beyond the TIMESTAMP
+# range in another row does not fail the comparison
 query I
-SELECT [union_value(n := 0.5::DECIMAL(38,37))::UNION(n DECIMAL(38,37), tag e)] > ANY (SELECT [union_value(n := i)::UNION(n INTEGER, tag e)] FROM (VALUES (0), (100)) rhs(i))
+SELECT [union_value(n := TIMESTAMP '2000-01-01')::UNION(n TIMESTAMP, tag e)] > ANY (SELECT [union_value(n := d)::UNION(n DATE, tag e)] FROM (VALUES (DATE '1990-01-01'), (DATE '5874897-12-31')) rhs(d))
 ----
 true
 
@@ -154,10 +155,10 @@ true	true	true
 # cannot hold does not fail the comparison, also when the compared STRUCT has more fields, an ARRAY is compared with a
 # LIST or a TUPLE with a STRUCT
 query IIII
-SELECT {'n': 0.5::DECIMAL(38,37), 'tag': 'a'::e} > ANY (SELECT {'n': i, 'tag': 'a'::e} FROM (VALUES (0), (100)) rhs(i)),
-       {'n': 0.5::DECIMAL(38,37), 'tag': 'a'::e, 'extra': 0} > ANY (SELECT {'n': i, 'tag': 'a'::e} FROM (VALUES (0), (100)) rhs(i)),
-       [{'n': 0.5::DECIMAL(38,37), 'tag': 'a'::e}] > ANY (SELECT [{'n': i, 'tag': 'a'::e}]::STRUCT(n INTEGER, tag e)[1] FROM (VALUES (0), (100)) rhs(i)),
-       {'n': 0.5::DECIMAL(38,37), 'tag': 'a'::e} > ANY (SELECT row(i, 'a'::e) FROM (VALUES (0), (100)) rhs(i))
+SELECT {'n': TIMESTAMP '2000-01-01', 'tag': 'a'::e} > ANY (SELECT {'n': d, 'tag': 'a'::e} FROM (VALUES (DATE '1990-01-01'), (DATE '5874897-12-31')) rhs(d)),
+       {'n': TIMESTAMP '2000-01-01', 'tag': 'a'::e, 'extra': 0} > ANY (SELECT {'n': d, 'tag': 'a'::e} FROM (VALUES (DATE '1990-01-01'), (DATE '5874897-12-31')) rhs(d)),
+       [{'n': TIMESTAMP '2000-01-01', 'tag': 'a'::e}] > ANY (SELECT [{'n': d, 'tag': 'a'::e}]::STRUCT(n DATE, tag e)[1] FROM (VALUES (DATE '1990-01-01'), (DATE '5874897-12-31')) rhs(d)),
+       {'n': TIMESTAMP '2000-01-01', 'tag': 'a'::e} > ANY (SELECT row(d, 'a'::e) FROM (VALUES (DATE '1990-01-01'), (DATE '5874897-12-31')) rhs(d))
 ----
 true	true	true	true
 
@@ -180,11 +181,6 @@ SELECT 2.5 > ANY (SELECT i FROM ints), 2.5 > ALL (SELECT i FROM ints), 0.5 < ALL
 true	false	true	false
 
 # any other column keeps the extremum in its own type, so a row the compared type cannot hold does not fail
-query I
-SELECT 0.5::DECIMAL(38,37) > ANY (SELECT v FROM (VALUES (0), (100)) rhs(v))
-----
-true
-
 statement ok
 CREATE TABLE dates(d DATE);
 

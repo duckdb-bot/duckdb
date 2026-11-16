@@ -1,0 +1,13 @@
+# name: benchmark/micro/optimizer/topn_without_estimate.benchmark
+# description: ORDER BY with a large LIMIT over a source without a row estimate uses top-n
+# group: [optimizer]
+
+name TopN Without Estimate
+group micro
+subgroup optimizer
+
+run
+SELECT count(*), sum(i) FROM (SELECT i FROM range((SELECT 10000000)) t(i) ORDER BY hash(i) DESC LIMIT 10000);
+
+result II
+10000	49859891744

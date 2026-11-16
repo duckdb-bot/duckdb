@@ -1,0 +1,15 @@
+# name: benchmark/micro/cast/cast_string_timestamp.benchmark
+# description: Cast strings with nanosecond fractions to TIMESTAMP
+# group: [cast]
+
+name Cast VARCHAR -> TIMESTAMP
+group cast
+
+load
+CREATE TABLE strings AS SELECT (TIMESTAMP '1992-01-01 12:00:00' + (i % 10000) * INTERVAL '1' DAY)::VARCHAR || '.' || lpad((i * 7919 % 1000000000)::VARCHAR, 9, '0') AS s FROM range(10000000) tbl(i);
+
+run
+SELECT MIN(CAST(s AS TIMESTAMP)) FROM strings;
+
+result I
+1992-01-01 12:00:00

@@ -1,0 +1,50 @@
+# name: test/sql/aggregate/aggregates/test_bitstring_agg_null_branch.test
+# description: A NULL constant keeps the statistics of the other branches, so bitstring_agg finds its range
+# group: [aggregates]
+
+query I
+SELECT bitstring_agg(arg)::VARCHAR FROM (SELECT 1 AS arg UNION ALL SELECT NULL AS arg);
+----
+1
+
+query I
+SELECT bitstring_agg(arg)::VARCHAR FROM (SELECT 1 AS arg UNION ALL SELECT NULL UNION ALL SELECT 3);
+----
+101
+
+# a value outside of a range that only NULLs gave is still found
+query II
+SELECT min(x), max(x) FROM (SELECT NULL::INTEGER AS x UNION ALL SELECT 5);
+----
+5	5
+
+query I
+SELECT count(*) FROM (SELECT NULL::INTEGER AS x UNION ALL SELECT 5) WHERE x > 1;
+----
+1
+
+query I
+SELECT count(*) FROM (SELECT NULL::INTEGER AS x) WHERE x IS NULL;
+----
+1
+
+query I
+SELECT bitstring_agg(arg)::VARCHAR FROM (SELECT NULL AS arg UNION ALL SELECT 2 UNION ALL SELECT 4);
+----
+101
+
+# only NULLs give NULL, as a column of only NULLs does
+query I
+SELECT bitstring_agg(arg) FROM (SELECT NULL::INTEGER AS arg UNION ALL SELECT NULL);
+----
+NULL
+
+query II
+SELECT min(x), max(x) FROM (SELECT NULL::DOUBLE AS x UNION ALL SELECT 2.5 UNION ALL SELECT -1.5);
+----
+-1.5	2.5
+
+query I
+SELECT count(*) FROM (SELECT NULL::DOUBLE AS x UNION ALL SELECT 2.5) WHERE x > 2;
+----
+1

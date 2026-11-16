@@ -677,8 +677,10 @@ unique_ptr<SelectNode> Binder::BindPivot(PivotRef &ref, vector<unique_ptr<Parsed
 	idx_t total_pivots = 1;
 	for (auto &pivot : ref.pivots) {
 		if (!pivot.pivot_enum.empty()) {
-			auto &type_entry = Catalog::GetEntry<TypeCatalogEntry>(
-			    context, QualifiedName(Identifier::InvalidCatalog(), Identifier::InvalidSchema(), pivot.pivot_enum));
+			// the enum resolves in the search path of this binder, which is that of the view or macro being bound
+			auto &type_entry =
+			    entry_retriever.GetEntry(EntryLookupInfo(CatalogType::TYPE_ENTRY, QualifiedName(pivot.pivot_enum)))
+			        ->Cast<TypeCatalogEntry>();
 			auto type = type_entry.user_type;
 			if (type.id() != LogicalTypeId::ENUM) {
 				throw BinderException(ref, "Pivot must reference an ENUM type: %s is of type \"%s\"", pivot.pivot_enum,

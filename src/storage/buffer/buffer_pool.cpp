@@ -123,7 +123,7 @@ private:
 	//! We multiply the base purge size by this value.
 	constexpr static idx_t PURGE_SIZE_MULTIPLIER = 2;
 	//! We multiply the purge size by this value to determine early-outs. This is the minimum queue size.
-	//! We never purge below this point.
+	//! Below it, a queue is only purged when it holds many dead nodes.
 	constexpr static idx_t EARLY_OUT_MULTIPLIER = 4;
 	//! We multiply the approximate alive nodes by this value to test whether our total dead nodes
 	//! exceed their allowed ratio. Must be greater than 1.
@@ -193,9 +193,9 @@ void EvictionQueue::Purge() {
 	// get an estimate of the queue size as-of now
 	idx_t approx_q_size = q.size_approx();
 
-	// early-out, if the queue is not big enough to justify purging
+	// early-out, if the queue is not big enough to justify purging and holds few dead nodes
 	// - we want to keep the LRU characteristic alive
-	if (approx_q_size < purge_size * EARLY_OUT_MULTIPLIER) {
+	if (approx_q_size < purge_size * EARLY_OUT_MULTIPLIER && total_dead_nodes < purge_size) {
 		return;
 	}
 
@@ -295,6 +295,10 @@ void EvictionQueue::PurgeIteration(const idx_t purge_size) {
 			}
 		}
 #endif
+	}
+	// dead nodes keep their slots after compaction, so clear every slot to free their control blocks
+	for (idx_t i = 0; i < actually_dequeued; i++) {
+		purge_nodes[i].memory_p.reset();
 	}
 }
 

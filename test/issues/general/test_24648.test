@@ -47,6 +47,11 @@ CREATE TABLE s (i INTEGER PRIMARY KEY, parent INTEGER REFERENCES s (i));
 statement ok
 ALTER TABLE s RENAME TO s2;
 
+query I
+SELECT sql FROM duckdb_tables() WHERE table_name = 's2';
+----
+CREATE TABLE s2(i INTEGER PRIMARY KEY, parent INTEGER, FOREIGN KEY (parent) REFERENCES s2(i));
+
 statement ok
 INSERT INTO s2 VALUES (1, NULL);
 
@@ -85,6 +90,11 @@ statement ok
 CHECKPOINT;
 
 restart
+
+query I
+SELECT sql FROM duckdb_tables() WHERE table_name = 's2';
+----
+CREATE TABLE s2(i INTEGER PRIMARY KEY, parent INTEGER, FOREIGN KEY (parent) REFERENCES s2(i));
 
 statement ok
 ALTER TABLE c2 RENAME TO c;

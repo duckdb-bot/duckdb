@@ -311,6 +311,7 @@ unique_ptr<CatalogEntry> DuckTableEntry::AlterEntry(ClientContext &context, Alte
 				auto &fk = constraint->Cast<ForeignKeyConstraint>();
 				if (fk.info.type == ForeignKeyType::FK_TYPE_SELF_REFERENCE_TABLE) {
 					fk.info.table = rename_info.new_table_name;
+					fk.referenced_table = QualifiedName(schema.GetSchemaPath(), rename_info.new_table_name);
 				}
 				continue;
 			}

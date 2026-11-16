@@ -17,6 +17,7 @@
 #include "duckdb/common/reference_map.hpp"
 #include "duckdb/common/unordered_map.hpp"
 #include "duckdb/common/unordered_set.hpp"
+#include "duckdb/common/types/decimal.hpp"
 #include "duckdb/parser/column_definition.hpp"
 #include "duckdb/parser/tableref/match_recognize_ref.hpp"
 #include "duckdb/parser/query_node.hpp"
@@ -462,6 +463,12 @@ public:
 	//! Set while binding the key expressions of an index
 	void SetBindingIndexKey(bool binding_index_key);
 	bool IsBindingIndexKey() const;
+	//! The widest DECIMAL the binder constructs: the max_decimal_width setting, or the fixed limit of the keys of an
+	//! index while they are bound
+	DecimalWidthLimit GetDecimalWidthLimit() const;
+	optional_ptr<const DecimalWidthLimit> GetFixedDecimalWidthLimit() const;
+	//! Binds decimals within the limit instead of the setting while it is set, the limit outlives the binding
+	void SetDecimalWidthLimit(optional_ptr<const DecimalWidthLimit> limit);
 	//! Mark the query node this binder binds as under TRY, see TrySubqueryLowering
 	void SetUnderTry();
 	bool IsUnderTry() const;
@@ -501,6 +508,8 @@ private:
 	bool inside_subquery = false;
 	//! Whether the key expressions of an index are being bound
 	bool binding_index_key = false;
+	//! The fixed limit of the DECIMAL widths this binder constructs, set while the keys of an index are bound
+	optional_ptr<const DecimalWidthLimit> decimal_width_limit;
 	//! Whether the query node this binder binds is under TRY, so that the subqueries of its select item are planned
 	//! together with the TRY lowering, when the subquery itself is planned
 	bool under_try = false;

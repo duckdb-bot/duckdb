@@ -2,6 +2,8 @@
 # description: A macro in a nested schema is found as a window function without naming the catalog
 # group: [nested_schema]
 
+load {TEST_DIR}/nested_window_macro.db readwrite v2.0.0
+
 statement ok
 CREATE SCHEMA s1;
 
@@ -25,7 +27,7 @@ SELECT s1.s2.w(i) FROM range(3) r(i);
 2
 
 query I
-SELECT memory.s1.s2.w(i) OVER (ORDER BY i) FROM range(3) r(i);
+SELECT nested_window_macro.s1.s2.w(i) OVER (ORDER BY i) FROM range(3) r(i);
 ----
 0
 1

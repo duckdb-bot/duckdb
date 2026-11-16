@@ -18,7 +18,7 @@ class LogicalMaterializedCTE;
 //! The PartialAggregatePushdown optimizer pushes partial aggregate states below joins when this can reduce join work
 class PartialAggregatePushdown : public LogicalOperatorVisitor {
 public:
-	explicit PartialAggregatePushdown(Optimizer &optimizer);
+	PartialAggregatePushdown(Optimizer &optimizer, bool statistics_propagation_follows);
 
 	void VisitOperator(unique_ptr<LogicalOperator> &op) override;
 
@@ -36,6 +36,9 @@ private:
 
 private:
 	Optimizer &optimizer;
+	//! Whether statistics propagation runs on the plan afterwards. The proof that an aggregate argument cannot throw
+	//! relies on it, since it certifies the argument as the propagation rewrites it, with the statistics it uses
+	bool statistics_propagation_follows;
 	unordered_map<idx_t, reference<LogicalMaterializedCTE>> cte_definitions;
 	column_binding_map_t<ColumnBinding> replacement_map;
 };

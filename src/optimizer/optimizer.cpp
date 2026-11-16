@@ -364,7 +364,11 @@ void Optimizer::RunBuiltInOptimizers() {
 	// Pre-aggregate SUM/COUNT below joins when GROUP BY is on dimension columns
 	// and the fact side dominates cardinality — reduces probe-side work.
 	RunOptimizer(OptimizerType::PARTIAL_AGGREGATE_PUSHDOWN, [&]() {
-		PartialAggregatePushdown partial_aggregate_pushdown(*this);
+		// the pushdown proves with the table statistics that an argument cannot throw, which holds only when statistics
+		// propagation runs on the plan afterwards
+		const bool statistics_propagation_follows =
+		    !CTEContainsDML(*plan) && !OptimizerDisabled(OptimizerType::STATISTICS_PROPAGATION);
+		PartialAggregatePushdown partial_aggregate_pushdown(*this, statistics_propagation_follows);
 		partial_aggregate_pushdown.VisitOperator(plan);
 	});
 

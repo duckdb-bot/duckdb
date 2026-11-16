@@ -1,0 +1,121 @@
+# name: test/optimizer/partial_aggregate_pushdown_statistics_proof.test
+# description: The proof that an aggregate argument cannot throw holds only when statistics propagation runs on the plan
+# group: [optimizer]
+
+statement ok
+CREATE TABLE dim AS SELECT i AS id, i % 5 AS a, i % 3 AS b FROM range(100) t(i) WHERE i <> 50;
+
+# The fact rows with id = 50 have no dimension row and hold a value that does not convert to INTEGER.
+statement ok
+CREATE TABLE fact AS SELECT i % 100 AS id, CASE WHEN i % 100 = 50 THEN 'oops' ELSE (i % 7)::VARCHAR END AS v FROM range(10000) t(i);
+
+# Statistics propagation folds the CASE, which is NULL for every row, and with it the cast out of the argument, which is
+# how the proof finds that the argument cannot throw. Without the propagation the plan keeps the cast, so the aggregate
+# must stay above the join.
+statement ok
+SET disabled_optimizers = 'statistics_propagation'
+
+query III
+SELECT a, b, sum(coalesce(CASE WHEN CAST(v AS INTEGER) > 0 THEN NULL::BIGINT END, fact.id)) FROM fact JOIN dim ON fact.id = dim.id GROUP BY a, b ORDER BY a, b
+----
+0	0	31500
+0	1	28500
+0	2	30000
+1	0	35700
+1	1	32200
+1	2	29100
+2	0	29700
+2	1	36400
+2	2	32900
+3	0	33600
+3	1	30300
+3	2	37100
+4	0	37800
+4	1	34300
+4	2	30900
+
+query II
+EXPLAIN SELECT a, b, sum(coalesce(CASE WHEN CAST(v AS INTEGER) > 0 THEN NULL::BIGINT END, fact.id)) FROM fact JOIN dim ON fact.id = dim.id GROUP BY a, b
+----
+physical_plan	<!REGEX>:.*combine_aggr.*
+
+statement ok
+RESET disabled_optimizers
+
+# The bounds of the base table columns prove that this product fits its type, but a DML CTE changes the rows before the
+# scan runs, so the statistics captured at planning do not hold and the aggregate must stay above the join.
+statement ok
+CREATE TABLE fact_rev AS SELECT i % 100 AS id, (i % 1000 + 0.5)::DECIMAL(15,2) AS price, ((i % 10) / 100.0)::DECIMAL(15,2) AS discount FROM range(10000) t(i);
+
+query II
+EXPLAIN WITH u AS (UPDATE fact_rev SET price = 9999999999999.99, discount = -99999999999.99 WHERE id = 50 RETURNING id) SELECT a, b, sum(price * (1 - discount)) FROM fact_rev JOIN dim USING (id) GROUP BY a, b
+----
+physical_plan	<!REGEX>:.*combine_aggr.*
+
+query III
+WITH u AS (UPDATE fact_rev SET price = 9999999999999.99, discount = -99999999999.99 WHERE id = 50 RETURNING id) SELECT a, b, sum(price * (1 - discount)) FROM fact_rev JOIN dim USING (id) GROUP BY a, b ORDER BY a, b
+----
+0	0	339417.5000
+0	1	291217.5000
+0	2	290290.0000
+1	0	337509.5000
+1	1	336627.0000
+1	2	288808.5000
+2	0	286387.5000
+2	1	334665.0000
+2	2	333822.5000
+3	0	331004.0000
+3	1	283954.5000
+3	2	331806.5000
+4	0	328934.0000
+4	1	328171.5000
+4	2	281509.5000
+
+# The double eager pushdown, which pre-aggregates both inputs of a many-to-many join, relies on the same proof. Runtime
+# join filters would hide the error on the unmatched rows.
+statement ok
+CREATE TABLE dl AS SELECT (i % 150)::INTEGER AS k, (i % 150 % 4)::INTEGER AS g FROM range(6000) t(i) WHERE i % 150 <> 75;
+
+statement ok
+CREATE TABLE dv AS SELECT (i % 150)::INTEGER AS k, CASE WHEN i % 150 = 75 THEN 'oops' ELSE (i % 7)::VARCHAR END AS v FROM range(6000) t(i);
+
+statement ok
+CREATE TABLE dv_rev AS SELECT (i % 150)::INTEGER AS k, (i % 1000 + 0.5)::DECIMAL(15,2) AS price, ((i % 10) / 100.0)::DECIMAL(15,2) AS discount FROM range(6000) t(i);
+
+statement ok
+ANALYZE
+
+statement ok
+SET disabled_optimizers = 'join_filter_pushdown,statistics_propagation'
+
+query II
+EXPLAIN SELECT g, sum(coalesce(CASE WHEN CAST(v AS INTEGER) > 0 THEN NULL::BIGINT END, dv.k)) FROM dl JOIN dv USING (k) GROUP BY g
+----
+physical_plan	<!REGEX>:.*combine_aggr.*
+
+query II
+SELECT g, sum(coalesce(CASE WHEN CAST(v AS INTEGER) > 0 THEN NULL::BIGINT END, dv.k)) FROM dl JOIN dv USING (k) GROUP BY g ORDER BY g
+----
+0	4499200
+1	4560000
+2	4380800
+3	4320000
+
+statement ok
+SET disabled_optimizers = 'join_filter_pushdown'
+
+query II
+EXPLAIN WITH u AS (UPDATE dv_rev SET price = 9999999999999.99, discount = -99999999999.99 WHERE k = 75 RETURNING k) SELECT g, sum(price * (1 - discount)) FROM dl JOIN dv_rev USING (k) GROUP BY g
+----
+physical_plan	<!REGEX>:.*combine_aggr.*
+
+query II
+WITH u AS (UPDATE dv_rev SET price = 9999999999999.99, discount = -99999999999.99 WHERE k = 75 RETURNING k) SELECT g, sum(price * (1 - discount)) FROM dl JOIN dv_rev USING (k) GROUP BY g ORDER BY g
+----
+0	29149824.0000
+1	28903888.0000
+2	28382976.0000
+3	27382752.0000
+
+statement ok
+RESET disabled_optimizers

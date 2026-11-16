@@ -1,0 +1,73 @@
+# name: test/sql/optimizer/plan/in_list_scan_filter.test
+# description: Results of short IN lists, which the scan checks when they keep almost no rows
+# group: [plan]
+
+# the keys are not ordered, so zone maps cannot skip row groups
+statement ok
+CREATE TABLE in_scan AS
+SELECT (i * 7919) % 1000003 AS k,
+       CASE WHEN i % 10 = 0 THEN NULL ELSE 'v' || i END AS s,
+       i / 4 AS d,
+       (i % 1000)::DECIMAL(9, 2) AS n,
+       DATE '2000-01-01' + (i % 5000)::INTEGER AS dt
+FROM range(1000000) t(i);
+
+query IIIII
+SELECT * FROM in_scan WHERE k IN (5, 7919, 123456, 999999) ORDER BY k;
+----
+5	v293346	73336.5	346.00	2009-02-28
+7919	v1	0.25	1.00	2000-01-02
+123456	v643028	160757.0	28.00	2008-04-16
+999999	v365325	91331.25	325.00	2000-11-21
+
+query I
+SELECT count(*) FROM in_scan WHERE k IN (5, 7919, 123456, 999999, 1000004);
+----
+4
+
+# also when the list is long enough to become a join
+query I
+SELECT count(*) FROM in_scan WHERE k IN (5, 7919, 123456, 999999, 17, 19, 23);
+----
+7
+
+query I
+SELECT count(*) FROM in_scan WHERE k IN (5, 7919, 123456, 999999, 17, 19, 23, 29, 31);
+----
+9
+
+# other types, NULL values in the column, and lists that keep many rows
+query I
+SELECT count(*) FROM in_scan WHERE s IN ('v1', 'v253', 'v10', 'v999999');
+----
+3
+
+query I
+SELECT count(*) FROM in_scan WHERE n IN (1.00, 253.00, 0.5);
+----
+2000
+
+query I
+SELECT count(*) FROM in_scan WHERE dt IN (DATE '2000-01-02', DATE '2007-03-18', DATE '1999-12-31');
+----
+400
+
+query I
+SELECT count(*) FROM in_scan WHERE d IN (0.25, 1.5, 7.75, 2.0);
+----
+4
+
+query I
+SELECT count(*) FROM in_scan WHERE n IN (1.00, 3.00, 5.00, 7.00, 9.00, 11.00, 13.00, 15.00);
+----
+8000
+
+query I
+SELECT count(*) FROM in_scan WHERE k IN (5, 7919) OR s = 'v10';
+----
+2
+
+query I
+SELECT count(*) FROM in_scan WHERE k NOT IN (5, 7919, 123456, 999999);
+----
+999996

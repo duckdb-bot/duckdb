@@ -1,0 +1,44 @@
+# name: test/sql/optimizer/plan/in_list_scan_filter_rows.test
+# description: A short IN list that keeps almost no rows filters them during the scan, which returns only the rows it keeps
+# group: [plan]
+
+# the scan checks the list per vector, so the row counts are those of the default vector size
+require vector_size 2048
+
+# the keys are not ordered, so zone maps cannot skip row groups
+statement ok
+CREATE TABLE in_scan AS
+SELECT (i * 7919) % 1000003 AS k,
+       CASE WHEN i % 10 = 0 THEN NULL ELSE 'v' || i END AS s,
+       i / 4 AS d,
+       (i % 1000)::DECIMAL(9, 2) AS n,
+       DATE '2000-01-01' + (i % 5000)::INTEGER AS dt
+FROM range(1000000) t(i);
+
+# the scan returns only the rows the list keeps
+query II
+EXPLAIN (ANALYZE, FORMAT JSON) SELECT * FROM in_scan WHERE k IN (5, 7919, 123456, 999999);
+----
+analyzed_plan	<REGEX>:.*"intermediate_rows": 4,\s*"intermediate_size_bytes": [0-9]+,\s*"name": "SEQ_SCAN".*
+
+query II
+EXPLAIN (ANALYZE, FORMAT JSON) SELECT * FROM in_scan WHERE k IN (5, 7919, 123456, 999999, 17, 19, 23);
+----
+analyzed_plan	<REGEX>:.*"intermediate_rows": 7,\s*"intermediate_size_bytes": [0-9]+,\s*"name": "SEQ_SCAN".*
+
+# the longest list that the scan checks, and one value more
+query II
+EXPLAIN (ANALYZE, FORMAT JSON) SELECT * FROM in_scan WHERE k IN (5, 7919, 123456, 999999, 17, 19, 23, 29);
+----
+analyzed_plan	<REGEX>:.*"intermediate_rows": 8,\s*"intermediate_size_bytes": [0-9]+,\s*"name": "SEQ_SCAN".*
+
+query II
+EXPLAIN (ANALYZE, FORMAT JSON) SELECT * FROM in_scan WHERE k IN (5, 7919, 123456, 999999, 17, 19, 23, 29, 31);
+----
+analyzed_plan	<REGEX>:.*"intermediate_rows": 1000000,\s*"intermediate_size_bytes": [0-9]+,\s*"name": "SEQ_SCAN".*
+
+# a column with few distinct values is not filtered during the scan
+query II
+EXPLAIN (ANALYZE, FORMAT JSON) SELECT * FROM in_scan WHERE n IN (1.00, 3.00);
+----
+analyzed_plan	<REGEX>:.*"intermediate_rows": 1000000,\s*"intermediate_size_bytes": [0-9]+,\s*"name": "SEQ_SCAN".*

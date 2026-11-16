@@ -5,6 +5,7 @@
 #include "column_writer.hpp"
 #include "duckdb/common/typedefs.hpp"
 #include "duckdb/common/types.hpp"
+#include "duckdb/common/types/selection_vector.hpp"
 #include "duckdb/common/types/validity_mask.hpp"
 #include "duckdb/common/types/vector.hpp"
 #include "duckdb/common/unique_ptr.hpp"
@@ -13,6 +14,27 @@
 #include "writer/list_column_writer.hpp"
 
 namespace duckdb {
+
+static idx_t GetValidArrayChildren(Vector &array, Vector &result, idx_t count) {
+	// NULL arrays have no child entries in Parquet
+	auto array_size = ArrayType::GetSize(array.GetType());
+	auto &validity = FlatVector::Validity(array);
+	if (validity.CheckAllValid(count)) {
+		return count * array_size;
+	}
+	SelectionVector sel(count * array_size);
+	idx_t child_count = 0;
+	for (idx_t row = 0; row < count; row++) {
+		if (!validity.RowIsValid(row)) {
+			continue;
+		}
+		for (idx_t k = 0; k < array_size; k++) {
+			sel.set_index(child_count++, row * array_size + k);
+		}
+	}
+	result.Flatten(sel, child_count);
+	return child_count;
+}
 
 void ArrayColumnWriter::Analyze(ColumnWriterState &state_p, ColumnWriterState *parent, Vector &vector, idx_t count) {
 	auto &state = state_p.Cast<ListColumnWriterState>();
@@ -45,8 +67,7 @@ void ArrayColumnWriter::Prepare(ColumnWriterState &state_p, ColumnWriterState *p
 	auto &validity = FlatVector::ValidityMutable(vector);
 
 	// write definition levels and repeats
-	// the main difference between this and ListColumnWriter::Prepare is that we need to make sure to write out
-	// repetition levels and definitions for the child elements of the array even if the array itself is NULL.
+	// unlike a list, an array that is not NULL always has array_size child elements
 	idx_t vcount = parent ? parent->definition_levels.size() - state.parent_index : count;
 	idx_t vector_index = 0;
 	for (idx_t i = 0; i < vcount; i++) {
@@ -59,7 +80,9 @@ void ArrayColumnWriter::Prepare(ColumnWriterState &state_p, ColumnWriterState *p
 		auto first_repeat_level =
 		    parent && !parent->repetition_levels.empty() ? parent->repetition_levels[parent_index] : MaxRepeat();
 		if (parent && parent->definition_levels[parent_index] != PARQUET_DEFINE_VALID) {
-			WriteArrayState(state, array_size, first_repeat_level, parent->definition_levels[parent_index]);
+			// an array below a NULL is NULL itself, so its child entries are skipped as well
+			D_ASSERT(!validity.RowIsValid(vector_index));
+			WriteArrayState(state, array_size, first_repeat_level, parent->definition_levels[parent_index], true);
 		} else if (validity.RowIsValid(vector_index)) {
 			state.num_values++;
 			// push the repetition levels
@@ -68,23 +91,26 @@ void ArrayColumnWriter::Prepare(ColumnWriterState &state_p, ColumnWriterState *p
 			//! Produce a null
 			state.own_null_count++;
 			state.num_values++;
-			WriteArrayState(state, array_size, first_repeat_level, MaxDefine() - 1);
+			WriteArrayState(state, array_size, first_repeat_level, MaxDefine() - 1, true);
 		}
 		vector_index++;
 	}
 	state.parent_index += vcount;
 
 	auto &array_child = ArrayVector::GetChildMutable(vector);
+	Vector child_array(Vector::Ref(array_child));
+	auto child_count = GetValidArrayChildren(vector, child_array, count);
 	// The elements of a single array should not span multiple Parquet pages
 	// So, we force the entire vector to fit on a single page by setting "vector_can_span_multiple_pages=false"
-	GetChildWriter().Prepare(*state.child_state, &state_p, array_child, count * array_size, false);
+	GetChildWriter().Prepare(*state.child_state, &state_p, child_array, child_count, false);
 }
 
 void ArrayColumnWriter::Write(ColumnWriterState &state_p, Vector &vector, idx_t count) {
 	auto &state = state_p.Cast<ListColumnWriterState>();
-	auto array_size = ArrayType::GetSize(vector.GetType());
 	auto &array_child = ArrayVector::GetChildMutable(vector);
-	GetChildWriter().Write(*state.child_state, array_child, count * array_size);
+	Vector child_array(Vector::Ref(array_child));
+	auto child_count = GetValidArrayChildren(vector, child_array, count);
+	GetChildWriter().Write(*state.child_state, child_array, child_count);
 }
 
 } // namespace duckdb

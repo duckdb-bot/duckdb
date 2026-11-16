@@ -317,13 +317,8 @@ optional_ptr<CatalogEntry> ColumnQualifier::QualifyFunction(FunctionExpression &
 	}
 	// the function exists in the system catalog - turn this into a dot call
 	ErrorData error;
-	unique_ptr<ColumnRefExpression> colref;
-	if (function.GetQualifiedName().Catalog().empty()) {
-		colref = make_uniq<ColumnRefExpression>(function.GetQualifiedName().Schema());
-	} else {
-		colref =
-		    make_uniq<ColumnRefExpression>(function.GetQualifiedName().Schema(), function.GetQualifiedName().Catalog());
-	}
+	// the whole qualification names the column, including the fields of a struct ("t.s.f" in "t.s.f.lower()")
+	auto colref = make_uniq<ColumnRefExpression>(function.GetQualifiedName().Parent().Path());
 	auto new_colref = QualifyColumnName(*colref, error);
 	if (!new_colref) {
 		new_colref = std::move(colref);

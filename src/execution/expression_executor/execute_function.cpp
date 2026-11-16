@@ -140,7 +140,15 @@ unique_ptr<ExpressionState> ExpressionExecutor::InitializeState(const BoundFunct
 
 	result->Finalize();
 	if (expr.Function().HasInitStateCallback()) {
-		result->local_state = expr.Function().GetInitStateCallback()(*result, expr, expr.BindInfo().get());
+		try {
+			result->local_state = expr.Function().GetInitStateCallback()(*result, expr, expr.BindInfo().get());
+		} catch (std::exception &ex) {
+			ErrorData error(ex);
+			if (!root.inside_try || !Exception::IsExecutionError(error.Type())) {
+				throw;
+			}
+			result->init_error = std::move(error);
+		}
 	}
 	return std::move(result);
 }
@@ -246,13 +254,16 @@ void ExpressionExecutor::Execute(const BoundFunctionExpression &expr, Expression
 		}
 	}
 	auto &execute_function_state = state->Cast<ExecuteFunctionState>();
+	if (execute_function_state.init_error.HasError()) {
+		execute_function_state.init_error.Throw();
+	}
 	if (all_constant) {
 		// if all arguments are constant temporarily set the child cardinality to 1
 		SetConstantArgumentCardinality(arguments, execute_function_state.constant_argument_buffers);
 	} else {
 		arguments.SetChildCardinality(count);
 	}
-	arguments.Verify(context);
+	arguments.Verify(context.GetDatabase());
 
 	auto dictionary_executed = expr.Function().HasFunctionCallback() && !all_constant &&
 	                           execute_function_state.TryExecuteDictionaryExpression(expr, arguments, *state, result);
@@ -301,13 +312,16 @@ idx_t ExpressionExecutor::Select(const BoundFunctionExpression &expr, Expression
 		}
 	}
 	auto &execute_function_state = state->Cast<ExecuteFunctionState>();
+	if (execute_function_state.init_error.HasError()) {
+		execute_function_state.init_error.Throw();
+	}
 	if (all_constant) {
 		// if all arguments are constant we only need to run the function on one value
 		SetConstantArgumentCardinality(arguments, execute_function_state.constant_argument_buffers);
 	} else {
 		arguments.SetChildCardinality(count);
 	}
-	arguments.Verify(context);
+	arguments.Verify(context.GetDatabase());
 	if (all_constant) {
 		Vector result(LogicalType::BOOLEAN);
 		if (expr.Function().HasFunctionCallback()) {

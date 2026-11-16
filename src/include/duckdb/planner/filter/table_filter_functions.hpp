@@ -9,6 +9,7 @@
 #pragma once
 
 #include "duckdb/common/common.hpp"
+#include "duckdb/common/limits.hpp"
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/common/optional_ptr.hpp"
 #include "duckdb/common/enums/expression_type.hpp"
@@ -93,7 +94,9 @@ struct TableFilterFunctions {
 class BloomFilter {
 public:
 	BloomFilter() = default;
-	void Initialize(ClientContext &context_p, idx_t number_of_rows);
+	//! Cap the bitmap size without reducing its desired bits per key.
+	void Initialize(ClientContext &context_p, idx_t number_of_rows,
+	                idx_t max_bitmap_bytes = NumericLimits<idx_t>::Maximum());
 
 	//! VectorOperations::Hash writes at the source row positions, so the hashes to insert are the ones sel
 	//! points at rather than the first count entries
@@ -122,6 +125,13 @@ public:
 		D_ASSERT(sealed);
 		return useful;
 	}
+	bool IsPublished() const {
+		return published;
+	}
+	//! Marks the filter as handed to a probe-side consumer: it must stay immutable afterwards
+	void MarkPublished() {
+		published = true;
+	}
 
 	static idx_t GetNumberOfSectors(idx_t number_of_rows);
 
@@ -135,11 +145,14 @@ private:
 
 private:
 	idx_t num_sectors;
+	//! Sector capacity of buf_, so an unpublished filter can be reused across recursive iterations
+	idx_t allocated_sectors = 0;
 	uint64_t bitmask; // num_sectors - 1 -> used to get the sector offset
 
 	bool initialized = false;
 	bool sealed = false;
 	bool useful = false;
+	bool published = false;
 	AllocatedData buf_;
 	uint64_t *bf;
 };

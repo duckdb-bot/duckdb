@@ -1,0 +1,122 @@
+# name: test/sql/constraints/check/update_untouched_multi_column_check.test
+# description: an UPDATE that sets none of the columns of a multi column CHECK constraint leaves those columns alone
+# group: [check]
+
+# the referenced key a is part of the CHECK constraint but not of the UPDATE
+statement ok
+CREATE TABLE t (a INTEGER UNIQUE, b INTEGER, c INTEGER, CHECK (a + b < 100));
+
+statement ok
+CREATE TABLE child (a INTEGER REFERENCES t(a));
+
+statement ok
+INSERT INTO t VALUES (1, 2, 3);
+
+statement ok
+INSERT INTO child VALUES (1);
+
+statement ok
+UPDATE t SET c = c + 1 WHERE a = 1;
+
+# the row was updated in place and kept its row id
+query IIII
+SELECT rowid, a, b, c FROM t;
+----
+0	1	2	4
+
+# MERGE INTO binds its updates the same way
+statement ok
+MERGE INTO t USING (SELECT 1 AS a) s ON t.a = s.a WHEN MATCHED THEN UPDATE SET c = c + 1;
+
+query IIII
+SELECT rowid, a, b, c FROM t;
+----
+0	1	2	5
+
+# so does INSERT ... ON CONFLICT DO UPDATE
+statement ok
+INSERT INTO t VALUES (1, 2, 30) ON CONFLICT (a) DO UPDATE SET c = excluded.c;
+
+query IIII
+SELECT rowid, a, b, c FROM t;
+----
+0	1	2	30
+
+# the same with a primary key
+statement ok
+CREATE TABLE pk (a INTEGER PRIMARY KEY, b INTEGER, c INTEGER, CHECK (a + b < 100));
+
+statement ok
+CREATE TABLE pk_child (a INTEGER REFERENCES pk(a));
+
+statement ok
+INSERT INTO pk VALUES (1, 2, 3);
+
+statement ok
+INSERT INTO pk_child VALUES (1);
+
+statement ok
+UPDATE pk SET c = c + 1 WHERE a = 1;
+
+query IIII
+SELECT rowid, a, b, c FROM pk;
+----
+0	1	2	4
+
+# without a referencing table the row is also updated in place instead of deleted and inserted
+statement ok
+CREATE TABLE alone (a INTEGER UNIQUE, b INTEGER, c INTEGER, CHECK (a + b < 100));
+
+statement ok
+INSERT INTO alone VALUES (1, 2, 3);
+
+statement ok
+UPDATE alone SET c = c + 1 WHERE a = 1;
+
+query IIII
+SELECT rowid, a, b, c FROM alone;
+----
+0	1	2	4
+
+# a CHECK constraint whose column is set is still verified with the columns it needs
+statement error
+UPDATE alone SET b = 99 WHERE a = 1;
+----
+CHECK constraint failed on table "alone"
+
+statement ok
+UPDATE alone SET b = 98 WHERE a = 1;
+
+query III
+SELECT a, b, c FROM alone;
+----
+1	98	4
+
+# the columns added for one CHECK constraint can be part of another one, which then needs its columns as well
+statement ok
+CREATE TABLE chained (a INTEGER UNIQUE, b INTEGER, c INTEGER, d INTEGER, CHECK (a + b < 100), CHECK (b + d < 100));
+
+statement ok
+INSERT INTO chained VALUES (1, 2, 3, 4);
+
+# setting a column outside both CHECK constraints leaves all their columns alone
+statement ok
+UPDATE chained SET c = 30 WHERE a = 1;
+
+query IIIII
+SELECT rowid, a, b, c, d FROM chained;
+----
+0	1	2	30	4
+
+statement ok
+UPDATE chained SET d = 10 WHERE a = 1;
+
+query IIII
+SELECT a, b, c, d FROM chained;
+----
+1	2	30	10
+
+statement error
+UPDATE chained SET d = 98 WHERE a = 1;
+----
+CHECK constraint failed on table "chained"

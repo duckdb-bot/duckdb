@@ -4,6 +4,7 @@
 #include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
 #include "duckdb/common/algorithm.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/index_map.hpp"
 #include "duckdb/common/enum_util.hpp"
 #include "duckdb/common/logical_type_info.hpp"
 #include "duckdb/main/database.hpp"
@@ -312,11 +313,33 @@ void TableCatalogEntry::BindUpdateConstraints(Binder &binder, LogicalGet &get, L
 	// suppose we have a constraint CHECK(i + j < 10); now we need both i and j to check the constraint
 	// if we are only updating one of the two columns we add the other one to the UPDATE set
 	// with a "useless" update (i.e. i=i) so we can verify that the CHECK constraint is not violated
+	// a CHECK constraint none of whose columns is updated gets no extra columns, the executor skips it as well
 	auto bound_constraints = binder.BindConstraints(GetConstraints(), name, GetColumns());
-	for (auto &constraint : bound_constraints) {
-		if (constraint->type == ConstraintType::CHECK) {
-			auto &check = constraint->Cast<BoundCheckConstraint>();
-			// check constraint! check if we need to add any extra columns to the UPDATE clause
+	// the CHECK constraints that need a column, by column
+	physical_index_map_t<vector<idx_t>> checks_by_column;
+	for (idx_t constraint_idx = 0; constraint_idx < bound_constraints.size(); constraint_idx++) {
+		auto &constraint = bound_constraints[constraint_idx];
+		if (constraint->type != ConstraintType::CHECK) {
+			continue;
+		}
+		for (auto &column : constraint->Cast<BoundCheckConstraint>().bound_columns) {
+			checks_by_column[column].push_back(constraint_idx);
+		}
+	}
+	// walk the updated columns, including the ones added on the way, since the columns added for one constraint can
+	// be part of another constraint that then needs its columns as well
+	vector<bool> handled_constraints(bound_constraints.size(), false);
+	for (idx_t column_idx = 0; column_idx < update.columns.size(); column_idx++) {
+		auto entry = checks_by_column.find(update.columns[column_idx]);
+		if (entry == checks_by_column.end()) {
+			continue;
+		}
+		for (auto constraint_idx : entry->second) {
+			if (handled_constraints[constraint_idx]) {
+				continue;
+			}
+			handled_constraints[constraint_idx] = true;
+			auto &check = bound_constraints[constraint_idx]->Cast<BoundCheckConstraint>();
 			LogicalUpdate::BindExtraColumns(*this, get, proj, update, check.bound_columns);
 		}
 	}

@@ -1,0 +1,17 @@
+# name: benchmark/micro/cte/materialized_cte_small_producer_join.benchmark
+# description: Join each row of a materialized CTE built from a cross product of small ranges to one row
+# group: [cte]
+
+name Materialized CTE Small Producer Join
+group micro
+subgroup cte
+
+load
+CREATE TABLE rhs AS SELECT j FROM range(6000) r(j);
+
+run
+WITH a AS MATERIALIZED (SELECT i, j FROM range(6000) r(i) CROSS JOIN range(6000) s(j))
+SELECT count(*) FROM a JOIN rhs USING (j);
+
+result I
+36000000

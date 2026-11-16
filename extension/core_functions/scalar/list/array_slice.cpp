@@ -86,6 +86,90 @@ struct StringSliceOperations {
 	}
 };
 
+//! Slices strings that repeat in consecutive rows, as a string that a lambda captures does, remembering the length
+//! and the ASCII check of the last string and where its last slice ended
+struct RepeatedStringSliceOperations {
+	int64_t ValueLength(const string_t &value) {
+		if (value.IsInlined()) {
+			return Length<string_t, int64_t>(value);
+		}
+		if (value.GetData() == last_data && value.GetSize() == last_size) {
+			return last_length;
+		}
+		last_data = value.GetData();
+		last_size = value.GetSize();
+		last_length = Length<string_t, int64_t>(value);
+		last_ascii = AsciiCheck::NOT_CHECKED;
+		ascii_prefix = 0;
+		known_character = 0;
+		known_byte = 0;
+		return last_length;
+	}
+
+	string_t SliceValue(Vector &result, string_t input, int64_t begin, int64_t end) {
+		// the previous row sliced the same string, as when a lambda captures it
+		const bool repeats = input.GetData() == previous_data && input.GetSize() == previous_size;
+		previous_data = input.GetData();
+		previous_size = input.GetSize();
+		if (!repeats || input.IsInlined() || input.GetData() != last_data || input.GetSize() != last_size) {
+			return SubstringUnicode(result, input, begin + 1, end - begin);
+		}
+		// a repeated string is checked for ASCII once, and a string that is not ASCII is searched for the start of
+		// a slice from where the previous slice ended instead of from its start
+		if (last_ascii == AsciiCheck::NOT_CHECKED) {
+			ascii_prefix = FirstNonAscii(last_data, last_size);
+			last_ascii = ascii_prefix == last_size ? AsciiCheck::ASCII : AsciiCheck::NOT_ASCII;
+		}
+		if (last_ascii == AsciiCheck::ASCII) {
+			return SubstringASCII(result, input, begin + 1, end - begin);
+		}
+		auto start_byte = BytePosition(begin);
+		auto end_byte = BytePosition(end);
+		return StringVector::AddString(result, last_data + start_byte, end_byte - start_byte);
+	}
+
+	//! The byte at which a character of the last string starts, or its size past its last character. In the ASCII
+	//! prefix of the string a character is its byte, and a character after the one found before is searched from there
+	idx_t BytePosition(int64_t character) {
+		if (UnsafeNumericCast<idx_t>(character) <= ascii_prefix) {
+			return UnsafeNumericCast<idx_t>(character);
+		}
+		if (character < known_character || known_byte < ascii_prefix) {
+			known_character = UnsafeNumericCast<int64_t>(ascii_prefix);
+			known_byte = ascii_prefix;
+		}
+		while (known_character < character && known_byte < last_size) {
+			known_byte++;
+			while (known_byte < last_size && !IsCharacter(last_data[known_byte])) {
+				known_byte++;
+			}
+			known_character++;
+		}
+		return known_byte;
+	}
+
+	enum class AsciiCheck { NOT_CHECKED, ASCII, NOT_ASCII };
+
+	//! The last string that was not inlined, as inlined strings are copied out of the vector, and its code points
+	const char *last_data = nullptr;
+	idx_t last_size = 0;
+	int64_t last_length = 0;
+	//! The string that the previous row sliced
+	const char *previous_data = nullptr;
+	idx_t previous_size = 0;
+	AsciiCheck last_ascii = AsciiCheck::NOT_CHECKED;
+	//! The bytes at the start of the last string that are ASCII, once it was checked
+	idx_t ascii_prefix = 0;
+	//! A character of the last string and the byte at which it starts
+	int64_t known_character = 0;
+	idx_t known_byte = 0;
+
+	static string_t SliceValueWithSteps(Vector &result, SelectionVector &sel, string_t input, int64_t begin,
+	                                    int64_t end, int64_t step, idx_t &sel_idx) {
+		throw InternalException("Slicing with steps is not supported for strings");
+	}
+};
+
 struct ListSliceOperations {
 	static int64_t ValueLength(const list_entry_t &value) {
 		return UnsafeNumericCast<int64_t>(value.length);
@@ -132,7 +216,7 @@ void ClampIndex(INDEX_TYPE &index, const INPUT_TYPE &value, const INDEX_TYPE len
 }
 
 template <typename INPUT_TYPE, typename INDEX_TYPE, typename OP>
-bool ClampSlice(const INPUT_TYPE &value, INDEX_TYPE &begin, INDEX_TYPE &end) {
+bool ClampSlice(OP &op, const INPUT_TYPE &value, INDEX_TYPE &begin, INDEX_TYPE &end) {
 	// Clamp offsets
 	begin = (begin != 0 && begin != (INDEX_TYPE)NumericLimits<int64_t>::Minimum()) ? begin - 1 : begin;
 
@@ -142,7 +226,7 @@ bool ClampSlice(const INPUT_TYPE &value, INDEX_TYPE &begin, INDEX_TYPE &end) {
 		is_min = true;
 	}
 
-	const auto length = OP::ValueLength(value);
+	const auto length = op.ValueLength(value);
 	if (begin < 0 && -begin > length && end < 0 && end < -length) {
 		begin = 0;
 		end = 0;
@@ -173,6 +257,7 @@ void ExecuteFlatSlice(Vector &result, Vector &list_vector, Vector &begin_vector,
 		sel.Initialize(ListVector::GetListSize(list_vector));
 	}
 
+	OP op;
 	auto result_data = FlatVector::Writer<INPUT_TYPE>(result, count);
 	for (idx_t i = 0; i < count; ++i) {
 		auto list_idx = list_data.sel->get_index(i);
@@ -192,7 +277,7 @@ void ExecuteFlatSlice(Vector &result, Vector &list_vector, Vector &begin_vector,
 
 		auto sliced = UnifiedVectorFormat::GetData<INPUT_TYPE>(list_data)[list_idx];
 		auto begin = begin_is_empty ? 0 : UnifiedVectorFormat::GetData<INDEX_TYPE>(begin_data)[begin_idx];
-		auto end = end_is_empty ? OP::ValueLength(sliced) : UnifiedVectorFormat::GetData<INDEX_TYPE>(end_data)[end_idx];
+		auto end = end_is_empty ? op.ValueLength(sliced) : UnifiedVectorFormat::GetData<INDEX_TYPE>(end_data)[end_idx];
 		auto step = step_vector ? UnifiedVectorFormat::GetData<INDEX_TYPE>(step_data)[step_idx] : 1;
 		if (step == NumericLimits<INDEX_TYPE>::Minimum()) {
 			// the minimum cannot be negated - any step that is at least as large as the list selects the same entry
@@ -202,12 +287,12 @@ void ExecuteFlatSlice(Vector &result, Vector &list_vector, Vector &begin_vector,
 		if (step < 0) {
 			swap(begin, end);
 			begin = end_is_empty ? 0 : begin;
-			end = begin_is_empty ? OP::ValueLength(sliced) : end;
+			end = begin_is_empty ? op.ValueLength(sliced) : end;
 		}
 
 		bool clamp_result = false;
 		if (step_valid || step == 1) {
-			clamp_result = ClampSlice<INPUT_TYPE, INDEX_TYPE, OP>(sliced, begin, end);
+			clamp_result = ClampSlice<INPUT_TYPE, INDEX_TYPE, OP>(op, sliced, begin, end);
 		}
 
 		idx_t length = 0;
@@ -220,9 +305,9 @@ void ExecuteFlatSlice(Vector &result, Vector &list_vector, Vector &begin_vector,
 		if (!clamp_result) {
 			result_data.WriteNull();
 		} else if (!step_vector) {
-			result_data.WriteValue(OP::SliceValue(result, sliced, begin, end));
+			result_data.WriteValue(op.SliceValue(result, sliced, begin, end));
 		} else {
-			result_data.WriteValue(OP::SliceValueWithSteps(result, sel, sliced, begin, end, step, sel_idx));
+			result_data.WriteValue(op.SliceValueWithSteps(result, sel, sliced, begin, end, step, sel_idx));
 		}
 	}
 	if (step_vector) {
@@ -258,11 +343,7 @@ void ArraySliceFunction(DataChunk &args, ExpressionState &state, Vector &result)
 	D_ASSERT(args.data.size() == 3 || args.data.size() == 4);
 	auto count = args.size();
 
-	Vector &list_or_str_vector = result;
-	// this ensures that we do not change the input chunk
-	VectorOperations::Copy(args.data[0], list_or_str_vector, count, 0, 0);
-
-	if (list_or_str_vector.GetType().id() == LogicalTypeId::SQLNULL) {
+	if (result.GetType().id() == LogicalTypeId::SQLNULL) {
 		ConstantVector::SetNull(result, count_t(count));
 		return;
 	}
@@ -281,6 +362,9 @@ void ArraySliceFunction(DataChunk &args, ExpressionState &state, Vector &result)
 	auto end_is_empty = info.end_is_empty;
 	switch (result.GetType().id()) {
 	case LogicalTypeId::LIST: {
+		Vector &list_or_str_vector = result;
+		// this ensures that we do not change the input chunk
+		VectorOperations::Copy(args.data[0], list_or_str_vector, count, 0, 0);
 		// Share the value dictionary as we are just going to slice it
 		if (list_or_str_vector.GetVectorType() != VectorType::FLAT_VECTOR &&
 		    list_or_str_vector.GetVectorType() != VectorType::CONSTANT_VECTOR) {
@@ -291,13 +375,29 @@ void ArraySliceFunction(DataChunk &args, ExpressionState &state, Vector &result)
 		break;
 	}
 	case LogicalTypeId::BLOB:
-		ExecuteSlice<string_t, int64_t, BlobSliceOperations>(result, list_or_str_vector, begin_vector, end_vector,
-		                                                     step_vector, count, begin_is_empty, end_is_empty);
+	case LogicalTypeId::VARCHAR: {
+		// the slices are copied into the result, so a dictionary or constant input, whose strings repeat in its rows
+		// as those of a string that a lambda captures do, is read as it is instead of copying every row's string
+		auto &input = args.data[0];
+		const bool repeats_strings = input.GetVectorType() == VectorType::DICTIONARY_VECTOR ||
+		                             input.GetVectorType() == VectorType::CONSTANT_VECTOR;
+		Vector &strings = repeats_strings ? input : result;
+		if (!repeats_strings) {
+			VectorOperations::Copy(input, strings, count, 0, 0);
+		}
+		if (result.GetType().id() == LogicalTypeId::BLOB) {
+			ExecuteSlice<string_t, int64_t, BlobSliceOperations>(result, strings, begin_vector, end_vector, step_vector,
+			                                                     count, begin_is_empty, end_is_empty);
+		} else if (repeats_strings) {
+			ExecuteSlice<string_t, int64_t, RepeatedStringSliceOperations>(
+			    result, strings, begin_vector, end_vector, step_vector, count, begin_is_empty, end_is_empty);
+		} else {
+			// every row of the copy has its own string, so there is nothing to remember between rows
+			ExecuteSlice<string_t, int64_t, StringSliceOperations>(result, strings, begin_vector, end_vector,
+			                                                       step_vector, count, begin_is_empty, end_is_empty);
+		}
 		break;
-	case LogicalTypeId::VARCHAR:
-		ExecuteSlice<string_t, int64_t, StringSliceOperations>(result, list_or_str_vector, begin_vector, end_vector,
-		                                                       step_vector, count, begin_is_empty, end_is_empty);
-		break;
+	}
 	default:
 		throw NotImplementedException("Specifier type not implemented");
 	}

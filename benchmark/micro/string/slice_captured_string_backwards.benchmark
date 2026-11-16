@@ -1,0 +1,15 @@
+# name: benchmark/micro/string/slice_captured_string_backwards.benchmark
+# description: Slicing a string of 16 MiB that is ASCII up to its last character, which a lambda captures, from its end to its start (duckdblabs/bot-issue-tracker#637)
+# group: [string]
+
+name Slice Captured String (Backwards)
+group string
+
+load
+CREATE TABLE t AS SELECT repeat('x', 16 * 1024 * 1024 - 2) || 'é' AS s;
+
+run
+SELECT count(*), sum(length(p)) FROM (SELECT unnest(list_transform(range(1024, 0, -1), lambda i: s[(i - 1) * 16384 + 1 : i * 16384])) AS p FROM t);
+
+result II
+1024	16777215

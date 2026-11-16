@@ -21,6 +21,7 @@ unique_ptr<ParsedExpression> ColumnAliasBinder::ResolveAlias(ColumnRefExpression
 	if (alias_entry == bind_state.alias_map.end()) {
 		return nullptr;
 	}
+	bind_state.VerifyUnambiguousAlias(colref.ColumnNames().back(), colref, "Alias");
 
 	// We found an alias - bind it
 	return bind_state.BindAlias(alias_entry->second);
@@ -40,6 +41,7 @@ bool ColumnAliasBinder::BindAlias(ExpressionBinder &enclosing_binder, unique_ptr
 	if (alias_entry == bind_state.alias_map.end()) {
 		return false;
 	}
+	bind_state.VerifyUnambiguousAlias(expr.ColumnNames().back(), expr, "Alias");
 
 	if (visited_select_indexes.find(alias_entry->second) != visited_select_indexes.end()) {
 		// self-referential alias cannot be resolved

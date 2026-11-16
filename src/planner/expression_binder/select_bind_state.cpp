@@ -3,6 +3,14 @@
 
 namespace duckdb {
 
+void SelectBindState::VerifyUnambiguousAlias(const Identifier &alias, const ParsedExpression &expr,
+                                             const string &component) const {
+	if (ambiguous_aliases.find(alias) != ambiguous_aliases.end()) {
+		throw BinderException(expr, "%s %s is ambiguous, as several columns of the SELECT list have this alias",
+		                      component, alias);
+	}
+}
+
 unique_ptr<ParsedExpression> SelectBindState::BindAlias(idx_t index) {
 	if (volatile_expressions.find(index) != volatile_expressions.end()) {
 		throw BinderException("Alias %s referenced - but the expression has side "

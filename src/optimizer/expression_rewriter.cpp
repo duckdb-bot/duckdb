@@ -81,6 +81,7 @@ struct RewriteFrame {
 	reference<unique_ptr<Expression>> expr;
 	bool is_root;
 	bool children_visited;
+	bool in_try;
 };
 
 static unique_ptr<Expression> ApplyRule(LogicalOperator &op, const vector<reference<Rule>> &rules,
@@ -124,7 +125,7 @@ unique_ptr<Expression> ExpressionRewriter::ApplyRules(LogicalOperator &op, const
                                                       unique_ptr<Expression> expr, bool &changes_made, bool is_root) {
 	vector<RewriteFrame> stack;
 	vector<reference<unique_ptr<Expression>>> children;
-	stack.push_back({expr, is_root, false});
+	stack.push_back({expr, is_root, false, false});
 
 	while (!stack.empty()) {
 		auto &frame = stack.back();
@@ -134,11 +135,16 @@ unique_ptr<Expression> ExpressionRewriter::ApplyRules(LogicalOperator &op, const
 			frame.children_visited = true;
 			// Rewrite the subtree bottom-up so parent rules see already-simplified children.
 			CollectChildren(*current_expr, children);
+			// TRY and HAS_ERROR capture the errors of their child
+			auto expression_type = current_expr->GetExpressionType();
+			auto children_in_try = frame.in_try || expression_type == ExpressionType::OPERATOR_TRY ||
+			                       expression_type == ExpressionType::OPERATOR_HAS_ERROR;
 			for (idx_t i = children.size(); i > 0; i--) {
-				stack.push_back({children[i - 1], false, false});
+				stack.push_back({children[i - 1], false, false, children_in_try});
 			}
 			continue;
 		}
+		in_try = frame.in_try;
 		bool node_made_change = false;
 		current_expr = ApplyRule(op, rules, std::move(current_expr), node_made_change, frame.is_root);
 		if (node_made_change) {
@@ -192,7 +198,7 @@ void ExpressionRewriter::VisitOperator(LogicalOperator &op) {
 
 void ExpressionRewriter::VisitExpression(unique_ptr<Expression> *expression) {
 	bool changes_made = false;
-	*expression = ExpressionRewriter::ApplyRules(*op, to_apply_rules, std::move(*expression), changes_made, true);
+	*expression = ApplyRules(*op, to_apply_rules, std::move(*expression), changes_made, true);
 }
 
 ClientContext &Rule::GetContext() const {

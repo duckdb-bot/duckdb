@@ -266,9 +266,6 @@ SELECT typeof(CASE WHEN true THEN 1::DECIMAL(38,10) ELSE 1::DECIMAL(38,0) END)
 ----
 type DECIMAL(38,10) is being cast to DECIMAL(38,0), reducing the scale from 10 to 0
 
-statement ok
-RESET warnings_as_errors;
-
 statement error
 SELECT 1::DECIMAL(39,0)
 ----

@@ -1,0 +1,36 @@
+# name: test/optimizer/statistics/statistics_epoch_ms_precision.test
+# description: epoch_ms propagates exact bounds for TIMESTAMP_NS, TIMESTAMP_MS and TIMESTAMP_S columns
+# group: [statistics]
+
+statement ok
+CREATE TABLE ns_finite AS SELECT make_timestamp_ns(n * 1000000) AS ts FROM range(-2, 3) t(n);
+
+statement ok
+CREATE TABLE ms_finite AS SELECT (TIMESTAMP '1970-01-01' + to_milliseconds(n))::TIMESTAMP_MS AS ts FROM range(-2, 3) t(n);
+
+statement ok
+CREATE TABLE s_finite AS SELECT (TIMESTAMP '1970-01-01' + to_seconds(n))::TIMESTAMP_S AS ts FROM range(-2, 3) t(n);
+
+query II
+SELECT s.min, s.max FROM (SELECT stats(epoch_ms(ts)) s FROM ns_finite LIMIT 1);
+----
+-2	2
+
+query II
+SELECT s.min, s.max FROM (SELECT stats(epoch_ms(ts)) s FROM ms_finite LIMIT 1);
+----
+-2	2
+
+query II
+SELECT s.min, s.max FROM (SELECT stats(epoch_ms(ts)) s FROM s_finite LIMIT 1);
+----
+-2000	2000
+
+# an infinity in the column leaves the bounds unknown instead of wrong
+statement ok
+INSERT INTO ms_finite VALUES ('infinity');
+
+query I
+SELECT s.min IS NULL AND s.max IS NULL FROM (SELECT stats(epoch_ms(ts)) s FROM ms_finite LIMIT 1);
+----
+true

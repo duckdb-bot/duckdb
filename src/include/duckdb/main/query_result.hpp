@@ -231,8 +231,8 @@ private:
 	QueryResultState Cancelled();
 	void CompleteInternal(ClientContextLock &lock);
 	//! Ends the query as failed after an exception escaped a call that holds the context lock, and releases the
-	//! context
-	void AbandonAfterThrowInternal(ClientContextLock &lock, ErrorData error);
+	//! context. An exception of an unknown type is passed as null
+	void AbandonAfterThrowInternal(ClientContextLock &lock, optional_ptr<const std::exception> ex);
 	void SettleRetainedInternal(ClientContextLock &lock);
 	//! Ends a query whose retained execution finished and collects its rows
 	QueryResultState EndFinishedInternal(ClientContextLock &lock);

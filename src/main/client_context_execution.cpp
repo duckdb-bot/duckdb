@@ -135,7 +135,13 @@ ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success,
 				if (transaction.GetAutoRollback()) {
 					transaction.Rollback(previous_error);
 				} else {
-					ValidChecker::Invalidate(ActiveTransaction(), "Failed to commit");
+					// the transaction is invalidated also when the message cannot be allocated
+					string message;
+					try {
+						message = "Failed to commit";
+					} catch (...) { // NOLINT
+					}
+					ValidChecker::Invalidate(ActiveTransaction(), std::move(message));
 				}
 			}
 		}
@@ -510,6 +516,12 @@ bool ClientContext::IsActiveResult(ClientContextLock &lock, BaseQueryResult &res
 		return false;
 	}
 	return active_query->IsOpenResult(result);
+}
+
+void ClientContext::ForgetResultInternal(ClientContextLock &lock, BaseQueryResult &result) {
+	if (active_query && active_query->IsOpenResult(result)) {
+		active_query->ClearOpenResult();
+	}
 }
 
 bool ClientContext::ExecutionIsFinished() {

@@ -390,6 +390,8 @@ private:
 	                     bool invalidate_transaction = false);
 	//! Ends the active query as abandoned: nothing it did is committed
 	void AbortInternal(ClientContextLock &lock);
+	//! Forgets a result whose query could not be aborted for lack of memory, so that the next statement aborts it
+	void ForgetResultInternal(ClientContextLock &lock, BaseQueryResult &result);
 	unique_ptr<QueryResult> SubmitStatement(ClientContextLock &lock, unique_ptr<SQLStatement> statement,
 	                                        const QueryParameters &parameters, bool verify, Retention retention);
 	//! Starts a bound statement of the active query. Returns its handle; for a statement of a query that expands

@@ -1,5 +1,5 @@
 # name: test/sql/prepared/prepared_verification_deferred_binding.test
-# description: The prepared statement verification skips a statement its parameters cannot bind, also when the binding waits for the values
+# description: The prepared statement verification keeps ORDER BY positions and navigation offsets constant when the binding waits for the values
 # group: [prepared]
 
 statement ok
@@ -11,7 +11,7 @@ CREATE TABLE t (x INTEGER);
 statement ok
 INSERT INTO t VALUES (1), (2);
 
-# the VALUES parameters leave the statement unbound until the values are known, the ORDER BY position stays a position
+# the VALUES parameters leave the statement unbound until the values are known, the ORDER BY position is no parameter
 query I
 SELECT x FROM (VALUES (1), (2)) v(x) ORDER BY 1;
 ----
@@ -29,13 +29,13 @@ SELECT * FROM t PIVOT(count(*) FOR (x + 1) IN (2)) ORDER BY 1;
 ----
 1
 
-# the offset of a navigation function must stay a constant
+# the offset of a navigation function is bound with the value
 query I
 SELECT v FROM (VALUES (1), (2)) v(x) MATCH_RECOGNIZE (ORDER BY x MEASURES LAST(x, 1) AS v ONE ROW PER MATCH PATTERN (A+) DEFINE A AS true);
 ----
 1
 
-# a statement the parameters bind runs as a prepared statement
+# a statement without such positions runs as a prepared statement
 query I
 SELECT x + 1 FROM t ORDER BY x LIMIT 1;
 ----

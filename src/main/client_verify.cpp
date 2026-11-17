@@ -19,7 +19,6 @@
 #include "duckdb/parser/parsed_expression_iterator.hpp"
 #include "duckdb/parser/statement/execute_statement.hpp"
 #include "duckdb/parser/statement/prepare_statement.hpp"
-#include "duckdb/planner/planner.hpp"
 
 namespace duckdb {
 
@@ -241,23 +240,6 @@ void ClientContext::StatementVerification(ClientContextLock &lock, unique_ptr<SQ
 		auto execute = make_uniq<ExecuteStatement>();
 		execute->name = Identifier(name);
 		execute->named_values = std::move(prep_verifier.values);
-
-		// a parameter whose type the binder cannot resolve leaves the statement unbound until EXECUTE binds it with
-		// the values, so bind the EXECUTE here first: a statement the values cannot bind is not verified either
-		try {
-			RunFunctionInTransactionInternal(lock, [&]() {
-				Planner planner(*this);
-				planner.CreatePlan(execute->Copy());
-			});
-		} catch (std::exception &ex) {
-			error = ErrorData(ex);
-		}
-		if (error.HasError()) {
-			if (error.Type() == ExceptionType::INTERNAL) {
-				error.Throw("Failed to bind the execute during verify: ");
-			}
-			return;
-		}
 
 		ReplaceStatement(statement, std::move(execute));
 	} else if (verification == DebugStatementVerification::EXPLAIN_STATEMENT ||

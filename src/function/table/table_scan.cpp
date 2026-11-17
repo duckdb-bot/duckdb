@@ -808,7 +808,15 @@ unique_ptr<GlobalTableFunctionState> DuckTableScanInitGlobal(ClientContext &cont
 			break;
 		}
 	}
+	if (bind_data.create_index_boundary) {
+		bind_data.create_index_boundary->revert_count = storage.GetRevertCount();
+	}
 	storage.InitializeParallelScan(context, g_state->state, input.column_indexes);
+	if (bind_data.create_index_boundary) {
+		// the index creation adds the rows appended from here on
+		auto &scan_state = g_state->state.scan_state;
+		bind_data.create_index_boundary->row_end = scan_state.max_row - scan_state.row_groups->GetBaseRowId();
+	}
 	g_state->InitializeScanInfo(input);
 	if (!input.CanRemoveFilterColumns()) {
 		return std::move(g_state);

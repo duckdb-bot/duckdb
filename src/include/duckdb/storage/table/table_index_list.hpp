@@ -68,6 +68,8 @@ public:
 	//! types here is refused, or left unbound when skip_mismatched_keys is set, for a read that can do without it.
 	void Bind(ClientContext &context, DataTableInfo &table_info, const optional<string> &index_type = {},
 	          bool skip_mismatched_keys = false);
+	//! Throws if the database file holds no data for one of the indexes, which then cannot be kept up to date.
+	void ThrowIfStorageMissing(DataTableInfo &table_info) const;
 	//! Returns true, if there are no index entries.
 	bool Empty() const {
 		return Count() == 0;

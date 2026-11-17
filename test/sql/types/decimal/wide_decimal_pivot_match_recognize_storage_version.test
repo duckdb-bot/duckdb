@@ -79,7 +79,7 @@ SELECT v FROM old.vm ORDER BY v;
 1.0000
 2.0000
 
-# from storage version v2.0.0 the query is stored as text the reader binds itself, so the wide casts are allowed
+# from storage version v2.0.0 a cast stores a type expression the reader binds itself, so the wide casts are allowed
 statement ok
 ATTACH '{TEST_DIR}/wide_decimal_pivot_v200.db' AS new (STORAGE_VERSION 'v2.0.0');
 

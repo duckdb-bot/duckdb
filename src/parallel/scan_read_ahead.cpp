@@ -219,8 +219,10 @@ ScanReadAhead::ScanReadAhead(ClientContext &context, ScanReadAheadPolicy policy,
                              idx_t shard_count, idx_t scan_concurrency)
     : context(context), prefetch_enabled(prefetch_enabled_p),
       job_window(JobWindow(policy, read_ahead_depth, scan_concurrency)), memory_governor(std::move(memory_governor_p)),
-      open_window(MaxValue<idx_t>(TaskScheduler::GetScheduler(context).NumberOfAsyncThreads() * 2,
-                                  memory_governor ? 0 : read_ahead_depth)),
+      // without prefetch no file is opened ahead, and sizing the window must not launch the async threads
+      open_window(prefetch_enabled_p ? MaxValue<idx_t>(TaskScheduler::GetScheduler(context).NumberOfAsyncThreads() * 2,
+                                                       memory_governor ? 0 : read_ahead_depth)
+                                     : 0),
       open_file_budget(GetOpenFileBudget(context)),
       affinity(policy == ScanReadAheadPolicy::AFFINITY ? make_uniq<ScanAffinityQueue>(shard_count) : nullptr) {
 	D_ASSERT(read_ahead_depth > 0);

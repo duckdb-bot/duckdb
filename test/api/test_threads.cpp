@@ -286,6 +286,29 @@ TEST_CASE("Test async threads are launched on their first use", "[api]") {
 	REQUIRE(NewThreadCount(threads_before) >= 16);
 }
 
+TEST_CASE("Test a parallel scan of a persistent table does not launch the async threads", "[api]") {
+	const auto threads_before = ProcessThreadIds();
+	const auto path = TestCreatePath("async_threads_persistent_scan.db");
+	DeleteDatabase(path);
+	DBConfig config;
+	Settings::Set<ThreadsSetting>(config, SetScope::GLOBAL, Value::BIGINT(4));
+	Settings::Set<AsyncThreadsSetting>(config, SetScope::GLOBAL, Value::BIGINT(16));
+	DuckDB db(path, &config);
+	Connection con(db);
+	// the parallel scan of a table in a local file takes the affinity policy without prefetch
+	REQUIRE_NO_FAIL(con.Query("PRAGMA verify_parallelism"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE t AS SELECT range AS i FROM range(1000000)"));
+	REQUIRE_NO_FAIL(con.Query("CHECKPOINT"));
+	auto result = con.Query("SELECT count(*) FROM t WHERE i % 7 = 3");
+	REQUIRE(CHECK_COLUMN(result, 0, {Value::BIGINT(142857)}));
+	auto &scheduler = TaskScheduler::GetScheduler(*con.context);
+	REQUIRE(scheduler.NumberOfLaunchedAsyncThreads() == 0);
+	REQUIRE(NewThreadCount(threads_before) < 16);
+
+	REQUIRE(scheduler.NumberOfAsyncThreads() == 16);
+	REQUIRE(NewThreadCount(threads_before) >= 16);
+}
+
 TEST_CASE("Test idle memory reclamation does not launch the async threads", "[api]") {
 	const auto threads_before = ProcessThreadIds();
 	DBConfig config;

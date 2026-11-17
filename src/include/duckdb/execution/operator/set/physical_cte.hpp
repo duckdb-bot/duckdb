@@ -50,6 +50,7 @@ public:
 	bool ParallelSource() const override;
 
 	InsertionOrderPreservingMap<string> ParamsToString() const override;
+	void InitializeOutputChunk(Allocator &allocator, DataChunk &chunk) const override;
 
 public:
 	TableIndex cte_index;

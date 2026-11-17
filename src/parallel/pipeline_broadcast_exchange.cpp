@@ -45,9 +45,14 @@ struct PipelineBroadcastExchange::ChunkPool : public enable_shared_from_this<Pip
 			}
 		}
 
+		if (result && result->GetCapacity() < source.size()) {
+			// a pooled chunk holds only as many rows as it was made for
+			result.reset();
+		}
 		if (!result) {
+			// sized to the source, so a small chunk of wide rows does not take the memory of a full vector
 			result = make_uniq<DataChunk>();
-			result->Initialize(allocator, types);
+			result->Initialize(allocator, types, MinValue<idx_t>(NextPowerOfTwo(source.size()), STANDARD_VECTOR_SIZE));
 		} else if (reset_mode == ResetMode::RESET) {
 			result->Reset();
 		} else {
@@ -104,6 +109,8 @@ struct PipelineBroadcastExchange::BroadcastSpoolReader {
 
 	ColumnDataScanState scan_state;
 	DataChunk scan_chunk;
+	//! Holds the rows of a chunk that spans several scan chunks, initialized when first needed
+	DataChunk gather_chunk;
 	idx_t observed_generation = 0;
 };
 
@@ -152,15 +159,21 @@ struct PipelineBroadcastExchange::BroadcastSpool {
 			return;
 		}
 
+		// gather the rows in a chunk of the reader, so the result only references them and needs no buffers
+		if (reader.gather_chunk.ColumnCount() == 0) {
+			collection.InitializeScanChunk(reader.gather_chunk);
+		}
+		reader.gather_chunk.Reset();
 		idx_t rows_read = 0;
 		while (rows_read < entry.row_count) {
 			row_idx = entry.row_offset + rows_read;
 			offset = Seek(position, entry, row_idx, reader);
 			auto append_count = MinValue<idx_t>(reader.scan_chunk.size() - offset, entry.row_count - rows_read);
 			auto sel = SelectionVector::Incremental(offset, append_count);
-			result.Append(reader.scan_chunk, sel, append_count);
+			reader.gather_chunk.Append(reader.scan_chunk, sel, append_count);
 			rows_read += append_count;
 		}
+		result.Reference(reader.gather_chunk);
 	}
 
 	idx_t RetireBefore(idx_t position) DUCKDB_EXCLUDES(lock) {

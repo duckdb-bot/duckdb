@@ -1254,7 +1254,8 @@ void RemotePushdownOptimizer::CheckCastType(const TypeExpression &type_expr) {
 	// autoload extensions, whose types the server can have
 	if (!type_expr.GetCatalog().empty()) {
 		auto catalog = Catalog::GetCatalogEntry(binder.context, type_expr.GetCatalog());
-		if (catalog && !catalog->IsSystemCatalog() && !catalog->Supports(RemoteCapability::EXECUTE_QUERY_NODE)) {
+		if (!catalog || (!catalog->IsSystemCatalog() && !catalog->Supports(RemoteCapability::EXECUTE_QUERY_NODE))) {
+			// a first component that is not a catalog starts a nested schema path, which is not resolved here
 			MarkStaysWithParent();
 		}
 	} else if (!type_expr.GetSchema().empty()) {
@@ -1268,9 +1269,10 @@ void RemotePushdownOptimizer::CheckCastType(const TypeExpression &type_expr) {
 			if (!catalog || catalog->IsSystemCatalog()) {
 				continue;
 			}
-			EntryLookupInfo type_lookup(
-			    CatalogType::TYPE_ENTRY,
-			    QualifiedName(catalog->GetName(), local_entry.GetSchema(), type_expr.GetTypeName()));
+			// the search path entry can name a nested schema, which is looked up as a path
+			EntryLookupInfo type_lookup(CatalogType::TYPE_ENTRY,
+			                            QualifiedName::FromCatalogSchema(
+			                                catalog->GetName(), local_entry.GetSchemaPath(), type_expr.GetTypeName()));
 			if (catalog->LookupEntry(retriever, type_lookup, OnEntryNotFound::RETURN_NULL).Found()) {
 				MarkStaysWithParent();
 				break;

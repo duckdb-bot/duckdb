@@ -533,5 +533,42 @@ SELECT v FROM (SELECT [id::VARCHAR]::temp.local_enum[] AS v FROM r.tbl) s, local
 [9]
 [10]
 
+# a type of a nested schema in the search path is found under its schema path
+statement ok
+CREATE SCHEMA outer_schema;
+
+statement ok
+CREATE SCHEMA outer_schema.inner_schema;
+
+statement ok
+SET schema = 'outer_schema.inner_schema';
+
+statement ok
+CREATE TYPE nested_int AS BIGINT;
+
+query II
+EXPLAIN SELECT v FROM (SELECT max(id::nested_int) AS v FROM r.tbl) s, main.local_tbl;
+----
+physical_plan	<REGEX>:.*Ungrouped Aggregate.*
+
+query I
+SELECT v FROM (SELECT max(id::nested_int) AS v FROM r.tbl) s, main.local_tbl;
+----
+10
+
+statement ok
+RESET schema;
+
+# the type named by its nested schema path keeps the subquery local as well
+query II
+EXPLAIN SELECT v FROM (SELECT max(id::outer_schema.inner_schema.nested_int) AS v FROM r.tbl) s, local_tbl;
+----
+physical_plan	<REGEX>:.*Ungrouped Aggregate.*
+
+query I
+SELECT v FROM (SELECT max(id::outer_schema.inner_schema.nested_int) AS v FROM r.tbl) s, local_tbl;
+----
+10
+
 statement ok
 CALL quack_stop('quack:127.0.0.1:9619');

@@ -448,8 +448,8 @@ void StorageManager::CheckQueryDecimalsAreSupported(QueryNode &node) const {
 		return;
 	}
 	// the walker leaves the pivot expressions, the entries of a PIVOT IN list and the input of a MATCH_RECOGNIZE to
-	// its callers, as the binders of these positions take no parameters, which the prepared statement verification
-	// makes of the constants the walker hands out
+	// its callers, since the prepared statement verification replaces the constants of everything it hands out by
+	// parameters, which fails in these positions
 	std::function<void(unique_ptr<ParsedExpression> &)> expr_callback = [&](unique_ptr<ParsedExpression> &child) {
 		CheckExpressionDecimalsAreSupported(*child);
 	};
@@ -471,7 +471,12 @@ void StorageManager::CheckQueryDecimalsAreSupported(QueryNode &node) const {
 		case TableReferenceType::MATCH_RECOGNIZE: {
 			auto &input = ref.Cast<MatchRecognizeRef>().input;
 			if (input) {
-				ParsedExpressionIterator::EnumerateTableRefChildren(*input, expr_callback, ref_callback);
+				// the walker calls this callback for the input itself, this walks the children of the input once
+				ParsedExpressionIterator::EnumerateTableRefChildren(*input, expr_callback, [&](TableRef &child) {
+					if (&child != input.get()) {
+						ref_callback(child);
+					}
+				});
 			}
 			break;
 		}

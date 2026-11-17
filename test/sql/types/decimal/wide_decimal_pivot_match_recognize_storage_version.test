@@ -29,6 +29,12 @@ CREATE VIEW old.vm AS SELECT v FROM (SELECT CAST(x AS DECIMAL(50,4)) AS d FROM o
 ----
 DECIMAL columns wider than 38 digits are not supported in storage versions prior to v2.1.0
 
+# a wide cast two MATCH_RECOGNIZE inputs deep
+statement error
+CREATE VIEW old.vm AS SELECT v FROM (SELECT d FROM (SELECT CAST(x AS DECIMAL(50,4)) AS d FROM old.t) s1 MATCH_RECOGNIZE (MEASURES first(d) AS d ONE ROW PER MATCH PATTERN (A) DEFINE A AS true)) s2 MATCH_RECOGNIZE (MEASURES first(d) AS v ONE ROW PER MATCH PATTERN (A) DEFINE A AS true);
+----
+DECIMAL columns wider than 38 digits are not supported in storage versions prior to v2.1.0
+
 # the same in a table macro
 statement error
 CREATE MACRO old.m() AS TABLE PIVOT old.t ON (x::VARCHAR || CAST(1 AS DECIMAL(50,4))::VARCHAR) IN ('11.0000') USING count(*);

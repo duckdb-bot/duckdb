@@ -792,6 +792,38 @@ TEST_CASE("Prepared CREATE VIEW stores the values of its parameters", "[api]") {
 	REQUIRE(CHECK_COLUMN(result, 0, {3}));
 }
 
+TEST_CASE("Prepared CREATE VIEW checks the types of its parameter values against the storage version", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	auto path = TestCreatePath("prepared_view_parameters_v1_4_0.db");
+	DeleteDatabase(path);
+	REQUIRE_NO_FAIL(con.Query("ATTACH '" + path + "' AS old (STORAGE_VERSION 'v1.4.0')"));
+	// a parameter value of a decimal wider than 38 digits is refused like an explicit cast to that type
+	REQUIRE_FAIL(con.Query("CREATE VIEW old.v AS SELECT CAST(1 AS DECIMAL(50, 4)) AS c"));
+	auto wide = Value("1").DefaultCastAs(LogicalType::DECIMAL(50, 4));
+	auto result = con.Query("CREATE VIEW old.v AS SELECT ? AS c", wide);
+	REQUIRE(result->HasError());
+	REQUIRE(StringUtil::Contains(result->GetError(), "storage versions prior to v2.1.0"));
+	result = con.Query("SELECT count(*) FROM duckdb_views() WHERE database_name = 'old'");
+	REQUIRE(CHECK_COLUMN(result, 0, {0}));
+	// a value within 38 digits is stored
+	auto narrow = Value("1").DefaultCastAs(LogicalType::DECIMAL(18, 4));
+	REQUIRE_NO_FAIL(con.Query("CREATE VIEW old.n AS SELECT ? AS c", narrow));
+	result = con.Query("SELECT typeof(c), c::VARCHAR FROM old.n");
+	REQUIRE(CHECK_COLUMN(result, 0, {"DECIMAL(18,4)"}));
+	REQUIRE(CHECK_COLUMN(result, 1, {"1.0000"}));
+	// a view whose binding is deferred stores its values before they are checked as well
+	auto deferred = con.Prepare("CREATE VIEW old.d WITH (DEFER_BINDING) AS SELECT ? AS c FROM missing_table");
+	REQUIRE(!deferred->HasError());
+	result = deferred->Execute(wide);
+	REQUIRE(result->HasError());
+	REQUIRE(StringUtil::Contains(result->GetError(), "storage versions prior to v2.1.0"));
+	REQUIRE_NO_FAIL(deferred->Execute(narrow));
+	result = con.Query("SELECT view_name FROM duckdb_views() WHERE database_name = 'old' ORDER BY view_name");
+	REQUIRE(result->RowCount() == 2);
+	REQUIRE(CHECK_COLUMN(result, 0, {"d", "n"}));
+}
+
 static atomic<idx_t> execute_pre_binds {0};
 static atomic<idx_t> post_binds {0};
 

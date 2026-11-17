@@ -444,23 +444,28 @@ struct ViewParameterReplacer {
 	}
 };
 
+//! Stores the values of the positional parameters of a prepared statement in the query of the view
+static void StoreViewParameterValues(Binder &binder, CreateViewInfo &base) {
+	auto parameters = binder.GetParameters();
+	if (!parameters || !base.query) {
+		return;
+	}
+	ViewParameterReplacer finder {parameters->GetParameterData(), false};
+	finder.Visit(*base.query->node);
+	if (!finder.found) {
+		return;
+	}
+	ViewParameterReplacer replacer {parameters->GetParameterData(), true};
+	replacer.Visit(*base.query->node);
+	base.sql = base.ToString();
+}
+
 void Binder::BindCreateViewInfo(CreateViewInfo &base) {
 	// references to the view's own catalog are resolved through the view's search path anyway - drop the qualifier so
 	// the view keeps working when the database is attached under a different alias
 	auto &view_catalog = base.GetQualifiedName().Catalog();
 	if (base.query && !view_catalog.empty()) {
 		RemotePushdownOptimizer::StripCatalogName(*base.query, view_catalog);
-	}
-	auto parameters = GetParameters();
-	if (parameters) {
-		// the view stores the values of the positional parameters of a prepared statement
-		ViewParameterReplacer finder {parameters->GetParameterData(), false};
-		finder.Visit(*base.query->node);
-		if (finder.found) {
-			ViewParameterReplacer replacer {parameters->GetParameterData(), true};
-			replacer.Visit(*base.query->node);
-			base.sql = base.ToString();
-		}
 	}
 	if (base.binding_mode == CreateViewBindingMode::SKIP_BINDING) {
 		return;
@@ -1039,6 +1044,8 @@ BoundStatement Binder::Bind(CreateStatement &stmt) {
 				base.binding_mode = CreateViewBindingMode::SKIP_BINDING;
 			}
 		}
+		// the values of the parameters become constants of the stored query, so they are checked with it
+		StoreViewParameterValues(*this, base);
 		if (base.query && !base.temporary) {
 			// the query of the view is stored, so a cast in it may not target a decimal wider than the database stores
 			auto &attached = schema.ParentCatalog().GetAttached();

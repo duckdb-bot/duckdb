@@ -134,7 +134,7 @@ public:
 			op.function.initialize_operator(*new_global_state, op);
 		}
 		unique_ptr<CopyToFileInfo> new_written_file_info;
-		if (op.return_type == CopyFunctionReturnType::WRITTEN_FILE_STATISTICS) {
+		if (GetCopyFunctionBaseReturnType(op.return_type) == CopyFunctionReturnType::WRITTEN_FILE_STATISTICS) {
 			new_written_file_info = make_uniq<CopyToFileInfo>(op.file_path);
 			new_written_file_info->file_stats = make_uniq<CopyFunctionFileStatistics>();
 			op.function.copy_to_get_written_statistics(context, *op.bind_data, *new_global_state,
@@ -422,6 +422,10 @@ void PhysicalBatchCopyToFile::AddRawBatchData(ClientContext &context, GlobalSink
 
 static bool CorrectSizeForBatch(const ColumnDataCollection &batch, const optional_idx &batch_size,
                                 const optional_idx &batch_size_bytes) {
+	if (!batch_size.IsValid()) {
+		// no row target (only ROW_GROUP_SIZE_BYTES): the byte target alone decides
+		return CopyFunctionBatchAnalyzer(batch, batch_size, batch_size_bytes).IsAcceptable();
+	}
 	if (batch_size.GetIndex() == 0) {
 		// a batch size of 0 indicates we are happy with any batch size
 		return true;
@@ -711,7 +715,8 @@ SourceResultType PhysicalBatchCopyToFile::GetDataInternal(ExecutionContext &cont
                                                           OperatorSourceInput &input) const {
 	auto &g = sink_state->Cast<FixedBatchCopyGlobalState>();
 	auto fp = use_tmp_file ? PhysicalCopyToFile::GetNonTmpFile(context.client, file_path) : file_path;
-	switch (return_type) {
+	auto return_column_types = CopyFunctionReturnsColumnTypes(return_type);
+	switch (GetCopyFunctionBaseReturnType(return_type)) {
 	case CopyFunctionReturnType::CHANGED_ROWS:
 		chunk.data[0].Append(Value::BIGINT(NumericCast<int64_t>(g.rows_copied.load())));
 		break;
@@ -727,7 +732,10 @@ SourceResultType PhysicalBatchCopyToFile::GetDataInternal(ExecutionContext &cont
 	case CopyFunctionReturnType::WRITTEN_FILE_STATISTICS: {
 		if (g.written_file_info) {
 			g.written_file_info->file_path = std::move(fp);
-			PhysicalCopyToFile::ReturnStatistics(chunk, *g.written_file_info);
+			PhysicalCopyToFile::ReturnStatistics(context.client.GetContext(), chunk, *g.written_file_info);
+		} else if (return_column_types) {
+			// WRITE_EMPTY_FILE false writes no file without rows
+			PhysicalCopyToFile::ReturnNoFileStatistics(chunk);
 		}
 		break;
 	}
@@ -735,6 +743,9 @@ SourceResultType PhysicalBatchCopyToFile::GetDataInternal(ExecutionContext &cont
 		throw NotImplementedException("Unknown CopyFunctionReturnType");
 	}
 
+	if (return_column_types) {
+		PhysicalCopyToFile::ReturnColumnTypes(chunk, query_names, query_types);
+	}
 	return SourceResultType::FINISHED;
 }
 

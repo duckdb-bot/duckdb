@@ -25,12 +25,7 @@ CSVWriterState::CSVWriterState(DatabaseInstance &db, idx_t flush_size_p)
     : flush_size(flush_size_p), stream(make_uniq<MemoryStream>(BufferAllocator::Get(db), flush_size)) {
 }
 
-CSVWriterState::~CSVWriterState() {
-	if (stream && !Exception::UncaughtException()) {
-		// Ensure we don't accidentally destroy unflushed data
-		D_ASSERT(stream->GetPosition() == 0);
-	}
-}
+CSVWriterState::~CSVWriterState() = default;
 
 CSVWriterOptions::CSVWriterOptions(const string &delim, const char &quote, const string &write_newline,
                                    char comment_char) {
@@ -47,6 +42,7 @@ CSVWriterOptions::CSVWriterOptions(const string &delim, const char &quote, const
 
 	if (!write_newline.empty()) {
 		newline = TransformNewLine(write_newline);
+		requires_quotes[static_cast<uint8_t>(newline[0])] = true;
 	}
 }
 

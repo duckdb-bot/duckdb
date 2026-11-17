@@ -118,9 +118,10 @@ public:
 	void CreateNewCollection(ClientContext &context, DuckTableEntry &table_entry,
 	                         const vector<LogicalType> &insert_types) {
 		if (!optimistic_writer) {
-			optimistic_writer = make_uniq<OptimisticDataWriter>(context, table_entry.GetStorage());
+			optimistic_writer = make_uniq<OptimisticDataWriter>(table_entry.GetStorage());
 		}
-		auto collection = optimistic_writer->CreateCollection(table_entry.GetStorage(), insert_types);
+		auto collection =
+		    optimistic_writer->CreateCollection(context.GetContext(), table_entry.GetStorage(), insert_types);
 		auto &row_collection = *collection->collection;
 		row_collection.InitializeEmpty();
 		row_collection.InitializeAppend(current_append_state);
@@ -149,7 +150,7 @@ public:
 
 		// Merge the collections.
 		if (!l_state.optimistic_writer) {
-			l_state.optimistic_writer = make_uniq<OptimisticDataWriter>(context, g_state.table.GetStorage());
+			l_state.optimistic_writer = make_uniq<OptimisticDataWriter>(g_state.table.GetStorage());
 		}
 		auto result_collection_index = g_state.MergeCollections(context, merge_collections, *l_state.optimistic_writer);
 		merge_collections.clear();
@@ -303,7 +304,7 @@ void BatchInsertGlobalState::AddCollection(ClientContext &context, const idx_t b
 	auto new_count = collection.GetTotalRows();
 	auto batch_type = new_count < row_group_size ? RowGroupBatchType::NOT_FLUSHED : RowGroupBatchType::FLUSHED;
 	if (batch_type == RowGroupBatchType::FLUSHED && writer) {
-		writer->WriteUnflushedRowGroups(optimistic_collection);
+		writer->WriteUnflushedRowGroups(context.GetContext(), optimistic_collection);
 	}
 	annotated_lock_guard<annotated_mutex> l(lock);
 	insert_count += new_count;
@@ -488,7 +489,8 @@ SinkResultType PhysicalBatchInsert::Sink(ExecutionContext &context, DataChunk &i
 	auto flushed_row_group_idx = collection.Append(insert_chunk, lstate.current_append_state);
 	if (flushed_row_group_idx.IsValid()) {
 		// we have already written to disk - flush the next row group as well
-		lstate.optimistic_writer->WriteNewRowGroup(optimistic_collection, flushed_row_group_idx.GetIndex());
+		lstate.optimistic_writer->WriteNewRowGroup(context.client.GetContext(), optimistic_collection,
+		                                           flushed_row_group_idx.GetIndex());
 	}
 	return SinkResultType::NEED_MORE_INPUT;
 }
@@ -521,7 +523,7 @@ SinkCombineResultType PhysicalBatchInsert::Combine(ExecutionContext &context, Op
 	if (lstate.optimistic_writer) {
 		annotated_lock_guard<annotated_mutex> l(gstate.lock);
 		auto &optimistic_writer = gstate.table.GetStorage().GetOptimisticWriter(context.client);
-		optimistic_writer.Merge(*lstate.optimistic_writer);
+		optimistic_writer.Merge(context.client.GetContext(), *lstate.optimistic_writer);
 	}
 
 	// unblock any blocked tasks
@@ -578,7 +580,7 @@ SinkFinalizeType PhysicalBatchInsert::Finalize(Pipeline &pipeline, Event &event,
 		// now that we have created all of the mergers, perform the actual merging
 		vector<PhysicalIndex> final_collections;
 		final_collections.reserve(mergers.size());
-		auto writer = make_uniq<OptimisticDataWriter>(context, data_table);
+		auto writer = make_uniq<OptimisticDataWriter>(data_table);
 		for (auto &merger : mergers) {
 			final_collections.push_back(merger->Flush(*writer));
 		}
@@ -591,8 +593,8 @@ SinkFinalizeType PhysicalBatchInsert::Finalize(Pipeline &pipeline, Event &event,
 		}
 
 		auto &optimistic_writer = data_table.GetOptimisticWriter(context);
-		optimistic_writer.Merge(*writer);
-		optimistic_writer.FinalFlush();
+		optimistic_writer.Merge(context.GetContext(), *writer);
+		optimistic_writer.FinalFlush(context.GetContext());
 		memory_manager.FinalCheck();
 		if (g_state.deferred_foreign_keys) {
 			// every row of the statement is in the transaction-local storage now

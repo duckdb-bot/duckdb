@@ -9,6 +9,7 @@
 #pragma once
 
 #include "duckdb/common/mutex.hpp"
+#include "duckdb/common/optional_ptr.hpp"
 #include "duckdb/common/types/column/column_data_collection.hpp"
 #include "duckdb/common/unordered_map.hpp"
 #include "duckdb/common/vector.hpp"
@@ -20,6 +21,7 @@
 
 namespace duckdb {
 class ColumnSegment;
+class Context;
 class DataTable;
 class LocalTableStorage;
 class RowGroup;
@@ -138,6 +140,8 @@ struct ConstraintState {
 struct LocalAppendState {
 	TableAppendState append_state;
 	LocalTableStorage *storage;
+	//! The context of the operation that appends (the local storage can outlive the connection that created it)
+	optional_ptr<Context> context;
 	unique_ptr<ConstraintState> constraint_state;
 };
 

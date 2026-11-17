@@ -102,6 +102,12 @@ void ParsedExpressionIterator::EnumerateTableRefChildren(
 		for (auto &aggr : p_ref.aggregates) {
 			expr_callback(aggr);
 		}
+		// the entries of the IN lists are not expressions of the query, the binder folds them to the pivot values
+		for (auto &pivot : p_ref.pivots) {
+			for (auto &pivot_expr : pivot.pivot_expressions) {
+				expr_callback(pivot_expr);
+			}
+		}
 		break;
 	}
 	case TableReferenceType::SUBQUERY: {
@@ -132,7 +138,7 @@ void ParsedExpressionIterator::EnumerateTableRefChildren(
 			expr_callback(mr_ref.config->pattern);
 		}
 		if (mr_ref.input) {
-			ref_callback(*mr_ref.input);
+			EnumerateTableRefChildren(*mr_ref.input, expr_callback, ref_callback);
 		}
 		break;
 	}

@@ -19,9 +19,12 @@ namespace duckdb {
 //===--------------------------------------------------------------------===//
 class TableFunctionMultiFileGlobalState : public GlobalTableFunctionState {
 public:
-	//! The operator the files are scanned for, and the files that scan reads
+	explicit TableFunctionMultiFileGlobalState(const MultiFileList &file_list_p) : file_list(file_list_p) {
+	}
+
+	//! The operator and file list of the scan
 	optional_ptr<const PhysicalOperator> op;
-	optional_ptr<const MultiFileList> file_list;
+	const MultiFileList &file_list;
 	//! What the wrapped function has reported for the files of this scan - collected whenever a file may have
 	//! counted more, so that a reader can be released without losing what it counted.
 	//! "scanned" is handed over and cleared on every report - the profiler sums what each thread reports, so a
@@ -674,9 +677,8 @@ void TableFunctionMultiFileWrapper::BindReader(ClientContext &context, vector<Lo
 unique_ptr<GlobalTableFunctionState>
 TableFunctionMultiFileWrapper::InitializeGlobalState(ClientContext &, MultiFileBindData &,
                                                      MultiFileGlobalState &global_state) {
-	auto result = make_uniq<TableFunctionMultiFileGlobalState>();
+	auto result = make_uniq<TableFunctionMultiFileGlobalState>(global_state.file_list);
 	result->op = global_state.op;
-	result->file_list = global_state.file_list;
 	return std::move(result);
 }
 

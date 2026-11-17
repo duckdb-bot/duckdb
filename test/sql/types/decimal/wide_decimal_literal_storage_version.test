@@ -37,6 +37,17 @@ CREATE VIEW old.vcast AS SELECT CAST(1 AS DECIMAL(50,4)) AS c;
 ----
 DECIMAL columns wider than 38 digits are not supported in storage versions prior to v2.1.0
 
+# a view whose binding is deferred is stored all the same
+statement error
+CREATE VIEW old.vdefer WITH (DEFER_BINDING) AS SELECT 123456789012345678901234567890123456789012.1234 AS c;
+----
+DECIMAL literals wider than 38 digits are not supported in storage versions prior to v2.0.0
+
+statement error
+CREATE VIEW old.vdefer WITH (DEFER_BINDING) AS SELECT CAST(1 AS DECIMAL(50,4)) AS c;
+----
+DECIMAL columns wider than 38 digits are not supported in storage versions prior to v2.1.0
+
 # a literal that fits 38 digits is stored as it is
 statement ok
 CREATE VIEW old.vfit AS SELECT 1234567890123456789012345678901234.1234 AS c;

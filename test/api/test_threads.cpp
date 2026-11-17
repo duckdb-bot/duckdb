@@ -82,16 +82,14 @@ TEST_CASE("Test database maximum_threads argument", "[api]") {
 	// but we can set another value
 	{
 		DBConfig config;
-		config.options.maximum_threads = 10;
+		Settings::Set<ThreadsSetting>(config, SetScope::GLOBAL, Value::BIGINT(10));
 		DuckDB db(nullptr, &config);
 		REQUIRE(db.NumberOfThreads() == 10);
 	}
 	// zero is not erlaubt
 	{
 		DBConfig config;
-		config.options.maximum_threads = 0;
-		DuckDB db;
-		REQUIRE_THROWS(db = DuckDB(nullptr, &config));
+		REQUIRE_THROWS(config.SetOptionByName("threads", Value::BIGINT(0)));
 	}
 }
 
@@ -102,7 +100,7 @@ TEST_CASE("Test external threads", "[api]") {
 	auto options = config.GetOptions();
 
 	con.Query("SET threads=13");
-	REQUIRE(config.options.maximum_threads == 13);
+	REQUIRE(Settings::Get<ThreadsSetting>(config) == 13);
 	REQUIRE(db.NumberOfThreads() == 13);
 	con.Query("SET external_threads=13");
 	REQUIRE(Settings::Get<ExternalThreadsSetting>(config) == 13);
@@ -130,7 +128,7 @@ TEST_CASE("Test external threads", "[api]") {
 
 	con.Query("RESET threads");
 	auto file_system = make_uniq<VirtualFileSystem>();
-	REQUIRE(config.options.maximum_threads == DBConfig().GetSystemMaxThreads(*file_system));
+	REQUIRE(NumericCast<idx_t>(Settings::Get<ThreadsSetting>(config)) == DBConfig().GetSystemMaxThreads(*file_system));
 	REQUIRE(db.NumberOfThreads() == DBConfig().GetSystemMaxThreads(*file_system));
 }
 
@@ -211,7 +209,7 @@ private:
 // SQL cannot supply a sink callback that raises the accumulated source/operator limit.
 TEST_CASE("Pipeline sink thread limits cannot raise source or operator caps", "[api]") {
 	DBConfig config;
-	config.options.maximum_threads = 8;
+	Settings::Set<ThreadsSetting>(config, SetScope::GLOBAL, Value::BIGINT(8));
 	DuckDB db(nullptr, &config);
 	Connection con(db);
 	Executor executor(*con.context);
@@ -274,8 +272,8 @@ static idx_t NewThreadCount(const unordered_set<string> &threads_before) {
 TEST_CASE("Test async threads are launched on their first use", "[api]") {
 	const auto threads_before = ProcessThreadIds();
 	DBConfig config;
-	config.options.maximum_threads = 1;
-	config.options.async_threads = 16;
+	Settings::Set<ThreadsSetting>(config, SetScope::GLOBAL, Value::BIGINT(1));
+	Settings::Set<AsyncThreadsSetting>(config, SetScope::GLOBAL, Value::BIGINT(16));
 	DuckDB db(nullptr, &config);
 	Connection con(db);
 	REQUIRE_NO_FAIL(con.Query("CREATE TABLE t AS SELECT range AS i FROM range(10000)"));
@@ -291,8 +289,8 @@ TEST_CASE("Test async threads are launched on their first use", "[api]") {
 TEST_CASE("Test idle memory reclamation does not launch the async threads", "[api]") {
 	const auto threads_before = ProcessThreadIds();
 	DBConfig config;
-	config.options.maximum_threads = 1;
-	config.options.async_threads = 16;
+	Settings::Set<ThreadsSetting>(config, SetScope::GLOBAL, Value::BIGINT(1));
+	Settings::Set<AsyncThreadsSetting>(config, SetScope::GLOBAL, Value::BIGINT(16));
 	DuckDB db(nullptr, &config);
 	Connection con(db);
 	REQUIRE_NO_FAIL(con.Query("CREATE TABLE t AS SELECT range AS i FROM range(10000)"));
@@ -337,8 +335,8 @@ TEST_CASE("Test idle workers reclaim memory without launching the async threads"
 	constexpr idx_t SIZE = 8 * 1024 * 1024;
 	const auto threads_before = ProcessThreadIds();
 	DBConfig config;
-	config.options.maximum_threads = 2;
-	config.options.async_threads = 16;
+	Settings::Set<ThreadsSetting>(config, SetScope::GLOBAL, Value::BIGINT(2));
+	Settings::Set<AsyncThreadsSetting>(config, SetScope::GLOBAL, Value::BIGINT(16));
 	DuckDB db(nullptr, &config);
 	Connection con(db);
 	auto &allocator = BlockAllocator::Get(*db.instance);
@@ -397,8 +395,8 @@ TEST_CASE("Test async threads are launched by the first async task", "[api]") {
 	for (idx_t task_count : {1, 8}) {
 		const auto threads_before = ProcessThreadIds();
 		DBConfig config;
-		config.options.maximum_threads = 1;
-		config.options.async_threads = 16;
+		Settings::Set<ThreadsSetting>(config, SetScope::GLOBAL, Value::BIGINT(1));
+		Settings::Set<AsyncThreadsSetting>(config, SetScope::GLOBAL, Value::BIGINT(16));
 		DuckDB db(nullptr, &config);
 		Connection con(db);
 		REQUIRE(NewThreadCount(threads_before) < 16);
@@ -423,8 +421,8 @@ TEST_CASE("Test async threads launched from a pinned thread run on every CPU", "
 		return;
 	}
 	DBConfig config;
-	config.options.maximum_threads = 1;
-	config.options.async_threads = 4;
+	Settings::Set<ThreadsSetting>(config, SetScope::GLOBAL, Value::BIGINT(1));
+	Settings::Set<AsyncThreadsSetting>(config, SetScope::GLOBAL, Value::BIGINT(4));
 	DuckDB db(nullptr, &config);
 	Connection con(db);
 	const auto threads_before = ProcessThreadIds();
@@ -473,7 +471,7 @@ TEST_CASE("Test launching async threads while the thread count changes", "[api]"
 	}
 	for (idx_t i = 0; i < 5; i++) {
 		DBConfig config;
-		config.options.async_threads = 4;
+		Settings::Set<AsyncThreadsSetting>(config, SetScope::GLOBAL, Value::BIGINT(4));
 		DuckDB db(nullptr, &config);
 		std::vector<std::thread> threads;
 		vector<string> results(4);

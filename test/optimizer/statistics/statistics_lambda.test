@@ -1,0 +1,67 @@
+# name: test/optimizer/statistics/statistics_lambda.test
+# description: Statistics of the list elements and the captured columns propagate into lambda bodies
+# group: [statistics]
+
+# check the propagated statistics against the values that the lambda body sees
+statement ok
+SET debug_verify_stats=true;
+
+statement ok
+CREATE TABLE t AS SELECT 'abc' AS a, 'áé' AS u, 10 AS n, 20 AS m, ['xy', 'z'] AS l, [3, 5] AS k;
+
+# captured columns
+query II
+SELECT list_transform([1], lambda i: stats(a).has_unicode)[1], list_transform([1], lambda i: stats(u).has_unicode)[1] FROM t;
+----
+false	true
+
+# the list elements and the captured columns in the order of the lambda inputs, the index has no statistics
+query I
+SELECT list_transform(k, lambda x: [stats(x).max::INT, stats(n).min::INT, stats(m).min::INT]) FROM t;
+----
+[[5, 10, 20], [5, 10, 20]]
+
+query I
+SELECT list_transform(k, lambda x, i: [stats(x).max::INT, stats(i).min::INT, stats(n).min::INT, stats(m).min::INT]) FROM t;
+----
+[[5, NULL, 10, 20], [5, NULL, 10, 20]]
+
+query I
+SELECT list_filter(k, lambda x, i: stats(x).max::INT = 5 AND stats(i).min IS NULL AND stats(n).min::INT = 10 AND stats(m).min::INT = 20) FROM t;
+----
+[3, 5]
+
+# list_reduce passes the accumulator after the element, and the initial value is no input of the lambda body
+query I
+SELECT list_reduce(k, lambda acc, x: acc + stats(x).max::INT * 100 + stats(n).min::INT + coalesce(stats(acc).max::INT, 0)) FROM t;
+----
+513
+
+query I
+SELECT list_reduce(k, lambda acc, x, i: acc + stats(x).max::INT * 100 + stats(m).min::INT + coalesce(stats(acc).max::INT, stats(i).max::INT, 0), 1000) FROM t;
+----
+2040
+
+# an outer lambda parameter and a captured column inside a nested lambda, and the outer parameter after it
+query I
+SELECT list_transform(l, lambda x: [list_transform(k, lambda y: [stats(y).max::INT, stats(x).max_string_length::INT, stats(n).min::INT]), [[stats(x).max_string_length::INT]]]) FROM t;
+----
+[[[[5, 2, 10], [5, 2, 10]], [[2]]], [[[5, 2, 10], [5, 2, 10]], [[2]]]]
+
+# a lambda in an unnest
+query I
+SELECT unnest(list_transform([1, 2], lambda i: stats(a).has_unicode)) FROM t;
+----
+false
+false
+
+# a captured value repeats for every list element, so it has no total string length within the lambda body
+query I
+SELECT max(len(s.d)) FROM (SELECT unnest(list_transform(range(100), lambda i: struct_pack(d := a))) AS s FROM t);
+----
+3
+
+query I
+SELECT list_transform([1, 2], lambda i: stats(a).total_string_length) FROM t;
+----
+[NULL, NULL]

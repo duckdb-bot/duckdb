@@ -165,6 +165,18 @@ static bool IsNullOnlyForNullColumn(Expression &expr) {
 	}
 }
 
+unique_ptr<BaseStatistics> StatisticsPropagator::GetColumnStatistics(ClientContext &context, LogicalGet &get,
+                                                                     const ColumnIndex &column_index) {
+	if (get.function.statistics_extended) {
+		TableFunctionGetStatisticsInput input(get.bind_data.get(), column_index);
+		return get.function.statistics_extended(context, input);
+	}
+	if (get.function.statistics) {
+		return get.function.statistics(context, get.bind_data.get(), column_index.GetPrimaryIndex());
+	}
+	return nullptr;
+}
+
 //! The longest IN list that the scan checks itself, as it compares every row with every value
 static constexpr idx_t MAX_SCAN_IN_FILTER_VALUES = 8;
 //! The scan only checks an IN list that keeps at most this fraction of the rows, as checking costs more than it
@@ -219,14 +231,7 @@ unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalGet 
 	}
 	auto &column_ids = get.GetColumnIds();
 	for (idx_t i = 0; i < column_ids.size(); i++) {
-		unique_ptr<BaseStatistics> stats;
-		if (get.function.statistics_extended) {
-			TableFunctionGetStatisticsInput input(get.bind_data.get(), column_ids[i]);
-			stats = get.function.statistics_extended(context, input);
-		} else {
-			stats = get.function.statistics(context, get.bind_data.get(), column_ids[i].GetPrimaryIndex());
-		}
-
+		auto stats = GetColumnStatistics(context, get, column_ids[i]);
 		if (stats) {
 			ColumnBinding binding(get.table_index, ProjectionIndex(i));
 			statistics_map.insert(make_pair(binding, std::move(stats)));

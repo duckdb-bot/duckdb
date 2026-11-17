@@ -1,0 +1,121 @@
+# name: test/sql/types/decimal/wide_decimal_pivot_match_recognize_storage_version.test
+# description: The storage version check of stored expressions reaches PIVOT expressions and MATCH_RECOGNIZE inputs
+# group: [decimal]
+
+statement ok
+ATTACH '{TEST_DIR}/wide_decimal_pivot_v140.db' AS old (STORAGE_VERSION 'v1.4.0');
+
+statement ok
+CREATE TABLE old.t (x INTEGER);
+
+statement ok
+INSERT INTO old.t VALUES (1), (2);
+
+# a wide cast in the pivot expression
+statement error
+CREATE VIEW old.vp AS PIVOT old.t ON (x::VARCHAR || CAST(1 AS DECIMAL(50,4))::VARCHAR) IN ('11.0000', '21.0000') USING count(*);
+----
+DECIMAL columns wider than 38 digits are not supported in storage versions prior to v2.1.0
+
+# a wide cast in the pivot IN list
+statement error
+CREATE VIEW old.vp AS PIVOT old.t ON x::VARCHAR IN (CAST(1 AS DECIMAL(50,4))::VARCHAR) USING count(*);
+----
+DECIMAL columns wider than 38 digits are not supported in storage versions prior to v2.1.0
+
+# a wide cast in the input of MATCH_RECOGNIZE
+statement error
+CREATE VIEW old.vm AS SELECT v FROM (SELECT CAST(x AS DECIMAL(50,4)) AS d FROM old.t) s MATCH_RECOGNIZE (MEASURES first(d) AS v ONE ROW PER MATCH PATTERN (A) DEFINE A AS true);
+----
+DECIMAL columns wider than 38 digits are not supported in storage versions prior to v2.1.0
+
+# a wide cast two MATCH_RECOGNIZE inputs deep
+statement error
+CREATE VIEW old.vm AS SELECT v FROM (SELECT d FROM (SELECT CAST(x AS DECIMAL(50,4)) AS d FROM old.t) s1 MATCH_RECOGNIZE (MEASURES first(d) AS d ONE ROW PER MATCH PATTERN (A) DEFINE A AS true)) s2 MATCH_RECOGNIZE (MEASURES first(d) AS v ONE ROW PER MATCH PATTERN (A) DEFINE A AS true);
+----
+DECIMAL columns wider than 38 digits are not supported in storage versions prior to v2.1.0
+
+# the same in a table macro
+statement error
+CREATE MACRO old.m() AS TABLE PIVOT old.t ON (x::VARCHAR || CAST(1 AS DECIMAL(50,4))::VARCHAR) IN ('11.0000') USING count(*);
+----
+DECIMAL columns wider than 38 digits are not supported in storage versions prior to v2.1.0
+
+# casts within 38 digits in these positions are stored and read back
+statement ok
+CREATE VIEW old.vp AS PIVOT old.t ON (x::VARCHAR || CAST(1 AS DECIMAL(38,4))::VARCHAR) IN ('11.0000', '21.0000') USING count(*);
+
+statement ok
+CREATE VIEW old.vm AS SELECT v FROM (SELECT CAST(x AS DECIMAL(38,4)) AS d FROM old.t) s MATCH_RECOGNIZE (MEASURES first(d) AS v ONE ROW PER MATCH PATTERN (A) DEFINE A AS true);
+
+query II
+SELECT * FROM old.vp;
+----
+1	1
+
+query I
+SELECT v FROM old.vm ORDER BY v;
+----
+1.0000
+2.0000
+
+# a chain of forty MATCH_RECOGNIZE clauses is walked once per input, the view is only created
+statement ok
+CREATE VIEW old.vchain AS SELECT x FROM (SELECT 1 AS x) t MATCH_RECOGNIZE (MEASURES first(x) AS x ONE ROW PER MATCH PATTERN (A) DEFINE A AS true) MATCH_RECOGNIZE (MEASURES first(x) AS x ONE ROW PER MATCH PATTERN (A) DEFINE A AS true) MATCH_RECOGNIZE (MEASURES first(x) AS x ONE ROW PER MATCH PATTERN (A) DEFINE A AS true) MATCH_RECOGNIZE (MEASURES first(x) AS x ONE ROW PER MATCH PATTERN (A) DEFINE A AS true) MATCH_RECOGNIZE (MEASURES first(x) AS x ONE ROW PER MATCH PATTERN (A) DEFINE A AS true) MATCH_RECOGNIZE (MEASURES first(x) AS x ONE ROW PER MATCH PATTERN (A) DEFINE A AS true) MATCH_RECOGNIZE (MEASURES first(x) AS x ONE ROW PER MATCH PATTERN (A) DEFINE A AS true) MATCH_RECOGNIZE (MEASURES first(x) AS x ONE ROW PER MATCH PATTERN (A) DEFINE A AS true) MATCH_RECOGNIZE (MEASURES first(x) AS x ONE ROW PER MATCH PATTERN (A) DEFINE A AS true) MATCH_RECOGNIZE (MEASURES first(x) AS x ONE ROW PER MATCH PATTERN (A) DEFINE A AS true) MATCH_RECOGNIZE (MEASURES first(x) AS x ONE ROW PER MATCH PATTERN (A) DEFINE A AS true) MATCH_RECOGNIZE (MEASURES first(x) AS x ONE ROW PER MATCH PATTERN (A) DEFINE A AS true) MATCH_RECOGNIZE (MEASURES first(x) AS x ONE ROW PER MATCH PATTERN (A) DEFINE A AS true) MATCH_RECOGNIZE (MEASURES first(x) AS x ONE ROW PER MATCH PATTERN (A) DEFINE A AS true) MATCH_RECOGNIZE (MEASURES first(x) AS x ONE ROW PER MATCH PATTERN (A) DEFINE A AS true) MATCH_RECOGNIZE (MEASURES first(x) AS x ONE ROW PER MATCH PATTERN (A) DEFINE A AS true) MATCH_RECOGNIZE (MEASURES first(x) AS x ONE ROW PER MATCH PATTERN (A) DEFINE A AS true) MATCH_RECOGNIZE (MEASURES first(x) AS x ONE ROW PER MATCH PATTERN (A) DEFINE A AS true) MATCH_RECOGNIZE (MEASURES first(x) AS x ONE ROW PER MATCH PATTERN (A) DEFINE A AS true) MATCH_RECOGNIZE (MEASURES first(x) AS x ONE ROW PER MATCH PATTERN (A) DEFINE A AS true) MATCH_RECOGNIZE (MEASURES first(x) AS x ONE ROW PER MATCH PATTERN (A) DEFINE A AS true) MATCH_RECOGNIZE (MEASURES first(x) AS x ONE ROW PER MATCH PATTERN (A) DEFINE A AS true) MATCH_RECOGNIZE (MEASURES first(x) AS x ONE ROW PER MATCH PATTERN (A) DEFINE A AS true) MATCH_RECOGNIZE (MEASURES first(x) AS x ONE ROW PER MATCH PATTERN (A) DEFINE A AS true) MATCH_RECOGNIZE (MEASURES first(x) AS x ONE ROW PER MATCH PATTERN (A) DEFINE A AS true) MATCH_RECOGNIZE (MEASURES first(x) AS x ONE ROW PER MATCH PATTERN (A) DEFINE A AS true) MATCH_RECOGNIZE (MEASURES first(x) AS x ONE ROW PER MATCH PATTERN (A) DEFINE A AS true) MATCH_RECOGNIZE (MEASURES first(x) AS x ONE ROW PER MATCH PATTERN (A) DEFINE A AS true) MATCH_RECOGNIZE (MEASURES first(x) AS x ONE ROW PER MATCH PATTERN (A) DEFINE A AS true) MATCH_RECOGNIZE (MEASURES first(x) AS x ONE ROW PER MATCH PATTERN (A) DEFINE A AS true) MATCH_RECOGNIZE (MEASURES first(x) AS x ONE ROW PER MATCH PATTERN (A) DEFINE A AS true) MATCH_RECOGNIZE (MEASURES first(x) AS x ONE ROW PER MATCH PATTERN (A) DEFINE A AS true) MATCH_RECOGNIZE (MEASURES first(x) AS x ONE ROW PER MATCH PATTERN (A) DEFINE A AS true) MATCH_RECOGNIZE (MEASURES first(x) AS x ONE ROW PER MATCH PATTERN (A) DEFINE A AS true) MATCH_RECOGNIZE (MEASURES first(x) AS x ONE ROW PER MATCH PATTERN (A) DEFINE A AS true) MATCH_RECOGNIZE (MEASURES first(x) AS x ONE ROW PER MATCH PATTERN (A) DEFINE A AS true) MATCH_RECOGNIZE (MEASURES first(x) AS x ONE ROW PER MATCH PATTERN (A) DEFINE A AS true) MATCH_RECOGNIZE (MEASURES first(x) AS x ONE ROW PER MATCH PATTERN (A) DEFINE A AS true) MATCH_RECOGNIZE (MEASURES first(x) AS x ONE ROW PER MATCH PATTERN (A) DEFINE A AS true) MATCH_RECOGNIZE (MEASURES first(x) AS x ONE ROW PER MATCH PATTERN (A) DEFINE A AS true);
+
+query I
+SELECT count(*) FROM duckdb_views() WHERE database_name = 'old' AND view_name = 'vchain';
+----
+1
+
+statement ok
+CHECKPOINT old;
+
+statement ok
+DETACH old;
+
+statement ok
+ATTACH '{TEST_DIR}/wide_decimal_pivot_v140.db' AS old;
+
+query II
+SELECT * FROM old.vp;
+----
+1	1
+
+query I
+SELECT v FROM old.vm ORDER BY v;
+----
+1.0000
+2.0000
+
+# from storage version v2.0.0 a cast stores a type expression the reader binds itself, so the wide casts are allowed
+statement ok
+ATTACH '{TEST_DIR}/wide_decimal_pivot_v200.db' AS new (STORAGE_VERSION 'v2.0.0');
+
+statement ok
+CREATE TABLE new.t AS SELECT 1 AS x;
+
+statement ok
+CREATE VIEW new.vp AS PIVOT new.t ON (x::VARCHAR || CAST(1 AS DECIMAL(50,4))::VARCHAR) IN ('11.0000') USING count(*);
+
+statement ok
+CREATE VIEW new.vm AS SELECT v FROM (SELECT CAST(x AS DECIMAL(50,4)) AS d FROM new.t) s MATCH_RECOGNIZE (MEASURES first(d) AS v ONE ROW PER MATCH PATTERN (A) DEFINE A AS true);
+
+statement ok
+CHECKPOINT new;
+
+statement ok
+DETACH new;
+
+statement ok
+ATTACH '{TEST_DIR}/wide_decimal_pivot_v200.db' AS new;
+
+query I
+SELECT * FROM new.vp;
+----
+1
+
+query II
+SELECT typeof(v), v FROM new.vm;
+----
+DECIMAL(50,4)	1.0000

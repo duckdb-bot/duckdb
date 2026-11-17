@@ -47,6 +47,11 @@ struct ArrowStreamParameters {
 struct ArrowScanFactory : public TableFunctionInfo {
 	virtual void GetSchema(ArrowSchema &schema) = 0;
 	virtual unique_ptr<ArrowArrayStreamWrapper> ProduceStream(ArrowStreamParameters &parameters) = 0;
+	//! Whether the produced streams apply the projection and the filters of the parameters. Otherwise the scan reads
+	//! the columns it needs from the whole stream and pushes down no filter
+	virtual bool AppliesParameters() const {
+		return true;
+	}
 };
 
 struct ArrowScanFunctionData : public TableFunctionData {

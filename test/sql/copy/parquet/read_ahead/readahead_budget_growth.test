@@ -7,6 +7,10 @@ require parquet
 statement ok
 SET threads=16
 
+# allow 64 queued jobs at 16 MiB each so the automatic budget can grow past 512 MiB
+statement ok
+SET async_threads=32
+
 # the budget may grow to min(64 MB x threads, memory_limit / 8) and starts at min(8 MB x threads, memory_limit / 16)
 statement ok
 SET memory_limit='8GB'

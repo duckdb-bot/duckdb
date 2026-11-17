@@ -317,7 +317,8 @@ Value HivePartitioning::GetValue(ClientContext &context, const string &key, cons
 void HivePartitioning::ApplyFiltersToFileList(ClientContext &context, vector<OpenFileInfo> &files,
                                               vector<unique_ptr<Expression>> &filters,
                                               const HivePartitioningFilterInfo &filter_info,
-                                              MultiFilePushdownInfo &info) {
+                                              MultiFilePushdownInfo &info,
+                                              optional_ptr<vector<idx_t>> remaining_file_indexes) {
 	vector<OpenFileInfo> pruned_files;
 	vector<bool> have_preserved_filter(filters.size(), false);
 	vector<unique_ptr<Expression>> pruned_filters;
@@ -373,6 +374,9 @@ void HivePartitioning::ApplyFiltersToFileList(ClientContext &context, vector<Ope
 
 		if (!should_prune_file) {
 			pruned_files.push_back(files[i]);
+			if (remaining_file_indexes) {
+				remaining_file_indexes->push_back(i);
+			}
 		}
 	}
 

@@ -58,12 +58,17 @@ SELECT count(*) FROM read_json(['{TEMP_DIR}/lazy_list*.json' FOR x IN range(1000
 ----
 1000
 
-# CSV counts the files of the scan for its rejects table, so it expands every pattern
+# CSV takes a bounded count of the files for its parallelism, so the LIMIT is reached before the unmatched pattern
 statement ok
 COPY (SELECT 42 AS i) TO '{TEMP_DIR}/lazy_list.csv';
 
-statement error
+query I
 SELECT * FROM read_csv(['{TEMP_DIR}/lazy_list*.csv' FOR x IN range(1000)] || ['{TEMP_DIR}/missing*.csv']) LIMIT 1
+----
+42
+
+statement error
+SELECT count(*) FROM read_csv(['{TEMP_DIR}/lazy_list*.csv' FOR x IN range(1000)] || ['{TEMP_DIR}/missing*.csv'])
 ----
 No files found that match the pattern
 
@@ -72,7 +77,7 @@ SELECT count(*), count(DISTINCT filename) FROM read_csv(['{TEMP_DIR}/lazy_list*.
 ----
 1000	1
 
-# the rejects of two scans in one query get distinct file ids, which takes the exact count of the first scan
+# the rejects of two scans in one query get distinct file ids
 statement ok
 COPY (SELECT * FROM (VALUES ('x'), ('1')) t(num)) TO '{TEMP_DIR}/lazy_rejects.csv' (HEADER);
 

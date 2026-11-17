@@ -11,6 +11,7 @@
 #include "duckdb/parser/expression/subquery_expression.hpp"
 #include "duckdb/parser/parsed_expression_iterator.hpp"
 #include "duckdb/parser/query_node.hpp"
+#include "duckdb/parser/tableref/pivotref.hpp"
 #include "duckdb/parser/statement/select_statement.hpp"
 #include "duckdb/common/types/geometry.hpp"
 #include "duckdb/common/types/variant.hpp"
@@ -446,7 +447,20 @@ void StorageManager::CheckQueryDecimalsAreSupported(QueryNode &node) const {
 		return;
 	}
 	ParsedExpressionIterator::EnumerateQueryNodeChildren(
-	    node, [&](unique_ptr<ParsedExpression> &child) { CheckExpressionDecimalsAreSupported(*child); });
+	    node, [&](unique_ptr<ParsedExpression> &child) { CheckExpressionDecimalsAreSupported(*child); },
+	    [&](TableRef &ref) {
+		    if (ref.type != TableReferenceType::PIVOT) {
+			    return;
+		    }
+		    // the entries of a PIVOT IN list are folded to values by the binder, so the walker leaves them out
+		    for (auto &pivot : ref.Cast<PivotRef>().pivots) {
+			    for (auto &entry : pivot.entries) {
+				    if (entry.expr) {
+					    CheckExpressionDecimalsAreSupported(*entry.expr);
+				    }
+			    }
+		    }
+	    });
 }
 
 bool StorageManager::HasWAL() const {

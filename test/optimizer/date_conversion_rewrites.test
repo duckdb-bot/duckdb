@@ -35,7 +35,7 @@ EXPLAIN SELECT TRY_CAST(i AS BIGINT) = 5 FROM ints;
 physical_plan	<REGEX>:.*Projections: i = 5.*
 
 statement ok
-CREATE TABLE decimals(m DECIMAL(10, 2));
+CREATE TABLE decimals AS SELECT m::DECIMAL(10, 2) AS m FROM (VALUES (1.50), (123.45)) t(m);
 
 query II
 EXPLAIN SELECT TRY_CAST(m AS DECIMAL(18, 2)) = 5 FROM decimals;

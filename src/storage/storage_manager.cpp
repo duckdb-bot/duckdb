@@ -409,8 +409,8 @@ string StorageManager::GetUnsupportedDecimalWidthReason(const LogicalType &type,
 	return WideDecimalUnsupportedReason(db, storage_version, subject);
 }
 
-void StorageManager::CheckDecimalWidthIsSupported(const LogicalType &type, const string &subject) const {
-	auto reason = GetUnsupportedDecimalWidthReason(type, subject);
+void StorageManager::CheckDecimalWidthIsSupported(const LogicalType &type) const {
+	auto reason = GetUnsupportedDecimalWidthReason(type);
 	if (!reason.empty()) {
 		throw InvalidInputException(reason);
 	}
@@ -435,8 +435,10 @@ void StorageManager::CheckExpressionDecimalsAreSupported(const ParsedExpression 
 			// these storage versions store a wider numeric literal as the DOUBLE their engines type it as, which the
 			// reading engine keeps, so the literal is refused like a cast to a wide decimal
 			auto &literal = expr.Cast<ConstantExpression>().GetLiteral();
-			if (literal.kind == LiteralKind::INTEGER || literal.kind == LiteralKind::NUMERIC) {
-				CheckDecimalWidthIsSupported(literal.ToValue().type(), "literals");
+			if ((literal.kind == LiteralKind::INTEGER || literal.kind == LiteralKind::NUMERIC) &&
+			    ContainsWideDecimal(literal.ToValue().type())) {
+				auto what = StringUtil::Format("DECIMAL literals wider than %d digits", Decimal::MAX_WIDTH_INT128);
+				throw InvalidInputException(GetUnsupportedPriorToVersionReason(what, StorageVersion::V2_0_0));
 			}
 			break;
 		}

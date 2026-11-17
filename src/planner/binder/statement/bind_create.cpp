@@ -963,7 +963,7 @@ BoundStatement Binder::Bind(CreateStatement &stmt) {
 				base.binding_mode = CreateViewBindingMode::SKIP_BINDING;
 			}
 		}
-		if (base.query && !base.temporary) {
+		if (base.query && !base.temporary && base.binding_mode != CreateViewBindingMode::SKIP_BINDING) {
 			// the query of the view is stored, so a cast in it may not target a decimal wider than the database stores
 			auto &attached = schema.ParentCatalog().GetAttached();
 			if (!attached.IsTemporary() && attached.HasStorageManager()) {

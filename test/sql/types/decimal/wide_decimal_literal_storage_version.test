@@ -1,5 +1,5 @@
 # name: test/sql/types/decimal/wide_decimal_literal_storage_version.test
-# description: A numeric literal wider than 38 digits in a stored expression is refused below storage version v2.0.0, where it would be stored as a DOUBLE
+# description: A numeric literal wider than 38 digits in a stored expression is refused below storage version v2.0.0, which would store it as a DOUBLE
 # group: [decimal]
 
 statement ok
@@ -10,27 +10,27 @@ ATTACH '{TEST_DIR}/wide_decimal_literal_v140.db' AS old (STORAGE_VERSION 'v1.4.0
 statement error
 CREATE VIEW old.vlit AS SELECT 123456789012345678901234567890123456789012.1234 AS c;
 ----
-DECIMAL literals wider than 38 digits are not supported in storage versions prior to v2.1.0
+DECIMAL literals wider than 38 digits are not supported in storage versions prior to v2.0.0
 
 statement error
 CREATE VIEW old.vsub AS SELECT (SELECT 123456789012345678901234567890123456789012.1234) AS c;
 ----
-DECIMAL literals wider than 38 digits are not supported in storage versions prior to v2.1.0
+DECIMAL literals wider than 38 digits are not supported in storage versions prior to v2.0.0
 
 statement error
 CREATE TABLE old.t (d DECIMAL(18,4) DEFAULT 123456789012345678901234567890123456789012.1234);
 ----
-DECIMAL literals wider than 38 digits are not supported in storage versions prior to v2.1.0
+DECIMAL literals wider than 38 digits are not supported in storage versions prior to v2.0.0
 
 statement error
 CREATE TABLE old.t (d DECIMAL(18,4) CHECK (d < 123456789012345678901234567890123456789012.1234));
 ----
-DECIMAL literals wider than 38 digits are not supported in storage versions prior to v2.1.0
+DECIMAL literals wider than 38 digits are not supported in storage versions prior to v2.0.0
 
 statement error
 CREATE MACRO old.m() AS 123456789012345678901234567890123456789012.1234 + 1;
 ----
-DECIMAL literals wider than 38 digits are not supported in storage versions prior to v2.1.0
+DECIMAL literals wider than 38 digits are not supported in storage versions prior to v2.0.0
 
 statement error
 CREATE VIEW old.vcast AS SELECT CAST(1 AS DECIMAL(50,4)) AS c;
@@ -43,6 +43,15 @@ CREATE VIEW old.vfit AS SELECT 1234567890123456789012345678901234.1234 AS c;
 
 statement ok
 CREATE MACRO old.mfit() AS 1234567890123456789012345678901234.1234 + 1;
+
+query II
+SELECT typeof(c), c::VARCHAR FROM old.vfit;
+----
+DECIMAL(38,4)	1234567890123456789012345678901234.1234
+
+# a definition that is discarded because the view exists is not checked, nothing of it is stored
+statement ok
+CREATE VIEW IF NOT EXISTS old.vfit AS SELECT 123456789012345678901234567890123456789012.1234 AS c;
 
 query II
 SELECT typeof(c), c::VARCHAR FROM old.vfit;

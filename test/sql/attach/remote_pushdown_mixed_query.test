@@ -468,6 +468,22 @@ SELECT v FROM (SELECT id::VARCHAR::local_enum AS v FROM r.tbl) s, local_tbl ORDE
 9
 10
 
+query II
+EXPLAIN SELECT v FROM (SELECT max(id::VARCHAR::local_enum) AS v FROM r.tbl) s, local_tbl;
+----
+physical_plan	<REGEX>:.*Ungrouped Aggregate.*
+
+# a cast to a built-in type lets the subquery be pushed
+query II
+EXPLAIN SELECT v FROM (SELECT sum(id::BIGINT) AS v FROM r.tbl) s, local_tbl;
+----
+physical_plan	<!REGEX>:.*Ungrouped Aggregate.*
+
+query I
+SELECT v FROM (SELECT sum(id::BIGINT) AS v FROM r.tbl) s, local_tbl;
+----
+22
+
 # built-in and shared types still let a whole query be pushed
 query I
 SELECT id::system.main.BIGINT FROM r.tbl UNION ALL SELECT id FROM r.tbl ORDER BY 1 LIMIT 2;

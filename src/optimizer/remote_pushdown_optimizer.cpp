@@ -1273,7 +1273,9 @@ void RemotePushdownOptimizer::CheckCastType(const TypeExpression &type_expr) {
 			EntryLookupInfo type_lookup(CatalogType::TYPE_ENTRY,
 			                            QualifiedName::FromCatalogSchema(
 			                                catalog->GetName(), local_entry.GetSchemaPath(), type_expr.GetTypeName()));
-			if (catalog->LookupEntry(retriever, type_lookup, OnEntryNotFound::RETURN_NULL).Found()) {
+			auto lookup = catalog->LookupEntry(retriever, type_lookup, OnEntryNotFound::RETURN_NULL);
+			if (lookup.Found() && !lookup.entry->internal) {
+				// built-in types are generated in every catalog and exist on the server as well
 				MarkStaysWithParent();
 				break;
 			}

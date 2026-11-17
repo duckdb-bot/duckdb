@@ -837,11 +837,16 @@ public:
 	void RevertCommit() override;
 	// Make the commit persistent
 	idx_t FlushCommit(transaction_t commit_id, bool sync_now) override;
+	bool IsFlushed() const override;
 
 	void AddRowGroupData(DataTable &table, idx_t start_index, idx_t count,
 	                     unique_ptr<PersistentCollectionData> row_group_data) override;
 	optional_ptr<PersistentCollectionData> GetRowGroupData(DataTable &table, idx_t start_index, idx_t &count) override;
 	bool HasRowGroupData() override;
+
+private:
+	//! The blocks of the optimistically written row groups
+	vector<block_id_t> GetOptimisticallyWrittenBlockIds() const;
 
 private:
 	StorageManager &storage;
@@ -886,16 +891,27 @@ void SingleFileStorageCommitState::RevertCommit() {
 		wal.Truncate(initial_wal_size);
 	}
 	auto &block_manager = storage.GetBlockManager();
+	for (auto &block_id : GetOptimisticallyWrittenBlockIds()) {
+		block_manager.MarkBlockAsModified(block_id);
+	}
+	state = WALCommitState::TRUNCATED;
+}
+
+vector<block_id_t> SingleFileStorageCommitState::GetOptimisticallyWrittenBlockIds() const {
+	vector<block_id_t> block_ids;
 	for (auto &entry : optimistically_written_data) {
 		for (auto &rg_entry : entry.second) {
 			if (rg_entry.second.row_group_data) {
-				for (auto &block_id : rg_entry.second.row_group_data->GetBlockIds()) {
-					block_manager.MarkBlockAsModified(block_id);
-				}
+				auto row_group_block_ids = rg_entry.second.row_group_data->GetBlockIds();
+				block_ids.insert(block_ids.end(), row_group_block_ids.begin(), row_group_block_ids.end());
 			}
 		}
 	}
-	state = WALCommitState::TRUNCATED;
+	return block_ids;
+}
+
+bool SingleFileStorageCommitState::IsFlushed() const {
+	return state == WALCommitState::FLUSHED;
 }
 
 idx_t SingleFileStorageCommitState::FlushCommit(transaction_t commit_id, bool sync_now) {
@@ -915,6 +931,9 @@ idx_t SingleFileStorageCommitState::FlushCommit(transaction_t commit_id, bool sy
 		throw FatalException("Simulated crash before WAL_FLUSH write");
 	}
 
+	// collected before the flush, since nothing after it may fail
+	auto committed_block_ids = GetOptimisticallyWrittenBlockIds();
+
 	idx_t wal_sync_offset = 0;
 	if (sync_now) {
 		wal.Flush();
@@ -923,16 +942,13 @@ idx_t SingleFileStorageCommitState::FlushCommit(transaction_t commit_id, bool sy
 		wal_sync_offset = wal.FlushMarker();
 	}
 	state = WALCommitState::FLUSHED;
+	if (abort_mode == CheckpointAbort::DEBUG_ABORT_AFTER_WAL_FLUSH) {
+		throw IOException("Simulated failure after WAL_FLUSH write");
+	}
 	// checkpoints whose bound is past the commit include the blocks of its optimistically written row groups
 	auto &block_manager = storage.GetBlockManager();
-	for (auto &entry : optimistically_written_data) {
-		for (auto &rg_entry : entry.second) {
-			if (rg_entry.second.row_group_data) {
-				for (auto &block_id : rg_entry.second.row_group_data->GetBlockIds()) {
-					block_manager.MarkBlockAsCommitted(block_id, commit_id);
-				}
-			}
-		}
+	for (auto &block_id : committed_block_ids) {
+		block_manager.MarkBlockAsCommitted(block_id, commit_id);
 	}
 	return wal_sync_offset;
 }

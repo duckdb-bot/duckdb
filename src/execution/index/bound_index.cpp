@@ -1,6 +1,8 @@
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/execution/index/bound_index.hpp"
 
+#include "duckdb/main/client_context.hpp"
+
 #include "duckdb/common/array.hpp"
 #include "duckdb/common/radix.hpp"
 #include "duckdb/common/serializer/serializer.hpp"
@@ -30,6 +32,9 @@ BoundIndex::BoundIndex(const Identifier &name, const string &index_type, IndexCo
 		unbound_expressions.emplace_back(expr->Copy());
 		bound_expressions.push_back(BindExpression(expr->Copy()));
 		executor.AddExpression(*bound_expressions.back());
+		if (bound_expressions.back()->GetExpressionType() != ExpressionType::BOUND_REF) {
+			has_expression_keys = true;
+		}
 	}
 }
 
@@ -88,9 +93,34 @@ void BoundIndex::Delete(DataChunk &entries, Vector &row_identifiers) {
 	Delete(state, entries, row_identifiers);
 }
 
+idx_t BoundIndex::TryDelete(DataChunk &entries, Vector &row_identifiers, const QueryContext &context,
+                            optional_ptr<SelectionVector> deleted_sel, optional_ptr<SelectionVector> non_deleted_sel) {
+	IndexLock state(*this);
+	return TryDelete(state, entries, row_identifiers, context, deleted_sel, non_deleted_sel);
+}
+
+idx_t BoundIndex::TryDelete(IndexLock &state, DataChunk &entries, Vector &row_identifiers, const QueryContext &context,
+                            optional_ptr<SelectionVector> deleted_sel, optional_ptr<SelectionVector> non_deleted_sel) {
+	return TryDelete(state, entries, row_identifiers, deleted_sel, non_deleted_sel);
+}
+
+void BoundIndex::Delete(DataChunk &entries, Vector &row_identifiers, const QueryContext &context) {
+	IndexLock state(*this);
+	Delete(state, entries, row_identifiers, context);
+}
+
+void BoundIndex::Delete(IndexLock &state, DataChunk &entries, Vector &row_identifiers, const QueryContext &context) {
+	// the virtual without the context, which extension indexes override
+	Delete(state, entries, row_identifiers);
+}
+
 void BoundIndex::Delete(IndexLock &state, DataChunk &entries, Vector &row_identifiers) {
 	state.AssertHeld(*this);
 	auto deleted_rows = TryDelete(state, entries, row_identifiers);
+	VerifyDeleteCount(deleted_rows, entries);
+}
+
+void BoundIndex::VerifyDeleteCount(idx_t deleted_rows, DataChunk &entries) {
 	if (deleted_rows != entries.size()) {
 		throw InvalidInputException("Failed to delete all rows from index. Only deleted %d out of %d rows.\nChunk: %s",
 		                            deleted_rows, entries.size(), entries.ToString());
@@ -142,8 +172,18 @@ idx_t BoundIndex::GetInMemorySize() const {
 	return GetInMemorySize(state);
 }
 
-void BoundIndex::ExecuteExpressions(DataChunk &input, DataChunk &result) const {
-	executor.Execute(input, result);
+void BoundIndex::ExecuteExpressions(DataChunk &input, DataChunk &result, const QueryContext &context) const {
+	auto client_context = Context::TryGetClientContext(context.GetContext());
+	if (!has_expression_keys || !client_context) {
+		executor.Execute(input, result);
+		return;
+	}
+	// key expressions such as list_sort run with the client context of the operation, which the shared executor lacks
+	ExpressionExecutor context_executor(*client_context);
+	for (auto &expr : bound_expressions) {
+		context_executor.AddExpression(*expr);
+	}
+	context_executor.Execute(input, result);
 }
 
 idx_t BoundIndex::UnboundExpressionCount() const {

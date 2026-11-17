@@ -10,6 +10,7 @@
 
 #include "duckdb/common/error_data.hpp"
 #include "duckdb/common/mutex.hpp"
+#include "duckdb/common/query_context.hpp"
 
 #include "duckdb/execution/index/unbound_index.hpp"
 #include "duckdb/common/enums/index_constraint_type.hpp"
@@ -47,6 +48,8 @@ public:
 public:
 	IndexAppendMode append_mode;
 	vector<reference<const BoundIndex>> delete_indexes;
+	//! The client context of the operation, when it has one, for key expressions that need it
+	QueryContext context;
 };
 
 //! Identifies the logical purpose of a delta owned by an index entry.
@@ -144,11 +147,27 @@ public:
 	//! Obtains a lock and calls TryDelete while holding that lock
 	idx_t TryDelete(DataChunk &entries, Vector &row_identifiers, optional_ptr<SelectionVector> deleted_sel = nullptr,
 	                optional_ptr<SelectionVector> non_deleted_sel = nullptr) DUCKDB_EXCLUDES(lock);
+	//! Delete a chunk of entries from the index with the client context of the operation, when it has one. The index
+	//! lock must be held. Indexes that do not override this ignore the context.
+	virtual idx_t TryDelete(IndexLock &state, DataChunk &entries, Vector &row_identifiers, const QueryContext &context,
+	                        optional_ptr<SelectionVector> deleted_sel, optional_ptr<SelectionVector> non_deleted_sel)
+	    DUCKDB_REQUIRES(state);
+	//! Obtains a lock and calls TryDelete with the context while holding that lock
+	idx_t TryDelete(DataChunk &entries, Vector &row_identifiers, const QueryContext &context,
+	                optional_ptr<SelectionVector> deleted_sel, optional_ptr<SelectionVector> non_deleted_sel)
+	    DUCKDB_EXCLUDES(lock);
 	//! Delete a chunk of entries from the index. The index lock must be held.
 	//! Throws an error if not all rows are deleted
 	virtual void Delete(IndexLock &state, DataChunk &entries, Vector &row_identifiers) DUCKDB_REQUIRES(state);
 	//! Obtains a lock and calls Delete while holding that lock
 	void Delete(DataChunk &entries, Vector &row_identifiers) DUCKDB_EXCLUDES(lock);
+	//! Delete a chunk of entries from the index with the client context of the operation, when it has one. The index
+	//! lock must be held. Throws an error if not all rows are deleted. Indexes that do not override this ignore the
+	//! context and delete through the virtual without it.
+	virtual void Delete(IndexLock &state, DataChunk &entries, Vector &row_identifiers, const QueryContext &context)
+	    DUCKDB_REQUIRES(state);
+	//! Obtains a lock and calls Delete with the context while holding that lock
+	void Delete(DataChunk &entries, Vector &row_identifiers, const QueryContext &context) DUCKDB_EXCLUDES(lock);
 
 	//! Insert a chunk.
 	virtual ErrorData Insert(IndexLock &l, DataChunk &chunk, Vector &row_ids) DUCKDB_REQUIRES(l) = 0;
@@ -201,8 +220,8 @@ public:
 	//! Serializes index memory to the WAL, the caller must have exclusive access to the index.
 	virtual IndexStorageInfo SerializeToWAL(StorageVersion storage_version);
 
-	//! Execute the index expressions on an input chunk
-	void ExecuteExpressions(DataChunk &input, DataChunk &result) const;
+	//! Execute the index expressions on an input chunk, with the client context of the operation when it has one
+	void ExecuteExpressions(DataChunk &input, DataChunk &result, const QueryContext &context = QueryContext()) const;
 	static string AppendRowError(DataChunk &input, idx_t index);
 
 	//! Throw a constraint violation exception
@@ -221,6 +240,8 @@ protected:
 
 	//! Creates an empty physical copy with the requested constraint type.
 	virtual unique_ptr<BoundIndex> CreateEmptyCopy(IndexConstraintType constraint_type) const;
+	//! Throws if a delete left entries of the chunk in the index.
+	static void VerifyDeleteCount(idx_t deleted_rows, DataChunk &entries);
 	//! Merges a checkpoint delta into this index.
 	virtual ErrorData MergeCheckpointDelta(IndexDeltaType type, BoundIndex &delta_index);
 
@@ -238,6 +259,8 @@ protected:
 private:
 	//! Expression executor to execute the index expressions
 	mutable ExpressionExecutor executor;
+	//! Whether a key is an expression rather than a column, so the client context of the operation can matter
+	bool has_expression_keys = false;
 
 	//! Bind the unbound expressions of the index
 	unique_ptr<Expression> BindExpression(unique_ptr<Expression> expr);

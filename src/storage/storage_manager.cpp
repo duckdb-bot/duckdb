@@ -11,6 +11,7 @@
 #include "duckdb/parser/expression/subquery_expression.hpp"
 #include "duckdb/parser/parsed_expression_iterator.hpp"
 #include "duckdb/parser/query_node.hpp"
+#include "duckdb/parser/tableref/match_recognize_ref.hpp"
 #include "duckdb/parser/tableref/pivotref.hpp"
 #include "duckdb/parser/statement/select_statement.hpp"
 #include "duckdb/common/types/geometry.hpp"
@@ -446,21 +447,39 @@ void StorageManager::CheckQueryDecimalsAreSupported(QueryNode &node) const {
 	if (GetStorageVersion() >= StorageVersion::V2_0_0) {
 		return;
 	}
-	ParsedExpressionIterator::EnumerateQueryNodeChildren(
-	    node, [&](unique_ptr<ParsedExpression> &child) { CheckExpressionDecimalsAreSupported(*child); },
-	    [&](TableRef &ref) {
-		    if (ref.type != TableReferenceType::PIVOT) {
-			    return;
-		    }
-		    // the entries of a PIVOT IN list are folded to values by the binder, so the walker leaves them out
-		    for (auto &pivot : ref.Cast<PivotRef>().pivots) {
-			    for (auto &entry : pivot.entries) {
-				    if (entry.expr) {
-					    CheckExpressionDecimalsAreSupported(*entry.expr);
-				    }
-			    }
-		    }
-	    });
+	// the walker leaves the pivot expressions, the entries of a PIVOT IN list and the input of a MATCH_RECOGNIZE to
+	// its callers, as the binders of these positions take no parameters, which the prepared statement verification
+	// makes of the constants the walker hands out
+	std::function<void(unique_ptr<ParsedExpression> &)> expr_callback = [&](unique_ptr<ParsedExpression> &child) {
+		CheckExpressionDecimalsAreSupported(*child);
+	};
+	std::function<void(TableRef &)> ref_callback = [&](TableRef &ref) {
+		switch (ref.type) {
+		case TableReferenceType::PIVOT: {
+			for (auto &pivot : ref.Cast<PivotRef>().pivots) {
+				for (auto &pivot_expr : pivot.pivot_expressions) {
+					expr_callback(pivot_expr);
+				}
+				for (auto &entry : pivot.entries) {
+					if (entry.expr) {
+						expr_callback(entry.expr);
+					}
+				}
+			}
+			break;
+		}
+		case TableReferenceType::MATCH_RECOGNIZE: {
+			auto &input = ref.Cast<MatchRecognizeRef>().input;
+			if (input) {
+				ParsedExpressionIterator::EnumerateTableRefChildren(*input, expr_callback, ref_callback);
+			}
+			break;
+		}
+		default:
+			break;
+		}
+	};
+	ParsedExpressionIterator::EnumerateQueryNodeChildren(node, expr_callback, ref_callback);
 }
 
 bool StorageManager::HasWAL() const {

@@ -1,0 +1,118 @@
+# name: test/sql/types/decimal/wide_decimal_literal_storage_version.test
+# description: A numeric literal wider than 38 digits in a stored expression is refused below storage version v2.0.0, which would store it as a DOUBLE
+# group: [decimal]
+
+statement ok
+ATTACH '{TEST_DIR}/wide_decimal_literal_v140.db' AS old (STORAGE_VERSION 'v1.4.0');
+
+# the literal binds to DECIMAL(46,4), which the engines of this storage version type as DOUBLE, so it is refused like a
+# cast to a wide decimal instead of changing its type and value after a restart
+statement error
+CREATE VIEW old.vlit AS SELECT 123456789012345678901234567890123456789012.1234 AS c;
+----
+DECIMAL literals wider than 38 digits are not supported in storage versions prior to v2.0.0
+
+statement error
+CREATE VIEW old.vsub AS SELECT (SELECT 123456789012345678901234567890123456789012.1234) AS c;
+----
+DECIMAL literals wider than 38 digits are not supported in storage versions prior to v2.0.0
+
+statement error
+CREATE TABLE old.t (d DECIMAL(18,4) DEFAULT 123456789012345678901234567890123456789012.1234);
+----
+DECIMAL literals wider than 38 digits are not supported in storage versions prior to v2.0.0
+
+statement error
+CREATE TABLE old.t (d DECIMAL(18,4) CHECK (d < 123456789012345678901234567890123456789012.1234));
+----
+DECIMAL literals wider than 38 digits are not supported in storage versions prior to v2.0.0
+
+statement error
+CREATE MACRO old.m() AS 123456789012345678901234567890123456789012.1234 + 1;
+----
+DECIMAL literals wider than 38 digits are not supported in storage versions prior to v2.0.0
+
+statement error
+CREATE VIEW old.vcast AS SELECT CAST(1 AS DECIMAL(50,4)) AS c;
+----
+DECIMAL columns wider than 38 digits are not supported in storage versions prior to v2.1.0
+
+# a view whose binding is deferred is stored all the same
+statement error
+CREATE VIEW old.vdefer WITH (DEFER_BINDING) AS SELECT 123456789012345678901234567890123456789012.1234 AS c;
+----
+DECIMAL literals wider than 38 digits are not supported in storage versions prior to v2.0.0
+
+statement error
+CREATE VIEW old.vdefer WITH (DEFER_BINDING) AS SELECT CAST(1 AS DECIMAL(50,4)) AS c;
+----
+DECIMAL columns wider than 38 digits are not supported in storage versions prior to v2.1.0
+
+# a literal that fits 38 digits is stored as it is
+statement ok
+CREATE VIEW old.vfit AS SELECT 1234567890123456789012345678901234.1234 AS c;
+
+statement ok
+CREATE MACRO old.mfit() AS 1234567890123456789012345678901234.1234 + 1;
+
+query II
+SELECT typeof(c), c::VARCHAR FROM old.vfit;
+----
+DECIMAL(38,4)	1234567890123456789012345678901234.1234
+
+# a definition that is discarded because the view exists is not checked, nothing of it is stored
+statement ok
+CREATE VIEW IF NOT EXISTS old.vfit AS SELECT 123456789012345678901234567890123456789012.1234 AS c;
+
+query II
+SELECT typeof(c), c::VARCHAR FROM old.vfit;
+----
+DECIMAL(38,4)	1234567890123456789012345678901234.1234
+
+statement ok
+CHECKPOINT old;
+
+statement ok
+DETACH old;
+
+statement ok
+ATTACH '{TEST_DIR}/wide_decimal_literal_v140.db' AS old;
+
+query II
+SELECT typeof(c), c::VARCHAR FROM old.vfit;
+----
+DECIMAL(38,4)	1234567890123456789012345678901234.1234
+
+query II
+SELECT typeof(old.mfit()), old.mfit()::VARCHAR;
+----
+DECIMAL(39,4)	1234567890123456789012345678901235.1234
+
+# from storage version v2.0.0 the literal is stored as written and keeps its type after a restart
+statement ok
+ATTACH '{TEST_DIR}/wide_decimal_literal_v200.db' AS new (STORAGE_VERSION 'v2.0.0');
+
+statement ok
+CREATE VIEW new.vlit AS SELECT 123456789012345678901234567890123456789012.1234 AS c;
+
+statement ok
+CREATE MACRO new.m() AS 123456789012345678901234567890123456789012.1234 + 1;
+
+statement ok
+CHECKPOINT new;
+
+statement ok
+DETACH new;
+
+statement ok
+ATTACH '{TEST_DIR}/wide_decimal_literal_v200.db' AS new;
+
+query II
+SELECT typeof(c), c::VARCHAR FROM new.vlit;
+----
+DECIMAL(46,4)	123456789012345678901234567890123456789012.1234
+
+query II
+SELECT typeof(new.m()), new.m()::VARCHAR;
+----
+DECIMAL(47,4)	123456789012345678901234567890123456789013.1234

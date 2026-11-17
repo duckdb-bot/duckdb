@@ -63,6 +63,7 @@
 #include "duckdb/common/enums/ordinality_request_type.hpp"
 #include "duckdb/common/enums/output_type.hpp"
 #include "duckdb/common/enums/physical_operator_type.hpp"
+#include "duckdb/common/enums/pipeline_execution_order.hpp"
 #include "duckdb/common/enums/prepared_statement_mode.hpp"
 #include "duckdb/common/enums/preserve_order.hpp"
 #include "duckdb/common/enums/profiling_coverage.hpp"
@@ -176,6 +177,7 @@
 #include "duckdb/optimizer/aggregate_rewrite.hpp"
 #include "duckdb/optimizer/build_probe_side_optimizer.hpp"
 #include "duckdb/optimizer/compressed_materialization.hpp"
+#include "duckdb/optimizer/distinctness.hpp"
 #include "duckdb/optimizer/join_order/join_order_operator.hpp"
 #include "duckdb/optimizer/relation_statistics/relation_statistics.hpp"
 #include "duckdb/optimizer/remove_unused_columns.hpp"
@@ -2166,6 +2168,24 @@ const char* EnumUtil::ToChars<DistinctType>(DistinctType value) {
 template<>
 DistinctType EnumUtil::FromString<DistinctType>(const char *value) {
 	return static_cast<DistinctType>(StringUtil::StringToEnum(GetDistinctTypeValues(), 2, "DistinctType", value));
+}
+
+const StringUtil::EnumStringLiteral *GetDistinctnessPropagationValues() {
+	static constexpr StringUtil::EnumStringLiteral values[] {
+		{ static_cast<uint32_t>(DistinctnessPropagation::UNARY_OPERATORS), "UNARY_OPERATORS" },
+		{ static_cast<uint32_t>(DistinctnessPropagation::UNARY_OPERATORS_AND_JOINS), "UNARY_OPERATORS_AND_JOINS" }
+	};
+	return values;
+}
+
+template<>
+const char* EnumUtil::ToChars<DistinctnessPropagation>(DistinctnessPropagation value) {
+	return StringUtil::EnumToString(GetDistinctnessPropagationValues(), 2, "DistinctnessPropagation", static_cast<uint32_t>(value));
+}
+
+template<>
+DistinctnessPropagation EnumUtil::FromString<DistinctnessPropagation>(const char *value) {
+	return static_cast<DistinctnessPropagation>(StringUtil::StringToEnum(GetDistinctnessPropagationValues(), 2, "DistinctnessPropagation", value));
 }
 
 const StringUtil::EnumStringLiteral *GetErrorTypeValues() {
@@ -4712,19 +4732,20 @@ const StringUtil::EnumStringLiteral *GetOptimizerTypeValues() {
 		{ static_cast<uint32_t>(OptimizerType::WINDOW_JOIN_PUSHDOWN), "WINDOW_JOIN_PUSHDOWN" },
 		{ static_cast<uint32_t>(OptimizerType::SELF_JOIN_AGGREGATE), "SELF_JOIN_AGGREGATE" },
 		{ static_cast<uint32_t>(OptimizerType::SCALAR_AGGREGATE_MERGE), "SCALAR_AGGREGATE_MERGE" },
-		{ static_cast<uint32_t>(OptimizerType::DUPLICATE_ELIMINATED_DOMAIN), "DUPLICATE_ELIMINATED_DOMAIN" }
+		{ static_cast<uint32_t>(OptimizerType::DUPLICATE_ELIMINATED_DOMAIN), "DUPLICATE_ELIMINATED_DOMAIN" },
+		{ static_cast<uint32_t>(OptimizerType::REDUNDANT_DISTINCT), "REDUNDANT_DISTINCT" }
 	};
 	return values;
 }
 
 template<>
 const char* EnumUtil::ToChars<OptimizerType>(OptimizerType value) {
-	return StringUtil::EnumToString(GetOptimizerTypeValues(), 53, "OptimizerType", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetOptimizerTypeValues(), 54, "OptimizerType", static_cast<uint32_t>(value));
 }
 
 template<>
 OptimizerType EnumUtil::FromString<OptimizerType>(const char *value) {
-	return static_cast<OptimizerType>(StringUtil::StringToEnum(GetOptimizerTypeValues(), 53, "OptimizerType", value));
+	return static_cast<OptimizerType>(StringUtil::StringToEnum(GetOptimizerTypeValues(), 54, "OptimizerType", value));
 }
 
 const StringUtil::EnumStringLiteral *GetOrderByColumnTypeValues() {
@@ -5262,6 +5283,25 @@ const char* EnumUtil::ToChars<PipelineBroadcastExchangeScanMode>(PipelineBroadca
 template<>
 PipelineBroadcastExchangeScanMode EnumUtil::FromString<PipelineBroadcastExchangeScanMode>(const char *value) {
 	return static_cast<PipelineBroadcastExchangeScanMode>(StringUtil::StringToEnum(GetPipelineBroadcastExchangeScanModeValues(), 2, "PipelineBroadcastExchangeScanMode", value));
+}
+
+const StringUtil::EnumStringLiteral *GetPipelineExecutionOrderValues() {
+	static constexpr StringUtil::EnumStringLiteral values[] {
+		{ static_cast<uint32_t>(PipelineExecutionOrder::PARTITIONED), "PARTITIONED" },
+		{ static_cast<uint32_t>(PipelineExecutionOrder::ORDERED), "ORDERED" },
+		{ static_cast<uint32_t>(PipelineExecutionOrder::UNORDERED), "UNORDERED" }
+	};
+	return values;
+}
+
+template<>
+const char* EnumUtil::ToChars<PipelineExecutionOrder>(PipelineExecutionOrder value) {
+	return StringUtil::EnumToString(GetPipelineExecutionOrderValues(), 3, "PipelineExecutionOrder", static_cast<uint32_t>(value));
+}
+
+template<>
+PipelineExecutionOrder EnumUtil::FromString<PipelineExecutionOrder>(const char *value) {
+	return static_cast<PipelineExecutionOrder>(StringUtil::StringToEnum(GetPipelineExecutionOrderValues(), 3, "PipelineExecutionOrder", value));
 }
 
 const StringUtil::EnumStringLiteral *GetPipelineInputModeValues() {
@@ -6067,6 +6107,24 @@ const char* EnumUtil::ToChars<ScanReadAheadAcquire>(ScanReadAheadAcquire value) 
 template<>
 ScanReadAheadAcquire EnumUtil::FromString<ScanReadAheadAcquire>(const char *value) {
 	return static_cast<ScanReadAheadAcquire>(StringUtil::StringToEnum(GetScanReadAheadAcquireValues(), 3, "ScanReadAheadAcquire", value));
+}
+
+const StringUtil::EnumStringLiteral *GetScanReadAheadPolicyValues() {
+	static constexpr StringUtil::EnumStringLiteral values[] {
+		{ static_cast<uint32_t>(ScanReadAheadPolicy::ORDERED), "ORDERED" },
+		{ static_cast<uint32_t>(ScanReadAheadPolicy::AFFINITY), "AFFINITY" }
+	};
+	return values;
+}
+
+template<>
+const char* EnumUtil::ToChars<ScanReadAheadPolicy>(ScanReadAheadPolicy value) {
+	return StringUtil::EnumToString(GetScanReadAheadPolicyValues(), 2, "ScanReadAheadPolicy", static_cast<uint32_t>(value));
+}
+
+template<>
+ScanReadAheadPolicy EnumUtil::FromString<ScanReadAheadPolicy>(const char *value) {
+	return static_cast<ScanReadAheadPolicy>(StringUtil::StringToEnum(GetScanReadAheadPolicyValues(), 2, "ScanReadAheadPolicy", value));
 }
 
 const StringUtil::EnumStringLiteral *GetScanTypeValues() {

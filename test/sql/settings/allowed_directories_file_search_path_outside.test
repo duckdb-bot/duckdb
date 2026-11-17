@@ -1,0 +1,44 @@
+# name: test/sql/settings/allowed_directories_file_search_path_outside.test
+# description: A relative path that file_search_path resolves outside allowed_directories is refused
+# group: [settings]
+
+require skip_reload
+
+require no_extension_autoloading "EXPECTED: Test disable autoloading"
+
+# the working directory is allowed, the search path is its parent
+statement ok
+SET file_search_path = '..'
+
+statement ok
+SET allowed_directories = ['.']
+
+statement ok
+SET enable_external_access = false
+
+statement error
+SELECT * FROM glob('*')
+----
+Cannot access file "*"
+
+statement error
+SELECT * FROM read_csv('*.csv')
+----
+Cannot access file "*.csv"
+
+# a name in the working directory is found there
+query III
+SELECT * FROM 'data/csv/glob/f_1.csv'
+----
+1	alice	alice@email.com
+2	eve	eve@email.com
+3r	bob	NULL
+
+# a name found in the working directory does not look at the search path
+statement ok
+SET file_search_path = 'file://invalid-local-authority/unused'
+
+query I
+SELECT count(*) FROM 'data/csv/glob/f_2.csv'
+----
+2

@@ -100,6 +100,7 @@
         "test/sql/parallelism/async_task_synchronous_batch.test",
         "test/sql/storage/prefetch/async_native_scan_pool.test",
         "test/sql/storage/prefetch/async_native_scan_read_ahead.test",
+        "test/sql/storage/prefetch/scan_affinity_execution_order.test",
         "test/sql/storage/prefetch/prefetch_run_size_cap.test",
         "test/sql/progress/test_verify_progress.test"
       ]
@@ -107,7 +108,8 @@
     {
       "reason": "disabled_compression_methods doesn't survive database restarts",
       "paths": [
-        "test/sql/settings/setting_validation_and_reset.test"
+        "test/sql/settings/setting_validation_and_reset.test",
+        "test/sql/storage/compression/alp/alp_sampling_ratio.test"
       ]
     },
     {
@@ -192,6 +194,12 @@
       "reason": "Asserts the in-memory operator log, which does not survive the forced restarts.",
       "paths": [
         "test/sql/cte/materialized/cte_buffered_consumer_cycle_demotion.test"
+      ]
+    },
+    {
+      "reason": "A temporary secret must still be there at the next statement, which a restart in between prevents.",
+      "paths": [
+        "test/sql/extensions/extension_repository_from_host_httpfs.test"
       ]
     }
   ]

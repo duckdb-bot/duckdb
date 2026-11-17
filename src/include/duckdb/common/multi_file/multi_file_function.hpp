@@ -1131,6 +1131,18 @@ public:
 		} while (true);
 	}
 
+	//! Whether every file of the scan was opened at bind (union_by_name, maximum_sample_files or
+	//! maximum_files_for_stats). The files are counted up to one past the opened readers, which settles the comparison
+	//! without expanding the rest of a lazily expanded file list
+	static bool EveryFileOpened(const MultiFileBindData &bind_data) {
+		auto opened_files = bind_data.union_readers.size();
+		if (opened_files == 0) {
+			return false;
+		}
+		auto file_count = bind_data.file_list->GetFileCount(opened_files + 1);
+		return file_count.type == FileExpansionType::ALL_FILES_EXPANDED && file_count.count == opened_files;
+	}
+
 	static unique_ptr<BaseStatistics> MultiFileScanStatsExtended(ClientContext &context,
 	                                                             TableFunctionGetStatisticsInput &input) {
 		auto result = MultiFileScanStatsInternal(context, input);
@@ -1207,7 +1219,7 @@ public:
 		const bool multiple_files = bind_data.file_list->GetExpandResult() == FileExpandResult::MULTIPLE_FILES;
 		// multiple files: only if every file was opened at bind (union_by_name, maximum_sample_files or
 		// maximum_files_for_stats)
-		if (multiple_files && bind_data.union_readers.size() != bind_data.file_list->GetTotalFileCount()) {
+		if (multiple_files && !EveryFileOpened(bind_data)) {
 			return nullptr;
 		}
 		auto get_statistics = [&](BaseUnionData &reader) {
@@ -1339,8 +1351,7 @@ public:
 		// files opened for their statistics alone (ReadFilesForStatistics after a custom Bind) are counted here
 		const bool opened_for_statistics =
 		    data.file_options.union_by_name || data.union_readers.size() > 1 || !data.initial_reader;
-		if (!data.union_readers.empty() && opened_for_statistics &&
-		    data.union_readers.size() == data.file_list->GetTotalFileCount()) {
+		if (!data.union_readers.empty() && opened_for_statistics && EveryFileOpened(data)) {
 			// check if we can get a cardinality estimate from the (already opened) union readers
 			bool has_exact_cardinality = true;
 			idx_t cardinality = 0;

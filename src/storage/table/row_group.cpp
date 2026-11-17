@@ -1062,12 +1062,6 @@ void RowGroup::ProcessPreparedScan(ScanOptions options, CollectionScanState &sta
 				col_data.Filter(transaction, state.vector_index, state.column_scans[scan_idx], result_vector, sel,
 				                approved_tuple_count, filter.filter, table_filter_state);
 			}
-			for (auto &table_filter : filter_list) {
-				if (table_filter.IsAlwaysTrue()) {
-					continue;
-				}
-				result.data[table_filter.scan_column_index].Slice(sel, approved_tuple_count);
-			}
 		}
 		if (approved_tuple_count == 0) {
 			// all rows were filtered out by the table filters
@@ -1085,6 +1079,15 @@ void RowGroup::ProcessPreparedScan(ScanOptions options, CollectionScanState &sta
 			filter_info.EndFilter(filter_state);
 			FinishVector(state);
 			return;
+		}
+		if (has_filters) {
+			// Slice only columns that will be returned. Empty chunks are reset above without allocating dictionaries.
+			for (auto &table_filter : filter_info.GetFilterList()) {
+				if (table_filter.IsAlwaysTrue()) {
+					continue;
+				}
+				result.data[table_filter.scan_column_index].Slice(sel, approved_tuple_count);
+			}
 		}
 		//! Now we use the selection vector to fetch data for the other columns.
 		for (idx_t i = 0; i < column_ids.size(); i++) {
@@ -1464,14 +1467,15 @@ ColumnCheckpointInfo::ColumnCheckpointInfo(RowGroupWriteInfo &info, idx_t column
     : column_idx(column_idx), info(info) {
 }
 
-RowGroupWriteInfo::RowGroupWriteInfo(PartialBlockManager &manager, const vector<CompressionType> &compression_types,
-                                     CheckpointOptions options_p)
-    : manager(manager), compression_types(compression_types), options(options_p) {
+RowGroupWriteInfo::RowGroupWriteInfo(Context &context, PartialBlockManager &manager,
+                                     const vector<CompressionType> &compression_types, CheckpointOptions options_p)
+    : manager(manager), context(context), compression_types(compression_types), options(options_p) {
 }
 
-RowGroupWriteInfo::RowGroupWriteInfo(PartialBlockManager &manager, const vector<CompressionType> &compression_types,
+RowGroupWriteInfo::RowGroupWriteInfo(Context &context, PartialBlockManager &manager,
+                                     const vector<CompressionType> &compression_types,
                                      vector<unique_ptr<PartialBlockManager>> &column_partial_block_managers_p)
-    : manager(manager), compression_types(compression_types), options(),
+    : manager(manager), context(context), compression_types(compression_types), options(),
       column_partial_block_managers(column_partial_block_managers_p) {
 }
 
@@ -1480,6 +1484,10 @@ PartialBlockManager &RowGroupWriteInfo::GetPartialBlockManager(idx_t column_idx)
 		return *column_partial_block_managers->at(column_idx);
 	}
 	return manager;
+}
+
+Context &ColumnCheckpointInfo::GetContext() {
+	return info.context;
 }
 
 PartialBlockManager &ColumnCheckpointInfo::GetPartialBlockManager() {
@@ -1727,7 +1735,8 @@ RowGroupWriteData RowGroup::WriteToDisk(RowGroupWriter &writer) {
 		}
 	}
 
-	RowGroupWriteInfo info(writer.GetPartialBlockManager(), compression_types, writer.GetCheckpointOptions());
+	RowGroupWriteInfo info(writer.GetTableWriter().GetContext(), writer.GetPartialBlockManager(), compression_types,
+	                       writer.GetCheckpointOptions());
 
 	vector<idx_t> reused_columns;
 	for (idx_t column_idx = 0; column_idx < GetColumnCount(); column_idx++) {

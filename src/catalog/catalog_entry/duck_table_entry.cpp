@@ -95,25 +95,6 @@ DuckTableEntry::DuckTableEntry(Catalog &catalog, SchemaCatalogEntry &schema, Bou
 	if (!triggers) {
 		triggers = make_shared_ptr<CatalogSet>(catalog);
 	}
-
-	// the default, generated and check expressions are written to the catalog, as are the generated column types,
-	// also when ALTER TABLE creates the entry around the storage of the altered table
-	auto &storage_manager = catalog.GetAttached().GetStorageManager();
-	for (auto &col_def : columns.Logical()) {
-		if (col_def.Generated()) {
-			storage_manager.CheckDecimalWidthIsSupported(col_def.Type());
-			storage_manager.CheckExpressionDecimalsAreSupported(col_def.GeneratedExpression());
-		}
-		if (col_def.HasDefaultValue()) {
-			storage_manager.CheckExpressionDecimalsAreSupported(col_def.DefaultValue());
-		}
-	}
-	for (auto &constraint : constraints) {
-		if (constraint->type == ConstraintType::CHECK) {
-			storage_manager.CheckExpressionDecimalsAreSupported(*constraint->Cast<CheckConstraint>().expression);
-		}
-	}
-
 	if (storage) {
 		if (!info.indexes.empty()) {
 			storage->SetIndexStorageInfo(std::move(info.indexes));

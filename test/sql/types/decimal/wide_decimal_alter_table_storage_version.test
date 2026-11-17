@@ -6,9 +6,12 @@ statement ok
 ATTACH '{TEST_DIR}/wide_decimal_alter_v140.db' AS old (STORAGE_VERSION 'v1.4.0');
 
 statement ok
-CREATE TABLE old.t (i INTEGER, v VARCHAR);
+CREATE TABLE old.t (i INTEGER, v VARCHAR, s STRUCT(x INTEGER) DEFAULT {'x': 1});
 
-# the new entry stores the default, and a wide cast target cannot be read back by this storage version
+statement ok
+INSERT INTO old.t (i) VALUES (0);
+
+# the altered entry stores the default, and a wide cast target cannot be read back by this storage version
 statement error
 ALTER TABLE old.t ALTER COLUMN v SET DEFAULT CAST(1 AS DECIMAL(50,4));
 ----
@@ -19,6 +22,25 @@ ALTER TABLE old.t ADD COLUMN w VARCHAR DEFAULT CAST(1 AS DECIMAL(50,4));
 ----
 DECIMAL columns wider than 38 digits are not supported in storage versions prior to v2.1.0
 
+# the default of the new field is written into the rewritten default of the struct column
+statement error
+ALTER TABLE old.t ADD COLUMN s.y VARCHAR DEFAULT CAST(1 AS DECIMAL(50,4))::VARCHAR;
+----
+DECIMAL columns wider than 38 digits are not supported in storage versions prior to v2.1.0
+
+# the refused statements leave the table as it was, so it stays writable
+statement ok
+INSERT INTO old.t (i) VALUES (1);
+
+statement ok
+UPDATE old.t SET v = 'x' WHERE i = 0;
+
+query II
+SELECT i, v FROM old.t ORDER BY i;
+----
+0	x
+1	NULL
+
 # defaults within 38 digits are stored, and the database reopens
 statement ok
 ALTER TABLE old.t ALTER COLUMN v SET DEFAULT CAST(1 AS DECIMAL(38,4));
@@ -27,12 +49,14 @@ statement ok
 ALTER TABLE old.t ADD COLUMN w VARCHAR DEFAULT CAST(2 AS DECIMAL(38,4));
 
 statement ok
-INSERT INTO old.t (i) VALUES (1);
+INSERT INTO old.t (i) VALUES (2);
 
 query III
-SELECT i, v, w FROM old.t;
+SELECT i, v, w FROM old.t ORDER BY i;
 ----
-1	1.0000	2.0000
+0	x	2.0000
+1	NULL	2.0000
+2	1.0000	2.0000
 
 statement ok
 CHECKPOINT old;
@@ -44,13 +68,15 @@ statement ok
 ATTACH '{TEST_DIR}/wide_decimal_alter_v140.db' AS old;
 
 statement ok
-INSERT INTO old.t (i) VALUES (2);
+INSERT INTO old.t (i) VALUES (3);
 
 query III
 SELECT i, v, w FROM old.t ORDER BY i;
 ----
-1	1.0000	2.0000
+0	x	2.0000
+1	NULL	2.0000
 2	1.0000	2.0000
+3	1.0000	2.0000
 
 # from storage version v2.0.0 a cast stores a type expression the reader binds itself, so the wide default is allowed
 statement ok

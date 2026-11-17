@@ -8,6 +8,7 @@
 #include "duckdb/common/type_visitor.hpp"
 #include "duckdb/common/types/decimal.hpp"
 #include "duckdb/parser/expression/cast_expression.hpp"
+#include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/parser/expression/subquery_expression.hpp"
 #include "duckdb/parser/parsed_expression_iterator.hpp"
 #include "duckdb/parser/query_node.hpp"
@@ -408,8 +409,8 @@ string StorageManager::GetUnsupportedDecimalWidthReason(const LogicalType &type,
 	return WideDecimalUnsupportedReason(db, storage_version, subject);
 }
 
-void StorageManager::CheckDecimalWidthIsSupported(const LogicalType &type) const {
-	auto reason = GetUnsupportedDecimalWidthReason(type);
+void StorageManager::CheckDecimalWidthIsSupported(const LogicalType &type, const string &subject) const {
+	auto reason = GetUnsupportedDecimalWidthReason(type, subject);
 	if (!reason.empty()) {
 		throw InvalidInputException(reason);
 	}
@@ -430,6 +431,15 @@ void StorageManager::CheckExpressionDecimalsAreSupported(const ParsedExpression 
 		case ExpressionClass::CAST:
 			CheckDecimalWidthIsSupported(UnboundType::TryDefaultBind(expr.Cast<CastExpression>().TargetType()));
 			break;
+		case ExpressionClass::CONSTANT: {
+			// these storage versions store a wider numeric literal as the DOUBLE their engines type it as, which the
+			// reading engine keeps, so the literal is refused like a cast to a wide decimal
+			auto &literal = expr.Cast<ConstantExpression>().GetLiteral();
+			if (literal.kind == LiteralKind::INTEGER || literal.kind == LiteralKind::NUMERIC) {
+				CheckDecimalWidthIsSupported(literal.ToValue().type(), "literals");
+			}
+			break;
+		}
 		case ExpressionClass::SUBQUERY:
 			CheckQueryDecimalsAreSupported(*expr.Cast<SubqueryExpression>().Subquery()->node);
 			break;

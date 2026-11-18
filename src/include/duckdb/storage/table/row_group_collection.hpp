@@ -102,6 +102,8 @@ public:
 		return revert_count;
 	}
 	idx_t GetRowGroupCount() const;
+	//! The number of row groups, including the ones that are not loaded yet, without loading them
+	idx_t GetRowGroupCountWithoutLoading() const;
 	Allocator &GetAllocator() const;
 
 	void Initialize(PersistentCollectionData &data);

@@ -144,7 +144,7 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalCreateIndex &op) {
 		scan_op = *scan_op.get().children[0];
 	}
 	auto &get = scan_op.get().Cast<LogicalGet>();
-	get.bind_data->Cast<TableScanBindData>().create_index_boundary = scan_boundary;
+	get.bind_data.write().Cast<TableScanBindData>().create_index_boundary = scan_boundary;
 	auto &scan = CreatePlan(*op.children[0]);
 
 	// Index has a plan replacement function

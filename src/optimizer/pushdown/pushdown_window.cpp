@@ -219,8 +219,10 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownWindow(unique_ptr<LogicalOpe
 		vector<ColumnBinding> bindings;
 		ExtractFilterBindings(*filters.at(i)->filter, bindings);
 		// Also a filter that compares a partition expression of every window expression with constants, when the
-		// window expressions can run for fewer partitions.
-		if ((CanPushdownFilter(window_exprs_partition_bindings, bindings) ||
+		// window expressions can run for fewer partitions. A filter on partition columns must also keep the
+		// partitions whole, giving equal values the same result.
+		if (((CanPushdownFilter(window_exprs_partition_bindings, bindings) &&
+		      KeepsEqualValuesTogether(*filters.at(i)->filter)) ||
 		     (only_ranks && ComparesWindowPartitions(window, *filters.at(i)->filter))) &&
 		    !filters.at(i)->filter->IsVolatile()) {
 			pushdown.filters.push_back(std::move(filters.at(i)));

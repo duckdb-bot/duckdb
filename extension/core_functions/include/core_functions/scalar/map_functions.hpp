@@ -81,6 +81,16 @@ struct MapFromEntriesFun {
 	static ScalarFunction GetFunction();
 };
 
+struct InternalMapFromEntriesKeepFirstFun {
+	static constexpr const char *Name = "__internal_map_from_entries_keep_first";
+	static constexpr const char *Parameters = "entries";
+	static constexpr const char *Description = "";
+	static constexpr const char *Example = "";
+	static constexpr const char *Categories = "";
+
+	static ScalarFunction GetFunction();
+};
+
 struct MapConcatFun {
 	static constexpr const char *Name = "map_concat";
 	static constexpr const char *Parameters = "any,...";

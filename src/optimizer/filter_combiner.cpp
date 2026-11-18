@@ -216,7 +216,7 @@ void FilterCombiner::GenerateFilters(const std::function<void(unique_ptr<Express
 					auto lower_constant = make_uniq<BoundConstantExpression>(lower_value);
 					auto upper_constant = make_uniq<BoundConstantExpression>(upper_value);
 					auto between =
-					    BoundBetweenExpression::Create(entries[i].get().Copy(), std::move(lower_constant),
+					    BoundBetweenExpression::Create(context, entries[i].get().Copy(), std::move(lower_constant),
 					                                   std::move(upper_constant), lower_inclusive, upper_inclusive);
 					callback(std::move(between));
 				}
@@ -1259,7 +1259,7 @@ FilterResult FilterCombiner::AddFilter(Expression &expr) {
 		if (!ExpressionExecutor::TryEvaluateScalar(context, expr, result)) {
 			return FilterResult::UNSUPPORTED;
 		}
-		result = result.DefaultCastAs(LogicalType::BOOLEAN);
+		result = result.CastAs(context, LogicalType::BOOLEAN);
 		// check if the filter passes
 		if (result.IsNull() || !BooleanValue::Get(result)) {
 			// the filter does not pass the scalar test, create an empty result

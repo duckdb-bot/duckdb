@@ -1,5 +1,4 @@
 #include "duckdb/optimizer/filter_pushdown.hpp"
-#include "duckdb/common/type_visitor.hpp"
 #include "duckdb/optimizer/filter_combiner.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
 #include "duckdb/planner/expression/bound_between_expression.hpp"
@@ -139,8 +138,6 @@ unique_ptr<LogicalOperator> FilterPushdown::Rewrite(unique_ptr<LogicalOperator> 
 	case LogicalOperatorType::LOGICAL_EXCEPT:
 	case LogicalOperatorType::LOGICAL_UNION:
 		return PushdownSetOperation(std::move(op));
-	case LogicalOperatorType::LOGICAL_DISTINCT:
-		return PushdownDistinct(std::move(op));
 	case LogicalOperatorType::LOGICAL_ORDER_BY:
 		// we can just push directly through these operations without any rewriting
 		RewriteChild(*op, 0);
@@ -342,22 +339,6 @@ void FilterPushdown::RewriteChild(LogicalOperator &op, idx_t child_idx) {
 	                                           op.children[child_idx]->GetColumnBindings());
 }
 
-bool FilterPushdown::EqualValuesAreIdentical(const LogicalType &type) {
-	return !TypeVisitor::Contains(type, [](const LogicalType &child) {
-		switch (child.id()) {
-		case LogicalTypeId::FLOAT:
-		case LogicalTypeId::DOUBLE:
-		case LogicalTypeId::INTERVAL:
-		case LogicalTypeId::VARIANT:
-			return true;
-		case LogicalTypeId::VARCHAR:
-			return !StringType::GetCollation(child).empty();
-		default:
-			return false;
-		}
-	});
-}
-
 //! Whether the filter only compares columns with constants or tests them for NULL, also negated or combined
 static bool ComparesColumnsWithConstants(const Expression &filter) {
 	auto is_column = [](const Expression &expr) {
@@ -414,7 +395,7 @@ bool FilterPushdown::KeepsEqualValuesTogether(const Expression &filter) {
 	// other filters can tell equal values apart, unless the columns they read have no equal values that differ
 	bool keeps_equal_values_together = true;
 	ExpressionIterator::VisitExpression<BoundColumnRefExpression>(filter, [&](const BoundColumnRefExpression &col) {
-		if (!EqualValuesAreIdentical(col.GetReturnType())) {
+		if (!col.GetReturnType().EqualValuesAreIdentical()) {
 			keeps_equal_values_together = false;
 		}
 	});

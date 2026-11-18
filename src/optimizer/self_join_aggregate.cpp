@@ -58,7 +58,6 @@
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
 #include "duckdb/planner/operator/logical_cross_product.hpp"
 #include "duckdb/planner/operator/logical_cteref.hpp"
-#include "duckdb/planner/operator/logical_distinct.hpp"
 #include "duckdb/planner/operator/logical_filter.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/planner/operator/logical_materialized_cte.hpp"
@@ -88,27 +87,6 @@ bool JoinConditionsVolatile(const LogicalOperator &op) {
 		}
 	}
 	return false;
-}
-
-//! A GROUP BY whose result is the same over its input with or without repeated rows
-bool AggregateIgnoresDuplicates(const LogicalAggregate &aggregate) {
-	if (AnyVolatile(aggregate.groups)) {
-		return false;
-	}
-	for (auto &expr : aggregate.expressions) {
-		if (expr->GetExpressionClass() != ExpressionClass::BOUND_AGGREGATE || expr->IsVolatile()) {
-			return false;
-		}
-		auto &bound = expr->Cast<BoundAggregateExpression>();
-		if (bound.IsDistinct()) {
-			continue;
-		}
-		auto &name = bound.Function().GetName().GetIdentifierName();
-		if ((name != "min" && name != "max") || bound.GetChildren().size() != 1) {
-			return false;
-		}
-	}
-	return true;
 }
 
 //! The column bindings the plan reads, visited from the root down so that a candidate projection's expressions count
@@ -147,13 +125,6 @@ public:
 			}
 		} else {
 			VisitOperatorExpressions(op);
-		}
-		if (op.type == LogicalOperatorType::LOGICAL_DISTINCT &&
-		    op.Cast<LogicalDistinct>().distinct_type == DistinctType::DISTINCT_ON) {
-			// the columns it does not deduplicate on pass through by position
-			for (auto &binding : op.children[0]->GetColumnBindings()) {
-				read.insert(binding);
-			}
 		}
 		VisitOperatorChildren(op);
 	}
@@ -342,12 +313,7 @@ private:
 			return;
 		}
 		case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY:
-			Walk(op.children[0], AggregateIgnoresDuplicates(op.Cast<LogicalAggregate>()));
-			return;
-		case LogicalOperatorType::LOGICAL_DISTINCT:
-			// its targets are expressions, so what it deduplicates on counts as read, and so does every column a
-			// DISTINCT ON passes through
-			Walk(op.children[0], true);
+			Walk(op.children[0], op.Cast<LogicalAggregate>().IgnoresDuplicates());
 			return;
 		case LogicalOperatorType::LOGICAL_MATERIALIZED_CTE: {
 			// its references are all below its second child, so they are all seen before its definition is
@@ -511,8 +477,8 @@ private:
 		auto scan = std::move(join.children[0]);
 		auto not_null = make_uniq<LogicalFilter>();
 		for (auto &key : keys) {
-			auto check = make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_IS_NOT_NULL, LogicalType::BOOLEAN);
-			check->GetChildrenMutable().push_back(
+			auto check = make_uniq<BoundOperatorExpression>(
+			    ExpressionType::OPERATOR_IS_NOT_NULL, LogicalType::BOOLEAN,
 			    make_uniq<BoundColumnRefExpression>(key.type, ColumnBinding(scan_index, key.left)));
 			not_null->expressions.push_back(std::move(check));
 		}
@@ -552,11 +518,10 @@ private:
 			unique_ptr<Expression> replacement;
 			if (key_of[k] != DConstants::INVALID_INDEX) {
 				replacement = make_uniq<BoundColumnRefExpression>(
-				    expr->GetReturnType(), ColumnBinding(group_index, ProjectionIndex(key_of[k])));
+				    expr->GetAlias(), expr->GetReturnType(), ColumnBinding(group_index, ProjectionIndex(key_of[k])));
 			} else {
-				replacement = make_uniq<BoundConstantExpression>(Value(expr->GetReturnType()));
+				replacement = make_uniq<BoundConstantExpression>(Value(expr->GetReturnType()), expr->GetAlias());
 			}
-			replacement->SetAlias(expr->GetAlias());
 			expr = std::move(replacement);
 		}
 		// drops the filters, the join and the other scan

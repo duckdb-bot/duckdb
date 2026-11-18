@@ -976,14 +976,17 @@ void LogicalWindow::Serialize(Serializer &serializer) const {
 	LogicalOperator::Serialize(serializer);
 	serializer.WritePropertyWithDefault<TableIndex>(200, "window_index", window_index);
 	serializer.WritePropertyWithDefault<vector<unique_ptr<Expression>>>(201, "expressions", expressions);
-	serializer.WritePropertyWithDefault<bool>(202, "numbering_is_arbitrary", numbering_is_arbitrary, false);
+	serializer.WritePropertyWithDefault<optional_idx>(202, "partition_limit", partition_limit, optional_idx());
+	serializer.WritePropertyWithDefault<bool>(203, "numbering_is_arbitrary", numbering_is_arbitrary, false);
 }
 
 unique_ptr<LogicalOperator> LogicalWindow::Deserialize(Deserializer &deserializer) {
 	auto window_index = deserializer.ReadPropertyWithDefault<TableIndex>(200, "window_index");
-	auto result = duckdb::unique_ptr<LogicalWindow>(new LogicalWindow(window_index));
-	deserializer.ReadPropertyWithDefault<vector<unique_ptr<Expression>>>(201, "expressions", result->expressions);
-	deserializer.ReadPropertyWithExplicitDefault<bool>(202, "numbering_is_arbitrary", result->numbering_is_arbitrary, false);
+	auto expressions = deserializer.ReadPropertyWithDefault<vector<unique_ptr<Expression>>>(201, "expressions");
+	auto partition_limit = deserializer.ReadPropertyWithExplicitDefault<optional_idx>(202, "partition_limit", optional_idx());
+	auto result = duckdb::unique_ptr<LogicalWindow>(new LogicalWindow(window_index, partition_limit));
+	result->expressions = std::move(expressions);
+	deserializer.ReadPropertyWithExplicitDefault<bool>(203, "numbering_is_arbitrary", result->numbering_is_arbitrary, false);
 	return std::move(result);
 }
 

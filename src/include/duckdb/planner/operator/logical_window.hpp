@@ -22,13 +22,17 @@ public:
 	static constexpr const LogicalOperatorType TYPE = LogicalOperatorType::LOGICAL_WINDOW;
 
 public:
-	explicit LogicalWindow(TableIndex window_index)
-	    : LogicalOperator(LogicalOperatorType::LOGICAL_WINDOW), window_index(window_index) {
+	LogicalWindow(TableIndex window_index, optional_idx partition_limit)
+	    : LogicalOperator(LogicalOperatorType::LOGICAL_WINDOW), window_index(window_index),
+	      partition_limit(partition_limit) {
 	}
 
 	TableIndex window_index;
 	//! Whether the numbers only tell rows apart, so they may change as long as every reader sees the same ones
 	bool numbering_is_arbitrary = false;
+
+	//! The maximum number of rows to return per partition
+	optional_idx partition_limit;
 
 public:
 	vector<ColumnBinding> GetColumnBindings() override;

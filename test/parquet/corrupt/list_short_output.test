@@ -4,13 +4,13 @@
 
 require parquet
 
-# The row group declares eight rows, but y contains only four lists.
+# The row group declares eight rows, but y contains only four lists, which the row group check rejects.
 statement error
 SELECT x, y[1] FROM read_parquet('data/parquet-testing/corrupt/list_short_output.parquet') WHERE x > 0;
 ----
-Mismatch in parquet read
+Column has 4 values but row group has 8 rows
 
 statement error
 SELECT x, y[1] FROM read_parquet('data/parquet-testing/corrupt/list_short_output.parquet');
 ----
-Mismatch in parquet read
+Column has 4 values but row group has 8 rows

@@ -4,8 +4,8 @@
 
 require parquet
 
-# The schema has two columns, but only the first row group contains both.
+# The schema has two columns, but only the first row group contains both, which is caught when the file is opened.
 statement error
 SELECT column_id, num_values FROM parquet_metadata('{DATA_DIR}/parquet-testing/corrupt/metadata_column_count_mismatch.parquet');
 ----
-Data Corruption Error: Parquet row group 1 column count mismatch (expected 2, found 1)
+<REGEX>:.*row group does not have enough columns \(row group 1 has 1 column chunks, the schema has 2 columns\).*

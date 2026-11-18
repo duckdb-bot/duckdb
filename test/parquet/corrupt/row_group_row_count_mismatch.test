@@ -1,0 +1,100 @@
+# name: test/parquet/corrupt/row_group_row_count_mismatch.test
+# description: a row group that claims more rows than its column chunks hold is rejected instead of counted or read forever
+# group: [corrupt]
+
+require parquet
+
+# the second row group claims 9223372036854775807 rows and its only column chunk has no metadata
+query III
+SELECT row_group_id, row_group_num_rows, num_values
+FROM parquet_metadata('{DATA_DIR}/parquet-testing/corrupt/null_type_statistics.parquet')
+ORDER BY row_group_id;
+----
+0	12	12
+1	9223372036854775807	0
+
+# the row group claims 60 rows and its column chunk holds 5 values
+query III
+SELECT row_group_id, row_group_num_rows, num_values
+FROM parquet_metadata('{DATA_DIR}/parquet-testing/corrupt/row_group_rows_exceed_values.parquet');
+----
+0	60	5
+
+# the first two row groups claim 9223372036854775807 rows each, with as many values
+query III
+SELECT row_group_id, row_group_num_rows, num_values
+FROM parquet_metadata('{DATA_DIR}/parquet-testing/corrupt/row_group_row_counts_overflow.parquet')
+ORDER BY row_group_id;
+----
+0	9223372036854775807	9223372036854775807
+1	9223372036854775807	9223372036854775807
+2	2048	2048
+
+# the row counts of the row groups are used as exact statistics, the sum used to overflow BIGINT
+statement error
+SELECT count(*) FROM read_parquet('{DATA_DIR}/parquet-testing/corrupt/null_type_statistics.parquet');
+----
+<REGEX>:.*column chunk is missing its metadata \(row group 1, column 0, 9223372036854775807 rows\).*
+
+# this count used to be 60, the message names the file
+statement error
+SELECT count(*) FROM read_parquet('{DATA_DIR}/parquet-testing/corrupt/row_group_rows_exceed_values.parquet');
+----
+<REGEX>:.*Failed to read file ".*row_group_rows_exceed_values\.parquet": metadata is corrupt\. Column has 5 values but row group has 60 rows \(row group 0, column 0\).*
+
+# the second row group of this file has one column chunk for two columns, nothing holds the rows of the second
+# column, the file is rejected when it is opened
+statement error
+SELECT count(*) FROM read_parquet('{DATA_DIR}/parquet-testing/corrupt/metadata_column_count_mismatch.parquet');
+----
+<REGEX>:.*row group does not have enough columns \(row group 1 has 1 column chunks, the schema has 2 columns\).*
+
+# this count used to be 2046, the sum of the row counts wrapped around
+statement error
+SELECT count(*) FROM read_parquet('{DATA_DIR}/parquet-testing/corrupt/row_group_row_counts_overflow.parquet');
+----
+<REGEX>:.*row_group_row_counts_overflow\.parquet.*metadata is corrupt\. The row counts of the row groups up to row group 1 exceed the BIGINT range.*
+
+# without the statistics the count comes from a scan that reads no column, it used to run forever
+statement ok
+SET disabled_optimizers = 'statistics_propagation';
+
+statement error
+SELECT count(*) FROM read_parquet('{DATA_DIR}/parquet-testing/corrupt/null_type_statistics.parquet');
+----
+<REGEX>:.*column chunk is missing its metadata \(row group 1, column 0, 9223372036854775807 rows\).*
+
+statement error
+SELECT x FROM (
+    SELECT 1 AS x
+    FROM read_parquet('{DATA_DIR}/parquet-testing/corrupt/null_type_statistics.parquet')
+    LIMIT 2 OFFSET 11
+);
+----
+<REGEX>:.*column chunk is missing its metadata \(row group 1, column 0, 9223372036854775807 rows\).*
+
+statement error
+SELECT count(*) FROM read_parquet('{DATA_DIR}/parquet-testing/corrupt/row_group_rows_exceed_values.parquet');
+----
+<REGEX>:.*metadata is corrupt\. Column has 5 values but row group has 60 rows \(row group 0, column 0\).*
+
+# the statistics of the column may reject the chunk first
+statement error
+SELECT i FROM read_parquet('{DATA_DIR}/parquet-testing/corrupt/row_group_rows_exceed_values.parquet');
+----
+<REGEX>:.*metadata is corrupt\. Column has 5 values but row group has 60 rows.*
+
+# the row numbers of the third row group used to be -2 and -1
+statement error
+SELECT file_row_number, file_row_group_number
+FROM read_parquet('{DATA_DIR}/parquet-testing/corrupt/row_group_row_counts_overflow.parquet', file_row_number = true)
+WHERE file_row_group_number = 2
+LIMIT 2;
+----
+<REGEX>:.*metadata is corrupt\. The row counts of the row groups up to row group 1 exceed the BIGINT range.*
+
+# reading the column without a chunk used to be an internal error
+statement error
+SELECT * FROM read_parquet('{DATA_DIR}/parquet-testing/corrupt/metadata_column_count_mismatch.parquet');
+----
+<REGEX>:.*row group does not have enough columns \(row group 1 has 1 column chunks, the schema has 2 columns\).*

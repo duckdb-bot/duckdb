@@ -45,10 +45,12 @@ class LogicalGet;
 class PhysicalOperator;
 
 struct ParquetMetadataCacheEntry {
-	ParquetMetadataCacheEntry(shared_ptr<ParquetFileMetadataCache> metadata, ParquetCacheValidity validity,
-	                          bool has_deletes);
+	ParquetMetadataCacheEntry(shared_ptr<ParquetFileMetadataCache> metadata, string file_path,
+	                          ParquetCacheValidity validity, bool has_deletes);
 
 	shared_ptr<ParquetFileMetadataCache> metadata;
+	//! The file the metadata belongs to, named in the errors of its validation
+	string file_path;
 	ParquetCacheValidity validity;
 	bool has_deletes;
 };
@@ -133,8 +135,10 @@ static vector<column_t> ParquetGetRowIdColumns(ClientContext &context, optional_
 }
 
 ParquetMetadataCacheEntry::ParquetMetadataCacheEntry(shared_ptr<ParquetFileMetadataCache> metadata_p,
-                                                     ParquetCacheValidity validity_p, bool has_deletes_p)
-    : metadata(std::move(metadata_p)), validity(validity_p), has_deletes(has_deletes_p) {
+                                                     string file_path_p, ParquetCacheValidity validity_p,
+                                                     bool has_deletes_p)
+    : metadata(std::move(metadata_p)), file_path(std::move(file_path_p)), validity(validity_p),
+      has_deletes(has_deletes_p) {
 }
 
 //! The cached metadata of every file of the scan - empty unless the metadata of all of them is cached
@@ -162,7 +166,7 @@ static vector<ParquetMetadataCacheEntry> LoadMetadataCaches(ClientContext &conte
 
 		// check if the cache is valid based ONLY on the OpenFileInfo (do not do any file system requests here)
 		const auto is_valid = metadata_entry->IsValid(file, context);
-		result.emplace_back(std::move(metadata_entry), is_valid, has_deletes);
+		result.emplace_back(std::move(metadata_entry), file.path, is_valid, has_deletes);
 	}
 	return result;
 }
@@ -212,7 +216,7 @@ GetCachedPartitionStats(ClientContext &context, const vector<ParquetMetadataCach
 
 	// all caches are valid! we can return the partition stats
 	for (auto &cache : cached_metadata) {
-		ParquetReader::GetPartitionStats(cache.metadata->metadata->file_metadata, result);
+		ParquetReader::GetPartitionStats(cache.metadata->metadata->file_metadata, cache.file_path, result);
 	}
 	return result;
 }

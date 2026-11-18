@@ -20,8 +20,10 @@ PhysicalNestedLoopJoin::PhysicalNestedLoopJoin(PhysicalPlan &physical_plan, Logi
                              estimated_cardinality) {
 	filter_pushdown = std::move(pushdown_info_p);
 	D_ASSERT(join_type != JoinType::MARK || (conditions.size() == 1 && !predicate));
+	// a TUPLE or a UNION can compare as NULL when neither side is NULL
+	auto key_type = conditions[0].GetLHS().GetReturnType().id();
 	track_unknown =
-	    join_type == JoinType::MARK && (conditions[0].GetLHS().GetReturnType().id() == LogicalTypeId::TUPLE ||
+	    join_type == JoinType::MARK && (key_type == LogicalTypeId::TUPLE || key_type == LogicalTypeId::UNION ||
 	                                    conditions[0].GetComparisonType() == ExpressionType::COMPARE_DISTINCT_FROM);
 	children.push_back(left);
 	children.push_back(right);

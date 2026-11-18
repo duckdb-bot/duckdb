@@ -24,12 +24,15 @@
 #include "duckdb/parser/peg/transformer/parse_result.hpp"
 #include "duckdb/storage/arena_allocator.hpp"
 
+#include <map>
+
 namespace duckdb {
 class ClientContext;
 class PEGTransformerFactory;
 class ParseResultAllocator;
 class Matcher;
 class MatcherAllocator;
+struct ListMatchChain;
 class MatchProcess;
 
 enum class SuggestionState : uint8_t {
@@ -146,6 +149,8 @@ struct MatcherSuggestion {
 	AutoCompleteCandidate keyword;
 	SuggestionState type;
 	char extra_char = '\0';
+	//! Label of the enclosing labelled rule (e.g. "an expression"), if the suggestion was added inside one
+	optional_ptr<const string> label;
 };
 
 struct MatchContext {
@@ -166,6 +171,15 @@ struct MatchContext {
 	IdentifierCaseMode identifier_case_mode;
 	ParserPackratCache *packrat_cache;
 	MatchMode mode;
+	//! Label of the labelled rule currently being walked for suggestions, if any
+	optional_ptr<const string> active_label;
+	//! Ignore rule-level suggestion suppression, so the suggestions a rule adds depend only on its
+	//! position and the packrat cache stays valid while collecting them
+	bool memoizable_suggestions = false;
+	//! With memoizable_suggestions: walk labelled rules instead of summarising them by their label alone
+	bool expand_labels = false;
+	//! With memoizable_suggestions: suggestion walks already done, keyed by matcher and active label
+	std::map<std::pair<const Matcher *, const string *>, SuggestionType> walked_suggestions;
 };
 
 struct MatchState {
@@ -288,7 +302,20 @@ struct MatcherFirstSet {
 	//! Merge other into this set, returns whether anything changed
 	DUCKDB_API bool Merge(const MatcherFirstSet &other);
 	//! False only if the matcher certainly cannot match at the current token
-	DUCKDB_API bool MightMatch(MatchState &state) const;
+	bool MightMatch(MatchState &state) const {
+		if (!computed || any || nullable) {
+			return true;
+		}
+		auto token = state.token_iterator.Current();
+		if (!token) {
+			return false;
+		}
+		if (token->token_class & class_mask) {
+			return true;
+		}
+		auto literal_id = state.token_iterator.CurrentLiteralInfo(*table).LiteralId();
+		return literal_id && HasLiteral(literal_id);
+	}
 };
 
 class Matcher {
@@ -301,11 +328,14 @@ public:
 	MatcherResult MatchParseResult(MatchState &state) const;
 	//! Create matcher-local state with state.Make<PROCESS>() for incremental execution.
 	virtual arena_ptr<MatchProcess> StartMatch(MatchState &state) const = 0;
-	virtual bool IsAtomic() const {
-		return false;
+	//! Whether the matcher is an AtomicMatcher, which matches in one step without a process
+	bool IsAtomic() const {
+		return atomic;
 	}
 	virtual SuggestionType AddSuggestion(MatchState &state) const;
 	virtual SuggestionType AddSuggestionInternal(MatchState &state) const = 0;
+	//! AddSuggestionInternal, with the matcher's label (if any) applied to the suggestions it adds
+	SuggestionType AddLabelledSuggestion(MatchState &state) const;
 	virtual string ToString() const = 0;
 	void Print() const;
 
@@ -318,6 +348,13 @@ public:
 	void SetRule(const CompiledGrammarRule &rule_p) {
 		rule = rule_p;
 		name = rule_p.name;
+	}
+	//! A short description of what the matcher accepts, used to summarise it in syntax errors
+	void SetLabel(string label_p) {
+		label = std::move(label_p);
+	}
+	const string &GetLabel() const {
+		return label;
 	}
 	optional_ptr<const CompiledGrammarRule> GetRule() const {
 		return rule;
@@ -379,7 +416,9 @@ protected:
 	friend class MatcherAllocator;
 	MatcherType type;
 	string name;
+	string label;
 	optional_idx packrat_id;
+	bool atomic = false;
 	bool packrat_memoized = false;
 	bool collapsible = false;
 	bool structural = false;
@@ -392,11 +431,9 @@ DUCKDB_API void ComputeFirstSets(Matcher &root, const GrammarLiteralTable &table
 class AtomicMatcher : public Matcher {
 public:
 	explicit AtomicMatcher(MatcherType type) : Matcher(type) {
+		atomic = true;
 	}
 
-	bool IsAtomic() const final {
-		return true;
-	}
 	DUCKDB_API arena_ptr<MatchProcess> StartMatch(MatchState &state) const final;
 	virtual MatcherResult MatchAtomic(MatchState &state) const = 0;
 	//! Describes the tokens this matcher can start with; the default (no information) never skips the matcher
@@ -420,12 +457,22 @@ public:
 
 class MatcherAllocator {
 public:
+	DUCKDB_API MatcherAllocator();
+	DUCKDB_API MatcherAllocator(MatcherAllocator &&) noexcept;
+	DUCKDB_API MatcherAllocator &operator=(MatcherAllocator &&) noexcept;
+	DUCKDB_API ~MatcherAllocator();
+
 	Matcher &Allocate(unique_ptr<Matcher> matcher);
 	void InitializeListChains();
 
 private:
 	vector<unique_ptr<Matcher>> matchers;
+	vector<unique_ptr<ListMatchChain>> list_chains;
 };
+
+//! The arenas of a parse (parse results, matcher frames, packrat entries, transform results) start with room for
+//! a typical statement, so that it does not grow them through several chunks first
+static constexpr idx_t PARSER_ARENA_INITIAL_CAPACITY = 8 * ArenaAllocator::ARENA_ALLOCATOR_INITIAL_CAPACITY;
 
 class ParseResultAllocator {
 public:
@@ -442,6 +489,14 @@ public:
 			pending_destructors.push_back(std::move(owned));
 		}
 		return optional_ptr<ParseResult>(result);
+	}
+
+	//! Uninitialized child storage owned by the result arena.
+	unsafe_array_ptr<reference<ParseResult>> AllocateChildren(idx_t capacity) {
+		arena.AlignNext();
+		return unsafe_array_ptr<reference<ParseResult>>(
+		    reinterpret_cast<reference<ParseResult> *>(arena.Allocate(capacity * sizeof(reference<ParseResult>))),
+		    capacity);
 	}
 
 	//! Copy a collected set of children into the arena, where it lives as long as the results it belongs to

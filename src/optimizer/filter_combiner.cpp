@@ -2,7 +2,6 @@
 
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/common/enums/expression_type.hpp"
-#include "duckdb/common/type_visitor.hpp"
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/function/scalar/string_common.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
@@ -128,25 +127,6 @@ FilterResult FilterCombiner::AddConjuncts(unique_ptr<Expression> expr) {
 	return FilterResult::SUCCESS;
 }
 
-//! Whether values of the type that compare equal are also identical, so that every expression gives them the same
-//! result. Signed zeros compare equal but print differently, as do intervals of the same length and strings that a
-//! collation compares
-static bool EqualValuesAreIdentical(const LogicalType &type) {
-	return !TypeVisitor::Contains(type, [](const LogicalType &child) {
-		switch (child.id()) {
-		case LogicalTypeId::FLOAT:
-		case LogicalTypeId::DOUBLE:
-		case LogicalTypeId::INTERVAL:
-		case LogicalTypeId::VARIANT:
-			return true;
-		case LogicalTypeId::VARCHAR:
-			return !StringType::GetCollation(child).empty();
-		default:
-			return false;
-		}
-	});
-}
-
 void FilterCombiner::GenerateEquivalentFilters(const Expression &filter,
                                                const std::function<void(unique_ptr<Expression> filter)> &callback) {
 	if (filter.IsVolatile()) {
@@ -159,8 +139,8 @@ void FilterCombiner::GenerateEquivalentFilters(const Expression &filter,
 		if (entry == equivalence_set_map.end()) {
 			return;
 		}
-		if (!EqualValuesAreIdentical(col.GetReturnType())) {
-			// the filter can tell equal values apart, so it does not hold for the other columns of the set
+		if (!col.GetReturnType().EqualValuesAreIdentical()) {
+			// equal values of this type need not be identical, so the filter need not hold for the other columns
 			return;
 		}
 		for (auto &existing : candidate_columns) {
@@ -175,6 +155,9 @@ void FilterCombiner::GenerateEquivalentFilters(const Expression &filter,
 		auto &col = col_ref.get();
 		auto set_id = equivalence_set_map.find(col)->second;
 		for (auto &item : equivalence_map[set_id]) {
+			if (item.get().Equals(col)) {
+				continue;
+			}
 			callback(ExpressionIterator::ReplaceExpression(filter, col, item.get()));
 		}
 	}
@@ -237,7 +220,7 @@ void FilterCombiner::GenerateFilters(const std::function<void(unique_ptr<Express
 					auto lower_constant = make_uniq<BoundConstantExpression>(lower_value);
 					auto upper_constant = make_uniq<BoundConstantExpression>(upper_value);
 					auto between =
-					    BoundBetweenExpression::Create(entries[i].get().Copy(), std::move(lower_constant),
+					    BoundBetweenExpression::Create(context, entries[i].get().Copy(), std::move(lower_constant),
 					                                   std::move(upper_constant), lower_inclusive, upper_inclusive);
 					callback(std::move(between));
 				}
@@ -361,6 +344,53 @@ static bool SupportedFilterComparison(ExpressionType expression_type) {
 		return true;
 	default:
 		return false;
+	}
+}
+
+optional_ptr<const Expression> FilterCombiner::GetComparedExpression(const Expression &filter) {
+	const auto filter_type = filter.GetExpressionType();
+	// BETWEEN and IN compare their first child with the others
+	const bool compares_first_child =
+	    filter_type == ExpressionType::COMPARE_BETWEEN || filter_type == ExpressionType::COMPARE_IN;
+	if ((!SupportedFilterComparison(filter_type) && !compares_first_child) || filter.IsVolatile()) {
+		return nullptr;
+	}
+	optional_ptr<const Expression> compared;
+	bool valid = true;
+	idx_t child_idx = 0;
+	ExpressionIterator::EnumerateChildren(filter, [&](const Expression &child) {
+		if (!child.IsFoldable()) {
+			valid = valid && !compared && (!compares_first_child || child_idx == 0);
+			compared = &child;
+		}
+		child_idx++;
+	});
+	return valid ? compared : nullptr;
+}
+
+void FilterCombiner::GenerateJoinFilters(const vector<JoinCondition> &conditions,
+                                         const vector<reference<const Expression>> &filters, JoinSide target_side,
+                                         const std::function<void(unique_ptr<Expression> filter)> &callback) {
+	D_ASSERT(target_side == JoinSide::LEFT || target_side == JoinSide::RIGHT);
+	for (auto &cond : conditions) {
+		// a comparison with constants is false for NULL, so NOT DISTINCT FROM acts as equality for it
+		if (!cond.IsComparison() || (cond.GetComparisonType() != ExpressionType::COMPARE_EQUAL &&
+		                             cond.GetComparisonType() != ExpressionType::COMPARE_NOT_DISTINCT_FROM)) {
+			continue;
+		}
+		auto &source = target_side == JoinSide::LEFT ? cond.GetRHS() : cond.GetLHS();
+		auto &target = target_side == JoinSide::LEFT ? cond.GetLHS() : cond.GetRHS();
+		// the join evaluates both sides once per row, a generated filter must not evaluate them differently
+		if (source.IsVolatile() || target.IsVolatile() || target.CanThrow() || source.IsFoldable() ||
+		    target.IsFoldable()) {
+			continue;
+		}
+		for (auto &filter : filters) {
+			auto compared = GetComparedExpression(filter.get());
+			if (compared && compared->Equals(source)) {
+				callback(ExpressionIterator::ReplaceExpression(filter.get(), source, target));
+			}
+		}
 	}
 }
 
@@ -805,9 +835,15 @@ FilterPushdownResult FilterCombiner::TryPushdownOrClause(TableFilterSet &table_f
 			    CreateComparisonExpression(*column_ref, comparison_type, const_val->GetValue()));
 		}
 	}
-	if (only_equalities && equality_column &&
-	    TryPushdownDenseInFilter(table_filters, *equality_column, equality_values)) {
-		return FilterPushdownResult::PUSHED_DOWN_FULLY;
+	if (only_equalities && equality_column) {
+		if (TryPushdownDenseInFilter(table_filters, *equality_column, equality_values)) {
+			return FilterPushdownResult::PUSHED_DOWN_FULLY;
+		}
+		// Push the same filter as for `col IN (...)`, which index scans can use.
+		auto in_expr = ExpressionFilter::CreateInExpression(CreateFilterTargetExpression(*equality_column),
+		                                                    std::move(equality_values));
+		table_filters.PushFilter(proj_id, CreateOptionalExpressionFilter(std::move(in_expr), col_type));
+		return FilterPushdownResult::PUSHED_DOWN_PARTIALLY;
 	}
 	table_filters.PushFilter(proj_id, CreateOptionalExpressionFilter(std::move(conj_filter), col_type));
 	return FilterPushdownResult::PUSHED_DOWN_PARTIALLY;
@@ -1217,7 +1253,8 @@ FilterResult FilterCombiner::AddBoundComparisonFilter(Expression &expr) {
 }
 
 FilterResult FilterCombiner::AddFilter(Expression &expr) {
-	if (expr.HasParameter()) {
+	// every occurrence of a volatile expression is its own evaluation, so it cannot share an equivalence set
+	if (expr.HasParameter() || expr.IsVolatile()) {
 		return FilterResult::UNSUPPORTED;
 	}
 	if (expr.IsFoldable()) {
@@ -1226,7 +1263,7 @@ FilterResult FilterCombiner::AddFilter(Expression &expr) {
 		if (!ExpressionExecutor::TryEvaluateScalar(context, expr, result)) {
 			return FilterResult::UNSUPPORTED;
 		}
-		result = result.DefaultCastAs(LogicalType::BOOLEAN);
+		result = result.CastAs(context, LogicalType::BOOLEAN);
 		// check if the filter passes
 		if (result.IsNull() || !BooleanValue::Get(result)) {
 			// the filter does not pass the scalar test, create an empty result

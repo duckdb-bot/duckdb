@@ -292,14 +292,14 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundFuncti
 			// also have moved its children
 			auto original = func.Copy();
 			unique_ptr<Expression> replacement;
-			FunctionStatisticsInput input(func, func.BindInfo().get(), stats, &replacement);
+			FunctionStatisticsInput input(func, func.BindInfoMutable(), stats, &replacement);
 			auto result = func.Function().GetStatisticsCallback()(context, input);
 			if (replacement) {
 				expr_ptr = std::move(original);
 			}
 			return result;
 		}
-		FunctionStatisticsInput input(func, func.BindInfo().get(), stats, &expr_ptr);
+		FunctionStatisticsInput input(func, func.BindInfoMutable(), stats, &expr_ptr);
 		return func.Function().GetStatisticsCallback()(context, input);
 	}
 	return PropagateMonotoneBounds(context, func, stats);

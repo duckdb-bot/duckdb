@@ -7,6 +7,8 @@
 #include "duckdb/common/types/time.hpp"
 #include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/common/helper.hpp"
+#include "duckdb/common/exception/conversion_exception.hpp"
+#include "duckdb/common/limits.hpp"
 #include "duckdb/common/typedefs.hpp"
 #include "duckdb/common/types/interval.hpp"
 #include "duckdb/common/operator/add.hpp"
@@ -105,9 +107,14 @@ Int96 TimestampToImpalaTimestamp(timestamp_t &ts) {
 	auto days_since_epoch = Date::Epoch(Timestamp::GetDate(ts)) / int64_t(24 * 60 * 60);
 	// first two uint32 in Int96 are nanoseconds since midnights
 	// last uint32 is number of days since year 4713 BC ("Julian date")
+	auto julian_day = days_since_epoch + JULIAN_TO_UNIX_EPOCH_DAYS;
+	if (julian_day < 0 || julian_day > NumericLimits<uint32_t>::Maximum()) {
+		throw ConversionException("Timestamp %s cannot be written as INT96, whose days start at 4714-11-24 (BC)",
+		                          Timestamp::ToString(ts));
+	}
 	Int96 impala_ts;
 	Store<uint64_t>(micros_since_midnight * NANOSECONDS_PER_MICRO, data_ptr_cast(impala_ts.value));
-	impala_ts.value[2] = days_since_epoch + JULIAN_TO_UNIX_EPOCH_DAYS;
+	impala_ts.value[2] = static_cast<uint32_t>(julian_day);
 	return impala_ts;
 }
 

@@ -455,9 +455,11 @@ statement error
 select time_bucket('1 week'::interval, '290309-12-21 (BC)'::date);
 ----
 
-statement error
+# the first midnight of the range starts a week bucket
+query I
 select time_bucket('1 week'::interval, '290309-12-22 (BC)'::date);
 ----
+290309-12-22 (BC)
 
 statement error
 select time_bucket('1 day'::interval, '290309-12-21 (BC)'::date);

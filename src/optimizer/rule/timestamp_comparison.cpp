@@ -90,6 +90,11 @@ unique_ptr<Expression> TimeStampComparison::Apply(LogicalOperator &op, vector<re
 		auto original_val = result.GetValue<duckdb::date_t>();
 		auto no_seconds = dtime_t(0);
 
+		timestamp_t midnight;
+		if (original_val.IsFinite() && !Timestamp::TryFromDatetime(original_val, no_seconds, midnight)) {
+			// the first day of the range has no midnight, so the comparison is kept
+			return nullptr;
+		}
 		// original date as timestamp with no seconds
 		auto original_val_ts = DateToTimestampValue(original_val, no_seconds);
 		auto original_val_for_comparison = make_uniq<BoundConstantExpression>(original_val_ts);
@@ -114,8 +119,12 @@ unique_ptr<Expression> TimeStampComparison::Apply(LogicalOperator &op, vector<re
 			return nullptr;
 		}
 
-		auto result_as_val = Value::DATE(date_t_result);
-		auto original_val_plus_on_date_ts = Value::TIMESTAMP(result_as_val.GetValue<timestamp_t>());
+		timestamp_t next_midnight;
+		if (!Timestamp::TryFromDatetime(date_t_result, no_seconds, next_midnight)) {
+			// the last day of the range has no next midnight, so the comparison is kept
+			return nullptr;
+		}
+		auto original_val_plus_on_date_ts = Value::TIMESTAMP(next_midnight);
 
 		auto val_for_comparison = make_uniq<BoundConstantExpression>(original_val_plus_on_date_ts);
 

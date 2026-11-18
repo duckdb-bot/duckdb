@@ -27,6 +27,11 @@ bool BoundSubqueryExpression::PropagatesNullValues() const {
 	return false;
 }
 
+bool BoundSubqueryExpression::CanLowerTry() const {
+	return subquery_type == SubqueryType::SCALAR && binder->IsUnderTry() &&
+	       binder->GetTrySubqueryPlanIndexes().recorded;
+}
+
 bool BoundSubqueryExpression::IsVolatile() const {
 	if (Expression::IsVolatile()) {
 		return true;

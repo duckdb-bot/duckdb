@@ -1,0 +1,481 @@
+# name: test/sql/merge/merge_into_try_subquery.test
+# description: TRY over a scalar subquery in MERGE INTO action conditions and error messages
+# group: [merge]
+
+statement ok
+CREATE TABLE t(k INTEGER, v INTEGER, txt VARCHAR);
+
+statement ok
+INSERT INTO t VALUES (1, 10, 'bad');
+
+# the subquery raises an error that TRY masks, so the condition holds in a plain query
+query I
+SELECT TRY(1 + (SELECT txt::INTEGER FROM t)) IS NULL;
+----
+true
+
+# the same condition on a WHEN MATCHED action
+statement ok
+MERGE INTO t USING (VALUES (1)) src(k) ON t.k = src.k
+  WHEN MATCHED AND TRY(1 + (SELECT txt::INTEGER FROM t)) IS NULL THEN UPDATE SET v = 0;
+
+query III
+SELECT * FROM t;
+----
+1	0	bad
+
+# a DELETE action
+statement ok
+MERGE INTO t USING (VALUES (1)) src(k) ON t.k = src.k
+  WHEN MATCHED AND TRY(1 + (SELECT txt::INTEGER FROM t)) IS NULL THEN DELETE;
+
+query I
+SELECT count(*) FROM t;
+----
+0
+
+# WHEN NOT MATCHED
+statement ok
+MERGE INTO t USING (VALUES (1)) src(k) ON t.k = src.k
+  WHEN NOT MATCHED AND TRY(1 + (SELECT 'bad'::INTEGER)) IS NULL THEN INSERT VALUES (src.k, 10, 'bad');
+
+query III
+SELECT * FROM t;
+----
+1	10	bad
+
+# WHEN NOT MATCHED BY SOURCE
+statement ok
+MERGE INTO t USING (VALUES (2)) src(k) ON t.k = src.k
+  WHEN NOT MATCHED BY SOURCE AND TRY(1 + (SELECT txt::INTEGER FROM t)) IS NULL THEN UPDATE SET v = 1;
+
+query III
+SELECT * FROM t;
+----
+1	1	bad
+
+# HAS_ERROR as the condition
+statement ok
+MERGE INTO t USING (VALUES (1)) src(k) ON t.k = src.k
+  WHEN MATCHED AND HAS_ERROR(1 + (SELECT txt::INTEGER FROM t)) THEN UPDATE SET v = 2;
+
+query III
+SELECT * FROM t;
+----
+1	2	bad
+
+# a correlated subquery, and source and target columns next to the subquery
+statement ok
+MERGE INTO t USING (VALUES (1)) src(k) ON t.k = src.k
+  WHEN MATCHED AND TRY(src.k + t.v + (SELECT s.txt::INTEGER FROM t s WHERE s.k = t.k)) IS NULL THEN UPDATE SET v = 3;
+
+query III
+SELECT * FROM t;
+----
+1	3	bad
+
+# TRY in an ERROR message, which the error reports with the masked value gone
+statement error
+MERGE INTO t USING (VALUES (1)) src(k) ON t.k = src.k
+  WHEN MATCHED THEN ERROR concat('masked ', TRY(1 + (SELECT txt::INTEGER FROM t))::VARCHAR, 'end');
+----
+Merge error condition WHEN MATCHED: masked end
+
+# a subquery that raises no error contributes its value
+statement ok
+UPDATE t SET txt = '5';
+
+statement ok
+MERGE INTO t USING (VALUES (1)) src(k) ON t.k = src.k
+  WHEN MATCHED AND TRY(1 + (SELECT txt::INTEGER FROM t)) = 6 THEN UPDATE SET v = 4;
+
+query III
+SELECT * FROM t;
+----
+1	4	5
+
+# TRY directly over the subquery
+statement ok
+MERGE INTO t USING (VALUES (1)) src(k) ON t.k = src.k
+  WHEN MATCHED AND TRY((SELECT txt::INTEGER FROM t)) = 5 THEN UPDATE SET v = 5;
+
+query III
+SELECT * FROM t;
+----
+1	5	5
+
+# TRY directly over a subquery that correlates on the target and on the source
+statement ok
+MERGE INTO t USING (VALUES (1)) src(k) ON t.k = src.k
+  WHEN MATCHED AND TRY((SELECT t.k)) = 1 AND TRY((SELECT src.k + 1)) = 2 THEN UPDATE SET v = 6;
+
+query III
+SELECT * FROM t;
+----
+1	6	5
+
+statement error
+MERGE INTO t USING (VALUES (1)) src(k) ON t.k = src.k
+  WHEN MATCHED THEN ERROR concat('key ', TRY((SELECT t.k))::VARCHAR);
+----
+key 1
+
+# the subquery value must not be read as a row id
+statement ok
+CREATE TABLE u(k INTEGER, v INTEGER);
+
+statement ok
+INSERT INTO u VALUES (1, 10), (2, 20), (3, 30);
+
+statement ok
+MERGE INTO u USING (VALUES (3)) src(k) ON u.k = src.k
+  WHEN MATCHED AND TRY((SELECT 1::BIGINT)) = 1 THEN DELETE;
+
+query II
+SELECT * FROM u ORDER BY k;
+----
+1	10
+2	20
+
+statement ok
+MERGE INTO u USING (VALUES (2)) src(k) ON u.k = src.k
+  WHEN MATCHED AND TRY((SELECT 0::BIGINT)) = 0 THEN UPDATE SET v = 0;
+
+query II
+SELECT * FROM u ORDER BY k;
+----
+1	10
+2	0
+
+statement ok
+MERGE INTO u USING (VALUES (1)) src(k) ON u.k = src.k
+  WHEN MATCHED AND TRY((SELECT 1)) = 1 THEN DELETE;
+
+query II
+SELECT * FROM u ORDER BY k;
+----
+2	0
+
+statement ok
+INSERT INTO u VALUES (1, 10), (3, 30);
+
+statement ok
+MERGE INTO u USING (VALUES (3)) src(k) ON u.k = src.k
+  WHEN MATCHED AND TRY((SELECT 1::BIGINT)) = 1 THEN UPDATE SET v = 33;
+
+query II
+SELECT * FROM u ORDER BY k;
+----
+1	10
+2	0
+3	33
+
+# a subquery that a macro expands to
+statement ok
+CREATE MACRO m() AS (SELECT 'bad'::INTEGER);
+
+statement ok
+MERGE INTO u USING (VALUES (3)) src(k) ON u.k = src.k
+  WHEN MATCHED AND TRY(1 + m()) IS NULL THEN UPDATE SET v = 3;
+
+query II
+SELECT * FROM u ORDER BY k;
+----
+1	10
+2	0
+3	3
+
+# TRY without a subquery
+statement ok
+MERGE INTO u USING (VALUES (3)) src(k) ON u.k = src.k
+  WHEN MATCHED AND TRY(('x' || v)::INTEGER) IS NULL THEN UPDATE SET v = 4;
+
+query II
+SELECT * FROM u ORDER BY k;
+----
+1	10
+2	0
+3	4
+
+# a lambda in the condition works under TRY, as long as it holds no subquery
+statement ok
+MERGE INTO u USING (VALUES (3)) src(k) ON u.k = src.k
+  WHEN MATCHED AND TRY(list_transform([1, 2], lambda x: x + 1)) = [2, 3] THEN UPDATE SET v = 5;
+
+statement ok
+MERGE INTO u USING (VALUES (3)) src(k) ON u.k = src.k
+  WHEN MATCHED AND list_transform([1, 2], lambda x: TRY(x + 1)) = [2, 3] THEN UPDATE SET v = v + 1;
+
+query II
+SELECT * FROM u ORDER BY k;
+----
+1	10
+2	0
+3	6
+
+# a subquery in a lambda body is rejected when the condition is bound, as it is in SELECT, with or without a TRY
+# inside or around the lambda
+statement error
+MERGE INTO u USING (VALUES (3)) src(k) ON u.k = src.k
+  WHEN MATCHED AND list_transform([1, 2], lambda x: x + (SELECT 1)) = [2, 3] THEN UPDATE SET v = 0;
+----
+subqueries in lambda expressions are not supported
+
+statement error
+MERGE INTO u USING (VALUES (3)) src(k) ON u.k = src.k
+  WHEN MATCHED AND list_transform([1, 2], lambda x: x + (SELECT x + 1)) = [3, 5] THEN UPDATE SET v = 0;
+----
+subqueries in lambda expressions are not supported
+
+statement error
+MERGE INTO u USING (VALUES (3)) src(k) ON u.k = src.k
+  WHEN MATCHED AND list_transform([1, 2], lambda x: TRY((SELECT x + 1))) = [2, 3] THEN UPDATE SET v = 0;
+----
+subqueries in lambda expressions are not supported
+
+statement error
+MERGE INTO u USING (VALUES (3)) src(k) ON u.k = src.k
+  WHEN MATCHED AND list_transform([1], lambda x: TRY((SELECT 'z'::INT))) = [NULL] THEN UPDATE SET v = 0;
+----
+subqueries in lambda expressions are not supported
+
+statement error
+MERGE INTO u USING (VALUES (3)) src(k) ON u.k = src.k
+  WHEN MATCHED AND list_transform([1, 2], lambda x: TRY(x + (SELECT 1))) = [2, 3] THEN UPDATE SET v = 0;
+----
+subqueries in lambda expressions are not supported
+
+statement error
+MERGE INTO u USING (VALUES (3)) src(k) ON u.k = src.k
+  WHEN MATCHED AND TRY(list_transform([1, 2], lambda x: x + (SELECT 1))) = [2, 3] THEN UPDATE SET v = 0;
+----
+subqueries in lambda expressions are not supported
+
+statement error
+MERGE INTO u USING (VALUES (3)) src(k) ON u.k = src.k
+  WHEN MATCHED AND HAS_ERROR(list_transform([1, 2], lambda x: x + (SELECT 1))) THEN UPDATE SET v = 0;
+----
+subqueries in lambda expressions are not supported
+
+statement error
+MERGE INTO u USING (VALUES (3)) src(k) ON u.k = src.k
+  WHEN MATCHED AND list_transform([[1]], lambda l: list_transform(l, lambda x: x + (SELECT 1)))[1][1] = 2 THEN UPDATE SET v = 0;
+----
+subqueries in lambda expressions are not supported
+
+# macros that expand to a lambda around a subquery are rejected the same way, a lambda without a subquery works
+statement ok
+CREATE MACRO lt(y) AS list_transform([1, 2], lambda x: x + y);
+
+statement ok
+CREATE MACRO one() AS (SELECT 1);
+
+statement error
+MERGE INTO u USING (VALUES (3)) src(k) ON u.k = src.k
+  WHEN MATCHED AND TRY(lt(one())) = [2, 3] THEN UPDATE SET v = 0;
+----
+subqueries in lambda expressions are not supported
+
+statement error
+MERGE INTO u USING (VALUES (3)) src(k) ON u.k = src.k
+  WHEN MATCHED AND TRY(lt((SELECT 1))) = [2, 3] THEN UPDATE SET v = 0;
+----
+subqueries in lambda expressions are not supported
+
+statement ok
+MERGE INTO u USING (VALUES (3)) src(k) ON u.k = src.k
+  WHEN MATCHED AND TRY(lt(1)) = [2, 3] THEN UPDATE SET v = v + 1;
+
+query II
+SELECT * FROM u ORDER BY k;
+----
+1	10
+2	0
+3	7
+
+# the condition keeps the semantics of SELECT, where an error in the subquery turns the whole TRY into NULL, also
+# when the expression around the subquery tolerates NULL, and HAS_ERROR sees the error
+statement ok
+CREATE TABLE w(k INTEGER, v INTEGER, txt VARCHAR);
+
+statement ok
+INSERT INTO w VALUES (1, 10, 'bad');
+
+query IIII
+SELECT TRY((SELECT txt::INTEGER FROM w) IS NULL), TRY(coalesce((SELECT txt::INTEGER FROM w), 5)),
+       HAS_ERROR(1 + (SELECT txt::INTEGER FROM w)), HAS_ERROR(TRY((SELECT txt::INTEGER FROM w))) FROM w;
+----
+NULL	NULL	true	false
+
+# NULL is not true, so these actions do not run
+statement ok
+MERGE INTO w USING (VALUES (1)) src(k) ON w.k = src.k
+  WHEN MATCHED AND TRY((SELECT txt::INTEGER FROM w) IS NULL) THEN UPDATE SET v = 0;
+
+statement ok
+MERGE INTO w USING (VALUES (1)) src(k) ON w.k = src.k
+  WHEN MATCHED AND TRY(coalesce((SELECT txt::INTEGER FROM w), 5)) = 5 THEN UPDATE SET v = 0;
+
+query III
+SELECT * FROM w;
+----
+1	10	bad
+
+statement ok
+MERGE INTO w USING (VALUES (1)) src(k) ON w.k = src.k
+  WHEN MATCHED AND TRY(coalesce((SELECT txt::INTEGER FROM w), 5)) IS NULL THEN UPDATE SET v = 1;
+
+# TRY directly over the subquery masks the error before HAS_ERROR sees it
+statement ok
+MERGE INTO w USING (VALUES (1)) src(k) ON w.k = src.k
+  WHEN MATCHED AND NOT HAS_ERROR(TRY((SELECT txt::INTEGER FROM w))) THEN UPDATE SET v = v + 1;
+
+query III
+SELECT * FROM w;
+----
+1	2	bad
+
+# HAS_ERROR in an error message
+statement error
+MERGE INTO w USING (VALUES (1)) src(k) ON w.k = src.k
+  WHEN MATCHED THEN ERROR concat('has error ', HAS_ERROR(1 + (SELECT txt::INTEGER FROM w))::VARCHAR);
+----
+has error true
+
+# TRY nested in a function of the condition, and a subquery under TRY with a nested subquery in its select list
+statement ok
+MERGE INTO w USING (VALUES (1)) src(k) ON w.k = src.k
+  WHEN MATCHED AND coalesce(TRY(1 + (SELECT txt::INTEGER FROM w)), 7) = 7 AND TRY((SELECT 1 + (SELECT txt::INTEGER FROM w))) IS NULL THEN UPDATE SET v = 4;
+
+query III
+SELECT * FROM w;
+----
+1	4	bad
+
+# a subquery in a lambda body is rejected when the condition is bound, with or without a TRY inside or around the
+# lambda
+statement error
+MERGE INTO w USING (VALUES (1)) src(k) ON w.k = src.k
+  WHEN MATCHED AND list_transform([1, 2], lambda x: TRY(x + (SELECT txt::INTEGER FROM w))) = [NULL, NULL] THEN UPDATE SET v = 0;
+----
+subqueries in lambda expressions are not supported
+
+statement error
+MERGE INTO w USING (VALUES (1)) src(k) ON w.k = src.k
+  WHEN MATCHED AND TRY(list_transform([1, 2], lambda x: x + (SELECT txt::INTEGER FROM w))) IS NULL THEN UPDATE SET v = 0;
+----
+subqueries in lambda expressions are not supported
+
+statement error
+MERGE INTO w USING (VALUES (1)) src(k) ON w.k = src.k
+  WHEN MATCHED AND TRY(list_transform([1], lambda x: x + (SELECT 0))[1] + (SELECT txt::INTEGER FROM w)) IS NULL THEN UPDATE SET v = 0;
+----
+subqueries in lambda expressions are not supported
+
+# a lambda without a subquery leaves the TRY whole, so a subquery next to the lambda is masked like any other
+statement ok
+MERGE INTO w USING (VALUES (1)) src(k) ON w.k = src.k
+  WHEN MATCHED AND TRY(list_transform([1], lambda x: x + 0)[1] + (SELECT txt::INTEGER FROM w)) IS NULL THEN UPDATE SET v = 5;
+
+statement ok
+MERGE INTO w USING (VALUES (1)) src(k) ON w.k = src.k
+  WHEN MATCHED AND list_transform([[1]], lambda l: list_transform(l, lambda x: x + w.v))[1][1] = 6 THEN UPDATE SET v = 6;
+
+query III
+SELECT * FROM w;
+----
+1	6	bad
+
+# TRY directly over a subquery with result modifiers or over a grouped bare subquery item is lowered onto the subquery
+# plan, also through the projection
+statement ok
+MERGE INTO w USING (VALUES (1)) src(k) ON w.k = src.k
+  WHEN MATCHED AND TRY((SELECT txt::INTEGER FROM w ORDER BY k LIMIT 1)) IS NULL AND TRY((SELECT (SELECT txt::INTEGER FROM w) GROUP BY 1)) IS NULL THEN UPDATE SET v = v + 1;
+
+statement ok
+MERGE INTO w USING (VALUES (1)) src(k) ON w.k = src.k
+  WHEN MATCHED AND TRY((SELECT DISTINCT txt::INTEGER FROM w)) IS NULL THEN UPDATE SET v = v + 1;
+
+# HAS_ERROR directly over the subquery sees its error
+statement ok
+MERGE INTO w USING (VALUES (1)) src(k) ON w.k = src.k
+  WHEN MATCHED AND HAS_ERROR((SELECT txt::INTEGER FROM w)) THEN UPDATE SET v = v + 1;
+
+query III
+SELECT * FROM w;
+----
+1	9	bad
+
+statement error
+MERGE INTO w USING (VALUES (1)) src(k) ON w.k = src.k
+  WHEN MATCHED THEN ERROR concat('ordered ', TRY((SELECT txt::INTEGER FROM w ORDER BY k LIMIT 1))::VARCHAR, 'end');
+----
+Merge error condition WHEN MATCHED: ordered end
+
+# the nested form rejects result modifiers as it does in a SELECT
+statement error
+MERGE INTO w USING (VALUES (1)) src(k) ON w.k = src.k
+  WHEN MATCHED AND TRY(1 + (SELECT txt::INTEGER FROM w ORDER BY k LIMIT 1)) IS NULL THEN UPDATE SET v = 0;
+----
+TRY over a subquery with result modifiers is only supported when the subquery is the direct argument of TRY
+
+# target rows whose correlated lookup errors, succeeds, is NULL or has no row, with earlier actions taking some rows,
+# so every row sees its own error flag
+statement ok
+CREATE TABLE lookup(k INTEGER, txt VARCHAR);
+
+statement ok
+INSERT INTO lookup VALUES (1, 'bad'), (2, '5'), (3, NULL), (5, '7');
+
+statement ok
+CREATE TABLE tgt(k INTEGER, v INTEGER);
+
+statement ok
+INSERT INTO tgt VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50);
+
+query III
+SELECT k, TRY(coalesce((SELECT l.txt::INTEGER FROM lookup l WHERE l.k = tgt.k), 5)),
+       HAS_ERROR(1 + (SELECT l.txt::INTEGER FROM lookup l WHERE l.k = tgt.k)) FROM tgt ORDER BY k;
+----
+1	NULL	true
+2	5	false
+3	5	false
+4	5	false
+5	7	false
+
+statement ok
+MERGE INTO tgt USING (VALUES (1), (2), (3), (4), (5)) src(k) ON tgt.k = src.k
+  WHEN MATCHED AND TRY((SELECT l.txt::INTEGER FROM lookup l WHERE l.k = tgt.k)) = 5 THEN UPDATE SET v = 1
+  WHEN MATCHED AND HAS_ERROR(1 + (SELECT l.txt::INTEGER FROM lookup l WHERE l.k = tgt.k)) THEN UPDATE SET v = -1
+  WHEN MATCHED AND TRY(coalesce((SELECT l.txt::INTEGER FROM lookup l WHERE l.k = tgt.k), 5)) = 5 THEN UPDATE SET v = 0;
+
+query II
+SELECT * FROM tgt ORDER BY k;
+----
+1	-1
+2	1
+3	0
+4	0
+5	50
+
+# the correlated lookup in a lambda body is rejected when the condition is bound
+statement error
+MERGE INTO tgt USING (VALUES (1), (2), (3), (4), (5)) src(k) ON tgt.k = src.k
+  WHEN MATCHED AND TRY(list_transform([1], lambda x: x + (SELECT l.txt::INTEGER FROM lookup l WHERE l.k = tgt.k))) = [6] THEN UPDATE SET v = v + 100;
+----
+subqueries in lambda expressions are not supported
+
+query II
+SELECT * FROM tgt ORDER BY k;
+----
+1	-1
+2	1
+3	0
+4	0
+5	50
+
+# the database stays usable
+query I
+SELECT 42;
+----
+42

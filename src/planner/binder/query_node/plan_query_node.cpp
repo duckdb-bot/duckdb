@@ -77,7 +77,7 @@ unique_ptr<LogicalOperator> Binder::PlanDistinct(BoundDistinctModifier &distinct
 		LogicalOperatorVisitor::EnumerateExpressions(
 		    current.get(), [&](unique_ptr<Expression> *expr) { ReplaceTableIndex(*expr, result_index, child_index); });
 	}
-	if (IsBindingTrySubquery()) {
+	if (IsUnderTry()) {
 		auto &try_indexes = GetTrySubqueryPlanIndexesMutable();
 		if (try_indexes.recorded && try_indexes.projection_index == result_index) {
 			try_indexes.distinct_index = result_index;

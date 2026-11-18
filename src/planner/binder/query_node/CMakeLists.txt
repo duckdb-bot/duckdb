@@ -11,7 +11,8 @@ add_library_unity(
   plan_query_node.cpp
   plan_select_node.cpp
   plan_setop.cpp
-  plan_subquery.cpp)
+  plan_subquery.cpp
+  plan_try_subquery.cpp)
 set(ALL_OBJECT_FILES
     ${ALL_OBJECT_FILES} $<TARGET_OBJECTS:duckdb_bind_query_node>
     PARENT_SCOPE)

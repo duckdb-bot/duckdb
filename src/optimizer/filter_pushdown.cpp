@@ -392,7 +392,7 @@ bool FilterPushdown::KeepsEqualValuesTogether(const Expression &filter) {
 	if (ComparesColumnsWithConstants(filter)) {
 		return true;
 	}
-	// other filters can tell equal values apart, unless the columns they read have no equal values that differ
+	// other filters push down only when equal values of every column they read are known to be identical
 	bool keeps_equal_values_together = true;
 	ExpressionIterator::VisitExpression<BoundColumnRefExpression>(filter, [&](const BoundColumnRefExpression &col) {
 		if (!col.GetReturnType().EqualValuesAreIdentical()) {

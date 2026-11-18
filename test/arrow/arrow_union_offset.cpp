@@ -4,6 +4,8 @@
 
 #include "arrow/arrow_test_helper.hpp"
 #include "duckdb/common/adbc/single_batch_array_stream.hpp"
+#include "duckdb/parser/parser.hpp"
+#include "duckdb/parser/query_node/select_node.hpp"
 
 #include <string>
 #include <vector>
@@ -128,11 +130,15 @@ unique_ptr<QueryResult> ScanColumn(Connection &con, ArrowSchema &col_schema, Arr
 	ArrowArrayStream stream {};
 	AdbcError err {};
 	REQUIRE(duckdb_adbc::BatchToArrayStream(&record_array, &record_schema, &stream, &err) == ADBC_STATUS_OK);
-	auto arrow_scan = con.TableFunction("arrow_scan", {}, {}, ArrowTestHelper::ConstructArrowScan(stream));
+	auto factory = ArrowTestHelper::ConstructArrowScan(stream);
 	if (projection.empty()) {
-		return arrow_scan->Execute();
+		return con.TableFunction("arrow_scan", {}, {}, std::move(factory))->Execute();
 	}
-	return arrow_scan->Project(projection)->Execute();
+	auto arrow_scan = ArrowTestHelper::ArrowScanSelect(std::move(factory));
+	auto &select_node = arrow_scan->node->Cast<SelectNode>();
+	select_node.select_list = Parser(*con.context).ParseExpressionList(projection);
+	select_node.aggregate_handling = AggregateHandling::NO_AGGREGATES_ALLOWED;
+	return con.Query(std::move(arrow_scan));
 }
 
 // Compares the names and rows of the scan, projected when a projection is given, with those of the query, in order

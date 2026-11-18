@@ -186,7 +186,7 @@ unique_ptr<MatchRecognizePattern> MatchRecognizePattern::Deserialize(Deserialize
 	return result;
 }
 
-void WindowMatchRecognizeExecutor::Serialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data,
+void WindowMatchRecognizeExecutor::Serialize(Serializer &serializer, const optional_ptr<const FunctionData> bind_data,
                                              const BoundWindowFunction &function) {
 	auto &config = bind_data->Cast<MatchRecognizeFunctionData>();
 	serializer.WriteObject(100, "pattern", [&](Serializer &child) { config.pattern->Serialize(child); });
@@ -1168,6 +1168,8 @@ WindowFunction MatchRecognizeFun::GetFunction() {
 
 	fun.SetSerializeCallback(WindowMatchRecognizeExecutor::Serialize);
 	fun.SetDeserializeCallback(WindowMatchRecognizeExecutor::Deserialize);
+
+	fun.SetFallible(); // AFTER MATCH SKIP validation and matcher budget checks throw at runtime
 
 	return fun;
 }

@@ -27,6 +27,20 @@ static void CopyFile(FileSystem &fs, const string &source, const string &target)
 	target_handle->Write(QueryContext(), contents.get(), file_size, 0);
 }
 
+//! Find the checksum type whose checksum of a framed WAL entry matches the stored one
+static bool FindEntryChecksumType(const_data_ptr_t entry, idx_t entry_size, uint64_t stored_checksum,
+                                  ChecksumType &checksum_type) {
+	if (Checksum(entry, entry_size, ChecksumType::WORD_XOR) == stored_checksum) {
+		checksum_type = ChecksumType::WORD_XOR;
+		return true;
+	}
+	if (Checksum(entry, entry_size, ChecksumType::XXHASH64) == stored_checksum) {
+		checksum_type = ChecksumType::XXHASH64;
+		return true;
+	}
+	return false;
+}
+
 static pair<idx_t, idx_t> GetWALCommitBoundaries(FileSystem &fs, const string &path) {
 	auto handle = fs.OpenFile(path, FileFlags::FILE_FLAGS_READ);
 	auto wal_size = handle->GetFileSize();
@@ -49,8 +63,8 @@ static pair<idx_t, idx_t> GetWALCommitBoundaries(FileSystem &fs, const string &p
 			auto entry = duckdb::unique_ptr<data_t[]>(new data_t[entry_size]);
 			memcpy(entry.get(), wal_contents.get() + offset, entry_size);
 			// the checksum type of the WAL follows the database file
-			if (Checksum(entry.get(), entry_size, ChecksumType::WORD_XOR) != stored_checksum &&
-			    Checksum(entry.get(), entry_size, ChecksumType::XXHASH64) != stored_checksum) {
+			ChecksumType checksum_type;
+			if (!FindEntryChecksumType(entry.get(), entry_size, stored_checksum, checksum_type)) {
 				break;
 			}
 			offset += entry_size;
@@ -289,20 +303,6 @@ TEST_CASE("Test encrypted WAL version on an unencrypted database", "[storage][.]
 	REQUIRE_THROWS_WITH(DuckDB(storage_database, config.get()),
 	                    Catch::Contains("marked as encrypted, but the database is not"));
 	DeleteDatabase(storage_database);
-}
-
-//! Find the checksum type of a framed WAL entry, which follows the database file, by its stored checksum
-static bool FindEntryChecksumType(const_data_ptr_t entry, idx_t entry_size, uint64_t stored_checksum,
-                                  ChecksumType &checksum_type) {
-	if (Checksum(entry, entry_size, ChecksumType::WORD_XOR) == stored_checksum) {
-		checksum_type = ChecksumType::WORD_XOR;
-		return true;
-	}
-	if (Checksum(entry, entry_size, ChecksumType::XXHASH64) == stored_checksum) {
-		checksum_type = ChecksumType::XXHASH64;
-		return true;
-	}
-	return false;
 }
 
 //! Renumber the first field (101) of the payload of the first framed WAL entry and fix up its checksum

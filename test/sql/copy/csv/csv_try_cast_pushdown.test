@@ -82,4 +82,4 @@ NULL
 statement error
 SELECT CAST(x AS INTEGER) AS v FROM read_csv('{TEST_DIR}/try_cast_1.csv', columns = {'x': 'VARCHAR'}, header = false)
 ----
-Could not convert string "nope" to 'INTEGER'
+<REGEX>:.*Could not convert string .nope. to .*

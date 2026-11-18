@@ -273,7 +273,7 @@ TEST_CASE("Common subplan skips table functions that keep pushed filters in thei
 	REQUIRE(result->Collection().GetValue(0, 0).GetValue<int64_t>() == 3);
 	REQUIRE(result->Collection().GetValue(1, 0).GetValue<int64_t>() == 7);
 
-	REQUIRE_NO_FAIL(con.Query("PRAGMA explain_output='optimized_only'"));
+	REQUIRE_NO_FAIL(con.Query("SET explain_output='optimized_only'"));
 	const auto explain = GetExplainPlan(con, query);
 	REQUIRE(!StringUtil::Contains(explain, "__common_subplan_"));
 

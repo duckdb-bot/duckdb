@@ -586,6 +586,7 @@ auto Instance::StartupOptionPairs(const StartupOptions &options) -> std::vector<
 	if (options.custom_user_agent) {
 		result.emplace_back("custom_user_agent", *options.custom_user_agent);
 	}
+	result.insert(result.end(), options.options.begin(), options.options.end());
 	return result;
 }
 
@@ -602,6 +603,25 @@ Instance::Instance(Environment &env, const StartupOptions &options)
 
 Instance::Instance(Environment &env, const std::string &path, const StartupOptions &options) : Instance(env, options) {
 	Attach(path, true);
+}
+
+auto Instance::OpenShared(const std::string &path, const StartupOptions &options) -> Instance {
+	return OpenShared(Environment::Default(), path, options);
+}
+
+auto Instance::OpenShared(Environment &env, const std::string &path, const StartupOptions &options) -> Instance {
+	auto pairs = StartupOptionPairs(options);
+	StringArrays names(pairs.size());
+	StringArrays values(pairs.size());
+	for (auto &[name, value] : pairs) {
+		names.Push(name);
+		values.Push(value);
+	}
+	auto path_str = ToStr(path);
+	duckdb_v2_instance_handle instance = nullptr;
+	CheckedAPICall(duckdb_v2_instance_open_shared, env.handle(), path_str.data(), path_str.size(), names.ptrs(),
+	               names.lengths(), values.ptrs(), values.lengths(), static_cast<idx_t>(pairs.size()), &instance);
+	return Instance(instance);
 }
 
 //---------------------------------------------------------------------------
@@ -1562,12 +1582,21 @@ auto LogicalType::GetParam(idx_t index) const -> TypeParam {
 	return TypeParam {std::string(FromStr(name, name_length)), detail::HandleFactory::Make<Value>(value)};
 }
 
-auto LogicalType::GetDecimalWidth() const -> uint8_t {
-	return GetParam(0).GetValue().Get<uint8_t>();
+// A DECIMAL's width and scale parameters are UINTEGER values; engines before the width cap was lifted hand over
+// UTINYINT.
+static auto ReadDecimalParam(const Value &param) -> uint32_t {
+	if (param.GetLogicalType().GetTypeId() == LogicalTypeId::UTINYINT) {
+		return param.Get<uint8_t>();
+	}
+	return param.Get<uint32_t>();
 }
 
-auto LogicalType::GetDecimalScale() const -> uint8_t {
-	return GetParam(1).GetValue().Get<uint8_t>();
+auto LogicalType::GetDecimalWidth() const -> uint32_t {
+	return ReadDecimalParam(GetParam(0).GetValue());
+}
+
+auto LogicalType::GetDecimalScale() const -> uint32_t {
+	return ReadDecimalParam(GetParam(1).GetValue());
 }
 
 auto LogicalType::GetEnumSize() const -> idx_t {
@@ -1625,7 +1654,7 @@ auto LogicalType::GetUnionMemberType(idx_t index) const -> LogicalType {
 
 auto LogicalType::GetDecimalInternalTypeId() const -> LogicalTypeId {
 	// The committed DECIMAL storage tiers: width <= 4 int16, <= 9 int32,
-	// <= 18 int64, <= 38 int128. Pinned against the engine in [capi_v2].
+	// <= 18 int64, <= 38 int128, wider BIGNUM. Pinned against the engine in [capi_v2].
 	auto width = GetDecimalWidth();
 	if (width <= 4) {
 		return LogicalTypeId::SMALLINT;
@@ -1636,7 +1665,10 @@ auto LogicalType::GetDecimalInternalTypeId() const -> LogicalTypeId {
 	if (width <= 18) {
 		return LogicalTypeId::BIGINT;
 	}
-	return LogicalTypeId::HUGEINT;
+	if (width <= 38) {
+		return LogicalTypeId::HUGEINT;
+	}
+	return LogicalTypeId::BIGNUM;
 }
 
 auto LogicalType::GetEnumInternalTypeId() const -> LogicalTypeId {
@@ -2097,6 +2129,14 @@ void Value::GetDecimal(int128_t &out, uint8_t width, uint8_t scale) const {
 		                            std::to_string(scale) + ")");
 	}
 	out = FromC(payload);
+}
+
+auto Value::GetDecimal() const -> RuntimeDecimal {
+	duckdb_v2_hugeint_t payload {};
+	RuntimeDecimal result {};
+	CheckedAPICall(duckdb_v2_value_get_decimal, handle(), &payload, &result.width, &result.scale);
+	result.value = FromC(payload);
+	return result;
 }
 
 auto Value::CreateDecimal(Factory &factory, int128_t value, uint8_t width, uint8_t scale) -> Value {

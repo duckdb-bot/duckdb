@@ -29,7 +29,6 @@
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "utf8proc_wrapper.hpp"
 #include "duckdb/optimizer/in_clause_rewriter.hpp"
-#include "duckdb/optimizer/remove_duplicate_groups.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
 
 namespace duckdb {
@@ -151,7 +150,7 @@ void FilterCombiner::GenerateEquivalentFilters(const Expression &filter,
 	for (auto &col_ref : candidate_columns) {
 		auto &col = col_ref.get();
 		// a filter on values that are equal but not identical, such as 0.0 and -0.0, can differ between them
-		if (!BaseTypeAllowsCollapse(col.GetReturnType())) {
+		if (!col.GetReturnType().EqualValuesAreIdentical()) {
 			continue;
 		}
 		auto set_id = equivalence_set_map.find(col)->second;
@@ -210,7 +209,7 @@ bool FilterCombiner::HasOnlyIdenticalColumnEquivalents(const Expression &column)
 	for (auto &member : equivalence_map[entry->second]) {
 		auto &expr = member.get();
 		if (expr.GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF ||
-		    !BaseTypeAllowsCollapse(expr.GetReturnType())) {
+		    !expr.GetReturnType().EqualValuesAreIdentical()) {
 			return false;
 		}
 	}
@@ -273,7 +272,7 @@ void FilterCombiner::AddNotDistinctFromConstants() {
 			}
 			const bool identity = expr.Equals(*source);
 			// values that are equal but not identical, such as 0.0 and -0.0, can give different results for E
-			if (!identity && !BaseTypeAllowsCollapse(source->GetReturnType())) {
+			if (!identity && !source->GetReturnType().EqualValuesAreIdentical()) {
 				continue;
 			}
 			for (auto &target : entry->second) {
@@ -358,7 +357,7 @@ void FilterCombiner::GenerateFilters(const std::function<void(unique_ptr<Express
 					auto lower_constant = make_uniq<BoundConstantExpression>(lower_value);
 					auto upper_constant = make_uniq<BoundConstantExpression>(upper_value);
 					auto between =
-					    BoundBetweenExpression::Create(entries[i].get().Copy(), std::move(lower_constant),
+					    BoundBetweenExpression::Create(context, entries[i].get().Copy(), std::move(lower_constant),
 					                                   std::move(upper_constant), lower_inclusive, upper_inclusive);
 					callback(std::move(between));
 				}

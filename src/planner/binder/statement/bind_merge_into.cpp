@@ -147,9 +147,12 @@ Binder::BindMergeAction(LogicalMergeInto &merge_into, TableCatalogEntry &table, 
 			if (mapped_index == DConstants::INVALID_INDEX) {
 				result->expressions.push_back(merge_into.bound_defaults[storage_idx]->Copy());
 			} else {
-				result->expressions.push_back(table.GetDefaultExpressionForColumn(
-				    context, insert_types[mapped_index], col.Type(), insert_bindings[mapped_index],
-				    *merge_into.bound_defaults[storage_idx]));
+				auto expression = table.GetDefaultExpressionForColumn(context, insert_types[mapped_index], col.Type(),
+				                                                      insert_bindings[mapped_index],
+				                                                      *merge_into.bound_defaults[storage_idx]);
+				// the catalog casts the value to the type of the column, a cast to TIMESTAMPTZ reads the TimeZone
+				CheckRequiresRebind(*expression);
+				result->expressions.push_back(std::move(expression));
 			}
 		}
 		break;

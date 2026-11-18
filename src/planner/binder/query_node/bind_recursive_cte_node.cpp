@@ -53,6 +53,7 @@ BoundStatement Binder::BindNode(RecursiveCTENode &statement) {
 
 	// Create temporary binder to bind expressions
 	auto aggregate_binder = Binder::CreateBinder(context, nullptr);
+	aggregate_binder->SetDefersRebinds();
 	FunctionBinder function_binder(*aggregate_binder);
 	aggregate_binder->bind_context.AddGenericBinding(setop_index, statement.ctename, result.names, result.types);
 	ExpressionBinder expression_binder(*aggregate_binder, context);
@@ -180,6 +181,8 @@ BoundStatement Binder::BindNode(RecursiveCTENode &statement) {
 				                      result.names[aggregate_idx]);
 			}
 
+			// the function binder casts the arguments after they were bound, so the complete aggregate is checked
+			CheckRequiresRebind(*aggregate);
 			return_types[aggregate_idx] = aggregate->GetReturnType();
 			payload_references[aggregate_idx] = std::move(aggregate);
 		} else {
@@ -193,6 +196,13 @@ BoundStatement Binder::BindNode(RecursiveCTENode &statement) {
 
 	if (key_targets.empty() && !payload_references.empty()) {
 		throw BinderException("USING KEY clause requires at least one key column.");
+	}
+	// the binder of the USING KEY aggregates has statement properties of its own and keeps the rebinds it defers
+	if (aggregate_binder->HasDeferredRebind()) {
+		RequireRebind();
+	}
+	if (aggregate_binder->GetStatementProperties().always_require_rebind) {
+		SetAlwaysRequireRebind();
 	}
 
 	// Now that we have finished binding all aggregates, we can update the operator types

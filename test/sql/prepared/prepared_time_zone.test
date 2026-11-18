@@ -86,3 +86,525 @@ SELECT max(ts) - min(ts) FROM local_times;
 
 statement ok
 COMMIT;
+
+# casts that only the optimizer folds, and the arguments of table functions, are bound again too
+# (duckdblabs/bot-issue-tracker#679)
+statement ok
+SET TimeZone = 'UTC';
+
+statement ok
+CREATE TABLE stamps (id INTEGER, ts TIMESTAMPTZ);
+
+# the implicit cast of the string to TIMESTAMPTZ reads the TimeZone
+statement ok
+PREPARE insert_cast AS INSERT INTO stamps VALUES (1, '2026-01-01 00:00:00');
+
+# the cast to VARCHAR reads the TimeZone, and nothing else in the statement is bound
+statement ok
+PREPARE constant_cast AS SELECT (TIMESTAMPTZ '2026-01-01 00:00:00+00')::VARCHAR;
+
+# the arguments of a table function are folded to values when it is bound
+statement ok
+PREPARE table_function_argument AS SELECT epoch_us(x) FROM repeat(TIMESTAMPTZ '2026-01-01 00:00:00', 1) AS t(x);
+
+# range and generate_series step through the days of the TimeZone's calendar
+statement ok
+PREPARE range_calendar AS SELECT max(range)::VARCHAR FROM range(TIMESTAMPTZ '2026-03-28 23:00:00+00', TIMESTAMPTZ '2026-03-31 00:00:00+00', INTERVAL '1 day');
+
+statement ok
+PREPARE series_calendar AS SELECT max(generate_series)::VARCHAR FROM generate_series(TIMESTAMPTZ '2026-03-28 23:00:00+00', TIMESTAMPTZ '2026-03-31 00:00:00+00', INTERVAL '1 day');
+
+# a cast that does not read the TimeZone
+statement ok
+PREPARE plain_cast AS SELECT ('2026-01-01'::DATE)::VARCHAR;
+
+query I
+EXECUTE constant_cast;
+----
+2026-01-01 00:00:00+00
+
+query I
+EXECUTE table_function_argument;
+----
+1767225600000000
+
+query I
+EXECUTE range_calendar;
+----
+2026-03-30 23:00:00+00
+
+statement ok
+SET TimeZone = 'Europe/Amsterdam';
+
+statement ok
+EXECUTE insert_cast;
+
+statement ok
+INSERT INTO stamps VALUES (2, '2026-01-01 00:00:00');
+
+query II
+SELECT id, ts FROM stamps ORDER BY id;
+----
+1	2026-01-01 00:00:00+01
+2	2026-01-01 00:00:00+01
+
+query I
+EXECUTE constant_cast;
+----
+2026-01-01 01:00:00+01
+
+query I
+EXECUTE table_function_argument;
+----
+1767222000000000
+
+query I
+EXECUTE range_calendar;
+----
+2026-03-31 00:00:00+02
+
+query I
+EXECUTE series_calendar;
+----
+2026-03-31 00:00:00+02
+
+query I
+EXECUTE plain_cast;
+----
+2026-01-01
+
+# a CHECK constraint that reads the TimeZone is bound again with the prepared INSERT and UPDATE
+statement ok
+SET TimeZone = 'UTC';
+
+statement ok
+CREATE TABLE checked (s VARCHAR CHECK (s = (TIMESTAMPTZ '2026-01-01 00:00:00+00')::VARCHAR));
+
+statement ok
+PREPARE insert_checked AS INSERT INTO checked VALUES ('2026-01-01 00:00:00+00');
+
+statement ok
+PREPARE update_checked AS UPDATE checked SET s = '2026-01-01 00:00:00+00';
+
+statement ok
+EXECUTE insert_checked;
+
+statement ok
+SET TimeZone = 'Europe/Amsterdam';
+
+statement error
+EXECUTE insert_checked;
+----
+CHECK constraint failed
+
+statement error
+EXECUTE update_checked;
+----
+CHECK constraint failed
+
+query I
+SELECT count(*) FROM checked;
+----
+1
+
+# the partition path of a prepared COPY is bound again
+statement ok
+SET TimeZone = 'UTC';
+
+statement ok
+PREPARE copy_partitioned AS COPY (SELECT '2026-01-01' AS p, 42 AS n) TO '{TEST_DIR}/prepared_partitions' (FORMAT CSV, PARTITION_BY (p), PARTITION_PATH p::TIMESTAMPTZ::VARCHAR);
+
+statement ok
+SET TimeZone = 'Europe/Amsterdam';
+
+statement ok
+EXECUTE copy_partitioned;
+
+query I
+SELECT count(*) FROM glob('{TEST_DIR}/prepared_partitions/2026-01-01 00:00:00+01/*.csv');
+----
+1
+
+# the calendar of range and generate_series over TIMESTAMPTZ follows the settings even when no argument does
+statement ok
+SET TimeZone = 'UTC';
+
+statement ok
+PREPARE range_epoch AS SELECT max(epoch_us(r)) FROM range(to_timestamp(1774738800), to_timestamp(1774915200), INTERVAL '1 day') t(r);
+
+statement ok
+PREPARE series_epoch AS SELECT max(epoch_us(r)) FROM generate_series(to_timestamp(1774738800), to_timestamp(1774915200), INTERVAL '1 day') t(r);
+
+query I
+EXECUTE range_epoch;
+----
+1774911600000000
+
+statement ok
+SET TimeZone = 'Europe/Amsterdam';
+
+query I
+EXECUTE range_epoch;
+----
+1774908000000000
+
+query I
+EXECUTE series_epoch;
+----
+1774908000000000
+
+# the DEFAULT of a column is bound with the prepared INSERT, and its cast to TIMESTAMPTZ reads the TimeZone
+statement ok
+SET TimeZone = 'UTC';
+
+statement ok
+CREATE TABLE defaulted (id INTEGER, ts TIMESTAMPTZ DEFAULT '2026-01-01 00:00:00');
+
+statement ok
+PREPARE insert_default AS INSERT INTO defaulted (id) VALUES (1);
+
+statement ok
+SET TimeZone = 'Europe/Amsterdam';
+
+statement ok
+EXECUTE insert_default;
+
+statement ok
+INSERT INTO defaulted (id) VALUES (2);
+
+query II
+SELECT id, ts FROM defaulted ORDER BY id;
+----
+1	2026-01-01 00:00:00+01
+2	2026-01-01 00:00:00+01
+
+# the cast of a set operation's column to VARCHAR is added after its expressions are bound (to_timestamp reads none)
+statement ok
+SET TimeZone = 'UTC';
+
+statement ok
+PREPARE setop_cast AS SELECT max(x) FROM (SELECT to_timestamp(1767225600) AS x UNION ALL SELECT '2026-01-01 00:00:00') t;
+
+query I
+EXECUTE setop_cast;
+----
+2026-01-01 00:00:00+00
+
+statement ok
+SET TimeZone = 'Europe/Amsterdam';
+
+query I
+EXECUTE setop_cast;
+----
+2026-01-01 01:00:00+01
+
+# the casts that bring the rows of a VALUES list to one type are added after its expressions are bound
+statement ok
+SET TimeZone = 'UTC';
+
+statement ok
+PREPARE values_cast AS SELECT min(epoch_us(x)) FROM (VALUES (to_timestamp(1767225600)), ('2026-01-01 00:00:00')) t(x);
+
+query I
+EXECUTE values_cast;
+----
+1767225600000000
+
+statement ok
+SET TimeZone = 'Europe/Amsterdam';
+
+query I
+EXECUTE values_cast;
+----
+1767222000000000
+
+# the cast of a column of INSERT ... SELECT to the type of the table's column is added after the SELECT is bound
+statement ok
+SET TimeZone = 'UTC';
+
+statement ok
+PREPARE insert_select AS INSERT INTO stamps SELECT 3, '2026-01-01 00:00:00';
+
+statement ok
+SET TimeZone = 'Europe/Amsterdam';
+
+statement ok
+EXECUTE insert_select;
+
+query II
+SELECT id, ts FROM stamps WHERE id = 3;
+----
+3	2026-01-01 00:00:00+01
+
+# aggregates, windows and UNNEST leave the expression tree while they are bound, and are checked there
+statement ok
+SET TimeZone = 'UTC';
+
+statement ok
+PREPARE aggregate_cast AS SELECT min(x::VARCHAR) FROM (VALUES (to_timestamp(1767225600))) t(x);
+
+statement ok
+PREPARE window_cast AS SELECT first(x::VARCHAR) OVER () FROM (VALUES (to_timestamp(1767225600))) t(x);
+
+# the RANGE offset of a window frame is bound without the binder
+statement ok
+PREPARE window_frame AS SELECT count(*) OVER (ORDER BY x RANGE BETWEEN INTERVAL 1 DAY PRECEDING AND CURRENT ROW) FROM (VALUES (to_timestamp(1767225600))) t(x);
+
+statement ok
+PREPARE unnest_list AS SELECT UNNEST([x::VARCHAR]) FROM (VALUES (to_timestamp(1767225600))) t(x);
+
+# RETURNING and the aggregates of USING KEY are bound by a binder of their own
+statement ok
+PREPARE insert_returning AS INSERT INTO stamps SELECT 4, to_timestamp(1767225600) RETURNING ts::VARCHAR;
+
+statement ok
+PREPARE key_aggregate AS WITH RECURSIVE r(k, n, s, t) USING KEY (k, last(s::VARCHAR) AS t) AS (SELECT 1, 0, to_timestamp(1767225600), '' UNION SELECT k, n + 1, s, t FROM r WHERE n < 1) SELECT t FROM r;
+
+# the aggregate of USING KEY casts its argument to VARCHAR itself
+statement ok
+PREPARE key_aggregate_cast AS WITH RECURSIVE r(k, n, s, t) USING KEY (k, string_agg(s, '|') AS t) AS (SELECT 1, 0, to_timestamp(1767225600), '' UNION SELECT k, n + 1, s, t FROM r WHERE n < 1) SELECT t FROM r;
+
+# the aggregates and navigations of a MATCH_RECOGNIZE DEFINE are computed by the matcher from a projection
+statement ok
+PREPARE match_define AS SELECT count(*) FROM (SELECT c FROM (VALUES (1, to_timestamp(1767225600))) t(rn, ts) MATCH_RECOGNIZE (ORDER BY rn MEASURES count(*) AS c ONE ROW PER MATCH PATTERN (A) DEFINE A AS min(A.ts::VARCHAR) = '2026-01-01 00:00:00+00'));
+
+statement ok
+PREPARE match_navigation AS SELECT count(*) FROM (SELECT c FROM (VALUES (1, to_timestamp(1767225600))) t(rn, ts) MATCH_RECOGNIZE (ORDER BY rn MEASURES count(*) AS c ONE ROW PER MATCH PATTERN (A) DEFINE A AS LAST(A.ts::VARCHAR) = '2026-01-01 00:00:00+00'));
+
+# a DEFINE aggregate casts its argument itself and the matcher casts again at execution, so only the plan shows it
+statement ok
+PREPARE match_aggregate_cast AS SELECT count(*) FROM (SELECT c FROM (VALUES (1, to_timestamp(1767225600))) t(rn, ts) MATCH_RECOGNIZE (ORDER BY rn MEASURES count(*) AS c ONE ROW PER MATCH PATTERN (A) DEFINE A AS string_agg(A.ts) = '2026-01-01 00:00:00+00'));
+
+query I
+EXECUTE aggregate_cast;
+----
+2026-01-01 00:00:00+00
+
+query I
+EXECUTE window_cast;
+----
+2026-01-01 00:00:00+00
+
+query I
+EXECUTE unnest_list;
+----
+2026-01-01 00:00:00+00
+
+query I
+EXECUTE insert_returning;
+----
+2026-01-01 00:00:00+00
+
+query I
+EXECUTE key_aggregate;
+----
+2026-01-01 00:00:00+00
+
+query I
+EXECUTE key_aggregate_cast;
+----
+2026-01-01 00:00:00+00|2026-01-01 00:00:00+00
+
+query I
+EXECUTE match_define;
+----
+1
+
+query I
+EXECUTE match_navigation;
+----
+1
+
+statement ok
+SET TimeZone = 'Europe/Amsterdam';
+
+query I
+EXECUTE aggregate_cast;
+----
+2026-01-01 01:00:00+01
+
+query I
+EXECUTE window_cast;
+----
+2026-01-01 01:00:00+01
+
+query I
+EXECUTE unnest_list;
+----
+2026-01-01 01:00:00+01
+
+query I
+EXECUTE insert_returning;
+----
+2026-01-01 01:00:00+01
+
+query I
+EXECUTE key_aggregate;
+----
+2026-01-01 01:00:00+01
+
+query I
+EXECUTE key_aggregate_cast;
+----
+2026-01-01 01:00:00+01|2026-01-01 01:00:00+01
+
+query I
+EXECUTE match_define;
+----
+0
+
+query I
+EXECUTE match_navigation;
+----
+0
+
+# the struct_extract expressions that UNNEST of a struct expands to are checked as well
+statement ok
+SET TimeZone = 'UTC';
+
+statement ok
+PREPARE unnest_struct AS SELECT UNNEST({'s': ts::VARCHAR}) FROM (VALUES (to_timestamp(1767225600))) t(ts);
+
+query I
+EXECUTE unnest_struct;
+----
+2026-01-01 00:00:00+00
+
+statement ok
+SET TimeZone = 'Europe/Amsterdam';
+
+query I
+EXECUTE unnest_struct;
+----
+2026-01-01 01:00:00+01
+
+# every function whose result can change across queries is treated alike, getvariable reads the variable at bind
+statement ok
+SET VARIABLE tag = 'first';
+
+statement ok
+CREATE TABLE tagged (id INTEGER, tag VARCHAR DEFAULT getvariable('tag'));
+
+statement ok
+PREPARE insert_tagged AS INSERT INTO tagged (id) VALUES (1);
+
+statement ok
+PREPARE variable_argument AS SELECT s FROM repeat(getvariable('tag'), 1) AS t(s);
+
+query I
+EXECUTE variable_argument;
+----
+first
+
+statement ok
+SET VARIABLE tag = 'second';
+
+statement ok
+EXECUTE insert_tagged;
+
+query II
+SELECT id, tag FROM tagged;
+----
+1	second
+
+query I
+EXECUTE variable_argument;
+----
+second
+
+# a prepared statement that reads a setting keeps no plan, one that does not keeps its plan (result_types shows the
+# plan only for statements with a query result)
+query II
+SELECT name, result_types IS NULL AS bound_again FROM duckdb_prepared_statements()
+WHERE name IN ('plain_cast', 'constant_cast', 'table_function_argument', 'range_calendar', 'range_epoch', 'setop_cast', 'values_cast', 'variable_argument', 'aggregate_cast', 'window_cast', 'window_frame', 'unnest_list', 'insert_returning', 'key_aggregate', 'key_aggregate_cast', 'match_define', 'match_navigation', 'match_aggregate_cast')
+ORDER BY name;
+----
+aggregate_cast	true
+constant_cast	true
+insert_returning	true
+key_aggregate	true
+key_aggregate_cast	true
+match_aggregate_cast	true
+match_define	true
+match_navigation	true
+plain_cast	false
+range_calendar	true
+range_epoch	true
+setop_cast	true
+table_function_argument	true
+unnest_list	true
+values_cast	true
+variable_argument	true
+window_cast	true
+window_frame	true
+
+# a DELETE binds the constraints of its table too, so it is bound again as well (with the optimizer on it is anyway)
+statement ok
+PRAGMA disable_optimizer;
+
+statement ok
+SET TimeZone = 'UTC';
+
+statement ok
+CREATE TABLE deleted (id INTEGER, s VARCHAR CHECK (s = (TIMESTAMPTZ '2026-01-01 00:00:00+00')::VARCHAR));
+
+statement ok
+INSERT INTO deleted VALUES (1, '2026-01-01 00:00:00+00');
+
+statement ok
+PREPARE delete_checked AS DELETE FROM deleted WHERE id = 1 RETURNING s;
+
+statement ok
+PREPARE insert_deleted AS INSERT INTO deleted VALUES (2, '2026-01-01 00:00:00+00') RETURNING s;
+
+query II
+SELECT name, result_types IS NULL AS bound_again FROM duckdb_prepared_statements()
+WHERE name IN ('delete_checked', 'insert_deleted')
+ORDER BY name;
+----
+delete_checked	true
+insert_deleted	true
+
+statement ok
+SET TimeZone = 'Europe/Amsterdam';
+
+statement error
+EXECUTE insert_deleted;
+----
+CHECK constraint failed
+
+query I
+EXECUTE delete_checked;
+----
+2026-01-01 00:00:00+00
+
+query I
+SELECT count(*) FROM deleted;
+----
+0
+
+# HAVING with GROUP BY ALL moves the expression of a generated column into the groups while it binds it
+statement ok
+SET TimeZone = 'UTC';
+
+statement ok
+CREATE TABLE grouped (i INTEGER, g VARCHAR GENERATED ALWAYS AS (to_timestamp(1767225600)::VARCHAR), h VARCHAR GENERATED ALWAYS AS (g));
+
+statement ok
+INSERT INTO grouped (i) VALUES (1);
+
+statement ok
+PREPARE having_generated AS SELECT count(*) FROM (SELECT count(*) FROM grouped GROUP BY ALL HAVING h = '2026-01-01 00:00:00+00') q;
+
+query I
+EXECUTE having_generated;
+----
+1
+
+statement ok
+SET TimeZone = 'Europe/Amsterdam';
+
+query I
+EXECUTE having_generated;
+----
+0

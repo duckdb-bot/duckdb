@@ -1319,6 +1319,19 @@ static unique_ptr<FunctionData> InOutKeywordBind(ClientContext &, TableFunctionB
 	return make_uniq<InOutKeywordData>(std::move(delta));
 }
 
+static unique_ptr<FunctionData> InOutInstantBind(ClientContext &, TableFunctionBindInput &input,
+                                                 vector<LogicalType> &types, vector<Identifier> &names) {
+	if (input.input_table_types != vector<LogicalType> {LogicalType::BIGINT}) {
+		throw BinderException("Only the positional argument belongs in the input table");
+	}
+	types.push_back(LogicalType::BIGINT);
+	names.emplace_back("value");
+	// The option is a TIMESTAMPTZ, so a TIMESTAMP argument is cast with the TimeZone of the bind.
+	const auto &at = input.named_parameters.at("at");
+	auto offset = at.IsNull() ? Value(LogicalType::BIGINT) : Value::BIGINT(at.GetValue<timestamp_tz_t>().value);
+	return make_uniq<InOutKeywordData>(std::move(offset));
+}
+
 static OperatorResultType InOutKeywordExecute(ExecutionContext &, TableFunctionInput &input, DataChunk &arguments,
                                               DataChunk &output) {
 	const auto &offset = input.bind_data->Cast<InOutKeywordData>().offset;
@@ -1352,6 +1365,12 @@ static void RegisterInOutKeywordFunctions(ExtensionLoader &loader) {
 		overloads.AddFunction(std::move(overload));
 	}
 	loader.RegisterFunction(overloads);
+	FunctionSignature instant_signature;
+	instant_signature.AddPositionalOnly("value", LogicalType::BIGINT);
+	instant_signature.AddKeywordOnly("at", LogicalType::TIMESTAMP_TZ);
+	TableFunction instant("test_in_out_instant", std::move(instant_signature), nullptr, InOutInstantBind);
+	instant.in_out_function = InOutKeywordExecute;
+	loader.RegisterFunction(std::move(instant));
 }
 
 //===--------------------------------------------------------------------===//

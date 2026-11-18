@@ -660,8 +660,7 @@ static ColumnMapResult MapColumnStruct(ClientContext &context, const MultiFileCo
 	return result;
 }
 
-//! Reads the field a pushed-down extract selects from a struct without child definitions with the type it has in the
-//! file when its text becomes bytes, so that the cast of the mapping converts it instead of the reader
+//! The field a pushed-down extract selects keeps its file type when its text becomes bytes, so the mapping converts it
 static void ReadExtractedTextAsBytes(ColumnIndex &index, const LogicalType &local_type) {
 	reference<ColumnIndex> field_index(index);
 	reference<const LogicalType> field_type(local_type);

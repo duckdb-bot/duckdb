@@ -63,7 +63,7 @@ unique_ptr<FileBuffer> StandardBufferManager::ConstructManagedBuffer(idx_t size,
 		// non re-usable buffer (or mmap-backed, which we cannot rewrite): allocate a new buffer
 		result = make_uniq<FileBuffer>(BlockAllocator::Get(db), type, size, block_header_size);
 	}
-	result->Initialize(DBConfig::GetConfig(db).options.debug_initialize);
+	result->Initialize(Settings::Get<DebugInitializeSetting>(db));
 	return result;
 }
 
@@ -557,7 +557,7 @@ void StandardBufferManager::WriteTemporaryBuffer(QueryContext context, MemoryTag
 	if (buffer.AllocSize() == GetBlockAllocSize()) {
 		idx_t eviction_size = temporary_directory.handle->GetTempFile().WriteTemporaryBuffer(context, block_id, buffer);
 		evicted_data_per_tag[uint8_t(tag)] += eviction_size;
-		auto profiler = Context::TryGetQueryProfiler(context.GetServices());
+		auto profiler = Context::TryGetQueryProfiler(context.GetContext());
 		if (profiler) {
 			profiler->TrackBytesSpilled(eviction_size);
 		}
@@ -607,7 +607,7 @@ void StandardBufferManager::WriteTemporaryBuffer(QueryContext context, MemoryTag
 		throw;
 	}
 	evicted_data_per_tag[uint8_t(tag)] += buffer.AllocSize();
-	auto profiler = Context::TryGetQueryProfiler(context.GetServices());
+	auto profiler = Context::TryGetQueryProfiler(context.GetContext());
 	if (profiler) {
 		profiler->TrackBytesSpilled(buffer.AllocSize() + header_size);
 	}
@@ -922,8 +922,8 @@ BufferAllocator &BufferAllocator::Get(ClientContext &context) {
 	return manager.GetBufferAllocator();
 }
 
-BufferAllocator &BufferAllocator::Get(Context &services) {
-	return Get(services.GetDatabase());
+BufferAllocator &BufferAllocator::Get(Context &context) {
+	return Get(context.GetDatabase());
 }
 
 BufferAllocator &BufferAllocator::Get(DatabaseInstance &db) {

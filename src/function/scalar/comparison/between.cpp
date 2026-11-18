@@ -5,6 +5,7 @@
 #include "duckdb/function/scalar/comparison_functions.hpp"
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/parser/expression/between_expression.hpp"
+#include "duckdb/parser/expression/comparison_expression.hpp"
 #include "duckdb/planner/expression/bound_between_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/expression/legacy_bound_between_expression.hpp"
@@ -221,7 +222,17 @@ unique_ptr<FunctionData> BindBetweenFun(BindScalarFunctionInput &input) {
 }
 
 string BetweenToString(FunctionToStringInput &input) {
-	return BetweenExpression::ToString(*input.children[0], *input.children[1], *input.children[2]);
+	auto &between_info = input.bind_data->Cast<BetweenFunctionData>();
+	auto &between_input = input.GetChild(0);
+	auto &lower = input.GetChild(1);
+	auto &upper = input.GetChild(2);
+	if (between_info.lower_inclusive && between_info.upper_inclusive) {
+		return BetweenExpression::ToString(between_input, lower, upper);
+	}
+	auto lower_type = BoundBetweenExpression::LowerComparisonType(between_info.lower_inclusive);
+	auto upper_type = BoundBetweenExpression::UpperComparisonType(between_info.upper_inclusive);
+	return "(" + ComparisonExpression::ToString(lower_type, between_input, lower) + " AND " +
+	       ComparisonExpression::ToString(upper_type, between_input, upper) + ")";
 }
 
 ExpressionType BetweenGetExpressionType(FunctionToStringInput &input) {
@@ -235,7 +246,7 @@ unique_ptr<Expression> BetweenLegacySerializeCallback(FunctionToStringInput &inp
 	                                               between_info.upper_inclusive);
 }
 
-void BetweenFunctionSerialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data_p,
+void BetweenFunctionSerialize(Serializer &serializer, const optional_ptr<const FunctionData> bind_data_p,
                               const BoundScalarFunction &function) {
 	auto &bind_data = bind_data_p->Cast<BetweenFunctionData>();
 	serializer.WriteProperty(100, "lower_inclusive", bind_data.lower_inclusive);

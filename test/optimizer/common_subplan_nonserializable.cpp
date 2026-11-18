@@ -117,9 +117,9 @@ void BoundedRangeFunction(ClientContext &, TableFunctionInput &data, DataChunk &
 	output.SetChildCardinality(count);
 }
 
-void BoundedRangePushdown(ClientContext &, LogicalGet &, FunctionData *bind_data_p,
+void BoundedRangePushdown(ClientContext &, LogicalGet &get, optional_ptr<const FunctionData>,
                           vector<unique_ptr<Expression>> &filters) {
-	auto &bind_data = bind_data_p->Cast<BoundedRangeBindData>();
+	auto &bind_data = get.bind_data.write().Cast<BoundedRangeBindData>();
 	for (idx_t i = 0; i < filters.size(); i++) {
 		auto type = filters[i]->GetExpressionType();
 		if (filters[i]->GetExpressionClass() != ExpressionClass::BOUND_FUNCTION ||

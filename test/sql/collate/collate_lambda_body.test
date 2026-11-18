@@ -1,0 +1,128 @@
+# name: test/sql/collate/collate_lambda_body.test
+# description: The COLLATE in a lambda body decides the collation of the result of invoke and list_reduce, not the collation of the arguments
+# group: [collate]
+
+# the bodies here are expressions over the parameter, as a COLLATE on a bare lambda parameter is dropped (issue #711)
+
+query I
+SELECT invoke(lambda x: (x || '') COLLATE NOCASE, 'A' COLLATE NOACCENT) = 'a';
+----
+true
+
+query I
+SELECT list_reduce(['b'], lambda a, x: a COLLATE NOCASE, 'A' COLLATE NOACCENT) = 'a';
+----
+true
+
+query I
+SELECT invoke(lambda x: upper(x) COLLATE NOCASE, 'A' COLLATE NOACCENT) = 'a';
+----
+true
+
+query I
+SELECT typeof(invoke(lambda x: (x || '') COLLATE NOCASE, 'A' COLLATE NOACCENT));
+----
+VARCHAR('NOCASE')
+
+query I
+SELECT typeof(list_reduce(['b'], lambda a, x: a COLLATE NOCASE, 'A' COLLATE NOACCENT));
+----
+VARCHAR('NOCASE')
+
+# without an initial value the accumulator starts as the list's first element
+query I
+SELECT typeof(list_reduce(['A' COLLATE NOACCENT, 'b'], lambda a, x: (a || x) COLLATE NOCASE));
+----
+VARCHAR('NOCASE')
+
+query I
+SELECT list_reduce(['A' COLLATE NOACCENT, 'b'], lambda a, x: (a || x) COLLATE NOCASE) = 'ab';
+----
+true
+
+# the same as the plain expression
+query I
+SELECT ('A' COLLATE NOACCENT) COLLATE NOCASE = 'a';
+----
+true
+
+# without a COLLATE in the body, the arguments' collation still reaches the result
+query I
+SELECT typeof(invoke(lambda x: upper(x), 'A' COLLATE NOACCENT));
+----
+VARCHAR('NOACCENT')
+
+query I
+SELECT invoke(lambda x: upper(x), 'ä' COLLATE NOACCENT) = 'A';
+----
+true
+
+query I
+SELECT typeof(list_reduce(['b'], lambda a, x: a || x, 'A' COLLATE NOACCENT));
+----
+VARCHAR('NOACCENT')
+
+# the body's collation also decides which rows match
+statement ok
+CREATE TABLE strings AS SELECT * FROM (VALUES ('A'), ('ä'), ('b')) t(s);
+
+query I
+SELECT s FROM strings WHERE invoke(lambda x: (x || '') COLLATE NOCASE, s COLLATE NOACCENT) = 'a';
+----
+A
+
+query I
+SELECT s FROM strings WHERE invoke(lambda x: (x || '') COLLATE NOACCENT, s COLLATE NOCASE) = 'a';
+----
+ä
+
+query I
+SELECT s FROM strings WHERE invoke(lambda x: x || '', s COLLATE NOACCENT) = 'a';
+----
+ä
+
+query I
+SELECT s FROM strings WHERE invoke(lambda x: (x || '') COLLATE NOCASE.NOACCENT, s COLLATE NOACCENT) = 'a' ORDER BY s;
+----
+A
+ä
+
+# a NULL argument folds the call to a NULL of the result type
+query I
+SELECT typeof(invoke(lambda x: upper(x) COLLATE NOCASE, NULL::VARCHAR COLLATE NOACCENT));
+----
+VARCHAR('NOCASE')
+
+# a function whose result type is an argument's or a field's type keeps that type's collation as well
+query I
+SELECT typeof(struct_extract({'a': 'A' COLLATE NOCASE}, 'a' COLLATE NOACCENT));
+----
+VARCHAR('NOCASE')
+
+# also when a NULL argument folds the call before the function is bound
+query I
+SELECT typeof(struct_extract(cast_to_type(NULL, {'a': 'A' COLLATE NOCASE}), 'a' COLLATE NOACCENT));
+----
+VARCHAR('NOCASE')
+
+# arguments with different collations are still rejected, whatever the body's collation
+statement error
+SELECT invoke(lambda x, y: upper(x) COLLATE NOCASE, 'A' COLLATE NOACCENT, 'B' COLLATE NOCASE);
+----
+Cannot combine types with different collation
+
+# other functions keep propagating their arguments' collation
+query I
+SELECT typeof(upper('A' COLLATE NOACCENT));
+----
+VARCHAR('NOACCENT')
+
+query I
+SELECT typeof(concat('A' COLLATE NOACCENT, 'b'));
+----
+VARCHAR('NOACCENT')
+
+statement error
+SELECT concat('A' COLLATE NOACCENT, 'b' COLLATE NOCASE);
+----
+Cannot combine types with different collation

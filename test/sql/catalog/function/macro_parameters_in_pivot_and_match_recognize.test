@@ -1,0 +1,69 @@
+# name: test/sql/catalog/function/macro_parameters_in_pivot_and_match_recognize.test
+# description: Macro parameters inside PIVOT expressions and MATCH_RECOGNIZE inputs are replaced by the arguments
+# group: [function]
+
+statement ok
+CREATE TABLE t (x INTEGER, c VARCHAR);
+
+statement ok
+INSERT INTO t VALUES (1, 'a'), (2, 'b');
+
+# a parameter in the pivot expression of a table macro
+statement ok
+CREATE MACRO m(p) AS TABLE PIVOT t ON (x + p) IN (2, 3) USING count(*);
+
+query III
+SELECT * FROM m(1) ORDER BY c;
+----
+a	1	0
+b	0	1
+
+query III
+SELECT * FROM m(2) ORDER BY c;
+----
+a	0	1
+b	0	0
+
+# a parameter in the aggregate keeps working
+statement ok
+CREATE MACRO m_aggregate(p) AS TABLE PIVOT t ON c IN ('a') USING sum(x + p);
+
+query I
+SELECT * FROM m_aggregate(10);
+----
+11
+
+# a parameter in the input of a MATCH_RECOGNIZE
+statement ok
+CREATE MACRO m_match(p) AS TABLE SELECT v FROM (SELECT p AS c) s MATCH_RECOGNIZE (MEASURES first(c) AS v ONE ROW PER MATCH PATTERN (A) DEFINE A AS true);
+
+query I
+SELECT * FROM m_match(7);
+----
+7
+
+# a parameter in the measures and defines keeps working
+statement ok
+CREATE MACRO m_measure(p) AS TABLE SELECT v FROM (SELECT 1 AS c) s MATCH_RECOGNIZE (MEASURES first(c) + p AS v ONE ROW PER MATCH PATTERN (A) DEFINE A AS c = p);
+
+query I
+SELECT * FROM m_measure(1);
+----
+2
+
+# the same positions inside the subquery of a scalar macro
+statement ok
+CREATE MACRO s(p) AS (SELECT count(*) FROM (SELECT * FROM t PIVOT(count(*) FOR (x + p) IN (2))));
+
+query I
+SELECT s(1);
+----
+2
+
+statement ok
+CREATE MACRO s_match(p) AS (SELECT v FROM (SELECT p AS c) s MATCH_RECOGNIZE (MEASURES first(c) AS v ONE ROW PER MATCH PATTERN (A) DEFINE A AS true));
+
+query I
+SELECT s_match(7);
+----
+7

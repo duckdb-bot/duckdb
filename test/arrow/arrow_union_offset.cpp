@@ -130,14 +130,12 @@ unique_ptr<QueryResult> ScanColumn(Connection &con, ArrowSchema &col_schema, Arr
 	ArrowArrayStream stream {};
 	AdbcError err {};
 	REQUIRE(duckdb_adbc::BatchToArrayStream(&record_array, &record_schema, &stream, &err) == ADBC_STATUS_OK);
-	auto factory = ArrowTestHelper::ConstructArrowScan(stream);
-	if (projection.empty()) {
-		return con.TableFunction("arrow_scan", {}, {}, std::move(factory))->Execute();
+	auto arrow_scan = ArrowTestHelper::ArrowScanSelect(ArrowTestHelper::ConstructArrowScan(stream));
+	if (!projection.empty()) {
+		auto &select_node = arrow_scan->node->Cast<SelectNode>();
+		select_node.select_list = Parser(*con.context).ParseExpressionList(projection);
+		select_node.aggregate_handling = AggregateHandling::NO_AGGREGATES_ALLOWED;
 	}
-	auto arrow_scan = ArrowTestHelper::ArrowScanSelect(std::move(factory));
-	auto &select_node = arrow_scan->node->Cast<SelectNode>();
-	select_node.select_list = Parser(*con.context).ParseExpressionList(projection);
-	select_node.aggregate_handling = AggregateHandling::NO_AGGREGATES_ALLOWED;
 	return con.Query(std::move(arrow_scan));
 }
 

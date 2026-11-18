@@ -660,6 +660,25 @@ static ColumnMapResult MapColumnStruct(ClientContext &context, const MultiFileCo
 	return result;
 }
 
+//! Reads the field a pushed-down extract selects from a struct without child definitions with the type it has in the
+//! file when its text becomes bytes, so that the cast of the mapping converts it instead of the reader
+static void ReadExtractedTextAsBytes(ColumnIndex &index, const LogicalType &local_type) {
+	reference<ColumnIndex> field_index(index);
+	reference<const LogicalType> field_type(local_type);
+	while (field_index.get().IsPushdownExtract()) {
+		auto &child = field_index.get().GetChildIndex(0);
+		if (!child.HasPrimaryIndex() || field_type.get().id() != LogicalTypeId::STRUCT ||
+		    child.GetPrimaryIndex() >= StructType::GetChildCount(field_type.get())) {
+			return;
+		}
+		field_type = StructType::GetChildType(field_type.get(), child.GetPrimaryIndex());
+		field_index = child;
+	}
+	if (field_index.get().HasType() && ReadsTextAsBytes(field_type.get(), field_index.get().GetType())) {
+		field_index.get().SetType(field_type.get());
+	}
+}
+
 static ColumnMapResult MapColumn(ClientContext &context, const MultiFileColumnDefinition &global_column,
                                  const ColumnIndex &global_index,
                                  const vector<MultiFileColumnDefinition> &local_columns, const ColumnMapper &mapper,
@@ -689,6 +708,9 @@ static ColumnMapResult MapColumn(ClientContext &context, const MultiFileColumnDe
 		// Map directly when no child remapping is needed or the source requires a scalar cast.
 		result.column_map = Value(local_column.name);
 		result.column_index = make_uniq<ColumnIndex>(global_index.RemapRootIndex(local_idx.GetIndex()));
+		if (global_index.IsPushdownExtract()) {
+			ReadExtractedTextAsBytes(*result.column_index, local_column.type);
+		}
 		result.mapping = std::move(mapping);
 		result.local_column = local_column;
 		return result;

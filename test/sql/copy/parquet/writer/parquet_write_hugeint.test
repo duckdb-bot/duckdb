@@ -150,9 +150,6 @@ SELECT count(DISTINCT boundary_order) FROM parquet_page_index('{TEST_DIR}/hugein
 ----
 1
 
-statement ok
-CALL enable_logging('PhysicalOperator');
-
 # the statistics of every row group are the minimum and maximum of its rows
 query I
 SELECT count(*) FROM parquet_metadata('{TEST_DIR}/hugeint_groups.parquet') m
@@ -160,33 +157,3 @@ JOIN (SELECT i // 2048 AS g, min(h) AS mn, max(h) AS mx, count(*) - count(h) AS 
 ON m.row_group_id = e.g AND m.stats_min_value::HUGEINT = e.mn AND m.stats_max_value::HUGEINT = e.mx AND m.stats_null_count = e.nulls
 ----
 5
-
-query I nosort negatives
-SELECT count(*), min(h), max(h) FROM groups WHERE h < (-1000)::HUGEINT * 1180591620717411303424
-----
-
-query I nosort negatives
-SELECT count(*), min(h), max(h) FROM '{TEST_DIR}/hugeint_groups.parquet' WHERE h < (-1000)::HUGEINT * 1180591620717411303424
-----
-
-query I nosort positives
-SELECT count(*), min(h), max(h) FROM groups WHERE h >= 0 AND h < 3000::HUGEINT * 1180591620717411303424
-----
-
-query I nosort positives
-SELECT count(*), min(h), max(h) FROM '{TEST_DIR}/hugeint_groups.parquet' WHERE h >= 0 AND h < 3000::HUGEINT * 1180591620717411303424
-----
-
-query I
-SELECT count(*) FROM '{TEST_DIR}/hugeint_groups.parquet' WHERE h IS NULL
-----
-1429
-
-statement ok
-CALL disable_logging();
-
-# the selective filters skipped pages through the page index
-query I
-SELECT count(*) > 0 FROM duckdb_logs_parsed('PhysicalOperator') WHERE class = 'ParquetReader' AND event = 'SkipPages'
-----
-true

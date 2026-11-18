@@ -262,3 +262,20 @@ SELECT id, s.sub::VARCHAR FROM schema_deep ORDER BY id;
 ----
 1	{'a': 'caf\\xC3\\xA9', 'n': 1}
 2	{'a': 'caf\\xC3\\xA9', 'n': 2}
+
+# an extracted list and an extracted map are read with their file types and cast as a whole
+statement ok
+COPY (SELECT 1 AS id, {'l': ['a\x41', NULL, ''], 'm': MAP {'café': 'a\x41'}} AS s) TO '{TEST_DIR}/schema_containers.parquet' (FIELD_IDS {id: 1, s: {__duckdb_field_id: 2, l: 3, m: 4}});
+
+statement ok
+CREATE VIEW schema_containers AS SELECT * FROM read_parquet('{TEST_DIR}/schema_containers.parquet', schema := MAP {1: {name: 'id', type: 'INTEGER', default_value: NULL, children: NULL}, 2: {name: 's', type: 'STRUCT(l BLOB[], m MAP(BLOB, BLOB))', default_value: NULL, children: NULL}});
+
+query II
+SELECT s.l, s.m FROM schema_containers;
+----
+['a\\x5Cx41', NULL, '']	{'caf\\xC3\\xA9'='a\\x5Cx41'}
+
+query II
+SELECT s.l IS NOT DISTINCT FROM [encode('a\x41'), NULL, encode('')], s.m = MAP {encode('café'): encode('a\x41')} FROM schema_containers;
+----
+true	true

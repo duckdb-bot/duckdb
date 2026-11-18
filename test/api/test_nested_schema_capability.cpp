@@ -228,8 +228,7 @@ TEST_CASE("Standalone pushdown keeps casts to unsupported nested type paths loca
 	Catalog::GetCatalog(*con.context, "flat").Cast<FlatEntryCatalog>().remote = true;
 	con.Commit();
 
-	// a self-contained body over a supported path next to a local table is pushed down on its own, which reaches the
-	// catalog's RemoteExecute
+	// a body over a supported path next to a local table is pushed on its own and reaches the catalog's RemoteExecute
 	auto check_pushed = [&con](const string &query) {
 		INFO(query);
 		auto result = con.Query(query);
@@ -241,8 +240,7 @@ TEST_CASE("Standalone pushdown keeps casts to unsupported nested type paths loca
 	check_pushed("WITH c AS (SELECT * FROM flat.b.t) SELECT * FROM c, local_tbl");
 	check_pushed("SELECT * FROM (SELECT i::flat.b.my_int AS v FROM flat.b.t) s, local_tbl");
 
-	// a nested path the catalog does not support names nothing there, so the body stays local and the binder
-	// reports the missing entry
+	// a nested path the catalog does not support names nothing, so the body stays local and the binder reports it
 	auto check_local = [&con](const string &query) {
 		INFO(query);
 		auto result = con.Query(query);
@@ -257,6 +255,8 @@ TEST_CASE("Standalone pushdown keeps casts to unsupported nested type paths loca
 	    "SELECT * FROM (SELECT flat.a.b.f(i) AS v FROM flat.b.t) s, local_tbl",
 	    "SELECT * FROM (SELECT i::flat.a.b.missing_type AS v FROM flat.b.t) s, local_tbl",
 	    "WITH s AS (SELECT i::flat.a.b.missing_type AS v FROM flat.b.t) SELECT * FROM s, local_tbl",
+	    "SELECT * FROM (SELECT [i]::flat.a.b.missing_type[] AS v FROM flat.b.t) s, local_tbl",
+	    "SELECT * FROM (SELECT {'x': i}::STRUCT(x flat.a.b.missing_type) AS v FROM flat.b.t) s, local_tbl",
 	};
 	for (auto &query : unsupported) {
 		check_local(query);

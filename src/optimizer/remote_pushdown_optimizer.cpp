@@ -1267,9 +1267,12 @@ void RemotePushdownOptimizer::CheckCastType(const TypeExpression &type_expr) {
 	// a user type of a local catalog might not exist remotely, built-in types exist everywhere. The lookups do not
 	// autoload extensions, whose types the server can have
 	if (!type_expr.GetCatalog().empty()) {
+		Identifier catalog_name;
+		vector<Identifier> schema_path;
 		auto catalog = Catalog::GetCatalogEntry(binder.context, type_expr.GetCatalog());
-		if (!catalog || (!catalog->IsSystemCatalog() && !catalog->Supports(RemoteCapability::EXECUTE_QUERY_NODE))) {
-			// a first component that is not a catalog starts a nested schema path, which is not resolved here
+		if (!catalog || (!catalog->IsSystemCatalog() && !catalog->Supports(RemoteCapability::EXECUTE_QUERY_NODE)) ||
+		    !ResolveQualification(type_expr.GetQualifiedName(), catalog_name, schema_path, CatalogType::TYPE_ENTRY)) {
+			// a first component that is not a catalog, or a nested path the catalog does not support, stays local
 			MarkStaysWithParent();
 		}
 	} else if (!type_expr.GetSchema().empty()) {

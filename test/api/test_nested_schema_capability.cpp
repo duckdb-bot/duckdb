@@ -211,3 +211,54 @@ TEST_CASE("Unsupported catalogs reject nested schemas", "[api][nested_schema]") 
 	result = con.Query("SELECT * FROM b.t");
 	REQUIRE(CHECK_COLUMN(result, 0, {42}));
 }
+
+TEST_CASE("Standalone pushdown keeps casts to unsupported nested type paths local", "[api][nested_schema]") {
+	DBConfig config;
+	StorageExtension::Register(config, "flat_schema_test", make_shared_ptr<FlatStorageExtension>());
+	DuckDB db(nullptr, &config);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("ATTACH 'remote' AS flat (TYPE flat_schema_test)"));
+	REQUIRE_NO_FAIL(con.Query("USE flat"));
+	REQUIRE_NO_FAIL(con.Query("CREATE SCHEMA a"));
+	REQUIRE_NO_FAIL(con.Query("CREATE SCHEMA b"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE b.t AS SELECT 42 AS i"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TYPE b.my_int AS INTEGER"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TEMP TABLE local_tbl AS SELECT 1 AS x"));
+	con.BeginTransaction();
+	Catalog::GetCatalog(*con.context, "flat").Cast<FlatEntryCatalog>().remote = true;
+	con.Commit();
+
+	// a self-contained body over a supported path next to a local table is pushed down on its own, which reaches the
+	// catalog's RemoteExecute
+	auto check_pushed = [&con](const string &query) {
+		INFO(query);
+		auto result = con.Query(query);
+		REQUIRE_FAIL(result);
+		INFO(result->GetError());
+		REQUIRE(result->GetErrorType() == ExceptionType::NOT_IMPLEMENTED);
+	};
+	check_pushed("SELECT * FROM (SELECT * FROM flat.b.t) s, local_tbl");
+	check_pushed("WITH c AS (SELECT * FROM flat.b.t) SELECT * FROM c, local_tbl");
+	check_pushed("SELECT * FROM (SELECT i::flat.b.my_int AS v FROM flat.b.t) s, local_tbl");
+
+	// a nested path the catalog does not support names nothing there, so the body stays local and the binder
+	// reports the missing entry
+	auto check_local = [&con](const string &query) {
+		INFO(query);
+		auto result = con.Query(query);
+		REQUIRE_FAIL(result);
+		INFO(result->GetError());
+		REQUIRE(result->GetErrorType() == ExceptionType::CATALOG);
+	};
+	const vector<string> unsupported {
+	    "SELECT * FROM (SELECT * FROM flat.a.b.t) s, local_tbl",
+	    "WITH c AS (SELECT * FROM flat.a.b.t) SELECT * FROM c, local_tbl",
+	    "SELECT * FROM (SELECT count(*) AS n FROM a.b.t) s, local_tbl",
+	    "SELECT * FROM (SELECT flat.a.b.f(i) AS v FROM flat.b.t) s, local_tbl",
+	    "SELECT * FROM (SELECT i::flat.a.b.missing_type AS v FROM flat.b.t) s, local_tbl",
+	    "WITH s AS (SELECT i::flat.a.b.missing_type AS v FROM flat.b.t) SELECT * FROM s, local_tbl",
+	};
+	for (auto &query : unsupported) {
+		check_local(query);
+	}
+}

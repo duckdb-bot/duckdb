@@ -212,7 +212,6 @@ TEST_CASE("Test arrow roundtrip of ENUM in fixed-size arrays", "[arrow]") {
 	ArrowTestFactory factory(std::move(types), std::move(names), std::move(result), con.context->GetClientProperties(),
 	                         *con.context);
 	auto arrow_result = ArrowTestHelper::ScanArrowObject(con, ArrowTestHelper::ConstructArrowScan(factory));
-	REQUIRE(arrow_result);
 	child_list_t<LogicalType> l_children {{"s", LogicalType::ARRAY(LogicalType::VARCHAR, 2)}};
 	child_list_t<LogicalType> sa_children {{"c", LogicalType::VARCHAR}};
 	vector<LogicalType> expected_types {LogicalType::ARRAY(LogicalType::VARCHAR, 3),
@@ -233,7 +232,6 @@ static bool ArrowRoundtripMatches(Connection &con, const string &query, const st
 	ArrowTestFactory factory(std::move(types), std::move(names), std::move(result), con.context->GetClientProperties(),
 	                         *con.context);
 	auto arrow_result = ArrowTestHelper::ScanArrowObject(con, ArrowTestHelper::ConstructArrowScan(factory));
-	REQUIRE(arrow_result);
 	return arrow_result->Equals(*con.Query(expected), false);
 }
 

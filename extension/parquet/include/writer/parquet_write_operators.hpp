@@ -436,35 +436,62 @@ struct ParquetTimeTZOperator : public BaseParquetOperator {
 	}
 };
 
-struct ParquetHugeintOperator : public BaseParquetOperator {
+//! HUGEINT and UHUGEINT columns are DECIMAL(39, 0) columns of 17 bytes, so that no value is lost (a DOUBLE keeps
+//! 53 bits). The leading byte extends the sign of the 128 bit two's complement value.
+struct ParquetHugeintDecimalOperator : public BaseParquetOperator {
+	static void WriteBigEndian(uint64_t value, data_ptr_t result) {
+		for (idx_t i = 0; i < sizeof(uint64_t); i++) {
+			result[i] = static_cast<data_t>((value >> ((sizeof(uint64_t) - i - 1) * 8)) & 0xFF);
+		}
+	}
+
+	static void Encode(const hugeint_t &input, data_ptr_t result) {
+		result[0] = input.upper < 0 ? 0xFF : 0x00;
+		WriteBigEndian(static_cast<uint64_t>(input.upper), result + 1);
+		WriteBigEndian(input.lower, result + 1 + sizeof(uint64_t));
+	}
+
+	static void Encode(const uhugeint_t &input, data_ptr_t result) {
+		result[0] = 0x00;
+		WriteBigEndian(input.upper, result + 1);
+		WriteBigEndian(input.lower, result + 1 + sizeof(uint64_t));
+	}
+
 	template <class SRC, class TGT>
 	static TGT Operation(SRC input) {
-		return Hugeint::Cast<double>(input);
+		TGT result;
+		Encode(input, result.bytes);
+		return result;
+	}
+
+	template <class SRC, class TGT>
+	static void WriteToStream(const TGT &target_value, WriteStream &ser) {
+		ser.WriteData(target_value.bytes, ParquetHugeintDecimalTargetType::SIZE);
+	}
+
+	template <class SRC, class TGT>
+	static constexpr idx_t WriteSize(const TGT &target_value) {
+		return ParquetHugeintDecimalTargetType::SIZE;
+	}
+
+	template <class SRC, class TGT>
+	static uint64_t XXHash64(const TGT &target_value) {
+		return duckdb_zstd::XXH64(target_value.bytes, ParquetHugeintDecimalTargetType::SIZE, 0);
 	}
 
 	template <class SRC, class TGT>
 	static unique_ptr<ColumnWriterStatistics> InitializeStats() {
-		return make_uniq<ColumnWriterStatistics>();
+		return make_uniq<HugeintDecimalStatisticsState>();
 	}
 
 	template <class SRC, class TGT>
 	static void HandleStats(ColumnWriterStatistics *stats, TGT target_value) {
-	}
-};
-
-struct ParquetUhugeintOperator : public BaseParquetOperator {
-	template <class SRC, class TGT>
-	static TGT Operation(SRC input) {
-		return Uhugeint::Cast<double>(input);
+		stats->Cast<HugeintDecimalStatisticsState>().Update(target_value);
 	}
 
 	template <class SRC, class TGT>
-	static unique_ptr<ColumnWriterStatistics> InitializeStats() {
-		return make_uniq<ColumnWriterStatistics>();
-	}
-
-	template <class SRC, class TGT>
-	static void HandleStats(ColumnWriterStatistics *stats, TGT target_value) {
+	static idx_t GetRowSize(const Vector &, idx_t) {
+		return ParquetHugeintDecimalTargetType::SIZE;
 	}
 };
 

@@ -21,6 +21,7 @@
 #include "duckdb/common/types/geometry_crs.hpp"
 #include "duckdb/common/type_visitor.hpp"
 #include "writer/variant_column_writer.hpp"
+#include "writer/parquet_write_stats.hpp"
 #include "duckdb/common/assert.hpp"
 #include "duckdb/common/case_insensitive_map.hpp"
 #include "duckdb/common/encryption_state.hpp"
@@ -155,7 +156,8 @@ bool ParquetWriter::TryGetParquetType(const LogicalType &duckdb_type, optional_p
 		break;
 	case LogicalTypeId::UHUGEINT:
 	case LogicalTypeId::HUGEINT:
-		parquet_type = Type::DOUBLE;
+		// a DECIMAL(39, 0) in 17 bytes, DOUBLE would lose everything beyond 53 bits
+		parquet_type = Type::FIXED_LEN_BYTE_ARRAY;
 		break;
 	case LogicalTypeId::ENUM:
 	case LogicalTypeId::BLOB:
@@ -359,6 +361,23 @@ void ParquetWriter::SetSchemaProperties(const LogicalType &duckdb_type, duckdb_p
 		schema_ele.__isset.type_length = true;
 		schema_ele.__isset.logicalType = true;
 		schema_ele.logicalType.__isset.UUID = true;
+		break;
+	case LogicalTypeId::HUGEINT:
+	case LogicalTypeId::UHUGEINT:
+		static_assert(ParquetHugeintDecimalTargetType::SIZE == idx_t(ParquetDecimalUtils::HUGEINT_DECIMAL_BYTES),
+		              "the HUGEINT decimal schema and writer must agree on the byte length");
+		schema_ele.converted_type = ConvertedType::DECIMAL;
+		schema_ele.precision = ParquetDecimalUtils::HUGEINT_DECIMAL_WIDTH;
+		schema_ele.scale = 0;
+		schema_ele.type_length = ParquetDecimalUtils::HUGEINT_DECIMAL_BYTES;
+		schema_ele.__isset.converted_type = true;
+		schema_ele.__isset.precision = true;
+		schema_ele.__isset.scale = true;
+		schema_ele.__isset.type_length = true;
+		schema_ele.__isset.logicalType = true;
+		schema_ele.logicalType.__isset.DECIMAL = true;
+		schema_ele.logicalType.DECIMAL.precision = schema_ele.precision;
+		schema_ele.logicalType.DECIMAL.scale = schema_ele.scale;
 		break;
 	case LogicalTypeId::DECIMAL:
 		if (DecimalType::GetWidth(duckdb_type) > idx_t(NumericLimits<int32_t>::Maximum())) {
@@ -1274,10 +1293,12 @@ static unique_ptr<ColumnStatsUnifier> GetBaseStatsUnifier(const LogicalType &typ
 		return make_uniq<NumericStatsUnifier<uint64_t>>();
 	case LogicalTypeId::FLOAT:
 		return make_uniq<NumericStatsUnifier<float>>();
-	case LogicalTypeId::HUGEINT:
-	case LogicalTypeId::UHUGEINT:
 	case LogicalTypeId::DOUBLE:
 		return make_uniq<NumericStatsUnifier<double>>();
+	case LogicalTypeId::HUGEINT:
+	case LogicalTypeId::UHUGEINT:
+		// written as a wide decimal, so the statistics are its big-endian two's complement bytes
+		return make_uniq<WideDecimalStatsUnifier>(ParquetDecimalUtils::HUGEINT_DECIMAL_WIDTH, 0);
 	case LogicalTypeId::DECIMAL: {
 		auto width = DecimalType::GetWidth(type);
 		auto scale = DecimalType::GetScale(type);

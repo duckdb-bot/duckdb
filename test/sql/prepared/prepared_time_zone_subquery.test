@@ -1,0 +1,226 @@
+# name: test/sql/prepared/prepared_time_zone_subquery.test
+# description: Prepared statements whose subqueries read the TimeZone are bound again, unless a fold drops the subquery
+# group: [prepared]
+
+require icu
+
+statement ok
+SET TimeZone = 'UTC';
+
+statement ok
+SET VARIABLE x = 1;
+
+# the casts of the literal and to VARCHAR inside the subquery read the TimeZone
+statement ok
+PREPARE subquery_cast AS SELECT (SELECT TIMESTAMPTZ '2026-01-01 00:00:00'::VARCHAR);
+
+statement ok
+PREPARE try_subquery_cast AS SELECT TRY((SELECT TIMESTAMPTZ '2026-01-01 00:00:00'::VARCHAR));
+
+# a derived table and a nested subquery are bound by binders below the subquery's binder
+statement ok
+PREPARE derived_cast AS SELECT (SELECT v FROM (SELECT TIMESTAMPTZ '2026-01-01 00:00:00'::VARCHAR AS v) x);
+
+statement ok
+PREPARE nested_cast AS SELECT (SELECT (SELECT TIMESTAMPTZ '2026-01-01 00:00:00'::VARCHAR));
+
+# the cast of a set operation's column is added when the subquery is planned
+statement ok
+PREPARE setop_cast AS SELECT (SELECT min(epoch_us(v)) FROM (SELECT TIMESTAMP '2026-01-01 00:00:00' UNION ALL SELECT TIMESTAMPTZ '2026-01-01 00:00:00+00') x(v));
+
+# the arguments of a table function are folded when the subquery is bound, and the calendar of range follows the settings
+statement ok
+PREPARE range_cast AS SELECT (SELECT epoch_us(min(r)) FROM range(TIMESTAMPTZ '2026-01-01 00:00:00', TIMESTAMPTZ '2026-01-02 00:00:00', INTERVAL 1 DAY) x(r));
+
+statement ok
+PREPARE range_calendar AS SELECT (SELECT max(epoch_us(r)) FROM range(to_timestamp(1774738800), to_timestamp(1774915200), INTERVAL 1 DAY) x(r));
+
+# the aggregates of USING KEY are bound by a binder of their own, whose rebinds the CTE passes on
+statement ok
+PREPARE key_aggregate_cast AS SELECT (WITH RECURSIVE r(k, n, s, txt) USING KEY (k, last(s::VARCHAR) AS txt) AS (SELECT 1, 0, TIMESTAMPTZ '2026-01-01 00:00:00', '' UNION SELECT k, n + 1, s, txt FROM r WHERE n < 1) SELECT txt FROM r);
+
+# typeof replaces the subquery with its type, which the settings do not change
+statement ok
+PREPARE dropped_cast AS SELECT typeof((SELECT TIMESTAMPTZ '2026-01-01 00:00:00'));
+
+statement ok
+PREPARE dropped_try_cast AS SELECT typeof(TRY((SELECT TIMESTAMPTZ '2026-01-01 00:00:00')));
+
+statement ok
+PREPARE dropped_range AS SELECT typeof((SELECT min(r) FROM range(TIMESTAMPTZ '2026-01-01 00:00:00', TIMESTAMPTZ '2026-01-02 00:00:00', INTERVAL 1 DAY) x(r)));
+
+statement ok
+PREPARE dropped_key_aggregate AS SELECT typeof((WITH RECURSIVE r(k, n, s, txt) USING KEY (k, last(s::VARCHAR) AS txt) AS (SELECT 1, 0, TIMESTAMPTZ '2026-01-01 00:00:00', '' UNION SELECT k, n + 1, s, txt FROM r WHERE n < 1) SELECT txt FROM r));
+
+# the type of a variable follows the variable, which getvariable reads when it is bound
+statement ok
+PREPARE dropped_variable AS SELECT typeof((SELECT getvariable('x')));
+
+# a variable read by a USING KEY aggregate marks the statement at once, which the CTE passes on as such
+statement ok
+PREPARE dropped_key_variable AS SELECT typeof((WITH RECURSIVE r(k, n, v) USING KEY (k, last(getvariable('x')) AS v) AS (SELECT 1, 0, NULL UNION SELECT k, n + 1, v FROM r WHERE n < 1) SELECT v FROM r));
+
+query I
+EXECUTE subquery_cast;
+----
+2026-01-01 00:00:00+00
+
+query I
+EXECUTE try_subquery_cast;
+----
+2026-01-01 00:00:00+00
+
+query I
+EXECUTE derived_cast;
+----
+2026-01-01 00:00:00+00
+
+query I
+EXECUTE nested_cast;
+----
+2026-01-01 00:00:00+00
+
+query I
+EXECUTE setop_cast;
+----
+1767225600000000
+
+query I
+EXECUTE range_cast;
+----
+1767225600000000
+
+query I
+EXECUTE range_calendar;
+----
+1774911600000000
+
+query I
+EXECUTE key_aggregate_cast;
+----
+2026-01-01 00:00:00+00
+
+query I
+EXECUTE dropped_cast;
+----
+TIMESTAMP WITH TIME ZONE
+
+query I
+EXECUTE dropped_try_cast;
+----
+TIMESTAMP WITH TIME ZONE
+
+query I
+EXECUTE dropped_range;
+----
+TIMESTAMP WITH TIME ZONE
+
+query I
+EXECUTE dropped_key_aggregate;
+----
+VARCHAR
+
+query I
+EXECUTE dropped_variable;
+----
+INTEGER
+
+query I
+EXECUTE dropped_key_variable;
+----
+INTEGER
+
+statement ok
+SET TimeZone = 'Europe/Amsterdam';
+
+statement ok
+SET VARIABLE x = 'text';
+
+query I
+EXECUTE subquery_cast;
+----
+2026-01-01 00:00:00+01
+
+query I
+EXECUTE try_subquery_cast;
+----
+2026-01-01 00:00:00+01
+
+query I
+EXECUTE derived_cast;
+----
+2026-01-01 00:00:00+01
+
+query I
+EXECUTE nested_cast;
+----
+2026-01-01 00:00:00+01
+
+query I
+EXECUTE setop_cast;
+----
+1767222000000000
+
+query I
+EXECUTE range_cast;
+----
+1767222000000000
+
+query I
+EXECUTE range_calendar;
+----
+1774908000000000
+
+query I
+EXECUTE key_aggregate_cast;
+----
+2026-01-01 00:00:00+01
+
+query I
+EXECUTE dropped_cast;
+----
+TIMESTAMP WITH TIME ZONE
+
+query I
+EXECUTE dropped_try_cast;
+----
+TIMESTAMP WITH TIME ZONE
+
+query I
+EXECUTE dropped_range;
+----
+TIMESTAMP WITH TIME ZONE
+
+query I
+EXECUTE dropped_key_aggregate;
+----
+VARCHAR
+
+query I
+EXECUTE dropped_variable;
+----
+VARCHAR
+
+query I
+EXECUTE dropped_key_variable;
+----
+VARCHAR
+
+# a statement whose subquery reads a setting keeps no plan, one whose subquery typeof drops keeps its plan
+query II
+SELECT name, result_types IS NULL AS bound_again FROM duckdb_prepared_statements() ORDER BY name;
+----
+derived_cast	true
+dropped_cast	false
+dropped_key_aggregate	false
+dropped_key_variable	true
+dropped_range	false
+dropped_try_cast	false
+dropped_variable	true
+key_aggregate_cast	true
+nested_cast	true
+range_calendar	true
+range_cast	true
+setop_cast	true
+subquery_cast	true
+try_subquery_cast	true

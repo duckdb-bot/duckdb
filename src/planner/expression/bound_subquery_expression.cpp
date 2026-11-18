@@ -34,4 +34,8 @@ bool BoundSubqueryExpression::IsVolatile() const {
 	return subquery.plan && subquery.plan->HasVolatileExpressions();
 }
 
+bool BoundSubqueryExpression::RequiresRebind() const {
+	return requires_rebind || Expression::RequiresRebind();
+}
+
 } // namespace duckdb

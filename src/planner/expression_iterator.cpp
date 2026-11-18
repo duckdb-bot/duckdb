@@ -1,5 +1,6 @@
 #include "duckdb/planner/expression_iterator.hpp"
 
+#include "duckdb/planner/expression/bound_expanded_expression.hpp"
 #include "duckdb/planner/expression/list.hpp"
 #include "duckdb/planner/tableref/list.hpp"
 #include "duckdb/common/enum_util.hpp"
@@ -98,6 +99,13 @@ void ExpressionIterator::EnumerateChildren(Expression &expr,
 	case ExpressionClass::BOUND_UNNEST: {
 		auto &unnest_expr = expr.Cast<BoundUnnestExpression>();
 		callback(unnest_expr.ChildMutable());
+		break;
+	}
+	case ExpressionClass::BOUND_EXPANDED: {
+		auto &expanded_expr = expr.Cast<BoundExpandedExpression>();
+		for (auto &child : expanded_expr.GetChildrenMutable()) {
+			callback(child);
+		}
 		break;
 	}
 	case ExpressionClass::BOUND_COLUMN_REF:

@@ -1116,7 +1116,8 @@ static auto CV2SplitNestedExclusiveBetween(unique_ptr<Expression> &expression) -
 //! accept one by one, and one that contains such a BETWEEN with it written as the conjunction of its comparisons, so
 //! that the callback sees the bounds as they are. A predicate the callback does not take goes back to the engine as
 //! the optimizer wrote it, so that the engine does not evaluate the input of a BETWEEN twice.
-static auto CV2TableFilterPushdown(ClientContext &context, LogicalGet &get, FunctionData *bind_data_p,
+static auto CV2TableFilterPushdown(ClientContext &context, LogicalGet &get,
+                                   optional_ptr<const FunctionData> bind_data_p,
                                    vector<unique_ptr<Expression>> &filters) -> void {
 	if (filters.empty()) {
 		return;

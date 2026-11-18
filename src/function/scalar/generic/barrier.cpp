@@ -57,6 +57,13 @@ bool ExpressionBarrier::Contains(const Expression &expr) {
 	if (IsBarrier(expr)) {
 		return true;
 	}
+	if (expr.GetExpressionClass() == ExpressionClass::BOUND_FUNCTION) {
+		// a lambda body is not a child of its function
+		auto lambda_expr = expr.Cast<BoundFunctionExpression>().GetLambdaExpression();
+		if (lambda_expr && Contains(*lambda_expr)) {
+			return true;
+		}
+	}
 	bool contains = false;
 	ExpressionIterator::EnumerateChildren(expr, [&](const Expression &child) { contains |= Contains(child); });
 	return contains;

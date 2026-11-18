@@ -956,7 +956,6 @@ void LogicalUpdate::Serialize(Serializer &serializer) const {
 	serializer.WritePropertyWithDefault<bool>(206, "update_is_del_and_insert", update_is_del_and_insert);
 	serializer.WritePropertyWithDefault<bool>(207, "capture_old_rows", capture_old_rows, false);
 	serializer.WritePropertyWithDefault<vector<idx_t>>(208, "old_row_columns", old_row_columns);
-	serializer.WritePropertyWithDefault<RowIdHandling>(209, "row_id_handling", row_id_handling, RowIdHandling::ASSUME_UNIQUE);
 }
 
 unique_ptr<LogicalOperator> LogicalUpdate::Deserialize(Deserializer &deserializer) {
@@ -970,7 +969,6 @@ unique_ptr<LogicalOperator> LogicalUpdate::Deserialize(Deserializer &deserialize
 	deserializer.ReadPropertyWithDefault<bool>(206, "update_is_del_and_insert", result->update_is_del_and_insert);
 	deserializer.ReadPropertyWithExplicitDefault<bool>(207, "capture_old_rows", result->capture_old_rows, false);
 	deserializer.ReadPropertyWithDefault<vector<idx_t>>(208, "old_row_columns", result->old_row_columns);
-	deserializer.ReadPropertyWithExplicitDefault<RowIdHandling>(209, "row_id_handling", result->row_id_handling, RowIdHandling::ASSUME_UNIQUE);
 	return std::move(result);
 }
 
@@ -978,12 +976,15 @@ void LogicalWindow::Serialize(Serializer &serializer) const {
 	LogicalOperator::Serialize(serializer);
 	serializer.WritePropertyWithDefault<TableIndex>(200, "window_index", window_index);
 	serializer.WritePropertyWithDefault<vector<unique_ptr<Expression>>>(201, "expressions", expressions);
+	serializer.WritePropertyWithDefault<optional_idx>(202, "partition_limit", partition_limit, optional_idx());
 }
 
 unique_ptr<LogicalOperator> LogicalWindow::Deserialize(Deserializer &deserializer) {
 	auto window_index = deserializer.ReadPropertyWithDefault<TableIndex>(200, "window_index");
-	auto result = duckdb::unique_ptr<LogicalWindow>(new LogicalWindow(window_index));
-	deserializer.ReadPropertyWithDefault<vector<unique_ptr<Expression>>>(201, "expressions", result->expressions);
+	auto expressions = deserializer.ReadPropertyWithDefault<vector<unique_ptr<Expression>>>(201, "expressions");
+	auto partition_limit = deserializer.ReadPropertyWithExplicitDefault<optional_idx>(202, "partition_limit", optional_idx());
+	auto result = duckdb::unique_ptr<LogicalWindow>(new LogicalWindow(window_index, partition_limit));
+	result->expressions = std::move(expressions);
 	return std::move(result);
 }
 

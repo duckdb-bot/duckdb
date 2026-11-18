@@ -227,7 +227,7 @@ static void ExecuteExpression(const idx_t elem_cnt, const LambdaFunctions::Colum
 // ListLambdaBindData
 //===--------------------------------------------------------------------===//
 
-void ListLambdaBindData::Serialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data_p,
+void ListLambdaBindData::Serialize(Serializer &serializer, const optional_ptr<const FunctionData> bind_data_p,
                                    const BoundScalarFunction &) {
 	auto &bind_data = bind_data_p->Cast<ListLambdaBindData>();
 	serializer.WriteProperty(100, "return_type", bind_data.return_type);
@@ -415,7 +415,8 @@ static unique_ptr<BaseStatistics> PropagateLambdaStats(FunctionStatisticsInput &
 	if (!input.propagator || !input.bind_data) {
 		return nullptr;
 	}
-	auto &bind_data = input.bind_data->Cast<ListLambdaBindData>();
+	// the propagation can rewrite the lambda body, so the bind data is taken for writing
+	auto &bind_data = input.bind_data.write().Cast<ListLambdaBindData>();
 	if (!bind_data.lambda_expr) {
 		return nullptr;
 	}

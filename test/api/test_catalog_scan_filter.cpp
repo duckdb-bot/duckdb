@@ -29,7 +29,7 @@ TEST_CASE("Filters through a function that only looks like lower() keep the tabl
 	con.BeginTransaction();
 	auto &catalog = Catalog::GetCatalog(*con.context, Identifier("memory"));
 	MetaTransaction::Get(*con.context)
-	    .ModifyDatabase(catalog.GetAttached(), DatabaseModificationType::CREATE_CATALOG_ENTRY);
+	    .ModifyDatabase(*con.context, catalog.GetAttached(), DatabaseModificationType::CREATE_CATALOG_ENTRY);
 	catalog.CreateFunction(*con.context, info);
 	con.Commit();
 

@@ -29,8 +29,10 @@ add_library_unity(
   cte_join_filter_collector.cpp
   cte_join_filter_pusher.cpp
   cte_runtime_filter_pushdown.cpp
+  cte_semi_join_filter_transfer.cpp
   cte_inlining.cpp
   deliminator.cpp
+  distinctness.cpp
   duplicate_eliminated_domain_optimizer.cpp
   multi_stage_aggregate_rewriter.cpp
   expression_heuristics.cpp
@@ -54,6 +56,7 @@ add_library_unity(
   recursive_join_planning.cpp
   regex_range_filter.cpp
   remove_duplicate_groups.cpp
+  remove_redundant_distinct.cpp
   remove_redundant_order.cpp
   remove_redundant_order_keys.cpp
   remove_unused_columns.cpp
@@ -63,6 +66,7 @@ add_library_unity(
   topn_optimizer.cpp
   topn_window_elimination.cpp
   unnest_rewriter.cpp
+  window_fusion.cpp
   window_join_pushdown.cpp
   window_self_join.cpp
   row_number_rewriter.cpp

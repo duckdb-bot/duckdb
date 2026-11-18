@@ -544,15 +544,6 @@ TopNWindowElimination::CreateProjectionOperator(unique_ptr<LogicalOperator> op,
 	return unique_ptr<LogicalOperator>(std::move(logical_projection));
 }
 
-class ColumnReferenceExtractor : public BaseColumnPruner {
-public:
-	static column_binding_map_t<ReferencedColumn> GetReferences(unique_ptr<Expression> *expression) {
-		ColumnReferenceExtractor extractor;
-		extractor.VisitExpression(expression);
-		return extractor.column_references;
-	}
-};
-
 optional_idx TopNWindowElimination::CanOptimize(LogicalOperator &op) {
 	const optional_idx cant_optimize;
 	if (op.type != LogicalOperatorType::LOGICAL_FILTER) {
@@ -660,6 +651,10 @@ optional_idx TopNWindowElimination::CanOptimize(LogicalOperator &op) {
 		return cant_optimize;
 	}
 	const auto &window = child.get().Cast<LogicalWindow>();
+	//	Give up if window fusion has already taking this.
+	if (window.partition_limit.IsValid()) {
+		return cant_optimize;
+	}
 	if (window.window_index != filter_col_idx) {
 		return cant_optimize;
 	}
@@ -713,7 +708,7 @@ vector<unique_ptr<Expression>> TopNWindowElimination::GenerateAggregatePayload(c
 	// Remember order of group columns to recreate that order in new bindings later.
 	// A FLOAT or DOUBLE group holds both 0.0 and -0.0, so such a column is carried in the payload instead.
 	column_binding_map_t<idx_t> group_bindings;
-	for (idx_t i = 0; i < window_expr.PartitionsMutable().size(); i++) {
+	for (idx_t i = 0; i < window_expr.Partitions().size(); i++) {
 		auto &expr = window_expr.PartitionsMutable()[i];
 		const auto &type = expr->GetReturnType();
 		if (TypeVisitor::Contains(type, LogicalTypeId::FLOAT) || TypeVisitor::Contains(type, LogicalTypeId::DOUBLE)) {
@@ -960,7 +955,7 @@ bool TopNWindowElimination::CanUseLateMaterialization(const LogicalWindow &windo
 	vector<ColumnBinding> projections(window_expr.Partitions().size() + args.size());
 
 	// Build a projection list for an LHS table scan to recreate the column order of an aggregate with struct packing
-	for (idx_t i = 0; i < window_expr.PartitionsMutable().size(); i++) {
+	for (idx_t i = 0; i < window_expr.Partitions().size(); i++) {
 		auto &partition = window_expr.PartitionsMutable()[i];
 		if (!ExtractSingleBinding(&partition, projections[i])) {
 			return false;

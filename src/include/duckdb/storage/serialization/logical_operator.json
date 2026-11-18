@@ -137,10 +137,17 @@
         "id": 201,
         "name": "expressions",
         "type": "vector<Expression*>"
+      },
+      {
+        "id": 202,
+        "name": "partition_limit",
+        "type": "optional_idx",
+        "default": "optional_idx()"
       }
     ],
     "constructor": [
-      "window_index"
+      "window_index",
+      "partition_limit"
     ]
   },
   {
@@ -947,12 +954,6 @@
         "id": 208,
         "name": "old_row_columns",
         "type": "vector<idx_t>"
-      },
-      {
-        "id": 209,
-        "name": "row_id_handling",
-        "type": "RowIdHandling",
-        "default": "RowIdHandling::ASSUME_UNIQUE"
       }
     ],
     "constructor": [

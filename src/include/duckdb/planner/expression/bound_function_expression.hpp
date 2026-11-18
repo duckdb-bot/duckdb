@@ -49,6 +49,8 @@ public:
 	bool &IsOperatorMutable() {
 		return is_operator;
 	}
+	//! The lambda body this function executes, if it has one
+	optional_ptr<const Expression> GetLambdaExpression() const;
 	bool RequiresOrderedExecution() const;
 
 	bool IsVolatile() const override;

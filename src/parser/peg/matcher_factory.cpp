@@ -231,6 +231,7 @@ Matcher &MatcherFactory::CreateRootMatcher(const string &root_rule) {
 	AddPackratMemoizedRule("Expression");
 	AddPackratMemoizedRule("TableRef");
 	AddPackratMemoizedRule("ParensTableRef");
+	AddPackratMemoizedRule("WithClause");
 	AddPackratMemoizedRule("Identifier");
 	AddPackratMemoizedRule("ColId");
 	AddPackratMemoizedRule("CatalogQualification");

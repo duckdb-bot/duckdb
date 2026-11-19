@@ -1,0 +1,244 @@
+# name: test/sql/catalog/system_functions/system_catalog_scanner_constraints.test
+# description: Filter pushdown on the identity columns of duckdb_constraints()
+# group: [system_functions]
+
+# Fixture: two attached in-memory catalogs. In each, schema s1 holds table t1 (a primary key, a check and a not null
+# constraint) and table t2 (a unique constraint and a foreign key to t1), a nested schema s1.child holds table tc (a
+# not null constraint), and schema s2 holds table t3 (a check constraint) and the table nc without constraints.
+
+statement ok
+ATTACH ':memory:' AS db1;
+
+statement ok
+ATTACH ':memory:' AS db2;
+
+foreach db db1 db2
+
+statement ok
+CREATE SCHEMA {db}.s1;
+
+statement ok
+CREATE SCHEMA {db}.s2;
+
+statement ok
+CREATE SCHEMA {db}.s1.child;
+
+statement ok
+CREATE TABLE {db}.s1.t1(i INTEGER PRIMARY KEY, j INTEGER CHECK (j > 0), k INTEGER NOT NULL);
+
+statement ok
+CREATE TABLE {db}.s1.t2(x INTEGER UNIQUE, y INTEGER REFERENCES {db}.s1.t1(i));
+
+statement ok
+CREATE TABLE {db}.s1.child.tc(i INTEGER NOT NULL);
+
+statement ok
+CREATE TABLE {db}.s2.t3(i INTEGER CHECK (i < 10));
+
+statement ok
+CREATE TABLE {db}.s2.nc(i INTEGER);
+
+endloop
+
+# The snapshot is taken before any pushed query runs, so that the lazily created entries of the system catalog are in
+# place.
+statement ok
+CREATE TABLE full_duckdb_constraints AS SELECT * FROM duckdb_constraints();
+
+# ------------------------------------------------------------------------------------------------
+# 1. EXPLAIN: identity predicates are table filters on the scan, other predicates are not
+# ------------------------------------------------------------------------------------------------
+
+query II
+EXPLAIN SELECT database_name FROM duckdb_constraints() WHERE schema_name = 's1';
+----
+physical_plan	<REGEX>:.*Filters:.*schema_name.*s1.*
+
+query II
+EXPLAIN SELECT database_name FROM duckdb_constraints() WHERE database_name = 'db1';
+----
+physical_plan	<REGEX>:.*Filters:.*database_name.*db1.*
+
+query II
+EXPLAIN SELECT database_name FROM duckdb_constraints() WHERE lower(schema_name) = 's1';
+----
+physical_plan	<REGEX>:.*Filters:.*lower\(schema_name\).*s1.*
+
+# the table of a constraint is the scanned entry
+query II
+EXPLAIN SELECT constraint_type FROM duckdb_constraints() WHERE table_name = 't1';
+----
+physical_plan	<REGEX>:.*Filters:.*table_name.*t1.*
+
+query II
+EXPLAIN SELECT constraint_type FROM duckdb_constraints() WHERE table_oid = 0;
+----
+physical_plan	<REGEX>:.*Filters:.*table_oid.*
+
+# a filter that can throw stays above the scan
+query II
+EXPLAIN SELECT database_name FROM duckdb_constraints() WHERE schema_name::INTEGER = 1;
+----
+physical_plan	<!REGEX>:.*Filters:.*
+
+# the columns of the constraint itself stay above the scan
+query II
+EXPLAIN SELECT table_name FROM duckdb_constraints() WHERE constraint_index = 0;
+----
+physical_plan	<!REGEX>:.*Filters:.*
+
+query II
+EXPLAIN SELECT table_name FROM duckdb_constraints() WHERE constraint_type = 'CHECK';
+----
+physical_plan	<!REGEX>:.*Filters:.*
+
+query II
+EXPLAIN SELECT table_name FROM duckdb_constraints() WHERE constraint_name = 't1_i_pkey';
+----
+physical_plan	<!REGEX>:.*Filters:.*
+
+# ------------------------------------------------------------------------------------------------
+# 2. Row equivalence: a pushed filter returns the rows a filter over the full scan returns
+# ------------------------------------------------------------------------------------------------
+
+# foreach splits its values on spaces, so every predicate below is written without them; oids come from variables
+statement ok
+SET VARIABLE db2_oid = (SELECT database_oid FROM duckdb_databases() WHERE database_name = 'db2');
+
+statement ok
+SET VARIABLE t2_oid = (SELECT DISTINCT table_oid FROM full_duckdb_constraints WHERE database_name = 'db1' AND table_name = 't2');
+
+foreach predicate database_name='db1' database_oid=getvariable('db2_oid') schema_name='s1' schema_name=ANY(['s1','s2']) lower(schema_name)='s2' schema_name^@'s' schema_name<>'main' (database_name='db1')AND(schema_name='s1') database_name='system' table_name='t1' table_name=ANY(['t1','t3']) lower(table_name)='t2' table_name^@'t' table_name='nc' table_oid=getvariable('t2_oid') (schema_name='s1')AND(table_name='t2') (database_name='db2')AND(table_name='t1')
+
+query I
+SELECT count(*) FROM (SELECT * FROM duckdb_constraints() WHERE {predicate} EXCEPT ALL SELECT * FROM full_duckdb_constraints WHERE {predicate});
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT * FROM full_duckdb_constraints WHERE {predicate} EXCEPT ALL SELECT * FROM duckdb_constraints() WHERE {predicate});
+----
+0
+
+endloop
+
+# the IN and LIKE shapes, which need spaces
+query I
+SELECT count(*) FROM (SELECT * FROM duckdb_constraints() WHERE schema_name IN ('s1', 's2') EXCEPT ALL SELECT * FROM full_duckdb_constraints WHERE schema_name IN ('s1', 's2'));
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT * FROM full_duckdb_constraints WHERE table_name LIKE 't%' EXCEPT ALL SELECT * FROM duckdb_constraints() WHERE table_name LIKE 't%');
+----
+0
+
+# ------------------------------------------------------------------------------------------------
+# 3. The rows of the fixture
+# ------------------------------------------------------------------------------------------------
+
+query IIII
+SELECT database_name, table_name, constraint_index, constraint_type FROM duckdb_constraints() WHERE schema_name = 's1' ORDER BY ALL;
+----
+db1	t1	0	PRIMARY KEY
+db1	t1	1	CHECK
+db1	t1	2	NOT NULL
+db1	t1	3	NOT NULL
+db1	t2	0	UNIQUE
+db1	t2	1	FOREIGN KEY
+db2	t1	0	PRIMARY KEY
+db2	t1	1	CHECK
+db2	t1	2	NOT NULL
+db2	t1	3	NOT NULL
+db2	t2	0	UNIQUE
+db2	t2	1	FOREIGN KEY
+
+# the schema filter matches the leaf name of a nested schema
+query IIII
+SELECT database_name, schema_name, table_name, constraint_type FROM duckdb_constraints() WHERE schema_name = 'child' ORDER BY ALL;
+----
+db1	child	tc	NOT NULL
+db2	child	tc	NOT NULL
+
+# a table without constraints has no rows, pruned or not
+query I
+SELECT count(*) FROM duckdb_constraints() WHERE table_name = 'nc';
+----
+0
+
+# the tables of a schema keep their order by name, so a pruned result is a subsequence of the full scan. The filter
+# is applied in the subquery, where it reaches the scan (WITH ORDINALITY above the scan would keep it from doing so)
+query II
+EXPLAIN SELECT row_number() OVER () AS ord, * FROM (SELECT * FROM duckdb_constraints() WHERE schema_name = 's1');
+----
+physical_plan	<REGEX>:.*Filters:.*schema_name.*s1.*
+
+query I
+WITH pruned AS (
+    SELECT row_number() OVER () AS ord, * FROM (SELECT * FROM duckdb_constraints() WHERE schema_name = 's1')),
+filtered AS (
+    SELECT o.ord, f.pos
+    FROM pruned o
+    JOIN (SELECT row_number() OVER () AS pos, * FROM full_duckdb_constraints) f USING (database_name, schema_name, table_name, constraint_index)),
+stepped AS (SELECT pos, lag(pos) OVER (ORDER BY ord) AS prev FROM filtered)
+SELECT count(*) = 12 AND bool_and(prev IS NULL OR pos > prev) FROM stepped;
+----
+true
+
+# ------------------------------------------------------------------------------------------------
+# 4. EXPLAIN ANALYZE: counters
+# ------------------------------------------------------------------------------------------------
+
+query II
+EXPLAIN ANALYZE SELECT * FROM duckdb_constraints() WHERE database_name = 'db1' AND schema_name = 's1';
+----
+analyzed_plan	<REGEX>:.*Catalogs Scanned: 1/.*Schemas Scanned: 1/.*
+
+# one table, four constraint rows
+query II
+EXPLAIN ANALYZE SELECT * FROM duckdb_constraints() WHERE database_name = 'db1' AND schema_name = 's1' AND table_name = 't1';
+----
+analyzed_plan	<REGEX>:.*Entries Scanned: 1/.*
+
+query II
+EXPLAIN ANALYZE SELECT * FROM duckdb_constraints() WHERE database_name = 'nonexistent';
+----
+analyzed_plan	<REGEX>:.*Catalogs Scanned: 0/.*Schemas Scanned: 0/0.*
+
+# ------------------------------------------------------------------------------------------------
+# 5. Consumers: views that rename identity columns pass a predicate on them through to the scan
+# ------------------------------------------------------------------------------------------------
+
+query III
+SELECT table_schema, table_name, constraint_type FROM information_schema.table_constraints WHERE table_catalog = 'db1' AND table_schema = 's1' ORDER BY ALL;
+----
+s1	t1	CHECK
+s1	t1	CHECK
+s1	t1	CHECK
+s1	t1	PRIMARY KEY
+s1	t2	FOREIGN KEY
+s1	t2	UNIQUE
+
+query II
+EXPLAIN ANALYZE SELECT constraint_name FROM information_schema.table_constraints WHERE table_catalog = 'db1' AND table_schema = 's1';
+----
+analyzed_plan	<REGEX>:.*Catalogs Scanned: 1/.*Schemas Scanned: 1/.*
+
+# pg_constraint names the table by its oid, which pins the scan to that table
+statement ok
+SET VARIABLE t1_oid = (SELECT table_oid FROM duckdb_tables() WHERE database_name = 'db1' AND schema_name = 's1' AND table_name = 't1');
+
+query I
+SELECT count(*) FROM pg_catalog.pg_constraint WHERE conrelid = getvariable('t1_oid');
+----
+4
+
+query II
+EXPLAIN ANALYZE SELECT conname FROM pg_catalog.pg_constraint WHERE conrelid = getvariable('t1_oid');
+----
+analyzed_plan	<REGEX>:.*Filters: table_oid = \d+.*Entries Scanned: 1/.*
+
+query I
+SELECT pg_get_constraintdef((SELECT oid FROM pg_catalog.pg_constraint WHERE conrelid = getvariable('t1_oid') AND contype = 'p'));
+----
+PRIMARY KEY(i)

@@ -1,0 +1,52 @@
+# name: test/sql/logging/enable_logging_keeps_path.test
+# description: a call that changes another storage option keeps the path of the active file log storage
+# group: [logging]
+
+require noforcestorage
+
+statement ok
+CALL enable_logging(['QueryLog'], storage = 'file', storage_path = '{TEST_DIR}/keeps_path');
+
+query I
+SELECT 1;
+----
+1
+
+# used to drop the path, so the files were looked up relative to the working directory
+statement ok
+CALL enable_logging(['QueryLog'], storage_buffer_size = 100);
+
+query I
+SELECT 2;
+----
+2
+
+# the entries written after the call are read through the kept path
+query I
+SELECT count(*) > 0 FROM duckdb_logs() WHERE message LIKE '%SELECT 2%';
+----
+true
+
+# the files of both calls are in the configured directory
+query I
+SELECT count(*) FROM glob('{TEST_DIR}/keeps_path/*.csv');
+----
+2
+
+
+# a .csv path implies normalize false, and a later normalize is checked against the kept path
+statement ok
+CALL enable_logging(['QueryLog'], storage_path = '{TEST_DIR}/keeps_path.csv');
+
+statement error
+CALL enable_logging(['QueryLog'], storage_normalize = true);
+----
+while normalize is true
+
+query I
+SELECT 3;
+----
+3
+
+statement ok
+CALL disable_logging();

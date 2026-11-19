@@ -70,13 +70,13 @@ NULL
 statement error
 select 'a%c' ilike 'a$%C' escape '///';
 ----
-<REGEX>:.*Syntax Error: Invalid escape string.*
+<REGEX>:.*Invalid Input Error: Invalid escape string.*
 
-# escape must be a constant
+# an escape string read from a column must be one character too
 statement error
 SELECT str ILIKE pat ESCAPE str FROM tbl
 ----
-<REGEX>:.*Syntax Error: Invalid escape string.*
+<REGEX>:.*Invalid Input Error: Invalid escape string.*
 
 # An embedded NUL is a valid escape character and must not be confused with
 # the empty escape string, which disables escaping.
@@ -116,4 +116,4 @@ false	false
 statement error
 SELECT 'ab' ILIKE ('a' || chr(0)) ESCAPE chr(0)
 ----
-<REGEX>:.*Syntax Error: Like pattern must not end with escape character.*
+<REGEX>:.*Invalid Input Error: Like pattern must not end with escape character.*

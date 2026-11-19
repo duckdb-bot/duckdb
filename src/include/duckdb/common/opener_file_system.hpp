@@ -241,6 +241,10 @@ public:
 		GetFileSystem().SetDisabledFileSystems(names);
 	}
 
+	vector<string> GetDisabledFileSystems() override {
+		return GetFileSystem().GetDisabledFileSystems();
+	}
+
 	bool SubSystemIsDisabled(const string &name) override {
 		return GetFileSystem().SubSystemIsDisabled(name);
 	}

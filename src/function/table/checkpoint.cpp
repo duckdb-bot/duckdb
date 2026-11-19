@@ -45,11 +45,11 @@ static unique_ptr<FunctionData> CheckpointBind(ClientContext &context, TableFunc
 		auto default_database = DatabaseManager::GetDefaultDatabase(context);
 		db = db_manager.GetDatabase(context, default_database);
 		if (!db) {
-			throw BinderException("Catalog \"%s\" does not exist!", default_database);
+			throw BinderException("Catalog %s does not exist!", default_database);
 		}
 	}
 	if (db->IsSystem() || db->IsTemporary()) {
-		throw BinderException("Cannot checkpoint database \"%s\": it does not have storage", db->GetName());
+		throw BinderException("Cannot checkpoint database %s: it does not have storage", db->GetName());
 	}
 	return make_uniq<CheckpointBindData>(db);
 }
@@ -62,16 +62,20 @@ static void TemplatedCheckpointFunction(ClientContext &context, TableFunctionInp
 }
 
 void CheckpointFunction::RegisterFunction(BuiltinFunctions &set) {
+	// a checkpoint is a side effect per execution
 	TableFunctionSet checkpoint("checkpoint");
 	checkpoint.AddFunction(TableFunction({}, TemplatedCheckpointFunction<false>, CheckpointBind));
 	checkpoint.AddFunction(TableFunction(FunctionSignature().AddPositionalOnly("database", LogicalType::VARCHAR),
 	                                     TemplatedCheckpointFunction<false>, CheckpointBind));
+	checkpoint.ApplyToFunctions([](TableFunction &function) { function.stability = FunctionStability::VOLATILE; });
 	set.AddFunction(checkpoint);
 
 	TableFunctionSet force_checkpoint("force_checkpoint");
 	force_checkpoint.AddFunction(TableFunction({}, TemplatedCheckpointFunction<true>, CheckpointBind));
 	force_checkpoint.AddFunction(TableFunction(FunctionSignature().AddPositionalOnly("database", LogicalType::VARCHAR),
 	                                           TemplatedCheckpointFunction<true>, CheckpointBind));
+	force_checkpoint.ApplyToFunctions(
+	    [](TableFunction &function) { function.stability = FunctionStability::VOLATILE; });
 	set.AddFunction(force_checkpoint);
 }
 

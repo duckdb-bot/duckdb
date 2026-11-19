@@ -1,5 +1,6 @@
 #include "duckdb/function/combine_types_rule.hpp"
 #include "duckdb/common/helper.hpp"
+#include "duckdb/common/types/decimal.hpp"
 #include "duckdb/common/numeric_utils.hpp"
 #include "duckdb/common/insertion_order_preserving_map.hpp"
 
@@ -10,6 +11,10 @@ namespace duckdb {
 // ===========================================
 static bool CombineNoAliasTypes(LogicalTypeResolver &logical_type_resolver, const LogicalType &left,
                                 const LogicalType &right, LogicalType &result) {
+	// a plain value cannot implicitly become an aggregate state
+	if (left.IsAggregateState() != right.IsAggregateState()) {
+		return false;
+	}
 	// we always prefer aliased types
 	if (!left.GetAlias().empty()) {
 		result = left;
@@ -129,6 +134,11 @@ static bool CombineEqualVarchar(LogicalTypeResolver &logical_type_resolver, cons
 	}
 	return true;
 }
+
+DecimalWidthLimit LogicalTypeResolver::GetDecimalWidthLimit() const {
+	return decimal_width_limit ? *decimal_width_limit : DecimalWidthLimit::FromSetting(context);
+}
+
 static bool CombineEqualDecimal(LogicalTypeResolver &logical_type_resolver, const LogicalType &left,
                                 const LogicalType &right, LogicalType &result) {
 	// unify the width/scale so that the resulting decimal always fits
@@ -137,16 +147,22 @@ static bool CombineEqualDecimal(LogicalTypeResolver &logical_type_resolver, cons
 	// using the max of these of the two types gives us the new decimal size
 	auto extra_width_left = DecimalType::GetWidth(left) - DecimalType::GetScale(left);
 	auto extra_width_right = DecimalType::GetWidth(right) - DecimalType::GetScale(right);
-	auto extra_width =
-	    MaxValue<uint8_t>(NumericCast<uint8_t>(extra_width_left), NumericCast<uint8_t>(extra_width_right));
-	auto scale = MaxValue<uint8_t>(DecimalType::GetScale(left), DecimalType::GetScale(right));
-	auto width = NumericCast<uint8_t>(extra_width + scale);
-	if (width > DecimalType::MaxWidth()) {
-		// if the resulting decimal does not fit, we truncate the scale
-		width = DecimalType::MaxWidth();
-		scale = NumericCast<uint8_t>(width - extra_width);
+	auto extra_width = MaxValue<uint32_t>(extra_width_left, extra_width_right);
+	auto scale = MaxValue<uint32_t>(DecimalType::GetScale(left), DecimalType::GetScale(right));
+	idx_t width = idx_t(extra_width) + scale;
+	const auto max_input_width = MaxValue<uint32_t>(DecimalType::GetWidth(left), DecimalType::GetWidth(right));
+	const auto decimal_width_limit = logical_type_resolver.GetDecimalWidthLimit();
+	const idx_t width_limit = decimal_width_limit.ResultWidth(max_input_width);
+	if (width > width_limit && !Decimal::IsWide(width_limit)) {
+		// the result does not fit the fixed-size tiers: truncate the scale
+		width = width_limit;
+		scale = NumericCast<uint32_t>(width - extra_width);
 	}
-	result = LogicalType::DECIMAL(width, scale);
+	// a wide result is never truncated, a result wider than the inputs and the maximum width is an error
+	result =
+	    LogicalType::DECIMAL(decimal_width_limit.CheckedWidth(
+	                             width, max_input_width, "Combining " + left.ToString() + " and " + right.ToString()),
+	                         scale);
 	return true;
 }
 static bool CombineEqualList(LogicalTypeResolver &logical_type_resolver, const LogicalType &left,
@@ -347,6 +363,13 @@ static bool CombineStringLiteral(LogicalTypeResolver &, const LogicalType &left,
 	return true;
 }
 
+// BIGNUM has no implicit cast to or from FLOAT and DECIMAL; like their arithmetic, these pairs meet in DOUBLE
+static bool CombineBignumFloatOrDecimal(LogicalTypeResolver &, const LogicalType &, const LogicalType &,
+                                        LogicalType &result) {
+	result = LogicalType::DOUBLE;
+	return true;
+}
+
 static bool UnequalMatchesVariant(const LogicalType &left, const LogicalType &right) {
 	if (left.id() == right.id()) {
 		// rule only applies to unequal types
@@ -374,6 +397,13 @@ static bool UnequalMatchesEnum(const LogicalType &left, const LogicalType &right
 	return left.id() == LogicalTypeId::ENUM || right.id() == LogicalTypeId::ENUM;
 }
 
+static bool UnequalMatchesBignumFloatOrDecimal(const LogicalType &left, const LogicalType &right) {
+	auto is_pair = [](const LogicalType &a, const LogicalType &b) {
+		return a.id() == LogicalTypeId::BIGNUM && (b.id() == LogicalTypeId::FLOAT || b.id() == LogicalTypeId::DECIMAL);
+	};
+	return is_pair(left, right) || is_pair(right, left);
+}
+
 static bool UnequalMatchesStringLiteral(const LogicalType &left, const LogicalType &right) {
 	if (left.id() == right.id()) {
 		// rule only applies to unequal types
@@ -391,6 +421,7 @@ const vector<CombineTypesRule> &DefaultCombineTypesRules() {
 	    {UnequalMatchesEnum, CombineEnum},
 	    {UnequalMatchesStruct, CombineStructTypes},
 	    {UnequalMatchesStringLiteral, CombineStringLiteral},
+	    {UnequalMatchesBignumFloatOrDecimal, CombineBignumFloatOrDecimal},
 	    {EqualMatchesStringLiteral, CombineEqualStringLiteral},
 	    {EqualMatchesIntegerLiteral, CombineEqualIntegerLiteral},
 	    {EqualMatchesEnum, CombineEqualEnum},

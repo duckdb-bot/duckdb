@@ -177,26 +177,26 @@ void NodePtr::InsertChild(ART &art, NodePtr &node_ptr, const uint8_t byte, const
 // Delete
 //===--------------------------------------------------------------------===//
 
-void NodePtr::DeleteChild(ART &art, NodePtr &node_ptr, NodePtr &parent_ptr, const uint8_t byte, const GateStatus status,
-                          const ARTKey &row_id) {
-	D_ASSERT(node_ptr.HasMetadata());
+void NodePtr::DeleteChild(ART &art, NodePtrHandle node_ptr_handle, NodePtr &parent_ptr, const uint8_t byte,
+                          const GateStatus status, const ARTKey &row_id) {
+	D_ASSERT(node_ptr_handle.Get().HasMetadata());
 
-	auto type = node_ptr.GetType();
+	auto type = node_ptr_handle.Get().GetType();
 	switch (type) {
 	case NType::NODE_4:
-		return Node4::DeleteChild(art, node_ptr, parent_ptr, byte, status);
+		return Node4::DeleteChild(art, std::move(node_ptr_handle), parent_ptr, byte, status);
 	case NType::NODE_16:
-		return Node16::DeleteChild(art, node_ptr, byte);
+		return Node16::DeleteChild(art, node_ptr_handle.Get(), byte);
 	case NType::NODE_48:
-		return Node48::DeleteChild(art, node_ptr, byte);
+		return Node48::DeleteChild(art, node_ptr_handle.Get(), byte);
 	case NType::NODE_256:
-		return Node256::DeleteChild(art, node_ptr, byte);
+		return Node256::DeleteChild(art, node_ptr_handle.Get(), byte);
 	case NType::NODE_7_LEAF:
-		return Node7Leaf::DeleteByte(art, node_ptr, parent_ptr, byte, row_id);
+		return Node7Leaf::DeleteByte(art, std::move(node_ptr_handle), parent_ptr, byte, row_id);
 	case NType::NODE_15_LEAF:
-		return Node15Leaf::DeleteByte(art, node_ptr, byte);
+		return Node15Leaf::DeleteByte(art, node_ptr_handle.Get(), byte);
 	case NType::NODE_256_LEAF:
-		return Node256Leaf::DeleteByte(art, node_ptr, byte);
+		return Node256Leaf::DeleteByte(art, node_ptr_handle.Get(), byte);
 	default:
 		throw InternalException("Invalid node type for DeleteChild: %d.", type);
 	}
@@ -230,7 +230,7 @@ const unsafe_optional_ptr<NodePtr> NodePtr::GetChild(ART &art, const uint8_t byt
 	return GetChildInternal(art, *this, byte, false);
 }
 
-unsafe_optional_ptr<NodePtr> NodePtr::GetChildMutable(ART &art, const uint8_t byte, const bool unsafe) const {
+unsafe_optional_ptr<NodePtr> NodePtr::GetChildMutableUnsafe(ART &art, const uint8_t byte, const bool unsafe) const {
 	return GetChildInternal(art, *this, byte, unsafe);
 }
 
@@ -250,6 +250,27 @@ OptionalNodePtr NodePtr::GetChildNode(const ART &art, const uint8_t byte) const 
 	default:
 		throw InternalException("Invalid node type for GetChildNode: %d.", type);
 	}
+}
+
+unsafe_optional_ptr<NodePtr> NodePtr::GetChildMutable(NodeHandle &handle, const uint8_t byte) {
+	unsafe_optional_ptr<NodePtr> child;
+	switch (handle.GetType()) {
+	case NType::NODE_4:
+		child = Node4::GetChild(handle.Get<Node4>(), byte);
+		break;
+	case NType::NODE_16:
+		child = Node16::GetChild(handle.Get<Node16>(), byte);
+		break;
+	case NType::NODE_48:
+		child = Node48::GetChild(handle.Get<Node48>(), byte);
+		break;
+	case NType::NODE_256:
+		child = Node256::GetChild(handle.Get<Node256>(), byte);
+		break;
+	default:
+		throw InternalException("Invalid node type for GetChildMutable: %d.", handle.GetType());
+	}
+	return child;
 }
 
 OptionalNodePtr NodePtr::GetNextChildNode(const ART &art, uint8_t &byte) const {
@@ -297,15 +318,16 @@ bool NodePtr::HasByte(const ART &art, const uint8_t byte) const {
 	D_ASSERT(HasMetadata());
 
 	auto type = GetType();
+	ConstNodeHandle handle(art, *this);
 	switch (type) {
 	case NType::NODE_7_LEAF:
-		return Ref<const Node7Leaf>(art, *this, NType::NODE_7_LEAF).HasByte(byte);
+		return handle.Get<Node7Leaf>().HasByte(byte);
 	case NType::NODE_15_LEAF:
-		return Ref<const Node15Leaf>(art, *this, NType::NODE_15_LEAF).HasByte(byte);
+		return handle.Get<Node15Leaf>().HasByte(byte);
 	case NType::NODE_256_LEAF:
-		return Ref<const Node256Leaf>(art, *this, NType::NODE_256_LEAF).HasByte(byte);
+		return handle.Get<Node256Leaf>().HasByte(byte);
 	default:
-		throw InternalException("Invalid node type for GetNextByte: %d.", type);
+		throw InternalException("Invalid node type for HasByte: %d.", type);
 	}
 }
 

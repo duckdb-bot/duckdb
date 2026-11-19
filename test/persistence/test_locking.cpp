@@ -1,5 +1,6 @@
 #include "catch.hpp"
 #include "duckdb/common/file_system.hpp"
+#include "duckdb/main/settings.hpp"
 #include "duckdb.hpp"
 #include "test_helpers.hpp"
 
@@ -110,8 +111,8 @@ TEST_CASE("Test read lock with multiple processes", "[persistence][.]") {
 //! No worker threads, so that a forked child starts from a single thread
 static unique_ptr<DBConfig> SingleThreadConfig(bool read_only = false) {
 	auto config = make_uniq<DBConfig>();
-	config->options.maximum_threads = 1;
-	config->options.async_threads = 0;
+	Settings::Set<ThreadsSetting>(*config, SetScope::GLOBAL, Value::BIGINT(1));
+	Settings::Set<AsyncThreadsSetting>(*config, SetScope::GLOBAL, Value::BIGINT(0));
 	if (read_only) {
 		config->options.access_mode = AccessMode::READ_ONLY;
 	}

@@ -57,7 +57,7 @@ enum class CaseMode { PRESERVE, LOWERCASE, FOLD, NO_IDENTITY, STATS_THROW, NO_UP
 class CaseTestFileSystem : public FileSystem {
 public:
 	CaseTestFileSystem(string root_p, CaseMode mode_p)
-	    : root(std::move(root_p)), mode(mode_p), local(FileSystem::CreateLocal()) {
+	    : root(std::move(root_p)), mode(mode_p), local(make_uniq<LocalFileSystem>()) {
 	}
 
 	string GetName() const override {
@@ -261,13 +261,13 @@ TEST_CASE("COPY with PARTITION_BY on the local file system writes partitions tha
 	auto root = TestCreatePath("copy_partition_case_local");
 	TestDeleteDirectory(root);
 	TestCreateDirectory(root);
-	auto fs = FileSystem::CreateLocal();
-	fs->CreateDirectory(fs->JoinPath(root, "probe"));
-	bool ignores_case = fs->DirectoryExists(fs->JoinPath(root, "PROBE"));
+	auto &fs = TestLocalFileSystem();
+	fs.CreateDirectory(fs.JoinPath(root, "probe"));
+	bool ignores_case = fs.DirectoryExists(fs.JoinPath(root, "PROBE"));
 
 	DuckDB db(nullptr);
 	Connection con(db);
-	auto out = fs->JoinPath(root, "out");
+	auto out = fs.JoinPath(root, "out");
 	auto copy =
 	    "COPY (SELECT * FROM (VALUES ('a', 1), ('A', 2)) v(k, x)) TO '" + out + "' (FORMAT parquet, PARTITION_BY (k))";
 	if (ignores_case) {
@@ -297,8 +297,8 @@ TEST_CASE("COPY with PARTITION_BY writes partitions that differ only in case whe
 	TestCreateDirectory(root + "/out");
 	TestCreateDirectory(root + "/out/k=a");
 	TestCreateDirectory(root + "/out/k=A");
-	auto fs = FileSystem::CreateLocal();
-	if (!fs->DirectoryExists(root + "/out/K=A")) {
+	auto &fs = TestLocalFileSystem();
+	if (!fs.DirectoryExists(root + "/out/K=A")) {
 		for (auto mode : {CaseMode::NO_IDENTITY, CaseMode::STATS_THROW, CaseMode::NO_UPPERCASE_IDENTITY}) {
 			INFO("mode " << static_cast<int>(mode));
 			DuckDB db(nullptr);

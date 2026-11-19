@@ -7,9 +7,9 @@
 
 namespace duckdb {
 
-//! Deserializes a vector of the given type from data written by write
+//! Deserializes a vector of the given type from data written by write, and returns it
 template <class FUNC>
-static void DeserializeVector(const LogicalType &type, idx_t count, FUNC write) {
+static unique_ptr<Vector> DeserializeVectorReturn(const LogicalType &type, idx_t count, FUNC write) {
 	Allocator allocator;
 	MemoryStream stream(allocator);
 	BinarySerializer serializer(stream);
@@ -20,9 +20,16 @@ static void DeserializeVector(const LogicalType &type, idx_t count, FUNC write) 
 
 	BinaryDeserializer deserializer(stream);
 	deserializer.Begin();
-	Vector result(type, MaxValue<idx_t>(count, STANDARD_VECTOR_SIZE));
-	result.Deserialize(deserializer, count);
+	auto result = make_uniq<Vector>(type, MaxValue<idx_t>(count, STANDARD_VECTOR_SIZE));
+	result->Deserialize(deserializer, count);
 	deserializer.End();
+	return result;
+}
+
+//! Deserializes a vector of the given type from data written by write
+template <class FUNC>
+static void DeserializeVector(const LogicalType &type, idx_t count, FUNC write) {
+	DeserializeVectorReturn(type, count, write);
 }
 
 static void WriteFlatHeader(Serializer &serializer, VectorType vector_type = VectorType::FLAT_VECTOR) {
@@ -53,27 +60,27 @@ static void WriteListVector(Serializer &serializer, idx_t list_size, const vecto
 TEST_CASE("Deserialize LIST vectors with out-of-range entries", "[serialization]") {
 	auto type = LogicalType::LIST(LogicalType::INTEGER);
 	REQUIRE_NOTHROW(DeserializeVector(type, 2, [&](Serializer &s) { WriteListVector(s, 3, {{0, 1}, {1, 2}}); }));
-	REQUIRE_THROWS_AS(DeserializeVector(type, 1,
-	                                    [&](Serializer &s) {
-		                                    WriteListVector(s, 3, {{2, 2}});
-	                                    }),
-	                  SerializationException);
-	REQUIRE_THROWS_AS(DeserializeVector(type, 1,
-	                                    [&](Serializer &s) {
-		                                    WriteListVector(s, 3, {{5, 0}});
-	                                    }),
-	                  SerializationException);
-	REQUIRE_THROWS_AS(DeserializeVector(type, 1,
-	                                    [&](Serializer &s) {
-		                                    WriteListVector(s, 3, {{1, NumericLimits<uint64_t>::Maximum()}});
-	                                    }),
-	                  SerializationException);
+	REQUIRE_THROWS_WITH(DeserializeVector(type, 1,
+	                                      [&](Serializer &s) {
+		                                      WriteListVector(s, 3, {{2, 2}});
+	                                      }),
+	                    Catch::Contains("list entry is out of range"));
+	REQUIRE_THROWS_WITH(DeserializeVector(type, 1,
+	                                      [&](Serializer &s) {
+		                                      WriteListVector(s, 3, {{5, 0}});
+	                                      }),
+	                    Catch::Contains("list entry is out of range"));
+	REQUIRE_THROWS_WITH(DeserializeVector(type, 1,
+	                                      [&](Serializer &s) {
+		                                      WriteListVector(s, 3, {{1, NumericLimits<uint64_t>::Maximum()}});
+	                                      }),
+	                    Catch::Contains("list entry is out of range"));
 	// more entries than rows in the vector
-	REQUIRE_THROWS_AS(DeserializeVector(type, 1,
-	                                    [&](Serializer &s) {
-		                                    WriteListVector(s, 3, {{0, 1}, {1, 1}});
-	                                    }),
-	                  SerializationException);
+	REQUIRE_THROWS_WITH(DeserializeVector(type, 1,
+	                                      [&](Serializer &s) {
+		                                      WriteListVector(s, 3, {{0, 1}, {1, 1}});
+	                                      }),
+	                    Catch::Contains("more entries than the vector size"));
 }
 
 TEST_CASE("Deserialize ARRAY vectors with a mismatching array size", "[serialization]") {
@@ -86,8 +93,8 @@ TEST_CASE("Deserialize ARRAY vectors with a mismatching array size", "[serializa
 		};
 	};
 	REQUIRE_NOTHROW(DeserializeVector(type, 3, write_array(2, 3)));
-	REQUIRE_THROWS_AS(DeserializeVector(type, 3, write_array(1, 3)), SerializationException);
-	REQUIRE_THROWS_AS(DeserializeVector(type, 3, write_array(3, 3)), SerializationException);
+	REQUIRE_THROWS_WITH(DeserializeVector(type, 3, write_array(1, 3)), Catch::Contains("array size"));
+	REQUIRE_THROWS_WITH(DeserializeVector(type, 3, write_array(3, 3)), Catch::Contains("array size"));
 }
 
 TEST_CASE("Deserialize dictionary vectors with out-of-range selection indices", "[serialization]") {
@@ -103,7 +110,8 @@ TEST_CASE("Deserialize dictionary vectors with out-of-range selection indices", 
 		};
 	};
 	REQUIRE_NOTHROW(DeserializeVector(LogicalType::INTEGER, 2, write_dictionary(0)));
-	REQUIRE_THROWS_AS(DeserializeVector(LogicalType::INTEGER, 2, write_dictionary(1000)), SerializationException);
+	REQUIRE_THROWS_WITH(DeserializeVector(LogicalType::INTEGER, 2, write_dictionary(1000)),
+	                    Catch::Contains("Failed to deserialize dictionary vector: selection index"));
 }
 
 TEST_CASE("Deserialize VARCHAR vectors with string lengths exceeding the string data", "[serialization]") {
@@ -117,8 +125,35 @@ TEST_CASE("Deserialize VARCHAR vectors with string lengths exceeding the string 
 		};
 	};
 	REQUIRE_NOTHROW(DeserializeVector(LogicalType::VARCHAR, 2, write_strings(2)));
-	REQUIRE_THROWS_AS(DeserializeVector(LogicalType::VARCHAR, 2, write_strings(3)), SerializationException);
-	REQUIRE_THROWS_AS(DeserializeVector(LogicalType::VARCHAR, 2, write_strings(1000000)), SerializationException);
+	REQUIRE_THROWS_WITH(DeserializeVector(LogicalType::VARCHAR, 2, write_strings(3)),
+	                    Catch::Contains("string lengths exceed the serialized string data"));
+	REQUIRE_THROWS_WITH(DeserializeVector(LogicalType::VARCHAR, 2, write_strings(1000000)),
+	                    Catch::Contains("string lengths exceed the serialized string data"));
+}
+
+TEST_CASE("Deserialize shredded VARIANT vectors with a mismatched unshredded layout", "[serialization]") {
+	auto write_shredded = [&](const LogicalType &child0_type, const LogicalType &child1_type) {
+		return [=](Serializer &s) {
+			auto shredded_type = LogicalType::STRUCT({{"unshredded", child0_type}, {"shredded", child1_type}});
+			s.WriteProperty(90, "vector_type", VectorType::SHREDDED_VECTOR);
+			s.WriteProperty(91, "shredded_type", shredded_type);
+			// matches the declared child count, so this doesn't trip the (unrelated) child-count check
+			s.WriteObject(92, "shredded_data", [&](Serializer &obj) {
+				WriteFlatHeader(obj);
+				obj.WriteList(103, "children", 2, [&](Serializer::List &list, idx_t i) {
+					list.WriteObject([&](Serializer &child_obj) {
+						WriteFlatHeader(child_obj);
+						int32_t value = 42;
+						child_obj.WriteProperty(102, "data", const_data_ptr_cast(&value), sizeof(int32_t));
+					});
+				});
+			});
+		};
+	};
+	// a shredded_type whose first child isn't the canonical VARIANT struct layout is rejected
+	REQUIRE_THROWS_WITH(
+	    DeserializeVector(LogicalType::VARIANT(), 1, write_shredded(LogicalType::INTEGER, LogicalType::INTEGER)),
+	    Catch::Contains("first child must be the canonical VARIANT struct"));
 }
 
 TEST_CASE("Deserialize STRUCT vectors with too many children", "[serialization]") {
@@ -136,8 +171,36 @@ TEST_CASE("Deserialize STRUCT vectors with too many children", "[serialization]"
 		};
 	};
 	REQUIRE_NOTHROW(DeserializeVector(type, 1, write_struct(1)));
-	REQUIRE_THROWS_AS(DeserializeVector(type, 1, write_struct(2)), SerializationException);
-	REQUIRE_THROWS_AS(DeserializeVector(type, 1, write_struct(0)), SerializationException);
+	REQUIRE_THROWS_WITH(DeserializeVector(type, 1, write_struct(2)),
+	                    Catch::Contains("more entries than the vector size"));
+	REQUIRE_THROWS_WITH(DeserializeVector(type, 1, write_struct(0)),
+	                    Catch::Contains("Failed to deserialize vector: expected 1 entries but got 0"));
+}
+
+TEST_CASE("GetValue on a UNION vector with an out-of-range stored tag", "[serialization]") {
+	auto type = LogicalType::UNION({{"a", LogicalType::INTEGER}, {"b", LogicalType::INTEGER}});
+	auto write_union = [&](uint8_t tag) {
+		return [=](Serializer &s) {
+			WriteFlatHeader(s);
+			s.WriteList(103, "children", 3, [&](Serializer::List &list, idx_t i) {
+				list.WriteObject([&](Serializer &obj) {
+					WriteFlatHeader(obj);
+					if (i == 0) {
+						obj.WriteProperty(102, "data", const_data_ptr_cast(&tag), sizeof(uint8_t));
+					} else {
+						int32_t value = 42;
+						obj.WriteProperty(102, "data", const_data_ptr_cast(&value), sizeof(int32_t));
+					}
+				});
+			});
+		};
+	};
+	// a valid tag (0 or 1, since there are 2 members) materializes without issue
+	auto valid = DeserializeVectorReturn(type, 1, write_union(0));
+	REQUIRE_NOTHROW(valid->GetValue(0));
+	// a stored tag beyond the member count must be rejected, not index past the children array
+	auto invalid = DeserializeVectorReturn(type, 1, write_union(5));
+	REQUIRE_THROWS_WITH(invalid->GetValue(0), Catch::Contains("Union tag (5) is out of bounds"));
 }
 
 } // namespace duckdb

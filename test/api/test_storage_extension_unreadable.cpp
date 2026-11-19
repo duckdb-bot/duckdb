@@ -19,7 +19,7 @@ public:
 	explicit UnreadableTransactionManager(AttachedDatabase &db) : DuckTransactionManager(db) {
 	}
 
-	Transaction &StartTransaction(ClientContext &context) override {
+	Transaction &StartTransaction(Context &context, MetaTransaction &meta_transaction) override {
 		switch (unreadable_error.load()) {
 		case ExceptionType::IO:
 			throw IOException("Unable to open the unreadable database");
@@ -30,7 +30,7 @@ public:
 		case ExceptionType::FATAL:
 			throw FatalException("Unable to open the unreadable database");
 		default:
-			return DuckTransactionManager::StartTransaction(context);
+			return DuckTransactionManager::StartTransaction(context, meta_transaction);
 		}
 	}
 };

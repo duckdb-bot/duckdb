@@ -72,10 +72,13 @@ public:
 	vector<string> ListSubSystems() override;
 
 	FileSystem &GetDefaultFileSystem();
+	//! The local file system: the default file system if it is local, otherwise one owned by this VirtualFileSystem
+	FileSystem &GetLocalFileSystem();
 
 	std::string GetName() const override;
 
 	void SetDisabledFileSystems(const vector<string> &names) override;
+	vector<string> GetDisabledFileSystems() override;
 	bool SubSystemIsDisabled(const string &name) override;
 	bool IsDisabledForPath(const string &path) override;
 
@@ -111,9 +114,12 @@ private:
 	// Return nullptr if compression is not involved, throw exception if compression is requested but no usable
 	// filesystem gets registered.
 	optional_ptr<FileSystem> FindCompressionFileSystem(FileSystemRegistry &registry,
-	                                                   const FileCompressionType &compression, const string &path);
+	                                                   const FileCompressionType &compression, const string &path,
+	                                                   bool for_writing);
 
 private:
+	//! Only set if the default file system is not local
+	unique_ptr<FileSystem> owned_local_file_system;
 	mutex registry_lock;
 	shared_ptr<FileSystemRegistry> file_system_registry;
 	vector<unique_ptr<FileSystem>> unregistered_file_systems;

@@ -70,6 +70,7 @@ public:
 	unique_ptr<FileSystem> ExtractSubSystem(const string &name) override;
 
 	vector<string> ListSubSystems() override;
+	bool IsLocalFile(const string &path) override;
 
 	FileSystem &GetDefaultFileSystem();
 	//! The local file system: the default file system if it is local, otherwise one owned by this VirtualFileSystem

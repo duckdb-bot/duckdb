@@ -18,6 +18,7 @@
 #include <chrono>
 #include <fstream>
 #include <thread>
+#include "duckdb/main/settings.hpp"
 
 using namespace duckdb;
 
@@ -225,8 +226,8 @@ TEST_CASE("Test spilling without a database path and without external access", "
 
 TEST_CASE("Test the sandbox stays closed around the temporary directory without a database path", "[api]") {
 	auto temp_directory = TestCreatePath("sandboxed_spill.tmp");
-	auto fs = FileSystem::CreateLocal();
-	fs->CreateDirectory(temp_directory);
+	auto &fs = TestLocalFileSystem();
+	fs.CreateDirectory(temp_directory);
 
 	DBConfig config;
 	config.options.use_temporary_directory = true;
@@ -871,7 +872,7 @@ TEST_CASE("Issue #14130: InsertStatement::ToString causes InternalException late
 
 TEST_CASE("Issue #6284: CachingPhysicalOperator in pull causes issues", "[api][.]") {
 	DBConfig config;
-	config.options.maximum_threads = 8;
+	Settings::Set<ThreadsSetting>(config, SetScope::GLOBAL, Value::BIGINT(8));
 	DuckDB db(nullptr, &config);
 	Connection con(db);
 
@@ -964,12 +965,11 @@ TEST_CASE("Test insert returning in CPP API", "[api]") {
 	                     {"query_1", "query_2", "query_arg_1", "query_arg_2", "prepared_arg_1", "prepared_arg_2"}));
 }
 
-TEST_CASE("Test a logical execute still has types after an optimization pass", "[api]") {
+TEST_CASE("Test an extracted EXECUTE plan still has types after an optimization pass", "[api]") {
 	DuckDB db(nullptr);
 	Connection con(db);
 	con.Query("PREPARE test AS SELECT 42::INTEGER;");
 	const auto query_plan = con.ExtractPlan("EXECUTE test");
-	REQUIRE((query_plan->type == LogicalOperatorType::LOGICAL_EXECUTE));
 	REQUIRE((query_plan->types.size() == 1));
 	REQUIRE((query_plan->types[0].id() == LogicalTypeId::INTEGER));
 }

@@ -4,6 +4,7 @@
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/function/table/system_functions.hpp"
+#include "duckdb/function/table/system_catalog_scanner.hpp"
 #include "duckdb/main/client_data.hpp"
 
 namespace duckdb {
@@ -14,6 +15,7 @@ struct DuckDBIndexesData : public GlobalTableFunctionState {
 
 	vector<reference<CatalogEntry>> entries;
 	idx_t offset;
+	SystemCatalogScannerStats stats;
 };
 
 static unique_ptr<FunctionData> DuckDBIndexesBind(ClientContext &context, TableFunctionBindInput &input,
@@ -60,14 +62,14 @@ static unique_ptr<FunctionData> DuckDBIndexesBind(ClientContext &context, TableF
 	names.emplace_back("sql");
 	return_types.emplace_back(LogicalType::VARCHAR);
 
-	return nullptr;
+	return SystemCatalogScanner::CreateBindData(names, return_types);
 }
 
 unique_ptr<GlobalTableFunctionState> DuckDBIndexesInit(ClientContext &context, TableFunctionInitInput &input) {
 	auto result = make_uniq<DuckDBIndexesData>();
 
-	// scan all the schemas for tables and collect them
-	auto schemas = Catalog::GetAllSchemas(context);
+	// scan the surviving schemas for indexes and collect them
+	auto schemas = SystemCatalogScanner::GetSchemas(context, input, result->stats);
 	for (auto &schema : schemas) {
 		schema.get().Scan(context, CatalogType::INDEX_ENTRY,
 		                  [&](CatalogEntry &entry) { result->entries.push_back(entry); });
@@ -157,8 +159,15 @@ void DuckDBIndexesFunction(ClientContext &context, TableFunctionInput &data_p, D
 	}
 }
 
+static void DuckDBIndexesGetMetrics(TableFunctionGetMetricsInput &input) {
+	SystemCatalogScanner::ReportMetrics(input, input.global_state->Cast<DuckDBIndexesData>().stats);
+}
+
 void DuckDBIndexesFun::RegisterFunction(BuiltinFunctions &set) {
-	set.AddFunction(TableFunction("duckdb_indexes", {}, DuckDBIndexesFunction, DuckDBIndexesBind, DuckDBIndexesInit));
+	TableFunction function("duckdb_indexes", {}, DuckDBIndexesFunction, DuckDBIndexesBind, DuckDBIndexesInit);
+	SystemCatalogScanner::RegisterPushdown(function);
+	function.get_metrics = DuckDBIndexesGetMetrics;
+	set.AddFunction(std::move(function));
 }
 
 } // namespace duckdb

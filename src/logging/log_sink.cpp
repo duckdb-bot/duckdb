@@ -237,8 +237,16 @@ void CSVLogSink::FlushChunk(LoggingTargetTable table, DataChunk &chunk) {
 	cast_buffers[table]->Reset();
 }
 
+//! The sinks read their options as plain values, so a NULL is refused instead of failing inside the value
+static void CheckLogSinkOptionNotNull(const string &sink, const string &option, const Value &value) {
+	if (value.IsNull()) {
+		throw InvalidInputException("Log sink config option for sink '%s' cannot be NULL: '%s'", sink, option);
+	}
+}
+
 void BufferingLogSink::UpdateConfigInternal(DatabaseInstance &db, case_insensitive_map_t<Value> &config) {
 	for (const auto &it : config) {
+		CheckLogSinkOptionNotNull(GetSinkName(), it.first, it.second);
 		if (StringUtil::CIEquals(it.first, "buffer_size")) {
 			buffer_limit = it.second.GetValue<uint64_t>();
 			ResetAllBuffers();
@@ -416,6 +424,7 @@ void FileLogSink::UpdateConfigInternal(DatabaseInstance &db, case_insensitive_ma
 	vector<string> to_remove;
 	for (const auto &it : config_copy) {
 		auto key = StringUtil::Lower(it.first);
+		CheckLogSinkOptionNotNull(GetSinkName(), it.first, it.second);
 		if (key == "path") {
 			auto path_value = it.second.ToString();
 			//! We implicitly set normalize to false when a path ending in .csv is specified

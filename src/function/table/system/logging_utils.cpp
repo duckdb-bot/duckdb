@@ -32,13 +32,16 @@ static void VerifyFileStoragePath(LogManager &log_manager, const string &storage
 		return;
 	}
 	auto current_storage = StringUtil::Lower(log_manager.GetConfig().storage);
-	// Already-active file storage keeps its existing path, only a fresh switch is guarded.
+	auto path_entry = storage_config.find("path");
+	bool has_path = path_entry != storage_config.end();
+	bool has_usable_path = has_path && !path_entry->second.IsNull() && !path_entry->second.ToString().empty();
+	// Already-active file storage keeps its existing path when none is given, only a fresh switch needs one
 	if (current_storage == LogConfig::FILE_STORAGE_NAME) {
+		if (has_path && !has_usable_path) {
+			throw InvalidInputException("The path of the 'file' log storage cannot be NULL or empty");
+		}
 		return;
 	}
-	auto path_entry = storage_config.find("path");
-	bool has_usable_path =
-	    path_entry != storage_config.end() && !path_entry->second.IsNull() && !path_entry->second.ToString().empty();
 	if (!has_usable_path) {
 		throw InvalidInputException(
 		    "Cannot enable 'file' log storage without a valid path. Provide one via storage_path, "
@@ -119,10 +122,12 @@ static unique_ptr<FunctionData> BindEnableLogging(ClientContext &context, TableF
 
 	for (const auto &param : input.named_parameters) {
 		auto &key = param.first;
+		// a NULL has no meaning for any of these, and the sinks read the storage options as plain values. A NULL
+		// path is checked with the storage below, so that it reports a missing path
+		if (param.second.IsNull() && key != "storage_path") {
+			throw InvalidInputException("EnableLogging: %s cannot be NULL", key.GetIdentifierName());
+		}
 		if (key == "level") {
-			if (param.second.IsNull()) {
-				throw InvalidInputException("EnableLogging: level cannot be NULL");
-			}
 			result->config.level = EnumUtil::FromString<LogLevel>(param.second.ToString());
 		} else if (key == "storage") {
 			storage_isset = true;
@@ -133,8 +138,11 @@ static unique_ptr<FunctionData> BindEnableLogging(ClientContext &context, TableF
 			}
 			auto &children = StructValue::GetChildren(param.second);
 			for (idx_t i = 0; i < children.size(); i++) {
-				result->storage_config[StructType::GetChildName(param.second.type(), i).GetIdentifierName()] =
-				    children[i];
+				auto option = StructType::GetChildName(param.second.type(), i).GetIdentifierName();
+				if (children[i].IsNull() && !StringUtil::CIEquals(option, "path")) {
+					throw InvalidInputException("EnableLogging: storage_config option '%s' cannot be NULL", option);
+				}
+				result->storage_config[option] = children[i];
 			}
 		} else if (key == "storage_path") {
 			result->storage_config["path"] = param.second;

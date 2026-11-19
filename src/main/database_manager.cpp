@@ -189,7 +189,7 @@ shared_ptr<AttachedDatabase> DatabaseManager::AttachDatabase(ClientContext &cont
 		timer.EndTimer();
 	}
 	auto &config = DBConfig::GetConfig(context);
-	if (options.stored_database_path && config.file_registry && config.file_system->IsLocalFile(info.path)) {
+	if (options.stored_database_path && config.file_system->IsLocalFile(info.path)) {
 		// the other database instances of the process must not open the file either
 		while (!config.file_registry->TryRegister(*this, info.path, info.name, options.access_mode)) {
 			context.InterruptCheck();
@@ -262,7 +262,8 @@ optional_ptr<AttachedDatabase> DatabaseManager::FinalizeAttach(ClientContext &co
 		auto deleter = detached_db->ExtractDeleter();
 		meta_transaction.DetachDatabase(*detached_db);
 		detached_db->OnDetach(context);
-		detached_db.reset();
+		detached_db->MarkDetached(AttachedDatabase::GetDetachCloseAction(context));
+		AttachedDatabase::InvokeCloseIfLastReference(detached_db, context);
 		// Best-effort teardown: the replacement is already in effect, so a deleter failure must not
 		// abort the statement mid-swap; TryDelete logs it as a warning instead.
 		if (deleter) {
@@ -298,6 +299,7 @@ void DatabaseManager::DetachDatabase(ClientContext &context, const Identifier &n
 	auto deleter = attached_db->ExtractDeleter();
 	MetaTransaction::Get(context).DetachDatabase(*attached_db);
 	attached_db->OnDetach(context);
+	attached_db->MarkDetached(AttachedDatabase::GetDetachCloseAction(context));
 
 	// DetachInternal removes the AttachedDatabase from the list of databases that can be referenced.
 	AttachedDatabase::InvokeCloseIfLastReference(attached_db, context);

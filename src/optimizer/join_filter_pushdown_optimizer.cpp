@@ -188,7 +188,9 @@ bool JoinFilterPushdownUtil::JoinTypeIsSupported(JoinType join_type) {
 		// cannot generate join filters for these join types
 		// mark/single - cannot change cardinality of probe side
 		// left/outer always need to include every row from probe side
-		// FIXME: anti/right_anti - we could do this, but need to invert the join conditions
+		// anti - the probe rows without a match are the result
+		// right_anti - join filters are generated (see CanGenerateJoinFilters), but the build side optimizer, which
+		// asks this function as well, does not take them into account
 		return false;
 	default:
 		return true;
@@ -739,12 +741,15 @@ static void SimplifyJoinFilterCastChain(ClientContext &context, JoinFilterPushdo
 	column.input_expression = make_uniq<BoundReferenceExpression>(column.storage_type, idx_t(0));
 	if (target_type != column.storage_type) {
 		column.input_expression =
-		    BoundCastExpression::AddDefaultCastToType(std::move(column.input_expression), target_type, true);
+		    BoundCastExpression::AddCastToType(context, std::move(column.input_expression), target_type, true);
 	}
 }
 
 bool JoinFilterPushdownOptimizer::CanGenerateJoinFilters(const LogicalComparisonJoin &join) {
-	if (!JoinFilterPushdownUtil::JoinTypeIsSupported(join.join_type)) {
+	// a RIGHT ANTI join emits the build rows without a match: its probe rows only mark build rows as matched.
+	// a probe row whose key is not in the build side cannot mark anything, so it can be filtered out like for
+	// a RIGHT SEMI join
+	if (join.join_type != JoinType::RIGHT_ANTI && !JoinFilterPushdownUtil::JoinTypeIsSupported(join.join_type)) {
 		return false;
 	}
 	for (auto &condition : join.conditions) {
@@ -844,14 +849,7 @@ void JoinFilterPushdownOptimizer::GenerateJoinFilters(LogicalComparisonJoin &joi
 		}
 	}
 
-	// Even if we cannot find any table sources in which we can push down filters,
-	// we still initialize the aggregate states so that we have the possibility of doing a perfect hash join
-	// TODO: Can ExpressionType::COMPARE_NOT_DISTINCT_FROM be used with perfect hash joins?
-	const auto compute_aggregates_anyway =
-	    join.join_type == JoinType::INNER && join.conditions.size() == 1 && pushdown_info->join_condition.size() == 1 &&
-	    join.conditions[0].IsComparison() && join.conditions[0].GetComparisonType() == ExpressionType::COMPARE_EQUAL &&
-	    TypeIsIntegral(join.conditions[0].GetRHS().GetReturnType().InternalType());
-	if (pushdown_info->probe_info.empty() && !compute_aggregates_anyway) {
+	if (pushdown_info->probe_info.empty()) {
 		// no table sources found in which we can push down filters
 		return;
 	}
@@ -874,10 +872,8 @@ void JoinFilterPushdownOptimizer::GenerateJoinFilters(LogicalComparisonJoin &joi
 			pushdown_info->min_max_aggregates.push_back(std::move(aggr_expr));
 		}
 	}
-	if (!pushdown_info->probe_info.empty()) {
-		const idx_t child_idx = join.children[1]->type == LogicalOperatorType::LOGICAL_DELIM_GET ? 0 : 1;
-		pushdown_info->build_side_has_filter = IsFiltering(join.children[child_idx]);
-	}
+	const idx_t child_idx = join.children[1]->type == LogicalOperatorType::LOGICAL_DELIM_GET ? 0 : 1;
+	pushdown_info->build_side_has_filter = IsFiltering(join.children[child_idx]);
 
 	// set up the filter pushdown in the join itself
 	join.filter_pushdown = std::move(pushdown_info);

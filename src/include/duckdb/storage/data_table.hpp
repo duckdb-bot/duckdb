@@ -44,6 +44,7 @@ class TableDataWriter;
 class TableStatistics;
 class ConflictManager;
 class TableScanState;
+struct TableScanAssignment;
 struct CollectionCheckpointResult;
 struct TableDeleteState;
 struct ConstraintState;
@@ -104,6 +105,9 @@ public:
 	                            const vector<ColumnIndex> &column_indexes);
 	optional_idx NextParallelScan(ClientContext &context, ParallelTableScanState &state, TableScanState &scan_state,
 	                              bool initialize_columns = true);
+	//! Claims a range without column initialization and retains it for another worker
+	bool NextParallelScanAssignment(ClientContext &context, ParallelTableScanState &state, TableScanState &scan_state,
+	                                TableScanAssignment &assignment);
 
 	//! Scans up to STANDARD_VECTOR_SIZE elements from the table starting
 	//! from offset and store them in result. Offset is incremented with how many
@@ -194,7 +198,7 @@ public:
 	                optional_ptr<StorageCommitState> commit_state);
 	//! Revert a set of appends made by the given AppendState, used to revert appends in the event of an error during
 	//! commit (e.g. because of an I/O exception)
-	void RevertAppend(DuckTransaction &transaction, idx_t start_row, idx_t count);
+	void RevertAppend(ClientContext &context, DuckTransaction &transaction, idx_t start_row, idx_t count);
 	void RevertAppendInternal(idx_t start_row);
 	//! Revert an append that failed before it was finalized
 	void RevertFailedAppend(TableAppendState &state);
@@ -304,6 +308,9 @@ public:
 	vector<PartitionStatistics> GetPartitionStats(ClientContext &context);
 
 private:
+	optional_idx NextParallelScanInternal(ClientContext &context, ParallelTableScanState &state,
+	                                      TableScanState &scan_state, bool initialize_columns,
+	                                      optional_ptr<TableScanAssignment> assignment);
 	//! Verify the new added constraints against current persistent&local data
 	void VerifyNewConstraint(ClientContext &context, LocalStorage &local_storage, DataTable &parent,
 	                         const BoundConstraint &constraint);

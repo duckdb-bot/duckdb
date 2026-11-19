@@ -36,8 +36,8 @@ struct CommitInfo {
 
 class DuckTransaction : public Transaction {
 public:
-	DuckTransaction(DuckTransactionManager &manager, ClientContext &context, transaction_t start_time,
-	                SnapshotView view, idx_t catalog_version);
+	DuckTransaction(DuckTransactionManager &manager, Context &context, transaction_t start_time, SnapshotView view,
+	                idx_t catalog_version);
 	~DuckTransaction() override;
 
 	//! The start timestamp of this transaction
@@ -86,8 +86,8 @@ public:
 	//! Returns whether or not a commit of this transaction should trigger an automatic checkpoint
 	bool AutomaticCheckpoint(AttachedDatabase &db, const UndoBufferProperties &properties);
 
-	//! Rollback
-	ErrorData Rollback();
+	//! Rollback, with the context of the connection that rolls back
+	ErrorData Rollback(ClientContext &context);
 	//! Cleanup the undo buffer
 	void Cleanup(VisibilityBound lowest_visibility_bound);
 

@@ -415,7 +415,7 @@ void CommitState::CommitDelete(DeleteInfo &info, transaction_t old_id) {
 	index_data_remover.PushDelete(info);
 }
 
-void CommitState::RevertCommit(UndoFlags type, data_ptr_t data) {
+void CommitState::RevertCommit(ClientContext &context, UndoFlags type, data_ptr_t data) {
 	transaction_t transaction_id = commit_id;
 	switch (type) {
 	case UndoFlags::CATALOG_ENTRY: {
@@ -431,7 +431,7 @@ void CommitState::RevertCommit(UndoFlags type, data_ptr_t data) {
 	case UndoFlags::INSERT_TUPLE: {
 		auto info = reinterpret_cast<AppendInfo *>(data);
 		// revert this append
-		info->table->GetStorage().RevertAppend(transaction, info->start_row, info->count);
+		info->table->GetStorage().RevertAppend(context, transaction, info->start_row, info->count);
 		break;
 	}
 	case UndoFlags::DELETE_TUPLE: {

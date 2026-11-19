@@ -481,15 +481,16 @@ HTTPUtil::RunRequestWithRetry(const std::function<unique_ptr<HTTPResponse>(void)
 			    if (response) {
 				    response->url = request.url;
 			    }
-		    } catch (IOException &e) {
+		    } catch (const std::exception &e) {
+			    caught_error = ErrorData(e);
+			    if (caught_error.Type() != ExceptionType::IO && caught_error.Type() != ExceptionType::HTTP) {
+				    throw;
+			    }
 			    exception_error = e.what();
 			    caught_e = std::current_exception();
-			    caught_error = ErrorData(e);
-		    } catch (HTTPException &e) {
-			    exception_error = e.what();
-			    caught_e = std::current_exception();
-			    caught_error = ErrorData(e);
-			    caught_response = ResponseFromError(caught_error);
+			    if (caught_error.Type() == ExceptionType::HTTP) {
+				    caught_response = ResponseFromError(caught_error);
+			    }
 		    }
 
 		    if (response) {
@@ -580,7 +581,7 @@ HTTPUtil::RunRequestWithRetry(const std::function<unique_ptr<HTTPResponse>(void)
 void HTTPParams::Initialize(optional_ptr<FileOpener> opener) {
 	db = FileOpener::TryGetDatabase(opener);
 	if (db) {
-		auto &http_proxy_setting = db->config.options.http_proxy;
+		auto http_proxy_setting = Settings::Get<HTTPProxySetting>(db->config);
 		if (!http_proxy_setting.empty()) {
 			idx_t port;
 			string host;

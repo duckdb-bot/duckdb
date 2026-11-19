@@ -17,7 +17,8 @@
 
 namespace duckdb {
 
-RollbackState::RollbackState(DuckTransaction &transaction_p) : transaction(transaction_p) {
+RollbackState::RollbackState(DuckTransaction &transaction_p, ClientContext &context_p)
+    : transaction(transaction_p), context(context_p) {
 }
 
 void RollbackState::RollbackEntry(UndoFlags type, data_ptr_t data) {
@@ -32,7 +33,7 @@ void RollbackState::RollbackEntry(UndoFlags type, data_ptr_t data) {
 	case UndoFlags::INSERT_TUPLE: {
 		auto info = reinterpret_cast<AppendInfo *>(data);
 		// revert the append in the base table
-		info->table->GetStorage().RevertAppend(transaction, info->start_row, info->count);
+		info->table->GetStorage().RevertAppend(context, transaction, info->start_row, info->count);
 		break;
 	}
 	case UndoFlags::DELETE_TUPLE:
@@ -61,6 +62,9 @@ void RollbackState::RollbackEntry(UndoFlags type, data_ptr_t data) {
 			if (deleter) {
 				db_manager.AddPendingTeardown(std::move(deleter));
 			}
+			// the last release closes it, which may be the MetaTransaction finalizing later
+			attached_db->MarkDetached(DatabaseCloseAction::SKIP_CHECKPOINT);
+			AttachedDatabase::InvokeCloseIfLastReference(attached_db, DatabaseCloseAction::SKIP_CHECKPOINT);
 		}
 		break;
 	}

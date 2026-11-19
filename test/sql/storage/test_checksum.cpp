@@ -105,7 +105,7 @@ BlockChecksumCounts CountBlockChecksumTypes(FileSystem &fs, const string &path, 
 //! Write a table of the values 42 and 43, damage the first data block that allows it and check that reading fails
 template <class DAMAGE>
 void TestDataBlockDamageIsDetected(const string &name, DAMAGE damage) {
-	auto fs = FileSystem::CreateLocal();
+	auto &fs = TestLocalFileSystem();
 	auto storage_database = TestCreatePath(name);
 	auto config = GetTestConfig();
 	config->options.storage_compatibility = StorageCompatibility::FromString("v2.1.0");
@@ -121,7 +121,7 @@ void TestDataBlockDamageIsDetected(const string &name, DAMAGE damage) {
 		block_alloc_size = GetBlockAllocSize(con);
 	}
 
-	auto contents = ReadChecksumTestFile(*fs, storage_database);
+	auto contents = ReadChecksumTestFile(fs, storage_database);
 	bool found = false;
 	for (idx_t block_start = Storage::FILE_HEADER_SIZE * 3; !found && block_start < contents.size;
 	     block_start += block_alloc_size) {
@@ -145,7 +145,7 @@ void TestDataBlockDamageIsDetected(const string &name, DAMAGE damage) {
 } // namespace
 
 TEST_CASE("Test functioning of checksum", "[storage]") {
-	duckdb::unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
+	auto &fs = TestLocalFileSystem();
 	duckdb::unique_ptr<DuckDB> database;
 	auto storage_database = TestCreatePath("checksum_test");
 	auto config = GetTestConfig();
@@ -164,9 +164,9 @@ TEST_CASE("Test functioning of checksum", "[storage]") {
 	database.reset();
 
 	// now write random values into the file
-	auto handle = fs->OpenFile(storage_database, FileFlags::FILE_FLAGS_WRITE);
+	auto handle = fs.OpenFile(storage_database, FileFlags::FILE_FLAGS_WRITE);
 	int8_t value = 0x22;
-	fs->Write(*handle, &value, sizeof(int8_t), 100);
+	handle->Write(QueryContext(), &value, sizeof(int8_t), 100);
 	handle->Sync();
 	handle.reset();
 	// reloading the database no longer works
@@ -187,7 +187,7 @@ TEST_CASE("Test that the checksum detects two swapped words in a block", "[stora
 }
 
 TEST_CASE("Test that the file headers keep the word XOR checksum", "[storage]") {
-	auto fs = FileSystem::CreateLocal();
+	auto &fs = TestLocalFileSystem();
 	auto storage_database = TestCreatePath("checksum_file_headers");
 	auto config = GetTestConfig();
 	config->options.storage_compatibility = StorageCompatibility::FromString("v2.1.0");
@@ -201,7 +201,7 @@ TEST_CASE("Test that the file headers keep the word XOR checksum", "[storage]") 
 	}
 
 	// older releases verify the database headers before they read the storage version
-	auto contents = ReadChecksumTestFile(*fs, storage_database);
+	auto contents = ReadChecksumTestFile(fs, storage_database);
 	REQUIRE(contents.size >= Storage::FILE_HEADER_SIZE * 3);
 	for (idx_t header_start = 0; header_start < Storage::FILE_HEADER_SIZE * 3;
 	     header_start += Storage::FILE_HEADER_SIZE) {
@@ -216,7 +216,7 @@ TEST_CASE("Test that the file headers keep the word XOR checksum", "[storage]") 
 }
 
 TEST_CASE("Test that the checksum detects two zeroed equal words in a WAL entry", "[storage]") {
-	auto fs = FileSystem::CreateLocal();
+	auto &fs = TestLocalFileSystem();
 	auto storage_database = TestCreatePath("checksum_equal_words_wal");
 	auto config = GetTestConfig();
 	config->options.storage_compatibility = StorageCompatibility::FromString("v2.1.0");
@@ -233,7 +233,7 @@ TEST_CASE("Test that the checksum detects two zeroed equal words in a WAL entry"
 	}
 
 	// after an unframed header, the WAL entries are stored as [size][checksum][payload]
-	auto contents = ReadChecksumTestFile(*fs, storage_database + ".wal");
+	auto contents = ReadChecksumTestFile(fs, storage_database + ".wal");
 	idx_t largest_payload = 0;
 	idx_t largest_payload_size = 0;
 	for (idx_t header_size = 1; header_size < 256 && largest_payload_size == 0; header_size++) {
@@ -284,7 +284,7 @@ TEST_CASE("Test that the checksum type follows the storage version a file is cre
 	                                                 {"v2.0.0", ChecksumType::WORD_XOR},
 	                                                 {"v2.0.1", ChecksumType::WORD_XOR},
 	                                                 {"v2.1.0", ChecksumType::XXHASH64}};
-	auto fs = FileSystem::CreateLocal();
+	auto &fs = TestLocalFileSystem();
 	auto storage_database = TestCreatePath("checksum_storage_versions");
 	for (const auto &version_checksum : version_checksums) {
 		INFO(version_checksum.version);
@@ -301,7 +301,7 @@ TEST_CASE("Test that the checksum type follows the storage version a file is cre
 			block_alloc_size = GetBlockAllocSize(con);
 		}
 
-		auto counts = CountBlockChecksumTypes(*fs, storage_database, block_alloc_size);
+		auto counts = CountBlockChecksumTypes(fs, storage_database, block_alloc_size);
 		if (version_checksum.checksum_type == ChecksumType::XXHASH64) {
 			REQUIRE(counts.xxhash64 > 0);
 			REQUIRE(counts.word_xor == 0);
@@ -314,7 +314,7 @@ TEST_CASE("Test that the checksum type follows the storage version a file is cre
 }
 
 TEST_CASE("Test that a database keeps the checksum of the storage version it was created with", "[storage]") {
-	auto fs = FileSystem::CreateLocal();
+	auto &fs = TestLocalFileSystem();
 	auto storage_database = TestCreatePath("checksum_storage_upgrade");
 	auto config = GetTestConfig();
 
@@ -340,7 +340,7 @@ TEST_CASE("Test that a database keeps the checksum of the storage version it was
 		block_alloc_size = GetBlockAllocSize(con, "upgraded");
 		REQUIRE_NO_FAIL(con.Query("DETACH upgraded"));
 	}
-	auto counts = CountBlockChecksumTypes(*fs, storage_database, block_alloc_size);
+	auto counts = CountBlockChecksumTypes(fs, storage_database, block_alloc_size);
 	REQUIRE(counts.word_xor > 0);
 	REQUIRE(counts.xxhash64 == 0);
 	{

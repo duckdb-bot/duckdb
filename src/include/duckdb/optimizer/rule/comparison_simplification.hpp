@@ -21,7 +21,8 @@ public:
 	                             bool is_root) override;
 };
 
-//! Rewrites top-level filter equality between row constructors into scalar equalities.
+//! Rewrites top-level filter equality between row constructors, or a row constructor and a constant row, into
+//! scalar equalities.
 class RowComparisonSimplificationRule : public Rule {
 public:
 	explicit RowComparisonSimplificationRule(ExpressionRewriter &rewriter);

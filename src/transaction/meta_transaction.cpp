@@ -64,7 +64,7 @@ Transaction &MetaTransaction::GetTransaction(ClientContext &context, AttachedDat
 	lock_guard<mutex> guard(lock);
 	auto entry = transactions.find(db);
 	if (entry == transactions.end()) {
-		auto &new_transaction = db.GetTransactionManager().StartTransaction(context);
+		auto &new_transaction = db.GetTransactionManager().StartTransaction(context.GetContext(), *this);
 		new_transaction.active_query = active_query.load();
 #ifdef DEBUG
 		VerifyAllTransactionsUnique(db, all_transactions);
@@ -171,7 +171,7 @@ ErrorData MetaTransaction::Commit(ClientContext &context) {
 					    error.HasError() ? TransactionState::ROLLED_BACK : TransactionState::COMMITTED;
 				} else {
 					// Rollback due to previous error.
-					transaction_manager.RollbackTransaction(transaction);
+					transaction_manager.RollbackTransaction(context, transaction);
 					transaction_ref.state = TransactionState::ROLLED_BACK;
 				}
 			} catch (std::exception &ex) {
@@ -183,7 +183,7 @@ ErrorData MetaTransaction::Commit(ClientContext &context) {
 	return error;
 }
 
-void MetaTransaction::Rollback() {
+void MetaTransaction::Rollback(ClientContext &context) {
 	// Rollback all transactions in reverse order.
 	ErrorData error;
 	for (idx_t i = all_transactions.size(); i > 0; i--) {
@@ -201,7 +201,7 @@ void MetaTransaction::Rollback() {
 		}
 		try {
 			auto &transaction = transaction_ref.transaction;
-			transaction_manager.RollbackTransaction(transaction);
+			transaction_manager.RollbackTransaction(context, transaction);
 		} catch (std::exception &ex) {
 			error.Merge(db.ScopeFatalError(ErrorData(ex)));
 		}

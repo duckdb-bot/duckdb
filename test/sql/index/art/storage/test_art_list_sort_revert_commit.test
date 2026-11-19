@@ -1,0 +1,59 @@
+# name: test/sql/index/art/storage/test_art_list_sort_revert_commit.test
+# description: A failed commit reverts its appends to an index on list_sort after the connection that bound the index is gone
+# group: [storage]
+
+require skip_reload
+
+load {TEST_DIR}/art_list_sort_revert_commit.db
+
+statement ok
+CREATE TABLE t (id INTEGER, l INTEGER[]);
+
+statement ok
+INSERT INTO t SELECT i, [i + 1, i] FROM range(5000) r(i);
+
+statement ok
+CREATE INDEX i ON t ((list_sort(l)[1]));
+
+restart
+
+# the index is bound by this connection, which closes before the next one writes
+statement ok
+INSERT INTO t VALUES (5000, [5001, 5000]);
+
+reconnect
+
+# the commit fails after the rows and their keys were appended, so both are reverted
+statement ok
+SET GLOBAL debug_force_commit_failure = true;
+
+statement error
+INSERT INTO t SELECT 10000 + i, [10000 + i + 1, 10000 + i] FROM range(5000) r(i);
+----
+Forced commit failure
+
+statement ok
+SET GLOBAL debug_force_commit_failure = false;
+
+query I
+SELECT count(*) FROM t;
+----
+5001
+
+query I
+SELECT id FROM t WHERE list_sort(l)[1] = 10000;
+----
+
+# the index lost the entries of the reverted rows and serves new ones
+statement ok
+INSERT INTO t VALUES (10000, [10001, 10000]);
+
+query I
+SELECT id FROM t WHERE list_sort(l)[1] = 10000;
+----
+10000
+
+query I
+SELECT id FROM t WHERE list_sort(l)[1] = 5000;
+----
+5000

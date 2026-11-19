@@ -1,4 +1,5 @@
 #include "capi_tester.hpp"
+#include "duckdb/common/local_file_system.hpp"
 
 using namespace duckdb;
 
@@ -119,4 +120,50 @@ TEST_CASE("Issue #25056: duckdb_set_config crashes on a boolean option set to fa
 			duckdb_destroy_config(&config);
 		}
 	}
+}
+
+TEST_CASE("duckdb_set_config sets allowed_directories and allowed_paths before the database opens", "[capi]") {
+	auto allowed_directory = TestCreatePath("capi_allowed_directory");
+	auto allowed_file = TestCreatePath("capi_allowed_file.csv");
+	auto other_file = TestCreatePath("capi_other_file.csv");
+	{
+		duckdb::DuckDB db(nullptr);
+		duckdb::Connection con(db);
+		duckdb::LocalFileSystem fs;
+		fs.CreateDirectory(allowed_directory);
+		REQUIRE_NO_FAIL(con.Query("COPY (SELECT 42 AS i) TO '" + fs.JoinPath(allowed_directory, "x.csv") + "'"));
+		REQUIRE_NO_FAIL(con.Query("COPY (SELECT 42 AS i) TO '" + allowed_file + "'"));
+		REQUIRE_NO_FAIL(con.Query("COPY (SELECT 42 AS i) TO '" + other_file + "'"));
+	}
+
+	duckdb_config config;
+	REQUIRE(duckdb_create_config(&config) == DuckDBSuccess);
+	auto directories = "['" + allowed_directory + "']";
+	auto paths = "['" + allowed_file + "']";
+	REQUIRE(duckdb_set_config(config, "allowed_directories", directories.c_str()) == DuckDBSuccess);
+	REQUIRE(duckdb_set_config(config, "allowed_paths", paths.c_str()) == DuckDBSuccess);
+	REQUIRE(duckdb_set_config(config, "enable_external_access", "false") == DuckDBSuccess);
+	// a path that cannot be sanitized is refused when it is set
+	REQUIRE(duckdb_set_config(config, "allowed_directories", "['file://otherhost/tmp/example']") == DuckDBError);
+	REQUIRE(duckdb_set_config(config, "allowed_directories", directories.c_str()) == DuckDBSuccess);
+	duckdb_database db;
+	char *error = nullptr;
+	REQUIRE(duckdb_open_ext(nullptr, &db, config, &error) == DuckDBSuccess);
+	duckdb_destroy_config(&config);
+	duckdb_connection con;
+	REQUIRE(duckdb_connect(db, &con) == DuckDBSuccess);
+
+	duckdb_result result;
+	auto in_directory = "SELECT * FROM read_csv('" + allowed_directory + "/x.csv')";
+	REQUIRE(duckdb_query(con, in_directory.c_str(), &result) == DuckDBSuccess);
+	duckdb_destroy_result(&result);
+	auto allowed = "SELECT * FROM read_csv('" + allowed_file + "')";
+	REQUIRE(duckdb_query(con, allowed.c_str(), &result) == DuckDBSuccess);
+	duckdb_destroy_result(&result);
+	auto other = "SELECT * FROM read_csv('" + other_file + "')";
+	REQUIRE(duckdb_query(con, other.c_str(), &result) == DuckDBError);
+	duckdb_destroy_result(&result);
+
+	duckdb_disconnect(&con);
+	duckdb_close(&db);
 }

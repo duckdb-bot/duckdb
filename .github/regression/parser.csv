@@ -13,3 +13,5 @@ ParserAoC
 ParserGrammarConstruction
 ParserStress
 ParserValuesList
+ParserSetOperationChain
+ParserCTEChain

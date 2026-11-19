@@ -232,12 +232,12 @@ Matcher &MatcherFactory::CreateRootMatcher(const string &root_rule) {
 	AddPackratMemoizedRule("TableRef");
 	AddPackratMemoizedRule("ParensTableRef");
 	AddPackratMemoizedRule("WithClause");
-	AddPackratMemoizedRule("SelectParens");
 	AddPackratMemoizedRule("Identifier");
 	AddPackratMemoizedRule("ColId");
 	AddPackratMemoizedRule("CatalogQualification");
 	AddPackratMemoizedRule("SchemaQualification");
 	AddPackratMemoizedRule("ReservedSchemaQualification");
+	AddPackratMemoizedRule("SelectParens");
 	//===--------------------------------------------------------------------===//
 	// END GENERATED PACKRAT MEMOIZED RULES
 	//===--------------------------------------------------------------------===//

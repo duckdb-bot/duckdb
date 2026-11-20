@@ -1,0 +1,63 @@
+# name: test/sql/types/interval/test_interval_normalize_limits.test
+# description: Intervals near the limits of their fields compare by their exact length
+# group: [interval]
+
+# the length in microseconds, with a month of 30 days as in comparisons
+statement ok
+CREATE MACRO total_micros(i) AS (datepart('year', i)::HUGEINT * 12 + datepart('month', i)) * 2592000000000 + datepart('day', i)::HUGEINT * 86400000000 + datepart('hour', i)::HUGEINT * 3600000000 + datepart('minute', i)::HUGEINT * 60000000 + datepart('microseconds', i)
+
+query II
+SELECT INTERVAL '-2147483648 months -2147483648 days -9223372036854775807 microseconds' = INTERVAL '-2147483648 months -2147483648 days -9223372036854775806 microseconds', INTERVAL '-2147483648 months -2147483648 days -9223372036854775807 microseconds' = INTERVAL '-2147483648 months -2147483647 days -9223372036854775807 microseconds'
+----
+false	false
+
+query II
+SELECT INTERVAL '2147483647 months 2147483647 days 9223372036854775806 microseconds' = INTERVAL '2147483647 months 2147483647 days 9223372036854775807 microseconds', INTERVAL '2147483647 months 2147483647 days 9223372036000000000 microseconds' < INTERVAL '2147483647 months 2147483647 days 9223372036854775807 microseconds'
+----
+false	true
+
+query I
+SELECT count(DISTINCT i) FROM (VALUES (INTERVAL '-2147483648 months -2147483648 days -9223372036854775807 microseconds'), (INTERVAL '-2147483648 months -2147483648 days -9223372036854775806 microseconds'), (INTERVAL '-2147483648 months -2147483647 days -9223372036854775807 microseconds')) t(i)
+----
+3
+
+# every combination of field values at and near the limits
+statement ok
+CREATE TABLE lengths AS SELECT i, total_micros(i) AS t FROM (SELECT to_months(m) + to_days(d) + to_microseconds(u) AS i FROM (VALUES (-2147483648), (-2147483647), (-1), (0), (1), (2147483646), (2147483647)) m(m), (VALUES (-2147483648), (-2147483647), (-30), (-1), (0), (1), (30), (2147483646), (2147483647)) d(d), (VALUES (-9223372036854775808), (-9223372036854775807), (-9223372036854775806), (-9223372022400000001), (-9223372022400000000), (-86400000000), (-1), (0), (1), (86400000000), (9223372022399999999), (9223372022400000000), (9223372036854775806), (9223372036854775807)) u(u))
+
+# normalizing keeps the length
+query II
+SELECT count(*), count(*) FILTER (total_micros(normalized_interval(i)) = t) FROM lengths
+----
+882	882
+
+query I
+SELECT count(*) FROM lengths a, lengths b WHERE (a.i = b.i) <> (a.t = b.t) OR (a.i < b.i) <> (a.t < b.t) OR (a.t = b.t AND hash(a.i) <> hash(b.i))
+----
+0
+
+query III
+SELECT count(DISTINCT i), count(DISTINCT t), (SELECT count(*) FROM (SELECT i FROM lengths GROUP BY i)) FROM lengths
+----
+714	714	714
+
+query II
+SELECT (SELECT count(*) FROM lengths a JOIN lengths b ON a.i = b.i), (SELECT count(*) FROM lengths a JOIN lengths b ON a.t = b.t)
+----
+1324	1324
+
+query I
+SELECT count(*) FROM (SELECT t, lag(t) OVER (ORDER BY i) AS previous FROM lengths) WHERE previous > t
+----
+0
+
+# a VARIANT compares the intervals it holds the same way
+query II
+SELECT count(DISTINCT i::VARIANT), count(DISTINCT t) FROM lengths
+----
+714	714
+
+query I
+SELECT count(*) FROM lengths a, lengths b WHERE (a.i::VARIANT = b.i::VARIANT) <> (a.t = b.t) OR (a.i::VARIANT < b.i::VARIANT) <> (a.t < b.t)
+----
+0

@@ -440,6 +440,15 @@ void FileLogSink::UpdateConfigInternal(DatabaseInstance &db, case_insensitive_ma
 		    "normalize to false.",
 		    new_path);
 	}
+	// the single log file of normalize false needs a csv file path, a directory only names the files of normalize
+	// true, so the combination would fail at the first flush with a table without a path
+	auto &path_in_effect = new_path.empty() ? base_path : new_path;
+	if (!normalize_contexts_new_value && !path_in_effect.empty() && !StringUtil::EndsWith(path_in_effect, ".csv")) {
+		throw InvalidConfigurationException(
+		    "Can not set normalize to false with the directory path '%s'. Normalize false makes DuckDB write a single "
+		    "log file. Please specify a csv file path instead of a directory path, or set normalize to true.",
+		    path_in_effect);
+	}
 
 	// If any writer is initialized, we flush first:
 	// - when switching between normalized and denormalized, this is necessary since we are changing the buffer schema

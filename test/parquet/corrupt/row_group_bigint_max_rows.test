@@ -1,0 +1,26 @@
+# name: test/parquet/corrupt/row_group_bigint_max_rows.test
+# description: a row group that claims 9223372036854775807 rows with as many values is counted from the statistics, two of them are not
+# group: [corrupt]
+
+require parquet
+
+# the row group is consistent, so its count comes from the statistics without a scan (which would produce the rows)
+query III
+SELECT row_group_id, row_group_num_rows, num_values
+FROM parquet_metadata('{DATA_DIR}/parquet-testing/corrupt/row_group_bigint_max_rows.parquet');
+----
+0	9223372036854775807	9223372036854775807
+
+statement ok
+SET parquet_metadata_cache = true;
+
+query I
+SELECT count(*) FROM read_parquet('{DATA_DIR}/parquet-testing/corrupt/row_group_bigint_max_rows.parquet');
+----
+9223372036854775807
+
+# the counts of two such files do not fit a BIGINT, the count stays with the scan, it used to be an internal error
+query II
+EXPLAIN SELECT count(*) FROM read_parquet(['{DATA_DIR}/parquet-testing/corrupt/row_group_bigint_max_rows.parquet', '{DATA_DIR}/parquet-testing/corrupt/row_group_bigint_max_rows.parquet']);
+----
+physical_plan	<REGEX>:.*READ_PARQUET.*

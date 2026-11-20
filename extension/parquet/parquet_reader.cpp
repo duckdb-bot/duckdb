@@ -1,5 +1,6 @@
 #include "parquet_reader.hpp"
 #include "duckdb/common/types/decimal.hpp"
+#include "duckdb/common/operator/add.hpp"
 
 #include <string.h>
 #include <unordered_map>
@@ -739,13 +740,14 @@ unique_ptr<BaseStatistics> ParquetReader::ReadStatistics(const Identifier &name)
 	return ReadStatisticsInternal(*GetFileMetadata(), *root_schema, parquet_options, file_col_idx);
 }
 
-unique_ptr<BaseStatistics> ParquetReader::ReadStatistics(ClientContext &context, ParquetOptions parquet_options,
+unique_ptr<BaseStatistics> ParquetReader::ReadStatistics(ClientContext &context, OpenFileInfo file,
+                                                         ParquetOptions parquet_options,
                                                          shared_ptr<ParquetFileMetadataCache> metadata,
                                                          const Identifier &name) {
 	if (!CanUseParquetMetadataStatistics(context, metadata, parquet_options)) {
 		return nullptr;
 	}
-	ParquetReader reader(context, std::move(parquet_options), std::move(metadata));
+	ParquetReader reader(context, std::move(parquet_options), std::move(metadata), std::move(file));
 	return reader.ReadStatistics(name);
 }
 
@@ -1392,9 +1394,14 @@ unique_ptr<ParquetColumnSchema> ParquetReader::ParseSchema(ClientContext &contex
 		                            "schema tree",
 		                            file.path);
 	}
-	if (!file_meta_data->row_groups.empty() && next_file_idx != file_meta_data->row_groups[0].columns.size()) {
-		throw InvalidInputException("Failed to read Parquet file \"%s\": row group does not have enough columns",
-		                            file.path);
+	// every row group has one column chunk per leaf column, the statistics and the scans index the chunks by column
+	for (idx_t row_group_idx = 0; row_group_idx < file_meta_data->row_groups.size(); row_group_idx++) {
+		auto &row_group = file_meta_data->row_groups[row_group_idx];
+		if (next_file_idx != row_group.columns.size()) {
+			throw InvalidInputException("Failed to read Parquet file \"%s\": row group does not have enough columns "
+			                            "(row group %llu has %llu column chunks, the schema has %llu columns)",
+			                            file.path, row_group_idx, row_group.columns.size(), next_file_idx);
+		}
 	}
 	return make_uniq<ParquetColumnSchema>(root);
 }
@@ -1603,10 +1610,10 @@ unique_ptr<BaseStatistics> ParquetUnionData::GetStatistics(ClientContext &contex
 }
 
 ParquetReader::ParquetReader(ClientContext &context_p, ParquetOptions parquet_options_p,
-                             shared_ptr<ParquetFileMetadataCache> metadata_p)
-    : BaseFileReader(string()), fs(CachingFileSystem::Get(context_p)), allocator(BufferAllocator::Get(context_p)),
-      buffer_manager(BufferManager::GetBufferManager(context_p)), metadata(std::move(metadata_p)),
-      parquet_options(std::move(parquet_options_p)), rows_read(0) {
+                             shared_ptr<ParquetFileMetadataCache> metadata_p, OpenFileInfo file_p)
+    : BaseFileReader(std::move(file_p)), fs(CachingFileSystem::Get(context_p)),
+      allocator(BufferAllocator::Get(context_p)), buffer_manager(BufferManager::GetBufferManager(context_p)),
+      metadata(std::move(metadata_p)), parquet_options(std::move(parquet_options_p)), rows_read(0) {
 	can_use_metadata_statistics = CanUseParquetMetadataStatistics(context_p, metadata, parquet_options);
 	interval_bloom_filter_version = ParquetStatisticsUtils::GetIntervalBloomFilterVersion(*GetFileMetadata());
 	InitializeSchema(context_p);
@@ -1654,13 +1661,52 @@ uint32_t ParquetReader::ReadDataEncrypted(duckdb_apache::thrift::protocol::TProt
 	                               *encryption_util, aad_crypto_metadata);
 }
 
-static idx_t GetRowGroupOffset(const ParquetReader &reader, idx_t group_idx) {
+//! The start of a message about corrupt metadata, naming the file when it is known
+static string CorruptMetadataMessage(const char *file_name) {
+	if (file_name) {
+		return StringUtil::Format("Failed to read file \"%s\": metadata is corrupt.", file_name);
+	}
+	return "Parquet metadata is corrupt.";
+}
+
+//! The row count of a row group, which a valid file does not state as negative
+static idx_t GetRowGroupRowCount(const duckdb_parquet::FileMetaData &metadata, idx_t row_group_idx,
+                                 const char *file_name) {
+	auto num_rows = metadata.row_groups[row_group_idx].num_rows;
+	if (num_rows < 0) {
+		throw InvalidInputException("%s Row group %llu has invalid number of rows (%lld)",
+		                            CorruptMetadataMessage(file_name), row_group_idx, num_rows);
+	}
+	return NumericCast<idx_t>(num_rows);
+}
+
+//! The row offset after a row group, which stays within the BIGINT range of the file row number in a valid file
+static idx_t AddRowGroupRowCount(idx_t row_offset, idx_t num_rows, idx_t row_group_idx, const char *file_name) {
+	idx_t result;
+	if (!TryAddOperator::Operation(row_offset, num_rows, result) ||
+	    result > NumericCast<idx_t>(NumericLimits<int64_t>::Maximum())) {
+		throw DataCorruptionException(
+		    "%s The row counts of the row groups up to row group %llu exceed the BIGINT range",
+		    CorruptMetadataMessage(file_name), row_group_idx);
+	}
+	return result;
+}
+
+idx_t ParquetReader::GetRowGroupOffset(const duckdb_parquet::FileMetaData &metadata, idx_t group_idx,
+                                       const char *file_name) {
 	idx_t row_group_offset = 0;
-	auto &row_groups = reader.GetFileMetadata()->row_groups;
-	for (idx_t i = 0; i < group_idx; i++) {
-		row_group_offset += row_groups[i].num_rows;
+	idx_t row_group_end = 0;
+	// also the end of the row group lies within the BIGINT range, so its file row numbers do
+	for (idx_t i = 0; i <= group_idx; i++) {
+		row_group_offset = row_group_end;
+		row_group_end =
+		    AddRowGroupRowCount(row_group_offset, GetRowGroupRowCount(metadata, i, file_name), i, file_name);
 	}
 	return row_group_offset;
+}
+
+idx_t ParquetReader::GetRowGroupOffset(idx_t group_idx) const {
+	return GetRowGroupOffset(*GetFileMetadata(), group_idx, GetFileName().c_str());
 }
 
 const ParquetRowGroup &ParquetReader::GetGroup(ParquetReaderScanState &state) {
@@ -2002,11 +2048,7 @@ void ParquetReader::PrepareRowGroupBuffer(ClientContext &context, ParquetReaderS
 		                                       GetGroup(state).ordinal);
 	}
 
-	if (group.num_rows < 0) {
-		throw InvalidInputException("Failed to read file \"%s\": metadata is corrupt. Row group has invalid "
-		                            "number of rows (%lld)",
-		                            GetFileName(), group.num_rows);
-	}
+	// RegisterRowGroupReads validated the row counts of the row group
 	auto row_group_num_rows = NumericCast<idx_t>(group.num_rows);
 
 	if (filters && row_group_num_rows > 0 && state.offset_in_group == row_group_num_rows) {
@@ -2607,16 +2649,45 @@ void ParquetReader::InitializeScan(ClientContext &context, ParquetReaderScanStat
 	state.repeat_buf.Resize(allocator, STANDARD_VECTOR_SIZE);
 }
 
-shared_ptr<ParquetReader> ParquetReader::CreateMetadataReader(ClientContext &context, ParquetOptions parquet_options,
+shared_ptr<ParquetReader> ParquetReader::CreateMetadataReader(ClientContext &context, OpenFileInfo file,
+                                                              ParquetOptions parquet_options,
                                                               shared_ptr<ParquetFileMetadataCache> metadata) {
-	return shared_ptr<ParquetReader>(new ParquetReader(context, std::move(parquet_options), std::move(metadata)));
+	return shared_ptr<ParquetReader>(
+	    new ParquetReader(context, std::move(parquet_options), std::move(metadata), std::move(file)));
 }
 
 void ParquetReader::GetPartitionStats(vector<PartitionStatistics> &result) {
 	if (!can_use_metadata_statistics) {
 		return;
 	}
-	GetPartitionStats(*GetFileMetadata(), result, *root_schema, parquet_options);
+	GetPartitionStats(*GetFileMetadata(), GetFileName(), result, *root_schema, parquet_options);
+}
+
+void ParquetReader::ValidateRowGroup(const duckdb_parquet::FileMetaData &metadata, idx_t row_group_idx,
+                                     const string &file_name) {
+	auto &row_group = metadata.row_groups[row_group_idx];
+	GetRowGroupRowCount(metadata, row_group_idx, file_name.c_str());
+	for (idx_t column_idx = 0; column_idx < row_group.columns.size(); column_idx++) {
+		auto &column = row_group.columns[column_idx];
+		if (!column.__isset.meta_data) {
+			// nothing in the file supports the row count, the column reader refuses such a chunk as well
+			throw InvalidInputException("Failed to read file \"%s\": column chunk is missing its metadata (row group "
+			                            "%llu, column %llu, %lld rows)",
+			                            file_name, row_group_idx, column_idx, row_group.num_rows);
+		}
+		auto num_values = column.meta_data.num_values;
+		if (num_values < 0) {
+			throw DataCorruptionException("Failed to read file \"%s\": metadata is corrupt. Column has invalid number "
+			                              "of values (%lld in row group %llu, column %llu)",
+			                              file_name, num_values, row_group_idx, column_idx);
+		}
+		// every row has at least one value in every column, also a NULL or an empty list
+		if (num_values < row_group.num_rows) {
+			throw DataCorruptionException("Failed to read file \"%s\": metadata is corrupt. Column has %lld values but "
+			                              "row group has %lld rows (row group %llu, column %llu)",
+			                              file_name, num_values, row_group.num_rows, row_group_idx, column_idx);
+		}
+	}
 }
 
 struct ParquetPartitionRowGroup : public PartitionRowGroup {
@@ -2679,21 +2750,24 @@ struct ParquetPartitionRowGroup : public PartitionRowGroup {
 	}
 };
 
-void ParquetReader::GetPartitionStats(const duckdb_parquet::FileMetaData &metadata, vector<PartitionStatistics> &result,
+void ParquetReader::GetPartitionStats(const duckdb_parquet::FileMetaData &metadata, const string &file_name,
+                                      vector<PartitionStatistics> &result,
                                       optional_ptr<ParquetColumnSchema> root_schema,
                                       optional_ptr<ParquetOptions> parquet_options) {
 	idx_t offset = 0;
 	for (idx_t i = 0; i < metadata.row_groups.size(); i++) {
 		auto &row_group = metadata.row_groups[i];
+		// the counts are promised as exact, so they must be ones the file can hold
+		ValidateRowGroup(metadata, i, file_name);
 		PartitionStatistics partition_stats;
 		partition_stats.row_start = offset;
-		partition_stats.count = row_group.num_rows;
+		partition_stats.count = NumericCast<idx_t>(row_group.num_rows);
 		partition_stats.count_type = CountType::COUNT_EXACT;
 		if (root_schema && parquet_options) {
 			partition_stats.partition_row_group =
 			    make_shared_ptr<ParquetPartitionRowGroup>(metadata, root_schema, parquet_options, i);
 		}
-		offset += row_group.num_rows;
+		offset = AddRowGroupRowCount(offset, partition_stats.count, i, file_name.c_str());
 		result.push_back(partition_stats);
 	}
 }
@@ -2843,10 +2917,13 @@ ParquetPrefetchStrategy ParquetReader::RegisterRowGroupReads(ClientContext &cont
 		trans.SetAcceptedColumnGap(DetermineAcceptedColumnGap(context, state));
 	}
 
-	// TODO: only need this if we have a deletion vector?
-	state.group_offset = GetRowGroupOffset(*this, state.group_index);
-
 	auto &group = GetGroup(state);
+	// also for a scan without columns, which produces the rows of the row group from its count alone
+	ValidateRowGroup(*GetFileMetadata(), state.group_index, GetFileName());
+
+	// TODO: only need this if we have a deletion vector?
+	state.group_offset = GetRowGroupOffset(state.group_index);
+
 	// rule the row group out on the statistics of all filters before any column reads a Bloom filter
 	if (filters && group.num_rows > 0 && FiltersExcludeRowGroup(context, state, false)) {
 		rows_read += NumericCast<idx_t>(group.num_rows);

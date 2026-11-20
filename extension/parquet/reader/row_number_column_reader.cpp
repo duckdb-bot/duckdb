@@ -40,11 +40,7 @@ void RowNumberColumnReader::InitializeRead(idx_t row_group_idx_p, idx_t row_grou
 			    reader.GetFileName(), column.meta_data.num_values, row_group_num_rows);
 		}
 	}
-	row_group_offset = 0;
-	auto &row_groups = reader.GetFileMetadata()->row_groups;
-	for (idx_t i = 0; i < row_group_idx_p; i++) {
-		row_group_offset += row_groups[i].num_rows;
-	}
+	row_group_offset = reader.GetRowGroupOffset(row_group_idx_p);
 }
 
 void RowNumberColumnReader::Filter(ColumnReaderInput &input, Vector &result, const TableFilter &filter,

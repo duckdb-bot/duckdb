@@ -210,10 +210,8 @@ unique_ptr<BaseStatistics> ParquetColumnSchema::Stats(const FileMetaData &file_m
 			return NumericStats::CreateEmpty(type).ToUnique();
 		}
 
-		idx_t row_group_offset_min = 0;
-		for (idx_t i = 0; i < row_group_idx_p; i++) {
-			row_group_offset_min += row_groups[i].num_rows;
-		}
+		// the row counts up to and including this row group lie within the BIGINT range, so the row numbers do
+		auto row_group_offset_min = ParquetReader::GetRowGroupOffset(file_meta_data, row_group_idx_p, nullptr);
 
 		auto stats = NumericStats::CreateUnknown(type);
 		NumericStats::SetMin(stats, Value::BIGINT(UnsafeNumericCast<int64_t>(row_group_offset_min)));

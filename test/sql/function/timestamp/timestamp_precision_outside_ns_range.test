@@ -38,6 +38,25 @@ SELECT date_part(['year', 'hour', 'minute'], ts), timezone(ts), timezone_hour(ts
 {'year': 1600, 'hour': 23, 'minute': 59}	0	0	59000000000
 {'year': 2020, 'hour': 1, 'minute': 2}	0	0	3000000000
 
+# the date parts and julian take the same path
+query IIIIIIIII
+SELECT year(ts), month(ts), day(ts), quarter(ts), dayofyear(ts), week(ts), isoyear(ts), yearweek(ts), julian(ts) FROM ms ORDER BY ts;
+----
+2020	2	29	1	60	9	2020	202009	2458909.0430955556
+2500	6	15	2	166	24	2500	250024	2634332.524268391
+
+query IIIIIIIII
+SELECT decade(ts), century(ts), millennium(ts), era(ts), dayofweek(ts), weekday(ts), isodow(ts), dayofmonth(ts), julian(ts) FROM s ORDER BY ts;
+----
+160	16	2	1	2	2	2	29	2305507.999988426
+202	21	3	1	6	6	6	29	2458909.043090278
+
+query III
+SELECT date_part('year', ts), extract(month FROM ts), date_part('julian', ts) FROM ms ORDER BY ts;
+----
+2020	2	2458909.0430955556
+2500	6	2634332.524268391
+
 # the results are those of the TIMESTAMP overloads
 query I
 SELECT count(*) FROM ms WHERE hour(ts) <> hour(ts::TIMESTAMP) OR epoch(ts) <> epoch(ts::TIMESTAMP) OR nanosecond(ts) <> nanosecond(ts::TIMESTAMP) OR date_part('minute', ts) <> date_part('minute', ts::TIMESTAMP);
@@ -46,6 +65,16 @@ SELECT count(*) FROM ms WHERE hour(ts) <> hour(ts::TIMESTAMP) OR epoch(ts) <> ep
 
 query I
 SELECT count(*) FROM s WHERE hour(ts) <> hour(ts::TIMESTAMP) OR epoch(ts) <> epoch(ts::TIMESTAMP) OR nanosecond(ts) <> nanosecond(ts::TIMESTAMP) OR date_part('minute', ts) <> date_part('minute', ts::TIMESTAMP);
+----
+0
+
+query I
+SELECT count(*) FROM ms WHERE year(ts) <> year(ts::TIMESTAMP) OR month(ts) <> month(ts::TIMESTAMP) OR day(ts) <> day(ts::TIMESTAMP) OR decade(ts) <> decade(ts::TIMESTAMP) OR century(ts) <> century(ts::TIMESTAMP) OR millennium(ts) <> millennium(ts::TIMESTAMP) OR quarter(ts) <> quarter(ts::TIMESTAMP) OR dayofweek(ts) <> dayofweek(ts::TIMESTAMP) OR isodow(ts) <> isodow(ts::TIMESTAMP) OR dayofyear(ts) <> dayofyear(ts::TIMESTAMP) OR week(ts) <> week(ts::TIMESTAMP) OR isoyear(ts) <> isoyear(ts::TIMESTAMP) OR era(ts) <> era(ts::TIMESTAMP) OR yearweek(ts) <> yearweek(ts::TIMESTAMP) OR julian(ts) <> julian(ts::TIMESTAMP);
+----
+0
+
+query I
+SELECT count(*) FROM s WHERE year(ts) <> year(ts::TIMESTAMP) OR month(ts) <> month(ts::TIMESTAMP) OR day(ts) <> day(ts::TIMESTAMP) OR decade(ts) <> decade(ts::TIMESTAMP) OR century(ts) <> century(ts::TIMESTAMP) OR millennium(ts) <> millennium(ts::TIMESTAMP) OR quarter(ts) <> quarter(ts::TIMESTAMP) OR dayofweek(ts) <> dayofweek(ts::TIMESTAMP) OR isodow(ts) <> isodow(ts::TIMESTAMP) OR dayofyear(ts) <> dayofyear(ts::TIMESTAMP) OR week(ts) <> week(ts::TIMESTAMP) OR isoyear(ts) <> isoyear(ts::TIMESTAMP) OR era(ts) <> era(ts::TIMESTAMP) OR yearweek(ts) <> yearweek(ts::TIMESTAMP) OR julian(ts) <> julian(ts::TIMESTAMP);
 ----
 0
 
@@ -95,6 +124,44 @@ SELECT count(*) FROM two_years WHERE date_part('year', ts) = 2020;
 1
 
 endloop
+
+# a year filter on a TIMESTAMP_MS or TIMESTAMP_S column binds to the overload of that type, whose statistics are right
+statement ok
+CREATE TABLE ms_years AS SELECT (TIMESTAMP '2499-06-01 10:00:00' + to_years(n))::TIMESTAMP_MS AS ts FROM range(3) t(n);
+
+statement ok
+CREATE TABLE s_years AS SELECT (TIMESTAMP '1599-06-01 10:00:00' + to_years(n))::TIMESTAMP_S AS ts FROM range(3) t(n);
+
+query I
+SELECT count(*) FROM ms_years WHERE date_part('year', ts) = 2500;
+----
+1
+
+query I
+SELECT count(*) FROM s_years WHERE date_part('year', ts) = 1600;
+----
+1
+
+query II
+SELECT count(*) FILTER (WHERE extract(year FROM ts) >= 2500), count(*) FILTER (WHERE year(ts) = 2501) FROM ms_years;
+----
+2	1
+
+query II
+EXPLAIN SELECT count(*) FROM ms_years WHERE date_part('year', ts) = 2500;
+----
+physical_plan	<!REGEX>:.*TIMESTAMP_NS.*
+
+query II
+EXPLAIN SELECT count(*) FROM s_years WHERE date_part('year', ts) = 1600;
+----
+physical_plan	<!REGEX>:.*TIMESTAMP_NS.*
+
+# the year bounds of the column exclude 1971, so the filter is known to match nothing
+query II
+EXPLAIN SELECT count(*) FROM ms_years WHERE date_part('year', ts) = 1971;
+----
+physical_plan	<REGEX>:.*Empty Result.*
 
 # strftime has its own TIMESTAMP_NS overload and keeps taking it for in range values
 query I

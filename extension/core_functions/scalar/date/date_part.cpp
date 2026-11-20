@@ -232,16 +232,11 @@ struct DatePart {
 		}
 	};
 
-	//! Widens a lower precision timestamp to TIMESTAMP, keeping infinities and failing for the few raw values beyond
-	//! the TIMESTAMP range
+	//! Widens a lower precision timestamp to TIMESTAMP, failing for the few raw values beyond its range
 	template <class TA>
 	static inline timestamp_t ToTimestamp(const TA &input) {
-		if (!input.IsFinite()) {
-			return timestamp_t(input.value);
-		}
 		timestamp_t result;
-		if (!TryMultiplyOperator::Operation<int64_t, int64_t, int64_t>(
-		        input.value, timestamp_t::PRECISION / TA::PRECISION, result.value)) {
+		if (!TryCast::Operation<TA, timestamp_t>(input, result)) {
 			throw ConversionException("Could not convert Timestamp to higher precision.");
 		}
 		return result;
@@ -2189,8 +2184,26 @@ unique_ptr<Expression> DatePartBindExpression(FunctionBindExpressionInput &input
 	                                 std::move(children));
 }
 
+//! TIMESTAMP_MS and TIMESTAMP_S overloads through the TIMESTAMP implementation, so neither widens to TIMESTAMP_NS
+void AddLowerPrecisionTimestampFunctions(ScalarFunctionSet &operator_set, const LogicalType &result_type,
+                                         scalar_function_t ts_ms_func, scalar_function_t ts_s_func,
+                                         const Identifier &param_name) {
+	ScalarFunction ts_ms_fun({}, result_type, std::move(ts_ms_func), nullptr,
+	                         StatisticsPropagator::PropagateFiniteMonotoneBounds);
+	ts_ms_fun.GetSignature().AddParameter(param_name, LogicalType::TIMESTAMP_MS);
+	// the widening can overflow for raw values near the ends of the range
+	ts_ms_fun.SetFallible();
+	operator_set.AddFunction(ts_ms_fun);
+	ScalarFunction ts_s_fun({}, result_type, std::move(ts_s_func), nullptr,
+	                        StatisticsPropagator::PropagateFiniteMonotoneBounds);
+	ts_s_fun.GetSignature().AddParameter(param_name, LogicalType::TIMESTAMP_S);
+	ts_s_fun.SetFallible();
+	operator_set.AddFunction(ts_s_fun);
+}
+
 ScalarFunctionSet GetGenericDatePartFunction(scalar_function_t date_func, scalar_function_t ts_func,
-                                             scalar_function_t ts_ns_func, scalar_function_t interval_func,
+                                             scalar_function_t ts_ns_func, scalar_function_t ts_ms_func,
+                                             scalar_function_t ts_s_func, scalar_function_t interval_func,
                                              function_statistics_t date_stats, function_statistics_t ts_stats,
                                              function_statistics_t ts_ns_stats) {
 	ScalarFunctionSet operator_set;
@@ -2203,6 +2216,8 @@ ScalarFunctionSet GetGenericDatePartFunction(scalar_function_t date_func, scalar
 	ScalarFunction ts_ns_fun({}, LogicalType::BIGINT, std::move(ts_ns_func), nullptr, ts_ns_stats);
 	ts_ns_fun.GetSignature().AddParameter("ts", LogicalType::TIMESTAMP_NS);
 	operator_set.AddFunction(ts_ns_fun);
+	AddLowerPrecisionTimestampFunctions(operator_set, LogicalType::BIGINT, std::move(ts_ms_func), std::move(ts_s_func),
+	                                    "ts");
 	ScalarFunction interval_fun({}, LogicalType::BIGINT, std::move(interval_func));
 	interval_fun.GetSignature().AddParameter("ts", LogicalType::INTERVAL);
 	operator_set.AddFunction(interval_fun);
@@ -2214,9 +2229,11 @@ template <class OP>
 ScalarFunctionSet GetDatePartFunction() {
 	return GetGenericDatePartFunction(
 	    DatePart::UnaryFunction<date_t, int64_t, OP>, DatePart::UnaryFunction<timestamp_t, int64_t, OP>,
-	    DatePart::UnaryFunction<timestamp_ns_t, int64_t, OP>, ScalarFunction::UnaryFunction<interval_t, int64_t, OP>,
-	    OP::template PropagateStatistics<date_t>, OP::template PropagateStatistics<timestamp_t>,
-	    OP::template PropagateStatistics<timestamp_ns_t>);
+	    DatePart::UnaryFunction<timestamp_ns_t, int64_t, OP>,
+	    DatePart::UnaryFunction<timestamp_ms_t, int64_t, DatePart::ViaTimestamp<OP>>,
+	    DatePart::UnaryFunction<timestamp_sec_t, int64_t, DatePart::ViaTimestamp<OP>>,
+	    ScalarFunction::UnaryFunction<interval_t, int64_t, OP>, OP::template PropagateStatistics<date_t>,
+	    OP::template PropagateStatistics<timestamp_t>, OP::template PropagateStatistics<timestamp_ns_t>);
 }
 
 ScalarFunctionSet GetGenericTimePartFunction(const LogicalType &result_type, scalar_function_t date_func,
@@ -2238,19 +2255,9 @@ ScalarFunctionSet GetGenericTimePartFunction(const LogicalType &result_type, sca
 	ScalarFunction ts_ns_fun({}, result_type, std::move(ts_ns_func), nullptr, ts_ns_stats);
 	ts_ns_fun.GetSignature().AddParameter(param_name, LogicalType::TIMESTAMP_NS);
 	operator_set.AddFunction(ts_ns_fun);
-	// without these the binder would widen TIMESTAMP_MS and TIMESTAMP_S to TIMESTAMP_NS, whose range is far smaller
 	if (lower_precision) {
-		ScalarFunction ts_ms_fun({}, result_type, std::move(ts_ms_func), nullptr,
-		                         StatisticsPropagator::PropagateFiniteMonotoneBounds);
-		ts_ms_fun.GetSignature().AddParameter(param_name, LogicalType::TIMESTAMP_MS);
-		// the widening can overflow for raw values near the ends of the range
-		ts_ms_fun.SetFallible();
-		operator_set.AddFunction(ts_ms_fun);
-		ScalarFunction ts_s_fun({}, result_type, std::move(ts_s_func), nullptr,
-		                        StatisticsPropagator::PropagateFiniteMonotoneBounds);
-		ts_s_fun.GetSignature().AddParameter(param_name, LogicalType::TIMESTAMP_S);
-		ts_s_fun.SetFallible();
-		operator_set.AddFunction(ts_s_fun);
+		AddLowerPrecisionTimestampFunctions(operator_set, result_type, std::move(ts_ms_func), std::move(ts_s_func),
+		                                    param_name);
 	}
 	ScalarFunction interval_fun({}, result_type, std::move(interval_func));
 	interval_fun.GetSignature().AddParameter(param_name, LogicalType::INTERVAL);
@@ -2513,9 +2520,11 @@ template <class OP>
 ScalarFunctionSet GetCachedDatepartFunction() {
 	return GetGenericDatePartFunction(
 	    DatePartCachedFunction<OP, date_t>, DatePartCachedFunction<OP, timestamp_t>,
-	    DatePart::UnaryFunction<timestamp_ns_t, int64_t, OP>, ScalarFunction::UnaryFunction<interval_t, int64_t, OP>,
-	    OP::template PropagateStatistics<date_t>, OP::template PropagateStatistics<timestamp_t>,
-	    OP::template PropagateStatistics<timestamp_ns_t>);
+	    DatePart::UnaryFunction<timestamp_ns_t, int64_t, OP>,
+	    DatePart::UnaryFunction<timestamp_ms_t, int64_t, DatePart::ViaTimestamp<OP>>,
+	    DatePart::UnaryFunction<timestamp_sec_t, int64_t, DatePart::ViaTimestamp<OP>>,
+	    ScalarFunction::UnaryFunction<interval_t, int64_t, OP>, OP::template PropagateStatistics<date_t>,
+	    OP::template PropagateStatistics<timestamp_t>, OP::template PropagateStatistics<timestamp_ns_t>);
 }
 
 void SetNonDecreasingExceptInterval(ScalarFunctionSet &functions) {
@@ -2823,6 +2832,9 @@ ScalarFunctionSet JulianDayFun::GetFunctions() {
 	ScalarFunction ts_ns_fun({}, LogicalType::DOUBLE, ts_ns_func, nullptr, ts_ns_stats);
 	ts_ns_fun.GetSignature().AddParameter("ts", LogicalType::TIMESTAMP_NS);
 	operator_set.AddFunction(ts_ns_fun);
+	AddLowerPrecisionTimestampFunctions(
+	    operator_set, LogicalType::DOUBLE, DatePart::UnaryFunction<timestamp_ms_t, double, DatePart::ViaTimestamp<OP>>,
+	    DatePart::UnaryFunction<timestamp_sec_t, double, DatePart::ViaTimestamp<OP>>, "ts");
 
 	return operator_set;
 }

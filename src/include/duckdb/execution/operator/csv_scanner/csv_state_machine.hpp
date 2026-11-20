@@ -101,6 +101,10 @@ struct CSVStates {
 	inline bool IsQuotedCurrent() const {
 		return states[1] == CSVState::QUOTED || states[1] == CSVState::QUOTED_NEW_LINE;
 	}
+	//! Inside a quoted value, which includes the escape state an escape character inside quotes leads to
+	inline bool IsQuotedOrEscapedCurrent() const {
+		return IsQuotedCurrent() || states[1] == CSVState::ESCAPE;
+	}
 	inline bool IsState(const CSVState state) const {
 		return states[1] == state;
 	}

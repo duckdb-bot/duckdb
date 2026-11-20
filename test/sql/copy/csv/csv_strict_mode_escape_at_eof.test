@@ -51,3 +51,21 @@ query II
 SELECT * FROM read_csv('{TEST_DIR}/escaped_then_closed.csv', auto_detect=false, header=false, columns={'a': 'INTEGER', 'b': 'VARCHAR'}, escape='\', strict_mode=true);
 ----
 1	a"b
+
+# ignore_errors drops the row also when it starts its chunk and crosses into the last buffer, and the read stays usable
+foreach parallel true false
+
+foreach buffer_size 8 1024
+
+query II
+SELECT * FROM read_csv('data/csv/strict_mode_escape_at_eof.csv', auto_detect=false, header=true, columns={'a': 'INTEGER', 'b': 'VARCHAR'}, escape='\', strict_mode=true, parallel={parallel}, buffer_size={buffer_size}, ignore_errors=true);
+----
+
+query I
+SELECT 42;
+----
+42
+
+endloop
+
+endloop

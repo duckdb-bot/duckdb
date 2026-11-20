@@ -116,6 +116,18 @@ FROM stage3,
 ----
 logical_opt	<!REGEX>:(.*DELIM_JOIN.*)|(.*CTE Name:.*__duckdb_delim.*)
 
+# the dedup CTE is still explicit when CTE inlining does not run first
+statement ok
+SET disabled_optimizers = 'cte_inlining'
+
+query II
+EXPLAIN SELECT * FROM (VALUES ([1, 2, 3]), ([4, 5])) t(i), (SELECT UNNEST(i)) t2(j) ORDER BY 1, 2;
+----
+logical_opt	<!REGEX>:(.*DELIM_JOIN.*)|(.*CTE Name:.*__duckdb_delim.*)
+
+statement ok
+SET disabled_optimizers = ''
+
 # make sure that these plans are not rewritten
 
 query II

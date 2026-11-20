@@ -14,13 +14,22 @@
 
 namespace duckdb {
 
+class LogicalMaterializedCTE;
+
 //! Rewrites fully decorrelated DelimJoins into materialized CTEs.
 class DelimJoinCTERewriter {
 public:
 	static void Rewrite(Binder &binder, unique_ptr<LogicalOperator> &plan);
+	//! Whether a materialized CTE is the domain or the dedup CTE of a rewritten delim join, by its generated name
+	static bool IsGeneratedDomainCTE(const LogicalMaterializedCTE &cte);
+	static bool IsGeneratedDedupCTE(const LogicalMaterializedCTE &cte);
 
 private:
 	explicit DelimJoinCTERewriter(Binder &binder);
+
+	//! The generated CTE names carry the table index of the CTE they name
+	static Identifier DomainCTEName(TableIndex cte_index);
+	static Identifier DedupCTEName(TableIndex dedup_cte_index);
 
 	void Rewrite(unique_ptr<LogicalOperator> &plan);
 	BindingReplacementGraph RewriteDelimJoinsToCTEs(unique_ptr<LogicalOperator> &plan, LogicalOperator &rewrite_root,

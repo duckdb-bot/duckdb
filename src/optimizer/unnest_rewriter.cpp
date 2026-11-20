@@ -20,6 +20,7 @@
 #include "duckdb/planner/operator/logical_projection.hpp"
 #include "duckdb/planner/operator/logical_unnest.hpp"
 #include "duckdb/planner/expression_binder.hpp"
+#include "duckdb/planner/subquery/delim_join_cte_rewriter.hpp"
 
 #include <algorithm>
 
@@ -519,6 +520,10 @@ bool UnnestRewriter::RewriteCTECandidate(unique_ptr<LogicalOperator> &root, uniq
 	if (domain_cte.materialize != CTEMaterialize::CTE_MATERIALIZE_DEFAULT || domain_cte.children.size() != 2) {
 		return false;
 	}
+	// only the CTEs the planner generated for a delim join are undone, a user CTE of the same shape keeps its join
+	if (!DelimJoinCTERewriter::IsGeneratedDomainCTE(domain_cte)) {
+		return false;
+	}
 	if (RewriteInlineCTEDedupCandidate(root, candidate, updater)) {
 		return true;
 	}
@@ -531,6 +536,9 @@ bool UnnestRewriter::RewriteCTECandidate(unique_ptr<LogicalOperator> &root, uniq
 	auto &outer_projection = domain_cte.children[1]->Cast<LogicalProjection>();
 	auto &dedup_cte = outer_projection.children[0]->Cast<LogicalMaterializedCTE>();
 	if (dedup_cte.materialize != CTEMaterialize::CTE_MATERIALIZE_DEFAULT || dedup_cte.children.size() != 2) {
+		return false;
+	}
+	if (!DelimJoinCTERewriter::IsGeneratedDedupCTE(dedup_cte)) {
 		return false;
 	}
 	if (dedup_cte.children[0]->type != LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY) {

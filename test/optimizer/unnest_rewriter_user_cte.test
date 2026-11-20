@@ -1,0 +1,80 @@
+# name: test/optimizer/unnest_rewriter_user_cte.test
+# description: The unnest rewriter leaves a user CTE alone whose join and GROUP BY mirror a duplicate eliminated join
+# group: [optimizer]
+
+statement ok
+CREATE TABLE src(i INTEGER, l INTEGER[]);
+
+statement ok
+INSERT INTO src VALUES (1, [10, 11]), (1, [20]), (2, [30]);
+
+# each of the two rows with i = 1 joins all three unnested values of the groups with i = 1
+query II rowsort
+WITH c AS (SELECT i, l FROM src)
+SELECT c.i, u.x
+FROM c
+JOIN (
+    SELECT unnest(d.l) AS x, d.i, d.l
+    FROM (SELECT i, l FROM c GROUP BY i, l) d
+) u ON c.i = u.i;
+----
+1	10
+1	10
+1	11
+1	11
+1	20
+1	20
+2	30
+
+# the join condition is kept as written
+query II rowsort
+WITH c AS (SELECT i, l FROM src)
+SELECT c.i, u.x
+FROM c
+JOIN (
+    SELECT unnest(d.l) AS x, d.i, d.l
+    FROM (SELECT i, l FROM c GROUP BY i, l) d
+) u ON c.i < u.i;
+----
+1	30
+1	30
+
+# a user CTE named like the planner's generated CTE of table index 0 is still a user CTE
+query II rowsort
+WITH __duckdb_delim_0 AS (SELECT i, l FROM src)
+SELECT c.i, u.x
+FROM __duckdb_delim_0 c
+JOIN (
+    SELECT unnest(d.l) AS x, d.i, d.l
+    FROM (SELECT i, l FROM __duckdb_delim_0 GROUP BY i, l) d
+) u ON c.i = u.i;
+----
+1	10
+1	10
+1	11
+1	11
+1	20
+1	20
+2	30
+
+# the unnest follows another projected column
+statement ok
+CREATE TABLE src2 AS SELECT i, [i, i + 1] AS l FROM range(4) r(i);
+
+query II rowsort
+WITH c AS (SELECT i, l FROM src2)
+SELECT c.i, u.x
+FROM c
+JOIN (
+    SELECT d.i, unnest(d.l) AS x
+    FROM (SELECT i, l FROM c GROUP BY i, l) d
+) u ON c.i = u.i;
+----
+0	0
+0	1
+1	1
+1	2
+2	2
+2	3
+3	3
+3	4

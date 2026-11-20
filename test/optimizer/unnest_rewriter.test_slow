@@ -116,6 +116,90 @@ FROM stage3,
 ----
 logical_opt	<!REGEX>:(.*DELIM_JOIN.*)|(.*CTE Name:.*__duckdb_delim.*)
 
+# with the rewriter and filter pushdown enabled the planner unnests over the left rows itself, without filter
+# pushdown a lateral unnest takes the general decorrelation, which builds the CTEs the rewriter undoes
+statement ok
+CREATE TABLE lists(i INTEGER, l INTEGER[]);
+
+statement ok
+INSERT INTO lists VALUES (1, [10, 11]), (1, [20]), (2, [30]);
+
+statement ok
+SET disabled_optimizers = 'filter_pushdown,unnest_rewriter'
+
+query II
+EXPLAIN SELECT i, x FROM lists, (SELECT unnest(l) AS x) u;
+----
+logical_opt	<REGEX>:(?s).*CTE Name: __duckdb_delim_\d+.*
+
+# CTE inlining folds the dedup CTE into the join side before the rewriter runs
+query II
+EXPLAIN SELECT i, x FROM lists, (SELECT unnest(l) AS x) u;
+----
+logical_opt	<!REGEX>:(?s).*__duckdb_delim_dedup.*
+
+statement ok
+SET disabled_optimizers = 'filter_pushdown'
+
+query II rowsort
+SELECT i, x FROM lists, (SELECT unnest(l) AS x) u;
+----
+1	10
+1	11
+1	20
+2	30
+
+query II
+EXPLAIN SELECT i, x FROM lists, (SELECT unnest(l) AS x) u;
+----
+logical_opt	<!REGEX>:(.*DELIM_JOIN.*)|(.*CTE Name:.*__duckdb_delim.*)
+
+# the generated CTEs are still recognized in the copies that CTE inlining makes of a twice referenced CTE
+query IIII rowsort
+WITH c AS NOT MATERIALIZED (SELECT i, x FROM lists, (SELECT unnest(l) AS x) u)
+SELECT a.i, a.x, b.i, b.x FROM c a, c b WHERE a.x < b.x;
+----
+1	10	1	11
+1	10	1	20
+1	10	2	30
+1	11	1	20
+1	11	2	30
+1	20	2	30
+
+query II
+EXPLAIN WITH c AS NOT MATERIALIZED (SELECT i, x FROM lists, (SELECT unnest(l) AS x) u)
+SELECT a.i, a.x, b.i, b.x FROM c a, c b WHERE a.x < b.x;
+----
+logical_opt	<!REGEX>:(?s).*CTE Name.*
+
+# and in a plan that went through serialization before the optimizer ran. EXPLAIN skips that round trip, so the
+# profiler output shows the executed plan
+statement ok
+SET debug_verify_serializer = true
+
+statement ok
+SET enable_profiling = 'json'
+
+statement ok
+SET profiling_output = '{TEST_DIR}/unnest_rewriter_serialized_plan.json'
+
+statement ok
+SELECT i, x FROM lists, (SELECT unnest(l) AS x) u;
+
+statement ok
+PRAGMA disable_profiling
+
+statement ok
+RESET debug_verify_serializer
+
+query I
+SELECT content LIKE '%UNNEST%' AND content NOT LIKE '%CTE_SCAN%' FROM read_text('{TEST_DIR}/unnest_rewriter_serialized_plan.json');
+----
+true
+
+statement ok
+SET disabled_optimizers = ''
+
 # make sure that these plans are not rewritten
 
 query II

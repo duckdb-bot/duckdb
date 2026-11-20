@@ -10,8 +10,10 @@
 
 #include "duckdb/common/bignum.hpp"
 #include "duckdb/common/common.hpp"
+#include "duckdb/common/optional_idx.hpp"
 #include "duckdb/common/types/decimal.hpp"
 #include "duckdb/common/types/hugeint.hpp"
+#include "duckdb/common/types/string_heap.hpp"
 
 namespace duckdb {
 class ClientContext;
@@ -35,6 +37,25 @@ struct DecimalHelper<bignum_t> {
 
 		StringHeap &heap;
 		BignumArithmeticState state;
+	};
+
+	//! Scratch reused across rescaled values.
+	struct RescaleState {
+		explicit RescaleState(optional_ptr<ClientContext> context = nullptr) : arithmetic(context) {
+		}
+
+		//! Invalidates scratch values; call before constructing the next input in heap.
+		void Reset() {
+			heap.GetAllocator().Reset();
+		}
+		const string &GetPowerOfTen(idx_t exponent);
+
+		StringHeap heap;
+		BignumArithmeticState arithmetic;
+
+	private:
+		optional_idx cached_exponent;
+		string cached_power;
 	};
 
 	//! 10^exponent as a BIGNUM blob, the powers of everyday widths are cached; a long computation checks for
@@ -84,6 +105,12 @@ struct DecimalHelper<bignum_t> {
 	//! rescaled value
 	DUCKDB_API static string Rescale(const bignum_t &value, uint32_t source_scale, uint32_t target_scale,
 	                                 optional_ptr<ClientContext> context = nullptr);
+	//! The result borrows from value or state; consume it before resetting state or releasing value.
+	DUCKDB_API static bignum_t Rescale(RescaleState &state, const bignum_t &value, uint32_t source_scale,
+	                                   uint32_t target_scale);
+	//! Fixed-width inputs use integer arithmetic before encoding the result as a BIGNUM.
+	DUCKDB_API static bignum_t Rescale(RescaleState &state, hugeint_t value, uint32_t source_scale,
+	                                   uint32_t target_scale);
 	//! Rescales an unscaled value to target_scale (rounding half away from zero) and checks it fits target_width, the
 	//! result is the BIGNUM blob of the rescaled value
 	DUCKDB_API static bool TryRescale(const bignum_t &value, uint32_t source_scale, uint32_t target_width,

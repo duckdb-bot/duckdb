@@ -62,6 +62,18 @@ WITH c AS MATERIALIZED (SELECT count(*) AS n FROM range(10000) t(i) WHERE i IN (
 ----
 5	0
 
+# a list larger than the table stays the build side, the join is not flipped to scan the table rows from the hash table
+statement ok
+CREATE TABLE small AS SELECT i AS ts FROM range(4096) r(i);
+
+statement ok
+CREATE TABLE small_r AS SELECT ts FROM small WHERE list_contains(range(0, 16384, 2), ts);
+
+query II
+SELECT count(*) FILTER (WHERE ts < prev), count(*) FROM (SELECT ts, lag(ts) OVER (ORDER BY rowid) AS prev FROM small_r)
+----
+0	2048
+
 # with several threads the batch index keeps the order
 statement ok
 SET threads = 4;

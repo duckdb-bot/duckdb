@@ -2153,22 +2153,6 @@ DelimJoinCTERewriter::DelimJoinCTERewriter(Binder &binder) : binder(binder) {
 	                          !config.IsOptimizerDisabled(OptimizerType::DELIMINATOR);
 }
 
-Identifier DelimJoinCTERewriter::DomainCTEName(TableIndex cte_index) {
-	return Identifier("__duckdb_delim_" + to_string(cte_index.index));
-}
-
-Identifier DelimJoinCTERewriter::DedupCTEName(TableIndex dedup_cte_index) {
-	return Identifier("__duckdb_delim_dedup_" + to_string(dedup_cte_index.index));
-}
-
-bool DelimJoinCTERewriter::IsGeneratedDomainCTE(const LogicalMaterializedCTE &cte) {
-	return cte.ctename == DomainCTEName(cte.table_index);
-}
-
-bool DelimJoinCTERewriter::IsGeneratedDedupCTE(const LogicalMaterializedCTE &cte) {
-	return cte.ctename == DedupCTEName(cte.table_index);
-}
-
 BindingReplacementGraph DelimJoinCTERewriter::MaterializeDelimJoinAsCTE(unique_ptr<LogicalOperator> &plan,
                                                                         LogicalOperator &rewrite_root,
                                                                         bool null_rejecting_filter_above,
@@ -2269,7 +2253,7 @@ BindingReplacementGraph DelimJoinCTERewriter::MaterializeDelimJoinAsCTE(unique_p
 	auto left_types = cte_source->types;
 
 	auto cte_index = binder.GenerateTableIndex();
-	auto cte_name = DomainCTEName(cte_index);
+	auto cte_name = Identifier("__duckdb_delim_" + to_string(cte_index.index));
 
 	auto left_cte_ref_index = binder.GenerateTableIndex();
 	auto left_cte_ref = make_uniq<LogicalCTERef>(left_cte_ref_index, cte_index, left_types,
@@ -2305,14 +2289,16 @@ BindingReplacementGraph DelimJoinCTERewriter::MaterializeDelimJoinAsCTE(unique_p
 	}
 	dedup->children.push_back(std::move(dedup_child));
 
-	auto dedup_cte_name = DedupCTEName(dedup_cte_index);
+	auto dedup_cte_name = Identifier("__duckdb_delim_dedup_" + to_string(dedup_cte_index.index));
 	auto dedup_cte_child = std::move(plan);
 	auto dedup_cte =
 	    make_uniq<LogicalMaterializedCTE>(dedup_cte_name, dedup_cte_index, dedup_types.size(), std::move(dedup),
 	                                      std::move(dedup_cte_child), CTEMaterialize::CTE_MATERIALIZE_DEFAULT);
+	dedup_cte->generated_for_delim_join = true;
 	auto cte_child = std::move(dedup_cte);
 	auto cte = make_uniq<LogicalMaterializedCTE>(cte_name, cte_index, left_column_count, std::move(cte_source),
 	                                             std::move(cte_child), CTEMaterialize::CTE_MATERIALIZE_DEFAULT);
+	cte->generated_for_delim_join = true;
 	if (can_restrict_input) {
 		cte->filter_dependency = make_uniq<CTEFilterDependency>(left_cte_ref_index, dedup_child_index);
 	}

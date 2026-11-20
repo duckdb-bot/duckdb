@@ -47,6 +47,8 @@ public:
 	}
 
 	CTEMaterialize materialize = CTEMaterialize::CTE_MATERIALIZE_ALWAYS;
+	//! Set on the CTEs the planner generates for a delim join, which the unnest rewriter undoes
+	bool generated_for_delim_join = false;
 	//! Valid only for the original generated consumers, until CTE filter pushdown. Deliberately not serialized.
 	unique_ptr<CTEFilterDependency> filter_dependency;
 

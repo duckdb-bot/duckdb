@@ -116,17 +116,90 @@ FROM stage3,
 ----
 logical_opt	<!REGEX>:(.*DELIM_JOIN.*)|(.*CTE Name:.*__duckdb_delim.*)
 
-# the dedup CTE is still explicit when CTE inlining does not run first
+# a lateral subquery with a cast next to the unnest takes the general decorrelation, which builds the CTEs
+statement ok
+CREATE TABLE lists(i INTEGER, l INTEGER[]);
+
+statement ok
+INSERT INTO lists VALUES (1, [10, 11]), (1, [20]), (2, [30]);
+
+query II rowsort
+SELECT i, x FROM lists, (SELECT unnest(l) AS x, CAST(i AS VARCHAR) AS s) u;
+----
+1	10
+1	11
+1	20
+2	30
+
+# without the rewriter the domain CTE stays, its dedup CTE inlined
+statement ok
+SET disabled_optimizers = 'unnest_rewriter'
+
+query II
+EXPLAIN SELECT i, x FROM lists, (SELECT unnest(l) AS x, CAST(i AS VARCHAR) AS s) u;
+----
+logical_opt	<REGEX>:(?s).*CTE Name: __duckdb_delim_\d+.*
+
+query II
+EXPLAIN SELECT i, x FROM lists, (SELECT unnest(l) AS x, CAST(i AS VARCHAR) AS s) u;
+----
+logical_opt	<!REGEX>:(?s).*__duckdb_delim_dedup.*
+
+# without CTE inlining the dedup CTE stays explicit
+statement ok
+SET disabled_optimizers = 'unnest_rewriter,cte_inlining'
+
+query II
+EXPLAIN SELECT i, x FROM lists, (SELECT unnest(l) AS x, CAST(i AS VARCHAR) AS s) u;
+----
+logical_opt	<REGEX>:(?s).*__duckdb_delim_dedup.*
+
+# the rewriter removes both forms
 statement ok
 SET disabled_optimizers = 'cte_inlining'
 
 query II
-EXPLAIN SELECT * FROM (VALUES ([1, 2, 3]), ([4, 5])) t(i), (SELECT UNNEST(i)) t2(j) ORDER BY 1, 2;
+EXPLAIN SELECT i, x FROM lists, (SELECT unnest(l) AS x, CAST(i AS VARCHAR) AS s) u;
 ----
 logical_opt	<!REGEX>:(.*DELIM_JOIN.*)|(.*CTE Name:.*__duckdb_delim.*)
 
 statement ok
 SET disabled_optimizers = ''
+
+query II
+EXPLAIN SELECT i, x FROM lists, (SELECT unnest(l) AS x, CAST(i AS VARCHAR) AS s) u;
+----
+logical_opt	<!REGEX>:(.*DELIM_JOIN.*)|(.*CTE Name:.*__duckdb_delim.*)
+
+# the generated CTEs are still recognized in the copies that CTE inlining makes of a twice referenced CTE
+query IIII rowsort
+WITH c AS NOT MATERIALIZED (SELECT i, x FROM lists, (SELECT unnest(l) AS x, CAST(i AS VARCHAR) AS s) u)
+SELECT a.i, a.x, b.i, b.x FROM c a, c b WHERE a.x < b.x;
+----
+1	10	1	11
+1	10	1	20
+1	10	2	30
+1	11	1	20
+1	11	2	30
+1	20	2	30
+
+query II
+EXPLAIN WITH c AS NOT MATERIALIZED (SELECT i, x FROM lists, (SELECT unnest(l) AS x, CAST(i AS VARCHAR) AS s) u)
+SELECT a.i, a.x, b.i, b.x FROM c a, c b WHERE a.x < b.x;
+----
+logical_opt	<!REGEX>:(.*DELIM_JOIN.*)|(.*CTE Name:.*__duckdb_delim.*)
+
+# and in a plan that went through serialization before the optimizer ran
+statement ok
+SET debug_verify_serializer = true
+
+query II
+EXPLAIN SELECT i, x FROM lists, (SELECT unnest(l) AS x, CAST(i AS VARCHAR) AS s) u;
+----
+logical_opt	<!REGEX>:(.*DELIM_JOIN.*)|(.*CTE Name:.*__duckdb_delim.*)
+
+statement ok
+SET debug_verify_serializer = false
 
 # make sure that these plans are not rewritten
 

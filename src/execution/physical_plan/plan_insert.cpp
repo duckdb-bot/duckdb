@@ -1,5 +1,6 @@
 #include "duckdb/catalog/catalog_entry/duck_table_entry.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
+#include "duckdb/execution/operator/join/physical_hash_join.hpp"
 #include "duckdb/execution/operator/persistent/physical_insert.hpp"
 #include "duckdb/execution/physical_plan_generator.hpp"
 #include "duckdb/planner/operator/logical_insert.hpp"
@@ -15,7 +16,10 @@
 namespace duckdb {
 
 OrderPreservationType PhysicalPlanGenerator::OrderPreservationRecursive(PhysicalOperator &op) {
-	if (op.IsSource()) {
+	// a hash join that keeps the order of its probe side emits no rows as a source
+	const bool keeps_child_order =
+	    op.type == PhysicalOperatorType::HASH_JOIN && op.Cast<PhysicalHashJoin>().preserves_probe_order;
+	if (op.IsSource() && !keeps_child_order) {
 		return op.SourceOrder();
 	}
 

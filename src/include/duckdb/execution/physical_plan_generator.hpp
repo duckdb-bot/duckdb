@@ -100,6 +100,8 @@ public:
 	idx_t delim_index = 0;
 	//! Tracks whether we are planning the recursive member of a recursive CTE.
 	idx_t planning_recursive_cte_depth = 0;
+	//! The memory that the hash joins over constant collections of the plan keep, to keep the order of their probe side
+	idx_t ordered_constant_build_size = 0;
 
 public:
 	//! Creates and returns the physical plan from the logical operator.

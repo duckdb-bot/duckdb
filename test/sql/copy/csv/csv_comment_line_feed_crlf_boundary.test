@@ -365,6 +365,41 @@ SELECT list(a ORDER BY a) FROM read_csv('{TEST_DIR}/comment_lf_boundary_quote_lf
 ----
 [1, 1, 3]
 
+# ranges of 16 bytes inside buffers of 64 bytes, a range starts at the line feed of a split \r\n
+statement ok
+COPY (SELECT 1 AS a FROM range(32)) TO '{TEST_DIR}/comment_lf_boundary_ranges_crlf.csv' (HEADER false, NEW_LINE '\r\n');
+
+query II
+SELECT count(*), sum(a) FROM read_csv('{TEST_DIR}/comment_lf_boundary_ranges_crlf.csv', auto_detect = false, delim = ',', quote = '"', escape = '"', new_line = '\r\n', comment = '#', header = false, columns = {'a': 'INTEGER'}, buffer_size = 64, max_line_size = 16);
+----
+32	32
+
+# a range starts at the line feed that ends a comment inside a buffer
+statement ok
+COPY (SELECT repeat('1' || chr(13) || chr(10), 3) || '#abcde!' || chr(10) || '2' || chr(13) || chr(10) || '3' || chr(13) || chr(10) || repeat('4' || chr(13) || chr(10), 23) || '4' || chr(13)) TO '{TEST_DIR}/comment_lf_boundary_ranges_comment.csv' (HEADER false, QUOTE '', DELIM '|');
+
+query II
+SELECT count(*), sum(a) FROM read_csv('{TEST_DIR}/comment_lf_boundary_ranges_comment.csv', auto_detect = false, delim = ',', quote = '"', escape = '"', new_line = '\r\n', comment = '#', header = false, columns = {'a': 'INTEGER'}, buffer_size = 64, max_line_size = 16);
+----
+29	104
+
+# a range starts at the invalid line feed behind a closing quote inside a buffer, and in the next buffer
+statement ok
+COPY (SELECT repeat('1' || chr(13) || chr(10), 3) || '"abcde"' || chr(10) || '2' || chr(13) || chr(10) || '3' || chr(13) || chr(10) || repeat('4' || chr(13) || chr(10), 23) || '4' || chr(13)) TO '{TEST_DIR}/comment_lf_boundary_ranges_quote.csv' (HEADER false, QUOTE '', DELIM '|');
+
+query II
+SELECT count(*), sum(a) FROM read_csv('{TEST_DIR}/comment_lf_boundary_ranges_quote.csv', auto_detect = false, delim = ',', quote = '"', escape = '"', new_line = '\r\n', comment = '#', header = false, columns = {'a': 'INTEGER'}, buffer_size = 64, max_line_size = 16, store_rejects = true, rejects_table = 'rej_ranges_quote', rejects_scan = 'scan_ranges_quote');
+----
+28	102
+
+statement ok
+COPY (SELECT repeat('1' || chr(13) || chr(10), 19) || '"abcde"' || chr(10) || '2' || chr(13) || chr(10) || '3' || chr(13) || chr(10) || repeat('4' || chr(13) || chr(10), 23) || '4' || chr(13)) TO '{TEST_DIR}/comment_lf_boundary_ranges_quote_buffer.csv' (HEADER false, QUOTE '', DELIM '|');
+
+query II
+SELECT count(*), sum(a) FROM read_csv('{TEST_DIR}/comment_lf_boundary_ranges_quote_buffer.csv', auto_detect = false, delim = ',', quote = '"', escape = '"', new_line = '\r\n', comment = '#', header = false, columns = {'a': 'INTEGER'}, buffer_size = 64, max_line_size = 16, store_rejects = true, rejects_table = 'rej_ranges_quote_buffer', rejects_scan = 'scan_ranges_quote_buffer');
+----
+44	118
+
 # spaces before the second comment are no value
 statement ok
 COPY (SELECT 'a,b' || chr(13) || chr(10) || '1,2' || chr(13) || chr(10) || '#comment' || chr(10) || '  #second' || chr(10) || '300,400' || chr(13) || chr(10) || '500,600' || chr(13)) TO '{TEST_DIR}/comment_lf_boundary_spaces.csv' (HEADER false, QUOTE '', DELIM '|');

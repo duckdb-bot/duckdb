@@ -1970,7 +1970,7 @@ ValidRowInfo StringValueScanner::TryRow(CSVState state, idx_t start_pos, idx_t e
 	        quoted};
 }
 
-bool StringValueScanner::StartsWithLineFeedOfSplitNewLine() const {
+bool StringValueScanner::LeadingLineFeedBelongsToThreadBefore() const {
 	if (state_machine->dialect_options.state_machine_options.new_line != NewLineIdentifier::CARRY_ON) {
 		return false;
 	}
@@ -2056,10 +2056,10 @@ void StringValueScanner::SetStart() {
 	}
 	// 4. We are in the middle of a comment line, which ends at a line break that need not end a row of the dialect. A
 	// quoted value can hold such a line break too, so a row found through quotes stays, as does a row whose search
-	// passed a quoted line break. A line feed that completes a \r\n split over the buffer end belongs to the thread
-	// before, together with the row behind it
+	// passed a quoted line break. A line feed that starts the range can be the thread before's, read with the row
+	// behind it, in which case the comment candidate must not start there
 	if (state_machine->dialect_options.state_machine_options.comment.GetValue() != '\0' && !best_row_from_quotes &&
-	    !StartsWithLineFeedOfSplitNewLine()) {
+	    !LeadingLineFeedBelongsToThreadBefore()) {
 		auto comment_row = TryRow(CSVState::COMMENT, iterator.pos.buffer_pos, iterator.GetEndPos());
 		if (comment_row.is_valid &&
 		    (!best_row.is_valid || (comment_row.start_pos < best_row.start_pos && !best_row.quoted_new_line))) {

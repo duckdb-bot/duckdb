@@ -181,6 +181,9 @@ static void JsonSerializePlanFunction(DataChunk &args, ExpressionState &state, V
 
 		} catch (std::exception &ex) {
 			ErrorData error(ex);
+			if (error.Type() == ExceptionType::OUT_OF_MEMORY) {
+				throw;
+			}
 			// the result object may hold the plan that failed to write, so the error document starts afresh
 			auto error_obj = yyjson_mut_obj(doc);
 			yyjson_mut_obj_add_true(doc, error_obj, "error");

@@ -470,7 +470,7 @@ TEST_CASE("Test reopening a database from several threads while it shuts down", 
 struct BackgroundCacheCall {
 	shared_ptr<DuckDB> db;
 	std::exception_ptr error;
-	//! The call had not returned within the wait, which only a lookup that spins on a kept connection causes
+	//! The call had not returned within the wait, as a lookup that spins on a kept connection does not
 	bool timed_out = false;
 };
 

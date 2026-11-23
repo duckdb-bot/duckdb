@@ -1457,8 +1457,12 @@ string_t StringValueScanner::RemoveEscape(const char *str_ptr, idx_t end, char e
 }
 
 void StringValueScanner::ProcessOverBufferValue() {
+	// a comment that ran to the end of the previous buffer goes on in this one, the value before it was handled then
+	const bool open_comment = result.comment && result.last_position.buffer_pos >= previous_buffer_handle->actual_size;
 	// Process first string
-	if (result.last_position.buffer_pos != previous_buffer_handle->actual_size) {
+	if (open_comment) {
+		states.Initialize(CSVState::COMMENT);
+	} else if (result.last_position.buffer_pos != previous_buffer_handle->actual_size) {
 		states.Initialize();
 	}
 
@@ -1467,7 +1471,7 @@ void StringValueScanner::ProcessOverBufferValue() {
 	idx_t j = 0;
 	result.quoted = false;
 	// the value ends where a comment starts, also when the comment started before this buffer
-	bool comment_started = false;
+	bool comment_started = open_comment;
 	for (idx_t i = result.last_position.buffer_pos; i < previous_buffer_handle->actual_size; i++) {
 		state_machine->Transition(states, previous_buffer[i]);
 		if (states.EmptyLine() || states.IsCurrentNewRow()) {
@@ -1586,7 +1590,7 @@ void StringValueScanner::ProcessOverBufferValue() {
 	const bool empty_line = single_column_empty_line && result.cur_col_id == 0 && !result.comment;
 	const bool comment_only_line =
 	    comment_started && IsCommentOnlyLine(result.cur_col_id, over_buffer_string.c_str(), over_buffer_string.size());
-	bool skip_value = comment_only_line;
+	bool skip_value = comment_only_line || open_comment;
 	if (result.projecting_columns && !skip_value) {
 		if (result.cur_col_id < result.number_of_columns && !result.projected_columns[result.cur_col_id]) {
 			result.cur_col_id++;

@@ -92,3 +92,52 @@ SELECT a, b FROM read_csv('{DATA_DIR}/csv/comment_eof_no_newline.csv', header = 
 endloop
 
 endloop
+
+# a comment longer than two buffers: its line break is read after the states were reset for the second time, and its
+# text can hold delimiters and quotes
+statement ok
+COPY (SELECT l FROM (VALUES (1, 'a'), (2, '#' || repeat('x,"y', 18)), (3, '7'), (4, '8')) t(i, l) ORDER BY i) TO '{TEST_DIR}/long_comment.csv' (HEADER false, QUOTE '');
+
+statement ok
+COPY (SELECT l FROM (VALUES (1, 'a,b'), (2, '1,2'), (3, '#' || repeat('c,"d', 18)), (4, '3,4')) t(i, l) ORDER BY i) TO '{TEST_DIR}/long_comment_two_columns.csv' (HEADER false, QUOTE '');
+
+# the \r\n that ends this comment starts a buffer at buffer_size 12, 14, 21 and 28, and is split at 17
+statement ok
+COPY (SELECT l FROM (VALUES (1, 'a,b'), (2, '11,22'), (3, '#' || repeat('x', 71)), (4, '3,4'), (5, '5,6')) t(i, l) ORDER BY i) TO '{TEST_DIR}/long_comment_crlf.csv' (HEADER false, QUOTE '', NEW_LINE '\r\n');
+
+loop buffer_size 8 41
+
+query I
+SELECT a FROM read_csv('{TEST_DIR}/long_comment.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR'}, comment = '#', buffer_size = {buffer_size}, parallel = false);
+----
+7
+8
+
+query II
+SELECT a, b FROM read_csv('{TEST_DIR}/long_comment_two_columns.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, comment = '#', buffer_size = {buffer_size}, parallel = false);
+----
+1	2
+3	4
+
+query II
+SELECT a, b FROM read_csv('{TEST_DIR}/long_comment_crlf.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, comment = '#', new_line = '\r\n', buffer_size = {buffer_size}, parallel = false);
+----
+11	22
+3	4
+5	6
+
+endloop
+
+# a row whose comment spans more than two buffers is longer than the maximum line size, its comment adds no value
+statement ok
+COPY (SELECT l FROM (VALUES (1, 'a,b'), (2, '1,abcdefghij#' || repeat('x', 24)), (3, '3,4')) t(i, l) ORDER BY i) TO '{TEST_DIR}/long_comment_after_value.csv' (HEADER false, QUOTE '');
+
+statement error
+SELECT a, b FROM read_csv('{TEST_DIR}/long_comment_after_value.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, comment = '#', nullstr = 'NULL', buffer_size = 16, parallel = false);
+----
+Maximum line size
+
+query II
+SELECT a, b FROM read_csv('{TEST_DIR}/long_comment_after_value.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, comment = '#', nullstr = 'NULL', buffer_size = 16, parallel = false, ignore_errors = true);
+----
+3	4

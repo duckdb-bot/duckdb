@@ -18,6 +18,7 @@
 #include <chrono>
 #include <fstream>
 #include <thread>
+#include "duckdb/main/settings.hpp"
 
 using namespace duckdb;
 
@@ -94,6 +95,27 @@ TEST_CASE("Test destroying connections with open transactions", "[api]") {
 
 	auto conn = make_uniq<Connection>(*db);
 	REQUIRE_NO_FAIL(conn->Query("CREATE TABLE test(i INTEGER)"));
+}
+
+TEST_CASE("Test destroying connections with open transactions while unwinding", "[api]") {
+	auto db = make_uniq<DuckDB>(nullptr);
+	try {
+		Connection con(*db);
+		REQUIRE_NO_FAIL(con.Query("BEGIN TRANSACTION"));
+		REQUIRE_NO_FAIL(con.Query("CREATE TABLE test(i INTEGER)"));
+		REQUIRE_NO_FAIL(con.Query("INSERT INTO test VALUES (1)"));
+		throw std::runtime_error("unwind");
+	} catch (std::runtime_error &) { // NOLINT
+	}
+
+	// the transaction was rolled back: the table does not exist and later transactions work normally
+	Connection conn(*db);
+	REQUIRE_FAIL(conn.Query("SELECT * FROM test"));
+	REQUIRE_NO_FAIL(conn.Query("CREATE TABLE test(i INTEGER)"));
+	REQUIRE_NO_FAIL(conn.Query("INSERT INTO test VALUES (2)"));
+	REQUIRE_NO_FAIL(conn.Query("CHECKPOINT"));
+	auto result = conn.Query("SELECT * FROM test");
+	REQUIRE(CHECK_COLUMN(result, 0, {2}));
 }
 
 static void long_running_query(Connection *conn, bool *correct) {
@@ -187,6 +209,21 @@ TEST_CASE("Test temp_directory defaults", "[api][.]") {
 
 		REQUIRE(db->instance->config.options.temporary_directory == ".tmp");
 	}
+}
+
+TEST_CASE("Test max_temp_directory_size set at startup is enforced", "[api]") {
+	auto config = GetTestConfig();
+	config->SetOptionByName("temp_directory", TestCreatePath("max_temp_directory_size_startup"));
+	config->SetOptionByName("max_temp_directory_size", "0KiB");
+	DuckDB db(nullptr, config.get());
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("PRAGMA memory_limit='4MB'"));
+
+	// the table does not fit in memory, so it has to be offloaded, which the limit does not allow
+	auto result = con.Query("CREATE TABLE t AS SELECT random() FROM range(1000000)");
+	REQUIRE(result->HasError());
+	REQUIRE(result->GetErrorType() == ExceptionType::OUT_OF_MEMORY);
+	REQUIRE(StringUtil::Contains(result->GetError(), "failed to offload data block"));
 }
 
 TEST_CASE("Test parallel usage of single client", "[api][.]") {
@@ -643,6 +680,41 @@ TEST_CASE("Test parser tokenize", "[api]") {
 	REQUIRE(tokens.size() == expected.size());
 }
 
+TEST_CASE("Test parser tokenize of words the grammar matches literally", "[api]") {
+	// REPOSITORY, PREFIX, PUBLIC and KEYS are in none of the keyword lists, the grammar matches them literally;
+	// highlighting shows them as keywords, while names and quoted identifiers stay identifiers
+	string sql = "CREATE EXTENSION REPOSITORY r WITH PREFIX 'p' USING PUBLIC KEYS [\"prefix\"]";
+	auto tokens = Parser::Tokenize(sql);
+
+	using T = SimplifiedTokenType;
+	vector<pair<T, idx_t>> expected {
+	    {T::SIMPLIFIED_TOKEN_KEYWORD, 0},          // CREATE
+	    {T::SIMPLIFIED_TOKEN_KEYWORD, 7},          // EXTENSION
+	    {T::SIMPLIFIED_TOKEN_KEYWORD, 17},         // REPOSITORY
+	    {T::SIMPLIFIED_TOKEN_IDENTIFIER, 28},      // r
+	    {T::SIMPLIFIED_TOKEN_KEYWORD, 30},         // WITH
+	    {T::SIMPLIFIED_TOKEN_KEYWORD, 35},         // PREFIX
+	    {T::SIMPLIFIED_TOKEN_STRING_CONSTANT, 42}, // 'p'
+	    {T::SIMPLIFIED_TOKEN_KEYWORD, 46},         // USING
+	    {T::SIMPLIFIED_TOKEN_KEYWORD, 52},         // PUBLIC
+	    {T::SIMPLIFIED_TOKEN_KEYWORD, 59},         // KEYS
+	    {T::SIMPLIFIED_TOKEN_OPERATOR, 64},        // [
+	    {T::SIMPLIFIED_TOKEN_IDENTIFIER, 65},      // "prefix"
+	};
+	REQUIRE(tokens.size() >= expected.size());
+	for (idx_t i = 0; i < expected.size(); i++) {
+		REQUIRE(tokens[i].type == expected[i].first);
+		REQUIRE(tokens[i].start == expected[i].second);
+	}
+
+	// the grammar also matches the quotes of quoted identifiers literally: an unfinished one stays an identifier
+	for (auto &unfinished : {"\"", "`", "SELECT \""}) {
+		auto unfinished_tokens = Parser::Tokenize(unfinished);
+		REQUIRE(!unfinished_tokens.empty());
+		REQUIRE(unfinished_tokens.back().type == T::SIMPLIFIED_TOKEN_IDENTIFIER);
+	}
+}
+
 TEST_CASE("Test opening an invalid database file", "[api]") {
 	duckdb::unique_ptr<DuckDB> db;
 	bool success = false;
@@ -778,7 +850,7 @@ TEST_CASE("Issue #14130: InsertStatement::ToString causes InternalException late
 
 TEST_CASE("Issue #6284: CachingPhysicalOperator in pull causes issues", "[api][.]") {
 	DBConfig config;
-	config.options.maximum_threads = 8;
+	Settings::Set<ThreadsSetting>(config, SetScope::GLOBAL, Value::BIGINT(8));
 	DuckDB db(nullptr, &config);
 	Connection con(db);
 
@@ -871,12 +943,11 @@ TEST_CASE("Test insert returning in CPP API", "[api]") {
 	                     {"query_1", "query_2", "query_arg_1", "query_arg_2", "prepared_arg_1", "prepared_arg_2"}));
 }
 
-TEST_CASE("Test a logical execute still has types after an optimization pass", "[api]") {
+TEST_CASE("Test an extracted EXECUTE plan still has types after an optimization pass", "[api]") {
 	DuckDB db(nullptr);
 	Connection con(db);
 	con.Query("PREPARE test AS SELECT 42::INTEGER;");
 	const auto query_plan = con.ExtractPlan("EXECUTE test");
-	REQUIRE((query_plan->type == LogicalOperatorType::LOGICAL_EXECUTE));
 	REQUIRE((query_plan->types.size() == 1));
 	REQUIRE((query_plan->types[0].id() == LogicalTypeId::INTEGER));
 }
@@ -1013,10 +1084,10 @@ TEST_CASE("Test ClientInterruptState suppresses interrupts after irreversible op
 	SECTION("Normal interrupt works") {
 		context.Interrupt();
 		REQUIRE(context.IsInterrupted());
-		REQUIRE_THROWS(context.InterruptCheck());
+		REQUIRE_THROWS(context.FastInterruptCheck());
 		context.ClearInterrupt();
 		REQUIRE(!context.IsInterrupted());
-		REQUIRE_NOTHROW(context.InterruptCheck());
+		REQUIRE_NOTHROW(context.FastInterruptCheck());
 	}
 
 	SECTION("SuppressInterrupts blocks subsequent Interrupt calls") {
@@ -1025,7 +1096,7 @@ TEST_CASE("Test ClientInterruptState suppresses interrupts after irreversible op
 		// Since state is SUPPRESSED, CAS fails and interrupt is discarded
 		context.Interrupt();
 		REQUIRE(!context.IsInterrupted());
-		REQUIRE_NOTHROW(context.InterruptCheck());
+		REQUIRE_NOTHROW(context.FastInterruptCheck());
 		context.ClearInterrupt();
 	}
 
@@ -1036,7 +1107,7 @@ TEST_CASE("Test ClientInterruptState suppresses interrupts after irreversible op
 		// overriding the INTERRUPTED state
 		context.SuppressInterrupts();
 		REQUIRE(!context.IsInterrupted());
-		REQUIRE_NOTHROW(context.InterruptCheck());
+		REQUIRE_NOTHROW(context.FastInterruptCheck());
 		context.ClearInterrupt();
 	}
 
@@ -1046,7 +1117,7 @@ TEST_CASE("Test ClientInterruptState suppresses interrupts after irreversible op
 		// Now back to NOT_INTERRUPTED, Interrupt() should work again
 		context.Interrupt();
 		REQUIRE(context.IsInterrupted());
-		REQUIRE_THROWS(context.InterruptCheck());
+		REQUIRE_THROWS(context.FastInterruptCheck());
 		context.ClearInterrupt();
 	}
 
@@ -1057,10 +1128,58 @@ TEST_CASE("Test ClientInterruptState suppresses interrupts after irreversible op
 		// After COMMIT, state should be SUPPRESSED — Interrupt() should be discarded
 		context.Interrupt();
 		REQUIRE(!context.IsInterrupted());
-		REQUIRE_NOTHROW(context.InterruptCheck());
+		REQUIRE_NOTHROW(context.FastInterruptCheck());
 		// Cleanup
 		context.ClearInterrupt();
 		REQUIRE_NO_FAIL(con.Query("DROP TABLE suppress_test"));
+	}
+}
+
+TEST_CASE("Test internal connections follow the interrupts of their base client", "[api]") {
+	DuckDB db;
+	Connection con(db);
+	auto child = Connection::CreateInternal(*con.context);
+	auto grandchild = Connection::CreateInternal(*child.context);
+	REQUIRE(grandchild.context->base_context == con.context);
+	REQUIRE(grandchild.context->internal_depth == 2);
+
+	SECTION("Interrupting the base interrupts every internal connection") {
+		con.context->Interrupt();
+		REQUIRE(child.context->IsInterrupted());
+		REQUIRE(grandchild.context->IsInterrupted());
+		REQUIRE_THROWS(grandchild.context->FastInterruptCheck());
+		con.context->ClearInterrupt();
+		REQUIRE(!grandchild.context->IsInterrupted());
+	}
+
+	SECTION("Interrupting an internal connection does not interrupt the base") {
+		child.context->Interrupt();
+		REQUIRE(!con.context->IsInterrupted());
+		child.context->ClearInterrupt();
+	}
+
+	SECTION("The base client's query deadline applies to internal connections while it is set") {
+		REQUIRE_NOTHROW(grandchild.context->InterruptCheck());
+		// a deadline in the past, as a base query that ran out of time would leave it
+		con.context->query_deadline = 1;
+		REQUIRE_THROWS(grandchild.context->InterruptCheck());
+		REQUIRE_THROWS(child.context->InterruptCheck());
+		con.context->query_deadline.SetInvalid();
+		REQUIRE_NOTHROW(grandchild.context->InterruptCheck());
+	}
+
+	SECTION("A query running on behalf of the base stops when the base is interrupted") {
+		REQUIRE_NO_FAIL(
+		    con.Query("CREATE MACRO slow_deleter(h) AS TABLE SELECT sum(i) AS s FROM range(100000000000) t(i)"));
+		auto start = std::chrono::steady_clock::now();
+		std::thread interrupter([&]() {
+			std::this_thread::sleep_for(std::chrono::milliseconds(200));
+			con.Interrupt();
+		});
+		auto result = con.Query("FROM destroy_external_resource('slow_deleter', 1)");
+		interrupter.join();
+		REQUIRE(result->HasError());
+		REQUIRE(std::chrono::steady_clock::now() - start < std::chrono::seconds(30));
 	}
 }
 

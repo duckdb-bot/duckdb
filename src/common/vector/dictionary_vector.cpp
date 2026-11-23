@@ -74,7 +74,7 @@ void DictionaryBuffer::ToUnifiedFormat(UnifiedVectorFormat &format) const {
 		entry->data.Flatten();
 	}
 	format.data = FlatVector::GetData(entry->data);
-	format.validity = FlatVector::ValidityMutable(entry->data);
+	format.validity = FlatVector::Validity(entry->data);
 }
 
 buffer_ptr<VectorBuffer> DictionaryBuffer::SliceWithCache(SelCache &cache, const LogicalType &type,
@@ -109,14 +109,14 @@ buffer_ptr<VectorBuffer> DictionaryBuffer::SliceInternal(const LogicalType &type
 		for (idx_t i = 0; i < count; i++) {
 			new_sel.set_index(i, sel_vector.get_index(offset + i));
 		}
-		return make_uniq<DictionaryBuffer>(new_sel, count, entry);
+		return make_buffer<DictionaryBuffer>(new_sel, count, entry);
 	}
 	if (offset == 0) {
 		// for offset = 0 all we have to do is update the count - so just create a new buffer
-		return make_uniq<DictionaryBuffer>(sel_data, end, entry);
+		return make_buffer<DictionaryBuffer>(sel_data, end, entry);
 	}
 	SelectionVector sliced_sel(sel_vector.data() + offset, count);
-	auto result = make_uniq<DictionaryBuffer>(sliced_sel, count, entry);
+	auto result = make_buffer<DictionaryBuffer>(sliced_sel, count, entry);
 	result->AddAuxiliaryData(make_uniq<SelectionDataHolder>(sel_data));
 	return result;
 }
@@ -130,6 +130,11 @@ buffer_ptr<VectorBuffer> DictionaryBuffer::SliceInternal(const LogicalType &type
 	auto sliced_dictionary = GetSelVector().Slice(sel, count);
 	auto new_buffer = make_buffer<DictionaryBuffer>(std::move(sliced_dictionary), count, entry);
 	return new_buffer;
+}
+
+buffer_ptr<VectorBuffer> DictionaryBuffer::ConstantReferenceInternal(const LogicalType &type, idx_t index,
+                                                                     count_t count) const {
+	return ConstantReference(entry->data, sel_vector.get_index(index), count);
 }
 
 Value DictionaryBuffer::GetValue(const LogicalType &type, idx_t index) const {
@@ -162,7 +167,7 @@ buffer_ptr<VectorBuffer> DictionaryBuffer::FlattenSliceInternal(const LogicalTyp
 	auto &sel = sel_ref.get();
 
 	// flatten the child using the selection vector
-	return entry->data.BufferMutable().FlattenSlice(type, sel, count);
+	return entry->data.Buffer().FlattenSlice(type, sel, count);
 }
 
 buffer_ptr<DictionaryEntry> DictionaryVector::CreateReusableDictionary(const LogicalType &type, const idx_t &size) {

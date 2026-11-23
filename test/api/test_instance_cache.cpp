@@ -608,9 +608,12 @@ TEST_CASE("Test the instance cache after an on_create failure that keeps a conne
 		std::promise<void> waiter_returned;
 		auto waiter_returned_future = waiter_returned.get_future();
 		std::thread waiter_thread;
+		bool waiter_holds_entry = false;
 		auto failing_on_create_with_waiter = [&](DuckDB &created) {
 			kept_con = make_uniq<Connection>(created);
-			// the waiter finds the entry and waits for the callback, the sleep gives it time to get there
+			// the waiter holds the entry once it has found it, and waits for this callback to end from then on
+			auto &entry = DBConfig::GetConfig(*created.instance).db_cache_entry;
+			auto holders_before = entry.use_count();
 			waiter_thread = std::thread([&]() {
 				try {
 					DBConfig waiter_config;
@@ -620,20 +623,32 @@ TEST_CASE("Test the instance cache after an on_create failure that keeps a conne
 				}
 				waiter_returned.set_value();
 			});
-			std::this_thread::sleep_for(std::chrono::milliseconds(100));
+			auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+			while (entry.use_count() <= holders_before && std::chrono::steady_clock::now() < deadline) {
+				std::this_thread::yield();
+			}
+			waiter_holds_entry = entry.use_count() > holders_before;
 			throw InvalidInputException("on_create failed on purpose");
 		};
-		REQUIRE_THROWS_WITH(instance_cache.GetOrCreateInstance(path, config, true, failing_on_create_with_waiter),
-		                    Catch::Contains("on_create failed on purpose"));
-		REQUIRE(kept_con);
-		weak_ptr<DatabaseInstance> failed_instance = kept_con->context->db;
-
-		WaitForBackgroundCall(waiter_returned_future, waiter, waiter_thread, release_kept_connection);
+		// the outcome is checked after the waiter is joined, a failing assertion must not unwind past a joinable thread
+		string creator_error;
+		try {
+			instance_cache.GetOrCreateInstance(path, config, true, failing_on_create_with_waiter);
+		} catch (std::exception &ex) {
+			creator_error = ex.what();
+		}
+		if (waiter_thread.joinable()) {
+			WaitForBackgroundCall(waiter_returned_future, waiter, waiter_thread, release_kept_connection);
+		}
+		REQUIRE_THAT(creator_error, Catch::Contains("on_create failed on purpose"));
+		REQUIRE(waiter_holds_entry);
 		REQUIRE(!waiter.timed_out);
 		if (waiter.error) {
 			std::rethrow_exception(waiter.error);
 		}
 		REQUIRE(waiter.db);
+		REQUIRE(kept_con);
+		weak_ptr<DatabaseInstance> failed_instance = kept_con->context->db;
 		REQUIRE(waiter.db->instance != failed_instance.lock());
 		REQUIRE_NO_FAIL(Connection(*waiter.db).Query("SELECT 42"));
 		auto found = instance_cache.GetInstance(path, config);

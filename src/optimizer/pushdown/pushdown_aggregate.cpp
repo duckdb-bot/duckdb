@@ -41,7 +41,7 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownAggregate(unique_ptr<Logical
 
 	// pushdown into AGGREGATE and GROUP BY
 	// we cannot push expressions that refer to the aggregate
-	FilterPushdown child_pushdown(optimizer, convert_mark_joins, projection_mode);
+	FilterPushdown child_pushdown(optimizer, projection_mode);
 	for (idx_t i = 0; i < filters.size(); i++) {
 		auto &f = *filters[i];
 		if (f.bindings.find(aggr.aggregate_index) != f.bindings.end()) {
@@ -82,7 +82,8 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownAggregate(unique_ptr<Logical
 		if (!can_pushdown_filter) {
 			continue;
 		}
-		if (IsVolatile(aggr, *f.filter)) {
+		if (f.filter->IsVolatile() || IsVolatile(aggr, *f.filter)) {
+			// a volatile filter is evaluated once per group, not once per input row
 			continue;
 		}
 		// no aggregate! we can push this down

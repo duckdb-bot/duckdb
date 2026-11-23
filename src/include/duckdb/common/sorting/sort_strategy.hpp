@@ -13,6 +13,7 @@
 namespace duckdb {
 
 class ParallelHyperLogLogLocalState;
+class TupleDataCollection;
 
 class SortStrategy {
 public:
@@ -24,9 +25,10 @@ public:
 	                                        const vector<BoundOrderByNode> &order_bys, const Types &payload_types,
 	                                        const vector<unique_ptr<BaseStatistics>> &partitions_stats,
 	                                        const OperatorPartitionInfo &partition_info, idx_t estimated_cardinality,
-	                                        bool require_payload = false);
+	                                        bool require_payload = false,
+	                                        optional_idx partition_limit = optional_idx());
 
-	explicit SortStrategy(const Types &input_types);
+	explicit SortStrategy(const Types &input_types, optional_idx partition_limit = optional_idx());
 	virtual ~SortStrategy() = default;
 
 public:
@@ -73,6 +75,11 @@ public:
 	using ChunkRows = vector<ChunkRow>;
 	virtual const ChunkRows &GetHashGroups(GlobalSourceState &global_state) const = 0;
 
+	//! Takes the buffered rows of a hash bin that is known to hold a single partition key out of the strategy, so that
+	//! the caller can read them directly instead of sorting or materializing the bin (which must not happen
+	//! afterwards). Call after Finalize and GetGlobalSourceState. The default knows no such bins.
+	virtual unique_ptr<TupleDataCollection> TryTakeSinglePartition(idx_t hash_bin, GlobalSourceState &source) const;
+
 	virtual void RegisterHyperLogLog(LocalSinkState &local_state, ParallelHyperLogLogLocalState &hll_state) const;
 
 public:
@@ -82,6 +89,8 @@ public:
 	vector<column_t> scan_ids;
 	//! Key columns in the sorted output. Needed for prefix computations.
 	vector<column_t> sort_ids;
+	//! The maximum number of rows in a partition
+	optional_idx partition_limit;
 };
 
 } // namespace duckdb

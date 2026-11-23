@@ -167,7 +167,7 @@ idx_t StrfTimeFormat::GetLength(date_t date, int32_t data[8], const char *tz_nam
 	return size;
 }
 
-idx_t StrfTimeFormat::GetLength(date_t date, dtime_t time, int32_t utc_offset, const char *tz_name) {
+idx_t StrfTimeFormat::GetLength(date_t date, dtime_t time, int32_t utc_offset, const char *tz_name) const {
 	if (!var_length_specifiers.empty()) {
 		int32_t data[8];
 		Date::Convert(date, data[0], data[1], data[2]);
@@ -237,6 +237,7 @@ char *StrfTimeFormat::WriteYear(char *target, int32_t year) const {
 // write a value in the range of 0..999999... padded to the given number of digits
 char *StrfTimeFormat::WritePadded(char *target, uint32_t value, size_t padding) const {
 	D_ASSERT(padding > 1);
+	auto end = target + padding;
 	if (padding % 2) {
 		uint32_t decimals = value % 1000u;
 		WritePadded3(target + padding - 3, decimals);
@@ -248,7 +249,7 @@ char *StrfTimeFormat::WritePadded(char *target, uint32_t value, size_t padding) 
 		WritePadded2(target + padding - 2 * (i + 1), decimals);
 		value /= 100;
 	}
-	return target + padding;
+	return end;
 }
 
 bool StrfTimeFormat::IsDateSpecifier(StrTimeSpecifier specifier) {
@@ -456,13 +457,13 @@ void StrfTimeFormat::FormatStringNS(date_t date, int32_t data[8], const char *tz
 	memcpy(target, literals[i].c_str(), literals[i].size());
 }
 
-void StrfTimeFormat::FormatString(date_t date, int32_t data[8], const char *tz_name, char *target) {
+void StrfTimeFormat::FormatString(date_t date, int32_t data[8], const char *tz_name, char *target) const {
 	data[6] *= Interval::NANOS_PER_MICRO;
 	FormatStringNS(date, data, tz_name, target);
 	data[6] /= Interval::NANOS_PER_MICRO;
 }
 
-void StrfTimeFormat::FormatString(date_t date, dtime_t time, char *target) {
+void StrfTimeFormat::FormatString(date_t date, dtime_t time, char *target) const {
 	int32_t data[8]; // year, month, day, hour, min, sec, µs, offset
 	Date::Convert(date, data[0], data[1], data[2]);
 	Time::Convert(time, data[3], data[4], data[5], data[6]);
@@ -671,7 +672,7 @@ string StrTimeFormat::ParseFormatSpecifier(const string &format_string, StrTimeF
 	return string();
 }
 
-void StrfTimeFormat::ConvertDateVector(const Vector &input, Vector &result) {
+void StrfTimeFormat::ConvertDateVector(const Vector &input, Vector &result) const {
 	D_ASSERT(input.GetType().id() == LogicalTypeId::DATE);
 	D_ASSERT(result.GetType().id() == LogicalTypeId::VARCHAR);
 	auto &heap = StringVector::GetStringHeap(result);
@@ -737,7 +738,7 @@ string_t StrfTimeFormat::ConvertTimestampValue(const timestamp_ns_t &input, Stri
 	}
 }
 
-void StrfTimeFormat::ConvertTimestampVector(const Vector &input, Vector &result) {
+void StrfTimeFormat::ConvertTimestampVector(const Vector &input, Vector &result) const {
 	D_ASSERT(input.GetType().id() == LogicalTypeId::TIMESTAMP || input.GetType().id() == LogicalTypeId::TIMESTAMP_TZ);
 	D_ASSERT(result.GetType().id() == LogicalTypeId::VARCHAR);
 	auto &heap = StringVector::GetStringHeap(result);
@@ -745,7 +746,7 @@ void StrfTimeFormat::ConvertTimestampVector(const Vector &input, Vector &result)
 	                                              [&](timestamp_t ts) { return ConvertTimestampValue(ts, heap); });
 }
 
-void StrfTimeFormat::ConvertTimestampNSVector(const Vector &input, Vector &result) {
+void StrfTimeFormat::ConvertTimestampNSVector(const Vector &input, Vector &result) const {
 	D_ASSERT(input.GetType().id() == LogicalTypeId::TIMESTAMP_NS ||
 	         input.GetType().id() == LogicalTypeId::TIMESTAMP_TZ_NS);
 	D_ASSERT(result.GetType().id() == LogicalTypeId::VARCHAR);
@@ -1403,9 +1404,16 @@ bool StrpTimeFormat::Parse(const char *data, size_t size, ParseResult &result, b
 	}
 	case StrTimeSpecifier::DAY_OF_YEAR_PADDED:
 	case StrTimeSpecifier::DAY_OF_YEAR_DECIMAL: {
-		auto yeardate = Date::FromDate(result_data[0], 1, 1);
+		auto year = result_data[0];
+		auto yeardate = Date::FromDate(year, 1, 1);
 		yeardate += UnsafeNumericCast<int32_t>(yearday - 1);
 		Date::Convert(yeardate, result_data[0], result_data[1], result_data[2]);
+		if (result_data[0] != year) {
+			// day 366 of a year that is not a leap year
+			error_message = "Year day out of range for the year";
+			error_position = 0;
+			return false;
+		}
 		break;
 	}
 	case StrTimeSpecifier::DAY_OF_MONTH_PADDED:
@@ -1475,6 +1483,10 @@ date_t StrpTimeFormat::ParseResult::ToDate() {
 }
 
 bool StrpTimeFormat::ParseResult::TryToDate(date_t &result) {
+	if (is_special) {
+		result = special;
+		return true;
+	}
 	return Date::TryFromDate(data[0], data[1], data[2], result);
 }
 
@@ -1518,6 +1530,10 @@ timestamp_t StrpTimeFormat::ParseResult::ToTimestamp() {
 }
 
 bool StrpTimeFormat::ParseResult::TryToTimestamp(timestamp_t &result) {
+	if (is_special) {
+		result = ToTimestamp();
+		return true;
+	}
 	date_t date;
 	if (!TryToDate(date)) {
 		return false;
@@ -1540,11 +1556,10 @@ timestamp_ns_t StrpTimeFormat::ParseResult::ToTimestampNS() {
 		// Don't use rounded µs
 		const auto date = ToDate();
 		const auto time = ToTimeNS();
-		if (!TryMultiplyOperator::Operation<int64_t, int64_t, int64_t>(date.days, Interval::NANOS_PER_DAY,
-		                                                               result.value)) {
+		if (!Timestamp::TryCombineUnits(date.days, time, Interval::NANOS_PER_DAY, result.value)) {
 			throw ConversionException("Date out of nanosecond range: %d-%d-%d", data[0], data[1], data[2]);
 		}
-		if (!TryAddOperator::Operation<int64_t, int64_t, int64_t>(result.value, time, result.value)) {
+		if (!result.IsFinite()) {
 			throw ConversionException("Overflow exception in date/time -> timestamp_ns conversion");
 		}
 	}
@@ -1553,6 +1568,10 @@ timestamp_ns_t StrpTimeFormat::ParseResult::ToTimestampNS() {
 }
 
 bool StrpTimeFormat::ParseResult::TryToTimestampNS(timestamp_ns_t &result) {
+	if (is_special) {
+		result = ToTimestampNS();
+		return true;
+	}
 	date_t date;
 	if (!TryToDate(date)) {
 		return false;
@@ -1560,10 +1579,7 @@ bool StrpTimeFormat::ParseResult::TryToTimestampNS(timestamp_ns_t &result) {
 
 	// Don't use rounded µs
 	const auto time = ToTimeNS();
-	if (!TryMultiplyOperator::Operation<int64_t, int64_t, int64_t>(date.days, Interval::NANOS_PER_DAY, result.value)) {
-		return false;
-	}
-	if (!TryAddOperator::Operation<int64_t, int64_t, int64_t>(result.value, time, result.value)) {
+	if (!Timestamp::TryCombineUnits(date.days, time, Interval::NANOS_PER_DAY, result.value)) {
 		return false;
 	}
 	return result.IsFinite();

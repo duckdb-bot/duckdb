@@ -1979,17 +1979,24 @@ bool StringValueScanner::StartsWithLineFeedOfSplitNewLine() const {
 		return false;
 	}
 	if (iterator.pos.buffer_pos > 0) {
-		return buffer_handle_ptr[iterator.pos.buffer_pos - 1] == '\r';
+		const char byte_before = buffer_handle_ptr[iterator.pos.buffer_pos - 1];
+		return byte_before == '\r' ||
+		       byte_before == state_machine->dialect_options.state_machine_options.quote.GetValue();
 	}
 	if (iterator.pos.buffer_idx == 0) {
 		return false;
 	}
-	auto previous_buffer = buffer_manager->GetBuffer(iterator.pos.buffer_idx - 1);
-	if (!previous_buffer || previous_buffer->actual_size == 0) {
-		// without the byte before, the line feed stays with the thread before, as it did so far
+	if (!buffer_manager->HasKnownBufferRanges()) {
+		// compressed or piped input, the buffer before may be gone, so the line feed stays with the thread before
 		return true;
 	}
-	return previous_buffer->Ptr()[previous_buffer->actual_size - 1] == '\r';
+	auto previous_buffer = buffer_manager->GetBuffer(iterator.pos.buffer_idx - 1);
+	if (!previous_buffer || previous_buffer->actual_size == 0) {
+		return true;
+	}
+	const char byte_before = previous_buffer->Ptr()[previous_buffer->actual_size - 1];
+	// a quote before the line feed can close a value that an invalid line feed follows, which the thread before reads
+	return byte_before == '\r' || byte_before == state_machine->dialect_options.state_machine_options.quote.GetValue();
 }
 
 void StringValueScanner::SetStart() {

@@ -339,6 +339,8 @@ struct ValidRowInfo {
 	idx_t end_buffer_idx;
 	idx_t end_pos;
 	bool last_state_quote = false;
+	//! The search for the row end passed a line break inside a quoted value
+	bool quoted_new_line = false;
 };
 //! Our dialect scanner basically goes over the CSV and actually parses the values to a DuckDB vector of string_t
 class StringValueScanner : public BaseScanner {
@@ -423,8 +425,8 @@ private:
 	//! Main function, sets the correct start
 	void SetStart();
 	//! From a given initial state, it skips until we reach the until_state
-	bool SkipUntilState(CSVState initial_state, CSVState until_state, CSVIterator &current_iterator,
-	                    bool &quoted) const;
+	bool SkipUntilState(CSVState initial_state, CSVState until_state, CSVIterator &current_iterator, bool &quoted,
+	                    bool &quoted_new_line) const;
 	//! If the current row we found is valid
 	bool IsRowValid(CSVIterator &current_iterator) const;
 	ValidRowInfo TryRow(CSVState state, idx_t start_pos, idx_t end_pos) const;

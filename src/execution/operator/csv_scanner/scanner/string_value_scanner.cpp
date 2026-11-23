@@ -1526,6 +1526,13 @@ void StringValueScanner::ProcessOverBufferValue() {
 					}
 				}
 				state_machine->Transition(states, buffer_handle_ptr[iterator.pos.buffer_pos]);
+				if (result.IsCommentSet(result) && states.IsState(CSVState::RECORD_SEPARATOR)) {
+					// the line feed ends a comment that reached the buffer end, the row behind it is read as usual
+					result.UnsetComment(result, iterator.pos.buffer_pos);
+					lines_read++;
+					iterator.pos.buffer_pos++;
+					break;
+				}
 				iterator.pos.buffer_pos++;
 			} // Avoid double-counting when \r\r\n line endings split across buffer boundary: first \r triggers AddRow
 			  // in previous buffer, remaining \r\n is here. Check first consumed char is \r (not \n) to avoid
@@ -1852,6 +1859,10 @@ bool StringValueScanner::SkipUntilState(CSVState initial_state, CSVState until_s
 			skipper.SkipToStop(state_machine_strict->transition_array.skip_quoted, to_pos,
 			                   current_iterator.pos.buffer_pos);
 		}
+		if (current_state.IsState(CSVState::COMMENT)) {
+			skipper.SkipToStop(state_machine_strict->transition_array.skip_comment, to_pos,
+			                   current_iterator.pos.buffer_pos);
+		}
 		if ((current_state.IsState(CSVState::DELIMITER) || current_state.IsState(CSVState::CARRIAGE_RETURN) ||
 		     current_state.IsState(CSVState::RECORD_SEPARATOR)) &&
 		    first_column) {
@@ -1969,10 +1980,24 @@ void StringValueScanner::SetStart() {
 		state_machine_strict =
 		    make_shared_ptr<CSVStateMachine>(state_machine_cache.Get(state_options), state_machine->options);
 	}
-	// At this point we have 3 options:
+	// At this point we have 4 options:
 	// 1. We are at the start of a valid line
 	ValidRowInfo best_row = TryRow(CSVState::STANDARD_NEWLINE, iterator.pos.buffer_pos, iterator.GetEndPos());
-	// 2. We are in the middle of a quoted value
+	// 2. We are in the middle of a comment line, which ends at a line break that need not end a row of the dialect. In
+	// the \r\n dialect a line feed that starts the range belongs to the thread before, which reads the row behind it
+	// too
+	const bool starts_with_line_feed =
+	    iterator.pos.buffer_pos < cur_buffer_handle->actual_size && buffer_handle_ptr[iterator.pos.buffer_pos] == '\n';
+	const bool carry_on_new_line =
+	    state_machine->dialect_options.state_machine_options.new_line == NewLineIdentifier::CARRY_ON;
+	if (state_machine->dialect_options.state_machine_options.comment.GetValue() != '\0' &&
+	    !(carry_on_new_line && starts_with_line_feed)) {
+		auto comment_row = TryRow(CSVState::COMMENT, iterator.pos.buffer_pos, iterator.GetEndPos());
+		if (comment_row.is_valid && (!best_row.is_valid || comment_row.start_pos < best_row.start_pos)) {
+			best_row = comment_row;
+		}
+	}
+	// 3. We are in the middle of a quoted value
 	if (state_machine->dialect_options.state_machine_options.quote.GetValue() != '\0') {
 		idx_t end_pos = iterator.GetEndPos();
 		if (best_row.is_valid && best_row.end_buffer_idx == iterator.pos.buffer_idx) {
@@ -1990,7 +2015,7 @@ void StringValueScanner::SetStart() {
 			best_row = quoted_row;
 		}
 	}
-	// 3. We are in an escaped value
+	// 4. We are in an escaped value
 	if (!best_row.is_valid && state_machine->dialect_options.state_machine_options.quote.GetValue() != '\0') {
 		auto escape_row = TryRow(CSVState::ESCAPE, iterator.pos.buffer_pos, iterator.GetEndPos());
 		if (escape_row.is_valid) {
@@ -2022,7 +2047,7 @@ void StringValueScanner::SetStart() {
 		}
 	}
 
-	// 4. We have an error, if we have an error, we let life go on, the scanner will either ignore it
+	// 5. We have an error, if we have an error, we let life go on, the scanner will either ignore it
 	// or throw.
 	result.last_position = {iterator.pos.buffer_idx, iterator.pos.buffer_pos, result.buffer_size};
 	start_pos = iterator.GetGlobalCurrentPos();

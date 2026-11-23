@@ -3653,6 +3653,7 @@ duckdb::RebindQueryInfo ShellEstimateState::OnFinalizePrepare(duckdb::ClientCont
                                                               duckdb::PreparedStatementMode mode) {
 	if (state.estimate_pending) {
 		state.estimate_pending = false;
+		// the plan is read inside the transaction it was bound in, which a database that read_duckdb attached needs
 		try {
 			state.PrintQueryEstimate(prepared);
 		} catch (std::exception &) {

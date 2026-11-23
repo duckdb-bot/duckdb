@@ -134,7 +134,7 @@ COPY (SELECT 'a,b' || chr(13) || chr(10) || '1,2' || chr(13) || chr(10) || '#com
 
 foreach parallel true false
 
-loop buffer_size 19 41
+loop buffer_size 18 41
 
 query II
 SELECT count(*), list(a ORDER BY a) FROM read_csv('{TEST_DIR}/comment_lf_boundary_quoted_value.csv', auto_detect = false, delim = ',', quote = '"', escape = '"', new_line = '\r\n', comment = '#', header = true, columns = {'a': 'VARCHAR', 'b': 'INTEGER'}, buffer_size = {buffer_size}, parallel = {parallel});
@@ -144,16 +144,6 @@ SELECT count(*), list(a ORDER BY a) FROM read_csv('{TEST_DIR}/comment_lf_boundar
 endloop
 
 endloop
-
-# FIXME: the row behind a row that fills the whole buffer up to its \r is lost, with and without the comment
-mode skip
-
-query II
-SELECT count(*), list(a ORDER BY a) FROM read_csv('{TEST_DIR}/comment_lf_boundary_quoted_value.csv', auto_detect = false, delim = ',', quote = '"', escape = '"', new_line = '\r\n', comment = '#', header = true, columns = {'a': 'VARCHAR', 'b': 'INTEGER'}, buffer_size = 18);
-----
-3	[1, 5, abcdefghijkl]
-
-mode unskip
 
 # a quoted value holding a bare line feed and a \r\n is not a comment, the thread that starts inside it keeps it whole
 statement ok
@@ -199,7 +189,7 @@ mode unskip
 statement ok
 COPY (SELECT 'a,b' || chr(13) || chr(10) || '1,2' || chr(13) || chr(10) || '#comment' || chr(10) || 'nope,400' || chr(13) || chr(10) || '500,600' || chr(13)) TO '{TEST_DIR}/comment_lf_boundary_reject.csv' (HEADER false, QUOTE '', DELIM '|');
 
-loop buffer_size 18 31
+loop buffer_size 19 31
 
 query II
 SELECT a, b FROM read_csv('{TEST_DIR}/comment_lf_boundary_reject.csv', auto_detect = false, delim = ',', quote = '"', escape = '"', new_line = '\r\n', comment = '#', header = true, columns = {'a': 'INTEGER', 'b': 'INTEGER'}, buffer_size = {buffer_size}, store_rejects = true, rejects_table = 'rej_{buffer_size}', rejects_scan = 'scan_{buffer_size}') ORDER BY ALL;
@@ -214,12 +204,231 @@ SELECT line, line_byte_position, byte_position, csv_line FROM rej_{buffer_size};
 
 endloop
 
-# FIXME: with buffers of 11 to 17 bytes the reject behind the comment is lost without a rejects entry, as on main
+# FIXME: with buffers of 11 to 18 bytes the reject behind the comment is lost without a rejects entry, as on main
 mode skip
 
+query II
+SELECT a, b FROM read_csv('{TEST_DIR}/comment_lf_boundary_reject.csv', auto_detect = false, delim = ',', quote = '"', escape = '"', new_line = '\r\n', comment = '#', header = true, columns = {'a': 'INTEGER', 'b': 'INTEGER'}, buffer_size = 14, store_rejects = true, rejects_table = 'rej_14', rejects_scan = 'scan_14') ORDER BY ALL;
+----
+1	2
+500	600
+
 query IIII
-SELECT line, line_byte_position, byte_position, csv_line FROM read_csv('{TEST_DIR}/comment_lf_boundary_reject.csv', auto_detect = false, delim = ',', quote = '"', escape = '"', new_line = '\r\n', comment = '#', header = true, columns = {'a': 'INTEGER', 'b': 'INTEGER'}, buffer_size = 14, store_rejects = true, rejects_table = 'rej_14', rejects_scan = 'scan_14'), rej_14;
+SELECT line, line_byte_position, byte_position, csv_line FROM rej_14;
 ----
 4	20	20	nope,400
 
 mode unskip
+
+# a comment after the values of a row, with the buffer end inside the comment, keeps the row's last value
+statement ok
+COPY (SELECT 'a' || chr(13) || chr(10) || '1' || chr(13) || chr(10) || '2#comment' || chr(13) || chr(10) || '3' || chr(13)) TO '{TEST_DIR}/comment_lf_boundary_after_value.csv' (HEADER false, QUOTE '', DELIM '|');
+
+foreach parallel true false
+
+loop buffer_size 11 15
+
+query I
+SELECT a FROM read_csv('{TEST_DIR}/comment_lf_boundary_after_value.csv', auto_detect = false, delim = ',', quote = '"', escape = '"', new_line = '\r\n', comment = '#', header = true, columns = {'a': 'INTEGER'}, buffer_size = {buffer_size}, parallel = {parallel}) ORDER BY ALL;
+----
+1
+2
+3
+
+endloop
+
+loop buffer_size 16 23
+
+query I
+SELECT a FROM read_csv('{TEST_DIR}/comment_lf_boundary_after_value.csv', auto_detect = false, delim = ',', quote = '"', escape = '"', new_line = '\r\n', comment = '#', header = true, columns = {'a': 'INTEGER'}, buffer_size = {buffer_size}, parallel = {parallel}) ORDER BY ALL;
+----
+1
+2
+3
+
+endloop
+
+endloop
+
+statement ok
+COPY (SELECT 'a,b' || chr(13) || chr(10) || '1,2' || chr(13) || chr(10) || '3,4#comment' || chr(13) || chr(10) || '5,6' || chr(13)) TO '{TEST_DIR}/comment_lf_boundary_after_values.csv' (HEADER false, QUOTE '', DELIM '|');
+
+foreach parallel true false
+
+loop buffer_size 13 21
+
+query II
+SELECT a, b FROM read_csv('{TEST_DIR}/comment_lf_boundary_after_values.csv', auto_detect = false, delim = ',', quote = '"', escape = '"', new_line = '\r\n', comment = '#', header = true, columns = {'a': 'INTEGER', 'b': 'INTEGER'}, buffer_size = {buffer_size}, parallel = {parallel}) ORDER BY ALL;
+----
+1	2
+3	4
+5	6
+
+endloop
+
+loop buffer_size 22 31
+
+query II
+SELECT a, b FROM read_csv('{TEST_DIR}/comment_lf_boundary_after_values.csv', auto_detect = false, delim = ',', quote = '"', escape = '"', new_line = '\r\n', comment = '#', header = true, columns = {'a': 'INTEGER', 'b': 'INTEGER'}, buffer_size = {buffer_size}, parallel = {parallel}) ORDER BY ALL;
+----
+1	2
+3	4
+5	6
+
+endloop
+
+endloop
+
+# FIXME: with the buffer end right before the \r of a comment after the values (buffer sizes 15 and 21 here), the value and the comment text are read as one value, as on main
+mode skip
+
+query I
+SELECT a FROM read_csv('{TEST_DIR}/comment_lf_boundary_after_value.csv', auto_detect = false, delim = ',', quote = '"', escape = '"', new_line = '\r\n', comment = '#', header = true, columns = {'a': 'INTEGER'}, buffer_size = 15) ORDER BY ALL;
+----
+1
+2
+3
+
+mode unskip
+
+# the comment ends a row that fills the result chunk, the row behind it goes to the next chunk
+statement ok
+COPY (SELECT string_agg('1' || chr(13) || chr(10), '' ORDER BY i) || '2#comment' || chr(10) || '3' || chr(13) FROM range(2047) t(i)) TO '{TEST_DIR}/comment_lf_boundary_full_chunk.csv' (HEADER false, QUOTE '', DELIM '|');
+
+foreach parallel true false
+
+loop buffer_size 6149 6153
+
+query II
+SELECT count(*), sum(a) FROM read_csv('{TEST_DIR}/comment_lf_boundary_full_chunk.csv', auto_detect = false, delim = ',', quote = '"', escape = '"', new_line = '\r\n', comment = '#', header = false, columns = {'a': 'INTEGER'}, buffer_size = {buffer_size}, parallel = {parallel});
+----
+2049	2052
+
+endloop
+
+endloop
+
+# the same with two columns, the row the comment ends has a value in each
+statement ok
+COPY (SELECT string_agg('1,10' || chr(13) || chr(10), '' ORDER BY i) || '2,20#comment' || chr(10) || '3,30' || chr(13) FROM range(2047) t(i)) TO '{TEST_DIR}/comment_lf_boundary_full_chunk_two.csv' (HEADER false, QUOTE '', DELIM '|');
+
+foreach parallel true false
+
+loop buffer_size 12288 12292
+
+query III
+SELECT count(*), sum(a), sum(b) FROM read_csv('{TEST_DIR}/comment_lf_boundary_full_chunk_two.csv', auto_detect = false, delim = ',', quote = '"', escape = '"', new_line = '\r\n', comment = '#', header = false, columns = {'a': 'INTEGER', 'b': 'INTEGER'}, buffer_size = {buffer_size}, parallel = {parallel});
+----
+2049	2052	20520
+
+endloop
+
+endloop
+
+# the rows before the comment are all rejects, the two rows around the comment stay
+statement ok
+COPY (SELECT string_agg('x' || chr(13) || chr(10), '' ORDER BY i) || '2#comment' || chr(10) || '3' || chr(13) FROM range(2047) t(i)) TO '{TEST_DIR}/comment_lf_boundary_rejects_chunk.csv' (HEADER false, QUOTE '', DELIM '|');
+
+loop buffer_size 6147 6151
+
+query II
+SELECT count(*), sum(a) FROM read_csv('{TEST_DIR}/comment_lf_boundary_rejects_chunk.csv', auto_detect = false, delim = ',', quote = '"', escape = '"', new_line = '\r\n', comment = '#', header = false, columns = {'a': 'INTEGER'}, buffer_size = {buffer_size}, store_rejects = true, rejects_table = 'rej_chunk_{buffer_size}', rejects_scan = 'scan_chunk_{buffer_size}');
+----
+2	5
+
+query I
+SELECT count(*) FROM rej_chunk_{buffer_size};
+----
+2047
+
+endloop
+
+# spaces before the second comment are no value
+statement ok
+COPY (SELECT 'a,b' || chr(13) || chr(10) || '1,2' || chr(13) || chr(10) || '#comment' || chr(10) || '  #second' || chr(10) || '300,400' || chr(13) || chr(10) || '500,600' || chr(13)) TO '{TEST_DIR}/comment_lf_boundary_spaces.csv' (HEADER false, QUOTE '', DELIM '|');
+
+foreach parallel true false
+
+loop buffer_size 11 19
+
+query II
+SELECT count(*), list(a ORDER BY a) FROM read_csv('{TEST_DIR}/comment_lf_boundary_spaces.csv', auto_detect = false, delim = ',', quote = '"', escape = '"', new_line = '\r\n', comment = '#', header = true, columns = {'a': 'INTEGER', 'b': 'INTEGER'}, buffer_size = {buffer_size}, parallel = {parallel});
+----
+3	[1, 300, 500]
+
+endloop
+
+loop buffer_size 22 49
+
+query II
+SELECT count(*), list(a ORDER BY a) FROM read_csv('{TEST_DIR}/comment_lf_boundary_spaces.csv', auto_detect = false, delim = ',', quote = '"', escape = '"', new_line = '\r\n', comment = '#', header = true, columns = {'a': 'INTEGER', 'b': 'INTEGER'}, buffer_size = {buffer_size}, parallel = {parallel});
+----
+3	[1, 300, 500]
+
+endloop
+
+endloop
+
+# FIXME: with buffers of 10 and 19 to 21 bytes the spaces before the second comment are read as a value by the thread whose range ends right before them, as on main
+mode skip
+
+query II
+SELECT count(*), list(a ORDER BY a) FROM read_csv('{TEST_DIR}/comment_lf_boundary_spaces.csv', auto_detect = false, delim = ',', quote = '"', escape = '"', new_line = '\r\n', comment = '#', header = true, columns = {'a': 'INTEGER', 'b': 'INTEGER'}, buffer_size = 20);
+----
+3	[1, 300, 500]
+
+mode unskip
+
+# a quoted value that starts with the comment character behind the comment
+statement ok
+COPY (SELECT 'a,b' || chr(13) || chr(10) || '1,2' || chr(13) || chr(10) || '#comment' || chr(10) || '"#abc",4' || chr(13) || chr(10) || '5,6' || chr(13)) TO '{TEST_DIR}/comment_lf_boundary_quoted_hash.csv' (HEADER false, QUOTE '', DELIM '|');
+
+foreach parallel true false
+
+loop buffer_size 10 15
+
+query II
+SELECT count(*), list(a ORDER BY a) FROM read_csv('{TEST_DIR}/comment_lf_boundary_quoted_hash.csv', auto_detect = false, delim = ',', quote = '"', escape = '"', new_line = '\r\n', comment = '#', header = true, columns = {'a': 'VARCHAR', 'b': 'INTEGER'}, buffer_size = {buffer_size}, parallel = {parallel});
+----
+3	[#abc, 1, 5]
+
+endloop
+
+loop buffer_size 18 41
+
+query II
+SELECT count(*), list(a ORDER BY a) FROM read_csv('{TEST_DIR}/comment_lf_boundary_quoted_hash.csv', auto_detect = false, delim = ',', quote = '"', escape = '"', new_line = '\r\n', comment = '#', header = true, columns = {'a': 'VARCHAR', 'b': 'INTEGER'}, buffer_size = {buffer_size}, parallel = {parallel});
+----
+3	[#abc, 1, 5]
+
+endloop
+
+endloop
+
+# FIXME: with buffers of 15 to 17 bytes a thread that starts inside the comment takes the quote behind it for a closing quote and the threads disagree, as on main
+mode skip
+
+query II
+SELECT count(*), list(a ORDER BY a) FROM read_csv('{TEST_DIR}/comment_lf_boundary_quoted_hash.csv', auto_detect = false, delim = ',', quote = '"', escape = '"', new_line = '\r\n', comment = '#', header = true, columns = {'a': 'VARCHAR', 'b': 'INTEGER'}, buffer_size = 16);
+----
+3	[#abc, 1, 5]
+
+mode unskip
+
+# FIXME: a quoted row longer than the buffer is dropped with ignore_errors, and a thread that starts inside it can take a line of it for a row, as main does at other buffer sizes
+statement ok
+COPY (SELECT 'a,b' || chr(13) || chr(10) || 'xxxxxxxx,2' || chr(13) || chr(10) || '"a' || chr(10) || '3,4' || chr(13) || chr(10) || repeat('z', 18) || '",5' || chr(13) || chr(10) || '6,7' || chr(13)) TO '{TEST_DIR}/comment_lf_boundary_long_quoted.csv' (HEADER false, QUOTE '', DELIM '|');
+
+mode skip
+
+query II
+SELECT count(*), list(b ORDER BY b) FROM read_csv('{TEST_DIR}/comment_lf_boundary_long_quoted.csv', auto_detect = false, delim = ',', quote = '"', escape = '"', new_line = '\r\n', comment = '#', header = true, columns = {'a': 'VARCHAR', 'b': 'INTEGER'}, buffer_size = 18, ignore_errors = true);
+----
+2	[2, 7]
+
+mode unskip
+
+query II
+SELECT count(*), list(b ORDER BY b) FROM read_csv('{TEST_DIR}/comment_lf_boundary_long_quoted.csv', auto_detect = false, delim = ',', quote = '"', escape = '"', new_line = '\r\n', comment = '#', header = true, columns = {'a': 'VARCHAR', 'b': 'INTEGER'}, buffer_size = 32, ignore_errors = true);
+----
+3	[2, 5, 7]

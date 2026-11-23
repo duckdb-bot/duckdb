@@ -1527,14 +1527,13 @@ void StringValueScanner::ProcessOverBufferValue() {
 				}
 				state_machine->Transition(states, buffer_handle_ptr[iterator.pos.buffer_pos]);
 				if (result.IsCommentSet(result) && states.IsState(CSVState::RECORD_SEPARATOR)) {
-					// the line feed ends a comment that reached the buffer end, the row behind it is read as usual
+					// the line feed ends a comment that reached the buffer end, the row behind it is the next
+					// thread's, which sees that the byte before its line feed is not a carriage return
 					result.UnsetComment(result, iterator.pos.buffer_pos);
 					lines_read++;
 					iterator.pos.buffer_pos++;
-					// the row starts in this buffer, and nothing of the comment is part of the joined value
 					result.last_position = {iterator.pos.buffer_idx, iterator.pos.buffer_pos, result.buffer_size};
-					j = 0;
-					break;
+					return;
 				}
 				iterator.pos.buffer_pos++;
 			} // Avoid double-counting when \r\r\n line endings split across buffer boundary: first \r triggers AddRow
@@ -1971,6 +1970,28 @@ ValidRowInfo StringValueScanner::TryRow(CSVState state, idx_t start_pos, idx_t e
 	        quoted};
 }
 
+bool StringValueScanner::StartsWithLineFeedOfSplitNewLine() const {
+	if (state_machine->dialect_options.state_machine_options.new_line != NewLineIdentifier::CARRY_ON) {
+		return false;
+	}
+	if (iterator.pos.buffer_pos >= cur_buffer_handle->actual_size ||
+	    buffer_handle_ptr[iterator.pos.buffer_pos] != '\n') {
+		return false;
+	}
+	if (iterator.pos.buffer_pos > 0) {
+		return buffer_handle_ptr[iterator.pos.buffer_pos - 1] == '\r';
+	}
+	if (iterator.pos.buffer_idx == 0) {
+		return false;
+	}
+	auto previous_buffer = buffer_manager->GetBuffer(iterator.pos.buffer_idx - 1);
+	if (!previous_buffer || previous_buffer->actual_size == 0) {
+		// without the byte before, the line feed stays with the thread before, as it did so far
+		return true;
+	}
+	return previous_buffer->Ptr()[previous_buffer->actual_size - 1] == '\r';
+}
+
 void StringValueScanner::SetStart() {
 	start_pos = iterator.GetGlobalCurrentPos();
 	if (iterator.first_one) {
@@ -2028,14 +2049,10 @@ void StringValueScanner::SetStart() {
 	}
 	// 4. We are in the middle of a comment line, which ends at a line break that need not end a row of the dialect. A
 	// quoted value can hold such a line break too, so a row found through quotes stays, as does a row whose search
-	// passed a quoted line break. In the \r\n dialect a line feed that starts the range belongs to the thread before,
-	// which reads the row behind it too
-	const bool starts_with_line_feed =
-	    iterator.pos.buffer_pos < cur_buffer_handle->actual_size && buffer_handle_ptr[iterator.pos.buffer_pos] == '\n';
-	const bool carry_on_new_line =
-	    state_machine->dialect_options.state_machine_options.new_line == NewLineIdentifier::CARRY_ON;
+	// passed a quoted line break. A line feed that completes a \r\n split over the buffer end belongs to the thread
+	// before, together with the row behind it
 	if (state_machine->dialect_options.state_machine_options.comment.GetValue() != '\0' && !best_row_from_quotes &&
-	    !(carry_on_new_line && starts_with_line_feed)) {
+	    !StartsWithLineFeedOfSplitNewLine()) {
 		auto comment_row = TryRow(CSVState::COMMENT, iterator.pos.buffer_pos, iterator.GetEndPos());
 		if (comment_row.is_valid &&
 		    (!best_row.is_valid || (comment_row.start_pos < best_row.start_pos && !best_row.quoted_new_line))) {

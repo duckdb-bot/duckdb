@@ -427,6 +427,8 @@ private:
 	//! From a given initial state, it skips until we reach the until_state
 	bool SkipUntilState(CSVState initial_state, CSVState until_state, CSVIterator &current_iterator, bool &quoted,
 	                    bool &quoted_new_line) const;
+	//! Whether the range starts with the line feed of a \r\n that a buffer end split, which the thread before reads
+	bool StartsWithLineFeedOfSplitNewLine() const;
 	//! If the current row we found is valid
 	bool IsRowValid(CSVIterator &current_iterator) const;
 	ValidRowInfo TryRow(CSVState state, idx_t start_pos, idx_t end_pos) const;

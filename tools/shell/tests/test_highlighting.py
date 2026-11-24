@@ -316,4 +316,23 @@ def test_no_color_can_be_overridden_by_highlight_on(shell):
     assert b'222' in output.replace(b'200+22', b'')
     assert SGR.search(output)
 
+# switching between the dark and light palettes leaves no color of the previous palette behind
+@pytest.mark.skipif(os.name == 'nt', reason="requires a POSIX pseudo-terminal")
+@pytest.mark.parametrize("arguments, colors, previous_colors", [
+    # from light to dark the prompt, the database name and the schema name take the dark palette's colors
+    (['-light-mode', '-cmd', '.highlight_mode dark'], [b'\x1b[38;5;208m', b'\x1b[38;5;172m', b'\x1b[38;5;39m'], [b'\x1b[38;5;166m', b'\x1b[38;5;25m']),
+    # dark to light
+    (['-dark-mode', '-cmd', '.highlight_mode light'], [b'\x1b[38;5;166m', b'\x1b[38;5;25m'], [b'\x1b[38;5;208m', b'\x1b[38;5;172m', b'\x1b[38;5;39m']),
+])
+def test_mode_switch_leaves_no_previous_colors(shell, arguments, colors, previous_colors):
+    status, output, flags = run_interactive_in_pty(shell, [*arguments, '-cmd', 'CREATE TABLE tbl(i INTEGER)'], [b".tables\n", b".quit\n"])
+    assert status == 0, output
+    assert output.count(b'\x1b]11;?') == 0
+    assert b'tbl' in output
+    for color in colors:
+        assert color in output
+    for color in previous_colors:
+        assert color not in output
+    check_terminal_restored(flags)
+
 # fmt: on

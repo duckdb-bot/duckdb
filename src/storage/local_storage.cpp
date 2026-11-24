@@ -500,7 +500,7 @@ void LocalTableStorage::AppendToDeleteIndexes(Context &context, Vector &row_ids,
 		return;
 	}
 	if (committed_count == delete_chunk.size()) {
-		delete_indexes.AppendToDeleteIndexes(delete_chunk, row_ids);
+		delete_indexes.AppendToDeleteIndexes(context, delete_chunk, row_ids);
 		return;
 	}
 

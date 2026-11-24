@@ -3564,6 +3564,7 @@ struct ScanEstimate {
 	idx_t rows;
 };
 
+//! Collect the scans of a plan: the table and table function scans that read data
 static void CollectScanEstimates(duckdb::ClientContext &context, const duckdb::PhysicalOperator &op,
                                  vector<ScanEstimate> &scans) {
 	if (op.type == duckdb::PhysicalOperatorType::TABLE_SCAN) {

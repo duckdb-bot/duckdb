@@ -166,10 +166,10 @@ public:
 	DUCKDB_API void SuppressInterrupts();
 	DUCKDB_API void CancelTransaction();
 
+	//! InterruptCheck that only reads the clock for the timeout every 256th call, for hot loops
+	DUCKDB_API void FastInterruptCheck() const;
 	//! Check for interrupt or timeout, throws InterruptException if triggered
 	DUCKDB_API void InterruptCheck() const;
-	//! InterruptCheck that reads the clock on every call, for waits that block between checks
-	DUCKDB_API void BlockingInterruptCheck() const;
 
 	//! Enable query profiling
 	DUCKDB_API void EnableProfiling();
@@ -252,9 +252,6 @@ public:
 	//! invalidates the active transaction according to the transaction invalidation policy, as fits statements that are
 	//! parsed to be run; without it the transaction stays usable, as fits statements that are only inspected.
 	DUCKDB_API StatementIterator IterateStatements(const string &query, bool apply_invalidation_policy = true);
-
-	//! Extract the logical plan of a query
-	DUCKDB_API unique_ptr<LogicalOperator> ExtractPlan(const string &query);
 
 	//! Runs a function with a valid transaction context, potentially starting a transaction if the context is in auto
 	//! commit mode.

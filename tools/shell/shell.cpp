@@ -60,6 +60,7 @@
 #include "duckdb/parser/statement/explain_statement.hpp"
 #include "duckdb/parser/statement/multi_statement.hpp"
 #include "duckdb/execution/operator/scan/physical_table_scan.hpp"
+#include "duckdb/execution/operator/projection/physical_tableinout_function.hpp"
 #include "duckdb/execution/physical_plan_generator.hpp"
 #include "duckdb/main/client_context_state.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
@@ -3564,24 +3565,41 @@ struct ScanEstimate {
 	idx_t rows;
 };
 
-//! Collect the scans of a plan: the table and table function scans that read data
+//! Add the estimate of a scan, the plan's or the table function's own when the plan carries none
+static void AddScanEstimate(duckdb::ClientContext &context, const duckdb::BoundTableFunction &function,
+                            optional_ptr<const duckdb::FunctionData> bind_data, idx_t estimated_cardinality,
+                            vector<ScanEstimate> &scans) {
+	ScanEstimate scan;
+	auto table = function.get_table_entry ? function.get_table_entry(bind_data) : nullptr;
+	scan.name = table ? table->name.GetIdentifierName() : StringUtil::Lower(function.GetName().GetIdentifierName());
+	scan.rows = estimated_cardinality;
+	if (scan.rows == 0 && function.cardinality && bind_data) {
+		// the plan carries no estimate (e.g. with the optimizer off), ask the function as the planner would
+		auto node_stats = function.cardinality(context, bind_data.get());
+		if (node_stats && node_stats->has_estimated_cardinality) {
+			scan.rows = node_stats->estimated_cardinality;
+		}
+	}
+	scans.push_back(std::move(scan));
+}
+
+//! Collect the scans of a plan that read data, table in-out functions included
 static void CollectScanEstimates(duckdb::ClientContext &context, const duckdb::PhysicalOperator &op,
                                  vector<ScanEstimate> &scans) {
-	if (op.type == duckdb::PhysicalOperatorType::TABLE_SCAN) {
+	switch (op.type) {
+	case duckdb::PhysicalOperatorType::TABLE_SCAN: {
 		auto &get = op.Cast<duckdb::PhysicalTableScan>();
-		ScanEstimate scan;
-		auto table = get.function.get_table_entry ? get.function.get_table_entry(get.bind_data.get()) : nullptr;
-		scan.name =
-		    table ? table->name.GetIdentifierName() : StringUtil::Lower(get.function.GetName().GetIdentifierName());
-		scan.rows = get.estimated_cardinality;
-		if (scan.rows == 0 && get.function.cardinality && get.bind_data) {
-			// the plan carries no estimate (e.g. with the optimizer off), ask the function as the planner would
-			auto node_stats = get.function.cardinality(context, get.bind_data.get());
-			if (node_stats && node_stats->has_estimated_cardinality) {
-				scan.rows = node_stats->estimated_cardinality;
-			}
-		}
-		scans.push_back(std::move(scan));
+		AddScanEstimate(context, get.function, get.bind_data.get(), get.estimated_cardinality, scans);
+		break;
+	}
+	case duckdb::PhysicalOperatorType::INOUT_FUNCTION: {
+		// a table in-out function (summary, a correlated LATERAL table function) reads its input like a scan
+		auto &in_out = op.Cast<duckdb::PhysicalTableInOutFunction>();
+		AddScanEstimate(context, in_out.function, in_out.bind_data.get(), in_out.estimated_cardinality, scans);
+		break;
+	}
+	default:
+		break;
 	}
 	// GetChildren includes the inputs some operators own apart from their children (positional scans, delim joins)
 	for (auto &child : op.GetChildren()) {

@@ -230,11 +230,13 @@ Matcher &MatcherFactory::CreateRootMatcher(const string &root_rule) {
 	//===--------------------------------------------------------------------===//
 	AddPackratMemoizedRule("Expression");
 	AddPackratMemoizedRule("TableRef");
+	AddPackratMemoizedRule("ParensTableRef");
 	AddPackratMemoizedRule("Identifier");
 	AddPackratMemoizedRule("ColId");
 	AddPackratMemoizedRule("CatalogQualification");
 	AddPackratMemoizedRule("SchemaQualification");
 	AddPackratMemoizedRule("ReservedSchemaQualification");
+	AddPackratMemoizedRule("SelectParens");
 	//===--------------------------------------------------------------------===//
 	// END GENERATED PACKRAT MEMOIZED RULES
 	//===--------------------------------------------------------------------===//
@@ -247,7 +249,6 @@ Matcher &MatcherFactory::CreateRootMatcher(const string &root_rule) {
 	// START GENERATED RULE LABELS
 	//===--------------------------------------------------------------------===//
 	LabelRule("Expression", "an expression");
-	LabelRule("LambdaArrowExpression", "an expression");
 	LabelRule("LogicalOrExpression", "an expression");
 	LabelRule("LogicalAndExpression", "an expression");
 	LabelRule("LogicalNotExpression", "an expression");
@@ -308,9 +309,17 @@ unique_ptr<KeywordMatcher> MatcherFactory::CreateKeyword(const string &keyword, 
 }
 
 template <class T, class... ARGS>
-static unique_ptr<T> MakeStructural(ARGS &&... args) {
+static unique_ptr<T> MakeStructural(ARGS &&...args) {
 	auto result = make_uniq<T>(std::forward<ARGS>(args)...);
 	result->SetStructural();
+	return result;
+}
+
+template <class T, class... ARGS>
+static unique_ptr<T> MakeChoice(ARGS &&...args) {
+	auto result = MakeStructural<T>(std::forward<ARGS>(args)...);
+	// This helper creates only the built-in selectors below, not factory overrides.
+	result->SetSelectionStatePreserving();
 	return result;
 }
 
@@ -325,18 +334,18 @@ unique_ptr<ChoiceMatcher> MatcherFactory::CreateChoice(vector<reference<Matcher>
 		for (idx_t i = 0; i < matchers.size(); i++) {
 			auto &matcher = matchers[i].get();
 			if (matcher.Type() != MatcherType::KEYWORD) {
-				return MakeStructural<ChoiceMatcher>(std::move(matchers));
+				return MakeChoice<ChoiceMatcher>(std::move(matchers));
 			}
 			auto literal = matcher.Cast<KeywordMatcher>().GetDispatchLiteral(table);
 			if (!literal.IsValid()) {
-				return MakeStructural<ChoiceMatcher>(std::move(matchers));
+				return MakeChoice<ChoiceMatcher>(std::move(matchers));
 			}
 			// Preserve the first alternative when spellings share an ID.
 			literal_children.emplace(static_cast<uint32_t>(literal.GetIndex()), i);
 		}
-		return MakeStructural<LiteralChoiceMatcher>(std::move(matchers), table, std::move(literal_children));
+		return MakeChoice<LiteralChoiceMatcher>(std::move(matchers), table, std::move(literal_children));
 	}
-	return MakeStructural<ChoiceMatcher>(std::move(matchers));
+	return MakeChoice<ChoiceMatcher>(std::move(matchers));
 }
 
 unique_ptr<OptionalMatcher> MatcherFactory::CreateOptional(Matcher &matcher) const {

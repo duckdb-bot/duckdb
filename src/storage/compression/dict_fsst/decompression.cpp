@@ -67,12 +67,13 @@ CompressedStringScanState::~CompressedStringScanState() {
 	delete reinterpret_cast<duckdb_fsst_decoder_t *>(decoder);
 }
 
-string_t CompressedStringScanState::FetchStringFromDict(Vector &result, uint32_t dict_offset, idx_t dict_idx) {
+string_t CompressedStringScanState::FetchStringFromDict(Vector &result, uint32_t dict_offset, idx_t dict_idx,
+                                                        StringScanType string_scan_type) {
 	D_ASSERT(dict_idx < layout.dict_count);
 	if (dict_idx == 0) {
 		return string_t(nullptr, 0);
 	}
-	uint32_t string_len = string_lengths[dict_idx];
+	uint32_t string_len = GetStringLength(dict_idx);
 
 	// normal string: read string from this block
 	auto string_data = layout.dictionary.GetBytes(dict_offset, string_len);
@@ -94,6 +95,9 @@ string_t CompressedStringScanState::FetchStringFromDict(Vector &result, uint32_t
 		}
 	}
 	default:
+		if (string_scan_type == StringScanType::COPY_STRINGS) {
+			return StringVector::AddStringOrBlob(result, string_t(str_ptr, string_len));
+		}
 		// FIXME: the Vector doesn't seem to take ownership of the non-inlined string data???
 		return string_t(str_ptr, string_len);
 	}
@@ -148,7 +152,7 @@ CompressedStringScanState::SegmentLayout CompressedStringScanState::ReadLayout(c
 	        indices};
 }
 
-void CompressedStringScanState::Initialize(bool initialize_dictionary) {
+void CompressedStringScanState::Initialize() {
 	switch (layout.mode) {
 	case DictFSSTMode::FSST_ONLY:
 	case DictFSSTMode::DICT_FSST: {
@@ -166,41 +170,79 @@ void CompressedStringScanState::Initialize(bool initialize_dictionary) {
 	default:
 		break;
 	}
+}
 
+void CompressedStringScanState::LoadStringLengths() {
+	if (!string_lengths.empty()) {
+		return;
+	}
 	constexpr auto group_size = BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE;
 	string_lengths.resize(AlignValue<idx_t, group_size>(layout.dict_count));
+	BitpackingPrimitives::UnPackBufferWithFrame<uint32_t>(data_ptr_cast(string_lengths.data()),
+	                                                      layout.string_lengths.data(), string_lengths.size(),
+	                                                      layout.string_lengths_width, 0);
 
 	// Both the entry count and each length fit in uint32_t, so their sum fits in uint64_t.
 	uint64_t total_bytes = 0;
-	for (idx_t i = 0; i < layout.dict_count; i += group_size) {
-		BitpackingPrimitives::UnPackBlock<uint32_t>(
-		    data_ptr_cast(string_lengths.data() + i),
-		    layout.string_lengths.data() + (i * layout.string_lengths_width) / 8, layout.string_lengths_width);
-
-		// Validate only real entries, not the final group's padding.
-		const auto end = MinValue<idx_t>(i + group_size, layout.dict_count);
-		uint64_t group_bytes = 0;
-		for (idx_t j = i; j < end; j++) {
-			group_bytes += string_lengths[j];
-		}
-
-		// Each string offset sums earlier lengths, so bounding the total keeps all offsets in range.
-		total_bytes += group_bytes;
-		if (total_bytes > layout.dictionary.Size()) {
-			ThrowStringLengthsOutOfBounds();
-		}
+	for (idx_t i = 0; i < layout.dict_count; i++) {
+		total_bytes += string_lengths[i];
+	}
+	if (total_bytes > layout.dictionary.Size()) {
+		ThrowStringLengthsOutOfBounds();
 	}
 
 	// Index 0 represents NULL, so its length must be 0
 	if (string_lengths[0] != 0) {
 		ThrowInvalidNullLength();
 	}
+}
 
-	if (!initialize_dictionary || layout.mode == DictFSSTMode::FSST_ONLY) {
-		// Used by fetch, as fetch will never produce a DictionaryVector
-		return;
+const uint32_t *CompressedStringScanState::GetStringLengthGroup(idx_t group_start) {
+	D_ASSERT(group_start % BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE == 0 &&
+	         group_start < layout.dict_count);
+	if (string_length_group_start != group_start) {
+		BitpackingPrimitives::UnPackBlock<uint32_t>(data_ptr_cast(string_length_group),
+		                                            layout.string_lengths.data() +
+		                                                (group_start * layout.string_lengths_width) / 8,
+		                                            layout.string_lengths_width);
+		string_length_group_start = group_start;
 	}
+	return string_length_group;
+}
 
+uint32_t CompressedStringScanState::GetStringLength(idx_t dict_idx) {
+	if (!string_lengths.empty()) {
+		return string_lengths[dict_idx];
+	}
+	const auto group_offset = dict_idx % BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE;
+	return GetStringLengthGroup(dict_idx - group_offset)[group_offset];
+}
+
+idx_t CompressedStringScanState::SumStringLengths(idx_t start, idx_t end) {
+	idx_t sum = 0;
+	if (!string_lengths.empty()) {
+		const auto lengths = string_lengths.data();
+		for (auto i = start; i < end; i++) {
+			sum += lengths[i];
+		}
+		return sum;
+	}
+	constexpr idx_t GROUP_SIZE = BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE;
+	for (auto group_start = start - start % GROUP_SIZE; group_start < end; group_start += GROUP_SIZE) {
+		const auto lengths = GetStringLengthGroup(group_start);
+		const auto to = MinValue<idx_t>(end - group_start, GROUP_SIZE);
+		for (auto i = MaxValue<idx_t>(start, group_start) - group_start; i < to; i++) {
+			sum += lengths[i];
+		}
+	}
+	return sum;
+}
+
+bool CompressedStringScanState::EnsureDictionary() {
+	if (dictionary || layout.mode == DictFSSTMode::FSST_ONLY) {
+		return dictionary != nullptr;
+	}
+	LoadStringLengths();
 	dictionary = DictionaryVector::CreateReusableDictionary(segment.GetType(), layout.dict_count);
 	auto &dict_data = dictionary->data;
 	auto dict_child_data = FlatVector::GetDataMutable<string_t>(dict_data);
@@ -215,6 +257,37 @@ void CompressedStringScanState::Initialize(bool initialize_dictionary) {
 		dict_child_data[i] = FetchStringFromDict(dict_data, offset, i);
 		offset += string_len;
 	}
+	return true;
+}
+
+uint32_t CompressedStringScanState::GetStringOffset(idx_t string_number, bool allow_restart) {
+	D_ASSERT(string_number < layout.dict_count);
+	if (!string_offsets.empty()) {
+		return string_offsets[string_number];
+	}
+	if (string_number < decompress_position) {
+		if (!allow_restart || summed_lengths >= layout.dict_count) {
+			LoadStringLengths();
+			string_offsets.resize(layout.dict_count);
+			uint32_t offset = 0;
+			for (uint32_t i = 0; i < layout.dict_count; i++) {
+				string_offsets[i] = offset;
+				offset += string_lengths[i];
+			}
+			return string_offsets[string_number];
+		}
+		decompress_position = 0;
+		decompress_offset = 0;
+	}
+	// lengths read group by group are not validated up front, so bound each offset as LoadStringLengths does
+	const auto offset = decompress_offset + SumStringLengths(decompress_position, string_number);
+	if (offset > layout.dictionary.Size()) {
+		ThrowStringLengthsOutOfBounds();
+	}
+	decompress_offset = UnsafeNumericCast<uint32_t>(offset);
+	summed_lengths += string_number - decompress_position;
+	decompress_position = string_number;
+	return decompress_offset;
 }
 
 const SelectionVector &CompressedStringScanState::GetSelVec(idx_t start, idx_t scan_count) {
@@ -245,8 +318,8 @@ const SelectionVector &CompressedStringScanState::GetSelVec(idx_t start, idx_t s
 		}
 
 		sel_t *sel_vec_ptr = sel_vec->data();
-		BitpackingPrimitives::UnPackBuffer<sel_t>(data_ptr_cast(sel_vec_ptr), indices.data(), decompress_count,
-		                                          layout.dictionary_indices_width);
+		BitpackingPrimitives::UnPackBufferWithFrame<sel_t>(data_ptr_cast(sel_vec_ptr), indices.data(), decompress_count,
+		                                                   layout.dictionary_indices_width, 0);
 
 		sel_vec->ShiftLeft(start_offset, scan_count);
 
@@ -264,13 +337,14 @@ const SelectionVector &CompressedStringScanState::GetSelVec(idx_t start, idx_t s
 	}
 }
 
-void CompressedStringScanState::ScanToFlatVector(Vector &result, idx_t result_offset, idx_t start, idx_t scan_count) {
-	Select(result, result_offset, start, *FlatVector::IncrementalSelectionVector(), scan_count);
+void CompressedStringScanState::ScanToFlatVector(Vector &result, idx_t result_offset, idx_t start, idx_t scan_count,
+                                                 StringScanType string_scan_type) {
+	Select(result, result_offset, start, *FlatVector::IncrementalSelectionVector(), scan_count, string_scan_type);
 	result.Verify();
 }
 
 void CompressedStringScanState::Select(Vector &result, idx_t result_offset, idx_t start, const SelectionVector &sel,
-                                       idx_t sel_count) {
+                                       idx_t sel_count, StringScanType string_scan_type) {
 	// The last selected row bounds the unpacked range, so selections must be ordered.
 #ifdef DEBUG
 	for (idx_t i = 1; i < sel_count; i++) {
@@ -284,7 +358,22 @@ void CompressedStringScanState::Select(Vector &result, idx_t result_offset, idx_
 	const idx_t start_offset = layout.mode == DictFSSTMode::FSST_ONLY ? start + 1 : 0;
 
 	auto result_data = FlatVector::Writer<string_t>(result, sel_count, result_offset);
-	if (dictionary) {
+	if (string_scan_type == StringScanType::COPY_STRINGS) {
+		// a select of many rows unpacks every length up front and computes all offsets on its first step back
+		const bool few_rows = sel_count < BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE;
+		if (!few_rows) {
+			LoadStringLengths();
+		}
+		for (idx_t i = 0; i < sel_count; i++) {
+			auto string_number = selvec.get_index(start_offset + sel.get_index(i));
+			if (string_number == 0) {
+				result_data.WriteNull();
+				continue;
+			}
+			result_data.WriteStringRef(FetchStringFromDict(result, GetStringOffset(string_number, few_rows),
+			                                               string_number, StringScanType::COPY_STRINGS));
+		}
+	} else if (EnsureDictionary()) {
 		// We have prepared the full dictionary, we can reference these strings directly
 		auto dictionary_values = FlatVector::GetData<string_t>(dictionary->data);
 		for (idx_t i = 0; i < sel_count; i++) {
@@ -297,6 +386,7 @@ void CompressedStringScanState::Select(Vector &result, idx_t result_offset, idx_
 			result_data.WriteStringRef(dictionary_values[string_number]);
 		}
 	} else {
+		LoadStringLengths();
 		for (idx_t i = 0; i < sel_count; i++) {
 			// Lookup dict offset in index buffer
 			auto string_number = selvec.get_index(start_offset + sel.get_index(i));
@@ -322,10 +412,38 @@ bool CompressedStringScanState::AllowDictionaryScan(idx_t scan_count) {
 	if (scan_count != STANDARD_VECTOR_SIZE) {
 		return false;
 	}
-	if (!dictionary) {
-		return false;
+	return EnsureDictionary();
+}
+
+void CompressedStringScanState::SelectToDictionaryVector(Vector &result, idx_t start, idx_t vector_count,
+                                                         const SelectionVector &sel, idx_t sel_count) {
+	D_ASSERT(layout.mode != DictFSSTMode::FSST_ONLY);
+	D_ASSERT(sel_count <= vector_count / 64);
+	EnsureDictionary();
+	SelectionVector selected_indices(MaxValue<idx_t>(sel_count, 1));
+	constexpr auto group_size = BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE;
+	uint32_t group[group_size];
+	idx_t loaded_group = NumericLimits<idx_t>::Maximum();
+	bool invalid_index = false;
+	for (idx_t i = 0; i < sel_count; i++) {
+		const auto row = start + sel.get_index(i);
+		const auto group_start = row - row % group_size;
+		if (group_start != loaded_group) {
+			const auto byte_offset = (group_start / group_size) * (group_size * layout.dictionary_indices_width / 8);
+			const auto byte_count = group_size * layout.dictionary_indices_width / 8;
+			auto bytes = layout.dictionary_indices.SubArray(byte_offset, byte_count);
+			BitpackingPrimitives::UnPackBlock<uint32_t>(data_ptr_cast(group), bytes.data(),
+			                                            layout.dictionary_indices_width);
+			loaded_group = group_start;
+		}
+		const auto index = group[row - group_start];
+		invalid_index |= index >= layout.dict_count;
+		selected_indices.set_index(i, index);
 	}
-	return true;
+	if (invalid_index) {
+		ThrowDictionaryIndexOutOfBounds();
+	}
+	result.Dictionary(dictionary, selected_indices, sel_count);
 }
 
 void CompressedStringScanState::ScanToDictionaryVector(ColumnSegment &segment, Vector &result, idx_t result_offset,

@@ -317,7 +317,7 @@ static bool TryReadExactSQLLogicTestFilter(const vector<string> &input_files, ve
 	if (input_files.empty()) {
 		return false;
 	}
-	auto fs = FileSystem::CreateLocal();
+	auto &fs = TestLocalFileSystem();
 	unordered_set<string> seen_paths;
 	for (auto &input_file : input_files) {
 		std::ifstream file(input_file.c_str());
@@ -333,7 +333,7 @@ static bool TryReadExactSQLLogicTestFilter(const vector<string> &input_files, ve
 			if (!IsSQLLogicTestFile(line)) {
 				return false;
 			}
-			if (!fs->FileExists(line)) {
+			if (!fs.FileExists(line)) {
 				error = "Unable to find sqllogictest file from -f/--input-file: " + line;
 				return true;
 			}
@@ -352,7 +352,7 @@ int main(int argc_in, char *argv[]) {
 		return 1;
 	}
 
-	string test_directory = DUCKDB_ROOT_DIRECTORY;
+	string test_directory = TestRootDirectory();
 
 	// route the sqllogictest runner's verdicts into the Catch session
 	static CatchTestReporter catch_reporter;

@@ -77,6 +77,10 @@ static bool IsConflictingId(TransactionData transaction, transaction_t id, trans
 		return true;
 	}
 	if (IsDeleteId(id)) {
+		if (GetWriter(id) == GetWriter(new_id)) {
+			// a concurrent statement of this transaction deleted the row after this write found it
+			return true;
+		}
 		// a transaction cannot see a row whose delete it sees, so it never writes it
 		throw InternalException("ChunkVectorInfo: write of a row whose delete the transaction sees");
 	}
@@ -631,7 +635,7 @@ void ChunkVectorInfo::VerifyCachedCompressionState() const {
 #endif
 }
 
-VersionCompressionResult ChunkVectorInfo::CompressVersionIds(VisibilityBound lowest_visibility_bound) {
+VersionCompressionResult ChunkVectorInfo::CompressVersionIds(VisibilityBound lowest_visibility_bound, idx_t row_count) {
 	if (!recheck_compression) {
 		// no ids were modified since this vector last settled - only a further modification
 		// (which re-arms the check) can make it compressible, so skip re-scanning the ids
@@ -741,7 +745,7 @@ VersionCompressionResult ChunkVectorInfo::CompressVersionIds(VisibilityBound low
 		{
 			auto segment = allocator.GetHandle(GetInsertedPointer());
 			auto inserted = segment.GetPtr<transaction_t>();
-			for (idx_t i = 0; i < STANDARD_VECTOR_SIZE; i++) {
+			for (idx_t i = 0; i < row_count; i++) {
 				if (inserted[i] >= lowest_visibility_bound) {
 					// the insert is not yet visible to all transactions
 					can_compress = false;
@@ -823,7 +827,7 @@ bool ChunkVectorInfo::Cleanup(VisibilityBound lowest_visibility_bound) const {
 	return true;
 }
 
-bool ChunkVectorInfo::HasDeletes(VisibilityBound visibility_bound) const {
+bool ChunkVectorInfo::HasDeletes(VisibilityBound visibility_bound, idx_t row_count) const {
 	if (HasConstantInsertionId() && !IsCommitted(ConstantInsertId())) {
 		// the vector was inserted by a transaction that has not committed yet
 		// the rows have to be masked as deleted when writing a checkpoint
@@ -844,7 +848,7 @@ bool ChunkVectorInfo::HasDeletes(VisibilityBound visibility_bound) const {
 	case DeleteIdState::ARRAY: {
 		auto segment = allocator.GetHandle(GetDeletedPointer());
 		auto deleted = segment.GetPtr<transaction_t>();
-		for (idx_t i = 0; i < STANDARD_VECTOR_SIZE; i++) {
+		for (idx_t i = 0; i < row_count; i++) {
 			if (deleted[i] < visibility_bound) {
 				return true;
 			}
@@ -984,28 +988,63 @@ transaction_t ChunkVectorInfo::ConstantDeleteId() const {
 	return constant_delete_id;
 }
 
-void ChunkVectorInfo::Write(WriteStream &writer, VisibilityBound visibility_bound) const {
-	SelectionVector sel(STANDARD_VECTOR_SIZE);
-	transaction_t transaction_id = DConstants::INVALID_INDEX;
-	idx_t count = GetSelVector(TransactionData(transaction_id, visibility_bound), sel, STANDARD_VECTOR_SIZE);
-	if (count == STANDARD_VECTOR_SIZE) {
+void ChunkVectorInfo::Write(WriteStream &writer, VisibilityBound visibility_bound, idx_t row_count) const {
+	D_ASSERT(row_count > 0 && row_count <= STANDARD_VECTOR_SIZE);
+	TransactionData transaction(DConstants::INVALID_INDEX, visibility_bound);
+	// all rows are inserted and the rows in deleted_mask are exactly the deleted rows
+	const bool use_deleted_mask = delete_state == DeleteIdState::MASKED && HasConstantInsertionId() &&
+	                              transaction.view.Sees(ConstantInsertId()) && transaction.view.Sees(mask_delete_id);
+	SelectionVector sel;
+	idx_t count;
+	if (use_deleted_mask) {
+		count = row_count - deleted_mask.CountValid(row_count);
+#ifdef DEBUG
+		SelectionVector verify_sel(STANDARD_VECTOR_SIZE);
+		D_ASSERT(GetSelVector(transaction, verify_sel, row_count) == count);
+		for (idx_t i = 0; i < count; i++) {
+			D_ASSERT(!deleted_mask.RowIsValid(verify_sel.get_index(i)));
+		}
+#endif
+	} else {
+		sel.Initialize(STANDARD_VECTOR_SIZE);
+		count = GetSelVector(transaction, sel, row_count);
+	}
+	if (count == row_count) {
 		// nothing is deleted: skip writing anything
 		writer.Write<ChunkInfoType>(ChunkInfoType::EMPTY_INFO);
 		return;
 	}
-	if (count == 0) {
+	if (count == 0 && row_count == STANDARD_VECTOR_SIZE) {
 		// everything is deleted: write a constant vector
 		writer.Write<ChunkInfoType>(ChunkInfoType::CONSTANT_INFO);
 		writer.Write<idx_t>(start);
 		return;
 	}
-	// write a boolean vector
+	// write a boolean vector - rows appended past row_count later must not be loaded as deleted
 	writer.Write<ChunkInfoType>(ChunkInfoType::VECTOR_INFO);
 	writer.Write<idx_t>(start);
 	ValidityMask mask(STANDARD_VECTOR_SIZE);
-	mask.Initialize(STANDARD_VECTOR_SIZE);
-	for (idx_t i = 0; i < count; i++) {
-		mask.SetInvalid(sel.get_index(i));
+	if (use_deleted_mask) {
+		mask.Copy(deleted_mask, STANDARD_VECTOR_SIZE);
+		mask.EnsureWritable();
+		for (idx_t i = row_count; i < STANDARD_VECTOR_SIZE; i++) {
+			mask.SetInvalidUnsafe(i);
+		}
+	} else {
+		// sel holds the visible rows in ascending order: only the rows in between are deleted
+		mask.SetAllInvalid(STANDARD_VECTOR_SIZE);
+		idx_t row_idx = 0;
+		for (idx_t i = 0; i < count; i++) {
+			auto visible_idx = sel.get_index(i);
+			D_ASSERT(visible_idx >= row_idx);
+			for (; row_idx < visible_idx; row_idx++) {
+				mask.SetValidUnsafe(row_idx);
+			}
+			row_idx = visible_idx + 1;
+		}
+		for (; row_idx < row_count; row_idx++) {
+			mask.SetValidUnsafe(row_idx);
+		}
 	}
 	mask.Write(writer, STANDARD_VECTOR_SIZE);
 }

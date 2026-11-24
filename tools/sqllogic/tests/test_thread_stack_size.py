@@ -41,7 +41,8 @@ def test_thread_stack_size_reports_an_unusable_default_stack(unittest_binary):
     prlimit = shutil.which("prlimit")
     if prlimit is None or sys.maxsize <= 2**32:
         pytest.skip("needs prlimit and 64 bit sizes")
-    huge = str(2**64 - 32768)
+    # glibc rounds the limit up to the page size, so the value stays aligned on 4, 16 and 64 KiB pages
+    huge = str(2**64 - 65536)
     result = run_with_stack_size(unittest_binary, "131072", wrapper=(prlimit, f"--stack={huge}:{huge}", "--"))
     if "ASan cannot proceed" in result.stderr:
         pytest.skip("AddressSanitizer cannot start with this stack limit")

@@ -596,11 +596,19 @@ class AllocationCache {
 		alignas(64) atomic<idx_t> count {0};
 	};
 
+	//! A size class. Its bucket is created when the first buffer of the size is returned
+	struct BucketSlot {
+		optional_ptr<Bucket> Get() const {
+			return created.load(std::memory_order_acquire) ? bucket.get() : nullptr;
+		}
+
+		atomic<bool> created {false};
+		mutex create_lock;
+		unique_ptr<Bucket> bucket;
+	};
+
 public:
 	explicit AllocationCache(Allocator &allocator) : allocator(allocator), shard_count(AllocatorShardCount()) {
-		for (auto &bucket : buckets) {
-			bucket = make_uniq<Bucket>(shard_count);
-		}
 	}
 	~AllocationCache() {
 		Flush(NumericLimits<idx_t>::Maximum());
@@ -625,8 +633,12 @@ public:
 	}
 	data_ptr_t TryAllocate(idx_t size, optional_idx &home) {
 		D_ASSERT(SupportsSize(size));
+		auto bucket_ptr = buckets[CountZeros<idx_t>::Trailing(size) - MIN_SHIFT].Get();
+		if (!bucket_ptr) {
+			return nullptr;
+		}
+		auto &bucket = *bucket_ptr;
 		const auto shard = LocalShard();
-		auto &bucket = *buckets[CountZeros<idx_t>::Trailing(size) - MIN_SHIFT];
 		CachedAllocation allocation;
 		if (bucket.queues.Get(shard).TryDequeue(allocation)) {
 			bucket.count.fetch_sub(1, std::memory_order_relaxed);
@@ -660,7 +672,11 @@ public:
 		}
 		// Raw-pointer callers cannot retain ownership across reuse; leave their home unknown.
 		const auto shard = home.IsValid() ? home.GetIndex() : LocalShard();
-		auto &bucket = *buckets[CountZeros<idx_t>::Trailing(size) - MIN_SHIFT];
+		auto bucket_ptr = GetOrCreateBucket(size);
+		if (!bucket_ptr) {
+			return false;
+		}
+		auto &bucket = *bucket_ptr;
 		const auto capacity = MaxValue<idx_t>(MAX_CACHED_BYTES_PER_BUCKET / size, 1);
 		if (bucket.count.fetch_add(1, std::memory_order_relaxed) < capacity) {
 			try {
@@ -683,16 +699,31 @@ public:
 	idx_t GetCachedMemory(optional_idx idle_before = optional_idx()) const {
 		idx_t bytes = 0;
 		for (idx_t i = 0; i < buckets.size(); i++) {
-			bytes += Reclaimable(*buckets[i], idle_before) * (static_cast<idx_t>(1) << (MIN_SHIFT + i));
+			if (auto bucket = buckets[i].Get()) {
+				bytes += Reclaimable(*bucket, idle_before) * (static_cast<idx_t>(1) << (MIN_SHIFT + i));
+			}
 		}
 		return bytes;
+	}
+
+	//! The size classes whose bucket exists
+	idx_t GetBucketCount() const {
+		idx_t count = 0;
+		for (auto &slot : buckets) {
+			count += slot.Get() ? 1 : 0;
+		}
+		return count;
 	}
 
 	// Maintenance is serialized by BlockAllocator; allocation and return never take that lock.
 	idx_t Flush(idx_t byte_limit, optional_idx idle_before = optional_idx()) {
 		idx_t freed = 0;
 		for (idx_t i = buckets.size(); i > 0 && freed < byte_limit; i--) {
-			auto &bucket = *buckets[i - 1];
+			auto bucket_ptr = buckets[i - 1].Get();
+			if (!bucket_ptr) {
+				continue;
+			}
+			auto &bucket = *bucket_ptr;
 			const auto size = (static_cast<idx_t>(1) << (MIN_SHIFT + i - 1));
 			// A snapshot bounds the work even if producers continue returning buffers.
 			auto remaining = Reclaimable(bucket, idle_before);
@@ -725,11 +756,32 @@ private:
 	idx_t LocalShard() const {
 		return BlockAllocator::GetLocalShard(shard_count);
 	}
+	//! Returns nullptr when the queues of a new bucket cannot be allocated
+	optional_ptr<Bucket> GetOrCreateBucket(idx_t size) {
+		auto &slot = buckets[CountZeros<idx_t>::Trailing(size) - MIN_SHIFT];
+		if (auto bucket = slot.Get()) {
+			return bucket;
+		}
+		try {
+			lock_guard<mutex> guard(slot.create_lock);
+			if (!slot.created.load(std::memory_order_relaxed)) {
+				slot.bucket = make_uniq<Bucket>(shard_count);
+				slot.created.store(true, std::memory_order_release);
+			}
+		} catch (...) {
+			return nullptr;
+		}
+		return slot.bucket.get();
+	}
 
 	Allocator &allocator;
 	const idx_t shard_count;
-	array<unique_ptr<Bucket>, MAX_SHIFT - MIN_SHIFT + 1> buckets;
+	array<BucketSlot, MAX_SHIFT - MIN_SHIFT + 1> buckets;
 };
+
+idx_t BlockAllocator::GetAllocationCacheBucketCount() const {
+	return allocation_cache->GetBucketCount();
+}
 
 idx_t BlockAllocator::GetGuardBlockCount() const {
 	// Power-of-two blocks of at least 64 KiB align to all supported OS page sizes.

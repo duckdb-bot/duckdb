@@ -613,7 +613,7 @@ unique_ptr<MergeIntoStatement> Binder::GenerateMergeInto(InsertQueryNode &node, 
 		for (auto &col : distinct_on_columns) {
 			auto &type = columns.GetColumn(col).Type();
 			if (type.id() == LogicalTypeId::ENUM) {
-				// FIXME: an ENUM key is not cast and is compared as a string, under the collation of its source
+				// FIXME: an ENUM key is not cast, so a VARCHAR source is compared as a string under its collation
 				continue;
 			}
 			if (!TypeExpression::CanRepresent(type) || type.HasAlias()) {

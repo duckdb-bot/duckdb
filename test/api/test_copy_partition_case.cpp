@@ -162,7 +162,7 @@ private:
 };
 
 void RegisterCaseTestFileSystem(Connection &con, const string &root, CaseMode mode) {
-	FileSystem::GetFileSystem(*con.context).RegisterSubSystem(make_uniq<CaseTestFileSystem>(root, mode));
+	VirtualFileSystem::Get(*con.context).RegisterSubSystem(make_uniq<CaseTestFileSystem>(root, mode));
 }
 
 void RequireCaseCollision(Connection &con, const string &query) {

@@ -44,7 +44,8 @@ static void RunWithDefaultPlaceholder(Connection &con, const string &merge) {
 	plan->ResolveOperatorTypes();
 	// a plan statement does not register the database it writes to
 	auto &catalog = Catalog::GetCatalog(*con.context, Identifier("memory"));
-	MetaTransaction::Get(*con.context).ModifyDatabase(catalog.GetAttached(), DatabaseModificationType::UPDATE_DATA);
+	MetaTransaction::Get(*con.context)
+	    .ModifyDatabase(*con.context, catalog.GetAttached(), DatabaseModificationType::UPDATE_DATA);
 	REQUIRE_NO_FAIL(con.Query(make_uniq<LogicalPlanStatement>(std::move(plan))));
 	con.Commit();
 }

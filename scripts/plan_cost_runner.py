@@ -23,6 +23,9 @@ PROFILE_OUTPUT = f"PRAGMA profile_output='{PROFILE_FILENAME}'"
 
 BANNER_SIZE = 52
 RETRIES = 2
+PROFILE_RUNS = 10
+# Overlapping cost samples whose medians differ by more than this are still compared.
+MEDIAN_TOLERANCE = 0.05
 
 
 def run_command(command, **kwargs):
@@ -95,7 +98,11 @@ class PlanCost:
         return self
 
     def more_output_and_build_work(self, other):
-        return self.total > other.total and self.build_side > other.build_side and self.probe_side >= other.probe_side
+        dominates = (
+            self.total > other.total and self.build_side > other.build_side and self.probe_side >= other.probe_side
+        )
+        # Small work increases still need the hot timing comparison before they count as a regression.
+        return dominates and any(new > old * 1.03 for new, old in zip(cost_components(self), cost_components(other)))
 
     def needs_timing(self, other):
         return (
@@ -112,7 +119,7 @@ class PlanCost:
             return False
         if self.more_output_and_build_work(other):
             return True
-        # Use timings to evaluate tradeoffs between output rows and build/probe work.
+        # Use timings for small work changes and tradeoffs between output rows and build/probe work.
         return self.time > other.time * 1.03
 
     def __lt__(self, other):
@@ -233,6 +240,56 @@ def query_plan_cost(cli, dbname, query):
         return cost
 
 
+def cost_components(cost):
+    return (cost.total, cost.build_side, cost.probe_side)
+
+
+def median_cost(costs):
+    result = PlanCost()
+    result.total, result.build_side, result.probe_side = (
+        statistics.median_low(values) for values in zip(*(cost_components(cost) for cost in costs))
+    )
+    return result
+
+
+def within_run_variation(old_costs, new_costs):
+    for old_values, new_values in zip(
+        zip(*(cost_components(cost) for cost in old_costs)), zip(*(cost_components(cost) for cost in new_costs))
+    ):
+        if max(old_values) < min(new_values) or max(new_values) < min(old_values):
+            return False
+        old_median, new_median = statistics.median_low(old_values), statistics.median_low(new_values)
+        if abs(old_median - new_median) > MEDIAN_TOLERANCE * max(old_median, new_median):
+            return False
+    return True
+
+
+def query_plan_costs(old, new, dbname, query, query_name="query"):
+    old_costs = [query_plan_cost(old, dbname, query)]
+    new_costs = [query_plan_cost(new, dbname, query)]
+    if old_costs[0] == new_costs[0]:
+        return old_costs[0], new_costs[0]
+    # Selectivity-paused optional join filters make scan cardinalities vary between runs of one binary.
+    for _ in range(PROFILE_RUNS - 1):
+        old_costs.append(query_plan_cost(old, dbname, query))
+        new_costs.append(query_plan_cost(new, dbname, query))
+    if within_run_variation(old_costs, new_costs):
+        # The difference is within the run-to-run variation of both binaries.
+        return old_costs[0], old_costs[0]
+    print(f"{query_name}: comparing plan cost samples")
+    for component, old_values, new_values in zip(
+        ("total", "build", "probe"),
+        zip(*(cost_components(cost) for cost in old_costs)),
+        zip(*(cost_components(cost) for cost in new_costs)),
+    ):
+        print(
+            f"  {component}: old range=[{min(old_values)}, {max(old_values)}], "
+            f"median={statistics.median_low(old_values)}; "
+            f"new range=[{min(new_values)}, {max(new_values)}], median={statistics.median_low(new_values)}"
+        )
+    return median_cost(old_costs), median_cost(new_costs)
+
+
 def query_timings(cli, dbname, query, runs):
     # Warm up in the same process before enabling the timer.
     command = [cli, '--readonly', dbname, '-c', query, '-c', '.timer on 6']
@@ -326,8 +383,7 @@ def main():
         with open(f, "r") as file:
             query = file.read()
 
-        old_cost = query_plan_cost(old, DB_NAME, query)
-        new_cost = query_plan_cost(new, DB_NAME, query)
+        old_cost, new_cost = query_plan_costs(old, new, DB_NAME, query, query_name)
 
         if old_cost.needs_timing(new_cost):
             print(f"{query_name}: comparing hot query timings")

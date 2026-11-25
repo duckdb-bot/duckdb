@@ -706,10 +706,12 @@ public:
 	}
 
 	using BindFunctionInput::GetArgumentName;
+	using BindFunctionInput::GetBinder;
 	using BindFunctionInput::GetClientContext;
 	using BindFunctionInput::GetConstant;
 	using BindFunctionInput::GetDecimalWidthLimit;
 	using BindFunctionInput::GetNonNullConstant;
+	using BindFunctionInput::HasBinder;
 	using BindFunctionInput::NestedFunctionBinder;
 	using BindFunctionInput::TryGetConstant;
 

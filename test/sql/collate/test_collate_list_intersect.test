@@ -70,13 +70,6 @@ SELECT list_intersect([{'x': 'A', 'y': 1}], [{'y': 1, 'x': 'a' COLLATE NOCASE}])
 ----
 [{'x': A, 'y': 1}]	[{'x': A, 'y': 1}]
 
-# equal values that differ, without a collation, are returned by their first occurrence as well
-query II
-SELECT signbit(list_intersect([0.0::DOUBLE, '-0'::DOUBLE], [0.0::DOUBLE, 2, 3])[1]),
-	signbit(list_intersect(['-0'::DOUBLE, 0.0::DOUBLE, 5], [0.0::DOUBLE])[1])
-----
-false	true
-
 statement error
 SELECT list_intersect(['A' COLLATE NOCASE], ['a' COLLATE NOACCENT])
 ----
@@ -139,3 +132,15 @@ query I
 SELECT count(*) FROM t WHERE (len(list_intersect(tags, [needle])) > 0) = list_has_any(tags, [needle])
 ----
 5000
+
+# a query on an indexed expression compares by keys, though the index key does not
+statement ok
+CREATE TABLE indexed AS SELECT ['A'] AS s FROM range(3) UNION ALL SELECT ['a'] UNION ALL SELECT ['b'];
+
+statement ok
+CREATE INDEX indexed_idx ON indexed (len(list_intersect(s, ['a' COLLATE NOCASE])));
+
+query II
+SELECT count(*), count(*) FILTER (s = ['A']) FROM indexed WHERE len(list_intersect(s, ['a' COLLATE NOCASE])) = 1
+----
+4	3

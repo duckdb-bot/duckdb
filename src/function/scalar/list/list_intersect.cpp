@@ -1,5 +1,4 @@
 #include "duckdb/common/types/data_chunk.hpp"
-#include "duckdb/common/type_visitor.hpp"
 #include "duckdb/function/scalar/list_functions.hpp"
 #include "duckdb/function/scalar/nested_functions.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
@@ -144,9 +143,15 @@ static void ListIntersectFunction(DataChunk &args, ExpressionState &state, Vecto
 			}
 			const auto &key = hash_keys.GetValueUnsafe(h_idx);
 			set.insert(key);
-			if (use_l_for_hash) {
+			if (!use_l_for_hash) {
+				continue;
+			}
+			if (bind_data.key) {
 				// elements with equal keys can differ, the first of them is the one to return
 				key_to_index_map.emplace(key, h_idx);
+			} else {
+				// of equal elements such as 0.0 and -0.0 the last one stays, the keys of an index hold it
+				key_to_index_map[key] = h_idx;
 			}
 		}
 
@@ -175,11 +180,11 @@ static void ListIntersectFunction(DataChunk &args, ExpressionState &state, Vecto
 		list.Append(l_child, row_sel, l_size, 0, row_result_length);
 	}
 }
-//! Whether a (nested) type has a VARCHAR with an explicit collation
-static bool HasExplicitCollation(const LogicalType &type) {
-	return TypeVisitor::Contains(type, [](const LogicalType &child) {
-		return child.id() == LogicalTypeId::VARCHAR && !StringType::GetCollation(child).empty();
-	});
+//! Whether the elements match by their comparison keys: not in an index key or outside of a query, where the function
+//! is bound as it was without them, so that the keys of an index that exists do not change
+template <class INPUT>
+static bool ComparesByKeys(INPUT &input) {
+	return input.HasBinder() && !input.GetBinder().IsBindingIndexKey();
 }
 
 static unique_ptr<FunctionData> ListIntersectBind(BindScalarFunctionInput &input) {
@@ -192,21 +197,20 @@ static unique_ptr<FunctionData> ListIntersectBind(BindScalarFunctionInput &input
 	// both arguments have the type with the combined collations, whose elements match by their comparison keys
 	auto &list_type = input.GetBoundFunction().GetArguments()[0];
 	unique_ptr<Expression> key;
-	if (list_type.id() == LogicalTypeId::LIST) {
+	if (ComparesByKeys(input) && list_type.id() == LogicalTypeId::LIST) {
 		auto &element_type = ListType::GetChildType(list_type);
-		// an index key, like a rebind outside of a query, only compares by keys under an explicit collation
-		const bool explicit_only = !input.HasBinder() || input.GetBinder().IsBindingIndexKey();
-		if (!explicit_only || HasExplicitCollation(element_type)) {
-			key = make_uniq<BoundReferenceExpression>(element_type, idx_t(0));
-			if (!ExpressionBinder::PushCollation(context, key, element_type, CollationType::COMBINABLE_COLLATIONS)) {
-				key.reset();
-			}
+		key = make_uniq<BoundReferenceExpression>(element_type, idx_t(0));
+		if (!ExpressionBinder::PushCollation(context, key, element_type, CollationType::COMBINABLE_COLLATIONS)) {
+			key.reset();
 		}
 	}
 	return make_uniq<ListIntersectBindData>(std::move(key));
 }
 
 static void ListIntersectResolveTypes(ResolveScalarFunctionTypesInput &input) {
+	if (!ComparesByKeys(input)) {
+		return;
+	}
 	// the arguments are cast to types that keep the collations of both lists
 	FunctionBinder::CombineArgumentCollations(input.GetBoundFunction(), input.GetArguments());
 }

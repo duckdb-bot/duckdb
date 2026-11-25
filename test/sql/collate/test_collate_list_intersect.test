@@ -133,14 +133,22 @@ SELECT count(*) FROM t WHERE (len(list_intersect(tags, [needle])) > 0) = list_ha
 ----
 5000
 
-# a query on an indexed expression compares by keys, though the index key does not
+# a query that compares by keys is not answered from an index, whose key does not
 statement ok
-CREATE TABLE indexed AS SELECT ['A'] AS s FROM range(3) UNION ALL SELECT ['a'] UNION ALL SELECT ['b'];
+CREATE TABLE indexed AS SELECT ['A', 'a'] AS s FROM range(3) UNION ALL SELECT ['b'];
 
 statement ok
-CREATE INDEX indexed_idx ON indexed (len(list_intersect(s, ['a' COLLATE NOCASE])));
+CREATE INDEX indexed_idx ON indexed (len(list_intersect(s, s)));
 
-query II
-SELECT count(*), count(*) FILTER (s = ['A']) FROM indexed WHERE len(list_intersect(s, ['a' COLLATE NOCASE])) = 1
+query I
+SELECT count(*) FROM indexed WHERE len(list_intersect(s, s)) = 2
 ----
-4	3
+3
+
+statement ok
+SET default_collation = 'nocase';
+
+query I
+SELECT count(*) FROM indexed WHERE len(list_intersect(s, s)) = 1
+----
+4

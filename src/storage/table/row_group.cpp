@@ -1039,7 +1039,7 @@ void RowGroup::ProcessPreparedScan(ScanOptions options, CollectionScanState &sta
 				auto &table_filter_state = *filter.filter_state;
 
 				const auto scan_idx = filter.scan_column_index;
-				const auto column_idx = filter.table_column_index;
+				const auto &column_idx = filter.table_column_index;
 
 				auto &result_vector = result.data[scan_idx];
 				if (approved_tuple_count == 0) {
@@ -1383,6 +1383,7 @@ void RowGroup::Update(TransactionData transaction, DuckTableEntry &table_entry, 
 		WriteRows(transaction, table_entry, vector_idx, vector_start, ids + offset, count,
 		          UnsafeNumericCast<row_t>(vector_start), true, written);
 	}
+	lock_guard<mutex> update_guard(update_lock);
 	for (idx_t i = 0; i < column_ids.size(); i++) {
 		auto column = column_ids[i];
 		auto &col_data = GetColumn(column.index);

@@ -127,6 +127,12 @@ EXPLAIN SELECT count(*) FILTER (WHERE CASE WHEN random() < 0.5 THEN true ELSE tr
 ----
 logical_opt	<REGEX>:(?s).*FILTER.*
 
+# a condition behind an expression barrier
+query II
+EXPLAIN SELECT count(*) FILTER (WHERE CASE WHEN __internal_barrier(x) > 1 THEN true ELSE true END) AS filtered FROM v;
+----
+logical_opt	<REGEX>:(?s).*FILTER.*
+
 # a condition that raises an error for a row
 statement ok
 CREATE TABLE bad AS SELECT * FROM (VALUES (1, '1'), (2, 'bad'), (3, '3')) t(x, s);
@@ -140,6 +146,16 @@ statement error
 SELECT sum(x) FILTER (WHERE CASE WHEN CAST(s AS INTEGER) > 0 THEN true ELSE true END) FROM bad;
 ----
 Could not convert string 'bad' to INT32
+
+# FIXME: a comparison that the statistics decide drops an operand that fails, so this error is lost
+mode skip
+
+statement error
+SELECT sum(x) FILTER (WHERE (CASE WHEN CAST(s AS INTEGER) > 0 THEN 1 ELSE 1 END) > 0) FROM bad;
+----
+Could not convert string 'bad' to INT32
+
+mode unskip
 
 # a filter without an effect of its own that is true for every row still gives the result of the aggregate without it
 query II

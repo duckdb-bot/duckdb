@@ -258,6 +258,40 @@ DROP TABLE reject_scans;
 
 mode unskip
 
+# the unterminated value starts in the buffer before the last one and its row has another column to come
+statement ok
+COPY (SELECT * FROM (VALUES ('1', 'a', 'z'), ('2', '"abc', 'z')) t(a, b, c)) TO '{TEST_DIR}/unterminated_quote_eof_two_buffers.csv' (HEADER false, QUOTE '');
+
+foreach parallel false true
+
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/unterminated_quote_eof_two_buffers.csv', auto_detect=false, header=false, columns={'a': 'INTEGER', 'b': 'VARCHAR', 'c': 'VARCHAR'}, buffer_size=10, parallel={parallel}, strict_mode=true);
+----
+Value with unterminated quote found.
+
+query III
+SELECT * FROM read_csv('{TEST_DIR}/unterminated_quote_eof_two_buffers.csv', auto_detect=false, header=false, columns={'a': 'INTEGER', 'b': 'VARCHAR', 'c': 'VARCHAR'}, buffer_size=10, parallel={parallel}, strict_mode=true, store_rejects=true);
+----
+1	a	z
+
+query III
+SELECT line, column_idx, error_type FROM reject_errors;
+----
+2	2	UNQUOTED VALUE
+
+statement ok
+DROP TABLE reject_errors;
+
+statement ok
+DROP TABLE reject_scans;
+
+query III
+SELECT * FROM read_csv('{TEST_DIR}/unterminated_quote_eof_two_buffers.csv', auto_detect=false, header=false, columns={'a': 'INTEGER', 'b': 'VARCHAR', 'c': 'VARCHAR'}, buffer_size=10, parallel={parallel}, strict_mode=true, ignore_errors=true);
+----
+1	a	z
+
+endloop
+
 # more files than twice the threads are read one at a time as well
 statement ok
 SET threads=1;

@@ -11,6 +11,10 @@ SET threads=4;
 statement ok
 CREATE TABLE r AS SELECT m % 1000 AS match FROM range(16000) t(m);
 
+# one row for each match
+statement ok
+CREATE TABLE u AS SELECT m AS match FROM range(1000) t(m);
+
 # a single chunk of range(300) produces 147 chunks, and the join produces sixteen rows for each row
 query II
 EXPLAIN ANALYZE WITH a AS MATERIALIZED (SELECT key, match FROM range(300) t(key) CROSS JOIN range(1000) c(match))
@@ -87,13 +91,13 @@ SELECT count(*), sum(key * match) FROM a;
 
 query II
 EXPLAIN ANALYZE WITH a AS MATERIALIZED (SELECT key, match FROM range(300) t(key) CROSS JOIN range(1000) c(match))
-SELECT count(*), sum(key) FROM a JOIN range(1000) b(match) USING (match);
+SELECT count(*), sum(key) FROM a JOIN u USING (match);
 ----
 analyzed_plan	<REGEX>:.*Fanout Mode: DIRECT.*
 
 query II
 WITH a AS MATERIALIZED (SELECT key, match FROM range(300) t(key) CROSS JOIN range(1000) c(match))
-SELECT count(*), sum(key) FROM a JOIN range(1000) b(match) USING (match);
+SELECT count(*), sum(key) FROM a JOIN u USING (match);
 ----
 300000	44850000
 
@@ -111,6 +115,19 @@ WITH a AS MATERIALIZED (SELECT key, match FROM range(300) t(key) CROSS JOIN rang
 SELECT count(*) FROM a JOIN e USING (match);
 ----
 0
+
+# range has no distinct count, so its join with one row for each match is estimated to multiply the rows
+query II
+EXPLAIN ANALYZE WITH a AS MATERIALIZED (SELECT key, match FROM range(300) t(key) CROSS JOIN range(1000) c(match))
+SELECT count(*), sum(key) FROM a JOIN range(1000) b(match) USING (match);
+----
+analyzed_plan	<REGEX>:.*Execution Mode: MATERIALIZED.*Materialized Consumers: 1.*
+
+query II
+WITH a AS MATERIALIZED (SELECT key, match FROM range(300) t(key) CROSS JOIN range(1000) c(match))
+SELECT count(*), sum(key) FROM a JOIN range(1000) b(match) USING (match);
+----
+300000	44850000
 
 # a CTE on the build side, where the rows multiply in the probe pipeline
 query II

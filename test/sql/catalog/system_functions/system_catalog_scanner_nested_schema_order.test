@@ -28,7 +28,7 @@ CREATE VIEW {parent}.child.v_{parent} AS SELECT 42 AS i;
 
 endloop
 
-# the same name at another depth and in another catalog
+# the same name at other depths and in another catalog
 statement ok
 CREATE SCHEMA s3.child.child;
 
@@ -36,63 +36,73 @@ statement ok
 CREATE TABLE s3.child.child.t_s3_deep(i INTEGER);
 
 statement ok
+CREATE SCHEMA child;
+
+statement ok
+CREATE TABLE child.t_top(i INTEGER);
+
+statement ok
 CREATE SCHEMA zz_other_db.child;
 
 statement ok
 CREATE TABLE zz_other_db.child.t_other(i INTEGER);
 
-# the full listing
+# the full listing, a schema before its deeper namesakes
 query I
 SELECT table_name FROM duckdb_tables() WHERE NOT internal;
 ----
+t_top
 t_s0
 t_s1
 t_s2
 t_s3
-t_s3_deep
 t_s4
 t_s5
 t_s6
+t_s3_deep
 t_other
 
 # a pushed schema filter keeps the order of the full listing
 query I
 SELECT table_name FROM duckdb_tables() WHERE schema_name = 'child';
 ----
+t_top
 t_s0
 t_s1
 t_s2
 t_s3
-t_s3_deep
 t_s4
 t_s5
 t_s6
+t_s3_deep
 t_other
 
 # so does a pushed database filter
 query I
 SELECT table_name FROM duckdb_tables() WHERE database_name = current_database();
 ----
+t_top
 t_s0
 t_s1
 t_s2
 t_s3
-t_s3_deep
 t_s4
 t_s5
 t_s6
+t_s3_deep
 
 query I
 SELECT table_name FROM duckdb_tables() WHERE database_name = current_database() AND schema_name = 'child';
 ----
+t_top
 t_s0
 t_s1
 t_s2
 t_s3
-t_s3_deep
 t_s4
 t_s5
 t_s6
+t_s3_deep
 
 # views are listed in the same order
 query I
@@ -116,3 +126,19 @@ v_s3
 v_s4
 v_s5
 v_s6
+
+# the built-in types stay with the top-level main schema when a nested schema has its name
+require noforcestorage
+
+statement ok
+CREATE SCHEMA memory.nested_main_parent;
+
+statement ok
+CREATE SCHEMA memory.nested_main_parent.main;
+
+query TI
+SELECT coalesce(s.parent_schema, '<root>'), t.type_oid
+FROM duckdb_types() t JOIN duckdb_schemas() s ON t.schema_oid = s.oid
+WHERE t.type_name = 'int' AND t.type_oid IS NOT NULL;
+----
+<root>	13

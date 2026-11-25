@@ -1649,8 +1649,13 @@ void Catalog::SortSchemas(vector<reference<SchemaCatalogEntry>> &schemas) {
 		          if (left.name != right.name) {
 			          return left.name < right.name;
 		          }
-		          // nested schemas of different parents can share their name
-		          return left.GetSchemaPath() < right.GetSchemaPath();
+		          // schemas of different parents can share their name, the shallower one goes first
+		          auto left_path = left.GetSchemaPath();
+		          auto right_path = right.GetSchemaPath();
+		          if (left_path.size() != right_path.size()) {
+			          return left_path.size() < right_path.size();
+		          }
+		          return left_path < right_path;
 	          });
 }
 

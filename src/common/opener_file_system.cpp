@@ -10,10 +10,6 @@
 
 namespace duckdb {
 
-void OpenerFileSystem::RegisterCompressionFilesystem(unique_ptr<CompressedFileSystem> fs) {
-	GetFileSystem().RegisterCompressionFilesystem(std::move(fs));
-}
-
 unique_ptr<MemoryMappedFile> OpenerFileSystem::MemoryMapFile(const OpenFileInfo &path, FileOpenFlags flags,
                                                              const MMapOptions &options,
                                                              optional_ptr<FileOpener> opener) {
@@ -22,7 +18,7 @@ unique_ptr<MemoryMappedFile> OpenerFileSystem::MemoryMapFile(const OpenFileInfo 
 	if (IsDuckDBExtensionName(path.path)) {
 		VerifyCanAccessExtension(path.path, flags);
 	}
-	return GetFileSystem().MemoryMapFile(path, flags, options, GetOpener());
+	return FindFileSystem(path.path).MemoryMapFile(path, flags, options, GetOpener());
 }
 
 static PermissionException CannotAccessError(const string &path, FileType type) {
@@ -37,14 +33,13 @@ unique_ptr<MultiFileList> OpenerFileSystem::GlobFilesExtended(const string &path
 	vector<string> search_paths;
 	if (!GetRestrictedSearchPaths(path, expanded_path, search_paths)) {
 		VerifyCanAccessFile(path);
-		return GetFileSystem().Glob(path, input, GetOpener());
+		return FindFileSystem(path).Glob(path, input, GetOpener());
 	}
 	// the path is checked where file_search_path resolves it, and only the allowed locations are looked at
 	// (a glob only in the search paths, a name without glob also in the working directory)
-	auto &fs = GetFileSystem();
 	bool any_allowed = !HasGlob(expanded_path) && IsAccessAllowed(expanded_path, FileType::FILE_TYPE_REGULAR);
 	for (idx_t i = 0; i < search_paths.size() && !any_allowed; i++) {
-		auto location = fs.JoinPath(FileSystem::ExpandPath(search_paths[i], GetOpener()), expanded_path);
+		auto location = JoinPath(FileSystem::ExpandPath(search_paths[i], GetOpener()), expanded_path);
 		any_allowed = IsAccessAllowed(location, FileType::FILE_TYPE_REGULAR);
 	}
 	if (!any_allowed) {
@@ -54,7 +49,7 @@ unique_ptr<MultiFileList> OpenerFileSystem::GlobFilesExtended(const string &path
 	restricted_input.can_access_location = [this](const string &location) {
 		return IsAccessAllowed(location, FileType::FILE_TYPE_REGULAR);
 	};
-	return fs.Glob(path, restricted_input, GetOpener());
+	return FindFileSystem(path).Glob(path, restricted_input, GetOpener());
 }
 
 bool OpenerFileSystem::GetRestrictedSearchPaths(const string &path, string &expanded_path,

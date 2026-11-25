@@ -46,6 +46,8 @@ enum class AccessMode : uint8_t;
 
 enum class AdaptiveFilterSource : uint8_t;
 
+enum class AggregateCombineSourceRetention : uint8_t;
+
 enum class AggregateCombineType : uint8_t;
 
 enum class AggregateDistinctDependent : uint8_t;
@@ -338,6 +340,8 @@ enum class JoinOrderOperatorType : uint8_t;
 
 enum class JoinRefType : uint8_t;
 
+enum class JoinSimplificationPhase : uint8_t;
+
 enum class JoinType : uint8_t;
 
 enum class KeywordCase : uint8_t;
@@ -532,8 +536,6 @@ enum class RecursiveProbeSidePreference : uint8_t;
 
 enum class RegexMatchOperatorSemantics : uint8_t;
 
-enum class RelationType : uint8_t;
-
 enum class RemoteCapability : uint8_t;
 
 enum class RemoveUnusedColumnsMode : uint8_t;
@@ -606,6 +608,8 @@ enum class SourceBatchIndexState : uint8_t;
 
 enum class SourceResultType : uint8_t;
 
+enum class StandardByteClass : uint8_t;
+
 enum class StarExpressionType : uint8_t;
 
 enum class StateMemoryOwnership : uint8_t;
@@ -631,6 +635,8 @@ enum class StrTimeSpecifier : uint8_t;
 enum class SubqueryType : uint8_t;
 
 enum class SuggestionState : uint8_t;
+
+enum class SystemFile : uint8_t;
 
 enum class TableColumnType : uint8_t;
 
@@ -737,6 +743,9 @@ const char* EnumUtil::ToChars<AccessMode>(AccessMode value);
 
 template<>
 const char* EnumUtil::ToChars<AdaptiveFilterSource>(AdaptiveFilterSource value);
+
+template<>
+const char* EnumUtil::ToChars<AggregateCombineSourceRetention>(AggregateCombineSourceRetention value);
 
 template<>
 const char* EnumUtil::ToChars<AggregateCombineType>(AggregateCombineType value);
@@ -1177,6 +1186,9 @@ template<>
 const char* EnumUtil::ToChars<JoinRefType>(JoinRefType value);
 
 template<>
+const char* EnumUtil::ToChars<JoinSimplificationPhase>(JoinSimplificationPhase value);
+
+template<>
 const char* EnumUtil::ToChars<JoinType>(JoinType value);
 
 template<>
@@ -1468,9 +1480,6 @@ template<>
 const char* EnumUtil::ToChars<RegexMatchOperatorSemantics>(RegexMatchOperatorSemantics value);
 
 template<>
-const char* EnumUtil::ToChars<RelationType>(RelationType value);
-
-template<>
 const char* EnumUtil::ToChars<RemoteCapability>(RemoteCapability value);
 
 template<>
@@ -1579,6 +1588,9 @@ template<>
 const char* EnumUtil::ToChars<SourceResultType>(SourceResultType value);
 
 template<>
+const char* EnumUtil::ToChars<StandardByteClass>(StandardByteClass value);
+
+template<>
 const char* EnumUtil::ToChars<StarExpressionType>(StarExpressionType value);
 
 template<>
@@ -1616,6 +1628,9 @@ const char* EnumUtil::ToChars<SubqueryType>(SubqueryType value);
 
 template<>
 const char* EnumUtil::ToChars<SuggestionState>(SuggestionState value);
+
+template<>
+const char* EnumUtil::ToChars<SystemFile>(SystemFile value);
 
 template<>
 const char* EnumUtil::ToChars<TableColumnType>(TableColumnType value);
@@ -1764,6 +1779,9 @@ AccessMode EnumUtil::FromString<AccessMode>(const char *value);
 
 template<>
 AdaptiveFilterSource EnumUtil::FromString<AdaptiveFilterSource>(const char *value);
+
+template<>
+AggregateCombineSourceRetention EnumUtil::FromString<AggregateCombineSourceRetention>(const char *value);
 
 template<>
 AggregateCombineType EnumUtil::FromString<AggregateCombineType>(const char *value);
@@ -2204,6 +2222,9 @@ template<>
 JoinRefType EnumUtil::FromString<JoinRefType>(const char *value);
 
 template<>
+JoinSimplificationPhase EnumUtil::FromString<JoinSimplificationPhase>(const char *value);
+
+template<>
 JoinType EnumUtil::FromString<JoinType>(const char *value);
 
 template<>
@@ -2495,9 +2516,6 @@ template<>
 RegexMatchOperatorSemantics EnumUtil::FromString<RegexMatchOperatorSemantics>(const char *value);
 
 template<>
-RelationType EnumUtil::FromString<RelationType>(const char *value);
-
-template<>
 RemoteCapability EnumUtil::FromString<RemoteCapability>(const char *value);
 
 template<>
@@ -2606,6 +2624,9 @@ template<>
 SourceResultType EnumUtil::FromString<SourceResultType>(const char *value);
 
 template<>
+StandardByteClass EnumUtil::FromString<StandardByteClass>(const char *value);
+
+template<>
 StarExpressionType EnumUtil::FromString<StarExpressionType>(const char *value);
 
 template<>
@@ -2643,6 +2664,9 @@ SubqueryType EnumUtil::FromString<SubqueryType>(const char *value);
 
 template<>
 SuggestionState EnumUtil::FromString<SuggestionState>(const char *value);
+
+template<>
+SystemFile EnumUtil::FromString<SystemFile>(const char *value);
 
 template<>
 TableColumnType EnumUtil::FromString<TableColumnType>(const char *value);

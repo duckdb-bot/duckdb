@@ -87,7 +87,7 @@ SELECT count(*) FROM bad, UNNEST(l) u(v) WHERE s::INT > 0 AND random() < 0;
 statement ok
 RESET delim_join_as_cte;
 
-# a filter on a projected cast joins the volatile filter of the input and runs after it, with or without the lateral join
+# a filter on a projected cast runs after the volatile filter of the input, with or without the lateral join
 query I
 SELECT count(*) FROM (SELECT s::INT AS n, l FROM bad WHERE random() < 0) q WHERE n > 0;
 ----

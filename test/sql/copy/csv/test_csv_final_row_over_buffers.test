@@ -400,3 +400,21 @@ SELECT a, b FROM read_csv('{TEST_DIR}/comments_over_buffers.csv', header = true,
 5	5
 
 endloop
+
+# an encoding other than UTF-8 is read sequentially, so the end of this file of three full buffers is only found when
+# a fourth one is asked for. With two threads, one reads the long row over the last two buffers while the other one
+# takes the last part of the file and finds its end. The read is repeated to make that order likely
+statement ok
+SET threads = 2;
+
+statement ok
+COPY (SELECT l FROM (SELECT i, printf('%07d,%07d', i, i) AS l FROM range(16388) t(i) UNION ALL SELECT 16388, '9,"' || repeat('x', 524220)) ORDER BY i) TO '{TEST_DIR}/sequential_three_buffers.csv' (HEADER false, QUOTE '', DELIMITER '|');
+
+loop i 0 10
+
+query II
+SELECT count(*), sum(a) FROM read_csv('{TEST_DIR}/sequential_three_buffers.csv', header = false, auto_detect = false, columns = {'a': 'BIGINT', 'b': 'VARCHAR'}, encoding = 'latin-1', buffer_size = 262144, ignore_errors = true)
+----
+16388	134275078
+
+endloop

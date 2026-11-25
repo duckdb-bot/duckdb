@@ -53,11 +53,13 @@ static bool IsRangeType(const LogicalType &type) {
 	}
 }
 
-//! A RANGE offset that is NULL for every row is rejected, an offset read per row places a NULL at the peers
-static void VerifyRangeOffset(ClientContext &context, const Expression &offset) {
+//! A constant NULL offset of a RANGE frame is rejected, an offset read per row places a NULL at the peers
+static void VerifyRangeOffset(ClientContext &context, const Expression &offset, bool has_parameter) {
 	bool is_null = offset.GetReturnType() == LogicalType::SQLNULL;
 	Value constant_offset;
-	if (!is_null && offset.IsFoldable() && ExpressionExecutor::TryEvaluateScalar(context, offset, constant_offset)) {
+	// a parameter is bound as a constant once it has a value, but its value belongs to the execution
+	if (!is_null && !has_parameter && offset.IsFoldable() &&
+	    ExpressionExecutor::TryEvaluateScalar(context, offset, constant_offset)) {
 		is_null = constant_offset.IsNull();
 	}
 	if (is_null) {
@@ -222,6 +224,8 @@ BindResult BaseSelectBinder::BindWindowExpression(WindowExpression &window, idx_
 		bound_orders.push_back(std::move(bound_order));
 	}
 	auto bound_filter = BindChild(window.FilterMutable(), depth, error);
+	const bool start_has_parameter = window.StartExpr() && window.StartExpr()->HasParameter();
+	const bool end_has_parameter = window.EndExpr() && window.EndExpr()->HasParameter();
 	auto bound_start = BindChild(window.StartExprMutable(), depth, error);
 	auto bound_end = BindChild(window.EndExprMutable(), depth, error);
 
@@ -356,12 +360,6 @@ BindResult BaseSelectBinder::BindWindowExpression(WindowExpression &window, idx_
 	                         window.WindowStart() == WindowBoundary::EXPR_FOLLOWING_RANGE;
 	const bool range_end = window.WindowEnd() == WindowBoundary::EXPR_PRECEDING_RANGE ||
 	                       window.WindowEnd() == WindowBoundary::EXPR_FOLLOWING_RANGE;
-	if (range_start) {
-		VerifyRangeOffset(context, *bound_start);
-	}
-	if (range_end) {
-		VerifyRangeOffset(context, *bound_end);
-	}
 	if ((range_start || range_end) && bound_orders.size() == 1) {
 		result->RetainSQLRange(range_start ? bound_start.get() : nullptr, range_end ? bound_end.get() : nullptr,
 		                       bound_orders[0]->GetReturnType());
@@ -374,6 +372,9 @@ BindResult BaseSelectBinder::BindWindowExpression(WindowExpression &window, idx_
 	auto &config = DBConfig::GetConfig(context);
 	auto range_sense = OrderType::INVALID;
 	LogicalType start_type = LogicalType::BIGINT;
+	if (range_start) {
+		VerifyRangeOffset(context, *bound_start, start_has_parameter);
+	}
 	if (window.WindowStart() == WindowBoundary::EXPR_PRECEDING_RANGE) {
 		D_ASSERT(window.OrderBy().size() == 1);
 		range_sense = config.ResolveOrder(context, window.OrderByMutable()[0].type);
@@ -390,6 +391,9 @@ BindResult BaseSelectBinder::BindWindowExpression(WindowExpression &window, idx_
 	}
 
 	LogicalType end_type = LogicalType::BIGINT;
+	if (range_end) {
+		VerifyRangeOffset(context, *bound_end, end_has_parameter);
+	}
 	if (window.WindowEnd() == WindowBoundary::EXPR_PRECEDING_RANGE) {
 		D_ASSERT(window.OrderBy().size() == 1);
 		range_sense = config.ResolveOrder(context, window.OrderByMutable()[0].type);

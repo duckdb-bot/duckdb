@@ -326,6 +326,7 @@ SELECT a, b FROM read_csv('{DATA_DIR}/csv/final_row_open_quote.csv', header = tr
 ----
 unterminated quote
 
+# FIXME: a single-threaded scan drops this row without an error, it should report the unterminated quote as well
 query I
 SELECT count(*) FILTER (WHERE a LIKE '%x%') FROM read_csv('{DATA_DIR}/csv/final_row_open_quote.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, strict_mode = true, null_padding = true, buffer_size = 40, parallel = false)
 ----

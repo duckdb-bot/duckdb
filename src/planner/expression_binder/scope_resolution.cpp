@@ -189,8 +189,9 @@ ColumnResolution ExpressionBinder::ResolveColumn(ColumnRefExpression &colref, id
 //! so the resolver sees the same names a real bind would.
 class ResolvableColumnCollector {
 public:
+	//! Without a list for the columns inside subqueries, subqueries are skipped
 	ResolvableColumnCollector(Binder &binder, vector<reference<ColumnRefExpression>> &result,
-	                          vector<reference<ColumnRefExpression>> &subquery_result)
+	                          optional_ptr<vector<reference<ColumnRefExpression>>> subquery_result = nullptr)
 	    : binder(binder), result(result), subquery_result(subquery_result) {
 	}
 
@@ -200,12 +201,15 @@ public:
 			subquery_columns_count = false;
 			return;
 		}
-		if (subquery_depth == 0 && !CanCountBeside(expr)) {
+		if (subquery_result && subquery_depth == 0 && !CanCountBeside(expr)) {
 			// the expression is still collected, as it always was
 			subquery_columns_count = false;
 		}
 		switch (expr.GetExpressionClass()) {
 		case ExpressionClass::SUBQUERY: {
+			if (!subquery_result) {
+				return;
+			}
 			auto &subquery = expr.Cast<SubqueryExpression>();
 			subquery_depth++;
 			// the operand of IN, ANY or ALL belongs to the query of the subquery expression, and counts with it
@@ -226,7 +230,7 @@ public:
 			if (subquery_depth == 0) {
 				result.push_back(col_ref);
 			} else {
-				subquery_result.push_back(col_ref);
+				subquery_result->push_back(col_ref);
 			}
 			return;
 		}
@@ -335,8 +339,8 @@ private:
 private:
 	Binder &binder;
 	vector<reference<ColumnRefExpression>> &result;
-	//! The columns inside subqueries
-	vector<reference<ColumnRefExpression>> &subquery_result;
+	//! The columns inside subqueries, when they are collected
+	optional_ptr<vector<reference<ColumnRefExpression>>> subquery_result;
 	vector<identifier_set_t> lambda_params;
 	//! The number of subqueries around the expression that is being collected
 	idx_t subquery_depth = 0;
@@ -358,6 +362,34 @@ optional_idx ExpressionBinder::ResolveAggregateOwner(FunctionExpression &aggrega
 			collector.CollectExpression(*order.expression);
 		}
 	}
+	auto owner = ResolveOwner(columns, start);
+	if (!collector.SubqueryColumnsCount() || subquery_columns.empty()) {
+		return owner;
+	}
+	// the columns of the subqueries count only if all of them name a column, an alias can stand for an aggregate and
+	// a whole row for a call
+	auto subquery_owner = owner;
+	for (auto &colref : subquery_columns) {
+		auto resolution = ResolveColumn(colref.get(), start);
+		if (!resolution.qualified || resolution.qualified->GetExpressionClass() != ExpressionClass::COLUMN_REF) {
+			return owner;
+		}
+		if (!subquery_owner.IsValid() || resolution.depth < subquery_owner.GetIndex()) {
+			subquery_owner = resolution.depth;
+		}
+	}
+	return subquery_owner;
+}
+
+optional_idx ExpressionBinder::ResolveExpressionOwner(ParsedExpression &expr, idx_t start) {
+	vector<reference<ColumnRefExpression>> columns;
+	// a group is only matched without subqueries, so the columns inside them are not collected
+	ResolvableColumnCollector collector(binder, columns);
+	collector.CollectExpression(expr);
+	return ResolveOwner(columns, start);
+}
+
+optional_idx ExpressionBinder::ResolveOwner(vector<reference<ColumnRefExpression>> &columns, idx_t start) {
 	auto owner = start;
 	bool found = false;
 	for (auto &colref : columns) {
@@ -372,24 +404,7 @@ optional_idx ExpressionBinder::ResolveAggregateOwner(FunctionExpression &aggrega
 			found = true;
 		}
 	}
-	if (!collector.SubqueryColumnsCount() || subquery_columns.empty()) {
-		return found ? optional_idx(owner) : optional_idx();
-	}
-	// the columns of the subqueries count only if all of them name a column, an alias can stand for an aggregate and
-	// a whole row for a call
-	auto subquery_owner = owner;
-	bool subquery_found = found;
-	for (auto &colref : subquery_columns) {
-		auto resolution = ResolveColumn(colref.get(), start);
-		if (!resolution.qualified || resolution.qualified->GetExpressionClass() != ExpressionClass::COLUMN_REF) {
-			return found ? optional_idx(owner) : optional_idx();
-		}
-		if (!subquery_found || resolution.depth < subquery_owner) {
-			subquery_owner = resolution.depth;
-			subquery_found = true;
-		}
-	}
-	return optional_idx(subquery_owner);
+	return found ? optional_idx(owner) : optional_idx();
 }
 
 optional_idx ExpressionBinder::ResolveOuterGroup(vector<reference<ParsedExpression>> &expressions, idx_t start) {
@@ -406,6 +421,61 @@ optional_idx ExpressionBinder::ResolveOuterGroup(vector<reference<ParsedExpressi
 		}
 	}
 	return optional_idx();
+}
+
+//! Expression classes that can never equal a group expression, or that are already matched against
+//! the groups elsewhere: a column reference is matched by name and alias in `ResolveColumn`
+static bool CanMatchGroup(const ParsedExpression &expr) {
+	switch (expr.GetExpressionClass()) {
+	case ExpressionClass::COLUMN_REF:
+	case ExpressionClass::CONSTANT:
+	case ExpressionClass::PARAMETER:
+	case ExpressionClass::POSITIONAL_REFERENCE:
+	case ExpressionClass::LAMBDA_REF:
+	case ExpressionClass::LAMBDA:
+	case ExpressionClass::STAR:
+	case ExpressionClass::DEFAULT:
+	case ExpressionClass::SUBQUERY:
+	case ExpressionClass::TYPE:
+	case ExpressionClass::WINDOW:
+		return false;
+	default:
+		return true;
+	}
+}
+
+optional_idx ExpressionBinder::ResolveOuterGroupOwner(ParsedExpression &expr) {
+	if (!CanMatchGroup(expr)) {
+		return optional_idx();
+	}
+	// resolving the owner walks the expression, so only do so when some enclosing scope can match at all -
+	// plain column groups are already matched in `ResolveColumn`
+	bool any_compound_groups = false;
+	for (idx_t scope = 1; scope < ScopeCount() && !any_compound_groups; scope++) {
+		any_compound_groups = ScopeAt(scope).HasCompoundGroups();
+	}
+	if (!any_compound_groups) {
+		return optional_idx();
+	}
+	// the expression only refers to a group of the scope that owns all of its columns, so that e.g. a
+	// column of an inner scope that shadows the grouped one keeps the expression in the inner scope
+	auto owner = ResolveExpressionOwner(expr, 0);
+	if (!owner.IsValid() || owner.GetIndex() == 0) {
+		return optional_idx();
+	}
+	// the columns of a nested subquery can resolve in other scopes than the expression's own columns
+	if (!ScopeAt(owner.GetIndex()).MatchesGroupWithoutSubquery(expr)) {
+		return optional_idx();
+	}
+	return owner;
+}
+
+BindResult ExpressionBinder::BindGroupInEnclosingScope(unique_ptr<ParsedExpression> &expr_ptr, idx_t owner,
+                                                       idx_t depth) {
+	// the groups are keyed by the qualified form, so bind a qualified copy and leave the original intact
+	auto qualified = expr_ptr->Copy();
+	QualifyColumnNames(ScopeAt(owner).binder, qualified);
+	return DispatchToScope(owner, qualified, depth);
 }
 
 } // namespace duckdb

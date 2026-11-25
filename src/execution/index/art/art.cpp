@@ -20,6 +20,7 @@
 #include "duckdb/optimizer/matcher/expression_matcher.hpp"
 #include "duckdb/planner/expression/bound_between_expression.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
+#include "duckdb/planner/expression/bound_conjunction_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/storage/arena_allocator.hpp"
@@ -210,11 +211,9 @@ static unique_ptr<IndexScanState> InitializeScanTwoPredicates(const Value &low_v
 	return std::move(result);
 }
 
-unique_ptr<IndexScanState> ART::TryInitializeScan(const Expression &expr, const Expression &filter_expr) const {
-	Value low_value, high_value, equal_value;
-	ExpressionType low_comparison_type = ExpressionType::INVALID, high_comparison_type = ExpressionType::INVALID;
-
-	// Try to find a matching index for any of the filter expressions.
+//! Matches a comparison between the index expression and a non-NULL constant.
+static bool TryMatchComparison(const Expression &expr, const Expression &filter_expr, ExpressionType &comparison_type,
+                               Value &constant_value) {
 	ComparisonExpressionMatcher matcher;
 
 	// Match on a comparison type.
@@ -226,81 +225,101 @@ unique_ptr<IndexScanState> ART::TryInitializeScan(const Expression &expr, const 
 	matcher.policy = SetMatcher::Policy::UNORDERED;
 
 	vector<reference<Expression>> bindings;
-	auto filter_match =
-	    matcher.Match(const_cast<Expression &>(filter_expr), bindings); // NOLINT: Match does not alter the expr.
-	if (filter_match) {
-		// This is a range or equality comparison with a constant value, so we can use the index.
-		// 		bindings[0] = the expression
-		// 		bindings[1] = the index expression
-		// 		bindings[2] = the constant
-		auto &comparison = bindings[0].get().Cast<BoundFunctionExpression>();
-		auto constant_value = bindings[2].get().Cast<BoundConstantExpression>().GetValue();
-		auto comparison_type = comparison.GetExpressionType();
+	if (!matcher.Match(const_cast<Expression &>(filter_expr), bindings)) { // NOLINT: Match does not alter the expr.
+		return false;
+	}
+	// 		bindings[0] = the expression
+	// 		bindings[1] = the index expression
+	// 		bindings[2] = the constant
+	auto &comparison = bindings[0].get().Cast<BoundFunctionExpression>();
+	constant_value = bindings[2].get().Cast<BoundConstantExpression>().GetValue();
+	comparison_type = comparison.GetExpressionType();
 
-		auto &left = BoundComparisonExpression::Left(comparison);
-		if (left.GetExpressionType() == ExpressionType::VALUE_CONSTANT) {
-			// The expression is on the right side, we flip the comparison expression.
-			comparison_type = FlipComparisonExpression(comparison_type);
+	auto &left = BoundComparisonExpression::Left(comparison);
+	if (left.GetExpressionType() == ExpressionType::VALUE_CONSTANT) {
+		// The expression is on the right side, we flip the comparison expression.
+		comparison_type = FlipComparisonExpression(comparison_type);
+	}
+	if (comparison_type == ExpressionType::COMPARE_NOT_DISTINCT_FROM) {
+		// Table filters discard NULL and false alike, so IS NOT DISTINCT FROM a
+		// non-NULL constant selects the same rows as equality.
+		comparison_type = ExpressionType::COMPARE_EQUAL;
+	}
+	// NULL is not indexed.
+	return !constant_value.IsNull();
+}
+
+static void CollectConjunctionChildren(const Expression &expr, vector<reference<const Expression>> &result) {
+	if (expr.GetExpressionType() != ExpressionType::CONJUNCTION_AND) {
+		result.push_back(expr);
+		return;
+	}
+	for (auto &child : expr.Cast<BoundConjunctionExpression>().GetChildren()) {
+		CollectConjunctionChildren(*child, result);
+	}
+}
+
+static bool IsLowerBound(const ExpressionType comparison_type) {
+	return comparison_type == ExpressionType::COMPARE_GREATERTHAN ||
+	       comparison_type == ExpressionType::COMPARE_GREATERTHANOREQUALTO;
+}
+
+unique_ptr<IndexScanState> ART::TryInitializeScan(const Expression &expr, const Expression &filter_expr) const {
+	Value low_value, high_value;
+	ExpressionType low_comparison_type = ExpressionType::INVALID;
+	ExpressionType high_comparison_type = ExpressionType::INVALID;
+
+	// Keeps the first bound on each side.
+	auto add_bound = [&](const Value &value, const ExpressionType comparison_type) {
+		auto is_lower = IsLowerBound(comparison_type);
+		auto &bound_value = is_lower ? low_value : high_value;
+		if (bound_value.IsNull()) {
+			bound_value = value;
+			(is_lower ? low_comparison_type : high_comparison_type) = comparison_type;
 		}
+	};
 
-		if (comparison_type == ExpressionType::COMPARE_NOT_DISTINCT_FROM) {
-			// Table filters discard NULL and false alike, so IS NOT DISTINCT FROM a
-			// non-NULL constant selects the same rows as equality. NULL is not indexed.
-			if (constant_value.IsNull()) {
+	// Use the conjuncts that form a key range, the caller applies the remaining ones to the fetched rows.
+	vector<reference<const Expression>> comparisons;
+	CollectConjunctionChildren(filter_expr, comparisons);
+	for (auto &comparison_ref : comparisons) {
+		auto &comparison = comparison_ref.get();
+		if (comparison.GetExpressionType() == ExpressionType::COMPARE_BETWEEN) {
+			auto &between = comparison.Cast<BoundFunctionExpression>();
+			auto &lower_bound = BoundBetweenExpression::LowerBound(between);
+			auto &upper_bound = BoundBetweenExpression::UpperBound(between);
+			if (!BoundBetweenExpression::Input(between).Equals(expr) ||
+			    lower_bound.GetExpressionType() != ExpressionType::VALUE_CONSTANT ||
+			    upper_bound.GetExpressionType() != ExpressionType::VALUE_CONSTANT) {
+				continue;
+			}
+			auto &lower_value = lower_bound.Cast<BoundConstantExpression>().GetValue();
+			auto &upper_value = upper_bound.Cast<BoundConstantExpression>().GetValue();
+			// A NULL bound matches no rows.
+			if (lower_value.IsNull() || upper_value.IsNull()) {
 				return nullptr;
 			}
-			equal_value = constant_value;
-		} else if (comparison_type == ExpressionType::COMPARE_EQUAL) {
-			// An equality value overrides any other bounds.
-			equal_value = constant_value;
-		} else if (comparison_type == ExpressionType::COMPARE_GREATERTHANOREQUALTO ||
-		           comparison_type == ExpressionType::COMPARE_GREATERTHAN) {
-			// This is a lower bound.
-			low_value = constant_value;
-			low_comparison_type = comparison_type;
-		} else {
-			// This is an upper bound.
-			high_value = constant_value;
-			high_comparison_type = comparison_type;
+			add_bound(lower_value, BoundBetweenExpression::LowerComparisonType(between));
+			add_bound(upper_value, BoundBetweenExpression::UpperComparisonType(between));
+			continue;
 		}
-	} else if (filter_expr.GetExpressionType() == ExpressionType::COMPARE_BETWEEN) {
-		auto &between = filter_expr.Cast<BoundFunctionExpression>();
-		auto &input = BoundBetweenExpression::Input(between);
-		if (!input.Equals(expr)) {
-			// The expression does not match the index expression.
-			return nullptr;
+		ExpressionType comparison_type;
+		Value constant_value;
+		if (!TryMatchComparison(expr, comparison, comparison_type, constant_value)) {
+			continue;
 		}
-		auto &lower_bound = BoundBetweenExpression::LowerBound(between);
-		auto &upper_bound = BoundBetweenExpression::UpperBound(between);
-
-		if (lower_bound.GetExpressionType() != ExpressionType::VALUE_CONSTANT ||
-		    upper_bound.GetExpressionType() != ExpressionType::VALUE_CONSTANT) {
-			// Not a constant expression.
-			return nullptr;
+		if (comparison_type == ExpressionType::COMPARE_EQUAL) {
+			return InitializeScanSinglePredicate(constant_value, ExpressionType::COMPARE_EQUAL);
 		}
-
-		auto lower_inclusive = BoundBetweenExpression::LowerInclusive(between);
-		auto upper_inclusive = BoundBetweenExpression::UpperInclusive(between);
-		low_value = lower_bound.Cast<BoundConstantExpression>().GetValue();
-		low_comparison_type =
-		    lower_inclusive ? ExpressionType::COMPARE_GREATERTHANOREQUALTO : ExpressionType::COMPARE_GREATERTHAN;
-		high_value = (upper_bound.Cast<BoundConstantExpression>()).GetValue();
-		high_comparison_type =
-		    upper_inclusive ? ExpressionType::COMPARE_LESSTHANOREQUALTO : ExpressionType::COMPARE_LESSTHAN;
+		add_bound(constant_value, comparison_type);
 	}
-	// FIXME: add another if...else... to match rewritten BETWEEN,
-	// i.e., WHERE i BETWEEN 50 AND 1502 is rewritten to CONJUNCTION_AND.
 
 	// We cannot use an index scan.
-	if (equal_value.IsNull() && low_value.IsNull() && high_value.IsNull()) {
+	if (low_value.IsNull() && high_value.IsNull()) {
 		return nullptr;
 	}
 
 	// Initialize the index scan state and return it.
-	if (!equal_value.IsNull()) {
-		// Equality predicate.
-		return InitializeScanSinglePredicate(equal_value, ExpressionType::COMPARE_EQUAL);
-	}
 	if (!low_value.IsNull() && !high_value.IsNull()) {
 		// Two-sided predicate.
 		return InitializeScanTwoPredicates(low_value, low_comparison_type, high_value, high_comparison_type);
@@ -656,14 +675,8 @@ ErrorData ART::InsertKeys(ArenaAllocator &arena, unsafe_vector<ARTKey> &keys, un
 
 ErrorData ART::Append(IndexLock &l, DataChunk &chunk, Vector &row_ids) {
 	l.AssertHeld(*this);
-	// Execute all column expressions before inserting the data chunk.
-	DataChunk expr_chunk;
-	expr_chunk.Initialize(Allocator::DefaultAllocator(), logical_types);
-	ExecuteExpressions(chunk, expr_chunk);
-
-	// Now insert the data chunk.
 	IndexAppendInfo info;
-	return Insert(l, expr_chunk, row_ids, info);
+	return Append(l, chunk, row_ids, info);
 }
 
 ErrorData ART::Append(IndexLock &l, DataChunk &chunk, Vector &row_ids, IndexAppendInfo &info) {
@@ -671,7 +684,12 @@ ErrorData ART::Append(IndexLock &l, DataChunk &chunk, Vector &row_ids, IndexAppe
 	// Execute all column expressions before inserting the data chunk.
 	DataChunk expr_chunk;
 	expr_chunk.Initialize(Allocator::DefaultAllocator(), logical_types);
-	ExecuteExpressions(chunk, expr_chunk);
+	try {
+		ExecuteExpressions(chunk, expr_chunk);
+	} catch (std::exception &ex) {
+		// nothing was inserted yet: return the error instead of throwing
+		return ErrorData(ex);
+	}
 
 	// Now insert the data chunk.
 	return Insert(l, expr_chunk, row_ids, info);
@@ -694,6 +712,15 @@ void ART::ResetStorage(IndexLock &index_lock) {
 	index_lock.AssertHeld(*this);
 	for (auto &allocator : *allocators) {
 		allocator->Reset();
+	}
+	root_ptr.Clear();
+}
+
+void ART::DisownStorage(IndexLock &index_lock) {
+	index_lock.AssertHeld(*this);
+	D_ASSERT(owns_data);
+	for (auto &allocator : *allocators) {
+		allocator->DisownBuffers();
 	}
 	root_ptr.Clear();
 }
@@ -1576,9 +1603,11 @@ void ART::Verify(IndexLock &l) {
 }
 
 void ART::VerifyInternal() {
+#ifdef D_ASSERT_IS_ENABLED
 	if (root_ptr.HasMetadata()) {
 		root_ptr.Verify(*this);
 	}
+#endif
 }
 
 void ART::VerifyAllocations(IndexLock &l) {

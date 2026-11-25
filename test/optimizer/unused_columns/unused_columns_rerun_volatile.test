@@ -7,9 +7,6 @@ statement ok
 SET debug_verify_column_bindings=true;
 
 statement ok
-SET explain_output = 'OPTIMIZED_ONLY';
-
-statement ok
 CREATE TABLE v AS SELECT x FROM (VALUES (1), (2), (3)) t(x);
 
 # the statistics decide the comparison of the derived column, which alone leaves the column in the plan
@@ -239,31 +236,3 @@ statement error
 SELECT sum(x) FILTER (WHERE CASE WHEN (SELECT x FROM v) > 0 THEN true ELSE true END) FROM v;
 ----
 More than one row returned by a subquery
-
-# a volatile column that the query never reads is not computed
-statement ok
-CREATE SEQUENCE unread_sequence;
-
-query I
-SELECT count(*) FROM (SELECT x, CASE WHEN nextval('unread_sequence') > 0 THEN true ELSE true END AS b FROM v);
-----
-3
-
-query I
-SELECT nextval('unread_sequence');
-----
-1
-
-# a column without an effect that lost its reader is still pruned from the scan
-statement ok
-CREATE TABLE w AS SELECT i AS x, true AS always_true FROM range(100) r(i);
-
-query II
-EXPLAIN SELECT sum(x) FILTER (WHERE b) AS filtered FROM (SELECT x, always_true AS b FROM w);
-----
-logical_opt	<!REGEX>:(?s).*always_true.*
-
-query II
-EXPLAIN SELECT count(x), list(c ORDER BY x) FROM (SELECT x, b > false AS c FROM (SELECT x, always_true AS b FROM w));
-----
-logical_opt	<!REGEX>:(?s).*always_true.*

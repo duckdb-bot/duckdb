@@ -1,0 +1,46 @@
+# name: test/optimizer/unused_columns/unused_columns_rerun_volatile_plan.test
+# description: The column pruning that runs again after statistics propagation still removes what it removed before
+# group: [unused_columns]
+
+statement ok
+SET explain_output = 'PHYSICAL_ONLY';
+
+statement ok
+CREATE TABLE v AS SELECT x FROM (VALUES (1), (2), (3)) t(x);
+
+# a volatile column that the query never reads is not computed
+statement ok
+CREATE SEQUENCE unread_sequence;
+
+query I
+SELECT count(*) FROM (SELECT x, CASE WHEN nextval('unread_sequence') > 0 THEN true ELSE true END AS b FROM v);
+----
+3
+
+query I
+SELECT nextval('unread_sequence');
+----
+1
+
+# a column without an effect that lost its reader is still pruned from the scan
+statement ok
+CREATE TABLE w AS SELECT i AS x, true AS always_true FROM range(100) r(i);
+
+query II
+EXPLAIN SELECT sum(x) FILTER (WHERE b) AS filtered FROM (SELECT x, always_true AS b FROM w);
+----
+physical_plan	<!REGEX>:(?s).*always_true.*
+
+query II
+EXPLAIN SELECT count(x), list(c ORDER BY x) FROM (SELECT x, b > false AS c FROM (SELECT x, always_true AS b FROM w));
+----
+physical_plan	<!REGEX>:(?s).*always_true.*
+
+# the scan shows the column while a filter reads it
+statement ok
+SET disabled_optimizers = 'statistics_propagation';
+
+query II
+EXPLAIN SELECT sum(x) FILTER (WHERE b) AS filtered FROM (SELECT x, always_true AS b FROM w);
+----
+physical_plan	<REGEX>:(?s).*always_true.*

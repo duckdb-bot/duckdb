@@ -438,6 +438,33 @@ TEST_CASE("Test that a reset option compares as never set in the instance cache"
 		REQUIRE_THROWS_WITH(instance_cache.GetOrCreateInstance(path, second, true),
 		                    Catch::Matchers::Contains("different configuration than existing connections"));
 	}
+	SECTION("A reset that is refused leaves the option set") {
+		DBConfig first;
+		first.SetOptionByName("enable_external_access", Value(false));
+		DBConfig second;
+		second.SetOptionByName("temp_directory", Value(TestCreatePath("instance_cache_reset_option_tmp")));
+		second.SetOptionByName("enable_external_access", Value(false));
+		REQUIRE_THROWS_WITH(second.ResetOption(nullptr, *DBConfig::GetOptionByName("temp_directory")),
+		                    Catch::Matchers::Contains("has been disabled by configuration"));
+
+		auto db = instance_cache.GetOrCreateInstance(path, first, true);
+		REQUIRE_THROWS_WITH(instance_cache.GetOrCreateInstance(path, second, true),
+		                    Catch::Matchers::Contains("different configuration than existing connections"));
+	}
+	SECTION("An extension option with the name of a built-in option leaves the built-in option set") {
+		DBConfig first;
+		DBConfig second;
+		second.SetOptionByName("threads", Value::BIGINT(3));
+		second.AddExtensionOption("threads", "an option named like a built-in one", LogicalType::BIGINT,
+		                          Value::BIGINT(1));
+		ExtensionOption extension_option;
+		REQUIRE(second.TryGetExtensionOption("threads", extension_option));
+		second.ResetOption(extension_option);
+
+		auto db = instance_cache.GetOrCreateInstance(path, first, true);
+		REQUIRE_THROWS_WITH(instance_cache.GetOrCreateInstance(path, second, true),
+		                    Catch::Matchers::Contains("different configuration than existing connections"));
+	}
 	SECTION("An extension option that was reset compares as never set") {
 		DBConfig first;
 		DBConfig second;

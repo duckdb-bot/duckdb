@@ -479,12 +479,6 @@ static void EraseUserOptions(identifier_map_t<Value> &user_options, PREDICATE &&
 }
 
 void DBConfig::ResetOption(optional_ptr<DatabaseInstance> db, const ConfigurationOption &option) {
-	if (is_user_config) {
-		EraseUserOptions(options.user_options, [&](const Identifier &name) {
-			auto user_option = GetOptionByName(name);
-			return user_option && StringUtil::Equals(user_option->name, option.name);
-		});
-	}
 	if (option.IsGeneric()) {
 		// generic option
 		if (option.set_callback) {
@@ -494,14 +488,21 @@ void DBConfig::ResetOption(optional_ptr<DatabaseInstance> db, const Configuratio
 			option.set_callback(info, reset_value);
 		}
 		user_settings.ClearSetting(option.setting_idx.GetIndex());
-		return;
+	} else {
+		if (!option.reset_global) {
+			throw InternalException("Could not reset option \"%s\" as a global option", option.name);
+		}
+		std::lock_guard<std::recursive_mutex> guard(config_lock);
+		D_ASSERT(option.set_global);
+		option.reset_global(db.get(), *this);
 	}
-	if (!option.reset_global) {
-		throw InternalException("Could not reset option \"%s\" as a global option", option.name);
+	if (is_user_config) {
+		// the reset went through, under every name the option was set with
+		EraseUserOptions(options.user_options, [&](const Identifier &name) {
+			auto user_option = GetOptionByName(name);
+			return user_option && StringUtil::Equals(user_option->name, option.name);
+		});
 	}
-	std::lock_guard<std::recursive_mutex> guard(config_lock);
-	D_ASSERT(option.set_global);
-	option.reset_global(db.get(), *this);
 }
 
 Value ConfigurationOption::GetDefaultValue(const DBConfig &config) const {
@@ -526,14 +527,15 @@ void DBConfig::SetOption(const Identifier &name, Value value) {
 }
 
 void DBConfig::ResetOption(const ExtensionOption &extension_option) {
+	user_settings.ClearSetting(extension_option.setting_index.GetIndex());
 	if (is_user_config) {
 		EraseUserOptions(options.user_options, [&](const Identifier &name) {
+			// a name that is also a built-in option was recorded for the built-in option
 			ExtensionOption user_option;
-			return TryGetExtensionOption(name, user_option) &&
+			return !GetOptionByName(name) && TryGetExtensionOption(name, user_option) &&
 			       user_option.setting_index == extension_option.setting_index;
 		});
 	}
-	user_settings.ClearSetting(extension_option.setting_index.GetIndex());
 }
 
 void DBConfig::ResetGenericOption(idx_t setting_index) {

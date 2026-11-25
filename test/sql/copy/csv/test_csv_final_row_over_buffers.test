@@ -425,9 +425,8 @@ SELECT a, b FROM read_csv('{TEST_DIR}/comments_over_buffers.csv', header = true,
 
 endloop
 
-# an encoding other than UTF-8 is read sequentially, so the end of this file of three full buffers is only found when
-# a fourth one is asked for. With two threads, one reads the long row over the last two buffers while the other one
-# takes the last part of the file and finds its end. The read is repeated to make that order likely
+# read sequentially, the end of a file of three full buffers is only found when a fourth one is asked for. One thread
+# is in the long last row when the other one finds the end, and the read is repeated to make that order likely
 statement ok
 SET threads = 2;
 

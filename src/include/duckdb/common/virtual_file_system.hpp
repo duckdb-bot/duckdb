@@ -52,9 +52,6 @@ public:
 	//! The file system of paths no sub-system handles. Does not check whether it is disabled.
 	DUCKDB_API FileSystem &GetDefaultFileSystem();
 
-	//! Whether the file at the path is opened through a LocalFileSystem.
-	DUCKDB_API bool IsLocalFile(const string &path);
-
 	DUCKDB_API std::string GetName() const;
 
 private:

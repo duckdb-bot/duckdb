@@ -189,7 +189,7 @@ shared_ptr<AttachedDatabase> DatabaseManager::AttachDatabase(ClientContext &cont
 		timer.EndTimer();
 	}
 	auto &config = DBConfig::GetConfig(context);
-	if (options.stored_database_path && config.file_system->IsLocalFile(info.path)) {
+	if (options.stored_database_path && config.file_system->FindFileSystem(info.path, nullptr).IsLocalFileSystem()) {
 		// the other database instances of the process must not open the file either
 		while (!config.file_registry->TryRegister(*this, info.path, info.name, options.access_mode)) {
 			context.InterruptCheck();

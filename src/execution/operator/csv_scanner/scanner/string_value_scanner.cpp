@@ -2128,7 +2128,9 @@ void StringValueScanner::FinishBoundaryScan(const bool moved) {
 				ProcessExtraRow();
 			}
 		}
-		if (cur_buffer_handle->is_last_buffer && iterator.pos.buffer_pos >= cur_buffer_handle->actual_size) {
+		// the loop above releases the buffer when it finds the end of the file
+		if (cur_buffer_handle && cur_buffer_handle->is_last_buffer &&
+		    iterator.pos.buffer_pos >= cur_buffer_handle->actual_size) {
 			// the last buffer has no next buffer to wait for
 			TryMoveToNextBuffer();
 		}

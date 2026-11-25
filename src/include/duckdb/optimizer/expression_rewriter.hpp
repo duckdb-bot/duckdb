@@ -47,17 +47,18 @@ public:
 	                                             Value value);
 
 private:
-	//! Returns the rewrite rules, constructing them on first access
+	//! Returns the custom rules if any were added, otherwise the default rules shared by the client context
 	const vector<unique_ptr<Rule>> &GetRules();
+	//! Creates the default rules, which only use the rewriter to reach its client context
+	static vector<unique_ptr<Rule>> CreateDefaultRules(ExpressionRewriter &rewriter);
 
 	//! Apply a set of rules to a specific expression
-	unique_ptr<Expression> ApplyRules(LogicalOperator &op, const vector<reference<Rule>> &rules,
+	unique_ptr<Expression> ApplyRules(LogicalOperator &op, const vector<unique_ptr<Rule>> &rules,
 	                                  unique_ptr<Expression> expr, bool &changes_made, bool is_root = false);
 
 	//! The set of rules as known by the Expression Rewriter
 	vector<unique_ptr<Rule>> rules;
 	optional_ptr<LogicalOperator> op;
-	vector<reference<Rule>> to_apply_rules;
 	//! Whether the expression the rules are applied to is inside TRY or HAS_ERROR
 	bool in_try = false;
 };

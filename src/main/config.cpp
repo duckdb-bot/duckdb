@@ -466,7 +466,25 @@ void DBConfig::SetOption(optional_ptr<DatabaseInstance> db, const ConfigurationO
 	option.set_global(db.get(), *this, input);
 }
 
+//! Forgets the selected user options, so that the config compares as if they were never set
+template <class PREDICATE>
+static void EraseUserOptions(identifier_map_t<Value> &user_options, PREDICATE &&is_reset) {
+	for (auto entry = user_options.begin(); entry != user_options.end();) {
+		if (is_reset(entry->first)) {
+			entry = user_options.erase(entry);
+		} else {
+			++entry;
+		}
+	}
+}
+
 void DBConfig::ResetOption(optional_ptr<DatabaseInstance> db, const ConfigurationOption &option) {
+	if (is_user_config) {
+		EraseUserOptions(options.user_options, [&](const Identifier &name) {
+			auto user_option = GetOptionByName(name);
+			return user_option && StringUtil::Equals(user_option->name, option.name);
+		});
+	}
 	if (option.IsGeneric()) {
 		// generic option
 		if (option.set_callback) {
@@ -508,6 +526,13 @@ void DBConfig::SetOption(const Identifier &name, Value value) {
 }
 
 void DBConfig::ResetOption(const ExtensionOption &extension_option) {
+	if (is_user_config) {
+		EraseUserOptions(options.user_options, [&](const Identifier &name) {
+			ExtensionOption user_option;
+			return TryGetExtensionOption(name, user_option) &&
+			       user_option.setting_index == extension_option.setting_index;
+		});
+	}
 	user_settings.ClearSetting(extension_option.setting_index.GetIndex());
 }
 

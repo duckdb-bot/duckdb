@@ -1,4 +1,5 @@
 #include "duckdb/common/types/data_chunk.hpp"
+#include "duckdb/common/type_visitor.hpp"
 #include "duckdb/function/scalar/list_functions.hpp"
 #include "duckdb/function/scalar/nested_functions.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
@@ -6,6 +7,7 @@
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/planner/expression_binder.hpp"
+#include "duckdb/planner/binder.hpp"
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/function/create_sort_key.hpp"
 #include "duckdb/common/serializer/deserializer.hpp"
@@ -173,6 +175,13 @@ static void ListIntersectFunction(DataChunk &args, ExpressionState &state, Vecto
 		list.Append(l_child, row_sel, l_size, 0, row_result_length);
 	}
 }
+//! Whether a (nested) type has a VARCHAR with an explicit collation
+static bool HasExplicitCollation(const LogicalType &type) {
+	return TypeVisitor::Contains(type, [](const LogicalType &child) {
+		return child.id() == LogicalTypeId::VARCHAR && !StringType::GetCollation(child).empty();
+	});
+}
+
 static unique_ptr<FunctionData> ListIntersectBind(BindScalarFunctionInput &input) {
 	auto &context = input.GetClientContext();
 	auto &arguments = input.GetArguments();
@@ -185,9 +194,13 @@ static unique_ptr<FunctionData> ListIntersectBind(BindScalarFunctionInput &input
 	unique_ptr<Expression> key;
 	if (list_type.id() == LogicalTypeId::LIST) {
 		auto &element_type = ListType::GetChildType(list_type);
-		key = make_uniq<BoundReferenceExpression>(element_type, idx_t(0));
-		if (!ExpressionBinder::PushCollation(context, key, element_type, CollationType::COMBINABLE_COLLATIONS)) {
-			key.reset();
+		// an index key, like a rebind outside of a query, only compares by keys under an explicit collation
+		const bool explicit_only = !input.HasBinder() || input.GetBinder().IsBindingIndexKey();
+		if (!explicit_only || HasExplicitCollation(element_type)) {
+			key = make_uniq<BoundReferenceExpression>(element_type, idx_t(0));
+			if (!ExpressionBinder::PushCollation(context, key, element_type, CollationType::COMBINABLE_COLLATIONS)) {
+				key.reset();
+			}
 		}
 	}
 	return make_uniq<ListIntersectBindData>(std::move(key));

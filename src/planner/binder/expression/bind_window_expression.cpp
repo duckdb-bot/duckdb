@@ -55,10 +55,6 @@ static bool IsRangeType(const LogicalType &type) {
 
 //! Whether the expression is written as a NULL constant, with or without casts around it
 static bool IsNullConstant(const ParsedExpression &expr) {
-	if (!expr.GetAlias().empty()) {
-		// the expression of a generated column, which replaces a reference to it and carries its name
-		return false;
-	}
 	reference<const ParsedExpression> current = expr;
 	while (current.get().GetExpressionClass() == ExpressionClass::CAST) {
 		current = current.get().Cast<CastExpression>().Child();

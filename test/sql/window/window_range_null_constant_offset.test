@@ -170,20 +170,6 @@ EXECUTE alias_offset(1)
 1	1	1
 1	2	3
 
-# a generated column is a column, also when its expression is a NULL constant
-statement ok
-CREATE TABLE generated_offset(i BIGINT, off BIGINT GENERATED ALWAYS AS (NULL))
-
-statement ok
-INSERT INTO generated_offset(i) VALUES (0), (1), (2)
-
-query II
-SELECT i, sum(i) OVER (ORDER BY i RANGE BETWEEN off PRECEDING AND CURRENT ROW) FROM generated_offset ORDER BY i
-----
-0	0
-1	1
-2	2
-
 # so does a variable, read as a parameter or with getvariable
 statement ok
 SET VARIABLE null_offset = NULL::BIGINT
@@ -228,6 +214,25 @@ FROM range(3) t(i) GROUP BY i, 1::BIGINT ORDER BY i
 0	0
 1	1
 2	3
+
+# the binder replaces a generated column by its expression, which can be the NULL constant
+statement ok
+CREATE TABLE generated_offset(i BIGINT, null_off BIGINT GENERATED ALWAYS AS (NULL), off BIGINT GENERATED ALWAYS AS (i - i))
+
+statement ok
+INSERT INTO generated_offset(i) VALUES (0), (1), (2)
+
+statement error
+SELECT i, sum(i) OVER (ORDER BY i RANGE BETWEEN null_off PRECEDING AND CURRENT ROW) FROM generated_offset
+----
+Binder Error: Window RANGE expressions cannot be NULL
+
+query II
+SELECT i, sum(i) OVER (ORDER BY i RANGE BETWEEN off PRECEDING AND CURRENT ROW) FROM generated_offset ORDER BY i
+----
+0	0
+1	1
+2	2
 
 # a macro argument is a constant when it is written as one
 statement ok

@@ -5,11 +5,21 @@
 # data/csv/strict_mode_escape_at_eof.csv is the ten bytes 1,a<newline>2,"ab\ without a final newline, so the last
 # quoted value ends in the escape character and is never closed
 
-# the single-threaded scan does not report a quoted value cut off by the end of the file yet, so the parallel scan is tested
+# the parallel scan reports the value, with the file in one buffer and with the value split over two buffers
 foreach buffer_size 8 1024
 
 statement error
 SELECT * FROM read_csv('data/csv/strict_mode_escape_at_eof.csv', auto_detect=false, header=false, columns={'a': 'INTEGER', 'b': 'VARCHAR'}, escape='\', strict_mode=true, parallel=true, buffer_size={buffer_size});
+----
+Value with unterminated quote found
+
+endloop
+
+# the single-threaded scan, which has no boundary to finish the row in, reports it with both buffer sizes too
+foreach buffer_size 8 1024
+
+statement error
+SELECT * FROM read_csv('data/csv/strict_mode_escape_at_eof.csv', auto_detect=false, header=false, columns={'a': 'INTEGER', 'b': 'VARCHAR'}, escape='\', strict_mode=true, parallel=false, buffer_size={buffer_size});
 ----
 Value with unterminated quote found
 

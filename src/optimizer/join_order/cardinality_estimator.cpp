@@ -14,7 +14,7 @@ public:
 	DomainEstimate();
 
 public:
-	idx_t GetDistinctCount(const JoinPredicate &predicate) const;
+	double GetDistinctCount(const JoinPredicate &predicate) const;
 	bool HasReliableDistinctCount() const;
 	idx_t GetReliableDistinctCount() const;
 	void Update(ColumnBinding binding, const DistinctCount &distinct_count,
@@ -35,7 +35,7 @@ private:
 DomainEstimate::DomainEstimate() {
 }
 
-idx_t DomainEstimate::GetDistinctCount(const JoinPredicate &predicate) const {
+double DomainEstimate::GetDistinctCount(const JoinPredicate &predicate) const {
 	auto domain = estimate;
 	for (bool left : {true, false}) {
 		auto entry = local_fallbacks.find(predicate.GetStatsBinding(left));
@@ -44,11 +44,20 @@ idx_t DomainEstimate::GetDistinctCount(const JoinPredicate &predicate) const {
 		}
 	}
 	if (!domain) {
-		return NumericLimits<idx_t>::Maximum();
+		return static_cast<double>(NumericLimits<idx_t>::Maximum());
 	}
 	auto result = domain->distinct_count;
+	auto comparison = predicate.GetComparisonType();
+	if (domain->source == DistinctCountSource::CARDINALITY && estimate && result > 0 &&
+	    predicate.GetJoinType() == JoinType::INNER &&
+	    (comparison == ExpressionType::COMPARE_EQUAL || comparison == ExpressionType::COMPARE_NOT_DISTINCT_FROM)) {
+		// Discount scan-backed domains before applying predicate-local bounds.
+		return MinValue<double>(static_cast<double>(result),
+		                        MaxValue(1.0, static_cast<double>(estimate->distinct_count) *
+		                                          RelationStatisticsHelper::DEFAULT_SELECTIVITY));
+	}
 	if (!HasReliableDistinctCount() || reliable_source_count != 1) {
-		return result;
+		return static_cast<double>(result);
 	}
 	auto key_domain = NumericLimits<idx_t>::Maximum();
 	for (auto candidate : min_max_candidates) {
@@ -56,7 +65,7 @@ idx_t DomainEstimate::GetDistinctCount(const JoinPredicate &predicate) const {
 			key_domain = MinValue(key_domain, candidate);
 		}
 	}
-	return key_domain == NumericLimits<idx_t>::Maximum() ? result : key_domain;
+	return static_cast<double>(key_domain == NumericLimits<idx_t>::Maximum() ? result : key_domain);
 }
 
 bool DomainEstimate::HasReliableDistinctCount() const {
@@ -142,7 +151,7 @@ public:
 public:
 	reference<JoinPredicate> predicate;
 	reference<const DomainEstimate> domain_estimate;
-	idx_t distinct_count;
+	double distinct_count;
 };
 
 struct SelectivitySubgraph {
@@ -214,7 +223,7 @@ CardinalityEstimator::~CardinalityEstimator() {
 }
 
 double FilterInfoWithTotalDomains::GetDistinctCount() const {
-	return static_cast<double>(distinct_count);
+	return distinct_count;
 }
 
 bool FilterInfoWithTotalDomains::HasReliableDistinctCount() const {
@@ -862,6 +871,8 @@ CardinalityValue CardinalityEstimator::EstimateCardinality(JoinRelationSet &set)
 		auto right_rows = EstimateCardinality(right);
 		if (op.type == JoinOrderOperatorType::LEFT) {
 			result = MaxValue(left_rows, left_rows * right_rows * boundary->selectivity);
+		} else if (op.type == JoinOrderOperatorType::MARK) {
+			result = left_rows;
 		} else {
 			auto type = op.type == JoinOrderOperatorType::SEMI ? JoinType::SEMI : JoinType::ANTI;
 			result = RelationStatisticsHelper::EstimateSemiAntiJoinFallbackCardinality(
@@ -965,6 +976,20 @@ void CardinalityEstimator::Initialize(const vector<RelationStats> &relations,
 		state->unique_keys.push_back(stats.unique_key);
 		state->cardinalities.emplace(set_manager.GetJoinRelation(RelationIndex(i)), cardinality);
 		UpdateTotalDomains(RelationIndex(i), stats, sources);
+	}
+	for (auto &op : operators) {
+		if (op->type != JoinOrderOperatorType::MARK) {
+			continue;
+		}
+		D_ASSERT(op->right_relations.get().count == 1);
+		auto rhs = op->right_relations.get().relations[0];
+		// The marker's synthetic slot follows the RHS columns but is produced by the join.
+		auto key = ColumnBinding(TableIndex(rhs.index), ProjectionIndex(relations[rhs.index].columns.size()));
+		for (auto &domain : state->relation_set_stats) {
+			if (domain.equivalent_relations.count(key)) {
+				domain.domain_estimate.Update(key, DistinctCount(3, DistinctCountSource::CARDINALITY), nullptr);
+			}
+		}
 	}
 	RestrictFilterDomains(relations);
 	for (auto &domain : state->relation_set_stats) {

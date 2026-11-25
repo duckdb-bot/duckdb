@@ -77,7 +77,7 @@ static void *MinimumThreadStackProbe(void *) {
 // Thread startup code, such as sanitizer hooks, can need more stack than a minimum size probe stack has left.
 // Each probe stack gets this reserve below it, which the glibc size check does not count, and an inaccessible guard
 // page below the reserve, so a startup that needs even more faults instead of writing into a neighbouring mapping.
-static constexpr size_t PROBE_STACK_RESERVE = 65536;
+static constexpr size_t PROBE_STACK_RESERVE = 16384;
 
 // Probes run on a stack this function maps itself to not pollute the glibc stack cache with stacks created during these
 // probes.

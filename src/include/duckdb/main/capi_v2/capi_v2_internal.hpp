@@ -94,7 +94,7 @@ inline void SetStringOut(const char **out, idx_t *out_length, const Identifier &
 //! reads as all-empty entries.
 class string_view_array {
 public:
-	string_view_array(const char **ptrs, const idx_t *lengths, idx_t count)
+	string_view_array(const char *const *ptrs, const idx_t *lengths, idx_t count)
 	    : ptrs(ptrs), lengths(lengths), count(count) {
 	}
 
@@ -106,7 +106,7 @@ public:
 	std::string_view operator[](idx_t i) const;
 
 private:
-	const char **ptrs;
+	const char *const *ptrs;
 	const idx_t *lengths;
 	idx_t count;
 };
@@ -303,6 +303,11 @@ private:
 //! The common type of a non-empty set of types, folded left to right in the factory's scope. Throws
 //! NotImplementedException when there is none. Defined in capi_v2_logical_type.cpp.
 auto ResolveCommonType(CV2Factory &factory, const vector<LogicalType> &types) -> LogicalType;
+
+//! Throws when the type holds a DECIMAL wider than the factory creates: the max_decimal_width setting of the factory's
+//! client, or the default of the setting for a factory without one. The cost of a wide decimal grows with its width,
+//! so a factory bounds the types and values it creates like a session bounds the ones it binds
+void CheckDecimalWidthV2(CV2Factory &factory, const LogicalType &type);
 
 //! The SQL ATTACH `(KEY value)` options of one attach, as the text values a quoted literal produces. Bound to the
 //! instance handle it was created from, which is what future per-instance resources (an allocator, say) would be
@@ -890,6 +895,17 @@ inline void InvokeTextSink(duckdb_v2_text_sink_fn sink, std::string_view text, v
 	CV2ErrorInfo info;
 	auto handle = Convert(&info);
 	sink(text.data(), text.size(), user_data, &handle);
+	if (info.HasError()) {
+		info.ThrowAsException();
+	}
+}
+
+//! Runs a callback taking an error slot, and throws what it reports.
+template <class FUNC>
+void InvokeWithErrorSlot(FUNC &&fn) {
+	CV2ErrorInfo info;
+	auto handle = Convert(&info);
+	fn(&handle);
 	if (info.HasError()) {
 		info.ThrowAsException();
 	}

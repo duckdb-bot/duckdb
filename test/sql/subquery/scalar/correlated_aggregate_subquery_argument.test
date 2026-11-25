@@ -212,9 +212,9 @@ SELECT (SELECT SUM(ten(1) + (SELECT x)) FROM (VALUES (10)) v(y)) FROM (VALUES (1
 11
 12
 
-# a whole row is a call, which a macro can replace
+# a whole row is a call that names its columns, which a macro with those parameters can replace
 statement ok
-CREATE MACRO struct_pack(z) AS 10
+CREATE MACRO struct_pack(x) AS 10
 
 query I rowsort
 SELECT (SELECT COUNT((SELECT t))) FROM (VALUES (1), (2)) t(x)

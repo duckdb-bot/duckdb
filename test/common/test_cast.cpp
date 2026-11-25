@@ -398,3 +398,30 @@ TEST_CASE("Test nanoseconds of strings without fractional seconds", "[cast]") {
 	REQUIRE(Cast::Operation<string_t, timestamp_tz_ns_t>(string_t(ts_str)).value == expected_ns);
 	REQUIRE(Cast::Operation<string_t, timestamp_ns_t>(string_t(frac_str)).value == expected_ns + 123456789);
 }
+
+TEST_CASE("Test nanoseconds of timestamp strings without a time", "[cast]") {
+	// a date alone never reaches the time parser
+	const string date_str = "2020-01-01";
+	const auto expected = Timestamp::FromDatetime(Date::FromDate(2020, 1, 1), dtime_t(0));
+	int32_t nanos = 999;
+	auto ts = Timestamp::FromCString(date_str.c_str(), date_str.size(), false, &nanos);
+	REQUIRE(ts == expected);
+	REQUIRE(nanos == 0);
+
+	// neither do the infinities
+	const string infinity_str = "infinity";
+	nanos = 999;
+	ts = Timestamp::FromCString(infinity_str.c_str(), infinity_str.size(), false, &nanos);
+	REQUIRE(ts == timestamp_t::infinity());
+	REQUIRE(nanos == 0);
+
+	timestamp_ns_t ts_ns;
+	REQUIRE(Timestamp::TryConvertTimestamp(date_str.c_str(), date_str.size(), ts_ns, false) ==
+	        TimestampCastResult::SUCCESS);
+	const auto expected_ns = expected.value * Interval::NANOS_PER_MICRO;
+	REQUIRE(ts_ns.value == expected_ns);
+
+	// the throwing casts pass uninitialized nanoseconds
+	REQUIRE(Cast::Operation<string_t, timestamp_ns_t>(string_t(date_str)).value == expected_ns);
+	REQUIRE(Cast::Operation<string_t, timestamp_tz_ns_t>(string_t(date_str)).value == expected_ns);
+}

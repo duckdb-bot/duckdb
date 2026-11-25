@@ -355,6 +355,8 @@ public:
 	      duck_table(bind_data.table.Cast<DuckTableEntry>()), tx(DuckTransaction::Get(context, duck_table.catalog)),
 	      storage(duck_table.GetStorage()), total_rows(storage.GetTotalRows()),
 	      progress(MaxValue<idx_t>(1, context.db->NumberOfThreads())) {
+		// Persisted row groups can be smaller than the configured target size.
+		max_threads = MaxValue(max_threads, total_row_groups_to_scan);
 		for (auto &counter : progress) {
 			counter.store(0, std::memory_order_relaxed);
 		}
@@ -562,7 +564,7 @@ public:
 			return PersistentScanResult::YIELD;
 		}
 		// the prepared vector was filtered out entirely, go the next vector
-		context.InterruptCheck();
+		context.FastInterruptCheck();
 		return PersistentScanResult::NEXT_VECTOR;
 	}
 
@@ -669,7 +671,6 @@ public:
 
 	void TableScanFunc(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) override {
 		auto &l_state = data_p.local_state->Cast<TableScanLocalState>();
-		l_state.scan_state.options.force_fetch_row = Settings::Get<DebugForceFetchRowSetting>(context);
 
 #ifdef DUCKDB_DEBUG_ASYNC_SINK_SOURCE
 		{
@@ -727,7 +728,7 @@ public:
 			}
 
 			// Before looping back, check if we are interrupted
-			context.InterruptCheck();
+			context.FastInterruptCheck();
 		} while (true);
 	}
 
@@ -1244,7 +1245,7 @@ InsertionOrderPreservingMap<string> TableScanToString(TableFunctionToStringInput
 	return result;
 }
 
-static void TableScanSerialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data_p,
+static void TableScanSerialize(Serializer &serializer, const optional_ptr<const FunctionData> bind_data_p,
                                const BoundTableFunction &function) {
 	auto &bind_data = bind_data_p->Cast<TableScanBindData>();
 	// the catalog/schema/name are only the innermost qualification - "qualified_name" carries the full (possibly
@@ -1301,19 +1302,19 @@ virtual_column_map_t TableScanGetVirtualColumns(ClientContext &context, optional
 	return bind_data.table.GetVirtualColumns();
 }
 
-vector<column_t> TableScanGetRowIdColumns(ClientContext &context, optional_ptr<FunctionData> bind_data) {
+vector<column_t> TableScanGetRowIdColumns(ClientContext &context, optional_ptr<const FunctionData> bind_data) {
 	vector<column_t> result;
 	result.emplace_back(COLUMN_IDENTIFIER_ROW_ID);
 	return result;
 }
 
-void SetScanOrder(unique_ptr<RowGroupOrderOptions> order_options, optional_ptr<FunctionData> bind_data_p) {
-	auto &bind_data = bind_data_p->Cast<TableScanBindData>();
+void SetScanOrder(unique_ptr<RowGroupOrderOptions> order_options, cow_ptr<FunctionData> &bind_data_p) {
+	auto &bind_data = bind_data_p.write().Cast<TableScanBindData>();
 	bind_data.order_options = std::move(order_options);
 }
 
-void SetPartitionsToScan(vector<idx_t> partition_indices, optional_ptr<FunctionData> bind_data_p) {
-	auto &bind_data = bind_data_p->Cast<TableScanBindData>();
+void SetPartitionsToScan(vector<idx_t> partition_indices, cow_ptr<FunctionData> &bind_data_p) {
+	auto &bind_data = bind_data_p.write().Cast<TableScanBindData>();
 	bind_data.partitions_to_scan = make_uniq<unordered_set<idx_t>>(partition_indices.begin(), partition_indices.end());
 }
 

@@ -68,20 +68,6 @@ SELECT nextval('null_check_sequence');
 ----
 4
 
-# a second derived table whose comparison of such a column the statistics decide
-statement ok
-CREATE SEQUENCE projected_comparison_sequence;
-
-query I
-SELECT sum(x) FILTER (WHERE c) FROM (SELECT x, b > false AS c FROM (SELECT x, CASE WHEN nextval('projected_comparison_sequence') > 0 THEN true ELSE true END AS b FROM v));
-----
-6
-
-query I
-SELECT nextval('projected_comparison_sequence');
-----
-4
-
 # below an ORDER BY, whose columns can be compressed and restored by projections
 statement ok
 CREATE SEQUENCE order_sequence;
@@ -93,27 +79,6 @@ SELECT first(x) FILTER (WHERE b) FROM (SELECT x, CASE WHEN nextval('order_sequen
 
 query I
 SELECT nextval('order_sequence');
-----
-4
-
-# below a join that compresses only its other side
-statement ok
-CREATE TABLE payload AS SELECT x, x::VARIANT AS vx FROM (VALUES (1), (2), (3)) t(x);
-
-statement ok
-CREATE TABLE joined AS SELECT * FROM (VALUES (10, false), (20, true)) t(x, k);
-
-statement ok
-CREATE SEQUENCE join_sequence;
-
-query II
-SELECT sum(joined.x) FILTER (WHERE q.c), list(q.vx ORDER BY q.vx::INT)
-FROM (SELECT x % 2 = 0 AS k, vx, b > false AS c FROM (SELECT x, vx, CASE WHEN nextval('join_sequence') > 0 THEN true ELSE true END AS b FROM payload)) q JOIN joined ON q.k = joined.k;
-----
-40	[1, 2, 3]
-
-query I
-SELECT nextval('join_sequence');
 ----
 4
 

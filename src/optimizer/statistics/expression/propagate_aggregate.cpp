@@ -1,13 +1,15 @@
 #include "duckdb/optimizer/statistics_propagator.hpp"
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
+#include "duckdb/planner/expression/expression_barrier.hpp"
 #include "duckdb/storage/statistics/numeric_stats.hpp"
 
 namespace duckdb {
 
 unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundAggregateExpression &aggr,
                                                                      unique_ptr<Expression> &expr_ptr) {
-	if (aggr.GetFilter()) {
-		// a filter that is true for every row is no filter, if evaluating it has no effect of its own
+	// a filter whose evaluation has an effect stays as it is written
+	if (aggr.GetFilter() && !aggr.GetFilter()->IsVolatile() && !ExpressionBarrier::Contains(*aggr.GetFilter())) {
+		// a filter that is true for every row is no filter, unless it can still fail
 		auto &filter = aggr.GetFilterMutable();
 		auto filter_stats = PropagateExpression(filter);
 		if (filter_stats && filter_stats->GetType().id() == LogicalTypeId::BOOLEAN && !filter_stats->CanHaveNull() &&

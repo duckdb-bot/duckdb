@@ -94,6 +94,33 @@ SELECT nextval('branch_sequence');
 ----
 4
 
+# a comparison and a BETWEEN over the volatile expression, which the statistics decide on their own
+statement ok
+CREATE SEQUENCE comparison_sequence;
+
+query I
+SELECT sum(x) FILTER (WHERE (CASE WHEN nextval('comparison_sequence') > 0 THEN 1 ELSE 1 END) > 0) FROM v;
+----
+6
+
+query I
+SELECT nextval('comparison_sequence');
+----
+4
+
+statement ok
+CREATE SEQUENCE between_sequence;
+
+query I
+SELECT sum(x) FILTER (WHERE (CASE WHEN nextval('between_sequence') > 0 THEN x ELSE x END) BETWEEN 0 AND 10) FROM v;
+----
+6
+
+query I
+SELECT nextval('between_sequence');
+----
+4
+
 # a condition that draws random numbers
 query II
 EXPLAIN SELECT count(*) FILTER (WHERE CASE WHEN random() < 0.5 THEN true ELSE true END) AS filtered FROM v;

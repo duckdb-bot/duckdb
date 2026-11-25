@@ -12,6 +12,15 @@ statement ok
 CREATE TABLE empty_tbl (i BIGINT);
 
 statement ok
+CREATE TABLE lists (l BIGINT[]);
+
+statement ok
+INSERT INTO lists VALUES ([1, 2]), ([3]), (NULL);
+
+statement ok
+SET VARIABLE int_list = [1, 2];
+
+statement ok
 SET explain_output = 'all';
 
 # integer literals become BIGINT values, the plan holds no cast before it is optimized
@@ -47,6 +56,14 @@ physical_plan	<REGEX>:[\s\S]*
 
 query II
 EXPLAIN SELECT * FROM tbl WHERE d IN ('2020-01-01', '2022-02-02');
+----
+logical_plan	<!REGEX>:[\s\S]*CAST[\s\S]*
+logical_opt	<REGEX>:[\s\S]*
+physical_plan	<REGEX>:[\s\S]*
+
+# strings become lists of the column's type
+query II
+EXPLAIN SELECT * FROM lists WHERE l IN ('[1, 2]', '[4]');
 ----
 logical_plan	<!REGEX>:[\s\S]*CAST[\s\S]*
 logical_opt	<REGEX>:[\s\S]*
@@ -112,6 +129,14 @@ SELECT i, i IN (1, NULL), i NOT IN (1, NULL), i IN (NULL, 4, NULL) FROM tbl ORDE
 1	true	false	NULL
 4	NULL	NULL	true
 NULL	NULL	NULL	NULL
+
+# lists from strings and from a list constant with another child type
+query III
+SELECT l, l IN ('[1, 2]', '[4]'), l IN (getvariable('int_list'), [4]) FROM lists ORDER BY l;
+----
+[1, 2]	true	true
+[3]	false	false
+NULL	NULL	NULL
 
 # string literals in a list of numbers
 query II

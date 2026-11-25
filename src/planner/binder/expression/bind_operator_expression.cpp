@@ -53,12 +53,17 @@ static optional<Value> TryCastConstantValue(ClientContext &context, const BoundC
 static unique_ptr<Expression> CastConstantToType(ClientContext &context, unique_ptr<Expression> expr,
                                                  const LogicalType &target_type) {
 	auto &constant = expr->Cast<BoundConstantExpression>();
-	if (!target_type.IsValid() || constant.GetReturnType() == target_type) {
+	auto &source_type = constant.GetReturnType();
+	if (!target_type.IsValid() || source_type == target_type) {
 		return expr;
+	}
+	if (source_type.id() == LogicalTypeId::LIST && target_type.id() == LogicalTypeId::LIST) {
+		// AddCastToType leaves a LIST alone when the child types are equal
+		return BoundCastExpression::AddCastToType(context, std::move(expr), target_type);
 	}
 	GetCastFunctionInput get_input(context);
 	get_input.query_location = constant.GetQueryLocation();
-	auto bound_cast = CastFunctionSet::Get(context).GetCastFunction(constant.GetReturnType(), target_type, get_input);
+	auto bound_cast = CastFunctionSet::Get(context).GetCastFunction(source_type, target_type, get_input);
 	if (bound_cast.GetStability() == FunctionStability::CONSISTENT) {
 		auto cast_value = TryCastConstantValue(context, bound_cast, constant.GetValue(), target_type);
 		if (cast_value) {

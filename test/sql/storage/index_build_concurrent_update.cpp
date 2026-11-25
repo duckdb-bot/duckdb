@@ -38,8 +38,12 @@ bool IsExpectedError(const string &error) {
 
 //! Checks that an index lookup of the key finds the rows a full scan finds
 void VerifyIndexLookup(Connection &con, int32_t key) {
-	auto lookup = con.Query("SELECT count(*) FROM t WHERE id = " + to_string(key));
-	auto scan = con.Query("SELECT count(*) FROM t WHERE id::VARCHAR = '" + to_string(key) + "'");
+	auto count_sql = "SELECT count(*) FROM t WHERE id = " + to_string(key);
+	auto lookup = con.Query(count_sql);
+	// without the optimizer the filter is not pushed into the scan, which then reads every row
+	REQUIRE_NO_FAIL(con.Query("PRAGMA disable_optimizer"));
+	auto scan = con.Query(count_sql);
+	REQUIRE_NO_FAIL(con.Query("PRAGMA enable_optimizer"));
 	REQUIRE_NO_FAIL(*lookup);
 	REQUIRE_NO_FAIL(*scan);
 	INFO("key " << key);

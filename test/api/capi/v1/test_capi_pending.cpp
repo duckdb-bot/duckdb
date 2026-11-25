@@ -228,8 +228,12 @@ TEST_CASE("Test a pending update planned before an index on its column was creat
 
 	// The index finds the rows that a scan finds
 	for (string key : {"5", "30000000"}) {
-		auto lookup = tester.Query("SELECT count(*) FROM t WHERE id = " + key);
-		auto scan = tester.Query("SELECT count(*) FROM t WHERE id::VARCHAR = '" + key + "'");
+		auto count_sql = "SELECT count(*) FROM t WHERE id = " + key;
+		auto lookup = tester.Query(count_sql);
+		// Without the optimizer the filter is not pushed into the scan, which then reads every row
+		REQUIRE_NO_FAIL(tester.Query("PRAGMA disable_optimizer"));
+		auto scan = tester.Query(count_sql);
+		REQUIRE_NO_FAIL(tester.Query("PRAGMA enable_optimizer"));
 		REQUIRE_NO_FAIL(*lookup);
 		REQUIRE_NO_FAIL(*scan);
 		REQUIRE(lookup->Fetch<int64_t>(0, 0) == scan->Fetch<int64_t>(0, 0));

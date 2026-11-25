@@ -39,7 +39,7 @@ statement ok
 CREATE SEQUENCE list_sequence;
 
 query III
-SELECT count(*) FILTER (WHERE CASE WHEN nextval('count_sequence') > 0 THEN true ELSE true END),
+SELECT count(x) FILTER (WHERE CASE WHEN nextval('count_sequence') > 0 THEN true ELSE true END),
        min(x) FILTER (WHERE CASE WHEN nextval('min_sequence') > 0 THEN true ELSE true END),
        list(x ORDER BY x) FILTER (WHERE CASE WHEN nextval('list_sequence') > 0 THEN true ELSE true END)
 FROM v;

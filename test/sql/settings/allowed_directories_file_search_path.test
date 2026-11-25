@@ -150,6 +150,19 @@ SELECT count(*) FROM 'f_2.csv'
 ----
 2
 
+statement ok
+SET file_search_path = '{DATA_DIR}/csv/glob,s3://bucket/unused'
+
+query I
+SELECT count(*) FROM glob('*.csv')
+----
+3
+
+query I
+SELECT count(*) FROM 'f_2.csv'
+----
+2
+
 # a remote entry alone leaves no location to look at
 statement ok
 SET file_search_path = 's3://bucket/unused'

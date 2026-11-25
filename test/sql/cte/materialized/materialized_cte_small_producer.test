@@ -2,7 +2,7 @@
 # description: A CTE whose producer reads few source chunks is materialized when a consumer multiplies its rows, so that the consumer runs in parallel (duckdb/duckdb#11565)
 # group: [materialized]
 
-require vector_size 2048
+require exact_vector_size 2048
 
 statement ok
 SET threads=4;

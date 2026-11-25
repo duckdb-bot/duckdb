@@ -1,7 +1,6 @@
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/catalog/catalog_entry/aggregate_function_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/window_function_catalog_entry.hpp"
-#include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/function/function_binder.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/catalog/catalog_entry/scalar_macro_catalog_entry.hpp"
@@ -54,23 +53,19 @@ static bool IsRangeType(const LogicalType &type) {
 	}
 }
 
-//! Whether the expression is written as a constant, with or without casts around it
-static bool IsCastOfConstant(const ParsedExpression &expr) {
+//! Whether the expression is written as a NULL constant, with or without casts around it
+static bool IsNullConstant(const ParsedExpression &expr) {
 	reference<const ParsedExpression> current = expr;
 	while (current.get().GetExpressionClass() == ExpressionClass::CAST) {
 		current = current.get().Cast<CastExpression>().Child();
 	}
-	return current.get().GetExpressionClass() == ExpressionClass::CONSTANT;
+	return current.get().GetExpressionClass() == ExpressionClass::CONSTANT &&
+	       current.get().Cast<ConstantExpression>().GetLiteral().IsNull();
 }
 
 //! A RANGE offset written as a NULL constant is rejected, any other offset places a NULL at the peers of the row
-static void VerifyRangeOffset(ClientContext &context, const Expression &offset, bool is_constant) {
-	bool is_null = offset.GetReturnType() == LogicalType::SQLNULL;
-	Value constant_offset;
-	if (!is_null && is_constant && ExpressionExecutor::TryEvaluateScalar(context, offset, constant_offset)) {
-		is_null = constant_offset.IsNull();
-	}
-	if (is_null) {
+static void VerifyRangeOffset(const Expression &offset, bool is_null_constant) {
+	if (offset.GetReturnType() == LogicalType::SQLNULL || is_null_constant) {
 		QueryErrorContext error_context(offset.GetQueryLocation());
 		throw BinderException(error_context, "Window RANGE expressions cannot be NULL");
 	}
@@ -232,8 +227,8 @@ BindResult BaseSelectBinder::BindWindowExpression(WindowExpression &window, idx_
 		bound_orders.push_back(std::move(bound_order));
 	}
 	auto bound_filter = BindChild(window.FilterMutable(), depth, error);
-	const bool start_is_constant = window.StartExpr() && IsCastOfConstant(*window.StartExpr());
-	const bool end_is_constant = window.EndExpr() && IsCastOfConstant(*window.EndExpr());
+	const bool start_is_null_constant = window.StartExpr() && IsNullConstant(*window.StartExpr());
+	const bool end_is_null_constant = window.EndExpr() && IsNullConstant(*window.EndExpr());
 	auto bound_start = BindChild(window.StartExprMutable(), depth, error);
 	auto bound_end = BindChild(window.EndExprMutable(), depth, error);
 
@@ -381,7 +376,7 @@ BindResult BaseSelectBinder::BindWindowExpression(WindowExpression &window, idx_
 	auto range_sense = OrderType::INVALID;
 	LogicalType start_type = LogicalType::BIGINT;
 	if (range_start) {
-		VerifyRangeOffset(context, *bound_start, start_is_constant);
+		VerifyRangeOffset(*bound_start, start_is_null_constant);
 	}
 	if (window.WindowStart() == WindowBoundary::EXPR_PRECEDING_RANGE) {
 		D_ASSERT(window.OrderBy().size() == 1);
@@ -400,7 +395,7 @@ BindResult BaseSelectBinder::BindWindowExpression(WindowExpression &window, idx_
 
 	LogicalType end_type = LogicalType::BIGINT;
 	if (range_end) {
-		VerifyRangeOffset(context, *bound_end, end_is_constant);
+		VerifyRangeOffset(*bound_end, end_is_null_constant);
 	}
 	if (window.WindowEnd() == WindowBoundary::EXPR_PRECEDING_RANGE) {
 		D_ASSERT(window.OrderBy().size() == 1);

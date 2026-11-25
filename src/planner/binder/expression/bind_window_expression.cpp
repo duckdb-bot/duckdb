@@ -12,6 +12,7 @@
 #include "duckdb/parser/expression/function_expression.hpp"
 #include "duckdb/parser/expression/window_expression.hpp"
 #include "duckdb/planner/binder.hpp"
+#include "duckdb/planner/bound_parameter_map.hpp"
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
@@ -54,11 +55,11 @@ static bool IsRangeType(const LogicalType &type) {
 }
 
 //! A constant NULL offset of a RANGE frame is rejected, an offset read per row places a NULL at the peers
-static void VerifyRangeOffset(ClientContext &context, const Expression &offset, bool has_parameter) {
+static void VerifyRangeOffset(ClientContext &context, const Expression &offset, bool has_parameter_values) {
 	bool is_null = offset.GetReturnType() == LogicalType::SQLNULL;
 	Value constant_offset;
-	// a parameter is bound as a constant once it has a value, but its value belongs to the execution
-	if (!is_null && !has_parameter && offset.IsFoldable() &&
+	// a parameter that has a value is bound as a constant, so a constant can then be a value of the execution
+	if (!is_null && !has_parameter_values && offset.IsFoldable() &&
 	    ExpressionExecutor::TryEvaluateScalar(context, offset, constant_offset)) {
 		is_null = constant_offset.IsNull();
 	}
@@ -224,8 +225,6 @@ BindResult BaseSelectBinder::BindWindowExpression(WindowExpression &window, idx_
 		bound_orders.push_back(std::move(bound_order));
 	}
 	auto bound_filter = BindChild(window.FilterMutable(), depth, error);
-	const bool start_has_parameter = window.StartExpr() && window.StartExpr()->HasParameter();
-	const bool end_has_parameter = window.EndExpr() && window.EndExpr()->HasParameter();
 	auto bound_start = BindChild(window.StartExprMutable(), depth, error);
 	auto bound_end = BindChild(window.EndExprMutable(), depth, error);
 
@@ -371,9 +370,11 @@ BindResult BaseSelectBinder::BindWindowExpression(WindowExpression &window, idx_
 	// for ORDER BY DESC.
 	auto &config = DBConfig::GetConfig(context);
 	auto range_sense = OrderType::INVALID;
+	auto parameters = binder.GetParameters();
+	const bool has_parameter_values = parameters && !parameters->GetParameterData().empty();
 	LogicalType start_type = LogicalType::BIGINT;
 	if (range_start) {
-		VerifyRangeOffset(context, *bound_start, start_has_parameter);
+		VerifyRangeOffset(context, *bound_start, has_parameter_values);
 	}
 	if (window.WindowStart() == WindowBoundary::EXPR_PRECEDING_RANGE) {
 		D_ASSERT(window.OrderBy().size() == 1);
@@ -392,7 +393,7 @@ BindResult BaseSelectBinder::BindWindowExpression(WindowExpression &window, idx_
 
 	LogicalType end_type = LogicalType::BIGINT;
 	if (range_end) {
-		VerifyRangeOffset(context, *bound_end, end_has_parameter);
+		VerifyRangeOffset(context, *bound_end, has_parameter_values);
 	}
 	if (window.WindowEnd() == WindowBoundary::EXPR_PRECEDING_RANGE) {
 		D_ASSERT(window.OrderBy().size() == 1);

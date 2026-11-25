@@ -1,0 +1,19 @@
+# name: benchmark/micro/optimizer/in_list_literal_planning.benchmark
+# description: Planning a filter with an IN list of 20000 integer literals over a BIGINT column
+# group: [optimizer]
+
+name In List Literal Planning
+group micro
+subgroup optimizer
+
+load
+SET VARIABLE in_list_sql = (
+	SELECT 'SELECT count(*) FROM range(40000) r(i) WHERE i IN (' || string_agg(i::VARCHAR, ', ' ORDER BY i) || ')'
+	FROM range(20000) t(i)
+);
+
+run
+FROM query(getvariable('in_list_sql'));
+
+result I
+20000

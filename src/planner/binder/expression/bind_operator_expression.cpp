@@ -13,6 +13,7 @@
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/catalog/catalog_entry/scalar_function_catalog_entry.hpp"
+#include "duckdb/function/cast/cast_function_set.hpp"
 #include "duckdb/function/function_binder.hpp"
 
 namespace duckdb {
@@ -22,6 +23,27 @@ LogicalType ExpressionBinder::ResolveNotType(OperatorExpression &op, vector<uniq
 	D_ASSERT(children.size() == 1);
 	children[0] = BoundCastExpression::AddCastToType(context, std::move(children[0]), LogicalType::BOOLEAN);
 	return LogicalType(LogicalTypeId::BOOLEAN);
+}
+
+//! Casts a constant to the target type. The value is converted right away when the cast is consistent and succeeds
+static unique_ptr<Expression> CastConstantToType(ClientContext &context, unique_ptr<Expression> expr,
+                                                 const LogicalType &target_type) {
+	auto &constant = expr->Cast<BoundConstantExpression>();
+	if (!target_type.IsValid() || constant.GetReturnType() == target_type) {
+		return expr;
+	}
+	auto &cast_functions = CastFunctionSet::Get(context);
+	GetCastFunctionInput get_input(context);
+	get_input.query_location = constant.GetQueryLocation();
+	auto bound_cast = cast_functions.GetCastFunction(constant.GetReturnType(), target_type, get_input);
+	if (bound_cast.GetStability() == FunctionStability::CONSISTENT) {
+		auto cast_value = constant.GetValue().TryCastAs(cast_functions, get_input, target_type);
+		if (cast_value) {
+			return constant.WithValue(std::move(*cast_value));
+		}
+	}
+	// a cast that reads settings or fails stays in the plan
+	return BoundCastExpression::Create(std::move(expr), target_type, std::move(bound_cast));
 }
 
 LogicalType ExpressionBinder::ResolveCoalesceType(OperatorExpression &op, vector<unique_ptr<Expression>> &children) {
@@ -56,7 +78,11 @@ LogicalType ExpressionBinder::ResolveCoalesceType(OperatorExpression &op, vector
 
 	// cast all children to the same type
 	for (auto &child : children) {
-		child = BoundCastExpression::AddCastToType(context, std::move(child), max_type);
+		if (is_in_operator && child->GetExpressionClass() == ExpressionClass::BOUND_CONSTANT) {
+			child = CastConstantToType(context, std::move(child), max_type);
+		} else {
+			child = BoundCastExpression::AddCastToType(context, std::move(child), max_type);
+		}
 		if (is_in_operator) {
 			// If it's IN/NOT_IN operator, push collation functions.
 			ExpressionBinder::PushCollation(context, child, max_type);

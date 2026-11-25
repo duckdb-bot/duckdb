@@ -1,9 +1,8 @@
 #include "duckdb/common/types/data_chunk.hpp"
-#include "duckdb/common/types/decimal.hpp"
 #include "duckdb/function/scalar/list_functions.hpp"
 #include "duckdb/function/scalar/nested_functions.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
-#include "duckdb/planner/expression/bound_comparison_expression.hpp"
+#include "duckdb/function/function_binder.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/planner/expression_binder.hpp"
@@ -181,21 +180,22 @@ static unique_ptr<FunctionData> ListIntersectBind(BindScalarFunctionInput &input
 	arguments[0] = BoundCastExpression::AddArrayCastToList(context, std::move(arguments[0]));
 	arguments[1] = BoundCastExpression::AddArrayCastToList(context, std::move(arguments[1]));
 
-	auto &left_type = arguments[0]->GetReturnType();
-	auto &right_type = arguments[1]->GetReturnType();
+	// both arguments have the type with the combined collations, whose elements match by their comparison keys
+	auto &list_type = input.GetBoundFunction().GetArguments()[0];
 	unique_ptr<Expression> key;
-	LogicalType element_type;
-	if (left_type.id() == LogicalTypeId::LIST && right_type.id() == LogicalTypeId::LIST &&
-	    BoundComparisonExpression::TryBindComparison(context, ListType::GetChildType(left_type),
-	                                                 ListType::GetChildType(right_type), element_type,
-	                                                 ExpressionType::COMPARE_EQUAL, input.GetDecimalWidthLimit())) {
-		// elements match by their comparison keys, under the combined collation of both lists
+	if (list_type.id() == LogicalTypeId::LIST) {
+		auto &element_type = ListType::GetChildType(list_type);
 		key = make_uniq<BoundReferenceExpression>(element_type, idx_t(0));
 		if (!ExpressionBinder::PushCollation(context, key, element_type, CollationType::COMBINABLE_COLLATIONS)) {
 			key.reset();
 		}
 	}
 	return make_uniq<ListIntersectBindData>(std::move(key));
+}
+
+static void ListIntersectResolveTypes(ResolveScalarFunctionTypesInput &input) {
+	// the arguments are cast to types that keep the collations of both lists
+	FunctionBinder::CombineArgumentCollations(input.GetBoundFunction(), input.GetArguments());
 }
 
 ScalarFunction ListIntersectFun::GetFunction() {
@@ -205,6 +205,7 @@ ScalarFunction ListIntersectFun::GetFunction() {
 	    .AddParameter("list1", LogicalType::LIST(LogicalType::TEMPLATE("T")))
 	    .AddParameter("list2", LogicalType::LIST(LogicalType::TEMPLATE("T")));
 	fun.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
+	fun.SetResolveTypesCallback(ListIntersectResolveTypes);
 	fun.SetSerializeCallback(ListIntersectBindData::Serialize);
 	fun.SetDeserializeCallback(ListIntersectBindData::Deserialize);
 	return fun;

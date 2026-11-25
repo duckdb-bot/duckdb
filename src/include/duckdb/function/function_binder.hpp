@@ -433,6 +433,10 @@ public:
 	//! Casts a constant to the type of the parameter it fills, as an argument of any function is cast - a parameter
 	//! whose type is not concrete, such as ANY, takes it as it is
 	DUCKDB_API static Value CastToParameterType(ClientContext &context, Value value, const LogicalType &parameter_type);
+	//! Gives the argument types of a function the combined collations of its arguments, for a function that compares
+	//! its arguments itself instead of having their collations pushed
+	DUCKDB_API static void CombineArgumentCollations(BoundSimpleFunction &bound_function,
+	                                                 const vector<unique_ptr<Expression>> &arguments);
 
 	DUCKDB_API unique_ptr<Expression>
 	BindScalarFunction(const Identifier &schema, const Identifier &name, vector<unique_ptr<Expression>> children,

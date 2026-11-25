@@ -1,0 +1,16 @@
+# name: benchmark/micro/list/list_intersect_collation.benchmark
+# description: list_intersect of lists whose elements are compared under a collation
+# group: [list]
+
+name list_intersect collation
+group micro
+subgroup list
+
+load
+CREATE TABLE t1 AS SELECT ['a' || (i % 7), 'b' || (i % 11), 'c' || (i % 13), 'd' || (i % 17)] AS l1, ('a' || (i % 7))::VARCHAR COLLATE NOCASE AS needle FROM range(1000000) r(i);
+
+run
+SELECT sum(len(list_intersect(l1, [needle]))) FROM t1;
+
+result I
+1000000

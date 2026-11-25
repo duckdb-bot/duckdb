@@ -63,8 +63,32 @@ SELECT list_intersect([INTERVAL 1 MONTH, INTERVAL 2 DAY], [INTERVAL 30 DAY]), li
 ----
 [1 month]	[[1 month]]	[]
 
+# the collation of a struct field survives a cast of its list, to another field order or to a wider field
+query II
+SELECT list_intersect([{'x': 'A', 'y': 1}], [{'y': 1, 'x': 'a' COLLATE NOCASE}]),
+	list_intersect([{'x': 'A', 'y': 1::BIGINT}], [{'x': 'a' COLLATE NOCASE, 'y': 1::SMALLINT}])
+----
+[{'x': A, 'y': 1}]	[{'x': A, 'y': 1}]
+
+# equal values that differ, without a collation, are returned by their first occurrence as well
+query II
+SELECT signbit(list_intersect([0.0::DOUBLE, '-0'::DOUBLE], [0.0::DOUBLE, 2, 3])[1]),
+	signbit(list_intersect(['-0'::DOUBLE, 0.0::DOUBLE, 5], [0.0::DOUBLE])[1])
+----
+false	true
+
 statement error
 SELECT list_intersect(['A' COLLATE NOCASE], ['a' COLLATE NOACCENT])
+----
+Cannot combine types with different collation
+
+statement error
+SELECT list_intersect([['A' COLLATE NOACCENT]], [['a' COLLATE NOCASE]])
+----
+Cannot combine types with different collation
+
+statement error
+SELECT list_intersect([{'x': 'A' COLLATE NOACCENT}], [{'x': 'a' COLLATE NOCASE}])
 ----
 Cannot combine types with different collation
 
@@ -72,10 +96,12 @@ Cannot combine types with different collation
 statement ok
 SET default_collation = 'nocase';
 
-query II
-SELECT list_intersect(['A', 'b'], ['a']), list_intersect(['A' COLLATE "binary"], ['a'])
+# a binary collation overrides it, also on a struct field of a list that is cast
+query III
+SELECT list_intersect(['A', 'b'], ['a']), list_intersect(['A' COLLATE "binary"], ['a']),
+	list_intersect([{'x': 'A', 'y': 1}], [{'y': 1, 'x': 'a' COLLATE "binary"}])
 ----
-[A]	[]
+[A]	[]	[]
 
 statement ok
 RESET default_collation;

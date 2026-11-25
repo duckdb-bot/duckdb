@@ -3,6 +3,8 @@ import json
 import os
 import re
 import shlex
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -112,7 +114,11 @@ class JobStagesTest(unittest.TestCase):
                 changed_keys=changed_keys or set(),
                 reduced_ci_mode=reduced_ci_mode,
                 run_all=run_all,
-                runners={"linux_x64": "runner-x64", "linux_arm64": "runner-arm64"},
+                runners={
+                    "linux_x64": "runner-x64",
+                    "linux_x64_8xlarge": "runner-x64-8xlarge",
+                    "linux_arm64": "runner-arm64",
+                },
                 runner_provider=runner_provider,
                 changed_extension_files=changed_extension_files or [],
             )
@@ -335,9 +341,8 @@ class JobStagesTest(unittest.TestCase):
         selection = self._compute_job_selection(
             "merge_group", "gh-readonly-queue/main/pr-1-abc", "duckdb/duckdb", changed_keys={"osx"}
         )
-        required_jobs = {"linux-relassert", "linux-release", "linux-release-tests", "tidy-check"}
-        self.assertTrue(required_jobs.issubset(set(selection.enabled_jobs)))
-        self.assertNotIn("osx", selection.enabled_jobs)
+        required_jobs = {"linux-relassert", "linux-release", "tidy-check"}
+        self.assertEqual(set(selection.enabled_jobs), required_jobs)
         self.assertEqual([config["name"] for config in selection.linux_release_matrix], ["amd64 compatibility"])
         self.assertTrue(selection.linux_release_matrix[0]["publish_static"])
         self.assertTrue(selection.linux_release_matrix[0]["test_static"])
@@ -349,6 +354,7 @@ class JobStagesTest(unittest.TestCase):
             "push", "v2.0-cyanoptera", "duckdb/duckdb", default_branch="v2.0-cyanoptera"
         )
         self.assertIn("codecov", selection.enabled_jobs)
+        self.assertIn("linux-release-tests", selection.enabled_jobs)
         self.assertEqual(selection.enabled_jobs.count("osx"), 1)
         self.assertFalse(selection.save_cache)
 
@@ -367,6 +373,7 @@ class JobStagesTest(unittest.TestCase):
             self.assertTrue(expected_base_jobs.issubset(set(workflow_dispatch_selection.enabled_jobs)))
             self.assertTrue(set(job_stages.RELEASE_JOBS).issubset(set(workflow_dispatch_selection.enabled_jobs)))
             self.assertNotIn("regression", workflow_dispatch_selection.enabled_jobs)
+            self.assertIn("linux-release-tests", workflow_dispatch_selection.enabled_jobs)
             self.assertTrue(workflow_dispatch_selection.optimized_release)
             self.assertEqual(
                 workflow_dispatch_selection.extension_opt_in_archs,
@@ -423,6 +430,7 @@ class JobStagesTest(unittest.TestCase):
         self.assertNotIn("codecov", selection.enabled_jobs)
         self.assertNotIn("osx", selection.enabled_jobs)
         self.assertIn("linux-release-musl", selection.enabled_jobs)
+        self.assertIn("linux-release-tests", selection.enabled_jobs)
         self.assertEqual([config["name"] for config in selection.linux_release_matrix], ["amd64 compatibility"])
         self.assertTrue(selection.linux_release_matrix[0]["publish_static"])
         self.assertTrue(selection.linux_release_matrix[0]["test_static"])
@@ -570,20 +578,52 @@ class JobStagesTest(unittest.TestCase):
             selection.runners,
             {
                 "linux_x64": "runner-x64;job.priority=2",
+                "linux_x64_8xlarge": "runner-x64-8xlarge;job.priority=2",
                 "linux_arm64": "runner-arm64;job.priority=2",
             },
         )
-        self.assertEqual(selection.linux_release_matrix[0]["runner"], "runner-x64;job.priority=2")
+        self.assertEqual(selection.linux_release_matrix[0]["runner"], "runner-x64-8xlarge;job.priority=2")
 
         pull_request_selection = self._compute_job_selection(
             "pull_request", "feature/my-branch", "duckdb/duckdb", runner_provider="namespace"
         )
         self.assertEqual(pull_request_selection.runners["linux_x64"], "runner-x64")
+        self.assertEqual(pull_request_selection.linux_release_matrix[0]["runner"], "runner-x64-8xlarge")
 
         github_selection = self._compute_job_selection(
             "merge_group", "gh-readonly-queue/main/pr-1-abc", "somefork/duckdb", runner_provider="github"
         )
         self.assertEqual(github_selection.runners["linux_x64"], "runner-x64")
+        self.assertEqual(github_selection.linux_release_matrix[0]["runner"], "runner-x64-8xlarge")
+
+    def test_release_runner_selection(self):
+        for event_name in ["pull_request", "push", "workflow_dispatch"]:
+            with self.subTest(event_name=event_name):
+                selection = self._compute_job_selection(event_name, "main", "duckdb/duckdb")
+                for config in selection.linux_release_matrix:
+                    expected_runner = "runner-x64-8xlarge" if config["arch"] == "amd64" else "runner-arm64"
+                    self.assertEqual(config["runner"], expected_runner)
+                for config in selection.linux_musl_matrix:
+                    expected_runner = "runner-x64" if config["arch"] == "amd64" else "runner-arm64"
+                    self.assertEqual(config["runner"], expected_runner)
+
+    def test_release_runner_selection_with_legacy_map(self):
+        selection_input = job_stages.JobSelectionInput(
+            event_name="workflow_dispatch",
+            ref_name="main",
+            default_branch="main",
+            repository="somefork/duckdb",
+            skip_tests=False,
+            changed_keys=set(),
+            reduced_ci_mode="disabled",
+            run_all=True,
+            runners={"linux_x64": "ubuntu-latest", "linux_arm64": "ubuntu-24.04-arm"},
+        )
+        matrix = job_stages.linux_release_matrix(selection_input, optimized_release=True, full_extension_matrix=True)
+        self.assertEqual(
+            [config["runner"] for config in matrix],
+            ["ubuntu-latest", "ubuntu-24.04-arm", "ubuntu-latest", "ubuntu-24.04-arm"],
+        )
 
     def test_writes_github_output(self):
         selection = job_stages.JobSelection(
@@ -671,8 +711,8 @@ class JobStagesTest(unittest.TestCase):
             self.assertIn("extension_opt_in_archs=", out)
             payload = out.splitlines()[0].split("=", 1)[1]
             selected_jobs = json.loads(payload)
-            required_jobs = {"linux-relassert", "linux-release", "linux-release-tests", "tidy-check"}
-            self.assertTrue(required_jobs.issubset(set(selected_jobs)))
+            required_jobs = {"linux-relassert", "linux-release", "tidy-check"}
+            self.assertEqual(set(selected_jobs), required_jobs)
             output_values = self._read_github_output(out)
             release_matrix = json.loads(output_values["linux_release_matrix"])
             self.assertEqual(release_matrix[0]["runner"], "runner-x64;job.priority=2")
@@ -714,6 +754,11 @@ class JobStagesTest(unittest.TestCase):
                 os.environ.pop("OVERRIDE_JOBS", None)
             else:
                 os.environ["OVERRIDE_JOBS"] = old_value
+
+    def test_merge_group_can_override_release_tests(self):
+        with mock.patch.dict(os.environ, {"OVERRIDE_JOBS": "linux-release linux-release-tests"}):
+            selection = self._compute_job_selection("merge_group", "gh-readonly-queue/main/pr-1-abc", "duckdb/duckdb")
+        self.assertEqual(selection.enabled_jobs, ["prepare", "linux-release", "linux-release-tests"])
 
     def test_all_jobs_matches_main_workflow(self):
         workflow_jobs = self._main_workflow_job_ids()
@@ -777,6 +822,52 @@ class JobStagesTest(unittest.TestCase):
             extra_in_summary,
             f"summary.needs references unknown jobs: {sorted(extra_in_summary)}",
         )
+
+    def _run_summary_status_check(self, results: dict[str, str]) -> subprocess.CompletedProcess[str]:
+        workflow_path = REPO_ROOT / ".github" / "workflows" / "Main.yml"
+        commands = [
+            command
+            for _, command in self._extract_run_commands(workflow_path.read_text(encoding="utf-8"))
+            if "NEEDS_JSON='${{ toJSON(needs) }}'" in command
+        ]
+        self.assertEqual(len(commands), 1, "failed to locate the Summary status check")
+        needs = {job_id: {"result": result} for job_id, result in results.items()}
+        command = commands[0].replace("${{ toJSON(needs) }}", json.dumps(needs))
+        return subprocess.run(
+            ["bash", "-e", "-o", "pipefail", "-c", command],
+            capture_output=True,
+            text=True,
+        )
+
+    @unittest.skipUnless(shutil.which("bash") and shutil.which("jq"), "requires Bash and jq")
+    def test_summary_requires_successful_prepare(self):
+        for prepare_result in ("failure", "cancelled", "skipped", None):
+            with self.subTest(prepare_result=prepare_result):
+                results = {job_id: "skipped" for job_id in self._main_workflow_job_ids() - {"summary", "prepare"}}
+                if prepare_result is not None:
+                    results["prepare"] = prepare_result
+                proc = self._run_summary_status_check(results)
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertIn("The prepare job did not succeed.", proc.stdout)
+
+    @unittest.skipUnless(shutil.which("bash") and shutil.which("jq"), "requires Bash and jq")
+    def test_summary_allows_intentionally_skipped_jobs(self):
+        results = {job_id: "skipped" for job_id in self._main_workflow_job_ids() - {"summary"}}
+        results.update(
+            {"prepare": "success", "linux-relassert": "success", "linux-release": "success", "tidy-check": "success"}
+        )
+        proc = self._run_summary_status_check(results)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+
+    @unittest.skipUnless(shutil.which("bash") and shutil.which("jq"), "requires Bash and jq")
+    def test_summary_rejects_failed_or_cancelled_jobs(self):
+        for job_result in ("failure", "cancelled"):
+            with self.subTest(job_result=job_result):
+                results = {job_id: "success" for job_id in self._main_workflow_job_ids() - {"summary"}}
+                results["linux-release-tests"] = job_result
+                proc = self._run_summary_status_check(results)
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertIn(f"linux-release-tests: {job_result}", proc.stdout)
 
     def test_workflow_unittest_commands_use_wrapped_runner(self):
         violations: list[str] = []

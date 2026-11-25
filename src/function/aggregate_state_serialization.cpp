@@ -11,10 +11,36 @@
 
 namespace duckdb {
 
+bool AggregateStateField::IsFixedSize(const LogicalType &type) const {
+	switch (kind) {
+	case AggregateFieldKind::PRIMITIVE:
+		return TypeIsConstantSize(type.InternalType());
+	case AggregateFieldKind::OPTIONAL_VALUE:
+		return children.size() == 1 && children[0].IsFixedSize(type);
+	case AggregateFieldKind::STRUCT: {
+		if (type.id() != LogicalTypeId::STRUCT) {
+			return false;
+		}
+		const auto &types = StructType::GetChildTypes(type);
+		if (types.size() != children.size()) {
+			return false;
+		}
+		for (idx_t i = 0; i < types.size(); i++) {
+			if (!children[i].IsFixedSize(types[i].second)) {
+				return false;
+			}
+		}
+		return true;
+	}
+	default:
+		return false;
+	}
+}
+
 namespace {
 
 template <class OP, class... ARGS>
-void TemplateDispatch(PhysicalType type, ARGS &&... args) {
+void TemplateDispatch(PhysicalType type, ARGS &&...args) {
 	switch (type) {
 	case PhysicalType::BOOL:
 		OP::template Operation<bool>(std::forward<ARGS>(args)...);
@@ -146,6 +172,16 @@ static void SerializeField(const LogicalType &type, const AggregateStateField &f
 			// elements are stored directly - build the result LIST vector from each state's linked list
 			// (BuildLists appends to the result's child, writing the list entries at [offset, offset + count))
 			field.list_functions.BuildLists(linked_lists, result, offset);
+			if (field.list_empty_as_empty) {
+				// an empty linked list is an empty group: export it as a non-NULL empty list rather than NULL
+				auto result_entries = FlatVector::GetDataMutable<list_entry_t>(result);
+				for (idx_t i = 0; i < count; i++) {
+					if (FlatVector::IsNull(result, offset + i)) {
+						FlatVector::SetNull(result, offset + i, false);
+						result_entries[offset + i] = {0, 0};
+					}
+				}
+			}
 			break;
 		}
 		// the elements are sort keys: build the physically stored (BLOB) elements into a temporary LIST vector, then
@@ -163,8 +199,11 @@ static void SerializeField(const LogicalType &type, const AggregateStateField &f
 		for (const auto list_entry : physical_list.Values<VectorListType<string_t>>()) {
 			const auto row = offset + list_entry.GetIndex();
 			if (!list_entry.IsValid()) {
-				// an empty linked list is exported as NULL, matching the finalize semantics of list aggregates
-				FlatVector::SetNull(result, row, true);
+				// an empty linked list is exported as NULL, matching the finalize semantics of list aggregates;
+				// the sorted aggregate buffer instead exports an empty group as a non-NULL empty list
+				if (!field.list_empty_as_empty) {
+					FlatVector::SetNull(result, row, true);
+				}
 				result_entries[row] = {child_offset, 0};
 				continue;
 			}
@@ -319,7 +358,7 @@ void AggregateStateSerialization::SerializeStates(const AggregateStateLayout &la
 }
 
 void AggregateStateSerialization::SerializeStates(const BoundAggregateFunction &aggr,
-                                                  optional_ptr<FunctionData> bind_data,
+                                                  optional_ptr<const FunctionData> bind_data,
                                                   const AggregateStateLayout &layout, Vector &states, idx_t count,
                                                   Vector &result, ArenaAllocator &allocator, idx_t offset) {
 	if (aggr.HasExportAggregateStateCallback()) {

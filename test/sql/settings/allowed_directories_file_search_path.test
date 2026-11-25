@@ -136,6 +136,29 @@ SELECT count(*) FROM glob('*.csv')
 ----
 3
 
+# a remote entry is skipped without loading its file system
+statement ok
+SET file_search_path = 's3://bucket/unused,{DATA_DIR}/csv/glob'
+
+query I
+SELECT count(*) FROM glob('*.csv')
+----
+3
+
+query I
+SELECT count(*) FROM 'f_2.csv'
+----
+2
+
+# a remote entry alone leaves no location to look at
+statement ok
+SET file_search_path = 's3://bucket/unused'
+
+statement error
+SELECT * FROM glob('*.csv')
+----
+Cannot access file "*.csv"
+
 # absolute paths are checked as before
 query I
 SELECT count(*) FROM '{DATA_DIR}/csv/glob/f_2.csv'

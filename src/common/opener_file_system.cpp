@@ -42,18 +42,20 @@ unique_ptr<MultiFileList> OpenerFileSystem::GlobFilesExtended(const string &path
 	}
 	// the path is checked where file_search_path resolves it, and only the allowed locations are looked at
 	// (a glob only in the search paths, a name without glob also in the working directory)
-	bool any_allowed = !HasGlob(expanded_path) && IsAccessAllowed(expanded_path, FileType::FILE_TYPE_REGULAR);
+	// a remote location is never searched, so it is refused without looking up its file system
+	auto can_access_location = [this](const string &location) {
+		return !IsRemoteFile(location) && IsAccessAllowed(location, FileType::FILE_TYPE_REGULAR);
+	};
+	bool any_allowed = !HasGlob(expanded_path) && can_access_location(expanded_path);
 	for (idx_t i = 0; i < search_paths.size() && !any_allowed; i++) {
 		auto location = JoinPath(FileSystem::ExpandPath(search_paths[i], GetOpener()), expanded_path);
-		any_allowed = IsAccessAllowed(location, FileType::FILE_TYPE_REGULAR);
+		any_allowed = can_access_location(location);
 	}
 	if (!any_allowed) {
 		throw CannotAccessError(path, FileType::FILE_TYPE_REGULAR);
 	}
 	FileGlobInput restricted_input = input;
-	restricted_input.can_access_location = [this](const string &location) {
-		return IsAccessAllowed(location, FileType::FILE_TYPE_REGULAR);
-	};
+	restricted_input.can_access_location = can_access_location;
 	return FindFileSystem(path).Glob(path, restricted_input, GetOpener());
 }
 

@@ -40,6 +40,14 @@ static vector<FunctionArgument> &GetFunctionArgumentsMutable(ParsedExpression &e
 	return expr.Cast<FunctionExpression>().GetArgumentsMutable();
 }
 
+//! The star of COUNT(tbl.*), which stays in place until the aggregate is bound
+static optional_ptr<const ParsedExpression> GetQualifiedCountStar(const ParsedExpression &expr) {
+	if (!Binder::IsQualifiedCountStar(expr)) {
+		return nullptr;
+	}
+	return &GetFunctionArguments(expr)[0].GetExpression();
+}
+
 static void FindColumnsRelation(const ParsedExpression &expr, optional<Identifier> &relation_name) {
 	if (expr.GetExpressionClass() == ExpressionClass::STAR) {
 		auto &star = expr.Cast<StarExpression>();
@@ -139,11 +147,7 @@ StarExpressionType Binder::FindStarExpression(unique_ptr<ParsedExpression> &expr
 		*star = &current_star;
 		has_star = StarExpressionType::STAR;
 	}
-	// the star of COUNT(tbl.*) is rewritten when the aggregate is bound
-	optional_ptr<const ParsedExpression> count_star;
-	if (IsQualifiedCountStar(*expr)) {
-		count_star = &GetFunctionArguments(*expr)[0].GetExpression();
-	}
+	auto count_star = GetQualifiedCountStar(*expr);
 	ParsedExpressionIterator::EnumerateChildren(*expr, [&](unique_ptr<ParsedExpression> &child_expr) {
 		if (child_expr.get() == count_star.get()) {
 			return;
@@ -167,8 +171,13 @@ void Binder::ReplaceStarExpression(unique_ptr<ParsedExpression> &expr, unique_pt
 		}
 		return;
 	}
-	ParsedExpressionIterator::EnumerateChildren(
-	    *expr, [&](unique_ptr<ParsedExpression> &child_expr) { ReplaceStarExpression(child_expr, replacement); });
+	auto count_star = GetQualifiedCountStar(*expr);
+	ParsedExpressionIterator::EnumerateChildren(*expr, [&](unique_ptr<ParsedExpression> &child_expr) {
+		if (child_expr.get() == count_star.get()) {
+			return;
+		}
+		ReplaceStarExpression(child_expr, replacement);
+	});
 }
 
 string Binder::ReplaceColumnsAlias(const string &alias, const string &column_name,

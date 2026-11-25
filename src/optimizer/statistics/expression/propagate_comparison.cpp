@@ -115,13 +115,17 @@ bool StatisticsPropagator::ReadsRemovableColumns(const Expression &expr) const {
 	return removable;
 }
 
+bool StatisticsPropagator::CanBeFolded(const Expression &expr) const {
+	return !expr.IsVolatile() && !ExpressionBarrier::Contains(expr) && ReadsRemovableColumns(expr);
+}
+
 void StatisticsPropagator::RecordRemovableColumns(LogicalOperator &op) {
 	if (op.type != LogicalOperatorType::LOGICAL_PROJECTION) {
 		return;
 	}
 	auto &proj = op.Cast<LogicalProjection>();
 	for (idx_t i = 0; i < proj.expressions.size(); i++) {
-		if (IsRemovable(*proj.expressions[i]) && ReadsRemovableColumns(*proj.expressions[i])) {
+		if (CanBeFolded(*proj.expressions[i]) && IsRemovable(*proj.expressions[i])) {
 			removable_columns.insert(ColumnBinding(proj.table_index, ProjectionIndex(i)));
 		}
 	}

@@ -68,6 +68,34 @@ SELECT nextval('null_check_sequence');
 ----
 4
 
+# a second derived table whose comparison of such a column the statistics decide
+statement ok
+CREATE SEQUENCE projected_comparison_sequence;
+
+query I
+SELECT sum(x) FILTER (WHERE c) FROM (SELECT x, b > false AS c FROM (SELECT x, CASE WHEN nextval('projected_comparison_sequence') > 0 THEN true ELSE true END AS b FROM v));
+----
+6
+
+query I
+SELECT nextval('projected_comparison_sequence');
+----
+4
+
+# below an ORDER BY, whose columns can be compressed and restored by projections
+statement ok
+CREATE SEQUENCE order_sequence;
+
+query I
+SELECT first(x) FILTER (WHERE b) FROM (SELECT x, CASE WHEN nextval('order_sequence') > 0 THEN true ELSE true END AS b FROM v ORDER BY x DESC);
+----
+3
+
+query I
+SELECT nextval('order_sequence');
+----
+4
+
 # a materialized CTE
 statement ok
 CREATE SEQUENCE cte_sequence;

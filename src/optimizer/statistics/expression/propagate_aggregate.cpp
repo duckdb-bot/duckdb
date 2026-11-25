@@ -1,6 +1,5 @@
 #include "duckdb/optimizer/statistics_propagator.hpp"
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
-#include "duckdb/planner/expression/expression_barrier.hpp"
 #include "duckdb/storage/statistics/numeric_stats.hpp"
 
 namespace duckdb {
@@ -8,8 +7,7 @@ namespace duckdb {
 unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundAggregateExpression &aggr,
                                                                      unique_ptr<Expression> &expr_ptr) {
 	// a filter stays as it is written when evaluating it, or computing a column it reads, has an effect
-	if (aggr.GetFilter() && !aggr.GetFilter()->IsVolatile() && !ExpressionBarrier::Contains(*aggr.GetFilter()) &&
-	    ReadsRemovableColumns(*aggr.GetFilter())) {
+	if (aggr.GetFilter() && CanBeFolded(*aggr.GetFilter())) {
 		// a filter that is true for every row is no filter, unless it can still fail
 		auto &filter = aggr.GetFilterMutable();
 		auto filter_stats = PropagateExpression(filter);

@@ -195,6 +195,8 @@ private:
 	static bool IsRemovable(const Expression &expr);
 	//! Whether every column an expression reads can be removed from the plan without an observable effect
 	bool ReadsRemovableColumns(const Expression &expr) const;
+	//! Whether folding an expression away loses no effect of its own or of a column it reads, judged as it is written
+	bool CanBeFolded(const Expression &expr) const;
 	//! Records the columns of a projection that can be removed from the plan without an observable effect
 	void RecordRemovableColumns(LogicalOperator &op);
 	bool ExpressionIsConstant(Expression &expr, const Value &val);

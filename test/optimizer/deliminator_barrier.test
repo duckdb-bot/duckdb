@@ -116,6 +116,35 @@ ORDER BY ALL;
 4	NULL
 NULL	NULL
 
+# a correlation domain that the subquery joins as a relation of its own
+query II
+SELECT o.k, l.v
+FROM barrier_outer o, LATERAL (
+    SELECT __internal_barrier(i.s::INTEGER) AS v
+    FROM (SELECT o.k AS k) d JOIN barrier_inner i ON i.k = d.k
+) l
+ORDER BY ALL;
+----
+1	1
+1	1
+1	10
+1	10
+3	3
+
+query II
+SELECT o.k, l.v
+FROM barrier_outer o, LATERAL (
+    SELECT __internal_barrier(i.s::INTEGER) AS v
+    FROM (SELECT o.k AS k, o.j AS j) d JOIN barrier_inner i ON i.k = d.k AND i.j = d.j
+) l
+ORDER BY ALL;
+----
+1	1
+1	1
+1	10
+1	10
+3	3
+
 # nested subqueries
 query I
 SELECT k FROM barrier_outer o

@@ -1,0 +1,115 @@
+# name: test/sql/copy/csv/csv_sequential_file_full_last_buffer.test
+# description: A compressed or re-encoded CSV file that ends exactly at the end of a buffer reads like the plain file
+# group: [csv]
+
+# 16 bytes in two buffers of 8, the second row opens a quote that never closes
+statement ok
+COPY (SELECT '1,a' || chr(10) || '2,"abcdefgh') TO '{TEST_DIR}/full_last_buffer.csv' (HEADER false, QUOTE '', DELIM '|');
+
+statement ok
+COPY (SELECT '1,a' || chr(10) || '2,"abcdefgh') TO '{TEST_DIR}/full_last_buffer.csv.gz' (HEADER false, QUOTE '', DELIM '|', COMPRESSION gzip);
+
+query I
+SELECT size FROM read_blob('{TEST_DIR}/full_last_buffer.csv');
+----
+16
+
+# single-threaded and strict, the unterminated row is skipped
+query II
+SELECT * FROM read_csv('{TEST_DIR}/full_last_buffer.csv', auto_detect=false, header=false, columns={'a': 'INTEGER', 'b': 'VARCHAR'}, buffer_size=8, strict_mode=true, ignore_errors=true, parallel=false);
+----
+1	a
+
+query II
+SELECT * FROM read_csv('{TEST_DIR}/full_last_buffer.csv.gz', auto_detect=false, header=false, columns={'a': 'INTEGER', 'b': 'VARCHAR'}, buffer_size=8, strict_mode=true, ignore_errors=true, parallel=false);
+----
+1	a
+
+# a file in another encoding is read sequentially as well
+query II
+SELECT * FROM read_csv('{TEST_DIR}/full_last_buffer.csv', auto_detect=false, header=false, columns={'a': 'INTEGER', 'b': 'VARCHAR'}, buffer_size=8, strict_mode=true, ignore_errors=true, parallel=false, encoding='latin-1');
+----
+1	a
+
+# or recorded as a reject
+query II
+SELECT * FROM read_csv('{TEST_DIR}/full_last_buffer.csv.gz', auto_detect=false, header=false, columns={'a': 'INTEGER', 'b': 'VARCHAR'}, buffer_size=8, strict_mode=true, store_rejects=true, parallel=false);
+----
+1	a
+
+query III
+SELECT line, column_idx, error_type FROM reject_errors;
+----
+2	2	UNQUOTED VALUE
+
+statement ok
+DROP TABLE reject_errors;
+
+statement ok
+DROP TABLE reject_scans;
+
+# or reported with its line
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/full_last_buffer.csv.gz', auto_detect=false, header=false, columns={'a': 'INTEGER', 'b': 'VARCHAR'}, buffer_size=8, strict_mode=true, parallel=false);
+----
+Value with unterminated quote found.
+
+# without strict mode the row is read
+query II
+SELECT count(*), max(a) FROM read_csv('{TEST_DIR}/full_last_buffer.csv.gz', auto_detect=false, header=false, columns={'a': 'INTEGER', 'b': 'VARCHAR'}, buffer_size=8, strict_mode=false, parallel=false);
+----
+2	2
+
+# a parallel read on one thread
+statement ok
+SET threads=1;
+
+query II
+SELECT count(*), max(a) FROM read_csv('{TEST_DIR}/full_last_buffer.csv', auto_detect=false, header=false, columns={'a': 'INTEGER', 'b': 'VARCHAR'}, buffer_size=8, strict_mode=false);
+----
+2	2
+
+query II
+SELECT count(*), max(a) FROM read_csv('{TEST_DIR}/full_last_buffer.csv.gz', auto_detect=false, header=false, columns={'a': 'INTEGER', 'b': 'VARCHAR'}, buffer_size=8, strict_mode=false);
+----
+2	2
+
+# the error names the row that holds the quote
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/full_last_buffer.csv.gz', auto_detect=false, header=false, columns={'a': 'INTEGER', 'b': 'VARCHAR'}, buffer_size=8, strict_mode=true);
+----
+<REGEX>:(?s).*Original Line. 2,.*unterminated quote.*
+
+statement ok
+RESET threads;
+
+# three full buffers
+statement ok
+COPY (SELECT '1,a' || chr(10) || '2,b' || chr(10) || '3,"cdefghijklmn') TO '{TEST_DIR}/three_full_buffers.csv.gz' (HEADER false, QUOTE '', DELIM '|', COMPRESSION gzip);
+
+query II
+SELECT * FROM read_csv('{TEST_DIR}/three_full_buffers.csv.gz', auto_detect=false, header=false, columns={'a': 'INTEGER', 'b': 'VARCHAR'}, buffer_size=8, strict_mode=true, ignore_errors=true, parallel=false);
+----
+1	a
+2	b
+
+# complete rows that end with a full buffer, and rows that go on behind one
+statement ok
+COPY (SELECT '1,a' || chr(10) || '2,b' || chr(10) || '3,c' || chr(10) || '4,d') TO '{TEST_DIR}/complete_rows_full_buffer.csv.gz' (HEADER false, QUOTE '', DELIM '|', COMPRESSION gzip);
+
+statement ok
+COPY (SELECT '1,a' || chr(10) || '2,bb' || chr(10) || '3,ccc' || chr(10) || '4,dddd') TO '{TEST_DIR}/complete_rows_part_buffer.csv.gz' (HEADER false, QUOTE '', DELIM '|', COMPRESSION gzip);
+
+foreach parallel true false
+
+query III
+SELECT count(*), sum(a), max(b) FROM read_csv('{TEST_DIR}/complete_rows_full_buffer.csv.gz', auto_detect=false, header=false, columns={'a': 'INTEGER', 'b': 'VARCHAR'}, buffer_size=8, strict_mode=true, parallel={parallel});
+----
+4	10	d
+
+query III
+SELECT count(*), sum(a), max(b) FROM read_csv('{TEST_DIR}/complete_rows_part_buffer.csv.gz', auto_detect=false, header=false, columns={'a': 'INTEGER', 'b': 'VARCHAR'}, buffer_size=8, strict_mode=true, parallel={parallel});
+----
+4	10	dddd
+
+endloop

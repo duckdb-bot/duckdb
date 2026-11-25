@@ -32,7 +32,8 @@ void CSVBuffer::Load(CSVFileHandle &file_handle) {
 		// We keep reading until this block is full
 		actual_buffer_size += file_handle.Read(&buffer[actual_buffer_size], requested_size - actual_buffer_size);
 	}
-	last_buffer = file_handle.FinishedReading();
+	// a full buffer does not tell whether the file ends with it
+	last_buffer = file_handle.AtEndOfFile();
 }
 
 shared_ptr<CSVBuffer> CSVBuffer::Next(CSVFileHandle &file_handle, idx_t buffer_size) const {

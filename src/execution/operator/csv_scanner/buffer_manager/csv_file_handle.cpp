@@ -65,6 +65,7 @@ void CSVFileHandle::Reset() {
 	stored_bytes_counted = 0;
 	encoder.Reset();
 	finished = false;
+	has_look_ahead_byte = false;
 	requested_bytes = 0;
 }
 
@@ -85,7 +86,23 @@ bool CSVFileHandle::FinishedReading() const {
 	return finished;
 }
 
+bool CSVFileHandle::AtEndOfFile() {
+	if (finished) {
+		return true;
+	}
+	if (!has_look_ahead_byte) {
+		has_look_ahead_byte = Read(&look_ahead_byte, 1) == 1;
+	}
+	return !has_look_ahead_byte;
+}
+
 idx_t CSVFileHandle::Read(void *buffer, idx_t nr_bytes) {
+	if (has_look_ahead_byte && nr_bytes > 0) {
+		// this byte was counted when it was read ahead
+		*static_cast<char *>(buffer) = look_ahead_byte;
+		has_look_ahead_byte = false;
+		return 1;
+	}
 	// We avoid reading past the original size of the file for uncompressed files in utf-8 encoding. This avoids reading
 	// the data that is written after opening the file. This can be useful, for example when reading a duckdb log file
 	// in csv format while logging is enabled

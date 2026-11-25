@@ -42,6 +42,8 @@ public:
 	bool HasKnownBufferRanges() const;
 
 	bool FinishedReading() const;
+	//! Whether the file has no byte left, which reads one byte ahead when the reads so far have not reached the end
+	bool AtEndOfFile();
 
 	idx_t Read(void *buffer, idx_t nr_bytes);
 
@@ -90,6 +92,9 @@ private:
 	idx_t requested_bytes = 0;
 	//! If we finished reading the file
 	bool finished = false;
+	//! A byte that AtEndOfFile read ahead, which the next read returns first
+	char look_ahead_byte = 0;
+	bool has_look_ahead_byte = false;
 };
 
 } // namespace duckdb

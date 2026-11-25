@@ -134,7 +134,7 @@ private:
 //! The RemoveUnusedColumns optimizer traverses the logical operator tree and removes any columns that are not required
 class RemoveUnusedColumns : public BaseColumnPruner {
 public:
-	explicit RemoveUnusedColumns(Optimizer &optimizer);
+	explicit RemoveUnusedColumns(Optimizer &optimizer, bool keep_volatile_columns = false);
 	RemoveUnusedColumns(RemoveUnusedColumns &parent, bool is_root);
 
 	void VisitOperator(unique_ptr<LogicalOperator> &op) override;
@@ -147,6 +147,8 @@ private:
 	//! output implicitly refers all the columns below it)
 	bool everything_referenced;
 	bool allow_missing_cte_references = false;
+	//! Whether a projection keeps a volatile expression whose column nothing reads any more
+	bool keep_volatile_columns;
 	RemoveUnusedColumnsMode mode = RemoveUnusedColumnsMode::APPLY;
 
 	RemoveUnusedColumns &root;

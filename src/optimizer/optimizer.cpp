@@ -545,7 +545,8 @@ void Optimizer::RunBuiltInOptimizers() {
 	if (removed_expressions || topn_used_late_materialization) {
 		RunOptimizer(OptimizerType::UNUSED_COLUMNS, [&]() {
 			ClearProjectionMaps(*plan);
-			RemoveUnusedColumns unused(*this);
+			// a volatile column that lost its reader in statistics propagation is still evaluated
+			RemoveUnusedColumns unused(*this, true);
 			unused.VisitOperator(plan);
 		});
 	}

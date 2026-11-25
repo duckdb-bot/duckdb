@@ -55,14 +55,15 @@ static void GatherCTEScans(const TableIndex cte_index, const LogicalOperator &op
 	}
 }
 
-RemoveUnusedColumns::RemoveUnusedColumns(Optimizer &optimizer)
+RemoveUnusedColumns::RemoveUnusedColumns(Optimizer &optimizer, bool keep_volatile_columns)
     : optimizer(optimizer), binder(optimizer.binder), context(optimizer.context), everything_referenced(true),
-      root(*this) {
+      keep_volatile_columns(keep_volatile_columns), root(*this) {
 }
 
 RemoveUnusedColumns::RemoveUnusedColumns(RemoveUnusedColumns &parent, bool is_root)
     : optimizer(parent.optimizer), binder(parent.binder), context(parent.context), everything_referenced(is_root),
-      allow_missing_cte_references(parent.allow_missing_cte_references), mode(parent.mode), root(parent.root) {
+      allow_missing_cte_references(parent.allow_missing_cte_references),
+      keep_volatile_columns(parent.keep_volatile_columns), mode(parent.mode), root(parent.root) {
 }
 
 unordered_map<TableIndex, MaterializedCTEInfo> &RemoveUnusedColumns::GetCTEMap() {
@@ -774,6 +775,14 @@ void RemoveUnusedColumns::VisitOperator(unique_ptr<LogicalOperator> &op_ref) {
 	}
 	case LogicalOperatorType::LOGICAL_PROJECTION: {
 		auto &proj = op.Cast<LogicalProjection>();
+		if (keep_volatile_columns && !everything_referenced) {
+			// a volatile expression is still evaluated after another optimizer removed the reader of its column
+			for (idx_t i = 0; i < proj.expressions.size(); i++) {
+				if (proj.expressions[i]->IsVolatile()) {
+					column_references.emplace(ColumnBinding(proj.table_index, ProjectionIndex(i)), ReferencedColumn());
+				}
+			}
+		}
 		if (analyze) {
 			RemoveUnusedColumns remove(*this, false);
 			for (idx_t i = 0; i < proj.expressions.size(); i++) {

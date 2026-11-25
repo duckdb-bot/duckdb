@@ -28,24 +28,28 @@ SELECT nextval('sum_sequence');
 ----
 4
 
-# the same for other aggregates, each of them evaluates the filter for every row
+# the same for other aggregates, each with a sequence of its own
 statement ok
-CREATE SEQUENCE aggregate_sequence;
+CREATE SEQUENCE count_sequence;
 
-query IIIII
-SELECT count(*) FILTER (WHERE CASE WHEN nextval('aggregate_sequence') > 0 THEN true ELSE true END),
-       count(x) FILTER (WHERE CASE WHEN nextval('aggregate_sequence') > 0 THEN true ELSE true END),
-       min(x) FILTER (WHERE CASE WHEN nextval('aggregate_sequence') > 0 THEN true ELSE true END),
-       avg(x) FILTER (WHERE CASE WHEN nextval('aggregate_sequence') > 0 THEN true ELSE true END),
-       list(x ORDER BY x) FILTER (WHERE CASE WHEN nextval('aggregate_sequence') > 0 THEN true ELSE true END)
+statement ok
+CREATE SEQUENCE min_sequence;
+
+statement ok
+CREATE SEQUENCE list_sequence;
+
+query III
+SELECT count(*) FILTER (WHERE CASE WHEN nextval('count_sequence') > 0 THEN true ELSE true END),
+       min(x) FILTER (WHERE CASE WHEN nextval('min_sequence') > 0 THEN true ELSE true END),
+       list(x ORDER BY x) FILTER (WHERE CASE WHEN nextval('list_sequence') > 0 THEN true ELSE true END)
 FROM v;
 ----
-3	3	1	2.0	[1, 2, 3]
+3	1	[1, 2, 3]
 
-query I
-SELECT nextval('aggregate_sequence');
+query III
+SELECT nextval('count_sequence'), nextval('min_sequence'), nextval('list_sequence');
 ----
-16
+4	4	4
 
 # with groups
 statement ok

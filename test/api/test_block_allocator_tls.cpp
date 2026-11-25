@@ -607,7 +607,7 @@ TEST_CASE("A database that has returned no buffer to the allocation cache holds 
 }
 
 #ifndef DUCKDB_NO_THREADS
-TEST_CASE("Allocation cache creates the queues of a size class once when threads return buffers together",
+TEST_CASE("Allocation cache keeps every buffer when threads return the first buffers of a size class together",
           "[api][allocation_cache]") {
 	constexpr idx_t SIZE = 512 * 1024;
 	constexpr idx_t WORKERS = 8;
@@ -635,7 +635,7 @@ TEST_CASE("Allocation cache creates the queues of a size class once when threads
 		for (auto &worker : workers) {
 			worker.join();
 		}
-		// every thread found or created the same queues, and each buffer is in them
+		// one size class holds queues, and every buffer is in them
 		CHECK(BlockAllocatorTestHelper::AllocationCacheBuckets(allocator) == 1);
 		CHECK(allocator.GetCachedMemory() == WORKERS * SIZE);
 		CHECK(live_bytes.load() == WORKERS * SIZE);

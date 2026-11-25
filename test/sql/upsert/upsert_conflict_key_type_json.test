@@ -177,6 +177,24 @@ SELECT a, k, n FROM json_composite ORDER BY k
 1	1	1
 1	1.0	2
 
+# rows of the source are deduplicated on the key as it is inserted
+statement ok
+CREATE TABLE json_distinct (k JSON PRIMARY KEY);
+
+statement ok
+INSERT INTO json_distinct SELECT 0.0::DOUBLE UNION ALL SELECT '-0.0'::DOUBLE ON CONFLICT DO NOTHING;
+
+statement ok
+INSERT INTO json_distinct SELECT '"a"' COLLATE NOCASE UNION ALL SELECT '"A"' COLLATE NOCASE ON CONFLICT DO NOTHING;
+
+query I
+SELECT k FROM json_distinct ORDER BY k
+----
+"A"
+"a"
+-0.0
+0.0
+
 # a key that is not valid JSON fails as in a plain INSERT
 statement error
 INSERT INTO json_values SELECT '{' ON CONFLICT DO NOTHING;

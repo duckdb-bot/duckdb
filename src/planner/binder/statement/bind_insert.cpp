@@ -612,12 +612,13 @@ unique_ptr<MergeIntoStatement> Binder::GenerateMergeInto(InsertQueryNode &node, 
 	for (auto &distinct_on_columns : all_distinct_on_columns) {
 		for (auto &col : distinct_on_columns) {
 			auto &type = columns.GetColumn(col).Type();
-			if (!TypeExpression::CanRepresent(type) || type.HasAlias() || type.id() == LogicalTypeId::ENUM) {
-				// a parsed cast resolves these types again, by name or from all their values
-				if (type.id() != LogicalTypeId::ENUM) {
-					// an ENUM finds its conflicts as a string, the other types are cast once the source is bound
-					bound_cast_types.emplace(col, type);
-				}
+			if (type.id() == LogicalTypeId::ENUM) {
+				// FIXME: an ENUM key is not cast and is compared as a string, under the collation of its source
+				continue;
+			}
+			if (!TypeExpression::CanRepresent(type) || type.HasAlias()) {
+				// a parsed cast resolves these types again by name, so they are cast once the source is bound
+				bound_cast_types.emplace(col, type);
 				continue;
 			}
 			unique_ptr<ParsedExpression> key = make_uniq<CastExpression>(type, make_uniq<ColumnRefExpression>(col));

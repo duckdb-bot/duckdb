@@ -7,12 +7,12 @@ namespace duckdb {
 unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundAggregateExpression &aggr,
                                                                      unique_ptr<Expression> &expr_ptr) {
 	if (aggr.GetFilter()) {
-		// a filter that is true for every row is no filter
+		// a filter that is true for every row is no filter, if evaluating it has no effect of its own
 		auto &filter = aggr.GetFilterMutable();
 		auto filter_stats = PropagateExpression(filter);
 		if (filter_stats && filter_stats->GetType().id() == LogicalTypeId::BOOLEAN && !filter_stats->CanHaveNull() &&
 		    filter_stats->GetStatsType() == StatisticsType::NUMERIC_STATS && NumericStats::HasMinMax(*filter_stats) &&
-		    BooleanValue::Get(NumericStats::Min(*filter_stats))) {
+		    BooleanValue::Get(NumericStats::Min(*filter_stats)) && IsRemovable(*filter)) {
 			filter.reset();
 			// the columns that only the filter read can be pruned from the scan
 			removed_expressions = true;

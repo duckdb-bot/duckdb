@@ -1,0 +1,117 @@
+# name: test/optimizer/statistics/statistics_aggregate_filter_effects.test
+# description: An aggregate filter that is true for every row stays when evaluating it has an effect
+# group: [statistics]
+
+statement ok
+CREATE TABLE v AS SELECT x FROM (VALUES (1), (2), (3)) t(x);
+
+statement ok
+SET explain_output = 'OPTIMIZED_ONLY';
+
+# both branches are true, but the condition advances the sequence once for every row
+# the alias keeps the text of the filter out of the projection, so that FILTER can only match the aggregate
+statement ok
+CREATE SEQUENCE sum_sequence;
+
+query II
+EXPLAIN SELECT sum(x) FILTER (WHERE CASE WHEN nextval('sum_sequence') > 0 THEN true ELSE true END) AS filtered FROM v;
+----
+logical_opt	<REGEX>:(?s).*FILTER.*
+
+query I
+SELECT sum(x) FILTER (WHERE CASE WHEN nextval('sum_sequence') > 0 THEN true ELSE true END) FROM v;
+----
+6
+
+query I
+SELECT nextval('sum_sequence');
+----
+4
+
+# the same for other aggregates, each of them evaluates the filter for every row
+statement ok
+CREATE SEQUENCE aggregate_sequence;
+
+query IIIII
+SELECT count(*) FILTER (WHERE CASE WHEN nextval('aggregate_sequence') > 0 THEN true ELSE true END),
+       count(x) FILTER (WHERE CASE WHEN nextval('aggregate_sequence') > 0 THEN true ELSE true END),
+       min(x) FILTER (WHERE CASE WHEN nextval('aggregate_sequence') > 0 THEN true ELSE true END),
+       avg(x) FILTER (WHERE CASE WHEN nextval('aggregate_sequence') > 0 THEN true ELSE true END),
+       list(x ORDER BY x) FILTER (WHERE CASE WHEN nextval('aggregate_sequence') > 0 THEN true ELSE true END)
+FROM v;
+----
+3	3	1	2.0	[1, 2, 3]
+
+query I
+SELECT nextval('aggregate_sequence');
+----
+16
+
+# with groups
+statement ok
+CREATE SEQUENCE group_sequence;
+
+query II
+SELECT x % 2, sum(x) FILTER (WHERE CASE WHEN nextval('group_sequence') > 0 THEN true ELSE true END) FROM v GROUP BY ALL ORDER BY ALL;
+----
+0	2
+1	4
+
+query I
+SELECT nextval('group_sequence');
+----
+4
+
+# over a table function
+statement ok
+CREATE SEQUENCE range_sequence;
+
+query I
+SELECT sum(x) FILTER (WHERE CASE WHEN nextval('range_sequence') > 0 THEN true ELSE true END) FROM range(1, 4) t(x);
+----
+6
+
+query I
+SELECT nextval('range_sequence');
+----
+4
+
+# branches that the statistics of the column prove to be true
+statement ok
+CREATE SEQUENCE branch_sequence;
+
+query I
+SELECT sum(x) FILTER (WHERE CASE WHEN nextval('branch_sequence') > 0 THEN x > 0 ELSE x < 10 END) FROM v;
+----
+6
+
+query I
+SELECT nextval('branch_sequence');
+----
+4
+
+# a condition that draws random numbers
+query II
+EXPLAIN SELECT count(*) FILTER (WHERE CASE WHEN random() < 0.5 THEN true ELSE true END) AS filtered FROM v;
+----
+logical_opt	<REGEX>:(?s).*FILTER.*
+
+# a condition that raises an error for a row
+statement ok
+CREATE TABLE bad AS SELECT * FROM (VALUES (1, '1'), (2, 'bad'), (3, '3')) t(x, s);
+
+query II
+EXPLAIN SELECT sum(x) FILTER (WHERE CASE WHEN CAST(s AS INTEGER) > 0 THEN true ELSE true END) AS filtered FROM bad;
+----
+logical_opt	<REGEX>:(?s).*FILTER.*
+
+statement error
+SELECT sum(x) FILTER (WHERE CASE WHEN CAST(s AS INTEGER) > 0 THEN true ELSE true END) FROM bad;
+----
+Could not convert string 'bad' to INT32
+
+# a filter without an effect of its own that is true for every row still gives the result of the aggregate without it
+query II
+SELECT sum(x) FILTER (WHERE x > 0), count(*) FILTER (WHERE x < 10) FROM v;
+----
+6	3

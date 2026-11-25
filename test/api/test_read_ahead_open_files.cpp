@@ -164,7 +164,7 @@ TEST_CASE("Read-ahead keeps the files open ahead of a scan within its window", "
 		file_list += (file_list.empty() ? "'" : ", '") + path + "'";
 	}
 	auto &counting_fs = *fs;
-	FileSystem::GetFileSystem(*con.context).RegisterSubSystem(std::move(fs));
+	VirtualFileSystem::Get(*con.context).RegisterSubSystem(std::move(fs));
 
 	// many scan threads produce jobs for a small window
 	const idx_t threads = 32;

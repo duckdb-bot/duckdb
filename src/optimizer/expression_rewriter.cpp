@@ -84,6 +84,16 @@ const vector<unique_ptr<Rule>> &ExpressionRewriter::GetRules() {
 	return client_data.default_expression_rewriter->rules;
 }
 
+const vector<unique_ptr<Rule>> &ExpressionRewriter::GetTryRules() {
+	if (!rules.empty()) {
+		return rules;
+	}
+	if (try_rules.empty()) {
+		try_rules = CreateDefaultRules(*this);
+	}
+	return try_rules;
+}
+
 void ExpressionRewriter::AddRule(unique_ptr<Rule> rule) {
 	D_ASSERT(rule->root);
 	rules.push_back(std::move(rule));
@@ -157,8 +167,10 @@ unique_ptr<Expression> ExpressionRewriter::ApplyRules(LogicalOperator &op, const
 			continue;
 		}
 		in_try = frame.in_try;
+		// the rules shared by the client belong to its default rewriter, so they cannot read the state of this one
+		auto &frame_rules = in_try ? GetTryRules() : rules;
 		bool node_made_change = false;
-		current_expr = ApplyRule(op, rules, std::move(current_expr), node_made_change, frame.is_root);
+		current_expr = ApplyRule(op, frame_rules, std::move(current_expr), node_made_change, frame.is_root);
 		if (node_made_change) {
 			changes_made = true;
 			frame.children_visited = false;

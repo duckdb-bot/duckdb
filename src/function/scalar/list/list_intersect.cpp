@@ -1,12 +1,71 @@
 #include "duckdb/common/types/data_chunk.hpp"
+#include "duckdb/common/types/decimal.hpp"
 #include "duckdb/function/scalar/list_functions.hpp"
 #include "duckdb/function/scalar/nested_functions.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
+#include "duckdb/planner/expression/bound_comparison_expression.hpp"
+#include "duckdb/planner/expression/bound_function_expression.hpp"
+#include "duckdb/planner/expression/bound_reference_expression.hpp"
+#include "duckdb/planner/expression_binder.hpp"
+#include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/function/create_sort_key.hpp"
+#include "duckdb/common/serializer/deserializer.hpp"
+#include "duckdb/common/serializer/serializer.hpp"
+#include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/common/string_map_set.hpp"
 #include "duckdb/common/helper.hpp"
 
 namespace duckdb {
+
+struct ListIntersectBindData : public FunctionData {
+	explicit ListIntersectBindData(unique_ptr<Expression> key_p) : key(std::move(key_p)) {
+	}
+
+	//! Maps an element to the key that compares it, empty when the elements are compared as they are
+	unique_ptr<Expression> key;
+
+public:
+	unique_ptr<FunctionData> Copy() const override {
+		return make_uniq<ListIntersectBindData>(key ? key->Copy() : nullptr);
+	}
+	bool Equals(const FunctionData &other_p) const override {
+		auto &other = other_p.Cast<ListIntersectBindData>();
+		return Expression::Equals(key, other.key);
+	}
+	static void Serialize(Serializer &serializer, const optional_ptr<const FunctionData> bind_data,
+	                      const BoundScalarFunction &) {
+		auto &data = bind_data->Cast<ListIntersectBindData>();
+		serializer.WritePropertyWithDefault(100, "key", data.key);
+	}
+	static unique_ptr<FunctionData> Deserialize(Deserializer &deserializer, BoundScalarFunction &function) {
+		auto key = deserializer.ReadPropertyWithDefault<unique_ptr<Expression>>(100, "key");
+		function.SetReturnType(deserializer.Get<const LogicalType &>());
+		return make_uniq<ListIntersectBindData>(std::move(key));
+	}
+};
+
+//! Creates the sort keys of the elements of a list, from their comparison keys when they have one
+static void CreateElementSortKeys(ExpressionState &state, const ListIntersectBindData &bind_data, const Vector &child,
+                                  idx_t child_count, Vector &sort_keys) {
+	const OrderModifiers order_modifiers(OrderType::ASCENDING, OrderByNullType::NULLS_LAST);
+	if (!bind_data.key) {
+		CreateSortKeyHelpers::CreateSortKey(child, order_modifiers, sort_keys);
+		return;
+	}
+	ExpressionExecutor executor(state.GetContext(), *bind_data.key);
+	DataChunk elements;
+	elements.InitializeEmpty({child.GetType()});
+	for (idx_t offset = 0; offset < child_count; offset += STANDARD_VECTOR_SIZE) {
+		const auto count = MinValue<idx_t>(STANDARD_VECTOR_SIZE, child_count - offset);
+		elements.data[0].Slice(child, offset, offset + count);
+		elements.CheckCardinality(count);
+		Vector keys(bind_data.key->GetReturnType());
+		executor.ExecuteExpression(elements, keys);
+		Vector batch_sort_keys(LogicalType::BLOB);
+		CreateSortKeyHelpers::CreateSortKey(keys, count, order_modifiers, batch_sort_keys);
+		VectorOperations::Copy(batch_sort_keys, sort_keys, count, 0, offset);
+	}
+}
 
 static void ListIntersectFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto row_count = args.size();
@@ -32,10 +91,9 @@ static void ListIntersectFunction(DataChunk &args, ExpressionState &state, Vecto
 	Vector l_sortkey_vec(LogicalType::BLOB, l_size);
 	Vector r_sortkey_vec(LogicalType::BLOB, r_size);
 
-	const OrderModifiers order_modifiers(OrderType::ASCENDING, OrderByNullType::NULLS_LAST);
-
-	CreateSortKeyHelpers::CreateSortKey(l_child, order_modifiers, l_sortkey_vec);
-	CreateSortKeyHelpers::CreateSortKey(r_child, order_modifiers, r_sortkey_vec);
+	auto &bind_data = state.expr.Cast<BoundFunctionExpression>().BindInfo()->Cast<ListIntersectBindData>();
+	CreateElementSortKeys(state, bind_data, l_child, l_size, l_sortkey_vec);
+	CreateElementSortKeys(state, bind_data, r_child, r_size, r_sortkey_vec);
 
 	const auto l_sortkey_ptr = l_sortkey_vec.Values<string_t>();
 	const auto r_sortkey_ptr = r_sortkey_vec.Values<string_t>();
@@ -86,7 +144,8 @@ static void ListIntersectFunction(DataChunk &args, ExpressionState &state, Vecto
 			const auto &key = hash_keys.GetValueUnsafe(h_idx);
 			set.insert(key);
 			if (use_l_for_hash) {
-				key_to_index_map[key] = h_idx;
+				// elements with equal keys can differ, the first of them is the one to return
+				key_to_index_map.emplace(key, h_idx);
 			}
 		}
 
@@ -121,7 +180,22 @@ static unique_ptr<FunctionData> ListIntersectBind(BindScalarFunctionInput &input
 	D_ASSERT(input.GetBoundFunction().GetArguments().size() == 2);
 	arguments[0] = BoundCastExpression::AddArrayCastToList(context, std::move(arguments[0]));
 	arguments[1] = BoundCastExpression::AddArrayCastToList(context, std::move(arguments[1]));
-	return nullptr;
+
+	auto &left_type = arguments[0]->GetReturnType();
+	auto &right_type = arguments[1]->GetReturnType();
+	unique_ptr<Expression> key;
+	LogicalType element_type;
+	if (left_type.id() == LogicalTypeId::LIST && right_type.id() == LogicalTypeId::LIST &&
+	    BoundComparisonExpression::TryBindComparison(context, ListType::GetChildType(left_type),
+	                                                 ListType::GetChildType(right_type), element_type,
+	                                                 ExpressionType::COMPARE_EQUAL, input.GetDecimalWidthLimit())) {
+		// elements match by their comparison keys, under the combined collation of both lists
+		key = make_uniq<BoundReferenceExpression>(element_type, idx_t(0));
+		if (!ExpressionBinder::PushCollation(context, key, element_type, CollationType::COMBINABLE_COLLATIONS)) {
+			key.reset();
+		}
+	}
+	return make_uniq<ListIntersectBindData>(std::move(key));
 }
 
 ScalarFunction ListIntersectFun::GetFunction() {
@@ -131,6 +205,8 @@ ScalarFunction ListIntersectFun::GetFunction() {
 	    .AddParameter("list1", LogicalType::LIST(LogicalType::TEMPLATE("T")))
 	    .AddParameter("list2", LogicalType::LIST(LogicalType::TEMPLATE("T")));
 	fun.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
+	fun.SetSerializeCallback(ListIntersectBindData::Serialize);
+	fun.SetDeserializeCallback(ListIntersectBindData::Deserialize);
 	return fun;
 }
 

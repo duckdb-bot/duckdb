@@ -26,6 +26,11 @@ static PermissionException CannotAccessError(const string &path, FileType type) 
 	                           type == FileType::FILE_TYPE_DIR ? "directory" : "file", path);
 }
 
+vector<OpenFileInfo> OpenerFileSystem::Glob(const string &path, FileOpener *opener) {
+	VerifyNoOpener(opener);
+	return GlobFilesExtended(path, FileGlobOptions::ALLOW_EMPTY, nullptr)->GetAllFiles();
+}
+
 unique_ptr<MultiFileList> OpenerFileSystem::GlobFilesExtended(const string &path, const FileGlobInput &input,
                                                               optional_ptr<FileOpener> opener) {
 	VerifyNoOpener(opener);

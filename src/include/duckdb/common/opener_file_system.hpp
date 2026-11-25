@@ -218,10 +218,7 @@ public:
 		return fs.PathSeparator(path);
 	}
 
-	vector<OpenFileInfo> Glob(const string &path, FileOpener *opener = nullptr) override {
-		VerifyNoOpener(opener);
-		return GlobFilesExtended(path, FileGlobOptions::ALLOW_EMPTY, nullptr)->GetAllFiles();
-	}
+	vector<OpenFileInfo> Glob(const string &path, FileOpener *opener = nullptr) override;
 
 	std::string GetName() const override {
 		auto fixed_fs = GetFixedFileSystem();

@@ -1581,17 +1581,23 @@ void StringValueScanner::ProcessOverBufferValue() {
 		}
 		j++;
 	}
-	if (cur_buffer_handle->is_last_buffer && iterator.pos.buffer_pos >= cur_buffer_handle->actual_size &&
-	    states.IsQuotedCurrent() && state_machine->dialect_options.state_machine_options.strict_mode.GetValue()) {
-		// the file ended inside a quoted value: record that before the value itself is added
-		result.current_errors.Insert(UNTERMINATED_QUOTES, result.cur_col_id, result.chunk_col_id, result.last_position);
-	}
 	if (iterator.pos.buffer_pos >= cur_buffer_handle->actual_size && !cur_buffer_handle->is_last_buffer &&
 	    !over_buffer_string.empty()) {
 		// the value goes on in the next buffer
 		over_buffer_value = std::move(over_buffer_string);
 		over_buffer_value_position = j;
 		return;
+	}
+	const bool file_ended =
+	    cur_buffer_handle->is_last_buffer && iterator.pos.buffer_pos >= cur_buffer_handle->actual_size;
+	FinishOverBufferValue(over_buffer_string, file_ended);
+}
+
+void StringValueScanner::FinishOverBufferValue(const string &over_buffer_string, const bool file_ended) {
+	if (file_ended && states.IsQuotedCurrent() &&
+	    state_machine->dialect_options.state_machine_options.strict_mode.GetValue()) {
+		// the file ended inside a quoted value: record that before the value itself is added
+		result.current_errors.Insert(UNTERMINATED_QUOTES, result.cur_col_id, result.chunk_col_id, result.last_position);
 	}
 	// With a single column, a record separator read right after a state reset is an empty line only when it does not
 	// end an open row or comment
@@ -1618,7 +1624,7 @@ void StringValueScanner::ProcessOverBufferValue() {
 			// remove the extra delimiter bytes before removing escapes, which can change the length of the value
 			if (extra_delimiter_bytes > length) {
 				throw InternalException(
-				    "Value size is lower than the number of extra delimiter bytes in the ProcessOverBufferValue()");
+				    "Value size is lower than the number of extra delimiter bytes in the FinishOverBufferValue()");
 			}
 			length -= extra_delimiter_bytes;
 			removed_extra_delimiter_bytes = true;
@@ -1695,7 +1701,7 @@ void StringValueScanner::ProcessOverBufferValue() {
 			if (!removed_extra_delimiter_bytes) {
 				if (extra_delimiter_bytes > value_size) {
 					throw InternalException(
-					    "Value size is lower than the number of extra delimiter bytes in the ProcessOverBufferValue()");
+					    "Value size is lower than the number of extra delimiter bytes in the FinishOverBufferValue()");
 				}
 				value_size -= extra_delimiter_bytes;
 			}
@@ -1714,7 +1720,7 @@ void StringValueScanner::ProcessOverBufferValue() {
 		lines_read++;
 	}
 
-	if (iterator.pos.buffer_pos >= cur_buffer_handle->actual_size && cur_buffer_handle->is_last_buffer) {
+	if (file_ended) {
 		result.added_last_line = true;
 	}
 	if (states.IsCarriageReturn() &&
@@ -1817,7 +1823,17 @@ StringValueScanner::MoveBufferResult StringValueScanner::TryMoveToNextBuffer() {
 				result.current_errors.Insert(UNTERMINATED_QUOTES, result.cur_col_id, result.chunk_col_id,
 				                             result.last_position);
 			}
-			result.AddRow(result, previous_buffer_handle->actual_size);
+			if (!over_buffer_value.empty()) {
+				// the last value waited for a next buffer and ends with the file
+				FinishOverBufferValue(over_buffer_value, true);
+				over_buffer_value.clear();
+			}
+			if (result.added_last_line) {
+				iterator.pos.buffer_pos = previous_buffer_handle->actual_size;
+				result.AddRowInternal();
+			} else {
+				result.AddRow(result, previous_buffer_handle->actual_size);
+			}
 		}
 		lines_read++;
 	}

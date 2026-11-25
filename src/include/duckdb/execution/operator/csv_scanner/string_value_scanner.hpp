@@ -410,6 +410,8 @@ private:
 
 	//! Function used to process values that go over the first buffer, extra allocation might be necessary
 	void ProcessOverBufferValue();
+	//! Adds a value that was read over the end of a buffer, and its row when a record separator ends the value
+	void FinishOverBufferValue(const string &over_buffer_string, bool file_ended);
 
 	void ProcessExtraRow();
 	//! Function used to move from one buffer to the other, if necessary

@@ -32,7 +32,7 @@ EXPLAIN SELECT sum(x) FILTER (WHERE b) AS filtered FROM (SELECT x, always_true A
 physical_plan	<!REGEX>:(?s).*always_true.*
 
 query II
-EXPLAIN SELECT count(x), list(c ORDER BY x) FROM (SELECT x, b > false AS c FROM (SELECT x, always_true AS b FROM w));
+EXPLAIN SELECT list(c ORDER BY x) FROM (SELECT x, b > false AS c FROM (SELECT x, always_true AS b FROM w)) WHERE x >= 0;
 ----
 physical_plan	<!REGEX>:(?s).*always_true.*
 

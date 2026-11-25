@@ -261,3 +261,47 @@ query I
 SELECT (SELECT SUM((SELECT x[1]))) FROM (VALUES ([1]), ([2]), (NULL)) t(x)
 ----
 3
+
+# a query that groups by the expression of the subquery argument computes the aggregate over its rows
+statement ok
+CREATE TABLE grouped(x INTEGER);
+
+statement ok
+INSERT INTO grouped VALUES (1), (1), (2), (NULL);
+
+query III
+SELECT x::BIGINT, (SELECT SUM((SELECT x::BIGINT))), (SELECT SUM(x::BIGINT)) FROM grouped GROUP BY 1 ORDER BY 1 NULLS LAST
+----
+1	2	2
+2	2	2
+NULL	NULL	NULL
+
+# the rolled up group sums all rows
+query II
+SELECT x::BIGINT, (SELECT SUM((SELECT x::BIGINT))) FROM grouped GROUP BY ROLLUP(1) ORDER BY 1 NULLS LAST, 2
+----
+1	2
+2	2
+NULL	4
+NULL	NULL
+
+query I
+SELECT x::BIGINT FROM grouped GROUP BY 1 HAVING (SELECT COUNT((SELECT x::BIGINT))) = 2
+----
+1
+
+# the alias of the group can stand for an aggregate, so the aggregate stays in the subquery
+query II
+SELECT x::BIGINT AS a, (SELECT SUM((SELECT a))) FROM grouped GROUP BY a ORDER BY 1 NULLS LAST
+----
+1	1
+2	2
+NULL	NULL
+
+# an inner column of the same name keeps the aggregate in its query
+query II
+SELECT x::BIGINT, (SELECT SUM((SELECT x::BIGINT)) FROM (VALUES (5), (6)) u(x)) FROM grouped GROUP BY 1 ORDER BY 1 NULLS LAST
+----
+1	11
+2	11
+NULL	11

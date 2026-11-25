@@ -170,6 +170,20 @@ EXECUTE alias_offset(1)
 1	1	1
 1	2	3
 
+# a generated column is a column, also when its expression is a NULL constant
+statement ok
+CREATE TABLE generated_offset(i BIGINT, off BIGINT GENERATED ALWAYS AS (NULL))
+
+statement ok
+INSERT INTO generated_offset(i) VALUES (0), (1), (2)
+
+query II
+SELECT i, sum(i) OVER (ORDER BY i RANGE BETWEEN off PRECEDING AND CURRENT ROW) FROM generated_offset ORDER BY i
+----
+0	0
+1	1
+2	2
+
 # so does a variable, read as a parameter or with getvariable
 statement ok
 SET VARIABLE null_offset = NULL::BIGINT

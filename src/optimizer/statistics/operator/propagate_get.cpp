@@ -178,6 +178,7 @@ unique_ptr<BaseStatistics> StatisticsPropagator::GetColumnStatistics(ClientConte
 
 unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalGet &get,
                                                                      unique_ptr<LogicalOperator> &node_ptr) {
+	removable_tables.insert(get.table_index);
 	if (get.function.cardinality) {
 		node_stats = get.function.cardinality(context, get.bind_data.get());
 	} else {

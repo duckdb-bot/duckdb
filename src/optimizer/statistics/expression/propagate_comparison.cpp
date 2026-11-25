@@ -1,8 +1,10 @@
 #include "duckdb/optimizer/statistics_propagator.hpp"
+#include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/expression/expression_barrier.hpp"
+#include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/optimizer/expression_rewriter.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/storage/statistics/string_stats.hpp"
@@ -98,6 +100,18 @@ bool StatisticsPropagator::HasNoValidValue(optional_ptr<const BaseStatistics> st
 
 bool StatisticsPropagator::IsRemovable(const Expression &expr) {
 	return !expr.CanThrow() && !expr.IsVolatile() && !ExpressionBarrier::Contains(expr);
+}
+
+bool StatisticsPropagator::ReadsRemovableColumns(const Expression &expr) const {
+	bool removable = true;
+	ExpressionIterator::VisitExpression<BoundColumnRefExpression>(expr, [&](const BoundColumnRefExpression &colref) {
+		auto &binding = colref.Binding();
+		if (colref.Depth() > 0 || (removable_tables.find(binding.table_index) == removable_tables.end() &&
+		                           removable_columns.find(binding) == removable_columns.end())) {
+			removable = false;
+		}
+	});
+	return removable;
 }
 
 FilterPropagateResult StatisticsPropagator::PropagateComparison(const BaseStatistics &lstats,

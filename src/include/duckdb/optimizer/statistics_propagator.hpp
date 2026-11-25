@@ -193,6 +193,8 @@ private:
 
 	//! Whether an expression can be removed from the plan without an observable effect
 	static bool IsRemovable(const Expression &expr);
+	//! Whether every column an expression reads can be removed from the plan without an observable effect
+	bool ReadsRemovableColumns(const Expression &expr) const;
 	bool ExpressionIsConstant(Expression &expr, const Value &val);
 	bool ExpressionIsConstantOrNull(Expression &expr, const Value &val);
 
@@ -215,6 +217,9 @@ private:
 	};
 	//! The map of CTE index -> statistics of its definition
 	unordered_map<TableIndex, CTEStatistics> cte_stats_map;
+	//! The scans and the projected columns that can be removed from the plan without an observable effect
+	unordered_set<TableIndex> removable_tables;
+	column_binding_set_t removable_columns;
 	//! Whether any expression, filter or join condition was removed, leaving columns that may now be unused
 	bool removed_expressions = false;
 	//! Node stats for the current node

@@ -1,0 +1,120 @@
+# name: test/optimizer/statistics/statistics_aggregate_filter_column_effects.test
+# description: An aggregate filter that is true for every row stays when a column it reads is computed with an effect
+# group: [statistics]
+
+statement ok
+CREATE TABLE v AS SELECT x FROM (VALUES (1), (2), (3)) t(x);
+
+statement ok
+SET explain_output = 'OPTIMIZED_ONLY';
+
+# the derived table advances the sequence once for every row, the filter only reads its column
+statement ok
+CREATE SEQUENCE derived_sequence;
+
+query II
+EXPLAIN SELECT sum(x) FILTER (WHERE b) AS filtered FROM (SELECT x, CASE WHEN nextval('derived_sequence') > 0 THEN true ELSE true END AS b FROM v);
+----
+logical_opt	<REGEX>:(?s).*FILTER.*
+
+query I
+SELECT sum(x) FILTER (WHERE b) FROM (SELECT x, CASE WHEN nextval('derived_sequence') > 0 THEN true ELSE true END AS b FROM v);
+----
+6
+
+query I
+SELECT nextval('derived_sequence');
+----
+4
+
+# through a second derived table that passes the column on
+statement ok
+CREATE SEQUENCE nested_sequence;
+
+query I
+SELECT sum(x) FILTER (WHERE c) FROM (SELECT x, b AS c FROM (SELECT x, CASE WHEN nextval('nested_sequence') > 0 THEN true ELSE true END AS b FROM v));
+----
+6
+
+query I
+SELECT nextval('nested_sequence');
+----
+4
+
+# a materialized CTE
+statement ok
+CREATE SEQUENCE cte_sequence;
+
+query I
+WITH m AS MATERIALIZED (SELECT x, CASE WHEN nextval('cte_sequence') > 0 THEN true ELSE true END AS b FROM v)
+SELECT sum(x) FILTER (WHERE b) FROM m;
+----
+6
+
+query I
+SELECT nextval('cte_sequence');
+----
+4
+
+# a scalar subquery runs once
+statement ok
+CREATE SEQUENCE subquery_sequence;
+
+query I
+SELECT sum(x) FILTER (WHERE (SELECT CASE WHEN nextval('subquery_sequence') > 0 THEN true ELSE true END)) FROM v;
+----
+6
+
+query I
+SELECT nextval('subquery_sequence');
+----
+2
+
+# also in the CASE form that is rewritten into a filter
+statement ok
+CREATE SEQUENCE case_sequence;
+
+query I
+SELECT sum(CASE WHEN (SELECT CASE WHEN nextval('case_sequence') > 0 THEN true ELSE true END) THEN x END) FROM v;
+----
+6
+
+query I
+SELECT nextval('case_sequence');
+----
+2
+
+# a scalar subquery that returns more than one row raises its error
+statement error
+SELECT sum(x) FILTER (WHERE CASE WHEN (SELECT x FROM v) > 0 THEN true ELSE true END) FROM v;
+----
+More than one row returned by a subquery
+
+# a filter over columns without an effect that is true for every row is still dropped
+statement ok
+CREATE TABLE flags AS SELECT i AS x, true AS flag FROM range(100) r(i);
+
+query II
+EXPLAIN SELECT sum(x) FILTER (WHERE flag) AS filtered FROM flags;
+----
+logical_opt	<!REGEX>:(?s).*FILTER.*
+
+query II
+EXPLAIN SELECT sum(x) FILTER (WHERE b) AS filtered FROM (SELECT x, flag AS b FROM flags);
+----
+logical_opt	<!REGEX>:(?s).*FILTER.*
+
+query II
+EXPLAIN SELECT sum(x) FILTER (WHERE b) AS filtered FROM (SELECT x, x >= 0 AS b FROM flags);
+----
+logical_opt	<!REGEX>:(?s).*FILTER.*
+
+query II
+EXPLAIN SELECT sum(x) FILTER (WHERE b) AS filtered FROM (SELECT x, CASE WHEN x > 5 THEN flag ELSE true END AS b FROM flags);
+----
+logical_opt	<!REGEX>:(?s).*FILTER.*
+
+query II
+EXPLAIN SELECT sum(f1.x) FILTER (WHERE f2.flag) AS filtered FROM flags f1 JOIN flags f2 USING (x);
+----
+logical_opt	<!REGEX>:(?s).*FILTER.*

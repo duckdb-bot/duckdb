@@ -7,8 +7,9 @@ namespace duckdb {
 
 unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundAggregateExpression &aggr,
                                                                      unique_ptr<Expression> &expr_ptr) {
-	// a filter whose evaluation has an effect stays as it is written
-	if (aggr.GetFilter() && !aggr.GetFilter()->IsVolatile() && !ExpressionBarrier::Contains(*aggr.GetFilter())) {
+	// a filter stays as it is written when evaluating it, or computing a column it reads, has an effect
+	if (aggr.GetFilter() && !aggr.GetFilter()->IsVolatile() && !ExpressionBarrier::Contains(*aggr.GetFilter()) &&
+	    ReadsRemovableColumns(*aggr.GetFilter())) {
 		// a filter that is true for every row is no filter, unless it can still fail
 		auto &filter = aggr.GetFilterMutable();
 		auto filter_stats = PropagateExpression(filter);

@@ -1780,7 +1780,9 @@ StringValueScanner::MoveBufferResult StringValueScanner::TryMoveToNextBuffer() {
 			const auto chunk_col_id_before = result.chunk_col_id;
 			if (result.current_errors.HandleErrors(result)) {
 				result.InvalidateUnwrittenColumns(chunk_col_id_before);
+				result.StoreLinePosition();
 				result.number_of_rows++;
+				lines_read++;
 			}
 		}
 	} else {

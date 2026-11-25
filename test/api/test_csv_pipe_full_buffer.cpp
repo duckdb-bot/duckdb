@@ -1,7 +1,7 @@
 #include "catch.hpp"
 #include "test_helpers.hpp"
 
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(DUCKDB_NO_THREADS)
 #include <atomic>
 #include <chrono>
 #include <fcntl.h>
@@ -16,15 +16,6 @@ TEST_CASE("A CSV read from a pipe returns rows of a full buffer while the writer
 	const auto path = TestJoinPath(LocalTestDirectoryPath(), "csv_full_buffer.fifo");
 	unlink(path.c_str());
 	REQUIRE(mkfifo(path.c_str(), 0600) == 0);
-	// a writer that also holds the read end can open and fill the pipe before the query starts
-	const auto writer = open(path.c_str(), O_RDWR);
-	REQUIRE(writer >= 0);
-	// complete rows that fill exactly one buffer
-	string rows;
-	while (rows.size() < BUFFER_SIZE) {
-		rows += "1\n";
-	}
-	const auto written = write(writer, rows.data(), rows.size());
 
 	DuckDB db(nullptr);
 	Connection con(db);
@@ -39,12 +30,29 @@ TEST_CASE("A CSV read from a pipe returns rows of a full buffer while the writer
 		row_count = has_error ? 0 : result->RowCount();
 		returned = true;
 	});
+
+	// the pipe can be opened for writing without waiting once the query has opened it for reading
+	int writer = -1;
+	while (writer < 0 && !returned) {
+		writer = open(path.c_str(), O_WRONLY | O_NONBLOCK);
+		if (writer < 0) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+	}
+	// complete rows that fill exactly one buffer
+	string rows;
+	while (rows.size() < BUFFER_SIZE) {
+		rows += "1\n";
+	}
+	const auto written = writer < 0 ? -1 : write(writer, rows.data(), rows.size());
 	// the writer neither writes nor closes until the query has returned
 	for (idx_t i = 0; i < 300 && !returned; i++) {
 		std::this_thread::sleep_for(std::chrono::milliseconds(100));
 	}
 	const bool returned_while_open = returned;
-	close(writer);
+	if (writer >= 0) {
+		close(writer);
+	}
 	reader.join();
 	unlink(path.c_str());
 

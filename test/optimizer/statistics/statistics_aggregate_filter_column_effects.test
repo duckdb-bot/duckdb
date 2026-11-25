@@ -41,6 +41,33 @@ SELECT nextval('nested_sequence');
 ----
 4
 
+# a comparison and a NULL check of such a column, which the statistics decide on their own
+statement ok
+CREATE SEQUENCE comparison_sequence;
+
+query I
+SELECT sum(x) FILTER (WHERE b > false) FROM (SELECT x, CASE WHEN nextval('comparison_sequence') > 0 THEN true ELSE true END AS b FROM v);
+----
+6
+
+query I
+SELECT nextval('comparison_sequence');
+----
+4
+
+statement ok
+CREATE SEQUENCE null_check_sequence;
+
+query I
+SELECT sum(x) FILTER (WHERE b IS NOT NULL) FROM (SELECT x, CASE WHEN nextval('null_check_sequence') > 0 THEN true ELSE true END AS b FROM v);
+----
+6
+
+query I
+SELECT nextval('null_check_sequence');
+----
+4
+
 # a materialized CTE
 statement ok
 CREATE SEQUENCE cte_sequence;
@@ -116,5 +143,11 @@ logical_opt	<!REGEX>:(?s).*FILTER.*
 
 query II
 EXPLAIN SELECT sum(f1.x) FILTER (WHERE f2.flag) AS filtered FROM flags f1 JOIN flags f2 USING (x);
+----
+logical_opt	<!REGEX>:(?s).*FILTER.*
+
+# also above an ORDER BY, whose columns can be compressed and restored by projections
+query II
+EXPLAIN SELECT first(x) FILTER (WHERE flag) AS filtered FROM (SELECT x, flag FROM flags ORDER BY x DESC);
 ----
 logical_opt	<!REGEX>:(?s).*FILTER.*

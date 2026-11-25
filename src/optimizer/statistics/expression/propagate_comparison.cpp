@@ -5,6 +5,7 @@
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/expression/expression_barrier.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
+#include "duckdb/planner/operator/logical_projection.hpp"
 #include "duckdb/optimizer/expression_rewriter.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/storage/statistics/string_stats.hpp"
@@ -112,6 +113,18 @@ bool StatisticsPropagator::ReadsRemovableColumns(const Expression &expr) const {
 		}
 	});
 	return removable;
+}
+
+void StatisticsPropagator::RecordRemovableColumns(LogicalOperator &op) {
+	if (op.type != LogicalOperatorType::LOGICAL_PROJECTION) {
+		return;
+	}
+	auto &proj = op.Cast<LogicalProjection>();
+	for (idx_t i = 0; i < proj.expressions.size(); i++) {
+		if (IsRemovable(*proj.expressions[i]) && ReadsRemovableColumns(*proj.expressions[i])) {
+			removable_columns.insert(ColumnBinding(proj.table_index, ProjectionIndex(i)));
+		}
+	}
 }
 
 FilterPropagateResult StatisticsPropagator::PropagateComparison(const BaseStatistics &lstats,

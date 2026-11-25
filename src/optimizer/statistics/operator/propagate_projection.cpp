@@ -14,14 +14,12 @@ unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalProj
 	// then propagate to each of the expressions
 	for (idx_t i = 0; i < proj.expressions.size(); i++) {
 		auto stats = PropagateExpression(proj.expressions[i]);
-		ColumnBinding binding(proj.table_index, ProjectionIndex(i));
-		if (IsRemovable(*proj.expressions[i]) && ReadsRemovableColumns(*proj.expressions[i])) {
-			removable_columns.insert(binding);
-		}
 		if (stats) {
+			ColumnBinding binding(proj.table_index, ProjectionIndex(i));
 			statistics_map.insert(make_pair(binding, std::move(stats)));
 		}
 	}
+	RecordRemovableColumns(proj);
 	return std::move(node_stats);
 }
 

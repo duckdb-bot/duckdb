@@ -25,6 +25,30 @@ LogicalType ExpressionBinder::ResolveNotType(OperatorExpression &op, vector<uniq
 	return LogicalType(LogicalTypeId::BOOLEAN);
 }
 
+//! Casts a value with a bound cast. Returns nullopt when the cast fails or throws
+static optional<Value> TryCastConstantValue(ClientContext &context, const BoundCastInfo &bound_cast, const Value &value,
+                                            const LogicalType &target_type) {
+	try {
+		Vector source(value, count_t(1));
+		Vector result(target_type);
+		unique_ptr<FunctionLocalState> local_state;
+		if (bound_cast.HasInitLocalState()) {
+			CastLocalStateParameters local_state_parameters(context, bound_cast.GetCastData());
+			local_state = bound_cast.InitLocalState(local_state_parameters);
+		}
+		string error_message;
+		CastParameters parameters(bound_cast.GetCastData(), false, &error_message, local_state.get());
+		if (!bound_cast.Cast(source, result, 1, parameters)) {
+			return nullopt;
+		}
+		return result.GetValue(0);
+	} catch (InternalException &) {
+		throw;
+	} catch (...) {
+		return nullopt;
+	}
+}
+
 //! Casts a constant to the target type. The value is converted right away when the cast is consistent and succeeds
 static unique_ptr<Expression> CastConstantToType(ClientContext &context, unique_ptr<Expression> expr,
                                                  const LogicalType &target_type) {
@@ -32,17 +56,16 @@ static unique_ptr<Expression> CastConstantToType(ClientContext &context, unique_
 	if (!target_type.IsValid() || constant.GetReturnType() == target_type) {
 		return expr;
 	}
-	auto &cast_functions = CastFunctionSet::Get(context);
 	GetCastFunctionInput get_input(context);
 	get_input.query_location = constant.GetQueryLocation();
-	auto bound_cast = cast_functions.GetCastFunction(constant.GetReturnType(), target_type, get_input);
+	auto bound_cast = CastFunctionSet::Get(context).GetCastFunction(constant.GetReturnType(), target_type, get_input);
 	if (bound_cast.GetStability() == FunctionStability::CONSISTENT) {
-		auto cast_value = constant.GetValue().TryCastAs(cast_functions, get_input, target_type);
+		auto cast_value = TryCastConstantValue(context, bound_cast, constant.GetValue(), target_type);
 		if (cast_value) {
 			return constant.WithValue(std::move(*cast_value));
 		}
 	}
-	// a cast that reads settings or fails stays in the plan
+	// a cast that reads settings, fails or throws stays in the plan
 	return BoundCastExpression::Create(std::move(expr), target_type, std::move(bound_cast));
 }
 

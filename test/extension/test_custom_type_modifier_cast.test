@@ -15,3 +15,33 @@ statement error
 SELECT 1::MINMAX(500, 1000);
 ----
 Conversion Error: Value 1 is outside of range [500,1000]
+
+statement ok
+CREATE TABLE bounds (b MINMAX(0, 10));
+
+# the cast throws for a constant outside the range, an IN list raises that only when it is evaluated
+query I
+SELECT b IN (99, 1) FROM bounds;
+----
+
+statement ok
+INSERT INTO bounds VALUES (1);
+
+query I
+SELECT b IN (5, 1) FROM bounds;
+----
+true
+
+query I
+SELECT TRY(b IN (99, 1)) FROM bounds;
+----
+NULL
+
+query I
+SELECT b FROM bounds WHERE false AND b IN (99, 1);
+----
+
+statement error
+SELECT b IN (99, 1) FROM bounds;
+----
+Conversion Error: Value 99 is outside of range [0,10]

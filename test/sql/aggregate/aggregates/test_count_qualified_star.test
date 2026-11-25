@@ -304,6 +304,13 @@ SELECT l.id, count(r.*) OVER () - count(COLUMNS(r.*)) OVER () FROM l LEFT JOIN r
 2	0	1
 3	0	1
 
+# COLUMNS in the window of the count itself
+query III
+SELECT r.id, count(r.*) OVER (PARTITION BY COLUMNS(r.*)) FROM r ORDER BY 1;
+----
+2	1	1
+3	1	1
+
 # ORDER BY
 query I
 SELECT l.id FROM l LEFT JOIN r ON l.id = r.id GROUP BY l.id ORDER BY count(r.*) - count(COLUMNS(r.*)) DESC, l.id;
@@ -363,6 +370,12 @@ query I
 SELECT count(s.*) * 10 + count(coalesce(*COLUMNS(s.*))) FROM l LEFT JOIN s ON l.id = s.id;
 ----
 22
+
+# the count inside the unpacked expression
+query I
+SELECT [UNPACK(count(r.*) - count(COLUMNS(r.*)))] FROM r;
+----
+[0, 1]
 
 # a qualified star under another aggregate is still refused
 statement error

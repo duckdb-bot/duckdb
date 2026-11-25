@@ -1,5 +1,6 @@
 #include "duckdb/optimizer/statistics_propagator.hpp"
 
+#include "duckdb/common/reference_map.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/optimizer/compressed_materialization.hpp"
@@ -140,11 +141,17 @@ unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalOper
 		// compress data based on statistics for materializing operators
 		CompressedMaterialization compressed_materialization(optimizer, *root, propagation_path, statistics_map);
 		auto &materializing_op = *node_ptr;
+		reference_set_t<LogicalOperator> propagated_children;
+		for (auto &child : materializing_op.children) {
+			propagated_children.insert(*child);
+		}
 		compressed_materialization.Compress(node_ptr);
 		if (!RefersToSameObject(*node_ptr, materializing_op)) {
 			// the projections that compress and restore columns pass the other columns on
 			for (auto &child : materializing_op.children) {
-				RecordRemovableColumns(*child);
+				if (propagated_children.find(*child) == propagated_children.end()) {
+					RecordRemovableColumns(*child);
+				}
 			}
 			RecordRemovableColumns(*node_ptr);
 		}

@@ -1,6 +1,7 @@
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/catalog/catalog_entry/aggregate_function_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/window_function_catalog_entry.hpp"
+#include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/function/function_binder.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/catalog/catalog_entry/scalar_macro_catalog_entry.hpp"
@@ -52,6 +53,19 @@ static bool IsRangeType(const LogicalType &type) {
 	}
 }
 
+//! A RANGE offset that is NULL for every row is rejected, an offset read per row places a NULL at the peers
+static void VerifyRangeOffset(ClientContext &context, const Expression &offset) {
+	bool is_null = offset.GetReturnType() == LogicalType::SQLNULL;
+	Value constant_offset;
+	if (!is_null && offset.IsFoldable() && ExpressionExecutor::TryEvaluateScalar(context, offset, constant_offset)) {
+		is_null = constant_offset.IsNull();
+	}
+	if (is_null) {
+		QueryErrorContext error_context(offset.GetQueryLocation());
+		throw BinderException(error_context, "Window RANGE expressions cannot be NULL");
+	}
+}
+
 static LogicalType BindRangeExpression(ClientContext &context, const string &name, unique_ptr<Expression> &bound,
                                        unique_ptr<Expression> &bound_order,
                                        optional_ptr<unique_ptr<WindowRangeBoundary>> origin = nullptr) {
@@ -62,9 +76,6 @@ static LogicalType BindRangeExpression(ClientContext &context, const string &nam
 
 	D_ASSERT(bound);
 	QueryErrorContext error_context(bound->GetQueryLocation());
-	if (bound->GetReturnType() == LogicalType::SQLNULL) {
-		throw BinderException(error_context, "Window RANGE expressions cannot be NULL");
-	}
 	// the function binder casts the operands and folds a constant offset to its value. The origin recognizes a
 	// constant offset in the bound call by value, so keep a copy of it - any other offset stays in place
 	unique_ptr<Expression> offset_copy = origin && bound->IsFoldable() ? bound->Copy() : nullptr;
@@ -345,6 +356,12 @@ BindResult BaseSelectBinder::BindWindowExpression(WindowExpression &window, idx_
 	                         window.WindowStart() == WindowBoundary::EXPR_FOLLOWING_RANGE;
 	const bool range_end = window.WindowEnd() == WindowBoundary::EXPR_PRECEDING_RANGE ||
 	                       window.WindowEnd() == WindowBoundary::EXPR_FOLLOWING_RANGE;
+	if (range_start) {
+		VerifyRangeOffset(context, *bound_start);
+	}
+	if (range_end) {
+		VerifyRangeOffset(context, *bound_end);
+	}
 	if ((range_start || range_end) && bound_orders.size() == 1) {
 		result->RetainSQLRange(range_start ? bound_start.get() : nullptr, range_end ? bound_end.get() : nullptr,
 		                       bound_orders[0]->GetReturnType());

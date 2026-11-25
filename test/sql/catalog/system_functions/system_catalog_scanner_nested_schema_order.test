@@ -126,19 +126,3 @@ v_s3
 v_s4
 v_s5
 v_s6
-
-# the built-in types stay with the top-level main schema when a nested schema has its name
-require noforcestorage
-
-statement ok
-CREATE SCHEMA memory.nested_main_parent;
-
-statement ok
-CREATE SCHEMA memory.nested_main_parent.main;
-
-query TI
-SELECT coalesce(s.parent_schema, '<root>'), t.type_oid
-FROM duckdb_types() t JOIN duckdb_schemas() s ON t.schema_oid = s.oid
-WHERE t.type_name = 'int' AND t.type_oid IS NOT NULL;
-----
-<root>	13

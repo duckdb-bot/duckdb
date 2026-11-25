@@ -1,0 +1,73 @@
+# name: test/sql/storage/temp_directory/reset_temp_directory_after_empty.test
+# description: RESET temp_directory restores the default path after the setting was emptied
+# group: [temp_directory]
+
+require vector_size 2048
+
+load {TEST_DIR}/reset_temp_directory_after_empty.db
+
+query I
+SELECT ends_with(current_setting('temp_directory'), 'reset_temp_directory_after_empty.db.tmp');
+----
+1
+
+# an empty path switches spilling off
+statement ok
+SET temp_directory = '';
+
+query I
+SELECT current_setting('temp_directory');
+----
+(empty)
+
+statement ok
+RESET temp_directory;
+
+query I
+SELECT ends_with(current_setting('temp_directory'), 'reset_temp_directory_after_empty.db.tmp');
+----
+1
+
+# so does NULL
+statement ok
+SET temp_directory = NULL;
+
+query I
+SELECT current_setting('temp_directory');
+----
+(empty)
+
+statement ok
+RESET temp_directory;
+
+query I
+SELECT ends_with(current_setting('temp_directory'), 'reset_temp_directory_after_empty.db.tmp');
+----
+1
+
+# a second reset keeps the default path
+statement ok
+RESET temp_directory;
+
+query I
+SELECT ends_with(current_setting('temp_directory'), 'reset_temp_directory_after_empty.db.tmp');
+----
+1
+
+# and the restored directory takes the blocks that do not fit in memory
+statement ok
+SET temp_directory = '';
+
+statement ok
+RESET temp_directory;
+
+statement ok
+SET memory_limit = '2MB';
+
+statement ok
+CREATE TEMPORARY TABLE spilled AS FROM range(1_000_000);
+
+query I
+SELECT count(*) FROM spilled;
+----
+1000000

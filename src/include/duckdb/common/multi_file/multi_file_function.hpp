@@ -238,7 +238,7 @@ public:
 			result->table_columns = IdentifiersToStrings(names);
 		}
 		result->columns = MultiFileColumnDefinition::ColumnsFromNamesAndTypes(result->names, result->types);
-		result->file_options.VerifyColumnStatistics(result->names, result->types);
+		result->file_options.VerifyColumnStatistics(context.GetContext(), result->names, result->types);
 		return std::move(result);
 	}
 
@@ -311,7 +311,7 @@ public:
 		file_options.auto_detect_hive_partitioning = false;
 
 		for (auto &[option_name, option_values] : input.info.options) {
-			if (multi_file_reader->ParseCopyOption(option_name, option_values, file_options)) {
+			if (multi_file_reader->ParseCopyOption(context.GetContext(), option_name, option_values, file_options)) {
 				continue;
 			}
 			if (interface->ParseCopyOption(context, option_name, option_values, *options, expected_names,
@@ -409,7 +409,7 @@ public:
 				can_skip_file = true;
 			} else {
 				current_reader_data.reader->PrepareReader(context, *global_state.global_state);
-				if (global_state.read_ahead) {
+				if (global_state.read_ahead && global_state.read_ahead->PrefetchEnabled()) {
 					current_reader_data.reader->PrepareReadAhead(context, *global_state.global_state);
 				}
 			}
@@ -610,6 +610,7 @@ public:
 			// covers a cancellation that signals without the lock
 			gstate.async_open_settled.wait_for(parallel_lock, std::chrono::milliseconds(10));
 			parallel_lock.unlock();
+			// the throttled FastInterruptCheck() would only read the clock every ~2.5s of waiting here
 			context.InterruptCheck();
 			parallel_lock.lock();
 		}
@@ -754,7 +755,7 @@ public:
 				continue;
 			}
 
-			if (gstate.read_ahead) {
+			if (gstate.read_ahead && gstate.read_ahead->PrefetchEnabled()) {
 				// read-ahead: open files on the async pool ahead of decoding, then wait for the front one
 				ScheduleFileOpens(context, bind_data, gstate, parallel_lock);
 			} else if (TryOpenNextFile(context, bind_data, gstate, parallel_lock)) {
@@ -763,7 +764,7 @@ public:
 
 			// Check if the current file is being opened, in that case we need to wait for it.
 			if (current_reader_data.file_state == MultiFileFileState::OPENING) {
-				if (gstate.read_ahead) {
+				if (gstate.read_ahead && gstate.read_ahead->PrefetchEnabled()) {
 					WaitForAsyncOpen(context, gstate, parallel_lock);
 				} else {
 					WaitForFile(gstate.file_index, gstate, parallel_lock);
@@ -810,7 +811,7 @@ public:
 		if (!bind_data.interface->SupportsReadAhead(bind_data)) {
 			return;
 		}
-		gstate.read_ahead = ScanReadAhead::Create(context);
+		gstate.read_ahead = ScanReadAhead::Create(context, ScanReadAheadPolicy::ORDERED);
 	}
 
 	static unique_ptr<GlobalTableFunctionState> MultiFileInitGlobal(ClientContext &context,
@@ -1185,7 +1186,8 @@ public:
 		// statistics the caller gave for the column (the "column_statistics" option) stand in for the files' -
 		// they describe the scan as a whole, which is what the optimizer asks about, where a file's describe one file
 		if (!bind_data.file_options.column_statistics.IsNull()) {
-			auto explicit_stats = bind_data.file_options.GetColumnStatistics(col_name, bind_data.types[primary_index]);
+			auto explicit_stats = bind_data.file_options.GetColumnStatistics(context.GetContext(), col_name,
+			                                                                 bind_data.types[primary_index]);
 			if (explicit_stats) {
 				if (!column_index.IsPushdownExtract()) {
 					return explicit_stats;
@@ -1373,9 +1375,10 @@ public:
 		return data.interface->GetCardinality(context, data, estimated_file_count);
 	}
 
-	static void MultiFileComplexFilterPushdown(ClientContext &context, LogicalGet &get, FunctionData *bind_data_p,
+	static void MultiFileComplexFilterPushdown(ClientContext &context, LogicalGet &get,
+	                                           optional_ptr<const FunctionData> bind_data_p,
 	                                           vector<unique_ptr<Expression>> &filters) {
-		auto &data = bind_data_p->Cast<MultiFileBindData>();
+		auto &data = get.bind_data.write().Cast<MultiFileBindData>();
 
 		MultiFilePushdownInfo info(get.table_index, data.names, get.GetColumnIds(), get.extra_info);
 		auto new_list =

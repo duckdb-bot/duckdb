@@ -316,3 +316,12 @@ query I
 EXECUTE s46(7);
 ----
 1
+
+# nor is that of the recurring table that the recursive part of a CTE reads
+statement ok
+PREPARE s47 AS WITH RECURSIVE q(a) USING KEY (a) AS (SELECT 1 UNION SELECT a FROM recurring.q AT (VERSION => $1) WHERE false) PIVOT q ON a;
+
+query I
+EXECUTE s47(7);
+----
+1

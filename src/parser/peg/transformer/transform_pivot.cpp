@@ -24,63 +24,15 @@
 namespace duckdb {
 
 //! Finds a parameter in the parts of a PIVOT that its values are read from, and in the CTEs that those parts read
-struct PivotValuesParameterFinder {
-	//! The visible CTEs of a WITH clause, and the scope around them
-	struct CTEScope {
-		CTEScope(CommonTableExpressionMap &ctes, idx_t begin, idx_t end, optional_idx parent)
-		    : ctes(ctes), begin(begin), end(end), parent(parent) {
-		}
-		reference<CommonTableExpressionMap> ctes;
-		//! the visible CTEs, as a CTE only sees those declared before it in its WITH clause
-		idx_t begin;
-		idx_t end;
-		//! the scope around this one, if any
-		optional_idx parent;
-	};
-	//! A part of the statement that is not visited yet, and the innermost scope it is in
-	template <class T>
-	struct PendingNode {
-		PendingNode(T &node, optional_idx scope) : node(node), scope(scope) {
-		}
-		reference<T> node;
-		optional_idx scope;
-	};
-	//! the scopes of all parts of the statement, each of which names the scope around it
-	vector<CTEScope> scopes;
-	//! what is left to visit, kept here as recursion would overflow the stack on a long chain of CTEs
-	vector<PendingNode<ParsedExpression>> pending_expressions;
-	vector<PendingNode<TableRef>> pending_table_refs;
-	vector<PendingNode<QueryNode>> pending_query_nodes;
-	reference_set_t<CommonTableExpressionInfo> visited_ctes;
-	bool found = false;
-
-	//! whether a part that was pushed, or a CTE it reads, has a parameter
-	bool HasParameter() {
-		bool visited_node = true;
-		while (visited_node && !found) {
-			visited_node =
-			    VisitNext(pending_expressions) || VisitNext(pending_table_refs) || VisitNext(pending_query_nodes);
-		}
-		return found;
-	}
-
+class PivotValuesParameterFinder {
+public:
+	//! adds the visible CTEs of a WITH clause as a scope inside the parent scope
 	optional_idx AddScope(CommonTableExpressionMap &ctes, idx_t begin, idx_t end, optional_idx parent) {
 		scopes.emplace_back(ctes, begin, end, parent);
 		return scopes.size() - 1;
 	}
 
-	//! visits the pending node that was added last, if there is one
-	template <class T>
-	bool VisitNext(vector<PendingNode<T>> &pending_nodes) {
-		if (pending_nodes.empty()) {
-			return false;
-		}
-		auto next = pending_nodes.back();
-		pending_nodes.pop_back();
-		Visit(next.node.get(), next.scope);
-		return true;
-	}
-
+	//! adds a part of the statement to visit, with the innermost scope it is in
 	void Push(unique_ptr<ParsedExpression> &expr, optional_idx scope) {
 		pending_expressions.emplace_back(*expr, scope);
 	}
@@ -104,6 +56,51 @@ struct PivotValuesParameterFinder {
 
 	void Push(TableRef &ref, optional_idx scope) {
 		pending_table_refs.emplace_back(ref, scope);
+	}
+
+	//! whether a part that was pushed, or a CTE it reads, has a parameter
+	bool HasParameter() {
+		bool visited_node = true;
+		while (visited_node && !found) {
+			visited_node =
+			    VisitNext(pending_expressions) || VisitNext(pending_table_refs) || VisitNext(pending_query_nodes);
+		}
+		return found;
+	}
+
+private:
+	//! The visible CTEs of a WITH clause, and the scope around them
+	struct CTEScope {
+		CTEScope(CommonTableExpressionMap &ctes, idx_t begin, idx_t end, optional_idx parent)
+		    : ctes(ctes), begin(begin), end(end), parent(parent) {
+		}
+		reference<CommonTableExpressionMap> ctes;
+		//! the visible CTEs, as a CTE only sees those declared before it in its WITH clause
+		idx_t begin;
+		idx_t end;
+		//! the scope around this one, if any
+		optional_idx parent;
+	};
+	//! A part of the statement that is not visited yet, and the innermost scope it is in
+	template <class T>
+	struct PendingNode {
+		PendingNode(T &node, optional_idx scope) : node(node), scope(scope) {
+		}
+		reference<T> node;
+		optional_idx scope;
+	};
+
+private:
+	//! visits the pending node that was added last, if there is one
+	template <class T>
+	bool VisitNext(vector<PendingNode<T>> &pending_nodes) {
+		if (pending_nodes.empty()) {
+			return false;
+		}
+		auto next = pending_nodes.back();
+		pending_nodes.pop_back();
+		Visit(next.node.get(), next.scope);
+		return true;
 	}
 
 	void Visit(ParsedExpression &expr, optional_idx scope) {
@@ -298,6 +295,16 @@ struct PivotValuesParameterFinder {
 		}
 		return false;
 	}
+
+private:
+	//! the scopes of all parts of the statement, each of which names the scope around it
+	vector<CTEScope> scopes;
+	//! what is left to visit, kept here as recursion would overflow the stack on a long chain of CTEs
+	vector<PendingNode<ParsedExpression>> pending_expressions;
+	vector<PendingNode<TableRef>> pending_table_refs;
+	vector<PendingNode<QueryNode>> pending_query_nodes;
+	reference_set_t<CommonTableExpressionInfo> visited_ctes;
+	bool found = false;
 };
 
 //! Whether a parameter that is not counted with the source reaches the query of the values of a pivot column

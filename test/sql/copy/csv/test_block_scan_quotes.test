@@ -67,13 +67,13 @@ SELECT a, replace(replace(b, chr(13), '<CR>'), chr(10), '<LF>'), c FROM read_csv
 query III
 SELECT count(*), sum(length(b)), count(*) FILTER (WHERE a LIKE 'p%') FROM read_csv('{TEST_DIR}/quotes.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, ignore_errors=true, buffer_size=4096, columns={'a':'VARCHAR','b':'VARCHAR','c':'VARCHAR'})
 ----
-502	14959	495
+611	17745	600
 
 # quotes in quotes.csv with buffer_size 100000, aggregate
 query III
 SELECT count(*), sum(length(b)), count(*) FILTER (WHERE a LIKE 'p%') FROM read_csv('{TEST_DIR}/quotes.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, ignore_errors=true, buffer_size=100000, columns={'a':'VARCHAR','b':'VARCHAR','c':'VARCHAR'})
 ----
-307	8875	300
+611	17745	600
 
 # quotes in quotes_crlf.csv, escape='"', strict_mode=true
 statement error
@@ -125,13 +125,13 @@ SELECT a, replace(replace(b, chr(13), '<CR>'), chr(10), '<LF>'), c FROM read_csv
 query III
 SELECT count(*), sum(length(b)), count(*) FILTER (WHERE a LIKE 'p%') FROM read_csv('{TEST_DIR}/quotes_crlf.csv', delim=',', quote='"', escape='"', header=false, new_line='\r\n', auto_detect=false, ignore_errors=true, buffer_size=4096, columns={'a':'VARCHAR','b':'VARCHAR','c':'VARCHAR'})
 ----
-509	15239	502
+611	17745	600
 
 # quotes in quotes_crlf.csv with buffer_size 100000, aggregate
 query III
 SELECT count(*), sum(length(b)), count(*) FILTER (WHERE a LIKE 'p%') FROM read_csv('{TEST_DIR}/quotes_crlf.csv', delim=',', quote='"', escape='"', header=false, new_line='\r\n', auto_detect=false, ignore_errors=true, buffer_size=100000, columns={'a':'VARCHAR','b':'VARCHAR','c':'VARCHAR'})
 ----
-307	8875	300
+611	17745	600
 
 # quoted values longer than a block, with a newline inside
 query II
@@ -156,7 +156,7 @@ CSV Error on Line: 301
 query I
 SELECT count(*) FROM read_csv('{TEST_DIR}/unterminated.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, ignore_errors=true, columns={'a':'VARCHAR','b':'VARCHAR','c':'VARCHAR'})
 ----
-300
+598
 
 # a backslash escape dialect
 statement error

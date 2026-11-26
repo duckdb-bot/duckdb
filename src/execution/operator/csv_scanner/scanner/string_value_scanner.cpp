@@ -1156,7 +1156,9 @@ void StringValueScanner::Flush(DataChunk &insert_chunk) {
 		// We have to check if we got to error
 		error_handler->ErrorIfNeeded();
 		if (parse_chunk.size() == 0) {
-			return;
+			// rows whose errors are ignored leave an empty chunk, which the caller takes for the end of the scan
+			continue_processing = cur_buffer_handle && !iterator.done;
+			continue;
 		}
 		// convert the columns in the parsed chunk to the types of the table
 		insert_chunk.SetChildCardinality(parse_chunk.size());
@@ -1275,21 +1277,10 @@ void StringValueScanner::Flush(DataChunk &insert_chunk) {
 			result.borked_rows.clear();
 		}
 		insert_chunk.SetChildCardinality(insert_chunk.size());
-		if (insert_chunk.size() == 0 && cur_buffer_handle) {
-			idx_t to_pos;
-			if (iterator.IsBoundarySet()) {
-				to_pos = iterator.GetEndPos();
-				if (to_pos > cur_buffer_handle->actual_size) {
-					to_pos = cur_buffer_handle->actual_size;
-				}
-			} else {
-				to_pos = cur_buffer_handle->actual_size;
-			}
-			if (iterator.pos.buffer_pos < to_pos) {
-				// If a chunk is complete with errors, we might get to this situation where we must proceed with the
-				// scanning
-				continue_processing = true;
-			}
+		if (insert_chunk.size() == 0 && cur_buffer_handle && !iterator.done) {
+			// If a chunk is complete with errors, we might get to this situation where we must proceed with the
+			// scanning
+			continue_processing = true;
 		}
 	} while (continue_processing);
 }
@@ -2054,8 +2045,9 @@ void StringValueScanner::FinalizeChunkProcess() {
 	// If we are not done we have two options.
 	// 1) If a boundary is set.
 	if (iterator.IsBoundarySet()) {
-		if (!result.current_errors.HasErrorType(UNTERMINATED_QUOTES) &&
-		    !result.current_errors.HasErrorType(INVALID_STATE)) {
+		// Process also stops at an invalid state, the boundary is scanned once its end is reached
+		if (!cur_buffer_handle ||
+		    iterator.pos.buffer_pos >= MinValue<idx_t>(iterator.GetEndPos(), cur_buffer_handle->actual_size)) {
 			iterator.done = true;
 		}
 		// We read until the next line or until we have nothing else to read.
@@ -2107,8 +2099,9 @@ void StringValueScanner::FinishBoundaryScan(const bool moved) {
 		result.number_of_rows++;
 	}
 	if (!iterator.done) {
-		if (iterator.pos.buffer_pos >= iterator.GetEndPos() || iterator.pos.buffer_idx > iterator.GetBufferIdx() ||
-		    FinishedFile()) {
+		// the row with the error was finished here, when it ends where the boundary ends the row behind it is left
+		const bool row_ends_boundary = iterator.pos.buffer_pos == iterator.GetEndPos() && states.IsCurrentNewRow();
+		if ((iterator.pos.buffer_pos >= iterator.GetEndPos() && !row_ends_boundary) || FinishedFile()) {
 			iterator.done = true;
 		}
 	}

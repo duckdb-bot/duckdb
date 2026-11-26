@@ -292,6 +292,53 @@ SELECT * FROM read_csv('{TEST_DIR}/unterminated_quote_eof_two_buffers.csv', auto
 
 endloop
 
+# the last row closes its quote, goes on with text and crosses into the last buffer, without a final newline
+statement ok
+COPY (SELECT encode('a' || chr(10) || '0' || chr(10) || '1' || chr(10) || '"xx"x')) TO '{TEST_DIR}/text_after_quote_eof.csv' (FORMAT BLOB);
+
+foreach parallel false true
+
+statement error
+SELECT a FROM read_csv('{TEST_DIR}/text_after_quote_eof.csv', auto_detect=false, header=true, columns={'a': 'VARCHAR'}, buffer_size=8, parallel={parallel}, strict_mode=true);
+----
+Value with unterminated quote found.
+
+statement error
+SELECT a FROM read_csv('{TEST_DIR}/text_after_quote_eof.csv', auto_detect=false, header=true, columns={'a': 'VARCHAR'}, buffer_size=8, parallel={parallel}, strict_mode=true);
+----
+CSV Error on Line: 4
+
+query I
+SELECT a FROM read_csv('{TEST_DIR}/text_after_quote_eof.csv', auto_detect=false, header=true, columns={'a': 'VARCHAR'}, buffer_size=8, parallel={parallel}, strict_mode=true, store_rejects=true);
+----
+0
+1
+
+query III
+SELECT line, column_idx, error_type FROM reject_errors;
+----
+4	1	UNQUOTED VALUE
+
+statement ok
+DROP TABLE reject_errors;
+
+statement ok
+DROP TABLE reject_scans;
+
+query I
+SELECT a FROM read_csv('{TEST_DIR}/text_after_quote_eof.csv', auto_detect=false, header=true, columns={'a': 'VARCHAR'}, buffer_size=8, parallel={parallel}, strict_mode=true, ignore_errors=true);
+----
+0
+1
+
+endloop
+
+# with a buffer that holds the file, the error names the row itself
+statement error
+SELECT a FROM read_csv('{TEST_DIR}/text_after_quote_eof.csv', auto_detect=false, header=true, columns={'a': 'VARCHAR'}, buffer_size=11, parallel=false, strict_mode=true);
+----
+Original Line: "xx"x
+
 # more files than twice the threads are read one at a time as well
 statement ok
 SET threads=1;

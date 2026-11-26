@@ -866,7 +866,11 @@ void StringValueResult::InvalidateUnwrittenColumns(idx_t first_unwritten_col) {
 	}
 }
 
-void StringValueResult::StoreLinePosition() {
+void StringValueResult::StoreLinePosition(bool row_has_errors) {
+	if (row_has_errors && borked_rows.find(static_cast<idx_t>(number_of_rows)) == borked_rows.end()) {
+		// the row was removed, the row before it keeps its position
+		return;
+	}
 	// a removed row leaves number_of_rows at -1, nothing reads a position for it
 	if (number_of_rows >= 0) {
 		line_positions_per_row[static_cast<idx_t>(number_of_rows)] = current_line_position;
@@ -893,7 +897,7 @@ bool StringValueResult::AddRowInternal() {
 
 		D_ASSERT(buffer_handles.find(current_line_position.begin.buffer_idx) != buffer_handles.end());
 		D_ASSERT(buffer_handles.find(current_line_position.end.buffer_idx) != buffer_handles.end());
-		StoreLinePosition();
+		StoreLinePosition(true);
 		number_of_rows++;
 		if (static_cast<idx_t>(number_of_rows) >= result_size) {
 			// We have a full chunk
@@ -1054,6 +1058,7 @@ bool StringValueResult::EmptyLine(StringValueResult &result, const idx_t buffer_
 			} else {
 				result.validity_mask[0]->SetInvalid(static_cast<idx_t>(result.number_of_rows));
 			}
+			result.StoreLinePosition();
 			result.number_of_rows++;
 		}
 		if (static_cast<idx_t>(result.number_of_rows) >= result.result_size) {
@@ -1261,6 +1266,8 @@ void StringValueScanner::Flush(DataChunk &insert_chunk) {
 				}
 			}
 		}
+		idx_t first_row = 0;
+		idx_t last_row = parse_chunk.size() - 1;
 		if (!result.borked_rows.empty()) {
 			// We must remove the borked lines from our chunk
 			SelectionVector successful_rows(parse_chunk.size());
@@ -1273,8 +1280,19 @@ void StringValueScanner::Flush(DataChunk &insert_chunk) {
 			// Now we slice the result
 			insert_chunk.Slice(successful_rows, sel_idx);
 			result.borked_rows.clear();
+			if (sel_idx > 0) {
+				first_row = successful_rows.get_index(0);
+				last_row = successful_rows.get_index(sel_idx - 1);
+			}
 		}
 		insert_chunk.SetChildCardinality(insert_chunk.size());
+		if (insert_chunk.size() > 0) {
+			// the validator checks these positions against the rows that the other scanners returned
+			if (!first_row_pos.IsValid()) {
+				first_row_pos = result.line_positions_per_row[first_row].begin.GetGlobalPosition(result.requested_size);
+			}
+			last_row_end_pos = result.line_positions_per_row[last_row].end.GetGlobalPosition(result.requested_size);
+		}
 		if (insert_chunk.size() == 0 && cur_buffer_handle) {
 			idx_t to_pos;
 			if (iterator.IsBoundarySet()) {
@@ -1743,10 +1761,11 @@ StringValueScanner::MoveBufferResult StringValueScanner::TryMoveToNextBuffer() {
 			result.current_line_position.end = line_end;
 			// handle the errors recorded for the row before counting it, as AddRowInternal does
 			const auto chunk_col_id_before = result.chunk_col_id;
-			if (result.current_errors.HandleErrors(result)) {
+			const bool row_has_errors = result.current_errors.HandleErrors(result);
+			if (row_has_errors) {
 				result.InvalidateUnwrittenColumns(chunk_col_id_before);
 			}
-			result.line_positions_per_row[static_cast<idx_t>(result.number_of_rows)] = result.current_line_position;
+			result.StoreLinePosition(row_has_errors);
 			result.number_of_rows++;
 		}
 		result.cur_col_id = 0;
@@ -2138,7 +2157,7 @@ void StringValueScanner::ProcessRemainingBuffers() {
 }
 
 ValidatorLine StringValueScanner::GetValidationLine() {
-	return {start_pos, result.iterator.GetGlobalCurrentPos()};
+	return {start_pos, result.iterator.GetGlobalCurrentPos(), first_row_pos, last_row_end_pos};
 }
 
 } // namespace duckdb

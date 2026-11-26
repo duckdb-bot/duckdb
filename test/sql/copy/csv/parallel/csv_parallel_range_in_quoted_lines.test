@@ -1,0 +1,155 @@
+# name: test/sql/copy/csv/parallel/csv_parallel_range_in_quoted_lines.test
+# description: A parallel scan with ignore_errors or store_rejects does not return a line inside a quoted value as a row
+# group: [parallel]
+
+statement ok
+SET threads = 4;
+
+# a valid file, the quoted value of row 0599112 holds two line breaks and the second scan range of a default read
+# starts in its first line
+statement ok
+COPY (
+	SELECT line FROM (
+		SELECT -1 AS i, 0 AS j, 'a,b' AS line
+		UNION ALL
+		SELECT i, 0, lpad(i::VARCHAR, 7, '0') || CASE WHEN i = 599112 THEN ',"first line' ELSE ',"x,y"' END FROM range(700000) t(i)
+		UNION ALL SELECT 599112, 1, '7777777,inside'
+		UNION ALL SELECT 599112, 2, 'last line"'
+	) ORDER BY i, j
+) TO '{TEST_DIR}/csv_parallel_range_in_quoted_lines.csv' (HEADER false, QUOTE '', DELIMITER '|');
+
+# the scanner of that range takes the second line for a row, and the scanner before it reads the line as part of the
+# value. The read fails as it does without an error option
+foreach error_option ignore_errors store_rejects
+
+statement error
+SELECT count(*) FROM read_csv('{TEST_DIR}/csv_parallel_range_in_quoted_lines.csv', {error_option} = true);
+----
+does not support a full read
+
+endloop
+
+query II
+SELECT count(*), count(*) FILTER (WHERE a = '7777777') FROM read_csv('{TEST_DIR}/csv_parallel_range_in_quoted_lines.csv', ignore_errors = true, parallel = false);
+----
+700000	0
+
+statement ok
+CREATE TABLE loaded (a VARCHAR, b VARCHAR);
+
+statement error
+COPY loaded FROM '{TEST_DIR}/csv_parallel_range_in_quoted_lines.csv' (HEADER, IGNORE_ERRORS);
+----
+does not support a full read
+
+query I
+SELECT count(*) FROM loaded;
+----
+0
+
+# a small file with two rows with an error behind the quoted value, read with one scan range per buffer
+statement ok
+COPY (SELECT line FROM (VALUES (1, 'a,b'), (2, '0,xxxxxxxxxxxxxxxxxxxxxxxxxx'), (3, '1,"t,""q""z'), (4, 'FAKE,x'), (5, 'tail"'), (6, '"u"z,"v"z'), (7, '"u"z,"v"z')) t(i, line) ORDER BY i)
+TO '{TEST_DIR}/csv_parallel_range_in_quoted_lines_small.csv' (HEADER false, QUOTE '', DELIMITER '|');
+
+foreach error_option ignore_errors store_rejects
+
+# the second buffer starts in the first line of the value
+loop buffer_size 38 45
+
+statement error
+SELECT string_agg(a, ',' ORDER BY a) FROM read_csv('{TEST_DIR}/csv_parallel_range_in_quoted_lines_small.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, {error_option} = true, buffer_size = {buffer_size});
+----
+does not support a full read
+
+endloop
+
+query I
+SELECT string_agg(a, ',' ORDER BY a) FROM read_csv('{TEST_DIR}/csv_parallel_range_in_quoted_lines_small.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, {error_option} = true, buffer_size = 38, parallel = false);
+----
+0,1
+
+# the first buffer holds the value
+query I
+SELECT string_agg(a, ',' ORDER BY a) FROM read_csv('{TEST_DIR}/csv_parallel_range_in_quoted_lines_small.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, {error_option} = true, buffer_size = 60);
+----
+0,1
+
+endloop
+
+# the row behind the line that is taken for a row has an error, in a file with one column
+statement ok
+COPY (SELECT line FROM (VALUES (1, 'c0'), (2, 'k000000000'), (3, '"k1first'), (4, 'tail"'), (5, 'k2,extra'), (6, 'k3')) t(i, line) ORDER BY i)
+TO '{TEST_DIR}/csv_parallel_range_in_quoted_lines_error_behind.csv' (HEADER false, QUOTE '', DELIMITER '|');
+
+foreach error_option ignore_errors store_rejects
+
+statement error
+SELECT string_agg(c0, ',' ORDER BY c0) FROM read_csv('{TEST_DIR}/csv_parallel_range_in_quoted_lines_error_behind.csv', header = true, auto_detect = false, columns = {'c0': 'VARCHAR'}, {error_option} = true, buffer_size = 16);
+----
+does not support a full read
+
+query I
+SELECT count(*) FROM read_csv('{TEST_DIR}/csv_parallel_range_in_quoted_lines_error_behind.csv', header = true, auto_detect = false, columns = {'c0': 'VARCHAR'}, {error_option} = true, buffer_size = 16, parallel = false);
+----
+3
+
+endloop
+
+# a scanner that starts inside a quoted value and skips its lines as rows with errors returns no row of the scanner
+# before it, the read is right
+statement ok
+COPY (SELECT line FROM (VALUES (1, 'c0,c1'), (2, 'k00000,w'), (3, 'k00001,"first'), (4, 'some text'), (5, ''), (6, ''), (7, 'last"'), (8, 'k00002,"quoted"'), (9, 'k00003,"quoted"'), (10, 'k00004,"quoted"'), (11, 'k00005,""')) t(i, line) ORDER BY i)
+TO '{TEST_DIR}/csv_parallel_range_in_quoted_lines_skipped.csv' (HEADER false, QUOTE '', DELIMITER '|');
+
+foreach error_option ignore_errors store_rejects
+
+query I
+SELECT string_agg(c0, ',' ORDER BY c0) FROM read_csv('{TEST_DIR}/csv_parallel_range_in_quoted_lines_skipped.csv', header = true, auto_detect = false, columns = {'c0': 'VARCHAR', 'c1': 'VARCHAR'}, {error_option} = true, buffer_size = 35);
+----
+k00000,k00001,k00002,k00003,k00004,k00005
+
+endloop
+
+# an empty line is a row of a file with one column, as the first or the last row of a scanner too
+statement ok
+COPY (SELECT line FROM (VALUES (1, 'c0'), (2, 'k00'), (3, 'k01'), (4, ''), (5, 'k03'), (6, 'k04')) t(i, line) ORDER BY i)
+TO '{TEST_DIR}/csv_parallel_range_in_quoted_lines_empty.csv' (HEADER false, QUOTE '', DELIMITER '|');
+
+foreach error_option ignore_errors store_rejects
+
+loop buffer_size 5 16
+
+query II
+SELECT count(*), count(c0) FROM read_csv('{TEST_DIR}/csv_parallel_range_in_quoted_lines_empty.csv', header = true, auto_detect = false, columns = {'c0': 'VARCHAR'}, {error_option} = true, buffer_size = {buffer_size});
+----
+5	4
+
+endloop
+
+endloop
+
+# rows that only one scanner returns are left alone. Here a quoted value with line breaks is part of a row with an
+# error, which the scanner before the range skips, and the scanner of the range returns a line of the value
+statement ok
+COPY (SELECT line FROM (VALUES (1, 'a,b'), (2, 'k0,vvvvvvvvvvvv'), (3, 'k1,"first'), (4, 'p1,v'), (5, 'last",x,x'), (6, 'k2,v')) t(i, line) ORDER BY i)
+TO '{TEST_DIR}/csv_parallel_range_in_quoted_lines_error_row.csv' (HEADER false, QUOTE '', DELIMITER '|');
+
+# and here a quote is never closed, the scanner that meets it reads to the end of the file and returns nothing of it
+statement ok
+COPY (SELECT line FROM (VALUES (1, 'c0'), (2, 'k00'), (3, '"s1stray'), (4, 'k98'), (5, 'k99')) t(i, line) ORDER BY i)
+TO '{TEST_DIR}/csv_parallel_range_in_quoted_lines_stray_quote.csv' (HEADER false, QUOTE '', DELIMITER '|');
+
+foreach error_option ignore_errors store_rejects
+
+statement ok
+SELECT count(*) FROM read_csv('{TEST_DIR}/csv_parallel_range_in_quoted_lines_error_row.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, {error_option} = true, buffer_size = 26);
+
+loop buffer_size 14 20
+
+statement ok
+SELECT count(*) FROM read_csv('{TEST_DIR}/csv_parallel_range_in_quoted_lines_stray_quote.csv', header = true, auto_detect = false, columns = {'c0': 'VARCHAR'}, {error_option} = true, buffer_size = {buffer_size});
+
+endloop
+
+endloop

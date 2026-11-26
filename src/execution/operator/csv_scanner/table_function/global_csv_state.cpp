@@ -149,9 +149,14 @@ void CSVGlobalState::FinishFile(CSVFileScan &scan) {
 	scan.Finish();
 	const bool ignore_or_store_errors =
 	    csv_data.options.ignore_errors.GetValue() || csv_data.options.store_rejects.GetValue();
-	if (!single_threaded && !ignore_or_store_errors) {
-		// If we are running multithreaded and not ignoring errors, we must run the validator
-		scan.validator.Verify();
+	if (!single_threaded) {
+		if (ignore_or_store_errors) {
+			// Scanners that skip rows with errors do not line up, so we only validate the rows they returned
+			scan.validator.VerifyReturnedRows();
+		} else {
+			// If we are running multithreaded and not ignoring errors, we must run the validator
+			scan.validator.Verify();
+		}
 	}
 	scan.error_handler->ErrorIfAny();
 	FillRejectsTable(scan);

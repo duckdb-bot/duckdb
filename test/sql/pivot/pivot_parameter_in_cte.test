@@ -307,3 +307,12 @@ query I
 EXECUTE s45(1);
 ----
 2
+
+# the AT clause of a CTE reference is not read, so a parameter in it works
+statement ok
+PREPARE s46 AS WITH c AS (SELECT 1 AS a), q AS (FROM c AT (VERSION => $1)) PIVOT q ON a;
+
+query I
+EXECUTE s46(7);
+----
+1

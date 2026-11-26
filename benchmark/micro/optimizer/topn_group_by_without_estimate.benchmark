@@ -1,0 +1,13 @@
+# name: benchmark/micro/optimizer/topn_group_by_without_estimate.benchmark
+# description: ORDER BY the group key with a large LIMIT over a grouped aggregate of a source without a row estimate
+# group: [optimizer]
+
+name TopN Group By Without Estimate
+group micro
+subgroup optimizer
+
+run
+SELECT count(*), sum(k), sum(c) FROM (SELECT k, count(*) AS c FROM (SELECT i % 1000000 AS k FROM range((SELECT 10000000)) t(i)) GROUP BY k ORDER BY k LIMIT 6000);
+
+result III
+6000	17997000	60000

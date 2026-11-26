@@ -159,3 +159,45 @@ SELECT a, b FROM read_csv('{TEST_DIR}/indented_comment_two_columns.csv', header 
 endloop
 
 endloop
+
+# a value that fills a buffer ends at the comment that starts the next buffer, the comment adds no value to its row
+statement ok
+COPY (SELECT l FROM (VALUES (1, 'a,b'), (2, '1,2'), (3, 'xxxx#zz'), (4, '3,4')) t(i, l) ORDER BY i) TO '{TEST_DIR}/value_fills_buffer.csv' (HEADER false, QUOTE '');
+
+loop buffer_size 4 6
+
+statement error
+SELECT a, b FROM read_csv('{TEST_DIR}/value_fills_buffer.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, comment = '#', buffer_size = {buffer_size}, parallel = false);
+----
+Expected Number of Columns: 2 Found: 1
+
+endloop
+
+query II
+SELECT a, b FROM read_csv('{TEST_DIR}/value_fills_buffer.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, comment = '#', buffer_size = 4, parallel = false, ignore_errors = true);
+----
+1	2
+3	4
+
+# a line of spaces that fills a buffer is a row with one value, the comment line behind it is no part of that row
+statement ok
+COPY (SELECT l FROM (VALUES (1, 'a,b'), (2, '1,2'), (3, '    '), (4, '#zz'), (5, '3,4')) t(i, l) ORDER BY i) TO '{TEST_DIR}/spaces_line_before_comment.csv' (HEADER false, QUOTE '');
+
+loop buffer_size 4 6
+
+statement error
+SELECT a, b FROM read_csv('{TEST_DIR}/spaces_line_before_comment.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, comment = '#', buffer_size = {buffer_size}, parallel = false);
+----
+Expected Number of Columns: 2 Found: 1
+
+endloop
+
+# empty lines fill a buffer before a comment line, the comment adds no row of NULLs
+statement ok
+COPY (SELECT l FROM (VALUES (1, 'a,b'), (2, '1,2'), (3, ''), (4, ''), (5, ''), (6, ''), (7, '#zz'), (8, '3,4')) t(i, l) ORDER BY i) TO '{TEST_DIR}/empty_lines_before_comment.csv' (HEADER false, QUOTE '');
+
+query II
+SELECT a, b FROM read_csv('{TEST_DIR}/empty_lines_before_comment.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, comment = '#', buffer_size = 4, parallel = false, ignore_errors = true);
+----
+1	2
+3	4

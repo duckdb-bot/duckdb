@@ -1459,6 +1459,9 @@ string_t StringValueScanner::RemoveEscape(const char *str_ptr, idx_t end, char e
 void StringValueScanner::ProcessOverBufferValue() {
 	// a comment that ran to the end of the previous buffer goes on in this one, the value before it was handled then
 	const bool open_comment = result.comment && result.last_position.buffer_pos >= previous_buffer_handle->actual_size;
+	// a value that ran to the end of the previous buffer was added there, a comment that follows it adds no other value
+	const bool open_value =
+	    !open_comment && result.cur_col_id > 0 && result.last_position.buffer_pos > previous_buffer_handle->actual_size;
 	// Process first string
 	if (open_comment) {
 		states.Initialize(CSVState::COMMENT);
@@ -1590,7 +1593,8 @@ void StringValueScanner::ProcessOverBufferValue() {
 	const bool empty_line = single_column_empty_line && result.cur_col_id == 0 && !result.comment;
 	const bool comment_only_line =
 	    comment_started && IsCommentOnlyLine(result.cur_col_id, over_buffer_string.c_str(), over_buffer_string.size());
-	bool skip_value = comment_only_line || open_comment;
+	bool skip_value =
+	    comment_only_line || open_comment || (open_value && comment_started && over_buffer_string.empty());
 	if (result.projecting_columns && !skip_value) {
 		if (result.cur_col_id < result.number_of_columns && !result.projected_columns[result.cur_col_id]) {
 			result.cur_col_id++;

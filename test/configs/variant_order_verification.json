@@ -54,6 +54,7 @@
         "test/optimizer/group_by_top_key_guards.test",
         "test/optimizer/group_by_top_key_key_types.test",
         "test/optimizer/group_by_top_key_partitioned.test",
+        "test/optimizer/topn/topn_group_by_without_estimate.test",
         "test/sql/optimizer/secure_view_join_filter_pushdown.test"
       ]
     },

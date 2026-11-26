@@ -1,0 +1,82 @@
+# name: test/optimizer/topn/topn_group_by_without_estimate.test
+# description: Top-key filter of a grouped aggregate over a source without a row estimate, for limits above 5000
+# group: [topn]
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+statement ok
+SET explain_output = 'OPTIMIZED_ONLY';
+
+require no_alternative_verify
+
+# range with a subquery argument has no estimate. The first three sources have enough rows for the filter to drop rows
+query II
+EXPLAIN SELECT count(*), sum(k), sum(c), min(c), max(c) FROM (SELECT k, count(*) AS c FROM (SELECT i % 100000 AS k FROM range((SELECT 2000000)) t(i)) GROUP BY k ORDER BY k LIMIT 5001);
+----
+logical_opt	<REGEX>:.*TOP_N.*TOP_KEY_FILTER.*
+
+query IIIII
+SELECT count(*), sum(k), sum(c), min(c), max(c) FROM (SELECT k, count(*) AS c FROM (SELECT i % 100000 AS k FROM range((SELECT 2000000)) t(i)) GROUP BY k ORDER BY k LIMIT 5001);
+----
+5001	12502500	100020	20	20
+
+query II
+EXPLAIN SELECT count(*), sum(k), sum(c), min(c), max(c) FROM (SELECT k, count(*) AS c FROM (SELECT i % 100000 AS k FROM range((SELECT 3200000)) t(i)) GROUP BY k ORDER BY k LIMIT 10000);
+----
+logical_opt	<REGEX>:.*TOP_N.*TOP_KEY_FILTER.*
+
+query IIIII
+SELECT count(*), sum(k), sum(c), min(c), max(c) FROM (SELECT k, count(*) AS c FROM (SELECT i % 100000 AS k FROM range((SELECT 3200000)) t(i)) GROUP BY k ORDER BY k LIMIT 10000);
+----
+10000	49995000	320000	32	32
+
+# the offset counts towards the limit
+query II
+EXPLAIN SELECT count(*), sum(k), sum(c), min(c), max(c) FROM (SELECT k, count(*) AS c FROM (SELECT i % 100000 AS k FROM range((SELECT 3200000)) t(i)) GROUP BY k ORDER BY k LIMIT 4000 OFFSET 3500);
+----
+logical_opt	<REGEX>:.*TOP_N.*TOP_KEY_FILTER.*
+
+query IIIII
+SELECT count(*), sum(k), sum(c), min(c), max(c) FROM (SELECT k, count(*) AS c FROM (SELECT i % 100000 AS k FROM range((SELECT 3200000)) t(i)) GROUP BY k ORDER BY k LIMIT 4000 OFFSET 3500);
+----
+4000	21998000	128000	32	32
+
+# DISTINCT is planned as a grouped aggregate
+query II
+EXPLAIN SELECT count(*), sum(k) FROM (SELECT DISTINCT i % 20000 AS k FROM range((SELECT 100000)) t(i) ORDER BY k LIMIT 7500);
+----
+logical_opt	<REGEX>:.*TOP_N.*TOP_KEY_FILTER.*
+
+query II
+SELECT count(*), sum(k) FROM (SELECT DISTINCT i % 20000 AS k FROM range((SELECT 100000)) t(i) ORDER BY k LIMIT 7500);
+----
+7500	28121250
+
+# above 10000 the filter does not apply
+query II
+EXPLAIN SELECT k, count(*) AS c FROM (SELECT i % 20000 AS k FROM range((SELECT 100000)) t(i)) GROUP BY k ORDER BY k LIMIT 10001;
+----
+logical_opt	<!REGEX>:.*TOP_KEY_FILTER.*
+
+# a limit of at most 5000 never depended on the estimate
+query II
+EXPLAIN SELECT count(*), sum(k), sum(c), min(c), max(c) FROM (SELECT k, count(*) AS c FROM (SELECT i % 20000 AS k FROM range((SELECT 100000)) t(i)) GROUP BY k ORDER BY k LIMIT 5000);
+----
+logical_opt	<REGEX>:.*TOP_N.*TOP_KEY_FILTER.*
+
+query IIIII
+SELECT count(*), sum(k), sum(c), min(c), max(c) FROM (SELECT k, count(*) AS c FROM (SELECT i % 20000 AS k FROM range((SELECT 100000)) t(i)) GROUP BY k ORDER BY k LIMIT 5000);
+----
+5000	12497500	25000	5	5
+
+# a source with an estimate still sorts fully for a large limit, without the filter
+query II
+EXPLAIN SELECT count(*), sum(k), sum(c), min(c), max(c) FROM (SELECT k, count(*) AS c FROM (SELECT i % 20000 AS k FROM range(100000) t(i)) GROUP BY k ORDER BY k LIMIT 7500);
+----
+logical_opt	<!REGEX>:.*TOP_KEY_FILTER.*
+
+query IIIII
+SELECT count(*), sum(k), sum(c), min(c), max(c) FROM (SELECT k, count(*) AS c FROM (SELECT i % 20000 AS k FROM range(100000) t(i)) GROUP BY k ORDER BY k LIMIT 7500);
+----
+7500	28121250	37500	5	5

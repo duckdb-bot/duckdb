@@ -141,3 +141,21 @@ query II
 SELECT a, b FROM read_csv('{TEST_DIR}/long_comment_after_value.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, comment = '#', nullstr = 'NULL', buffer_size = 16, parallel = false, ignore_errors = true);
 ----
 3	4
+
+# a line of spaces and a comment in a file with two columns, the buffer ends before, within and behind the spaces
+statement ok
+COPY (SELECT l FROM (VALUES (1, 'a,b'), (2, '1,2'), (3, '    #zz'), (4, '3,4')) t(i, l) ORDER BY i) TO '{TEST_DIR}/indented_comment_two_columns.csv' (HEADER false, QUOTE '');
+
+foreach parallel false true
+
+loop buffer_size 8 14
+
+query II
+SELECT a, b FROM read_csv('{TEST_DIR}/indented_comment_two_columns.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, comment = '#', buffer_size = {buffer_size}, parallel = {parallel});
+----
+1	2
+3	4
+
+endloop
+
+endloop

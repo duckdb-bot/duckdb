@@ -442,6 +442,16 @@ unique_ptr<SQLStatement> PEGTransformer::GenerateCreateEnumStmt(unique_ptr<Creat
 		subselect = std::move(select_node);
 	} else {
 		subselect = std::move(entry->subquery);
+		// the subquery becomes a statement of its own, whose WITH clause the binder takes for the top level
+		for (auto &cte : subselect->cte_map.map) {
+			auto cte_type = cte.second->query_node->type;
+			if (cte_type == QueryNodeType::COPY_QUERY_NODE) {
+				throw ParserException("WITH clause containing a COPY statement must be at the top level");
+			}
+			if (QueryNode::HasSideEffects(cte_type)) {
+				throw ParserException("WITH clause containing a data-modifying statement must be at the top level");
+			}
+		}
 	}
 
 	auto select = make_uniq<SelectStatement>();

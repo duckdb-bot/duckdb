@@ -1,0 +1,47 @@
+# name: test/sql/copy/csv/csv_sniffer_line_size_error_later_chunk.test
+# description: A line over the maximum line size behind the first chunk of the sniffer's sample is reported as such
+# group: [csv]
+
+# line 2101 is in the second chunk of the sample
+statement ok
+COPY (SELECT i AS a, CASE WHEN i = 2100 THEN repeat('x', 30) ELSE 'y' END AS b FROM range(1, 8001) t(i) ORDER BY i) TO '{TEST_DIR}/sniffer_long_row_second_chunk.csv' (HEADER);
+
+statement error
+SELECT count(*) FROM read_csv('{TEST_DIR}/sniffer_long_row_second_chunk.csv', max_line_size = 20);
+----
+Maximum line size of 20 bytes exceeded
+
+statement error
+SELECT count(*) FROM read_csv('{TEST_DIR}/sniffer_long_row_second_chunk.csv', max_line_size = 20);
+----
+Original Line: 2100,xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+statement error
+FROM sniff_csv('{TEST_DIR}/sniffer_long_row_second_chunk.csv', max_line_size = 20);
+----
+Maximum line size of 20 bytes exceeded
+
+# line 5001 is in the third chunk
+statement ok
+COPY (SELECT i AS a, CASE WHEN i = 5000 THEN repeat('x', 30) ELSE 'y' END AS b FROM range(1, 8001) t(i) ORDER BY i) TO '{TEST_DIR}/sniffer_long_row_third_chunk.csv' (HEADER);
+
+statement error
+SELECT count(*) FROM read_csv('{TEST_DIR}/sniffer_long_row_third_chunk.csv', max_line_size = 20);
+----
+Original Line: 5000,xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+# behind the sample the scanner reports the line
+statement error
+SELECT count(*) FROM read_csv('{TEST_DIR}/sniffer_long_row_second_chunk.csv', max_line_size = 20, sample_size = 2000);
+----
+CSV Error on Line: 2101
+Original Line: 2100,xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+# a file that no dialect fits keeps the error of the sniffer
+statement ok
+COPY (SELECT CASE WHEN i >= 2100 THEN 'y,y,y' ELSE i::VARCHAR || ',y' END FROM range(1, 8001) t(i) ORDER BY i) TO '{TEST_DIR}/sniffer_changing_columns.csv' (HEADER false, QUOTE '', DELIMITER '|');
+
+statement error
+SELECT count(*) FROM read_csv('{TEST_DIR}/sniffer_changing_columns.csv', max_line_size = 20);
+----
+It was not possible to automatically detect the CSV parsing dialect

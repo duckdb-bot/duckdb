@@ -240,15 +240,22 @@ struct PivotSourceParameterFinder {
 
 	void Visit(TableRef &ref, optional_idx scope) {
 		switch (ref.type) {
-		case TableReferenceType::BASE_TABLE:
-			ReadCTE(ref.Cast<BaseTableRef>().GetQualifiedName(), scope);
+		case TableReferenceType::BASE_TABLE: {
+			auto &table = ref.Cast<BaseTableRef>();
+			ReadCTE(table.GetQualifiedName(), scope);
+			if (table.at_clause) {
+				Push(table.at_clause->ExpressionMutable(), scope);
+			}
 			break;
+		}
 		case TableReferenceType::JOIN: {
 			auto &join = ref.Cast<JoinRef>();
 			Push(*join.left, scope);
 			Push(*join.right, scope);
-			if (join.condition) {
-				Push(join.condition, scope);
+			for (auto expr : {&join.condition, &join.ranking_expression}) {
+				if (*expr) {
+					Push(*expr, scope);
+				}
 			}
 			break;
 		}

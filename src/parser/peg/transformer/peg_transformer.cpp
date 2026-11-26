@@ -415,6 +415,16 @@ unique_ptr<SQLStatement> PEGTransformer::GenerateCreateEnumStmt(unique_ptr<Creat
 	unique_ptr<QueryNode> subselect;
 	if (!entry->subquery) {
 		auto select_node = std::move(entry->base);
+		for (auto &cte : select_node->cte_map.map) {
+			if (QueryNode::HasSideEffects(cte.second->query_node->type)) {
+				// this query runs before the statement itself, which would run the CTE again
+				throw ParserException(
+				    "PIVOT statements with pivot elements extracted from the data cannot be used with a CTE that "
+				    "contains a data-modifying or COPY statement.\nIn order to use PIVOT with such a CTE the PIVOT "
+				    "values must be manually specified, e.g.:\nPIVOT ... ON %s IN (val1, val2, ...)",
+				    entry->column->ToString());
+			}
+		}
 		auto columnref = entry->column->Copy();
 		auto cast = make_uniq<CastExpression>(LogicalType::VARCHAR, std::move(columnref));
 		select_node->select_list.push_back(std::move(cast));

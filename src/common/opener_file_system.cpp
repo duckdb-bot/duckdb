@@ -5,6 +5,7 @@
 #include "duckdb/common/memory_mapped_file.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/config.hpp"
+#include "duckdb/storage/external_file_cache/caching_file_system_wrapper.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/common/path.hpp"
 
@@ -89,6 +90,22 @@ bool OpenerFileSystem::GetRestrictedSearchPaths(const string &path, string &expa
 	}
 	search_paths = StringUtil::Split(search_path_setting.ToString(), ',');
 	return !search_paths.empty();
+}
+
+unique_ptr<FileHandle> OpenerFileSystem::OpenCachedFile(const OpenFileInfo &file, const FileOpenFlags &flags) {
+	// the cache holds the file as stored, the file system applies the compression on top of it
+	auto raw_flags = flags;
+	raw_flags.SetCompression(FileCompressionType::UNCOMPRESSED);
+	raw_flags.SetCachingMode(CachingMode::NO_CACHING);
+
+	// the caching file system is kept alive by the handles it hands out
+	auto caching_file_system =
+	    make_shared_ptr<CachingFileSystemWrapper>(FindFileSystem(file.path), GetOpener(), flags.GetCachingMode());
+	auto handle = caching_file_system->OpenFile(file, raw_flags, GetOpener());
+	if (!handle) {
+		return nullptr;
+	}
+	return GetFileSystem().WrapOpenedFile(std::move(handle), file, flags, GetOpener());
 }
 
 void OpenerFileSystem::VerifyNoOpener(optional_ptr<FileOpener> opener) {

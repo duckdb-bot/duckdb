@@ -237,7 +237,10 @@ protected:
 		if (fixed_fs) {
 			return fixed_fs->OpenFile(file, flags, GetOpener());
 		}
-		return GetFileSystem().OpenFile(file, flags, GetOpener());
+		if (flags.GetCachingMode() == CachingMode::NO_CACHING) {
+			return GetFileSystem().OpenFile(file, flags, GetOpener());
+		}
+		return OpenCachedFile(file, flags);
 	}
 
 	bool SupportsOpenFileExtended() const override {
@@ -290,6 +293,7 @@ private:
 		}
 		return GetFileSystem().FindFileSystem(path, GetOpener());
 	}
+	unique_ptr<FileHandle> OpenCachedFile(const OpenFileInfo &file, const FileOpenFlags &flags);
 	bool IsAccessAllowed(const string &path, FileType type);
 	void VerifyCanAccessFileInternal(const string &path, FileType type);
 	//! With file access restricted, the file_search_path entries that a relative local path is looked up in (throws for

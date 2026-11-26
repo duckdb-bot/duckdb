@@ -528,40 +528,51 @@ unique_ptr<MergeIntoStatement> Binder::GenerateMergeInto(InsertQueryNode &node, 
 		auto select_binder = Binder::CreateBinder(context, this);
 		SubqueryRef select_ref(std::move(node.select_statement), "excluded");
 		auto bound_select = select_binder->Bind(select_ref);
-		MoveCorrelatedExpressions(*select_binder);
 		vector<LogicalIndex> select_column_map;
 		vector<LogicalType> expected_types;
 		physical_index_vector_t<idx_t> column_index_map;
 		BindInsertColumnList(table, bound_select.names, node.default_values, select_column_map, expected_types,
 		                     column_index_map);
 		// the source needs the omitted columns that the conflict handling reads, the insert fills the others
-		identifier_set_t conflict_columns;
+		identifier_set_t read_columns;
 		for (auto &distinct_on_columns : all_distinct_on_columns) {
-			conflict_columns.insert(distinct_on_columns.begin(), distinct_on_columns.end());
+			read_columns.insert(distinct_on_columns.begin(), distinct_on_columns.end());
 		}
-		// EXCLUDED in a DO UPDATE can name any column
-		bool reads_all_columns = on_conflict_info.action_type == OnConflictAction::UPDATE;
+		if (on_conflict_info.set_info) {
+			// a DO UPDATE reads the columns it qualifies with EXCLUDED
+			auto add_excluded_column = [&](const ColumnRefExpression &column_ref) {
+				auto &names = column_ref.ColumnNames();
+				if (names.size() > 1 && names[0] == "excluded") {
+					read_columns.insert(names[1]);
+				}
+			};
+			for (auto &expr : on_conflict_info.set_info->expressions) {
+				ParsedExpressionIterator::VisitExpression<ColumnRefExpression>(*expr, add_excluded_column);
+			}
+			if (on_conflict_info.set_info->condition) {
+				ParsedExpressionIterator::VisitExpression<ColumnRefExpression>(*on_conflict_info.set_info->condition,
+				                                                               add_excluded_column);
+			}
+		}
 		vector<reference<const ColumnDefinition>> default_columns;
 		for (auto &column : columns.Physical()) {
 			bool omitted = column_index_map[column.Physical()] == DConstants::INVALID_INDEX;
-			if (omitted && (reads_all_columns || conflict_columns.count(column.Name()))) {
+			if (omitted && read_columns.count(column.Name())) {
 				default_columns.push_back(column);
 			}
 		}
 		if (!default_columns.empty()) {
-			// bind their defaults as a plain INSERT does, and project them next to the columns of the SELECT
-			vector<unique_ptr<Expression>> bound_defaults;
-			BindDefaultValues(columns, bound_defaults, table.ParentCatalog().GetName().GetIdentifierName(),
-			                  table.ParentSchema().GetSchemaPath());
+			// project their defaults next to the columns of the SELECT, bound as a plain INSERT binds them
 			auto projection_index = GenerateTableIndex();
 			auto projection = LogicalProjection::CreateIdentity(projection_index, std::move(bound_select.plan));
 			// the identity projection has one column for each name of the SELECT
 			D_ASSERT(projection->expressions.size() == bound_select.names.size());
+			auto &catalog_name = table.ParentCatalog().GetName();
 			for (auto &column : default_columns) {
-				auto &bound_default = bound_defaults[column.get().StorageOid()];
+				BindDefaultValue(column, projection->expressions, catalog_name.GetIdentifierName(),
+				                 table.ParentSchema().GetSchemaPath());
 				bound_select.names.push_back(column.get().Name());
-				bound_select.types.push_back(bound_default->GetReturnType());
-				projection->expressions.push_back(std::move(bound_default));
+				bound_select.types.push_back(projection->expressions.back()->GetReturnType());
 			}
 			bound_select.plan = std::move(projection);
 			// a new bind context names the projection as the source

@@ -219,8 +219,8 @@ struct PivotValuesParameterFinder {
 		switch (ref.type) {
 		case TableReferenceType::BASE_TABLE: {
 			auto &table = ref.Cast<BaseTableRef>();
-			ReadCTE(table.GetQualifiedName(), scope);
-			if (table.at_clause) {
+			// the AT clause of a table is read, that of a CTE is not
+			if (!ReadCTE(table.GetQualifiedName(), scope) && table.at_clause) {
 				Push(table.at_clause->ExpressionMutable(), scope);
 			}
 			break;
@@ -273,10 +273,10 @@ struct PivotValuesParameterFinder {
 		}
 	}
 
-	//! the CTE that a table name reads is visited once, with the CTEs in scope where it is defined
-	void ReadCTE(const QualifiedName &name, optional_idx scope) {
+	//! whether a table name reads a CTE, which is then visited once, with the CTEs in scope where it is defined
+	bool ReadCTE(const QualifiedName &name, optional_idx scope) {
 		if (!name.Catalog().empty() || !name.Schema().empty()) {
-			return;
+			return false;
 		}
 		while (scope.IsValid()) {
 			auto defining_scope = scopes[scope.GetIndex()];
@@ -294,8 +294,9 @@ struct PivotValuesParameterFinder {
 			if (visited_ctes.insert(cte).second && cte.query_node) {
 				Push(*cte.query_node, AddScope(ctes, 0, index, defining_scope.parent));
 			}
-			return;
+			return true;
 		}
+		return false;
 	}
 };
 

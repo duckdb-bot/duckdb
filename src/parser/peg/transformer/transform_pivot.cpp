@@ -33,20 +33,9 @@ public:
 	}
 
 	//! adds a part of the statement to visit, with the innermost scope it is in
-	void Push(unique_ptr<ParsedExpression> &expr, optional_idx scope) {
-		pending_expressions.emplace_back(*expr, scope);
-	}
-
 	void Push(vector<unique_ptr<ParsedExpression>> &expressions, optional_idx scope) {
 		for (auto &expr : expressions) {
 			Push(expr, scope);
-		}
-	}
-
-	void Push(UpdateSetInfo &info, optional_idx scope) {
-		Push(info.expressions, scope);
-		if (info.condition) {
-			Push(info.condition, scope);
 		}
 	}
 
@@ -101,6 +90,17 @@ private:
 		pending_nodes.pop_back();
 		Visit(next.node.get(), next.scope);
 		return true;
+	}
+
+	void Push(unique_ptr<ParsedExpression> &expr, optional_idx scope) {
+		pending_expressions.emplace_back(*expr, scope);
+	}
+
+	void Push(UpdateSetInfo &info, optional_idx scope) {
+		Push(info.expressions, scope);
+		if (info.condition) {
+			Push(info.condition, scope);
+		}
 	}
 
 	void Visit(ParsedExpression &expr, optional_idx scope) {

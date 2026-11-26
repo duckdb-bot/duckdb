@@ -1005,7 +1005,7 @@ bool StringValueResult::AddRowWithoutValue(StringValueResult &result, const idx_
 
 void StringValueResult::InvalidState(StringValueResult &result) {
 	if (result.quoted) {
-		// a value that goes on in the next buffer is read again from its start, and is still rejected once
+		// one error of this kind for a column of a row, however often its value gets here
 		if (!result.current_errors.HasErrorType(UNTERMINATED_QUOTES, result.cur_col_id)) {
 			result.current_errors.Insert(UNTERMINATED_QUOTES, result.cur_col_id, result.chunk_col_id,
 			                             result.last_position);

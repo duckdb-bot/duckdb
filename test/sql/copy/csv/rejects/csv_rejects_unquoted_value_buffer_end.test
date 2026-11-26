@@ -1,5 +1,5 @@
 # name: test/sql/copy/csv/rejects/csv_rejects_unquoted_value_buffer_end.test
-# description: A value with text behind its closing quote is rejected once, wherever a buffer ends in it
+# description: A column value with text behind its closing quote is rejected once
 # group: [rejects]
 
 require skip_reload
@@ -109,3 +109,18 @@ statement ok
 DROP TABLE reject_errors;
 
 endloop
+
+# carriage returns behind the bad text are invalid too when the line break is a line feed, without a buffer end
+statement ok
+COPY (SELECT * FROM (VALUES ('a'), ('0'), ('"xx"x' || chr(13) || 'z' || chr(13) || 'w'), ('3')) t(line)) TO '{TEST_DIR}/unquoted_carriage_returns.csv' (HEADER false, QUOTE '', DELIMITER '|');
+
+query I
+SELECT a FROM read_csv('{TEST_DIR}/unquoted_carriage_returns.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR'}, new_line = '\n', parallel = false, store_rejects = true) ORDER BY a;
+----
+0
+3
+
+query III
+SELECT line, column_idx, error_type FROM reject_errors;
+----
+3	1	UNQUOTED VALUE

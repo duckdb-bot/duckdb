@@ -150,3 +150,13 @@ SELECT string_agg(a, ',' ORDER BY a) FROM read_csv('{TEST_DIR}/csv_parallel_erro
 endloop
 
 endloop
+
+# the last row has no line break and the text behind its closing quote starts the last buffer
+foreach error_option ignore_errors store_rejects
+
+query I
+SELECT string_agg(a, ',' ORDER BY a) FROM read_csv('{DATA_DIR}/csv/parallel_error_row_eof.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, {error_option} = true, buffer_size = 8);
+----
+0,1
+
+endloop

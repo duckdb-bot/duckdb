@@ -23,8 +23,8 @@
 
 namespace duckdb {
 
-//! Finds a parameter in a PIVOT source, also in the CTEs it reads, which the query of the pivot values copies
-struct PivotSourceParameterFinder {
+//! Finds a parameter in the parts of a PIVOT that its values are read from, and in the CTEs that those parts read
+struct PivotValuesParameterFinder {
 	//! The visible CTEs of a WITH clause, and the scope around them
 	struct CTEScope {
 		CTEScope(CommonTableExpressionMap &ctes, idx_t begin, idx_t end, optional_idx parent)
@@ -37,7 +37,7 @@ struct PivotSourceParameterFinder {
 		//! the scope around this one, if any
 		optional_idx parent;
 	};
-	//! A part of the source that is not visited yet, and the innermost scope it is in
+	//! A part of the statement that is not visited yet, and the innermost scope it is in
 	template <class T>
 	struct PendingNode {
 		PendingNode(T &node, optional_idx scope) : node(node), scope(scope) {
@@ -45,7 +45,7 @@ struct PivotSourceParameterFinder {
 		reference<T> node;
 		optional_idx scope;
 	};
-	//! the scopes of all parts of the source, each of which names the scope around it
+	//! the scopes of all parts of the statement, each of which names the scope around it
 	vector<CTEScope> scopes;
 	//! what is left to visit, kept here as recursion would overflow the stack on a long chain of CTEs
 	vector<PendingNode<ParsedExpression>> pending_expressions;
@@ -54,9 +54,8 @@ struct PivotSourceParameterFinder {
 	reference_set_t<CommonTableExpressionInfo> visited_ctes;
 	bool found = false;
 
-	//! whether the source, or a CTE it reads, has a parameter
-	bool HasParameter(TableRef &source, optional_idx scope) {
-		Push(source, scope);
+	//! whether a part that was pushed, or a CTE it reads, has a parameter
+	bool HasParameter() {
 		bool visited_node = true;
 		while (visited_node && !found) {
 			visited_node =
@@ -322,13 +321,31 @@ struct PivotSourceParameterFinder {
 	}
 };
 
-static bool SourceHasParameter(PEGTransformer &transformer, TableRef &source) {
-	PivotSourceParameterFinder finder;
+//! Whether a parameter that is not counted with the source reaches the query of the values of a pivot column
+static bool PivotValuesHaveParameter(PEGTransformer &transformer, TableRef &source, vector<PivotColumn> &columns) {
+	PivotValuesParameterFinder finder;
 	optional_idx scope;
 	for (auto &ctes : transformer.stored_cte_map) {
 		scope = finder.AddScope(ctes.get(), 0, ctes.get().map.size(), scope);
 	}
-	return finder.HasParameter(source, scope);
+	bool reads_source = false;
+	for (auto &column : columns) {
+		if (!column.pivot_enum.empty() || !column.entries.empty()) {
+			continue;
+		}
+		if (column.subquery) {
+			// the values are read from the subquery, which does not see the CTEs around the PIVOT
+			finder.Push(*column.subquery, optional_idx());
+		} else {
+			// the values are those of the pivot expression over the source
+			finder.Push(column.pivot_expressions, scope);
+			reads_source = true;
+		}
+	}
+	if (reads_source) {
+		finder.Push(source, scope);
+	}
+	return finder.HasParameter();
 }
 
 void PEGTransformerFactory::AddPivotEntry(PEGTransformer &transformer, string enum_name, unique_ptr<SelectNode> base,
@@ -435,8 +452,7 @@ PEGTransformerFactory::FinalizePivotStatementTrampoline(PEGTransformer &transfor
 		}
 	}
 	auto source = process.TakeResult<unique_ptr<TableRef>>(0);
-	// a parameter in a CTE that the source reads is not counted while the source is transformed
-	auto has_parameters = process.TakeResult<bool>(4) || SourceHasParameter(transformer, *source);
+	auto has_parameters = process.TakeResult<bool>(4);
 	auto select_node = make_uniq<SelectNode>();
 	if (!pivot_columns.HasResult()) {
 		select_node->from_table = std::move(source);
@@ -464,6 +480,8 @@ PEGTransformerFactory::FinalizePivotStatementTrampoline(PEGTransformer &transfor
 		return transformer.MakeResult<unique_ptr<SelectStatement>>(std::move(result));
 	}
 	auto columns = process.TakeResult<vector<PivotColumn>>(1);
+	// a parameter in a CTE, a pivot expression or an IN subquery is not counted while the source is transformed
+	has_parameters = has_parameters || PivotValuesHaveParameter(transformer, *source, columns);
 	for (idx_t c = 0; c < columns.size(); c++) {
 		auto &col = columns[c];
 		if (!col.pivot_enum.empty() || !col.entries.empty()) {

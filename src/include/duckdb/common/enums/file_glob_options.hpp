@@ -10,6 +10,8 @@
 
 #include "duckdb/common/constants.hpp"
 
+#include <functional>
+
 namespace duckdb {
 
 enum class FileGlobOptions : uint8_t { DISALLOW_EMPTY = 0, ALLOW_EMPTY = 1, FALLBACK_GLOB = 2 };
@@ -29,6 +31,9 @@ struct FileGlobInput {
 	FileGlobOptions behavior;
 	bool allow_empty;
 	string extension;
+	//! Set by OpenerFileSystem when file access is restricted, whether a relative path may be looked up in a location
+	//! (the path itself, or the path joined with a file_search_path entry). A refused location is not looked at.
+	std::function<bool(const string &location)> can_access_location;
 };
 
 } // namespace duckdb

@@ -2171,8 +2171,9 @@ static bool IsSymbolicLink(const string &path) {
 #endif
 }
 
-vector<OpenFileInfo> LocalFileSystem::FetchFileWithoutGlob(const string &path, optional_ptr<FileOpener> opener,
-                                                           bool absolute_path) {
+vector<OpenFileInfo>
+LocalFileSystem::FetchFileWithoutGlob(const string &path, optional_ptr<FileOpener> opener, bool absolute_path,
+                                      const std::function<bool(const string &)> &can_access_location) {
 	vector<OpenFileInfo> result;
 	// a regular file comes with its type, size, modification time and version tag, as from a glob
 	auto add_file = [&](const string &file_path) {
@@ -2186,22 +2187,29 @@ vector<OpenFileInfo> LocalFileSystem::FetchFileWithoutGlob(const string &path, o
 		}
 		result.push_back(std::move(info));
 	};
-	if (FileExists(path, opener)) {
-		add_file(path);
-	} else if (IsPipe(path, opener)) {
-		result.emplace_back(path);
-	} else if (!absolute_path) {
+	// adds the regular file or the pipe at a location, when the access check allows the location
+	auto add_if_exists = [&](const string &location) {
+		// a location that the check would expand again is skipped, so that the check and the lookup see one path
+		if (can_access_location && (ExpandPath(location, opener) != location || !can_access_location(location))) {
+			return false;
+		}
+		if (FileExists(location, opener)) {
+			add_file(location);
+			return true;
+		}
+		if (IsPipe(location, opener)) {
+			result.emplace_back(location);
+			return true;
+		}
+		return false;
+	};
+	if (!add_if_exists(path) && !absolute_path) {
 		Value value;
 		if (opener && opener->TryGetCurrentSetting("file_search_path", value)) {
 			auto search_paths_str = value.ToString();
 			vector<std::string> search_paths = StringUtil::Split(search_paths_str, ',');
 			for (const auto &search_path : search_paths) {
-				auto joined_path = JoinPath(search_path, path);
-				if (FileExists(joined_path, opener)) {
-					add_file(joined_path);
-				} else if (IsPipe(joined_path, opener)) {
-					result.emplace_back(joined_path);
-				}
+				add_if_exists(JoinPath(can_access_location ? ExpandPath(search_path, opener) : search_path, path));
 			}
 		}
 	}
@@ -2272,7 +2280,8 @@ static void GlobFilesInternal(FileSystem &fs, const string &path, const string &
 
 struct LocalGlobResult : public LazyMultiFileList {
 public:
-	LocalGlobResult(LocalFileSystem &fs, const string &path, FileGlobOptions options, optional_ptr<FileOpener> opener);
+	LocalGlobResult(LocalFileSystem &fs, const string &path, const FileGlobInput &input,
+	                optional_ptr<FileOpener> opener);
 
 protected:
 	bool ExpandNextPath() const override;
@@ -2281,16 +2290,17 @@ private:
 	LocalFileSystem &fs;
 	string path;
 	optional_ptr<FileOpener> opener;
+	std::function<bool(const string &)> can_access_location;
 	vector<PathSplit> splits;
 	bool absolute_path = false;
 	mutable std::priority_queue<ExpandDirectory> expand_directories;
 	mutable bool finished = false;
 };
 
-LocalGlobResult::LocalGlobResult(LocalFileSystem &fs, const string &path_p, FileGlobOptions options_p,
+LocalGlobResult::LocalGlobResult(LocalFileSystem &fs, const string &path_p, const FileGlobInput &input,
                                  optional_ptr<FileOpener> opener)
-    : LazyMultiFileList(FileOpener::TryGetContext(opener)), fs(fs), path(fs.ExpandPath(path_p, opener)),
-      opener(opener) {
+    : LazyMultiFileList(FileOpener::TryGetContext(opener)), fs(fs), path(fs.ExpandPath(path_p, opener)), opener(opener),
+      can_access_location(input.can_access_location) {
 	if (path.empty()) {
 		finished = true;
 		return;
@@ -2319,7 +2329,8 @@ LocalGlobResult::LocalGlobResult(LocalFileSystem &fs, const string &path_p, File
 			splits[0].path = home_directory;
 			D_ASSERT(path[0] == '~');
 			if (!fs.HasGlob(path)) {
-				expanded_files = fs.FetchFileWithoutGlob(home_directory + path.substr(1), opener, absolute_path);
+				expanded_files = fs.FetchFileWithoutGlob(home_directory + path.substr(1), opener, absolute_path,
+				                                         can_access_location);
 				finished = true;
 				return;
 			}
@@ -2328,7 +2339,7 @@ LocalGlobResult::LocalGlobResult(LocalFileSystem &fs, const string &path_p, File
 	// Check if the path has a glob at all
 	if (!fs.HasGlob(path)) {
 		// no glob: return only the file (if it exists or is a pipe)
-		expanded_files = fs.FetchFileWithoutGlob(path, opener, absolute_path);
+		expanded_files = fs.FetchFileWithoutGlob(path, opener, absolute_path, can_access_location);
 		finished = true;
 		return;
 	}
@@ -2341,14 +2352,26 @@ LocalGlobResult::LocalGlobResult(LocalFileSystem &fs, const string &path_p, File
 	} else {
 		// If file_search_path is set, use those paths as the first glob elements
 		Value value;
+		bool has_search_path = false;
 		if (opener && opener->TryGetCurrentSetting("file_search_path", value)) {
 			auto search_paths_str = value.ToString();
 			auto search_paths = StringUtil::Split(search_paths_str, ',');
 			for (const auto &search_path : search_paths) {
-				expand_directories.emplace(search_path, 0);
+				has_search_path = true;
+				if (!can_access_location) {
+					expand_directories.emplace(search_path, 0);
+					continue;
+				}
+				// the root is checked and listed in one form, expanded and normalized (an empty entry lists nothing)
+				auto root =
+				    search_path.empty() ? search_path : Path::FromString(fs.ExpandPath(search_path, opener)).ToString();
+				auto location = fs.JoinPath(root, path);
+				if (fs.ExpandPath(location, opener) == location && can_access_location(location)) {
+					expand_directories.emplace(std::move(root), 0);
+				}
 			}
 		}
-		if (expand_directories.empty()) {
+		if (!has_search_path) {
 			expand_directories.emplace(".", 0, true);
 		}
 	}
@@ -2366,7 +2389,7 @@ bool LocalGlobResult::ExpandNextPath() const {
 		if (expanded_files.empty()) {
 			// no result found that matches the glob
 			// last ditch effort: search the path as a string literal
-			expanded_files = fs.FetchFileWithoutGlob(path, opener, absolute_path);
+			expanded_files = fs.FetchFileWithoutGlob(path, opener, absolute_path, can_access_location);
 		}
 		finished = true;
 		return false;
@@ -2438,7 +2461,7 @@ bool LocalGlobResult::ExpandNextPath() const {
 
 unique_ptr<MultiFileList> LocalFileSystem::GlobFilesExtended(const string &path, const FileGlobInput &input,
                                                              optional_ptr<FileOpener> opener) {
-	return make_uniq<LocalGlobResult>(*this, path, FileGlobOptions::ALLOW_EMPTY, opener);
+	return make_uniq<LocalGlobResult>(*this, path, input, opener);
 }
 
 } // namespace duckdb

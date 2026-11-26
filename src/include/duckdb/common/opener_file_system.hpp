@@ -218,11 +218,7 @@ public:
 		return fs.PathSeparator(path);
 	}
 
-	vector<OpenFileInfo> Glob(const string &path, FileOpener *opener = nullptr) override {
-		VerifyNoOpener(opener);
-		VerifyCanAccessFile(path);
-		return FindFileSystem(path).Glob(path, GetOpener().get());
-	}
+	vector<OpenFileInfo> Glob(const string &path, FileOpener *opener = nullptr) override;
 
 	std::string GetName() const override {
 		auto fixed_fs = GetFixedFileSystem();
@@ -298,7 +294,11 @@ private:
 		return GetFileSystem().FindFileSystem(path, GetOpener());
 	}
 	unique_ptr<FileHandle> OpenCachedFile(const OpenFileInfo &file, const FileOpenFlags &flags);
+	bool IsAccessAllowed(const string &path, FileType type);
 	void VerifyCanAccessFileInternal(const string &path, FileType type);
+	//! With file access restricted, the file_search_path entries that a relative local path is looked up in (throws for
+	//! a path that the glob would expand as the home directory where the check does not)
+	bool GetRestrictedSearchPaths(const string &path, string &expanded_path, vector<string> &search_paths);
 };
 
 } // namespace duckdb

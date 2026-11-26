@@ -320,3 +320,16 @@ SELECT a, b FROM read_csv('{TEST_DIR}/empty_lines_before_comment.csv', header = 
 ----
 1	2
 3	4
+
+# a last row without a line break that fails to convert is the first row of its chunk, ignore_errors drops it
+foreach parallel false true
+
+loop buffer_size 8 19
+
+query II
+SELECT a, b FROM read_csv('{DATA_DIR}/csv/comment_eof_no_newline.csv', header = true, skip = 2, auto_detect = false, columns = {'a': 'INTEGER', 'b': 'INTEGER'}, comment = '#', buffer_size = {buffer_size}, parallel = {parallel}, ignore_errors = true);
+----
+
+endloop
+
+endloop

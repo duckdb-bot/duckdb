@@ -209,8 +209,10 @@ public:
 
 	//! Skips Notes and/or parts of the data, starting from the top.
 	//! notes are dirty lines on top of the file, before the actual data
+	//! lines_skipped, when given, receives the number of lines that were read to skip the rows
 	static CSVIterator SkipCSVRows(shared_ptr<CSVBufferManager> buffer_manager,
-	                               const shared_ptr<CSVStateMachine> &state_machine, idx_t rows_to_skip);
+	                               const shared_ptr<CSVStateMachine> &state_machine, idx_t rows_to_skip,
+	                               optional_ptr<idx_t> lines_skipped = nullptr);
 
 protected:
 	//! Boundaries of this scanner

@@ -86,3 +86,32 @@ SELECT count(*) FROM read_csv('{TEST_DIR}/sniffer_long_row_skip.csv', skip = 2, 
 ----
 CSV Error on Line: 5
 Original Line: 5,666666666666666666
+
+# a comment line among the skipped rows is a line too
+statement ok
+COPY (SELECT * FROM (VALUES ('#c'), ('note 1'), ('note 2'), ('a,b'), ('1,2'), ('5,666666666666666666'), ('3,4')) t(line)) TO '{TEST_DIR}/sniffer_long_row_skip_comment.csv' (HEADER false, QUOTE '', DELIMITER '|');
+
+statement error
+SELECT count(*) FROM read_csv('{TEST_DIR}/sniffer_long_row_skip_comment.csv', skip = 2, comment = '#', max_line_size = 10);
+----
+CSV Error on Line: 6
+Original Line: 5,666666666666666666
+
+statement error
+SELECT count(*) FROM read_csv('{TEST_DIR}/sniffer_long_row_skip_comment.csv', skip = 2, comment = '#', header = true, max_line_size = 10, auto_detect = false, columns = {'a': 'BIGINT', 'b': 'VARCHAR'});
+----
+CSV Error on Line: 6
+Original Line: 5,666666666666666666
+
+# the second of two files is sniffed from its first byte, also when rows are skipped
+statement ok
+COPY (SELECT * FROM (VALUES ('0,0'), ('0,0'), ('1,2'), ('3,4')) t(line)) TO '{TEST_DIR}/sniffer_long_row_first_file.csv' (HEADER false, QUOTE '', DELIMITER '|');
+
+statement ok
+COPY (SELECT * FROM (VALUES ('0,0'), ('0,0'), ('1,2'), ('5,666666666666666666'), ('3,4')) t(line)) TO '{TEST_DIR}/sniffer_long_row_second_file.csv' (HEADER false, QUOTE '', DELIMITER '|');
+
+statement error
+SELECT count(*) FROM read_csv(['{TEST_DIR}/sniffer_long_row_first_file.csv', '{TEST_DIR}/sniffer_long_row_second_file.csv'], skip = 2, header = false, max_line_size = 10, files_to_sniff = 1);
+----
+CSV Error on Line: 4
+Original Line: 5,666666666666666666

@@ -70,13 +70,20 @@ bool BaseScanner::FinishedFile() const {
 }
 
 CSVIterator BaseScanner::SkipCSVRows(shared_ptr<CSVBufferManager> buffer_manager,
-                                     const shared_ptr<CSVStateMachine> &state_machine, idx_t rows_to_skip) {
+                                     const shared_ptr<CSVStateMachine> &state_machine, idx_t rows_to_skip,
+                                     optional_ptr<idx_t> lines_skipped) {
+	if (lines_skipped) {
+		*lines_skipped = 0;
+	}
 	if (rows_to_skip == 0) {
 		return {};
 	}
 	auto error_handler = make_shared_ptr<CSVErrorHandler>();
 	SkipScanner row_skipper(std::move(buffer_manager), state_machine, error_handler, rows_to_skip);
 	row_skipper.ParseChunk();
+	if (lines_skipped) {
+		*lines_skipped = row_skipper.GetLinesRead();
+	}
 	return row_skipper.GetIterator();
 }
 

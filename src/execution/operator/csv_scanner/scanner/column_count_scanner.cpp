@@ -116,16 +116,13 @@ void ColumnCountResult::QuotedNewLine(ColumnCountResult &result) {
 ColumnCountScanner::ColumnCountScanner(shared_ptr<CSVBufferManager> buffer_manager,
                                        const shared_ptr<CSVStateMachine> &state_machine,
                                        shared_ptr<CSVErrorHandler> error_handler_p, idx_t result_size_p,
-                                       CSVIterator iterator)
+                                       CSVIterator iterator, idx_t lines_skipped)
     : BaseScanner(std::move(buffer_manager), state_machine, std::move(error_handler_p), true, nullptr, iterator),
       result(states, *state_machine, result_size_p, *error_handler, lines_read), column_count(1),
       result_size(result_size_p) {
 	sniffing = true;
-	const auto &skip_rows = state_machine->options.dialect_options.skip_rows;
-	if (skip_rows.IsSetByUser()) {
-		// the rows the user skips are in front of the first line this scanner reads
-		lines_read = skip_rows.GetValue();
-	}
+	// the lines skipped in front of the iterator count for the line numbers of errors
+	lines_read = lines_skipped;
 	idx_t actual_size = 0;
 	if (cur_buffer_handle) {
 		actual_size = cur_buffer_handle->actual_size;

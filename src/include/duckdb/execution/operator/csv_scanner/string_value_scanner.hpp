@@ -416,6 +416,11 @@ private:
 	void FinishMoveToNextBuffer(shared_ptr<CSVBufferHandle> next_buffer);
 	//! Tail of the boundary chunk finalization, runs after the move past the boundary end
 	void FinishBoundaryScan(bool moved);
+	//! If the scanner of the given boundary finds the row it starts at
+	bool FindsStart(const CSVIterator &boundary) const;
+	//! If this scanner reads on behind the end of its buffer, in the boundaries whose scanners find no start, because a
+	//! row with a stored error is open
+	bool TakeOverNextBoundary();
 	//! Processes buffers until the chunk is full or the file ends
 	void ProcessRemainingBuffers();
 
@@ -448,6 +453,8 @@ private:
 	bool suspended = false;
 	//! The buffer a suspension waits on, a scanner suspends at most once per buffer
 	idx_t pending_buffer_idx = 0;
+	//! The last boundary this scanner reads, set once it took over a boundary
+	CSVIterator last_boundary;
 };
 
 } // namespace duckdb

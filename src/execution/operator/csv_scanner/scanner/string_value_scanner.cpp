@@ -2092,7 +2092,7 @@ void StringValueScanner::FinalizeChunkProcess() {
 		// Process also stops at an invalid state, the boundary is scanned once its end is reached
 		if (!cur_buffer_handle ||
 		    iterator.pos.buffer_pos >= MinValue<idx_t>(iterator.GetEndPos(), cur_buffer_handle->actual_size)) {
-			iterator.done = true;
+			iterator.done = !TakeOverNextBoundary();
 		}
 		// We read until the next line or until we have nothing else to read.
 		// Move to next buffer
@@ -2110,6 +2110,42 @@ void StringValueScanner::FinalizeChunkProcess() {
 		// We read until the chunk is complete, or we have nothing else to read.
 		ProcessRemainingBuffers();
 	}
+}
+
+bool StringValueScanner::FindsStart(const CSVIterator &boundary) const {
+	// the scanner of the boundary runs this search, its result size only has to differ from a line finder's
+	constexpr idx_t start_finder_size = 2;
+	StringValueScanner start_finder(scanner_idx + 1, buffer_manager, state_machine, make_shared_ptr<CSVErrorHandler>(),
+	                                csv_file_scan, false, boundary, start_finder_size);
+	start_finder.Initialize();
+	return !start_finder.iterator.done;
+}
+
+bool StringValueScanner::TakeOverNextBoundary() {
+	if (result.result_size == 1 || !cur_buffer_handle || iterator.pos.buffer_pos < cur_buffer_handle->actual_size) {
+		return false;
+	}
+	if (!result.current_errors.HasErrorType(UNTERMINATED_QUOTES) &&
+	    !result.current_errors.HasErrorType(INVALID_STATE)) {
+		return false;
+	}
+	// a row with a stored error is open at the end of the buffer and is finished in the next one
+	if (!last_boundary.IsBoundarySet()) {
+		last_boundary = iterator;
+	}
+	auto next_boundary = last_boundary;
+	next_boundary.done = false;
+	if (!next_boundary.Next(*buffer_manager, state_machine->options) || FindsStart(next_boundary)) {
+		return false;
+	}
+	// nobody else returns the rows of the boundaries of that buffer whose scanners find no start
+	const idx_t next_buffer_idx = next_boundary.GetBufferIdx();
+	do {
+		last_boundary = next_boundary;
+		iterator.SetEnd(next_boundary.GetEndPos());
+	} while (next_boundary.Next(*buffer_manager, state_machine->options) &&
+	         next_boundary.GetBufferIdx() == next_buffer_idx && !FindsStart(next_boundary));
+	return true;
 }
 
 void StringValueScanner::FinishBoundaryScan(const bool moved) {

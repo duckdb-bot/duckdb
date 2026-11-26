@@ -438,6 +438,115 @@ SELECT a, b FROM read_csv('{TEST_DIR}/comments_over_buffers.csv', header = true,
 
 endloop
 
+# the last value fills a whole buffer and its carriage return and line feed start the next one
+statement ok
+COPY (SELECT l || chr(13) FROM (VALUES (1, 'a,b'), (2, '1,2'), (3, '5,sixsixsixsix')) t(i, l) ORDER BY i) TO '{TEST_DIR}/crlf_value_fills_buffer.csv' (HEADER false, QUOTE '', DELIMITER '|');
+
+foreach parallel true false
+
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/crlf_value_fills_buffer.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, new_line = '\r\n', buffer_size = 12, parallel = {parallel})
+----
+Maximum line size of 12 bytes exceeded
+
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/crlf_value_fills_buffer.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, new_line = '\r\n', buffer_size = 12, parallel = {parallel})
+----
+CSV Error on Line: 3
+
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/crlf_value_fills_buffer.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, new_line = '\r\n', buffer_size = 6, parallel = {parallel})
+----
+Maximum line size of 6 bytes exceeded
+
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/crlf_value_fills_buffer.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, new_line = '\r\n', buffer_size = 8, parallel = {parallel})
+----
+Maximum line size of 8 bytes exceeded
+
+foreach buffer_size 6 8 12
+
+query II
+SELECT * FROM read_csv('{TEST_DIR}/crlf_value_fills_buffer.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, new_line = '\r\n', buffer_size = {buffer_size}, parallel = {parallel}, ignore_errors = true)
+----
+1	2
+
+query II
+SELECT * FROM read_csv('{TEST_DIR}/crlf_value_fills_buffer.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, new_line = '\r\n', buffer_size = {buffer_size}, parallel = {parallel}, store_rejects = true)
+----
+1	2
+
+query II
+SELECT line, error_type FROM reject_errors
+----
+3	LINE SIZE OVER MAXIMUM
+
+statement ok
+DROP TABLE reject_errors;
+
+statement ok
+DROP TABLE reject_scans;
+
+endloop
+
+endloop
+
+# with a buffer that holds the row, both rows are read
+query II
+SELECT * FROM read_csv('{TEST_DIR}/crlf_value_fills_buffer.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, new_line = '\r\n', buffer_size = 16, parallel = false)
+----
+1	2
+5	sixsixsixsix
+
+# a short row whose comment makes its line longer than the buffer
+statement ok
+COPY (SELECT l FROM (VALUES (0, 'a,b'), (1, '1,2'), (2, '3,4'), (3, '5,6#cccccccccccc')) t(i, l) ORDER BY i) TO '{TEST_DIR}/short_row_long_comment.csv' (HEADER false, QUOTE '');
+
+foreach parallel true false
+
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/short_row_long_comment.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, comment = '#', buffer_size = 12, parallel = {parallel})
+----
+Maximum line size of 12 bytes exceeded
+
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/short_row_long_comment.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, comment = '#', buffer_size = 12, parallel = {parallel})
+----
+CSV Error on Line: 4
+
+query II
+SELECT * FROM read_csv('{TEST_DIR}/short_row_long_comment.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, comment = '#', buffer_size = 12, parallel = {parallel}, ignore_errors = true) ORDER BY a
+----
+1	2
+3	4
+
+query II
+SELECT * FROM read_csv('{TEST_DIR}/short_row_long_comment.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, comment = '#', buffer_size = 12, parallel = {parallel}, store_rejects = true) ORDER BY a
+----
+1	2
+3	4
+
+query III
+SELECT line, error_type, csv_line FROM reject_errors
+----
+4	LINE SIZE OVER MAXIMUM	5,6#cccccccccccc
+
+statement ok
+DROP TABLE reject_errors;
+
+statement ok
+DROP TABLE reject_scans;
+
+endloop
+
+# with a buffer that holds the line, the comment is skipped
+query II
+SELECT * FROM read_csv('{TEST_DIR}/short_row_long_comment.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, comment = '#', buffer_size = 17) ORDER BY a
+----
+1	2
+3	4
+5	6
+
 # read sequentially, the end of a file of three full buffers is only found when a fourth one is asked for. One thread
 # is in the long last row when the other one finds the end, and the read is repeated to make that order likely
 statement ok

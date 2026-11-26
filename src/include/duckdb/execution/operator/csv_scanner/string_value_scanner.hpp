@@ -453,7 +453,8 @@ private:
 	bool suspended = false;
 	//! The buffer a suspension waits on, a scanner suspends at most once per buffer
 	idx_t pending_buffer_idx = 0;
-	//! The last boundary this scanner reads, set once it took over a boundary
+	//! The last boundary this scanner reads, its own or the last one it took over. Set at the first attempt to take
+	//! over a boundary
 	CSVIterator last_boundary;
 };
 

@@ -194,6 +194,16 @@ SELECT string_agg(a, ',' ORDER BY a) FROM read_csv('{TEST_DIR}/csv_parallel_erro
 ----
 0,3
 
+# the same with two boundaries in the next buffer that find no start
+statement ok
+COPY (SELECT line FROM (VALUES (1, 'a,b'), (2, 'k0,xxx'), (3, 'k1,xxx'), (4, 'k2,xxx'), (5, 'k3,xxx'), (6, 'k4,xxx'), (7, 'k5,xxx'), (8, 'k6,xxx'), (9, 'k7,xxx'), (10, '"x"z,"" y'), (11, '1,x'), (12, '2,'), (13, 'abc,"" y'), (14, '4,x'), (15, '5,x')) t(i, line) ORDER BY i)
+TO '{TEST_DIR}/csv_parallel_error_row_buffer_end_twice.csv' (HEADER false, QUOTE '', DELIMITER '|');
+
+query I
+SELECT string_agg(a, ',' ORDER BY a) FROM read_csv('{TEST_DIR}/csv_parallel_error_row_buffer_end_twice.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, store_rejects = true, buffer_size = 64, max_line_size = 16);
+----
+1,2,4,5,k0,k1,k2,k3,k4,k5,k6,k7
+
 # the last row has no line break and the text behind its closing quote starts the last buffer
 foreach error_option ignore_errors store_rejects
 

@@ -18,11 +18,16 @@ namespace duckdb {
 struct ExtendedOpenFileInfo {
 	unordered_map<string, Value> options;
 
+	//! The option that names the secret to open the file with, instead of the one that matches its path
+	static constexpr const char *SECRET_OPTION = "secret";
+
 public:
 	//! Read an option as a T - returns false when the option is not set, throws when it is set to a value
 	//! that cannot be read as a T. Only the types specialized below are supported
 	template <class T>
 	bool TryGetOption(const string &name, T &result) const;
+	//! The name of the secret to open the file with - false when the file names none
+	DUCKDB_API bool TryGetSecretName(string &name) const;
 };
 
 //! A boolean option - anything that casts to BOOLEAN is accepted
@@ -55,7 +60,7 @@ public:
 	//! options to open the file with in its other fields (a VARIANT holding either is unpacked). Errors name the
 	//! function that was given the file
 	DUCKDB_API static OpenFileInfo FromValue(const Value &input, const Identifier &function_name);
-	//! The inverse of FromValue: the path as a VARCHAR when there are no options, a file struct otherwise
+	//! The inverse of FromValue: the path as a VARCHAR for a plain path, a file struct otherwise
 	DUCKDB_API Value ToValue() const;
 
 	bool operator<(const OpenFileInfo &rhs) const {

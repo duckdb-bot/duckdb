@@ -11,15 +11,18 @@ add_library_unity(
   test_capi_v2_column_data_collection.cpp
   test_capi_v2_common_type.cpp
   test_capi_v2_copy_function.cpp
+  test_capi_v2_crypto.cpp
   test_capi_v2_custom_option.cpp
   test_capi_v2_custom_type.cpp
   test_capi_v2_data_chunk.cpp
   test_capi_v2_error_info.cpp
   test_capi_v2_expression.cpp
+  test_capi_v2_extension_footer.cpp
   test_capi_v2_factory.cpp
   test_capi_v2_file_system.cpp
   test_capi_v2_identifier.cpp
   test_capi_v2_log_sink.cpp
+  test_capi_v2_query_metrics.cpp
   test_capi_v2_logging.cpp
   test_capi_v2_logical_type.cpp
   test_capi_v2_option.cpp
@@ -32,8 +35,11 @@ add_library_unity(
   test_capi_v2_result.cpp
   test_capi_v2_aggregate_function.cpp
   test_capi_v2_scalar_function.cpp
+  test_capi_v2_secret.cpp
+  test_capi_v2_object_cache.cpp
   test_capi_v2_statement_collection.cpp
   test_capi_v2_statement.cpp
+  test_capi_v2_stats.cpp
   test_capi_v2_table_function.cpp
   test_capi_v2_tokenizer.cpp
   test_capi_v2_static_extension.cpp
@@ -48,8 +54,10 @@ target_compile_definitions(test_sql_capi_v2
 # names, so it cannot share a unity TU.
 add_library(test_capi_v2_static_extension OBJECT
             static_extension/cpp_api_static_demo.cpp)
-target_compile_definitions(test_capi_v2_static_extension
-                           PRIVATE DUCKDB_EXTENSION_NAME=cpp_api_static_demo)
+target_compile_definitions(
+  test_capi_v2_static_extension
+  PRIVATE DUCKDB_EXTENSION_NAME=cpp_api_static_demo
+          DUCKDB_EXTENSION_API_VERSION_UNSTABLE=${DUCKDB_NORMALIZED_VERSION})
 target_include_directories(test_capi_v2_static_extension
                            PRIVATE ${CMAKE_SOURCE_DIR}/tools/cpp)
 

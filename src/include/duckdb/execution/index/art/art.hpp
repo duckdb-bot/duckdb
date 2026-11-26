@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "duckdb/common/array.hpp"
 #include "duckdb/execution/index/bound_index.hpp"
 #include "duckdb/execution/index/index_type.hpp"
 #include "duckdb/execution/index/art/node.hpp"
@@ -79,6 +80,7 @@ public:
 
 public:
 	//! Try to initialize a scan on the ART with the given expression and filter.
+	//! The scan can return a superset of the rows matching the filter.
 	unique_ptr<IndexScanState> TryInitializeScan(const Expression &expr, const Expression &filter_expr) const;
 	//! Initializes a scan for multiple equality lookup values.
 	unique_ptr<IndexScanState> InitializeBatchScan(unique_ptr<DataChunk> key_columns) const;
@@ -132,6 +134,8 @@ public:
 
 	//! Reset all ART storage.
 	void ResetStorage(IndexLock &index_lock) override DUCKDB_REQUIRES(index_lock);
+	//! Reset all ART storage without freeing its on-disk blocks.
+	void DisownStorage(IndexLock &index_lock) override DUCKDB_REQUIRES(index_lock);
 
 	//! Build an ART from a vector of sorted keys and their row IDs.
 	ARTConflictType Build(unsafe_vector<ARTKey> &keys, unsafe_vector<ARTKey> &row_ids, const idx_t row_count);

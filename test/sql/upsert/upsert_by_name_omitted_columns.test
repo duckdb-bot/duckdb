@@ -143,9 +143,15 @@ SELECT * FROM s.t ORDER BY k;
 3	NULL	7	8	102
 4	NULL	7	8	103
 
-# a row that conflicts takes no value from the sequence when nothing can read the omitted column
+# a row that conflicts takes no value from the sequence when nothing reads the omitted column
 statement ok
 INSERT INTO s.t BY NAME (SELECT 1 AS k) ON CONFLICT DO NOTHING;
+
+statement ok
+INSERT INTO s.t BY NAME (SELECT 2 AS k) ON CONFLICT DO UPDATE SET a = EXCLUDED.k + 20;
+
+statement ok
+INSERT INTO s.t BY NAME (SELECT 2 AS k) ON CONFLICT DO UPDATE SET a = 0 WHERE EXCLUDED.k > 2;
 
 statement ok
 INSERT OR IGNORE INTO s.t BY NAME (SELECT 3 AS k);
@@ -158,6 +164,10 @@ SELECT last_value FROM duckdb_sequences() WHERE schema_name = 's' AND sequence_n
 ----
 103
 
+# DO UPDATE SET to DEFAULT takes one value
+statement ok
+INSERT INTO s.t BY NAME (SELECT 3 AS k) ON CONFLICT DO UPDATE SET id = DEFAULT;
+
 # EXCLUDED reads the defaults of the omitted columns
 statement ok
 INSERT INTO s.t BY NAME (SELECT 1 AS k) ON CONFLICT DO UPDATE SET a = EXCLUDED.m + EXCLUDED.b, id = EXCLUDED.id;
@@ -165,9 +175,9 @@ INSERT INTO s.t BY NAME (SELECT 1 AS k) ON CONFLICT DO UPDATE SET a = EXCLUDED.m
 query IIIII
 SELECT * FROM s.t ORDER BY k;
 ----
-1	15	7	8	104
-2	NULL	7	8	101
-3	NULL	7	8	102
+1	15	7	8	105
+2	22	7	8	101
+3	NULL	7	8	104
 4	40	7	8	103
 
 # an omitted key takes its default from the schema of its table too
@@ -254,3 +264,64 @@ query III
 SELECT * FROM w;
 ----
 1	4	2
+
+# a field of an omitted struct column without a qualifier is the field of the stored row
+statement ok
+CREATE TABLE st (k INTEGER PRIMARY KEY, a INTEGER, v STRUCT(x INTEGER) DEFAULT {'x': 5});
+
+statement ok
+INSERT INTO st VALUES (1, 0, {'x': 7});
+
+statement ok
+INSERT INTO st BY NAME (SELECT 1 AS k) ON CONFLICT DO UPDATE SET a = v.x;
+
+query I
+SELECT a FROM st;
+----
+7
+
+statement ok
+INSERT INTO st BY NAME (SELECT 1 AS k) ON CONFLICT DO UPDATE SET a = EXCLUDED.v.x;
+
+query I
+SELECT a FROM st;
+----
+5
+
+# an omitted part of a composite key, next to a generated column
+statement ok
+CREATE TABLE ck (g INTEGER AS (a + b), a INTEGER DEFAULT 1, b INTEGER DEFAULT 2, c INTEGER, PRIMARY KEY (a, b));
+
+statement ok
+INSERT INTO ck BY NAME (SELECT 10 AS c) ON CONFLICT DO NOTHING;
+
+statement ok
+INSERT INTO ck BY NAME (SELECT 11 AS c, 5 AS a) ON CONFLICT (a, b) DO UPDATE SET c = EXCLUDED.c;
+
+statement ok
+INSERT OR REPLACE INTO ck BY NAME (SELECT 12 AS c, 1 AS a);
+
+query IIII
+SELECT a, b, c, g FROM ck ORDER BY a;
+----
+1	2	12	3
+5	2	11	7
+
+# the SELECT can be any query, and RETURNING shows the stored rows
+statement ok
+INSERT INTO d3 BY NAME (SELECT k FROM (SELECT 2 AS k, 5 AS o UNION ALL SELECT 3, 4) ORDER BY o LIMIT 2) ON CONFLICT DO UPDATE SET b = EXCLUDED.b + 1;
+
+query III rowsort
+INSERT INTO d3 BY NAME (SELECT k FROM (SELECT 3 AS k, 5 AS o UNION ALL SELECT 4, 4) ORDER BY o LIMIT 2) ON CONFLICT DO UPDATE SET b = EXCLUDED.b + 1 RETURNING k, a, b;
+----
+3	NULL	8
+4	NULL	7
+
+# a row trigger body cannot insert with conflict handling yet, so one that reads NEW in its SELECT is refused
+statement ok
+CREATE TABLE origin (k INTEGER);
+
+statement error
+CREATE TRIGGER origin_upsert AFTER INSERT ON origin FOR EACH ROW INSERT INTO d3 BY NAME (SELECT NEW.k AS k) ON CONFLICT DO NOTHING;
+----
+FOR EACH ROW trigger

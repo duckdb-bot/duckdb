@@ -1168,8 +1168,11 @@ void StringValueScanner::Flush(DataChunk &insert_chunk) {
 		// Now Do the cast-aroo
 		for (idx_t i = 0; i < csv_file_scan->column_ids.size(); i++) {
 			idx_t result_idx = i;
+			// the column of the file that this column of the parsed chunk holds
+			idx_t file_col_idx = i;
 			if (!csv_file_scan->projection_ids.empty()) {
 				result_idx = csv_file_scan->projection_ids[i].second;
+				file_col_idx = csv_file_scan->projection_ids[i].first;
 			}
 			if (i >= parse_chunk.ColumnCount()) {
 				throw InvalidInputException("Mismatch between the schema of different files");
@@ -1222,9 +1225,10 @@ void StringValueScanner::Flush(DataChunk &insert_chunk) {
 							row_byte_pos = result.line_positions_per_row[line_error].begin.GetGlobalPosition(
 							    result.result_size, first_nl);
 						}
-						auto csv_error = CSVError::CastError(
-						    state_machine->options, names[i], error_msg, i, borked_line, lines_per_batch, row_byte_pos,
-						    optional_idx::Invalid(), result_vector.GetType().id(), result.path);
+						auto csv_error =
+						    CSVError::CastError(state_machine->options, names[file_col_idx], error_msg, file_col_idx,
+						                        borked_line, lines_per_batch, row_byte_pos, optional_idx::Invalid(),
+						                        result_vector.GetType().id(), result.path);
 						error_handler->Error(csv_error);
 					}
 				}
@@ -1250,11 +1254,12 @@ void StringValueScanner::Flush(DataChunk &insert_chunk) {
 							      << LogicalTypeIdToString(type.id()) << "\'";
 							string error_msg = error.str();
 							FullLinePosition::SanitizeError(error_msg);
-							auto csv_error = CSVError::CastError(
-							    state_machine->options, names[i], error_msg, i, borked_line, lines_per_batch,
-							    result.line_positions_per_row[line_error].begin.GetGlobalPosition(result.result_size,
-							                                                                      first_nl),
-							    optional_idx::Invalid(), result_vector.GetType().id(), result.path);
+							auto csv_error =
+							    CSVError::CastError(state_machine->options, names[file_col_idx], error_msg,
+							                        file_col_idx, borked_line, lines_per_batch,
+							                        result.line_positions_per_row[line_error].begin.GetGlobalPosition(
+							                            result.result_size, first_nl),
+							                        optional_idx::Invalid(), result_vector.GetType().id(), result.path);
 							error_handler->Error(csv_error);
 						}
 					}

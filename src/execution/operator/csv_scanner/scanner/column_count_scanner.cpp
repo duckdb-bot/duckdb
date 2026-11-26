@@ -3,8 +3,8 @@
 namespace duckdb {
 
 ColumnCountResult::ColumnCountResult(CSVStates &states, CSVStateMachine &state_machine, idx_t result_size,
-                                     CSVErrorHandler &error_handler)
-    : ScannerResult(states, state_machine, result_size), error_handler(error_handler) {
+                                     CSVErrorHandler &error_handler, idx_t &lines_read)
+    : ScannerResult(states, state_machine, result_size), error_handler(error_handler), lines_read(lines_read) {
 	column_counts.resize(result_size);
 }
 
@@ -44,7 +44,7 @@ bool ColumnCountResult::AddRow(ColumnCountResult &result, idx_t buffer_pos) {
 	const LinePosition cur_position(result.cur_buffer_idx, buffer_pos + 1, result.current_buffer_size);
 	if (cur_position - result.last_position > result.state_machine.options.maximum_line_size.GetValue() &&
 	    buffer_pos != NumericLimits<idx_t>::Maximum()) {
-		LinesPerBoundary lines_per_batch;
+		LinesPerBoundary lines_per_batch(0, result.lines_read);
 		FullLinePosition current_line_position;
 		current_line_position.begin = result.last_position;
 		current_line_position.end = cur_position;
@@ -118,8 +118,14 @@ ColumnCountScanner::ColumnCountScanner(shared_ptr<CSVBufferManager> buffer_manag
                                        shared_ptr<CSVErrorHandler> error_handler_p, idx_t result_size_p,
                                        CSVIterator iterator)
     : BaseScanner(std::move(buffer_manager), state_machine, std::move(error_handler_p), true, nullptr, iterator),
-      result(states, *state_machine, result_size_p, *error_handler), column_count(1), result_size(result_size_p) {
+      result(states, *state_machine, result_size_p, *error_handler, lines_read), column_count(1),
+      result_size(result_size_p) {
 	sniffing = true;
+	const auto &skip_rows = state_machine->options.dialect_options.skip_rows;
+	if (skip_rows.IsSetByUser()) {
+		// the rows the user skips are in front of the first line this scanner reads
+		lines_read = skip_rows.GetValue();
+	}
 	idx_t actual_size = 0;
 	if (cur_buffer_handle) {
 		actual_size = cur_buffer_handle->actual_size;
@@ -196,7 +202,7 @@ void ColumnCountScanner::FinalizeChunkProcess() {
 				result.current_buffer_size = cur_buffer_handle->actual_size;
 				// Do a quick check that the line is still sane
 				const LinePosition cur_position(result.cur_buffer_idx, 0, result.current_buffer_size);
-				LinesPerBoundary lines_per_batch;
+				LinesPerBoundary lines_per_batch(0, lines_read);
 				if (cur_position - result.last_position > result.state_machine.options.maximum_line_size.GetValue()) {
 					FullLinePosition current_line_position;
 					current_line_position.begin = result.last_position;

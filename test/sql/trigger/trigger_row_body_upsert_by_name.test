@@ -1,0 +1,40 @@
+# name: test/sql/trigger/trigger_row_body_upsert_by_name.test
+# description: A row trigger body that inserts BY NAME with conflict handling from NEW is refused when it is created
+# group: [trigger]
+
+require noforcestorage
+
+statement ok
+CREATE TABLE origin (k INTEGER);
+
+statement ok
+CREATE TABLE upserted (k INTEGER PRIMARY KEY, a INTEGER, b INTEGER DEFAULT 7);
+
+# a MERGE INTO cannot be planned for each row yet, so the body is refused instead of failing when the trigger fires
+statement error
+CREATE TRIGGER origin_upsert AFTER INSERT ON origin FOR EACH ROW INSERT INTO upserted BY NAME (SELECT NEW.k AS k) ON CONFLICT DO NOTHING;
+----
+must reference at least one NEW or OLD column
+
+statement error
+CREATE TRIGGER origin_upsert AFTER INSERT ON origin FOR EACH ROW INSERT INTO upserted BY NAME (SELECT NEW.k AS k) ON CONFLICT DO UPDATE SET b = EXCLUDED.b;
+----
+must reference at least one NEW or OLD column
+
+statement error
+CREATE TRIGGER origin_upsert AFTER INSERT ON origin FOR EACH ROW INSERT INTO upserted BY NAME (SELECT NEW.k AS a) ON CONFLICT DO NOTHING;
+----
+must reference at least one NEW or OLD column
+
+statement error
+CREATE TRIGGER origin_upsert AFTER INSERT ON origin FOR EACH ROW INSERT OR REPLACE INTO upserted BY NAME (SELECT NEW.k AS k);
+----
+must reference at least one NEW or OLD column
+
+statement ok
+INSERT INTO origin VALUES (1);
+
+query I
+SELECT count(*) FROM upserted;
+----
+0

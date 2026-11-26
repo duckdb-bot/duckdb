@@ -317,11 +317,49 @@ INSERT INTO d3 BY NAME (SELECT k FROM (SELECT 3 AS k, 5 AS o UNION ALL SELECT 4,
 3	NULL	8
 4	NULL	7
 
-# a row trigger body cannot insert with conflict handling yet, so one that reads NEW in its SELECT is refused
+# the WHERE of DO UPDATE and a dot call read the omitted column too
 statement ok
-CREATE TABLE origin (k INTEGER);
+CREATE TABLE m (k INTEGER PRIMARY KEY, a INTEGER, v INTEGER DEFAULT -5);
+
+statement ok
+INSERT INTO m VALUES (1, 0, 0);
+
+statement ok
+INSERT INTO m BY NAME (SELECT 1 AS k) ON CONFLICT DO UPDATE SET a = 1 WHERE EXCLUDED.v = 0;
+
+statement ok
+INSERT INTO m BY NAME (SELECT 1 AS k) ON CONFLICT DO UPDATE SET a = a + 10 WHERE EXCLUDED.v = -5;
+
+statement ok
+INSERT INTO m BY NAME (SELECT 1 AS k) ON CONFLICT DO UPDATE SET a = a + excluded.v.abs() WHERE excluded.v.abs() = 5;
+
+query III
+SELECT * FROM m;
+----
+1	15	0
+
+# omitted unique keys are NULL, which never conflicts
+statement ok
+CREATE TABLE nu (u1 INTEGER UNIQUE, u2 INTEGER UNIQUE, a INTEGER);
+
+statement ok
+INSERT INTO nu BY NAME (SELECT 1 AS a UNION ALL SELECT 2) ON CONFLICT DO NOTHING;
+
+statement ok
+INSERT OR IGNORE INTO nu BY NAME (SELECT 3 AS a);
+
+query III
+SELECT * FROM nu ORDER BY a;
+----
+NULL	NULL	1
+NULL	NULL	2
+NULL	NULL	3
+
+# a name twice stays an error when the table has a column for the name a subquery gives the second one
+statement ok
+CREATE TABLE twice (k INTEGER PRIMARY KEY, a INTEGER, a_1 INTEGER);
 
 statement error
-CREATE TRIGGER origin_upsert AFTER INSERT ON origin FOR EACH ROW INSERT INTO d3 BY NAME (SELECT NEW.k AS k) ON CONFLICT DO NOTHING;
+INSERT INTO twice BY NAME (SELECT 1 AS k, 2 AS a, 3 AS a) ON CONFLICT DO NOTHING;
 ----
-FOR EACH ROW trigger
+Duplicate column name

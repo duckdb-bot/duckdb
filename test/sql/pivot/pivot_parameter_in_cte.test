@@ -202,3 +202,52 @@ CREATE TABLE dep AS SELECT 1 AS a;
 
 statement ok
 PREPARE s32 AS WITH dep AS (SELECT $1::INT AS a), q AS (COPY main.dep TO '{TEST_DIR}/pivot_parameter_in_cte_main.csv' (FORMAT CSV)) PIVOT q ON Count;
+
+# a PIVOT in a CTE reads the CTEs declared before it in its WITH clause
+statement error
+PREPARE s33 AS WITH q AS (SELECT $1 AS a), p AS (PIVOT q ON a) FROM p;
+----
+cannot have parameters in their source
+
+# a parameter in the AT clause of a table, and in the ranking expression of a NEAREST join
+statement error
+PREPARE s34 AS WITH q AS (FROM t AT (VERSION => $1)) PIVOT q ON a;
+----
+cannot have parameters in their source
+
+statement error
+PREPARE s35 AS WITH q AS (SELECT l.a FROM (VALUES (1)) l(a) JOIN (VALUES (1)) r(b) NEAREST BY DISTANCE $1::INTEGER) PIVOT q ON a;
+----
+cannot have parameters in their source
+
+# a named parameter is rejected in a CTE as in the source, also when a variable of its name is set
+statement ok
+SET VARIABLE v = 1;
+
+statement error
+PREPARE s36 AS WITH q AS (SELECT $v::INTEGER AS a) PIVOT q ON a;
+----
+cannot have parameters in their source
+
+statement error
+PREPARE s37 AS PIVOT (SELECT $v::INTEGER AS a) ON a;
+----
+cannot have parameters in their source
+
+# getvariable reads the variable without a parameter
+query I
+WITH q AS (SELECT getvariable('v')::INTEGER AS a) PIVOT q ON a;
+----
+1
+
+# a chain of CTEs that each read the one before is walked to its first CTE, however deep that is
+statement error
+FROM query('WITH c0 AS (SELECT $1 AS a), ' || array_to_string(list_transform(range(1, 161), lambda i: 'c' || i || ' AS (SELECT ' || repeat('NOT ', 500) || '(SELECT a FROM c' || (i - 1) || ') AS a)'), ', ') || ' PIVOT c160 ON a');
+----
+cannot have parameters in their source
+
+# without a parameter in the chain the statement gets as far as the check of the query function
+statement error
+FROM query('WITH c0 AS (SELECT true AS a), ' || array_to_string(list_transform(range(1, 161), lambda i: 'c' || i || ' AS (SELECT ' || repeat('NOT ', 500) || '(SELECT a FROM c' || (i - 1) || ') AS a)'), ', ') || ' PIVOT c160 ON a');
+----
+not supported in query() function

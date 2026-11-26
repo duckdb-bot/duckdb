@@ -1,0 +1,145 @@
+# name: test/sql/copy/parquet/writer/parquet_write_hugeint_page_index.test
+# description: HUGEINT and UHUGEINT columns written as DECIMAL(38,0) with the page index
+# group: [writer]
+
+require parquet
+
+# every page has bounds, and the statistics of the column chunk are merged from its pages
+statement ok
+COPY (SELECT CASE WHEN i < 2048 THEN 9007199254740993 + i ELSE -99999999999999999999999999999999999999 + i END::HUGEINT AS h FROM range(4096) t(i)) TO '{TEST_DIR}/hugeints_page_index.parquet' (FORMAT PARQUET, DATA_PAGE_SIZE_LIMIT 4096, WRITE_PAGE_INDEX true);
+
+query II
+SELECT stats_min_value::HUGEINT, stats_max_value::HUGEINT FROM parquet_metadata('{TEST_DIR}/hugeints_page_index.parquet')
+----
+-99999999999999999999999999999999997951	9007199254743040
+
+# the positive values come before the negative values, so the page bounds are not ordered
+query IIIII
+SELECT count(*) > 1, bool_and(NOT null_page), any_value(boundary_order), min(min_value::HUGEINT), max(max_value::HUGEINT) FROM parquet_page_index('{TEST_DIR}/hugeints_page_index.parquet')
+----
+true	true	UNORDERED	-99999999999999999999999999999999997951	9007199254743040
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+query II
+SELECT count(*), min(h) FROM '{TEST_DIR}/hugeints_page_index.parquet' WHERE h BETWEEN -99999999999999999999999999999999997951 AND -99999999999999999999999999999999997900
+----
+52	-99999999999999999999999999999999997951
+
+statement ok
+CALL disable_logging();
+
+# the page index skips the pages of the positive values
+query I
+SELECT count(*) > 0 FROM duckdb_logs_parsed('PhysicalOperator') WHERE class = 'ParquetReader' AND event = 'SkipPages'
+----
+true
+
+statement ok
+SET parquet_use_page_index = false
+
+query II
+SELECT count(*), min(h) FROM '{TEST_DIR}/hugeints_page_index.parquet' WHERE h BETWEEN -99999999999999999999999999999999997951 AND -99999999999999999999999999999999997900
+----
+52	-99999999999999999999999999999999997951
+
+statement ok
+RESET parquet_use_page_index
+
+# NULL values are counted per page, and the chunk statistics skip them
+statement ok
+COPY (SELECT CASE WHEN i % 3 = 0 THEN NULL ELSE (i - 2048)::HUGEINT END AS h FROM range(4096) t(i)) TO '{TEST_DIR}/hugeints_page_index_nulls.parquet' (FORMAT PARQUET, DATA_PAGE_SIZE_LIMIT 4096, WRITE_PAGE_INDEX true);
+
+query III
+SELECT stats_min_value::HUGEINT, stats_max_value::HUGEINT, stats_null_count FROM parquet_metadata('{TEST_DIR}/hugeints_page_index_nulls.parquet')
+----
+-2047	2046	1366
+
+query IIII
+SELECT any_value(boundary_order), sum(null_count), min(min_value::HUGEINT), max(max_value::HUGEINT) FROM parquet_page_index('{TEST_DIR}/hugeints_page_index_nulls.parquet')
+----
+ASCENDING	1366	-2047	2046
+
+query III
+SELECT count(*), min(h), max(h) FROM '{TEST_DIR}/hugeints_page_index_nulls.parquet' WHERE h < -2000
+----
+32	-2047	-2001
+
+# UHUGEINT values in descending order
+statement ok
+COPY (SELECT (99999999999999999999999999999999999999 - i)::UHUGEINT AS h FROM range(4096) t(i)) TO '{TEST_DIR}/uhugeints_page_index.parquet' (FORMAT PARQUET, DATA_PAGE_SIZE_LIMIT 4096, WRITE_PAGE_INDEX true);
+
+query II
+SELECT stats_min_value::UHUGEINT, stats_max_value::UHUGEINT FROM parquet_metadata('{TEST_DIR}/uhugeints_page_index.parquet')
+----
+99999999999999999999999999999999995904	99999999999999999999999999999999999999
+
+query IIIII
+SELECT count(*) > 1, bool_and(NOT null_page), any_value(boundary_order), min(min_value::UHUGEINT), max(max_value::UHUGEINT) FROM parquet_page_index('{TEST_DIR}/uhugeints_page_index.parquet')
+----
+true	true	DESCENDING	99999999999999999999999999999999995904	99999999999999999999999999999999999999
+
+foreach use_page_index true false
+
+statement ok
+SET parquet_use_page_index = {use_page_index}
+
+query II
+SELECT count(*), max(h) FROM '{TEST_DIR}/uhugeints_page_index.parquet' WHERE h < 99999999999999999999999999999999996000
+----
+96	99999999999999999999999999999999995999
+
+endloop
+
+statement ok
+RESET parquet_use_page_index
+
+# a dictionary-encoded column tracks the bounds of every page, and its bloom filter still holds every value
+statement ok
+COPY (SELECT (2 * (i % 256) - 10000000000000000000000000000000000000)::HUGEINT AS h FROM range(8192) t(i)) TO '{TEST_DIR}/hugeints_page_index_dict.parquet' (FORMAT PARQUET, DATA_PAGE_SIZE_LIMIT 4096, WRITE_PAGE_INDEX true, BLOOM_FILTER_FALSE_POSITIVE_RATIO 0.0001);
+
+query IIII
+SELECT encodings LIKE '%DICTIONARY%', stats_min_value::HUGEINT, stats_max_value::HUGEINT, bloom_filter_length > 1 FROM parquet_metadata('{TEST_DIR}/hugeints_page_index_dict.parquet')
+----
+true	-10000000000000000000000000000000000000	-9999999999999999999999999999999999490	true
+
+query IIII
+SELECT count(*) > 1, any_value(boundary_order), bool_and(min_value::HUGEINT = -10000000000000000000000000000000000000), bool_and(max_value::HUGEINT = -9999999999999999999999999999999999490) FROM parquet_page_index('{TEST_DIR}/hugeints_page_index_dict.parquet')
+----
+true	ASCENDING	true	true
+
+query II
+SELECT (SELECT bool_and(NOT bloom_filter_excludes) FROM parquet_bloom_probe('{TEST_DIR}/hugeints_page_index_dict.parquet', 'h', (-10000000000000000000000000000000000000)::DECIMAL(38,0))),
+	(SELECT bool_and(bloom_filter_excludes) FROM parquet_bloom_probe('{TEST_DIR}/hugeints_page_index_dict.parquet', 'h', (-9999999999999999999999999999999999999)::DECIMAL(38,0)))
+----
+true	true
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/hugeints_page_index_dict.parquet' WHERE h = -10000000000000000000000000000000000000
+----
+32
+
+# a page that holds only NULL values has no bounds, and does not change the statistics of the column chunk
+statement ok
+COPY (SELECT CASE WHEN i BETWEEN 512 AND 1023 OR i >= 1536 THEN NULL ELSE (i::HUGEINT - 99999999999999999999999999999999999999) END AS h FROM range(2048) t(i)) TO '{TEST_DIR}/hugeints_page_index_null_page.parquet' (FORMAT PARQUET, DATA_PAGE_SIZE_LIMIT 4096, WRITE_PAGE_INDEX true);
+
+query III
+SELECT stats_min_value::HUGEINT, stats_max_value::HUGEINT, stats_null_count FROM parquet_metadata('{TEST_DIR}/hugeints_page_index_null_page.parquet')
+----
+-99999999999999999999999999999999999999	-99999999999999999999999999999999998464	1024
+
+query IIIII
+SELECT count(*) FILTER (null_page), sum(null_count), any_value(boundary_order), min(min_value::HUGEINT), max(max_value::HUGEINT) FROM parquet_page_index('{TEST_DIR}/hugeints_page_index_null_page.parquet')
+----
+1	1024	ASCENDING	-99999999999999999999999999999999999999	-99999999999999999999999999999999998464
+
+query II
+SELECT null_page, null_count FROM parquet_page_index('{TEST_DIR}/hugeints_page_index_null_page.parquet') ORDER BY page_id DESC LIMIT 1
+----
+true	512
+
+query III
+SELECT count(*), min(h), max(h) FROM '{TEST_DIR}/hugeints_page_index_null_page.parquet' WHERE h >= -99999999999999999999999999999999998975
+----
+512	-99999999999999999999999999999999998975	-99999999999999999999999999999999998464

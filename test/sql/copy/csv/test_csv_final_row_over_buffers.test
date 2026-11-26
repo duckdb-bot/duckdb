@@ -547,6 +547,49 @@ SELECT * FROM read_csv('{TEST_DIR}/short_row_long_comment.csv', header = true, a
 3	4
 5	6
 
+# with buffer_size and max_line_size both given, the last scan range of a buffer can be shorter than the others. A row
+# that starts before that scan range and ends in the next buffer is read
+statement ok
+COPY (SELECT i + 1000 AS aaaa, 'wxyz' AS bbbbb FROM range(300) t(i) ORDER BY i) TO '{TEST_DIR}/short_rows.csv' (HEADER);
+
+foreach buffer_size 980 1000 1010
+
+query IIIII
+SELECT count(*), count(DISTINCT aaaa), min(aaaa), max(aaaa), count(*) FILTER (WHERE bbbbb = 'wxyz') FROM read_csv('{TEST_DIR}/short_rows.csv', buffer_size = {buffer_size}, max_line_size = 100)
+----
+300	300	1000	1299	300
+
+endloop
+
+# more of the row than its line feed is in the next buffer
+query IIIII
+SELECT count(*), count(DISTINCT aaaa), min(aaaa), max(aaaa), count(*) FILTER (WHERE bbbbb = 'wxyz') FROM read_csv('{TEST_DIR}/short_rows.csv', buffer_size = 996, max_line_size = 100, ignore_errors = true)
+----
+300	300	1000	1299	300
+
+statement ok
+COPY (SELECT l FROM (VALUES (0, 'aa,b'), (1, '1,2'), (2, '3,44'), (3, '55,666'), (4, '8,9')) t(i, l) ORDER BY i) TO '{TEST_DIR}/short_range.csv' (HEADER false, QUOTE '');
+
+query II
+SELECT * FROM read_csv('{TEST_DIR}/short_range.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, buffer_size = 20, max_line_size = 8) ORDER BY ALL
+----
+1	2
+3	44
+55	666
+8	9
+
+foreach buffer_size 18 19 20
+
+query II
+SELECT * FROM read_csv('{TEST_DIR}/short_range.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, buffer_size = {buffer_size}, max_line_size = 8, ignore_errors = true) ORDER BY ALL
+----
+1	2
+3	44
+55	666
+8	9
+
+endloop
+
 # read sequentially, the end of a file of three full buffers is only found when a fourth one is asked for. One thread
 # is in the long last row when the other one finds the end, and the read is repeated to make that order likely
 statement ok

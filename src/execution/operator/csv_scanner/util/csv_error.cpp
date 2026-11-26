@@ -133,34 +133,24 @@ bool CSVErrorHandler::AnyErrors() {
 	return !errors.empty();
 }
 
-bool CSVErrorHandler::HasError(const CSVErrorType error_type) {
+bool CSVErrorHandler::HasError(const CSVErrorType error_type, const idx_t start) {
 	lock_guard<mutex> parallel_lock(main_mutex);
-	for (const auto &er : errors) {
-		if (er.type == error_type) {
+	for (idx_t i = start; i < errors.size(); i++) {
+		if (errors[i].type == error_type) {
 			return true;
 		}
 	}
 	return false;
 }
 
-CSVError CSVErrorHandler::GetFirstError(CSVErrorType error_type) {
+CSVError CSVErrorHandler::GetFirstError(CSVErrorType error_type, const idx_t start) {
 	lock_guard<mutex> parallel_lock(main_mutex);
-	for (const auto &er : errors) {
-		if (er.type == error_type) {
-			return er;
+	for (idx_t i = start; i < errors.size(); i++) {
+		if (errors[i].type == error_type) {
+			return errors[i];
 		}
 	}
 	throw InternalException("CSVErrorHandler::GetFirstError was called without having an appropriate error type");
-}
-
-CSVError CSVErrorHandler::GetLastError(CSVErrorType error_type) {
-	lock_guard<mutex> parallel_lock(main_mutex);
-	for (idx_t i = errors.size(); i > 0; i--) {
-		if (errors[i - 1].type == error_type) {
-			return errors[i - 1];
-		}
-	}
-	throw InternalException("CSVErrorHandler::GetLastError was called without having an appropriate error type");
 }
 
 idx_t CSVErrorHandler::GetSize() {

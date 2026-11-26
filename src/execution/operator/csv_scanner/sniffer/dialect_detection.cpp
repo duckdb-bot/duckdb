@@ -539,8 +539,8 @@ void CSVSniffer::RefineCandidates() {
 			const idx_t errors_before = candidate_errors.GetSize();
 			if (RefineCandidateNextChunk(*cur_candidate) && !cur_candidate->GetResult().error) {
 				successful_candidates.push_back(std::move(cur_candidate));
-			} else if (candidate_errors.GetSize() > errors_before && candidate_errors.HasError(MAXIMUM_LINE_SIZE)) {
-				line_error = candidate_errors.GetLastError(MAXIMUM_LINE_SIZE);
+			} else if (candidate_errors.HasError(MAXIMUM_LINE_SIZE, errors_before)) {
+				line_error = candidate_errors.GetFirstError(MAXIMUM_LINE_SIZE, errors_before);
 				dropped_on_line_size = true;
 			} else {
 				dropped_otherwise = true;

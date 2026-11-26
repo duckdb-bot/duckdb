@@ -72,3 +72,12 @@ statement error
 SELECT count(*) FROM read_csv('{TEST_DIR}/sniffer_long_row_behind_quoted_span.csv', max_line_size = 20);
 ----
 Original Line: 2100,xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+# of two long rows in one chunk the first one is reported
+statement ok
+COPY (SELECT i AS a, CASE WHEN i IN (2100, 2200) THEN repeat('x', 30) ELSE 'y' END AS b FROM range(1, 8001) t(i) ORDER BY i) TO '{TEST_DIR}/sniffer_two_long_rows.csv' (HEADER);
+
+statement error
+SELECT count(*) FROM read_csv('{TEST_DIR}/sniffer_two_long_rows.csv', max_line_size = 20);
+----
+Original Line: 2100,xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx

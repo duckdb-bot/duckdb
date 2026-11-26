@@ -219,6 +219,51 @@ SELECT a FROM read_csv('{TEST_DIR}/indented_comment_one_column.csv', header = tr
 
 endloop
 
+# twelve spaces before a comment are three buffers at buffer_size 4, more than the file has columns
+statement ok
+COPY (SELECT l FROM (VALUES (1, 'a,b'), (2, '1,2'), (3, '            #zz'), (4, '3,4')) t(i, l) ORDER BY i) TO '{TEST_DIR}/indented_comment_twelve_spaces.csv' (HEADER false, QUOTE '');
+
+query II
+SELECT a, b FROM read_csv('{TEST_DIR}/indented_comment_twelve_spaces.csv', header = true, auto_detect = false, columns = {'a': 'INTEGER', 'b': 'INTEGER'}, comment = '#', buffer_size = 4, parallel = false);
+----
+1	2
+3	4
+
+# the spaces fill a buffer of a \r\n file, at buffer_size 5 behind the line feed that the buffer end split off
+statement ok
+COPY (SELECT l FROM (VALUES (1, 'a'), (2, '0'), (3, '    #zz'), (4, '3')) t(i, l) ORDER BY i) TO '{TEST_DIR}/indented_comment_crlf.csv' (HEADER false, QUOTE '', NEW_LINE '\r\n');
+
+loop buffer_size 3 7
+
+query I
+SELECT a FROM read_csv('{TEST_DIR}/indented_comment_crlf.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR'}, comment = '#', new_line = '\r\n', buffer_size = {buffer_size}, parallel = false);
+----
+0
+3
+
+endloop
+
+# the comment behind the spaces ends the file without a line break, the file is 15 and 16 bytes long
+statement ok
+COPY (SELECT encode(E'a,b\n1,2\n    #zz')) TO '{TEST_DIR}/indented_comment_eof.csv' (FORMAT BLOB);
+
+statement ok
+COPY (SELECT encode(E'a,b\n1,2\n    #zzz')) TO '{TEST_DIR}/indented_comment_eof_whole_buffers.csv' (FORMAT BLOB);
+
+loop buffer_size 4 6
+
+query II
+SELECT a, b FROM read_csv('{TEST_DIR}/indented_comment_eof.csv', header = true, auto_detect = false, columns = {'a': 'INTEGER', 'b': 'INTEGER'}, comment = '#', buffer_size = {buffer_size}, parallel = false);
+----
+1	2
+
+query II
+SELECT a, b FROM read_csv('{TEST_DIR}/indented_comment_eof_whole_buffers.csv', header = true, auto_detect = false, columns = {'a': 'INTEGER', 'b': 'INTEGER'}, comment = '#', buffer_size = {buffer_size}, parallel = false);
+----
+1	2
+
+endloop
+
 # a value that fills a buffer ends at the comment that starts the next buffer, the comment adds no value to its row
 statement ok
 COPY (SELECT l FROM (VALUES (1, 'a,b'), (2, '1,2'), (3, 'xxxx#zz'), (4, '3,4')) t(i, l) ORDER BY i) TO '{TEST_DIR}/value_fills_buffer.csv' (HEADER false, QUOTE '');
@@ -237,6 +282,21 @@ SELECT a, b FROM read_csv('{TEST_DIR}/value_fills_buffer.csv', header = true, au
 ----
 1	2
 3	4
+
+# a value that fills a buffer and a comment that ends the file without a line break, the row of the value stays
+statement ok
+COPY (SELECT encode(E'a\n0\nxxxx#zz')) TO '{TEST_DIR}/value_fills_buffer_eof.csv' (FORMAT BLOB);
+
+query I
+SELECT a FROM read_csv('{TEST_DIR}/value_fills_buffer_eof.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR'}, comment = '#', nullstr = 'NULL', buffer_size = 4, parallel = false);
+----
+0
+xxxx
+
+statement error
+SELECT a FROM read_csv('{TEST_DIR}/value_fills_buffer_eof.csv', header = true, auto_detect = false, columns = {'a': 'INTEGER'}, comment = '#', nullstr = 'NULL', buffer_size = 4, parallel = false);
+----
+Could not convert string "xxxx" to 'INTEGER'
 
 # a line of spaces that fills a buffer is a row with one value, the comment line behind it is no part of that row
 statement ok

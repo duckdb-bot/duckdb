@@ -11,7 +11,6 @@
 #include "duckdb/parser/query_node/insert_query_node.hpp"
 #include "duckdb/parser/query_node/update_query_node.hpp"
 #include "duckdb/parser/query_node/delete_query_node.hpp"
-#include "duckdb/parser/query_node/merge_query_node.hpp"
 #include "duckdb/parser/query_node/copy_query_node.hpp"
 #include "duckdb/parser/tableref/pivotref.hpp"
 #include "duckdb/parser/tableref/subqueryref.hpp"
@@ -189,28 +188,6 @@ struct PivotValuesParameterFinder {
 				Push(del.condition, scope);
 			}
 			Push(del.returning_list, scope);
-			break;
-		}
-		case QueryNodeType::MERGE_QUERY_NODE: {
-			auto &merge = node.Cast<MergeQueryNode>();
-			if (merge.source) {
-				Push(*merge.source, scope);
-			}
-			if (merge.join_condition) {
-				Push(merge.join_condition, scope);
-			}
-			for (auto &entry : merge.actions) {
-				for (auto &action : entry.second) {
-					if (action->condition) {
-						Push(action->condition, scope);
-					}
-					if (action->update_info) {
-						Push(*action->update_info, scope);
-					}
-					Push(action->expressions, scope);
-				}
-			}
-			Push(merge.returning_list, scope);
 			break;
 		}
 		case QueryNodeType::COPY_QUERY_NODE: {

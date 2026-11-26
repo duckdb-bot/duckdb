@@ -2012,7 +2012,12 @@ void StringValueScanner::SetStart() {
 			iterator.done = true;
 		} else {
 			bool mock;
-			if (!SkipUntilState(CSVState::STANDARD_NEWLINE, CSVState::RECORD_SEPARATOR, iterator, mock)) {
+			bool found_row = SkipUntilState(CSVState::STANDARD_NEWLINE, CSVState::RECORD_SEPARATOR, iterator, mock);
+			while (!found_row && iterator.pos.buffer_pos < iterator.GetEndPos()) {
+				// an invalid state does not end the row, the scanner before this one reads on to its line break
+				found_row = SkipUntilState(CSVState::INVALID, CSVState::RECORD_SEPARATOR, iterator, mock);
+			}
+			if (!found_row) {
 				iterator.CheckIfDone();
 			}
 		}

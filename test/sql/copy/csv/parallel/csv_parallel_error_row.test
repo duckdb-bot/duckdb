@@ -23,7 +23,8 @@ SELECT count(*), min(id), max(id) FROM loaded;
 ----
 29999	0	29999
 
-# small files with the row in the middle, twice, twice in a row, first, last, with \r\n and in two columns
+# small files with the row in the middle, twice, twice in a row, first, last, with \r\n and in two columns,
+# where the text is behind the first value, the second value or both
 statement ok
 COPY (SELECT a FROM (VALUES (1, '0'), (2, '1'), (3, '"xx"xyz'), (4, '3'), (5, '4'), (6, '5')) t(i, a) ORDER BY i)
 TO '{TEST_DIR}/csv_parallel_error_row_middle.csv' (HEADER, QUOTE '');
@@ -51,6 +52,14 @@ TO '{TEST_DIR}/csv_parallel_error_row_crlf.csv' (HEADER false, QUOTE '');
 statement ok
 COPY (SELECT a, 'x' AS b FROM (VALUES (1, '0'), (2, '1'), (3, '"2"z'), (4, '3'), (5, '4'), (6, '5')) t(i, a) ORDER BY i)
 TO '{TEST_DIR}/csv_parallel_error_row_columns.csv' (HEADER, QUOTE '');
+
+statement ok
+COPY (SELECT a, b FROM (VALUES (1, '0', 'x'), (2, '1', '"q"z'), (3, '3', 'x'), (4, '4', 'x')) t(i, a, b) ORDER BY i)
+TO '{TEST_DIR}/csv_parallel_error_row_second_column.csv' (HEADER, QUOTE '');
+
+statement ok
+COPY (SELECT a, b FROM (VALUES (1, '0', '0'), (2, '"x"z', '"y"z'), (3, '3', '3')) t(i, a, b) ORDER BY i)
+TO '{TEST_DIR}/csv_parallel_error_row_both_columns.csv' (HEADER, QUOTE '');
 
 # the row is recorded once
 query I
@@ -103,6 +112,16 @@ SELECT string_agg(a, ',' ORDER BY a) FROM read_csv('{TEST_DIR}/csv_parallel_erro
 ----
 0,1,3,4,5
 
+query I
+SELECT string_agg(a, ',' ORDER BY a) FROM read_csv('{TEST_DIR}/csv_parallel_error_row_second_column.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, {error_option} = true, buffer_size = {buffer_size});
+----
+0,3,4
+
+query I
+SELECT string_agg(a, ',' ORDER BY a) FROM read_csv('{TEST_DIR}/csv_parallel_error_row_both_columns.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, {error_option} = true, buffer_size = {buffer_size});
+----
+0,3
+
 endloop
 
 # boundaries that are smaller than a buffer
@@ -117,6 +136,16 @@ query I
 SELECT string_agg(a, ',' ORDER BY a) FROM read_csv('{TEST_DIR}/csv_parallel_error_row_twice.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR'}, {error_option} = true, buffer_size = 64, max_line_size = {max_line_size});
 ----
 0,2,4,5
+
+query I
+SELECT string_agg(a, ',' ORDER BY a) FROM read_csv('{TEST_DIR}/csv_parallel_error_row_second_column.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, {error_option} = true, buffer_size = 64, max_line_size = {max_line_size});
+----
+0,3,4
+
+query I
+SELECT string_agg(a, ',' ORDER BY a) FROM read_csv('{TEST_DIR}/csv_parallel_error_row_both_columns.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, {error_option} = true, buffer_size = 64, max_line_size = {max_line_size});
+----
+0,3
 
 endloop
 

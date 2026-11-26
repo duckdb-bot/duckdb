@@ -1,6 +1,7 @@
 #include "duckdb/optimizer/topn_optimizer.hpp"
 
 #include "duckdb/common/limits.hpp"
+#include "duckdb/planner/operator/logical_aggregate.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/planner/operator/logical_limit.hpp"
 #include "duckdb/planner/operator/logical_order.hpp"
@@ -30,6 +31,13 @@ static bool ReadsSourceWithoutEstimate(LogicalOperator &op, ClientContext &conte
 		case LogicalOperatorType::LOGICAL_FILTER:
 		case LogicalOperatorType::LOGICAL_ORDER_BY:
 		case LogicalOperatorType::LOGICAL_WINDOW:
+			current = *current.get().children[0];
+			break;
+		case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY:
+			// without groups the number of rows does not depend on the input
+			if (current.get().Cast<LogicalAggregate>().groups.empty()) {
+				return false;
+			}
 			current = *current.get().children[0];
 			break;
 		case LogicalOperatorType::LOGICAL_GET:

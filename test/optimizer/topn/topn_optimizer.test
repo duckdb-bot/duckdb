@@ -122,3 +122,45 @@ query I
 SELECT count(*) FROM (SELECT * FROM large_table ORDER BY a LIMIT 200000);
 ----
 100000
+
+# top-n is kept above a grouped aggregate over a source without an estimate as well
+query II
+EXPLAIN SELECT count(*), sum(k), sum(c), min(c), max(c) FROM (SELECT k, count(*) AS c FROM (SELECT i % 20000 AS k FROM range((SELECT 100000)) t(i)) GROUP BY k ORDER BY k LIMIT 5001);
+----
+logical_opt	<REGEX>:.*TOP_N.*
+
+query IIIII
+SELECT count(*), sum(k), sum(c), min(c), max(c) FROM (SELECT k, count(*) AS c FROM (SELECT i % 20000 AS k FROM range((SELECT 100000)) t(i)) GROUP BY k ORDER BY k LIMIT 5001);
+----
+5001	12502500	25005	5	5
+
+query II
+EXPLAIN SELECT count(*), sum(k), sum(c), min(c), max(c) FROM (SELECT k, count(*) AS c FROM (SELECT i % 20000 AS k FROM range((SELECT 100000)) t(i)) GROUP BY k ORDER BY k LIMIT 10001);
+----
+logical_opt	<REGEX>:.*TOP_N.*
+
+query IIIII
+SELECT count(*), sum(k), sum(c), min(c), max(c) FROM (SELECT k, count(*) AS c FROM (SELECT i % 20000 AS k FROM range((SELECT 100000)) t(i)) GROUP BY k ORDER BY k LIMIT 10001);
+----
+10001	50005000	50005	5	5
+
+# the same aggregate still sorts fully for a large limit when its source has an estimate
+query II
+EXPLAIN SELECT count(*), sum(k), sum(c), min(c), max(c) FROM (SELECT k, count(*) AS c FROM (SELECT i % 20000 AS k FROM range(100000) t(i)) GROUP BY k ORDER BY k LIMIT 5001);
+----
+logical_opt	<!REGEX>:.*TOP_N.*
+
+query IIIII
+SELECT count(*), sum(k), sum(c), min(c), max(c) FROM (SELECT k, count(*) AS c FROM (SELECT i % 20000 AS k FROM range(100000) t(i)) GROUP BY k ORDER BY k LIMIT 5001);
+----
+5001	12502500	25005	5	5
+
+# the number of rows of an aggregate without groups does not depend on its input, so its estimate counts
+query II
+EXPLAIN SELECT c, s FROM (SELECT count(*) AS c, sum(i) AS s FROM range((SELECT 100000)) t(i)) ORDER BY s LIMIT 6000 OFFSET 1;
+----
+logical_opt	<!REGEX>:.*TOP_N.*
+
+query II
+SELECT c, s FROM (SELECT count(*) AS c, sum(i) AS s FROM range((SELECT 100000)) t(i)) ORDER BY s LIMIT 6000 OFFSET 1;
+----

@@ -160,3 +160,20 @@ SELECT string_agg(a, ',' ORDER BY a) FROM read_csv('{DATA_DIR}/csv/parallel_erro
 0,1
 
 endloop
+
+# a chunk of rows that all fail their cast ends where the buffer ends
+require vector_size 512
+
+statement ok
+COPY (SELECT CASE WHEN i < current_setting('standard_vector_size')::BIGINT THEN 'x' ELSE '[' || (i - current_setting('standard_vector_size')::BIGINT + 7) || ']' END AS a FROM range(current_setting('standard_vector_size')::BIGINT + 2) t(i) ORDER BY i)
+TO '{TEST_DIR}/csv_parallel_error_row_chunk.csv' (HEADER, QUOTE '');
+
+foreach parallel true false
+
+query I
+SELECT a FROM read_csv('{TEST_DIR}/csv_parallel_error_row_chunk.csv', header = true, auto_detect = false, columns = {'a': 'INTEGER[]'}, buffer_size = 2 * current_setting('standard_vector_size')::BIGINT + 2, ignore_errors = true, parallel = {parallel}) ORDER BY a;
+----
+[7]
+[8]
+
+endloop

@@ -9,8 +9,8 @@ require notwindows
 # an unprojected column, a closing quote followed by other bytes, too few and too many columns, empty values, a lone CR
 # inside a value, quoted values holding only a delimiter or a row end, spaces, delimiters at both sides of a 64 byte
 # block edge, a partial match of the delimiter inside a value and an unterminated quote in the last row; the comment
-# files add comment lines and comment bytes inside values. Expected results are those of the build before the change,
-# except that a read with ignore_errors goes on behind the row with the closing quote, as a single-threaded read does.
+# files add comment lines and comment bytes inside values. A read with ignore_errors goes on behind the row with the
+# closing quote, as a single-threaded read does.
 
 statement ok
 COPY (SELECT line FROM (SELECT i AS o, i || '||v' || i AS line FROM range(2048) t(i) UNION ALL SELECT 5000, 'x||bad||extra' UNION ALL SELECT 5001, 'notanumber||y' UNION ALL SELECT 5002 + i, (3000 + i) || '||w' FROM range(10) t(i)) ORDER BY o) TO '{TEST_DIR}/skip_after_chunk_pipe2.csv' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '');

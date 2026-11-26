@@ -16,6 +16,11 @@ namespace duckdb {
 
 class ParquetDecimalUtils {
 public:
+	//! HUGEINT and UHUGEINT columns are written as DECIMAL(39, 0), the smallest width that holds every value of both
+	static constexpr int32_t HUGEINT_DECIMAL_WIDTH = 39;
+	//! The FIXED_LEN_BYTE_ARRAY length of that decimal, WideDecimalByteLength(HUGEINT_DECIMAL_WIDTH)
+	static constexpr int32_t HUGEINT_DECIMAL_BYTES = 17;
+
 	template <class PHYSICAL_TYPE>
 	static PHYSICAL_TYPE ReadDecimalValue(const_data_ptr_t pointer, idx_t size, const ParquetColumnSchema &) {
 		PHYSICAL_TYPE res = 0;

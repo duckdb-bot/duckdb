@@ -1,0 +1,45 @@
+# name: test/sql/copy/parquet/writer/parquet_write_hugeint_page_index.test
+# description: Selective filters on a HUGEINT Parquet column skip pages through the page index
+# group: [writer]
+
+require parquet
+
+# several row groups of several pages each with the page index, values on both sides of zero and NULLs
+statement ok
+CREATE TABLE groups AS SELECT i, CASE WHEN i % 7 = 0 THEN NULL ELSE (i - 5000)::HUGEINT * 1180591620717411303424 END AS h FROM range(10000) t(i)
+
+statement ok
+COPY (SELECT h FROM groups ORDER BY i) TO '{TEST_DIR}/hugeint_groups.parquet' (FORMAT 'parquet', ROW_GROUP_SIZE 2048, WRITE_PAGE_INDEX true, DATA_PAGE_SIZE_LIMIT 4096);
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+query III nosort negatives
+SELECT count(*), min(h), max(h) FROM groups WHERE h < (-1000)::HUGEINT * 1180591620717411303424
+----
+
+query III nosort negatives
+SELECT count(*), min(h), max(h) FROM '{TEST_DIR}/hugeint_groups.parquet' WHERE h < (-1000)::HUGEINT * 1180591620717411303424
+----
+
+query III nosort positives
+SELECT count(*), min(h), max(h) FROM groups WHERE h >= 0 AND h < 3000::HUGEINT * 1180591620717411303424
+----
+
+query III nosort positives
+SELECT count(*), min(h), max(h) FROM '{TEST_DIR}/hugeint_groups.parquet' WHERE h >= 0 AND h < 3000::HUGEINT * 1180591620717411303424
+----
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/hugeint_groups.parquet' WHERE h IS NULL
+----
+1429
+
+statement ok
+CALL disable_logging();
+
+# the selective filters skipped pages through the page index
+query I
+SELECT count(*) > 0 FROM duckdb_logs_parsed('PhysicalOperator') WHERE class = 'ParquetReader' AND event = 'SkipPages'
+----
+true

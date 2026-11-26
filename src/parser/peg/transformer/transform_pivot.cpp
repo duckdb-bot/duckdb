@@ -25,152 +25,208 @@ namespace duckdb {
 
 //! Finds a parameter in a PIVOT source, also in the CTEs it reads, which the query of the pivot values copies
 struct PivotSourceParameterFinder {
+	//! The visible CTEs of a WITH clause, and the scope around them
 	struct CTEScope {
-		CTEScope(CommonTableExpressionMap &ctes, idx_t begin, idx_t end) : ctes(ctes), begin(begin), end(end) {
+		CTEScope(CommonTableExpressionMap &ctes, idx_t begin, idx_t end, optional_idx parent)
+		    : ctes(ctes), begin(begin), end(end), parent(parent) {
 		}
 		reference<CommonTableExpressionMap> ctes;
 		//! the visible CTEs, as a CTE only sees those declared before it in its WITH clause
 		idx_t begin;
 		idx_t end;
+		//! the scope around this one, if any
+		optional_idx parent;
 	};
-	//! the CTEs in scope, the innermost last
+	//! A part of the source that is not visited yet, and the innermost scope it is in
+	template <class T>
+	struct PendingNode {
+		PendingNode(T &node, optional_idx scope) : node(node), scope(scope) {
+		}
+		reference<T> node;
+		optional_idx scope;
+	};
+	//! the scopes of all parts of the source, each of which names the scope around it
 	vector<CTEScope> scopes;
+	//! what is left to visit, kept here as recursion would overflow the stack on a long chain of CTEs
+	vector<PendingNode<ParsedExpression>> pending_expressions;
+	vector<PendingNode<TableRef>> pending_table_refs;
+	vector<PendingNode<QueryNode>> pending_query_nodes;
 	reference_set_t<CommonTableExpressionInfo> visited_ctes;
 	bool found = false;
 
-	void Visit(unique_ptr<ParsedExpression> &expr) {
-		if (expr->GetExpressionClass() == ExpressionClass::PARAMETER) {
+	//! whether the source, or a CTE it reads, has a parameter
+	bool HasParameter(TableRef &source, optional_idx scope) {
+		Push(source, scope);
+		bool visited_node = true;
+		while (visited_node && !found) {
+			visited_node =
+			    VisitNext(pending_expressions) || VisitNext(pending_table_refs) || VisitNext(pending_query_nodes);
+		}
+		return found;
+	}
+
+	optional_idx AddScope(CommonTableExpressionMap &ctes, idx_t begin, idx_t end, optional_idx parent) {
+		scopes.emplace_back(ctes, begin, end, parent);
+		return scopes.size() - 1;
+	}
+
+	//! visits the pending node that was added last, if there is one
+	template <class T>
+	bool VisitNext(vector<PendingNode<T>> &pending_nodes) {
+		if (pending_nodes.empty()) {
+			return false;
+		}
+		auto next = pending_nodes.back();
+		pending_nodes.pop_back();
+		Visit(next.node.get(), next.scope);
+		return true;
+	}
+
+	void Push(unique_ptr<ParsedExpression> &expr, optional_idx scope) {
+		pending_expressions.emplace_back(*expr, scope);
+	}
+
+	void Push(vector<unique_ptr<ParsedExpression>> &expressions, optional_idx scope) {
+		for (auto &expr : expressions) {
+			Push(expr, scope);
+		}
+	}
+
+	void Push(UpdateSetInfo &info, optional_idx scope) {
+		Push(info.expressions, scope);
+		if (info.condition) {
+			Push(info.condition, scope);
+		}
+	}
+
+	void Push(QueryNode &node, optional_idx scope) {
+		pending_query_nodes.emplace_back(node, scope);
+	}
+
+	void Push(TableRef &ref, optional_idx scope) {
+		pending_table_refs.emplace_back(ref, scope);
+	}
+
+	void Visit(ParsedExpression &expr, optional_idx scope) {
+		if (expr.GetExpressionClass() == ExpressionClass::PARAMETER) {
 			found = true;
 			return;
 		}
-		if (expr->GetExpressionClass() == ExpressionClass::SUBQUERY) {
-			Visit(*expr->Cast<SubqueryExpression>().SubqueryMutable()->node);
+		if (expr.GetExpressionClass() == ExpressionClass::SUBQUERY) {
+			Push(*expr.Cast<SubqueryExpression>().SubqueryMutable()->node, scope);
 		}
-		ParsedExpressionIterator::EnumerateChildren(*expr, [&](unique_ptr<ParsedExpression> &child) { Visit(child); });
-	}
-
-	void Visit(vector<unique_ptr<ParsedExpression>> &expressions) {
-		for (auto &expr : expressions) {
-			Visit(expr);
-		}
-	}
-
-	void Visit(UpdateSetInfo &info) {
-		Visit(info.expressions);
-		if (info.condition) {
-			Visit(info.condition);
-		}
+		ParsedExpressionIterator::EnumerateChildren(expr,
+		                                            [&](unique_ptr<ParsedExpression> &child) { Push(child, scope); });
 	}
 
 	//! the bodies of the CTEs of a node are only visited when they are read
-	void Visit(QueryNode &node) {
-		scopes.emplace_back(node.cte_map, 0, node.cte_map.map.size());
+	void Visit(QueryNode &node, optional_idx outer_scope) {
+		auto scope = outer_scope;
+		if (!node.cte_map.map.empty()) {
+			scope = AddScope(node.cte_map, 0, node.cte_map.map.size(), outer_scope);
+		}
 		switch (node.type) {
 		case QueryNodeType::SELECT_NODE: {
 			auto &select = node.Cast<SelectNode>();
-			Visit(select.select_list);
-			Visit(select.groups.group_expressions);
+			Push(select.select_list, scope);
+			Push(select.groups.group_expressions, scope);
 			for (auto expr : {&select.where_clause, &select.having, &select.qualify}) {
 				if (*expr) {
-					Visit(*expr);
+					Push(*expr, scope);
 				}
 			}
 			if (select.from_table) {
-				Visit(*select.from_table);
+				Push(*select.from_table, scope);
 			}
 			break;
 		}
 		case QueryNodeType::SET_OPERATION_NODE:
 			for (auto &child : node.Cast<SetOperationNode>().children) {
-				Visit(*child);
+				Push(*child, scope);
 			}
 			break;
 		case QueryNodeType::RECURSIVE_CTE_NODE: {
 			auto &recursive = node.Cast<RecursiveCTENode>();
-			Visit(*recursive.left);
-			// the recursive part also sees the CTE itself, which ends the scope it is defined in, but the CTEs it
-			// reads do not
-			D_ASSERT(scopes.size() >= 2);
-			auto defining_scope = scopes[scopes.size() - 2];
-			scopes.emplace_back(defining_scope.ctes, defining_scope.end, defining_scope.end + 1);
-			Visit(*recursive.right);
-			scopes.pop_back();
+			Push(*recursive.left, scope);
+			// the recursive part also sees the CTE itself, which is declared right after the CTEs that its body sees
+			auto body_scope = scopes[outer_scope.GetIndex()];
+			Push(*recursive.right, AddScope(body_scope.ctes, body_scope.end, body_scope.end + 1, scope));
 			break;
 		}
 		// a DML statement with RETURNING can be read as a CTE, its target table is not read
 		case QueryNodeType::INSERT_QUERY_NODE: {
 			auto &insert = node.Cast<InsertQueryNode>();
 			if (insert.select_statement) {
-				Visit(*insert.select_statement->node);
+				Push(*insert.select_statement->node, scope);
 			}
 			if (insert.on_conflict_info) {
 				if (insert.on_conflict_info->set_info) {
-					Visit(*insert.on_conflict_info->set_info);
+					Push(*insert.on_conflict_info->set_info, scope);
 				}
 				if (insert.on_conflict_info->condition) {
-					Visit(insert.on_conflict_info->condition);
+					Push(insert.on_conflict_info->condition, scope);
 				}
 			}
-			Visit(insert.returning_list);
+			Push(insert.returning_list, scope);
 			break;
 		}
 		case QueryNodeType::UPDATE_QUERY_NODE: {
 			auto &update = node.Cast<UpdateQueryNode>();
 			if (update.from_table) {
-				Visit(*update.from_table);
+				Push(*update.from_table, scope);
 			}
 			if (update.set_info) {
-				Visit(*update.set_info);
+				Push(*update.set_info, scope);
 			}
-			Visit(update.returning_list);
+			Push(update.returning_list, scope);
 			break;
 		}
 		case QueryNodeType::DELETE_QUERY_NODE: {
 			auto &del = node.Cast<DeleteQueryNode>();
 			for (auto &ref : del.using_clauses) {
-				Visit(*ref);
+				Push(*ref, scope);
 			}
 			if (del.condition) {
-				Visit(del.condition);
+				Push(del.condition, scope);
 			}
-			Visit(del.returning_list);
+			Push(del.returning_list, scope);
 			break;
 		}
 		case QueryNodeType::MERGE_QUERY_NODE: {
 			auto &merge = node.Cast<MergeQueryNode>();
 			if (merge.source) {
-				Visit(*merge.source);
+				Push(*merge.source, scope);
 			}
 			if (merge.join_condition) {
-				Visit(merge.join_condition);
+				Push(merge.join_condition, scope);
 			}
 			for (auto &entry : merge.actions) {
 				for (auto &action : entry.second) {
 					if (action->condition) {
-						Visit(action->condition);
+						Push(action->condition, scope);
 					}
 					if (action->update_info) {
-						Visit(*action->update_info);
+						Push(*action->update_info, scope);
 					}
-					Visit(action->expressions);
+					Push(action->expressions, scope);
 				}
 			}
-			Visit(merge.returning_list);
+			Push(merge.returning_list, scope);
 			break;
 		}
 		case QueryNodeType::COPY_QUERY_NODE: {
 			auto &info = *node.Cast<CopyQueryNode>().info;
 			if (info.select_statement) {
-				Visit(*info.select_statement);
+				Push(*info.select_statement, scope);
 			} else if (!info.is_from) {
-				VisitCTE(info.GetQualifiedName());
+				ReadCTE(info.GetQualifiedName(), scope);
 			}
 			if (info.file_path_expression) {
-				Visit(info.file_path_expression);
+				Push(info.file_path_expression, scope);
 			}
 			for (auto &option : info.parsed_options) {
 				if (option.second) {
-					Visit(option.second);
+					Push(option.second, scope);
 				}
 			}
 			break;
@@ -179,36 +235,35 @@ struct PivotSourceParameterFinder {
 			break;
 		}
 		ParsedExpressionIterator::EnumerateQueryNodeModifiers(
-		    node, [&](unique_ptr<ParsedExpression> &child) { Visit(child); });
-		scopes.pop_back();
+		    node, [&](unique_ptr<ParsedExpression> &child) { Push(child, scope); });
 	}
 
-	void Visit(TableRef &ref) {
+	void Visit(TableRef &ref, optional_idx scope) {
 		switch (ref.type) {
 		case TableReferenceType::BASE_TABLE:
-			VisitCTE(ref.Cast<BaseTableRef>().GetQualifiedName());
+			ReadCTE(ref.Cast<BaseTableRef>().GetQualifiedName(), scope);
 			break;
 		case TableReferenceType::JOIN: {
 			auto &join = ref.Cast<JoinRef>();
-			Visit(*join.left);
-			Visit(*join.right);
+			Push(*join.left, scope);
+			Push(*join.right, scope);
 			if (join.condition) {
-				Visit(join.condition);
+				Push(join.condition, scope);
 			}
 			break;
 		}
 		case TableReferenceType::SUBQUERY:
-			Visit(*ref.Cast<SubqueryRef>().subquery->node);
+			Push(*ref.Cast<SubqueryRef>().subquery->node, scope);
 			break;
 		case TableReferenceType::PIVOT: {
 			auto &pivot = ref.Cast<PivotRef>();
-			Visit(*pivot.source);
-			Visit(pivot.aggregates);
+			Push(*pivot.source, scope);
+			Push(pivot.aggregates, scope);
 			for (auto &column : pivot.pivots) {
-				Visit(column.pivot_expressions);
+				Push(column.pivot_expressions, scope);
 				for (auto &entry : column.entries) {
 					if (entry.expr) {
-						Visit(entry.expr);
+						Push(entry.expr, scope);
 					}
 				}
 			}
@@ -217,48 +272,44 @@ struct PivotSourceParameterFinder {
 		case TableReferenceType::SHOW_REF: {
 			auto &show = ref.Cast<ShowRef>();
 			if (show.query) {
-				Visit(*show.query);
+				Push(*show.query, scope);
 			}
 			break;
 		}
 		default:
 			// the other references hold expressions, and MATCH_RECOGNIZE also an input table
 			ParsedExpressionIterator::EnumerateTableRefChildren(
-			    ref, [&](unique_ptr<ParsedExpression> &child) { Visit(child); },
+			    ref, [&](unique_ptr<ParsedExpression> &child) { Push(child, scope); },
 			    [&](TableRef &child) {
 				    if (&child != &ref) {
-					    Visit(child);
+					    Push(child, scope);
 				    }
 			    });
 			break;
 		}
 	}
 
-	//! visits the CTE a table name reads, with the CTEs in scope where it is defined
-	void VisitCTE(const QualifiedName &name) {
+	//! the CTE that a table name reads is visited once, with the CTEs in scope where it is defined
+	void ReadCTE(const QualifiedName &name, optional_idx scope) {
 		if (!name.Catalog().empty() || !name.Schema().empty()) {
 			return;
 		}
-		for (idx_t i = scopes.size(); i > 0; i--) {
-			auto &scope = scopes[i - 1];
-			auto &ctes = scope.ctes.get();
+		while (scope.IsValid()) {
+			auto defining_scope = scopes[scope.GetIndex()];
+			scope = defining_scope.parent;
+			auto &ctes = defining_scope.ctes.get();
 			auto entry = ctes.map.find(name.Name());
 			if (entry == ctes.map.end()) {
 				continue;
 			}
 			auto index = NumericCast<idx_t>(entry - ctes.map.begin());
-			if (index < scope.begin || index >= scope.end) {
+			if (index < defining_scope.begin || index >= defining_scope.end) {
 				continue;
 			}
 			auto &cte = *entry->second;
-			if (!visited_ctes.insert(cte).second || !cte.query_node) {
-				return;
+			if (visited_ctes.insert(cte).second && cte.query_node) {
+				Push(*cte.query_node, AddScope(ctes, 0, index, defining_scope.parent));
 			}
-			auto outer_scopes = scopes;
-			scopes.erase(scopes.begin() + NumericCast<int64_t>(i - 1), scopes.end());
-			scopes.emplace_back(ctes, 0, index);
-			Visit(*cte.query_node);
-			scopes = std::move(outer_scopes);
 			return;
 		}
 	}
@@ -266,11 +317,11 @@ struct PivotSourceParameterFinder {
 
 static bool SourceHasParameter(PEGTransformer &transformer, TableRef &source) {
 	PivotSourceParameterFinder finder;
+	optional_idx scope;
 	for (auto &ctes : transformer.stored_cte_map) {
-		finder.scopes.emplace_back(ctes.get(), 0, ctes.get().map.size());
+		scope = finder.AddScope(ctes.get(), 0, ctes.get().map.size(), scope);
 	}
-	finder.Visit(source);
-	return finder.found;
+	return finder.HasParameter(source, scope);
 }
 
 void PEGTransformerFactory::AddPivotEntry(PEGTransformer &transformer, string enum_name, unique_ptr<SelectNode> base,

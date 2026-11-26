@@ -1005,7 +1005,11 @@ bool StringValueResult::AddRowWithoutValue(StringValueResult &result, const idx_
 
 void StringValueResult::InvalidState(StringValueResult &result) {
 	if (result.quoted) {
-		result.current_errors.Insert(UNTERMINATED_QUOTES, result.cur_col_id, result.chunk_col_id, result.last_position);
+		// a value that goes on in the next buffer is read again from its start, and is still rejected once
+		if (!result.current_errors.HasErrorType(UNTERMINATED_QUOTES, result.cur_col_id)) {
+			result.current_errors.Insert(UNTERMINATED_QUOTES, result.cur_col_id, result.chunk_col_id,
+			                             result.last_position);
+		}
 	} else {
 		LinesPerBoundary lines_per_batch(result.iterator.GetBoundaryIdx(), result.lines_read);
 		bool first_nl = false;

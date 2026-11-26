@@ -160,6 +160,65 @@ endloop
 
 endloop
 
+# the spaces before a comment fill whole buffers, the line is longer than the buffer and has no row
+statement ok
+COPY (SELECT l FROM (VALUES (1, 'a,b'), (2, '1,2'), (3, '        #zz'), (4, '3,4')) t(i, l) ORDER BY i) TO '{TEST_DIR}/indented_comment_eight_spaces.csv' (HEADER false, QUOTE '');
+
+statement ok
+COPY (SELECT l FROM (VALUES (1, 'a'), (2, '0'), (3, '    #zz'), (4, '3')) t(i, l) ORDER BY i) TO '{TEST_DIR}/indented_comment_one_column.csv' (HEADER false, QUOTE '');
+
+# the four spaces are the third buffer at buffer_size 4
+loop buffer_size 4 8
+
+query II
+SELECT a, b FROM read_csv('{TEST_DIR}/indented_comment_two_columns.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, comment = '#', buffer_size = {buffer_size}, parallel = false);
+----
+1	2
+3	4
+
+query I
+SELECT b FROM read_csv('{TEST_DIR}/indented_comment_two_columns.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, comment = '#', buffer_size = {buffer_size}, parallel = false);
+----
+2
+4
+
+# the spaces leave no cast error and no NULL for the row behind the comment
+query II
+SELECT a, b FROM read_csv('{TEST_DIR}/indented_comment_two_columns.csv', header = true, auto_detect = false, columns = {'a': 'INTEGER', 'b': 'INTEGER'}, comment = '#', buffer_size = {buffer_size}, parallel = false);
+----
+1	2
+3	4
+
+query II
+SELECT a, b FROM read_csv('{TEST_DIR}/indented_comment_two_columns.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, comment = '#', nullstr = '    ', buffer_size = {buffer_size}, parallel = false);
+----
+1	2
+3	4
+
+endloop
+
+# the eight spaces are two buffers at buffer_size 4 and one buffer at 5 and at 8
+loop buffer_size 4 10
+
+query II
+SELECT a, b FROM read_csv('{TEST_DIR}/indented_comment_eight_spaces.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, comment = '#', buffer_size = {buffer_size}, parallel = false);
+----
+1	2
+3	4
+
+endloop
+
+# the four spaces are two buffers at buffer_size 2 and the second buffer at 4
+loop buffer_size 2 6
+
+query I
+SELECT a FROM read_csv('{TEST_DIR}/indented_comment_one_column.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR'}, comment = '#', buffer_size = {buffer_size}, parallel = false);
+----
+0
+3
+
+endloop
+
 # a value that fills a buffer ends at the comment that starts the next buffer, the comment adds no value to its row
 statement ok
 COPY (SELECT l FROM (VALUES (1, 'a,b'), (2, '1,2'), (3, 'xxxx#zz'), (4, '3,4')) t(i, l) ORDER BY i) TO '{TEST_DIR}/value_fills_buffer.csv' (HEADER false, QUOTE '');

@@ -1462,6 +1462,9 @@ void StringValueScanner::ProcessOverBufferValue() {
 	// a value that ran to the end of the previous buffer was added there, a comment that follows it adds no other value
 	const bool open_value =
 	    !open_comment && result.cur_col_id > 0 && result.last_position.buffer_pos > previous_buffer_handle->actual_size;
+	// spaces that were added that way are no values of a line that turns out to hold only a comment
+	bool only_spaces_before = open_row_only_spaces;
+	open_row_only_spaces = false;
 	// Process first string
 	if (open_comment) {
 		states.Initialize(CSVState::COMMENT);
@@ -1554,6 +1557,8 @@ void StringValueScanner::ProcessOverBufferValue() {
 	for (; iterator.pos.buffer_pos < cur_buffer_handle->actual_size; iterator.pos.buffer_pos++) {
 		state_machine->Transition(states, buffer_handle_ptr[iterator.pos.buffer_pos]);
 		if (states.EmptyLine()) {
+			// a line break ends the line of the spaces, a comment behind it is another line
+			only_spaces_before = false;
 			if (state_machine->dialect_options.num_cols == 1) {
 				break;
 			}
@@ -1591,8 +1596,15 @@ void StringValueScanner::ProcessOverBufferValue() {
 	// end an open row or comment
 	const bool single_column_empty_line = states.EmptyLine() && state_machine->dialect_options.num_cols == 1;
 	const bool empty_line = single_column_empty_line && result.cur_col_id == 0 && !result.comment;
-	const bool comment_only_line =
-	    comment_started && IsCommentOnlyLine(result.cur_col_id, over_buffer_string.c_str(), over_buffer_string.size());
+	const bool only_spaces = IsCommentOnlyLine(only_spaces_before ? 0 : result.cur_col_id, over_buffer_string.c_str(),
+	                                           over_buffer_string.size());
+	const bool comment_only_line = comment_started && only_spaces;
+	if (comment_only_line && result.cur_col_id > 0) {
+		// take back the spaces that were added as values of this line, its row stays the current one
+		result.RemoveLastLine();
+		result.number_of_rows++;
+		result.current_errors.Reset();
+	}
 	bool skip_value =
 	    comment_only_line || open_comment || (open_value && comment_started && over_buffer_string.empty());
 	if (result.projecting_columns && !skip_value) {
@@ -1724,6 +1736,9 @@ void StringValueScanner::ProcessOverBufferValue() {
 	if (iterator.pos.buffer_pos >= cur_buffer_handle->actual_size && cur_buffer_handle->is_last_buffer) {
 		result.added_last_line = true;
 	}
+	// spaces that run to the end of this buffer can still turn out to stand before a comment
+	open_row_only_spaces = only_spaces && !over_buffer_string.empty() && !comment_started &&
+	                       iterator.pos.buffer_pos >= cur_buffer_handle->actual_size;
 	if (states.IsCarriageReturn() &&
 	    state_machine->dialect_options.state_machine_options.new_line == NewLineIdentifier::CARRY_ON) {
 		result.last_position = {iterator.pos.buffer_idx, ++iterator.pos.buffer_pos + 1, result.buffer_size};

@@ -240,7 +240,7 @@ WITH q AS (SELECT getvariable('v')::INTEGER AS a) PIVOT q ON a;
 ----
 1
 
-# a chain of CTEs that each read the one before is walked to its first CTE, however deep that is
+# a chain of 160 CTEs that each read the one before through 500 nested operators is walked to its first CTE
 statement error
 FROM query('WITH c0 AS (SELECT $1 AS a), ' || array_to_string(list_transform(range(1, 161), lambda i: 'c' || i || ' AS (SELECT ' || repeat('NOT ', 500) || '(SELECT a FROM c' || (i - 1) || ') AS a)'), ', ') || ' PIVOT c160 ON a');
 ----
@@ -325,3 +325,68 @@ query I
 EXECUTE s47(7);
 ----
 1
+
+# a parameter in ON CONFLICT, in a RETURNING list, in the FROM of an UPDATE and in the USING of a DELETE
+statement ok
+CREATE TABLE k (a INTEGER PRIMARY KEY);
+
+statement error
+PREPARE s48 AS WITH q AS (INSERT INTO k VALUES (1) ON CONFLICT (a) DO UPDATE SET a = excluded.a + $1::INTEGER RETURNING a) PIVOT q ON a;
+----
+cannot have parameters in their source
+
+statement error
+PREPARE s49 AS WITH q AS (INSERT INTO t VALUES (1) RETURNING $1::INTEGER AS a) PIVOT q ON a;
+----
+cannot have parameters in their source
+
+statement error
+PREPARE s50 AS WITH q AS (UPDATE t SET a = s.a FROM (SELECT $1::INTEGER AS a) s RETURNING t.a) PIVOT q ON a;
+----
+cannot have parameters in their source
+
+statement error
+PREPARE s51 AS WITH q AS (DELETE FROM t USING (SELECT $1::INTEGER AS a) s WHERE t.a = s.a RETURNING t.a) PIVOT q ON a;
+----
+cannot have parameters in their source
+
+# in the file name and in an option of COPY, in ORDER BY, and under a PIVOT with listed values
+statement error
+PREPARE s52 AS WITH q AS (COPY t TO $1 (FORMAT CSV)) PIVOT q ON Count;
+----
+cannot have parameters in their source
+
+statement error
+PREPARE s53 AS WITH q AS (COPY t TO '{TEST_DIR}/pivot_parameter_in_cte.csv' (FORMAT CSV, DELIMITER $1)) PIVOT q ON Count;
+----
+cannot have parameters in their source
+
+statement error
+PREPARE s54 AS WITH q AS (SELECT a FROM t ORDER BY a + $1::INTEGER LIMIT 1) PIVOT q ON a;
+----
+cannot have parameters in their source
+
+statement error
+PREPARE s55 AS WITH p AS (SELECT $1::INTEGER AS a, 1 AS b) PIVOT (FROM p PIVOT (count(*) FOR b IN (1))) ON a;
+----
+cannot have parameters in their source
+
+# a named enum as pivot values and a PIVOT without ON read no values from the data, so a parameter in a CTE works
+statement ok
+CREATE TYPE pivot_values AS ENUM ('1');
+
+statement ok
+PREPARE s56 AS WITH q AS (SELECT $1::INTEGER AS a) PIVOT q ON a IN pivot_values;
+
+query I
+EXECUTE s56(1);
+----
+1
+
+statement ok
+PREPARE s57 AS WITH q AS (SELECT $1::INTEGER AS a) PIVOT q USING sum(a);
+
+query I
+EXECUTE s57(7);
+----
+7

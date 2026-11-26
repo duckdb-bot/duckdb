@@ -245,10 +245,10 @@ endloop
 
 # the comment behind the spaces ends the file without a line break, the file is 15 and 16 bytes long
 statement ok
-COPY (SELECT encode(E'a,b\n1,2\n    #zz')) TO '{TEST_DIR}/indented_comment_eof.csv' (FORMAT BLOB);
+COPY (SELECT E'a,b\n1,2\n    #zz'::BLOB) TO '{TEST_DIR}/indented_comment_eof.csv' (FORMAT BLOB);
 
 statement ok
-COPY (SELECT encode(E'a,b\n1,2\n    #zzz')) TO '{TEST_DIR}/indented_comment_eof_whole_buffers.csv' (FORMAT BLOB);
+COPY (SELECT E'a,b\n1,2\n    #zzz'::BLOB) TO '{TEST_DIR}/indented_comment_eof_whole_buffers.csv' (FORMAT BLOB);
 
 loop buffer_size 4 6
 
@@ -285,7 +285,7 @@ SELECT a, b FROM read_csv('{TEST_DIR}/value_fills_buffer.csv', header = true, au
 
 # a value that fills a buffer and a comment that ends the file without a line break, the row of the value stays
 statement ok
-COPY (SELECT encode(E'a\n0\nxxxx#zz')) TO '{TEST_DIR}/value_fills_buffer_eof.csv' (FORMAT BLOB);
+COPY (SELECT E'a\n0\nxxxx#zz'::BLOB) TO '{TEST_DIR}/value_fills_buffer_eof.csv' (FORMAT BLOB);
 
 query I
 SELECT a FROM read_csv('{TEST_DIR}/value_fills_buffer_eof.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR'}, comment = '#', nullstr = 'NULL', buffer_size = 4, parallel = false);

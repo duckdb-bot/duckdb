@@ -251,3 +251,59 @@ statement error
 FROM query('WITH c0 AS (SELECT true AS a), ' || array_to_string(list_transform(range(1, 161), lambda i: 'c' || i || ' AS (SELECT ' || repeat('NOT ', 500) || '(SELECT a FROM c' || (i - 1) || ') AS a)'), ', ') || ' PIVOT c160 ON a');
 ----
 not supported in query() function
+
+# a parameter in the IN subquery or in the pivot expression that the pivot values are read from
+statement error
+PREPARE s38 AS PIVOT (SELECT 1 AS a) ON a IN (SELECT $1);
+----
+cannot have parameters in their source
+
+statement error
+PREPARE s39 AS PIVOT (SELECT 1 AS a) ON a IN (WITH v AS (SELECT $1::INTEGER AS a) FROM v);
+----
+cannot have parameters in their source
+
+statement error
+PREPARE s40 AS PIVOT (SELECT 1 AS a) ON (a + $1::INTEGER);
+----
+cannot have parameters in their source
+
+# an IN subquery does not read the source, so a parameter in a CTE that only the source reads works
+statement ok
+PREPARE s41 AS WITH q AS (SELECT $1::INTEGER AS a) PIVOT q ON a IN (SELECT 1);
+
+query I
+EXECUTE s41(1);
+----
+1
+
+# unless another pivot column reads its values from the source
+statement error
+PREPARE s42 AS WITH q AS (SELECT $1::INTEGER AS a, 1 AS b) PIVOT q ON a IN (SELECT 1), b;
+----
+cannot have parameters in their source
+
+# a parameter in a CTE that the IN subquery does not read, in a pivot expression with listed values, or in the aggregate
+statement ok
+PREPARE s43 AS PIVOT (SELECT 1 AS a) ON a IN (WITH unused AS (SELECT $1::INTEGER AS a) SELECT 1);
+
+query I
+EXECUTE s43(5);
+----
+1
+
+statement ok
+PREPARE s44 AS PIVOT (SELECT 1 AS a) ON (a + $1::INTEGER) IN (2);
+
+query I
+EXECUTE s44(1);
+----
+1
+
+statement ok
+PREPARE s45 AS PIVOT (SELECT 1 AS a) ON a USING sum(a + $1::INTEGER);
+
+query I
+EXECUTE s45(1);
+----
+2

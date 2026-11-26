@@ -419,7 +419,7 @@ SELECT count(*) FROM (SELECT k, count(*) c FROM e GROUP BY k LIMIT 3)
 0
 
 query II
-SELECT k1, count(*) c FROM t WHERE v::VARCHAR = 'x' GROUP BY k1 LIMIT 3
+SELECT k1, count(*) c FROM t WHERE v::VARCHAR = k2 GROUP BY k1 LIMIT 3
 ----
 
 # a key column of NULLs only: one NULL group
@@ -484,7 +484,7 @@ statement ok
 SET disabled_optimizers = '';
 
 query II
-EXPLAIN SELECT k1, count(*) c FROM t WHERE v::VARCHAR = 'x' GROUP BY k1 LIMIT 3
+EXPLAIN SELECT k1, count(*) c FROM t WHERE v::VARCHAR = k2 GROUP BY k1 LIMIT 3
 ----
 logical_opt	<REGEX>:.*Top N.*
 

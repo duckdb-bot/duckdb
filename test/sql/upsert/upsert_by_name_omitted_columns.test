@@ -338,6 +338,21 @@ SELECT * FROM m;
 ----
 1	15	0
 
+# omitted columns of several types each get their own default
+statement ok
+CREATE TABLE h (k INTEGER PRIMARY KEY, n INTEGER, v VARCHAR DEFAULT 'new', s STRUCT(x INTEGER) DEFAULT {'x': 5});
+
+statement ok
+INSERT INTO h VALUES (1, 9, 'old', {'x': 8});
+
+statement ok
+INSERT INTO h BY NAME (SELECT 1 AS k) ON CONFLICT DO UPDATE SET n = EXCLUDED.n, v = EXCLUDED.v, s = EXCLUDED.s;
+
+query ITI
+SELECT n, v, s.x FROM h;
+----
+NULL	new	5
+
 # omitted unique keys are NULL, which never conflicts
 statement ok
 CREATE TABLE nu (u1 INTEGER UNIQUE, u2 INTEGER UNIQUE, a INTEGER);

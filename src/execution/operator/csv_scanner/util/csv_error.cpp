@@ -153,6 +153,16 @@ CSVError CSVErrorHandler::GetFirstError(CSVErrorType error_type) {
 	throw InternalException("CSVErrorHandler::GetFirstError was called without having an appropriate error type");
 }
 
+CSVError CSVErrorHandler::GetLastError(CSVErrorType error_type) {
+	lock_guard<mutex> parallel_lock(main_mutex);
+	for (idx_t i = errors.size(); i > 0; i--) {
+		if (errors[i - 1].type == error_type) {
+			return errors[i - 1];
+		}
+	}
+	throw InternalException("CSVErrorHandler::GetLastError was called without having an appropriate error type");
+}
+
 idx_t CSVErrorHandler::GetSize() {
 	lock_guard<mutex> parallel_lock(main_mutex);
 	return errors.size();

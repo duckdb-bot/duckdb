@@ -136,6 +136,7 @@ public:
 	bool AnyErrors();
 	bool HasError(CSVErrorType error_type);
 	CSVError GetFirstError(CSVErrorType error_type);
+	CSVError GetLastError(CSVErrorType error_type);
 	idx_t GetMaxLineLength();
 
 	void DontPrintErrorLine();

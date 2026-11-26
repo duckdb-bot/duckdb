@@ -151,6 +151,20 @@ endloop
 
 endloop
 
+# a boundary that starts at a quoted value with line breaks, in a row that is followed by rows with errors
+statement ok
+COPY (SELECT line FROM (VALUES (1, 'a,b'), (2, '0,xxxxxxxxxxxxxxxxxxxxxxxxxx'), (3, '1,"t,""q""z'), (4, 'FAKE,x'), (5, 'tail"'), (6, '"u"z,"v"z'), (7, '"u"z,"v"z')) t(i, line) ORDER BY i)
+TO '{TEST_DIR}/csv_parallel_error_row_quoted_lines.csv' (HEADER false, QUOTE '', DELIMITER '|');
+
+foreach error_option ignore_errors store_rejects
+
+query I
+SELECT string_agg(a, ',' ORDER BY a) FROM read_csv('{TEST_DIR}/csv_parallel_error_row_quoted_lines.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, {error_option} = true, buffer_size = 35);
+----
+0,1
+
+endloop
+
 # the last row has no line break and the text behind its closing quote starts the last buffer
 foreach error_option ignore_errors store_rejects
 

@@ -1933,6 +1933,28 @@ bool StringValueScanner::IsRowValid(CSVIterator &current_iterator) const {
 	return true;
 }
 
+optional_idx StringValueScanner::EndOfErrorRow(const CSVIterator &line_start) const {
+	const bool has_quote = state_machine->dialect_options.state_machine_options.quote.GetValue() != '\0';
+	optional_idx row_end;
+	for (const auto state : {CSVState::STANDARD_NEWLINE, CSVState::QUOTED, CSVState::ESCAPE}) {
+		if (state != CSVState::STANDARD_NEWLINE && !has_quote) {
+			break;
+		}
+		auto reading = line_start;
+		bool quoted = false;
+		bool found_row = SkipUntilState(state, CSVState::RECORD_SEPARATOR, reading, quoted);
+		while (!found_row && reading.pos.buffer_pos < reading.GetEndPos()) {
+			// the scan reads on behind an invalid state
+			found_row = SkipUntilState(CSVState::INVALID, CSVState::RECORD_SEPARATOR, reading, quoted);
+		}
+		if (!found_row || (row_end.IsValid() && row_end.GetIndex() != reading.pos.buffer_pos)) {
+			return optional_idx();
+		}
+		row_end = reading.pos.buffer_pos;
+	}
+	return row_end;
+}
+
 ValidRowInfo StringValueScanner::TryRow(CSVState state, idx_t start_pos, idx_t end_pos) const {
 	auto current_iterator = iterator;
 	current_iterator.SetStart(start_pos);
@@ -2012,13 +2034,16 @@ void StringValueScanner::SetStart() {
 			iterator.done = true;
 		} else {
 			bool mock;
-			bool found_row = SkipUntilState(CSVState::STANDARD_NEWLINE, CSVState::RECORD_SEPARATOR, iterator, mock);
-			while (!found_row && iterator.pos.buffer_pos < iterator.GetEndPos()) {
-				// an invalid state does not end the row, the scanner before this one reads on to its line break
-				found_row = SkipUntilState(CSVState::INVALID, CSVState::RECORD_SEPARATOR, iterator, mock);
-			}
-			if (!found_row) {
-				iterator.CheckIfDone();
+			const auto line_start = iterator;
+			if (!SkipUntilState(CSVState::STANDARD_NEWLINE, CSVState::RECORD_SEPARATOR, iterator, mock)) {
+				// the scanner before this one reads a row with an error up to its line break. This one starts behind
+				// it when every reading of the bytes ends the row there
+				const auto row_end = EndOfErrorRow(line_start);
+				if (row_end.IsValid()) {
+					iterator.pos.buffer_pos = row_end.GetIndex();
+				} else {
+					iterator.CheckIfDone();
+				}
 			}
 		}
 	} else {

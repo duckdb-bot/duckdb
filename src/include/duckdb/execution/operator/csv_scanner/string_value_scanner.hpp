@@ -429,6 +429,9 @@ private:
 	bool IsRowValid(CSVIterator &current_iterator) const;
 	ValidRowInfo TryRow(CSVState state, idx_t start_pos, idx_t end_pos) const;
 	bool FirstValueEndsOnQuote(CSVIterator iterator) const;
+	//! The position behind the line break of a row with an error, when the row ends there read as unquoted text, as the
+	//! inside of a quoted value and as an escape
+	optional_idx EndOfErrorRow(const CSVIterator &line_start) const;
 
 	StringValueResult result;
 	vector<LogicalType> types;

@@ -1933,24 +1933,37 @@ bool StringValueScanner::IsRowValid(CSVIterator &current_iterator) const {
 	return true;
 }
 
+bool StringValueScanner::SkipRowWithErrors(CSVState initial_state, CSVIterator &current_iterator) const {
+	bool quoted = false;
+	bool found_row = SkipUntilState(initial_state, CSVState::RECORD_SEPARATOR, current_iterator, quoted);
+	while (!found_row && current_iterator.pos.buffer_pos < current_iterator.GetEndPos()) {
+		// the scan reads on behind an invalid state
+		found_row = SkipUntilState(CSVState::INVALID, CSVState::RECORD_SEPARATOR, current_iterator, quoted);
+	}
+	return found_row;
+}
+
 optional_idx StringValueScanner::EndOfErrorRow(const CSVIterator &line_start) const {
-	const bool has_quote = state_machine->dialect_options.state_machine_options.quote.GetValue() != '\0';
-	optional_idx row_end;
-	for (const auto state : {CSVState::STANDARD_NEWLINE, CSVState::QUOTED, CSVState::ESCAPE}) {
-		if (state != CSVState::STANDARD_NEWLINE && !has_quote) {
-			break;
-		}
+	if (!state_machine->dialect_options.state_machine_options.strict_mode.GetValue()) {
+		// a scan that is not strict does not read these bytes the way the line finder does
+		return optional_idx();
+	}
+	auto unquoted = line_start;
+	if (!SkipRowWithErrors(CSVState::STANDARD_NEWLINE, unquoted)) {
+		return optional_idx();
+	}
+	const idx_t row_end = unquoted.pos.buffer_pos;
+	// the scanner before this one may be in any state here, a row has to end at this line break from all of them
+	for (uint32_t state = 0; state < StateMachine::NUM_STATES; state++) {
 		auto reading = line_start;
-		bool quoted = false;
-		bool found_row = SkipUntilState(state, CSVState::RECORD_SEPARATOR, reading, quoted);
-		while (!found_row && reading.pos.buffer_pos < reading.GetEndPos()) {
-			// the scan reads on behind an invalid state
-			found_row = SkipUntilState(CSVState::INVALID, CSVState::RECORD_SEPARATOR, reading, quoted);
+		reading.SetEnd(row_end);
+		bool found_row = SkipRowWithErrors(static_cast<CSVState>(state), reading);
+		while (found_row && reading.pos.buffer_pos < row_end) {
+			found_row = SkipRowWithErrors(CSVState::RECORD_SEPARATOR, reading);
 		}
-		if (!found_row || (row_end.IsValid() && row_end.GetIndex() != reading.pos.buffer_pos)) {
+		if (!found_row) {
 			return optional_idx();
 		}
-		row_end = reading.pos.buffer_pos;
 	}
 	return row_end;
 }
@@ -2037,8 +2050,9 @@ void StringValueScanner::SetStart() {
 			const auto line_start = iterator;
 			if (!SkipUntilState(CSVState::STANDARD_NEWLINE, CSVState::RECORD_SEPARATOR, iterator, mock)) {
 				// the scanner before this one reads a row with an error up to its line break. This one starts behind
-				// it when every reading of the bytes ends the row there
-				const auto row_end = EndOfErrorRow(line_start);
+				// it when the row ends there whatever state that scanner is in
+				const bool is_invalid_state = iterator.pos.buffer_pos < iterator.GetEndPos();
+				const auto row_end = is_invalid_state ? EndOfErrorRow(line_start) : optional_idx();
 				if (row_end.IsValid()) {
 					iterator.pos.buffer_pos = row_end.GetIndex();
 				} else {

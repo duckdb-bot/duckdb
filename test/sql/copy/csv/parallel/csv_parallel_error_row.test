@@ -151,15 +151,34 @@ endloop
 
 endloop
 
-# a boundary that starts at a quoted value with line breaks, in a row that is followed by rows with errors
+# a boundary that starts at a quoted value with line breaks, in a row that is followed by rows with errors,
+# at the opening quote, at a space in front of it, and between the two bytes of the delimiter in front of it
 statement ok
 COPY (SELECT line FROM (VALUES (1, 'a,b'), (2, '0,xxxxxxxxxxxxxxxxxxxxxxxxxx'), (3, '1,"t,""q""z'), (4, 'FAKE,x'), (5, 'tail"'), (6, '"u"z,"v"z'), (7, '"u"z,"v"z')) t(i, line) ORDER BY i)
 TO '{TEST_DIR}/csv_parallel_error_row_quoted_lines.csv' (HEADER false, QUOTE '', DELIMITER '|');
+
+statement ok
+COPY (SELECT line FROM (VALUES (1, 'a,b'), (2, '0,' || repeat('x', 70)), (3, '1, "t,""q""z'), (4, 'FAKE,x'), (5, 'tail"'), (6, '"u"z,"v"z'), (7, '"u"z,"v"z'), (8, '"u"z,"v"z'), (9, '"u"z,"v"z'), (10, '"u"z,"v"z'), (11, '"u"z,"v"z')) t(i, line) ORDER BY i)
+TO '{TEST_DIR}/csv_parallel_error_row_quoted_lines_space.csv' (HEADER false, QUOTE '', DELIMITER '|');
+
+statement ok
+COPY (SELECT line FROM (VALUES (1, 'a||b'), (2, '0||' || repeat('x', 70)), (3, '1||"t||""q""z'), (4, 'FAKE||x'), (5, 'tail"'), (6, '"u"z||"v"z'), (7, '"u"z||"v"z'), (8, '"u"z||"v"z'), (9, '"u"z||"v"z'), (10, '"u"z||"v"z'), (11, '"u"z||"v"z')) t(i, line) ORDER BY i)
+TO '{TEST_DIR}/csv_parallel_error_row_quoted_lines_delimiter.csv' (HEADER false, QUOTE '', DELIMITER ';');
 
 foreach error_option ignore_errors store_rejects
 
 query I
 SELECT string_agg(a, ',' ORDER BY a) FROM read_csv('{TEST_DIR}/csv_parallel_error_row_quoted_lines.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, {error_option} = true, buffer_size = 35);
+----
+0,1
+
+query I
+SELECT string_agg(a, ',' ORDER BY a) FROM read_csv('{TEST_DIR}/csv_parallel_error_row_quoted_lines_space.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, {error_option} = true, buffer_size = 79);
+----
+0,1
+
+query I
+SELECT string_agg(a, ',' ORDER BY a) FROM read_csv('{TEST_DIR}/csv_parallel_error_row_quoted_lines_delimiter.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, delim = '||', {error_option} = true, buffer_size = 81);
 ----
 0,1
 

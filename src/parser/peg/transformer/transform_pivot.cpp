@@ -216,8 +216,9 @@ private:
 		switch (ref.type) {
 		case TableReferenceType::BASE_TABLE: {
 			auto &table = ref.Cast<BaseTableRef>();
-			// the AT clause of a table is read, that of a CTE is not
-			if (!ReadCTE(table.GetQualifiedName(), scope) && table.at_clause) {
+			auto &name = table.GetQualifiedName();
+			// the AT clause of a table is read, that of a CTE or of the recurring table of a recursive CTE is not
+			if (!ReadCTE(name, scope) && name.Schema() != "recurring" && table.at_clause) {
 				Push(table.at_clause->ExpressionMutable(), scope);
 			}
 			break;

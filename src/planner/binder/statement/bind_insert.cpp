@@ -360,6 +360,31 @@ static bool IsNotNullColumn(TableCatalogEntry &table, Identifier &column_name) {
 	return false;
 }
 
+//! Adds the columns that an expression of a DO UPDATE reads through EXCLUDED
+static void AddExcludedColumns(const ParsedExpression &expr, identifier_set_t &excluded_columns) {
+	switch (expr.GetExpressionClass()) {
+	case ExpressionClass::COLUMN_REF: {
+		auto &names = expr.Cast<ColumnRefExpression>().ColumnNames();
+		if (names.size() > 1 && names[0] == "excluded") {
+			excluded_columns.insert(names[1]);
+		}
+		break;
+	}
+	case ExpressionClass::FUNCTION: {
+		// a dot call is parsed as a function that is qualified with its receiver
+		auto &function_name = expr.Cast<FunctionExpression>().GetQualifiedName();
+		if (function_name.Catalog() == "excluded") {
+			excluded_columns.insert(function_name.Schema());
+		}
+		break;
+	}
+	default:
+		break;
+	}
+	ParsedExpressionIterator::EnumerateChildren(
+	    expr, [&](const ParsedExpression &child) { AddExcludedColumns(child, excluded_columns); });
+}
+
 unique_ptr<MergeIntoStatement> Binder::GenerateMergeInto(InsertQueryNode &node, TableCatalogEntry &table) {
 	D_ASSERT(node.on_conflict_info);
 
@@ -539,26 +564,18 @@ unique_ptr<MergeIntoStatement> Binder::GenerateMergeInto(InsertQueryNode &node, 
 			read_columns.insert(distinct_on_columns.begin(), distinct_on_columns.end());
 		}
 		if (on_conflict_info.set_info) {
-			// a DO UPDATE reads the columns it qualifies with EXCLUDED
-			auto add_excluded_column = [&](const ColumnRefExpression &column_ref) {
-				auto &names = column_ref.ColumnNames();
-				if (names.size() > 1 && names[0] == "excluded") {
-					read_columns.insert(names[1]);
-				}
-			};
 			for (auto &expr : on_conflict_info.set_info->expressions) {
-				ParsedExpressionIterator::VisitExpression<ColumnRefExpression>(*expr, add_excluded_column);
+				AddExcludedColumns(*expr, read_columns);
 			}
 			if (on_conflict_info.set_info->condition) {
-				ParsedExpressionIterator::VisitExpression<ColumnRefExpression>(*on_conflict_info.set_info->condition,
-				                                                               add_excluded_column);
+				AddExcludedColumns(*on_conflict_info.set_info->condition, read_columns);
 			}
 		}
-		vector<reference<const ColumnDefinition>> default_columns;
+		ColumnList default_columns;
 		for (auto &column : columns.Physical()) {
 			bool omitted = column_index_map[column.Physical()] == DConstants::INVALID_INDEX;
 			if (omitted && read_columns.count(column.Name())) {
-				default_columns.push_back(column);
+				default_columns.AddColumn(column.Copy());
 			}
 		}
 		if (!default_columns.empty()) {
@@ -567,12 +584,13 @@ unique_ptr<MergeIntoStatement> Binder::GenerateMergeInto(InsertQueryNode &node, 
 			auto projection = LogicalProjection::CreateIdentity(projection_index, std::move(bound_select.plan));
 			// the identity projection has one column for each name of the SELECT
 			D_ASSERT(projection->expressions.size() == bound_select.names.size());
-			auto &catalog_name = table.ParentCatalog().GetName();
-			for (auto &column : default_columns) {
-				BindDefaultValue(column, projection->expressions, catalog_name.GetIdentifierName(),
-				                 table.ParentSchema().GetSchemaPath());
-				bound_select.names.push_back(column.get().Name());
-				bound_select.types.push_back(projection->expressions.back()->GetReturnType());
+			BindDefaultValues(default_columns, projection->expressions,
+			                  table.ParentCatalog().GetName().GetIdentifierName(),
+			                  table.ParentSchema().GetSchemaPath());
+			for (auto &column : default_columns.Physical()) {
+				auto &bound_default = projection->expressions[bound_select.names.size()];
+				bound_select.names.push_back(column.Name());
+				bound_select.types.push_back(bound_default->GetReturnType());
 			}
 			bound_select.plan = std::move(projection);
 			// a new bind context names the projection as the source

@@ -2127,8 +2127,19 @@ void StringValueScanner::FinalizeChunkProcess() {
 void StringValueScanner::FinishBoundaryScan(const bool moved) {
 	if (cur_buffer_handle) {
 		if (!moved || result.cur_col_id > 0 || !over_buffer_value.empty()) {
+			// ProcessExtraRow counts the line feed of a \r\n whose carriage return ended the scan range as a line
+			const bool starts_at_line_feed = states.IsCarriageReturn() &&
+			                                 iterator.pos.buffer_pos < cur_buffer_handle->actual_size &&
+			                                 buffer_handle_ptr[iterator.pos.buffer_pos] == '\n';
 			const auto lines_before = lines_read;
 			ProcessExtraRow();
+			const bool row_without_comment_is_open =
+			    !states.IsCurrentNewRow() && !result.IsStateCurrent(CSVState::INVALID) && !result.IsCommentSet(result);
+			if (starts_at_line_feed && lines_read == lines_before + 1 && row_without_comment_is_open &&
+			    !cur_buffer_handle->is_last_buffer) {
+				// only that line feed was counted, the row behind it is counted when it ends in a later buffer
+				lines_read = lines_before;
+			}
 			// a row longer than a buffer goes on in the buffers after it
 			while (lines_read == lines_before && !result.IsStateCurrent(CSVState::INVALID) &&
 			       iterator.pos.buffer_pos >= cur_buffer_handle->actual_size && !cur_buffer_handle->is_last_buffer) {

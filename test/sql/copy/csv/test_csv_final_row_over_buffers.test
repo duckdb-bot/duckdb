@@ -590,6 +590,140 @@ SELECT * FROM read_csv('{TEST_DIR}/short_range.csv', header = true, auto_detect 
 
 endloop
 
+# a carriage return ends a scan range and its line feed starts the short one, the row behind them ends in the next
+# buffer
+statement ok
+COPY (SELECT l || chr(13) FROM (VALUES (0, 'a,b'), (1, '1,2'), (2, '33,44'), (3, '5,6'), (4, '7,8')) t(i, l) ORDER BY i) TO '{TEST_DIR}/crlf_pair_split.csv' (HEADER false, QUOTE '', DELIMITER '|');
+
+query II
+SELECT * FROM read_csv('{TEST_DIR}/crlf_pair_split.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, new_line = '\r\n', buffer_size = 20, max_line_size = 8) ORDER BY ALL
+----
+1	2
+33	44
+5	6
+7	8
+
+foreach buffer_size 18 19 20
+
+query II
+SELECT * FROM read_csv('{TEST_DIR}/crlf_pair_split.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, new_line = '\r\n', buffer_size = {buffer_size}, max_line_size = 8, ignore_errors = true) ORDER BY ALL
+----
+1	2
+33	44
+5	6
+7	8
+
+endloop
+
+# a row over the maximum line size behind that line feed is reported on its line, and the rows behind it are read
+statement ok
+COPY (SELECT l || chr(13) FROM (VALUES (0, 'a,b'), (1, '1,2'), (2, '33,44'), (3, '5,' || repeat('6', 17)), (4, '7,8'), (5, '9,9')) t(i, l) ORDER BY i) TO '{TEST_DIR}/crlf_pair_split_long.csv' (HEADER false, QUOTE '', DELIMITER '|');
+
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/crlf_pair_split_long.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, new_line = '\r\n', buffer_size = 20, max_line_size = 8)
+----
+Maximum line size of 8 bytes exceeded
+
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/crlf_pair_split_long.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, new_line = '\r\n', buffer_size = 20, max_line_size = 8)
+----
+CSV Error on Line: 4
+
+query II
+SELECT * FROM read_csv('{TEST_DIR}/crlf_pair_split_long.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, new_line = '\r\n', buffer_size = 20, max_line_size = 8, ignore_errors = true) ORDER BY ALL
+----
+1	2
+33	44
+7	8
+9	9
+
+query II
+SELECT * FROM read_csv('{TEST_DIR}/crlf_pair_split_long.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, new_line = '\r\n', buffer_size = 20, max_line_size = 8, store_rejects = true) ORDER BY ALL
+----
+1	2
+33	44
+7	8
+9	9
+
+query II
+SELECT line, error_type FROM reject_errors
+----
+4	LINE SIZE OVER MAXIMUM
+
+statement ok
+DROP TABLE reject_errors;
+
+statement ok
+DROP TABLE reject_scans;
+
+# a line feed that is the only byte of the short scan range, behind it the next buffer starts with an empty line
+statement ok
+COPY (SELECT l || chr(13) FROM (VALUES (0, 'a,b'), (1, '1,2'), (2, ''), (3, '3,4'), (4, ''), (5, ''), (6, '5,6'), (7, 'x,y,z'), (8, '7,8')) t(i, l) ORDER BY i) TO '{TEST_DIR}/crlf_blank_line_buffer_start.csv' (HEADER false, QUOTE '', DELIMITER '|');
+
+query II
+SELECT * FROM read_csv('{TEST_DIR}/crlf_blank_line_buffer_start.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, new_line = '\r\n', buffer_size = 17, max_line_size = 16, store_rejects = true) ORDER BY ALL
+----
+1	2
+3	4
+5	6
+7	8
+
+query II
+SELECT line, error_type FROM reject_errors
+----
+8	TOO MANY COLUMNS
+
+statement ok
+DROP TABLE reject_errors;
+
+statement ok
+DROP TABLE reject_scans;
+
+# a comment line behind the pair that ends with the buffer
+statement ok
+COPY (SELECT l || chr(13) FROM (VALUES (0, 'a,b'), (1, '1,2'), (2, '33,44'), (3, '#cccccc'), (4, '7,8'), (5, '9,9')) t(i, l) ORDER BY i) TO '{TEST_DIR}/crlf_pair_split_comment.csv' (HEADER false, QUOTE '', DELIMITER '|');
+
+query II
+SELECT * FROM read_csv('{TEST_DIR}/crlf_pair_split_comment.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, new_line = '\r\n', comment = '#', buffer_size = 24, max_line_size = 16) ORDER BY ALL
+----
+1	2
+33	44
+7	8
+9	9
+
+# rows of a larger file in these places
+statement ok
+COPY (SELECT i + 1000 AS aaaa, 'wxyz' AS bbbbb FROM range(300) t(i) ORDER BY i) TO '{TEST_DIR}/short_rows_crlf.csv' (HEADER, NEW_LINE e'\r\n');
+
+foreach buffer_size 986 1050 1066
+
+query IIIII
+SELECT count(*), count(DISTINCT aaaa), min(aaaa), max(aaaa), count(*) FILTER (WHERE bbbbb = 'wxyz') FROM read_csv('{TEST_DIR}/short_rows_crlf.csv', buffer_size = {buffer_size}, max_line_size = 100)
+----
+300	300	1000	1299	300
+
+endloop
+
+foreach buffer_size 914 1000 1042
+
+query IIIII
+SELECT count(*), count(DISTINCT aaaa), min(aaaa), max(aaaa), count(*) FILTER (WHERE bbbbb = 'wxyz') FROM read_csv('{TEST_DIR}/short_rows_crlf.csv', buffer_size = {buffer_size}, max_line_size = 100, ignore_errors = true)
+----
+300	300	1000	1299	300
+
+endloop
+
+# scan ranges that fill the buffer, and a read with one thread
+query IIIII
+SELECT count(*), count(DISTINCT aaaa), min(aaaa), max(aaaa), count(*) FILTER (WHERE bbbbb = 'wxyz') FROM read_csv('{TEST_DIR}/short_rows_crlf.csv', buffer_size = 992, max_line_size = 100)
+----
+300	300	1000	1299	300
+
+query IIIII
+SELECT count(*), count(DISTINCT aaaa), min(aaaa), max(aaaa), count(*) FILTER (WHERE bbbbb = 'wxyz') FROM read_csv('{TEST_DIR}/short_rows_crlf.csv', buffer_size = 986, max_line_size = 100, parallel = false)
+----
+300	300	1000	1299	300
+
 # read sequentially, the end of a file of three full buffers is only found when a fourth one is asked for. One thread
 # is in the long last row when the other one finds the end, and the read is repeated to make that order likely
 statement ok

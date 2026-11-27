@@ -59,6 +59,23 @@ TEST_CASE("Test GetTableNames", "[api]") {
 	REQUIRE(table_names.size() == 1);
 	REQUIRE(table_names.count("my_table"));
 
+	// recursive cte with a key, without and with an aggregate
+	for (bool qualified : {false, true}) {
+		table_names = con.GetTableNames("WITH RECURSIVE r(k) USING KEY (k) AS (SELECT a FROM my_table UNION ALL "
+		                                "SELECT k + 1 FROM r WHERE k < 2) SELECT * FROM r",
+		                                qualified);
+		REQUIRE(table_names.size() == 1);
+		REQUIRE(table_names.count("my_table"));
+
+		table_names = con.GetTableNames("WITH RECURSIVE r(k, v) USING KEY (k, max(v + 1) AS v) AS (SELECT a, b FROM "
+		                                "my_table UNION ALL SELECT k + 1, v + 1 FROM r, other_table WHERE k < 2) "
+		                                "SELECT * FROM r",
+		                                qualified);
+		REQUIRE(table_names.size() == 2);
+		REQUIRE(table_names.count("my_table"));
+		REQUIRE(table_names.count("other_table"));
+	}
+
 	// subqueries
 	table_names = con.GetTableNames("SELECT * FROM (SELECT * FROM (SELECT * FROM my_table) bla) bla3");
 	REQUIRE(table_names.size() == 1);

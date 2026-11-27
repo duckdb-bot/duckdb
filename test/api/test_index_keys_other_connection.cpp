@@ -1,5 +1,5 @@
 #include "catch.hpp"
-#include "duckdb/common/local_file_system.hpp"
+#include "duckdb/common/file_system.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/main/database.hpp"
 #include "test_helpers.hpp"
@@ -98,7 +98,7 @@ TEST_CASE("Test that the checkpoint on shutdown remaps an index on list_sort", "
 	}
 
 	// the checkpoint on shutdown succeeded, so the write ahead log is gone
-	LocalFileSystem fs;
+	auto &fs = TestLocalFileSystem();
 	REQUIRE(!fs.FileExists(path + ".wal"));
 
 	DuckDB db(path);

@@ -313,10 +313,10 @@ bool DecimalHelper<bignum_t>::IsZero(const bignum_t &value) {
 }
 
 //! The unscaled value formatted with the given scale, with at least one digit before the decimal point
-static string FormatScaled(const bignum_t &value, uint32_t scale, optional_ptr<ClientContext> context) {
-	auto digits = Bignum::BignumToVarchar(value, context);
+static void FormatScaled(BignumCastScratch &state, string &digits, const bignum_t &value, uint32_t scale) {
+	Bignum::BignumToVarchar(state, value, digits);
 	if (scale == 0) {
-		return digits;
+		return;
 	}
 	bool negative = false;
 	if (!digits.empty() && digits[0] == '-') {
@@ -331,7 +331,13 @@ static string FormatScaled(const bignum_t &value, uint32_t scale, optional_ptr<C
 	if (negative) {
 		digits.insert(digits.begin(), '-');
 	}
-	return digits;
+}
+
+static string FormatScaled(const bignum_t &value, uint32_t scale, optional_ptr<ClientContext> context) {
+	BignumCastScratch state(context);
+	string result;
+	FormatScaled(state, result, value, scale);
+	return result;
 }
 
 string DecimalHelper<bignum_t>::ToString(const bignum_t &value, uint32_t width, uint32_t scale,
@@ -458,12 +464,13 @@ const string &DecimalHelper<bignum_t>::RescaleState::GetPowerOfTen(idx_t exponen
 	return cached_power;
 }
 
-static string_t DivideAndRound(const BignumIntermediate &source, const BignumIntermediate &divisor,
-                               DecimalRounding rounding, StringHeap &heap, BignumArithmeticState &state) {
+string_t DecimalHelper<bignum_t>::DivideAndRound(const BignumIntermediate &source, const BignumIntermediate &divisor,
+                                                 DecimalRounding rounding, StringHeap &heap,
+                                                 BignumArithmeticState &state) {
 	string_t quotient;
 	string_t remainder;
 	if (!BignumIntermediate::TryDivMod(heap, state, source, divisor, quotient, remainder)) {
-		throw InternalException("Decimal rescaling: division by a power of ten failed");
+		throw InternalException("DivideAndRound: division by zero");
 	}
 	if (DecimalHelper<bignum_t>::IsZero(bignum_t(remainder))) {
 		return quotient;
@@ -508,7 +515,8 @@ static string_t RescaleBignum(const bignum_t &value, uint32_t source_scale, uint
 	if (target_scale > source_scale) {
 		return BignumIntermediate::Multiply(heap, state, source.intermediate, factor.intermediate);
 	}
-	return DivideAndRound(source.intermediate, factor.intermediate, DecimalRounding::HALF_AWAY_FROM_ZERO, heap, state);
+	return DecimalHelper<bignum_t>::DivideAndRound(source.intermediate, factor.intermediate,
+	                                               DecimalRounding::HALF_AWAY_FROM_ZERO, heap, state);
 }
 
 string DecimalHelper<bignum_t>::Rescale(const bignum_t &value, uint32_t source_scale, uint32_t target_scale,
@@ -584,7 +592,7 @@ bool DecimalHelper<bignum_t>::TryRound(const bignum_t &value, idx_t drop_digits,
 	return true;
 }
 
-string DecimalHelper<bignum_t>::FromInteger(uhugeint_t value) {
+void DecimalHelper<bignum_t>::FromInteger(uhugeint_t value, string &result) {
 	uint8_t bytes[16];
 	idx_t size = 0;
 	for (idx_t i = 0; i < 16; i++) {
@@ -596,22 +604,36 @@ string DecimalHelper<bignum_t>::FromInteger(uhugeint_t value) {
 		}
 		bytes[size++] = byte;
 	}
-	return Bignum::FromByteArray(bytes, size, false);
+	result.resize(Bignum::BIGNUM_HEADER_SIZE + size);
+	Bignum::SetHeader(&result[0], size, false);
+	memcpy(&result[Bignum::BIGNUM_HEADER_SIZE], bytes, size);
 }
 
-string DecimalHelper<bignum_t>::FromInteger(hugeint_t value) {
+void DecimalHelper<bignum_t>::FromInteger(hugeint_t value, string &result) {
 	if (value.upper >= 0) {
-		return FromInteger(uhugeint_t(static_cast<uint64_t>(value.upper), value.lower));
+		FromInteger(uhugeint_t(static_cast<uint64_t>(value.upper), value.lower), result);
+		return;
 	}
 	// the magnitude of the minimum hugeint (2^127) fits a uhugeint, so negate in uhugeint two's complement space
 	uhugeint_t bits(static_cast<uint64_t>(value.upper), value.lower);
 	uhugeint_t magnitude = ~bits + uhugeint_t(1);
-	auto blob = FromInteger(magnitude);
+	FromInteger(magnitude, result);
 	// complementing the header and data bytes flips the sign
-	for (auto &c : blob) {
+	for (auto &c : result) {
 		c = static_cast<char>(~c);
 	}
-	return blob;
+}
+
+string DecimalHelper<bignum_t>::FromInteger(hugeint_t value) {
+	string result;
+	FromInteger(value, result);
+	return result;
+}
+
+string DecimalHelper<bignum_t>::FromInteger(uhugeint_t value) {
+	string result;
+	FromInteger(value, result);
+	return result;
 }
 
 bool DecimalHelper<bignum_t>::TryToUhugeint(const bignum_t &value, uhugeint_t &result) {
@@ -625,10 +647,10 @@ bool DecimalHelper<bignum_t>::TryToHugeint(const bignum_t &value, hugeint_t &res
 }
 
 template <class T>
-static bool TryToFloatingInternal(const bignum_t &value, uint32_t scale, T &result,
-                                  optional_ptr<ClientContext> context) {
+static bool TryToFloatingInternal(BignumCastScratch &state, string &text, const bignum_t &value, uint32_t scale,
+                                  T &result) {
 	// the decimal text parses directly into the target type, so the value is rounded once
-	auto text = FormatScaled(value, scale, context);
+	FormatScaled(state, text, value, scale);
 	if (!TryCast::Operation(string_t(text), result, false)) {
 		throw InternalException("Could not convert wide decimal '%s' to a floating point number", text);
 	}
@@ -638,12 +660,26 @@ static bool TryToFloatingInternal(const bignum_t &value, uint32_t scale, T &resu
 
 bool DecimalHelper<bignum_t>::TryToFloating(const bignum_t &value, uint32_t scale, float &result,
                                             optional_ptr<ClientContext> context) {
-	return TryToFloatingInternal(value, scale, result, context);
+	BignumCastScratch state(context);
+	string text;
+	return TryToFloatingInternal(state, text, value, scale, result);
 }
 
 bool DecimalHelper<bignum_t>::TryToFloating(const bignum_t &value, uint32_t scale, double &result,
                                             optional_ptr<ClientContext> context) {
-	return TryToFloatingInternal(value, scale, result, context);
+	BignumCastScratch state(context);
+	string text;
+	return TryToFloatingInternal(state, text, value, scale, result);
+}
+
+bool DecimalHelper<bignum_t>::TryToFloating(BignumCastScratch &state, string &text, const bignum_t &value,
+                                            uint32_t scale, float &result) {
+	return TryToFloatingInternal(state, text, value, scale, result);
+}
+
+bool DecimalHelper<bignum_t>::TryToFloating(BignumCastScratch &state, string &text, const bignum_t &value,
+                                            uint32_t scale, double &result) {
+	return TryToFloatingInternal(state, text, value, scale, result);
 }
 
 double DecimalHelper<bignum_t>::ToDouble(const bignum_t &value, uint32_t scale, optional_ptr<ClientContext> context) {

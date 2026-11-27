@@ -551,6 +551,15 @@ public:
 		return factory;
 	}
 
+	/// Opens a connection that runs in the transaction of this context, to run SQL from inside a callback, e.g. to read
+	/// a table in a bind callback. It sees the transaction's uncommitted changes and this context's temporary objects;
+	/// a failing statement invalidates the transaction as one of this context would. It starts with the search path of
+	/// this context, so unqualified names resolve as they do here. It cannot start, commit or roll
+	/// back a transaction, and destroying it does neither. Destroy it before the transaction ends, usually before the
+	/// callback returns: a commit while it is still open rolls the transaction back.
+	/// @throws Exception When the context has no active transaction or the transaction was aborted.
+	auto ConnectInTransaction() const -> Connection;
+
 	/// Writes a message to DuckDB's log, readable through `SELECT * FROM duckdb_logs`.
 	/// Whether the entry is recorded is up to the database's log configuration; a message it filters out is dropped
 	/// without error.
@@ -1095,10 +1104,23 @@ public:
 	/// metrics. Unstable API.
 	auto EnableProfiling(bool enabled = true) -> void;
 
-	/// Takes a snapshot of the metrics of the last query this connection finished. What it holds is decided by the
-	/// profiling configuration, e.g. `SET enable_profiling = 'no_output'`. Unstable API.
-	/// @throws Exception While a result on this connection is still live.
+	/// Takes a snapshot of the metrics of the last query this connection profiled, which is not necessarily the last
+	/// query it ran: see GetProfilingInformation. What it holds is decided by the profiling configuration, e.g.
+	/// `SET enable_profiling = 'no_output'`. Unstable API.
+	/// @throws Exception While a result on this connection has not been drained or destroyed.
 	auto GetQueryMetrics() const -> QueryMetrics;
+
+	/// Renders the profile of the last query this connection profiled, as the text the profiler prints for it. The
+	/// profiler keeps that profile while profiling is disabled, so after profiling is enabled again it describes the
+	/// last query run while profiling was enabled until the next query finishes. What it holds is decided by the
+	/// profiling configuration, e.g. `SET enable_profiling = 'json'`; without profiling it is the profiler's note that
+	/// profiling is disabled. Unstable API.
+	/// @param format The profiler format name: "json", "text", "query_tree", "query_tree_optimizer", "html",
+	/// "graphviz", "yaml", "mermaid" or "no_output", which renders nothing. Empty selects the configured format, or a
+	/// query tree when that is "no_output".
+	/// @throws Exception For an unknown format, or while a result on this connection has not been drained or
+	/// destroyed.
+	auto GetProfilingInformation(std::string_view format = {}) const -> std::string;
 
 	/// Prepares a statement into a handle that can be executed repeatedly, borrowing it rather than consuming it.
 	/// @param statement The statement to prepare.
@@ -1259,13 +1281,29 @@ public:
 	/// @param path The database file, or ":memory:" / the empty string for a new in-memory database, which is never
 	/// shared.
 	/// @param options The options that can only be chosen at startup. An instance that is already open is shared only
-	/// when it was created with the same options, written the same way.
+	/// when it was created with options that give the same settings: an alias counts as its option, and a value
+	/// counts as equal once converted to the option's type, text regardless of case.
 	/// @throws Exception When the file is open in an instance created with other options, or attached to an instance
 	/// that is not shared.
 	static auto OpenShared(const std::string &path, const StartupOptions &options = {}) -> Instance;
 
 	/// `OpenShared` through `env`, which must outlive the instance.
 	static auto OpenShared(Environment &env, const std::string &path, const StartupOptions &options = {}) -> Instance;
+
+	/// Initializes an instance that `OpenShared` has just created. The instance is borrowed for the duration of the
+	/// call, and must not be moved from: configure it, or connect to it and run SQL.
+	using InitCallback = std::function<void(Instance &instance)>;
+
+	/// `OpenShared`, calling `init` when this call creates the instance, before another call can share it: calls for
+	/// the same file wait for `init` to return. When `init` throws, the instance is destroyed and the exception
+	/// propagates; the next call for the file creates an instance again. `init` is not called when the call shares
+	/// an existing instance, and must not open the same file with `OpenShared`.
+	static auto OpenShared(const std::string &path, const StartupOptions &options, const InitCallback &init)
+	    -> Instance;
+
+	/// `OpenShared` through `env`, which must outlive the instance, calling `init` when this call creates it.
+	static auto OpenShared(Environment &env, const std::string &path, const StartupOptions &options,
+	                       const InitCallback &init) -> Instance;
 
 	~Instance() override;
 	Instance(Instance &&) noexcept = default;
@@ -2069,13 +2107,14 @@ public:
 	struct RuntimeDecimal {
 		/// The unscaled value: the DECIMAL is `value / 10^scale`, e.g. 12345 for 123.45 at scale 2.
 		int128_t value;
-		uint8_t width;
-		uint8_t scale;
+		uint32_t width;
+		uint32_t scale;
 	};
 
 	/// Reads a DECIMAL of any width and scale, for when they are not known at compile time; `Get<WIDTH, SCALE>` is the
 	/// typed alternative.
-	/// @throws Exception When the value is NULL or not a DECIMAL.
+	/// @throws Exception When the value is NULL or not a DECIMAL, or when the backing integer of a DECIMAL wider than
+	/// 38 digits does not fit in 128 bits; `Get<bignum_t>()` reads the backing integer of any wide DECIMAL exactly.
 	auto GetDecimal() const -> RuntimeDecimal;
 
 	/// A NULL of the given type.
@@ -2127,10 +2166,11 @@ public:
 	/// typed alternative.
 	/// @param factory The factory to create the value with.
 	/// @param value The unscaled value, e.g. 12345 for 123.45 at scale 2.
-	/// @param width The number of digits, in [1, 255]; widths above 38 are stored as BIGNUM.
+	/// @param width The number of digits, at least 1 and at most the `max_decimal_width` setting of the factory's
+	/// connection (its default, 1000000, for the factory of an instance); widths above 38 are stored as BIGNUM.
 	/// @param scale The number of digits after the decimal point, at most `width`.
 	/// @throws Exception When the width or scale is out of range, or the value does not fit in `width` digits.
-	static auto CreateDecimal(Factory &factory, int128_t value, uint8_t width, uint8_t scale) -> Value;
+	static auto CreateDecimal(Factory &factory, int128_t value, uint32_t width, uint32_t scale) -> Value;
 
 	static auto Create(Factory &factory, bit_t value) -> Value;
 	static auto Create(Factory &factory, bignum_t value) -> Value;
@@ -2199,6 +2239,13 @@ public:
 	/// @param index Child index in [0, GetChildCount()).
 	auto GetChild(idx_t index) const -> Value;
 
+	/// The value that a VARIANT value holds, with the type that it was stored with: a TINYINT, a VARCHAR, a LIST of
+	/// STRUCTs, ... A stored list gives a LIST of its elements, a stored object a STRUCT of its fields; elements that
+	/// were stored with different types stay VARIANT values (a LIST of VARIANT), convert those in turn. A NULL VARIANT
+	/// gives a NULL value. The inverse is `Cast` to the VARIANT type, `factory.ParseType("VARIANT")`.
+	/// @throws InvalidInputException When the value is not a VARIANT.
+	auto VariantToValue() const -> Value;
+
 	/// Shorthand for `GetChild`.
 	auto operator[](idx_t index) const -> Value {
 		return GetChild(index);
@@ -2206,7 +2253,7 @@ public:
 
 private:
 	/// @internal Reads the backing integer, throwing unless the value's own width and scale are the ones asked for.
-	void GetDecimal(int128_t &out, uint8_t width, uint8_t scale) const;
+	void GetDecimal(int128_t &out, uint32_t width, uint32_t scale) const;
 
 	/// @internal Sign-extends a DECIMAL's backing integer to the widest storage tier, so one entry point can carry
 	/// every tier.
@@ -3725,6 +3772,9 @@ public:
 
 	/// Sets the function's name, as SQL will call it.
 	auto SetName(const std::string &name) & -> ScalarFunction &;
+	/// Sets the schema of the system catalog the function is registered in, for example `encodings`. Without it the
+	/// function is registered in the default schema. The schema must exist when the function is registered.
+	auto SetSchema(const std::string &schema) & -> ScalarFunction &;
 	/// The documentation of this overload, borrowed for in-place mutation.
 	auto GetDocs() -> FunctionDocs;
 
@@ -4702,6 +4752,9 @@ public:
 
 	/// Sets the function's name, as SQL will call it.
 	auto SetName(const std::string &name) & -> TableFunction &;
+	/// How stable the function's results are within and across queries. Defaults to `VOLATILE`; declare
+	/// `CONSISTENT_WITHIN_QUERY` to let the optimizer share identical scans.
+	auto SetStability(FunctionStability value) & -> TableFunction &;
 	/// The documentation of this overload, borrowed for in-place mutation.
 	auto GetDocs() -> FunctionDocs;
 
@@ -4774,6 +4827,7 @@ private:
 	explicit TableFunction(void *impl);
 	//! Moves what the callbacks need into the C handle, right before it is registered.
 	auto PrepareRegistration() -> void;
+	auto DataSourceHandle() -> void *;
 
 	auto SetUserDataInternal(void *data, void (*destructor)(void *)) -> void;
 
@@ -4791,6 +4845,8 @@ private:
 	MetricsCallback metrics_callback = nullptr;
 	ToStringCallback to_string_callback = nullptr;
 	detail::UserData user_data;
+	//! The data source the function scans with, which holds the callbacks of the scan
+	std::shared_ptr<void> data_source;
 
 public:
 	/// What the bind callback works with. Borrowed, valid only for the callback duration.
@@ -5441,7 +5497,7 @@ public:
 		}
 
 		/// Reports an operator metric of the scan by its profiler name, e.g. "operator.row_groups_scanned" or
-		/// "operator.total_row_groups_to_scan". See `duckdb_v2_table_function_metrics_set` for the accepted names.
+		/// "operator.total_row_groups_to_scan". See `duckdb_v2_data_source_metrics_set` for the accepted names.
 		/// @param name The name of the metric.
 		/// @param value The value since the metrics were last collected ("operator.total_row_groups_to_scan": in all).
 		/// @throws InvalidInputException When the name is not a metric a table function can report.
@@ -5706,6 +5762,8 @@ private:
 	//! Moves what the callbacks need into the C handle, right before it is registered.
 	auto PrepareRegistration() -> void;
 
+	auto DataSourceHandle() -> void *;
+
 	auto SetUserDataInternal(void *data, void (*destructor)(void *)) -> void;
 
 	CopyToBindCallback copy_to_bind_callback = nullptr;
@@ -5721,6 +5779,8 @@ private:
 	CopyFromExecCallback copy_from_exec_callback = nullptr;
 	CopyFromProgressCallback copy_from_progress_callback = nullptr;
 	detail::UserData user_data;
+	//! The data source the COPY FROM side scans with, which holds the callbacks of the scan
+	std::shared_ptr<void> data_source;
 
 public:
 	/// What the `COPY ... TO` bind callback works with. Borrowed, valid only for the callback duration.

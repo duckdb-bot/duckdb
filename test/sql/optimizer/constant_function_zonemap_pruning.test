@@ -54,7 +54,7 @@ statement ok
 DROP TABLE signed_zeros;
 
 # Equal NaN bounds do not distinguish the sign of a NaN, but signbit and the cast to VARCHAR do.
-# Keep them in memory: constant compression can discard the sign of a NaN.
+# The tables stay in memory, because constant compression can discard the sign of a NaN.
 foreach type DOUBLE FLOAT
 
 statement ok

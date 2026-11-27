@@ -23,6 +23,15 @@ statement ok
 CREATE INDEX i ON t(hash(s));
 
 statement ok
+CREATE TABLE lg(s VARCHAR, u VARCHAR, a TIMETZ, b TIMETZ);
+
+statement ok
+CREATE INDEX lgi ON lg (least(s, u), greatest(a, b));
+
+statement ok
+INSERT INTO lg VALUES ('B', 'a', TIMETZ '12:00:00+02', TIMETZ '11:00:00+00');
+
+statement ok
 INSERT INTO il VALUES ([INTERVAL 1 DAY]);
 
 statement ok
@@ -51,10 +60,21 @@ DELETE FROM il WHERE v = [INTERVAL 1 DAY];
 statement ok
 DELETE FROM vl WHERE v = [1::TINYINT::VARIANT];
 
+statement ok
+INSERT INTO lg VALUES ('c', 'D', TIMETZ '01:00:00+00', TIMETZ '03:00:00+05');
+
+statement ok
+DELETE FROM lg WHERE u = 'a';
+
 query I
 SELECT count(*) FROM t
 ----
 1
+
+query III
+SELECT count(*), any_value(least(s, u)), any_value(least(a, b)) FROM lg
+----
+1	c	03:00:00+05
 
 query I
 SELECT count(*) FROM il

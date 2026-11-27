@@ -1,0 +1,208 @@
+# name: test/sql/function/generic/least_greatest_comparison_keys.test
+# description: least and greatest order INTERVAL, TIMETZ and other types with a collation as comparisons do
+# group: [generic]
+
+# a month counts as 30 days and a day as 24 hours
+query III
+SELECT INTERVAL '1 month' < INTERVAL '45 days', least(INTERVAL '45 days', INTERVAL '1 month'), greatest(INTERVAL '45 days', INTERVAL '1 month');
+----
+true	1 month	45 days
+
+query II
+SELECT greatest(INTERVAL '1 day', INTERVAL '25 hours'), least(INTERVAL '25 hours', INTERVAL '1 day');
+----
+25:00:00	1 day
+
+query I
+SELECT greatest(TIMESTAMP '2024-01-03 00:00:00' - TIMESTAMP '2024-01-01 12:00:00', INTERVAL '40 hours');
+----
+40:00:00
+
+query III
+SELECT least(INTERVAL '45 days', INTERVAL '1 month', INTERVAL '25 hours'), greatest(INTERVAL '45 days', INTERVAL '1 month', INTERVAL '25 hours'), least(INTERVAL '45 days');
+----
+25:00:00	45 days	45 days
+
+# a TIMETZ is ordered by its instant
+query II
+SELECT TIMETZ '12:00:00+02' < TIMETZ '11:00:00+00', least(TIMETZ '12:00:00+02', TIMETZ '11:00:00+00');
+----
+true	12:00:00+02
+
+query II
+SELECT greatest(TIMETZ '12:00:00+02', TIMETZ '11:00:00+00'), least(TIMETZ '10:00:00+00', TIMETZ '12:00:00+02');
+----
+11:00:00+00	12:00:00+02
+
+# the result is the argument itself, and of two arguments that compare equal the first one
+query IIII
+SELECT least(INTERVAL '30 days', INTERVAL '1 month'), least(INTERVAL '1 month', INTERVAL '30 days'), greatest(INTERVAL '30 days', INTERVAL '1 month'), greatest(INTERVAL '1 month', INTERVAL '30 days');
+----
+30 days	1 month	30 days	1 month
+
+# NULL arguments are skipped
+query IIII
+SELECT least(NULL, INTERVAL '45 days', INTERVAL '1 month'), greatest(INTERVAL '45 days', NULL, INTERVAL '1 month'), least(NULL::INTERVAL, NULL), least(TIMETZ '12:00:00+02', NULL);
+----
+1 month	45 days	NULL	12:00:00+02
+
+statement ok
+CREATE TABLE intervals AS SELECT * FROM (VALUES
+	(1, INTERVAL '45 days', INTERVAL '1 month'),
+	(2, INTERVAL '1 day', INTERVAL '25 hours'),
+	(3, NULL, INTERVAL '2 days'),
+	(4, INTERVAL '3 days', NULL),
+	(5, NULL, NULL),
+	(6, INTERVAL '1 year', INTERVAL '360 days')
+) t(id, a, b);
+
+query IIII
+SELECT id, least(a, b), greatest(a, b), greatest(a, INTERVAL '40 hours') FROM intervals ORDER BY id;
+----
+1	1 month	45 days	45 days
+2	1 day	25:00:00	40:00:00
+3	2 days	2 days	40:00:00
+4	3 days	3 days	3 days
+5	NULL	NULL	40:00:00
+6	1 year	1 year	1 year
+
+# every row over several vectors, with NULLs in each argument
+query III
+SELECT count(*), count(least(x, y, z)), count(*) FILTER (WHERE least(x, y, z) IS NOT DISTINCT FROM expected)
+FROM (
+	SELECT x, y, z, CASE WHEN x <= y OR y IS NULL THEN CASE WHEN x <= z OR z IS NULL THEN x ELSE z END
+	                     WHEN y <= z OR z IS NULL THEN y
+	                     ELSE coalesce(z, x) END AS expected
+	FROM (
+		SELECT CASE WHEN i % 7 = 0 THEN NULL ELSE to_days((i * 7) % 61) + to_months(i % 3) END AS x,
+		       CASE WHEN i % 5 = 0 THEN NULL ELSE to_hours((i * 13) % 2000) END AS y,
+		       CASE WHEN i % 35 = 0 THEN NULL ELSE INTERVAL '40 days' END AS z
+		FROM range(10000) t(i)
+	)
+);
+----
+10000	9714	10000
+
+# the bounds of a TIMETZ column are those of its stored values, which do not bound the result
+statement ok
+CREATE TABLE times AS SELECT * FROM (VALUES
+	(TIMETZ '01:00:00+00', TIMETZ '00:30:00+00'),
+	(TIMETZ '02:00:00+10', TIMETZ '00:30:00+00'),
+	(TIMETZ '03:00:00+00', TIMETZ '00:30:00+00')
+) t(a, b);
+
+query II
+SELECT count(*) FILTER (WHERE least(a, b) = b), count(*) FROM times WHERE least(a, b)::VARCHAR = '02:00:00+10';
+----
+0	1
+
+# nested types
+query IIII
+SELECT least([INTERVAL '45 days'], [INTERVAL '1 month']), greatest({'a': INTERVAL '45 days'}, {'a': INTERVAL '1 month'}), least({'a': [TIMETZ '12:00:00+02']}, {'a': [TIMETZ '11:00:00+00']}), least([INTERVAL '45 days']::INTERVAL[1], [INTERVAL '1 month']::INTERVAL[1]);
+----
+[1 month]	{'a': 45 days}	{'a': ['12:00:00+02']}	[1 month]
+
+statement ok
+CREATE TABLE structs AS SELECT * FROM (VALUES ({'a': INTERVAL '45 days'}, {'a': INTERVAL '1 month'}), ({'a': INTERVAL '1 day'}, NULL)) t(x, y);
+
+query II
+SELECT least(x, y), greatest(x, y) FROM structs ORDER BY ALL;
+----
+{'a': 1 day}	{'a': 1 day}
+{'a': 1 month}	{'a': 45 days}
+
+# VARIANT values and strings with a collation
+query III
+SELECT 'b'::VARIANT < 'ab'::VARIANT, least('b'::VARIANT, 'ab'::VARIANT), greatest('b'::VARIANT, 'ab'::VARIANT);
+----
+false	ab	b
+
+# BIT values of different lengths
+query III
+SELECT '0'::BIT < '00'::BIT, least('0'::BIT, '00'::BIT, NULL), greatest('0'::BIT, '00'::BIT, NULL);
+----
+true	0	00
+
+query IIII
+SELECT least('B' COLLATE NOCASE, 'a'), greatest('B' COLLATE NOCASE, 'a'), least('b' COLLATE NOCASE, 'B'), least('B', 'a');
+----
+a	B	b	B
+
+statement ok
+SET default_collation = 'nocase';
+
+query II
+SELECT least('B', 'a'), greatest('B', 'a');
+----
+a	B
+
+statement ok
+RESET default_collation;
+
+# an argument is evaluated once, also a volatile one or a subquery
+query II
+SELECT count(*), count(*) FILTER (WHERE least(to_days((random() * 100)::INTEGER), INTERVAL '1 month') <= INTERVAL '1 month') FROM range(1000);
+----
+1000	1000
+
+query I
+SELECT least((SELECT min(b) FROM intervals), INTERVAL '40 hours');
+----
+25:00:00
+
+# in a view, a macro, a prepared statement and a lambda
+statement ok
+CREATE VIEW least_view AS SELECT id, least(a, b) AS l FROM intervals;
+
+query II
+SELECT * FROM least_view WHERE id <= 2 ORDER BY id;
+----
+1	1 month
+2	1 day
+
+statement ok
+CREATE MACRO greatest_macro(x, y) AS greatest(x, y);
+
+query I
+SELECT greatest_macro(a, b) FROM intervals WHERE id = 1;
+----
+45 days
+
+statement ok
+PREPARE least_statement AS SELECT least($1, $2);
+
+query I
+EXECUTE least_statement(INTERVAL '45 days', INTERVAL '1 month');
+----
+1 month
+
+query I
+EXECUTE least_statement(TIMETZ '12:00:00+02', TIMETZ '11:00:00+00');
+----
+12:00:00+02
+
+query I
+EXECUTE least_statement(5, 3);
+----
+3
+
+query I
+SELECT list_transform([INTERVAL '45 days', INTERVAL '10 days'], lambda x: least(x, INTERVAL '1 month'));
+----
+[1 month, 10 days]
+
+# the plan keeps the function as it was written
+query II
+EXPLAIN SELECT least(a, b) FROM intervals;
+----
+physical_plan	<REGEX>:.*least\(a, b\).*
+
+# FIXME: a MAP is not compared by the keys of its values, see the collation of MAP and UNION values
+mode skip "a MAP has no collation key for its values"
+
+query I
+SELECT least(MAP {1: INTERVAL '45 days'}, MAP {1: INTERVAL '1 month'});
+----
+{1=1 month}
+
+mode unskip

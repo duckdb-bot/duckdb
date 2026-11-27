@@ -286,8 +286,12 @@ struct LikeMatcher : public FunctionData {
 	}
 
 	bool Match(string_t &str) const {
-		auto str_data = const_uchar_ptr_cast(str.GetData());
-		auto str_len = str.GetSize();
+		return Match(str.GetData(), str.GetSize());
+	}
+
+	//! Matches a string that can be longer than a string_t, such as a lowercase copy
+	bool Match(const char *data, idx_t str_len) const {
+		auto str_data = const_uchar_ptr_cast(data);
 		idx_t segment_idx = 0;
 		idx_t end_idx = segments.size() - 1;
 		if (!has_start_percentage) {
@@ -477,13 +481,13 @@ bool ILikeOperatorFunctionInternal(string_t &str, string_t &pattern, char escape
 	idx_t pat_llength = LowerLength(pat_data, pat_size);
 	auto pat_ldata = make_unsafe_uniq_array_uninitialized<char>(pat_llength);
 	LowerCase(pat_data, pat_size, pat_ldata.get());
-	string_t str_lcase(str_ldata.get(), UnsafeNumericCast<uint32_t>(str_llength));
-	string_t pat_lcase(pat_ldata.get(), UnsafeNumericCast<uint32_t>(pat_llength));
+	// a lowercase copy can be longer than a string_t can hold, so it is matched by pointer and length
 	if (!HAS_ESCAPE) {
-		return LikeOperatorFunction(str_lcase, pat_lcase);
+		return LikeOperatorFunction(str_ldata.get(), str_llength, pat_ldata.get(), pat_llength);
 	}
 	// the pattern is lowercased, so the escape character must be as well
-	return LikeOperatorFunction(str_lcase, pat_lcase, StringUtil::CharacterToLower(escape));
+	return LikeOperatorFunction(str_ldata.get(), str_llength, pat_ldata.get(), pat_llength,
+	                            StringUtil::CharacterToLower(escape));
 }
 
 bool ILikeOperatorFunction(string_t &str, string_t &pattern) {
@@ -587,14 +591,13 @@ void ILikeEscapeFunction(DataChunk &args, ExpressionState &state, Vector &result
 		idx_t pat_llength = LowerLength(pattern.GetData(), pattern.GetSize());
 		auto pat_ldata = make_unsafe_uniq_array_uninitialized<char>(pat_llength);
 		LowerCase(pattern.GetData(), pattern.GetSize(), pat_ldata.get());
-		string_t pat_lcase(pat_ldata.get(), UnsafeNumericCast<uint32_t>(pat_llength));
 
 		// the matcher cannot honor escape semantics, so only use it when the escape char never appears in the
 		// (lowercased) pattern, in which case escape is irrelevant and the pattern is a plain LIKE pattern
 		unique_ptr<LikeMatcher> matcher;
-		bool escape_active = has_escape && memchr(pat_lcase.GetData(), escape_char, pat_lcase.GetSize()) != nullptr;
+		bool escape_active = has_escape && memchr(pat_ldata.get(), escape_char, pat_llength) != nullptr;
 		if (!escape_active) {
-			matcher = LikeMatcher::CreateLikeMatcher(string(pat_lcase.GetData(), pat_lcase.GetSize()));
+			matcher = LikeMatcher::CreateLikeMatcher(string(pat_ldata.get(), pat_llength));
 		}
 
 		// reusable scratch buffer for lowercasing each string value (grown on demand)
@@ -607,10 +610,15 @@ void ILikeEscapeFunction(DataChunk &args, ExpressionState &state, Vector &result
 				scratch_size = str_llength;
 			}
 			LowerCase(str.GetData(), str.GetSize(), scratch.get());
-			string_t str_lcase(scratch.get(), UnsafeNumericCast<uint32_t>(str_llength));
-			bool match = matcher ? matcher->Match(str_lcase)
-			                     : (has_escape ? LikeOperatorFunction(str_lcase, pat_lcase, escape_char)
-			                                   : LikeOperatorFunction(str_lcase, pat_lcase));
+			// the lowercase copy can be longer than a string_t can hold
+			bool match;
+			if (matcher) {
+				match = matcher->Match(scratch.get(), str_llength);
+			} else if (has_escape) {
+				match = LikeOperatorFunction(scratch.get(), str_llength, pat_ldata.get(), pat_llength, escape_char);
+			} else {
+				match = LikeOperatorFunction(scratch.get(), str_llength, pat_ldata.get(), pat_llength);
+			}
 			return INVERT ? !match : match;
 		});
 		return;
@@ -651,13 +659,12 @@ void ILikeFunction(DataChunk &input, ExpressionState &state, Vector &result) {
 		idx_t pat_llength = LowerLength(pattern.GetData(), pattern.GetSize());
 		auto pat_ldata = make_unsafe_uniq_array_uninitialized<char>(pat_llength);
 		LowerCase(pattern.GetData(), pattern.GetSize(), pat_ldata.get());
-		string_t pat_lcase(pat_ldata.get(), UnsafeNumericCast<uint32_t>(pat_llength));
 
 		// Build a case-insensitive matcher from the lowercased pattern. Because both the pattern and each string
 		// value are lowercased, a case-sensitive LikeMatcher over lowercased data is equivalent to ILIKE, and it
 		// uses the fast SIMD FindStrInStr/memcmp contains path. Returns null for patterns with '_' or only '%';
 		// in that case we fall back to the generic recursive matcher on the lowercased values.
-		auto matcher = LikeMatcher::CreateLikeMatcher(string(pat_lcase.GetData(), pat_lcase.GetSize()));
+		auto matcher = LikeMatcher::CreateLikeMatcher(string(pat_ldata.get(), pat_llength));
 
 		// reusable scratch buffer for lowercasing each string value (grown on demand)
 		idx_t scratch_size = 0;
@@ -669,8 +676,9 @@ void ILikeFunction(DataChunk &input, ExpressionState &state, Vector &result) {
 				scratch_size = str_llength;
 			}
 			LowerCase(str.GetData(), str.GetSize(), scratch.get());
-			string_t str_lcase(scratch.get(), UnsafeNumericCast<uint32_t>(str_llength));
-			bool match = matcher ? matcher->Match(str_lcase) : LikeOperatorFunction(str_lcase, pat_lcase);
+			// the lowercase copy can be longer than a string_t can hold
+			bool match = matcher ? matcher->Match(scratch.get(), str_llength)
+			                     : LikeOperatorFunction(scratch.get(), str_llength, pat_ldata.get(), pat_llength);
 			return INVERT ? !match : match;
 		});
 		return;

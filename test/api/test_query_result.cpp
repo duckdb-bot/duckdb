@@ -1285,7 +1285,7 @@ TEST_CASE("An internal error of the profiler at the end of a query invalidates t
 }
 
 //! Fails with an internal error when a file under its prefix is opened
-class FailingProfileFileSystem : public FileSystem {
+class FailingProfileFileSystem : public BaseFileSystem {
 public:
 	static constexpr const char *PREFIX = "failing-profile://";
 

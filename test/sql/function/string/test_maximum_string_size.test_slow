@@ -1,0 +1,47 @@
+# name: test/sql/function/string/test_maximum_string_size.test_slow
+# description: Test string functions with a result larger than the maximum string size
+# group: [string]
+
+# the input comes from a subquery, so the functions run during execution
+statement error
+SELECT length(bin(s)) FROM (SELECT repeat('x', 600000000) AS s)
+----
+<REGEX>:.*Out of Range Error.*maximum supported string size.*
+
+# the database is still usable
+query I
+SELECT 42
+----
+42
+
+statement error
+SELECT length(s || s) FROM (SELECT repeat('x', 2200000000) AS s)
+----
+<REGEX>:.*Out of Range Error.*maximum supported string size.*
+
+statement error
+SELECT length(concat(s, s)) FROM (SELECT repeat('x', 2200000000) AS s)
+----
+<REGEX>:.*Out of Range Error.*maximum supported string size.*
+
+statement error
+SELECT octet_length(b || b) FROM (SELECT repeat('x', 2200000000)::BLOB AS b)
+----
+<REGEX>:.*Out of Range Error.*maximum supported string size.*
+
+# constant arguments are folded while planning
+statement error
+SELECT length(bin(repeat('x', 600000000)))
+----
+<REGEX>:.*Out of Range Error.*maximum supported string size.*
+
+# TRY turns the error into NULL
+query I
+SELECT TRY(length(bin(s))) FROM (SELECT repeat('x', 600000000) AS s)
+----
+NULL
+
+query I
+SELECT 42
+----
+42

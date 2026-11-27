@@ -13,6 +13,8 @@
 #include "duckdb/storage/arena_allocator.hpp"
 
 namespace duckdb {
+class ErrorData;
+
 //! A string heap is the owner of a set of strings, strings can be inserted into
 //! it On every insert, a pointer to the inserted string is returned The
 //! returned pointer will remain valid until the StringHeap is destroyed
@@ -66,9 +68,7 @@ public:
 	inline string_t CreateEmptyStringInHeap(idx_t len) {
 		D_ASSERT(len > string_t::INLINE_LENGTH);
 		if (len > string_t::MAX_STRING_SIZE) {
-			throw OutOfRangeException(
-			    "Cannot create a string of size: '%d', the maximum supported string size is: '%d'", len,
-			    string_t::MAX_STRING_SIZE);
+			ThrowMaximumSizeExceeded(len);
 		}
 		// The caller fills the bytes and finalizes the prefix.
 		string_t result(UnsafeNumericCast<uint32_t>(len));
@@ -93,6 +93,11 @@ public:
 	DUCKDB_API ArenaAllocator &GetAllocator() {
 		return allocator;
 	}
+
+	//! Throws the error of a string that exceeds the maximum string size
+	[[noreturn]] DUCKDB_API static void ThrowMaximumSizeExceeded(idx_t len);
+	//! Whether the error is the one of a string that exceeds the maximum string size
+	DUCKDB_API static bool IsMaximumSizeError(const ErrorData &error);
 
 private:
 private:

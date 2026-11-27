@@ -2,6 +2,7 @@
 #include "duckdb/function/function_binder.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/common/types/decimal.hpp"
+#include "duckdb/common/types/string_heap.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/parser/parsed_expression.hpp"
@@ -28,7 +29,7 @@ DecimalWidthLimit FunctionBindExpressionInput::GetDecimalWidthLimit() const {
 
 void ThrowNonFallibleFunctionError(const Identifier &name, std::exception &ex) {
 	ErrorData error(ex);
-	if (!Exception::IsExecutionError(error.Type())) {
+	if (!Exception::IsExecutionError(error.Type()) || StringHeap::IsMaximumSizeError(error)) {
 		throw;
 	}
 	throw InternalException("Scalar function %s threw an execution error, but the function is not marked as "

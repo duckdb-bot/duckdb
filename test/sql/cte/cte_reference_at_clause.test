@@ -62,6 +62,12 @@ WITH c AS (SELECT a FROM t AT (VERSION => 7)) FROM c;
 ----
 Catalog type does not support time travel
 
+# inside the definition of a CTE of the same name, the name is still the table
+statement error
+WITH t AS (SELECT a FROM t AT (VERSION => 7)) FROM t;
+----
+Catalog type does not support time travel
+
 statement error
 FROM t AT (VERSION => 7);
 ----

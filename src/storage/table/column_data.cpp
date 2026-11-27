@@ -89,6 +89,10 @@ StorageManager &ColumnData::GetStorageManager() const {
 }
 
 bool ColumnData::HasUpdates() const {
+	if (!updates_may_exist.load(std::memory_order_acquire)) {
+		return false;
+	}
+	// Also synchronizes callers with the writer; the guard does not publish a constructed segment.
 	lock_guard<mutex> update_guard(update_lock);
 	return updates.get();
 }
@@ -360,6 +364,8 @@ void ColumnData::UpdateInternal(TransactionData transaction, DuckTableEntry &tab
                                 idx_t row_group_start) {
 	lock_guard<mutex> update_guard(update_lock);
 	if (!updates) {
+		// Publish before construction so readers synchronize through update_lock.
+		updates_may_exist.store(true, std::memory_order_release);
 		updates = make_uniq<UpdateSegment>(*this);
 	}
 	updates->Update(transaction, table_entry, column_index, update_vector, row_ids, update_count, base_vector,
@@ -967,9 +973,9 @@ void ColumnData::VisitBlockIds(BlockIdVisitor &visitor) const {
 	}
 }
 
-unique_ptr<ColumnCheckpointState> ColumnData::CreateCheckpointState(const RowGroup &row_group,
+unique_ptr<ColumnCheckpointState> ColumnData::CreateCheckpointState(const RowGroup &row_group, Context &context,
                                                                     PartialBlockManager &partial_block_manager) {
-	return make_uniq<ColumnCheckpointState>(row_group, *this, partial_block_manager);
+	return make_uniq<ColumnCheckpointState>(row_group, *this, context, partial_block_manager);
 }
 
 void ColumnData::CheckpointScan(ColumnSegment &segment, ColumnScanState &state, idx_t count,
@@ -995,7 +1001,8 @@ ColumnData::Checkpoint(const RowGroup &row_group, ColumnCheckpointInfo &checkpoi
 	// scan the segments of the column data
 	// set up the checkpoint state
 	auto &partial_block_manager = checkpoint_info.GetPartialBlockManager();
-	auto checkpoint_state = CreateCheckpointState(row_group, partial_block_manager);
+	auto &context = checkpoint_info.GetContext();
+	auto checkpoint_state = CreateCheckpointState(row_group, context, partial_block_manager);
 	checkpoint_state->global_stats = BaseStatistics::CreateEmpty(type).ToUnique();
 
 	if (!data.GetRootSegment()) {
@@ -1387,7 +1394,7 @@ unique_ptr<ExtraPersistentColumnData> ExtraPersistentColumnData::Deserialize(Des
 	case ExtraPersistentColumnDataType::LIST:
 		return ListPersistentColumnData::Deserialize(deserializer);
 	default:
-		throw InternalException("Unknown PersistentColumnData type");
+		throw DataCorruptionException("Column data with extra data of an unknown type");
 	}
 }
 

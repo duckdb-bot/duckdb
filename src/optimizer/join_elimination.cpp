@@ -103,7 +103,7 @@ namespace {
 struct ColumnProducers {
 	//! The expression that computes a column of a projection, an aggregate, a window or an unnest
 	column_binding_map_t<reference<const Expression>> expressions;
-	//! The columns of the children that a column of a set operation returns
+	//! The columns of the children that a column of a set operation or of a recursive CTE returns
 	column_binding_map_t<vector<ColumnBinding>> inputs;
 	//! The CTE that a CTE reference reads
 	unordered_map<TableIndex, TableIndex> cte_refs;
@@ -116,7 +116,7 @@ struct ColumnProducers {
 		}
 	}
 
-	//! The columns of `op` return the columns of its children at the same position
+	//! A column of `op` returns the columns of its children at the same position, payload aggregates aside
 	void AddInputs(TableIndex table_index, LogicalOperator &op) {
 		for (auto &child : op.children) {
 			auto child_bindings = child->GetColumnBindings();
@@ -206,7 +206,7 @@ bool RemovedSubtreeEffects::ReadsColumnWithEffect(LogicalOperator &reader, Logic
 			}
 			auto cte = materialized_ctes.find(cte_index);
 			if (cte == materialized_ctes.end()) {
-				// a reference to something that is not defined in this plan: assume the worst
+				// a reference to something that is not defined in this plan counts as an effect
 				return true;
 			}
 			// the column of the definition that the reference returns at this position

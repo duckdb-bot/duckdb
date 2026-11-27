@@ -41,6 +41,14 @@ EXPLAIN WITH m AS MATERIALIZED (SELECT x, nextval('plan_sequence') AS k FROM v) 
 ----
 logical_opt	<!REGEX>:(?s).*Join.*
 
+# nor does a volatile column of a recursion next to the column that a join inside the step reads
+query II
+EXPLAIN WITH RECURSIVE m AS MATERIALIZED (SELECT x, nextval('plan_sequence') AS k FROM v),
+r(x, k) AS (SELECT x, k FROM m UNION ALL SELECT r.x + 3, r.k FROM r LEFT JOIN u ON u.id = r.x WHERE r.x < 4)
+SELECT sum(x), sum(k) FROM r;
+----
+logical_opt	<!REGEX>:(?s).*Join.*
+
 # a volatile column that the query never reads is not computed
 statement ok
 CREATE SEQUENCE unread_sequence;

@@ -1,5 +1,5 @@
 # name: test/optimizer/unused_columns/unused_columns_rerun_volatile_plan.test
-# description: The column pruning that runs again after statistics propagation still removes what it removed before
+# description: Pruning and the count from statistics still remove what has no effect after statistics propagation
 # group: [unused_columns]
 
 statement ok
@@ -13,9 +13,9 @@ statement ok
 CREATE SEQUENCE unread_sequence;
 
 query I
-SELECT count(*) FROM (SELECT x, CASE WHEN nextval('unread_sequence') > 0 THEN true ELSE true END AS b FROM v);
+SELECT sum(x) FROM (SELECT x, CASE WHEN nextval('unread_sequence') > 0 THEN true ELSE true END AS b FROM v);
 ----
-3
+6
 
 query I
 SELECT nextval('unread_sequence');
@@ -35,6 +35,12 @@ query II
 EXPLAIN SELECT list(c ORDER BY x) FROM (SELECT x, b > false AS c FROM (SELECT x, always_true AS b FROM w)) WHERE x >= 0;
 ----
 physical_plan	<!REGEX>:(?s).*always_true.*
+
+# a count over a projection without a volatile expression is still answered from the row count of the table
+query II
+EXPLAIN SELECT count(y) FROM (SELECT x + 1 AS y FROM w);
+----
+physical_plan	<!REGEX>:(?s).*Seq Scan.*
 
 # the scan shows the column while a filter reads it
 statement ok

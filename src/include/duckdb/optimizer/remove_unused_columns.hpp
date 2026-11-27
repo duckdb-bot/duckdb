@@ -147,7 +147,7 @@ private:
 	//! output implicitly refers all the columns below it)
 	bool everything_referenced;
 	bool allow_missing_cte_references = false;
-	//! Whether a projection keeps a volatile expression whose column nothing reads any more
+	//! Whether a projection or an aggregate keeps a volatile expression whose column nothing reads any more
 	bool keep_volatile_columns;
 	RemoveUnusedColumnsMode mode = RemoveUnusedColumnsMode::APPLY;
 
@@ -168,6 +168,8 @@ private:
 	void RecordSecureViewReplacement(ColumnBinding old_binding, ColumnBinding new_binding,
 	                                 unique_ptr<Expression> expression = nullptr);
 	void ApplySecureViewReplacements();
+	//! Marks the volatile expressions of an operator as read
+	void KeepVolatileExpressions(const vector<unique_ptr<Expression>> &expressions, TableIndex table_idx);
 	void RemoveColumnsFromLogicalColumnDataGet(LogicalColumnDataGet &get);
 	void RemoveColumnsFromLogicalGet(LogicalGet &get, unique_ptr<LogicalOperator> &op_ref);
 	void VisitSecureView(LogicalSecureView &view);

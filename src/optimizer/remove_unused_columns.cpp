@@ -229,6 +229,16 @@ idx_t BaseColumnPruner::ReplaceBinding(ColumnBinding current_binding, ColumnBind
 	return created_bindings;
 }
 
+void RemoveUnusedColumns::KeepVolatileExpressions(const vector<unique_ptr<Expression>> &expressions,
+                                                  TableIndex table_idx) {
+	// a volatile expression is still evaluated after another optimizer removed the reader of its column
+	for (idx_t i = 0; i < expressions.size(); i++) {
+		if (expressions[i]->IsVolatile()) {
+			column_references.emplace(ColumnBinding(table_idx, ProjectionIndex(i)), ReferencedColumn());
+		}
+	}
+}
+
 template <class T>
 void RemoveUnusedColumns::ClearUnusedExpressions(vector<T> &list, TableIndex table_idx, bool replace) {
 	D_ASSERT(mode == RemoveUnusedColumnsMode::APPLY);
@@ -569,6 +579,9 @@ void RemoveUnusedColumns::VisitOperator(unique_ptr<LogicalOperator> &op_ref) {
 	case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY: {
 		// aggregate
 		auto &aggr = op.Cast<LogicalAggregate>();
+		if (keep_volatile_columns && !everything_referenced) {
+			KeepVolatileExpressions(aggr.expressions, aggr.aggregate_index);
+		}
 		if (analyze) {
 			RemoveUnusedColumns remove(*this, everything_referenced);
 			for (auto &group : aggr.groups) {
@@ -776,12 +789,7 @@ void RemoveUnusedColumns::VisitOperator(unique_ptr<LogicalOperator> &op_ref) {
 	case LogicalOperatorType::LOGICAL_PROJECTION: {
 		auto &proj = op.Cast<LogicalProjection>();
 		if (keep_volatile_columns && !everything_referenced) {
-			// a volatile expression is still evaluated after another optimizer removed the reader of its column
-			for (idx_t i = 0; i < proj.expressions.size(); i++) {
-				if (proj.expressions[i]->IsVolatile()) {
-					column_references.emplace(ColumnBinding(proj.table_index, ProjectionIndex(i)), ReferencedColumn());
-				}
-			}
+			KeepVolatileExpressions(proj.expressions, proj.table_index);
 		}
 		if (analyze) {
 			RemoveUnusedColumns remove(*this, false);

@@ -1,5 +1,5 @@
 # name: test/optimizer/unused_columns/unused_columns_rerun_volatile.test
-# description: The column pruning that runs again after statistics propagation keeps a volatile column that lost its reader
+# description: A volatile column that loses its reader in statistics propagation is still computed
 # group: [unused_columns]
 
 # the pruning runs again on a plan that already carries projection maps
@@ -230,6 +230,107 @@ query I
 SELECT nextval('case_sequence');
 ----
 2
+
+# a volatile aggregate whose reader the statistics decide
+statement ok
+CREATE SEQUENCE aggregate_sequence;
+
+query I
+SELECT sum(x) FILTER (WHERE b IS NULL) FROM (SELECT x, first(CASE WHEN nextval('aggregate_sequence') > 0 THEN NULL::INTEGER ELSE NULL::INTEGER END) AS b FROM v GROUP BY x);
+----
+6
+
+query I
+SELECT nextval('aggregate_sequence');
+----
+4
+
+statement ok
+CREATE SEQUENCE aggregate_fold_sequence;
+
+query II
+SELECT count(x), list(c ORDER BY x) FROM (SELECT x, b IS NULL AS c FROM (SELECT x, first(CASE WHEN nextval('aggregate_fold_sequence') > 0 THEN NULL::INTEGER ELSE NULL::INTEGER END) AS b FROM v GROUP BY x));
+----
+3	[true, true, true]
+
+query I
+SELECT nextval('aggregate_fold_sequence');
+----
+4
+
+# an ungrouped count over a volatile column is not answered from the row count of the table
+statement ok
+CREATE SEQUENCE ungrouped_sequence;
+
+query I
+SELECT count(b) FROM (SELECT x, CASE WHEN nextval('ungrouped_sequence') > 0 THEN true ELSE true END AS b FROM v);
+----
+3
+
+query I
+SELECT nextval('ungrouped_sequence');
+----
+4
+
+statement ok
+CREATE SEQUENCE count_filter_sequence;
+
+query I
+SELECT count(*) FILTER (WHERE b) FROM (SELECT x, CASE WHEN nextval('count_filter_sequence') > 0 THEN true ELSE true END AS b FROM v);
+----
+3
+
+query I
+SELECT nextval('count_filter_sequence');
+----
+4
+
+statement ok
+CREATE SEQUENCE count_where_sequence;
+
+query I
+SELECT count(*) FROM (SELECT x, b > false AS c FROM (SELECT x, CASE WHEN nextval('count_where_sequence') > 0 THEN true ELSE true END AS b FROM v)) WHERE c;
+----
+3
+
+query I
+SELECT nextval('count_where_sequence');
+----
+4
+
+# a top-N window rewrite with late materialization makes the pruning run again as well
+statement ok
+CREATE TABLE t AS SELECT i AS x, i % 5 AS g, md5(i::VARCHAR) AS p FROM range(1000) r(i);
+
+statement ok
+CREATE SEQUENCE late_materialization_sequence;
+
+query IIII
+SELECT sum(q.x), bool_and(q.c), sum(w.x), sum(length(w.p))
+FROM (SELECT x, b > false AS c FROM (SELECT x, CASE WHEN nextval('late_materialization_sequence') > 0 THEN true ELSE true END AS b FROM v)) q
+CROSS JOIN (SELECT x, g, p FROM t QUALIFY row_number() OVER (PARTITION BY g ORDER BY x) <= 2) w;
+----
+60	true	135	960
+
+query I
+SELECT nextval('late_materialization_sequence');
+----
+4
+
+# the pruning inside the top-N window rewrite
+statement ok
+CREATE SEQUENCE top_n_sequence;
+
+query III
+SELECT count(*), bool_and(c), sum(x)
+FROM (SELECT x, c FROM (SELECT x, g, b > false AS c FROM (SELECT x, g, CASE WHEN nextval('top_n_sequence') > 0 THEN true ELSE true END AS b FROM t)) QUALIFY row_number() OVER (PARTITION BY g ORDER BY x) <= 2);
+----
+10	true	45
+
+query I
+SELECT nextval('top_n_sequence');
+----
+1001
 
 # a scalar subquery that returns more than one row raises its error
 statement error

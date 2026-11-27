@@ -71,16 +71,26 @@ SELECT * FROM read_csv('{TEST_DIR}/crlf_every_range.csv', auto_detect = false, h
 ----
 CSV Error on Line: 7
 
+statement ok
+SET VARIABLE threads_of_the_test = current_setting('threads');
+
 # cast errors take their line from the same count, in the scanner (INTEGER) and when a chunk is flushed (INTERVAL, INTEGER[])
 foreach type INTEGER INTERVAL INTEGER[]
 
 statement ok
 COPY (SELECT line FROM (SELECT -1 AS i, 'aaaaaaaa,bbbbbb' AS line UNION ALL SELECT i, lpad(i::VARCHAR, 7, '0') || ',' || CASE WHEN i IN (5, 9, 13, 17, 30) THEN 'abcdef' WHEN '{type}' = 'INTEGER' THEN '123456' WHEN '{type}' = 'INTERVAL' THEN '1 day ' ELSE '[1234]' END FROM range(40) t(i)) ORDER BY i) TO '{TEST_DIR}/crlf_cast.csv' (HEADER false, QUOTE '', DELIMITER '|', NEW_LINE e'\r\n');
 
+# one thread reads the scan ranges in order, so the error does not wait for the lines of an earlier range
+statement ok
+SET threads = 1;
+
 statement error
 SELECT * FROM read_csv('{TEST_DIR}/crlf_cast.csv', auto_detect = false, header = true, columns = {'a': 'VARCHAR', 'b': '{type}'}, new_line = '\r\n', buffer_size = 256, max_line_size = 32);
 ----
 CSV Error on Line: 7
+
+statement ok
+SET threads = getvariable('threads_of_the_test');
 
 query II
 SELECT count(*), count(b) FROM read_csv('{TEST_DIR}/crlf_cast.csv', auto_detect = false, header = true, columns = {'a': 'VARCHAR', 'b': '{type}'}, new_line = '\r\n', buffer_size = 256, max_line_size = 32, store_rejects = true, rejects_table = 'rejects_cast', rejects_scan = 'scan_cast');

@@ -1335,7 +1335,7 @@ void StringValueScanner::ProcessExtraRow() {
 				lines_read++;
 				return;
 			}
-			lines_read++;
+			// the line was counted at its carriage return
 			iterator.pos.buffer_pos++;
 			break;
 		case CSVState::CARRIAGE_RETURN:

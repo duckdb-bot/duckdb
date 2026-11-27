@@ -1,0 +1,72 @@
+# name: test/sql/copy/csv/parallel/csv_parallel_crlf_line_number.test
+# description: Errors and rejects keep their line when a scan range ends between a carriage return and its line feed
+# group: [parallel]
+
+# 34 bytes, the carriage return behind 33,44 is the last byte of the second scan range of 8 bytes
+statement ok
+COPY (SELECT line FROM (VALUES (0, 'a,b'), (1, '1,2'), (2, '33,44'), (3, '5,6'), (4, 'x,y,z'), (5, '7,8')) t(i, line) ORDER BY i) TO '{TEST_DIR}/crlf_split_then_error.csv' (HEADER false, QUOTE '', DELIMITER '|', NEW_LINE e'\r\n');
+
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/crlf_split_then_error.csv', auto_detect = false, header = true, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, new_line = '\r\n', buffer_size = 32, max_line_size = 8);
+----
+CSV Error on Line: 5
+Original Line: x,y,z
+
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/crlf_split_then_error.csv', auto_detect = false, header = true, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, new_line = '\r\n', buffer_size = 32, max_line_size = 8, parallel = false);
+----
+CSV Error on Line: 5
+
+query I
+SELECT count(*) FROM read_csv('{TEST_DIR}/crlf_split_then_error.csv', auto_detect = false, header = true, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, new_line = '\r\n', buffer_size = 32, max_line_size = 8, store_rejects = true, rejects_table = 'rejects_split', rejects_scan = 'scan_split');
+----
+4
+
+query IIT
+SELECT line, column_idx, csv_line FROM rejects_split;
+----
+5	3	x,y,z
+
+# a header of 17 bytes and rows of 16 bytes, so every scan range of 64 bytes ends between a carriage return and its
+# line feed, and so does the first buffer of 256 bytes
+statement ok
+COPY (SELECT line FROM (SELECT -1 AS i, 'aaaaaaaa,bbbbbb' AS line UNION ALL SELECT i, lpad(i::VARCHAR, 7, '0') || CASE WHEN i IN (5, 9, 13, 17, 30) THEN ',12,456' ELSE ',123456' END FROM range(40) t(i)) ORDER BY i) TO '{TEST_DIR}/crlf_every_range.csv' (HEADER false, QUOTE '', DELIMITER '|', NEW_LINE e'\r\n');
+
+query I
+SELECT count(*) FROM read_csv('{TEST_DIR}/crlf_every_range.csv', auto_detect = false, header = true, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, new_line = '\r\n', buffer_size = 256, max_line_size = 32, store_rejects = true, rejects_table = 'rejects_ranges', rejects_scan = 'scan_ranges');
+----
+35
+
+# row i is on line i + 2
+query I
+SELECT list(line ORDER BY line) FROM rejects_ranges;
+----
+[7, 11, 15, 19, 32]
+
+# the sniffed read
+query I
+SELECT count(*) FROM read_csv('{TEST_DIR}/crlf_every_range.csv', buffer_size = 256, max_line_size = 32, store_rejects = true, rejects_table = 'rejects_sniffed', rejects_scan = 'scan_sniffed');
+----
+35
+
+query I
+SELECT list(line ORDER BY line) FROM rejects_sniffed;
+----
+[7, 11, 15, 19, 32]
+
+# the single-threaded read
+query I
+SELECT count(*) FROM read_csv('{TEST_DIR}/crlf_every_range.csv', auto_detect = false, header = true, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, new_line = '\r\n', buffer_size = 256, max_line_size = 32, store_rejects = true, rejects_table = 'rejects_serial', rejects_scan = 'scan_serial', parallel = false);
+----
+35
+
+query I
+SELECT list(line ORDER BY line) FROM rejects_serial;
+----
+[7, 11, 15, 19, 32]
+
+# the first bad row stops a read that does not store rejects
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/crlf_every_range.csv', auto_detect = false, header = true, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, new_line = '\r\n', buffer_size = 256, max_line_size = 32);
+----
+CSV Error on Line: 7

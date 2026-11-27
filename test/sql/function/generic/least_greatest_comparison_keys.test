@@ -83,6 +83,20 @@ FROM (
 ----
 10000	9714	10000
 
+# the bounds of the arguments say nothing about the result. Every first value is stored below every second one
+statement ok
+CREATE TABLE times AS SELECT TIMETZ '01:00:00+00' AS a, TIMETZ '05:00:00+10' AS b FROM range(3);
+
+query II
+SELECT count(*) FILTER (WHERE least(a, b)::VARCHAR = '05:00:00+10'), count(*) FILTER (WHERE greatest(a, b)::VARCHAR = '01:00:00+00') FROM times;
+----
+3	3
+
+query I
+SELECT count(*) FROM times WHERE least(a, b)::VARCHAR = '05:00:00+10';
+----
+3
+
 # nested types
 query IIII
 SELECT least([INTERVAL '45 days'], [INTERVAL '1 month']), greatest({'a': INTERVAL '45 days'}, {'a': INTERVAL '1 month'}), least({'a': [TIMETZ '12:00:00+02']}, {'a': [TIMETZ '11:00:00+00']}), least([INTERVAL '45 days']::INTERVAL[1], [INTERVAL '1 month']::INTERVAL[1]);

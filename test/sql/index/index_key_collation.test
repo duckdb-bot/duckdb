@@ -49,9 +49,6 @@ statement ok
 INSERT INTO vl VALUES ([2::TINYINT::VARIANT]);
 
 statement ok
-INSERT INTO lg VALUES ('c', 'D', TIMETZ '01:00:00+00', TIMETZ '03:00:00+05');
-
-statement ok
 SET default_collation = 'nocase';
 
 statement ok
@@ -62,6 +59,9 @@ DELETE FROM il WHERE v = [INTERVAL 1 DAY];
 
 statement ok
 DELETE FROM vl WHERE v = [1::TINYINT::VARIANT];
+
+statement ok
+INSERT INTO lg VALUES ('c', 'D', TIMETZ '01:00:00+00', TIMETZ '03:00:00+05');
 
 statement ok
 DELETE FROM lg WHERE u = 'a';

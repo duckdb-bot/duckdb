@@ -64,6 +64,22 @@ SELECT k, count(*) AS c FROM (SELECT i % 1000 AS k FROM range(2000000) t(i)) q G
 998	2000
 999	2000
 
+# groups of different sizes come back in the order of the aggregate result
+query II
+EXPLAIN SELECT k, count(*) AS c FROM (SELECT i % 10001 AS k FROM range(3000000) t(i)) q GROUP BY k ORDER BY c, k LIMIT 6000 OFFSET 9995;
+----
+logical_opt	<!REGEX>:.*TOP_N.*
+
+query II
+SELECT k, count(*) AS c FROM (SELECT i % 10001 AS k FROM range(3000000) t(i)) q GROUP BY k ORDER BY c, k LIMIT 6000 OFFSET 9995;
+----
+9695	300
+9696	300
+9697	300
+9698	300
+9699	300
+9700	300
+
 statement ok
 SET disabled_optimizers = 'top_n';
 

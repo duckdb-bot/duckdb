@@ -30,8 +30,8 @@ public:
 	unique_ptr<LogicalOperator> Optimize(unique_ptr<LogicalOperator> op);
 	//! Whether we can perform the optimization on this operator
 	static bool CanOptimize(LogicalOperator &op, optional_ptr<ClientContext> context = nullptr);
-	//! Whether the Top-N sorts the groups of a grouped aggregate by a result of its aggregate functions first, and
-	//! nothing else builds on it: no dynamic filter was pushed down, and the top key rewrite needs group keys in front
+	//! Whether the Top-N has no dynamic filter and sorts the groups of a grouped aggregate by a result of its
+	//! aggregate functions first, so that the top key rewrite, which needs group keys in front, cannot apply to it
 	static bool SortsGroupsByAggregateResult(const LogicalTopN &topn);
 	//! Turns a Top-N back into the ORDER BY and the LIMIT it was made from
 	static unique_ptr<LogicalOperator> ToSortAndLimit(unique_ptr<LogicalOperator> op);

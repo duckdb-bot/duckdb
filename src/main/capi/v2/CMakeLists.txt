@@ -8,11 +8,13 @@ add_library_unity(
   capi_v2_expression.cpp
   capi_v2_catalog.cpp
   capi_v2_column_data_collection.cpp
+  capi_v2_crypto.cpp
   capi_v2_config.cpp
   capi_v2_connection.cpp
   capi_v2_custom_option.cpp
   capi_v2_custom_type.cpp
   capi_v2_data_chunk.cpp
+  capi_v2_data_source.cpp
   capi_v2_environment.cpp
   capi_v2_error.cpp
   capi_v2_extension.cpp
@@ -34,6 +36,7 @@ add_library_unity(
   capi_v2_log_sink.cpp
   capi_v2_logging.cpp
   capi_v2_logical_type.cpp
+  capi_v2_operator.cpp
   capi_v2_option.cpp
   capi_v2_prepared_statement.cpp
   capi_v2_qname.cpp

@@ -1773,6 +1773,10 @@ FlattenDependentJoins::PushDownCorrelatedNodeInternal(unique_ptr<LogicalOperator
 		throw BinderException("Sampling in correlated subqueries is not (yet) supported");
 	case LogicalOperatorType::LOGICAL_POSITIONAL_JOIN:
 		throw BinderException("Positional join in correlated subqueries is not (yet) supported");
+	case LogicalOperatorType::LOGICAL_MERGE_INTO:
+		// only a FOR EACH ROW trigger puts a MERGE INTO below a dependent join
+		throw NotImplementedException("MERGE INTO, and INSERT with ON CONFLICT, OR REPLACE or OR IGNORE, cannot yet "
+		                              "run for every row of a FOR EACH ROW trigger");
 	default:
 		throw InternalException("Logical operator type \"%s\" for dependent join", LogicalOperatorToString(plan->type));
 	}

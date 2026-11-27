@@ -552,6 +552,79 @@ SELECT * FROM t_merge_body_dest ORDER BY k;
 1	0
 5	1
 
+# a row trigger can write to a table whose statement trigger has such a body
+statement ok
+CREATE TABLE t_merge_row_src (k INTEGER);
+
+statement ok
+CREATE TABLE t_merge_row_dest (k INTEGER);
+
+statement ok
+CREATE TABLE t_merge_seen (id INTEGER PRIMARY KEY, v INTEGER);
+
+statement ok
+CREATE TRIGGER trg_merge_row AFTER INSERT ON t_merge_row_src FOR EACH ROW
+    INSERT INTO t_merge_row_dest VALUES (NEW.k);
+
+statement ok
+CREATE TRIGGER trg_merge_seen BEFORE INSERT ON t_merge_row_dest FOR EACH STATEMENT
+    INSERT INTO t_merge_seen VALUES (1, 1) ON CONFLICT DO UPDATE SET v = 2;
+
+statement ok
+INSERT INTO t_merge_row_src VALUES (1);
+
+statement ok
+INSERT INTO t_merge_row_src VALUES (2), (3);
+
+# the row trigger can also be created after the statement trigger
+statement ok
+DROP TRIGGER trg_merge_row ON t_merge_row_src;
+
+statement ok
+CREATE TRIGGER trg_merge_row AFTER INSERT ON t_merge_row_src FOR EACH ROW
+    INSERT INTO t_merge_row_dest VALUES (NEW.k);
+
+statement ok
+INSERT INTO t_merge_row_src VALUES (4);
+
+query I
+SELECT * FROM t_merge_row_dest ORDER BY k;
+----
+1
+2
+3
+4
+
+query II
+SELECT * FROM t_merge_seen;
+----
+1	2
+
+# such a body cannot read the rows that a row trigger writes
+statement ok
+CREATE TRIGGER trg_merge_new_rows AFTER INSERT ON t_merge_row_dest REFERENCING NEW TABLE AS new_rows FOR EACH STATEMENT
+    INSERT INTO t_merge_seen SELECT k + 100, 1 FROM new_rows ON CONFLICT DO UPDATE SET v = 2;
+
+statement error
+INSERT INTO t_merge_row_src VALUES (5);
+----
+Not implemented Error: MERGE INTO, and INSERT with ON CONFLICT, OR REPLACE or OR IGNORE, cannot yet run for every row of a FOR EACH ROW trigger
+
+query I
+SELECT count(*) FROM t_merge_row_src;
+----
+4
+
+# a statement on the table itself runs it
+statement ok
+INSERT INTO t_merge_row_dest VALUES (5);
+
+query II
+SELECT * FROM t_merge_seen ORDER BY id;
+----
+1	2
+105	1
+
 # Cascading FOR EACH ROW triggers are not yet supported
 statement ok
 CREATE TABLE casc_a (id INTEGER);

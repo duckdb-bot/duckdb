@@ -2124,12 +2124,12 @@ bool TryCastErrorMessage::Operation(string_t input, timestamp_tz_ns_t &result, C
 	return false;
 }
 
-template <>
-bool TryCastErrorMessage::Operation(string_t input, timestamp_ns_t &result, CastParameters &parameters) {
-	switch (Timestamp::TryConvertTimestamp(input.GetData(), input.GetSize(), result, false)) {
-	case TimestampCastResult::SUCCESS:
-	case TimestampCastResult::STRICT_UTC:
-		return true;
+//! Records why a string is not a timestamp of the target type, unless the cast already holds an error
+static void AssignTimestampCastError(TimestampCastResult cast_result, string_t input, CastParameters &parameters) {
+	if (parameters.error_message && !parameters.error_message->empty()) {
+		return;
+	}
+	switch (cast_result) {
 	case TimestampCastResult::ERROR_INCORRECT_FORMAT:
 		HandleCastError::AssignError(Timestamp::FormatError(input), parameters);
 		break;
@@ -2139,7 +2139,19 @@ bool TryCastErrorMessage::Operation(string_t input, timestamp_ns_t &result, Cast
 	case TimestampCastResult::ERROR_RANGE:
 		HandleCastError::AssignError(Timestamp::RangeError(input), parameters);
 		break;
+	case TimestampCastResult::SUCCESS:
+	case TimestampCastResult::STRICT_UTC:
+		throw InternalException("A timestamp cast that succeeded has no error");
 	}
+}
+
+template <>
+bool TryCastErrorMessage::Operation(string_t input, timestamp_ns_t &result, CastParameters &parameters) {
+	const auto cast_result = Timestamp::TryConvertTimestamp(input.GetData(), input.GetSize(), result, false);
+	if (cast_result == TimestampCastResult::SUCCESS || cast_result == TimestampCastResult::STRICT_UTC) {
+		return true;
+	}
+	AssignTimestampCastError(cast_result, input, parameters);
 	return false;
 }
 
@@ -2147,14 +2159,16 @@ bool TryCastErrorMessage::Operation(string_t input, timestamp_ns_t &result, Cast
 template <class TIMESTAMP_TYPE>
 static bool TryCastStringToTimestampPrecision(string_t input, TIMESTAMP_TYPE &result, CastParameters &parameters) {
 	timestamp_t us;
-	if (!TryCastErrorMessage::Operation<string_t, timestamp_t>(input, us, parameters)) {
-		return false;
+	auto cast_result = Timestamp::TryConvertTimestamp(input.GetData(), input.GetSize(), us, false);
+	if (cast_result == TimestampCastResult::SUCCESS || cast_result == TimestampCastResult::STRICT_UTC) {
+		if (TryCastTimestampBase<timestamp_t, TIMESTAMP_TYPE>(us, result, parameters.strict)) {
+			return true;
+		}
+		// a valid timestamp whose rounded value does not fit the result type
+		cast_result = TimestampCastResult::ERROR_RANGE;
 	}
-	if (!TryCastTimestampBase<timestamp_t, TIMESTAMP_TYPE>(us, result, parameters.strict)) {
-		HandleCastError::AssignError(Timestamp::RangeError(input), parameters);
-		return false;
-	}
-	return true;
+	AssignTimestampCastError(cast_result, input, parameters);
+	return false;
 }
 
 template <>

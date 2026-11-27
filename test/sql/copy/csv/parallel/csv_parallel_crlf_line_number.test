@@ -70,3 +70,32 @@ statement error
 SELECT * FROM read_csv('{TEST_DIR}/crlf_every_range.csv', auto_detect = false, header = true, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, new_line = '\r\n', buffer_size = 256, max_line_size = 32);
 ----
 CSV Error on Line: 7
+
+# cast errors take their line from the same count, in the scanner (INTEGER) and when a chunk is flushed (INTERVAL, INTEGER[])
+foreach type INTEGER INTERVAL INTEGER[]
+
+statement ok
+COPY (SELECT line FROM (SELECT -1 AS i, 'aaaaaaaa,bbbbbb' AS line UNION ALL SELECT i, lpad(i::VARCHAR, 7, '0') || ',' || CASE WHEN i IN (5, 9, 13, 17, 30) THEN 'abcdef' WHEN '{type}' = 'INTEGER' THEN '123456' WHEN '{type}' = 'INTERVAL' THEN '1 day ' ELSE '[1234]' END FROM range(40) t(i)) ORDER BY i) TO '{TEST_DIR}/crlf_cast.csv' (HEADER false, QUOTE '', DELIMITER '|', NEW_LINE e'\r\n');
+
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/crlf_cast.csv', auto_detect = false, header = true, columns = {'a': 'VARCHAR', 'b': '{type}'}, new_line = '\r\n', buffer_size = 256, max_line_size = 32);
+----
+CSV Error on Line: 7
+
+query II
+SELECT count(*), count(b) FROM read_csv('{TEST_DIR}/crlf_cast.csv', auto_detect = false, header = true, columns = {'a': 'VARCHAR', 'b': '{type}'}, new_line = '\r\n', buffer_size = 256, max_line_size = 32, store_rejects = true, rejects_table = 'rejects_cast', rejects_scan = 'scan_cast');
+----
+35	35
+
+query I
+SELECT list(line ORDER BY line) FROM rejects_cast;
+----
+[7, 11, 15, 19, 32]
+
+statement ok
+DROP TABLE rejects_cast;
+
+statement ok
+DROP TABLE scan_cast;
+
+endloop

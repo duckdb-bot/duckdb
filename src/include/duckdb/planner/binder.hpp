@@ -772,6 +772,9 @@ private:
 
 	shared_ptr<Binder> CreateBinderWithSearchPath(const Identifier &catalog_name,
 	                                              const vector<Identifier> &schema_path);
+	//! Creates a binder that sees no columns of this binder. It shares the state of the statement of this binder
+	//! when that statement is bound to be executed or prepared
+	shared_ptr<Binder> CreateStatementBinder();
 
 	bool DebugAggregateStateExportVerify(BoundSelectNode &statement, unique_ptr<LogicalOperator> &root);
 

@@ -5,6 +5,8 @@
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/view_catalog_entry.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/numeric_utils.hpp"
+#include "duckdb/function/table/system_catalog_scanner.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/client_data.hpp"
 #include "duckdb/parser/constraints/not_null_constraint.hpp"
@@ -22,6 +24,7 @@ struct DuckDBColumnsData : public GlobalTableFunctionState {
 	vector<reference<CatalogEntry>> entries;
 	atomic<idx_t> offset;
 	idx_t column_offset;
+	SystemCatalogScannerStats stats;
 };
 
 static unique_ptr<FunctionData> DuckDBColumnsBind(ClientContext &context, TableFunctionBindInput &input,
@@ -72,13 +75,13 @@ static unique_ptr<FunctionData> DuckDBColumnsBind(ClientContext &context, TableF
 	return_types.emplace_back(LogicalType::INTEGER);
 
 	names.emplace_back("numeric_precision");
-	return_types.emplace_back(LogicalType::INTEGER);
+	return_types.emplace_back(LogicalType::BIGINT);
 
 	names.emplace_back("numeric_precision_radix");
 	return_types.emplace_back(LogicalType::INTEGER);
 
 	names.emplace_back("numeric_scale");
-	return_types.emplace_back(LogicalType::INTEGER);
+	return_types.emplace_back(LogicalType::BIGINT);
 
 	names.emplace_back("tags");
 	return_types.emplace_back(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
@@ -89,18 +92,17 @@ static unique_ptr<FunctionData> DuckDBColumnsBind(ClientContext &context, TableF
 	names.emplace_back("generation_expression");
 	return_types.emplace_back(LogicalType::VARCHAR);
 
-	return nullptr;
+	SystemCatalogIdentityColumns columns;
+	columns.entry_name = "table_name";
+	columns.entry_oid = "table_oid";
+	return SystemCatalogScanner::CreateBindData(names, return_types, columns);
 }
 
 static unique_ptr<GlobalTableFunctionState> DuckDBColumnsInit(ClientContext &context, TableFunctionInitInput &input) {
 	auto result = make_uniq<DuckDBColumnsData>();
 
-	// scan all the schemas for tables and views and collect them
-	auto schemas = Catalog::GetAllSchemas(context);
-	for (auto &schema : schemas) {
-		schema.get().Scan(context, CatalogType::TABLE_ENTRY,
-		                  [&](CatalogEntry &entry) { result->entries.push_back(entry); });
-	}
+	// collect the tables and views that survive the pushed-down filters
+	result->entries = SystemCatalogScanner::GetEntries(context, input, CatalogType::TABLE_ENTRY, result->stats);
 	return std::move(result);
 }
 
@@ -287,11 +289,11 @@ void ColumnHelper::WriteColumns(idx_t start_col, idx_t end_col, DataChunk &outpu
 	auto &data_type_id = output.data[13];
 	// character_maximum_length, INTEGER
 	auto &character_maximum_length = output.data[14];
-	// numeric_precision, INTEGER
+	// numeric_precision, BIGINT
 	auto &numeric_precision_col = output.data[15];
 	// numeric_precision_radix, INTEGER
 	auto &numeric_precision_radix_col = output.data[16];
-	// numeric_scale, INTEGER
+	// numeric_scale, BIGINT
 	auto &numeric_scale_col = output.data[17];
 	// tags, MAP(VARCHAR, VARCHAR)
 	auto &tags = output.data[18];
@@ -324,43 +326,43 @@ void ColumnHelper::WriteColumns(idx_t start_col, idx_t end_col, DataChunk &outpu
 		Value numeric_precision, numeric_scale, numeric_precision_radix;
 		switch (type.id()) {
 		case LogicalTypeId::DECIMAL:
-			numeric_precision = Value::INTEGER(DecimalType::GetWidth(type));
-			numeric_scale = Value::INTEGER(DecimalType::GetScale(type));
+			numeric_precision = Value::BIGINT(NumericCast<int64_t>(DecimalType::GetWidth(type)));
+			numeric_scale = Value::BIGINT(NumericCast<int64_t>(DecimalType::GetScale(type)));
 			numeric_precision_radix = Value::INTEGER(10);
 			break;
 		case LogicalTypeId::HUGEINT:
-			numeric_precision = Value::INTEGER(128);
-			numeric_scale = Value::INTEGER(0);
+			numeric_precision = Value::BIGINT(128);
+			numeric_scale = Value::BIGINT(0);
 			numeric_precision_radix = Value::INTEGER(2);
 			break;
 		case LogicalTypeId::BIGINT:
-			numeric_precision = Value::INTEGER(64);
-			numeric_scale = Value::INTEGER(0);
+			numeric_precision = Value::BIGINT(64);
+			numeric_scale = Value::BIGINT(0);
 			numeric_precision_radix = Value::INTEGER(2);
 			break;
 		case LogicalTypeId::INTEGER:
-			numeric_precision = Value::INTEGER(32);
-			numeric_scale = Value::INTEGER(0);
+			numeric_precision = Value::BIGINT(32);
+			numeric_scale = Value::BIGINT(0);
 			numeric_precision_radix = Value::INTEGER(2);
 			break;
 		case LogicalTypeId::SMALLINT:
-			numeric_precision = Value::INTEGER(16);
-			numeric_scale = Value::INTEGER(0);
+			numeric_precision = Value::BIGINT(16);
+			numeric_scale = Value::BIGINT(0);
 			numeric_precision_radix = Value::INTEGER(2);
 			break;
 		case LogicalTypeId::TINYINT:
-			numeric_precision = Value::INTEGER(8);
-			numeric_scale = Value::INTEGER(0);
+			numeric_precision = Value::BIGINT(8);
+			numeric_scale = Value::BIGINT(0);
 			numeric_precision_radix = Value::INTEGER(2);
 			break;
 		case LogicalTypeId::FLOAT:
-			numeric_precision = Value::INTEGER(24);
-			numeric_scale = Value::INTEGER(0);
+			numeric_precision = Value::BIGINT(24);
+			numeric_scale = Value::BIGINT(0);
 			numeric_precision_radix = Value::INTEGER(2);
 			break;
 		case LogicalTypeId::DOUBLE:
-			numeric_precision = Value::INTEGER(53);
-			numeric_scale = Value::INTEGER(0);
+			numeric_precision = Value::BIGINT(53);
+			numeric_scale = Value::BIGINT(0);
 			numeric_precision_radix = Value::INTEGER(2);
 			break;
 		default:
@@ -428,8 +430,14 @@ static double DuckDBColumnsProgress(ClientContext &context, const FunctionData *
 	return 100.0 * static_cast<double>(data.offset) / static_cast<double>(data.entries.size());
 }
 
+static void DuckDBColumnsGetMetrics(TableFunctionGetMetricsInput &input) {
+	SystemCatalogScanner::ReportMetrics(input, input.global_state->Cast<DuckDBColumnsData>().stats);
+}
+
 void DuckDBColumnsFun::RegisterFunction(BuiltinFunctions &set) {
 	TableFunction columns("duckdb_columns", {}, DuckDBColumnsFunction, DuckDBColumnsBind, DuckDBColumnsInit);
+	SystemCatalogScanner::RegisterPushdown(columns);
+	columns.get_metrics = DuckDBColumnsGetMetrics;
 	columns.table_scan_progress = DuckDBColumnsProgress;
 	set.AddFunction(columns);
 }

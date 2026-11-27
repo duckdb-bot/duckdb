@@ -30,6 +30,8 @@ struct JoinOrderUtil {
 	static bool HasValidJoinEndpoints(const FilterInfo &filter);
 	static bool HasDisjointJoinEndpoints(const FilterInfo &filter);
 	static RelationIndex GetBindingRelation(const ColumnBinding &binding);
+	//! Extract a column binding through invertible, non-TRY casts.
+	static ColumnBinding GetEquivalenceBinding(const Expression &expression);
 };
 
 class JoinPredicate {
@@ -43,6 +45,7 @@ public:
 	JoinPredicateClass GetPredicateClass() const;
 	JoinType GetJoinType() const;
 	ExpressionType GetComparisonType() const;
+	bool IsVolatile() const;
 	JoinRelationSet &GetSet() const;
 	JoinRelationSet &GetLeftSet() const;
 	JoinRelationSet &GetRightSet() const;
@@ -58,6 +61,7 @@ public:
 	bool HasValidEqualityBindings() const;
 	bool CanBuildEqualityClosure() const;
 	bool CanBuildSelectivityDomain() const;
+	bool IsResidualFilter() const;
 	bool IsEquivalencePredicate() const;
 	void SetEqualityClassIndex(optional_idx equality_class_index);
 	optional_idx GetEqualityClassIndex() const;
@@ -69,6 +73,7 @@ private:
 	reference<FilterInfo> filter;
 	JoinPredicateClass predicate_class;
 	ExpressionType comparison_type;
+	bool is_volatile;
 	ColumnBinding left_equality_binding;
 	ColumnBinding right_equality_binding;
 	optional_idx equality_class_index;
@@ -126,6 +131,7 @@ public:
 	void AddEqualityClass(JoinEqualityClass equality_class);
 	void AddDirectEqualityPairClass(JoinRelationSet &pair, idx_t equality_class_index, ColumnBinding first_binding,
 	                                ColumnBinding second_binding);
+	optional_ptr<const RelationPairEqualitySummary> GetDirectEqualityPair(JoinRelationSet &pair) const;
 
 	optional_ptr<const JoinPredicate> GetPredicateByFilterIndex(idx_t filter_index) const;
 	const vector<reference<JoinPredicate>> &GetPredicates() const;
@@ -133,7 +139,6 @@ public:
 	const vector<reference<JoinPredicate>> &GetSelectivityPredicates() const;
 	const vector<reference<JoinPredicate>> &GetGraphPredicates() const;
 	const vector<JoinEqualityClass> &GetEqualityClasses() const;
-	bool HasLeftJoinPredicates() const;
 
 	bool HasDirectCompositeEquality(JoinRelationSet &pair) const;
 
@@ -143,7 +148,6 @@ private:
 	vector<reference<JoinPredicate>> equality_join_predicates;
 	vector<reference<JoinPredicate>> selectivity_predicates;
 	vector<reference<JoinPredicate>> graph_predicates;
-	bool has_left_join_predicates = false;
 	vector<JoinEqualityClass> equality_classes;
 	reference_map_t<JoinRelationSet, RelationPairEqualitySummary> equality_pairs;
 };

@@ -139,11 +139,11 @@ class ExtensionLinkageTest(unittest.TestCase):
                 target["name"]: json.loads((reply / target["jsonFile"]).read_text())
                 for target in model["configurations"][0]["targets"]
             }
-            # CMake before 3.20 does not report toolchains
-            toolchains_reply = index["reply"].get("toolchains-v1")
-            toolchains = (
-                json.loads((reply / toolchains_reply["jsonFile"]).read_text())["toolchains"] if toolchains_reply else []
-            )
+            # CMake before 3.20 answers the toolchains query with an error instead of a file
+            toolchains_reply = index["reply"].get("toolchains-v1", {})
+            toolchains = []
+            if "jsonFile" in toolchains_reply:
+                toolchains = json.loads((reply / toolchains_reply["jsonFile"]).read_text())["toolchains"]
             clang_on_linux = sys.platform.startswith("linux") and any(
                 toolchain["language"] == "CXX" and "Clang" in toolchain["compiler"].get("id", "")
                 for toolchain in toolchains

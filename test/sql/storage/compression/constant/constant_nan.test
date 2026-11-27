@@ -1,0 +1,100 @@
+# name: test/sql/storage/compression/constant/constant_nan.test
+# description: Test that FLOAT/DOUBLE segments that hold only NaN values keep the sign of every NaN
+# group: [constant]
+
+require no_alternative_verify
+
+load {TEST_DIR}/constant_nan.db
+
+# NaN and -NaN compare equal, so a mix of them must not be stored as a constant segment
+statement ok
+CREATE TABLE mixed_nan(id INTEGER, v DOUBLE, vf FLOAT);
+
+statement ok
+INSERT INTO mixed_nan VALUES (1, 'NaN', 'NaN'), (2, '-NaN', '-NaN'), (3, NULL, NULL);
+
+statement ok
+CREATE TABLE neg_nan AS SELECT '-NaN'::DOUBLE AS v, '-NaN'::FLOAT AS vf FROM range(3);
+
+statement ok
+CREATE TABLE pos_nan AS SELECT 'NaN'::DOUBLE AS v, 'NaN'::FLOAT AS vf FROM range(3);
+
+statement ok
+CREATE TABLE nan_list(l DOUBLE[]);
+
+statement ok
+INSERT INTO nan_list VALUES (['NaN', '-NaN']);
+
+# a segment without any value can still use constant compression
+statement ok
+CREATE TABLE only_null AS SELECT NULL::DOUBLE AS v, NULL::FLOAT AS vf FROM range(3);
+
+# the keys of this index tell NaN and -NaN apart
+statement ok
+CREATE TABLE indexed_nan(v DOUBLE);
+
+statement ok
+INSERT INTO indexed_nan VALUES ('NaN'), ('-NaN');
+
+statement ok
+CREATE INDEX indexed_nan_idx ON indexed_nan (CAST(v AS VARCHAR));
+
+statement ok
+CHECKPOINT;
+
+loop i 0 2
+
+query IIIII
+SELECT id, v, signbit(v), vf, signbit(vf) FROM mixed_nan ORDER BY id;
+----
+1	nan	false	nan	false
+2	-nan	true	-nan	true
+3	NULL	NULL	NULL	NULL
+
+query IIII
+SELECT v, signbit(v), vf, signbit(vf) FROM neg_nan;
+----
+-nan	true	-nan	true
+-nan	true	-nan	true
+-nan	true	-nan	true
+
+query IIII
+SELECT v, signbit(v), vf, signbit(vf) FROM pos_nan;
+----
+nan	false	nan	false
+nan	false	nan	false
+nan	false	nan	false
+
+query III
+SELECT l, signbit(l[1]), signbit(l[2]) FROM nan_list;
+----
+[nan, -nan]	false	true
+
+query II
+SELECT v, signbit(v) FROM indexed_nan ORDER BY rowid;
+----
+nan	false
+-nan	true
+
+restart
+
+endloop
+
+query I
+SELECT DISTINCT compression = 'Constant' FROM pragma_storage_info('mixed_nan') WHERE segment_type IN ('DOUBLE', 'FLOAT');
+----
+false
+
+query I
+SELECT DISTINCT compression FROM pragma_storage_info('only_null') WHERE segment_type IN ('DOUBLE', 'FLOAT');
+----
+Constant
+
+# the index still has the keys of the stored values
+statement ok
+DELETE FROM indexed_nan;
+
+query I
+SELECT count(*) FROM indexed_nan;
+----
+0

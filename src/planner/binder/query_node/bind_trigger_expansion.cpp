@@ -573,6 +573,20 @@ bool BoundBodyContainsTrigger(const LogicalOperator &op) {
 	return false;
 }
 
+// Detects a MERGE INTO in a bound trigger body, which is also what an INSERT with conflict handling is planned as.
+// The NEW and OLD columns of a FOR EACH ROW trigger cannot be pushed through a MERGE INTO yet.
+bool BoundBodyContainsMergeInto(const LogicalOperator &op) {
+	if (op.type == LogicalOperatorType::LOGICAL_MERGE_INTO) {
+		return true;
+	}
+	for (auto &child : op.children) {
+		if (child && BoundBodyContainsMergeInto(*child)) {
+			return true;
+		}
+	}
+	return false;
+}
+
 unique_ptr<BoundStatement> Binder::TryExpandRowTriggers(QueryNode &node,
                                                         vector<unique_ptr<ParsedExpression>> &returning_list,
                                                         TableCatalogEntry &table, TriggerEventType event_type) {
@@ -675,6 +689,13 @@ BoundStatement Binder::ExpandRowTriggers(QueryNode &node, vector<unique_ptr<Pars
 		auto child_binder = Binder::CreateBinder(context, this);
 		auto body_copy = trigger.trigger_action->Copy();
 		auto bound_body = child_binder->Bind(*body_copy);
+
+		if (BoundBodyContainsMergeInto(*bound_body.plan)) {
+			throw NotImplementedException("FOR EACH ROW trigger %s on table %s has a MERGE INTO body or an INSERT "
+			                              "body with ON CONFLICT, OR REPLACE or OR IGNORE (not yet supported in FOR "
+			                              "EACH ROW triggers)",
+			                              trigger.name, table.name);
+		}
 
 		CorrelatedColumns corr_cols = std::move(child_binder->correlated_columns);
 		if (corr_cols.empty()) {

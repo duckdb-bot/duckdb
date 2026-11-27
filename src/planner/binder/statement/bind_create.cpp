@@ -717,6 +717,7 @@ void Binder::BindLogicalType(LogicalType &type) {
 }
 
 bool BoundBodyContainsTrigger(const LogicalOperator &op);
+bool BoundBodyContainsMergeInto(const LogicalOperator &op);
 
 SchemaCatalogEntry &Binder::BindCreateTriggerInfo(CreateTriggerInfo &create_trigger_info) {
 	if (create_trigger_info.temporary) {
@@ -876,6 +877,10 @@ SchemaCatalogEntry &Binder::BindCreateTriggerInfo(CreateTriggerInfo &create_trig
 		auto body_binder = Binder::CreateBinder(context, validation_binder.get());
 		auto bound_body = body_binder->Bind(*body_copy);
 		validation_binder->PopScope();
+		if (BoundBodyContainsMergeInto(*bound_body.plan)) {
+			throw NotImplementedException("MERGE INTO trigger bodies and INSERT trigger bodies with ON CONFLICT, OR "
+			                              "REPLACE or OR IGNORE in FOR EACH ROW triggers are not yet supported");
+		}
 		if (body_binder->correlated_columns.empty()) {
 			throw BinderException("FOR EACH ROW trigger %s on table %s must reference at least one NEW or OLD "
 			                      "column in the trigger body (use FOR EACH STATEMENT if row data is not needed)",

@@ -482,6 +482,76 @@ INSERT INTO t_conflict VALUES (1, 'b') ON CONFLICT DO NOTHING;
 ----
 Not implemented Error: ON CONFLICT is not yet supported on tables with FOR EACH ROW triggers
 
+# Trigger bodies that are planned as MERGE INTO are not yet supported
+statement ok
+CREATE TABLE t_merge_body (k INTEGER);
+
+statement ok
+CREATE TABLE t_merge_body_dest (k INTEGER PRIMARY KEY, v INTEGER DEFAULT 7);
+
+statement error
+CREATE TRIGGER trg_merge_body AFTER INSERT ON t_merge_body FOR EACH ROW
+    INSERT INTO t_merge_body_dest (k) VALUES (1) ON CONFLICT DO UPDATE SET v = NEW.k;
+----
+Not implemented Error: MERGE INTO trigger bodies and INSERT trigger bodies with ON CONFLICT, OR REPLACE or OR IGNORE in FOR EACH ROW triggers are not yet supported
+
+statement error
+CREATE TRIGGER trg_merge_body AFTER INSERT ON t_merge_body FOR EACH ROW
+    INSERT INTO t_merge_body_dest (k) VALUES (NEW.k) ON CONFLICT DO NOTHING;
+----
+Not implemented Error: MERGE INTO trigger bodies and INSERT trigger bodies with ON CONFLICT, OR REPLACE or OR IGNORE in FOR EACH ROW triggers are not yet supported
+
+statement error
+CREATE TRIGGER trg_merge_body AFTER INSERT ON t_merge_body FOR EACH ROW
+    INSERT OR REPLACE INTO t_merge_body_dest VALUES (NEW.k, 1);
+----
+Not implemented Error: MERGE INTO trigger bodies and INSERT trigger bodies with ON CONFLICT, OR REPLACE or OR IGNORE in FOR EACH ROW triggers are not yet supported
+
+statement error
+CREATE TRIGGER trg_merge_body AFTER INSERT ON t_merge_body FOR EACH ROW
+    INSERT OR IGNORE INTO t_merge_body_dest VALUES (NEW.k, 1);
+----
+Not implemented Error: MERGE INTO trigger bodies and INSERT trigger bodies with ON CONFLICT, OR REPLACE or OR IGNORE in FOR EACH ROW triggers are not yet supported
+
+statement error
+CREATE TRIGGER trg_merge_body AFTER INSERT ON t_merge_body FOR EACH ROW
+    MERGE INTO t_merge_body_dest USING (SELECT NEW.k AS k) s ON (t_merge_body_dest.k = s.k)
+    WHEN MATCHED THEN UPDATE SET v = NEW.k
+    WHEN NOT MATCHED THEN INSERT (k) VALUES (s.k);
+----
+Not implemented Error: MERGE INTO trigger bodies and INSERT trigger bodies with ON CONFLICT, OR REPLACE or OR IGNORE in FOR EACH ROW triggers are not yet supported
+
+statement error
+CREATE TRIGGER trg_merge_body AFTER DELETE ON t_merge_body FOR EACH ROW
+    INSERT INTO t_merge_body_dest (k) VALUES (1) ON CONFLICT DO UPDATE SET v = OLD.k;
+----
+Not implemented Error: MERGE INTO trigger bodies and INSERT trigger bodies with ON CONFLICT, OR REPLACE or OR IGNORE in FOR EACH ROW triggers are not yet supported
+
+# no trigger was created
+statement ok
+INSERT INTO t_merge_body VALUES (1);
+
+query II
+SELECT * FROM t_merge_body_dest;
+----
+
+# a statement trigger runs such a body
+statement ok
+CREATE TRIGGER trg_merge_body_stmt AFTER INSERT ON t_merge_body REFERENCING NEW TABLE AS n FOR EACH STATEMENT
+    INSERT INTO t_merge_body_dest SELECT k, 0 FROM n ON CONFLICT DO UPDATE SET v = v + 1;
+
+statement ok
+INSERT INTO t_merge_body VALUES (1), (5);
+
+statement ok
+INSERT INTO t_merge_body VALUES (5);
+
+query II
+SELECT * FROM t_merge_body_dest ORDER BY k;
+----
+1	0
+5	1
+
 # Cascading FOR EACH ROW triggers are not yet supported
 statement ok
 CREATE TABLE casc_a (id INTEGER);

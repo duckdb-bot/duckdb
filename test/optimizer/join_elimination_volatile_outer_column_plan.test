@@ -31,7 +31,13 @@ logical_opt	<!REGEX>:(?s).*Join.*
 
 # neither does a join key that is computed without an effect
 query II
-EXPLAIN SELECT sum(a.x) FROM (SELECT x, x + 0 AS k FROM v) a LEFT JOIN u ON u.id = a.k;
+EXPLAIN SELECT sum(a.x) FROM (SELECT x, x + 1 AS k FROM v) a LEFT JOIN u ON u.id = a.k;
+----
+logical_opt	<!REGEX>:(?s).*Join.*
+
+# nor does a volatile column of a materialized CTE next to the column that the condition reads
+query II
+EXPLAIN WITH m AS MATERIALIZED (SELECT x, nextval('plan_sequence') AS k FROM v) SELECT sum(m.x), sum(m.k) FROM m LEFT JOIN u ON u.id = m.x;
 ----
 logical_opt	<!REGEX>:(?s).*Join.*
 

@@ -107,10 +107,22 @@ struct ColumnProducers {
 	column_binding_map_t<vector<ColumnBinding>> inputs;
 	//! The CTE that a CTE reference reads
 	unordered_map<TableIndex, TableIndex> cte_refs;
+	//! The materialized CTEs whose definition has been collected
+	unordered_set<TableIndex> definitions;
 
 	void AddExpressions(TableIndex table_index, const vector<unique_ptr<Expression>> &list) {
 		for (idx_t i = 0; i < list.size(); i++) {
 			expressions.emplace(ColumnBinding(table_index, ProjectionIndex(i)), *list[i]);
+		}
+	}
+
+	//! The columns of `op` return the columns of its children at the same position
+	void AddInputs(TableIndex table_index, LogicalOperator &op) {
+		for (auto &child : op.children) {
+			auto child_bindings = child->GetColumnBindings();
+			for (idx_t i = 0; i < child_bindings.size(); i++) {
+				inputs[ColumnBinding(table_index, ProjectionIndex(i))].push_back(child_bindings[i]);
+			}
 		}
 	}
 
@@ -133,16 +145,13 @@ struct ColumnProducers {
 			break;
 		case LogicalOperatorType::LOGICAL_UNION:
 		case LogicalOperatorType::LOGICAL_EXCEPT:
-		case LogicalOperatorType::LOGICAL_INTERSECT: {
-			auto &setop = op.Cast<LogicalSetOperation>();
-			for (auto &child : op.children) {
-				auto child_bindings = child->GetColumnBindings();
-				for (idx_t i = 0; i < setop.column_count && i < child_bindings.size(); i++) {
-					inputs[ColumnBinding(setop.table_index, ProjectionIndex(i))].push_back(child_bindings[i]);
-				}
-			}
+		case LogicalOperatorType::LOGICAL_INTERSECT:
+			AddInputs(op.Cast<LogicalSetOperation>().table_index, op);
 			break;
-		}
+		case LogicalOperatorType::LOGICAL_RECURSIVE_CTE:
+			// a reference to the recursion reads these columns as well
+			AddInputs(op.Cast<LogicalCTE>().table_index, op);
+			break;
 		case LogicalOperatorType::LOGICAL_CTE_REF: {
 			auto &cte_ref = op.Cast<LogicalCTERef>();
 			cte_refs.emplace(cte_ref.table_index, cte_ref.cte_index);
@@ -180,10 +189,27 @@ bool RemovedSubtreeEffects::ReadsColumnWithEffect(LogicalOperator &reader, Logic
 		}
 		auto cte_ref = producers.cte_refs.find(binding.table_index);
 		if (cte_ref != producers.cte_refs.end()) {
-			// the columns of the definition are not told apart
-			if (recursive_ctes.find(cte_ref->second) == recursive_ctes.end() && DefinitionHasEffect(cte_ref->second)) {
+			auto cte_index = cte_ref->second;
+			if (recursive_ctes.find(cte_index) != recursive_ctes.end()) {
+				// the working table of a recursion holds the columns of the recursive CTE
+				pending.emplace_back(cte_index, binding.column_index);
+				continue;
+			}
+			auto cte = materialized_ctes.find(cte_index);
+			if (cte == materialized_ctes.end()) {
+				// a reference to something that is not defined in this plan: assume the worst
 				return true;
 			}
+			// the column of the definition that the reference returns at this position
+			auto &definition = *cte->second.get().children[0];
+			if (producers.definitions.insert(cte_index).second) {
+				producers.Collect(definition);
+			}
+			auto definition_bindings = definition.GetColumnBindings();
+			if (binding.column_index.GetIndex() >= definition_bindings.size()) {
+				return true;
+			}
+			pending.push_back(definition_bindings[binding.column_index.GetIndex()]);
 			continue;
 		}
 		auto input = producers.inputs.find(binding);

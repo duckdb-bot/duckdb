@@ -58,7 +58,7 @@ statement ok
 CREATE SEQUENCE derived_sequence;
 
 query I
-SELECT sum(b.x) FROM (SELECT x, k + 0 AS k0 FROM (SELECT x, nextval('derived_sequence') AS k FROM v)) b LEFT JOIN u ON u.id = b.k0;
+SELECT sum(b.x) FROM (SELECT x, k + 1 AS k1 FROM (SELECT x, nextval('derived_sequence') AS k FROM v)) b LEFT JOIN u ON u.id = b.k1;
 ----
 6
 
@@ -107,5 +107,49 @@ SELECT sum(m.x) FROM m LEFT JOIN u ON u.id = m.k;
 
 query I
 SELECT nextval('cte_sequence');
+----
+4
+
+# through a window over the volatile column
+statement ok
+CREATE SEQUENCE window_sequence;
+
+query I
+SELECT sum(a.x) FROM (SELECT x, max(k) OVER () AS mk FROM (SELECT x, nextval('window_sequence') AS k FROM v)) a LEFT JOIN u ON u.id = a.mk;
+----
+6
+
+query I
+SELECT nextval('window_sequence');
+----
+4
+
+# through a recursive CTE that reads a materialized CTE
+statement ok
+CREATE SEQUENCE recursive_sequence;
+
+query I
+WITH RECURSIVE m AS MATERIALIZED (SELECT x, nextval('recursive_sequence') AS k FROM v),
+r(x, k) AS (SELECT x, k FROM m UNION ALL SELECT x + 3, k FROM r WHERE x < 4)
+SELECT sum(r.x) FROM r LEFT JOIN u ON u.id = r.k;
+----
+21
+
+query I
+SELECT nextval('recursive_sequence');
+----
+4
+
+# a join that can only be removed after the first pruning
+statement ok
+CREATE SEQUENCE second_pass_sequence;
+
+query I
+SELECT sum(q.x) FROM (SELECT a.x, u.y AS unread FROM (SELECT x, nextval('second_pass_sequence') AS k FROM v) a LEFT JOIN u ON u.id = a.k) q;
+----
+6
+
+query I
+SELECT nextval('second_pass_sequence');
 ----
 4

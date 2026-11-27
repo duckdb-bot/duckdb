@@ -54,7 +54,7 @@ public:
 	//! Whether removing the subtree would skip an effect
 	bool HasEffect(LogicalOperator &subtree);
 	//! Whether an expression of `reader` reads a column that `source` computes with an effect: without the reader
-	//! the column is pruned, its expression included
+	//! the column can be pruned, its expression included
 	bool ReadsColumnWithEffect(LogicalOperator &reader, LogicalOperator &source);
 
 private:

@@ -22,7 +22,7 @@ SELECT nextval('unread_sequence');
 ----
 1
 
-# a column without an effect that lost its reader is still pruned from the scan
+# a column without an effect that lost its reader is still pruned, and the scan projects only the other column
 statement ok
 CREATE TABLE w AS SELECT i AS x, true AS always_true FROM range(100) r(i);
 
@@ -32,9 +32,19 @@ EXPLAIN SELECT sum(x) FILTER (WHERE b) AS filtered FROM (SELECT x, always_true A
 physical_plan	<!REGEX>:(?s).*always_true.*
 
 query II
+EXPLAIN SELECT sum(x) FILTER (WHERE b) AS filtered FROM (SELECT x, always_true AS b FROM w);
+----
+physical_plan	<REGEX>:(?s).*Projections: x .*
+
+query II
 EXPLAIN SELECT list(c ORDER BY x) FROM (SELECT x, b > false AS c FROM (SELECT x, always_true AS b FROM w)) WHERE x >= 0;
 ----
 physical_plan	<!REGEX>:(?s).*always_true.*
+
+query II
+EXPLAIN SELECT list(c ORDER BY x) FROM (SELECT x, b > false AS c FROM (SELECT x, always_true AS b FROM w)) WHERE x >= 0;
+----
+physical_plan	<REGEX>:(?s).*Projections: x .*
 
 # a count over a projection without a volatile expression is still answered from the row count of the table
 query II

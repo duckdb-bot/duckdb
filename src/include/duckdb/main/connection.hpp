@@ -42,6 +42,12 @@ public:
 	//! Creates an internal connection that runs on behalf of `caller`: it follows the interrupts and the query
 	//! deadline of caller's base client
 	DUCKDB_API static Connection CreateInternal(ClientContext &caller);
+	//! Creates a connection that runs in the transaction active on `context`, e.g. the one a bind callback runs in.
+	//! It sees and can modify everything the transaction can, starts with the search path of `context` (so unqualified
+	//! names resolve as they do there), and follows the interrupts of `context`. It cannot
+	//! start, commit or roll back a transaction, and the transaction cannot commit while the connection is open: an
+	//! error of one of its statements invalidates the transaction as one of `context` would.
+	DUCKDB_API static Connection CreateInTransaction(ClientContext &context);
 	// disable copy constructors
 	Connection(const Connection &other) = delete;
 	Connection &operator=(const Connection &) = delete;
@@ -137,8 +143,6 @@ public:
 	//! works as for ClientContext::IterateStatements.
 	DUCKDB_API vector<unique_ptr<SQLStatement>> ExtractStatements(const string &query,
 	                                                              bool apply_invalidation_policy = true);
-	//! Extract the logical plan that corresponds to a query
-	DUCKDB_API unique_ptr<LogicalOperator> ExtractPlan(const string &query);
 
 	//! Appends a ColumnDataCollection to the described table.
 	DUCKDB_API void Append(TableDescription &description, ColumnDataCollection &collection);

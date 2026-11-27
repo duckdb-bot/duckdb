@@ -62,7 +62,7 @@ optional_ptr<AttachedDatabase> DatabaseManager::GetDatabase(ClientContext &conte
 	lock_guard<mutex> guard(databases_lock);
 	shared_ptr<AttachedDatabase> db;
 	if (name == TEMP_CATALOG) {
-		db = context.client_data->temporary_objects;
+		db = meta_transaction.GetTemporaryObjectsPtr();
 	} else {
 		db = GetDatabaseInternal(guard, name);
 	}
@@ -183,7 +183,7 @@ shared_ptr<AttachedDatabase> DatabaseManager::AttachDatabase(ClientContext &cont
 				// The database ACTUALLY exists, so we return it.
 				return entry->second;
 			}
-			context.InterruptCheck();
+			context.FastInterruptCheck();
 		}
 		// Returning in the loop above will also end the timer, otherwise, do it explicitly here.
 		timer.EndTimer();
@@ -579,7 +579,11 @@ vector<shared_ptr<AttachedDatabase>> DatabaseManager::GetDatabases(ClientContext
 		result.push_back(system);
 	}
 	if (!max_db_count.IsValid() || max_db_count.GetIndex() >= 2) {
-		result.push_back(context.client_data->temporary_objects);
+		if (context.transaction.HasActiveTransaction()) {
+			result.push_back(context.transaction.ActiveTransaction().GetTemporaryObjectsPtr());
+		} else {
+			result.push_back(context.client_data->temporary_objects);
+		}
 	}
 
 	return result;

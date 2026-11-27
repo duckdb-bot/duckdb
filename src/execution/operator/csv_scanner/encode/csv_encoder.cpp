@@ -42,33 +42,6 @@ void CSVEncoderBuffer::Reset() {
 	actual_encoded_buffer_size = 0;
 }
 
-static optional_ptr<ScalarFunctionCatalogEntry> FindEncoding(ClientContext &context, const string &encoding_name) {
-	// look in the encodings schema directly: the generic lookup would autoload extensions by function name
-	auto transaction = CatalogTransaction::GetSystemCatalogTransaction(context);
-	auto &schema = Catalog::GetSystemCatalog(context).GetSchema(transaction, Identifier(EncodingFunction::SCHEMA));
-	auto entry = schema.GetEntry(transaction, CatalogType::SCALAR_FUNCTION_ENTRY,
-	                             Identifier(EncodingFunction::FunctionName(encoding_name)));
-	if (!entry) {
-		return nullptr;
-	}
-	return &entry->Cast<ScalarFunctionCatalogEntry>();
-}
-
-//! The names of all encodings: the scalar functions in the encodings schema
-static vector<string> GetLoadedEncodings(ClientContext &context) {
-	vector<string> result {"utf-8"};
-	auto &catalog = Catalog::GetSystemCatalog(context);
-	auto &schema = catalog.GetSchema(context, Identifier(EncodingFunction::SCHEMA));
-	schema.Scan(context, CatalogType::SCALAR_FUNCTION_ENTRY, [&](CatalogEntry &entry) {
-		if (entry.type != CatalogType::SCALAR_FUNCTION_ENTRY) {
-			return;
-		}
-		result.push_back(entry.name.GetIdentifierName());
-	});
-	std::sort(result.begin(), result.end());
-	return result;
-}
-
 CSVEncoder::CSVEncoder(ClientContext &context_p, const string &encoding_name_to_find, idx_t buffer_size)
     : context(context_p), pass_on_byte(0) {
 	encoding_name = StringUtil::Lower(encoding_name_to_find);
@@ -76,15 +49,8 @@ CSVEncoder::CSVEncoder(ClientContext &context_p, const string &encoding_name_to_
 		// UTF-8 is read straight into the CSV buffers (see CSVFileHandle::Read), the encoder buffers are never used
 		return;
 	}
-	auto entry = FindEncoding(context_p, encoding_name);
+	auto entry = EncodingFunction::Find(context_p, encoding_name);
 	if (!entry) {
-		// Maybe we can try to auto-load from our encodings extension, if this somehow fails, we just error.
-		if (Catalog::TryAutoLoad(context_p, "encodings")) {
-			entry = FindEncoding(context_p, encoding_name);
-		}
-	}
-	if (!entry) {
-		// If at this point we still do not have a function we throw an error.
 		std::ostringstream error;
 		error << "The CSV Reader does not support the encoding: \"" << encoding_name_to_find << "\"\n";
 		if (!context_p.db->ExtensionIsLoaded("encodings")) {
@@ -93,27 +59,55 @@ CSVEncoder::CSVEncoder(ClientContext &context_p, const string &encoding_name_to_
 			      << "\n";
 		}
 		error << "The currently supported encodings are: " << '\n';
-		for (auto &name : GetLoadedEncodings(context_p)) {
+		for (auto &name : EncodingFunction::GetEncodings(context_p)) {
 			error << "*  " << name << '\n';
 		}
 		throw InvalidInputException(error.str());
 	}
 
-	// Bind the streaming overload: decode_<name>(encoded BLOB, is_last BOOLEAN)
-	auto function = entry->functions.GetFunctionByArguments(context_p, {LogicalType::BLOB, LogicalType::BOOLEAN});
-	vector<unique_ptr<Expression>> children;
-	children.push_back(make_uniq<BoundReferenceExpression>(LogicalType::BLOB, 0));
-	children.push_back(make_uniq<BoundReferenceExpression>(LogicalType::BOOLEAN, 1));
-	decode_expression = function->Bind(context_p, std::move(children));
-	decode_executor = make_uniq<ExpressionExecutor>(context_p, *decode_expression);
+	auto function = BindDecoder(context_p, *entry);
 	decode_input.Initialize(context_p, {LogicalType::BLOB, LogicalType::BOOLEAN}, 1);
 
 	auto window = function->GetProperties().GetProperty(EncodingFunction::MINIMUM_INPUT_WINDOW_PROPERTY);
 	if (window) {
 		minimum_input_window = MaxValue<idx_t>(window->GetValue<idx_t>(), 1);
 	}
+	auto marks = function->GetProperties().GetProperty(EncodingFunction::BYTE_ORDER_MARKS_PROPERTY);
+	if (marks) {
+		for (auto &mark : ListValue::GetChildren(*marks)) {
+			auto &fields = StructValue::GetChildren(mark);
+			byte_order_marks.emplace_back(StringValue::Get(fields[0]), StringValue::Get(fields[1]));
+		}
+	}
 	// The encoded buffer is even for utf-16, and fits a full input window plus the probe byte
 	encoded_buffer.Initialize(MaxValue<idx_t>(buffer_size - buffer_size % 2, 2 * minimum_input_window + 2));
+}
+
+shared_ptr<const ScalarFunction> CSVEncoder::BindDecoder(ClientContext &context_p, ScalarFunctionCatalogEntry &entry) {
+	// Bind the streaming overload: decode_<name>(encoded BLOB, is_last BOOLEAN)
+	auto function = entry.functions.GetFunctionByArguments(context_p, {LogicalType::BLOB, LogicalType::BOOLEAN});
+	vector<unique_ptr<Expression>> children;
+	children.push_back(make_uniq<BoundReferenceExpression>(LogicalType::BLOB, 0));
+	children.push_back(make_uniq<BoundReferenceExpression>(LogicalType::BOOLEAN, 1));
+	decode_expression = function->Bind(context_p, std::move(children));
+	decode_executor = make_uniq<ExpressionExecutor>(context_p, *decode_expression);
+	return function;
+}
+
+void CSVEncoder::DetectByteOrder() {
+	for (auto &mark : byte_order_marks) {
+		if (encoded_buffer.GetSize() < mark.first.size() ||
+		    memcmp(encoded_buffer.Ptr(), mark.first.data(), mark.first.size()) != 0) {
+			continue;
+		}
+		auto &client_context = *context.GetClientContext();
+		auto entry = EncodingFunction::Find(client_context, mark.second);
+		if (!entry) {
+			throw InternalException("Encoding \"%s\" picked by a byte order mark does not exist", mark.second);
+		}
+		BindDecoder(client_context, *entry);
+		return;
+	}
 }
 
 void CSVEncoder::Reset() {
@@ -125,31 +119,31 @@ void CSVEncoder::Reset() {
 	encoded_bytes_read = 0;
 }
 
-idx_t CSVEncoder::Decode(const char *input, idx_t input_size, bool is_last, string &decoded) {
+idx_t CSVEncoder::Decode(const char *input, idx_t input_size, bool is_last, Vector &result, string_t &decoded) {
 	decode_input.Reset();
 	decode_input.SetChildCardinality(1);
 	FlatVector::GetDataMutable<string_t>(decode_input.data[0])[0] =
 	    string_t(input, UnsafeNumericCast<uint32_t>(input_size));
 	FlatVector::GetDataMutable<bool>(decode_input.data[1])[0] = is_last;
-	Vector result(EncodingFunction::StreamResultType(), 1);
 	decode_executor->ExecuteExpression(decode_input, result);
 	auto values = result.Values<VectorStructType<string_t, int64_t>>();
 	auto entry = values[0];
-	auto decoded_value = entry.GetChildValue<0>().GetValue();
-	decoded.assign(decoded_value.GetData(), decoded_value.GetSize());
+	decoded = entry.GetChildValue<0>().GetValue();
 	return UnsafeNumericCast<idx_t>(entry.GetChildValue<1>().GetValue());
 }
 
 idx_t CSVEncoder::DecodeBuffer(char *output_buffer, idx_t output_pos, idx_t output_size) {
-	string decoded;
 	while (encoded_buffer.HasDataToRead() && output_pos < output_size) {
 		const idx_t available = encoded_buffer.GetSize() - encoded_buffer.cur_pos;
 		// Decode as much input as there is room in the output, extended until it holds a complete character
-		idx_t slice = MinValue<idx_t>(MaxValue<idx_t>(output_size - output_pos, minimum_input_window), available);
+		const idx_t room = MinValue<idx_t>(output_size - output_pos, MAX_DECODE_SLICE);
+		idx_t slice = MinValue<idx_t>(MaxValue<idx_t>(room, minimum_input_window), available);
 		idx_t consumed = 0;
+		Vector result(EncodingFunction::StreamResultType(), 1);
+		string_t decoded;
 		while (true) {
 			const bool is_last = encoded_buffer.last_buffer && slice == available;
-			consumed = Decode(encoded_buffer.Ptr() + encoded_buffer.cur_pos, slice, is_last, decoded);
+			consumed = Decode(encoded_buffer.Ptr() + encoded_buffer.cur_pos, slice, is_last, result, decoded);
 			if (consumed != 0 || slice == available) {
 				break;
 			}
@@ -160,11 +154,11 @@ idx_t CSVEncoder::DecodeBuffer(char *output_buffer, idx_t output_pos, idx_t outp
 			break;
 		}
 		encoded_buffer.cur_pos += consumed;
-		const idx_t to_copy = MinValue<idx_t>(decoded.size(), output_size - output_pos);
-		memcpy(output_buffer + output_pos, decoded.data(), to_copy); // NOLINT(bugprone-not-null-terminated-result)
+		const idx_t to_copy = MinValue<idx_t>(decoded.GetSize(), output_size - output_pos);
+		memcpy(output_buffer + output_pos, decoded.GetData(), to_copy); // NOLINT(bugprone-not-null-terminated-result)
 		output_pos += to_copy;
-		if (to_copy < decoded.size()) {
-			pending_decoded.assign(decoded, to_copy, string::npos);
+		if (to_copy < decoded.GetSize()) {
+			pending_decoded.assign(decoded.GetData() + to_copy, decoded.GetSize() - to_copy);
 			pending_pos = 0;
 		}
 	}
@@ -188,6 +182,7 @@ idx_t CSVEncoder::Encode(FileHandle &file_handle_input, char *output_buffer, con
 	// 3. a new encoded buffer from the file
 	while (output_buffer_pos < decoded_buffer_size) {
 		idx_t current_decoded_buffer_start = output_buffer_pos;
+		const bool file_start = encoded_bytes_read == 0;
 		// An incomplete character at the end of the buffer is moved to the start of the next buffer
 		const idx_t tail_size = encoded_buffer.GetSize() - encoded_buffer.cur_pos;
 		memmove(encoded_buffer.Ptr(), encoded_buffer.Ptr() + encoded_buffer.cur_pos, tail_size);
@@ -212,6 +207,9 @@ idx_t CSVEncoder::Encode(FileHandle &file_handle_input, char *output_buffer, con
 			} else {
 				has_pass_on_byte = true;
 			}
+		}
+		if (file_start) {
+			DetectByteOrder();
 		}
 		output_buffer_pos = DecodeBuffer(output_buffer, output_buffer_pos, decoded_buffer_size);
 		if (output_buffer_pos == current_decoded_buffer_start) {

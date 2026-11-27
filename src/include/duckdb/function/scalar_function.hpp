@@ -240,7 +240,7 @@ public:
 //! Functions that can throw runtime errors must be marked as fallible using SetFallible(), since many parts of the
 //! system rely on this (e.g. dictionary expression caching, filter pushdown, TRY)
 //! Rethrows an execution error thrown by a function that is not marked as fallible as an internal error
-//! Every function that returns a string can exceed the maximum string size, so that error is rethrown as it is
+//! The error of a string heap allocation above the maximum string size is rethrown as it is
 [[noreturn]] DUCKDB_API void ThrowNonFallibleFunctionError(const Identifier &name, std::exception &ex);
 
 template <class IMPL>

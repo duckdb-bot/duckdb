@@ -292,7 +292,7 @@ void CommitState::CommitEntryDrop(CatalogEntry &entry, data_ptr_t dataptr, Commi
 
 //! Throws the conflict of a row change with the newer version another transaction made of its table
 [[noreturn]] static void ThrowTableChangedConflict(DuckTableEntry &table) {
-	// a change that keeps the storage of the table, or a drop that is not committed, leaves the storage as it is
+	// the version of the storage is not enough, an alter can keep the storage and a drop marks it only on commit
 	const bool dropped = table.Parent().type == CatalogType::DELETED_ENTRY;
 	throw TransactionException("Attempting to modify table %s but another transaction has %s this table",
 	                           table.GetStorage().GetTableName(), dropped ? "dropped" : "altered");

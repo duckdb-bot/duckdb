@@ -77,6 +77,12 @@ BoundStatement Binder::BindNode(RecursiveCTENode &statement) {
 			auto &bound_ref = bound_expr->Cast<BoundColumnRefExpression>();
 
 			auto column_index = bound_ref.Binding().column_index;
+			if (payload_references.find(column_index) != payload_references.end()) {
+				throw BinderException(expr->GetQueryLocation(),
+				                      "Column %s cannot be used as both key and aggregate in USING KEY clause.\n"
+				                      "Try using an alias for the aggregation.",
+				                      result.names[column_index]);
+			}
 			if (key_references.find(column_index) != key_references.end()) {
 				continue;
 			}

@@ -101,6 +101,42 @@ SELECT * FROM tbl;
 ----
 <REGEX>:.*cannot be used as both key and aggregate.*
 
+# The same with the aggregate before the key
+statement error
+WITH RECURSIVE tbl(a,b,c) USING KEY (a, list(b), max(c), c) AS (
+	SELECT 1, 1, NULL
+	UNION ALL
+    SELECT tbl.a, tbl.b - 1, a.b
+	FROM tbl, recurring.tbl AS a
+	WHERE tbl.b > 0)
+SELECT * FROM tbl;
+----
+<REGEX>:.*cannot be used as both key and aggregate.*
+
+# An alias makes a later key the target of the aggregate
+statement error
+WITH RECURSIVE tbl(a,b) USING KEY (max(b) AS a, a) AS (
+	VALUES (1, 10)
+	UNION ALL
+	SELECT a + 1, b + 1
+	FROM tbl
+	WHERE a < 2)
+SELECT * FROM tbl;
+----
+<REGEX>:.*cannot be used as both key and aggregate.*
+
+# The return type of the aggregate differs from the type of the key
+statement error
+WITH RECURSIVE tbl(a) USING KEY (count(a) AS a, a) AS (
+	VALUES (1)
+	UNION ALL
+	SELECT a + 1
+	FROM tbl
+	WHERE a < 2)
+SELECT * FROM tbl;
+----
+<REGEX>:.*cannot be used as both key and aggregate.*
+
 statement error
 WITH RECURSIVE tbl(a,b,c) USING KEY (list(c)) AS (
 	SELECT 1, 4, NULL

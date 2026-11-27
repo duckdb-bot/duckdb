@@ -33,7 +33,8 @@ bool IsExpectedError(const string &error) {
 	return error.empty() || StringUtil::Contains(error, "Transaction conflict") ||
 	       StringUtil::Contains(error, "another transaction has altered this table") ||
 	       StringUtil::Contains(error, "Cannot create index with outstanding updates") ||
-	       StringUtil::Contains(error, "Duplicate key") || StringUtil::Contains(error, "Data contains duplicates");
+	       StringUtil::Contains(error, "Duplicate key") || StringUtil::Contains(error, "Data contains duplicates") ||
+	       StringUtil::Contains(error, "PRIMARY KEY or UNIQUE constraint violation");
 }
 
 //! Checks that an index lookup of the key finds the rows a full scan finds

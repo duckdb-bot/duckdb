@@ -119,7 +119,6 @@
         "test/sql/aggregate/aggregates/test_approx_quantile.test",
         "test/sql/aggregate/aggregates/test_binned_histogram.test",
         "test/sql/aggregate/aggregates/test_bitstring_agg.test",
-        "test/sql/types/nested/map/test_map_extract_collation.test",
         "test/sql/aggregate/aggregates/test_entropy.test",
         "test/sql/aggregate/aggregates/test_histogram.test",
         "test/sql/aggregate/aggregates/test_histogram_3529.test",

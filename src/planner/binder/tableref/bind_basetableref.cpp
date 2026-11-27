@@ -153,6 +153,12 @@ BoundStatement Binder::Bind(BaseTableRef &ref) {
 	BindingAlias binding_alias(ref.GetQualifiedName().Schema(), ref.Table());
 	auto ctebinding = GetCTEBinding(binding_alias);
 	if (ctebinding && ctebinding->CanBeReferenced()) {
+		if (ref.at_clause) {
+			// a CTE is bound once for all its references, so one reference cannot read another snapshot
+			throw BinderException(error_context,
+			                      "AT clause cannot be applied to the CTE %s, apply it to the tables inside the CTE",
+			                      ref.Table());
+		}
 		ctebinding->Reference();
 
 		// There is a CTE binding in the BindContext.

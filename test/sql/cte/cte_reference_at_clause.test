@@ -1,0 +1,74 @@
+# name: test/sql/cte/cte_reference_at_clause.test
+# description: An AT clause on a reference to a CTE is refused instead of ignored
+# group: [cte]
+
+statement ok
+CREATE TABLE t AS SELECT 1 AS a;
+
+# a CTE is bound once, so a reference to it cannot read another snapshot
+statement error
+WITH c AS (SELECT 1 AS a) FROM c AT (VERSION => 7);
+----
+<REGEX>:.*Binder Error.*AT clause cannot be applied to the CTE "c".*
+
+statement error
+WITH c AS (SELECT 1 AS a) FROM c AT (TIMESTAMP => TIMESTAMP '2020-01-01');
+----
+<REGEX>:.*Binder Error.*AT clause cannot be applied to the CTE "c".*
+
+# whatever the clause holds
+statement error
+WITH c AS (SELECT 1 AS a) FROM c AT (VERSION => no_such_column);
+----
+<REGEX>:.*Binder Error.*AT clause cannot be applied to the CTE "c".*
+
+statement error
+WITH c AS (SELECT 1 AS a) FROM c AT (VERSION => (SELECT 1));
+----
+<REGEX>:.*Binder Error.*AT clause cannot be applied to the CTE "c".*
+
+# a materialized CTE and a reference with an alias
+statement error
+WITH c AS MATERIALIZED (SELECT 1 AS a) FROM c AS d AT (VERSION => 7);
+----
+<REGEX>:.*Binder Error.*AT clause cannot be applied to the CTE "c".*
+
+# the reference to the recursion inside a recursive CTE
+statement error
+WITH RECURSIVE c AS (SELECT 1 AS a UNION ALL SELECT a + 1 FROM c AT (VERSION => 7) WHERE a < 3) FROM c;
+----
+<REGEX>:.*Binder Error.*AT clause cannot be applied to the CTE "c".*
+
+# a CTE that hides a table of the same name
+statement error
+WITH t AS (SELECT 2 AS a) FROM t AT (VERSION => 7);
+----
+<REGEX>:.*Binder Error.*AT clause cannot be applied to the CTE "t".*
+
+# a prepared statement is refused when it is prepared
+statement error
+PREPARE s AS WITH c AS (SELECT 1 AS a) FROM c AT (VERSION => $1);
+----
+<REGEX>:.*Binder Error.*AT clause cannot be applied to the CTE "c".*
+
+# without the clause the references work, and the clause on a table inside a CTE reaches the catalog
+query I
+WITH c AS (SELECT 1 AS a) FROM c;
+----
+1
+
+statement error
+WITH c AS (SELECT a FROM t AT (VERSION => 7)) FROM c;
+----
+Catalog type does not support time travel
+
+# inside the definition of a CTE of the same name, the name is still the table
+statement error
+WITH t AS (SELECT a FROM t AT (VERSION => 7)) FROM t;
+----
+Catalog type does not support time travel
+
+statement error
+FROM t AT (VERSION => 7);
+----
+Catalog type does not support time travel

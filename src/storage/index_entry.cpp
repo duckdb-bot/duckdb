@@ -73,8 +73,8 @@ ErrorData IndexEntry::Append(const QueryContext &context, DataChunk &chunk, Vect
 		build_changed_rows += chunk.size();
 		try {
 			auto &added_data = deltas.GetOrCreate(bound_index, IndexDeltaType::ADDED_DATA);
+			// the keys run without the context of the commit, whose interrupt must not fail the build
 			IndexAppendInfo index_append_info(append_mode, nullptr);
-			index_append_info.context = context;
 			auto error = added_data.Append(chunk, row_ids, index_append_info);
 			if (error.HasError()) {
 				build_error = std::move(error);
@@ -137,7 +137,8 @@ void IndexEntry::RevertAppend(const QueryContext &context, DataChunk &chunk, Vec
 		return;
 	}
 	if (auto delta = deltas.Find(IndexDeltaType::ADDED_DATA)) {
-		delta->Delete(chunk, row_ids, context);
+		// as in Append, the keys of a building index run without the context of the commit
+		delta->Delete(chunk, row_ids, building ? QueryContext() : context);
 		return;
 	}
 	if (owned_index->IsBound()) {
@@ -338,10 +339,11 @@ void IndexEntry::RemoveFromIndex(const QueryContext &context, DataChunk &chunk, 
 			build_changed_rows += chunk.size();
 		}
 		try {
+			// as in Append, the keys of a building index run without the context of the commit
 			if (removal_type == IndexRemovalType::DELETED_ROWS_IN_USE) {
-				ApplyIndexRemoval(bound_index, deltas, chunk, row_ids, removal_type, context);
+				ApplyIndexRemoval(bound_index, deltas, chunk, row_ids, removal_type, QueryContext());
 			} else {
-				ApplyIndexRemovalToDeltas(bound_index, deltas, chunk, row_ids, removal_type, context);
+				ApplyIndexRemovalToDeltas(bound_index, deltas, chunk, row_ids, removal_type, QueryContext());
 			}
 		} catch (std::exception &ex) {
 			RecordBuildError(ex);

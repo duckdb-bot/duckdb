@@ -177,7 +177,13 @@ idx_t StructColumnData::Scan(TransactionData transaction, idx_t vector_index, Co
 			if (!ConstantVector::IsNull(result)) {
 				throw InternalException("StructColumnData::Scan returned a constant but not NULL vector ");
 			}
-			// constant NULL struct - we don't need to scan any children, everything is already NULL
+			// constant NULL struct - skip the children instead of scanning them, everything is already NULL
+			auto struct_children = GetStructChildren(state);
+			for (auto &child : struct_children) {
+				if (child.should_scan) {
+					child.col.Skip(child.state, scan_count);
+				}
+			}
 			return scan_count;
 		}
 	}
@@ -346,7 +352,8 @@ void StructColumnData::FetchRows(TransactionData transaction, ColumnFetchState &
 		if (!child_storage_index.HasChildren() && child_storage_index.HasType() &&
 		    child_storage_index.GetType() != child_type) {
 			auto &cast_set = CastFunctionSet::Get(GetDatabase());
-			auto cast_input = GetCastFunctionInput::Default();
+			auto context = state.context.GetContext();
+			auto cast_input = context ? GetCastFunctionInput(*context) : GetCastFunctionInput::Default();
 			for (idx_t idx = 0; idx < fetch_count; idx++) {
 				const idx_t offset = offsets[sel.get_index(idx)];
 				Vector intermediate(child_type, 1);

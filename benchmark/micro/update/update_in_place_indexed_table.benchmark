@@ -1,0 +1,13 @@
+# name: benchmark/micro/update/update_in_place_indexed_table.benchmark
+# description: In-place update of a column of a table that has an index on another column
+# group: [update]
+
+load
+CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER);
+INSERT INTO t SELECT i, i FROM range(10000000) tbl(i);
+
+run
+UPDATE t SET v = v + 1;
+
+result I
+10000000

@@ -46,6 +46,7 @@ COMMON_JOBS = [
 
 PULL_REQUEST_ONLY_JOBS = [
     "regression",
+    "check-patches",
 ]
 
 PULL_REQUEST_JOBS = COMMON_JOBS + PULL_REQUEST_ONLY_JOBS
@@ -61,6 +62,7 @@ MERGE_GROUP_JOBS = [
     "linux-relassert",
     "linux-release",
     "tidy-check",
+    "check-patches",
 ]
 
 RELEASE_JOBS = [
@@ -308,11 +310,8 @@ def optimized_release_config(*, runner: str, arch: str) -> dict[str, object]:
 def linux_release_matrix(
     selection_input: JobSelectionInput, optimized_release: bool, full_extension_matrix: bool
 ) -> list[dict[str, object]]:
-    result = [
-        compatibility_release_config(
-            runner=selection_input.runners.get("linux_x64", ""), arch="amd64", optimized_release=optimized_release
-        )
-    ]
+    runner_amd64 = selection_input.runners.get("linux_x64_8xlarge", selection_input.runners.get("linux_x64", ""))
+    result = [compatibility_release_config(runner=runner_amd64, arch="amd64", optimized_release=optimized_release)]
     if selection_input.event_name not in {"pull_request", "merge_group"} or full_extension_matrix:
         result.append(
             compatibility_release_config(
@@ -324,7 +323,7 @@ def linux_release_matrix(
     if optimized_release:
         result.extend(
             [
-                optimized_release_config(runner=selection_input.runners.get("linux_x64", ""), arch="amd64"),
+                optimized_release_config(runner=runner_amd64, arch="amd64"),
                 optimized_release_config(runner=selection_input.runners.get("linux_arm64", ""), arch="arm64"),
             ]
         )

@@ -1,0 +1,11 @@
+# name: test/sql/function/string/hive_partition_component_large.test_slow
+# description: Test hive_partition_component with a result larger than the maximum string size
+# group: [string]
+
+require ram 32gb
+
+# each space is escaped to three bytes, so the component has 2 + 1431655765 * 3 bytes
+statement error
+SELECT strlen(hive_partition_component('k', repeat(' ', 1431655765)));
+----
+<REGEX>:.*Out of Range Error.*size: '4294967297' in HIVE_PARTITION_COMPONENT, the maximum supported string size.*

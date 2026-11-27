@@ -681,7 +681,6 @@ optional_ptr<CatalogEntry> Binder::GetCatalogEntry(const EntryLookupInfo &lookup
 	return entry_retriever.GetEntry(lookup_info, on_entry_not_found);
 }
 
-//! Create a binder whose catalog search path is anchored to the table's catalog+schema
 shared_ptr<Binder> Binder::CreateStatementBinder() {
 	auto binder = Binder::CreateBinder(context);
 	const auto binding_mode = GetBindingMode();
@@ -692,6 +691,7 @@ shared_ptr<Binder> Binder::CreateStatementBinder() {
 	return binder;
 }
 
+//! Create a binder whose catalog search path is anchored to the table's catalog+schema
 shared_ptr<Binder> Binder::CreateBinderWithSearchPath(const Identifier &catalog_name,
                                                       const vector<Identifier> &schema_path) {
 	shared_ptr<Binder> new_binder = Binder::CreateBinder(context, this);

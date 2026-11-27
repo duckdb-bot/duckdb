@@ -24,6 +24,7 @@
 #include "duckdb/planner/operator/logical_set_operation.hpp"
 #include "duckdb/planner/operator/logical_window.hpp"
 #include "duckdb/planner/operator/logical_limit.hpp"
+#include "duckdb/planner/operator/logical_top_n.hpp"
 
 namespace duckdb {
 
@@ -127,6 +128,9 @@ unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalOper
 	case LogicalOperatorType::LOGICAL_ORDER_BY:
 		result = PropagateStatistics(node.Cast<LogicalOrder>(), node_ptr);
 		break;
+	case LogicalOperatorType::LOGICAL_TOP_N:
+		result = PropagateStatistics(node.Cast<LogicalTopN>(), node_ptr);
+		break;
 	case LogicalOperatorType::LOGICAL_WINDOW:
 		result = PropagateStatistics(node.Cast<LogicalWindow>(), node_ptr);
 		break;
@@ -139,15 +143,19 @@ unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalOper
 
 	// Children have been propagated; only this operator's output types need refreshing.
 	node_ptr->ResolveOperatorTypesFromChildren();
+	CompressOperator(node_ptr);
+
+	propagation_path.pop_back();
+	return result;
+}
+
+void StatisticsPropagator::CompressOperator(unique_ptr<LogicalOperator> &node_ptr) {
 	if (mode == StatisticsPropagationMode::FULL &&
 	    !optimizer.OptimizerDisabled(OptimizerType::COMPRESSED_MATERIALIZATION)) {
 		// compress data based on statistics for materializing operators
 		CompressedMaterialization compressed_materialization(optimizer, *root, propagation_path, statistics_map);
 		compressed_materialization.Compress(node_ptr);
 	}
-
-	propagation_path.pop_back();
-	return result;
 }
 
 unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(unique_ptr<LogicalOperator> &node_ptr) {

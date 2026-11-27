@@ -1,0 +1,13 @@
+# name: benchmark/micro/optimizer/topn_large_limit_grouped_aggregate.benchmark
+# description: ORDER BY an aggregate result with a LIMIT of a fifth of the groups, far below 0.7% of the input rows
+# group: [optimizer]
+
+name TopN Large Limit Grouped Aggregate
+group micro
+subgroup optimizer
+
+run
+SELECT count(*), sum(k), sum(c) FROM (SELECT k, count(*) AS c FROM (SELECT i % 1000000 AS k FROM range(30000000) t(i)) q GROUP BY k ORDER BY c, k LIMIT 200000);
+
+result III
+200000	19999900000	6000000

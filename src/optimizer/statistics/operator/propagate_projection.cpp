@@ -11,6 +11,12 @@ unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalProj
 		ReplaceWithEmptyResult(node_ptr);
 		return std::move(node_stats);
 	}
+	// a projection returns the rows of its child, so it follows an estimate that was tightened below it
+	auto &child = *proj.children[0];
+	if (child.has_estimated_cardinality && proj.has_estimated_cardinality &&
+	    child.estimated_cardinality < proj.estimated_cardinality) {
+		proj.SetEstimatedCardinality(child.estimated_cardinality);
+	}
 	// then propagate to each of the expressions
 	for (idx_t i = 0; i < proj.expressions.size(); i++) {
 		auto stats = PropagateExpression(proj.expressions[i]);

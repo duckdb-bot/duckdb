@@ -1,9 +1,12 @@
 #include "duckdb/optimizer/topn_optimizer.hpp"
 
 #include "duckdb/common/limits.hpp"
+#include "duckdb/planner/expression_iterator.hpp"
+#include "duckdb/planner/operator/logical_aggregate.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/planner/operator/logical_limit.hpp"
 #include "duckdb/planner/operator/logical_order.hpp"
+#include "duckdb/planner/operator/logical_projection.hpp"
 #include "duckdb/planner/operator/logical_top_n.hpp"
 #include "duckdb/planner/filter/expression_filter.hpp"
 #include "duckdb/planner/filter/table_filter_functions.hpp"
@@ -58,6 +61,64 @@ bool TopN::CanOptimize(LogicalOperator &op, optional_ptr<ClientContext> context)
 		return child_op->type == LogicalOperatorType::LOGICAL_ORDER_BY;
 	}
 	return false;
+}
+
+//! Whether the expression reads a result of the aggregate functions, through the projections above the aggregate
+static bool ReadsAggregateResult(const Expression &expr, const vector<reference<const LogicalProjection>> &projections,
+                                 idx_t projection_idx, const LogicalAggregate &aggregate) {
+	bool reads_result = false;
+	ExpressionIterator::VisitExpression<BoundColumnRefExpression>(expr, [&](const BoundColumnRefExpression &colref) {
+		auto &binding = colref.Binding();
+		if (binding.table_index == aggregate.aggregate_index) {
+			reads_result = true;
+		} else if (projection_idx < projections.size() &&
+		           binding.table_index == projections[projection_idx].get().table_index) {
+			auto &projected = *projections[projection_idx].get().expressions[binding.column_index];
+			reads_result = reads_result || ReadsAggregateResult(projected, projections, projection_idx + 1, aggregate);
+		}
+	});
+	return reads_result;
+}
+
+bool TopN::SortsGroupsByAggregateResult(const LogicalTopN &topn) {
+	if (topn.dynamic_filter || topn.orders.empty()) {
+		return false;
+	}
+	vector<reference<const LogicalProjection>> projections;
+	reference<const LogicalOperator> child = *topn.children[0];
+	while (child.get().type == LogicalOperatorType::LOGICAL_PROJECTION) {
+		projections.push_back(child.get().Cast<LogicalProjection>());
+		child = *child.get().children[0];
+	}
+	if (child.get().type != LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY) {
+		return false;
+	}
+	auto &aggregate = child.get().Cast<LogicalAggregate>();
+	if (aggregate.groups.empty()) {
+		return false;
+	}
+	return ReadsAggregateResult(*topn.orders[0].expression, projections, 0, aggregate);
+}
+
+unique_ptr<LogicalOperator> TopN::ToSortAndLimit(unique_ptr<LogicalOperator> op) {
+	auto &topn = op->Cast<LogicalTopN>();
+	D_ASSERT(!topn.dynamic_filter);
+	auto order = make_uniq<LogicalOrder>(std::move(topn.orders));
+	if (topn.children[0]->has_estimated_cardinality) {
+		order->SetEstimatedCardinality(topn.children[0]->estimated_cardinality);
+	}
+	order->AddChild(std::move(topn.children[0]));
+
+	auto offset_val =
+	    topn.offset == 0 ? BoundLimitNode() : BoundLimitNode::ConstantValue(NumericCast<int64_t>(topn.offset));
+	auto limit =
+	    make_uniq<LogicalLimit>(BoundLimitNode::ConstantValue(NumericCast<int64_t>(topn.limit)), std::move(offset_val));
+	limit->unpruned_offset = topn.unpruned_offset;
+	if (topn.has_estimated_cardinality) {
+		limit->SetEstimatedCardinality(topn.estimated_cardinality);
+	}
+	limit->AddChild(std::move(order));
+	return std::move(limit);
 }
 
 shared_ptr<DynamicFilterData> TopN::PushDynamicFilterIntoScans(ClientContext &context, LogicalOperator &child,

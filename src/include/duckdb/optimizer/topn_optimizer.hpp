@@ -30,6 +30,11 @@ public:
 	unique_ptr<LogicalOperator> Optimize(unique_ptr<LogicalOperator> op);
 	//! Whether we can perform the optimization on this operator
 	static bool CanOptimize(LogicalOperator &op, optional_ptr<ClientContext> context = nullptr);
+	//! Whether the Top-N sorts the groups of a grouped aggregate by a result of its aggregate functions first, and
+	//! nothing else builds on it: no dynamic filter was pushed down, and the top key rewrite needs group keys in front
+	static bool SortsGroupsByAggregateResult(const LogicalTopN &topn);
+	//! Turns a Top-N back into the ORDER BY and the LIMIT it was made from
+	static unique_ptr<LogicalOperator> ToSortAndLimit(unique_ptr<LogicalOperator> op);
 	//! Pushes a dynamic filter "binding <comparison_type> [boundary]" into the scans below the operator that produce
 	//! the column. Returns the filter, or nullptr if no scan can evaluate it.
 	static shared_ptr<DynamicFilterData> PushDynamicFilterIntoScans(ClientContext &context, LogicalOperator &child,

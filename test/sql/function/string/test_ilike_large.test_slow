@@ -2,7 +2,7 @@
 # description: Test ILIKE on a string whose lowercase copy is larger than the maximum string size
 # group: [string]
 
-require ram 16gb
+require ram 32gb
 
 # the capital letter has 2 bytes and its lowercase form 3, so the copy has 4500000001 bytes
 query IIII
@@ -10,8 +10,8 @@ SELECT strlen(s), s LIKE '%Z', s ILIKE '%z', s ILIKE '%Z' FROM (SELECT repeat('�
 ----
 3000000001	true	true	true
 
-# with an escape character, a pattern that the generic matcher handles, and a pattern that is not constant
+# with an escape character, a pattern that the generic matcher handles, and a pattern that is computed for each row
 query III
-SELECT s ILIKE '%z' ESCAPE '\', s ILIKE 'ⱥ%_z', s NOT ILIKE p FROM (SELECT repeat('Ⱥ', 1500000000) || 'Z' AS s, CASE WHEN random() >= 0 THEN '%y' END AS p);
+SELECT s ILIKE '%z' ESCAPE '\', s ILIKE 'ⱥ%_z', s NOT ILIKE p FROM (SELECT repeat('Ⱥ', 1500000000) || 'Z' AS s, substr('%z', 1, 2 + CAST(random() * 0 AS BIGINT)) AS p);
 ----
-true	true	true
+true	true	false

@@ -16,9 +16,6 @@ build_loadable_extension_directory(
 target_include_directories(debug_fs_loadable_extension
                            PRIVATE ${DEBUG_FS_INCLUDE_DIR})
 
-add_library(test_debug_fs_extension OBJECT ${DEBUG_FS_EXTENSION_FILES})
-target_include_directories(test_debug_fs_extension
-                           PRIVATE ${DEBUG_FS_INCLUDE_DIR})
 list(APPEND UNITTEST_OBJECT_FILES $<TARGET_OBJECTS:test_debug_fs_extension>)
 set(UNITTEST_OBJECT_FILES
     ${UNITTEST_OBJECT_FILES}
@@ -116,8 +113,6 @@ target_link_libraries(cpp_api_demo_fail_loadable_extension
                       duckdb_cpp_api_loadable)
 
 if(NOT WIN32 AND NOT SUN)
-  add_definitions(-DDUCKDB_BUILD_DIRECTORY="${PROJECT_BINARY_DIR}")
-
   build_loadable_extension_directory(
     loadable_extension_optimizer_demo
     "CPP"

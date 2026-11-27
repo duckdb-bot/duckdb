@@ -374,8 +374,8 @@ jobs:
     - name: Test
       run: make unittest_relassert
 
-    - name: Unittest Runner Tests
-      run: python -m pytest tools/sqllogic/tests --unittest-binary build/relassert/test/unittest
+    - name: Thread Stack Size Tests
+      run: python -m pytest tools/shell/tests/test_thread_stack_size.py --shell-binary build/relassert/duckdb
 
     - name: Test Benchmark SQL
       run: make test_benchmark_sql

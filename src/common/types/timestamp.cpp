@@ -179,7 +179,7 @@ TimestampCastResult Timestamp::TryConvertTimestamp(const char *str, idx_t len, t
 		return success;
 	}
 	if (!TryFromTimestampNanos(micros, nanos, result)) {
-		return TimestampCastResult::ERROR_INCORRECT_FORMAT;
+		return TimestampCastResult::ERROR_RANGE;
 	}
 	return TimestampCastResult::SUCCESS;
 }

@@ -802,6 +802,12 @@ DUCKDB_API bool TryCastErrorMessage::Operation(string_t input, interval_t &resul
 //===--------------------------------------------------------------------===//
 
 template <>
+DUCKDB_API bool TryCastErrorMessage::Operation(string_t input, timestamp_ns_t &result, CastParameters &parameters);
+template <>
+DUCKDB_API bool TryCastErrorMessage::Operation(string_t input, timestamp_ms_t &result, CastParameters &parameters);
+template <>
+DUCKDB_API bool TryCastErrorMessage::Operation(string_t input, timestamp_sec_t &result, CastParameters &parameters);
+template <>
 DUCKDB_API bool TryCast::Operation(string_t input, timestamp_ns_t &result, bool strict);
 template <>
 DUCKDB_API bool TryCast::Operation(string_t input, timestamp_ms_t &result, bool strict);

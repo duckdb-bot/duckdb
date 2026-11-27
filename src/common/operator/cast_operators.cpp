@@ -2124,6 +2124,63 @@ bool TryCastErrorMessage::Operation(string_t input, timestamp_tz_ns_t &result, C
 	return false;
 }
 
+//! Records why a string is not a timestamp of the target type, unless the cast already holds an error
+static void AssignTimestampCastError(TimestampCastResult cast_result, string_t input, CastParameters &parameters) {
+	if (parameters.error_message && !parameters.error_message->empty()) {
+		return;
+	}
+	switch (cast_result) {
+	case TimestampCastResult::ERROR_INCORRECT_FORMAT:
+		HandleCastError::AssignError(Timestamp::FormatError(input), parameters);
+		break;
+	case TimestampCastResult::ERROR_NON_UTC_TIMEZONE:
+		HandleCastError::AssignError(Timestamp::UnsupportedTimezoneError(input), parameters);
+		break;
+	case TimestampCastResult::ERROR_RANGE:
+		HandleCastError::AssignError(Timestamp::RangeError(input), parameters);
+		break;
+	case TimestampCastResult::SUCCESS:
+	case TimestampCastResult::STRICT_UTC:
+		throw InternalException("A timestamp cast that succeeded has no error");
+	}
+}
+
+template <>
+bool TryCastErrorMessage::Operation(string_t input, timestamp_ns_t &result, CastParameters &parameters) {
+	const auto cast_result = Timestamp::TryConvertTimestamp(input.GetData(), input.GetSize(), result, false);
+	if (cast_result == TimestampCastResult::SUCCESS || cast_result == TimestampCastResult::STRICT_UTC) {
+		return true;
+	}
+	AssignTimestampCastError(cast_result, input, parameters);
+	return false;
+}
+
+//! Parses a timestamp and rounds it to the precision of the result type
+template <class TIMESTAMP_TYPE>
+static bool TryCastStringToTimestampPrecision(string_t input, TIMESTAMP_TYPE &result, CastParameters &parameters) {
+	timestamp_t us;
+	auto cast_result = Timestamp::TryConvertTimestamp(input.GetData(), input.GetSize(), us, false);
+	if (cast_result == TimestampCastResult::SUCCESS || cast_result == TimestampCastResult::STRICT_UTC) {
+		if (TryCastTimestampBase<timestamp_t, TIMESTAMP_TYPE>(us, result, parameters.strict)) {
+			return true;
+		}
+		// a valid timestamp whose rounded value does not fit the result type
+		cast_result = TimestampCastResult::ERROR_RANGE;
+	}
+	AssignTimestampCastError(cast_result, input, parameters);
+	return false;
+}
+
+template <>
+bool TryCastErrorMessage::Operation(string_t input, timestamp_ms_t &result, CastParameters &parameters) {
+	return TryCastStringToTimestampPrecision(input, result, parameters);
+}
+
+template <>
+bool TryCastErrorMessage::Operation(string_t input, timestamp_sec_t &result, CastParameters &parameters) {
+	return TryCastStringToTimestampPrecision(input, result, parameters);
+}
+
 template <>
 bool TryCast::Operation(string_t input, timestamp_t &result, bool strict) {
 	return Timestamp::TryConvertTimestamp(input.GetData(), input.GetSize(), result, false) ==

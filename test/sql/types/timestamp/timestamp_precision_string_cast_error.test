@@ -1,0 +1,122 @@
+# name: test/sql/types/timestamp/timestamp_precision_string_cast_error.test
+# description: Failed string casts to TIMESTAMP_S, TIMESTAMP_MS and TIMESTAMP_NS say what is wrong with the string
+# group: [timestamp]
+
+foreach type TIMESTAMP_S TIMESTAMP_MS TIMESTAMP_NS TIMESTAMP(0) TIMESTAMP(3) TIMESTAMP(9) TIMESTAMP
+
+statement error
+SELECT 'abc'::{type};
+----
+Conversion Error: invalid timestamp field format: "abc", expected format is (YYYY-MM-DD HH:MM[:SS[.US]][±HH[:MM[:SS]]| ZONE])
+
+statement error
+SELECT '2024-13-01 00:00:00'::{type};
+----
+Conversion Error: timestamp field value out of range: "2024-13-01 00:00:00"
+
+statement error
+SELECT '2024-01-01 00:00:00+x'::{type};
+----
+Conversion Error: timestamp field value "2024-01-01 00:00:00+x" has a timestamp that is not UTC.
+
+# the cast still fails without an error under TRY_CAST
+query III
+SELECT TRY_CAST('abc' AS {type}), TRY_CAST('2024-13-01 00:00:00' AS {type}), TRY_CAST('2024-01-01 00:00:00+x' AS {type});
+----
+NULL	NULL	NULL
+
+query I
+SELECT '2024-01-01 00:00:00'::{type};
+----
+2024-01-01 00:00:00
+
+endloop
+
+# typed literals take the same cast
+statement error
+SELECT TIMESTAMP_S 'abc';
+----
+Conversion Error: invalid timestamp field format: "abc"
+
+statement error
+SELECT TIMESTAMP_MS 'abc';
+----
+Conversion Error: invalid timestamp field format: "abc"
+
+statement error
+SELECT TIMESTAMP_NS 'abc';
+----
+Conversion Error: invalid timestamp field format: "abc"
+
+# a timestamp that is valid in microseconds can still be out of range for the target
+statement error
+SELECT '2262-04-11 23:47:16.854775808'::TIMESTAMP_NS;
+----
+Conversion Error: timestamp field value out of range: "2262-04-11 23:47:16.854775808"
+
+statement error
+SELECT '1677-09-21 00:12:43.145224191'::TIMESTAMP_NS;
+----
+Conversion Error: timestamp field value out of range: "1677-09-21 00:12:43.145224191"
+
+statement error
+SELECT '294247-01-10 04:00:54.6'::TIMESTAMP_S;
+----
+Conversion Error: timestamp field value out of range: "294247-01-10 04:00:54.6"
+
+statement error
+SELECT '294247-01-10 04:00:54.7756'::TIMESTAMP_MS;
+----
+Conversion Error: timestamp field value out of range: "294247-01-10 04:00:54.7756"
+
+query II
+SELECT '294247-01-10 04:00:54.4'::TIMESTAMP_S, '294247-01-10 04:00:54.7754'::TIMESTAMP_MS;
+----
+294247-01-10 04:00:54	294247-01-10 04:00:54.775
+
+statement error
+SELECT '2262-04-11 23:47:16.854775808'::TIMESTAMPTZ_NS;
+----
+Conversion Error: timestamp field value out of range: "2262-04-11 23:47:16.854775808"
+
+# a column of strings
+statement ok
+CREATE TABLE strings AS SELECT * FROM (VALUES ('2024-01-01 00:00:00'), ('2024-02-30 00:00:00'), ('yesterday'), (NULL)) t(s);
+
+foreach type TIMESTAMP_S TIMESTAMP_MS TIMESTAMP_NS
+
+statement error
+SELECT s::{type} FROM strings WHERE s LIKE '2024%';
+----
+Conversion Error: timestamp field value out of range: "2024-02-30 00:00:00"
+
+statement error
+SELECT s::{type} FROM strings WHERE s NOT LIKE '2024-02%';
+----
+Conversion Error: invalid timestamp field format: "yesterday"
+
+query I
+SELECT TRY_CAST(s AS {type}) FROM strings ORDER BY ALL;
+----
+2024-01-01 00:00:00
+NULL
+NULL
+NULL
+
+endloop
+
+statement ok
+CREATE TABLE timestamps(sec TIMESTAMP_S, ms TIMESTAMP_MS, ns TIMESTAMP_NS);
+
+statement error
+INSERT INTO timestamps VALUES ('2024-01-01 00:00:00', 'today at noon', '2024-01-01 00:00:00');
+----
+Conversion Error: invalid timestamp field format: "today at noon"
+
+statement ok
+INSERT INTO timestamps VALUES ('infinity', '-infinity', 'epoch');
+
+query III
+SELECT * FROM timestamps;
+----
+infinity	-infinity	1970-01-01 00:00:00

@@ -83,19 +83,18 @@ FROM (
 ----
 10000	9714	10000
 
-# the bounds of the arguments say nothing about the result. Every first value is stored below every second one
+# the bounds of a TIMETZ column are those of its stored values, which do not bound the result
 statement ok
-CREATE TABLE times AS SELECT TIMETZ '01:00:00+00' AS a, TIMETZ '05:00:00+10' AS b FROM range(3);
+CREATE TABLE times AS SELECT * FROM (VALUES
+	(TIMETZ '01:00:00+00', TIMETZ '00:30:00+00'),
+	(TIMETZ '02:00:00+10', TIMETZ '00:30:00+00'),
+	(TIMETZ '03:00:00+00', TIMETZ '00:30:00+00')
+) t(a, b);
 
 query II
-SELECT count(*) FILTER (WHERE least(a, b)::VARCHAR = '05:00:00+10'), count(*) FILTER (WHERE greatest(a, b)::VARCHAR = '01:00:00+00') FROM times;
+SELECT count(*) FILTER (WHERE least(a, b) = b), count(*) FROM times WHERE least(a, b)::VARCHAR = '02:00:00+10';
 ----
-3	3
-
-query I
-SELECT count(*) FROM times WHERE least(a, b)::VARCHAR = '05:00:00+10';
-----
-3
+0	1
 
 # nested types
 query IIII

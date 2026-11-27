@@ -30,6 +30,7 @@ set(TEST_API_OBJECTS
     test_inherit_transaction.cpp
     test_shared_transaction_chaos.cpp
     test_shared_transaction_concurrency.cpp
+    test_list_literal_cast.cpp
     test_connect_prepare.cpp
     test_nested_schema_capability.cpp
     test_remote_pushdown_macro_arguments.cpp

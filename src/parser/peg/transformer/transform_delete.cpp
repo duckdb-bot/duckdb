@@ -11,7 +11,11 @@ unique_ptr<SQLStatement> PEGTransformerFactory::TransformDeleteStatement(
     optional<vector<unique_ptr<ParsedExpression>>> returning_clause) {
 	auto result = make_uniq<DeleteStatement>();
 	auto &node = *result->node;
-	if (with_clause && !with_clause->map.empty()) {
+	if (with_clause) {
+		if (!HasDataModifyingCTE(*with_clause)) {
+			// the CTEs were visible while the rest of the statement was transformed
+			transformer.stored_cte_map.pop_back();
+		}
 		node.cte_map = std::move(*with_clause);
 	}
 	node.table = std::move(target_opt_alias);

@@ -751,6 +751,9 @@ public:
 	                                                           optional_idx &failure_index);
 	static ParseResult &ExtractResultFromParens(ParseResult &parse_result);
 	static vector<reference<ParseResult>> ExtractParseResultsFromList(ParseResult &parse_result);
+	//! Whether a CTE of the WITH clause writes data. Such a clause is not shown to a PIVOT of a statement that
+	//! writes, which would run the CTE again to collect its values
+	static bool HasDataModifyingCTE(const CommonTableExpressionMap &cte_map);
 	static bool ExpressionIsEmptyStar(const ParsedExpression &expr);
 	static QualifiedName StringToQualifiedName(vector<string> input);
 	static QualifiedColumnName StringToQualifiedColumnName(const vector<string> &input);

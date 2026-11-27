@@ -53,10 +53,12 @@ ActiveCheckpointWrapper::ActiveCheckpointWrapper(optional_ptr<ClientContext> che
 ActiveCheckpointWrapper::~ActiveCheckpointWrapper() {
 	// This happens on failure before we commit the transaction.
 	if (active) {
-		transaction_manager.ResetActiveCheckpoint();
+		transaction_manager.ResetActiveCheckpoint(false);
 	}
 	if (checkpoint_transaction) {
-		transaction_manager.RollbackTransaction(*checkpoint_transaction);
+		// only a checkpoint started by a connection has a checkpoint transaction
+		D_ASSERT(checkpoint_context);
+		transaction_manager.RollbackTransaction(*checkpoint_context, *checkpoint_transaction);
 		checkpoint_transaction = nullptr;
 	}
 	if (checkpoint_context) {
@@ -84,7 +86,7 @@ void ActiveCheckpointWrapper::Begin(CheckpointOptions &options) {
 }
 
 void ActiveCheckpointWrapper::Commit() {
-	transaction_manager.ResetActiveCheckpoint();
+	transaction_manager.ResetActiveCheckpoint(true);
 	active = false;
 	if (!checkpoint_transaction) {
 		return;
@@ -108,7 +110,7 @@ SingleFileCheckpointWriter::SingleFileCheckpointWriter(QueryContext context, Att
                                                        BlockManager &block_manager, CheckpointOptions options_p,
                                                        optional_ptr<ClientContext> checkpoint_context)
     : CheckpointWriter(db, context, checkpoint_context),
-      partial_block_manager(GetContext(), block_manager, PartialBlockType::FULL_CHECKPOINT), options(options_p) {
+      partial_block_manager(block_manager, PartialBlockType::FULL_CHECKPOINT), options(options_p) {
 }
 
 SingleFileCheckpointWriter::~SingleFileCheckpointWriter() {
@@ -127,7 +129,7 @@ BlockManager &SingleFileCheckpointWriter::GetBlockManager() {
 }
 
 PartialBlockManager SingleFileCheckpointWriter::CreatePerIndexPartialBlockManager() {
-	return PartialBlockManager(GetContext(), GetBlockManager(), PartialBlockType::FULL_CHECKPOINT);
+	return PartialBlockManager(GetBlockManager(), PartialBlockType::FULL_CHECKPOINT);
 }
 
 MetadataWriter &SingleFileCheckpointWriter::GetMetadataWriter() {
@@ -264,7 +266,7 @@ void SingleFileCheckpointWriter::CreateCheckpoint() {
 	auto &transaction_manager = db.GetTransactionManager().Cast<DuckTransactionManager>();
 
 	// If there is a checkpoint context (non shutdown path), WALStartCheckpoint creates the checkpoint transaction.
-	ActiveCheckpointWrapper active_checkpoint(GetCheckpointContext(), db, transaction_manager);
+	ActiveCheckpointWrapper active_checkpoint(checkpoint_context, db, transaction_manager);
 	auto has_wal = storage_manager.WALStartCheckpoint(meta_block, options, active_checkpoint);
 
 	catalog_entry_vector_t catalog_entries;
@@ -313,7 +315,7 @@ void SingleFileCheckpointWriter::CreateCheckpoint() {
 	});
 	serializer.End();
 
-	partial_block_manager.FlushPartialBlocks();
+	partial_block_manager.FlushPartialBlocks(GetContext());
 	for (auto &pending : pending_publications) {
 		pending->Publish();
 	}
@@ -330,12 +332,21 @@ void SingleFileCheckpointWriter::CreateCheckpoint() {
 		throw IOException("Checkpoint aborted before header write (non-fatal) because of PRAGMA checkpoint_abort flag");
 	}
 
+	// a concurrent commit may have invalidated the database: do not publish the checkpoint
+	auto invalidation_error = db.InvalidationError("checkpoint");
+	if (invalidation_error.HasError()) {
+		invalidation_error.Throw();
+	}
+
 	// finally write the updated header
 	DatabaseHeader header;
 	header.meta_block = meta_block.block_pointer;
 	header.block_alloc_size = block_manager.GetBlockAllocSize();
 	header.vector_size = STANDARD_VECTOR_SIZE;
-	block_manager.WriteHeader(QueryContext(GetContext()), header);
+	transaction_t read_stamp, lowest_active_start;
+	transaction_manager.GetStartTimes(read_stamp, lowest_active_start);
+	block_manager.WriteHeader(QueryContext(GetContext()), header, options.visibility_bound, read_stamp,
+	                          lowest_active_start);
 
 	auto debug_verify_blocks = Settings::Get<DebugVerifyBlocksSetting>(db.GetDatabase());
 	if (debug_verify_blocks) {

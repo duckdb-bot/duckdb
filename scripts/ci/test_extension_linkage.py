@@ -209,7 +209,8 @@ class ExtensionLinkageTest(unittest.TestCase):
                 )
                 for name in ("shell", "test_loadable_extension"):
                     linked = libraries(name).replace("\\", "/")
-                    self.assertLess(linked.index(test_prebuilt_archive), linked.index("test_helpers"), linked)
+                    # the prebuilt archive resolves its symbols from a test_helpers archive behind it
+                    self.assertLess(linked.index(test_prebuilt_archive), linked.rindex("test_helpers"), linked)
                     if (
                         name == "shell"
                         or (name == "test_loadable_extension" and static_build)

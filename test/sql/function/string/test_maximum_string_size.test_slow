@@ -4,9 +4,9 @@
 
 require parquet
 
-# the input comes from a subquery, so the functions run during execution
+# the input depends on a column, so the functions run during execution and no plan holds a string of this size
 statement error
-SELECT length(bin(s)) FROM (SELECT repeat('x', 600000000) AS s)
+SELECT length(bin(s)) FROM (SELECT repeat('x', 600000000 + i) AS s FROM range(1) t(i))
 ----
 <REGEX>:.*Out of Range Error.*maximum supported string size.*
 
@@ -17,17 +17,17 @@ SELECT 42
 42
 
 statement error
-SELECT length(s || s) FROM (SELECT repeat('x', 2200000000) AS s)
+SELECT length(s || s) FROM (SELECT repeat('x', 2200000000 + i) AS s FROM range(1) t(i))
 ----
 <REGEX>:.*Out of Range Error.*maximum supported string size.*
 
 statement error
-SELECT length(concat(s, s)) FROM (SELECT repeat('x', 2200000000) AS s)
+SELECT length(concat(s, s)) FROM (SELECT repeat('x', 2200000000 + i) AS s FROM range(1) t(i))
 ----
 <REGEX>:.*Out of Range Error.*maximum supported string size.*
 
 statement error
-SELECT octet_length(b || b) FROM (SELECT repeat('x', 2200000000)::BLOB AS b)
+SELECT octet_length(b || b) FROM (SELECT repeat('x', 2200000000 + i)::BLOB AS b FROM range(1) t(i))
 ----
 <REGEX>:.*Out of Range Error.*maximum supported string size.*
 
@@ -39,7 +39,7 @@ SELECT length(bin(repeat('x', 600000000)))
 
 # TRY turns the error into NULL
 query I
-SELECT TRY(length(bin(s))) FROM (SELECT repeat('x', 600000000) AS s)
+SELECT TRY(length(bin(s))) FROM (SELECT repeat('x', 600000000 + i) AS s FROM range(1) t(i))
 ----
 NULL
 
@@ -50,7 +50,7 @@ SELECT 42
 
 # a dictionary with a value that fails and a value that does not
 statement ok
-COPY (SELECT i, CASE WHEN i = 0 THEN repeat('x', 600000000) ELSE 'a' END AS s FROM range(2) t(i)) TO '{TEST_DIR}/maximum_string_size_dictionary.parquet' (FORMAT PARQUET, COMPRESSION ZSTD, DICTIONARY_SIZE_LIMIT 10);
+COPY (SELECT i, CASE WHEN i = 0 THEN repeat('x', 600000000 + i) ELSE 'a' END AS s FROM range(2) t(i)) TO '{TEST_DIR}/maximum_string_size_dictionary.parquet' (FORMAT PARQUET, COMPRESSION ZSTD, DICTIONARY_SIZE_LIMIT 10);
 
 query I
 SELECT DISTINCT encodings FROM parquet_metadata('{TEST_DIR}/maximum_string_size_dictionary.parquet') WHERE path_in_schema = 's';

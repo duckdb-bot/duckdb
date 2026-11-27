@@ -1,4 +1,5 @@
 #include "duckdb/planner/filter/expression_filter.hpp"
+#include "duckdb/common/in_clause.hpp"
 #include "duckdb/common/optional_ptr.hpp"
 #include "duckdb/common/vector.hpp"
 #include "duckdb/function/arg_properties.hpp"
@@ -34,6 +35,45 @@
 #include "duckdb/function/scalar/struct_utils.hpp"
 
 namespace duckdb {
+
+bool ExpressionFilter::IsNativeInFilter(const Expression &expr) {
+	if (expr.GetExpressionType() != ExpressionType::COMPARE_IN) {
+		return false;
+	}
+	auto &children = expr.Cast<BoundOperatorExpression>().GetChildren();
+	if (children.size() < 2 || children[0]->GetExpressionClass() != ExpressionClass::BOUND_REF ||
+	    children[0]->Cast<BoundReferenceExpression>().Index() != 0) {
+		return false;
+	}
+	const auto type = children[0]->GetReturnType().InternalType();
+	if (!TypeIsNumeric(type) && type != PhysicalType::BOOL && type != PhysicalType::VARCHAR &&
+	    type != PhysicalType::INTERVAL) {
+		return false;
+	}
+	for (idx_t i = 1; i < children.size(); i++) {
+		if (children[i]->GetExpressionClass() != ExpressionClass::BOUND_CONSTANT ||
+		    children[i]->GetReturnType().InternalType() != type) {
+			return false;
+		}
+	}
+	return true;
+}
+
+bool ExpressionFilter::IsSmallNativeInFilter(const Expression &expr) {
+	return expr.GetExpressionType() == ExpressionType::COMPARE_IN &&
+	       expr.Cast<BoundOperatorExpression>().GetChildren().size() < IN_CLAUSE_REWRITE_THRESHOLD &&
+	       ExpressionFilter::IsNativeInFilter(expr);
+}
+
+bool ExpressionFilter::SupportsConstantFilterPushdown(const LogicalType &type) {
+	if (TypeIsNumeric(type.InternalType())) {
+		return true;
+	}
+	if (type.InternalType() == PhysicalType::VARCHAR || type.InternalType() == PhysicalType::BOOL) {
+		return true;
+	}
+	return false;
+}
 
 ExpressionFilter::ExpressionFilter(unique_ptr<Expression> expr_p) : ExpressionFilter(std::move(expr_p), {}) {
 }
@@ -81,6 +121,16 @@ unique_ptr<ExpressionFilter> ExpressionFilter::CreateComparisonFilter(Expression
 	auto comparison = BoundComparisonExpression::Create(comparison_type, std::move(column),
 	                                                    make_uniq<BoundConstantExpression>(std::move(constant)));
 	return make_uniq<ExpressionFilter>(std::move(comparison));
+}
+
+unique_ptr<ExpressionFilter> ExpressionFilter::CreateSelectivityOptionalFilter(unique_ptr<Expression> child_expr,
+                                                                               const LogicalType &column_type,
+                                                                               SelectivityOptionalFilterType type) {
+	float selectivity_threshold;
+	idx_t n_vectors_to_check;
+	GetThresholdAndVectorsToCheck(type, selectivity_threshold, n_vectors_to_check);
+	return make_uniq<ExpressionFilter>(CreateSelectivityOptionalFilterExpression(
+	    std::move(child_expr), column_type, selectivity_threshold, n_vectors_to_check));
 }
 
 bool ExpressionFilter::IsSimpleFilterColumnRef(const Expression &expr) {
@@ -136,7 +186,7 @@ static bool IsOptionalExpressionInternal(const Expression &expr, bool recurse_th
 	return true;
 }
 
-static bool ContainsInternalTableFilterFunction(const Expression &expr) {
+bool ExpressionFilter::ContainsInternalTableFilterFunction(const Expression &expr) {
 	if (expr.GetExpressionClass() == ExpressionClass::BOUND_FUNCTION) {
 		auto &func = expr.Cast<BoundFunctionExpression>();
 		if (TableFilterFunctions::IsTableFilterFunction(func.Function())) {
@@ -807,6 +857,19 @@ static FilterPropagateResult CheckNotOperatorStatistics(optional_ptr<ClientConte
 		    children[1]->Cast<BoundConstantExpression>().GetValue().IsNull()) {
 			return FilterPropagateResult::FILTER_FALSE_OR_NULL;
 		}
+		if (children.size() > 2 && ExpressionFilter::IsSimpleFilterColumnRef(*children[0])) {
+			bool has_null = false;
+			for (idx_t i = 1; i < children.size(); i++) {
+				if (children[i]->GetExpressionType() != ExpressionType::VALUE_CONSTANT) {
+					return FilterPropagateResult::NO_PRUNING_POSSIBLE;
+				}
+				has_null |= children[i]->Cast<BoundConstantExpression>().GetValue().IsNull();
+			}
+			if (has_null) {
+				// A match is false and a non-match is NULL after NOT; neither passes a filter.
+				return FilterPropagateResult::FILTER_FALSE_OR_NULL;
+			}
+		}
 	}
 	auto bool_ref = CheckBoolRefStatistics(child, input_stats, true);
 	if (bool_ref != FilterPropagateResult::NO_PRUNING_POSSIBLE) {
@@ -938,6 +1001,10 @@ bool ExpressionFilter::ContainsInternalFunction(const Expression &expr, const st
 
 bool ExpressionFilter::IsOptionalExpression(const Expression &expr) {
 	return IsOptionalExpressionInternal(expr, true, true);
+}
+
+bool ExpressionFilter::IsPruningOnlyExpression(const Expression &expr) {
+	return IsOptionalExpressionInternal(expr, true, false);
 }
 
 bool ExpressionFilter::IsRootOptionalExpression(const Expression &expr) {

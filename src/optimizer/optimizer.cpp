@@ -20,6 +20,7 @@
 #include "duckdb/optimizer/filter_statistics.hpp"
 #include "duckdb/optimizer/filter_pullup.hpp"
 #include "duckdb/optimizer/filter_pushdown.hpp"
+#include "duckdb/optimizer/group_by_top_key.hpp"
 #include "duckdb/optimizer/grouping_sets_optimizer.hpp"
 #include "duckdb/optimizer/in_clause_rewriter.hpp"
 #include "duckdb/optimizer/join_elimination.hpp"
@@ -27,6 +28,7 @@
 #include "duckdb/optimizer/join_order/join_order_optimizer.hpp"
 #include "duckdb/optimizer/join_simplification.hpp"
 #include "duckdb/optimizer/limit_pushdown.hpp"
+#include "duckdb/optimizer/mark_join_simplifier.hpp"
 #include "duckdb/optimizer/regex_range_filter.hpp"
 #include "duckdb/optimizer/remove_duplicate_groups.hpp"
 #include "duckdb/optimizer/remove_redundant_distinct.hpp"
@@ -128,48 +130,12 @@ static void ClearProjectionMaps(LogicalOperator &op) {
 	}
 }
 
-static bool ContainsDML(const LogicalOperator &op) {
-	switch (op.type) {
-	case LogicalOperatorType::LOGICAL_INSERT:
-	case LogicalOperatorType::LOGICAL_UPDATE:
-	case LogicalOperatorType::LOGICAL_DELETE:
-	case LogicalOperatorType::LOGICAL_MERGE_INTO:
-		return true;
-	default:
-		break;
-	}
-	for (auto &child : op.children) {
-		if (ContainsDML(*child)) {
-			return true;
-		}
-	}
-	return false;
-}
-
 static bool ContainsDataSource(const LogicalOperator &op) {
 	if (op.type == LogicalOperatorType::LOGICAL_GET) {
 		return true;
 	}
 	for (auto &child : op.children) {
 		if (ContainsDataSource(*child)) {
-			return true;
-		}
-	}
-	return false;
-}
-
-// Returns true if the plan contains a DML statement inside a CTE body. A top-level
-// DML statement is not flagged. COPY TO is side-effecting, but does not invalidate
-// table statistics and is deliberately excluded here.
-static bool CTEContainsDML(const LogicalOperator &op) {
-	if (op.type == LogicalOperatorType::LOGICAL_MATERIALIZED_CTE ||
-	    op.type == LogicalOperatorType::LOGICAL_RECURSIVE_CTE) {
-		if (!op.children.empty() && ContainsDML(*op.children[0])) {
-			return true;
-		}
-	}
-	for (auto &child : op.children) {
-		if (CTEContainsDML(*child)) {
 			return true;
 		}
 	}
@@ -264,15 +230,25 @@ void Optimizer::RunBuiltInOptimizers() {
 		plan = filter_pullup.Rewrite(std::move(plan));
 	});
 
+	// Simplify constant-input MARK joins before filter pushdown.
+	RunOptimizer(OptimizerType::MARK_JOIN_SIMPLIFIER, [&]() {
+		MarkJoinSimplifier mark_simplifier(*this);
+		mark_simplifier.OptimizeConstantInput(plan);
+	});
+
 	// perform filter pushdown
 	RunOptimizer(OptimizerType::FILTER_PUSHDOWN, [&]() {
 		FilterPushdown filter_pushdown(*this);
-		unordered_set<TableIndex> top_bindings;
-		filter_pushdown.CheckMarkToSemi(*plan, top_bindings);
 		plan = filter_pushdown.Rewrite(std::move(plan));
 	});
 
-	if (!CTEContainsDML(*plan)) {
+	// Expose filtering joins before choosing aggregate key domains.
+	RunOptimizer(OptimizerType::MARK_JOIN_SIMPLIFIER, [&]() {
+		MarkJoinSimplifier mark_simplifier(*this);
+		mark_simplifier.Optimize(plan);
+	});
+
+	if (!plan->CTEContainsDML()) {
 		RunOptimizer(OptimizerType::DUPLICATE_ELIMINATED_DOMAIN, [&]() {
 			DuplicateEliminatedDomainOptimizer domain_optimizer(*this);
 			domain_optimizer.Optimize(plan);
@@ -290,7 +266,7 @@ void Optimizer::RunBuiltInOptimizers() {
 	CTEFilterPusher::ClearDependencies(*plan);
 
 	RunOptimizer(OptimizerType::REGEX_RANGE, [&]() {
-		RegexRangeFilter regex_opt;
+		RegexRangeFilter regex_opt(context);
 		plan = regex_opt.Rewrite(std::move(plan));
 	});
 
@@ -354,11 +330,14 @@ void Optimizer::RunBuiltInOptimizers() {
 		plan = window_self_join_optimizer.Optimize(std::move(plan));
 	});
 
-	// Pull up projection from joins
-	RunOptimizer(OptimizerType::PROJECTION_PULLUP, [&]() {
-		ProjectionPullup projection_pullup(*this, plan);
-		projection_pullup.Optimize(plan);
+	// IN-clause rewriting and delim elimination can expose more filtered markers.
+	RunOptimizer(OptimizerType::MARK_JOIN_SIMPLIFIER, [&]() {
+		MarkJoinSimplifier mark_simplifier(*this);
+		mark_simplifier.Optimize(plan);
 	});
+
+	// Pull up projection from joins
+	RunOptimizer(OptimizerType::PROJECTION_PULLUP, [&]() { ProjectionPullup::Optimize(*this, plan); });
 
 	// Push down joins against windows
 	RunOptimizer(OptimizerType::WINDOW_JOIN_PUSHDOWN, [&]() {
@@ -412,7 +391,7 @@ void Optimizer::RunBuiltInOptimizers() {
 	RunOptimizer(OptimizerType::CASE_TO_FILTER_AGGREGATE, [&]() {
 		AggregateFunctionRewriter aggregate_function_rewriter(*this);
 		// DML CTEs can invalidate the table statistics captured during planning.
-		aggregate_function_rewriter.RewriteCaseToFilter(plan, !CTEContainsDML(*plan));
+		aggregate_function_rewriter.RewriteCaseToFilter(plan, !plan->CTEContainsDML());
 	});
 
 	RunOptimizer(OptimizerType::REDUNDANT_ORDER_KEYS, [&]() {
@@ -475,7 +454,7 @@ void Optimizer::RunBuiltInOptimizers() {
 	// convert common subplans into materialized CTEs
 	// Skip when the plan contains a DML CTE: table statistics are stale at plan
 	// time and could cause incorrect deduplication of scans across a DML boundary.
-	if (!CTEContainsDML(*plan)) {
+	if (!plan->CTEContainsDML()) {
 		RunOptimizer(OptimizerType::COMMON_SUBPLAN, [&]() {
 			CommonSubplanOptimizer common_subplan_optimizer(*this);
 			plan = common_subplan_optimizer.Optimize(std::move(plan));
@@ -516,7 +495,7 @@ void Optimizer::RunBuiltInOptimizers() {
 	column_binding_map_t<unique_ptr<BaseStatistics>> statistics_map;
 	bool propagated_statistics = false;
 	bool removed_expressions = false;
-	if (!CTEContainsDML(*plan)) {
+	if (!plan->CTEContainsDML()) {
 		RunOptimizer(OptimizerType::STATISTICS_PROPAGATION, [&]() {
 			StatisticsPropagator propagator(*this, plan);
 			propagator.PropagateStatistics(plan);
@@ -540,18 +519,18 @@ void Optimizer::RunBuiltInOptimizers() {
 		});
 	}
 
-	// rewrite unique ranking window function + filter on row_number to fused operator
-	RunOptimizer(OptimizerType::WINDOW_FUSION, [&]() {
-		WindowFusion window_fusion(context, &statistics_map);
-		plan = window_fusion.Optimize(std::move(plan));
-	});
-
 	// rewrite row_number window function + filter on row_number to aggregate
 	bool topn_used_late_materialization = false;
 	RunOptimizer(OptimizerType::TOP_N_WINDOW_ELIMINATION, [&]() {
 		TopNWindowElimination topn_window_elimination(context, *this, &statistics_map);
 		plan = topn_window_elimination.Optimize(std::move(plan));
 		topn_used_late_materialization = topn_window_elimination.UsedLateMaterialization();
+	});
+
+	// rewrite unique ranking window function + filters to a fused operator
+	RunOptimizer(OptimizerType::WINDOW_FUSION, [&]() {
+		WindowFusion window_fusion(context, &statistics_map);
+		plan = window_fusion.Optimize(std::move(plan));
 	});
 
 	// remove duplicate aggregates
@@ -611,6 +590,13 @@ void Optimizer::RunBuiltInOptimizers() {
 	RunOptimizer(OptimizerType::SCALAR_FN_PUSHDOWN, [&] {
 		ScalarFnPushdown fn_pushdown(context);
 		plan = fn_pushdown.Optimize(std::move(plan));
+	});
+
+	// Bounds the input of grouped aggregates whose Top-N orders by the group keys, and turns a LIMIT over a grouped
+	// aggregate into such a Top-N. Runs last: the filter is placed below the finished aggregate.
+	RunOptimizer(OptimizerType::GROUP_BY_TOP_KEY, [&]() {
+		GroupByTopKey group_by_top_key(*this);
+		plan = group_by_top_key.Optimize(std::move(plan));
 	});
 }
 

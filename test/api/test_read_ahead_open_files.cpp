@@ -27,7 +27,7 @@ private:
 };
 
 //! Serves read-ahead-count://<path> from a local directory, and records the most files it had open at once
-class OpenAheadFileSystem : public FileSystem {
+class OpenAheadFileSystem : public BaseFileSystem {
 public:
 	OpenAheadFileSystem() : local_prefix(TestCreatePath("read_ahead_count_")) {
 	}
@@ -159,7 +159,7 @@ TEST_CASE("Read-ahead keeps the files open ahead of a scan within its window", "
 	REQUIRE_NO_FAIL(con.Query("COPY (SELECT range AS i, range AS p FROM range(1000)) TO '" + dir +
 	                          "' (FORMAT parquet, PARTITION_BY p)"));
 	string file_list;
-	for (auto &file : LocalFileSystem().GlobFiles(dir + "/*/*.parquet")) {
+	for (auto &file : TestLocalFileSystem().GlobFiles(dir + "/*/*.parquet")) {
 		auto path = OpenAheadFileSystem::Prefix() + "files" + file.path.substr(dir.size());
 		file_list += (file_list.empty() ? "'" : ", '") + path + "'";
 	}

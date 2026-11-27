@@ -2125,6 +2125,49 @@ bool TryCastErrorMessage::Operation(string_t input, timestamp_tz_ns_t &result, C
 }
 
 template <>
+bool TryCastErrorMessage::Operation(string_t input, timestamp_ns_t &result, CastParameters &parameters) {
+	switch (Timestamp::TryConvertTimestamp(input.GetData(), input.GetSize(), result, false)) {
+	case TimestampCastResult::SUCCESS:
+	case TimestampCastResult::STRICT_UTC:
+		return true;
+	case TimestampCastResult::ERROR_INCORRECT_FORMAT:
+		HandleCastError::AssignError(Timestamp::FormatError(input), parameters);
+		break;
+	case TimestampCastResult::ERROR_NON_UTC_TIMEZONE:
+		HandleCastError::AssignError(Timestamp::UnsupportedTimezoneError(input), parameters);
+		break;
+	case TimestampCastResult::ERROR_RANGE:
+		HandleCastError::AssignError(Timestamp::RangeError(input), parameters);
+		break;
+	}
+	return false;
+}
+
+//! Parses a timestamp and rounds it to the precision of the result type
+template <class TIMESTAMP_TYPE>
+static bool TryCastStringToTimestampPrecision(string_t input, TIMESTAMP_TYPE &result, CastParameters &parameters) {
+	timestamp_t us;
+	if (!TryCastErrorMessage::Operation<string_t, timestamp_t>(input, us, parameters)) {
+		return false;
+	}
+	if (!TryCastTimestampBase<timestamp_t, TIMESTAMP_TYPE>(us, result, parameters.strict)) {
+		HandleCastError::AssignError(Timestamp::RangeError(input), parameters);
+		return false;
+	}
+	return true;
+}
+
+template <>
+bool TryCastErrorMessage::Operation(string_t input, timestamp_ms_t &result, CastParameters &parameters) {
+	return TryCastStringToTimestampPrecision(input, result, parameters);
+}
+
+template <>
+bool TryCastErrorMessage::Operation(string_t input, timestamp_sec_t &result, CastParameters &parameters) {
+	return TryCastStringToTimestampPrecision(input, result, parameters);
+}
+
+template <>
 bool TryCast::Operation(string_t input, timestamp_t &result, bool strict) {
 	return Timestamp::TryConvertTimestamp(input.GetData(), input.GetSize(), result, false) ==
 	       TimestampCastResult::SUCCESS;

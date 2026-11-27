@@ -74,7 +74,7 @@ AS tbl(s)
 statement error
 SELECT TIMESTAMP_NS '2262-04-11 23:47:16.854775808';
 ----
-Conversion Error: Could not convert string
+Conversion Error: timestamp field value out of range
 
 # Negative timestamp_ns
 query I

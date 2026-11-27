@@ -601,8 +601,9 @@ void ILikeEscapeFunction(DataChunk &args, ExpressionState &state, Vector &result
 		}
 
 		// reusable scratch buffer for lowercasing each string value (grown on demand)
+		// it is allocated up front so that the copy of an empty string has an address
 		idx_t scratch_size = 0;
-		unsafe_unique_array<char> scratch;
+		auto scratch = make_unsafe_uniq_array_uninitialized<char>(scratch_size);
 		UnaryExecutor::Execute<string_t, bool>(str_vec, result, args.size(), [&](string_t str) {
 			idx_t str_llength = LowerLength(str.GetData(), str.GetSize());
 			if (str_llength > scratch_size) {
@@ -667,8 +668,9 @@ void ILikeFunction(DataChunk &input, ExpressionState &state, Vector &result) {
 		auto matcher = LikeMatcher::CreateLikeMatcher(string(pat_ldata.get(), pat_llength));
 
 		// reusable scratch buffer for lowercasing each string value (grown on demand)
+		// it is allocated up front so that the copy of an empty string has an address
 		idx_t scratch_size = 0;
-		unsafe_unique_array<char> scratch;
+		auto scratch = make_unsafe_uniq_array_uninitialized<char>(scratch_size);
 		UnaryExecutor::Execute<string_t, bool>(input.data[0], result, input.size(), [&](string_t str) {
 			idx_t str_llength = LowerLength(str.GetData(), str.GetSize());
 			if (str_llength > scratch_size) {

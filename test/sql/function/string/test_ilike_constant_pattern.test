@@ -166,3 +166,18 @@ query T
 SELECT 'Hello' NOT ILIKE '%XYZ%'
 ----
 1
+
+# an empty string in the first row is matched before any lowercase copy was made
+statement ok
+CREATE TABLE empty_first AS SELECT * FROM (VALUES (1, ''), (2, 'CAFÉ'), (3, 'x')) v(id, s);
+
+query I
+SELECT id FROM empty_first WHERE s ILIKE '%é%' ORDER BY id
+----
+2
+
+query I
+SELECT id FROM empty_first WHERE s NOT ILIKE '%é%' ORDER BY id
+----
+1
+3

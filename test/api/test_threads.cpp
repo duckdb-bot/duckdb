@@ -252,7 +252,8 @@ TEST_CASE("Test async threads", "[api]") {
 static unordered_set<string> ProcessThreadIds() {
 	LocalFileSystem fs;
 	unordered_set<string> ids;
-	REQUIRE(fs.ListFiles("/proc/self/task", [&](const string &id, bool) { ids.insert(id); }));
+	REQUIRE(fs.ListFiles(
+	    "/proc/self/task", [&](const string &id, bool) { ids.insert(id); }, nullptr));
 	return ids;
 }
 

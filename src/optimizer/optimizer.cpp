@@ -230,6 +230,12 @@ void Optimizer::RunBuiltInOptimizers() {
 		plan = filter_pullup.Rewrite(std::move(plan));
 	});
 
+	// Simplify constant-input MARK joins before filter pushdown.
+	RunOptimizer(OptimizerType::MARK_JOIN_SIMPLIFIER, [&]() {
+		MarkJoinSimplifier mark_simplifier(*this);
+		mark_simplifier.OptimizeConstantInput(plan);
+	});
+
 	// perform filter pushdown
 	RunOptimizer(OptimizerType::FILTER_PUSHDOWN, [&]() {
 		FilterPushdown filter_pushdown(*this);
@@ -331,10 +337,7 @@ void Optimizer::RunBuiltInOptimizers() {
 	});
 
 	// Pull up projection from joins
-	RunOptimizer(OptimizerType::PROJECTION_PULLUP, [&]() {
-		ProjectionPullup projection_pullup(*this, plan);
-		projection_pullup.Optimize(plan);
-	});
+	RunOptimizer(OptimizerType::PROJECTION_PULLUP, [&]() { ProjectionPullup::Optimize(*this, plan); });
 
 	// Push down joins against windows
 	RunOptimizer(OptimizerType::WINDOW_JOIN_PUSHDOWN, [&]() {

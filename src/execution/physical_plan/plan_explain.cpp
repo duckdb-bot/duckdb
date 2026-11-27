@@ -21,7 +21,7 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalExplain &op) {
 	if (!analyze && !single_plan && output != ExplainOutputType::PHYSICAL_ONLY) {
 		logical_plan_opt = op.children[0]->ToString(context, op.format);
 	}
-	auto &plan = CreatePlan(*op.children[0]);
+	auto &plan = CreatePlanRecursive(*op.children[0]);
 	if (analyze) {
 		auto &explain = Make<PhysicalExplainAnalyze>(op.types, op.format);
 		explain.children.push_back(plan);

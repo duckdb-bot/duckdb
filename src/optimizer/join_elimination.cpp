@@ -41,7 +41,7 @@ void RemovedSubtreeEffects::CollectDefinitions(LogicalOperator &op) {
 	if (op.type == LogicalOperatorType::LOGICAL_MATERIALIZED_CTE) {
 		materialized_ctes.emplace(op.Cast<LogicalCTE>().table_index, op);
 	} else if (op.type == LogicalOperatorType::LOGICAL_RECURSIVE_CTE) {
-		recursive_ctes.insert(op.Cast<LogicalCTE>().table_index);
+		recursive_ctes.emplace(op.Cast<LogicalCTE>().table_index, op);
 	}
 	for (auto &child : op.children) {
 		CollectDefinitions(*child);
@@ -107,7 +107,7 @@ struct ColumnProducers {
 	column_binding_map_t<vector<ColumnBinding>> inputs;
 	//! The CTE that a CTE reference reads
 	unordered_map<TableIndex, TableIndex> cte_refs;
-	//! The materialized CTEs whose definition has been collected
+	//! The CTEs whose definition has been collected
 	unordered_set<TableIndex> definitions;
 
 	void AddExpressions(TableIndex table_index, const vector<unique_ptr<Expression>> &list) {
@@ -151,6 +151,10 @@ struct ColumnProducers {
 		case LogicalOperatorType::LOGICAL_RECURSIVE_CTE:
 			// a reference to the recursion reads these columns as well
 			AddInputs(op.Cast<LogicalCTE>().table_index, op);
+			definitions.insert(op.Cast<LogicalCTE>().table_index);
+			break;
+		case LogicalOperatorType::LOGICAL_MATERIALIZED_CTE:
+			definitions.insert(op.Cast<LogicalCTE>().table_index);
 			break;
 		case LogicalOperatorType::LOGICAL_CTE_REF: {
 			auto &cte_ref = op.Cast<LogicalCTERef>();
@@ -190,8 +194,13 @@ bool RemovedSubtreeEffects::ReadsColumnWithEffect(LogicalOperator &reader, Logic
 		auto cte_ref = producers.cte_refs.find(binding.table_index);
 		if (cte_ref != producers.cte_refs.end()) {
 			auto cte_index = cte_ref->second;
-			if (recursive_ctes.find(cte_index) != recursive_ctes.end()) {
-				// the working table of a recursion holds the columns of the recursive CTE
+			auto recursion = recursive_ctes.find(cte_index);
+			if (recursion != recursive_ctes.end()) {
+				// the working table of a recursion holds the columns of the recursive CTE, which can be above the
+				// source
+				if (producers.definitions.insert(cte_index).second) {
+					producers.Collect(recursion->second.get());
+				}
 				pending.emplace_back(cte_index, binding.column_index);
 				continue;
 			}

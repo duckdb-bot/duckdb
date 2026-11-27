@@ -140,12 +140,28 @@ SELECT nextval('recursive_sequence');
 ----
 4
 
-# a join that can only be removed after the first pruning
+# the join inside the step of a recursion reads the column from the working table
+statement ok
+CREATE SEQUENCE step_sequence;
+
+query I
+WITH RECURSIVE m AS MATERIALIZED (SELECT x, nextval('step_sequence') AS k FROM v),
+r(x, k) AS (SELECT x, k FROM m UNION ALL SELECT r.x + 3, r.k FROM r LEFT JOIN u ON u.id = r.k WHERE r.x < 4)
+SELECT sum(x) FROM r;
+----
+21
+
+query I
+SELECT nextval('step_sequence');
+----
+4
+
+# a join that can only be removed after the first pruning has removed the aggregate that reads its inner side
 statement ok
 CREATE SEQUENCE second_pass_sequence;
 
 query I
-SELECT sum(q.x) FROM (SELECT a.x, u.y AS unread FROM (SELECT x, nextval('second_pass_sequence') AS k FROM v) a LEFT JOIN u ON u.id = a.k) q;
+SELECT sum(q.x) FROM (SELECT a.x, max(u.y) AS unread FROM (SELECT x, nextval('second_pass_sequence') AS k FROM v) a LEFT JOIN u ON u.id = a.k GROUP BY a.x) q;
 ----
 6
 

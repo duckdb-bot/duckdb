@@ -66,7 +66,7 @@ private:
 	unordered_map<TableIndex, reference<LogicalOperator>> materialized_ctes;
 	//! The recursive CTEs of the plan: a reference to one reads the working table of a recursion that is part of the
 	//! plan around the reference
-	unordered_set<TableIndex> recursive_ctes;
+	unordered_map<TableIndex, reference<LogicalOperator>> recursive_ctes;
 	unordered_map<TableIndex, bool> definition_has_effect;
 };
 

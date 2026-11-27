@@ -185,7 +185,7 @@ public:
 			return query + " SELECT count(*) FROM c299";
 		}
 		case ParserWorkload::CTE_LIST: {
-			// one generated statement of about 600 KB: 20,000 small CTEs in one WITH clause
+			// one generated statement of about 600 KB with 20,000 small CTEs in one WITH clause
 			string query = "WITH ";
 			for (idx_t i = 0; i < 20000; i++) {
 				if (i > 0) {

@@ -1,8 +1,8 @@
 # name: test/sql/parser/long_with_clause.test
-# description: Every CTE of a long WITH clause is transformed, in its place
+# description: The CTEs of a long WITH clause are transformed in their places
 # group: [parser]
 
-# 800 CTEs in one clause, c<i> holds i
+# 800 CTEs in one clause, c<i> holds i, read at five positions
 query I
 SELECT * FROM query('WITH ' || array_to_string(list_transform(range(800), lambda i: 'c' || i || ' AS (SELECT ' || i || ' AS a)'), ', ') || ' SELECT (SELECT a FROM c0) + (SELECT a FROM c1) + (SELECT a FROM c400) + (SELECT a FROM c798) + (SELECT a FROM c799)');
 ----
@@ -20,7 +20,7 @@ SELECT * FROM query('WITH ' || array_to_string(list_transform(range(300), lambda
 ----
 299
 
-# a duplicate name is found wherever it stands
+# a duplicate of a name in the middle, added as the last CTE, is refused
 statement error
 SELECT * FROM query('WITH ' || array_to_string(list_transform(range(300), lambda i: 'c' || i || ' AS (SELECT ' || i || ' AS a)'), ', ') || ', c150 AS (SELECT 0 AS a) SELECT a FROM c299');
 ----

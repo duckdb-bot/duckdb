@@ -8,6 +8,7 @@
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/expression/bound_operator_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
+#include "duckdb/planner/operator/logical_any_join.hpp"
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
 #include "duckdb/planner/operator/logical_filter.hpp"
 #include "duckdb/planner/operator/logical_join.hpp"
@@ -114,6 +115,20 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownJoin(unique_ptr<LogicalOpera
 	         op->type == LogicalOperatorType::LOGICAL_ASOF_JOIN || op->type == LogicalOperatorType::LOGICAL_ANY_JOIN ||
 	         op->type == LogicalOperatorType::LOGICAL_DELIM_JOIN);
 	auto &join = op->Cast<LogicalJoin>();
+
+	// Filters must not change the rows seen by volatile join conditions.
+	if (op->type == LogicalOperatorType::LOGICAL_ANY_JOIN) {
+		if (op->Cast<LogicalAnyJoin>().condition->IsVolatile()) {
+			return FinishPushdown(std::move(op));
+		}
+	} else {
+		for (auto &condition : op->Cast<LogicalComparisonJoin>().conditions) {
+			if (condition.IsComparison() ? condition.GetLHS().IsVolatile() || condition.GetRHS().IsVolatile()
+			                             : condition.GetJoinExpression().IsVolatile()) {
+				return FinishPushdown(std::move(op));
+			}
+		}
+	}
 
 	unordered_set<TableIndex> left_bindings, right_bindings;
 	LogicalJoin::GetTableReferences(*op->children[0], left_bindings);

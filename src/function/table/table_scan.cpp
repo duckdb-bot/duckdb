@@ -839,7 +839,8 @@ static unique_ptr<LocalTableFunctionState> TableScanInitLocal(ExecutionContext &
 
 unique_ptr<GlobalTableFunctionState> DuckTableScanInitGlobal(ClientContext &context, TableFunctionInitInput &input,
                                                              DataTable &storage, const TableScanBindData &bind_data) {
-	auto g_state = make_uniq<DuckTableScanState>(context, input.bind_data.get());
+	// registered first, so that no in-place update is writing when the scan state adds the entry of its index
+	unique_ptr<IndexBuildRegistration> index_build_registration;
 	if (bind_data.is_create_index) {
 		vector<column_t> columns;
 		for (auto &column_index : input.column_indexes) {
@@ -847,9 +848,10 @@ unique_ptr<GlobalTableFunctionState> DuckTableScanInitGlobal(ClientContext &cont
 				columns.push_back(bind_data.table.GetStorageIndex(column_index).GetPrimaryIndex());
 			}
 		}
-		g_state->index_build_registration =
-		    make_uniq<IndexBuildRegistration>(storage.GetDataTableInfo(), std::move(columns));
+		index_build_registration = make_uniq<IndexBuildRegistration>(storage.GetDataTableInfo(), std::move(columns));
 	}
+	auto g_state = make_uniq<DuckTableScanState>(context, input.bind_data.get());
+	g_state->index_build_registration = std::move(index_build_registration);
 	if (bind_data.order_options) {
 		auto transaction = TransactionData(DuckTransaction::Get(context, storage.GetAttached()));
 		g_state->state.scan_state.reorderer = make_uniq<RowGroupReorderer>(*bind_data.order_options, transaction);

@@ -117,6 +117,12 @@ SELECT 'b'::VARIANT < 'ab'::VARIANT, least('b'::VARIANT, 'ab'::VARIANT), greates
 ----
 false	ab	b
 
+# BIT values of different lengths
+query III
+SELECT '0'::BIT < '00'::BIT, least('0'::BIT, '00'::BIT, NULL), greatest('0'::BIT, '00'::BIT, NULL);
+----
+true	0	00
+
 query IIII
 SELECT least('B' COLLATE NOCASE, 'a'), greatest('B' COLLATE NOCASE, 'a'), least('b' COLLATE NOCASE, 'B'), least('B', 'a');
 ----

@@ -10,12 +10,17 @@ from conftest import ShellTest
 # Whether a probe thread overflows into a neighbouring mapping depends on the address space layout of the run.
 RUNS = 10
 
+# Sizes of glibc's optional static TLS surplus (512 by default), part of the static TLS atop a created thread's stack.
+STATIC_TLS_SURPLUS_SIZES = range(512, 4608, 512)
+RUNS_PER_STATIC_TLS_SURPLUS = 3
 
-def run_with_stack_size(shell, stack_size, wrapper=()):
+
+def run_with_stack_size(shell, stack_size, wrapper=(), environment=None):
     env = dict(os.environ)
     # agent-mode variables of the runner must not switch the shell under test into agent mode
     for key in ShellTest.AGENT_ENVIRONMENT_VARIABLES:
         env.pop(key, None)
+    env.update(environment or {})
     result = subprocess.run(
         [*wrapper, shell, "--batch", "--no-init", "--thread-stack-size", stack_size, "-csv", "-c", "SELECT 42"],
         capture_output=True,
@@ -28,13 +33,24 @@ def run_with_stack_size(shell, stack_size, wrapper=()):
     return result
 
 
+def check_shell_started(result):
+    assert result.returncode == 0, f"exit code {result.returncode}\n{result.stdout}\n{result.stderr}"
+    assert "42" in result.stdout
+
+
 @pytest.mark.parametrize("stack_size", ["131072", "8388608"])
 def test_thread_stack_size_starts_the_shell(shell, stack_size):
     """Sizing the stacks probes threads on minimum size stacks, which must not crash the shell."""
     for _ in range(RUNS):
-        result = run_with_stack_size(shell, stack_size)
-        assert result.returncode == 0, f"exit code {result.returncode}\n{result.stdout}\n{result.stderr}"
-        assert "42" in result.stdout
+        check_shell_started(run_with_stack_size(shell, stack_size))
+
+
+@pytest.mark.parametrize("static_tls_surplus", STATIC_TLS_SURPLUS_SIZES)
+def test_thread_stack_size_starts_the_shell_across_static_tls_sizes(shell, static_tls_surplus):
+    """The room a minimum size stack leaves depends on the static TLS size, sampled here every 512 bytes over 4 KiB."""
+    tunables = {"GLIBC_TUNABLES": f"glibc.rtld.optional_static_tls={static_tls_surplus}"}
+    for _ in range(RUNS_PER_STATIC_TLS_SURPLUS):
+        check_shell_started(run_with_stack_size(shell, "131072", environment=tunables))
 
 
 def test_thread_stack_size_reports_an_unusable_default_stack(shell):

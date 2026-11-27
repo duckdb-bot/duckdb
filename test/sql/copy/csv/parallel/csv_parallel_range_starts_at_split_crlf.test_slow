@@ -16,11 +16,14 @@ COPY (
 	) ORDER BY i
 ) TO '{TEST_DIR}/csv_parallel_range_starts_at_split_crlf.csv' (HEADER false, QUOTE '', DELIMITER '|', NEW_LINE e'\r\n');
 
+# every row is read once, and the rows around the split keep their whole values
 foreach error_option parallel=true ignore_errors=true store_rejects=true
 
-query II
-SELECT count(*), max(a[:7]) FROM read_csv('{TEST_DIR}/csv_parallel_range_starts_at_split_crlf.csv', {error_option});
+query IIII
+SELECT count(*), count(DISTINCT a), max(a[:7]),
+	string_agg(replace(a, chr(10), '\n') || '|' || b, ';' ORDER BY a) FILTER (WHERE a[:7] BETWEEN '0559171' AND '0559173')
+FROM read_csv('{TEST_DIR}/csv_parallel_range_starts_at_split_crlf.csv', {error_option});
 ----
-700000	0699999
+700000	700000	0699999	0559171|x,y;0559172\nx|y;0559173|x,y
 
 endloop

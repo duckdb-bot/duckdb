@@ -90,3 +90,15 @@ query II
 SELECT i, TRY(list_transform([1], lambda x: length(bin(s)))) FROM read_parquet('{TEST_DIR}/maximum_string_size_dictionary.parquet') WHERE i = 1;
 ----
 1	[8]
+
+# constant arguments next to the dictionary
+query III
+SELECT i, TRY(length(concat_ws(s, 'y', 'y', 'y', 'y', 'y', 'y', 'y', 'y', 'y'))), has_error(concat_ws(s, 'y', 'y', 'y', 'y', 'y', 'y', 'y', 'y', 'y')) FROM read_parquet('{TEST_DIR}/maximum_string_size_dictionary.parquet') ORDER BY i;
+----
+0	NULL	true
+1	17	false
+
+query II
+SELECT i, length(concat_ws(s, 'y', 'y', 'y', 'y', 'y', 'y', 'y', 'y', 'y')) FROM read_parquet('{TEST_DIR}/maximum_string_size_dictionary.parquet') WHERE i = 1;
+----
+1	17

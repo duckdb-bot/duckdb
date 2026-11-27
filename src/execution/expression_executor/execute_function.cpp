@@ -122,6 +122,8 @@ bool ExecuteFunctionState::TryExecuteDictionaryExpression(const BoundFunctionExp
 			}
 			// The dictionary can hold values that no row reads, so the error only counts when a row raises it
 			failed_input_dictionary_id = input_dictionary_id;
+			// The constant arguments share their buffers with the dictionary chunk, which resized them
+			args.SetChildCardinality(args.size());
 			return false;
 		}
 

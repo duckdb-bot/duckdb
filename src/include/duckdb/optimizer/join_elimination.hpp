@@ -53,6 +53,9 @@ public:
 
 	//! Whether removing the subtree would skip an effect
 	bool HasEffect(LogicalOperator &subtree);
+	//! Whether an expression of `reader` reads a column that `source` computes with an effect: without the reader
+	//! the column is pruned, its expression included
+	bool ReadsColumnWithEffect(LogicalOperator &reader, LogicalOperator &source);
 
 private:
 	void CollectDefinitions(LogicalOperator &op);
@@ -76,7 +79,8 @@ public:
 	// 1. nothing above the join reads a column of its inner side (the output, filters, the conditions of the joins
 	//    above only read the outer side),
 	// 2. neither the join condition nor the inner side has a volatile expression (nextval, random): they would not
-	//    be evaluated any more. The inner side must not have any other effect either (RemovedSubtreeEffects), and
+	//    be evaluated any more. The inner side must not have any other effect either (RemovedSubtreeEffects), and the
+	//    join condition must not read a column that the outer side computes with a volatile expression, and
 	// 3. the join cannot change how often an outer row occurs in a way that is visible. There are two separate proofs:
 	//    a) the operators above ignore duplicates (PipelineInfo::ignores_duplicates): the join only repeats outer rows
 	//    b) every outer row matches at most one inner row: the inner side is distinct on the columns its equality

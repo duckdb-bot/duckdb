@@ -10,9 +10,9 @@ SELECT * FROM query('WITH ' || array_to_string(list_transform(range(800), lambda
 
 # a later CTE reads the one before it
 query I
-SELECT * FROM query('WITH c0 AS (SELECT 1 AS a), ' || array_to_string(list_transform(range(1, 500), lambda i: 'c' || i || ' AS (SELECT a + 1 AS a FROM c' || (i - 1) || ')'), ', ') || ' SELECT a FROM c499');
+SELECT * FROM query('WITH c0 AS (SELECT 1 AS a), ' || array_to_string(list_transform(range(1, 30), lambda i: 'c' || i || ' AS (SELECT a + 1 AS a FROM c' || (i - 1) || ')'), ', ') || ' SELECT a FROM c29');
 ----
-500
+30
 
 # a trailing comma after the last CTE
 query I

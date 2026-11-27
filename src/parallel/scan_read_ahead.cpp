@@ -138,6 +138,10 @@ private:
 		finished->FinishIOTask();
 	}
 
+	string TaskType() const override {
+		return "ReadAheadIOTask";
+	}
+
 private:
 	unique_ptr<AsyncTask> task;
 	shared_ptr<ReadAheadJobCompletion> completion;
@@ -157,6 +161,10 @@ public:
 	//! The open never runs, so settle the state the scan waits on - it only ever leaves OPENING in one of these two
 	void Cancel() override {
 		cancel_fn();
+	}
+
+	string TaskType() const override {
+		return "FileOpenTask";
 	}
 
 private:
@@ -568,7 +576,7 @@ ScanReadAheadAcquire ScanReadAhead::AcquireJob(ClientContext &context, TableFunc
 				yield_deadline = now + std::chrono::microseconds(PRODUCER_YIELD_MICROS);
 			}
 			if (now < *yield_deadline) {
-				context.InterruptCheck();
+				context.FastInterruptCheck();
 				TaskScheduler::YieldThread();
 			} else {
 				WaitForProgress(context, epoch);
@@ -749,7 +757,7 @@ void ScanReadAhead::ResumeScan(const InterruptState &interrupt_state) {
 }
 
 void ScanReadAhead::WaitForProgress(ClientContext &context, idx_t epoch) {
-	context.BlockingInterruptCheck();
+	context.InterruptCheck();
 	{
 		unique_lock<mutex> guard(lock);
 		++waiting_threads;
@@ -757,7 +765,7 @@ void ScanReadAhead::WaitForProgress(ClientContext &context, idx_t epoch) {
 		progress.wait_for(guard, std::chrono::milliseconds(10), [&]() { return progress_epoch.load() != epoch; });
 		--waiting_threads;
 	}
-	context.BlockingInterruptCheck();
+	context.InterruptCheck();
 }
 
 idx_t ScanReadAhead::ProgressEpoch() const {

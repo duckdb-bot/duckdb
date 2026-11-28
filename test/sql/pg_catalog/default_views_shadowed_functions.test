@@ -40,7 +40,7 @@ DROP MACRO duckdb_types;
 
 # a user scalar macro named like a helper of the view
 statement ok
-CREATE MACRO map_to_pg_oid(n) AS 999;
+CREATE MACRO map_type_id_to_pg_oid(n) AS 999;
 
 query II
 SELECT oid, typname FROM pg_type WHERE typname IN ('int4', 'varchar') ORDER BY typname;
@@ -57,7 +57,7 @@ SELECT count(*) FROM pg_type WHERE typname = 'bogus';
 0
 
 statement ok
-DROP MACRO map_to_pg_oid;
+DROP MACRO map_type_id_to_pg_oid;
 
 statement ok
 DROP MACRO format_pg_type;
@@ -148,6 +148,9 @@ SELECT count(*) FROM pg_type WHERE typname IN ('int4', 'varchar');
 statement ok
 DROP MACRO temp.main.duckdb_types;
 
+statement ok
+DROP MACRO duckdb_types;
+
 # a user table named like a function that a view reads as a bare relation, with the function's columns
 statement ok
 CREATE TABLE duckdb_columns AS SELECT * FROM system.main.duckdb_columns() LIMIT 0;
@@ -162,7 +165,7 @@ DROP TABLE duckdb_columns;
 
 # temporary objects named like the functions a view reads
 statement ok
-CREATE TEMP MACRO map_to_pg_oid(n) AS 999;
+CREATE TEMP MACRO map_type_id_to_pg_oid(n) AS 999;
 
 query II
 SELECT oid, typname FROM system.pg_catalog.pg_type WHERE typname IN ('int4', 'varchar') ORDER BY typname;

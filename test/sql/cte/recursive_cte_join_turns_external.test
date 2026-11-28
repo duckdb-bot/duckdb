@@ -9,18 +9,13 @@ statement ok
 SET threads = 1;
 
 statement ok
-SET memory_limit = '64MB';
-
-statement ok
 SET debug_force_external = true;
-
-statement ok
-SET disabled_optimizers = 'join_order,build_side_probe_side';
 
 statement ok
 CALL enable_logging('PhysicalOperator');
 
-# the join builds nothing in the first iteration and 200,000 rows in the second, which spill
+# the MARK join builds nothing in the first iteration and 200,000 rows in the second. Its condition rows make that
+# build larger than the minimum reservation of its single partition, so the join turns external
 query III
 WITH RECURSIVE w(n, k) AS (
     SELECT 0, 0::BIGINT
@@ -28,7 +23,7 @@ WITH RECURSIVE w(n, k) AS (
     (
         SELECT f.n + 1, u.k FROM (SELECT * FROM w WHERE n = 0) f CROSS JOIN range(200000) u(k)
         UNION ALL
-        SELECT s.n + 1, l.k FROM range(200000) l(k) JOIN (SELECT * FROM w WHERE n = 1) s ON l.k = s.k
+        SELECT 2, l.k FROM range(200000) l(k) WHERE (l.k, l.k + 1) IN (SELECT s.k, s.k + 1 FROM w s WHERE s.n = 1)
     )
 )
 SELECT count(*), min(n), max(n) FROM w;

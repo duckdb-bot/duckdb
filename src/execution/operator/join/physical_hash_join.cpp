@@ -814,6 +814,7 @@ struct HashJoinBuildConfig {
 	static constexpr idx_t SMALL_PARALLEL_MIN_THREADS = 4;
 	static constexpr double SKEW_SINGLE_THREADED_THRESHOLD = 0.33;
 	static constexpr double SMALL_BUILD_SKEW_THRESHOLD = 0.20;
+	static constexpr double DOMINANT_PARTITION_SKEW_THRESHOLD = 0.8;
 };
 
 //! If the data is very skewed (many of the exact same key), our finalize will become slow,
@@ -825,6 +826,15 @@ static bool KeysAreSkewed(const HashJoinGlobalSinkState &sink,
 	    sink.max_partition_size + sink.hash_table->PointerTableSize(sink.max_partition_count);
 	const auto skew = static_cast<double>(max_partition_ht_size) / static_cast<double>(sink.total_size);
 	return skew > threshold;
+}
+
+//! Whether an external join would hold less in memory than the whole hash table. It builds its largest partition
+//! whole, which is the whole table for a join that a recursive iteration reuses and most of it for very skewed keys.
+static bool ExternalJoinCanSpill(const HashJoinGlobalSinkState &sink) {
+	if (sink.total_size == 0 || sink.hash_table->GetRadixBits() == 0) {
+		return false;
+	}
+	return !KeysAreSkewed(sink, HashJoinBuildConfig::DOMINANT_PARTITION_SKEW_THRESHOLD);
 }
 
 //! If we have only one thread, always finalize single-threaded. Otherwise, we finalize in parallel if we
@@ -1390,7 +1400,7 @@ SinkFinalizeType PhysicalHashJoin::Finalize(Pipeline &pipeline, Event &event, Cl
 	// other operators hold, so several such joins could exceed the memory limit together. Ask with the initial
 	// minimum instead, so that the join only stays in memory when its share of the memory budget fits it
 	const auto external_minimum_reservation = sink.temporary_memory_state->GetMinimumReservation();
-	if (external_minimum_reservation >= sink.total_size) {
+	if (external_minimum_reservation >= sink.total_size && ExternalJoinCanSpill(sink)) {
 		sink.temporary_memory_state->SetMinimumReservation(
 		    MaxValue(sink.initial_minimum_reservation, sink.temporary_memory_state->GetReservation()));
 	}

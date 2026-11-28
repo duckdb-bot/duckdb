@@ -1,0 +1,128 @@
+# name: test/sql/settings/allowed_paths_wal_files.test
+# description: An allowed WAL file covers the files that a checkpoint keeps next to it
+# group: [settings]
+
+require skip_reload
+
+# enable_external_access = false disables extension loading
+require no_extension_autoloading "EXPECTED: Test disable loading of extensions"
+
+statement ok
+ATTACH '{TEST_DIR}/allowed_wal.db' AS d;
+
+statement ok
+CREATE TABLE d.t(i INTEGER);
+
+statement ok
+INSERT INTO d.t VALUES (1);
+
+statement ok
+DETACH d;
+
+statement ok
+SET allowed_paths=['{TEST_DIR}/allowed_wal.db', '{TEST_DIR}/allowed_wal.db.wal', '{TEST_DIR}/allowed_wal_file_only.db', '{TEST_DIR}/allowed_wal.txt', '{TEST_DIR}/allowed_wal_query.wal?x']
+
+statement ok
+SET enable_external_access=false
+
+statement ok
+ATTACH '{TEST_DIR}/allowed_wal.db' AS d;
+
+statement ok
+INSERT INTO d.t VALUES (2);
+
+statement ok
+CHECKPOINT d;
+
+statement ok
+INSERT INTO d.t VALUES (3);
+
+statement ok
+DETACH d;
+
+statement ok
+ATTACH '{TEST_DIR}/allowed_wal.db' AS d;
+
+query I
+SELECT i FROM d.t ORDER BY i
+----
+1
+2
+3
+
+statement ok
+DETACH d;
+
+# the checkpoint and recovery files of the allowed WAL can be reached, as the WAL can
+statement ok
+SELECT count(*) FROM read_text('{TEST_DIR}/allowed_wal.db.wal')
+
+statement ok
+SELECT count(*) FROM read_text('{TEST_DIR}/allowed_wal.db.wal.checkpoint')
+
+statement ok
+SELECT count(*) FROM read_text('{TEST_DIR}/allowed_wal.db.wal.recovery')
+
+# their suffix stands in front of a question mark when the path has one
+query I
+SELECT count(*) FROM read_text('{TEST_DIR}/allowed_wal_query.wal.checkpoint?x')
+----
+0
+
+query I
+SELECT count(*) FROM read_text('{TEST_DIR}/allowed_wal_query.wal.recovery?x')
+----
+0
+
+statement error
+SELECT * FROM read_text('{TEST_DIR}/allowed_wal_query.wal.checkpoint?y')
+----
+Permission Error
+
+statement error
+SELECT * FROM read_text('{TEST_DIR}/allowed_wal_query.wal?x.checkpoint')
+----
+Permission Error
+
+# a WAL that is not in the list does not cover them
+statement error
+SELECT * FROM read_text('{TEST_DIR}/allowed_wal_file_only.db.wal.checkpoint')
+----
+Permission Error
+
+statement error
+SELECT * FROM read_text('{TEST_DIR}/allowed_wal_file_only.db.wal')
+----
+Permission Error
+
+statement error
+ATTACH '{TEST_DIR}/allowed_wal_file_only.db' AS file_only
+----
+Permission Error
+
+# an entry that does not end in .wal covers nothing
+statement error
+SELECT * FROM read_text('{TEST_DIR}/allowed_wal.txt.checkpoint')
+----
+Permission Error
+
+statement error
+SELECT * FROM read_text('{TEST_DIR}/allowed_wal.db.checkpoint')
+----
+Permission Error
+
+statement error
+SELECT * FROM read_text('{TEST_DIR}/allowed_wal.db.wal.other')
+----
+Permission Error
+
+# a covered file covers no further file, and is not covered as a directory
+statement error
+SELECT * FROM read_text('{TEST_DIR}/allowed_wal.db.wal.checkpoint.checkpoint')
+----
+Permission Error
+
+statement error
+COPY (SELECT 1 i, 2 j) TO '{TEST_DIR}/allowed_wal.db.wal.checkpoint' (FORMAT csv, PARTITION_BY (i))
+----
+<REGEX>:.*Cannot access directory ".*allowed_wal.db.wal.checkpoint" .*

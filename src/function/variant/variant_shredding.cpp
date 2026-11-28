@@ -62,6 +62,7 @@ static void WriteShreddedWideDecimal(UnifiedVariantVectorData &variant, Vector &
 static bool IsVariantStringType(VariantLogicalType type_id) {
 	switch (type_id) {
 	case VariantLogicalType::GEOMETRY:
+	case VariantLogicalType::GEOGRAPHY:
 	case VariantLogicalType::BITSTRING:
 	case VariantLogicalType::BLOB:
 	case VariantLogicalType::VARCHAR:
@@ -168,6 +169,7 @@ void VariantShredding::WriteTypedPrimitiveValues(UnifiedVariantVectorData &varia
 	case LogicalTypeId::BLOB:
 	case LogicalTypeId::BIGNUM:
 	case LogicalTypeId::GEOMETRY:
+	case LogicalTypeId::GEOGRAPHY:
 	case LogicalTypeId::BIT:
 	case LogicalTypeId::VARCHAR: {
 		WriteShreddedString(variant, result, sel, value_index_sel, result_sel, count);
@@ -364,7 +366,7 @@ VariantShreddingState::VariantShreddingState(const LogicalType &type, idx_t tota
 
 bool VariantShreddingState::ValueIsShredded(UnifiedVariantVectorData &variant, idx_t row, uint32_t values_index) {
 	auto type_id = variant.GetTypeId(row, values_index);
-	if (!GetVariantTypes().count(type_id)) {
+	if (!GetVariantTypes().count(VariantTypeToLogicalTypeId(type_id))) {
 		return false;
 	}
 	if (type_id == VariantLogicalType::DECIMAL) {

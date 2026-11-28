@@ -1,0 +1,110 @@
+# name: test/sql/catalog/function/drop_type_macro_dependencies.test
+# description: A type in any member's declared parameters, in RETURNS or in a default is a dependency of the macro
+# group: [function]
+
+# typed parameters need storage v1.4.0 and a declared RETURNS type v2.1.0
+load {TEST_DIR}/drop_type_macro_dependencies.db readwrite v2.1.0
+
+statement ok
+SET enable_macro_dependencies = true;
+
+# the declared type of the only member
+statement ok
+CREATE TYPE t1 AS ENUM ('a');
+
+statement ok
+CREATE MACRO one_member(x t1) AS 2;
+
+statement error
+DROP TYPE t1;
+----
+<REGEX>:.*depends on type.*
+
+statement ok
+DROP TYPE t1 CASCADE;
+
+statement error
+SELECT one_member('a');
+----
+<REGEX>:.*one_member does not exist.*
+
+# the declared type of the second member registered before, the first member's did not
+statement ok
+CREATE TYPE t2 AS ENUM ('a');
+
+statement ok
+CREATE MACRO second_member(x INTEGER) AS 1, (x t2) AS 2;
+
+statement error
+DROP TYPE t2;
+----
+<REGEX>:.*depends on type.*
+
+statement ok
+CREATE TYPE t3 AS ENUM ('a');
+
+statement ok
+CREATE MACRO first_member(x t3) AS 1, (x INTEGER) AS 2;
+
+statement error
+DROP TYPE t3;
+----
+<REGEX>:.*depends on type.*
+
+# the declared return type
+statement ok
+CREATE TYPE t4 AS ENUM ('a');
+
+statement ok
+CREATE MACRO returns_type() RETURNS t4 AS 'a';
+
+statement error
+DROP TYPE t4;
+----
+<REGEX>:.*depends on type.*
+
+# a type in the default value of an untyped parameter
+statement ok
+CREATE TYPE t5 AS ENUM ('a');
+
+statement ok
+CREATE MACRO with_default(x := 'a'::t5) AS 1;
+
+statement error
+DROP TYPE t5;
+----
+<REGEX>:.*depends on type.*
+
+# the declared type of a table macro's only member
+statement ok
+CREATE TYPE t6 AS ENUM ('a');
+
+statement ok
+CREATE MACRO table_member(x t6) AS TABLE SELECT x AS v;
+
+statement error
+DROP TYPE t6;
+----
+<REGEX>:.*depends on type.*
+
+# the macros keep working while their types exist, and a cascade takes them along
+query IIII
+SELECT first_member('a'::t3), second_member(1), returns_type(), with_default();
+----
+1	1	a	1
+
+statement ok
+DROP TYPE t3 CASCADE;
+
+statement error
+SELECT first_member(1);
+----
+<REGEX>:.*first_member does not exist.*
+
+statement ok
+DROP TYPE t6 CASCADE;
+
+statement error
+SELECT * FROM table_member('a');
+----
+<REGEX>:.*table_member does not exist.*

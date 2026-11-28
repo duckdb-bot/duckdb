@@ -1197,21 +1197,24 @@ static bool HasRemotePathTraversal(const string &path) {
 	return false;
 }
 
+//! Adds the WAL file whose checkpoint or recovery file the path is, with the suffix of that file ending at suffix_end
+static void AddOwningWALPath(const string &path, idx_t suffix_end, vector<string> &wal_paths) {
+	auto stem = path.substr(0, suffix_end);
+	for (auto &extension : {string(".checkpoint"), string(".recovery")}) {
+		if (StringUtil::EndsWith(stem, ".wal" + extension)) {
+			wal_paths.push_back(stem.substr(0, stem.size() - extension.size()) + path.substr(suffix_end));
+		}
+	}
+}
+
 //! The WAL files that a path belongs to as their checkpoint or recovery file
 static vector<string> GetOwningWALPaths(const string &path) {
 	vector<string> wal_paths;
-	// the suffix stands at the end of the path or in front of a question mark, see Path::AddSuffixToPath
-	for (auto suffix_end : {path.size(), path.find('?')}) {
-		if (suffix_end == string::npos) {
-			continue;
-		}
-		for (auto &extension : {string(".checkpoint"), string(".recovery")}) {
-			auto suffix = ".wal" + extension;
-			if (suffix_end < suffix.size() || path.compare(suffix_end - suffix.size(), suffix.size(), suffix) != 0) {
-				continue;
-			}
-			wal_paths.push_back(path.substr(0, suffix_end - extension.size()) + path.substr(suffix_end));
-		}
+	// Path::AddSuffixToPath puts the suffix at the end of a path or in front of its first question mark
+	AddOwningWALPath(path, path.size(), wal_paths);
+	auto query_start = path.find('?');
+	if (query_start != string::npos) {
+		AddOwningWALPath(path, query_start, wal_paths);
 	}
 	return wal_paths;
 }

@@ -1,5 +1,5 @@
 # name: test/sql/join/right_outer/right_join_hash_table_released.test_slow
-# description: A right join releases its hash table once it has emitted its rows, before a sort above it merges
+# description: A right or full join releases its hash table once it has emitted its rows, before a sort above it merges
 # group: [right_outer]
 
 load {TEST_DIR}/right_join_hash_table_released.db
@@ -65,7 +65,7 @@ statement ok
 CHECKPOINT;
 
 statement ok
-SET memory_limit = '352MB';
+SET memory_limit = '280MB';
 
 statement ok
 SET threads = 1;
@@ -97,3 +97,11 @@ query I
 SELECT count(*) FROM read_csv('{TEST_DIR}/right_join_hash_table_released.csv');
 ----
 2239423
+
+# the scalar subquery is the build side of a cross product, so duckdb_memory() is read after the join emitted its rows
+query TII
+SELECT tag, memory_usage_bytes,
+  (SELECT count(*) FROM link l FULL JOIN specimen sp ON l.sample_id = sp.sample_id AND l.n = sp.n)
+FROM duckdb_memory() WHERE tag = 'HASH_TABLE';
+----
+HASH_TABLE	0	2239423

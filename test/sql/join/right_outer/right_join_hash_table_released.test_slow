@@ -98,7 +98,10 @@ SELECT count(*) FROM read_csv('{TEST_DIR}/right_join_hash_table_released.csv');
 ----
 2239423
 
-# the scalar subquery is the build side of a cross product, so duckdb_memory() is read after the join emitted its rows
+# the scalar subquery stays the build side of a cross product, so duckdb_memory() is read once the join emitted its rows
+statement ok
+SET disabled_optimizers = 'join_order,build_side_probe_side';
+
 query TII
 SELECT tag, memory_usage_bytes,
   (SELECT count(*) FROM link l FULL JOIN specimen sp ON l.sample_id = sp.sample_id AND l.n = sp.n)

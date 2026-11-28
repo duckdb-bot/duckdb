@@ -109,6 +109,9 @@ Transaction &DuckTransactionManager::StartTransaction(Context &context, MetaTran
 	auto transaction = make_uniq<DuckTransaction>(*this, context, start_time, view, catalog_version);
 	auto &transaction_ref = *transaction;
 
+	// the lists this transaction joins when it commits or rolls back get their room now, since nothing may allocate
+	// then (see CreateCleanupInfo)
+	ReserveTransactionSlots(active_transactions.size() + 1);
 	// store it in the set of active transactions
 	active_transactions.push_back(std::move(transaction));
 	return transaction_ref;
@@ -153,7 +156,7 @@ void DuckTransactionManager::GetStartTimes(transaction_t &next_start, transactio
 	lowest_active_start = LowestActiveStart();
 	// a cleanup that has not run counts as a transaction older than all others: it comes before any reuse
 	lock_guard<mutex> q_lock(cleanup_queue_lock);
-	if (!cleanup_queue.empty()) {
+	if (cleanup_queue_head < cleanup_queue.size()) {
 		lowest_active_start = 0;
 	}
 }
@@ -393,11 +396,13 @@ void DuckTransactionManager::CleanupTransactions() {
 		DuckCleanupInfo *top_cleanup_info = nullptr;
 		{
 			lock_guard<mutex> q_lock(cleanup_queue_lock);
-			if (cleanup_queue.empty()) {
-				// all transactions have been cleaned up - done
+			if (cleanup_queue_head == cleanup_queue.size()) {
+				// all transactions have been cleaned up - done, the vector keeps its capacity for the next cleanups
+				cleanup_queue.clear();
+				cleanup_queue_head = 0;
 				break;
 			}
-			top_cleanup_info = cleanup_queue.front().get();
+			top_cleanup_info = cleanup_queue[cleanup_queue_head].get();
 		}
 		try {
 			top_cleanup_info->Cleanup();
@@ -408,7 +413,8 @@ void DuckTransactionManager::CleanupTransactions() {
 		}
 		{
 			lock_guard<mutex> q_lock(cleanup_queue_lock);
-			cleanup_queue.pop();
+			cleanup_queue[cleanup_queue_head].reset();
+			cleanup_queue_head++;
 		}
 	}
 	// after the cleanups, so that none of them reads a reused block, and outside the lock: it can trim the file
@@ -505,6 +511,19 @@ ErrorData DuckTransactionManager::CommitTransaction(ClientContext &context, Tran
 			storage_manager.AddWALSize(undo_properties.estimated_size);
 		}
 	}
+	// The bookkeeping that takes the transaction out of the active set and queues its cleanup after the commit must
+	// not allocate. Once the commit is complete a failure can no longer fail it, and a transaction that stays active
+	// blocks checkpoints and the cleanup of old versions. Allocate it now, while a failure still rolls the
+	// transaction back
+	unique_ptr<DuckCleanupInfo> cleanup_info;
+	if (!error.HasError()) {
+		try {
+			cleanup_info = CreateCleanupInfo();
+		} catch (std::exception &ex) {
+			error = ErrorData(ex);
+		}
+	}
+
 	// obtain a commit id for the transaction
 	CommitInfo info;
 	info.commit_id = GetCommitTimestamp();
@@ -525,6 +544,16 @@ ErrorData DuckTransactionManager::CommitTransaction(ClientContext &context, Tran
 		// COMMIT not successful: ROLLBACK.
 		checkpoint_decision = CheckpointDecision(error.Message());
 		transaction.commit_id = 0;
+		if (commit_state) {
+			// the commit failed before the storage commit state reached transaction.Commit, while the cleanup info
+			// was allocated, and the entries it wrote to the WAL must go before the commit lock is released. An
+			// error of the revert itself is dropped in favor of the original one
+			try {
+				commit_state->RevertCommit();
+			} catch (std::exception &) { // NOLINT
+			}
+			commit_state.reset();
+		}
 
 		auto rollback_error = transaction.Rollback();
 		if (rollback_error.HasError()) {
@@ -568,7 +597,11 @@ ErrorData DuckTransactionManager::CommitTransaction(ClientContext &context, Tran
 	if (!commit_wal) {
 		// Remove the transaction from the list of active transactions and gather cleanup information.
 		// A commit that needs a WAL sync stays active until the sync below has completed.
-		QueueCleanup(RemoveTransaction(transaction, store_transaction, CreateCleanupInfo()));
+		if (!cleanup_info) {
+			// the commit failed before or while the cleanup info was allocated, and the transaction rolled back
+			cleanup_info = CreateCleanupInfo();
+		}
+		QueueCleanup(RemoveTransaction(transaction, store_transaction, std::move(cleanup_info)));
 	}
 
 	// We do not need to hold the transaction lock during cleanup of transactions,
@@ -608,7 +641,11 @@ ErrorData DuckTransactionManager::CommitTransaction(ClientContext &context, Tran
 				}
 			}
 		}
-		QueueCleanup(RemoveTransaction(transaction, store_transaction, CreateCleanupInfo()));
+		// the sync released the transaction lock. The lists RemoveTransaction and QueueCleanup append to have room
+		// for every active transaction (see ReserveTransactionSlots), and the cleanup info gets room for the
+		// transactions that committed in the meantime, as far as memory allows, so nothing can fail after the commit
+		ReserveCleanupInfo(*cleanup_info);
+		QueueCleanup(RemoveTransaction(transaction, store_transaction, std::move(cleanup_info)));
 		bool notify_others = !HasUnsyncedCommits();
 		t_lock.unlock();
 		if (notify_others) {
@@ -686,13 +723,45 @@ void DuckTransactionManager::RollbackTransaction(ClientContext &, Transaction &t
 }
 
 unique_ptr<DuckCleanupInfo> DuckTransactionManager::CreateCleanupInfo() {
+	// RemoveTransaction moves the transaction out of active_transactions before re-homing it in one of the lists,
+	// and QueueCleanup appends the cleanup info to the queue. Both are noexcept, so a failure to allocate there would
+	// terminate the process and lose the transaction. The lists got their room when the transactions started (see
+	// ReserveTransactionSlots). The cleanup info gets room for the transaction and for the committed transactions
+	// SweepCommittedTransactions can move into it, those committed now and those active now, which can commit while
+	// a commit waits for its WAL sync without the transaction lock
 	auto cleanup_info = make_uniq<DuckCleanupInfo>();
-	// RemoveTransaction moves the transaction out of active_transactions before re-homing it in one of these
-	// lists. It is noexcept, so a failure to allocate there would terminate the process and lose the transaction;
-	// reserve everything it can need here instead, where throwing is safe and modifies nothing.
-	cleanup_info->transactions.reserve(recently_committed_transactions.size() + 1);
-	recently_committed_transactions.reserve(recently_committed_transactions.size() + 1);
+	cleanup_info->transactions.reserve(recently_committed_transactions.size() + active_transactions.size() + 1);
 	return cleanup_info;
+}
+
+void DuckTransactionManager::ReserveCleanupInfo(DuckCleanupInfo &cleanup_info) noexcept {
+	// transactions that started and committed while a commit waited for its WAL sync were not known when its
+	// cleanup info was created. The commit is complete, so a failure here cannot fail it, the sweep then stops at
+	// the capacity and leaves the rest to the next sweep
+	const auto needed = recently_committed_transactions.size() + 1;
+	if (cleanup_info.transactions.capacity() >= needed) {
+		return;
+	}
+	try {
+		cleanup_info.transactions.reserve(needed);
+	} catch (std::exception &) { // NOLINT
+	}
+}
+
+template <class T>
+static void ReserveAtLeast(vector<T> &entries, idx_t needed) {
+	if (entries.capacity() < needed) {
+		// grow geometrically, so that the reservation at every transaction start stays cheap
+		entries.reserve(MaxValue<idx_t>(needed, entries.capacity() * 2));
+	}
+}
+
+void DuckTransactionManager::ReserveTransactionSlots(idx_t active_count) {
+	// every active transaction can add one entry to recently_committed_transactions when it commits, and one cleanup
+	// to the queue, and neither may allocate then (see CreateCleanupInfo)
+	ReserveAtLeast(recently_committed_transactions, recently_committed_transactions.size() + active_count);
+	lock_guard<mutex> q_lock(cleanup_queue_lock);
+	ReserveAtLeast(cleanup_queue, cleanup_queue.size() + active_count);
 }
 
 unique_ptr<DuckCleanupInfo>
@@ -719,6 +788,7 @@ DuckTransactionManager::RemoveTransaction(DuckTransaction &transaction, bool sto
 			// We add it to the list of recently committed transactions, which is ordered on commit_id.
 			// Commits that awaited a WAL sync leave the active set in the order their threads wake up, so
 			// the position is not necessarily the end.
+			D_ASSERT(recently_committed_transactions.capacity() > recently_committed_transactions.size());
 			auto position = std::upper_bound(recently_committed_transactions.begin(),
 			                                 recently_committed_transactions.end(), transaction.commit_id,
 			                                 [](transaction_t commit_id, const unique_ptr<DuckTransaction> &entry) {
@@ -727,11 +797,13 @@ DuckTransactionManager::RemoveTransaction(DuckTransaction &transaction, bool sto
 			recently_committed_transactions.insert(position, std::move(current_transaction));
 		} else {
 			// The transaction was aborted.
+			D_ASSERT(cleanup_info->transactions.capacity() > cleanup_info->transactions.size());
 			cleanup_info->transactions.push_back(std::move(current_transaction));
 		}
 	} else if (transaction.ChangesMade()) {
 		// We do not need to store the transaction, directly schedule it for cleanup.
 		current_transaction->awaiting_cleanup = true;
+		D_ASSERT(cleanup_info->transactions.capacity() > cleanup_info->transactions.size());
 		cleanup_info->transactions.push_back(std::move(current_transaction));
 	}
 	cleanup_info->lowest_visibility_bound = LowestVisibilityBound();
@@ -770,6 +842,11 @@ void DuckTransactionManager::SweepCommittedTransactions(DuckCleanupInfo &cleanup
 	idx_t i = 0;
 	for (; i < recently_committed_transactions.size(); i++) {
 		D_ASSERT(recently_committed_transactions[i]);
+		if (cleanup_info.transactions.size() == cleanup_info.transactions.capacity()) {
+			// no room left, which happens only when memory ran out after a commit that waited for its WAL sync (see
+			// ReserveCleanupInfo), the rest waits for the next sweep
+			break;
+		}
 		if (recently_committed_transactions[i]->commit_id >= cleanup_info.lowest_visibility_bound) {
 			// recently_committed_transactions is ordered on commit_id.
 			// Thus, if the current commit_id is greater than
@@ -789,10 +866,12 @@ void DuckTransactionManager::SweepCommittedTransactions(DuckCleanupInfo &cleanup
 	}
 }
 
-void DuckTransactionManager::QueueCleanup(unique_ptr<DuckCleanupInfo> cleanup_info) {
+void DuckTransactionManager::QueueCleanup(unique_ptr<DuckCleanupInfo> cleanup_info) noexcept {
 	if (cleanup_info->ScheduleCleanup()) {
 		lock_guard<mutex> q_lock(cleanup_queue_lock);
-		cleanup_queue.emplace(std::move(cleanup_info));
+		// reserved when the transaction started (see ReserveTransactionSlots), so this does not allocate
+		D_ASSERT(cleanup_queue.capacity() > cleanup_queue.size());
+		cleanup_queue.push_back(std::move(cleanup_info));
 	}
 	// under the transaction lock, and only after the cleanup that this start time allows is queued
 	lowest_remaining_start = LowestActiveStart();

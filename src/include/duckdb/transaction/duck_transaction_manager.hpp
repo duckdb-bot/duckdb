@@ -11,7 +11,6 @@
 #include "duckdb/transaction/transaction_manager.hpp"
 #include "duckdb/storage/storage_lock.hpp"
 #include "duckdb/common/enums/checkpoint_type.hpp"
-#include "duckdb/common/queue.hpp"
 
 #include <condition_variable>
 
@@ -108,11 +107,18 @@ protected:
 private:
 	//! Generates a new commit timestamp
 	transaction_t GetCommitTimestamp();
-	//! Allocates the cleanup info, and reserves the space RemoveTransaction needs to re-home a transaction.
+	//! Allocates the cleanup info with the space RemoveTransaction fills when it re-homes a transaction.
 	//! RemoveTransaction is noexcept, so it cannot do this itself: it must not allocate at all. Call this with
-	//! transaction_lock held, immediately before RemoveTransaction, so that a failure to allocate is reported
-	//! while the transaction lists are still untouched.
+	//! transaction_lock held, before a commit completes, so that a failure to allocate is reported while the
+	//! transaction can still roll back.
 	unique_ptr<DuckCleanupInfo> CreateCleanupInfo();
+	//! Reserves the entries of recently_committed_transactions and cleanup_queue that the given number of active
+	//! transactions can add, so that RemoveTransaction and QueueCleanup never allocate. Caller holds the transaction
+	//! lock
+	void ReserveTransactionSlots(idx_t active_count);
+	//! Makes room in the cleanup info for every committed transaction the sweep can move into it now. When that
+	//! allocation fails the sweep stops at the capacity. Caller holds the transaction lock
+	void ReserveCleanupInfo(DuckCleanupInfo &cleanup_info) noexcept;
 	//! Remove the given transaction from the list of active transactions
 	unique_ptr<DuckCleanupInfo> RemoveTransaction(DuckTransaction &transaction,
 	                                              unique_ptr<DuckCleanupInfo> cleanup_info) noexcept;
@@ -125,8 +131,9 @@ private:
 	//! Move the committed transactions below the cleanup info's lowest visibility bound into it.
 	//! Caller holds the transaction lock; must not allocate (see CreateCleanupInfo)
 	void SweepCommittedTransactions(DuckCleanupInfo &cleanup_info) noexcept;
-	//! Hand a cleanup to the background cleanup thread, if it has anything to do
-	void QueueCleanup(unique_ptr<DuckCleanupInfo> cleanup_info);
+	//! Hand a cleanup to the background cleanup thread, if it has anything to do. Does not allocate, the space in the
+	//! queue was reserved when the transaction started (see ReserveTransactionSlots)
+	void QueueCleanup(unique_ptr<DuckCleanupInfo> cleanup_info) noexcept;
 
 	//! Whether or not we can checkpoint
 	CheckpointDecision CanCheckpoint(DuckTransaction &transaction, unique_ptr<StorageLockKey> &checkpoint_lock,
@@ -202,7 +209,10 @@ private:
 	//! Cleanups have to happen in-order.
 	//! E.g., if one transaction drops a table, and another creates a table,
 	//! inverting the cleanup order can result in catalog errors.
-	queue<unique_ptr<DuckCleanupInfo>> cleanup_queue;
+	//! A vector with a head index rather than a queue, so that the space a cleanup takes can be reserved when its
+	//! transaction starts (see ReserveTransactionSlots). The entries before the head are done
+	vector<unique_ptr<DuckCleanupInfo>> cleanup_queue;
+	idx_t cleanup_queue_head = 0;
 
 protected:
 	virtual void OnCommitCheckpointDecision(const CheckpointDecision &decision, DuckTransaction &transaction) {

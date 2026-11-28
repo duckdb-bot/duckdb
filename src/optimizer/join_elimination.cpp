@@ -13,6 +13,11 @@
 #include "duckdb/planner/operator/logical_cte.hpp"
 #include "duckdb/planner/operator/logical_cteref.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
+#include "duckdb/planner/operator/logical_projection.hpp"
+#include "duckdb/planner/operator/logical_set_operation.hpp"
+#include "duckdb/planner/operator/logical_unnest.hpp"
+#include "duckdb/planner/operator/logical_window.hpp"
+#include "duckdb/planner/expression_iterator.hpp"
 #include <utility>
 
 namespace duckdb {
@@ -36,7 +41,7 @@ void RemovedSubtreeEffects::CollectDefinitions(LogicalOperator &op) {
 	if (op.type == LogicalOperatorType::LOGICAL_MATERIALIZED_CTE) {
 		materialized_ctes.emplace(op.Cast<LogicalCTE>().table_index, op);
 	} else if (op.type == LogicalOperatorType::LOGICAL_RECURSIVE_CTE) {
-		recursive_ctes.insert(op.Cast<LogicalCTE>().table_index);
+		recursive_ctes.emplace(op.Cast<LogicalCTE>().table_index, op);
 	}
 	for (auto &child : op.children) {
 		CollectDefinitions(*child);
@@ -88,6 +93,148 @@ bool RemovedSubtreeEffects::HasEffect(LogicalOperator &subtree) {
 		if (HasEffect(*child)) {
 			return true;
 		}
+	}
+	return false;
+}
+
+namespace {
+
+//! The expressions and operators that compute the columns of a subtree
+struct ColumnProducers {
+	//! The expression that computes a column of a projection, an aggregate, a window or an unnest
+	column_binding_map_t<reference<const Expression>> expressions;
+	//! The columns of the children that a column of a set operation or of a recursive CTE returns
+	column_binding_map_t<vector<ColumnBinding>> inputs;
+	//! The CTE that a CTE reference reads
+	unordered_map<TableIndex, TableIndex> cte_refs;
+	//! The CTEs whose definition has been collected
+	unordered_set<TableIndex> definitions;
+
+	void AddExpressions(TableIndex table_index, const vector<unique_ptr<Expression>> &list) {
+		for (idx_t i = 0; i < list.size(); i++) {
+			expressions.emplace(ColumnBinding(table_index, ProjectionIndex(i)), *list[i]);
+		}
+	}
+
+	//! A column of `op` returns the columns of its children at the same position, payload aggregates aside
+	void AddInputs(TableIndex table_index, LogicalOperator &op) {
+		for (auto &child : op.children) {
+			auto child_bindings = child->GetColumnBindings();
+			for (idx_t i = 0; i < child_bindings.size(); i++) {
+				inputs[ColumnBinding(table_index, ProjectionIndex(i))].push_back(child_bindings[i]);
+			}
+		}
+	}
+
+	void Collect(LogicalOperator &op) {
+		switch (op.type) {
+		case LogicalOperatorType::LOGICAL_PROJECTION:
+			AddExpressions(op.Cast<LogicalProjection>().table_index, op.expressions);
+			break;
+		case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY: {
+			auto &aggr = op.Cast<LogicalAggregate>();
+			AddExpressions(aggr.group_index, aggr.groups);
+			AddExpressions(aggr.aggregate_index, aggr.expressions);
+			break;
+		}
+		case LogicalOperatorType::LOGICAL_WINDOW:
+			AddExpressions(op.Cast<LogicalWindow>().window_index, op.expressions);
+			break;
+		case LogicalOperatorType::LOGICAL_UNNEST:
+			AddExpressions(op.Cast<LogicalUnnest>().unnest_index, op.expressions);
+			break;
+		case LogicalOperatorType::LOGICAL_UNION:
+		case LogicalOperatorType::LOGICAL_EXCEPT:
+		case LogicalOperatorType::LOGICAL_INTERSECT:
+			AddInputs(op.Cast<LogicalSetOperation>().table_index, op);
+			break;
+		case LogicalOperatorType::LOGICAL_RECURSIVE_CTE:
+			// a reference to the recursion reads these columns as well
+			AddInputs(op.Cast<LogicalCTE>().table_index, op);
+			definitions.insert(op.Cast<LogicalCTE>().table_index);
+			break;
+		case LogicalOperatorType::LOGICAL_MATERIALIZED_CTE:
+			definitions.insert(op.Cast<LogicalCTE>().table_index);
+			break;
+		case LogicalOperatorType::LOGICAL_CTE_REF: {
+			auto &cte_ref = op.Cast<LogicalCTERef>();
+			cte_refs.emplace(cte_ref.table_index, cte_ref.cte_index);
+			break;
+		}
+		default:
+			break;
+		}
+		for (auto &child : op.children) {
+			Collect(*child);
+		}
+	}
+};
+
+} // namespace
+
+bool RemovedSubtreeEffects::ReadsColumnWithEffect(LogicalOperator &reader, LogicalOperator &source) {
+	vector<ColumnBinding> pending;
+	LogicalOperatorVisitor::EnumerateExpressions(reader, [&](unique_ptr<Expression> *expr) {
+		ExpressionIterator::VisitExpression<BoundColumnRefExpression>(
+		    **expr, [&](const BoundColumnRefExpression &ref) { pending.push_back(ref.Binding()); });
+	});
+	if (pending.empty()) {
+		return false;
+	}
+	ColumnProducers producers;
+	producers.Collect(source);
+	// a column has an effect when its expression is volatile or reads a column that has one
+	column_binding_set_t visited;
+	while (!pending.empty()) {
+		auto binding = pending.back();
+		pending.pop_back();
+		if (!visited.insert(binding).second) {
+			continue;
+		}
+		auto cte_ref = producers.cte_refs.find(binding.table_index);
+		if (cte_ref != producers.cte_refs.end()) {
+			auto cte_index = cte_ref->second;
+			auto recursion = recursive_ctes.find(cte_index);
+			if (recursion != recursive_ctes.end()) {
+				// the working table of a recursion holds the columns of the recursive CTE, which can be above the
+				// source
+				if (producers.definitions.insert(cte_index).second) {
+					producers.Collect(recursion->second.get());
+				}
+				pending.emplace_back(cte_index, binding.column_index);
+				continue;
+			}
+			auto cte = materialized_ctes.find(cte_index);
+			if (cte == materialized_ctes.end()) {
+				// a reference to something that is not defined in this plan counts as an effect
+				return true;
+			}
+			// the column of the definition that the reference returns at this position
+			auto &definition = *cte->second.get().children[0];
+			if (producers.definitions.insert(cte_index).second) {
+				producers.Collect(definition);
+			}
+			auto definition_bindings = definition.GetColumnBindings();
+			if (binding.column_index.GetIndex() >= definition_bindings.size()) {
+				return true;
+			}
+			pending.push_back(definition_bindings[binding.column_index.GetIndex()]);
+			continue;
+		}
+		auto input = producers.inputs.find(binding);
+		if (input != producers.inputs.end()) {
+			pending.insert(pending.end(), input->second.begin(), input->second.end());
+			continue;
+		}
+		auto expression = producers.expressions.find(binding);
+		if (expression == producers.expressions.end()) {
+			continue;
+		}
+		if (expression->second.get().IsVolatile()) {
+			return true;
+		}
+		ExpressionIterator::VisitExpression<BoundColumnRefExpression>(
+		    expression->second.get(), [&](const BoundColumnRefExpression &ref) { pending.push_back(ref.Binding()); });
 	}
 	return false;
 }
@@ -270,6 +417,10 @@ bool JoinElimination::TryEliminateJoin(unique_ptr<LogicalOperator> &op) {
 		Distinctness distinctness(DistinctnessPropagation::UNARY_OPERATORS_AND_JOINS);
 		is_removable = Distinctness::GetJoinEqualityKeys(join, inner_idx, inner_keys) &&
 		               distinctness.IsDistinctOn(*join.children[inner_idx], inner_keys);
+	}
+	// a volatile column of the outer side that the join condition reads loses its reader with the join
+	if (is_removable && effects->ReadsColumnWithEffect(join, *join.children[outer_idx])) {
+		return false;
 	}
 	if (is_removable) {
 		op = LogicalJoin::PromoteJoinSide(std::move(join.children[outer_idx]), std::move(outer_projection_map));

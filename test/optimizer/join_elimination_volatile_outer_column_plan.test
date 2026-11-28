@@ -1,0 +1,64 @@
+# name: test/optimizer/join_elimination_volatile_outer_column_plan.test
+# description: A volatile column of the outer side only keeps the outer join whose condition reads it
+# group: [optimizer]
+
+statement ok
+SET explain_output = 'OPTIMIZED_ONLY';
+
+statement ok
+CREATE TABLE v AS SELECT x FROM (VALUES (1), (2), (3)) t(x);
+
+statement ok
+CREATE TABLE u(id BIGINT PRIMARY KEY, y INTEGER);
+
+statement ok
+INSERT INTO u VALUES (1, 10), (2, 20), (3, 30);
+
+statement ok
+CREATE SEQUENCE plan_sequence;
+
+# the join whose condition reads the volatile column stays
+query II
+EXPLAIN SELECT sum(a.x) FROM (SELECT x, nextval('plan_sequence') AS k FROM v) a LEFT JOIN u ON u.id = a.k;
+----
+logical_opt	<REGEX>:(?s).*Join.*
+
+# a volatile column that the join condition does not read does not keep the join
+query II
+EXPLAIN SELECT sum(a.x), sum(a.k) FROM (SELECT x, nextval('plan_sequence') AS k FROM v) a LEFT JOIN u ON u.id = a.x;
+----
+logical_opt	<!REGEX>:(?s).*Join.*
+
+# neither does a join key that is computed without an effect
+query II
+EXPLAIN SELECT sum(a.x) FROM (SELECT x, x + 1 AS k FROM v) a LEFT JOIN u ON u.id = a.k;
+----
+logical_opt	<!REGEX>:(?s).*Join.*
+
+# nor does a volatile column of a materialized CTE next to the column that the condition reads
+query II
+EXPLAIN WITH m AS MATERIALIZED (SELECT x, nextval('plan_sequence') AS k FROM v) SELECT sum(m.x), sum(m.k) FROM m LEFT JOIN u ON u.id = m.x;
+----
+logical_opt	<!REGEX>:(?s).*Join.*
+
+# nor does a volatile column of a recursion next to the column that a join inside the step reads
+query II
+EXPLAIN WITH RECURSIVE m AS MATERIALIZED (SELECT x, nextval('plan_sequence') AS k FROM v),
+r(x, k) AS (SELECT x, k FROM m UNION ALL SELECT r.x + 3, r.k FROM r LEFT JOIN u ON u.id = r.x WHERE r.x < 4)
+SELECT sum(x), sum(k) FROM r;
+----
+logical_opt	<!REGEX>:(?s).*Join.*
+
+# a volatile column that the query never reads is not computed
+statement ok
+CREATE SEQUENCE unread_sequence;
+
+query I
+SELECT sum(a.x) FROM (SELECT x, nextval('unread_sequence') AS k FROM v) a LEFT JOIN u ON u.id = a.x;
+----
+6
+
+query I
+SELECT nextval('unread_sequence');
+----
+1

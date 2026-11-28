@@ -1,0 +1,171 @@
+# name: test/optimizer/join_elimination_volatile_outer_column.test
+# description: An outer join stays when its condition is the reader of a volatile column of its outer side
+# group: [optimizer]
+
+statement ok
+CREATE TABLE v AS SELECT x FROM (VALUES (1), (2), (3)) t(x);
+
+statement ok
+CREATE TABLE u(id BIGINT PRIMARY KEY, y INTEGER);
+
+statement ok
+INSERT INTO u VALUES (1, 10), (2, 20), (3, 30);
+
+# the inner side is distinct on the join key and nothing reads it
+statement ok
+CREATE SEQUENCE key_sequence;
+
+query I
+SELECT sum(a.x) FROM (SELECT x, nextval('key_sequence') AS k FROM v) a LEFT JOIN u ON u.id = a.k;
+----
+6
+
+query I
+SELECT nextval('key_sequence');
+----
+4
+
+# the outer side on the right
+statement ok
+CREATE SEQUENCE right_sequence;
+
+query I
+SELECT sum(a.x) FROM u RIGHT JOIN (SELECT x, nextval('right_sequence') AS k FROM v) a ON u.id = a.k;
+----
+6
+
+query I
+SELECT nextval('right_sequence');
+----
+4
+
+# the operators above ignore duplicates
+statement ok
+CREATE SEQUENCE distinct_sequence;
+
+query I
+SELECT count(DISTINCT a.x) FROM (SELECT x, nextval('distinct_sequence') AS k FROM v) a LEFT JOIN (SELECT x AS id FROM v) w ON w.id = a.k;
+----
+3
+
+query I
+SELECT nextval('distinct_sequence');
+----
+4
+
+# the join key is computed from the volatile column by a second derived table
+statement ok
+CREATE SEQUENCE derived_sequence;
+
+query I
+SELECT sum(b.x) FROM (SELECT x, k + 1 AS k1 FROM (SELECT x, nextval('derived_sequence') AS k FROM v)) b LEFT JOIN u ON u.id = b.k1;
+----
+6
+
+query I
+SELECT nextval('derived_sequence');
+----
+4
+
+# a volatile aggregate
+statement ok
+CREATE SEQUENCE aggregate_sequence;
+
+query I
+SELECT sum(a.x) FROM (SELECT x, max(nextval('aggregate_sequence')) AS k FROM v GROUP BY x) a LEFT JOIN u ON u.id = a.k;
+----
+6
+
+query I
+SELECT nextval('aggregate_sequence');
+----
+4
+
+# through a UNION ALL
+statement ok
+CREATE SEQUENCE union_sequence;
+
+query I
+SELECT sum(a.x) FROM (SELECT x, nextval('union_sequence') AS k FROM v UNION ALL SELECT x, nextval('union_sequence') AS k FROM v) a LEFT JOIN u ON u.id = a.k;
+----
+12
+
+query I
+SELECT nextval('union_sequence');
+----
+7
+
+# through a materialized CTE
+statement ok
+CREATE SEQUENCE cte_sequence;
+
+query I
+WITH m AS MATERIALIZED (SELECT x, nextval('cte_sequence') AS k FROM v)
+SELECT sum(m.x) FROM m LEFT JOIN u ON u.id = m.k;
+----
+6
+
+query I
+SELECT nextval('cte_sequence');
+----
+4
+
+# through a window over the volatile column
+statement ok
+CREATE SEQUENCE window_sequence;
+
+query I
+SELECT sum(a.x) FROM (SELECT x, max(k) OVER () AS mk FROM (SELECT x, nextval('window_sequence') AS k FROM v)) a LEFT JOIN u ON u.id = a.mk;
+----
+6
+
+query I
+SELECT nextval('window_sequence');
+----
+4
+
+# through a recursive CTE that reads a materialized CTE
+statement ok
+CREATE SEQUENCE recursive_sequence;
+
+query I
+WITH RECURSIVE m AS MATERIALIZED (SELECT x, nextval('recursive_sequence') AS k FROM v),
+r(x, k) AS (SELECT x, k FROM m UNION ALL SELECT x + 3, k FROM r WHERE x < 4)
+SELECT sum(r.x) FROM r LEFT JOIN u ON u.id = r.k;
+----
+21
+
+query I
+SELECT nextval('recursive_sequence');
+----
+4
+
+# the join inside the step of a recursion reads the column from the working table
+statement ok
+CREATE SEQUENCE step_sequence;
+
+query I
+WITH RECURSIVE m AS MATERIALIZED (SELECT x, nextval('step_sequence') AS k FROM v),
+r(x, k) AS (SELECT x, k FROM m UNION ALL SELECT r.x + 3, r.k FROM r LEFT JOIN u ON u.id = r.k WHERE r.x < 4)
+SELECT sum(x) FROM r;
+----
+21
+
+query I
+SELECT nextval('step_sequence');
+----
+4
+
+# a join that can only be removed after the first pruning has removed the aggregate that reads its inner side
+statement ok
+CREATE SEQUENCE second_pass_sequence;
+
+query I
+SELECT sum(q.x) FROM (SELECT a.x, max(u.y) AS unread FROM (SELECT x, nextval('second_pass_sequence') AS k FROM v) a LEFT JOIN u ON u.id = a.k GROUP BY a.x) q;
+----
+6
+
+query I
+SELECT nextval('second_pass_sequence');
+----
+4

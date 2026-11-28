@@ -60,6 +60,12 @@
       ]
     },
     {
+      "reason": "Checks which outer joins the optimizer removes.",
+      "paths": [
+        "test/optimizer/join_elimination_volatile_outer_column_plan.test"
+      ]
+    },
+    {
       "reason": "Checks barrier ordering and scan pushdown performed by the optimizer.",
       "paths": [
         "test/sql/optimizer/barrier_projection_siblings.test"

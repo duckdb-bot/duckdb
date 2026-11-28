@@ -1194,6 +1194,10 @@ unique_ptr<CatalogEntry> DuckTableEntry::ChangeColumnType(ClientContext &context
 
 	// Check if type is supported in this database version
 	CheckTypeIsSupported(info.target_type, catalog.GetAttached());
+	if (alter_table_type == AlterTableType::ALTER_COLUMN_TYPE && info.bind_mode == AlterBindMode::BIND_ON_ALTER) {
+		// the USING expression is logged as it is here, so the storage version has to be able to hold its casts
+		catalog.GetAttached().GetStorageManager().CheckExpressionDecimalsAreSupported(*info.expression);
+	}
 
 	auto bound_constraints = binder->BindConstraints(constraints, name, columns);
 	for (auto &col : columns.Logical()) {

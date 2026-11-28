@@ -1,0 +1,55 @@
+# name: test/sql/storage/bc/test_alter_using_wide_cast_wal.test
+# description: An ALTER ... TYPE ... USING with a wide DECIMAL cast that an earlier build committed to the WAL of a v1.0.0 database is still replayed
+# group: [bc]
+
+# The database is written with a vector size of 2048.
+require vector_size 2048
+
+# data/storage/alter_using_wide_cast_wal_v1_0_0.db.gz and .db.wal.gz were written by DuckDB v2.1.0-dev96330
+# (07c9a117d0) at storage version v1.0.0. The database holds a table t with an INTEGER column s and the value 7
+# and an empty table log with a VARCHAR column note, and was checkpointed. Its write-ahead log holds three
+# statements. The first inserts the note '1 before the ALTER' into log, the second alters the type of s to INTEGER
+# USING CAST(CAST(s AS DECIMAL(50, 0)) AS INTEGER) + 1, and the third inserts the note '2 after the ALTER'.
+# The ALTER is refused when it runs now, but what was committed is replayed, together with the commits that follow
+
+unzip data/storage/alter_using_wide_cast_wal_v1_0_0.db.gz {TEST_DIR}/alter_using_wide_cast_wal.db
+
+unzip data/storage/alter_using_wide_cast_wal_v1_0_0.db.wal.gz {TEST_DIR}/alter_using_wide_cast_wal.db.wal
+
+statement ok
+ATTACH '{TEST_DIR}/alter_using_wide_cast_wal.db' AS wal
+
+query II
+SELECT s, typeof(s) FROM wal.t
+----
+8	INTEGER
+
+query I
+SELECT note FROM wal.log ORDER BY note
+----
+1 before the ALTER
+2 after the ALTER
+
+statement error
+ALTER TABLE wal.t ALTER s SET TYPE INTEGER USING (s::DECIMAL(50, 0))::INTEGER + 1
+----
+DECIMAL columns wider than 38 digits are not supported in storage versions prior to v2.1.0
+
+statement ok
+CHECKPOINT wal
+
+statement ok
+DETACH wal
+
+statement ok
+ATTACH '{TEST_DIR}/alter_using_wide_cast_wal.db' AS wal
+
+query II
+SELECT s, typeof(s) FROM wal.t
+----
+8	INTEGER
+
+query I
+SELECT count(*) FROM wal.log
+----
+2

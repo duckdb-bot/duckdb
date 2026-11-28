@@ -1,0 +1,119 @@
+# name: test/sql/alter/alter_type/alter_type_using_storage_version.test
+# description: The USING expression of ALTER ... TYPE is checked against the storage version of its database when the statement runs
+# group: [alter_type]
+
+statement ok
+ATTACH '{TEST_DIR}/alter_type_using_v1.db' AS old (STORAGE_VERSION 'v1.0.0');
+
+statement ok
+CREATE TABLE old.t (s INTEGER);
+
+statement ok
+INSERT INTO old.t VALUES (7);
+
+statement ok
+CREATE MACRO old.keep_one(x) AS 1;
+
+# the expression is written to the WAL, where this storage version cannot hold a DECIMAL of 50 digits
+statement error
+ALTER TABLE old.t ALTER s SET TYPE INTEGER USING (s::DECIMAL(50, 0))::INTEGER + 1;
+----
+DECIMAL columns wider than 38 digits are not supported in storage versions prior to v2.1.0
+
+statement error
+ALTER TABLE old.t ALTER s SET TYPE INTEGER USING old.keep_one(s::DECIMAL(50, 0));
+----
+DECIMAL columns wider than 38 digits are not supported in storage versions prior to v2.1.0
+
+statement error
+ALTER TABLE old.t ALTER s SET TYPE INTEGER[] USING [({'d': s}::STRUCT(d DECIMAL(50, 0))).d::INTEGER];
+----
+DECIMAL columns wider than 38 digits are not supported in storage versions prior to v2.1.0
+
+# an expression that does not bind keeps the error of the binder
+statement error
+ALTER TABLE old.t ALTER s SET TYPE INTEGER USING (missing::DECIMAL(50, 0))::INTEGER;
+----
+Table does not contain column "missing" referenced in alter statement
+
+# FIXME: a cast to a user type is logged with its name, refuse it once the WAL holds the type it resolved to
+mode skip unsupported
+
+statement ok
+CREATE TEMPORARY TYPE wide AS DECIMAL(50, 0);
+
+statement error
+ALTER TABLE old.t ALTER s SET TYPE INTEGER USING (s::wide)::INTEGER + 1;
+----
+DECIMAL columns wider than 38 digits are not supported in storage versions prior to v2.1.0
+
+mode unskip
+
+# a cast to a type that cannot be built is refused by the statement, not by the COMMIT
+statement ok
+BEGIN;
+
+statement ok
+INSERT INTO old.t VALUES (8);
+
+statement error
+ALTER TABLE old.t ALTER s SET TYPE INTEGER USING old.keep_one(s::ENUM('a', 'a'));
+----
+Attempted to create ENUM type with duplicate value a
+
+statement ok
+ROLLBACK;
+
+statement ok
+BEGIN;
+
+statement error
+ALTER TABLE old.t ALTER s SET TYPE INTEGER USING old.keep_one(s::DECIMAL(1, 2));
+----
+DECIMAL type scale cannot be greater than width
+
+statement ok
+ROLLBACK;
+
+query II
+SELECT s, typeof(s) FROM old.t;
+----
+7	INTEGER
+
+# a cast that the storage version can hold
+statement ok
+ALTER TABLE old.t ALTER s SET TYPE BIGINT USING (s::DECIMAL(30, 0))::BIGINT + 1;
+
+query II
+SELECT s, typeof(s) FROM old.t;
+----
+8	BIGINT
+
+statement ok
+DETACH old;
+
+statement ok
+ATTACH '{TEST_DIR}/alter_type_using_v1.db' AS old;
+
+query II
+SELECT s, typeof(s) FROM old.t;
+----
+8	BIGINT
+
+# from v2.0.0 on the cast is stored as a type expression, which the engine that reads it binds itself
+statement ok
+ATTACH '{TEST_DIR}/alter_type_using_v2.db' AS new (STORAGE_VERSION 'v2.0.0');
+
+statement ok
+CREATE TABLE new.t (s INTEGER);
+
+statement ok
+INSERT INTO new.t VALUES (7);
+
+statement ok
+ALTER TABLE new.t ALTER s SET TYPE INTEGER USING (s::DECIMAL(50, 0))::INTEGER + 1;
+
+query I
+SELECT s FROM new.t;
+----
+8

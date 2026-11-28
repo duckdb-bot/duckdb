@@ -37,9 +37,8 @@ restart
 statement ok
 SET threads = 1;
 
-# The new thread of the loop binds the index with its first statement. A thread reads the deadline of its query at
-# every 256th interrupt check, and without the optimizer nothing else reads it before the bind, so the replay of the
-# 300 buffered chunks reads it at the 256th chunk.
+# The INSERT of the loop binds the index on a new thread. A thread reads the deadline of its query at every 256th
+# interrupt check, and without the optimizer only the replay of the 300 buffered chunks gets that far.
 concurrentloop i 0 1
 
 statement ok
@@ -59,7 +58,7 @@ endloop
 statement ok
 INSERT INTO t VALUES (-1, [0, -1]);
 
-# the keys of the first and of the last buffered chunk are in the index
+# the keys of an early and of the last buffered chunk are in the index
 statement error
 INSERT INTO t VALUES (-2, [5001, 5000]);
 ----

@@ -1,0 +1,132 @@
+# name: test/sql/index/art/storage/test_art_list_sort_bind_deadline_deletes.test_slow
+# description: The deadline of a connection stops its bind of an index while it replays deletes, the next bind succeeds
+# group: [storage]
+
+require skip_reload
+
+# the replay evaluates the keys of 342 chunks
+require exact_vector_size 2048
+
+load {TEST_DIR}/art_list_sort_bind_deadline_deletes.db
+
+statement ok
+SET wal_autocheckpoint = '1TB';
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown;
+
+statement ok
+CREATE TABLE t (a BIGINT, l BIGINT[]);
+
+statement ok
+INSERT INTO t SELECT range, [range + 1, range] FROM range(1000000);
+
+statement ok
+CREATE UNIQUE INDEX idx_l ON t ((list_sort(l)[1]));
+
+statement ok
+CHECKPOINT;
+
+# these deletes stay in the write-ahead log and are buffered for the index when the database is opened again
+statement ok
+DELETE FROM t WHERE a < 700000;
+
+restart
+
+# without scheduler threads a statement runs on the thread of its connection
+statement ok
+SET threads = 1;
+
+# The INSERT of the loop binds the index on a new thread. A thread reads the deadline of its query at every 256th
+# interrupt check, and without the optimizer only the replay gets that far, after it removed the keys of about 250
+# chunks from the index.
+concurrentloop i 0 1
+
+statement ok
+SET debug_disable_optimizer = true;
+
+statement ok
+SET max_execution_time = 1;
+
+statement error
+INSERT INTO t VALUES (-1, [0, -1]);
+----
+Query exceeded maximum execution time
+
+endloop
+
+# the index stayed unbound with its buffered rows, and this statement binds it
+statement ok
+INSERT INTO t VALUES (-1, [0, -1]);
+
+query I
+SELECT count(*) FROM t;
+----
+300001
+
+# the keys of the first and of the last deleted row are free, kept keys are not
+statement ok
+INSERT INTO t VALUES (5, [6, 5]);
+
+statement ok
+INSERT INTO t VALUES (699999, [700000, 699999]);
+
+statement error
+INSERT INTO t VALUES (-2, [700001, 700000]);
+----
+Duplicate key
+
+statement error
+INSERT INTO t VALUES (-2, [1000000, 999999]);
+----
+Duplicate key
+
+# the index is written, read back and still agrees with the table
+statement ok
+CHECKPOINT;
+
+restart
+
+query I
+SELECT count(*) FROM t;
+----
+300003
+
+statement error
+INSERT INTO t VALUES (-2, [700001, 700000]);
+----
+Duplicate key
+
+statement error
+INSERT INTO t VALUES (-2, [1000000, 999999]);
+----
+Duplicate key
+
+statement error
+INSERT INTO t VALUES (-2, [6, 5]);
+----
+Duplicate key
+
+statement ok
+INSERT INTO t VALUES (7, [8, 7]);
+
+statement ok
+DELETE FROM t WHERE a >= 900000;
+
+statement ok
+CHECKPOINT;
+
+restart
+
+query I
+SELECT count(*) FROM t;
+----
+200004
+
+statement error
+INSERT INTO t VALUES (-2, [800001, 800000]);
+----
+Duplicate key
+
+statement ok
+INSERT INTO t VALUES (950000, [950001, 950000]);

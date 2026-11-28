@@ -53,6 +53,61 @@ SELECT count(*) FILTER (WHERE atan2(x, -1) < 0), count(*) FILTER (WHERE atan2(x,
 statement ok
 DROP TABLE signed_zeros;
 
+# Equal NaN bounds do not distinguish the sign of a NaN, but signbit and the cast to VARCHAR do.
+# The tables stay in memory, because constant compression can discard the sign of a NaN.
+foreach type DOUBLE FLOAT
+
+statement ok
+CREATE TEMP TABLE negative_nans AS SELECT '-NaN'::{type} AS x FROM range(3);
+
+query I
+SELECT count(*) FROM negative_nans WHERE signbit(x);
+----
+3
+
+query I
+SELECT count(*) FROM negative_nans WHERE x::VARCHAR = '-nan';
+----
+3
+
+query I
+SELECT DISTINCT x::VARCHAR FROM negative_nans;
+----
+-nan
+
+statement ok
+DROP TABLE negative_nans;
+
+# The bounds are equal too when the column holds NaNs of both signs, whichever comes first.
+foreach direction ASC DESC
+
+statement ok
+CREATE TEMP TABLE mixed_nans AS
+SELECT x FROM (VALUES (1, 'NaN'::{type}), (2, '-NaN'::{type})) t(i, x) ORDER BY i {direction};
+
+query I
+SELECT count(*) FROM mixed_nans WHERE signbit(x);
+----
+1
+
+query I
+SELECT count(*) FROM mixed_nans WHERE x::VARCHAR = '-nan';
+----
+1
+
+query I
+SELECT x::VARCHAR AS s FROM mixed_nans GROUP BY s ORDER BY s;
+----
+-nan
+nan
+
+statement ok
+DROP TABLE mixed_nans;
+
+endloop
+
+endloop
+
 # Nonzero floating-point constants can be propagated; zero remains inconclusive because its sign is not in the stats.
 statement ok
 CREATE TABLE const_db.constant_doubles AS

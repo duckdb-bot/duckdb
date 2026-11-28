@@ -44,13 +44,17 @@ bool HoldsNegativeInfinity(const Value &lo, const Value &hi) {
 }
 
 // Equal bounds need not imply identical inputs for certain types, so we skip this optimization for those values.
-// Floating-point bounds only lose information for the sign of zero.
+// Floating-point bounds lose the sign of zero, and the sign and payload of a NaN.
 bool CanInferConstantFromNumericBounds(const Value &value) {
 	switch (value.type().InternalType()) {
-	case PhysicalType::FLOAT:
-		return value.GetValue<float>() != 0.0F;
-	case PhysicalType::DOUBLE:
-		return value.GetValue<double>() != 0.0;
+	case PhysicalType::FLOAT: {
+		const auto bound = value.GetValue<float>();
+		return bound != 0.0F && !Value::IsNan(bound);
+	}
+	case PhysicalType::DOUBLE: {
+		const auto bound = value.GetValue<double>();
+		return bound != 0.0 && !Value::IsNan(bound);
+	}
 	case PhysicalType::INTERVAL:
 		return false;
 	default:

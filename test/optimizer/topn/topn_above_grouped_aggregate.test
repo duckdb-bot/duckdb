@@ -1,0 +1,98 @@
+# name: test/optimizer/topn/topn_above_grouped_aggregate.test
+# description: ORDER BY + LIMIT by an aggregate result is chosen by the estimated number of groups, not of input rows
+# group: [topn]
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+statement ok
+SET explain_output = 'OPTIMIZED_ONLY';
+
+# a BOOLEAN key has at most 3 groups, sorting them beats a Top-N of 6000 rows
+query II
+EXPLAIN SELECT k, count(*) AS c FROM (SELECT (i % 2 = 0) AS k FROM range(10000000) t(i)) q GROUP BY k ORDER BY c LIMIT 6000;
+----
+logical_opt	<!REGEX>:.*TOP_N.*
+
+# the sort and the projection carry the estimate of the aggregate
+query II
+EXPLAIN SELECT k, count(*) AS c FROM (SELECT (i % 2 = 0) AS k FROM range(10000000) t(i)) q GROUP BY k ORDER BY c LIMIT 6000;
+----
+logical_opt	<REGEX>:.*LIMIT.*ORDER_BY[^~]*~3 rows.*PROJECTION[^~]*~3 rows.*AGGREGATE[^~]*~3 rows.*
+
+# the modulo bounds the groups to 2 million, a fifth of a million rows is more than 0.7% of them
+query II
+EXPLAIN SELECT k, count(*) AS c FROM (SELECT i % 1000000 AS k FROM range(30000000) t(i)) q GROUP BY k ORDER BY c, k LIMIT 200000;
+----
+logical_opt	<!REGEX>:.*TOP_N.*
+
+# also with an offset, and with the aggregate result inside an expression
+query II
+EXPLAIN SELECT k, count(*) AS c FROM (SELECT i % 1000000 AS k FROM range(30000000) t(i)) q GROUP BY k ORDER BY c + 1 DESC, k LIMIT 100000 OFFSET 100000;
+----
+logical_opt	<!REGEX>:.*TOP_N.*
+
+# a limit that is small for the groups keeps the Top-N
+query II
+EXPLAIN SELECT k, count(*) AS c FROM (SELECT i % 1000000 AS k FROM range(30000000) t(i)) q GROUP BY k ORDER BY c, k LIMIT 6000;
+----
+logical_opt	<REGEX>:.*TOP_N.*
+
+# a Top-N that orders by a group key first is left alone
+query II
+EXPLAIN SELECT k, count(*) AS c FROM (SELECT i % 1000000 AS k FROM range(30000000) t(i)) q GROUP BY k ORDER BY k, c LIMIT 200000;
+----
+logical_opt	<REGEX>:.*TOP_N.*
+
+# the sort returns what the Top-N returned
+query II
+EXPLAIN SELECT k, count(*) AS c FROM (SELECT i % 1000 AS k FROM range(2000000) t(i)) q GROUP BY k ORDER BY c DESC, k LIMIT 6000 OFFSET 990;
+----
+logical_opt	<!REGEX>:.*TOP_N.*
+
+query II
+SELECT k, count(*) AS c FROM (SELECT i % 1000 AS k FROM range(2000000) t(i)) q GROUP BY k ORDER BY c DESC, k LIMIT 6000 OFFSET 990;
+----
+990	2000
+991	2000
+992	2000
+993	2000
+994	2000
+995	2000
+996	2000
+997	2000
+998	2000
+999	2000
+
+# groups of different sizes come back in the order of the aggregate result
+query II
+EXPLAIN SELECT k, count(*) AS c FROM (SELECT i % 10001 AS k FROM range(3000000) t(i)) q GROUP BY k ORDER BY c, k LIMIT 6000 OFFSET 9995;
+----
+logical_opt	<!REGEX>:.*TOP_N.*
+
+query II
+SELECT k, count(*) AS c FROM (SELECT i % 10001 AS k FROM range(3000000) t(i)) q GROUP BY k ORDER BY c, k LIMIT 6000 OFFSET 9995;
+----
+9695	300
+9696	300
+9697	300
+9698	300
+9699	300
+9700	300
+
+statement ok
+SET disabled_optimizers = 'top_n';
+
+query II
+SELECT k, count(*) AS c FROM (SELECT i % 1000 AS k FROM range(2000000) t(i)) q GROUP BY k ORDER BY c DESC, k LIMIT 6000 OFFSET 990;
+----
+990	2000
+991	2000
+992	2000
+993	2000
+994	2000
+995	2000
+996	2000
+997	2000
+998	2000
+999	2000

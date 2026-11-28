@@ -111,10 +111,13 @@ private:
 	unique_ptr<NodeStatistics> PropagateStatistics(LogicalCrossProduct &op, unique_ptr<LogicalOperator> &node_ptr);
 	unique_ptr<NodeStatistics> PropagateStatistics(LogicalLimit &op, unique_ptr<LogicalOperator> &node_ptr);
 	unique_ptr<NodeStatistics> PropagateStatistics(LogicalOrder &op, unique_ptr<LogicalOperator> &node_ptr);
+	unique_ptr<NodeStatistics> PropagateStatistics(LogicalTopN &op, unique_ptr<LogicalOperator> &node_ptr);
 	unique_ptr<NodeStatistics> PropagateStatistics(LogicalWindow &op, unique_ptr<LogicalOperator> &node_ptr);
 	unique_ptr<NodeStatistics> PropagateStatistics(LogicalUnnest &op, unique_ptr<LogicalOperator> &node_ptr);
 
 	unique_ptr<NodeStatistics> PropagateChildren(LogicalOperator &node, unique_ptr<LogicalOperator> &node_ptr);
+	//! Compresses the data that a materializing operator holds, based on the statistics of its columns
+	void CompressOperator(unique_ptr<LogicalOperator> &node_ptr);
 
 	//! Return statistics from a constant value
 	unique_ptr<BaseStatistics> StatisticsFromValue(const Value &input);

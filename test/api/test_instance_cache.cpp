@@ -391,6 +391,96 @@ static void TestInstanceCacheLastHandle(idx_t reopen_iterations) {
 	TestDeleteFile(path);
 }
 
+TEST_CASE("Test that a reset option compares as never set in the instance cache", "[api]") {
+	DBInstanceCache instance_cache;
+	auto path = TestCreatePath("instance_cache_reset_option.db");
+	auto &threads_option = *DBConfig::GetOptionByName("threads");
+
+	SECTION("A config that reset an option differs from one that sets it") {
+		DBConfig first;
+		first.SetOptionByName("threads", Value::BIGINT(3));
+		DBConfig second;
+		second.SetOptionByName("threads", Value::BIGINT(3));
+		second.ResetOption(nullptr, threads_option);
+
+		auto db = instance_cache.GetOrCreateInstance(path, first, true);
+		REQUIRE_THROWS_WITH(instance_cache.GetOrCreateInstance(path, second, true),
+		                    Catch::Matchers::Contains("different configuration than existing connections"));
+	}
+	SECTION("A config that reset an option shares the database of one that never set it") {
+		DBConfig first;
+		DBConfig second;
+		second.SetOptionByName("threads", Value::BIGINT(3));
+		second.ResetOption(nullptr, threads_option);
+
+		auto db = instance_cache.GetOrCreateInstance(path, first, true);
+		auto shared_db = instance_cache.GetOrCreateInstance(path, second, true);
+		REQUIRE(shared_db->instance == db->instance);
+	}
+	SECTION("An option set through its alias is reset as well") {
+		DBConfig first;
+		DBConfig second;
+		second.SetOptionByName("worker_threads", Value::BIGINT(3));
+		second.ResetOption(nullptr, threads_option);
+
+		auto db = instance_cache.GetOrCreateInstance(path, first, true);
+		auto shared_db = instance_cache.GetOrCreateInstance(path, second, true);
+		REQUIRE(shared_db->instance == db->instance);
+	}
+	SECTION("Another option that was set stays set") {
+		DBConfig first;
+		DBConfig second;
+		second.SetOptionByName("threads", Value::BIGINT(3));
+		second.SetOptionByName("max_memory", Value("1GB"));
+		second.ResetOption(nullptr, threads_option);
+
+		auto db = instance_cache.GetOrCreateInstance(path, first, true);
+		REQUIRE_THROWS_WITH(instance_cache.GetOrCreateInstance(path, second, true),
+		                    Catch::Matchers::Contains("different configuration than existing connections"));
+	}
+	SECTION("A reset that is refused leaves the option set") {
+		DBConfig first;
+		first.SetOptionByName("enable_external_access", Value(false));
+		DBConfig second;
+		second.SetOptionByName("temp_directory", Value(TestCreatePath("instance_cache_reset_option_tmp")));
+		second.SetOptionByName("enable_external_access", Value(false));
+		REQUIRE_THROWS_WITH(second.ResetOption(nullptr, *DBConfig::GetOptionByName("temp_directory")),
+		                    Catch::Matchers::Contains("has been disabled by configuration"));
+
+		auto db = instance_cache.GetOrCreateInstance(path, first, true);
+		REQUIRE_THROWS_WITH(instance_cache.GetOrCreateInstance(path, second, true),
+		                    Catch::Matchers::Contains("different configuration than existing connections"));
+	}
+	SECTION("An extension option with the name of a built-in option leaves the built-in option set") {
+		DBConfig first;
+		DBConfig second;
+		second.SetOptionByName("threads", Value::BIGINT(3));
+		second.AddExtensionOption("threads", "an option named like a built-in one", LogicalType::BIGINT,
+		                          Value::BIGINT(1));
+		ExtensionOption extension_option;
+		REQUIRE(second.TryGetExtensionOption("threads", extension_option));
+		second.ResetOption(extension_option);
+
+		auto db = instance_cache.GetOrCreateInstance(path, first, true);
+		REQUIRE_THROWS_WITH(instance_cache.GetOrCreateInstance(path, second, true),
+		                    Catch::Matchers::Contains("different configuration than existing connections"));
+	}
+	SECTION("An extension option that was reset compares as never set") {
+		DBConfig first;
+		DBConfig second;
+		second.AddExtensionOption("reset_test_option", "an option to reset", LogicalType::INTEGER, Value::INTEGER(1));
+		second.SetOptionByName("reset_test_option", Value::INTEGER(5));
+		ExtensionOption extension_option;
+		REQUIRE(second.TryGetExtensionOption("reset_test_option", extension_option));
+		second.ResetOption(extension_option);
+
+		auto db = instance_cache.GetOrCreateInstance(path, first, true);
+		auto shared_db = instance_cache.GetOrCreateInstance(path, second, true);
+		REQUIRE(shared_db->instance == db->instance);
+	}
+	TestDeleteFile(path);
+}
+
 TEST_CASE("Test the instance cache hands out a database that is still open after its last handle", "[api]") {
 	TestInstanceCacheLastHandle(2);
 }

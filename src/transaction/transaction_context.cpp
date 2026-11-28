@@ -122,7 +122,7 @@ void TransactionContext::Commit() {
 	auto error = transaction->Commit(context);
 	// Notify any registered state of transaction commit
 	if (error.HasError()) {
-		// every registered state is told, also when one of them fails; the commit's error is the one reported
+		// every registered state is told, also when one of them fails, and the commit's error is the one reported
 		ErrorData state_error;
 		NotifyEndOfTransaction(context, *transaction, [&](ClientContextState &state) {
 			try {

@@ -44,7 +44,7 @@ TEST_CASE("A rolled back statement does not remove the legacy file of another se
 	auto result = con.Query("SELECT name FROM duckdb_secrets()");
 	REQUIRE(CHECK_COLUMN(result, 0, {"a%2Fb"}));
 
-	// the name "a/b" encodes to the legacy file's name, so the secret cannot be created; its rollback leaves the file
+	// the name "a/b" encodes to the legacy file's name, so the secret is not created, and its rollback leaves the file
 	result = con.Query("CREATE PERSISTENT SECRET \"a/b\" (TYPE http)");
 	REQUIRE(result->HasError());
 	REQUIRE(StringUtil::Contains(result->GetError(), "belongs to the secret"));

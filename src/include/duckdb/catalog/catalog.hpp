@@ -497,6 +497,8 @@ public:
 	DUCKDB_API static vector<reference<SchemaCatalogEntry>> GetSchemas(CatalogEntryRetriever &retriever,
 	                                                                   const string &catalog_name);
 	DUCKDB_API static vector<reference<SchemaCatalogEntry>> GetAllSchemas(ClientContext &context);
+	//! Sorts schemas by catalog name and schema name, and schemas that share a name by depth and path
+	DUCKDB_API static void SortSchemas(vector<reference<SchemaCatalogEntry>> &schemas);
 
 	static vector<reference<CatalogEntry>> GetAllEntries(ClientContext &context, CatalogType catalog_type);
 

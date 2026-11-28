@@ -1,0 +1,128 @@
+# name: test/sql/catalog/system_functions/system_catalog_scanner_nested_schema_order.test
+# description: Nested schemas that share a name are listed in one order, with and without pushed filters
+# group: [system_functions]
+
+statement ok
+ATTACH ':memory:' AS nested_order_db;
+
+statement ok
+ATTACH ':memory:' AS zz_other_db;
+
+statement ok
+USE nested_order_db;
+
+# seven nested schemas with the same name, each with a table and a view
+foreach parent s0 s1 s2 s3 s4 s5 s6
+
+statement ok
+CREATE SCHEMA {parent};
+
+statement ok
+CREATE SCHEMA {parent}.child;
+
+statement ok
+CREATE TABLE {parent}.child.t_{parent}(i INTEGER);
+
+statement ok
+CREATE VIEW {parent}.child.v_{parent} AS SELECT 42 AS i;
+
+endloop
+
+# the same name at other depths and in another catalog
+statement ok
+CREATE SCHEMA s3.child.child;
+
+statement ok
+CREATE TABLE s3.child.child.t_s3_deep(i INTEGER);
+
+statement ok
+CREATE SCHEMA child;
+
+statement ok
+CREATE TABLE child.t_top(i INTEGER);
+
+statement ok
+CREATE SCHEMA zz_other_db.child;
+
+statement ok
+CREATE TABLE zz_other_db.child.t_other(i INTEGER);
+
+# the full listing, a schema before its deeper namesakes
+query I
+SELECT table_name FROM duckdb_tables() WHERE NOT internal;
+----
+t_top
+t_s0
+t_s1
+t_s2
+t_s3
+t_s4
+t_s5
+t_s6
+t_s3_deep
+t_other
+
+# a pushed schema filter keeps the order of the full listing
+query I
+SELECT table_name FROM duckdb_tables() WHERE schema_name = 'child';
+----
+t_top
+t_s0
+t_s1
+t_s2
+t_s3
+t_s4
+t_s5
+t_s6
+t_s3_deep
+t_other
+
+# so does a pushed database filter
+query I
+SELECT table_name FROM duckdb_tables() WHERE database_name = current_database();
+----
+t_top
+t_s0
+t_s1
+t_s2
+t_s3
+t_s4
+t_s5
+t_s6
+t_s3_deep
+
+query I
+SELECT table_name FROM duckdb_tables() WHERE database_name = current_database() AND schema_name = 'child';
+----
+t_top
+t_s0
+t_s1
+t_s2
+t_s3
+t_s4
+t_s5
+t_s6
+t_s3_deep
+
+# views are listed in the same order
+query I
+SELECT view_name FROM duckdb_views() WHERE NOT internal;
+----
+v_s0
+v_s1
+v_s2
+v_s3
+v_s4
+v_s5
+v_s6
+
+query I
+SELECT view_name FROM duckdb_views() WHERE schema_name = 'child';
+----
+v_s0
+v_s1
+v_s2
+v_s3
+v_s4
+v_s5
+v_s6

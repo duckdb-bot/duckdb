@@ -1637,20 +1637,29 @@ vector<reference<SchemaCatalogEntry>> Catalog::GetAllSchemas(ClientContext &cont
 		auto new_schemas = catalog.GetSchemas(context);
 		result.insert(result.end(), new_schemas.begin(), new_schemas.end());
 	}
-	sort(result.begin(), result.end(),
-	     [&](reference<SchemaCatalogEntry> left_p, reference<SchemaCatalogEntry> right_p) {
-		     auto &left = left_p.get();
-		     auto &right = right_p.get();
-		     if (left.catalog.GetName() < right.catalog.GetName()) {
-			     return true;
-		     }
-		     if (left.catalog.GetName() == right.catalog.GetName()) {
-			     return left.name < right.name;
-		     }
-		     return false;
-	     });
-
+	SortSchemas(result);
 	return result;
+}
+
+void Catalog::SortSchemas(vector<reference<SchemaCatalogEntry>> &schemas) {
+	std::sort(schemas.begin(), schemas.end(),
+	          [](reference<SchemaCatalogEntry> left_p, reference<SchemaCatalogEntry> right_p) {
+		          auto &left = left_p.get();
+		          auto &right = right_p.get();
+		          if (left.catalog.GetName() != right.catalog.GetName()) {
+			          return left.catalog.GetName() < right.catalog.GetName();
+		          }
+		          if (left.name != right.name) {
+			          return left.name < right.name;
+		          }
+		          // schemas of different parents can share their name, the shallower one goes first
+		          auto left_path = left.GetSchemaPath();
+		          auto right_path = right.GetSchemaPath();
+		          if (left_path.size() != right_path.size()) {
+			          return left_path.size() < right_path.size();
+		          }
+		          return left_path < right_path;
+	          });
 }
 
 vector<reference<CatalogEntry>> Catalog::GetAllEntries(ClientContext &context, CatalogType catalog_type) {

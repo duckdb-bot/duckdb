@@ -188,17 +188,7 @@ vector<reference<SchemaCatalogEntry>> GetSchemasWithFilters(ClientContext &conte
 	}
 
 	// same order as Catalog::GetAllSchemas
-	std::sort(result.begin(), result.end(), [](reference<SchemaCatalogEntry> l, reference<SchemaCatalogEntry> r) {
-		auto &left = l.get();
-		auto &right = r.get();
-		if (left.catalog.GetName() < right.catalog.GetName()) {
-			return true;
-		}
-		if (left.catalog.GetName() == right.catalog.GetName()) {
-			return left.name < right.name;
-		}
-		return false;
-	});
+	Catalog::SortSchemas(result);
 	return result;
 }
 

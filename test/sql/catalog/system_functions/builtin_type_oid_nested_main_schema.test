@@ -1,0 +1,26 @@
+# name: test/sql/catalog/system_functions/builtin_type_oid_nested_main_schema.test
+# description: The built-in types stay with the top-level main schema when a nested schema has its name
+# group: [system_functions]
+
+# The parent sorts before main, and the default catalog has to be the in-memory one, which is listed first
+require noforcestorage
+
+statement ok
+CREATE SCHEMA memory.a_nested_parent;
+
+statement ok
+CREATE SCHEMA memory.a_nested_parent.main;
+
+query TI
+SELECT coalesce(s.parent_schema, '<root>'), t.type_oid
+FROM duckdb_types() t JOIN duckdb_schemas() s ON t.schema_oid = s.oid
+WHERE t.type_name = 'int' AND t.type_oid IS NOT NULL;
+----
+<root>	13
+
+query TTI
+SELECT coalesce(s.parent_schema, '<root>'), t.typname, t.oid
+FROM pg_catalog.pg_type t JOIN duckdb_schemas() s ON t.typnamespace = s.oid
+WHERE t.oid = 23;
+----
+<root>	int4	23

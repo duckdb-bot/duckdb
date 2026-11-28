@@ -28,7 +28,7 @@ statement error
 SELECT histogram(ts, b) OVER (ROWS BETWEEN CURRENT ROW AND CURRENT ROW)
 FROM (VALUES (TIMESTAMP '2020-01-01', [DATE '5874897-12-31']), (TIMESTAMP '2020-06-01', [DATE '5874897-12-31'])) t(ts, b);
 ----
-can't be cast to the destination type
+timestamp field value out of range
 
 # infallible aggregates without throwing children stay eligible for dictionary execution
 
@@ -116,7 +116,7 @@ statement error
 SELECT histogram(ts, [DATE '5874897-12-31'] ORDER BY ts) OVER (ROWS BETWEEN CURRENT ROW AND CURRENT ROW)
 FROM (SELECT TIMESTAMP '2020-01-01' + INTERVAL (range) DAY AS ts FROM range(5)) t;
 ----
-can't be cast to the destination type
+timestamp field value out of range
 
 statement ok
 RESET debug_verify_vector;

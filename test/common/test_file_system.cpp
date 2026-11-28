@@ -254,6 +254,8 @@ TEST_CASE("Character devices use streaming file semantics", "[file_system]") {
 	REQUIRE(handle->GetWriteMode() == FileWriteMode::SEQUENTIAL);
 }
 
+enum class FileLockState : char { NOT_LOCKED = 0, LOCKED = 1, NOT_SUPPORTED = 2 };
+
 //! A child process that holds a write lock on a file until it is released
 class FileLockHolder {
 public:
@@ -284,14 +286,14 @@ public:
 	}
 
 public:
-	//! Waits until the child has tried, returns whether it holds the lock
-	bool WaitForLock() {
-		char locked = 0;
+	//! Waits until the child has tried to take the lock
+	FileLockState WaitForLock() {
+		auto state = FileLockState::NOT_LOCKED;
 		ssize_t count;
 		do {
-			count = read(ready_fd, &locked, 1);
+			count = read(ready_fd, &state, 1);
 		} while (count == -1 && errno == EINTR);
-		return count == 1 && locked == 1;
+		return count == 1 ? state : FileLockState::NOT_LOCKED;
 	}
 
 	//! Ends the child, returns whether it held the lock until now
@@ -319,21 +321,24 @@ public:
 private:
 	//! Runs in the child, with calls that are safe after a fork only
 	[[noreturn]] static void HoldLock(const char *path, int ready_fd, int release_fd) {
-		char locked = 0;
 		int fd = open(path, O_WRONLY);
+		auto state = fd < 0 ? FileLockState::NOT_SUPPORTED : FileLockState::NOT_LOCKED;
 		struct flock lock;
 		memset(&lock, 0, sizeof(lock));
 		lock.l_type = F_WRLCK;
 		lock.l_whence = SEEK_SET;
 		// another process may hold the lock for a moment
-		for (idx_t attempt = 0; fd >= 0 && attempt < 3000; attempt++) {
+		for (idx_t attempt = 0; state == FileLockState::NOT_LOCKED && attempt < 3000; attempt++) {
 			if (fcntl(fd, F_SETLK, &lock) == 0) {
-				locked = 1;
-				break;
+				state = FileLockState::LOCKED;
+			} else if (errno == EACCES || errno == EAGAIN || errno == EINTR) {
+				poll(nullptr, 0, 10);
+			} else {
+				// the system has no locks for this file
+				state = FileLockState::NOT_SUPPORTED;
 			}
-			poll(nullptr, 0, 10);
 		}
-		if (write(ready_fd, &locked, 1) != 1 || !locked) {
+		if (write(ready_fd, &state, 1) != 1 || state != FileLockState::LOCKED) {
 			_exit(1);
 		}
 		// the lock is held until the parent closes its end of the pipe
@@ -355,9 +360,13 @@ TEST_CASE("A character device is opened for writing while another process holds 
 	// the tests that run next to this one write to /dev/null, not to this device
 	auto device = "/dev/zero";
 	FileLockHolder holder(device);
-	auto locked = holder.WaitForLock();
+	auto state = holder.WaitForLock();
+	if (state == FileLockState::NOT_SUPPORTED) {
+		// without a lock on the device there is no conflict to run into
+		return;
+	}
 	string error;
-	if (locked) {
+	if (state == FileLockState::LOCKED) {
 		try {
 			auto &fs = TestLocalFileSystem();
 			auto handle = fs.OpenFile(device, FileFlags::FILE_FLAGS_WRITE | FileLockType::WRITE_LOCK);
@@ -368,7 +377,7 @@ TEST_CASE("A character device is opened for writing while another process holds 
 		}
 	}
 	auto held_until_release = holder.Release();
-	REQUIRE(locked);
+	REQUIRE(state == FileLockState::LOCKED);
 	REQUIRE(held_until_release);
 	REQUIRE(error == "");
 }

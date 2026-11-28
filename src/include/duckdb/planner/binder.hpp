@@ -437,6 +437,16 @@ public:
 	void SetCanContainNulls(bool can_contain_nulls);
 	bool CanContainNulls() const;
 	void SetAlwaysRequireRebind();
+	//! Requires a rebind when the expression contains a function or cast whose result can change between queries
+	void CheckRequiresRebind(const Expression &expr);
+	//! Requires a rebind when the cast of a folded value to the target type reads a setting such as TimeZone
+	void CheckCastRequiresRebind(const LogicalType &source_type, const LogicalType &target_type);
+	//! Requires a rebind, kept by the nearest binder that defers rebinds, whose owner passes it on or drops it
+	void RequireRebind();
+	//! Set for a binder whose owner decides whether the rebinds its expressions require reach the statement
+	void SetDefersRebinds();
+	//! Whether an expression of a binder that defers rebinds, or of one below it, requires a rebind
+	bool HasDeferredRebind() const;
 	void SetInsideSubquery();
 	bool IsInsideSubquery() const;
 	//! Set while binding the key expressions of an index
@@ -490,6 +500,10 @@ private:
 	optional_ptr<const DecimalWidthLimit> decimal_width_limit;
 	//! Whether this binder binds a TRY subquery, which lowers TRY onto the bound plan after binding
 	bool binding_try_subquery = false;
+	//! Whether the rebinds the expressions of this binder require are kept here for its owner
+	bool defers_rebinds = false;
+	//! Whether an expression of this binder, or of one below it, requires a rebind
+	bool deferred_rebind = false;
 	//! The plan indexes of the TRY subquery's top select node, recorded while planning it
 	TrySubqueryPlanIndexes try_subquery_plan_indexes;
 	//! The set of bound views
@@ -697,6 +711,8 @@ private:
 	unique_ptr<LogicalOperator> CastLogicalOperatorToTypes(const vector<LogicalType> &source_types,
 	                                                       const vector<LogicalType> &target_types,
 	                                                       unique_ptr<LogicalOperator> op);
+	//! Casts a bound expression to the target type and requires a rebind when the cast reads a setting such as TimeZone
+	unique_ptr<Expression> AddCastToType(unique_ptr<Expression> expr, const LogicalType &target_type);
 
 	BindingAlias FindBinding(const Identifier &using_column, const string &join_side);
 	bool TryFindBinding(const Identifier &using_column, const string &join_side, BindingAlias &result);

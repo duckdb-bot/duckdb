@@ -1,5 +1,6 @@
 #include "parquet_multi_file_info.hpp"
 #include "duckdb/common/once_flag.hpp"
+#include "duckdb/common/multi_file/table_function_query_filter.hpp"
 #include "duckdb/common/multi_file/table_function_multi_file.hpp"
 #include "duckdb/main/client_context.hpp"
 
@@ -180,6 +181,8 @@ static vector<ParquetMetadataCacheEntry> LoadMetadataCaches(ClientContext &conte
 				}
 			}
 		}
+		// the filter query of a file decides which of its rows are scanned
+		has_deletes = has_deletes || TableFunctionQueryFilter::HasFilterQuery(file);
 
 		// check if the cache is valid based ONLY on the OpenFileInfo (do not do any file system requests here)
 		const auto is_valid = metadata_entry->IsValid(file, context);
@@ -344,6 +347,10 @@ static vector<PartitionStatistics> ParquetMultiFileGetPartitionStats(ClientConte
                                                                      GetPartitionStatsInput &input) {
 	auto &bind_data = input.bind_data->Cast<MultiFileBindData>();
 	if (bind_data.file_list->GetExpandResult() == FileExpandResult::SINGLE_FILE) {
+		if (TableFunctionQueryFilter::HasFilterQuery(bind_data.file_list->GetFirstFile())) {
+			// the filter query decides which rows are scanned - the metadata does not tell how many the scan produces
+			return vector<PartitionStatistics>();
+		}
 		auto result = TableFunctionMultiFileWrapper::GetPartitionStats(context, input);
 		// Column accessors address physical ordinals and types, not the mapped output or generated roles.
 		bool identity = false;

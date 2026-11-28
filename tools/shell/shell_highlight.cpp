@@ -268,19 +268,18 @@ HighlightElementType ShellHighlight::TryGetHighlightElement(const char *element_
 
 void ShellHighlight::ToggleMode(HighlightMode mode) {
 	bool user_configured = false;
-	if (mode == HighlightMode::MIXED_MODE) {
-		SetColor(HighlightElementType::KEYWORD, PrintColor::GREEN, PrintIntensity::STANDARD, user_configured);
-		SetColor(HighlightElementType::STRING_CONSTANT, PrintColor::YELLOW, PrintIntensity::STANDARD, user_configured);
-		SetColor(HighlightElementType::NUMERIC_CONSTANT, PrintColor::YELLOW, PrintIntensity::STANDARD, user_configured);
-		SetColor(HighlightElementType::CONTINUATION_SELECTED, PrintColor::GREEN, PrintIntensity::STANDARD,
-		         user_configured);
-		SetColor(HighlightElementType::PROMPT, PrintColor::DARKORANGE, PrintIntensity::BOLD, user_configured);
-		SetColor(HighlightElementType::PROMPT_CONNECT, PrintColor::DARKORANGE, PrintIntensity::STANDARD,
-		         user_configured);
-		SetColor(HighlightElementType::DATABASE_NAME, PrintColor::ORANGE3, PrintIntensity::STANDARD, user_configured);
-		SetColor(HighlightElementType::SCHEMA_NAME, PrintColor::DEEPSKYBLUE1, PrintIntensity::STANDARD,
-		         user_configured);
-	}
+	// every mode starts from the mixed palette, the dark and light palettes then override part of it
+	SetColor(HighlightElementType::KEYWORD, PrintColor::GREEN, PrintIntensity::STANDARD, user_configured);
+	SetColor(HighlightElementType::STRING_CONSTANT, PrintColor::YELLOW, PrintIntensity::STANDARD, user_configured);
+	SetColor(HighlightElementType::NUMERIC_CONSTANT, PrintColor::YELLOW, PrintIntensity::STANDARD, user_configured);
+	SetColor(HighlightElementType::CONTINUATION_SELECTED, PrintColor::GREEN, PrintIntensity::STANDARD, user_configured);
+	SetColor(HighlightElementType::PROMPT, PrintColor::DARKORANGE, PrintIntensity::BOLD, user_configured);
+	SetColor(HighlightElementType::PROMPT_CONNECT, PrintColor::DARKORANGE, PrintIntensity::STANDARD, user_configured);
+	SetColor(HighlightElementType::DATABASE_NAME, PrintColor::ORANGE3, PrintIntensity::STANDARD, user_configured);
+	SetColor(HighlightElementType::SCHEMA_NAME, PrintColor::DEEPSKYBLUE1, PrintIntensity::STANDARD, user_configured);
+	SetColor(HighlightElementType::ERROR_TOKEN, PrintColor::RED, PrintIntensity::STANDARD, user_configured);
+	SetColor(HighlightElementType::ERROR_EMPHASIS, PrintColor::RED, PrintIntensity::BOLD, user_configured);
+	SetColor(HighlightElementType::ERROR_SUGGESTION, PrintColor::RED, PrintIntensity::BOLD, user_configured);
 
 	if (mode == HighlightMode::DARK_MODE) {
 		SetColor(HighlightElementType::KEYWORD, PrintColor::DODGERBLUE1, PrintIntensity::BOLD, user_configured);

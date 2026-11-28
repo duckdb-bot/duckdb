@@ -1,0 +1,40 @@
+# name: test/sql/copy/csv/parallel/csv_parallel_error_class.test
+# description: The parallel CSV reader raises the earliest of several stored errors with the exception class of that error
+# group: [parallel]
+
+statement ok
+SET threads=4
+
+# four scan ranges of 65536 rows, a cast error in the middle of the third and a third column early in the fourth
+statement ok
+COPY (
+	SELECT CASE WHEN i = 163840 THEN '0000000,abcdefg' WHEN i = 196618 THEN '0000000,1,34567' ELSE '0000000,1234567' END
+	FROM range(262144) t(i) ORDER BY i
+) TO '{TEST_DIR}/csv_parallel_error_class_cast_first.csv' (HEADER false, QUOTE '', DELIMITER '|');
+
+statement error
+SELECT count(*), sum(b) FROM read_csv('{TEST_DIR}/csv_parallel_error_class_cast_first.csv', header = false, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'INTEGER'}, buffer_size = 4194304, max_line_size = 1024);
+----
+Conversion Error: CSV Error on Line: 163841
+
+statement error
+SELECT count(*), sum(b) FROM read_csv('{TEST_DIR}/csv_parallel_error_class_cast_first.csv', header = false, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'INTEGER'}, buffer_size = 4194304, max_line_size = 1024, parallel = false);
+----
+Conversion Error: CSV Error on Line: 163841
+
+# the two errors the other way around
+statement ok
+COPY (
+	SELECT CASE WHEN i = 163840 THEN '0000000,1,34567' WHEN i = 196618 THEN '0000000,abcdefg' ELSE '0000000,1234567' END
+	FROM range(262144) t(i) ORDER BY i
+) TO '{TEST_DIR}/csv_parallel_error_class_columns_first.csv' (HEADER false, QUOTE '', DELIMITER '|');
+
+statement error
+SELECT count(*), sum(b) FROM read_csv('{TEST_DIR}/csv_parallel_error_class_columns_first.csv', header = false, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'INTEGER'}, buffer_size = 4194304, max_line_size = 1024);
+----
+Invalid Input Error: CSV Error on Line: 163841
+
+statement error
+SELECT count(*), sum(b) FROM read_csv('{TEST_DIR}/csv_parallel_error_class_columns_first.csv', header = false, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'INTEGER'}, buffer_size = 4194304, max_line_size = 1024, parallel = false);
+----
+Invalid Input Error: CSV Error on Line: 163841

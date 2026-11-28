@@ -50,7 +50,7 @@ void CSVErrorHandler::ThrowError(const CSVError &csv_error) {
 	} else {
 		error << error_to_throw.full_error_message;
 	}
-	switch (csv_error.type) {
+	switch (error_to_throw.type) {
 	case CAST_ERROR:
 		throw ConversionException(error.str());
 	case COLUMN_NAME_TYPE_MISMATCH:

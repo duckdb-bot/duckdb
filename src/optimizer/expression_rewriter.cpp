@@ -85,6 +85,16 @@ const vector<unique_ptr<Rule>> &ExpressionRewriter::GetRules() {
 	return client_data.default_expression_rewriter->rules;
 }
 
+const vector<unique_ptr<Rule>> &ExpressionRewriter::GetTryRules() {
+	if (!rules.empty()) {
+		return rules;
+	}
+	if (try_rules.empty()) {
+		try_rules = CreateDefaultRules(*this);
+	}
+	return try_rules;
+}
+
 void ExpressionRewriter::AddRule(unique_ptr<Rule> rule) {
 	D_ASSERT(rule->root);
 	rules.push_back(std::move(rule));
@@ -94,6 +104,7 @@ struct RewriteFrame {
 	reference<unique_ptr<Expression>> expr;
 	bool is_root;
 	bool children_visited;
+	bool in_try;
 };
 
 static unique_ptr<Expression> ApplyRule(LogicalOperator &op, const vector<unique_ptr<Rule>> &rules,
@@ -137,7 +148,7 @@ unique_ptr<Expression> ExpressionRewriter::ApplyRules(LogicalOperator &op, const
                                                       unique_ptr<Expression> expr, bool &changes_made, bool is_root) {
 	vector<RewriteFrame> stack;
 	vector<reference<unique_ptr<Expression>>> children;
-	stack.push_back({expr, is_root, false});
+	stack.push_back({expr, is_root, false, false});
 
 	while (!stack.empty()) {
 		auto &frame = stack.back();
@@ -147,13 +158,20 @@ unique_ptr<Expression> ExpressionRewriter::ApplyRules(LogicalOperator &op, const
 			frame.children_visited = true;
 			// Rewrite the subtree bottom-up so parent rules see already-simplified children.
 			CollectChildren(*current_expr, children);
+			// TRY and HAS_ERROR capture the errors of their child
+			auto expression_type = current_expr->GetExpressionType();
+			auto children_in_try = frame.in_try || expression_type == ExpressionType::OPERATOR_TRY ||
+			                       expression_type == ExpressionType::OPERATOR_HAS_ERROR;
 			for (idx_t i = children.size(); i > 0; i--) {
-				stack.push_back({children[i - 1], false, false});
+				stack.push_back({children[i - 1], false, false, children_in_try});
 			}
 			continue;
 		}
+		in_try = frame.in_try;
+		// the rules shared by the client belong to its default rewriter, so they cannot read the state of this one
+		auto &frame_rules = in_try ? GetTryRules() : rules;
 		bool node_made_change = false;
-		current_expr = ApplyRule(op, rules, std::move(current_expr), node_made_change, frame.is_root);
+		current_expr = ApplyRule(op, frame_rules, std::move(current_expr), node_made_change, frame.is_root);
 		if (node_made_change) {
 			changes_made = true;
 			frame.children_visited = false;
@@ -206,7 +224,7 @@ void ExpressionRewriter::VisitOperator(LogicalOperator &op) {
 
 void ExpressionRewriter::VisitExpression(unique_ptr<Expression> *expression) {
 	bool changes_made = false;
-	*expression = ExpressionRewriter::ApplyRules(*op, GetRules(), std::move(*expression), changes_made, true);
+	*expression = ApplyRules(*op, GetRules(), std::move(*expression), changes_made, true);
 }
 
 ClientContext &Rule::GetContext() const {

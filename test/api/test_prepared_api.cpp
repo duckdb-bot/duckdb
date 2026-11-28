@@ -780,8 +780,10 @@ TEST_CASE("Prepared CREATE VIEW stores the values of its parameters", "[api]") {
 
 		// a positional parameter needs a value
 		REQUIRE_FAIL(con.Query("CREATE VIEW u AS SELECT ? AS c"));
-		// one in the values of a PIVOT is not replaced, and still fails
-		REQUIRE_FAIL(con.Query("CREATE VIEW pv AS FROM (SELECT 1 AS a, 'x' AS b) PIVOT (sum(a) FOR b IN (?))", "x"));
+		// a value in the values of a PIVOT is stored as well
+		REQUIRE_NO_FAIL(con.Query("CREATE VIEW pv AS FROM (SELECT 1 AS a, 'x' AS b) PIVOT (sum(a) FOR b IN (?))", "x"));
+		result = con.Query("SELECT x FROM pv");
+		REQUIRE(CHECK_COLUMN(result, 0, {1}));
 	}
 	DuckDB db(path);
 	Connection con(db);
@@ -790,6 +792,8 @@ TEST_CASE("Prepared CREATE VIEW stores the values of its parameters", "[api]") {
 	REQUIRE(CHECK_COLUMN(result, 1, {"y"}));
 	result = con.Query("SELECT * FROM d");
 	REQUIRE(CHECK_COLUMN(result, 0, {3}));
+	result = con.Query("SELECT x FROM pv");
+	REQUIRE(CHECK_COLUMN(result, 0, {1}));
 }
 
 TEST_CASE("Prepared CREATE VIEW checks the types of its parameter values against the storage version", "[api]") {

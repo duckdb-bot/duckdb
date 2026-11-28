@@ -379,10 +379,21 @@ shared_ptr<LocalTableStorage> LocalTableManager::GetOrCreateStorage(Context &con
 			throw TransactionException("The table was altered concurrently by a connection sharing the transaction");
 		}
 		auto new_storage = make_shared_ptr<LocalTableStorage>(context, table);
+		// a connection sharing the transaction dropped the table before this storage existed
+		new_storage->is_dropped = dropped_tables.find(table) != dropped_tables.end();
 		table_storage.insert(make_pair(reference<const DataTable>(table), new_storage));
 		return new_storage;
 	}
 	return entry->second;
+}
+
+void LocalTableManager::DropTable(DataTable &table) {
+	lock_guard<mutex> l(table_storage_lock);
+	dropped_tables.insert(table);
+	auto entry = table_storage.find(table);
+	if (entry != table_storage.end()) {
+		entry->second->is_dropped = true;
+	}
 }
 
 bool LocalTableManager::IsEmpty() const {
@@ -846,11 +857,7 @@ vector<PartitionStatistics> LocalStorage::GetPartitionStats(DataTable &table, Tr
 }
 
 void LocalStorage::DropTable(DataTable &table) {
-	auto storage = table_manager.GetStorage(table);
-	if (!storage) {
-		return;
-	}
-	storage->is_dropped = true;
+	table_manager.DropTable(table);
 }
 
 void LocalStorage::MoveStorage(ClientContext &context, DataTable &old_dt, DataTable &new_dt) {

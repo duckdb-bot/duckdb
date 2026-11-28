@@ -459,9 +459,21 @@ bool CatalogSet::DropEntry(CatalogTransaction transaction, const Identifier &nam
 	if (!DropDependencies(transaction, name, cascade, allow_drop_internal)) {
 		return false;
 	}
-	lock_guard<mutex> write_lock(catalog.GetWriteLock());
-	lock_guard<mutex> read_lock(catalog_lock);
-	return DropEntryInternal(transaction, name, allow_drop_internal);
+	optional_ptr<CatalogEntry> entry;
+	{
+		lock_guard<mutex> write_lock(catalog.GetWriteLock());
+		lock_guard<mutex> read_lock(catalog_lock);
+		entry = GetEntryInternal(transaction, name);
+		if (!DropEntryInternal(transaction, name, allow_drop_internal)) {
+			return false;
+		}
+	}
+	if (transaction.transaction && entry->type == CatalogType::TABLE_ENTRY) {
+		// the rows that the transaction appended to the dropped table are not flushed at commit
+		auto &local_storage = LocalStorage::Get(transaction.transaction->Cast<DuckTransaction>());
+		local_storage.DropTable(entry->Cast<TableCatalogEntry>().GetStorage());
+	}
+	return true;
 }
 
 bool CatalogSet::DropEntry(ClientContext &context, const Identifier &name, bool cascade, bool allow_drop_internal) {

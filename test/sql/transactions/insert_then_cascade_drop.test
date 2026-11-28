@@ -1,0 +1,125 @@
+# name: test/sql/transactions/insert_then_cascade_drop.test
+# description: A transaction that inserts into a table and then drops it through a cascade commits
+# group: [transactions]
+
+statement ok
+CREATE SCHEMA s
+
+statement ok
+CREATE TABLE s.r(a BIGINT)
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO s.r VALUES (7)
+
+statement ok
+DROP SCHEMA s CASCADE
+
+statement ok
+COMMIT
+
+query I
+SELECT count(*) FROM duckdb_schemas() WHERE schema_name = 's'
+----
+0
+
+# the sequence of a default
+statement ok
+CREATE SEQUENCE seq
+
+statement ok
+CREATE TABLE d(a BIGINT DEFAULT nextval('seq'), b INTEGER)
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO d(b) VALUES (1)
+
+statement ok
+DROP SEQUENCE seq CASCADE
+
+statement ok
+COMMIT
+
+query I
+SELECT count(*) FROM duckdb_tables() WHERE table_name = 'd'
+----
+0
+
+# the type of a column
+statement ok
+CREATE TYPE mood AS ENUM ('ok', 'bad')
+
+statement ok
+CREATE TABLE e(m mood)
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO e VALUES ('ok')
+
+statement ok
+DROP TYPE mood CASCADE
+
+statement ok
+COMMIT
+
+query I
+SELECT count(*) FROM duckdb_tables() WHERE table_name = 'e'
+----
+0
+
+# a schema and a table with rows that the transaction created itself
+statement ok
+BEGIN
+
+statement ok
+CREATE SCHEMA s2
+
+statement ok
+CREATE TABLE s2.r AS SELECT 7 AS a
+
+statement ok
+DROP SCHEMA s2 CASCADE
+
+statement ok
+COMMIT
+
+query I
+SELECT count(*) FROM duckdb_schemas() WHERE schema_name = 's2'
+----
+0
+
+# the names are free again
+statement ok
+CREATE SCHEMA s
+
+statement ok
+CREATE TABLE s.r AS SELECT 8 AS a
+
+query I
+SELECT a FROM s.r
+----
+8
+
+# a rollback keeps the table and its committed rows
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO s.r VALUES (9)
+
+statement ok
+DROP SCHEMA s CASCADE
+
+statement ok
+ROLLBACK
+
+query I
+SELECT a FROM s.r
+----
+8

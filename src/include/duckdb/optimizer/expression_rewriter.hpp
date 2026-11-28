@@ -31,6 +31,11 @@ public:
 	//! Adds a custom rule; a rewriter with custom rules skips the default rule set
 	void AddRule(unique_ptr<Rule> rule);
 
+	//! Whether the expression the rules are applied to is inside TRY or HAS_ERROR
+	bool InTry() const {
+		return in_try;
+	}
+
 	// Generates either a constant_or_null(child) expression
 	static unique_ptr<Expression> ConstantOrNull(ClientContext &context, unique_ptr<Expression> child, Value value);
 	static unique_ptr<Expression> ConstantOrNull(ClientContext &context, vector<unique_ptr<Expression>> children,
@@ -39,16 +44,22 @@ public:
 private:
 	//! Returns the custom rules if any were added, otherwise the default rules shared by the client context
 	const vector<unique_ptr<Rule>> &GetRules();
-	//! Creates the default rules, which only use the rewriter to reach its client context
+	//! Returns the rules applied inside TRY or HAS_ERROR, which belong to this rewriter as they read its state
+	const vector<unique_ptr<Rule>> &GetTryRules();
+	//! Creates the default rules, which use the rewriter to reach its client context and its state
 	static vector<unique_ptr<Rule>> CreateDefaultRules(ExpressionRewriter &rewriter);
 
 	//! Apply a set of rules to a specific expression
-	static unique_ptr<Expression> ApplyRules(LogicalOperator &op, const vector<unique_ptr<Rule>> &rules,
-	                                         unique_ptr<Expression> expr, bool &changes_made, bool is_root = false);
+	unique_ptr<Expression> ApplyRules(LogicalOperator &op, const vector<unique_ptr<Rule>> &rules,
+	                                  unique_ptr<Expression> expr, bool &changes_made, bool is_root = false);
 
 	//! The set of rules as known by the Expression Rewriter
 	vector<unique_ptr<Rule>> rules;
+	//! The default rules of this rewriter, created for its first expression inside TRY or HAS_ERROR
+	vector<unique_ptr<Rule>> try_rules;
 	optional_ptr<LogicalOperator> op;
+	//! Whether the expression the rules are applied to is inside TRY or HAS_ERROR
+	bool in_try = false;
 };
 
 } // namespace duckdb

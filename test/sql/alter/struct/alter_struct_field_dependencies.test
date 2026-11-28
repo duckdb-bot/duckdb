@@ -53,7 +53,7 @@ SELECT * FROM m ORDER BY i;
 1	{'y': 1, 'c': 7}
 2	{'y': 1, 'c': 7}
 
-# the default of the column still calls the macro after the field is gone
+# FIXME: the default still calls the macro after the field is gone (duckdblabs/bot-issue-tracker#956)
 statement ok
 ALTER TABLE m DROP COLUMN s.c;
 

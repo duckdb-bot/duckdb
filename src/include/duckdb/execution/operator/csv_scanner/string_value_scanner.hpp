@@ -140,6 +140,15 @@ public:
 		return false;
 	}
 
+	bool HasErrorType(CSVErrorType type, idx_t col_idx) const {
+		for (auto &error : current_errors) {
+			if (type == error.type && col_idx == error.col_idx) {
+				return true;
+			}
+		}
+		return false;
+	}
+
 	bool HandleErrors(StringValueResult &result);
 
 	bool HasError() const {

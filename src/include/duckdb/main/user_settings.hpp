@@ -32,8 +32,8 @@ public:
 	void ClearSetting(idx_t setting_index);
 	bool IsSet(idx_t setting_index) const;
 	bool TryGetSetting(idx_t setting_index, Value &result_value) const;
-	//! The number of setting indexes that the map has room for
-	idx_t SettingCount() const;
+	//! Every setting that the map has a value for has an index below this bound
+	idx_t SettingIndexBound() const;
 
 private:
 	vector<GenericSetting> settings;
@@ -41,10 +41,16 @@ private:
 
 struct GlobalUserSettings;
 
+//! The value that a client reads for one setting
+struct SettingsSnapshotEntry {
+	idx_t setting_index;
+	Value value;
+};
+
 //! The values of the settings that a client reads, without those that are at their default
 struct SettingsSnapshot {
 	//! Sorted by setting index
-	vector<pair<idx_t, Value>> values;
+	vector<SettingsSnapshotEntry> entries;
 
 	bool Equals(const SettingsSnapshot &other) const;
 };

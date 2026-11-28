@@ -121,6 +121,35 @@ DECIMAL(38,0)
 statement ok
 RESET max_decimal_width;
 
+# a NULL value for the session hides the value of the database
+statement ok
+SET GLOBAL max_decimal_width = 38;
+
+statement ok
+PREPARE decimal_type AS SELECT typeof(1::DECIMAL(30,0) * 1::DECIMAL(30,0));
+
+statement ok
+SET SESSION max_decimal_width = NULL;
+
+query I
+EXECUTE decimal_type;
+----
+DECIMAL(60,0)
+
+statement ok
+PREPARE decimal_type AS SELECT typeof(1::DECIMAL(30,0) * 1::DECIMAL(30,0));
+
+statement ok
+RESET SESSION max_decimal_width;
+
+query I
+EXECUTE decimal_type;
+----
+DECIMAL(38,0)
+
+statement ok
+RESET GLOBAL max_decimal_width;
+
 # settings of the database, the order of NULLs, the order and the collation
 statement ok
 PREPARE null_order AS SELECT x FROM (VALUES (1), (NULL)) t(x) ORDER BY x;

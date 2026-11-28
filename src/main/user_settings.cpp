@@ -129,17 +129,17 @@ bool UserSettingsMap::TryGetSetting(idx_t setting_index, Value &result_value) co
 	return true;
 }
 
-idx_t UserSettingsMap::SettingCount() const {
+idx_t UserSettingsMap::SettingIndexBound() const {
 	return settings.size();
 }
 
 bool SettingsSnapshot::Equals(const SettingsSnapshot &other) const {
-	if (values.size() != other.values.size()) {
+	if (entries.size() != other.entries.size()) {
 		return false;
 	}
-	for (idx_t i = 0; i < values.size(); i++) {
-		if (values[i].first != other.values[i].first ||
-		    !SameUserSettingValue(values[i].second, other.values[i].second)) {
+	for (idx_t i = 0; i < entries.size(); i++) {
+		if (entries[i].setting_index != other.entries[i].setting_index ||
+		    !SameUserSettingValue(entries[i].value, other.entries[i].value)) {
 			return false;
 		}
 	}
@@ -387,8 +387,8 @@ const shared_ptr<const SettingsSnapshot> &LocalUserSettings::GetSnapshot(const D
 	UserSettingsMap global_map;
 	const auto global_version = global_settings.CopySettings(global_map);
 	auto current = make_shared_ptr<SettingsSnapshot>();
-	const auto setting_count = MaxValue(settings_map.SettingCount(), global_map.SettingCount());
-	for (idx_t setting_index = 0; setting_index < setting_count; setting_index++) {
+	const auto index_bound = MaxValue(settings_map.SettingIndexBound(), global_map.SettingIndexBound());
+	for (idx_t setting_index = 0; setting_index < index_bound; setting_index++) {
 		// the client reads its own value, then the value of the database
 		Value value;
 		if (!settings_map.TryGetSetting(setting_index, value) && !global_map.TryGetSetting(setting_index, value)) {
@@ -399,7 +399,7 @@ const shared_ptr<const SettingsSnapshot> &LocalUserSettings::GetSnapshot(const D
 			// set to the default, which is the value of a setting that is not set
 			continue;
 		}
-		current->values.emplace_back(setting_index, std::move(value));
+		current->entries.push_back(SettingsSnapshotEntry {setting_index, std::move(value)});
 	}
 	if (!snapshot || !snapshot->Equals(*current)) {
 		snapshot = std::move(current);

@@ -38,8 +38,12 @@ statement ok
 SET threads = 1;
 
 # The new thread of the loop binds the index with its first statement. A thread reads the deadline of its query at
-# every 256th interrupt check, so the replay of the 300 buffered chunks reads it.
+# every 256th interrupt check, and without the optimizer nothing else reads it before the bind, so the replay of the
+# 300 buffered chunks reads it at the 256th chunk.
 concurrentloop i 0 1
+
+statement ok
+SET debug_disable_optimizer = true;
 
 statement ok
 SET max_execution_time = 1;
@@ -55,8 +59,14 @@ endloop
 statement ok
 INSERT INTO t VALUES (-1, [0, -1]);
 
+# the keys of the first and of the last buffered chunk are in the index
 statement error
 INSERT INTO t VALUES (-2, [5001, 5000]);
+----
+Duplicate key
+
+statement error
+INSERT INTO t VALUES (-2, [615400, 615399]);
 ----
 Duplicate key
 

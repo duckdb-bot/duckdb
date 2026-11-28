@@ -1,0 +1,15 @@
+# name: benchmark/csv/try_cast_column.benchmark
+# description: Run TRY_CAST over a VARCHAR column of a CSV file
+# group: [csv]
+
+name CSV Read Benchmark with TRY_CAST of a VARCHAR column
+group csv
+
+load
+COPY (SELECT (i % 1000)::VARCHAR AS x FROM range(10000000) tbl(i)) TO '${BENCHMARK_DIR}/try_cast_column.csv' (FORMAT CSV, HEADER 0);
+
+run
+SELECT sum(v) FROM (SELECT TRY_CAST(x AS INTEGER) AS v FROM read_csv('${BENCHMARK_DIR}/try_cast_column.csv', header = 0, columns = {'x': 'VARCHAR'}))
+
+result I
+4995000000

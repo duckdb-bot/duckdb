@@ -1,0 +1,136 @@
+# name: test/issues/general/test_26066.test
+# description: Rows of an INSERT with ON CONFLICT whose conflict key holds a NULL never conflict on that key
+# group: [general]
+
+statement ok
+CREATE TABLE t (id INTEGER, val INTEGER UNIQUE);
+
+statement ok
+INSERT INTO t (id, val) VALUES (1, NULL), (2, NULL) ON CONFLICT (val) DO NOTHING;
+
+query II
+SELECT * FROM t ORDER BY id;
+----
+1	NULL
+2	NULL
+
+statement ok
+INSERT INTO t VALUES (3, NULL), (4, 5), (5, 5), (6, NULL) ON CONFLICT (val) DO UPDATE SET id = excluded.id;
+
+query II
+SELECT count(*), count(val) FROM t;
+----
+5	1
+
+statement ok
+INSERT OR IGNORE INTO t VALUES (7, NULL), (8, NULL), (9, 5);
+
+statement ok
+INSERT OR REPLACE INTO t VALUES (10, NULL), (11, NULL);
+
+query II
+SELECT count(*), count(val) FROM t;
+----
+9	1
+
+# the source runs once
+statement ok
+CREATE SEQUENCE seq START 12;
+
+statement ok
+INSERT INTO t SELECT nextval('seq'), NULL FROM range(2) ON CONFLICT DO NOTHING;
+
+query I
+SELECT currval('seq');
+----
+13
+
+# with keys with and without a NULL, a volatile source still runs once
+statement ok
+CREATE TABLE m (id INTEGER, val INTEGER UNIQUE);
+
+statement ok
+CREATE SEQUENCE seq2;
+
+statement ok
+INSERT INTO m SELECT nextval('seq2'), CASE WHEN range % 2 = 0 THEN NULL ELSE range // 4 END FROM range(8)
+ON CONFLICT DO NOTHING;
+
+query IIII
+SELECT count(*), count(val), count(DISTINCT id), bool_and(id BETWEEN 1 AND 8) FROM m;
+----
+6	2	6	true
+
+query I
+SELECT currval('seq2');
+----
+8
+
+query II rowsort
+INSERT INTO t BY NAME SELECT NULL AS val, 15 AS id UNION ALL SELECT NULL, 16 ON CONFLICT DO NOTHING RETURNING *;
+----
+15	NULL
+16	NULL
+
+statement ok
+INSERT INTO t (id) VALUES (17), (18) ON CONFLICT DO NOTHING;
+
+query II
+SELECT count(*), count(val) FROM t;
+----
+15	1
+
+# a composite key with a NULL part, next to duplicates without NULLs, and two unique constraints
+statement ok
+CREATE TABLE c (a INTEGER, b INTEGER, d INTEGER UNIQUE, UNIQUE (a, b));
+
+statement ok
+INSERT INTO c VALUES (1, NULL, NULL), (1, NULL, NULL), (1, 2, 3), (1, 2, 3) ON CONFLICT DO NOTHING;
+
+query III
+SELECT * FROM c ORDER BY ALL;
+----
+1	2	3
+1	NULL	NULL
+1	NULL	NULL
+
+# a NULL in the first key column, and rows that conflict only on the other constraint
+statement ok
+CREATE TABLE c2 (a INTEGER, b INTEGER, d INTEGER UNIQUE, UNIQUE (a, b));
+
+statement ok
+INSERT INTO c2 VALUES (NULL, 1, 7), (NULL, 1, 7), (NULL, 2, NULL), (NULL, 2, NULL), (3, 4, 9), (3, 4, 10)
+ON CONFLICT DO NOTHING;
+
+query III
+SELECT a, b, count(*) FROM c2 GROUP BY ALL ORDER BY ALL;
+----
+3	4	1
+NULL	1	1
+NULL	2	2
+
+# a user macro named uuid does not change which rows are kept
+statement ok
+CREATE MACRO uuid() AS 42;
+
+statement ok
+CREATE TABLE u (id INTEGER, val INTEGER UNIQUE);
+
+statement ok
+INSERT INTO u VALUES (1, NULL), (2, NULL), (3, 4), (4, 4) ON CONFLICT DO NOTHING;
+
+query II
+SELECT count(*), count(val) FROM u;
+----
+3	1
+
+statement ok
+CREATE TEMP MACRO uuid() AS 43;
+
+statement ok
+INSERT INTO u VALUES (5, NULL), (6, NULL) ON CONFLICT DO NOTHING;
+
+query II
+SELECT count(*), count(val) FROM u;
+----
+5	1

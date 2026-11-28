@@ -360,6 +360,31 @@ static bool IsNotNullColumn(TableCatalogEntry &table, Identifier &column_name) {
 	return false;
 }
 
+//! Adds the columns that an expression of a DO UPDATE reads through EXCLUDED
+static void AddExcludedColumns(const ParsedExpression &expr, identifier_set_t &excluded_columns) {
+	switch (expr.GetExpressionClass()) {
+	case ExpressionClass::COLUMN_REF: {
+		auto &names = expr.Cast<ColumnRefExpression>().ColumnNames();
+		if (names.size() > 1 && names[0] == "excluded") {
+			excluded_columns.insert(names[1]);
+		}
+		break;
+	}
+	case ExpressionClass::FUNCTION: {
+		// a dot call is parsed as a function that is qualified with its receiver
+		auto &function_name = expr.Cast<FunctionExpression>().GetQualifiedName();
+		if (function_name.Catalog() == "excluded") {
+			excluded_columns.insert(function_name.Schema());
+		}
+		break;
+	}
+	default:
+		break;
+	}
+	ParsedExpressionIterator::EnumerateChildren(
+	    expr, [&](const ParsedExpression &child) { AddExcludedColumns(child, excluded_columns); });
+}
+
 unique_ptr<MergeIntoStatement> Binder::GenerateMergeInto(InsertQueryNode &node, TableCatalogEntry &table) {
 	D_ASSERT(node.on_conflict_info);
 
@@ -523,6 +548,57 @@ unique_ptr<MergeIntoStatement> Binder::GenerateMergeInto(InsertQueryNode &node, 
 		select_node->from_table = make_uniq<BoundRefWrapper>(std::move(bound_select), std::move(select_binder));
 		select_stmt->node = std::move(select_node);
 		source = make_uniq<SubqueryRef>(std::move(select_stmt), "excluded");
+	} else if (node.select_statement && node.column_order == InsertColumnOrder::INSERT_BY_NAME) {
+		// bind the SELECT once, as reading its input can consume it, and check its names like a plain INSERT
+		auto select_binder = Binder::CreateBinder(context, this);
+		SubqueryRef select_ref(std::move(node.select_statement), "excluded");
+		auto bound_select = select_binder->Bind(select_ref);
+		vector<LogicalIndex> select_column_map;
+		vector<LogicalType> expected_types;
+		physical_index_vector_t<idx_t> column_index_map;
+		BindInsertColumnList(table, bound_select.names, node.default_values, select_column_map, expected_types,
+		                     column_index_map);
+		// the source needs the omitted columns that the conflict handling reads, the insert fills the others
+		identifier_set_t read_columns;
+		for (auto &distinct_on_columns : all_distinct_on_columns) {
+			read_columns.insert(distinct_on_columns.begin(), distinct_on_columns.end());
+		}
+		if (on_conflict_info.set_info) {
+			for (auto &expr : on_conflict_info.set_info->expressions) {
+				AddExcludedColumns(*expr, read_columns);
+			}
+			if (on_conflict_info.set_info->condition) {
+				AddExcludedColumns(*on_conflict_info.set_info->condition, read_columns);
+			}
+		}
+		ColumnList default_columns;
+		for (auto &column : columns.Physical()) {
+			bool omitted = column_index_map[column.Physical()] == DConstants::INVALID_INDEX;
+			if (omitted && read_columns.count(column.Name())) {
+				default_columns.AddColumn(column.Copy());
+			}
+		}
+		if (!default_columns.empty()) {
+			// project their defaults next to the columns of the SELECT, bound as a plain INSERT binds them
+			auto projection_index = GenerateTableIndex();
+			auto projection = LogicalProjection::CreateIdentity(projection_index, std::move(bound_select.plan));
+			// the identity projection has one column for each name of the SELECT
+			D_ASSERT(projection->expressions.size() == bound_select.names.size());
+			BindDefaultValues(default_columns, projection->expressions,
+			                  table.ParentCatalog().GetName().GetIdentifierName(),
+			                  table.ParentSchema().GetSchemaPath());
+			for (auto &column : default_columns.Physical()) {
+				auto &bound_default = projection->expressions[bound_select.names.size()];
+				bound_select.names.push_back(column.Name());
+				bound_select.types.push_back(bound_default->GetReturnType());
+			}
+			bound_select.plan = std::move(projection);
+			// a new bind context names the projection as the source
+			select_binder = Binder::CreateBinder(context, this);
+			select_binder->bind_context.AddGenericBinding(projection_index, "excluded", bound_select.names,
+			                                              bound_select.types);
+		}
+		source = make_uniq<BoundRefWrapper>(std::move(bound_select), std::move(select_binder));
 	} else if (node.select_statement) {
 		source = make_uniq<SubqueryRef>(std::move(node.select_statement), "excluded");
 	} else {

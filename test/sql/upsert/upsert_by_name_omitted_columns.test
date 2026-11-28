@@ -1,0 +1,380 @@
+# name: test/sql/upsert/upsert_by_name_omitted_columns.test
+# description: INSERT BY NAME with conflict handling fills the columns the SELECT omits, as without it
+# group: [upsert]
+
+statement ok
+CREATE TABLE d1 (k INTEGER PRIMARY KEY, a INTEGER, b INTEGER);
+
+statement ok
+INSERT INTO d1 VALUES (1, 1, 1);
+
+statement ok
+INSERT INTO d1 BY NAME (SELECT 1 AS k, 2 AS a) ON CONFLICT DO UPDATE SET b = EXCLUDED.b;
+
+query III
+SELECT * FROM d1;
+----
+1	1	NULL
+
+statement ok
+INSERT INTO d1 BY NAME (SELECT 3 AS a, 2 AS k) ON CONFLICT DO UPDATE SET a = EXCLUDED.a;
+
+query III
+SELECT * FROM d1 ORDER BY k;
+----
+1	1	NULL
+2	3	NULL
+
+statement ok
+CREATE SEQUENCE sq;
+
+statement ok
+CREATE TABLE t2 (k INTEGER PRIMARY KEY DEFAULT nextval('sq'), a INTEGER, b INTEGER DEFAULT 9);
+
+statement ok
+INSERT INTO t2 BY NAME (SELECT 5 AS a);
+
+statement ok
+INSERT INTO t2 BY NAME (SELECT 6 AS a) ON CONFLICT DO NOTHING;
+
+statement ok
+INSERT INTO t2 BY NAME (SELECT 6 AS a) ON CONFLICT (k) DO NOTHING;
+
+statement ok
+INSERT OR IGNORE INTO t2 BY NAME (SELECT 7 AS a);
+
+query III
+SELECT * FROM t2 ORDER BY k;
+----
+1	5	9
+2	6	9
+3	6	9
+4	7	9
+
+# a replace changes the columns the SELECT names, and keeps the others
+statement ok
+UPDATE t2 SET b = 10 WHERE k = 1;
+
+statement ok
+INSERT OR REPLACE INTO t2 BY NAME (SELECT 1 AS k, 50 AS a);
+
+query III
+SELECT * FROM t2 WHERE k = 1;
+----
+1	50	10
+
+# a name twice, or a generated column, is an error as in a column list
+statement error
+INSERT INTO d1 BY NAME (SELECT 1 AS k, 2 AS a, 3 AS a) ON CONFLICT DO NOTHING;
+----
+Duplicate column name
+
+statement ok
+CREATE TABLE g (k INTEGER PRIMARY KEY, a INTEGER, c INTEGER AS (a + 1));
+
+statement error
+INSERT INTO g BY NAME (SELECT 1 AS k, 2 AS a, 5 AS c) ON CONFLICT DO NOTHING;
+----
+generated column
+
+# a name that is not a column of the table is still an error
+statement error
+INSERT INTO d1 BY NAME (SELECT 1 AS k, 2 AS zz) ON CONFLICT DO NOTHING;
+----
+does not have a column with name "zz"
+
+# also in a prepared statement, where the omitted column gets its default
+statement ok
+CREATE TABLE d3 (k INTEGER PRIMARY KEY, a INTEGER, b INTEGER DEFAULT 7);
+
+statement ok
+PREPARE upsert AS INSERT INTO d3 BY NAME (SELECT $1::INTEGER AS k, $2::INTEGER AS a) ON CONFLICT DO UPDATE SET a = EXCLUDED.a, b = EXCLUDED.b;
+
+statement ok
+EXECUTE upsert(1, 2);
+
+statement ok
+EXECUTE upsert(1, 3);
+
+query III
+SELECT * FROM d3;
+----
+1	3	7
+
+# the default of an omitted column is bound in the schema of its table, as without conflict handling
+statement ok
+CREATE SCHEMA s;
+
+statement ok
+CREATE MACRO s.only_in_s() AS 7;
+
+statement ok
+CREATE MACRO s.in_both() AS 8;
+
+statement ok
+CREATE MACRO main.in_both() AS 99;
+
+statement ok
+CREATE SEQUENCE s.ids START 100;
+
+statement ok
+CREATE SEQUENCE main.ids START 500;
+
+statement ok
+CREATE TABLE s.t (k INTEGER PRIMARY KEY, a INTEGER, m INTEGER DEFAULT only_in_s(), b INTEGER DEFAULT in_both(), id INTEGER DEFAULT nextval('ids'));
+
+statement ok
+INSERT INTO s.t BY NAME (SELECT 1 AS k) ON CONFLICT DO NOTHING;
+
+statement ok
+INSERT INTO s.t BY NAME (SELECT 2 AS k) ON CONFLICT (k) DO UPDATE SET a = EXCLUDED.k;
+
+statement ok
+INSERT OR IGNORE INTO s.t BY NAME (SELECT 3 AS k);
+
+statement ok
+INSERT OR REPLACE INTO s.t BY NAME (SELECT 4 AS k);
+
+query IIIII
+SELECT * FROM s.t ORDER BY k;
+----
+1	NULL	7	8	100
+2	NULL	7	8	101
+3	NULL	7	8	102
+4	NULL	7	8	103
+
+# a row that conflicts takes no value from the sequence when nothing reads the omitted column
+statement ok
+INSERT INTO s.t BY NAME (SELECT 1 AS k) ON CONFLICT DO NOTHING;
+
+statement ok
+INSERT INTO s.t BY NAME (SELECT 2 AS k) ON CONFLICT DO UPDATE SET a = EXCLUDED.k + 20;
+
+statement ok
+INSERT INTO s.t BY NAME (SELECT 2 AS k) ON CONFLICT DO UPDATE SET a = 0 WHERE EXCLUDED.k > 2;
+
+statement ok
+INSERT OR IGNORE INTO s.t BY NAME (SELECT 3 AS k);
+
+statement ok
+INSERT OR REPLACE INTO s.t BY NAME (SELECT 4 AS k, 40 AS a);
+
+query I
+SELECT last_value FROM duckdb_sequences() WHERE schema_name = 's' AND sequence_name = 'ids';
+----
+103
+
+# DO UPDATE SET to DEFAULT takes one value
+statement ok
+INSERT INTO s.t BY NAME (SELECT 3 AS k) ON CONFLICT DO UPDATE SET id = DEFAULT;
+
+# EXCLUDED reads the defaults of the omitted columns
+statement ok
+INSERT INTO s.t BY NAME (SELECT 1 AS k) ON CONFLICT DO UPDATE SET a = EXCLUDED.m + EXCLUDED.b, id = EXCLUDED.id;
+
+query IIIII
+SELECT * FROM s.t ORDER BY k;
+----
+1	15	7	8	105
+2	22	7	8	101
+3	NULL	7	8	104
+4	40	7	8	103
+
+# an omitted key takes its default from the schema of its table too
+statement ok
+CREATE TABLE s.u (k INTEGER PRIMARY KEY DEFAULT in_both(), a INTEGER);
+
+statement ok
+INSERT INTO s.u BY NAME (SELECT 1 AS a) ON CONFLICT DO NOTHING;
+
+statement ok
+INSERT INTO s.u BY NAME (SELECT 2 AS a) ON CONFLICT DO NOTHING;
+
+statement ok
+INSERT OR IGNORE INTO s.u BY NAME (SELECT 3 AS a);
+
+query II
+SELECT * FROM s.u;
+----
+8	1
+
+statement ok
+INSERT INTO s.u BY NAME (SELECT 4 AS a) ON CONFLICT DO UPDATE SET a = EXCLUDED.a + EXCLUDED.k;
+
+query II
+SELECT * FROM s.u;
+----
+8	12
+
+statement ok
+INSERT OR REPLACE INTO s.u BY NAME (SELECT 5 AS a);
+
+query II
+SELECT * FROM s.u;
+----
+8	5
+
+statement ok
+CREATE SEQUENCE s.keys START 200;
+
+statement ok
+CREATE SEQUENCE main.keys START 600;
+
+statement ok
+CREATE TABLE s.q (k INTEGER PRIMARY KEY DEFAULT nextval('keys'), a INTEGER);
+
+statement ok
+INSERT INTO s.q BY NAME (SELECT 1 AS a) ON CONFLICT DO NOTHING;
+
+statement ok
+INSERT OR REPLACE INTO s.q BY NAME (SELECT 2 AS a);
+
+query II
+SELECT * FROM s.q ORDER BY k;
+----
+200	1
+201	2
+
+# also in a prepared statement
+statement ok
+PREPARE upsert_s AS INSERT INTO s.t BY NAME (SELECT $1::INTEGER AS k) ON CONFLICT DO UPDATE SET a = EXCLUDED.b;
+
+statement ok
+EXECUTE upsert_s(5);
+
+statement ok
+EXECUTE upsert_s(5);
+
+query IIII
+SELECT k, a, m, b FROM s.t WHERE k = 5;
+----
+5	8	7	8
+
+# EXCLUDED of an omitted column is the value a plain INSERT stores, in the type of the column
+statement ok
+CREATE TABLE w (k INTEGER PRIMARY KEY, a INTEGER, v INTEGER DEFAULT 1.5);
+
+statement ok
+INSERT INTO w BY NAME (SELECT 1 AS k) ON CONFLICT DO NOTHING;
+
+statement ok
+INSERT INTO w BY NAME (SELECT 1 AS k) ON CONFLICT DO UPDATE SET a = EXCLUDED.v * 2;
+
+query III
+SELECT * FROM w;
+----
+1	4	2
+
+# a field of an omitted struct column without a qualifier is the field of the stored row
+statement ok
+CREATE TABLE st (k INTEGER PRIMARY KEY, a INTEGER, v STRUCT(x INTEGER) DEFAULT {'x': 5});
+
+statement ok
+INSERT INTO st VALUES (1, 0, {'x': 7});
+
+statement ok
+INSERT INTO st BY NAME (SELECT 1 AS k) ON CONFLICT DO UPDATE SET a = v.x;
+
+query I
+SELECT a FROM st;
+----
+7
+
+statement ok
+INSERT INTO st BY NAME (SELECT 1 AS k) ON CONFLICT DO UPDATE SET a = EXCLUDED.v.x;
+
+query I
+SELECT a FROM st;
+----
+5
+
+# an omitted part of a composite key, next to a generated column
+statement ok
+CREATE TABLE ck (g INTEGER AS (a + b), a INTEGER DEFAULT 1, b INTEGER DEFAULT 2, c INTEGER, PRIMARY KEY (a, b));
+
+statement ok
+INSERT INTO ck BY NAME (SELECT 10 AS c) ON CONFLICT DO NOTHING;
+
+statement ok
+INSERT INTO ck BY NAME (SELECT 11 AS c, 5 AS a) ON CONFLICT (a, b) DO UPDATE SET c = EXCLUDED.c;
+
+statement ok
+INSERT OR REPLACE INTO ck BY NAME (SELECT 12 AS c, 1 AS a);
+
+query IIII
+SELECT a, b, c, g FROM ck ORDER BY a;
+----
+1	2	12	3
+5	2	11	7
+
+# the SELECT can be any query, and RETURNING shows the stored rows
+statement ok
+INSERT INTO d3 BY NAME (SELECT k FROM (SELECT 2 AS k, 5 AS o UNION ALL SELECT 3, 4) ORDER BY o LIMIT 2) ON CONFLICT DO UPDATE SET b = EXCLUDED.b + 1;
+
+query III rowsort
+INSERT INTO d3 BY NAME (SELECT k FROM (SELECT 3 AS k, 5 AS o UNION ALL SELECT 4, 4) ORDER BY o LIMIT 2) ON CONFLICT DO UPDATE SET b = EXCLUDED.b + 1 RETURNING k, a, b;
+----
+3	NULL	8
+4	NULL	7
+
+# the WHERE of DO UPDATE and a dot call read the omitted column too
+statement ok
+CREATE TABLE m (k INTEGER PRIMARY KEY, a INTEGER, v INTEGER DEFAULT -5);
+
+statement ok
+INSERT INTO m VALUES (1, 0, 0);
+
+statement ok
+INSERT INTO m BY NAME (SELECT 1 AS k) ON CONFLICT DO UPDATE SET a = 1 WHERE EXCLUDED.v = 0;
+
+statement ok
+INSERT INTO m BY NAME (SELECT 1 AS k) ON CONFLICT DO UPDATE SET a = a + 10 WHERE EXCLUDED.v = -5;
+
+statement ok
+INSERT INTO m BY NAME (SELECT 1 AS k) ON CONFLICT DO UPDATE SET a = a + excluded.v.abs() WHERE excluded.v.abs() = 5;
+
+query III
+SELECT * FROM m;
+----
+1	15	0
+
+# omitted columns of several types each get their own default
+statement ok
+CREATE TABLE h (k INTEGER PRIMARY KEY, n INTEGER, v VARCHAR DEFAULT 'new', s STRUCT(x INTEGER) DEFAULT {'x': 5});
+
+statement ok
+INSERT INTO h VALUES (1, 9, 'old', {'x': 8});
+
+statement ok
+INSERT INTO h BY NAME (SELECT 1 AS k) ON CONFLICT DO UPDATE SET n = EXCLUDED.n, v = EXCLUDED.v, s = EXCLUDED.s;
+
+query ITI
+SELECT n, v, s.x FROM h;
+----
+NULL	new	5
+
+# omitted unique keys are NULL, which never conflicts
+statement ok
+CREATE TABLE nu (u1 INTEGER UNIQUE, u2 INTEGER UNIQUE, a INTEGER);
+
+statement ok
+INSERT INTO nu BY NAME (SELECT 1 AS a UNION ALL SELECT 2) ON CONFLICT DO NOTHING;
+
+statement ok
+INSERT OR IGNORE INTO nu BY NAME (SELECT 3 AS a);
+
+query III
+SELECT * FROM nu ORDER BY a;
+----
+NULL	NULL	1
+NULL	NULL	2
+NULL	NULL	3
+
+# a name twice stays an error when the table has a column for the name a subquery gives the second one
+statement ok
+CREATE TABLE twice (k INTEGER PRIMARY KEY, a INTEGER, a_1 INTEGER);
+
+statement error
+INSERT INTO twice BY NAME (SELECT 1 AS k, 2 AS a, 3 AS a) ON CONFLICT DO NOTHING;
+----
+Duplicate column name

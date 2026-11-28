@@ -1,0 +1,43 @@
+# name: test/sql/binder/missing_table_column_candidates.test
+# description: The error for a qualified column that its table does not have lists the candidates after one colon
+# group: [binder]
+
+statement ok
+CREATE TABLE bar(b INTEGER);
+
+# the whole message of a qualified reference, with the candidates after one colon
+statement error
+FROM bar WHERE bar.c >= 42;
+----
+<REGEX>:Binder Error: Table "bar" does not have a column named "c"\s+Candidate bindings: "b"\n.*
+
+# through an alias of the table
+statement error
+SELECT t.c FROM bar AS t;
+----
+<REGEX>:Binder Error: Table "t" does not have a column named "c"\s+Candidate bindings: "b"\n.*
+
+statement error
+UPDATE bar SET b = bar.c;
+----
+<REGEX>:Binder Error: Table "bar" does not have a column named "c"\s+Candidate bindings: "b"\n.*
+
+statement error
+DELETE FROM bar WHERE bar.c = 1;
+----
+<REGEX>:Binder Error: Table "bar" does not have a column named "c"\s+Candidate bindings: "b"\n.*
+
+# several candidates
+statement ok
+CREATE TABLE wide(b INTEGER, bb INTEGER, other INTEGER);
+
+statement error
+SELECT wide.c FROM wide;
+----
+<REGEX>:Binder Error: Table "wide" does not have a column named "c"\s+Candidate bindings: "b", "bb", "other"\n.*
+
+# an unqualified reference lists its candidates the same way
+statement error
+SELECT c FROM bar;
+----
+<REGEX>:Binder Error: Referenced column "c" not found in FROM clause!\s+Candidate bindings: "b"\n.*

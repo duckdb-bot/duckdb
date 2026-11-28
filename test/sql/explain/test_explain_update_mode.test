@@ -235,36 +235,39 @@ EXPLAIN INSERT INTO t VALUES (1, 'a', 5) ON CONFLICT DO NOTHING
 ----
 physical_plan	<!REGEX>:.*Update.*
 
-# RETURNING writes every column, also in MERGE and ON CONFLICT DO UPDATE
+# RETURNING reads every column but writes only the listed ones, so it does not change the mode, also in MERGE and
+# ON CONFLICT DO UPDATE
 query II
 EXPLAIN UPDATE t SET v = 1 RETURNING v
 ----
-physical_plan	<REGEX>:.*Update Mode: Delete \+ Insert.*
+physical_plan	<REGEX>:.*Update Mode: In Place.*
 
 query II
 EXPLAIN INSERT INTO t VALUES (1, 'a', 5) ON CONFLICT (id) DO UPDATE SET v = excluded.v RETURNING v
 ----
-physical_plan	<REGEX>:.*Update Mode: Delete \+ Insert.*
+physical_plan	<REGEX>:.*Update Mode: In Place.*
 
 query II
 EXPLAIN MERGE INTO t USING s ON t.id = s.id WHEN MATCHED THEN UPDATE SET v = s.v RETURNING v
 ----
-physical_plan	<REGEX>:.*Update Mode: Delete \+ Insert.*
+physical_plan	<REGEX>:.*Update Mode: In Place.*
 
 query II
 EXPLAIN UPDATE n SET v = 1 RETURNING v
 ----
 physical_plan	<REGEX>:.*Update Mode: In Place.*
 
+# a LIST column that is only read for RETURNING is not written
 statement ok
 CREATE TABLE nl (a INTEGER, l INTEGER[]);
 
 query II
 EXPLAIN UPDATE nl SET a = 1 RETURNING a
 ----
-physical_plan	<REGEX>:.*Update Mode: Delete \+ Insert.*
+physical_plan	<REGEX>:.*Update Mode: In Place.*
 
-# an UPDATE trigger that fires acts like RETURNING (TEMP tables, as triggers also need a newer storage version)
+# an UPDATE trigger that fires reads every column like RETURNING and writes none of them (TEMP tables, as triggers also
+# need a newer storage version)
 statement ok
 CREATE TEMP TABLE audit (msg VARCHAR);
 
@@ -277,7 +280,7 @@ CREATE TRIGGER trg_pk_upd AFTER UPDATE ON trg_pk FOR EACH STATEMENT INSERT INTO 
 query II
 EXPLAIN UPDATE trg_pk SET v = 1
 ----
-physical_plan	<REGEX>:.*Update Mode: Delete \+ Insert.*
+physical_plan	<REGEX>:.*Update Mode: In Place.*
 
 statement ok
 CREATE TEMP TABLE trg_n (a INTEGER, v INTEGER);
@@ -305,7 +308,7 @@ CREATE TRIGGER trg_ins_ins AFTER INSERT ON trg_ins FOR EACH STATEMENT INSERT INT
 query II
 EXPLAIN INSERT INTO trg_ins VALUES (1, 1) ON CONFLICT (id) DO UPDATE SET v = excluded.v
 ----
-physical_plan	<REGEX>:.*Update Mode: Delete \+ Insert.*
+physical_plan	<REGEX>:.*Update Mode: In Place.*
 
 # a trigger on UPDATE OF other columns does not fire, so it adds nothing
 statement ok

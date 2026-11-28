@@ -60,15 +60,19 @@ PhysicalUpdate::PhysicalUpdate(PhysicalPlan &physical_plan, vector<LogicalType> 
 class UpdateGlobalState : public GlobalSinkState {
 public:
 	explicit UpdateGlobalState(ClientContext &context, const vector<LogicalType> &return_types,
-	                           bool update_is_del_and_insert, const vector<unique_ptr<Expression>> &expressions)
+	                           bool update_is_del_and_insert, const vector<PhysicalIndex> &columns,
+	                           const vector<unique_ptr<Expression>> &expressions, idx_t returning_only_column_count)
 	    : updated_count(0), return_collection(context, return_types) {
 		if (update_is_del_and_insert) {
 			updated_rows = make_uniq<RowIdDeduplicator>(context, vector<LogicalType> {LogicalType::ROW_TYPE});
 			return;
 		}
+		// the trailing columns only read for RETURNING keep their values, so they are not written
+		auto written_column_count = columns.size() - returning_only_column_count;
+		written_columns.assign(columns.begin(), columns.begin() + NumericCast<int64_t>(written_column_count));
 		// in-place updates are staged (followed by their row ids) and applied sorted by row id
-		for (auto &expr : expressions) {
-			staged_types.push_back(expr->GetReturnType());
+		for (idx_t i = 0; i < written_column_count; i++) {
+			staged_types.push_back(expressions[i]->GetReturnType());
 		}
 		staged_types.push_back(LogicalType::ROW_TYPE);
 		vector<BoundOrderByNode> orders;
@@ -91,7 +95,9 @@ public:
 	atomic<idx_t> updated_count;
 	unique_ptr<RowIdDeduplicator> updated_rows;
 	ColumnDataCollection return_collection;
-	//! The types of the staged in-place updates: the updated columns followed by the row ids
+	//! The columns an in-place update writes, leaving out those only read for RETURNING
+	vector<PhysicalIndex> written_columns;
+	//! The types of the staged in-place updates: the written columns followed by the row ids
 	vector<LogicalType> staged_types;
 	//! Sorts the staged in-place updates of each thread by row id
 	unique_ptr<Sort> staged_sort;
@@ -104,7 +110,7 @@ public:
 	UpdateLocalState(ClientContext &context, DataTable &table, const vector<unique_ptr<Expression>> &expressions,
 	                 const vector<LogicalType> &table_types, const vector<unique_ptr<Expression>> &bound_defaults,
 	                 const vector<unique_ptr<BoundConstraint>> &bound_constraints, bool capture_old_rows,
-	                 bool index_update)
+	                 bool index_update, idx_t returning_only_column_count)
 	    : table_types(table_types), bound_constraints(bound_constraints) {
 		// Only DEFAULT columns are computed into the update chunk, all other columns reference the input.
 		auto &allocator = Allocator::Get(context);
@@ -122,6 +128,13 @@ public:
 		update_chunk.Initialize(allocator, update_types, initialize);
 		if (has_default) {
 			default_executor = make_uniq<ExpressionExecutor>(context, bound_defaults);
+		}
+
+		// The written chunk leaves out the trailing columns that are only read for RETURNING.
+		if (returning_only_column_count > 0) {
+			auto written_column_count = update_types.size() - returning_only_column_count;
+			written_chunk.InitializeEmpty(vector<LogicalType>(
+			    update_types.begin(), update_types.begin() + NumericCast<int64_t>(written_column_count)));
 		}
 
 		// The mock and delete chunks only reference other vectors.
@@ -155,6 +168,7 @@ public:
 
 	vector<LogicalType> table_types;
 	DataChunk update_chunk;
+	DataChunk written_chunk;
 	DataChunk mock_chunk;
 	DataChunk delete_chunk;
 	//! Sorted unique-index key columns fetched into fetch_chunk for the delete indexes
@@ -248,7 +262,17 @@ SinkResultType PhysicalUpdate::Sink(ExecutionContext &context, DataChunk &chunk,
 			}
 			mock_chunk.CheckCardinality(update_chunk.size());
 		}
-		StageUpdates(context, g_state, l_state, update_chunk, row_ids, input.interrupt_state);
+		if (returning_only_column_count == 0) {
+			StageUpdates(context, g_state, l_state, update_chunk, row_ids, input.interrupt_state);
+		} else {
+			// the columns only read for RETURNING keep their values, so they are not written
+			auto &written_chunk = l_state.written_chunk;
+			for (idx_t i = 0; i < written_chunk.ColumnCount(); i++) {
+				written_chunk.data[i].Reference(update_chunk.data[i]);
+			}
+			written_chunk.CheckCardinality(update_chunk.size());
+			StageUpdates(context, g_state, l_state, written_chunk, row_ids, input.interrupt_state);
+		}
 
 		if (return_chunk) {
 			lock_guard<mutex> glock(g_state.lock);
@@ -332,12 +356,15 @@ SinkResultType PhysicalUpdate::Sink(ExecutionContext &context, DataChunk &chunk,
 }
 
 unique_ptr<GlobalSinkState> PhysicalUpdate::GetGlobalSinkState(ClientContext &context) const {
-	return make_uniq<UpdateGlobalState>(context, GetTypes(), update_is_del_and_insert, expressions);
+	return make_uniq<UpdateGlobalState>(context, GetTypes(), update_is_del_and_insert, columns, expressions,
+	                                    returning_only_column_count);
 }
 
 unique_ptr<LocalSinkState> PhysicalUpdate::GetLocalSinkState(ExecutionContext &context) const {
+	// an in-place update reads indexed columns only for RETURNING and never fetches the deleted rows
 	return make_uniq<UpdateLocalState>(context.client, table, expressions, table.GetTypes(), bound_defaults,
-	                                   bound_constraints, capture_old_rows, index_update);
+	                                   bound_constraints, capture_old_rows, update_is_del_and_insert && index_update,
+	                                   returning_only_column_count);
 }
 
 static bool RowIdsAreSorted(Vector &row_ids, idx_t count) {
@@ -370,7 +397,7 @@ void PhysicalUpdate::StageUpdates(ExecutionContext &context, GlobalSinkState &gs
 	if (l_state.staged_count == 0 && RowIdsAreSorted(row_ids, updates.size())) {
 		// already clustered (e.g. updates driven by a scan of the table) - staging would not help
 		auto &update_state = l_state.GetUpdateState(table, tableref, context.client);
-		table.Update(update_state, context.client, tableref, row_ids, columns, updates);
+		table.Update(update_state, context.client, tableref, row_ids, g_state.written_columns, updates);
 		return;
 	}
 	auto &sort = *g_state.staged_sort;
@@ -440,7 +467,8 @@ void PhysicalUpdate::FlushStagedUpdates(ExecutionContext &context, GlobalSinkSta
 				sorted_updates.data[c].Reference(sorted_chunk.data[c]);
 			}
 			sorted_updates.CheckCardinality(sorted_chunk.size());
-			table.Update(update_state, context.client, tableref, sorted_chunk.data.back(), columns, sorted_updates);
+			table.Update(update_state, context.client, tableref, sorted_chunk.data.back(), g_state.written_columns,
+			             sorted_updates);
 		}
 		if (result == SourceResultType::FINISHED) {
 			break;

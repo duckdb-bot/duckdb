@@ -1,0 +1,260 @@
+# name: test/sql/returning/returning_update_foreign_key.test
+# description: RETURNING on an UPDATE or MERGE that leaves the key alone does not delete and insert the row
+# group: [returning]
+
+statement ok
+CREATE TABLE parent (id INTEGER PRIMARY KEY, value INTEGER, tags VARCHAR[]);
+
+statement ok
+CREATE TABLE child (parent_id INTEGER REFERENCES parent(id));
+
+statement ok
+INSERT INTO parent VALUES (1, 10, ['a']), (2, 20, ['b']);
+
+statement ok
+INSERT INTO child VALUES (1), (2);
+
+query I
+UPDATE parent SET value = 11 WHERE id = 1 RETURNING value;
+----
+11
+
+query III rowsort
+UPDATE parent SET value = value + 1 RETURNING *;
+----
+1	12	[a]
+2	21	[b]
+
+query II
+UPDATE parent SET value = 0 WHERE id = 2 RETURNING tags, id;
+----
+[b]	2
+
+query II
+MERGE INTO parent USING (SELECT 1 AS id, 100 AS v) src ON parent.id = src.id
+WHEN MATCHED THEN UPDATE SET value = src.v RETURNING id, value;
+----
+1	100
+
+query III
+SELECT * FROM parent ORDER BY id;
+----
+1	100	[a]
+2	0	[b]
+
+# the exported SQL assigns only the updated column
+query TT
+EXPLAIN (SQL) UPDATE parent SET value = 11 WHERE id = 1 RETURNING *;
+----
+sql	<REGEX>:(?s)UPDATE\s+\w+\.main\.parent\s+SET\s+"value"\s+=\s+r\d+\.c0\s+FROM\s+.*RETURNING.*
+
+query TT
+EXPLAIN (SQL) MERGE INTO parent USING (SELECT 1 AS id, 100 AS v) src ON parent.id = src.id
+WHEN MATCHED THEN UPDATE SET value = src.v RETURNING id, value;
+----
+sql	<REGEX>:(?s)MERGE\s+INTO.*WHEN\s+MATCHED\s+THEN\s+UPDATE\s+SET\s+"value"\s+=\s+r\d+\.c0\s+RETURNING.*
+
+# MERGE with several actions
+statement ok
+INSERT INTO parent VALUES (3, 30, ['c']);
+
+query III rowsort
+MERGE INTO parent USING (SELECT * FROM (VALUES (1, 101), (3, 0), (4, 40)) t(id, v)) src ON parent.id = src.id
+WHEN MATCHED AND src.v = 0 THEN DELETE
+WHEN MATCHED THEN UPDATE SET value = src.v
+WHEN NOT MATCHED THEN INSERT VALUES (src.id, src.v, NULL)
+RETURNING merge_action, id, value;
+----
+DELETE	3	30
+INSERT	4	40
+UPDATE	1	101
+
+# constraints on the updated column are still checked
+statement ok
+CREATE TABLE checked (id INTEGER PRIMARY KEY, value INTEGER NOT NULL CHECK (value > 0));
+
+statement ok
+CREATE TABLE checked_child (id INTEGER REFERENCES checked(id));
+
+statement ok
+INSERT INTO checked VALUES (1, 1);
+
+statement ok
+INSERT INTO checked_child VALUES (1);
+
+statement error
+UPDATE checked SET value = -1 RETURNING *;
+----
+CHECK constraint failed
+
+statement error
+UPDATE checked SET value = NULL RETURNING *;
+----
+NOT NULL constraint failed
+
+query II
+UPDATE checked SET value = 2 RETURNING *;
+----
+1	2
+
+# an INSERT OR REPLACE that writes no column exports as DO NOTHING, which would not return the matched row
+statement ok
+CREATE TABLE replaced (id INTEGER PRIMARY KEY, v INTEGER);
+
+statement ok
+INSERT INTO replaced VALUES (1, 10);
+
+statement ok
+CREATE TABLE replaced_child (id INTEGER REFERENCES replaced(id));
+
+statement ok
+INSERT INTO replaced_child VALUES (1);
+
+statement error
+EXPLAIN (SQL) INSERT OR REPLACE INTO replaced(id) VALUES (1) RETURNING *;
+----
+A MERGE update action that assigns no column cannot be exported
+
+query II
+INSERT OR REPLACE INTO replaced(id) VALUES (1) RETURNING *;
+----
+1	10
+
+# a table with generated columns still verifies them through a delete and insert
+statement ok
+CREATE TABLE generated (id INTEGER PRIMARY KEY, v VARCHAR, g INTEGER GENERATED ALWAYS AS (CAST(v AS INTEGER)));
+
+statement ok
+INSERT INTO generated (id, v) VALUES (1, '1');
+
+statement error
+UPDATE generated SET v = 'x' RETURNING id;
+----
+Incorrect value for generated column
+
+statement error
+MERGE INTO generated USING (SELECT 1 AS id) src ON generated.id = src.id WHEN MATCHED THEN UPDATE SET v = 'y' RETURNING id;
+----
+Incorrect value for generated column
+
+query III
+SELECT * FROM generated;
+----
+1	1	1
+
+# changing the key, or a LIST column, still deletes and inserts the row, which the foreign key prevents
+statement error
+UPDATE parent SET id = 3 WHERE id = 1 RETURNING *;
+----
+Violates foreign key constraint
+
+statement error
+UPDATE parent SET tags = ['c'] WHERE id = 1 RETURNING id;
+----
+Violates foreign key constraint
+
+# the index stays correct after an update that returns its column
+statement ok
+CREATE TABLE u (k INTEGER UNIQUE, v INTEGER);
+
+statement ok
+INSERT INTO u VALUES (1, 1), (2, 2);
+
+query II rowsort
+UPDATE u SET v = v * 10 RETURNING k, v;
+----
+1	10
+2	20
+
+statement error
+INSERT INTO u VALUES (1, 5);
+----
+Duplicate key "k: 1"
+
+query II
+SELECT k, v FROM u WHERE k = 2;
+----
+2	20
+
+query II
+UPDATE u SET k = 3 WHERE k = 2 RETURNING k, v;
+----
+3	20
+
+query II
+SELECT k, v FROM u ORDER BY k;
+----
+1	10
+3	20
+
+# the row ids of a join arrive out of order, so the in-place update is staged and applied sorted by row id
+statement ok
+SET threads = 4;
+
+statement ok
+CREATE TABLE tgt (id INTEGER PRIMARY KEY, v INTEGER, s VARCHAR);
+
+statement ok
+INSERT INTO tgt SELECT i, i, 'v' || i FROM range(300000) t(i);
+
+statement ok
+CREATE TABLE tgt_child (id INTEGER REFERENCES tgt(id));
+
+statement ok
+INSERT INTO tgt_child VALUES (0), (5000);
+
+# the source is larger than tgt, so the hash join builds on tgt and emits its row ids out of order
+statement ok
+CREATE TABLE src AS SELECT i AS id FROM range(400000) t(i) ORDER BY hash(i);
+
+query III rowsort
+UPDATE tgt SET v = tgt.v + 1, s = 'x' || src.id FROM src WHERE tgt.id = src.id AND src.id % 15000 = 0 RETURNING id, v, s;
+----
+0	1	x0
+105000	105001	x105000
+120000	120001	x120000
+135000	135001	x135000
+15000	15001	x15000
+150000	150001	x150000
+165000	165001	x165000
+180000	180001	x180000
+195000	195001	x195000
+210000	210001	x210000
+225000	225001	x225000
+240000	240001	x240000
+255000	255001	x255000
+270000	270001	x270000
+285000	285001	x285000
+30000	30001	x30000
+45000	45001	x45000
+60000	60001	x60000
+75000	75001	x75000
+90000	90001	x90000
+
+query IIII
+SELECT count(*), count(*) FILTER (v = id + 1), count(*) FILTER (s = 'x' || id), count(*) FILTER (v = id AND s = 'v' || id) FROM tgt;
+----
+300000	20	20	299980
+
+# a small memory limit makes every thread apply its staged updates while the update runs
+statement ok
+SET memory_limit = '200MB';
+
+statement ok
+UPDATE tgt SET v = -src.id, s = 'staged ' || src.id FROM src WHERE tgt.id = src.id RETURNING id, v, s;
+
+query III
+SELECT count(*), count(*) FILTER (v = -id), count(*) FILTER (s = 'staged ' || id) FROM tgt;
+----
+300000	300000	300000
+
+# the index still finds the rows and still rejects duplicates
+query II
+SELECT id, v FROM tgt WHERE id = 5000;
+----
+5000	-5000
+
+statement error
+INSERT INTO tgt VALUES (5000, 0, 'duplicate');
+----
+Duplicate key "id: 5000"

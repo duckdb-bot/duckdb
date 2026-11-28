@@ -1,0 +1,62 @@
+# name: test/sql/catalog/function/test_window_macro_attached.test
+# description: A window macro called with a two-part name resolves in an attached database
+# group: [function]
+
+statement ok
+ATTACH ':memory:' AS db
+
+statement ok
+CREATE MACRO db.w(x) AS sum(x)
+
+statement ok
+CREATE MACRO db.sc(x) AS x + 1
+
+query I
+SELECT db.sc(1)
+----
+2
+
+query I
+SELECT db.w(i) OVER (ORDER BY i) FROM range(3) r(i)
+----
+0
+1
+3
+
+query I
+SELECT db.main.w(i) OVER (ORDER BY i) FROM range(3) r(i)
+----
+0
+1
+3
+
+# a built-in window function or aggregate with the system catalog as qualifier
+query II
+SELECT system.row_number() OVER (ORDER BY i), system.sum(i) OVER (ORDER BY i) FROM range(3) r(i)
+----
+1	0
+2	1
+3	3
+
+# a schema of the default database keeps working
+statement ok
+CREATE SCHEMA s
+
+statement ok
+CREATE MACRO s.w(x) AS max(x)
+
+query I
+SELECT s.w(i) OVER (ORDER BY i) FROM range(3) r(i)
+----
+0
+1
+2
+
+# a name that is both a schema and an attached database is ambiguous, as for other calls
+statement ok
+CREATE SCHEMA db
+
+statement error
+SELECT db.w(i) OVER (ORDER BY i) FROM range(3) r(i)
+----
+Ambiguous reference to catalog or schema

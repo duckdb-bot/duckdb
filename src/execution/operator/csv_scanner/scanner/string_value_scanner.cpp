@@ -871,6 +871,13 @@ void StringValueResult::StoreLinePosition() {
 	// a removed row leaves number_of_rows at -1, nothing reads a position for it
 	if (number_of_rows >= 0) {
 		line_positions_per_row[static_cast<idx_t>(number_of_rows)] = current_line_position;
+	}
+	StoreLinesRead();
+}
+
+void StringValueResult::StoreLinesRead() {
+	// a removed row leaves number_of_rows at -1, nothing reads a line count for it
+	if (number_of_rows >= 0) {
 		lines_read_per_row[static_cast<idx_t>(number_of_rows)] = lines_read;
 	}
 }
@@ -1056,7 +1063,7 @@ bool StringValueResult::EmptyLine(StringValueResult &result, const idx_t buffer_
 			} else {
 				result.validity_mask[0]->SetInvalid(static_cast<idx_t>(result.number_of_rows));
 			}
-			result.lines_read_per_row[static_cast<idx_t>(result.number_of_rows)] = result.lines_read;
+			result.StoreLinesRead();
 			result.number_of_rows++;
 		}
 		if (static_cast<idx_t>(result.number_of_rows) >= result.result_size) {
@@ -2109,7 +2116,7 @@ void StringValueScanner::FinishBoundaryScan(const bool moved) {
 	if (result.current_errors.HandleErrors(result)) {
 		result.InvalidateUnwrittenColumns(chunk_col_id_before);
 		// the position is not stored here, before the end of the file it is still that of the row in front
-		result.lines_read_per_row[static_cast<idx_t>(result.number_of_rows)] = lines_read;
+		result.StoreLinesRead();
 		result.number_of_rows++;
 	}
 	if (!iterator.done) {
@@ -2139,7 +2146,7 @@ void StringValueScanner::ProcessRemainingBuffers() {
 			result.validity_mask[result.chunk_col_id++]->SetInvalid(static_cast<idx_t>(result.number_of_rows));
 			result.cur_col_id++;
 		}
-		result.lines_read_per_row[static_cast<idx_t>(result.number_of_rows)] = lines_read;
+		result.StoreLinesRead();
 		result.number_of_rows++;
 	}
 }

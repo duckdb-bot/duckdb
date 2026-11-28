@@ -1,5 +1,5 @@
 # name: test/sql/alter/struct/drop_col_struct_column_default_macro.test
-# description: A macro with the name of a built-in function does not change what the default of a column stores when a field is dropped
+# description: A default that calls a macro with the name of a struct constructor stays as it is when a field is dropped
 # group: [struct]
 
 statement ok
@@ -73,43 +73,6 @@ SELECT i, s FROM other.named ORDER BY i;
 1	{'x': 2}
 2	{'x': 2}
 
-# a macro takes the place of the function that maps a default to the new type
-statement ok
-CREATE SCHEMA shadowed;
-
-statement ok
-CREATE MACRO shadowed.remap_struct(a, b, c, d) AS NULL;
-
-statement ok
-CREATE TABLE shadowed.cast_default(i INT, s STRUCT(x INT, y INT) DEFAULT {'x': 1, 'y': 2}::STRUCT(x INT, y INT));
-
-statement ok
-CREATE TABLE shadowed.constructor(i INT, s STRUCT(x INT, y INT) DEFAULT {'x': 1, 'y': 2});
-
-statement ok
-INSERT INTO shadowed.cast_default(i) VALUES (1);
-
-statement ok
-ALTER TABLE shadowed.cast_default DROP COLUMN s.y;
-
-statement ok
-ALTER TABLE shadowed.constructor DROP COLUMN s.y;
-
-statement ok
-INSERT INTO shadowed.cast_default(i) VALUES (2);
-
-query II
-SELECT i, s FROM shadowed.cast_default ORDER BY i;
-----
-1	{'x': 1}
-2	{'x': 1}
-
-query II
-SELECT table_name, column_default FROM duckdb_columns() WHERE schema_name = 'shadowed' AND column_name = 's' ORDER BY table_name;
-----
-cast_default	CAST(struct_pack(x := 1, y := 2) AS STRUCT(x INTEGER, y INTEGER))
-constructor	struct_pack(x := 1)
-
 # a macro in the default schema of the catalog of the table
 statement ok
 ATTACH ':memory:' AS attached;
@@ -140,15 +103,10 @@ SELECT i, s FROM attached.other.in_catalog ORDER BY i;
 
 # only the constructor that is the built-in function loses an argument
 query II
-SELECT table_name, column_default LIKE 'remap_struct(%' FROM duckdb_columns() WHERE schema_name = 'other' AND column_name = 's' ORDER BY table_name;
+SELECT table_name, column_default FROM duckdb_columns() WHERE schema_name = 'other' AND column_name = 's' ORDER BY table_name;
 ----
-in_catalog	true
-named	true
-nested	true
-positional	true
-sibling	false
-
-query I
-SELECT column_default FROM duckdb_columns() WHERE schema_name = 'other' AND table_name = 'sibling' AND column_name = 's';
-----
-struct_pack(n := "row"(1, 2))
+in_catalog	"row"(1, 2)
+named	struct_pack(x := 1, y := 2)
+nested	struct_pack(x := 1, n := "row"(1, 2))
+positional	"row"(1, 2)
+sibling	struct_pack(n := "row"(1, 2))

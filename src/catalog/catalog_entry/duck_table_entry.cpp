@@ -443,15 +443,6 @@ static bool DefaultCallsBuiltinFunction(ClientContext &context, SchemaCatalogEnt
 	       entry->ParentCatalog().IsSystemCatalog();
 }
 
-//! Whether a default that keeps a dropped field stores the same values when it is mapped to the new type
-static bool CanRemapDefault(ClientContext &context, SchemaCatalogEntry &schema, const LogicalType &column_type) {
-	// the mapping casts to the type of the column, and a cast names a type that has an alias
-	if (TypeVisitor::Contains(column_type, [](const LogicalType &type) { return type.HasAlias(); })) {
-		return false;
-	}
-	return DefaultCallsBuiltinFunction(context, schema, "remap_struct");
-}
-
 //! Removes the field that the new type lost from a default that is written as a struct constructor
 static bool DropFieldFromDefault(ClientContext &context, SchemaCatalogEntry &schema, ParsedExpression &default_value,
                                  const LogicalType &old_type, const LogicalType &new_type) {
@@ -1302,20 +1293,17 @@ unique_ptr<CatalogEntry> DuckTableEntry::ChangeColumnType(ClientContext &context
 				throw NotImplementedException("Changing types of generated columns is not supported yet");
 			}
 			copy.SetType(info.target_type);
-			if (alter_table_type != AlterTableType::ALTER_COLUMN_TYPE && copy.HasDefaultValue()) {
+			if ((alter_table_type == AlterTableType::RENAME_FIELD || alter_table_type == AlterTableType::ADD_FIELD) &&
+			    copy.HasDefaultValue()) {
+				// the stored default is not cast yet, the mapping is for the old type of the column
+				auto old_default = make_uniq<CastExpression>(col.Type(), copy.DefaultValue().Copy());
+				copy.SetDefaultValue(RemapStructDefault(std::move(old_default), info.target_type, info));
+			} else if (alter_table_type == AlterTableType::REMOVE_FIELD && copy.HasDefaultValue()) {
+				// any other default keeps the field, which the cast to the new type of the column drops
 				auto new_default = copy.DefaultValue().Copy();
-				bool remap_default = true;
-				if (alter_table_type == AlterTableType::REMOVE_FIELD) {
-					// a default that keeps the field stays as it is when its mapping could store other values
-					bool dropped = DropFieldFromDefault(context, schema, *new_default, col.Type(), info.target_type);
-					remap_default = !dropped && CanRemapDefault(context, schema, col.Type());
+				if (DropFieldFromDefault(context, schema, *new_default, col.Type(), info.target_type)) {
+					copy.SetDefaultValue(std::move(new_default));
 				}
-				if (remap_default) {
-					// the stored default is not cast yet, the mapping is for the old type of the column
-					auto old_default = make_uniq<CastExpression>(col.Type(), std::move(new_default));
-					new_default = RemapStructDefault(std::move(old_default), info.target_type, info);
-				}
-				copy.SetDefaultValue(std::move(new_default));
 			}
 		}
 		// TODO: check if the generated_expression breaks, only delete it if it does

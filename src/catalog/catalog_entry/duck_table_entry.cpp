@@ -468,9 +468,20 @@ static bool DropFieldFromDefault(ParsedExpression &default_value, const LogicalT
 		auto &argument = *arguments[argument_idx.GetIndex()].GetExpressionMutable();
 		return DropFieldFromDefault(argument, old_fields[field_idx].second, new_fields[field_idx].second);
 	}
-	if (arguments.size() == 1) {
-		// a constructor without fields is not a struct
-		return false;
+	if (has_names) {
+		// the cast to the new type needs an argument with the name of a field that stays
+		bool has_match = false;
+		for (idx_t i = 0; i < arguments.size(); i++) {
+			if (i == argument_idx.GetIndex()) {
+				continue;
+			}
+			for (auto &new_field : new_fields) {
+				has_match = has_match || arguments[i].GetName() == new_field.first;
+			}
+		}
+		if (!has_match) {
+			return false;
+		}
 	}
 	arguments.erase_at(argument_idx.GetIndex());
 	return true;

@@ -144,7 +144,7 @@ idx_t ListColumnData::ScanCount(ColumnScanState &state, Vector &result, idx_t co
 		return 0;
 	}
 	// updates not supported for lists
-	D_ASSERT(!updates);
+	D_ASSERT(!HasUpdates());
 
 	Vector offset_vector(LogicalType::UBIGINT, count);
 	idx_t scan_count = ScanVector(state, offset_vector, count, ScanVectorType::SCAN_FLAT_VECTOR);
@@ -227,7 +227,7 @@ void ListColumnData::Select(TransactionData transaction, idx_t vector_index, Col
 		ColumnData::Select(transaction, vector_index, state, result, sel, sel_count);
 		return;
 	}
-	D_ASSERT(!updates);
+	D_ASSERT(!HasUpdates());
 	Vector offset_vector(LogicalType::UBIGINT, target_count);
 	idx_t scan_count = ScanVector(state, offset_vector, target_count, ScanVectorType::SCAN_FLAT_VECTOR);
 	D_ASSERT(scan_count > 0);

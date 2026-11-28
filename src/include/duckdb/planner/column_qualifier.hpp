@@ -43,7 +43,11 @@ public:
 	void QualifyColumnNames(unique_ptr<ParsedExpression> &expr, vector<identifier_set_t> &lambda_params,
 	                        const bool within_function_expression = false);
 
-	optional_ptr<CatalogEntry> QualifyFunction(FunctionExpression &function);
+	//! Looks the function up in the catalog. A qualification that is not a schema holding the function is the column
+	//! the function is called on, as x.lower() is lower(x), unless it is one of the lambda parameters in scope, or
+	//! main on a name the parser rewrites, which is dropped. Returns nullptr when the catalog has no such function
+	optional_ptr<CatalogEntry> QualifyFunction(FunctionExpression &function,
+	                                           const vector<identifier_set_t> &lambda_params = {});
 
 private:
 	Binder &binder;

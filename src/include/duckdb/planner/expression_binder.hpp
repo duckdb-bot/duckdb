@@ -333,7 +333,9 @@ protected:
 
 	BindResult BindUnsupportedExpression(ParsedExpression &expr, idx_t depth, const string &message);
 
-	CatalogEntry &BindFunction(FunctionExpression &function);
+	//! Looks the function up in the catalog, making a qualification that is a column its first argument (x.lower()).
+	//! Returns nullptr for a name the parser rewrites into a syntax node once no catalog function of the name matches
+	optional_ptr<CatalogEntry> BindFunction(FunctionExpression &function);
 
 protected:
 	virtual BindResult BindGroupingFunction(OperatorExpression &op, idx_t depth);

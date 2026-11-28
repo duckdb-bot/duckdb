@@ -256,3 +256,34 @@ query II
 SELECT p, typeof(p) FROM d3.w;
 ----
 m	ENUM('m', 'n')
+
+# the default of an added struct field keeps the name of the user type it casts to
+# checked after the last replay, which does not resolve a user type in a field default
+statement ok
+CREATE TABLE t7 (i INTEGER, h STRUCT(x INTEGER) DEFAULT {'x': 1});
+
+statement ok
+ALTER TABLE t7 ADD COLUMN h.c e DEFAULT 'a'::e;
+
+query I
+SELECT regexp_extract(column_default, 'struct_pack\(c := (.*)\)\)$', 1)
+FROM duckdb_columns() WHERE table_name = 't7' AND column_name = 'h';
+----
+CAST('a' AS e)
+
+statement ok
+ALTER TABLE t7 ADD COLUMN h.n myint DEFAULT 7::myint;
+
+query I
+SELECT regexp_extract(column_default, 'struct_pack\(n := (.*)\)\)$', 1)
+FROM duckdb_columns() WHERE table_name = 't7' AND column_name = 'h';
+----
+CAST(7 AS myint)
+
+statement ok
+INSERT INTO t7 (i) VALUES (1);
+
+query II
+SELECT h, typeof(h) FROM t7;
+----
+{'x': 1, 'c': a, 'n': 7}	STRUCT(x INTEGER, c ENUM('a', 'b'), n INTEGER)

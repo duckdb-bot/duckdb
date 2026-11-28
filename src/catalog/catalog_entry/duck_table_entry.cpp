@@ -1201,8 +1201,10 @@ unique_ptr<CatalogEntry> DuckTableEntry::ChangeColumnType(ClientContext &context
 	AlterBinder expr_binder(*binder, context, *this, bound_columns, info.target_type);
 	auto expression = info.expression->Copy();
 	auto bound_expression = expr_binder.Bind(expression);
-	// The WAL stores the USING expression, and its replay binds it again without the search path of this session
-	ResolveCastTypes(expr_binder, *info.expression);
+	// Only a user issued ALTER TYPE logs its expression, and the replay binds it without the session's search path
+	if (alter_table_type == AlterTableType::ALTER_COLUMN_TYPE) {
+		ResolveCastTypes(expr_binder, *info.expression);
+	}
 
 	// Infer the target_type from the USING expression, if not set explicitly.
 	if (info.target_type == LogicalType::UNKNOWN) {

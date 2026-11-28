@@ -165,7 +165,7 @@ static bool TryFoldForBackwardsCompatibility(const unique_ptr<ParsedExpression> 
 		return true;
 	}
 	case ExpressionType::VALUE_CONSTANT: {
-		values.push_back(expr->Cast<ConstantExpression>().GetLiteral().ToValue());
+		values.push_back(expr->Cast<ConstantExpression>().GetValueForSerialization());
 		return true;
 	}
 	default:

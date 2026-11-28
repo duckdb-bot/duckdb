@@ -4,7 +4,7 @@
 
 # ICU is not loaded yet, so these are the casts of the core
 query I
-SELECT count(*) FROM duckdb_extensions() WHERE loaded AND extension_name = 'icu';
+SELECT count(*) FROM duckdb_functions() WHERE function_name = 'icu_calendar_names';
 ----
 0
 

@@ -620,6 +620,9 @@ jobs:
         run: |
           export LOCAL_EXTENSION_REPO="$PWD/build/release/repository"
           python3 scripts/ci/run_extension_autoload_tests.py
+          # DuckDB's own tests of the extension repository, no other job sets LOCAL_EXTENSION_REPO
+          repository_tests=$(grep -rlE '^require-env LOCAL_EXTENSION_REPO( |$)' test)
+          python3 scripts/ci/run_tests.py build/release/duckdb --test-flags="--autoloading available --skip-compiled" $repository_tests
 
       - name: Install parser tools
         if: ${{ !fromJson(needs.prepare.outputs.skip_tests) }}

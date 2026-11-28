@@ -55,6 +55,8 @@ static bool IsMonotoneInElement(const Expression &expr) {
 
 //! The elements of the result have the statistics of the lambda applied to the elements of the list
 static unique_ptr<BaseStatistics> ListTransformStats(ClientContext &context, FunctionStatisticsInput &input) {
+	// the statistics of the elements and the captured columns reach the lambda body first
+	LambdaFunctions::ListLambdaStats(context, input);
 	// only a lambda that reads the element alone, without its index or other columns
 	if (!input.bind_data || input.child_stats.size() != 2) {
 		return nullptr;

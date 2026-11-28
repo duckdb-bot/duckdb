@@ -1,5 +1,5 @@
 # name: test/sql/timezone/timestamptz_round_out_of_range.test
-# description: With ICU, a TIMESTAMPTZ that rounds past the largest timestamp fails with a range error
+# description: With ICU, a TIMESTAMPTZ that rounds past either end of the timestamp range fails with a range error
 # group: [timezone]
 
 require icu
@@ -20,8 +20,23 @@ SELECT TIMESTAMPTZ '294247-01-10 04:00:54.775806+00'::TIMESTAMP_MS;
 ----
 Conversion Error: timestamp field value out of range: "294247-01-10 04:00:54.775806"
 
+statement error
+SELECT TIMESTAMPTZ '290309-12-21 (BC) 19:59:05.4+00'::TIMESTAMP_S;
+----
+Conversion Error: timestamp field value out of range: "290309-12-21 (BC) 19:59:05.4"
+
+statement error
+SELECT TIMESTAMPTZ '290309-12-21 (BC) 19:59:05.2243+00'::TIMESTAMP_MS;
+----
+Conversion Error: timestamp field value out of range: "290309-12-21 (BC) 19:59:05.2243"
+
 query II
 SELECT TRY_CAST(TIMESTAMPTZ '294247-01-10 04:00:54.775806+00' AS TIMESTAMP_S), TRY_CAST(TIMESTAMPTZ '294247-01-10 04:00:54.775806+00' AS TIMESTAMP_MS);
+----
+NULL	NULL
+
+query II
+SELECT TRY_CAST(TIMESTAMPTZ '290309-12-21 (BC) 19:59:05.4+00' AS TIMESTAMP_S), TRY_CAST(TIMESTAMPTZ '290309-12-21 (BC) 19:59:05.2243+00' AS TIMESTAMP_MS);
 ----
 NULL	NULL
 
@@ -29,6 +44,11 @@ query II
 SELECT TIMESTAMPTZ '294247-01-10 04:00:54.4+00'::TIMESTAMP_S, TIMESTAMPTZ '2024-01-01 10:00:00.6+00'::TIMESTAMP_MS;
 ----
 294247-01-10 04:00:54	2024-01-01 10:00:00.6
+
+query II
+SELECT TIMESTAMPTZ '290309-12-21 (BC) 19:59:05.6+00'::TIMESTAMP_S, TIMESTAMPTZ '290309-12-21 (BC) 19:59:05.2246+00'::TIMESTAMP_MS;
+----
+290309-12-21 (BC) 19:59:06	290309-12-21 (BC) 19:59:05.225
 
 # a value that does not fit the higher precision keeps its message
 statement error

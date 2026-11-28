@@ -1796,10 +1796,13 @@ def write_collapsible_rules(collapsible_rules):
     print(f"Updated {transformer_factory_cpp_path}")
 
 
-def write_expression_depth_rules(nesting_rules, chain_rules):
+def write_expression_depth_rules(depth_rules):
     content = transformer_factory_cpp_path.read_text()
-    lines = [f'\tgrammar.SetExpressionDepth("{rule}", ExpressionDepthKind::NESTING);\n' for rule in nesting_rules]
-    lines += [f'\tgrammar.SetExpressionDepth("{rule}", ExpressionDepthKind::CHAIN);\n' for rule in chain_rules]
+    lines = [
+        f'\tgrammar.SetExpressionDepth("{rule}", ExpressionDepthKind::{kind});\n'
+        for kind, rules in depth_rules
+        for rule in rules
+    ]
     content = replace_generated_block(
         content,
         DEPTH_START_BLOCK,
@@ -1863,7 +1866,7 @@ def main():
         write_packrat_memoized_rules(packrat_rules)
         write_rule_labels(load_rule_labels(grammar_types_file, all_rules.keys()))
         write_collapsible_rules(collapsible_rules)
-        write_expression_depth_rules(*load_expression_depth_rules(grammar_types_file, all_rules.keys()))
+        write_expression_depth_rules(load_expression_depth_rules(grammar_types_file, all_rules.keys()))
         write_rule_ids(all_rules)
     elif args.report:
         print(f"grammar files: {', '.join(grammar_files)}")

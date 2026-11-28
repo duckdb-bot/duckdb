@@ -1955,6 +1955,12 @@ matcher_rule_overrides:
 # expression is transformed, every nesting rule on the transform stack counts one level and every chain rule
 # as many levels as it has repeated elements, so that max_expression_depth bounds the depth of the resulting
 # expression trees. Add a rule here when its repetitions nest the result one level each.
+# Chains of set operations and joins nest query nodes and table references the same way. Their levels count
+# towards a depth of their own, which max_expression_depth bounds as well. expression_depth_query_chain_rules
+# count like chain rules, expression_depth_query_list_rules count one level for every element after the first
+# of their comma separated list, and expression_depth_set_operation_chain_rules one level for every repeated
+# set operation that does not extend the UNION before it. These rules nest left deep and transform their operands
+# in order, so an operand counts the levels of its chain from its own on, which for the first operand are all.
 expression_depth_nesting_rules:
   - SingleExpression
   - Type
@@ -1980,6 +1986,17 @@ expression_depth_chain_rules:
   - AtTimeZoneExpression
   - PrefixExpression
   - IndirectionList
+
+expression_depth_query_chain_rules:
+  - IntersectChain
+  - TableRef
+  - JoinedTableRefChain
+
+expression_depth_query_list_rules:
+  - FromClause
+
+expression_depth_set_operation_chain_rules:
+  - SelectSetOpChain
 
 # collapsible_rules: see ParsedGrammar::SetTransformProcess. Every rule below has a transformer that returns its
 # operand unchanged when the rest of the rule matched nothing. Take a rule out of this list if that stops being

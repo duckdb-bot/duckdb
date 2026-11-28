@@ -122,6 +122,9 @@ def load_grammar_types(types_file):
             "collapsible_rules",
             "expression_depth_nesting_rules",
             "expression_depth_chain_rules",
+            "expression_depth_query_chain_rules",
+            "expression_depth_query_list_rules",
+            "expression_depth_set_operation_chain_rules",
             "additional_transform_result_types",
         ):
             continue
@@ -233,11 +236,17 @@ def load_packrat_memoized_rules(types_file, known_rules=None):
 
 
 def load_expression_depth_rules(types_file, known_rules=None):
-    """Load expression_depth_nesting_rules and expression_depth_chain_rules from grammar_types.yml."""
-    return (
-        load_rule_name_list(types_file, "expression_depth_nesting_rules", known_rules),
-        load_rule_name_list(types_file, "expression_depth_chain_rules", known_rules),
-    )
+    """Load the expression_depth_*_rules lists from grammar_types.yml, as (kind, rules) pairs."""
+    return [
+        ("NESTING", load_rule_name_list(types_file, "expression_depth_nesting_rules", known_rules)),
+        ("CHAIN", load_rule_name_list(types_file, "expression_depth_chain_rules", known_rules)),
+        ("QUERY_CHAIN", load_rule_name_list(types_file, "expression_depth_query_chain_rules", known_rules)),
+        ("QUERY_LIST", load_rule_name_list(types_file, "expression_depth_query_list_rules", known_rules)),
+        (
+            "SET_OPERATION_CHAIN",
+            load_rule_name_list(types_file, "expression_depth_set_operation_chain_rules", known_rules),
+        ),
+    ]
 
 
 def load_collapsible_rules(types_file, known_rules=None):

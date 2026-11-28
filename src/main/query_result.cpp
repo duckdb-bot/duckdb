@@ -387,7 +387,9 @@ void QueryResult::Materialize() {
 	if (IsCollected() || HasError() || !context) {
 		return;
 	}
-	auto lock = LockContext();
+	// The handle may hold the last reference to the context, which the lock below outlives
+	auto keep_alive = context;
+	auto lock = keep_alive->LockContext();
 	if (!IsOpenInternal(*lock)) {
 		Cancelled();
 		context.reset();

@@ -1124,6 +1124,33 @@ TEST_CASE("A step can end the query after its connection is gone", "[api][query_
 	REQUIRE(CHECK_COLUMN(count, 0, {100000}));
 }
 
+TEST_CASE("A cancelled result can be materialized after its connection is gone", "[api][query_result]") {
+	DuckDB db(nullptr);
+	auto con = make_uniq<Connection>(db);
+	shared_ptr<QueryResult> handle = Submit(*con, "SELECT i FROM range(10) t(i)");
+	con->context->CancelTransaction();
+	// The handle holds the last reference to the context, which materializing the cancelled result releases
+	con.reset();
+
+	// A call that never returns stays behind on its own thread, so that it fails this test only
+	auto returned = make_shared_ptr<std::atomic<bool>>(false);
+	std::thread materializer([handle, returned]() {
+		handle->Materialize();
+		*returned = true;
+	});
+	Deadline deadline;
+	while (!returned->load() && !deadline.Passed()) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+	if (!returned->load()) {
+		materializer.detach();
+		FAIL("Materialize did not return");
+	}
+	materializer.join();
+	REQUIRE(handle->HasError());
+	REQUIRE(handle->GetErrorType() == ExceptionType::INTERRUPT);
+}
+
 TEST_CASE("An unfinished write to a temporary object closed inside a transaction invalidates it",
           "[api][query_result]") {
 	DuckDB db(nullptr);

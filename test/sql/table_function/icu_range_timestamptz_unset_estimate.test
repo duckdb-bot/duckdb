@@ -37,6 +37,17 @@ EXPLAIN SELECT g FROM generate_series(TIMESTAMPTZ '2024-01-01 00:00:00+00', TIME
 ----
 physical_plan	<REGEX>:.*GENERATE_SERIES.*~1 row .*
 
+# a step without a length in microseconds
+query II
+EXPLAIN SELECT g FROM generate_series(TIMESTAMPTZ '2024-01-01 00:00:00+00', TIMESTAMPTZ '2024-01-10 00:00:00+00', INTERVAL '0 seconds') s(g)
+----
+physical_plan	<REGEX>:.*GENERATE_SERIES.*~1 row .*
+
+query II
+EXPLAIN SELECT g FROM range(TIMESTAMPTZ '2024-01-01 00:00:00+00', TIMESTAMPTZ '2024-01-10 00:00:00+00', INTERVAL '400000 years') s(g)
+----
+physical_plan	<REGEX>:.*RANGE.*~1 row .*
+
 # a step that points away from the end
 query I
 SELECT count(*) FROM generate_series(TIMESTAMPTZ '2024-01-10 00:00:00+00', TIMESTAMPTZ '2024-01-01 00:00:00+00', INTERVAL 1 DAY)

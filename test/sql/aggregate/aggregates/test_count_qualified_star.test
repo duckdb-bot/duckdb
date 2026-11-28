@@ -274,6 +274,115 @@ SELECT count(l.*) FROM l UNION ALL SELECT count(r.*) FROM r ORDER BY 1;
 2
 3
 
+# COUNT(tbl.*) in an expression that COLUMNS expands
+
+# the qualified star still counts rows next to each expanded column
+query II
+SELECT count(r.*) - count(COLUMNS(r.*)) FROM r;
+----
+0	1
+
+# the star of another relation
+query II
+SELECT count(l.*) - count(COLUMNS(r.*)) FROM l LEFT JOIN r ON l.id = r.id;
+----
+1	2
+
+# a NULL-extended relation
+query III
+SELECT l.id, count(r.*) - count(COLUMNS(r.*)) FROM l LEFT JOIN r ON l.id = r.id GROUP BY l.id ORDER BY 1;
+----
+1	0	0
+2	0	1
+3	0	0
+
+# window
+query III
+SELECT l.id, count(r.*) OVER () - count(COLUMNS(r.*)) OVER () FROM l LEFT JOIN r ON l.id = r.id ORDER BY 1;
+----
+1	0	1
+2	0	1
+3	0	1
+
+# COLUMNS in the window of the count itself
+query III
+SELECT r.id, count(r.*) OVER (PARTITION BY COLUMNS(r.*)) FROM r ORDER BY 1;
+----
+2	1	1
+3	1	1
+
+# ORDER BY
+query I
+SELECT l.id FROM l LEFT JOIN r ON l.id = r.id GROUP BY l.id ORDER BY count(r.*) - count(COLUMNS(r.*)) DESC, l.id;
+----
+2
+1
+3
+
+# two qualified stars next to the expanded columns
+query II
+SELECT count(l.*) + count(r.*) - count(COLUMNS(r.*)) FROM l LEFT JOIN r ON l.id = r.id;
+----
+3	4
+
+# COLUMNS with a regex, a list, a lambda and an EXCLUDE list
+query I
+SELECT count(r.*) - count(COLUMNS('^y$')) FROM r;
+----
+1
+
+query I
+SELECT count(r.*) - count(COLUMNS(['y'])) FROM r;
+----
+1
+
+query I
+SELECT count(r.*) - count(COLUMNS(lambda c: c = 'y')) FROM r;
+----
+1
+
+query I
+SELECT count(r.*) - count(COLUMNS(r.* EXCLUDE (id))) FROM r;
+----
+1
+
+# COLUMNS over every relation
+query III
+SELECT count(r.*) - count(COLUMNS(*)) FROM l LEFT JOIN r ON l.id = r.id;
+----
+-1	0	1
+
+# the expanded columns name the result
+query I
+SELECT column_name FROM (DESCRIBE SELECT count(r.*) - count(COLUMNS(r.*)) AS "missing_\0" FROM r) ORDER BY 1;
+----
+missing_id
+missing_y
+
+# a struct star
+query II
+SELECT count(st.*) - count(COLUMNS(t.*)) FROM (SELECT {'x': 1} AS st, NULL::INT AS n) t;
+----
+0	1
+
+# an unpacked COLUMNS
+query I
+SELECT count(s.*) * 10 + count(coalesce(*COLUMNS(s.*))) FROM l LEFT JOIN s ON l.id = s.id;
+----
+22
+
+# the count inside the unpacked expression
+query I
+SELECT [UNPACK(count(r.*) - count(COLUMNS(r.*)))] FROM r;
+----
+[0, 1]
+
+# a qualified star under another aggregate is still refused
+statement error
+SELECT min(r.*) - count(COLUMNS(r.*)) FROM r;
+----
+<REGEX>:.*STAR expression is only allowed as the root element.*
+
 # ---- the relation of a qualified star ----
 
 # FULL OUTER join

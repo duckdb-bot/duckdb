@@ -48,7 +48,6 @@ SourceResultType PhysicalDrop::GetDataInternal(ExecutionContext &context, DataCh
 		    std::equal(dropped_schema.begin() + 1, dropped_schema.end(), current_schema.begin())) {
 			// Reset the default when dropping its schema or an ancestor.
 			SchemaSetting::SetLocal(context.client, DEFAULT_SCHEMA);
-			ClientConfig::GetConfig(context.client).user_settings.RegisterChange();
 		}
 		break;
 	}

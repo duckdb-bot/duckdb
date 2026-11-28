@@ -155,9 +155,11 @@ void GlobalUserSettings::SetUserSetting(idx_t setting_index, Value target_value)
 
 void GlobalUserSettings::ClearSetting(idx_t setting_index) {
 	lock_guard<mutex> guard(lock);
+	if (settings_map.IsSet(setting_index)) {
+		++change_count;
+	}
 	settings_map.ClearSetting(setting_index);
 	++settings_version;
-	++change_count;
 }
 
 idx_t GlobalUserSettings::GetChangeCount() const {
@@ -332,8 +334,10 @@ void LocalUserSettings::SetUserSetting(idx_t setting_index, Value target_value) 
 }
 
 void LocalUserSettings::ClearSetting(idx_t setting_index) {
+	if (settings_map.IsSet(setting_index)) {
+		change_count++;
+	}
 	settings_map.ClearSetting(setting_index);
-	change_count++;
 }
 
 idx_t LocalUserSettings::GetChangeCount() const {

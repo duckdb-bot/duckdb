@@ -658,13 +658,14 @@ TEST_CASE("Test prepared statements with extension that can request a rebind", "
 //! Records for every EXECUTE whether the prepared statement has to be bound again
 class RebindRecorderState : public ClientContextState {
 public:
+	vector<bool> rebinds;
+
+public:
 	RebindQueryInfo OnRebindPreparedStatement(ClientContext &context, BindPreparedStatementCallbackInfo &info,
 	                                          RebindQueryInfo current_rebind) override {
 		rebinds.push_back(current_rebind == RebindQueryInfo::ATTEMPT_TO_REBIND);
 		return RebindQueryInfo::DO_NOT_REBIND;
 	}
-
-	vector<bool> rebinds;
 };
 
 TEST_CASE("A prepared statement keeps its plan until a setting changes", "[api]") {
@@ -739,6 +740,13 @@ TEST_CASE("A prepared statement keeps its plan until a setting changes", "[api]"
 	REQUIRE(CHECK_COLUMN(result, 0, {1, 2, Value()}));
 	REQUIRE(rebinds.back());
 
+	// the RESET of a setting that is not set is no change
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(con.Query("RESET SESSION default_null_order"));
+	REQUIRE_NO_FAIL(other.Query("RESET GLOBAL default_order"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(!rebinds.back());
+
 	// a setting with its own setter
 	REQUIRE_NO_FAIL(con.Query(prepare));
 	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
@@ -747,7 +755,25 @@ TEST_CASE("A prepared statement keeps its plan until a setting changes", "[api]"
 	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
 	REQUIRE(rebinds.back());
 	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(con.Query("USE s1"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(!rebinds.back());
 	REQUIRE_NO_FAIL(con.Query("RESET search_path"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(rebinds.back());
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(con.Query("RESET search_path"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(!rebinds.back());
+
+	REQUIRE_NO_FAIL(con.Query("SET operator_memory_limit = '1GB'"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(rebinds.back());
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(con.Query("SET operator_memory_limit = '1GB'"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(!rebinds.back());
+	REQUIRE_NO_FAIL(con.Query("RESET operator_memory_limit"));
 	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
 	REQUIRE(rebinds.back());
 
@@ -757,6 +783,9 @@ TEST_CASE("A prepared statement keeps its plan until a setting changes", "[api]"
 	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
 	REQUIRE(rebinds.back());
 	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(other.Query("SET GLOBAL max_temp_directory_size = '1GB'"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(!rebinds.back());
 	REQUIRE_NO_FAIL(other.Query("RESET GLOBAL max_temp_directory_size"));
 	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
 	REQUIRE(rebinds.back());

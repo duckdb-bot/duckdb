@@ -306,6 +306,46 @@ EXECUTE macro_name;
 ----
 first
 
+# a schema leaves the search path while the first one stays
+statement ok
+CREATE TYPE s2.second_only AS ENUM ('second');
+
+statement ok
+SET search_path = 's1,s2';
+
+statement ok
+PREPARE second_schema AS SELECT enum_range(NULL::second_only);
+
+query I
+EXECUTE second_schema;
+----
+[second]
+
+statement ok
+SET schema = 's1';
+
+statement error
+EXECUTE second_schema;
+----
+Type with name second_only does not exist
+
+statement ok
+SET search_path = 'main,s2';
+
+statement ok
+PREPARE second_schema AS SELECT enum_range(NULL::second_only);
+
+statement ok
+RESET schema;
+
+statement error
+EXECUTE second_schema;
+----
+Type with name second_only does not exist
+
+statement ok
+USE s1;
+
 statement ok
 PREPARE type_name AS SELECT enum_range(NULL::e);
 

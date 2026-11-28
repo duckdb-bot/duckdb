@@ -464,7 +464,6 @@ void DBConfig::SetOption(optional_ptr<DatabaseInstance> db, const ConfigurationO
 	std::lock_guard<std::recursive_mutex> guard(config_lock);
 	D_ASSERT(option.reset_global);
 	option.set_global(db.get(), *this, input);
-	user_settings.RegisterChange();
 }
 
 void DBConfig::ResetOption(optional_ptr<DatabaseInstance> db, const ConfigurationOption &option) {
@@ -485,7 +484,6 @@ void DBConfig::ResetOption(optional_ptr<DatabaseInstance> db, const Configuratio
 	std::lock_guard<std::recursive_mutex> guard(config_lock);
 	D_ASSERT(option.set_global);
 	option.reset_global(db.get(), *this);
-	user_settings.RegisterChange();
 }
 
 Value ConfigurationOption::GetDefaultValue(const DBConfig &config) const {

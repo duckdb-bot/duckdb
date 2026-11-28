@@ -497,8 +497,14 @@ private:
 	                        idx_t &next_file_idx, vector<ParseSchemaFrame> &frames, ParquetColumnSchema &result);
 	ParquetColumnSchema FinishSchemaElement(ParseSchemaFrame &frame, idx_t next_file_idx);
 
-	unique_ptr<ColumnReader> CreateReaderRecursive(ClientContext &context, const ColumnIndex &index,
-	                                               const ParquetColumnSchema &schema) const;
+	//! Create the reader of a column with the readers of its children
+	unique_ptr<ColumnReader> CreateColumnReader(ClientContext &context, const ColumnIndex &index,
+	                                            const ParquetColumnSchema &schema) const;
+	struct CreateReaderFrame;
+	bool OpenReaderFrame(ClientContext &context, optional_ptr<const ColumnIndex> column_id, ColumnIndex owned_column_id,
+	                     const ParquetColumnSchema &schema, vector<CreateReaderFrame> &frames,
+	                     unique_ptr<ColumnReader> &result) const;
+	unique_ptr<ColumnReader> FinishReaderFrame(ClientContext &context, CreateReaderFrame &frame) const;
 	const duckdb_parquet::RowGroup &GetGroup(ParquetReaderScanState &state);
 	uint64_t GetGroupCompressedSize(ParquetReaderScanState &state);
 	idx_t GetGroupOffset(ParquetReaderScanState &state);

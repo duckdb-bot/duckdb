@@ -415,6 +415,18 @@ void StorageManager::CheckDecimalWidthIsSupported(const LogicalType &type) const
 	}
 }
 
+//! Throws when a stored cast to this type cannot be written at the storage version of the database
+static void CheckCastTargetIsSupported(const StorageManager &storage_manager, const LogicalType &target) {
+	storage_manager.CheckDecimalWidthIsSupported(target);
+	// a GEOGRAPHY cannot be written below its storage version at all, so it is refused as the type of a column is
+	TypeVisitor::Contains(target, [&](const LogicalType &type) {
+		if (type.id() == LogicalTypeId::GEOGRAPHY) {
+			storage_manager.CheckTypeIsSupported(type);
+		}
+		return false;
+	});
+}
+
 void StorageManager::CheckExpressionDecimalsAreSupported(const ParsedExpression &expression) const {
 	if (GetStorageVersion() >= StorageVersion::V2_0_0) {
 		// from v2.0.0 on a CAST stores its target as a type expression, which the reading engine binds itself
@@ -428,7 +440,7 @@ void StorageManager::CheckExpressionDecimalsAreSupported(const ParsedExpression 
 		work.pop_back();
 		switch (expr.GetExpressionClass()) {
 		case ExpressionClass::CAST:
-			CheckDecimalWidthIsSupported(UnboundType::TryDefaultBind(expr.Cast<CastExpression>().TargetType()));
+			CheckCastTargetIsSupported(*this, UnboundType::TryDefaultBind(expr.Cast<CastExpression>().TargetType()));
 			break;
 		case ExpressionClass::SUBQUERY:
 			CheckQueryDecimalsAreSupported(*expr.Cast<SubqueryExpression>().Subquery()->node);

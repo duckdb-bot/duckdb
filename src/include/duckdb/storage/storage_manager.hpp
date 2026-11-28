@@ -155,8 +155,9 @@ public:
 	string GetUnsupportedDecimalWidthReason(const LogicalType &type, const string &subject = "columns") const;
 	//! Throws when a type written to the catalog holds a DECIMAL wider than this storage version stores
 	void CheckDecimalWidthIsSupported(const LogicalType &type) const;
-	//! Throws when a stored expression casts to a DECIMAL wider than this storage version stores: below v2.0.0 a CAST
-	//! serializes its target as a LogicalType, which the engines of that version read as a fixed-size decimal
+	//! Throws when a stored expression casts to a DECIMAL wider than this storage version stores or to GEOGRAPHY:
+	//! below v2.0.0 a CAST serializes its target as a LogicalType, which the engines of that version read as a
+	//! fixed-size decimal and which cannot be written for a GEOGRAPHY
 	void CheckExpressionDecimalsAreSupported(const ParsedExpression &expression) const;
 	//! The same check over every expression of a stored query (a view or a table macro)
 	void CheckQueryDecimalsAreSupported(QueryNode &node) const;

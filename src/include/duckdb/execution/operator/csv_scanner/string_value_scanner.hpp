@@ -444,6 +444,8 @@ private:
 	bool suspended = false;
 	//! The buffer a suspension waits on, a scanner suspends at most once per buffer
 	idx_t pending_buffer_idx = 0;
+	//! Whether the row that goes on behind the end of the buffer holds only spaces so far
+	bool open_row_only_spaces = false;
 };
 
 } // namespace duckdb

@@ -196,6 +196,19 @@ bool StringValueResult::HandleTooManyColumnsError(const char *value_ptr, const i
 	return false;
 }
 
+//! A line with only spaces before its comment and no values before them has no row
+static bool IsCommentOnlyLine(idx_t cur_col_id, const char *value, idx_t size) {
+	if (cur_col_id != 0) {
+		return false;
+	}
+	for (idx_t i = 0; i < size; i++) {
+		if (value[i] != ' ') {
+			return false;
+		}
+	}
+	return true;
+}
+
 void StringValueResult::SetComment(StringValueResult &result, idx_t buffer_pos) {
 	if (!result.comment) {
 		result.position_before_comment = buffer_pos;
@@ -205,21 +218,11 @@ void StringValueResult::SetComment(StringValueResult &result, idx_t buffer_pos) 
 
 bool StringValueResult::UnsetComment(StringValueResult &result, idx_t buffer_pos) {
 	bool done = false;
-	if (result.last_position.buffer_pos < result.position_before_comment) {
-		bool all_empty = true;
-		for (idx_t i = result.last_position.buffer_pos; i < result.position_before_comment; i++) {
-			if (result.buffer_ptr[i] != ' ') {
-				all_empty = false;
-				break;
-			}
-		}
-		if (!all_empty) {
-			done = AddRow(result, result.position_before_comment);
-		}
-	} else {
-		if (result.cur_col_id != 0) {
-			done = AddRow(result, result.position_before_comment);
-		}
+	const idx_t value_size = result.last_position.buffer_pos < result.position_before_comment
+	                             ? result.position_before_comment - result.last_position.buffer_pos
+	                             : 0;
+	if (!IsCommentOnlyLine(result.cur_col_id, result.buffer_ptr + result.last_position.buffer_pos, value_size)) {
+		done = AddRow(result, result.position_before_comment);
 	}
 	if (result.number_of_rows == 0) {
 		result.first_line_is_comment = true;
@@ -1454,8 +1457,18 @@ string_t StringValueScanner::RemoveEscape(const char *str_ptr, idx_t end, char e
 }
 
 void StringValueScanner::ProcessOverBufferValue() {
+	// a comment that ran to the end of the previous buffer goes on in this one, the value before it was handled then
+	const bool open_comment = result.comment && result.last_position.buffer_pos >= previous_buffer_handle->actual_size;
+	// a value that ran to the end of the previous buffer was added there, a comment that follows it adds no other value
+	const bool open_value =
+	    !open_comment && result.cur_col_id > 0 && result.last_position.buffer_pos > previous_buffer_handle->actual_size;
+	// spaces that were added that way are no values of a line that turns out to hold only a comment
+	bool only_spaces_before = open_row_only_spaces;
+	open_row_only_spaces = false;
 	// Process first string
-	if (result.last_position.buffer_pos != previous_buffer_handle->actual_size) {
+	if (open_comment) {
+		states.Initialize(CSVState::COMMENT);
+	} else if (result.last_position.buffer_pos != previous_buffer_handle->actual_size) {
 		states.Initialize();
 	}
 
@@ -1463,14 +1476,17 @@ void StringValueScanner::ProcessOverBufferValue() {
 	auto previous_buffer = previous_buffer_handle->Ptr();
 	idx_t j = 0;
 	result.quoted = false;
+	// the value ends where a comment starts, also when the comment started before this buffer
+	bool comment_started = open_comment;
 	for (idx_t i = result.last_position.buffer_pos; i < previous_buffer_handle->actual_size; i++) {
 		state_machine->Transition(states, previous_buffer[i]);
 		if (states.EmptyLine() || states.IsCurrentNewRow()) {
 			continue;
 		}
+		comment_started = comment_started || states.IsComment();
 		if (states.NewRow() || states.NewValue()) {
 			break;
-		} else if (!result.comment) {
+		} else if (!comment_started) {
 			over_buffer_string += previous_buffer[i];
 		}
 		if (states.IsQuoted()) {
@@ -1490,7 +1506,7 @@ void StringValueScanner::ProcessOverBufferValue() {
 		}
 		j++;
 	}
-	if (over_buffer_string.empty() &&
+	if (over_buffer_string.empty() && !comment_started &&
 	    state_machine->dialect_options.state_machine_options.new_line == NewLineIdentifier::CARRY_ON) {
 		if (!iterator.IsBoundarySet()) {
 			// Skip the line feed of a \r\n that the buffer end split, a line feed of its own ends a line
@@ -1541,6 +1557,8 @@ void StringValueScanner::ProcessOverBufferValue() {
 	for (; iterator.pos.buffer_pos < cur_buffer_handle->actual_size; iterator.pos.buffer_pos++) {
 		state_machine->Transition(states, buffer_handle_ptr[iterator.pos.buffer_pos]);
 		if (states.EmptyLine()) {
+			// a line break ends the line of the spaces, a comment behind it is another line
+			only_spaces_before = false;
 			if (state_machine->dialect_options.num_cols == 1) {
 				break;
 			}
@@ -1549,9 +1567,10 @@ void StringValueScanner::ProcessOverBufferValue() {
 			}
 			continue;
 		}
+		comment_started = comment_started || states.IsComment();
 		if (states.NewRow() || states.NewValue()) {
 			break;
-		} else if (!result.comment && !states.IsComment()) {
+		} else if (!comment_started) {
 			over_buffer_string += buffer_handle_ptr[iterator.pos.buffer_pos];
 		}
 		if (states.IsQuoted()) {
@@ -1577,8 +1596,18 @@ void StringValueScanner::ProcessOverBufferValue() {
 	// end an open row or comment
 	const bool single_column_empty_line = states.EmptyLine() && state_machine->dialect_options.num_cols == 1;
 	const bool empty_line = single_column_empty_line && result.cur_col_id == 0 && !result.comment;
-	bool skip_value = false;
-	if (result.projecting_columns) {
+	const bool only_spaces = IsCommentOnlyLine(only_spaces_before ? 0 : result.cur_col_id, over_buffer_string.c_str(),
+	                                           over_buffer_string.size());
+	const bool comment_only_line = comment_started && only_spaces;
+	if (comment_only_line && result.cur_col_id > 0) {
+		// take back the spaces that were added as values of this line, its row stays the current one
+		result.RemoveLastLine();
+		result.number_of_rows++;
+		result.current_errors.Reset();
+	}
+	bool skip_value =
+	    comment_only_line || open_comment || (open_value && comment_started && over_buffer_string.empty());
+	if (result.projecting_columns && !skip_value) {
 		if (result.cur_col_id < result.number_of_columns && !result.projected_columns[result.cur_col_id]) {
 			result.cur_col_id++;
 			skip_value = true;
@@ -1589,7 +1618,7 @@ void StringValueScanner::ProcessOverBufferValue() {
 		const auto &delimiter = result.state_machine.dialect_options.state_machine_options.delimiter.GetValue();
 		const idx_t extra_delimiter_bytes = states.IsDelimiter() && !delimiter.empty() ? delimiter.size() - 1 : 0;
 		bool removed_extra_delimiter_bytes = false;
-		if (result.quoted && !result.comment) {
+		if (result.quoted) {
 			idx_t length = over_buffer_string.size() - 1 - result.quoted_position;
 			while (length > 0 && result.ignore_empty_values &&
 			       over_buffer_string.c_str()[result.quoted_position + length] == ' ') {
@@ -1670,7 +1699,7 @@ void StringValueScanner::ProcessOverBufferValue() {
 			if (empty_line) {
 				result.EmptyLine(result, iterator.pos.buffer_pos);
 			}
-		} else if (!states.IsNotSet() && (!result.comment || !value.Empty())) {
+		} else if (!states.IsNotSet()) {
 			idx_t value_size = value.GetSize();
 			if (!removed_extra_delimiter_bytes) {
 				if (extra_delimiter_bytes > value_size) {
@@ -1686,10 +1715,20 @@ void StringValueScanner::ProcessOverBufferValue() {
 	}
 
 	if (states.NewRow() && !states.IsNotSet()) {
-		if (result.IsCommentSet(result)) {
+		if (comment_only_line) {
+			LinePosition current_line_start = {iterator.pos.buffer_idx, iterator.pos.buffer_pos, result.buffer_size};
+			result.current_line_position.begin = result.current_line_position.end;
+			result.current_line_position.end = current_line_start;
+		} else if (!comment_started && result.IsCommentSet(result)) {
 			result.UnsetComment(result, iterator.pos.buffer_pos);
 		} else if (!empty_line) {
 			result.AddRowInternal();
+		}
+		if (comment_started) {
+			if (result.number_of_rows == 0) {
+				result.first_line_is_comment = true;
+			}
+			result.comment = false;
 		}
 		lines_read++;
 	}
@@ -1697,6 +1736,9 @@ void StringValueScanner::ProcessOverBufferValue() {
 	if (iterator.pos.buffer_pos >= cur_buffer_handle->actual_size && cur_buffer_handle->is_last_buffer) {
 		result.added_last_line = true;
 	}
+	// spaces that run to the end of this buffer can still turn out to stand before a comment
+	open_row_only_spaces = only_spaces && !over_buffer_string.empty() && !comment_started &&
+	                       iterator.pos.buffer_pos >= cur_buffer_handle->actual_size;
 	if (states.IsCarriageReturn() &&
 	    state_machine->dialect_options.state_machine_options.new_line == NewLineIdentifier::CARRY_ON) {
 		result.last_position = {iterator.pos.buffer_idx, ++iterator.pos.buffer_pos + 1, result.buffer_size};
@@ -1746,7 +1788,7 @@ StringValueScanner::MoveBufferResult StringValueScanner::TryMoveToNextBuffer() {
 			if (result.current_errors.HandleErrors(result)) {
 				result.InvalidateUnwrittenColumns(chunk_col_id_before);
 			}
-			result.line_positions_per_row[static_cast<idx_t>(result.number_of_rows)] = result.current_line_position;
+			result.StoreLinePosition();
 			result.number_of_rows++;
 		}
 		result.cur_col_id = 0;

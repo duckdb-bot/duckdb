@@ -189,6 +189,18 @@ SELECT a FROM th WHERE a IS NOT DISTINCT FROM b AND b = 3 AND a::TINYINT = 3
 ----
 3
 
+# an expression is not carried over when one of its constants can equal another without being identical
+statement ok
+CREATE TABLE zb(a BOOLEAN, b BOOLEAN);
+
+statement ok
+INSERT INTO zb VALUES (true, true);
+
+query I
+SELECT count(*) FROM zb WHERE a IS NOT DISTINCT FROM b AND (CASE WHEN a THEN '0.0'::DOUBLE ELSE 1.0 END)::VARCHAR = (CASE WHEN a THEN '0.0'::DOUBLE ELSE 1.0 END)::VARCHAR AND (CASE WHEN b THEN '-0.0'::DOUBLE ELSE 1.0 END)::VARCHAR = '-0.0'
+----
+1
+
 # filters that contradict the constant
 statement ok
 CREATE TABLE c1 AS SELECT * FROM (VALUES (3), (7)) v(a);

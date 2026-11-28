@@ -507,7 +507,8 @@ void FilterCombiner::AddNotDistinctFromConstants() {
 		vector<unique_ptr<Expression>> targets;
 		for (auto &member : equivalence_map[set_id]) {
 			auto &expr = member.get();
-			if (expr.CanThrow()) {
+			// the copy must not match a stored expression whose constants only equal its own, such as 0.0 and -0.0
+			if (expr.CanThrow() || !CanMatchExpression(expr)) {
 				continue;
 			}
 			auto source = ReadColumn(expr);

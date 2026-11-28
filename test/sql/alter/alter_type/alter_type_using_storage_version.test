@@ -26,9 +26,22 @@ ALTER TABLE old.t ALTER s SET TYPE INTEGER USING old.keep_one(s::DECIMAL(50, 0))
 DECIMAL columns wider than 38 digits are not supported in storage versions prior to v2.1.0
 
 statement error
-ALTER TABLE old.t ALTER s SET TYPE INTEGER[] USING [(s::STRUCT(d DECIMAL(50, 0))).d::INTEGER];
+ALTER TABLE old.t ALTER s SET TYPE INTEGER[] USING [({'d': s}::STRUCT(d DECIMAL(50, 0))).d::INTEGER];
 ----
 DECIMAL columns wider than 38 digits are not supported in storage versions prior to v2.1.0
+
+# FIXME: a cast to a user type is logged with the name of the type, which hides its DECIMAL from the check
+mode skip unsupported
+
+statement ok
+CREATE TEMPORARY TYPE wide AS DECIMAL(50, 0);
+
+statement error
+ALTER TABLE old.t ALTER s SET TYPE INTEGER USING (s::wide)::INTEGER + 1;
+----
+DECIMAL columns wider than 38 digits are not supported in storage versions prior to v2.1.0
+
+mode unskip
 
 # a cast to a type that cannot be built is refused by the statement, not by the COMMIT
 statement ok

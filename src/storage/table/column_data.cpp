@@ -89,6 +89,10 @@ StorageManager &ColumnData::GetStorageManager() const {
 }
 
 bool ColumnData::HasUpdates() const {
+	if (!updates_may_exist.load(std::memory_order_acquire)) {
+		return false;
+	}
+	// Also synchronizes callers with the writer; the guard does not publish a constructed segment.
 	lock_guard<mutex> update_guard(update_lock);
 	return updates.get();
 }
@@ -360,6 +364,8 @@ void ColumnData::UpdateInternal(TransactionData transaction, DuckTableEntry &tab
                                 idx_t row_group_start) {
 	lock_guard<mutex> update_guard(update_lock);
 	if (!updates) {
+		// Publish before construction so readers synchronize through update_lock.
+		updates_may_exist.store(true, std::memory_order_release);
 		updates = make_uniq<UpdateSegment>(*this);
 	}
 	updates->Update(transaction, table_entry, column_index, update_vector, row_ids, update_count, base_vector,
@@ -967,9 +973,9 @@ void ColumnData::VisitBlockIds(BlockIdVisitor &visitor) const {
 	}
 }
 
-unique_ptr<ColumnCheckpointState> ColumnData::CreateCheckpointState(const RowGroup &row_group,
+unique_ptr<ColumnCheckpointState> ColumnData::CreateCheckpointState(const RowGroup &row_group, Context &context,
                                                                     PartialBlockManager &partial_block_manager) {
-	return make_uniq<ColumnCheckpointState>(row_group, *this, partial_block_manager);
+	return make_uniq<ColumnCheckpointState>(row_group, *this, context, partial_block_manager);
 }
 
 void ColumnData::CheckpointScan(ColumnSegment &segment, ColumnScanState &state, idx_t count,
@@ -995,7 +1001,8 @@ ColumnData::Checkpoint(const RowGroup &row_group, ColumnCheckpointInfo &checkpoi
 	// scan the segments of the column data
 	// set up the checkpoint state
 	auto &partial_block_manager = checkpoint_info.GetPartialBlockManager();
-	auto checkpoint_state = CreateCheckpointState(row_group, partial_block_manager);
+	auto &context = checkpoint_info.GetContext();
+	auto checkpoint_state = CreateCheckpointState(row_group, context, partial_block_manager);
 	checkpoint_state->global_stats = BaseStatistics::CreateEmpty(type).ToUnique();
 
 	if (!data.GetRootSegment()) {
@@ -1148,7 +1155,7 @@ static PersistentColumnData GetPersistentColumnDataType(Deserializer &deserializ
 		return result;
 	}
 	case ExtraPersistentColumnDataType::GEOMETRY: {
-		if (column_type.id() != LogicalTypeId::GEOMETRY) {
+		if (column_type.id() != LogicalTypeId::GEOMETRY && column_type.id() != LogicalTypeId::GEOGRAPHY) {
 			throw DataCorruptionException("GEOMETRY column data found for a column of type %s", column_type);
 		}
 		const auto &geometry_data = extra_data->Cast<GeometryPersistentColumnData>();
@@ -1387,7 +1394,7 @@ unique_ptr<ExtraPersistentColumnData> ExtraPersistentColumnData::Deserialize(Des
 	case ExtraPersistentColumnDataType::LIST:
 		return ListPersistentColumnData::Deserialize(deserializer);
 	default:
-		throw InternalException("Unknown PersistentColumnData type");
+		throw DataCorruptionException("Column data with extra data of an unknown type");
 	}
 }
 
@@ -1511,14 +1518,17 @@ void ColumnData::Verify(RowGroup &parent) {
 #ifdef DEBUG
 	data.Verify();
 
+	const auto is_geo_type = [](LogicalTypeId id) {
+		return id == LogicalTypeId::GEOMETRY || id == LogicalTypeId::GEOGRAPHY;
+	};
 	bool is_geometry_child_column = false;
-	if (type.id() == LogicalTypeId::GEOMETRY && this->parent && this->parent->type.id() == LogicalTypeId::GEOMETRY) {
-		// Geometry child column
+	if (is_geo_type(type.id()) && this->parent && is_geo_type(this->parent->type.id())) {
+		// Geometry/geography child column
 		is_geometry_child_column = true;
 	}
 
 	if (type.InternalType() == PhysicalType::STRUCT || type.InternalType() == PhysicalType::ARRAY ||
-	    (type.id() == LogicalTypeId::GEOMETRY && !is_geometry_child_column)) {
+	    (is_geo_type(type.id()) && !is_geometry_child_column)) {
 		// structs and fixed size lists don't have segments
 		D_ASSERT(!data.GetRootSegment());
 		return;
@@ -1541,7 +1551,7 @@ void ColumnData::Verify(RowGroup &parent) {
 shared_ptr<ColumnData> ColumnData::CreateColumn(BlockManager &block_manager, DataTableInfo &info, idx_t column_index,
                                                 const LogicalType &type, ColumnDataType data_type,
                                                 optional_ptr<ColumnData> parent) {
-	if (type.id() == LogicalTypeId::GEOMETRY) {
+	if (type.id() == LogicalTypeId::GEOMETRY || type.id() == LogicalTypeId::GEOGRAPHY) {
 		return make_shared_ptr<GeoColumnData>(block_manager, info, column_index, type, data_type, parent);
 	}
 	if (type.id() == LogicalTypeId::VARIANT) {

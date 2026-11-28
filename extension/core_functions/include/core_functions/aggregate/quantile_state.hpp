@@ -265,22 +265,33 @@ struct WindowQuantileState {
 
 	template <typename RESULT_TYPE, bool DISCRETE>
 	RESULT_TYPE WindowScalar(ClientContext &context, CursorType &data, const SubFrames &frames, const idx_t n,
-	                         Vector &result, const QuantileValue &q) const {
+	                         Vector &result, const QuantileValue &q, const bool desc) const {
 		D_ASSERT(n > 0);
 		if (qst) {
+			// the tree is sorted in the direction of the quantile
 			return qst->WindowScalar<INPUT_TYPE, RESULT_TYPE, DISCRETE>(context, data, frames, n, result, q);
 		} else if (s) {
 			// Find the position(s) needed
 			try {
-				QuantileInterpolator<DISCRETE> interp(q, s->size(), false);
-				s->at(interp.FRN, interp.CRN - interp.FRN + 1, skips);
+				const auto count = s->size();
+				QuantileInterpolator<DISCRETE> interp(q, count, desc);
+				// the skip list is ascending, so a descending quantile takes its positions from the end
+				auto first = interp.FRN;
+				auto last = interp.CRN;
+				if (desc) {
+					first = count - 1 - interp.CRN;
+					last = count - 1 - interp.FRN;
+				}
+				s->at(first, last - first + 1, skips);
 				// string values are views into the skips member, which outlives the extraction
 				array<INPUT_TYPE, 2> dest;
-				dest[0] = SkipValue::Load(skips[0].second);
 				if (skips.size() > 1) {
-					dest[1] = SkipValue::Load(skips[1].second);
+					// the first value is the one at the lower quantile position, which is the greater value descending
+					dest[0] = SkipValue::Load(skips[desc ? 1 : 0].second);
+					dest[1] = SkipValue::Load(skips[desc ? 0 : 1].second);
 				} else {
 					// Avoid UMA
+					dest[0] = SkipValue::Load(skips[0].second);
 					dest[1] = SkipValue::Load(skips[0].second);
 				}
 				return interp.template Extract<INPUT_TYPE, RESULT_TYPE>(dest.data(), result);
@@ -309,7 +320,8 @@ struct WindowQuantileState {
 
 		for (const auto &q : bind_data.order) {
 			const auto &quantile = bind_data.quantiles[q];
-			rdata[lentry.offset + q] = WindowScalar<CHILD_TYPE, DISCRETE>(context, data, frames, n, result, quantile);
+			rdata[lentry.offset + q] =
+			    WindowScalar<CHILD_TYPE, DISCRETE>(context, data, frames, n, result, quantile, bind_data.desc);
 		}
 	}
 };

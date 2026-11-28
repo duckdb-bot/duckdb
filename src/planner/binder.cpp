@@ -312,12 +312,12 @@ void Binder::SetDecimalWidthLimit(optional_ptr<const DecimalWidthLimit> limit) {
 	decimal_width_limit = limit;
 }
 
-void Binder::SetBindingTrySubquery() {
-	binding_try_subquery = true;
+void Binder::SetUnderTry() {
+	under_try = true;
 }
 
-bool Binder::IsBindingTrySubquery() const {
-	return binding_try_subquery;
+bool Binder::IsUnderTry() const {
+	return under_try;
 }
 
 const TrySubqueryPlanIndexes &Binder::GetTrySubqueryPlanIndexes() const {

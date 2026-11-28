@@ -141,8 +141,11 @@ void CTEBindState::Bind(CTEBinding &binding) {
 	query_binder->bind_context.AddCTEBinding(binding.GetIndex(), binding.GetBindingAlias(), vector<Identifier>(),
 	                                         vector<LogicalType>(), self_type);
 
-	// bind the actual CTE
+	// bind the actual CTE, the statement returns what its own query returns whatever the CTE is
+	auto &properties = parent_binder.GetStatementProperties();
+	const auto return_type = properties.return_type;
 	query = query_binder->Bind(cte_def);
+	properties.return_type = return_type;
 
 	// after binding - we add the active binders we removed back so we can leave the binder in its original state
 	parent_binder.RestoreScopes(stored_binders);

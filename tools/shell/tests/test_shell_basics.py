@@ -36,6 +36,18 @@ def test_no_builtin_extensions_allows_explicit_load_and_preserves_reopen(shell, 
     test.run().check_stdout("false\n{}\nfalse")
 
 
+def test_data_modifying_cte_prints_rows(shell):
+    test = (
+        ShellTest(shell, arguments=["-csv"])
+        .statement("CREATE TABLE t(a INTEGER);")
+        .statement("WITH ins AS (INSERT INTO t VALUES (7)) SELECT 1 AS x;")
+        .statement("WITH ins AS (INSERT INTO t VALUES (8)) INSERT INTO t VALUES (9) RETURNING a AS y;")
+        .statement("SELECT count(*) AS rows_in_t FROM t;")
+    )
+    result = test.run()
+    result.check_stdout("x\n1\ny\n9\nrows_in_t\n3")
+
+
 def test_range(shell):
     test = (
         ShellTest(shell)

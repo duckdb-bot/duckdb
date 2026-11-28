@@ -351,6 +351,42 @@ TEST_CASE("Test duckdb_result_return_type", "[capi]") {
 
 	result = tester.Query("FROM t");
 	REQUIRE(duckdb_result_return_type(result->InternalResult()) == DUCKDB_RESULT_TYPE_QUERY_RESULT);
+
+	// a statement returns what its own query returns, whatever its data-modifying CTEs are
+	REQUIRE_NO_FAIL(tester.Query("CREATE TABLE u (id INT)"));
+	REQUIRE_NO_FAIL(tester.Query("INSERT INTO u VALUES (1), (2)"));
+	for (auto &query : {"WITH ins AS (INSERT INTO t VALUES (7), (8), (9)) SELECT 42 AS x",
+	                    "WITH ins AS (INSERT INTO t VALUES (7), (8), (9)) SELECT 42 AS x FROM ins",
+	                    "WITH upd AS (UPDATE t SET id = id + 100) SELECT 42 AS x",
+	                    "WITH del AS (DELETE FROM u WHERE id = 1) SELECT 42 AS x",
+	                    "WITH ins AS (INSERT INTO t VALUES (7) RETURNING id), del AS (DELETE FROM u WHERE id = 2) "
+	                    "SELECT 42 AS x FROM ins",
+	                    "WITH del AS (DELETE FROM u WHERE id = 2), ins AS (INSERT INTO t VALUES (7) RETURNING id) "
+	                    "SELECT 42 AS x FROM ins",
+	                    "WITH ins AS (INSERT INTO t VALUES (9)) INSERT INTO u VALUES (42) RETURNING id",
+	                    "WITH ins AS (INSERT INTO t VALUES (9)) VALUES (42)"}) {
+		result = tester.Query(query);
+		REQUIRE_NO_FAIL(*result);
+		REQUIRE(duckdb_result_return_type(result->InternalResult()) == DUCKDB_RESULT_TYPE_QUERY_RESULT);
+		REQUIRE(result->rows_changed() == 0);
+		REQUIRE(result->row_count() == 1);
+		REQUIRE(result->Fetch<int32_t>(0, 0) == 42);
+	}
+
+	// a value that is no count is not read as one
+	result = tester.Query("WITH ins AS (INSERT INTO t VALUES (7)) SELECT 'abc' AS x");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(duckdb_result_return_type(result->InternalResult()) == DUCKDB_RESULT_TYPE_QUERY_RESULT);
+	REQUIRE(result->rows_changed() == 0);
+	REQUIRE(result->Fetch<string>(0, 0) == "abc");
+
+	// the count of the statement itself, not of its CTE
+	result =
+	    tester.Query("WITH ins AS (INSERT INTO t VALUES (7), (8), (9) RETURNING id) INSERT INTO u SELECT 5 FROM ins "
+	                 "LIMIT 1");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(duckdb_result_return_type(result->InternalResult()) == DUCKDB_RESULT_TYPE_CHANGED_ROWS);
+	REQUIRE(result->rows_changed() == 1);
 }
 
 TEST_CASE("Test DataChunk populate ListVector in C API", "[capi]") {

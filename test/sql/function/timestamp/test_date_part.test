@@ -714,6 +714,106 @@ NULL	NULL
 infinity	NULL
 
 # EPOCH_MS doesn't  require ICU
+# epoch_ms on the other timestamp precisions
+query IIII
+SELECT epoch_ms(TIMESTAMP_NS '2026-07-01 09:32:06.999999533'), epoch_ms(TIMESTAMP_NS '2026-07-01 09:32:06.1234567'), epoch_ms(TIMESTAMP_MS '2026-07-01 09:32:06.999'), epoch_ms(TIMESTAMP_S '2026-07-01 09:32:06');
+----
+1782898327000	1782898326123	1782898326999	1782898326000
+
+query III
+SELECT epoch_ms(TIMESTAMP_NS '1962-07-31 12:20:48.123456789'), epoch_ms(NULL::TIMESTAMP_NS), epoch_ms('infinity'::TIMESTAMP_NS);
+----
+-234185951877	NULL	NULL
+
+# half millisecond ties round like the implicit cast to TIMESTAMP did in earlier versions
+query IIIIII
+SELECT epoch_ms(make_timestamp_ns(499499)), epoch_ms(make_timestamp_ns(499500)), epoch_ms(make_timestamp_ns(500000)), epoch_ms(make_timestamp_ns(-499000)), epoch_ms(make_timestamp_ns(-499001)), epoch_ms(make_timestamp_ns(-499500));
+----
+0	1	1	0	0	-1
+
+# TIMESTAMP_MS and TIMESTAMP_S values outside the TIMESTAMP_NS range
+query II
+SELECT epoch_ms(TIMESTAMP_MS '2500-01-01 00:00:00'), epoch_ms(TIMESTAMP_S '1600-01-01 00:00:00');
+----
+16725225600000	-11676096000000
+
+query II
+SELECT epoch_ms(TIME_NS '12:34:56.123456789'), epoch_ms(TIME '12:34:56.123456');
+----
+45296123	45296123
+
+# statistics of epoch_ms over a finite TIMESTAMP_NS column stay exact
+statement ok
+CREATE TABLE ns_finite AS SELECT make_timestamp_ns(n * 1000000) AS ts FROM range(-2, 3) t(n);
+
+query II
+SELECT min(epoch_ms(ts)), max(epoch_ms(ts)) FROM ns_finite;
+----
+-2	2
+
+query III
+SELECT count(*) FILTER (WHERE epoch_ms(ts) < -2), count(*) FILTER (WHERE epoch_ms(ts) BETWEEN -1 AND 1), count(*) FILTER (WHERE epoch_ms(ts) > 2) FROM ns_finite;
+----
+0	3	0
+
+query I
+SELECT count(*) FROM ns_finite WHERE epoch_ms(ts) < -2;
+----
+0
+
+# statistics of the TIMESTAMP_MS and TIMESTAMP_S overloads stay exact too
+statement ok
+CREATE TABLE ms_finite AS SELECT (TIMESTAMP '1970-01-01' + to_milliseconds(n))::TIMESTAMP_MS AS ts FROM range(-2, 3) t(n);
+
+statement ok
+CREATE TABLE s_finite AS SELECT (TIMESTAMP '1970-01-01' + to_seconds(n))::TIMESTAMP_S AS ts FROM range(-2, 3) t(n);
+
+query IIII
+SELECT min(epoch_ms(ts)), max(epoch_ms(ts)), count(*) FILTER (WHERE epoch_ms(ts) < -2), count(*) FILTER (WHERE epoch_ms(ts) BETWEEN -1 AND 1) FROM ms_finite;
+----
+-2	2	0	3
+
+query IIII
+SELECT min(epoch_ms(ts)), max(epoch_ms(ts)), count(*) FILTER (WHERE epoch_ms(ts) < -2000), count(*) FILTER (WHERE epoch_ms(ts) BETWEEN -1000 AND 1000) FROM s_finite;
+----
+-2000	2000	0	3
+
+statement ok
+CREATE TABLE timestamps_ns AS SELECT ts::TIMESTAMP_NS AS ts FROM timestamps;
+
+query II
+SELECT ts, epoch_ms(ts) FROM timestamps_ns WHERE epoch_ms(ts) > 0 ORDER BY ALL;
+----
+1992-01-01 01:01:01.4	694227661400
+1992-01-01 01:01:02.2	694227662200
+1992-01-01 01:01:02.4	694227662400
+1993-08-14 08:22:33	745316553000
+1993-08-14 08:22:33.42	745316553420
+2001-04-20 14:42:11	987777731000
+2001-04-20 14:42:11.123	987777731123
+2004-01-31 12:00:00.00005	1075550400000
+2004-01-31 12:00:00.05	1075550400050
+2004-02-01 12:00:00.00005	1075636800000
+2004-02-01 12:00:00.05	1075636800050
+2004-02-29 13:05:47.123456	1078059947123
+2008-01-01 00:00:01.5	1199145601500
+2008-01-01 00:00:01.594	1199145601594
+2008-01-01 00:00:01.794	1199145601794
+2008-01-01 00:00:01.88926	1199145601889
+2008-01-01 00:00:01.894	1199145601894
+2008-01-01 00:00:01.98926	1199145601989
+2008-01-01 00:00:01.99926	1199145601999
+2008-01-01 00:00:11.1	1199145611100
+2019-01-06 04:03:02.123456	1546747382123
+2019-01-06 04:03:02.5	1546747382500
+2020-01-01 00:00:01.88926	1577836801889
+2020-12-31 21:25:58.745232	1609449958745
+2021-04-15 14:55:17.915	1618498517915
+2021-04-15 14:55:17.915	1618498517915
+2021-05-02 12:11:49.5	1619957509500
+2021-12-01 13:54:48.123456	1638366888123
+2022-01-01 00:00:41	1640995241000
+
 query II
 SELECT ts::TIMESTAMPTZ, epoch_ms(ts::TIMESTAMPTZ) FROM timestamps ORDER BY ALL;
 ----

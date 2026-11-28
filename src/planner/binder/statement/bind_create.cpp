@@ -950,15 +950,17 @@ BoundStatement Binder::Bind(CreateStatement &stmt) {
 				}
 			}
 		}
+		bool view_exists = false;
 		if (stmt.info->on_conflict == OnCreateConflict::IGNORE_ON_CONFLICT) {
 			CatalogTransaction transaction(schema.ParentCatalog(), context);
 			auto existing_entry = schema.GetEntry(transaction, CatalogType::VIEW_ENTRY, base.GetViewName());
 			if (existing_entry && existing_entry->type == CatalogType::VIEW_ENTRY) {
 				// IF EXISTS and the view already exists - avoid binding
 				base.binding_mode = CreateViewBindingMode::SKIP_BINDING;
+				view_exists = true;
 			}
 		}
-		if (base.query && !base.temporary) {
+		if (base.query && !base.temporary && !view_exists) {
 			// the query of the view is stored, so a cast in it may not target a decimal wider than the database stores
 			auto &attached = schema.ParentCatalog().GetAttached();
 			if (!attached.IsTemporary() && attached.HasStorageManager()) {

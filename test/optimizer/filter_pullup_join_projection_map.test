@@ -21,6 +21,12 @@ INSERT INTO inner_rows VALUES (NULL, -1), (NULL, -2);
 statement ok
 CREATE TABLE other_rows AS SELECT i AS k, i * 2 AS z FROM range(100) t(i);
 
+statement ok
+CREATE TABLE text_rows AS SELECT i AS k, CASE WHEN i = 7 THEN 'bad' ELSE i::VARCHAR END AS s FROM range(100) t(i);
+
+statement ok
+CREATE SECURE VIEW secure_inner AS SELECT k, w FROM inner_rows WHERE w < 500;
+
 # A constraint on the outer key of a lateral join also filters the scan of the inner table.
 query II
 EXPLAIN (FORMAT JSON) SELECT sum(q.w), count(*) FROM outer_rows o, LATERAL (SELECT i.w FROM inner_rows i WHERE i.k = o.k) q WHERE o.k <> 7;
@@ -57,6 +63,23 @@ query I
 SELECT count(*) FROM outer_rows o, LATERAL (SELECT i.w FROM inner_rows i WHERE i.k IS NOT DISTINCT FROM o.k) q WHERE o.k IS NULL;
 ----
 2
+
+# The implied filter stays above a filter with a projection map, here the one of the LIMIT.
+query II
+SELECT count(*), sum(q.w) FROM outer_rows o, LATERAL (SELECT i.w FROM inner_rows i WHERE i.k = o.k ORDER BY i.w LIMIT 2) q WHERE o.k <> 7;
+----
+198	19786
+
+# The implied filter enters a secure view like a filter of the query, and is reported at its boundary.
+query II
+EXPLAIN (FORMAT JSON) SELECT sum(q.w), count(*) FROM outer_rows o, LATERAL (SELECT i.w FROM secure_inner i WHERE i.k = o.k) q WHERE o.k <> 7;
+----
+physical_plan	<REGEX>:.*"View": "[^"]*secure_inner"[^}]*"Filters": [^}]*k != 7.*
+
+query II
+SELECT sum(q.w), count(*) FROM outer_rows o, LATERAL (SELECT i.w FROM secure_inner i WHERE i.k = o.k) q WHERE o.k <> 7;
+----
+123715	495
 
 # The other input can already have a filter at its top, here from the ON clause.
 query II
@@ -114,6 +137,23 @@ SELECT count(*), sum(s.w + x.z) FROM (SELECT o.k, q.w FROM outer_rows o, LATERAL
 ----
 990	593790
 
+# The enclosing join can have computed keys, which lets the pullup add columns to the projections below it.
+query II
+SELECT count(*), sum(s.w + x.z) FROM (SELECT o.k, q.w FROM outer_rows o, LATERAL (SELECT i.w FROM inner_rows i WHERE i.k = o.k) q WHERE o.k <> 7) s JOIN other_rows x ON s.k + 1 = x.k + 1;
+----
+990	593790
+
+# A filter that can throw is not copied for the enclosing join, and does not keep the constraint next to it back.
+query II
+EXPLAIN (FORMAT JSON) SELECT count(*), sum(s.w + x.z) FROM (SELECT o.k, q.w FROM text_rows o, LATERAL (SELECT i.w FROM inner_rows i WHERE i.k = o.k) q WHERE o.k <> 7 AND o.s::INTEGER >= 0) s JOIN other_rows x ON s.k = x.k;
+----
+physical_plan	<REGEX>:.*"Table": "[^"]*other_rows"[^}]*"Filters": [^}]*k != 7.*
+
+query II
+SELECT count(*), sum(s.w + x.z) FROM (SELECT o.k, q.w FROM text_rows o, LATERAL (SELECT i.w FROM inner_rows i WHERE i.k = o.k) q WHERE o.k <> 7 AND o.s::INTEGER >= 0) s JOIN other_rows x ON s.k = x.k;
+----
+990	593790
+
 # A volatile filter on the outer rows is not copied for the enclosing join.
 statement ok
 CREATE SEQUENCE outer_calls;
@@ -141,6 +181,20 @@ query I
 SELECT currval('condition_calls');
 ----
 101
+
+# The same for a volatile condition that is no comparison, which runs once for each pair with equal keys.
+statement ok
+CREATE SEQUENCE pair_calls;
+
+query II
+SELECT count(*), sum(q.w) FROM outer_rows o JOIN LATERAL (SELECT i.k AS ik, i.w, o.v AS ov FROM inner_rows i) q ON q.ik = o.k AND (o.v + nextval('pair_calls') > q.w - 100000 OR q.w < 0) AND q.ik <> 7;
+----
+990	494930
+
+query I
+SELECT currval('pair_calls');
+----
+990
 
 # Without an enclosing join that uses it, the constraint is not repeated on its own input.
 query II

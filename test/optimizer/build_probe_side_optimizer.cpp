@@ -89,8 +89,8 @@ TEST_CASE("Build/probe optimization preserves correlated recursive domain build 
 	REQUIRE(nested_cross->children[1].get() == nested_left);
 	auto correlated_result = connection.Query(correlated_query);
 	REQUIRE_NO_FAIL(*correlated_result);
-	CHECK_COLUMN(correlated_result, 0, {2, 3});
-	CHECK_COLUMN(correlated_result, 1, {3000, 4000});
+	REQUIRE(CHECK_COLUMN(correlated_result, 0, {2, 3}));
+	REQUIRE(CHECK_COLUMN(correlated_result, 1, {3000, 4000}));
 
 	const string recursive_query = R"(
 		WITH RECURSIVE t(i, j) AS (

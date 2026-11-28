@@ -1,0 +1,148 @@
+# name: test/sql/transactions/commit_conflict_table_change_message.test
+# description: A commit that conflicts with a change to its table says whether the table was altered or dropped
+# group: [transactions]
+
+statement ok
+CREATE TABLE tbl AS SELECT range AS id, range AS val FROM range(100);
+
+# changes that keep the storage of the table
+
+# INSERT against a comment on the table
+statement ok con1
+BEGIN
+
+statement ok con1
+INSERT INTO tbl VALUES (100, 100);
+
+statement ok con2
+COMMENT ON TABLE tbl IS 'changed';
+
+statement error con1
+COMMIT
+----
+Attempting to modify table "tbl" but another transaction has altered this table
+
+# DELETE against a comment on the table
+statement ok con1
+BEGIN
+
+statement ok con1
+DELETE FROM tbl WHERE id = 1;
+
+statement ok con2
+COMMENT ON TABLE tbl IS 'changed';
+
+statement error con1
+COMMIT
+----
+Attempting to modify table "tbl" but another transaction has altered this table
+
+# UPDATE against a comment on the table
+statement ok con1
+BEGIN
+
+statement ok con1
+UPDATE tbl SET val = val + 1 WHERE id = 2;
+
+statement ok con2
+COMMENT ON TABLE tbl IS 'changed';
+
+statement error con1
+COMMIT
+----
+Attempting to modify table "tbl" but another transaction has altered this table
+
+# DELETE against a renamed column
+statement ok con1
+BEGIN
+
+statement ok con1
+DELETE FROM tbl WHERE id = 1;
+
+statement ok con2
+ALTER TABLE tbl RENAME COLUMN val TO other_val;
+
+statement error con1
+COMMIT
+----
+Attempting to modify table "tbl" but another transaction has altered this table
+
+statement ok con2
+ALTER TABLE tbl RENAME COLUMN other_val TO val;
+
+# UPDATE against a renamed table
+statement ok con1
+BEGIN
+
+statement ok con1
+UPDATE tbl SET val = val + 1 WHERE id = 2;
+
+statement ok con2
+ALTER TABLE tbl RENAME TO renamed_tbl;
+
+statement error con1
+COMMIT
+----
+but another transaction has altered this table
+
+statement ok con2
+ALTER TABLE renamed_tbl RENAME TO tbl;
+
+# INSERT against a drop that is not committed
+statement ok con1
+BEGIN
+
+statement ok con1
+INSERT INTO tbl VALUES (100, 100);
+
+statement ok con2
+BEGIN
+
+statement ok con2
+DROP TABLE tbl;
+
+statement error con1
+COMMIT
+----
+Attempting to modify table "tbl" but another transaction has dropped this table
+
+statement ok con2
+ROLLBACK
+
+# none of the failed commits changed the table
+query III
+SELECT count(*), sum(id), sum(val) FROM tbl;
+----
+100	4950	4950
+
+# changes that replace or drop the storage of the table
+
+# DELETE against a new column
+statement ok con1
+BEGIN
+
+statement ok con1
+DELETE FROM tbl WHERE id = 1;
+
+statement ok con2
+ALTER TABLE tbl ADD COLUMN extra INTEGER;
+
+statement error con1
+COMMIT
+----
+Attempting to modify table "tbl" but another transaction has altered this table
+
+# UPDATE against a committed drop
+statement ok con1
+BEGIN
+
+statement ok con1
+UPDATE tbl SET val = val + 1 WHERE id = 2;
+
+statement ok con2
+DROP TABLE tbl;
+
+statement error con1
+COMMIT
+----
+Attempting to modify table "tbl" but another transaction has dropped this table

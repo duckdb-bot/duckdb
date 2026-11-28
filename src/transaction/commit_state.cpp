@@ -290,6 +290,14 @@ void CommitState::CommitEntryDrop(CatalogEntry &entry, data_ptr_t dataptr, Commi
 	}
 }
 
+//! Throws the conflict of a row change with the newer version another transaction made of its table
+[[noreturn]] static void ThrowTableChangedConflict(DuckTableEntry &table) {
+	// the version of the storage is not enough, an alter can keep the storage and a drop marks it only on commit
+	const bool dropped = table.Parent().type == CatalogType::DELETED_ENTRY;
+	throw TransactionException("Attempting to modify table %s but another transaction has %s this table",
+	                           table.GetStorage().GetTableName(), dropped ? "dropped" : "altered");
+}
+
 void CommitState::CommitEntry(UndoFlags type, data_ptr_t data, CommitInfo &commit_info) {
 	switch (type) {
 	case UndoFlags::CATALOG_ENTRY: {
@@ -380,11 +388,7 @@ void CommitState::CommitEntry(UndoFlags type, data_ptr_t data, CommitInfo &commi
 		// append:
 		auto info = reinterpret_cast<AppendInfo *>(data);
 		if (info->table->HasParent() && info->table->Parent().timestamp != transaction.GetTransactionId()) {
-			auto &storage = info->table->GetStorage();
-			auto table_name = storage.GetTableName();
-			auto table_modification = storage.TableModification();
-			throw TransactionException("Attempting to modify table %s but another transaction has %s this table",
-			                           table_name, table_modification);
+			ThrowTableChangedConflict(*info->table);
 		}
 		// mark the tuples as committed
 		info->table->GetStorage().CommitAppend(commit_id, info->start_row, info->count);
@@ -394,11 +398,7 @@ void CommitState::CommitEntry(UndoFlags type, data_ptr_t data, CommitInfo &commi
 		// deletion:
 		auto info = reinterpret_cast<DeleteInfo *>(data);
 		if (info->table->HasParent() && info->table->Parent().timestamp != transaction.GetTransactionId()) {
-			auto &storage = info->table->GetStorage();
-			auto table_name = storage.GetTableName();
-			auto table_modification = storage.TableModification();
-			throw TransactionException("Attempting to modify table %s but another transaction has %s this table",
-			                           table_name, table_modification);
+			ThrowTableChangedConflict(*info->table);
 		}
 		if (CommitDelete(*info, transaction.GetTransactionId())) {
 			commit_info.has_index_deletes = true;
@@ -409,11 +409,7 @@ void CommitState::CommitEntry(UndoFlags type, data_ptr_t data, CommitInfo &commi
 		// update:
 		auto info = reinterpret_cast<UpdateInfo *>(data);
 		if (info->table->HasParent() && info->table->Parent().timestamp != transaction.GetTransactionId()) {
-			auto &storage = info->table->GetStorage();
-			auto table_name = storage.GetTableName();
-			auto table_modification = storage.TableModification();
-			throw TransactionException("Attempting to modify table %s but another transaction has %s this table",
-			                           table_name, table_modification);
+			ThrowTableChangedConflict(*info->table);
 		}
 		info->version_number = commit_id;
 		break;

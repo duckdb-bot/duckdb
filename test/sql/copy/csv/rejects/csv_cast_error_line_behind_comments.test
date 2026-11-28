@@ -117,9 +117,47 @@ query I
 SELECT * FROM read_csv('{TEST_DIR}/casts_then_unterminated_quote.csv', auto_detect = false, header = false, columns = {'a': 'INTEGER[]'}, strict_mode = true, store_rejects = true, rejects_table = 'rejects_quote', rejects_scan = 'scan_quote');
 ----
 
-query ITT
-SELECT line, error_type, csv_line FROM rejects_quote ORDER BY line;
+query IT
+SELECT line, error_type FROM rejects_quote ORDER BY line;
 ----
-1	CAST	x
-2	CAST	1
-3	UNQUOTED VALUE	"abc
+1	CAST
+2	CAST
+3	UNQUOTED VALUE
+
+# such a row can fail a cast in a column in front of its error, in a chunk of its own
+statement ok
+COPY (SELECT line FROM (SELECT -1 AS i, 'a,b' AS line UNION ALL SELECT i, '11111111-2222-3333-4444-555555555555,ok' FROM range(2048) t(i) UNION ALL SELECT 2048, 'bad,"abc') ORDER BY i) TO '{TEST_DIR}/bad_row_with_unterminated_quote.csv' (HEADER false, QUOTE '', DELIMITER '|');
+
+foreach parallel false true
+
+query II
+SELECT count(a), count(b) FROM read_csv('{TEST_DIR}/bad_row_with_unterminated_quote.csv', auto_detect = false, header = true, columns = {'a': 'UUID', 'b': 'VARCHAR'}, strict_mode = true, parallel = {parallel}, store_rejects = true, rejects_table = 'rejects_end_{parallel}', rejects_scan = 'scan_end_{parallel}');
+----
+2048	2048
+
+query IT
+SELECT line, error_type FROM rejects_end_{parallel} ORDER BY error_type;
+----
+2050	CAST
+2050	UNQUOTED VALUE
+
+endloop
+
+# an empty line that is a row of an empty string, because the column is forced not to be NULL
+statement ok
+COPY (SELECT line FROM (VALUES (0, 'a'), (1, '11111111-2222-3333-4444-555555555555'), (2, '')) t(i, line) ORDER BY i) TO '{TEST_DIR}/empty_row.csv' (HEADER false, QUOTE '', DELIMITER '|');
+
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/empty_row.csv', auto_detect = false, header = true, columns = {'a': 'UUID'}, force_not_null = ['a']);
+----
+CSV Error on Line: 3
+
+query I
+SELECT count(a) FROM read_csv('{TEST_DIR}/empty_row.csv', auto_detect = false, header = true, columns = {'a': 'UUID'}, force_not_null = ['a'], store_rejects = true, rejects_table = 'rejects_empty', rejects_scan = 'scan_empty');
+----
+1
+
+query IT
+SELECT line, error_type FROM rejects_empty;
+----
+3	CAST

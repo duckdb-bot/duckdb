@@ -1056,6 +1056,7 @@ bool StringValueResult::EmptyLine(StringValueResult &result, const idx_t buffer_
 			} else {
 				result.validity_mask[0]->SetInvalid(static_cast<idx_t>(result.number_of_rows));
 			}
+			result.lines_read_per_row[static_cast<idx_t>(result.number_of_rows)] = result.lines_read;
 			result.number_of_rows++;
 		}
 		if (static_cast<idx_t>(result.number_of_rows) >= result.result_size) {
@@ -1775,6 +1776,7 @@ StringValueScanner::MoveBufferResult StringValueScanner::TryMoveToNextBuffer() {
 			const auto chunk_col_id_before = result.chunk_col_id;
 			if (result.current_errors.HandleErrors(result)) {
 				result.InvalidateUnwrittenColumns(chunk_col_id_before);
+				result.StoreLinePosition();
 				result.number_of_rows++;
 			}
 		}
@@ -2106,6 +2108,7 @@ void StringValueScanner::FinishBoundaryScan(const bool moved) {
 	const auto chunk_col_id_before = result.chunk_col_id;
 	if (result.current_errors.HandleErrors(result)) {
 		result.InvalidateUnwrittenColumns(chunk_col_id_before);
+		result.StoreLinePosition();
 		result.number_of_rows++;
 	}
 	if (!iterator.done) {
@@ -2135,6 +2138,7 @@ void StringValueScanner::ProcessRemainingBuffers() {
 			result.validity_mask[result.chunk_col_id++]->SetInvalid(static_cast<idx_t>(result.number_of_rows));
 			result.cur_col_id++;
 		}
+		result.lines_read_per_row[static_cast<idx_t>(result.number_of_rows)] = lines_read;
 		result.number_of_rows++;
 	}
 }

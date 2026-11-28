@@ -16,6 +16,9 @@ enum class ParserWorkload : uint8_t {
 	WIDE_SELECT,
 	NESTED_EXPRESSIONS,
 	MALFORMED_SELECT,
+	NESTED_CTES,
+	MALFORMED_CTES,
+	NESTED_PARENS,
 	STATEMENTS,
 	TPCH,
 	TPCDS,
@@ -47,7 +50,7 @@ public:
 		auto state = make_uniq<ParserBenchmarkState>();
 		state->queries = LoadQueries();
 		// Keep malformed-input backtracking under the runner's timeout in Run.
-		if (workload == ParserWorkload::MALFORMED_SELECT) {
+		if (ExpectsParserError()) {
 			return std::move(state);
 		}
 		for (idx_t i = 0; i < state->queries.size(); i++) {
@@ -71,7 +74,7 @@ public:
 				if (state.interrupted.load()) {
 					return;
 				}
-				if (workload == ParserWorkload::MALFORMED_SELECT) {
+				if (ExpectsParserError()) {
 					state.parser_errors += RejectMalformedQuery(state.options, query);
 					continue;
 				}
@@ -90,7 +93,7 @@ public:
 
 	string Verify(BenchmarkState *state_p) override {
 		auto &state = static_cast<ParserBenchmarkState &>(*state_p);
-		if (workload == ParserWorkload::MALFORMED_SELECT) {
+		if (ExpectsParserError()) {
 			return state.parser_errors == iterations * QueryCount() ? string()
 			                                                        : "Expected a ParserException on every call";
 		}
@@ -110,7 +113,7 @@ public:
 	}
 
 	string DisplayName() override {
-		if (workload == ParserWorkload::MALFORMED_SELECT) {
+		if (ExpectsParserError()) {
 			return StringUtil::Format("%s (%llu expected ParserExceptions/run)", name, iterations);
 		}
 		return StringUtil::Format("%s (%llu inputs x %llu repetitions, %llu statements/input)", name, QueryCount(),
@@ -118,7 +121,7 @@ public:
 	}
 
 	string BenchmarkInfo() override {
-		if (workload == ParserWorkload::MALFORMED_SELECT) {
+		if (ExpectsParserError()) {
 			return StringUtil::Format("Parser::ParseQuery, %llu rejected inputs/run; reused compiled grammar, "
 			                          "includes failed matching, error construction and cleanup",
 			                          iterations);
@@ -152,6 +155,13 @@ public:
 		}
 		case ParserWorkload::MALFORMED_SELECT:
 			return "select (((((((((((((;";
+		case ParserWorkload::NESTED_CTES:
+			return StringUtil::Repeat("WITH a AS (", 8) + "DELETE FROM t" + StringUtil::Repeat(") DELETE FROM t", 8);
+		case ParserWorkload::MALFORMED_CTES:
+			return StringUtil::Repeat("WITH a AS (", 8) + ";";
+		case ParserWorkload::NESTED_PARENS:
+			return "SELECT * FROM " + StringUtil::Repeat("(", 1024) + "t a CROSS JOIN t b" +
+			       StringUtil::Repeat(")", 1024);
 		case ParserWorkload::STATEMENTS: {
 			string query;
 			for (idx_t i = 0; i < 32; i++) {
@@ -196,6 +206,10 @@ public:
 	}
 
 private:
+	bool ExpectsParserError() const {
+		return workload == ParserWorkload::MALFORMED_SELECT || workload == ParserWorkload::MALFORMED_CTES;
+	}
+
 	static bool RejectMalformedQuery(const ParserOptions &options, const string &query) {
 		Parser parser(options);
 		try {
@@ -275,6 +289,9 @@ ParserMicroBenchmark parser_keyword_identifiers("ParserKeywordIdentifiers", Pars
 ParserMicroBenchmark parser_wide_select("ParserWideSelect", ParserWorkload::WIDE_SELECT, 55);
 ParserMicroBenchmark parser_nested_expressions("ParserNestedExpressions", ParserWorkload::NESTED_EXPRESSIONS, 250);
 ParserMicroBenchmark parser_malformed_select("ParserMalformedSelect", ParserWorkload::MALFORMED_SELECT, 400, 0);
+ParserMicroBenchmark parser_nested_ctes("ParserNestedCTEs", ParserWorkload::NESTED_CTES, 9000);
+ParserMicroBenchmark parser_malformed_ctes("ParserMalformedCTEs", ParserWorkload::MALFORMED_CTES, 16000, 0);
+ParserMicroBenchmark parser_nested_parens("ParserNestedParens", ParserWorkload::NESTED_PARENS, 190);
 ParserMicroBenchmark parser_statements("ParserStatements", ParserWorkload::STATEMENTS, 700, 32);
 ParserMicroBenchmark parser_tpch("ParserTPCH", ParserWorkload::TPCH, 12);
 ParserMicroBenchmark parser_tpcds("ParserTPCDS", ParserWorkload::TPCDS, 1);

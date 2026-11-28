@@ -2016,6 +2016,7 @@ packrat_memoized_rules:
   - Expression
   - TableRef
   - ParensTableRef
+  - WithClause
   - Identifier
   - ColId
   - CatalogQualification

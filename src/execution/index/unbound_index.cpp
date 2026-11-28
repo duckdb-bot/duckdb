@@ -4,6 +4,7 @@
 #include "duckdb/execution/index/bound_index.hpp"
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/parser/parsed_data/create_index_info.hpp"
+#include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/expression_binder/index_binder.hpp"
 #include "duckdb/storage/block_manager.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
@@ -76,7 +77,9 @@ unique_ptr<BoundIndex> UnboundIndex::Bind(IndexBinder &binder, const vector<Logi
 	// retry. Destroying the bound index would otherwise free the blocks this index still references.
 	if (HasBufferedReplays()) {
 		try {
-			bound_index->ApplyBufferedReplays(physical_column_types, buffered_replays, mapped_column_ids);
+			// a replay that the connection of the bind interrupts leaves this index for a retry as well
+			bound_index->ApplyBufferedReplays(binder.GetBinder().context, physical_column_types, buffered_replays,
+			                                  mapped_column_ids);
 		} catch (...) {
 			bound_index->DisownStorage();
 			throw;

@@ -225,11 +225,11 @@ public:
 	virtual string GetConstraintViolationMessage(VerifyExistenceType verify_type, idx_t failed_index,
 	                                             DataChunk &input) const DUCKDB_EXCLUDES(lock) = 0;
 
-	//! Replay index insert and delete operations buffered during WAL replay.
+	//! Replay index insert and delete operations buffered during WAL replay, with the context of the bind.
 	//! table_types has the physical types of the table in the order they appear, not logical (no generated columns).
 	//! mapped_column_ids maps each buffered data column to its physical table column.
-	void ApplyBufferedReplays(const vector<LogicalType> &table_types, BufferedIndexReplays &buffered_replays,
-	                          const vector<StorageIndex> &mapped_column_ids);
+	void ApplyBufferedReplays(const QueryContext &context, const vector<LogicalType> &table_types,
+	                          BufferedIndexReplays &buffered_replays, const vector<StorageIndex> &mapped_column_ids);
 
 protected:
 	friend class IndexDeltas;

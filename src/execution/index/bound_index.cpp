@@ -252,7 +252,8 @@ struct BufferedReplayState {
 };
 } // namespace
 
-void BoundIndex::ApplyBufferedReplays(const vector<LogicalType> &table_types, BufferedIndexReplays &buffered_replays,
+void BoundIndex::ApplyBufferedReplays(const QueryContext &context, const vector<LogicalType> &table_types,
+                                      BufferedIndexReplays &buffered_replays,
                                       const vector<StorageIndex> &mapped_column_ids) {
 	if (!buffered_replays.HasBufferedReplays()) {
 		return;
@@ -308,6 +309,7 @@ void BoundIndex::ApplyBufferedReplays(const vector<LogicalType> &table_types, Bu
 
 			if (replay_range.type == BufferedIndexReplay::INSERT_ENTRY) {
 				IndexAppendInfo append_info(IndexAppendMode::INSERT_DUPLICATES, nullptr);
+				append_info.context = context;
 				const auto error = Append(table_chunk, row_ids, append_info);
 				if (error.HasError()) {
 					if (error.Type() != ExceptionType::CONSTRAINT) {
@@ -318,7 +320,7 @@ void BoundIndex::ApplyBufferedReplays(const vector<LogicalType> &table_types, Bu
 				current_row += rows_to_process;
 				continue;
 			}
-			Delete(table_chunk, row_ids);
+			Delete(table_chunk, row_ids, context);
 			current_row += rows_to_process;
 		}
 	}

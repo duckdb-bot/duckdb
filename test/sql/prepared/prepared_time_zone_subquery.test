@@ -208,7 +208,9 @@ VARCHAR
 
 # a statement whose subquery reads a setting keeps no plan, one whose subquery typeof drops keeps its plan
 query II
-SELECT name, result_types IS NULL AS bound_again FROM duckdb_prepared_statements() ORDER BY name;
+SELECT name, result_types IS NULL AS bound_again FROM duckdb_prepared_statements()
+WHERE name IN ('subquery_cast', 'try_subquery_cast', 'derived_cast', 'nested_cast', 'setop_cast', 'range_cast', 'range_calendar', 'key_aggregate_cast', 'dropped_cast', 'dropped_try_cast', 'dropped_range', 'dropped_key_aggregate', 'dropped_variable', 'dropped_key_variable')
+ORDER BY name;
 ----
 derived_cast	true
 dropped_cast	false

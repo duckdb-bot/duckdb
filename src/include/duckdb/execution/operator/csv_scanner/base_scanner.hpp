@@ -46,8 +46,9 @@ public:
 		return buffer_pos == other.buffer_pos && buffer_idx == other.buffer_idx && buffer_size == other.buffer_size;
 	}
 
-	idx_t GetGlobalPosition(idx_t requested_buffer_size, bool first_char_nl = false) const {
-		return requested_buffer_size * buffer_idx + buffer_pos + first_char_nl;
+	//! newline_bytes is the length of the newline this position still points at, when it is the start of a line
+	idx_t GetGlobalPosition(idx_t requested_buffer_size, idx_t newline_bytes = 0) const {
+		return requested_buffer_size * buffer_idx + buffer_pos + newline_bytes;
 	}
 	idx_t buffer_pos = 0;
 	idx_t buffer_size = 0;

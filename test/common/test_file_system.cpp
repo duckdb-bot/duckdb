@@ -19,6 +19,7 @@
 #define TEST_HAVE_SYMLINK
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #else
 #include "duckdb/common/windows.hpp"
@@ -250,6 +251,49 @@ TEST_CASE("Character devices use streaming file semantics", "[file_system]") {
 	REQUIRE(fs.IsPipe("/dev/null"));
 	auto handle = fs.OpenFile("/dev/null", FileFlags::FILE_FLAGS_WRITE);
 	REQUIRE(handle->GetWriteMode() == FileWriteMode::SEQUENTIAL);
+}
+
+TEST_CASE("A character device is opened for writing while another process holds a lock on it", "[file_system]") {
+	int ready[2];
+	int done[2];
+	REQUIRE(pipe(ready) == 0);
+	REQUIRE(pipe(done) == 0);
+	// the child takes the lock that a writer takes on a regular file, and keeps it until it is told to go
+	pid_t pid = fork();
+	REQUIRE(pid >= 0);
+	if (pid == 0) {
+		char locked = 1;
+		int fd = open("/dev/null", O_WRONLY);
+		struct flock lock;
+		memset(&lock, 0, sizeof(lock));
+		lock.l_type = F_WRLCK;
+		lock.l_whence = SEEK_SET;
+		if (fd < 0 || fcntl(fd, F_SETLK, &lock) != 0) {
+			locked = 0;
+		}
+		if (write(ready[1], &locked, 1) == 1 && read(done[0], &locked, 1) == 1) {
+			_exit(0);
+		}
+		_exit(1);
+	}
+	char locked = 0;
+	REQUIRE(read(ready[0], &locked, 1) == 1);
+	string error;
+	try {
+		auto &fs = TestLocalFileSystem();
+		auto handle = fs.OpenFile("/dev/null", FileFlags::FILE_FLAGS_WRITE | FileLockType::WRITE_LOCK);
+		handle->Write(&locked, 1);
+	} catch (std::exception &ex) {
+		error = ex.what();
+	}
+	REQUIRE(write(done[1], &locked, 1) == 1);
+	int status = 0;
+	REQUIRE(waitpid(pid, &status, 0) == pid);
+	for (auto fd : {ready[0], ready[1], done[0], done[1]}) {
+		close(fd);
+	}
+	REQUIRE(locked == 1);
+	REQUIRE(error == "");
 }
 #endif
 

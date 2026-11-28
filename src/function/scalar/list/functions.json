@@ -94,7 +94,7 @@
             },
             {
                 "parameters": [
-                    {"name": "tuple", "type": "STRUCT"},
+                    {"name": "tuple", "type": "TUPLE"},
                     {"name": "index", "type": "ANY"}
                 ],
                 "description": "Extracts the entry from an unnamed `STRUCT` (tuple) using an index (1-based).",

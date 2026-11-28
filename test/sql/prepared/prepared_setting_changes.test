@@ -520,3 +520,30 @@ statement error
 EXECUTE in_schema;
 ----
 Type with name e does not exist
+
+# a prepared INSERT writes into the table of the current schema
+statement ok
+CREATE TABLE s1.target (i INTEGER);
+
+statement ok
+CREATE TABLE s2.target (i INTEGER);
+
+statement ok
+SET schema = 's1';
+
+statement ok
+PREPARE insert_target AS INSERT INTO target VALUES (1);
+
+statement ok
+EXECUTE insert_target;
+
+statement ok
+SET schema = 's2';
+
+statement ok
+EXECUTE insert_target;
+
+query II
+SELECT (SELECT count(*) FROM s1.target), (SELECT count(*) FROM s2.target);
+----
+1	1

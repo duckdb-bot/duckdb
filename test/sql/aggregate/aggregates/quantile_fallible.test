@@ -7,17 +7,17 @@
 statement error
 SELECT quantile_cont(d, 0.5) FROM (VALUES (DATE '5881580-07-10'), (DATE '5881580-07-09')) t(d);
 ----
-can't be cast to the destination type INT64
+timestamp field value out of range
 
 statement error
 SELECT median(d) FROM (VALUES (DATE '5881580-07-10'), (DATE '5881580-07-09')) t(d);
 ----
-can't be cast to the destination type INT64
+timestamp field value out of range
 
 statement error
 SELECT quantile_cont(d, [0.25, 0.75]) FROM (VALUES (DATE '5881580-07-10'), (DATE '5881580-07-09')) t(d);
 ----
-can't be cast to the destination type INT64
+timestamp field value out of range
 
 # the discrete quantile does not interpolate and keeps working on extreme dates
 

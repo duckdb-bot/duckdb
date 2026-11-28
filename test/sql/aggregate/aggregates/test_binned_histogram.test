@@ -269,7 +269,7 @@ SELECT histogram(d, b::DATE[]) FROM (VALUES (DATE '2020-01-01', ['2020-06-01']))
 statement error
 SELECT histogram(ts, b) FROM (VALUES (TIMESTAMP '2020-01-01', [DATE '5874897-12-31'])) t(ts, b)
 ----
-<REGEX>:.*Conversion Error.*can't be cast.*
+<REGEX>:.*Conversion Error.*timestamp field value out of range.*
 
 # the same conversion with a representable value keeps working
 query I

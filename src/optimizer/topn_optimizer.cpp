@@ -1,6 +1,7 @@
 #include "duckdb/optimizer/topn_optimizer.hpp"
 
 #include "duckdb/common/limits.hpp"
+#include "duckdb/planner/operator/logical_aggregate.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/planner/operator/logical_limit.hpp"
 #include "duckdb/planner/operator/logical_order.hpp"
@@ -18,6 +19,33 @@
 namespace duckdb {
 
 TopN::TopN(ClientContext &context_p) : context(context_p) {
+}
+
+//! Whether the rows come from a table function that gives no estimate of its own. Its estimate is then one row, or
+//! the rows of its input, which says nothing about how many rows a full sort would sort
+static bool ReadsSourceWithoutEstimate(LogicalOperator &op, ClientContext &context) {
+	reference<LogicalOperator> current = op;
+	while (true) {
+		switch (current.get().type) {
+		case LogicalOperatorType::LOGICAL_PROJECTION:
+		case LogicalOperatorType::LOGICAL_FILTER:
+		case LogicalOperatorType::LOGICAL_ORDER_BY:
+		case LogicalOperatorType::LOGICAL_WINDOW:
+			current = *current.get().children[0];
+			break;
+		case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY:
+			// without groups the number of rows does not depend on the input
+			if (current.get().Cast<LogicalAggregate>().groups.empty()) {
+				return false;
+			}
+			current = *current.get().children[0];
+			break;
+		case LogicalOperatorType::LOGICAL_GET:
+			return !current.get().Cast<LogicalGet>().HasSourceEstimate(context);
+		default:
+			return false;
+		}
+	}
 }
 
 bool TopN::CanOptimize(LogicalOperator &op, optional_ptr<ClientContext> context) {
@@ -39,23 +67,27 @@ bool TopN::CanOptimize(LogicalOperator &op, optional_ptr<ClientContext> context)
 			child_op->EstimateCardinality(*context);
 		}
 
+		auto order_op = child_op;
+		while (order_op->type == LogicalOperatorType::LOGICAL_PROJECTION) {
+			D_ASSERT(!order_op->children.empty());
+			order_op = order_op->children[0].get();
+		}
+		if (order_op->type != LogicalOperatorType::LOGICAL_ORDER_BY) {
+			return false;
+		}
+
 		if (child_op->has_estimated_cardinality) {
 			// only check if we should switch to full sorting if we have estimated cardinality
 			auto constant_limit = limit.limit_val.GetConstantValue();
 			if (limit.offset_val.Type() == LimitNodeType::CONSTANT_VALUE) {
 				constant_limit += limit.offset_val.GetConstantValue();
 			}
-			if (!TopNHeap::CanOptimize(constant_limit, child_op->estimated_cardinality)) {
+			if (!TopNHeap::CanOptimize(constant_limit, child_op->estimated_cardinality) &&
+			    (!context || !ReadsSourceWithoutEstimate(*child_op, *context))) {
 				return false;
 			}
 		}
-
-		while (child_op->type == LogicalOperatorType::LOGICAL_PROJECTION) {
-			D_ASSERT(!child_op->children.empty());
-			child_op = child_op->children[0].get();
-		}
-
-		return child_op->type == LogicalOperatorType::LOGICAL_ORDER_BY;
+		return true;
 	}
 	return false;
 }

@@ -1,0 +1,13 @@
+# name: benchmark/micro/optimizer/topn_large_limit.benchmark
+# description: ORDER BY with a limit of most rows of a source with a row estimate sorts fully instead of using top-n
+# group: [optimizer]
+
+name TopN Large Limit
+group micro
+subgroup optimizer
+
+run
+SELECT count(*), sum(i) FROM (SELECT i FROM range(2000000) t(i) ORDER BY hash(i) DESC LIMIT 1500000);
+
+result II
+1500000	1499666752621

@@ -107,6 +107,8 @@ public:
 	idx_t EstimateSourceCardinality(ClientContext &context);
 	//! Capture the source point and bound with one callback, before consuming bind data.
 	NodeStatistics EstimateSourceStatistics(ClientContext &context);
+	//! Whether the table function estimates its rows, instead of the estimate coming from its input or being one row
+	bool HasSourceEstimate(ClientContext &context);
 	bool TryGetStorageIndex(const ColumnIndex &column_index, StorageIndex &out_index) const;
 	void SetScanOrder(unique_ptr<RowGroupOrderOptions> options);
 	void SetPartitionsToScan(vector<idx_t> partition_indices);

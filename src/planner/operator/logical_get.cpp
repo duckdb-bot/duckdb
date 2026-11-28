@@ -329,6 +329,14 @@ NodeStatistics LogicalGet::EstimateSourceStatistics(ClientContext &context) {
 	return result;
 }
 
+bool LogicalGet::HasSourceEstimate(ClientContext &context) {
+	if (!function.cardinality || !bind_data) {
+		return false;
+	}
+	auto node_stats = function.cardinality(context, bind_data.get());
+	return node_stats && node_stats->has_estimated_cardinality;
+}
+
 void LogicalGet::SetScanOrder(unique_ptr<RowGroupOrderOptions> options) {
 	if (!function.set_scan_order) {
 		throw InternalException("LogicalGet::SetScanOrder called but function does not have scan order defined");

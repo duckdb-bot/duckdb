@@ -1446,7 +1446,7 @@ SinkFinalizeType PhysicalHashJoin::Finalize(Pipeline &pipeline, Event &event, Cl
 		sink.total_size = ht.GetTotalSize(sink.local_hash_tables, sink.max_partition_size, sink.max_partition_count,
 		                                  JoinHashTable::LookupSizing::HASH_ONLY);
 		// an external join needs its minimum even when the whole hash table is smaller, otherwise the manager grants
-		// only the hash table and its largest partition does not fit next to the probe side's buffers
+		// only the hash table and its largest partition may not fit next to the probe side's buffers
 		sink.temporary_memory_state->SetRemainingSizeAndUpdateReservation(
 		    context.GetContext(), MaxValue(sink.total_size, external_minimum_reservation));
 

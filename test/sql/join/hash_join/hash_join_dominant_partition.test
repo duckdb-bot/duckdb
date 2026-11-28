@@ -78,6 +78,9 @@ FROM duckdb_logs_parsed('PhysicalOperator') WHERE class = 'PhysicalHashJoin' AND
 true
 
 statement ok
+RESET debug_verify_progress_ignore;
+
+statement ok
 RESET disabled_optimizers;
 
 statement ok

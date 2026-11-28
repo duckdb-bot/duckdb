@@ -3,7 +3,7 @@
   "skip_compiled": "true",
   "skip_tests": [
     {
-      "reason": "Checks which hash joins spill, and with every hash zero all build rows share one partition, which never spills.",
+      "reason": "Expects hash joins to spill, and with every hash zero all rows of a build share one partition, so these joins stay in memory.",
       "paths": [
         "test/sql/join/hash_join/hash_join_dominant_partition.test",
         "test/sql/join/hash_join/mark_join_constant_lists_memory_limit.test"

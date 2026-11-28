@@ -701,6 +701,15 @@ StructMappingInfo AddFieldToStruct(const LogicalType &type, const vector<Identif
 	return result;
 }
 
+unique_ptr<CatalogEntry> DuckTableEntry::ChangeStructColumnType(ClientContext &context, AlterTableInfo &info,
+                                                                ChangeColumnTypeInfo &change_column_type,
+                                                                AlterTableType alter_table_type) {
+	auto result = ChangeColumnType(context, change_column_type, alter_table_type);
+	// the dependency manager reads the dependencies of the new table from the info of the statement
+	info.new_dependencies = std::move(change_column_type.new_dependencies);
+	return result;
+}
+
 unique_ptr<CatalogEntry> DuckTableEntry::AddField(ClientContext &context, AddFieldInfo &info) {
 	// follow the path - the parent column must exist regardless of IF NOT EXISTS (which only applies to the new field)
 	auto col_idx = GetColumnIndex(info.column_path[0], false);
@@ -725,7 +734,7 @@ unique_ptr<CatalogEntry> DuckTableEntry::AddField(ClientContext &context, AddFie
 
 	ChangeColumnTypeInfo change_column_type(info.GetAlterEntryData(), vector<Identifier> {info.column_path[0]},
 	                                        std::move(res.new_type), std::move(function));
-	return ChangeColumnType(context, change_column_type, AlterTableType::ADD_FIELD);
+	return ChangeStructColumnType(context, info, change_column_type, AlterTableType::ADD_FIELD);
 }
 
 void DuckTableEntry::UpdateConstraintsOnColumnDrop(const LogicalIndex &removed_index,
@@ -978,7 +987,7 @@ unique_ptr<CatalogEntry> DuckTableEntry::RemoveField(ClientContext &context, Rem
 
 	ChangeColumnTypeInfo change_column_type(info.GetAlterEntryData(), vector<Identifier> {info.column_path[0]},
 	                                        std::move(res.new_type), std::move(function));
-	return ChangeColumnType(context, change_column_type, AlterTableType::REMOVE_FIELD);
+	return ChangeStructColumnType(context, info, change_column_type, AlterTableType::REMOVE_FIELD);
 }
 
 DroppedFieldMapping RenameFieldFromStruct(const LogicalType &type, const vector<Identifier> &column_path,
@@ -1072,7 +1081,7 @@ unique_ptr<CatalogEntry> DuckTableEntry::RenameField(ClientContext &context, Ren
 	auto function = make_uniq<FunctionExpression>("remap_struct", std::move(children));
 	ChangeColumnTypeInfo change_column_type(info.GetAlterEntryData(), vector<Identifier> {info.column_path[0]},
 	                                        std::move(res.new_type), std::move(function));
-	return ChangeColumnType(context, change_column_type, AlterTableType::RENAME_FIELD);
+	return ChangeStructColumnType(context, info, change_column_type, AlterTableType::RENAME_FIELD);
 }
 
 unique_ptr<CatalogEntry> DuckTableEntry::SetDefault(ClientContext &context, SetDefaultInfo &info) {

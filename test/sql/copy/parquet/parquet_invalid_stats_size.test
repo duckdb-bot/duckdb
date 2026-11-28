@@ -1,0 +1,71 @@
+# name: test/sql/copy/parquet/parquet_invalid_stats_size.test
+# description: Statistics whose size does not fit the type are ignored, the column stays readable
+# group: [parquet]
+
+require parquet
+
+# invalid_stats_size.parquet was written by DuckDB with x = 287454020 and y = 1234605616436508552 in all ten rows,
+# then the four byte statistics of x and the eight byte statistics of y were shortened by one byte in the footer
+
+query IIIII
+SELECT path_in_schema, stats_min, stats_max, stats_min_value, stats_max_value
+FROM parquet_metadata('{DATA_DIR}/parquet-testing/invalid_stats_size.parquet')
+ORDER BY column_id
+----
+x	NULL	NULL	NULL	NULL
+y	NULL	NULL	NULL	NULL
+i	0	9	0	9
+
+query I
+SELECT x FROM '{DATA_DIR}/parquet-testing/invalid_stats_size.parquet' LIMIT 1
+----
+287454020
+
+query IIIII
+SELECT count(*), min(x), max(x), min(y), max(y) FROM '{DATA_DIR}/parquet-testing/invalid_stats_size.parquet'
+----
+10	287454020	287454020	1234605616436508552	1234605616436508552
+
+# filters on the columns are pushed into the scan, where the row group is checked against the statistics
+query I
+SELECT count(*) FROM '{DATA_DIR}/parquet-testing/invalid_stats_size.parquet' WHERE x > 5
+----
+10
+
+query I
+SELECT count(*) FROM '{DATA_DIR}/parquet-testing/invalid_stats_size.parquet' WHERE x < 5
+----
+0
+
+query I
+SELECT count(*) FROM '{DATA_DIR}/parquet-testing/invalid_stats_size.parquet' WHERE y = 1234605616436508552
+----
+10
+
+query I
+SELECT count(*) FROM '{DATA_DIR}/parquet-testing/invalid_stats_size.parquet' WHERE x = 287454020 AND y > 0 AND i < 5
+----
+5
+
+# the valid statistics of the other column are still used
+query I
+SELECT count(*) FROM '{DATA_DIR}/parquet-testing/invalid_stats_size.parquet' WHERE i > 20
+----
+0
+
+# the statistics of the file are merged with those of a file with valid statistics, in both orders
+statement ok
+COPY (SELECT 1::INTEGER AS x, 2::BIGINT AS y, 3::BIGINT AS i) TO '{TEST_DIR}/valid_stats_size.parquet' (FORMAT parquet)
+
+query IIII
+SELECT min(x), max(y), min(i), count(*)
+FROM read_parquet(['{DATA_DIR}/parquet-testing/invalid_stats_size.parquet', '{TEST_DIR}/valid_stats_size.parquet'], union_by_name = true)
+----
+1	1234605616436508552	0	11
+
+query IIII
+SELECT min(x), max(y), max(i), count(*)
+FROM read_parquet(['{TEST_DIR}/valid_stats_size.parquet', '{DATA_DIR}/parquet-testing/invalid_stats_size.parquet'], union_by_name = true)
+WHERE x > 0 AND y > 1
+----
+1	1234605616436508552	9	11

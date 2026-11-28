@@ -67,6 +67,16 @@ duckdb::unique_ptr<DBConfig> TornWALConfig(bool abort_on_wal_failure) {
 	return config;
 }
 
+//! Attaches the database with the alias torn while only the given paths may be accessed
+duckdb::unique_ptr<QueryResult> AttachWithAllowedPaths(Connection &con, const string &database_path,
+                                                       const duckdb::vector<string> &allowed_paths,
+                                                       const string &access_mode) {
+	auto path_list = StringUtil::Join(allowed_paths, ", ", [](const string &path) { return "'" + path + "'"; });
+	REQUIRE_NO_FAIL(con.Query("SET allowed_paths=[" + path_list + "]"));
+	REQUIRE_NO_FAIL(con.Query("SET enable_external_access=false"));
+	return con.Query("ATTACH '" + database_path + "' AS torn (" + access_mode + ")");
+}
+
 } // namespace
 
 TEST_CASE("A WAL entry with a wrong checksum in the last transaction is a torn tail", "[storage][wal]") {
@@ -227,5 +237,57 @@ TEST_CASE("A damaged WAL_FLUSH drops its transaction and the next one", "[storag
 	auto result = con.Query("SELECT k, count(*) FROM t GROUP BY k ORDER BY k");
 	REQUIRE(CHECK_COLUMN(result, 0, {1}));
 	REQUIRE(CHECK_COLUMN(result, 1, {1000}));
+	DeleteDatabase(database_path);
+}
+
+TEST_CASE("A cut off WAL tail is a torn tail when only the database and its WAL may be accessed", "[storage][wal]") {
+	auto config = TornWALConfig(false);
+	auto database_path = TestCreatePath("wal_torn_checksum_allowed_cut");
+	auto wal_path = database_path + ".wal";
+	for (auto &access_mode : {"READ_ONLY", "READ_WRITE"}) {
+		auto ends = WriteTransactions(database_path, *config);
+		// the last WAL_FLUSH loses its last byte
+		{
+			auto &fs = TestLocalFileSystem();
+			auto handle = fs.OpenFile(wal_path, FileFlags::FILE_FLAGS_WRITE);
+			fs.Truncate(*handle, NumericCast<int64_t>(ends[3] - 1));
+			handle->Sync();
+		}
+		DuckDB db(nullptr, config.get());
+		Connection con(db);
+		REQUIRE_NO_FAIL(AttachWithAllowedPaths(con, database_path, {database_path, wal_path}, access_mode));
+		auto result = con.Query("SELECT k, count(*) FROM torn.t GROUP BY k ORDER BY k");
+		REQUIRE(CHECK_COLUMN(result, 0, {1, 2}));
+		REQUIRE(CHECK_COLUMN(result, 1, {1000, 1000}));
+		REQUIRE(result->RowCount() == 2);
+	}
+	DeleteDatabase(database_path);
+}
+
+TEST_CASE("A WAL entry with a wrong checksum is not a torn tail when the checkpoint WAL may not be accessed",
+          "[storage][wal]") {
+	auto config = TornWALConfig(false);
+	auto database_path = TestCreatePath("wal_torn_checksum_allowed");
+	auto wal_path = database_path + ".wal";
+	auto ends = WriteTransactions(database_path, *config);
+	DamageTransaction(wal_path, ends[2], ends[3]);
+	{
+		// whether a checkpoint WAL continues the log is unknown
+		DuckDB db(nullptr, config.get());
+		Connection con(db);
+		auto result = AttachWithAllowedPaths(con, database_path, {database_path, wal_path}, "READ_ONLY");
+		REQUIRE(result->HasError());
+		REQUIRE(StringUtil::Contains(result->GetError(), "does not match stored checksum"));
+	}
+	{
+		DuckDB db(nullptr, config.get());
+		Connection con(db);
+		REQUIRE_NO_FAIL(AttachWithAllowedPaths(con, database_path, {database_path, wal_path, wal_path + ".checkpoint"},
+		                                       "READ_ONLY"));
+		auto result = con.Query("SELECT k, count(*) FROM torn.t GROUP BY k ORDER BY k");
+		REQUIRE(CHECK_COLUMN(result, 0, {1, 2}));
+		REQUIRE(CHECK_COLUMN(result, 1, {1000, 1000}));
+		REQUIRE(result->RowCount() == 2);
+	}
 	DeleteDatabase(database_path);
 }

@@ -581,6 +581,19 @@ static bool IsTornEntry(ReplayState &state, BufferedFileReader &reader, const st
 	return true;
 }
 
+//! Whether the log may go on after the end of this WAL. A checkpoint WAL continues the main WAL, and without access to
+//! its path it is unknown whether one exists.
+static bool LogMayContinue(ReplayState &state) {
+	if (state.replay_state != WALReplayState::MAIN_WAL) {
+		return false;
+	}
+	auto checkpoint_wal_path = state.db.GetStorageManager().GetCheckpointWALPath();
+	if (!DBConfig::Get(state.db).CanAccessFile(checkpoint_wal_path, FileType::FILE_TYPE_REGULAR)) {
+		return true;
+	}
+	return FileSystem::Get(state.db).FileExists(checkpoint_wal_path);
+}
+
 unique_ptr<WriteAheadLog> WriteAheadLogReplayer::ReplayLog(unique_ptr<FileHandle> handle, WALReplayState replay_state) {
 	auto &database = storage_manager.GetAttached();
 	Connection con(database.GetDatabase());
@@ -631,12 +644,11 @@ unique_ptr<WriteAheadLog> WriteAheadLogReplayer::ReplayLog(unique_ptr<FileHandle
 		ErrorData error(ex);
 		// truncated entries and entries with a wrong checksum at the end signal a torn WAL and are ignored
 		bool torn_wal = error.Type() == ExceptionType::SERIALIZATION;
-		// a checkpoint WAL continues the main WAL, then the end of the main WAL is not the end of the log
-		bool log_continues = replay_state == WALReplayState::MAIN_WAL &&
-		                     FileSystem::Get(database).FileExists(database.GetStorageManager().GetCheckpointWALPath());
 		const bool abort_on_wal_failure = Settings::Get<DebugAbortOnWalFailureSetting>(config);
-		if (!torn_wal && checkpoint_state.checksum_mismatch && !abort_on_wal_failure && !log_continues) {
-			torn_wal = IsTornEntry(checkpoint_state, reader, wal_path, checkpoint_state.current_position.GetIndex());
+		if (!torn_wal && checkpoint_state.checksum_mismatch && !abort_on_wal_failure) {
+			// the end of this WAL must also be the end of the log
+			torn_wal = IsTornEntry(checkpoint_state, reader, wal_path, checkpoint_state.current_position.GetIndex()) &&
+			           !LogMayContinue(checkpoint_state);
 		}
 		if (abort_on_wal_failure || !torn_wal) {
 			con.Rollback();

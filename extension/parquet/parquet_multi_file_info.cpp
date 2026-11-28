@@ -1,4 +1,5 @@
 #include "parquet_multi_file_info.hpp"
+#include "duckdb/common/multi_file/table_function_query_filter.hpp"
 #include "duckdb/common/multi_file/table_function_multi_file.hpp"
 #include "duckdb/main/client_context.hpp"
 
@@ -125,7 +126,7 @@ static bool ParquetScanSupportPushdownExtract(const FunctionData &bind_data_p, c
 	return StructType::IsStruct(column_type) || column_type.id() == LogicalTypeId::VARIANT;
 }
 
-static vector<column_t> ParquetGetRowIdColumns(ClientContext &context, optional_ptr<FunctionData> bind_data) {
+static vector<column_t> ParquetGetRowIdColumns(ClientContext &context, optional_ptr<const FunctionData> bind_data) {
 	vector<column_t> result;
 	result.emplace_back(MultiFileReader::COLUMN_IDENTIFIER_FILE_INDEX);
 	result.emplace_back(MultiFileReader::COLUMN_IDENTIFIER_FILE_ROW_NUMBER);
@@ -159,6 +160,8 @@ static vector<ParquetMetadataCacheEntry> LoadMetadataCaches(ClientContext &conte
 		if (file.extended_info) {
 			file.extended_info->TryGetOption("has_deletes", has_deletes);
 		}
+		// the filter query of a file decides which of its rows are scanned
+		has_deletes = has_deletes || TableFunctionQueryFilter::HasFilterQuery(file);
 
 		// check if the cache is valid based ONLY on the OpenFileInfo (do not do any file system requests here)
 		const auto is_valid = metadata_entry->IsValid(file, context);
@@ -223,6 +226,10 @@ static vector<PartitionStatistics> ParquetMultiFileGetPartitionStats(ClientConte
                                                                      GetPartitionStatsInput &input) {
 	auto &bind_data = input.bind_data->Cast<MultiFileBindData>();
 	if (bind_data.file_list->GetExpandResult() == FileExpandResult::SINGLE_FILE) {
+		if (TableFunctionQueryFilter::HasFilterQuery(bind_data.file_list->GetFirstFile())) {
+			// the filter query decides which rows are scanned - the metadata does not tell how many the scan produces
+			return vector<PartitionStatistics>();
+		}
 		auto result = TableFunctionMultiFileWrapper::GetPartitionStats(context, input);
 		// Column accessors address physical ordinals and types, not the mapped output or generated roles.
 		bool identity = false;

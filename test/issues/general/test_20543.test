@@ -2,7 +2,8 @@
 # description: ALTER TABLE ... SET TYPE ... USING with a cast to a user type replays from the WAL
 # group: [general]
 
-load {TEST_DIR}/alter_type_using_replay.db
+# a storage version before v2.0.0 binds every logged cast target at commit, also in an argument a macro drops
+load {TEST_DIR}/alter_type_using_replay.db readwrite v2.0.0
 
 statement ok
 PRAGMA disable_checkpoint_on_shutdown;

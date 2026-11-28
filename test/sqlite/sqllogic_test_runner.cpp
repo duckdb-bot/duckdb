@@ -1204,7 +1204,8 @@ void SQLLogicTestRunner::ExecuteScript(SQLLogicParser &parser, const string &scr
 				}
 				auto &var_name = token.parameters[1];
 				auto var_value = token.parameters[2];
-				if (IsVariableReplacement(var_value)) {
+				// a test that was skipped has not run the statement that sets the variable
+				if (IsVariableReplacement(var_value) && !finished_processing_file) {
 					string variable_name;
 					auto val = GetVariableReplacement(var_value, variable_name);
 					var_value = val.ToString();

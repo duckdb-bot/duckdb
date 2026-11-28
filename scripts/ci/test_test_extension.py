@@ -453,6 +453,33 @@ class TestExtensionIntegrationTest(unittest.TestCase):
             ],
         )
 
+    def test_set_variable_directive_behind_an_error_skip_does_not_fail_the_test(self):
+        skipping_statement = "statement ok\nSELECT error('HTTP 503 Service Unavailable');\n\n"
+        query = "query I\nSELECT '{v}';\n----\nx\n"
+        test_ids = [
+            self.create_test(
+                "variable_of_main_connection.test",
+                skipping_statement + "statement ok\nSET VARIABLE v = 'x';\n\nset variable v <variable:v>\n\n" + query,
+            ),
+            self.create_test(
+                "variable_of_named_connection.test",
+                skipping_statement
+                + "statement ok con1\nSET VARIABLE v = 'x';\n\nset variable v <variable:con1:v>\n\n"
+                + query,
+            ),
+            self.create_test(
+                "variable_without_skip.test",
+                "statement ok\nSET VARIABLE v = 'x';\n\nset variable v <variable:v>\n\n" + query,
+            ),
+        ]
+        database = self.run_selected(test_ids)
+        rows, error = run_tests.read_test_state(protocol_config(unittest_bin=self.binary), database, os.environ.copy())
+        self.assertIsNone(error)
+        self.assertEqual(
+            {row["test_id"]: row["status"] for row in rows},
+            {test_ids[0]: "skipped", test_ids[1]: "skipped", test_ids[2]: "passed"},
+        )
+
     def test_reproducer_runs_with_an_installed_cli_from_another_directory(self):
         installed = self.root / "installed cli"
         installed.mkdir()

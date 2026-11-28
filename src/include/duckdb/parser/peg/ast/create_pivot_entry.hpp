@@ -9,6 +9,8 @@ struct CreatePivotEntry {
 	unique_ptr<ParsedExpression> column;
 	unique_ptr<QueryNode> subquery;
 	bool has_parameters;
+	//! The WITH scopes around the one of base, outermost first
+	vector<CommonTableExpressionMap> outer_scopes;
 };
 
 } // namespace duckdb

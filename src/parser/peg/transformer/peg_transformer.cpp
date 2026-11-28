@@ -2,9 +2,12 @@
 
 #include "duckdb/parser/peg/compiled_grammar.hpp"
 #include "duckdb/parser/statement/multi_statement.hpp"
+#include "duckdb/parser/statement/select_statement.hpp"
 #include "duckdb/parser/query_node/select_node.hpp"
 #include "duckdb/parser/expression/cast_expression.hpp"
 #include "duckdb/parser/expression/operator_expression.hpp"
+#include "duckdb/parser/expression/star_expression.hpp"
+#include "duckdb/parser/tableref/subqueryref.hpp"
 
 namespace duckdb {
 
@@ -422,14 +425,26 @@ unique_ptr<SQLStatement> PEGTransformer::GenerateCreateEnumStmt(unique_ptr<Creat
 		auto is_not_null =
 		    make_uniq<OperatorExpression>(ExpressionType::OPERATOR_IS_NOT_NULL, std::move(entry->column));
 		select_node->where_clause = std::move(is_not_null);
+		subselect = std::move(select_node);
+
+		// the WITH scopes around the source's own become subqueries around the query, innermost first, so that
+		// every CTE is bound in the scope that defines it, as in the PIVOT itself
+		for (idx_t i = entry->outer_scopes.size(); i > 0; i--) {
+			auto outer_select = make_uniq<SelectStatement>();
+			outer_select->node = std::move(subselect);
+			auto outer_node = make_uniq<SelectNode>();
+			outer_node->cte_map = std::move(entry->outer_scopes[i - 1]);
+			outer_node->select_list.push_back(make_uniq<StarExpression>());
+			outer_node->from_table = make_uniq<SubqueryRef>(std::move(outer_select));
+			subselect = std::move(outer_node);
+		}
 
 		// order by the column
-		select_node->modifiers.push_back(make_uniq<DistinctModifier>());
+		subselect->modifiers.push_back(make_uniq<DistinctModifier>());
 		auto modifier = make_uniq<OrderModifier>();
 		modifier->orders.emplace_back(OrderType::ASCENDING, OrderByNullType::ORDER_DEFAULT,
 		                              ConstantExpression::Integer(1));
-		select_node->modifiers.push_back(std::move(modifier));
-		subselect = std::move(select_node);
+		subselect->modifiers.push_back(std::move(modifier));
 	} else {
 		subselect = std::move(entry->subquery);
 	}
@@ -472,17 +487,21 @@ void PEGTransformer::PivotEntryCheck(const string &type) {
 	}
 }
 
-void PEGTransformer::ExtractCTEsRecursive(CommonTableExpressionMap &cte_map) {
-	// Traverse the stack from the most recent scope back to the global scope
-	// Use reverse iterator if you push new scopes to the back
-	for (auto it = stored_cte_map.rbegin(); it != stored_cte_map.rend(); ++it) {
-		auto &current_scope = it->get();
-		for (auto &entry : current_scope.map) {
-			// Check if this CTE name is already in our result map
-			if (cte_map.map.find(entry.first) == cte_map.map.end()) {
-				cte_map.map[entry.first] = entry.second->Copy();
-			}
+void PEGTransformer::CollectEnclosingCTEScopes(CommonTableExpressionMap &cte_map,
+                                               vector<CommonTableExpressionMap> &outer_scopes) {
+	// the scopes are stored from the outermost to the innermost, a scope without CTEs changes nothing
+	vector<reference<CommonTableExpressionMap>> scopes;
+	for (auto &scope : stored_cte_map) {
+		if (!scope.get().map.empty()) {
+			scopes.push_back(scope);
 		}
+	}
+	if (scopes.empty()) {
+		return;
+	}
+	cte_map = scopes.back().get().Copy();
+	for (idx_t i = 0; i + 1 < scopes.size(); i++) {
+		outer_scopes.push_back(scopes[i].get().Copy());
 	}
 }
 

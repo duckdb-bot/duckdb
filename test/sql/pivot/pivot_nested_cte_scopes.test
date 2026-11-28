@@ -1,0 +1,135 @@
+# name: test/sql/pivot/pivot_nested_cte_scopes.test
+# description: PIVOT with extracted values keeps the nested WITH scopes of its source
+# group: [pivot]
+
+# a CTE of the PIVOT's own WITH clause reads an outer CTE
+query I
+WITH q AS (SELECT 'a' AS a) SELECT * FROM (WITH s AS (FROM q) PIVOT s ON a);
+----
+1
+
+query I
+WITH q AS (SELECT 'a' AS a) SELECT a FROM (WITH s AS (FROM q) PIVOT s ON a);
+----
+1
+
+# the same with listed pivot values and without PIVOT
+query I
+WITH q AS (SELECT 'a' AS a) SELECT a FROM (WITH s AS (FROM q) PIVOT s ON a IN ('a'));
+----
+1
+
+query I
+WITH q AS (SELECT 'a' AS a) SELECT * FROM (WITH s AS (FROM q) SELECT * FROM s);
+----
+a
+
+# the PIVOT's own WITH clause redeclares q, the outer CTE r it reads uses the outer q
+query I
+WITH q AS (SELECT 'a' AS a), r AS (FROM q) SELECT a FROM (WITH q AS (SELECT 'z' AS a) PIVOT r ON a);
+----
+1
+
+statement error
+WITH q AS (SELECT 'a' AS a), r AS (FROM q) SELECT z FROM (WITH q AS (SELECT 'z' AS a) PIVOT r ON a);
+----
+z
+
+# the PIVOT itself reads the redeclared q
+query I
+WITH q AS (SELECT 'a' AS a), r AS (FROM q) SELECT z FROM (WITH q AS (SELECT 'z' AS a) PIVOT q ON a);
+----
+1
+
+# the PIVOT in a later CTE body
+query I
+WITH q AS (SELECT 'a' AS a), src AS (WITH s AS (FROM q) PIVOT s ON a) SELECT a FROM src;
+----
+1
+
+# three levels
+query I
+WITH q AS (SELECT 'a' AS a), m AS (WITH r AS (FROM q) SELECT * FROM r), src AS (WITH s AS (FROM m) PIVOT s ON a) SELECT a FROM src;
+----
+1
+
+query I
+WITH q AS (SELECT 'a' AS a) SELECT a FROM (WITH r AS (FROM q) SELECT * FROM (WITH s AS (FROM r) PIVOT s ON a));
+----
+1
+
+# with USING and GROUP BY
+query III
+WITH q AS (SELECT 'a' AS a, 1 AS v, 10 AS g UNION ALL SELECT 'b', 2, 10 UNION ALL SELECT 'a', 3, 20)
+SELECT * FROM (WITH s AS (FROM q) PIVOT s ON a USING sum(v) GROUP BY g) ORDER BY g;
+----
+10	1	2
+20	3	NULL
+
+# the enum query reads the source itself, so duplicate column names, rowid and macros resolve as in the PIVOT
+query II
+WITH q AS (SELECT 'left' AS a, 1 AS g) SELECT * FROM (WITH r AS (SELECT 'right' AS a, 'x' AS a_1) PIVOT (q CROSS JOIN r) ON a_1 GROUP BY g);
+----
+1	1
+
+statement ok
+CREATE TABLE t AS SELECT 'a' AS a;
+
+query I
+WITH q AS (SELECT 'a' AS a) SELECT "0" FROM (WITH s AS (FROM q) PIVOT t ON rowid);
+----
+1
+
+# the macro reads the inner CTE s, which shadows the table s
+statement ok
+CREATE TABLE s AS SELECT 'catalog' AS a;
+
+statement ok
+CREATE MACRO with_inner(x) AS x || (SELECT a FROM s);
+
+query I
+WITH q AS (SELECT 'a' AS a) SELECT aa FROM (WITH s AS (FROM q) PIVOT t ON with_inner(a));
+----
+1
+
+query I
+SELECT acatalog FROM (PIVOT t ON with_inner(a));
+----
+1
+
+# a whole row alias as the pivot column
+query I
+WITH q AS (SELECT 1 AS x) SELECT "{'x': 1}" FROM (WITH s AS (FROM q) PIVOT s v ON v);
+----
+1
+
+# the values are ordered as text and NULL is left out
+query II
+WITH q AS (SELECT * FROM (VALUES (10), (9), (NULL)) t(x)) SELECT * FROM (WITH s AS (FROM q) PIVOT s ON x);
+----
+1	1
+
+query I
+SELECT column_name FROM (DESCRIBE WITH q AS (SELECT * FROM (VALUES (10), (9), (NULL)) t(x)) SELECT * FROM (WITH s AS (FROM q) PIVOT s ON x)) ORDER BY 1;
+----
+10
+9
+
+# UNPIVOT in the same scopes
+query II
+WITH q AS (SELECT 1 AS a, 2 AS b) SELECT * FROM (WITH s AS (FROM q) UNPIVOT s ON a, b) ORDER BY 1;
+----
+a	1
+b	2
+
+# an inner CTE that is not read by the source
+query I
+WITH q AS (SELECT 'a' AS a) SELECT a FROM (WITH s AS (SELECT 'ignored') PIVOT q ON a);
+----
+1
+
+# a single scope, as before
+query II
+WITH q AS (SELECT 'a' AS a UNION ALL SELECT 'b') SELECT * FROM (PIVOT q ON a);
+----
+1	1

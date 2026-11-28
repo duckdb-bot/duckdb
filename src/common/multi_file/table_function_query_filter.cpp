@@ -93,10 +93,12 @@ void TableFunctionQueryFilter::ReadFilterQuery(ClientContext &context, const str
 			throw InvalidInputException("The filter query must not modify a database");
 		}
 		vector<Value> values;
-		QueryResultStream<> stream(prepared->Submit(values));
-		if (stream.HasError()) {
-			stream.GetErrorObject().Throw();
+		auto result = prepared->Submit(values);
+		if (result && result->HasError()) {
+			// a stream cannot be opened on a failed result
+			result->GetErrorObject().Throw();
 		}
+		QueryResultStream<> stream(std::move(result));
 		auto &types = stream.GetTypes();
 		if (types.size() != 3 || types[0].id() != LogicalTypeId::BIGINT || types[1].id() != LogicalTypeId::BIGINT ||
 		    types[2].id() != LogicalTypeId::BIT) {

@@ -1,0 +1,238 @@
+# name: test/sql/subquery/test_correlated_equal_values.test
+# description: Outer values that compare equal but differ get their own subquery result (duckdblabs/bot-issue-tracker#697)
+# group: [subquery]
+
+statement ok
+CREATE TABLE l (c0 FLOAT);
+
+statement ok
+CREATE TABLE r (c0 VARCHAR);
+
+statement ok
+INSERT INTO l VALUES (0.0), ('-0.0'::FLOAT);
+
+statement ok
+INSERT INTO r VALUES ('-0.5');
+
+statement ok
+CREATE TABLE w AS SELECT * FROM (VALUES (-0.0::DOUBLE), (0.0::DOUBLE), (-0.0::DOUBLE), (0.0::DOUBLE), (0.0::DOUBLE)) t(x);
+
+query T
+SELECT CAST(c0 AS TEXT) AS t FROM l WHERE EXISTS (SELECT 1 FROM r WHERE r.c0 < CAST(l.c0 AS TEXT)) ORDER BY t;
+----
+0.0
+
+query T
+SELECT CAST(c0 AS TEXT) AS t FROM l WHERE NOT EXISTS (SELECT 1 FROM r WHERE r.c0 < CAST(l.c0 AS TEXT)) ORDER BY t;
+----
+-0.0
+
+query TI
+SELECT CAST(c0 AS TEXT) AS t, (SELECT count(*) FROM r WHERE r.c0 < CAST(l.c0 AS TEXT)) AS n FROM l ORDER BY t;
+----
+-0.0	0
+0.0	1
+
+# every outer row keeps its own value, duplicates included
+query TTI
+SELECT x::VARCHAR AS a, (SELECT x::VARCHAR) AS b, count(*) FROM w GROUP BY ALL ORDER BY ALL;
+----
+-0.0	-0.0	2
+0.0	0.0	3
+
+query TI
+SELECT x::VARCHAR AS a, count(*) FROM w WHERE EXISTS (SELECT 1 WHERE x::VARCHAR = '0.0') GROUP BY ALL;
+----
+0.0	3
+
+query TTI
+SELECT x::VARCHAR AS a, '-0.0' IN (SELECT x::VARCHAR) AS b, count(*) FROM w GROUP BY ALL ORDER BY ALL;
+----
+-0.0	true	2
+0.0	false	3
+
+query TTI
+SELECT x::VARCHAR AS a, s, count(*) FROM w, LATERAL (SELECT x::VARCHAR AS s) GROUP BY ALL ORDER BY ALL;
+----
+-0.0	-0.0	2
+0.0	0.0	3
+
+query TTI
+SELECT x::VARCHAR AS a, (SELECT (SELECT x::VARCHAR)) AS b, count(*) FROM w GROUP BY ALL ORDER BY ALL;
+----
+-0.0	-0.0	2
+0.0	0.0	3
+
+# one of two correlated columns can tell equal values apart
+query TTI
+SELECT x::VARCHAR AS a, (SELECT x::VARCHAR || y) AS b, count(*) FROM (SELECT x, 1 AS y FROM w) GROUP BY ALL ORDER BY ALL;
+----
+-0.0	-0.01	2
+0.0	0.01	3
+
+# intervals of the same length compare equal
+query TT
+SELECT i::VARCHAR AS a, (SELECT i::VARCHAR) AS b FROM (VALUES (INTERVAL '1 month'), (INTERVAL '30 days')) t(i) ORDER BY ALL;
+----
+1 month	1 month
+30 days	30 days
+
+# nested types that contain such values
+query TT
+SELECT s::VARCHAR AS a, (SELECT s::VARCHAR) AS b FROM (SELECT {'a': x} AS s FROM w) GROUP BY ALL ORDER BY ALL;
+----
+{'a': -0.0}	{'a': -0.0}
+{'a': 0.0}	{'a': 0.0}
+
+query TT
+SELECT l::VARCHAR AS a, (SELECT l::VARCHAR) AS b FROM (SELECT [x] AS l FROM w) GROUP BY ALL ORDER BY ALL;
+----
+[-0.0]	[-0.0]
+[0.0]	[0.0]
+
+query TT
+SELECT a::VARCHAR AS a, (SELECT a::VARCHAR) AS b FROM (SELECT [x]::DOUBLE[1] AS a FROM w) GROUP BY ALL ORDER BY ALL;
+----
+[-0.0]	[-0.0]
+[0.0]	[0.0]
+
+query TT
+SELECT m::VARCHAR AS a, (SELECT m::VARCHAR) AS b FROM (SELECT MAP {'k': x} AS m FROM w) GROUP BY ALL ORDER BY ALL;
+----
+{k=-0.0}	{k=-0.0}
+{k=0.0}	{k=0.0}
+
+query TT
+SELECT u::VARCHAR AS a, (SELECT u::VARCHAR) AS b FROM (SELECT union_value(v := x) AS u FROM w) GROUP BY ALL ORDER BY ALL;
+----
+-0.0	-0.0
+0.0	0.0
+
+query TT
+SELECT v::VARCHAR AS a, (SELECT v::VARCHAR) AS b FROM (SELECT x::VARIANT AS v FROM w) GROUP BY ALL ORDER BY ALL;
+----
+-0.0	-0.0
+0.0	0.0
+
+# comparisons give equal values the same result, so equal outer values keep sharing one result
+statement ok
+CREATE TABLE inn AS SELECT * FROM (VALUES (-0.0::DOUBLE, 1), (0.0::DOUBLE, 2), (1.0::DOUBLE, 3)) t(y, k);
+
+query TI
+SELECT x::VARCHAR AS a, (SELECT count(*) FROM inn WHERE inn.y = w.x) AS b FROM w GROUP BY ALL ORDER BY ALL;
+----
+-0.0	2
+0.0	2
+
+query TT
+SELECT x::VARCHAR AS a, (SELECT CASE WHEN x = 0 THEN 'zero' END) AS b FROM w GROUP BY ALL ORDER BY ALL;
+----
+-0.0	zero
+0.0	zero
+
+query TI
+SELECT x::VARCHAR AS a, (SELECT count(*) FROM inn i1 JOIN inn i2 ON i1.k = i2.k AND i1.y = w.x) AS b FROM w GROUP BY ALL ORDER BY ALL;
+----
+-0.0	2
+0.0	2
+
+query II
+EXPLAIN SELECT (SELECT count(*) FROM inn WHERE inn.y = w.x) FROM w;
+----
+physical_plan	<!REGEX>:.*delim_index.*
+
+query II
+EXPLAIN SELECT (SELECT CASE WHEN x = 0 THEN 'zero' END) FROM w;
+----
+physical_plan	<!REGEX>:.*delim_index.*
+
+query II
+EXPLAIN SELECT (SELECT count(*) FROM inn i1 JOIN inn i2 ON i1.k = i2.k AND i1.y = w.x) FROM w;
+----
+physical_plan	<!REGEX>:.*delim_index.*
+
+# interval comparisons compare the normalized value, so equal intervals keep sharing one result
+statement ok
+CREATE TABLE iv AS SELECT * FROM (VALUES (INTERVAL '1 month'), (INTERVAL '30 days')) t(i);
+
+query TI
+SELECT i::VARCHAR AS a, (SELECT count(*) FROM iv AS v WHERE v.i = iv.i) AS b FROM iv ORDER BY ALL;
+----
+1 month	2
+30 days	2
+
+query II
+EXPLAIN SELECT (SELECT count(*) FROM iv AS v WHERE v.i = iv.i) FROM iv;
+----
+physical_plan	<!REGEX>:.*delim_index.*
+
+# other uses of such a column get each outer row its own result
+query TT
+SELECT x::VARCHAR AS a, (SELECT max(x * (i + 1))::VARCHAR FROM range(2) t(i)) AS b FROM w GROUP BY ALL ORDER BY ALL;
+----
+-0.0	-0.0
+0.0	0.0
+
+query TT
+SELECT x::VARCHAR AS a, (SELECT x::VARCHAR FROM inn WHERE inn.y = w.x AND inn.k = 1) AS b FROM w GROUP BY ALL ORDER BY ALL;
+----
+-0.0	-0.0
+0.0	0.0
+
+query TI
+SELECT x::VARCHAR AS a, (SELECT max(i2.k) FROM inn i1 JOIN inn i2 ON i1.k = i2.k AND i1.y::VARCHAR = w.x::VARCHAR) AS b FROM w GROUP BY ALL ORDER BY ALL;
+----
+-0.0	1
+0.0	2
+
+query II
+EXPLAIN SELECT (SELECT x::VARCHAR) FROM w;
+----
+physical_plan	<REGEX>:.*delim_index.*
+
+# a subquery in the condition of an outer join is planned later
+query TI
+SELECT x::VARCHAR AS a, (SELECT count(q.i) FROM (VALUES (1)) p(i) LEFT JOIN (VALUES (1)) q(i) ON (SELECT x::VARCHAR) = '0.0') AS b FROM w GROUP BY ALL ORDER BY ALL;
+----
+-0.0	0
+0.0	1
+
+# values whose equal values are identical keep sharing one result
+query II
+EXPLAIN SELECT (SELECT k::VARCHAR) FROM inn;
+----
+physical_plan	<!REGEX>:.*delim_index.*
+
+# without the optimizer the planner always shares results between equal outer values, with the same exception
+statement ok
+PRAGMA disable_optimizer
+
+query TTI
+SELECT x::VARCHAR AS a, (SELECT x::VARCHAR) AS b, count(*) FROM w GROUP BY ALL ORDER BY ALL;
+----
+-0.0	-0.0	2
+0.0	0.0	3
+
+query TTI
+SELECT x::VARCHAR AS a, '-0.0' IN (SELECT x::VARCHAR) AS b, count(*) FROM w GROUP BY ALL ORDER BY ALL;
+----
+-0.0	true	2
+0.0	false	3
+
+query TTI
+SELECT x::VARCHAR AS a, s, count(*) FROM w, LATERAL (SELECT x::VARCHAR AS s) GROUP BY ALL ORDER BY ALL;
+----
+-0.0	-0.0	2
+0.0	0.0	3
+
+query TT
+SELECT l::VARCHAR AS a, (SELECT l::VARCHAR) AS b FROM (SELECT [x] AS l FROM w) GROUP BY ALL ORDER BY ALL;
+----
+[-0.0]	[-0.0]
+[0.0]	[0.0]
+
+query TI
+SELECT x::VARCHAR AS a, (SELECT count(*) FROM inn WHERE inn.y = w.x) AS b FROM w GROUP BY ALL ORDER BY ALL;
+----
+-0.0	2
+0.0	2

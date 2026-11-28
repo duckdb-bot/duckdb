@@ -1,0 +1,222 @@
+# name: test/sql/subquery/any_all/test_any_all_enum.test
+# description: ANY and ALL comparisons of a VARCHAR against an ENUM subquery use string order
+# group: [any_all]
+
+statement ok
+CREATE TYPE e AS ENUM ('z', 'a');
+
+statement ok
+CREATE TABLE t(g INTEGER, v e);
+
+statement ok
+INSERT INTO t VALUES (1, 'z'), (1, 'a');
+
+# ENUM order is the dictionary position, so min is 'z' and max is 'a', while the comparison uses string order
+query III
+SELECT bool_or('m' > v), min(v), max(v) FROM t
+----
+true	z	a
+
+query IIII
+SELECT 'm' > ANY (SELECT v FROM t), 'm' >= ANY (SELECT v FROM t), 'm' < ANY (SELECT v FROM t), 'm' <= ANY (SELECT v FROM t)
+----
+true	true	true	true
+
+query IIII
+SELECT 'm' > ALL (SELECT v FROM t), 'm' >= ALL (SELECT v FROM t), 'm' < ALL (SELECT v FROM t), 'm' <= ALL (SELECT v FROM t)
+----
+false	false	false	false
+
+query IIII
+SELECT 'zz' > ALL (SELECT v FROM t), '0' < ALL (SELECT v FROM t), 'zz' < ANY (SELECT v FROM t), '0' > ANY (SELECT v FROM t)
+----
+true	true	false	false
+
+# the extremum rewrite is used for the uncorrelated comparison
+query II
+EXPLAIN SELECT 'm' > ANY (SELECT v FROM t)
+----
+physical_plan	<REGEX>:.*(min|MIN)\(.*
+
+query II
+SELECT 'm' = ANY (SELECT v FROM t), 'a' = ANY (SELECT v FROM t)
+----
+false	true
+
+# a NULL in the subquery
+statement ok
+INSERT INTO t VALUES (1, NULL);
+
+query IIII
+SELECT 'm' > ANY (SELECT v FROM t), 'm' < ALL (SELECT v FROM t), 'zz' > ALL (SELECT v FROM t), '0' < ALL (SELECT v FROM t)
+----
+true	false	NULL	NULL
+
+# the same comparisons from a CTE
+query II
+WITH rhs(v) AS (VALUES ('z'::e), ('a'::e))
+SELECT 'm' > ANY (SELECT v FROM rhs), 'm' > ALL (SELECT v FROM rhs)
+----
+true	false
+
+# correlated subqueries
+statement ok
+CREATE TABLE o(g INTEGER, s VARCHAR);
+
+statement ok
+INSERT INTO o VALUES (1, 'm'), (1, 'zz'), (2, 'm');
+
+query IIII
+SELECT g, s, s > ANY (SELECT v FROM t WHERE t.g = o.g), s > ALL (SELECT v FROM t WHERE t.g = o.g) FROM o ORDER BY g, s
+----
+1	m	true	false
+1	zz	true	NULL
+2	m	false	true
+
+# a collated comparison
+query II
+SELECT 'M' COLLATE NOCASE > ANY (SELECT v FROM t), 'M' COLLATE NOCASE > ALL (SELECT v FROM t)
+----
+true	false
+
+# comparing an ENUM with the subquery keeps the ENUM order
+query II
+SELECT 'a'::e > ANY (SELECT v FROM t), 'z'::e >= ALL (SELECT v FROM t WHERE v IS NOT NULL)
+----
+true	false
+
+# an ENUM compared with an ENUM of another dictionary is compared as VARCHAR
+statement ok
+CREATE TYPE e2 AS ENUM ('b', 'y');
+
+query II
+SELECT 'y'::e2 > ANY (SELECT v FROM t), 'y'::e2 > ALL (SELECT v FROM t WHERE v IS NOT NULL)
+----
+true	false
+
+# a VARIANT comparison casts the ENUM rows too, and min/max binds its own comparator for the VARIANT
+query II
+SELECT 'm'::VARIANT > ANY (SELECT v FROM t), 'm'::VARIANT > ALL (SELECT v FROM t WHERE v IS NOT NULL)
+----
+true	false
+
+# an ENUM nested in a STRUCT or a LIST changes the order of the nested value as well
+query II
+SELECT {'f': 'm'} > ANY (SELECT {'f': v} FROM t WHERE v IS NOT NULL), {'f': 'm'} > ALL (SELECT {'f': v} FROM t WHERE v IS NOT NULL)
+----
+true	false
+
+query II
+SELECT ['m'] > ANY (SELECT [v] FROM t WHERE v IS NOT NULL), ['m'] > ALL (SELECT [v] FROM t WHERE v IS NOT NULL)
+----
+true	false
+
+query II
+SELECT map(['m'], [1]) > ANY (SELECT map([v], [1]) FROM t WHERE v IS NOT NULL), map(['m'], [1]) > ALL (SELECT map([v], [1]) FROM t WHERE v IS NOT NULL)
+----
+true	false
+
+query II
+SELECT map([1], ['m']) > ANY (SELECT map([1], [v]) FROM t WHERE v IS NOT NULL), map([1], ['m']) > ALL (SELECT map([1], [v]) FROM t WHERE v IS NOT NULL)
+----
+true	false
+
+# the members of a nested UNION are paired by name, as the cast pairs them
+query III
+SELECT {'u': union_value(a := 'm')} > ANY (SELECT {'u': union_value(a := v)} FROM t WHERE v IS NOT NULL), {'u': union_value(a := 'm')} > ALL (SELECT {'u': union_value(a := v)} FROM t WHERE v IS NOT NULL), [union_value(a := 'm')] > ANY (SELECT [union_value(a := v)] FROM t WHERE v IS NOT NULL)
+----
+true	false	true
+
+query II
+SELECT [union_value(tag := 'm')::UNION(n INTEGER, tag VARCHAR)] > ANY (SELECT [union_value(tag := v)::UNION(n INTEGER, tag e)] FROM t WHERE v IS NOT NULL), [union_value(tag := 'm')::UNION(n INTEGER, tag VARCHAR)] > ALL (SELECT [union_value(tag := v)::UNION(n INTEGER, tag e)] FROM t WHERE v IS NOT NULL)
+----
+true	false
+
+# a member without a counterpart makes the cast wrap the whole UNION into a member of the compared UNION
+query I
+SELECT {'u': union_value(w := union_value(a := 'm'))::UNION(w UNION(a VARCHAR, z INTEGER), z INTEGER)} > ANY (SELECT {'u': union_value(a := v)::UNION(a e, z BLOB)} FROM t WHERE v IS NOT NULL)
+----
+true
+
+# a UNION member that keeps its ENUM type does not cast the UNION before the extremum
+query I
+SELECT [union_value(n := 0.5::DECIMAL(38,37))::UNION(n DECIMAL(38,37), tag e)] > ANY (SELECT [union_value(n := i)::UNION(n INTEGER, tag e)] FROM (VALUES (0), (100)) rhs(i))
+----
+true
+
+# the fields of a STRUCT are matched by name, as the cast matches them, and by position for a TUPLE
+query III
+SELECT {'b': NULL::e, 'a': 'm'} > ANY (SELECT {'a': v, 'b': NULL} FROM t WHERE v IS NOT NULL), {'B': 'm', 'g': 1} > ANY (SELECT {'b': v, 'g': 1} FROM t WHERE v IS NOT NULL), row('m', 1) > ANY (SELECT row(v, 1) FROM t WHERE v IS NOT NULL)
+----
+true	true	true
+
+# an ENUM field that keeps its type does not cast the STRUCT before the extremum, so a sibling row the compared type
+# cannot hold does not fail the comparison, also when the compared STRUCT has more fields, an ARRAY is compared with a
+# LIST or a TUPLE with a STRUCT
+query IIII
+SELECT {'n': 0.5::DECIMAL(38,37), 'tag': 'a'::e} > ANY (SELECT {'n': i, 'tag': 'a'::e} FROM (VALUES (0), (100)) rhs(i)),
+       {'n': 0.5::DECIMAL(38,37), 'tag': 'a'::e, 'extra': 0} > ANY (SELECT {'n': i, 'tag': 'a'::e} FROM (VALUES (0), (100)) rhs(i)),
+       [{'n': 0.5::DECIMAL(38,37), 'tag': 'a'::e}] > ANY (SELECT [{'n': i, 'tag': 'a'::e}]::STRUCT(n INTEGER, tag e)[1] FROM (VALUES (0), (100)) rhs(i)),
+       {'n': 0.5::DECIMAL(38,37), 'tag': 'a'::e} > ANY (SELECT row(i, 'a'::e) FROM (VALUES (0), (100)) rhs(i))
+----
+true	true	true	true
+
+# an untyped NULL subquery compared with an ENUM
+query II
+SELECT 'a'::e > ANY (SELECT NULL), 'a'::e > ALL (SELECT NULL WHERE false)
+----
+NULL	true
+
+# a numeric comparison is not affected by the cast of the subquery column
+statement ok
+CREATE TABLE ints(i INTEGER);
+
+statement ok
+INSERT INTO ints VALUES (1), (3);
+
+query IIII
+SELECT 2.5 > ANY (SELECT i FROM ints), 2.5 > ALL (SELECT i FROM ints), 0.5 < ALL (SELECT i FROM ints), 3.5 <= ANY (SELECT i FROM ints)
+----
+true	false	true	false
+
+# any other column keeps the extremum in its own type, so a row the compared type cannot hold does not fail
+query I
+SELECT 0.5::DECIMAL(38,37) > ANY (SELECT v FROM (VALUES (0), (100)) rhs(v))
+----
+true
+
+statement ok
+CREATE TABLE dates(d DATE);
+
+statement ok
+INSERT INTO dates VALUES ('1990-01-01'), ('5874897-12-31');
+
+query I
+SELECT TIMESTAMP '2000-01-01' > ANY (SELECT d FROM dates)
+----
+true
+
+# a typed NULL is not cast to a UNION member before the extremum, so it is ignored by it
+query II
+WITH rhs(v) AS (VALUES (2), (NULL::INTEGER))
+SELECT union_value(n := 1) < ANY (SELECT v FROM rhs), union_value(n := 3) < ANY (SELECT v FROM rhs)
+----
+true	NULL
+
+query I
+WITH rhs(v) AS (VALUES ('z'::e), (NULL::e))
+SELECT union_value(s := 'm') < ANY (SELECT v FROM rhs)
+----
+true
+
+# FIXME: a UNION compared type keeps the extremum in the dictionary order of the ENUM until the rewrite leaves UNION
+# comparisons to the mark join
+mode skip unsupported
+
+query I
+WITH rhs(v) AS (VALUES ('z'::e), ('a'::e))
+SELECT union_value(s := 'm') < ANY (SELECT v FROM rhs)
+----
+true
+
+mode unskip

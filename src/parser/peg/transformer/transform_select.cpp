@@ -37,6 +37,23 @@ static bool IsDMLCTEQueryNode(QueryNodeType type) {
 	       type == QueryNodeType::DELETE_QUERY_NODE;
 }
 
+bool PEGTransformerFactory::HasDataModifyingCTE(const CommonTableExpressionMap &cte_map) {
+	for (auto &entry : cte_map.map) {
+		auto &query_node = *entry.second->query_node;
+		switch (query_node.type) {
+		case QueryNodeType::INSERT_QUERY_NODE:
+		case QueryNodeType::UPDATE_QUERY_NODE:
+		case QueryNodeType::DELETE_QUERY_NODE:
+		case QueryNodeType::MERGE_QUERY_NODE:
+		case QueryNodeType::COPY_QUERY_NODE:
+			return true;
+		default:
+			break;
+		}
+	}
+	return false;
+}
+
 static void ValidateRecursiveCTEQueryNode(const QueryNode &query_node) {
 	if (query_node.type == QueryNodeType::COPY_QUERY_NODE) {
 		throw ParserException("Recursive CTEs with COPY statements are not supported");
@@ -80,7 +97,8 @@ PEGTransformerFactory::FinalizeSelectStatementInternalTrampoline(PEGTransformer 
                                                                  GeneratedTransformProcess &process) {
 	if (process.manual_state == 0) {
 		auto &cte_map = process.GetResult<CommonTableExpressionMap>(0);
-		if (!cte_map.map.empty()) {
+		if (HasDataModifyingCTE(cte_map)) {
+			// the WITH clause left its CTEs visible for the rest of the statement, unless one of them writes
 			transformer.stored_cte_map.push_back(cte_map);
 		}
 		process.manual_state = 1;
@@ -1103,7 +1121,14 @@ PEGTransformerFactory::FinalizeWithClauseTrampoline(PEGTransformer &transformer,
 		return nullptr;
 	}
 	transformer.stored_cte_map.pop_back();
-	return transformer.MakeResult<CommonTableExpressionMap>(process.TakeResult<CommonTableExpressionMap>(entry_count));
+	auto with_clause =
+	    transformer.MakeResult<CommonTableExpressionMap>(process.TakeResult<CommonTableExpressionMap>(entry_count));
+	auto &cte_map = *TryGetTransformResult<CommonTableExpressionMap>(*with_clause);
+	if (!HasDataModifyingCTE(cte_map)) {
+		// the CTEs stay visible while the statement of this clause is transformed, which removes them again
+		transformer.stored_cte_map.push_back(cte_map);
+	}
+	return with_clause;
 }
 
 pair<Identifier, unique_ptr<CommonTableExpressionInfo>>

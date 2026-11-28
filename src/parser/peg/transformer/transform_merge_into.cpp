@@ -13,6 +13,10 @@ unique_ptr<SQLStatement> PEGTransformerFactory::TransformMergeIntoStatement(
 	auto result = make_uniq<MergeIntoStatement>();
 	auto &node = *result->node;
 	if (with_clause) {
+		if (!HasDataModifyingCTE(*with_clause)) {
+			// the CTEs were visible while the rest of the statement was transformed
+			transformer.stored_cte_map.pop_back();
+		}
 		node.cte_map = std::move(*with_clause);
 	}
 	node.target = std::move(target_opt_alias);

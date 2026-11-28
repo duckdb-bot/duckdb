@@ -1,0 +1,220 @@
+# name: test/sql/pivot/pivot_dml_with_clause.test
+# description: A PIVOT without an IN list in INSERT, UPDATE, DELETE and MERGE reads the CTEs of the leading WITH clause
+# group: [pivot]
+
+statement ok
+CREATE TABLE dst(n BIGINT);
+
+# the pivot collects its values from the CTE, one column named 1 with the count 1
+statement ok
+WITH q AS (SELECT 1 AS a) INSERT INTO dst PIVOT q ON a;
+
+query I
+SELECT n FROM dst;
+----
+1
+
+# the CTE is gone with its statement
+statement error
+INSERT INTO dst PIVOT q ON a;
+----
+<REGEX>:.*Table with name q does not exist.*
+
+# a table of the same name does not take the place of the CTE
+statement ok
+CREATE TABLE q AS SELECT 2 AS a;
+
+statement ok
+WITH q AS (SELECT 1 AS a) INSERT INTO dst PIVOT q ON a;
+
+query I
+SELECT n FROM dst;
+----
+1
+1
+
+# nor does a table with other values, which would give the pivot two columns
+statement ok
+CREATE OR REPLACE TABLE q AS SELECT * FROM (VALUES (2), (3)) v(a);
+
+statement ok
+WITH q AS (SELECT 1 AS a) INSERT INTO dst PIVOT q ON a;
+
+query I
+SELECT n FROM dst;
+----
+1
+1
+1
+
+# nor does a view
+statement ok
+DROP TABLE q;
+
+statement ok
+CREATE VIEW q AS SELECT 2 AS a;
+
+statement ok
+WITH q AS (SELECT 1 AS a) INSERT INTO dst PIVOT q ON a;
+
+query III
+SELECT count(*), min(n), max(n) FROM dst;
+----
+4	1	1
+
+statement ok
+DROP VIEW q;
+
+# two CTEs, the pivot reads the second, which reads the first
+statement ok
+WITH base AS (SELECT 1 AS a), q AS (SELECT a + 4 AS a FROM base) INSERT INTO dst SELECT "5" + 6 FROM (PIVOT q ON a);
+
+query I
+SELECT max(n) FROM dst;
+----
+7
+
+# a WITH clause of the SELECT inside the INSERT next to the leading one
+statement ok
+WITH q AS (SELECT 1 AS a) INSERT INTO dst WITH r AS (SELECT 2 AS b) SELECT "1" + "2" + 7 FROM (PIVOT q ON a), (PIVOT r ON b);
+
+query I
+SELECT max(n) FROM dst;
+----
+9
+
+# UPDATE, in a subquery and in the FROM clause
+statement ok
+CREATE OR REPLACE TABLE dst(n BIGINT);
+
+statement ok
+INSERT INTO dst VALUES (0);
+
+statement ok
+WITH q AS (SELECT 1 AS a) UPDATE dst SET n = (SELECT "1" FROM (PIVOT q ON a));
+
+query I
+SELECT n FROM dst;
+----
+1
+
+statement ok
+WITH q AS (SELECT 3 AS a) UPDATE dst SET n = p."3" + 1 FROM (PIVOT q ON a) p;
+
+query I
+SELECT n FROM dst;
+----
+2
+
+# DELETE, in a subquery and in the USING clause
+statement ok
+CREATE OR REPLACE TABLE dst(n BIGINT);
+
+statement ok
+INSERT INTO dst VALUES (0), (1), (2);
+
+statement ok
+WITH q AS (SELECT 1 AS a) DELETE FROM dst WHERE n IN (SELECT "1" FROM (PIVOT q ON a));
+
+query I
+SELECT n FROM dst ORDER BY n;
+----
+0
+2
+
+statement ok
+WITH q AS (SELECT 1 AS a) DELETE FROM dst USING (PIVOT q ON a) p WHERE dst.n = p."1" + 1;
+
+query I
+SELECT n FROM dst ORDER BY n;
+----
+0
+
+# MERGE
+statement ok
+CREATE OR REPLACE TABLE dst(n BIGINT);
+
+statement ok
+WITH q AS (SELECT 1 AS a) MERGE INTO dst USING (PIVOT q ON a) p ON dst.n = p."1" WHEN NOT MATCHED THEN INSERT VALUES (p."1");
+
+query I
+SELECT n FROM dst;
+----
+1
+
+# an explicit list needs no value query
+statement ok
+WITH q AS (SELECT 1 AS a) INSERT INTO dst PIVOT q ON a IN (1);
+
+query I
+SELECT n FROM dst;
+----
+1
+1
+
+# a CTE that writes runs once
+statement ok
+CREATE TABLE written(a INTEGER);
+
+statement ok
+WITH ins AS (INSERT INTO written VALUES (7) RETURNING a) INSERT INTO dst PIVOT (SELECT 1 AS a) ON a;
+
+query I
+SELECT count(*) FROM written;
+----
+1
+
+
+# so does it under UPDATE, DELETE and MERGE, for a CTE that inserts, updates or deletes
+statement ok
+CREATE OR REPLACE TABLE dst(n BIGINT);
+
+statement ok
+INSERT INTO dst VALUES (0);
+
+statement ok
+WITH ins AS (INSERT INTO written VALUES (8) RETURNING a) UPDATE dst SET n = (SELECT "1" FROM (PIVOT (SELECT 1 AS a) ON a));
+
+query II
+SELECT (SELECT n FROM dst), list(a ORDER BY a) FROM written;
+----
+1	[7, 8]
+
+statement ok
+WITH upd AS (UPDATE written SET a = a + 10 RETURNING a) DELETE FROM dst WHERE n IN (SELECT "1" FROM (PIVOT (SELECT 1 AS a) ON a));
+
+query II
+SELECT (SELECT count(*) FROM dst), list(a ORDER BY a) FROM written;
+----
+0	[17, 18]
+
+statement ok
+WITH del AS (DELETE FROM written WHERE a = 17 RETURNING a) MERGE INTO dst USING (PIVOT (SELECT 1 AS a) ON a) p ON dst.n = p."1" WHEN NOT MATCHED THEN INSERT VALUES (p."1");
+
+query II
+SELECT (SELECT n FROM dst), list(a ORDER BY a) FROM written;
+----
+1	[18]
+
+# a statement that writes inside a CTE removes the scope of its own WITH clause before the outer pivot is transformed
+statement ok
+CREATE OR REPLACE TABLE q AS SELECT 9 AS a;
+
+statement ok
+CREATE OR REPLACE TABLE written(a BIGINT);
+
+statement ok
+CREATE OR REPLACE TABLE dst(n BIGINT);
+
+statement ok
+WITH ins AS (WITH q AS (SELECT 2 AS a) INSERT INTO written SELECT a FROM q RETURNING a) INSERT INTO dst SELECT "9" FROM (PIVOT q ON a);
+
+query I
+SELECT n FROM dst;
+----
+1
+
+query III
+SELECT count(*), min(a), max(a) FROM written;
+----
+1	2	2

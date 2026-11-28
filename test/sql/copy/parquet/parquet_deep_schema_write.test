@@ -1,0 +1,55 @@
+# name: test/sql/copy/parquet/parquet_deep_schema_write.test
+# description: Write deeply nested columns to Parquet when the writer is created on a thread with the reduced --thread-stack-size
+# group: [parquet]
+
+require parquet
+
+# COPY creates the column writers on a thread of the asynchronous pool, which gets the reduced stack. Everything
+# else runs on the thread of the test, hence one thread
+statement ok
+SET threads=1
+
+statement ok
+COPY (FROM query('SELECT ' || repeat('{''a'': ', 200) || 'i' || repeat('}', 200) || ' AS s FROM range(3) t(i)')) TO '{TEST_DIR}/deep_struct_write.parquet'
+
+query II
+FROM query('SELECT min(s' || repeat('.a', 200) || '), max(s' || repeat('.a', 200) || ') FROM read_parquet(''{TEST_DIR}/deep_struct_write.parquet'')')
+----
+0	2
+
+# 80 structs that each hold a list
+statement ok
+COPY (FROM query('SELECT ' || repeat('{''a'': [', 80) || 'i' || repeat(']}', 80) || ' AS s FROM range(3) t(i)')) TO '{TEST_DIR}/deep_struct_list_write.parquet'
+
+query II
+FROM query('SELECT min(s' || repeat('.a[1]', 80) || '), max(s' || repeat('.a[1]', 80) || ') FROM read_parquet(''{TEST_DIR}/deep_struct_list_write.parquet'')')
+----
+0	2
+
+# a LIST or a MAP nested 150 levels deep has a definition level that the reader does not support, so their schema is
+# checked and not their values
+statement ok
+COPY (FROM query('SELECT ' || repeat('[', 150) || 'i' || repeat(']', 150) || ' AS l FROM range(3) t(i)')) TO '{TEST_DIR}/deep_list_write.parquet'
+
+query III
+SELECT count(*) FILTER (name = 'list'), count(*) FILTER (name = 'element'), count(*) FROM parquet_schema('{TEST_DIR}/deep_list_write.parquet')
+----
+150	150	302
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/deep_list_write.parquet')
+----
+3
+
+statement ok
+COPY (FROM query('SELECT ' || repeat('MAP {1: ', 150) || 'i' || repeat('}', 150) || ' AS m FROM range(3) t(i)')) TO '{TEST_DIR}/deep_map_write.parquet'
+
+query IIII
+SELECT count(*) FILTER (name = 'key_value'), count(*) FILTER (name = 'key'), count(*) FILTER (name = 'value'), count(*) FROM parquet_schema('{TEST_DIR}/deep_map_write.parquet')
+----
+150	150	150	452
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/deep_map_write.parquet')
+----
+3

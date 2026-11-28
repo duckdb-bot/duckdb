@@ -109,7 +109,7 @@ SELECT count(*) FROM tz WHERE date_trunc('decade', x) = TIMESTAMPTZ '0001-01-01 
 ----
 1
 
-# ICU truncates to an era by setting the year to zero, which moves across the BC/AD boundary
+# ICU truncates to the first year of an era, which stays on the same side of the BC/AD boundary
 statement ok
 CREATE TABLE eras AS SELECT * FROM (VALUES ('0002-06-01 (BC)'::TIMESTAMPTZ), (TIMESTAMPTZ '0002-06-01 00:00:00+00')) t(x);
 

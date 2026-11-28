@@ -16,6 +16,11 @@ void HivePartitionComponentFunction(DataChunk &args, ExpressionState &state, Vec
 		auto component = HivePartitioning::Escape(args.data[0].GetValue(row).ToString()) + "=";
 		component +=
 		    value.IsNull() ? HivePartitioning::DEFAULT_PARTITION_NAME : HivePartitioning::EscapeValue(value.ToString());
+		if (component.size() > string_t::MAX_STRING_SIZE) {
+			throw OutOfRangeException("Cannot create a string of size: '%d' in HIVE_PARTITION_COMPONENT, the maximum "
+			                          "supported string size is: '%d'",
+			                          component.size(), string_t::MAX_STRING_SIZE);
+		}
 		writer.WriteValue(string_t(component.c_str(), UnsafeNumericCast<uint32_t>(component.size())));
 	}
 }
@@ -27,6 +32,8 @@ ScalarFunction HivePartitionComponentFun::GetFunction() {
 	component.GetSignature().AddParameter("name", LogicalType::VARCHAR).AddParameter("value", LogicalType::ANY);
 	// a NULL partition value has a directory of its own
 	component.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
+	// throws if the component exceeds the maximum string size
+	component.SetFallible();
 	return component;
 }
 

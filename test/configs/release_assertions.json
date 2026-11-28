@@ -60,6 +60,7 @@
         "test/sql/copy/csv/csv_memory_management.test_slow",
         "test/sql/copy/csv/test_multiple_big_compressed_csvs.test_slow",
         "test/sql/copy/csv/test_skip.test_slow",
+        "test/sql/function/string/hive_partition_component_large.test_slow",
         "test/sql/copy/parquet/writer/parquet_write_tpcds.test_slow",
         "test/sql/storage/compression/roaring/roaring_compression_ratio.test_slow",
         "test/sql/storage/types/struct/struct_reclaim_space_drop.test_slow",

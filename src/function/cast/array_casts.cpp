@@ -179,7 +179,10 @@ static bool ArrayToListCast(Vector &source, Vector &result, idx_t count, CastPar
 	auto array_size = ArrayType::GetSize(source.GetType());
 	auto child_count = count * array_size;
 
-	ListVector::Reserve(result, child_count);
+	// a child cast that only refers to the source writes nothing into the list, so it needs no buffer there
+	if (!cast_data.child_cast_info.IsNopCast()) {
+		ListVector::Reserve(result, child_count);
+	}
 
 	auto &source_child = ArrayVector::GetChildMutable(source);
 	auto &result_child = ListVector::GetChildMutable(result);

@@ -1,0 +1,18 @@
+# name: test/sql/types/nested/array/array_extract_memory.test
+# description: Extracting an element of a fixed-size array reserves no buffer for the cast to a list
+# group: [array]
+
+statement ok
+CREATE TABLE src_wide AS SELECT (i + 1)::INTEGER AS id, list_prepend((i + 1)::DOUBLE, range(3071)::DOUBLE[])::DOUBLE[3072] AS a FROM range(2048) t(i);
+
+statement ok
+SET VARIABLE fanout = (SELECT 'WITH u1 AS MATERIALIZED (SELECT id, a FROM src_wide) ' || string_agg('SELECT ' || k || ' AS k, id, max(a[1]) AS m FROM u1 GROUP BY ALL', ' UNION ALL ' ORDER BY k) FROM range(40) t(k));
+
+statement ok
+SET memory_limit = '400MB';
+
+# 40 readers of the CTE extract one element each, a buffer of a whole chunk of arrays for every reader does not fit
+query II
+SELECT count(*), sum(m) FROM query(getvariable('fanout'));
+----
+81920	83927040.0

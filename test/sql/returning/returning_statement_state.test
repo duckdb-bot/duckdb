@@ -2,6 +2,9 @@
 # description: Expressions in RETURNING share the parameters and the properties of their statement
 # group: [returning]
 
+# the statement trigger of this test needs a storage version that has triggers
+require noforcestorage
+
 statement ok
 CREATE TABLE t(i INTEGER);
 

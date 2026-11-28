@@ -229,8 +229,33 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownWindow(unique_ptr<LogicalOpe
 	}
 
 	const auto only_ranks = OnlyRanksWithoutArguments(window);
+	bool has_volatile_filter = false;
+	for (auto &filter : filters) {
+		has_volatile_filter = has_volatile_filter || filter->filter->IsVolatile();
+	}
 	vector<unique_ptr<Filter>> leftover_filters;
+	auto keep_above = [&](unique_ptr<Filter> &filter) {
+		// Now look for filters of the form b 𝜃 c, 𝜃 𝜖 { < <= = >= > IDF INDF}, b 𝜖 P
+		// If the partition expression e(b) is order-preserving, we can inject (not push down!)
+		// a predicate of the form e(b) 𝜃' e(c)
+		for (const auto &p : window_partition_funcs) {
+			//	Skip partition functions that are not in all window functions
+			if (p.second != window_exprs_partition_bindings.size()) {
+				continue;
+			}
+			auto aux_filter = CreateAuxiliaryFilter(GetContext(), p.first, *filter);
+			if (aux_filter) {
+				pushdown.filters.push_back(std::move(aux_filter));
+			}
+		}
+		leftover_filters.push_back(std::move(filter));
+	};
 	for (idx_t i = 0; i < filters.size(); i++) {
+		if (has_volatile_filter && filters.at(i)->filter->CanThrow()) {
+			// a volatile filter stays above, and a filter that can throw must not run on rows that it removes
+			keep_above(filters.at(i));
+			continue;
+		}
 		// If a filter is on a partition in every window expression it can be pushed down.
 		vector<ColumnBinding> bindings;
 		ExtractFilterBindings(*filters.at(i)->filter, bindings);
@@ -242,21 +267,7 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownWindow(unique_ptr<LogicalOpe
 			pushdown.filters.push_back(std::move(filters.at(i)));
 			continue;
 		}
-
-		// Now look for filters of the form b 𝜃 c, 𝜃 𝜖 { < <= = >= > IDF INDF}, b 𝜖 P
-		// If the partition expression e(b) is order-preserving, we can inject (not push down!)
-		// a predicate of the form e(b) 𝜃' e(c)
-		for (const auto &p : window_partition_funcs) {
-			//	Skip partition functions that are not in all window functions
-			if (p.second != window_exprs_partition_bindings.size()) {
-				continue;
-			}
-			auto aux_filter = CreateAuxiliaryFilter(GetContext(), p.first, *filters.at(i));
-			if (aux_filter) {
-				pushdown.filters.push_back(std::move(aux_filter));
-			}
-		}
-		leftover_filters.push_back(std::move(filters.at(i)));
+		keep_above(filters.at(i));
 	}
 
 	op->children[0] = pushdown.Rewrite(std::move(op->children[0]));

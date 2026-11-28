@@ -1,0 +1,58 @@
+# name: test/optimizer/pushdown/throwing_filter_behind_volatile_filter_at_aggregate_and_window_plan.test
+# description: Only a volatile filter of the same clause keeps a filter that can throw above an aggregate or a window
+# group: [pushdown]
+
+statement ok
+CREATE TABLE numbers AS SELECT (i % 10)::VARCHAR AS s FROM range(100) t(i);
+
+statement ok
+SET explain_output = 'OPTIMIZED_ONLY';
+
+# without a volatile filter the cast goes below the aggregate
+query II
+EXPLAIN SELECT s FROM numbers GROUP BY s HAVING s::DOUBLE > 4;
+----
+logical_opt	<REGEX>:.*Aggregate.*CAST\(s AS DOUBLE\) > 4.0.*
+
+# behind a volatile filter it stays above the aggregate
+query II
+EXPLAIN SELECT s FROM numbers GROUP BY s HAVING random() < 2 AND s::DOUBLE > 4;
+----
+logical_opt	<REGEX>:.*random\(\) < 2.0.*AS DOUBLE\) > 4.0.*Aggregate.*
+
+# a filter that cannot throw still goes below
+query II
+EXPLAIN SELECT s FROM numbers GROUP BY s HAVING random() < 2 AND s <> '5';
+----
+logical_opt	<REGEX>:.*random\(\) < 2.0.*Aggregate.*s != '5'.*
+
+# the same for a window
+query II
+EXPLAIN SELECT s FROM numbers QUALIFY s::DOUBLE > 4 AND row_number() OVER (PARTITION BY s) = 1;
+----
+logical_opt	<REGEX>:.*Window.*CAST\(s AS DOUBLE\) > 4.0.*
+
+query II
+EXPLAIN SELECT s FROM numbers QUALIFY random() < 2 AND s::DOUBLE > 4 AND row_number() OVER (PARTITION BY s) = 1;
+----
+logical_opt	<REGEX>:.*random\(\) < 2.0.*AS DOUBLE\) > 4.0.*Window.*
+
+query II
+EXPLAIN SELECT s FROM numbers QUALIFY random() < 2 AND s <> '5' AND row_number() OVER (PARTITION BY s) = 1;
+----
+logical_opt	<REGEX>:.*random\(\) < 2.0.*Window.*s != '5'.*
+
+# a filter that stays above the window still gives the scan the weaker filter on its partition expression
+statement ok
+CREATE TABLE dates AS SELECT * FROM (VALUES ('2010-01-01'), ('2020-01-01'), ('2020-07-01'), ('2021-01-01')) t(s);
+
+query II
+EXPLAIN SELECT s FROM dates QUALIFY random() < 2 AND s::DATE >= DATE '2020-06-01' AND row_number() OVER (PARTITION BY year(s::DATE)) = 1;
+----
+logical_opt	<REGEX>:.*random\(\) < 2.0.*Window.*CAST\(s AS DATE\)\) >= 2020.*
+
+query I
+SELECT s FROM dates QUALIFY random() < 2 AND s::DATE >= DATE '2020-06-01' AND row_number() OVER (PARTITION BY year(s::DATE) ORDER BY s DESC) = 1 ORDER BY s;
+----
+2020-07-01
+2021-01-01

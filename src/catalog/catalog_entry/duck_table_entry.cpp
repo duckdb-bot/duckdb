@@ -707,6 +707,14 @@ unique_ptr<CatalogEntry> DuckTableEntry::ChangeStructColumnType(ClientContext &c
 	auto result = ChangeColumnType(context, change_column_type, alter_table_type);
 	// the dependency manager reads the dependencies of the new table from the info of the statement
 	info.new_dependencies = std::move(change_column_type.new_dependencies);
+	// a column type that is bound already adds no dependency, so the table keeps the ones it had
+	for (auto &dependency : dependencies.Set()) {
+		info.new_dependencies->AddDependency(dependency);
+	}
+	if (alter_table_type != AlterTableType::REMOVE_FIELD) {
+		// only a removed field can leave a dependency behind that the stored table no longer needs
+		result->Cast<DuckTableEntry>().dependencies = *info.new_dependencies;
+	}
 	return result;
 }
 

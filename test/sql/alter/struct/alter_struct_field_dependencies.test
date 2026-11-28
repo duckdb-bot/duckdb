@@ -1,5 +1,5 @@
 # name: test/sql/alter/struct/alter_struct_field_dependencies.test
-# description: An ALTER of a struct field registers what the new default of the column depends on
+# description: An ALTER of a struct field registers what the new default depends on and keeps what the table depended on
 # group: [struct]
 
 load {TEST_DIR}/alter_struct_field_dependencies.db
@@ -75,7 +75,45 @@ DROP MACRO mc;
 statement ok
 INSERT INTO m (i) VALUES (4);
 
-# the type of a field that was removed can be dropped
+# an added or renamed field leaves the table with the types it depended on
+statement ok
+CREATE TYPE mood AS ENUM ('ok', 'sad');
+
+statement ok
+CREATE TABLE k (m mood, s STRUCT(x INT, y INT));
+
+statement ok
+ALTER TABLE k ADD COLUMN s.z INT;
+
+statement error
+DROP TYPE mood;
+----
+table "k" depends on type "mood"
+
+statement ok
+ALTER TABLE k RENAME COLUMN s.x TO w;
+
+statement error
+DROP TYPE mood;
+----
+table "k" depends on type "mood"
+
+# a removed field keeps them as long as the table is not loaded again, which the transaction rules out
+statement ok
+BEGIN;
+
+statement ok
+ALTER TABLE k DROP COLUMN s.y;
+
+statement error
+DROP TYPE mood;
+----
+table "k" depends on type "mood"
+
+statement ok
+ROLLBACK;
+
+# the stored table does not name the type of a field that was removed
 statement ok
 CREATE TYPE o AS ENUM ('a', 'b');
 
@@ -89,9 +127,26 @@ statement ok
 ALTER TABLE r DROP COLUMN s.c;
 
 statement ok
-DROP TYPE o;
+CHECKPOINT;
 
 restart
+
+statement ok
+DROP TYPE o;
+
+# the table with the added and the renamed field still holds the type of its other column
+statement error
+DROP TYPE mood;
+----
+table "k" depends on type "mood"
+
+statement ok
+INSERT INTO k VALUES ('sad', {'w': 1, 'y': 2, 'z': 3});
+
+query II
+SELECT * FROM k;
+----
+sad	{'w': 1, 'y': 2, 'z': 3}
 
 query II
 SELECT * FROM m ORDER BY i;

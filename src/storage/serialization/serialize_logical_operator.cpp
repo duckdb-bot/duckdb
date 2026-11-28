@@ -711,6 +711,9 @@ void LogicalMaterializedCTE::Serialize(Serializer &serializer) const {
 	serializer.WritePropertyWithDefault<idx_t>(201, "column_count", column_count);
 	serializer.WritePropertyWithDefault<Identifier>(202, "ctename", ctename);
 	serializer.WritePropertyWithDefault<CTEMaterialize>(203, "materialize", materialize, CTEMaterialize::CTE_MATERIALIZE_DEFAULT);
+	if (serializer.ShouldSerialize(StorageVersion::V2_1_0)) {
+		serializer.WritePropertyWithDefault<bool>(204, "generated_for_delim_join", generated_for_delim_join, false);
+	}
 }
 
 unique_ptr<LogicalOperator> LogicalMaterializedCTE::Deserialize(Deserializer &deserializer) {
@@ -719,6 +722,7 @@ unique_ptr<LogicalOperator> LogicalMaterializedCTE::Deserialize(Deserializer &de
 	deserializer.ReadPropertyWithDefault<idx_t>(201, "column_count", result->column_count);
 	deserializer.ReadPropertyWithDefault<Identifier>(202, "ctename", result->ctename);
 	deserializer.ReadPropertyWithExplicitDefault<CTEMaterialize>(203, "materialize", result->materialize, CTEMaterialize::CTE_MATERIALIZE_DEFAULT);
+	deserializer.ReadPropertyWithExplicitDefault<bool>(204, "generated_for_delim_join", result->generated_for_delim_join, false);
 	return std::move(result);
 }
 

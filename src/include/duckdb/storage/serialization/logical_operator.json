@@ -769,6 +769,13 @@
         "name": "materialize",
         "type": "CTEMaterialize",
         "default": "CTEMaterialize::CTE_MATERIALIZE_DEFAULT"
+      },
+      {
+        "id": 204,
+        "name": "generated_for_delim_join",
+        "type": "bool",
+        "default": "false",
+        "version": "v2.1.0"
       }
     ]
   },

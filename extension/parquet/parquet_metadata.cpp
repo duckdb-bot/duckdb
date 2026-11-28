@@ -899,7 +899,6 @@ private:
 	optional_idx probe_column_idx;
 
 	unique_ptr<duckdb_apache::thrift::protocol::TCompactProtocolT<ThriftFileTransport>> protocol;
-	optional_ptr<Allocator> allocator;
 	unique_ptr<ExpressionFilter> filter;
 	optional<ParquetBloomFilterHashStrategy> hash_strategy;
 };
@@ -937,7 +936,6 @@ void ParquetBloomProbeProcessor::InitializeInternal(ClientContext &context, Parq
 
 	auto transport = duckdb_base_std::make_shared<ThriftFileTransport>(context, reader.GetHandle(), false);
 	protocol = make_uniq<duckdb_apache::thrift::protocol::TCompactProtocolT<ThriftFileTransport>>(std::move(transport));
-	allocator = &BufferAllocator::Get(context);
 	auto column_type = reader.GetColumns()[probe_column_idx.GetIndex()].type;
 	filter = ExpressionFilter::CreateComparisonFilter(ExpressionType::COMPARE_EQUAL,
 	                                                  probe_constant.CastAs(context, column_type));
@@ -958,9 +956,9 @@ void ParquetBloomProbeProcessor::ReadRow(vector<reference<Vector>> &output, idx_
 	D_ASSERT(!probe_constant.IsNull());
 
 	auto &column_schema = reader.root_schema->children[probe_column_idx.GetIndex()];
-	auto bloom_excludes =
-	    hash_strategy && ParquetStatisticsUtils::BloomFilterExcludes(*filter, column.meta_data, *protocol, *allocator,
-	                                                                 column_schema, *hash_strategy);
+	auto bloom_excludes = hash_strategy && ParquetStatisticsUtils::BloomFilterExcludes(
+	                                           *filter, column.meta_data, *protocol, reader.allocator, column_schema,
+	                                           *hash_strategy, reader, row_group.ordinal, probe_column_idx.GetIndex());
 
 	output[0].get().Append(Value(reader.file.path));
 	output[1].get().Append(Value::BIGINT(NumericCast<int64_t>(row_idx)));

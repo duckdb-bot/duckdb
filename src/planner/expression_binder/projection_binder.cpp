@@ -1,4 +1,5 @@
 #include "duckdb/planner/expression_binder/projection_binder.hpp"
+#include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 
 namespace duckdb {

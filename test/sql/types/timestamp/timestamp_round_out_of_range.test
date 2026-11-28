@@ -5,12 +5,12 @@
 statement error
 SELECT TIMESTAMP '294247-01-10 04:00:54.775806'::TIMESTAMP_S
 ----
-can't be cast
+Conversion Error: timestamp field value out of range: "294247-01-10 04:00:54.775806"
 
 statement error
 SELECT TIMESTAMP '294247-01-10 04:00:54.6'::TIMESTAMP_S::TIMESTAMPTZ
 ----
-can't be cast
+Conversion Error: timestamp field value out of range: "294247-01-10 04:00:54.6"
 
 query II
 SELECT TRY_CAST(TIMESTAMP '294247-01-10 04:00:54.775806' AS TIMESTAMP_S)::VARCHAR, TRY_CAST(TIMESTAMP '294247-01-10 04:00:54.775806' AS TIMESTAMP_MS)

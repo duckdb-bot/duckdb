@@ -1,0 +1,111 @@
+# name: test/sql/timezone/timestamptz_round_out_of_range.test
+# description: A TIMESTAMPTZ that rounds out of the timestamp range fails with a range error, with and without ICU
+# group: [timezone]
+
+# ICU is not loaded yet, so these are the casts of the core
+query I
+SELECT count(*) FROM duckdb_functions() WHERE function_name = 'icu_calendar_names';
+----
+0
+
+statement error
+SELECT TIMESTAMPTZ '294247-01-10 04:00:54.775806+00'::TIMESTAMP_S;
+----
+Conversion Error: timestamp field value out of range: "294247-01-10 04:00:54.775806"
+
+statement error
+SELECT TIMESTAMPTZ '294247-01-10 04:00:54.775806+00'::TIMESTAMP_MS;
+----
+Conversion Error: timestamp field value out of range: "294247-01-10 04:00:54.775806"
+
+statement error
+SELECT TIMESTAMPTZ '290309-12-21 (BC) 19:59:05.4+00'::TIMESTAMP_S;
+----
+Conversion Error: timestamp field value out of range: "290309-12-21 (BC) 19:59:05.4"
+
+statement error
+SELECT TIMESTAMPTZ '290309-12-21 (BC) 19:59:05.2243+00'::TIMESTAMP_MS;
+----
+Conversion Error: timestamp field value out of range: "290309-12-21 (BC) 19:59:05.2243"
+
+query IIII
+SELECT
+	TRY_CAST(TIMESTAMPTZ '294247-01-10 04:00:54.775806+00' AS TIMESTAMP_S),
+	TRY_CAST(TIMESTAMPTZ '294247-01-10 04:00:54.775806+00' AS TIMESTAMP_MS),
+	TRY_CAST(TIMESTAMPTZ '290309-12-21 (BC) 19:59:05.4+00' AS TIMESTAMP_S),
+	TRY_CAST(TIMESTAMPTZ '290309-12-21 (BC) 19:59:05.2243+00' AS TIMESTAMP_MS);
+----
+NULL	NULL	NULL	NULL
+
+query IIII
+SELECT
+	TIMESTAMPTZ '294247-01-10 04:00:54.4+00'::TIMESTAMP_S,
+	TIMESTAMPTZ '294247-01-10 04:00:54.7754+00'::TIMESTAMP_MS,
+	TIMESTAMPTZ '290309-12-21 (BC) 19:59:05.6+00'::TIMESTAMP_S,
+	TIMESTAMPTZ '290309-12-21 (BC) 19:59:05.2246+00'::TIMESTAMP_MS;
+----
+294247-01-10 04:00:54	294247-01-10 04:00:54.775	290309-12-21 (BC) 19:59:06	290309-12-21 (BC) 19:59:05.225
+
+# from here on the casts of ICU replace them
+require icu
+
+statement ok
+SET Calendar = 'gregorian';
+
+statement ok
+SET TimeZone = 'UTC';
+
+statement error
+SELECT TIMESTAMPTZ '294247-01-10 04:00:54.775806+00'::TIMESTAMP_S;
+----
+Conversion Error: timestamp field value out of range: "294247-01-10 04:00:54.775806"
+
+statement error
+SELECT TIMESTAMPTZ '294247-01-10 04:00:54.775806+00'::TIMESTAMP_MS;
+----
+Conversion Error: timestamp field value out of range: "294247-01-10 04:00:54.775806"
+
+statement error
+SELECT TIMESTAMPTZ '290309-12-21 (BC) 19:59:05.4+00'::TIMESTAMP_S;
+----
+Conversion Error: timestamp field value out of range: "290309-12-21 (BC) 19:59:05.4"
+
+statement error
+SELECT TIMESTAMPTZ '290309-12-21 (BC) 19:59:05.2243+00'::TIMESTAMP_MS;
+----
+Conversion Error: timestamp field value out of range: "290309-12-21 (BC) 19:59:05.2243"
+
+query II
+SELECT TRY_CAST(TIMESTAMPTZ '294247-01-10 04:00:54.775806+00' AS TIMESTAMP_S), TRY_CAST(TIMESTAMPTZ '294247-01-10 04:00:54.775806+00' AS TIMESTAMP_MS);
+----
+NULL	NULL
+
+query II
+SELECT TRY_CAST(TIMESTAMPTZ '290309-12-21 (BC) 19:59:05.4+00' AS TIMESTAMP_S), TRY_CAST(TIMESTAMPTZ '290309-12-21 (BC) 19:59:05.2243+00' AS TIMESTAMP_MS);
+----
+NULL	NULL
+
+query II
+SELECT TIMESTAMPTZ '294247-01-10 04:00:54.4+00'::TIMESTAMP_S, TIMESTAMPTZ '2024-01-01 10:00:00.6+00'::TIMESTAMP_MS;
+----
+294247-01-10 04:00:54	2024-01-01 10:00:00.6
+
+query II
+SELECT TIMESTAMPTZ '290309-12-21 (BC) 19:59:05.6+00'::TIMESTAMP_S, TIMESTAMPTZ '290309-12-21 (BC) 19:59:05.2246+00'::TIMESTAMP_MS;
+----
+290309-12-21 (BC) 19:59:06	290309-12-21 (BC) 19:59:05.225
+
+# a value that does not fit the higher precision keeps its message
+statement error
+SELECT TIMESTAMPTZ '2500-01-01 00:00:00+00'::TIMESTAMP_NS;
+----
+Conversion Error: Could not convert Timestamp to higher precision.
+
+# the message names the local time of the session
+statement ok
+SET TimeZone = 'Asia/Tokyo';
+
+statement error
+SELECT TIMESTAMPTZ '294247-01-09 19:00:54.775806+00'::TIMESTAMP_S;
+----
+Conversion Error: timestamp field value out of range: "294247-01-10 04:00:54.775806"

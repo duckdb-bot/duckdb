@@ -1,0 +1,91 @@
+# name: test/sql/types/timestamp/timestamp_round_out_of_range_message.test
+# description: A timestamp that rounds past either end of the timestamp range is reported as out of range
+# group: [timestamp]
+
+statement error
+SELECT TIMESTAMP '294247-01-10 04:00:54.775806'::TIMESTAMP_MS
+----
+Conversion Error: timestamp field value out of range: "294247-01-10 04:00:54.775806"
+
+# the first values that round past the range, and the last ones that do not
+statement error
+SELECT TIMESTAMP '294247-01-10 04:00:54.5'::TIMESTAMP_S
+----
+Conversion Error: timestamp field value out of range: "294247-01-10 04:00:54.5"
+
+statement error
+SELECT TIMESTAMP '294247-01-10 04:00:54.7755'::TIMESTAMP_MS
+----
+Conversion Error: timestamp field value out of range: "294247-01-10 04:00:54.7755"
+
+query II
+SELECT TIMESTAMP '294247-01-10 04:00:54.499999'::TIMESTAMP_S, TIMESTAMP '294247-01-10 04:00:54.775499'::TIMESTAMP_MS
+----
+294247-01-10 04:00:54	294247-01-10 04:00:54.775
+
+# the start of the range
+statement error
+SELECT TIMESTAMP '290309-12-21 (BC) 19:59:05.4'::TIMESTAMP_S
+----
+Conversion Error: timestamp field value out of range: "290309-12-21 (BC) 19:59:05.4"
+
+statement error
+SELECT TIMESTAMP '290309-12-21 (BC) 19:59:05.2243'::TIMESTAMP_MS
+----
+Conversion Error: timestamp field value out of range: "290309-12-21 (BC) 19:59:05.2243"
+
+query II
+SELECT TRY_CAST(TIMESTAMP '290309-12-21 (BC) 19:59:05.4' AS TIMESTAMP_S), TRY_CAST(TIMESTAMP '290309-12-21 (BC) 19:59:05.2243' AS TIMESTAMP_MS)
+----
+NULL	NULL
+
+# the last values that round past the start of the range, and the first ones that do not
+statement error
+SELECT TIMESTAMP '290309-12-21 (BC) 19:59:05.5'::TIMESTAMP_S
+----
+Conversion Error: timestamp field value out of range: "290309-12-21 (BC) 19:59:05.5"
+
+statement error
+SELECT TIMESTAMP '290309-12-21 (BC) 19:59:05.2245'::TIMESTAMP_MS
+----
+Conversion Error: timestamp field value out of range: "290309-12-21 (BC) 19:59:05.2245"
+
+query II
+SELECT TIMESTAMP '290309-12-21 (BC) 19:59:05.500001'::TIMESTAMP_S, TIMESTAMP '290309-12-21 (BC) 19:59:05.224501'::TIMESTAMP_MS
+----
+290309-12-21 (BC) 19:59:06	290309-12-21 (BC) 19:59:05.225
+
+# the message names no physical type, also for a column
+statement ok
+CREATE TABLE timestamps AS SELECT * FROM (VALUES (TIMESTAMP '2024-01-01 00:00:00'), (TIMESTAMP '294247-01-10 04:00:54.775806'), (NULL)) t(ts);
+
+statement error
+SELECT ts::TIMESTAMP_S FROM timestamps;
+----
+<REGEX>:Conversion Error: timestamp field value out of range: "294247-01-10 04:00:54.775806".*
+
+statement error
+SELECT ts::TIMESTAMP_MS FROM timestamps;
+----
+<!REGEX>:.*INT64.*
+
+statement ok
+CREATE TABLE seconds(ts TIMESTAMP_S);
+
+statement error
+INSERT INTO seconds SELECT ts FROM timestamps;
+----
+timestamp field value out of range: "294247-01-10 04:00:54.775806"
+
+query II
+SELECT TRY_CAST(ts AS TIMESTAMP_S), TRY_CAST(ts AS TIMESTAMP_MS) FROM timestamps ORDER BY ts;
+----
+2024-01-01 00:00:00	2024-01-01 00:00:00
+NULL	NULL
+NULL	NULL
+
+# infinity has no precision
+query II
+SELECT TIMESTAMP 'infinity'::TIMESTAMP_S, TIMESTAMP '-infinity'::TIMESTAMP_MS;
+----
+infinity	-infinity

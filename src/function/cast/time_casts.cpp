@@ -18,6 +18,11 @@ string TimestampCastErrorMessage(SRC input) {
 	if (std::is_same<DST, date_t>()) {
 		return StringUtil::Format("Could not convert Timestamp to %s.", TypeIdToString(GetTypeId<DST>()));
 	}
+	const bool from_micros = std::is_same<SRC, timestamp_t>() || std::is_same<SRC, timestamp_tz_t>();
+	if (from_micros && (std::is_same<DST, timestamp_ms_t>() || std::is_same<DST, timestamp_sec_t>())) {
+		// a lower precision only fails when the value rounds out of the timestamp range
+		return Timestamp::RangeError(Timestamp::ToString(timestamp_t(input.value)));
+	}
 	return "Could not convert Timestamp to higher precision.";
 }
 
@@ -129,10 +134,12 @@ BoundCastInfo DefaultCasts::TimestampCastSwitch(BindCastInput &input, const Logi
 		    &VectorCastHelpers::TryCastErrorLoop<timestamp_t, timestamp_ns_t, TryCastTimestampErrorMessage>);
 	case LogicalTypeId::TIMESTAMP_MS:
 		// timestamp (us) to timestamp (ms)
-		return BoundCastInfo(&VectorCastHelpers::TryCastLoop<timestamp_t, timestamp_ms_t, duckdb::TryCast>);
+		return BoundCastInfo(
+		    &VectorCastHelpers::TryCastErrorLoop<timestamp_t, timestamp_ms_t, TryCastTimestampErrorMessage>);
 	case LogicalTypeId::TIMESTAMP_SEC:
 		// timestamp (us) to timestamp (s)
-		return BoundCastInfo(&VectorCastHelpers::TryCastLoop<timestamp_t, timestamp_sec_t, duckdb::TryCast>);
+		return BoundCastInfo(
+		    &VectorCastHelpers::TryCastErrorLoop<timestamp_t, timestamp_sec_t, TryCastTimestampErrorMessage>);
 	default:
 		return TryVectorNullCast;
 	}
@@ -159,10 +166,12 @@ BoundCastInfo DefaultCasts::TimestampTzCastSwitch(BindCastInput &input, const Lo
 		    &VectorCastHelpers::TryCastErrorLoop<timestamp_tz_t, timestamp_ns_t, TryCastTimestampErrorMessage>);
 	case LogicalTypeId::TIMESTAMP_MS:
 		// timestamptz (us) to timestamp (ms)
-		return BoundCastInfo(&VectorCastHelpers::TryCastLoop<timestamp_tz_t, timestamp_ms_t, duckdb::TryCast>);
+		return BoundCastInfo(
+		    &VectorCastHelpers::TryCastErrorLoop<timestamp_tz_t, timestamp_ms_t, TryCastTimestampErrorMessage>);
 	case LogicalTypeId::TIMESTAMP_SEC:
 		// timestamptz (us) to timestamp (s)
-		return BoundCastInfo(&VectorCastHelpers::TryCastLoop<timestamp_tz_t, timestamp_sec_t, duckdb::TryCast>);
+		return BoundCastInfo(
+		    &VectorCastHelpers::TryCastErrorLoop<timestamp_tz_t, timestamp_sec_t, TryCastTimestampErrorMessage>);
 	default:
 		return TryVectorNullCast;
 	}

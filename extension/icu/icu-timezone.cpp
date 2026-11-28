@@ -390,6 +390,18 @@ struct ICUToNaiveTimestamp : public ICUDateFunc {
 		return timestamp_t(value);
 	}
 
+	//! The error of a naive timestamp that does not fit the precision of the target
+	template <class NAIVE, class DST>
+	static string CastToNaiveError(NAIVE naive) {
+		if constexpr (std::is_same<NAIVE, timestamp_t>::value &&
+		              (std::is_same<DST, timestamp_ms_t>::value || std::is_same<DST, timestamp_sec_t>::value)) {
+			// a lower precision only fails when the value rounds out of the timestamp range
+			return Timestamp::RangeError(Timestamp::ToString(naive));
+		} else {
+			return "Could not convert Timestamp to higher precision.";
+		}
+	}
+
 	template <class SRC, class DST>
 	static bool CastToNaive(Vector &source, Vector &result, idx_t count, CastParameters &parameters) {
 		auto &cast_data = parameters.cast_data->Cast<CastData>();
@@ -424,7 +436,7 @@ struct ICUToNaiveTimestamp : public ICUDateFunc {
 			}
 			DST output;
 			if (!TryCast::Operation(naive, output)) {
-				HandleCastError::AssignError("Could not convert Timestamp to higher precision.", parameters);
+				HandleCastError::AssignError(CastToNaiveError<NAIVE, DST>(naive), parameters);
 				all_converted = false;
 				return nullopt;
 			}

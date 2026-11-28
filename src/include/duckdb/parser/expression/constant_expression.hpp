@@ -56,11 +56,12 @@ public:
 	void Serialize(Serializer &serializer) const override;
 	static unique_ptr<ParsedExpression> Deserialize(Deserializer &deserializer);
 
+	//! The value written when serializing for storage versions that predate literals
+	Value GetValueForSerialization() const;
+
 private:
 	ConstantExpression();
 
-	//! The value written when serializing for storage versions that predate literals
-	Value GetValueForSerialization() const;
 	//! Rebuilds the expression from either the literal or, for older storage versions, the value
 	static unique_ptr<ParsedExpression> DeserializeConstant(const Value &value, Literal literal);
 

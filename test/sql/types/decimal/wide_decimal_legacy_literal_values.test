@@ -1,0 +1,177 @@
+# name: test/sql/types/decimal/wide_decimal_legacy_literal_values.test
+# description: Decimal literals wider than 38 digits in PIVOT entries and type modifiers are written below storage version v1.5.0 as the DOUBLE that the engines of those versions read
+# group: [decimal]
+
+load {TEST_DIR}/wide_decimal_legacy_literal_values.db readwrite v1.0.0
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown
+
+statement ok
+SET wal_autocheckpoint='1TB'
+
+statement ok
+CREATE VIEW pivot_wide AS SELECT * FROM (VALUES (1)) AS t(k) PIVOT (count(*) FOR k IN (123456789012345678901234567890123456789.0));
+
+statement ok
+CREATE VIEW pivot_row AS SELECT * FROM (VALUES (1, 2)) AS t(k, j) PIVOT (count(*) FOR (k, j) IN ((-123456789012345678901234567890123456789.0, 2)));
+
+# a literal of 38 digits is a decimal for those engines as well and stays exact
+statement ok
+CREATE VIEW pivot_exact AS SELECT * FROM (VALUES (1)) AS t(k) PIVOT (count(*) FOR k IN (1234567890123456789012345678901234567.8));
+
+# digit separators are not part of the number
+statement ok
+CREATE VIEW pivot_separators AS SELECT * FROM (VALUES (1)) AS t(k) PIVOT (count(*) FOR k IN (12_345_678_901_234_567_890_123_456_789_012_345_678.5));
+
+statement ok
+CREATE VIEW pivot_fraction_separators AS SELECT * FROM (VALUES (1)) AS t(k) PIVOT (count(*) FOR k IN (0.12345678_901234567890123456789012345678));
+
+# the macro drops its argument, so the cast to a type that does not exist is stored without being bound
+statement ok
+CREATE MACRO keep_one(x) AS 1;
+
+statement ok
+CREATE VIEW modifier_wide AS SELECT keep_one(1::unknown_type(123456789012345678901234567890123456789.0, 1234567890123456789012345678901234567.8)) AS x;
+
+statement ok
+CREATE VIEW modifier_separators AS SELECT keep_one(1::unknown_type(12_345_678_901_234_567_890_123_456_789_012_345_678.5)) AS x;
+
+# a plain constant is written with the same value
+statement ok
+CREATE VIEW constant_separators AS SELECT 12_345_678_901_234_567_890_123_456_789_012_345_678.5 AS c;
+
+# entries and a modifier in macro bodies, an entry in a column default
+statement ok
+CREATE MACRO pivot_scalar_macro() AS (SELECT * FROM (VALUES (1)) AS t(k) PIVOT (count(*) FOR k IN (123456789012345678901234567890123456789.0)));
+
+statement ok
+CREATE MACRO pivot_table_macro() AS TABLE SELECT * FROM (VALUES (1)) AS t(k) PIVOT (count(*) FOR k IN (123456789012345678901234567890123456789.0));
+
+statement ok
+CREATE MACRO modifier_macro() AS keep_one(1::unknown_type(123456789012345678901234567890123456789.0));
+
+statement ok
+CREATE TABLE pivot_default (i INTEGER DEFAULT keep_one((SELECT * FROM (VALUES (1)) AS t(k) PIVOT (count(*) FOR k IN (123456789012345678901234567890123456789.0)))));
+
+statement ok
+CREATE TABLE t (s INTEGER);
+
+statement ok
+INSERT INTO t VALUES (7);
+
+statement ok
+ALTER TABLE t ALTER s SET TYPE INTEGER USING keep_one(s::unknown_type(123456789012345678901234567890123456789.0)) + s;
+
+# the entries are read back from the WAL
+restart
+
+query IIII
+SELECT view_name, regexp_extract(sql, '-?[0-9.]+e\+[0-9]+'), contains(sql, '123456789012345678901234567890123456789'), contains(sql, '1234567890123456789012345678901234567.8') FROM duckdb_views() WHERE NOT internal ORDER BY view_name
+----
+constant_separators	1.2345678901234568e+37	false	false
+modifier_separators	1.2345678901234568e+37	false	false
+modifier_wide	1.2345678901234568e+38	false	true
+pivot_exact	(empty)	false	true
+pivot_fraction_separators	(empty)	false	false
+pivot_row	-1.2345678901234568e+38	false	false
+pivot_separators	1.2345678901234568e+37	false	false
+pivot_wide	1.2345678901234568e+38	false	false
+
+query I
+SELECT column_name FROM (DESCRIBE pivot_wide)
+----
+1.2345678901234568e+38
+
+query I
+SELECT column_name FROM (DESCRIBE pivot_row)
+----
+-1.2345678901234568e+38_2
+
+query I
+SELECT column_name FROM (DESCRIBE pivot_exact)
+----
+1234567890123456789012345678901234567.8
+
+query I
+SELECT column_name FROM (DESCRIBE pivot_separators)
+----
+1.2345678901234568e+37
+
+query I
+SELECT column_name FROM (DESCRIBE pivot_fraction_separators)
+----
+0.12345678901234568
+
+query II
+SELECT function_name, regexp_extract(macro_definition, '-?[0-9.]+e\+[0-9]+') FROM duckdb_functions() WHERE function_name IN ('modifier_macro', 'pivot_scalar_macro', 'pivot_table_macro') ORDER BY function_name
+----
+modifier_macro	1.2345678901234568e+38
+pivot_scalar_macro	1.2345678901234568e+38
+pivot_table_macro	1.2345678901234568e+38
+
+query II
+SELECT table_name, regexp_extract(column_default, '-?[0-9.]+e\+[0-9]+') FROM duckdb_columns() WHERE table_name IN ('modifier_default', 'pivot_default') ORDER BY table_name
+----
+pivot_default	1.2345678901234568e+38
+
+query III
+SELECT (SELECT x FROM modifier_wide), (SELECT s FROM t), (SELECT c::VARCHAR FROM constant_separators)
+----
+1	8	1.2345678901234568e+37
+
+# entries and modifiers that go from the statement into a checkpoint
+statement ok
+CREATE VIEW pivot_checkpointed AS SELECT * FROM (VALUES (1)) AS t(k) PIVOT (count(*) FOR k IN (987654321098765432109876543210987654321.0));
+
+statement ok
+CREATE VIEW modifier_checkpointed AS SELECT keep_one(1::unknown_type(987654321098765432109876543210987654321.0)) AS x;
+
+statement ok
+CREATE TABLE modifier_default (i INTEGER DEFAULT keep_one(1::unknown_type(987654321098765432109876543210987654321.0)));
+
+statement ok
+CREATE VIEW constant_fraction_separators AS SELECT 0.12345678_901234567890123456789012345678 AS c;
+
+statement ok
+CHECKPOINT
+
+restart
+
+query III
+SELECT view_name, regexp_extract(sql, '-?[0-9.]+e\+[0-9]+'), contains(sql, '123456789012345678901234567890123456789') OR contains(sql, '987654321098765432109876543210987654321') FROM duckdb_views() WHERE NOT internal ORDER BY view_name
+----
+constant_fraction_separators	(empty)	false
+constant_separators	1.2345678901234568e+37	false
+modifier_checkpointed	9.876543210987655e+38	false
+modifier_separators	1.2345678901234568e+37	false
+modifier_wide	1.2345678901234568e+38	false
+pivot_checkpointed	9.876543210987655e+38	false
+pivot_exact	(empty)	false
+pivot_fraction_separators	(empty)	false
+pivot_row	-1.2345678901234568e+38	false
+pivot_separators	1.2345678901234568e+37	false
+pivot_wide	1.2345678901234568e+38	false
+
+query I
+SELECT column_name FROM (DESCRIBE pivot_checkpointed)
+----
+9.876543210987655e+38
+
+query II
+SELECT function_name, regexp_extract(macro_definition, '-?[0-9.]+e\+[0-9]+') FROM duckdb_functions() WHERE function_name IN ('modifier_macro', 'pivot_scalar_macro', 'pivot_table_macro') ORDER BY function_name
+----
+modifier_macro	1.2345678901234568e+38
+pivot_scalar_macro	1.2345678901234568e+38
+pivot_table_macro	1.2345678901234568e+38
+
+query II
+SELECT table_name, regexp_extract(column_default, '-?[0-9.]+e\+[0-9]+') FROM duckdb_columns() WHERE table_name IN ('modifier_default', 'pivot_default') ORDER BY table_name
+----
+modifier_default	9.876543210987655e+38
+pivot_default	1.2345678901234568e+38
+
+query IIII
+SELECT (SELECT x FROM modifier_wide), (SELECT x FROM modifier_checkpointed), (SELECT s FROM t), (SELECT c::VARCHAR FROM constant_fraction_separators)
+----
+1	1	8	0.12345678901234568

@@ -241,7 +241,7 @@ void UnboundTypeInfo::Serialize(Serializer &serializer) const {
 		}
 
 		auto &const_expr = param->Cast<ConstantExpression>();
-		user_type_mods.push_back(const_expr.GetLiteral().ToValue());
+		user_type_mods.push_back(const_expr.GetValueForSerialization());
 	}
 
 	serializer.WritePropertyWithDefault<vector<Value>>(203, "user_type_modifiers", user_type_mods);

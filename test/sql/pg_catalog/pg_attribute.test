@@ -71,3 +71,23 @@ SELECT t.typname FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid JOIN 
 WHERE c.relname = 'typed' AND a.attname = 'i';
 ----
 int4
+
+# a generated column is virtual, a column with a default is not generated
+statement ok
+CREATE TABLE generated(id INTEGER DEFAULT 1, id2 INTEGER GENERATED ALWAYS AS (id + 1), id3 AS (id * 2) VIRTUAL);
+
+query III
+SELECT attname, attgenerated, atthasdef FROM pg_attribute JOIN pg_class ON (pg_attribute.attrelid = pg_class.oid) WHERE relname = 'generated' ORDER BY attnum;
+----
+id	(empty)	true
+id2	v	true
+id3	v	true
+
+# a view of a generated column is not generated
+statement ok
+CREATE VIEW generated_view AS SELECT id2 FROM generated;
+
+query II
+SELECT attname, attgenerated FROM pg_attribute JOIN pg_class ON (pg_attribute.attrelid = pg_class.oid) WHERE relname = 'generated_view';
+----
+id2	(empty)

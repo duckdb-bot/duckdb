@@ -1,3 +1,4 @@
+#include "duckdb/common/types/decimal.hpp"
 #include "duckdb/parser/parsed_data/create_index_info.hpp"
 #include "duckdb/parser/expression/columnref_expression.hpp"
 #include "duckdb/parser/peg/transformer/peg_transformer.hpp"
@@ -45,8 +46,9 @@ unique_ptr<CreateStatement> PEGTransformerFactory::TransformCreateIndexStmt(
 			if (option_entry.second->GetExpressionClass() != ExpressionClass::CONSTANT) {
 				throw InvalidInputException("Create index option must be a constant value");
 			}
+			// an option is stored as a value, and engines without wide decimals read a decimal of at most 38 digits
 			index_info->options[option_entry.first] =
-			    option_entry.second->Cast<ConstantExpression>().GetLiteral().ToValue();
+			    option_entry.second->Cast<ConstantExpression>().GetLiteral().ToValue(Decimal::MAX_WIDTH_INT128);
 		}
 	}
 	result->info = std::move(index_info);

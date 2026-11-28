@@ -223,6 +223,8 @@ public:
 	FullLinePosition current_line_position;
 	//! Used for CSV line reconstruction on flushed errors, one entry per row of the result
 	vector<FullLinePosition> line_positions_per_row;
+	//! The lines read in front of each row of the result, the line of an error that is found when the chunk is flushed
+	vector<idx_t> lines_read_per_row;
 	bool added_last_line = false;
 	bool quoted_new_line = false;
 

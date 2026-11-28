@@ -121,6 +121,7 @@ StringValueResult::StringValueResult(CSVStates &states, CSVStateMachine &state_m
 	parse_chunk.Initialize(buffer_allocator, logical_types, result_size);
 	// one slot more, the cast error search of Flush can stop one past the last row
 	line_positions_per_row.resize(result_size + 1);
+	lines_read_per_row.resize(result_size + 1);
 	for (auto &col : parse_chunk.data) {
 		vector_ptr.push_back(FlatVector::GetDataMutable(col));
 		validity_mask.push_back(&FlatVector::ValidityMutable(col));
@@ -870,6 +871,7 @@ void StringValueResult::StoreLinePosition() {
 	// a removed row leaves number_of_rows at -1, nothing reads a position for it
 	if (number_of_rows >= 0) {
 		line_positions_per_row[static_cast<idx_t>(number_of_rows)] = current_line_position;
+		lines_read_per_row[static_cast<idx_t>(number_of_rows)] = lines_read;
 	}
 }
 
@@ -1207,7 +1209,7 @@ void StringValueScanner::Flush(DataChunk &insert_chunk) {
 					}
 					if (!state_machine->options.IgnoreErrors()) {
 						LinesPerBoundary lines_per_batch(iterator.GetBoundaryIdx(),
-						                                 lines_read - parse_chunk.size() + line_error);
+						                                 result.lines_read_per_row[line_error]);
 						bool first_nl = false;
 						auto borked_line = result.line_positions_per_row[line_error].ReconstructCurrentLine(
 						    first_nl, result.buffer_handles, result.PrintErrorLine());
@@ -1240,7 +1242,7 @@ void StringValueScanner::Flush(DataChunk &insert_chunk) {
 						}
 						if (!state_machine->options.IgnoreErrors()) {
 							LinesPerBoundary lines_per_batch(iterator.GetBoundaryIdx(),
-							                                 lines_read - parse_chunk.size() + line_error);
+							                                 result.lines_read_per_row[line_error]);
 							bool first_nl = false;
 							auto borked_line = result.line_positions_per_row[line_error].ReconstructCurrentLine(
 							    first_nl, result.buffer_handles, result.PrintErrorLine());
@@ -1746,7 +1748,7 @@ StringValueScanner::MoveBufferResult StringValueScanner::TryMoveToNextBuffer() {
 			if (result.current_errors.HandleErrors(result)) {
 				result.InvalidateUnwrittenColumns(chunk_col_id_before);
 			}
-			result.line_positions_per_row[static_cast<idx_t>(result.number_of_rows)] = result.current_line_position;
+			result.StoreLinePosition();
 			result.number_of_rows++;
 		}
 		result.cur_col_id = 0;

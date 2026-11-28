@@ -1,0 +1,893 @@
+#include "test_capi_v2.hpp"
+
+#include <atomic>
+#include <string>
+
+// ---------------------------------------------------------------------------
+// V2 data source tests: a data source holds the callbacks that scan a source of
+// rows, and a table function takes it as its scan. The same data source scans
+// for several functions, each with the bind data of its own call.
+//
+// Callbacks avoid Catch assertions: a REQUIRE would throw through the C
+// callback boundary into the engine. On failure they populate the provided
+// error slot and return.
+// ---------------------------------------------------------------------------
+
+namespace test_capi_v2 {
+
+namespace {
+
+// Run a query producing a single BIGINT cell.
+int64_t DsQueryI64(duckdb_v2_connection_handle conn, std::string_view sql) {
+	duckdb_v2_result_handle result = nullptr;
+	REQUIRE(Query(conn, sql, &result) == DUCKDB_V2_ERROR_NONE);
+	auto chunk = StepChunk(result);
+	REQUIRE(chunk != nullptr);
+	duckdb_v2_vector_handle vec = nullptr;
+	duckdb_v2_data_chunk_get_vector(chunk, 0, &vec, nullptr);
+	duckdb_v2_vector_view view {};
+	duckdb_v2_vector_get_view(vec, &view, nullptr);
+	auto out = static_cast<const int64_t *>(view.data)[SelAt(view.sel, 0)];
+	duckdb_v2_data_chunk_destroy(&chunk);
+	duckdb_v2_result_destroy(&result);
+	return out;
+}
+
+duckdb_v2_data_source_handle DsMakeSource(duckdb_v2_factory_handle factory) {
+	duckdb_v2_data_source_handle source = nullptr;
+	REQUIRE(duckdb_v2_data_source_create(factory, &source, nullptr) == DUCKDB_V2_ERROR_NONE);
+	return source;
+}
+
+duckdb_v2_table_function_handle DsMakeFunction(duckdb_v2_factory_handle factory, std::string_view name) {
+	duckdb_v2_table_function_handle function = nullptr;
+	REQUIRE(duckdb_v2_table_function_create(factory, &function, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_table_function_set_name(function, name.data(), name.size(), nullptr) == DUCKDB_V2_ERROR_NONE);
+	return function;
+}
+
+// ---------------------------------------------------------------------------
+// The bind side: a function declaring BIGINT columns and, as bind data, the number of rows to produce, which the
+// data source reads. The number of columns, and how the argument is scaled, tell the functions apart.
+// ---------------------------------------------------------------------------
+
+struct DsCountBind {
+	int64_t count = 0;
+	// What the function's own user data was when it bound
+	int64_t function_user_data = 0;
+};
+
+void DsDeleteCountBind(void *ptr) {
+	delete static_cast<DsCountBind *>(ptr);
+}
+
+template <int64_t SCALE, int COLUMNS>
+void DsCountBindCb(duckdb_v2_function_bind_info_handle info, duckdb_v2_table_function_bind_info_handle result,
+                   duckdb_v2_context_handle context, duckdb_v2_error_info_handle *err) {
+	duckdb_v2_value_handle value = nullptr;
+	if (duckdb_v2_function_bind_get_arg_value(info, 0, &value, err) != DUCKDB_V2_ERROR_NONE) {
+		return;
+	}
+	int64_t count = 0;
+	auto rc = duckdb_v2_value_get_bigint(value, &count, err);
+	duckdb_v2_value_destroy(&value);
+	if (rc != DUCKDB_V2_ERROR_NONE) {
+		return;
+	}
+
+	duckdb_v2_factory_handle factory = nullptr;
+	duckdb_v2_context_get_factory(context, &factory, nullptr);
+	for (int i = 0; i < COLUMNS; i++) {
+		duckdb_v2_logical_type_handle bigint = nullptr;
+		if (duckdb_v2_factory_create_type_from_id(factory, DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT, nullptr, nullptr, nullptr,
+		                                          0, &bigint, err) != DUCKDB_V2_ERROR_NONE) {
+			return;
+		}
+		std::string name = std::string(1, static_cast<char>('a' + i));
+		rc = duckdb_v2_table_function_bind_add_result_column(result, name.data(), name.size(), bigint, err);
+		duckdb_v2_logical_type_destroy(&bigint);
+		if (rc != DUCKDB_V2_ERROR_NONE) {
+			return;
+		}
+	}
+
+	void *user_data = nullptr;
+	if (duckdb_v2_function_bind_get_user_data(info, &user_data, err) != DUCKDB_V2_ERROR_NONE) {
+		return;
+	}
+	auto bind = new DsCountBind {count * SCALE, user_data ? *static_cast<int64_t *>(user_data) : 0};
+	duckdb_v2_opaque bind_data = {bind, DsDeleteCountBind, nullptr};
+	duckdb_v2_function_bind_set_bind_data(info, &bind_data, err);
+}
+
+// ---------------------------------------------------------------------------
+// The scan side: it produces `count` rows. Column c of row r holds r + c * 1000, unless a user data of the source says
+// otherwise: then every value is that number, to see which user data reached the scan.
+// ---------------------------------------------------------------------------
+
+struct DsCountGlobal {
+	int64_t position = 0;
+	// The user data seen when the scan was set up
+	int64_t user_data_seen = -1;
+};
+
+void DsDeleteCountGlobal(void *ptr) {
+	delete static_cast<DsCountGlobal *>(ptr);
+}
+
+void DsCountInitGlobalCb(duckdb_v2_data_source_init_global_info_handle info, duckdb_v2_context_handle,
+                         duckdb_v2_error_info_handle *err) {
+	void *user_data = nullptr;
+	if (duckdb_v2_data_source_init_global_get_user_data(info, &user_data, err) != DUCKDB_V2_ERROR_NONE) {
+		return;
+	}
+	auto state = new DsCountGlobal();
+	state->user_data_seen = user_data ? *static_cast<int64_t *>(user_data) : -1;
+	duckdb_v2_opaque global = {state, DsDeleteCountGlobal, nullptr};
+	duckdb_v2_data_source_init_global_set_global_state(info, &global, err);
+}
+
+// Produces the columns the chunk holds. With projection pushdown the vectors stand for the requested columns, whose
+// declared index the callback looks up; without it they are all the declared columns.
+void DsCountExecCb(duckdb_v2_data_source_exec_info_handle info, duckdb_v2_context_handle,
+                   duckdb_v2_error_info_handle *err) {
+	void *bind_ptr = nullptr;
+	void *global_ptr = nullptr;
+	duckdb_v2_data_chunk_handle chunk = nullptr;
+	idx_t column_count = 0;
+	if (duckdb_v2_data_source_exec_get_bind_data(info, &bind_ptr, err) != DUCKDB_V2_ERROR_NONE ||
+	    duckdb_v2_data_source_exec_get_global_state(info, &global_ptr, err) != DUCKDB_V2_ERROR_NONE ||
+	    duckdb_v2_data_source_exec_get_output_chunk(info, &chunk, err) != DUCKDB_V2_ERROR_NONE ||
+	    duckdb_v2_data_source_exec_get_column_count(info, &column_count, err) != DUCKDB_V2_ERROR_NONE) {
+		return;
+	}
+	auto &bind = *static_cast<DsCountBind *>(bind_ptr);
+	auto &global = *static_cast<DsCountGlobal *>(global_ptr);
+
+	auto remaining = bind.count - global.position;
+	auto produced =
+	    remaining < static_cast<int64_t>(STANDARD_VECTOR_SIZE) ? remaining : static_cast<int64_t>(STANDARD_VECTOR_SIZE);
+	if (produced < 0) {
+		produced = 0;
+	}
+	for (idx_t c = 0; c < column_count; c++) {
+		idx_t declared = 0;
+		duckdb_v2_vector_handle vec = nullptr;
+		void *raw = nullptr;
+		if (duckdb_v2_data_source_exec_get_column_index(info, c, &declared, err) != DUCKDB_V2_ERROR_NONE ||
+		    duckdb_v2_data_chunk_get_vector(chunk, c, &vec, err) != DUCKDB_V2_ERROR_NONE ||
+		    duckdb_v2_vector_get_data_mutable(vec, &raw, err) != DUCKDB_V2_ERROR_NONE) {
+			return;
+		}
+		auto *out = static_cast<int64_t *>(raw);
+		for (int64_t i = 0; i < produced; i++) {
+			out[i] = global.user_data_seen >= 0 ? global.user_data_seen
+			                                    : global.position + i + static_cast<int64_t>(declared) * 1000;
+		}
+		if (c == 0) {
+			duckdb_v2_vector_set_size(vec, static_cast<idx_t>(produced), err);
+		}
+	}
+	global.position += produced;
+}
+
+// Where the callbacks of a scan observed something that the test then asserts on
+struct DsProbe {
+	std::atomic<int> exec_calls {0};
+	std::atomic<int> max_column_count {0};
+};
+DsProbe ds_probe;
+
+void DsProbingExecCb(duckdb_v2_data_source_exec_info_handle info, duckdb_v2_context_handle context,
+                     duckdb_v2_error_info_handle *err) {
+	idx_t column_count = 0;
+	if (duckdb_v2_data_source_exec_get_column_count(info, &column_count, err) != DUCKDB_V2_ERROR_NONE) {
+		return;
+	}
+	ds_probe.exec_calls++;
+	auto seen = static_cast<int>(column_count);
+	auto previous = ds_probe.max_column_count.load();
+	while (seen > previous && !ds_probe.max_column_count.compare_exchange_weak(previous, seen)) {
+	}
+	DsCountExecCb(info, context, err);
+}
+
+duckdb_v2_data_source_handle DsMakeCountSource(duckdb_v2_factory_handle factory) {
+	auto source = DsMakeSource(factory);
+	REQUIRE(duckdb_v2_data_source_set_init_global_callback(source, DsCountInitGlobalCb, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_data_source_set_exec_callback(source, DsCountExecCb, nullptr) == DUCKDB_V2_ERROR_NONE);
+	return source;
+}
+
+void DsSetCountSignature(duckdb_v2_factory_handle factory, duckdb_v2_table_function_handle function) {
+	auto bigint = MakeType(factory, DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT);
+	duckdb_v2_function_signature_handle sig = nullptr;
+	REQUIRE(duckdb_v2_table_function_get_signature(function, &sig, nullptr) == DUCKDB_V2_ERROR_NONE);
+	std::string_view name = "n";
+	REQUIRE(duckdb_v2_function_signature_add_parameter(sig, name.data(), name.size(), bigint, nullptr,
+	                                                   DUCKDB_V2_FUNCTION_PARAMETER_KIND_STANDARD,
+	                                                   nullptr) == DUCKDB_V2_ERROR_NONE);
+	duckdb_v2_logical_type_destroy(&bigint);
+}
+
+// Registers a function `name(n)` that binds with `bind_cb` and scans with `source`
+void DsRegisterWithSource(EnvFixture &fx, std::string_view name, duckdb_v2_table_function_bind_callback_fn bind_cb,
+                          duckdb_v2_data_source_handle source, int64_t *user_data = nullptr,
+                          bool projection_pushdown = false) {
+	auto function = DsMakeFunction(fx.factory, name);
+	DsSetCountSignature(fx.factory, function);
+	REQUIRE(duckdb_v2_table_function_set_projection_pushdown(function, projection_pushdown, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_table_function_set_bind_callback(function, bind_cb, nullptr) == DUCKDB_V2_ERROR_NONE);
+	if (user_data) {
+		duckdb_v2_opaque data = {user_data, nullptr, nullptr};
+		REQUIRE(duckdb_v2_table_function_set_user_data(function, &data, nullptr) == DUCKDB_V2_ERROR_NONE);
+	}
+	REQUIRE(duckdb_v2_table_function_set_data_source(function, source, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_connection_register_table_function(fx.conn, function, nullptr) == DUCKDB_V2_ERROR_NONE);
+	duckdb_v2_table_function_destroy(&function);
+}
+
+} // namespace
+
+TEST_CASE("V2 data source: one data source scans for several table functions", "[capi_v2][data_source]") {
+	EnvFixture fx;
+
+	auto source = DsMakeCountSource(fx.factory);
+	DsRegisterWithSource(fx, "ds_one", DsCountBindCb<1, 1>, source);
+	DsRegisterWithSource(fx, "ds_double", DsCountBindCb<2, 1>, source);
+	DsRegisterWithSource(fx, "ds_wide", DsCountBindCb<1, 3>, source);
+	// The functions keep what they took: the data source can go
+	REQUIRE(duckdb_v2_data_source_destroy(&source) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(source == nullptr);
+
+	// Each function scans with the bind data of its own call
+	REQUIRE(DsQueryI64(fx.conn, "SELECT count(*) FROM ds_one(10)") == 10);
+	REQUIRE(DsQueryI64(fx.conn, "SELECT count(*) FROM ds_double(10)") == 20);
+	REQUIRE(DsQueryI64(fx.conn, "SELECT sum(a)::BIGINT FROM ds_one(10)") == 45);
+	REQUIRE(DsQueryI64(fx.conn, "SELECT count(*) FROM ds_one(5000)") == 5000);
+	REQUIRE(DsQueryI64(fx.conn, "SELECT count(*) FROM ds_one(0)") == 0);
+
+	// The columns the function declares are the ones the data source fills
+	REQUIRE(DsQueryI64(fx.conn, "SELECT sum(a + b + c)::BIGINT FROM ds_wide(4)") == 3 * 6 + 4 * 3000);
+	duckdb_v2_result_handle result = nullptr;
+	REQUIRE(Query(fx.conn, "SELECT * FROM ds_wide(3)", &result) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(ColumnCount(result) == 3);
+	REQUIRE(DrainRowCount(result) == 3);
+	duckdb_v2_result_destroy(&result);
+}
+
+TEST_CASE("V2 data source: user data is the source's own, else the function's", "[capi_v2][data_source]") {
+	EnvFixture fx;
+	int64_t function_payload = 42;
+	int64_t source_payload = 7;
+
+	// A data source with user data of its own: its callbacks see that one, the bind callback the function's
+	auto with_data = DsMakeCountSource(fx.factory);
+	duckdb_v2_opaque source_data = {&source_payload, nullptr, nullptr};
+	REQUIRE(duckdb_v2_data_source_set_user_data(with_data, &source_data, nullptr) == DUCKDB_V2_ERROR_NONE);
+	DsRegisterWithSource(fx, "ds_own_data", DsCountBindCb<1, 1>, with_data, &function_payload);
+	duckdb_v2_data_source_destroy(&with_data);
+	REQUIRE(DsQueryI64(fx.conn, "SELECT min(a)::BIGINT FROM ds_own_data(3)") == 7);
+	REQUIRE(DsQueryI64(fx.conn, "SELECT max(a)::BIGINT FROM ds_own_data(3)") == 7);
+
+	// Without, they see the user data of the function
+	auto without_data = DsMakeCountSource(fx.factory);
+	DsRegisterWithSource(fx, "ds_function_data", DsCountBindCb<1, 1>, without_data, &function_payload);
+	duckdb_v2_data_source_destroy(&without_data);
+	REQUIRE(DsQueryI64(fx.conn, "SELECT max(a)::BIGINT FROM ds_function_data(3)") == 42);
+
+	// User data with a null pointer counts as none: they see the user data of the function
+	auto null_data = DsMakeCountSource(fx.factory);
+	duckdb_v2_opaque empty = {};
+	REQUIRE(duckdb_v2_data_source_set_user_data(null_data, &empty, nullptr) == DUCKDB_V2_ERROR_NONE);
+	DsRegisterWithSource(fx, "ds_null_data", DsCountBindCb<1, 1>, null_data, &function_payload);
+	duckdb_v2_data_source_destroy(&null_data);
+	REQUIRE(DsQueryI64(fx.conn, "SELECT max(a)::BIGINT FROM ds_null_data(3)") == 42);
+
+	// And without any, they see none
+	auto neither = DsMakeCountSource(fx.factory);
+	DsRegisterWithSource(fx, "ds_no_data", DsCountBindCb<1, 1>, neither);
+	duckdb_v2_data_source_destroy(&neither);
+	REQUIRE(DsQueryI64(fx.conn, "SELECT max(a)::BIGINT FROM ds_no_data(3)") == 2);
+}
+
+TEST_CASE("V2 data source: a function keeps a copy of the data source it took", "[capi_v2][data_source]") {
+	EnvFixture fx;
+
+	auto source = DsMakeCountSource(fx.factory);
+	auto function = DsMakeFunction(fx.factory, "ds_copy");
+	DsSetCountSignature(fx.factory, function);
+	REQUIRE(duckdb_v2_table_function_set_bind_callback(function, DsCountBindCb<1, 1>, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_table_function_set_data_source(function, source, nullptr) == DUCKDB_V2_ERROR_NONE);
+
+	// Changing the data source afterwards does not change the function
+	REQUIRE(duckdb_v2_data_source_set_exec_callback(source, DsProbingExecCb, nullptr) == DUCKDB_V2_ERROR_NONE);
+	ds_probe.exec_calls = 0;
+	REQUIRE(duckdb_v2_connection_register_table_function(fx.conn, function, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(DsQueryI64(fx.conn, "SELECT count(*) FROM ds_copy(10)") == 10);
+	REQUIRE(ds_probe.exec_calls == 0);
+	duckdb_v2_table_function_destroy(&function);
+
+	// A function taking it afterwards does see the change
+	DsRegisterWithSource(fx, "ds_copy_changed", DsCountBindCb<1, 1>, source);
+	REQUIRE(DsQueryI64(fx.conn, "SELECT count(*) FROM ds_copy_changed(10)") == 10);
+	REQUIRE(ds_probe.exec_calls > 0);
+	duckdb_v2_data_source_destroy(&source);
+}
+
+TEST_CASE("V2 data source: a table function without a data source cannot be registered", "[capi_v2][data_source]") {
+	EnvFixture fx;
+
+	auto function = DsMakeFunction(fx.factory, "ds_missing");
+	DsSetCountSignature(fx.factory, function);
+	REQUIRE(duckdb_v2_table_function_set_bind_callback(function, DsCountBindCb<1, 1>, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_connection_register_table_function(fx.conn, function, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+
+	// Taking a later data source replaces an earlier one
+	auto probing = DsMakeSource(fx.factory);
+	REQUIRE(duckdb_v2_data_source_set_exec_callback(probing, DsProbingExecCb, nullptr) == DUCKDB_V2_ERROR_NONE);
+	auto source = DsMakeCountSource(fx.factory);
+	REQUIRE(duckdb_v2_table_function_set_data_source(function, probing, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_table_function_set_data_source(function, source, nullptr) == DUCKDB_V2_ERROR_NONE);
+	duckdb_v2_data_source_destroy(&probing);
+	duckdb_v2_data_source_destroy(&source);
+	REQUIRE(duckdb_v2_connection_register_table_function(fx.conn, function, nullptr) == DUCKDB_V2_ERROR_NONE);
+	duckdb_v2_table_function_destroy(&function);
+	ds_probe.exec_calls = 0;
+	REQUIRE(DsQueryI64(fx.conn, "SELECT count(*) FROM ds_missing(10)") == 10);
+	REQUIRE(ds_probe.exec_calls == 0);
+}
+
+TEST_CASE("V2 data source: projection pushdown reaches the scan", "[capi_v2][data_source]") {
+	EnvFixture fx;
+
+	auto source = DsMakeSource(fx.factory);
+	REQUIRE(duckdb_v2_data_source_set_init_global_callback(source, DsCountInitGlobalCb, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_data_source_set_exec_callback(source, DsProbingExecCb, nullptr) == DUCKDB_V2_ERROR_NONE);
+	DsRegisterWithSource(fx, "ds_projected", DsCountBindCb<1, 3>, source, nullptr, true);
+	duckdb_v2_data_source_destroy(&source);
+
+	// Only the column the query reads is produced, and it is the declared column c
+	ds_probe.exec_calls = 0;
+	ds_probe.max_column_count = 0;
+	REQUIRE(DsQueryI64(fx.conn, "SELECT sum(c)::BIGINT FROM ds_projected(4)") == 6 + 4 * 2000);
+	REQUIRE(ds_probe.exec_calls > 0);
+	REQUIRE(ds_probe.max_column_count == 1);
+}
+
+TEST_CASE("V2 data source: refusals", "[capi_v2][data_source]") {
+	EnvFixture fx;
+
+	// A data source without an exec callback cannot scan
+	{
+		auto source = DsMakeSource(fx.factory);
+		auto function = DsMakeFunction(fx.factory, "ds_no_exec");
+		DsSetCountSignature(fx.factory, function);
+		REQUIRE(duckdb_v2_table_function_set_bind_callback(function, DsCountBindCb<1, 1>, nullptr) ==
+		        DUCKDB_V2_ERROR_NONE);
+		REQUIRE(duckdb_v2_table_function_set_data_source(function, source, nullptr) == DUCKDB_V2_ERROR_NONE);
+		REQUIRE(duckdb_v2_connection_register_table_function(fx.conn, function, nullptr) ==
+		        DUCKDB_V2_ERROR_INPUT_INVALID);
+		duckdb_v2_table_function_destroy(&function);
+		duckdb_v2_data_source_destroy(&source);
+	}
+
+	// A function cannot declare a partitioning without a data source with the partition data that backs it
+	{
+		auto source = DsMakeCountSource(fx.factory);
+		auto function = DsMakeFunction(fx.factory, "ds_no_partition_data");
+		DsSetCountSignature(fx.factory, function);
+		REQUIRE(duckdb_v2_table_function_set_bind_callback(function, DsCountBindCb<1, 1>, nullptr) ==
+		        DUCKDB_V2_ERROR_NONE);
+		REQUIRE(duckdb_v2_table_function_set_partitioning_callback(
+		            function,
+		            [](duckdb_v2_table_function_partitioning_info_handle, duckdb_v2_context_handle,
+		               duckdb_v2_error_info_handle *) {},
+		            nullptr) == DUCKDB_V2_ERROR_NONE);
+		REQUIRE(duckdb_v2_table_function_set_data_source(function, source, nullptr) == DUCKDB_V2_ERROR_NONE);
+		REQUIRE(duckdb_v2_connection_register_table_function(fx.conn, function, nullptr) ==
+		        DUCKDB_V2_ERROR_INPUT_INVALID);
+		duckdb_v2_table_function_destroy(&function);
+		duckdb_v2_data_source_destroy(&source);
+	}
+
+	// A virtual column needs projection pushdown to be asked for
+	{
+		auto source = DsMakeCountSource(fx.factory);
+		auto function = DsMakeFunction(fx.factory, "ds_virtual_column");
+		DsSetCountSignature(fx.factory, function);
+		REQUIRE(duckdb_v2_table_function_set_bind_callback(function, DsCountBindCb<1, 1>, nullptr) ==
+		        DUCKDB_V2_ERROR_NONE);
+		REQUIRE(duckdb_v2_table_function_add_virtual_column(function, DUCKDB_V2_TABLE_VIRTUAL_COLUMN_FILE_ROW_NUMBER,
+		                                                    nullptr) == DUCKDB_V2_ERROR_NONE);
+		REQUIRE(duckdb_v2_table_function_set_data_source(function, source, nullptr) == DUCKDB_V2_ERROR_NONE);
+		REQUIRE(duckdb_v2_connection_register_table_function(fx.conn, function, nullptr) ==
+		        DUCKDB_V2_ERROR_INPUT_INVALID);
+		REQUIRE(duckdb_v2_table_function_set_projection_pushdown(function, true, nullptr) == DUCKDB_V2_ERROR_NONE);
+		REQUIRE(duckdb_v2_connection_register_table_function(fx.conn, function, nullptr) == DUCKDB_V2_ERROR_NONE);
+		duckdb_v2_table_function_destroy(&function);
+		duckdb_v2_data_source_destroy(&source);
+	}
+
+	// A refused registration leaves nothing behind: the retry scans with the user data set before it
+	{
+		int64_t first = 42;
+		int64_t second = 99;
+		auto source = DsMakeCountSource(fx.factory);
+		auto function = DsMakeFunction(fx.factory, "ds_retry");
+		DsSetCountSignature(fx.factory, function);
+		REQUIRE(duckdb_v2_table_function_set_bind_callback(function, DsCountBindCb<1, 1>, nullptr) ==
+		        DUCKDB_V2_ERROR_NONE);
+		duckdb_v2_opaque first_data = {&first, nullptr, nullptr};
+		REQUIRE(duckdb_v2_table_function_set_user_data(function, &first_data, nullptr) == DUCKDB_V2_ERROR_NONE);
+		REQUIRE(duckdb_v2_table_function_add_virtual_column(function, DUCKDB_V2_TABLE_VIRTUAL_COLUMN_FILE_ROW_NUMBER,
+		                                                    nullptr) == DUCKDB_V2_ERROR_NONE);
+		REQUIRE(duckdb_v2_table_function_set_data_source(function, source, nullptr) == DUCKDB_V2_ERROR_NONE);
+		REQUIRE(duckdb_v2_connection_register_table_function(fx.conn, function, nullptr) ==
+		        DUCKDB_V2_ERROR_INPUT_INVALID);
+		duckdb_v2_opaque second_data = {&second, nullptr, nullptr};
+		REQUIRE(duckdb_v2_table_function_set_user_data(function, &second_data, nullptr) == DUCKDB_V2_ERROR_NONE);
+		REQUIRE(duckdb_v2_table_function_set_projection_pushdown(function, true, nullptr) == DUCKDB_V2_ERROR_NONE);
+		REQUIRE(duckdb_v2_connection_register_table_function(fx.conn, function, nullptr) == DUCKDB_V2_ERROR_NONE);
+		duckdb_v2_table_function_destroy(&function);
+		duckdb_v2_data_source_destroy(&source);
+		REQUIRE(DsQueryI64(fx.conn, "SELECT max(a)::BIGINT FROM ds_retry(3)") == 99);
+	}
+
+	// A data source of another database cannot scan for this one's functions
+	{
+		EnvFixture other;
+		auto source = DsMakeCountSource(other.factory);
+		auto function = DsMakeFunction(fx.factory, "ds_other_database");
+		REQUIRE(duckdb_v2_table_function_set_data_source(function, source, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+		duckdb_v2_table_function_destroy(&function);
+		duckdb_v2_data_source_destroy(&source);
+	}
+}
+
+TEST_CASE("V2 data source: null arguments and destroy null-safety", "[capi_v2][data_source]") {
+	EnvFixture fx;
+	duckdb_v2_data_source_handle source = nullptr;
+
+	REQUIRE(duckdb_v2_data_source_create(nullptr, &source, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_data_source_create(fx.factory, nullptr, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(source == nullptr);
+
+	REQUIRE(duckdb_v2_data_source_set_exec_callback(nullptr, DsCountExecCb, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_data_source_set_user_data(nullptr, nullptr, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+
+	auto function = DsMakeFunction(fx.factory, "ds_null_args");
+	REQUIRE(duckdb_v2_table_function_set_data_source(nullptr, source, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_table_function_set_data_source(function, nullptr, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	duckdb_v2_table_function_destroy(&function);
+
+	// Destroying nothing, and destroying twice, is fine
+	REQUIRE(duckdb_v2_data_source_destroy(nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_data_source_destroy(&source) == DUCKDB_V2_ERROR_NONE);
+	source = DsMakeSource(fx.factory);
+	REQUIRE(duckdb_v2_data_source_destroy(&source) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_data_source_destroy(&source) == DUCKDB_V2_ERROR_NONE);
+}
+
+namespace {
+
+// ---------------------------------------------------------------------------
+// ds_tasks(n): n rows of one BIGINT column, one row per invocation. Before each row the exec callback blocks the scan
+// on a task, which the next invocation finds has run. The last invocation declares the scan finished.
+// ---------------------------------------------------------------------------
+
+struct DsTaskProbe {
+	std::atomic<int> tasks_run {0};
+	std::atomic<int> task_data_destroyed {0};
+	std::atomic<int> exec_calls {0};
+};
+DsTaskProbe ds_task_probe;
+
+// What the exec callback of ds_misuse does: one way of declaring a result that does not fit the batch
+enum class DsMisuse {
+	HAVE_MORE_OUTPUT_EMPTY,
+	FINISHED_WITH_ROWS,
+	BLOCKED_WITHOUT_TASK,
+	TASK_NOT_BLOCKED,
+	TASK_THEN_IMPLICIT,
+	TASK_FAILS
+};
+std::atomic<DsMisuse> ds_misuse {DsMisuse::HAVE_MORE_OUTPUT_EMPTY};
+// How many tasks ds_tasks adds each time it blocks its scan
+std::atomic<int> ds_tasks_per_block {1};
+
+struct DsTaskGlobal {
+	int64_t position = 0;
+	// Whether the last invocation blocked the scan on a task
+	bool task_ran = false;
+	// How many tasks had run when the scan started
+	int tasks_before = ds_task_probe.tasks_run.load();
+};
+
+void DsDeleteTaskGlobal(void *ptr) {
+	delete static_cast<DsTaskGlobal *>(ptr);
+}
+
+void DsTaskInitGlobalCb(duckdb_v2_data_source_init_global_info_handle info, duckdb_v2_context_handle,
+                        duckdb_v2_error_info_handle *err) {
+	duckdb_v2_opaque global = {new DsTaskGlobal(), DsDeleteTaskGlobal, nullptr};
+	duckdb_v2_data_source_init_global_set_global_state(info, &global, err);
+}
+
+void DsDeleteTaskData(void *ptr) {
+	ds_task_probe.task_data_destroyed++;
+	delete static_cast<std::atomic<bool> *>(ptr);
+}
+
+void DsSetFlagTask(void *data, duckdb_v2_error_info_handle *) {
+	ds_task_probe.tasks_run++;
+	static_cast<std::atomic<bool> *>(data)->store(true);
+}
+
+void DsFailingTask(void *, duckdb_v2_error_info_handle *err) {
+	SetErrorInfo(err, DUCKDB_V2_ERROR_INPUT_INVALID, "the task failed");
+}
+
+void DsTaskExecCb(duckdb_v2_data_source_exec_info_handle info, duckdb_v2_context_handle,
+                  duckdb_v2_error_info_handle *err) {
+	ds_task_probe.exec_calls++;
+	void *bind_ptr = nullptr;
+	void *global_ptr = nullptr;
+	duckdb_v2_data_chunk_handle chunk = nullptr;
+	if (duckdb_v2_data_source_exec_get_bind_data(info, &bind_ptr, err) != DUCKDB_V2_ERROR_NONE ||
+	    duckdb_v2_data_source_exec_get_global_state(info, &global_ptr, err) != DUCKDB_V2_ERROR_NONE ||
+	    duckdb_v2_data_source_exec_get_output_chunk(info, &chunk, err) != DUCKDB_V2_ERROR_NONE) {
+		return;
+	}
+	auto &bind = *static_cast<DsCountBind *>(bind_ptr);
+	auto &global = *static_cast<DsTaskGlobal *>(global_ptr);
+	if (global.position >= bind.count) {
+		duckdb_v2_data_source_exec_set_result(info, DUCKDB_V2_DATA_SOURCE_RESULT_FINISHED, err);
+		return;
+	}
+	// every second invocation blocks, so a task runs before every row
+	if (!global.task_ran) {
+		global.task_ran = true;
+		for (int i = 0; i < ds_tasks_per_block; i++) {
+			duckdb_v2_opaque opaque = {new std::atomic<bool>(false), DsDeleteTaskData, nullptr};
+			if (duckdb_v2_data_source_exec_add_task(info, DsSetFlagTask, &opaque, err) != DUCKDB_V2_ERROR_NONE) {
+				return;
+			}
+		}
+		return;
+	}
+	global.task_ran = false;
+	// the scan went on only after the task of the last invocation ran
+	if (ds_task_probe.tasks_run.load() - global.tasks_before != (global.position + 1) * ds_tasks_per_block) {
+		SetErrorInfo(err, DUCKDB_V2_ERROR_INPUT_INVALID, "the scan went on before its task ran");
+		return;
+	}
+	duckdb_v2_vector_handle vec = nullptr;
+	void *raw = nullptr;
+	if (duckdb_v2_data_chunk_get_vector(chunk, 0, &vec, err) != DUCKDB_V2_ERROR_NONE ||
+	    duckdb_v2_vector_get_data_mutable(vec, &raw, err) != DUCKDB_V2_ERROR_NONE) {
+		return;
+	}
+	static_cast<int64_t *>(raw)[0] = global.position++;
+	if (duckdb_v2_vector_set_size(vec, 1, err) != DUCKDB_V2_ERROR_NONE) {
+		return;
+	}
+	duckdb_v2_data_source_exec_set_result(info, DUCKDB_V2_DATA_SOURCE_RESULT_HAVE_MORE_OUTPUT, err);
+}
+
+void DsMisuseExecCb(duckdb_v2_data_source_exec_info_handle info, duckdb_v2_context_handle,
+                    duckdb_v2_error_info_handle *err) {
+	duckdb_v2_data_chunk_handle chunk = nullptr;
+	duckdb_v2_vector_handle vec = nullptr;
+	if (duckdb_v2_data_source_exec_get_output_chunk(info, &chunk, err) != DUCKDB_V2_ERROR_NONE ||
+	    duckdb_v2_data_chunk_get_vector(chunk, 0, &vec, err) != DUCKDB_V2_ERROR_NONE) {
+		return;
+	}
+	auto add_task = [&](duckdb_v2_data_source_task_callback_fn task) {
+		duckdb_v2_opaque opaque = {new std::atomic<bool>(false), DsDeleteTaskData, nullptr};
+		duckdb_v2_data_source_exec_add_task(info, task, &opaque, err);
+	};
+	switch (ds_misuse.load()) {
+	case DsMisuse::HAVE_MORE_OUTPUT_EMPTY:
+		duckdb_v2_data_source_exec_set_result(info, DUCKDB_V2_DATA_SOURCE_RESULT_HAVE_MORE_OUTPUT, err);
+		break;
+	case DsMisuse::FINISHED_WITH_ROWS: {
+		void *raw = nullptr;
+		duckdb_v2_vector_get_data_mutable(vec, &raw, err);
+		static_cast<int64_t *>(raw)[0] = 1;
+		duckdb_v2_vector_set_size(vec, 1, err);
+		duckdb_v2_data_source_exec_set_result(info, DUCKDB_V2_DATA_SOURCE_RESULT_FINISHED, err);
+		break;
+	}
+	case DsMisuse::BLOCKED_WITHOUT_TASK:
+		duckdb_v2_data_source_exec_set_result(info, DUCKDB_V2_DATA_SOURCE_RESULT_BLOCKED, err);
+		break;
+	case DsMisuse::TASK_NOT_BLOCKED:
+		add_task(DsSetFlagTask);
+		duckdb_v2_data_source_exec_set_result(info, DUCKDB_V2_DATA_SOURCE_RESULT_FINISHED, err);
+		break;
+	case DsMisuse::TASK_THEN_IMPLICIT:
+		add_task(DsSetFlagTask);
+		duckdb_v2_data_source_exec_set_result(info, DUCKDB_V2_DATA_SOURCE_RESULT_IMPLICIT, err);
+		break;
+	case DsMisuse::TASK_FAILS:
+		add_task(DsFailingTask);
+		break;
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ds_claimed(n): claims two batches. Its first invocation declares more output without producing rows, the next
+// produces a row, and the last declares the scan finished.
+// ---------------------------------------------------------------------------
+
+void DsClaimTwiceCb(duckdb_v2_data_source_claim_batch_info_handle info, duckdb_v2_context_handle,
+                    duckdb_v2_error_info_handle *err) {
+	void *global_ptr = nullptr;
+	if (duckdb_v2_data_source_claim_batch_get_global_state(info, &global_ptr, err) != DUCKDB_V2_ERROR_NONE) {
+		return;
+	}
+	auto &global = *static_cast<DsTaskGlobal *>(global_ptr);
+	duckdb_v2_data_source_claim_batch_set_claimed(info, global.position++ < 2, err);
+}
+
+void DsClaimedExecCb(duckdb_v2_data_source_exec_info_handle info, duckdb_v2_context_handle,
+                     duckdb_v2_error_info_handle *err) {
+	void *global_ptr = nullptr;
+	duckdb_v2_data_chunk_handle chunk = nullptr;
+	duckdb_v2_vector_handle vec = nullptr;
+	if (duckdb_v2_data_source_exec_get_global_state(info, &global_ptr, err) != DUCKDB_V2_ERROR_NONE ||
+	    duckdb_v2_data_source_exec_get_output_chunk(info, &chunk, err) != DUCKDB_V2_ERROR_NONE ||
+	    duckdb_v2_data_chunk_get_vector(chunk, 0, &vec, err) != DUCKDB_V2_ERROR_NONE) {
+		return;
+	}
+	auto &global = *static_cast<DsTaskGlobal *>(global_ptr);
+	if (global.position == 1) {
+		duckdb_v2_data_source_exec_set_result(info, DUCKDB_V2_DATA_SOURCE_RESULT_HAVE_MORE_OUTPUT, err);
+		return;
+	}
+	if (global.task_ran) {
+		duckdb_v2_data_source_exec_set_result(info, DUCKDB_V2_DATA_SOURCE_RESULT_FINISHED, err);
+		return;
+	}
+	global.task_ran = true;
+	void *raw = nullptr;
+	duckdb_v2_vector_get_data_mutable(vec, &raw, err);
+	static_cast<int64_t *>(raw)[0] = 7;
+	duckdb_v2_vector_set_size(vec, 1, err);
+}
+
+// ---------------------------------------------------------------------------
+// ds_endless(n): blocks its scan on two tasks every invocation, so its scan never ends. The data of each task refers
+// to the local state of its scan.
+// ---------------------------------------------------------------------------
+
+struct DsEndlessProbe {
+	std::atomic<int> live_task_data {0};
+	// Local states destroyed while the data of a task referring to them was still alive
+	std::atomic<int> outlived_states {0};
+};
+DsEndlessProbe ds_endless_probe;
+
+struct DsEndlessLocal {
+	std::atomic<int> live_task_data {0};
+};
+
+struct DsEndlessTaskData {
+	DsEndlessLocal *local;
+};
+
+void DsDeleteEndlessLocal(void *ptr) {
+	auto local = static_cast<DsEndlessLocal *>(ptr);
+	if (local->live_task_data != 0) {
+		ds_endless_probe.outlived_states++;
+	}
+	delete local;
+}
+
+void DsEndlessInitLocalCb(duckdb_v2_data_source_init_local_info_handle info, duckdb_v2_context_handle,
+                          duckdb_v2_error_info_handle *err) {
+	duckdb_v2_opaque local = {new DsEndlessLocal(), DsDeleteEndlessLocal, nullptr};
+	duckdb_v2_data_source_init_local_set_local_state(info, &local, err);
+}
+
+void DsDeleteEndlessTaskData(void *ptr) {
+	auto data = static_cast<DsEndlessTaskData *>(ptr);
+	data->local->live_task_data--;
+	ds_endless_probe.live_task_data--;
+	delete data;
+}
+
+void DsEndlessTask(void *, duckdb_v2_error_info_handle *) {
+}
+
+void DsEndlessExecCb(duckdb_v2_data_source_exec_info_handle info, duckdb_v2_context_handle,
+                     duckdb_v2_error_info_handle *err) {
+	void *local_ptr = nullptr;
+	if (duckdb_v2_data_source_exec_get_local_state(info, &local_ptr, err) != DUCKDB_V2_ERROR_NONE) {
+		return;
+	}
+	auto local = static_cast<DsEndlessLocal *>(local_ptr);
+	for (int i = 0; i < 2; i++) {
+		local->live_task_data++;
+		ds_endless_probe.live_task_data++;
+		duckdb_v2_opaque opaque = {new DsEndlessTaskData {local}, DsDeleteEndlessTaskData, nullptr};
+		if (duckdb_v2_data_source_exec_add_task(info, DsEndlessTask, &opaque, err) != DUCKDB_V2_ERROR_NONE) {
+			return;
+		}
+	}
+}
+
+void DsRegisterExecSource(EnvFixture &fx, std::string_view name, duckdb_v2_data_source_exec_callback_fn exec_cb) {
+	auto source = DsMakeSource(fx.factory);
+	REQUIRE(duckdb_v2_data_source_set_init_global_callback(source, DsTaskInitGlobalCb, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_data_source_set_exec_callback(source, exec_cb, nullptr) == DUCKDB_V2_ERROR_NONE);
+	DsRegisterWithSource(fx, name, DsCountBindCb<1, 1>, source);
+	REQUIRE(duckdb_v2_data_source_destroy(&source) == DUCKDB_V2_ERROR_NONE);
+}
+
+// The message of a failing query, or the empty string when it succeeded
+std::string DsQueryError(duckdb_v2_connection_handle conn, std::string_view sql) {
+	duckdb_v2_result_handle result = nullptr;
+	duckdb_v2_error_info_handle err = nullptr;
+	auto rc = Query(conn, sql, &result, &err);
+	while (rc == DUCKDB_V2_ERROR_NONE) {
+		duckdb_v2_data_chunk_handle chunk = nullptr;
+		DUCKDB_V2_RESULT_STEP_STATUS status = DUCKDB_V2_RESULT_STEP_STATUS_WAITING;
+		rc = duckdb_v2_result_step(result, &chunk, &status, &err);
+		duckdb_v2_data_chunk_destroy(&chunk);
+		if (rc != DUCKDB_V2_ERROR_NONE || status == DUCKDB_V2_RESULT_STEP_STATUS_FINISHED ||
+		    status == DUCKDB_V2_RESULT_STEP_STATUS_CANCELLED) {
+			break;
+		}
+		if (status == DUCKDB_V2_RESULT_STEP_STATUS_WAITING) {
+			rc = duckdb_v2_result_wait(result, &err);
+		}
+	}
+	duckdb_v2_result_destroy(&result);
+	std::string message;
+	if (rc != DUCKDB_V2_ERROR_NONE && err) {
+		const char *text = nullptr;
+		idx_t text_length = 0;
+		duckdb_v2_error_info_get_text(err, &text, &text_length);
+		message = std::string(text, text_length);
+	}
+	duckdb_v2_error_info_destroy(&err);
+	return message;
+}
+
+} // namespace
+
+TEST_CASE("V2 data source: an exec callback blocks its scan on tasks", "[capi_v2][data_source]") {
+	EnvFixture fx;
+	DsRegisterExecSource(fx, "ds_tasks", DsTaskExecCb);
+
+	for (auto strategy : {"DEFAULT", "SYNCHRONOUS"}) {
+		INFO(strategy);
+		ExecSQL(fx.conn, std::string("SET debug_physical_table_scan_execution_strategy=") + strategy);
+		ds_task_probe.tasks_run = 0;
+		ds_task_probe.task_data_destroyed = 0;
+		ds_task_probe.exec_calls = 0;
+		// An empty batch with a task does not end the scan: every row comes after a task ran
+		REQUIRE(DsQueryI64(fx.conn, "SELECT count(*) FROM ds_tasks(5)") == 5);
+		REQUIRE(ds_task_probe.tasks_run == 5);
+		// every task's data was destroyed once it ran
+		REQUIRE(ds_task_probe.task_data_destroyed == 5);
+		// five blocked invocations, five producing a row, and the one declaring the scan finished
+		REQUIRE(ds_task_probe.exec_calls == 11);
+		REQUIRE(DsQueryI64(fx.conn, "SELECT sum(a)::BIGINT FROM ds_tasks(5)") == 10);
+		REQUIRE(DsQueryI64(fx.conn, "SELECT count(*) FROM ds_tasks(0)") == 0);
+	}
+}
+
+TEST_CASE("V2 data source: a result that does not fit the batch fails the query", "[capi_v2][data_source]") {
+	EnvFixture fx;
+	DsRegisterExecSource(fx, "ds_misuse", DsMisuseExecCb);
+
+	ds_misuse = DsMisuse::HAVE_MORE_OUTPUT_EMPTY;
+	REQUIRE_THAT(DsQueryError(fx.conn, "SELECT * FROM ds_misuse(1)"), Catch::Contains("has more output"));
+	ds_misuse = DsMisuse::FINISHED_WITH_ROWS;
+	REQUIRE_THAT(DsQueryError(fx.conn, "SELECT * FROM ds_misuse(1)"), Catch::Contains("finished, but produced rows"));
+	ds_misuse = DsMisuse::BLOCKED_WITHOUT_TASK;
+	REQUIRE_THAT(DsQueryError(fx.conn, "SELECT * FROM ds_misuse(1)"), Catch::Contains("added no task"));
+	ds_task_probe.task_data_destroyed = 0;
+	ds_misuse = DsMisuse::TASK_NOT_BLOCKED;
+	REQUIRE_THAT(DsQueryError(fx.conn, "SELECT * FROM ds_misuse(1)"), Catch::Contains("not blocked"));
+	// the task that was not run is destroyed with its data
+	REQUIRE(ds_task_probe.task_data_destroyed == 1);
+	for (auto strategy : {"DEFAULT", "SYNCHRONOUS"}) {
+		INFO(strategy);
+		ExecSQL(fx.conn, std::string("SET debug_physical_table_scan_execution_strategy=") + strategy);
+		ds_misuse = DsMisuse::TASK_FAILS;
+		REQUIRE_THAT(DsQueryError(fx.conn, "SELECT * FROM ds_misuse(1)"), Catch::Contains("the task failed"));
+	}
+}
+
+TEST_CASE("V2 data source: several tasks block one invocation", "[capi_v2][data_source]") {
+	EnvFixture fx;
+	DsRegisterExecSource(fx, "ds_tasks", DsTaskExecCb);
+	ds_tasks_per_block = 3;
+	for (auto strategy : {"DEFAULT", "SYNCHRONOUS"}) {
+		INFO(strategy);
+		ExecSQL(fx.conn, std::string("SET debug_physical_table_scan_execution_strategy=") + strategy);
+		ds_task_probe.tasks_run = 0;
+		ds_task_probe.task_data_destroyed = 0;
+		REQUIRE(DsQueryI64(fx.conn, "SELECT count(*) FROM ds_tasks(4)") == 4);
+		REQUIRE(ds_task_probe.tasks_run == 12);
+		REQUIRE(ds_task_probe.task_data_destroyed == 12);
+	}
+	ds_tasks_per_block = 1;
+}
+
+TEST_CASE("V2 data source: each invocation's result is checked against its own batch", "[capi_v2][data_source]") {
+	EnvFixture fx;
+	auto source = DsMakeSource(fx.factory);
+	REQUIRE(duckdb_v2_data_source_set_init_global_callback(source, DsTaskInitGlobalCb, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_data_source_set_claim_batch_callback(source, DsClaimTwiceCb, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_data_source_set_exec_callback(source, DsClaimedExecCb, nullptr) == DUCKDB_V2_ERROR_NONE);
+	DsRegisterWithSource(fx, "ds_claimed", DsCountBindCb<1, 1>, source);
+	REQUIRE(duckdb_v2_data_source_destroy(&source) == DUCKDB_V2_ERROR_NONE);
+	DsRegisterExecSource(fx, "ds_misuse", DsMisuseExecCb);
+	ExecSQL(fx.conn, "SET threads=1");
+
+	// the empty batch declaring more output fails, though the next batch produces a row
+	REQUIRE_THAT(DsQueryError(fx.conn, "SELECT * FROM ds_claimed(1)"), Catch::Contains("has more output"));
+	// a task added by an invocation that then declares no result is not dropped
+	ds_misuse = DsMisuse::TASK_THEN_IMPLICIT;
+	REQUIRE_THAT(DsQueryError(fx.conn, "SELECT * FROM ds_misuse(1)"), Catch::Contains("not blocked"));
+}
+
+TEST_CASE("V2 data source: tasks of an abandoned scan do not outlive its states", "[capi_v2][data_source]") {
+	EnvFixture fx;
+	auto source = DsMakeSource(fx.factory);
+	REQUIRE(duckdb_v2_data_source_set_init_local_callback(source, DsEndlessInitLocalCb, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_data_source_set_exec_callback(source, DsEndlessExecCb, nullptr) == DUCKDB_V2_ERROR_NONE);
+	DsRegisterWithSource(fx, "ds_endless", DsCountBindCb<1, 1>, source);
+	REQUIRE(duckdb_v2_data_source_destroy(&source) == DUCKDB_V2_ERROR_NONE);
+
+	for (auto threads : {1, 4}) {
+		for (bool interrupt : {false, true}) {
+			INFO("threads " << threads << ", interrupt " << interrupt);
+			ExecSQL(fx.conn, "SET threads=" + std::to_string(threads));
+			ds_endless_probe.outlived_states = 0;
+			duckdb_v2_result_handle result = nullptr;
+			REQUIRE(Query(fx.conn, "SELECT * FROM ds_endless(1)", &result, nullptr) == DUCKDB_V2_ERROR_NONE);
+			for (int i = 0; i < 4; i++) {
+				duckdb_v2_data_chunk_handle chunk = nullptr;
+				DUCKDB_V2_RESULT_STEP_STATUS status = DUCKDB_V2_RESULT_STEP_STATUS_WAITING;
+				REQUIRE(duckdb_v2_result_step(result, &chunk, &status, nullptr) == DUCKDB_V2_ERROR_NONE);
+				REQUIRE(chunk == nullptr);
+			}
+			if (interrupt) {
+				REQUIRE(duckdb_v2_connection_interrupt(fx.conn, nullptr) == DUCKDB_V2_ERROR_NONE);
+				DUCKDB_V2_RESULT_STEP_STATUS status = DUCKDB_V2_RESULT_STEP_STATUS_WAITING;
+				while (status != DUCKDB_V2_RESULT_STEP_STATUS_CANCELLED) {
+					duckdb_v2_data_chunk_handle chunk = nullptr;
+					REQUIRE(duckdb_v2_result_step(result, &chunk, &status, nullptr) == DUCKDB_V2_ERROR_NONE);
+					duckdb_v2_data_chunk_destroy(&chunk);
+				}
+			}
+			duckdb_v2_result_destroy(&result);
+			REQUIRE(ds_endless_probe.outlived_states == 0);
+			REQUIRE(ds_endless_probe.live_task_data == 0);
+		}
+	}
+}
+
+TEST_CASE("V2 data source: invalid result and task arguments", "[capi_v2][data_source]") {
+	// a null info or task is refused, and the task data is destroyed all the same
+	ds_task_probe.task_data_destroyed = 0;
+	duckdb_v2_opaque opaque = {new std::atomic<bool>(false), DsDeleteTaskData, nullptr};
+	REQUIRE(duckdb_v2_data_source_exec_add_task(nullptr, DsSetFlagTask, &opaque, nullptr) != DUCKDB_V2_ERROR_NONE);
+	REQUIRE(ds_task_probe.task_data_destroyed == 1);
+	REQUIRE(duckdb_v2_data_source_exec_set_result(nullptr, DUCKDB_V2_DATA_SOURCE_RESULT_FINISHED, nullptr) !=
+	        DUCKDB_V2_ERROR_NONE);
+}
+
+} // namespace test_capi_v2

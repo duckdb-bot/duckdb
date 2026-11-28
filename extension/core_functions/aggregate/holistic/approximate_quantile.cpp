@@ -1,4 +1,5 @@
 #include "duckdb/common/operator/add.hpp"
+#include "duckdb/common/types/decimal.hpp"
 #include "duckdb/common/vector/flat_vector.hpp"
 #include "duckdb/common/vector/vector_iterator.hpp"
 #include "duckdb/common/vector/list_vector.hpp"
@@ -154,7 +155,7 @@ struct ApproximateQuantileBindData : public FunctionData {
 		return true;
 	}
 
-	static void Serialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data_p,
+	static void Serialize(Serializer &serializer, const optional_ptr<const FunctionData> bind_data_p,
 	                      const BoundAggregateFunction &function) {
 		auto &bind_data = bind_data_p->Cast<ApproximateQuantileBindData>();
 		serializer.WriteProperty(100, "quantiles", bind_data.quantiles);
@@ -415,8 +416,16 @@ AggregateFunction GetApproximateQuantileAggregateFunction(const LogicalType &typ
 		return AggregateFunction::UnaryAggregate<ApproxQuantileState, double, double, ApproxQuantileScalarOperation>(
 		    type, type);
 	default:
-		throw InternalException("Unimplemented quantile aggregate");
+		throw NotImplementedException("Unimplemented quantile aggregate");
 	}
+}
+
+//! Wide decimals have no approximate quantile of their own, they are aggregated as DOUBLE
+LogicalType ApproxQuantileInputType(const LogicalType &type) {
+	if (type.id() == LogicalTypeId::DECIMAL && Decimal::IsWide(DecimalType::GetWidth(type))) {
+		return LogicalType::DOUBLE;
+	}
+	return type;
 }
 
 AggregateFunction GetApproximateQuantileDecimalAggregateFunction(const LogicalType &type) {
@@ -426,10 +435,11 @@ AggregateFunction GetApproximateQuantileDecimalAggregateFunction(const LogicalTy
 	case PhysicalType::INT32:
 	case PhysicalType::INT64:
 	case PhysicalType::INT128:
+	case PhysicalType::DOUBLE:
 		// keep the DECIMAL type as the input and return type so that the width and scale survive the bind
 		return GetApproximateQuantileAggregateFunction(type);
 	default:
-		throw InternalException("Unimplemented quantile decimal aggregate");
+		throw NotImplementedException("Unimplemented quantile decimal aggregate");
 	}
 }
 
@@ -496,7 +506,7 @@ void ReplaceApproxQuantileImplementation(BoundAggregateFunction &function, const
 unique_ptr<FunctionData> BindApproxQuantileDecimal(BindAggregateFunctionInput &input) {
 	auto &function = input.GetBoundFunction();
 	auto &arguments = input.GetArguments();
-	auto decimal_type = arguments[0]->GetReturnType();
+	auto decimal_type = ApproxQuantileInputType(arguments[0]->GetReturnType());
 	auto bind_data = BindApproxQuantile(input);
 	ReplaceApproxQuantileImplementation(function, ApproxQuantileDecimalFunction(decimal_type));
 	return bind_data;
@@ -623,7 +633,7 @@ AggregateFunction ApproxQuantileDecimalListFunction(const LogicalType &type) {
 unique_ptr<FunctionData> BindApproxQuantileDecimalList(BindAggregateFunctionInput &input) {
 	auto &function = input.GetBoundFunction();
 	auto &arguments = input.GetArguments();
-	auto decimal_type = arguments[0]->GetReturnType();
+	auto decimal_type = ApproxQuantileInputType(arguments[0]->GetReturnType());
 	auto bind_data = BindApproxQuantile(input);
 	ReplaceApproxQuantileImplementation(function, ApproxQuantileDecimalListFunction(decimal_type));
 	return bind_data;

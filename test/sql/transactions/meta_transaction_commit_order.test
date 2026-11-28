@@ -1,0 +1,40 @@
+# name: test/sql/transactions/meta_transaction_commit_order.test
+# description: a transaction over several databases commits the read-only ones before the one with changes
+# group: [transactions]
+
+# a restart between the statements would discard the log
+require skip_reload
+
+load {TEST_DIR}/meta_transaction_commit_order.db
+
+statement ok
+SET threads = 1;
+
+statement ok
+CREATE TABLE t (i INTEGER);
+
+statement ok
+SET logging_level = 'debug';
+
+statement ok
+SET enable_logging = true;
+
+# the unqualified name is looked up in the temp catalog first, so its transaction starts before the database's
+statement ok
+INSERT INTO t VALUES (1);
+
+statement ok
+SET enable_logging = false;
+
+# the temp catalog's transaction, which has nothing to commit, commits first and the database with the row last
+# (the statement verification modes add a system catalog transaction, which is left out)
+query I
+WITH commits AS (
+    SELECT query_id, timestamp, regexp_extract(message, '''database'': (\w+)', 1) AS db
+    FROM duckdb_logs
+    WHERE type = 'Transaction' AND message LIKE '%''type'': Commit%'
+)
+SELECT list(db ORDER BY timestamp) FROM commits
+WHERE query_id = (SELECT max(query_id) FROM commits) AND db IN ('temp', 'meta_transaction_commit_order');
+----
+[temp, meta_transaction_commit_order]

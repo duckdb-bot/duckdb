@@ -1,5 +1,7 @@
 #include "duckdb/transaction/meta_transaction.hpp"
 
+#include "duckdb/transaction/duck_transaction.hpp"
+
 #include "duckdb/common/exception/transaction_exception.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/uuid.hpp"
@@ -118,49 +120,68 @@ Transaction &Transaction::Get(ClientContext &context, Catalog &catalog) {
 	return Transaction::Get(context, catalog.GetAttached());
 }
 
+//! Whether the transaction has nothing to make durable, so that committing it before the others cannot leave
+//! anything behind when a later commit fails. An ATTACH leaves undo entries in a transaction that stayed read-only
+static bool CommitsNothing(Transaction &transaction) {
+	if (transaction.IsDuckTransaction()) {
+		return !transaction.Cast<DuckTransaction>().ChangesMade();
+	}
+	return transaction.IsReadOnly();
+}
+
 ErrorData MetaTransaction::Commit(ClientContext &context) {
 	ErrorData error;
 #ifdef DEBUG
 	reference_set_t<AttachedDatabase> committed_tx;
 #endif
-	// commit transactions in reverse order
-	for (idx_t i = all_transactions.size(); i > 0; i--) {
-		auto &db = all_transactions[i - 1].get();
-		auto entry = transactions.find(db);
-		if (entry == transactions.end()) {
-			throw InternalException("Could not find transaction corresponding to database in MetaTransaction");
-		}
+	// commit the transactions that have nothing to make durable first, in reverse order, then the others in reverse
+	// order. When one of the former fails, the statement fails before any database has committed and the other
+	// transactions roll back, instead of reporting a failure for data that is committed already
+	for (idx_t pass = 0; pass < 2; pass++) {
+		const bool nothing_to_commit_pass = pass == 0;
+		for (idx_t i = all_transactions.size(); i > 0; i--) {
+			auto &db = all_transactions[i - 1].get();
+			auto entry = transactions.find(db);
+			if (entry == transactions.end()) {
+				throw InternalException("Could not find transaction corresponding to database in MetaTransaction");
+			}
+			auto &transaction_ref = entry->second;
+			if (transaction_ref.state != TransactionState::UNCOMMITTED) {
+				// committed or rolled back already, in the first pass or before, and its manager may have freed it
+				continue;
+			}
+			auto &transaction = transaction_ref.transaction;
+			if (CommitsNothing(transaction) != nothing_to_commit_pass) {
+				continue;
+			}
 
 #ifdef DEBUG
-		auto already_committed = committed_tx.insert(db).second == false;
-		if (already_committed) {
-			throw InternalException("All databases inside all_transactions should be unique, invariant broken!");
-		}
+			auto already_committed = committed_tx.insert(db).second == false;
+			if (already_committed) {
+				throw InternalException("All databases inside all_transactions should be unique, invariant broken!");
+			}
 #endif
 
-		auto &transaction_manager = db.GetTransactionManager();
-		auto &transaction_ref = entry->second;
-		if (ValidChecker::IsInvalidated(db)) {
-			error.Merge(ErrorData(IOException("%s", ValidChecker::InvalidatedMessage(db))));
-			continue;
-		}
-		if (transaction_ref.state != TransactionState::UNCOMMITTED) {
-			continue;
-		}
-		auto &transaction = transaction_ref.transaction;
-		try {
-			if (!error.HasError()) {
-				// Commit the transaction.
-				error = db.ScopeFatalError(transaction_manager.CommitTransaction(context, transaction));
-				transaction_ref.state = error.HasError() ? TransactionState::ROLLED_BACK : TransactionState::COMMITTED;
-			} else {
-				// Rollback due to previous error.
-				transaction_manager.RollbackTransaction(context, transaction);
+			auto &transaction_manager = db.GetTransactionManager();
+			if (ValidChecker::IsInvalidated(db)) {
+				error.Merge(ErrorData(IOException("%s", ValidChecker::InvalidatedMessage(db))));
+				continue;
+			}
+			try {
+				if (!error.HasError()) {
+					// Commit the transaction.
+					error = db.ScopeFatalError(transaction_manager.CommitTransaction(context, transaction));
+					transaction_ref.state =
+					    error.HasError() ? TransactionState::ROLLED_BACK : TransactionState::COMMITTED;
+				} else {
+					// Rollback due to previous error.
+					transaction_manager.RollbackTransaction(context, transaction);
+					transaction_ref.state = TransactionState::ROLLED_BACK;
+				}
+			} catch (std::exception &ex) {
+				error.Merge(db.ScopeFatalError(ErrorData(ex)));
 				transaction_ref.state = TransactionState::ROLLED_BACK;
 			}
-		} catch (std::exception &ex) {
-			error.Merge(db.ScopeFatalError(ErrorData(ex)));
-			transaction_ref.state = TransactionState::ROLLED_BACK;
 		}
 	}
 	return error;

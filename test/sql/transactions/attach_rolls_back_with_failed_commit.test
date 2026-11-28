@@ -1,0 +1,36 @@
+# name: test/sql/transactions/attach_rolls_back_with_failed_commit.test
+# description: an ATTACH in a transaction whose commit fails is rolled back with the transaction
+# group: [transactions]
+
+statement ok
+CREATE TABLE pk (k INTEGER PRIMARY KEY);
+
+statement ok con1
+BEGIN;
+
+# the attach is recorded in the system catalog's transaction, which stays read-only
+statement ok con1
+ATTACH ':memory:' AS attached_in_failed_transaction;
+
+statement ok con1
+INSERT INTO pk VALUES (1);
+
+# another connection commits the same key first
+statement ok
+INSERT INTO pk VALUES (1);
+
+statement error con1
+COMMIT;
+----
+Failed to commit
+
+query I
+SELECT count(*) FROM pk;
+----
+1
+
+# the system catalog's transaction committed after the one that failed, so the attach is gone
+query I
+SELECT count(*) FROM duckdb_databases() WHERE database_name = 'attached_in_failed_transaction';
+----
+0

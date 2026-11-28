@@ -1418,19 +1418,20 @@ const StringUtil::EnumStringLiteral *GetColumnDataRepresentationValues() {
 	static constexpr StringUtil::EnumStringLiteral values[] {
 		{ static_cast<uint32_t>(ColumnDataRepresentation::FLAT), "FLAT" },
 		{ static_cast<uint32_t>(ColumnDataRepresentation::CONSTANT), "CONSTANT" },
-		{ static_cast<uint32_t>(ColumnDataRepresentation::DICTIONARY), "DICTIONARY" }
+		{ static_cast<uint32_t>(ColumnDataRepresentation::DICTIONARY), "DICTIONARY" },
+		{ static_cast<uint32_t>(ColumnDataRepresentation::LARGE_FLAT), "LARGE_FLAT" }
 	};
 	return values;
 }
 
 template<>
 const char* EnumUtil::ToChars<ColumnDataRepresentation>(ColumnDataRepresentation value) {
-	return StringUtil::EnumToString(GetColumnDataRepresentationValues(), 3, "ColumnDataRepresentation", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetColumnDataRepresentationValues(), 4, "ColumnDataRepresentation", static_cast<uint32_t>(value));
 }
 
 template<>
 ColumnDataRepresentation EnumUtil::FromString<ColumnDataRepresentation>(const char *value) {
-	return static_cast<ColumnDataRepresentation>(StringUtil::StringToEnum(GetColumnDataRepresentationValues(), 3, "ColumnDataRepresentation", value));
+	return static_cast<ColumnDataRepresentation>(StringUtil::StringToEnum(GetColumnDataRepresentationValues(), 4, "ColumnDataRepresentation", value));
 }
 
 const StringUtil::EnumStringLiteral *GetColumnDataScanPropertiesValues() {
@@ -2688,6 +2689,7 @@ const StringUtil::EnumStringLiteral *GetExtensionUpdateResultTagValues() {
 		{ static_cast<uint32_t>(ExtensionUpdateResultTag::REPOSITORY_NOT_FOUND), "REPOSITORY_NOT_FOUND" },
 		{ static_cast<uint32_t>(ExtensionUpdateResultTag::REPOSITORY_NOT_TRUSTED), "REPOSITORY_NOT_TRUSTED" },
 		{ static_cast<uint32_t>(ExtensionUpdateResultTag::REPOSITORY_UNREADABLE), "REPOSITORY_UNREADABLE" },
+		{ static_cast<uint32_t>(ExtensionUpdateResultTag::UPDATE_FAILED), "UPDATE_FAILED" },
 		{ static_cast<uint32_t>(ExtensionUpdateResultTag::REDOWNLOADED), "REDOWNLOADED" },
 		{ static_cast<uint32_t>(ExtensionUpdateResultTag::UPDATED), "UPDATED" }
 	};
@@ -2696,12 +2698,12 @@ const StringUtil::EnumStringLiteral *GetExtensionUpdateResultTagValues() {
 
 template<>
 const char* EnumUtil::ToChars<ExtensionUpdateResultTag>(ExtensionUpdateResultTag value) {
-	return StringUtil::EnumToString(GetExtensionUpdateResultTagValues(), 11, "ExtensionUpdateResultTag", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetExtensionUpdateResultTagValues(), 12, "ExtensionUpdateResultTag", static_cast<uint32_t>(value));
 }
 
 template<>
 ExtensionUpdateResultTag EnumUtil::FromString<ExtensionUpdateResultTag>(const char *value) {
-	return static_cast<ExtensionUpdateResultTag>(StringUtil::StringToEnum(GetExtensionUpdateResultTagValues(), 11, "ExtensionUpdateResultTag", value));
+	return static_cast<ExtensionUpdateResultTag>(StringUtil::StringToEnum(GetExtensionUpdateResultTagValues(), 12, "ExtensionUpdateResultTag", value));
 }
 
 const StringUtil::EnumStringLiteral *GetExternalFileCacheRequestSizingValues() {
@@ -3493,8 +3495,8 @@ IndexConstraintType EnumUtil::FromString<IndexConstraintType>(const char *value)
 const StringUtil::EnumStringLiteral *GetIndexDeltaTypeValues() {
 	static constexpr StringUtil::EnumStringLiteral values[] {
 		{ static_cast<uint32_t>(IndexDeltaType::DELETED_ROWS_IN_USE), "DELETED_ROWS_IN_USE" },
-		{ static_cast<uint32_t>(IndexDeltaType::ADDED_DATA_DURING_CHECKPOINT), "ADDED_DATA_DURING_CHECKPOINT" },
-		{ static_cast<uint32_t>(IndexDeltaType::REMOVED_DATA_DURING_CHECKPOINT), "REMOVED_DATA_DURING_CHECKPOINT" }
+		{ static_cast<uint32_t>(IndexDeltaType::ADDED_DATA), "ADDED_DATA" },
+		{ static_cast<uint32_t>(IndexDeltaType::REMOVED_DATA), "REMOVED_DATA" }
 	};
 	return values;
 }
@@ -3525,6 +3527,26 @@ const char* EnumUtil::ToChars<InsertColumnOrder>(InsertColumnOrder value) {
 template<>
 InsertColumnOrder EnumUtil::FromString<InsertColumnOrder>(const char *value) {
 	return static_cast<InsertColumnOrder>(StringUtil::StringToEnum(GetInsertColumnOrderValues(), 2, "InsertColumnOrder", value));
+}
+
+const StringUtil::EnumStringLiteral *GetIntegerRoundingValues() {
+	static constexpr StringUtil::EnumStringLiteral values[] {
+		{ static_cast<uint32_t>(IntegerRounding::UNKNOWN), "UNKNOWN" },
+		{ static_cast<uint32_t>(IntegerRounding::FLOOR), "FLOOR" },
+		{ static_cast<uint32_t>(IntegerRounding::CEIL), "CEIL" },
+		{ static_cast<uint32_t>(IntegerRounding::TRUNCATE), "TRUNCATE" }
+	};
+	return values;
+}
+
+template<>
+const char* EnumUtil::ToChars<IntegerRounding>(IntegerRounding value) {
+	return StringUtil::EnumToString(GetIntegerRoundingValues(), 4, "IntegerRounding", static_cast<uint32_t>(value));
+}
+
+template<>
+IntegerRounding EnumUtil::FromString<IntegerRounding>(const char *value) {
+	return static_cast<IntegerRounding>(StringUtil::StringToEnum(GetIntegerRoundingValues(), 4, "IntegerRounding", value));
 }
 
 const StringUtil::EnumStringLiteral *GetInterruptModeValues() {
@@ -7430,19 +7452,20 @@ const StringUtil::EnumStringLiteral *GetTransactionTypeValues() {
 		{ static_cast<uint32_t>(TransactionType::INVALID), "INVALID" },
 		{ static_cast<uint32_t>(TransactionType::BEGIN_TRANSACTION), "BEGIN_TRANSACTION" },
 		{ static_cast<uint32_t>(TransactionType::COMMIT), "COMMIT" },
-		{ static_cast<uint32_t>(TransactionType::ROLLBACK), "ROLLBACK" }
+		{ static_cast<uint32_t>(TransactionType::ROLLBACK), "ROLLBACK" },
+		{ static_cast<uint32_t>(TransactionType::JOIN_TRANSACTION), "JOIN_TRANSACTION" }
 	};
 	return values;
 }
 
 template<>
 const char* EnumUtil::ToChars<TransactionType>(TransactionType value) {
-	return StringUtil::EnumToString(GetTransactionTypeValues(), 4, "TransactionType", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetTransactionTypeValues(), 5, "TransactionType", static_cast<uint32_t>(value));
 }
 
 template<>
 TransactionType EnumUtil::FromString<TransactionType>(const char *value) {
-	return static_cast<TransactionType>(StringUtil::StringToEnum(GetTransactionTypeValues(), 4, "TransactionType", value));
+	return static_cast<TransactionType>(StringUtil::StringToEnum(GetTransactionTypeValues(), 5, "TransactionType", value));
 }
 
 const StringUtil::EnumStringLiteral *GetTransformChildKindValues() {

@@ -30,7 +30,13 @@ ALTER TABLE old.t ALTER s SET TYPE INTEGER[] USING [({'d': s}::STRUCT(d DECIMAL(
 ----
 DECIMAL columns wider than 38 digits are not supported in storage versions prior to v2.1.0
 
-# FIXME: a cast to a user type is logged with the name of the type, which hides its DECIMAL from the check
+# an expression that does not bind keeps the error of the binder
+statement error
+ALTER TABLE old.t ALTER s SET TYPE INTEGER USING (missing::DECIMAL(50, 0))::INTEGER;
+----
+Table does not contain column "missing" referenced in alter statement
+
+# FIXME: a cast to a user type is logged with its name, refuse it once the WAL holds the type it resolved to
 mode skip unsupported
 
 statement ok
@@ -58,10 +64,16 @@ Attempted to create ENUM type with duplicate value a
 statement ok
 ROLLBACK;
 
+statement ok
+BEGIN;
+
 statement error
 ALTER TABLE old.t ALTER s SET TYPE INTEGER USING old.keep_one(s::DECIMAL(1, 2));
 ----
 DECIMAL type scale cannot be greater than width
+
+statement ok
+ROLLBACK;
 
 query II
 SELECT s, typeof(s) FROM old.t;

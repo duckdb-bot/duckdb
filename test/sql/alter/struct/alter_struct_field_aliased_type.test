@@ -23,6 +23,18 @@ statement ok
 CREATE TABLE with_temporary (i INT, s STRUCT(x JSON, y INT));
 
 statement ok
+CREATE TABLE dropped_with_temporary (i INT, s STRUCT(x JSON, y INT));
+
+statement ok
+CREATE TABLE added_with_temporary (i INT, s STRUCT(x JSON, y INT));
+
+statement ok
+CREATE TABLE dropped_on_path (i INT, s STRUCT(x JSON, y INT));
+
+statement ok
+CREATE TABLE added_on_path (i INT, s STRUCT(x JSON, y INT));
+
+statement ok
 INSERT INTO dropped VALUES (1, {'x': '1.4', 'y': 2});
 
 statement ok
@@ -39,6 +51,18 @@ INSERT INTO on_path VALUES (1, {'x': '1.4', 'y': 2});
 
 statement ok
 INSERT INTO with_temporary VALUES (1, {'x': '1.4', 'y': 2});
+
+statement ok
+INSERT INTO dropped_with_temporary VALUES (1, {'x': '1.4', 'y': 2});
+
+statement ok
+INSERT INTO added_with_temporary VALUES (1, {'x': '1.4', 'y': 2});
+
+statement ok
+INSERT INTO dropped_on_path VALUES (1, {'x': '1.4', 'y': 2});
+
+statement ok
+INSERT INTO added_on_path VALUES (1, {'x': '1.4', 'y': 2});
 
 statement ok
 CREATE MACRO typed(a JSON) AS a;
@@ -101,12 +125,28 @@ statement ok
 ALTER TABLE with_temporary RENAME COLUMN s.y TO z;
 
 statement ok
+ALTER TABLE dropped_with_temporary DROP COLUMN s.y;
+
+statement ok
+ALTER TABLE added_with_temporary ADD COLUMN s.z INT;
+
+statement ok
 DROP TYPE JSON;
 
 query II
 SELECT s.x::VARCHAR, typeof(s) FROM with_temporary
 ----
 1.4	STRUCT(x JSON, z INTEGER)
+
+query II
+SELECT s.x::VARCHAR, typeof(s) FROM dropped_with_temporary
+----
+1.4	STRUCT(x JSON)
+
+query II
+SELECT s.x::VARCHAR, typeof(s) FROM added_with_temporary
+----
+1.4	STRUCT(x JSON, y INTEGER, z INTEGER)
 
 # the rewritten default of a column is bound with the schema of the table first on every insert
 statement ok
@@ -164,7 +204,23 @@ SET search_path = 'main,other';
 statement ok
 ALTER TABLE on_path RENAME COLUMN s.y TO z;
 
+statement ok
+ALTER TABLE dropped_on_path DROP COLUMN s.y;
+
+statement ok
+ALTER TABLE added_on_path ADD COLUMN s.z INT;
+
 query II
 SELECT s.x::VARCHAR, typeof(s) FROM on_path
 ----
 1.4	STRUCT(x JSON, z INTEGER)
+
+query II
+SELECT s.x::VARCHAR, typeof(s) FROM dropped_on_path
+----
+1.4	STRUCT(x JSON)
+
+query II
+SELECT s.x::VARCHAR, typeof(s) FROM added_on_path
+----
+1.4	STRUCT(x JSON, y INTEGER, z INTEGER)

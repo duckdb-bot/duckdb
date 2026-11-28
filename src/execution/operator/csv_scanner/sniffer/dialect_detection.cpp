@@ -513,6 +513,9 @@ void CSVSniffer::RefineCandidates() {
 		return;
 	}
 
+	// why candidates are dropped below, on a line over the maximum line size or on anything else
+	bool dropped_on_line_size = false;
+	bool dropped_otherwise = false;
 	for (idx_t i = 1; i <= options.sample_size_chunks; i++) {
 		vector<unique_ptr<ColumnCountScanner>> successful_candidates;
 		bool done = candidates.empty();
@@ -525,18 +528,32 @@ void CSVSniffer::RefineCandidates() {
 				// we finished the file or our chunk sample successfully
 				if (!cur_candidate->GetResult().error) {
 					successful_candidates.push_back(std::move(cur_candidate));
+				} else {
+					dropped_otherwise = true;
 				}
 				done = true;
 				continue;
 			}
+			// the candidates share their error handler, the errors of this chunk come behind the ones it held
+			auto &candidate_errors = *cur_candidate->error_handler;
+			const idx_t errors_before = candidate_errors.GetSize();
 			if (RefineCandidateNextChunk(*cur_candidate) && !cur_candidate->GetResult().error) {
 				successful_candidates.push_back(std::move(cur_candidate));
+			} else if (candidate_errors.HasError(MAXIMUM_LINE_SIZE, errors_before)) {
+				line_error = candidate_errors.GetFirstError(MAXIMUM_LINE_SIZE, errors_before);
+				dropped_on_line_size = true;
+			} else {
+				dropped_otherwise = true;
 			}
 		}
 		candidates = std::move(successful_candidates);
 		if (done) {
 			break;
 		}
+	}
+	if (candidates.empty() && dropped_on_line_size && !dropped_otherwise) {
+		// no candidate got past the long line, which is the error to report
+		all_fail_max_line_size = true;
 	}
 	// If we have multiple candidates with quotes set, we will give the preference to ones
 	// that have actually quoted values, otherwise we will choose quotes = \0

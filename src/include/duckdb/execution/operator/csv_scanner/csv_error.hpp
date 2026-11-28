@@ -134,8 +134,9 @@ public:
 	void NewMaxLineSize(idx_t scan_line_size);
 	//! Returns true if there are any errors
 	bool AnyErrors();
-	bool HasError(CSVErrorType error_type);
-	CSVError GetFirstError(CSVErrorType error_type);
+	//! Whether there is an error of a type, and the first one, among the errors from position start on
+	bool HasError(CSVErrorType error_type, idx_t start = 0);
+	CSVError GetFirstError(CSVErrorType error_type, idx_t start = 0);
 	idx_t GetMaxLineLength();
 
 	void DontPrintErrorLine();

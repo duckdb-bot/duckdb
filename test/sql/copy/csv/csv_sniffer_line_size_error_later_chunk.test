@@ -1,0 +1,83 @@
+# name: test/sql/copy/csv/csv_sniffer_line_size_error_later_chunk.test
+# description: A line over the maximum line size behind the first chunk of the sniffer's sample is reported as such
+# group: [csv]
+
+# line 2101 is in the second chunk of the sample
+statement ok
+COPY (SELECT i AS a, CASE WHEN i = 2100 THEN repeat('x', 30) ELSE 'y' END AS b FROM range(1, 8001) t(i) ORDER BY i) TO '{TEST_DIR}/sniffer_long_row_second_chunk.csv' (HEADER);
+
+statement error
+SELECT count(*) FROM read_csv('{TEST_DIR}/sniffer_long_row_second_chunk.csv', max_line_size = 20);
+----
+Maximum line size of 20 bytes exceeded
+
+statement error
+SELECT count(*) FROM read_csv('{TEST_DIR}/sniffer_long_row_second_chunk.csv', max_line_size = 20);
+----
+Original Line: 2100,xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+statement error
+FROM sniff_csv('{TEST_DIR}/sniffer_long_row_second_chunk.csv', max_line_size = 20);
+----
+Maximum line size of 20 bytes exceeded
+
+# line 5001 is in the third chunk
+statement ok
+COPY (SELECT i AS a, CASE WHEN i = 5000 THEN repeat('x', 30) ELSE 'y' END AS b FROM range(1, 8001) t(i) ORDER BY i) TO '{TEST_DIR}/sniffer_long_row_third_chunk.csv' (HEADER);
+
+statement error
+SELECT count(*) FROM read_csv('{TEST_DIR}/sniffer_long_row_third_chunk.csv', max_line_size = 20);
+----
+Original Line: 5000,xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+# behind the sample the scanner reports the line
+statement error
+SELECT count(*) FROM read_csv('{TEST_DIR}/sniffer_long_row_second_chunk.csv', max_line_size = 20, sample_size = 1);
+----
+CSV Error on Line: 2101
+Original Line: 2100,xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+# a file that no dialect fits keeps the error of the sniffer
+statement ok
+COPY (SELECT CASE WHEN i >= 2100 THEN 'y,y,y' ELSE i::VARCHAR || ',y' END FROM range(1, 8001) t(i) ORDER BY i) TO '{TEST_DIR}/sniffer_changing_columns.csv' (HEADER false, QUOTE '', DELIMITER '|');
+
+statement error
+SELECT count(*) FROM read_csv('{TEST_DIR}/sniffer_changing_columns.csv', max_line_size = 20);
+----
+It was not possible to automatically detect the CSV parsing dialect
+
+# candidates that fail for different reasons keep it too, here a quoted span that is too long and a row with a third column
+statement ok
+COPY (SELECT CASE WHEN i = 2100 THEN '2100,"y' WHEN i = 2111 THEN '2111,y"' WHEN i = 2200 THEN 'y,y,y' ELSE i::VARCHAR || ',y' END FROM range(1, 8001) t(i) ORDER BY i) TO '{TEST_DIR}/sniffer_mixed_failures.csv' (HEADER false, QUOTE '', DELIMITER '|');
+
+statement error
+SELECT count(*) FROM read_csv('{TEST_DIR}/sniffer_mixed_failures.csv', max_line_size = 20);
+----
+It was not possible to automatically detect the CSV parsing dialect
+
+# and when they fail in different chunks, on the column count in the second and on a long row in the third
+statement ok
+COPY (SELECT CASE WHEN i = 2100 THEN 'x,"y,z' WHEN i = 2101 THEN 'a,b"' WHEN i = 5000 THEN '5000,' || repeat('x', 30) ELSE i::VARCHAR || ',y' END FROM range(1, 8001) t(i) ORDER BY i) TO '{TEST_DIR}/sniffer_mixed_failures_across_chunks.csv' (HEADER false, QUOTE '', DELIMITER '|');
+
+statement error
+SELECT count(*) FROM read_csv('{TEST_DIR}/sniffer_mixed_failures_across_chunks.csv', max_line_size = 20);
+----
+It was not possible to automatically detect the CSV parsing dialect
+
+# the long row of the candidates that got furthest is reported, not an earlier error of a candidate that was dropped
+statement ok
+COPY (SELECT CASE WHEN i = 10 THEN '10,"y' WHEN i = 21 THEN '21,y"' WHEN i = 2100 THEN '2100,' || repeat('x', 30) ELSE i::VARCHAR || ',y' END FROM range(1, 8001) t(i) ORDER BY i) TO '{TEST_DIR}/sniffer_long_row_behind_quoted_span.csv' (HEADER false, QUOTE '', DELIMITER '|');
+
+statement error
+SELECT count(*) FROM read_csv('{TEST_DIR}/sniffer_long_row_behind_quoted_span.csv', max_line_size = 20);
+----
+Original Line: 2100,xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+# of two long rows in one chunk the first one is reported
+statement ok
+COPY (SELECT i AS a, CASE WHEN i IN (2100, 2200) THEN repeat('x', 30) ELSE 'y' END AS b FROM range(1, 8001) t(i) ORDER BY i) TO '{TEST_DIR}/sniffer_two_long_rows.csv' (HEADER);
+
+statement error
+SELECT count(*) FROM read_csv('{TEST_DIR}/sniffer_two_long_rows.csv', max_line_size = 20);
+----
+Original Line: 2100,xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx

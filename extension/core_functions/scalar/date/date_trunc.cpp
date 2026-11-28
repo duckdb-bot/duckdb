@@ -508,6 +508,9 @@ unique_ptr<BaseStatistics> DateTruncStatistics(vector<BaseStatistics> &child_sta
 		// the bounds are not in the range of the result type (e.g. a DATE beyond the TIMESTAMP range) - the rows
 		// holding them may not even reach the function, so do not propagate statistics
 		return nullptr;
+	} catch (const OutOfRangeException &) {
+		// the week of a bound starts before the first date, which is no reason to fail for other rows either
+		return nullptr;
 	}
 
 	auto min_value = Value::CreateValue(min_part);

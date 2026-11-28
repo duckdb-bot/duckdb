@@ -1,0 +1,49 @@
+# name: test/sql/parser/long_with_clause.test
+# description: The CTEs of a long WITH clause are transformed in their places
+# group: [parser]
+
+# 800 CTEs in one clause, c<i> holds i, read at five positions
+query I
+SELECT * FROM query('WITH ' || array_to_string(list_transform(range(800), lambda i: 'c' || i || ' AS (SELECT ' || i || ' AS a)'), ', ') || ' SELECT (SELECT a FROM c0) + (SELECT a FROM c1) + (SELECT a FROM c400) + (SELECT a FROM c798) + (SELECT a FROM c799)');
+----
+1998
+
+# a later CTE reads the one before it
+query I
+SELECT * FROM query('WITH c0 AS (SELECT 1 AS a), ' || array_to_string(list_transform(range(1, 30), lambda i: 'c' || i || ' AS (SELECT a + 1 AS a FROM c' || (i - 1) || ')'), ', ') || ' SELECT a FROM c29');
+----
+30
+
+# a trailing comma after the last CTE
+query I
+SELECT * FROM query('WITH ' || array_to_string(list_transform(range(300), lambda i: 'c' || i || ' AS (SELECT ' || i || ' AS a)'), ', ') || ', SELECT a FROM c299');
+----
+299
+
+# a duplicate of a name in the middle, added as the last CTE, is refused
+statement error
+SELECT * FROM query('WITH ' || array_to_string(list_transform(range(300), lambda i: 'c' || i || ' AS (SELECT ' || i || ' AS a)'), ', ') || ', c150 AS (SELECT 0 AS a) SELECT a FROM c299');
+----
+Duplicate CTE name
+
+# one, two and three CTEs
+query III
+WITH a AS (SELECT 1 AS x), b AS (SELECT x + 1 AS x FROM a), c AS (SELECT x + 1 AS x FROM b) SELECT (SELECT x FROM a), (SELECT x FROM b), (SELECT x FROM c);
+----
+1	2	3
+
+query II
+WITH a AS (SELECT 1 AS x), b AS (SELECT x + 1 AS x FROM a) SELECT (SELECT x FROM a), (SELECT x FROM b);
+----
+1	2
+
+query I
+WITH a AS (SELECT 1 AS x) SELECT x FROM a;
+----
+1
+
+# a PIVOT in a later CTE reads its values from an earlier one
+query I
+WITH src AS (SELECT 1 AS k, 10 AS v), mid AS (SELECT 2 AS z), p AS (PIVOT src ON k USING sum(v)) SELECT "1" FROM p;
+----
+10

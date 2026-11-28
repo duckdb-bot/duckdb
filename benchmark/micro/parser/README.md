@@ -51,6 +51,7 @@ Grammar extensions are not included in any of these benchmarks.
 | `ParserValuesList` | One large `VALUES` list | 8 | 1 |
 | `ParserSetOperationChain` | One generated statement of about 100 KiB: a `UNION ALL` of 2000 small selects | 13 | 1 |
 | `ParserCTEChain` | One generated statement of about 30 KiB: 300 CTEs, each with a list literal and a lambda | 24 | 1 |
+| `ParserCTEList` | One generated statement of about 600 KiB: 20,000 small CTEs in one `WITH` clause | 1 | 1 |
 | `ParserGrammarConstruction` | Construct and destroy the base grammar | 250 constructions | No SQL parsing |
 
 The batch sizes target roughly 300 ms using representative median timings. Corpus workloads round

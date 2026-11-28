@@ -1057,18 +1057,28 @@ PEGTransformerFactory::TransformGroupingSetsClause(PEGTransformer &transformer,
 	return result;
 }
 
+//! The CTE at `index` of a WITH clause, found without walking the CTEs before it
+static ParseResult &GetWithStatement(ListParseResult &with_clause, idx_t index) {
+	// List(D) <- D (',' D)* ','?
+	auto &list_pr = with_clause.Child<ListParseResult>(2);
+	if (index == 0) {
+		return list_pr.GetChild(0);
+	}
+	auto &repeat_result = list_pr.Child<OptionalParseResult>(1).GetResult().Cast<RepeatParseResult>();
+	return repeat_result.Child<ListParseResult>(index - 1).GetChild(1);
+}
+
 void PEGTransformerFactory::InitializeWithClauseTrampoline(PEGTransformer &transformer,
                                                            GeneratedTransformProcess &process) {
 	auto &list_pr = process.parse_result.Cast<ListParseResult>();
-	auto with_statement_list = ExtractParseResultsFromList(list_pr.Child<ListParseResult>(2));
-	auto entry_count = with_statement_list.size();
+	auto entry_count = CountParseResultsFromList(list_pr.Child<ListParseResult>(2));
 	// the last slot holds the CTE map that is built up while the CTEs are transformed
 	process.ReserveChildSlots(entry_count + 1);
 	process.SetChildResult(entry_count, transformer.MakeResult<CommonTableExpressionMap>(CommonTableExpressionMap()));
 	// earlier CTEs are visible while transforming later ones (e.g. for PIVOT enum extraction)
 	transformer.stored_cte_map.push_back(process.GetResult<CommonTableExpressionMap>(entry_count));
 	process.manual_state = 0;
-	process.PushChild({with_statement_list[0].get()}, 0);
+	process.PushChild({GetWithStatement(list_pr, 0)}, 0);
 }
 
 arena_ptr<TransformResultValue>
@@ -1098,8 +1108,7 @@ PEGTransformerFactory::FinalizeWithClauseTrampoline(PEGTransformer &transformer,
 
 	if (entry_idx + 1 < entry_count) {
 		process.manual_state = entry_idx + 1;
-		auto with_statement_list = ExtractParseResultsFromList(list_pr.Child<ListParseResult>(2));
-		process.PushChild({with_statement_list[entry_idx + 1].get()}, entry_idx + 1);
+		process.PushChild({GetWithStatement(list_pr, entry_idx + 1)}, entry_idx + 1);
 		return nullptr;
 	}
 	transformer.stored_cte_map.pop_back();

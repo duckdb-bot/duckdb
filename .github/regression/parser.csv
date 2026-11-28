@@ -12,3 +12,4 @@ ParserStress
 ParserValuesList
 ParserSetOperationChain
 ParserCTEChain
+ParserCTEList

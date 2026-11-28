@@ -24,7 +24,8 @@ enum class ParserWorkload : uint8_t {
 	STRESS,
 	VALUES_LIST,
 	SET_OPERATION_CHAIN,
-	CTE_CHAIN
+	CTE_CHAIN,
+	CTE_LIST
 };
 
 struct ParserBenchmarkState : public BenchmarkState {
@@ -183,6 +184,17 @@ public:
 			}
 			return query + " SELECT count(*) FROM c299";
 		}
+		case ParserWorkload::CTE_LIST: {
+			// one generated statement of about 600 KB with 20,000 small CTEs in one WITH clause
+			string query = "WITH ";
+			for (idx_t i = 0; i < 20000; i++) {
+				if (i > 0) {
+					query += ", ";
+				}
+				query += "c" + to_string(i) + " AS (SELECT " + to_string(i) + " AS a)";
+			}
+			return query + " SELECT 1";
+		}
 		case ParserWorkload::TPCH:
 		case ParserWorkload::TPCDS:
 		case ParserWorkload::FLUMMI:
@@ -284,6 +296,7 @@ ParserMicroBenchmark parser_stress("ParserStress", ParserWorkload::STRESS, 7);
 ParserMicroBenchmark parser_values_list("ParserValuesList", ParserWorkload::VALUES_LIST, 8);
 ParserMicroBenchmark parser_set_operation_chain("ParserSetOperationChain", ParserWorkload::SET_OPERATION_CHAIN, 13);
 ParserMicroBenchmark parser_cte_chain("ParserCTEChain", ParserWorkload::CTE_CHAIN, 24);
+ParserMicroBenchmark parser_cte_list("ParserCTEList", ParserWorkload::CTE_LIST, 1);
 
 struct ParserGrammarConstructionState : public BenchmarkState {
 	idx_t grammars_constructed = 0;

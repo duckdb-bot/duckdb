@@ -182,6 +182,7 @@ bool LateMaterialization::TryLateMaterialization(unique_ptr<LogicalOperator> &op
 
 	// visit the expressions for each operator in the chain
 	vector<reference<LogicalOperator>> source_operators;
+	bool has_filter_projection_map = false;
 
 	VisitOperatorExpressions(*op);
 	reference<LogicalOperator> child = *op->children[0];
@@ -219,6 +220,7 @@ bool LateMaterialization::TryLateMaterialization(unique_ptr<LogicalOperator> &op
 		case LogicalOperatorType::LOGICAL_FILTER: {
 			// visit filter expressions - we need these columns
 			VisitOperatorExpressions(child.get());
+			has_filter_projection_map |= child.get().HasProjectionMap();
 			// continue into child
 			child = *child.get().children[0];
 			break;
@@ -277,6 +279,15 @@ bool LateMaterialization::TryLateMaterialization(unique_ptr<LogicalOperator> &op
 			throw InternalException("Row id column id not found in virtual column list");
 		}
 		row_id_columns.push_back(entry->second);
+	}
+	if (only_deferred_lists && has_filter_projection_map) {
+		// FIXME: below a filter with a projection map ConstructRHS loses a row id that the scan already reads
+		for (auto &column_id : get.GetColumnIds()) {
+			if (std::find(row_id_column_ids.begin(), row_id_column_ids.end(), column_id.GetPrimaryIndex()) !=
+			    row_id_column_ids.end()) {
+				return false;
+			}
+		}
 	}
 	// we benefit from late materialization
 	// we need to transform this plan into a semi-join with the row-id

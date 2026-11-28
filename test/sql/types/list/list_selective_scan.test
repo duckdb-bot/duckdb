@@ -109,3 +109,36 @@ query III
 SELECT count(*), count(l), count(*) FILTER (WHERE l IS NOT DISTINCT FROM expected(id)) FROM t WHERE id BETWEEN 2040 AND 2060
 ----
 14	12	14
+
+# a small limit over a filter that reads the row ID
+statement ok
+CREATE TABLE u AS SELECT i AS id, i % 5 AS g, [x + i FOR x IN range(100)] AS l FROM range(3000) r(i);
+
+query III
+SELECT id, len(l), l[100] FROM u WHERE id + g > rowid + 3 LIMIT 2
+----
+4	100	103
+9	100	108
+
+# a small limit over a filter, with a row ID filter in the scan below it
+query III
+SELECT id, len(l), l[100] FROM u WHERE id + g > 2007 AND rowid >= 2000 LIMIT 2
+----
+2004	100	2103
+2007	100	2106
+
+# with range joins preferred the column lifetime pass does not rebuild projection maps below a join
+statement ok
+SET prefer_range_joins = true;
+
+query III
+SELECT id, len(l), l[100] FROM u WHERE id + g > rowid + 3 LIMIT 2
+----
+4	100	103
+9	100	108
+
+query III
+SELECT id, len(l), l[100] FROM u WHERE id + g > 2007 AND rowid >= 2000 LIMIT 2
+----
+2004	100	2103
+2007	100	2106

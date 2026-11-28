@@ -70,6 +70,7 @@ struct VariantNormalizer {
 	static void VisitBlob(const string_t &blob, VariantNormalizerState &state);
 	static void VisitBignum(const string_t &bignum, VariantNormalizerState &state);
 	static void VisitGeometry(const string_t &geom, VariantNormalizerState &state);
+	static void VisitGeography(const string_t &geog, VariantNormalizerState &state);
 	static void VisitBitstring(const string_t &bits, VariantNormalizerState &state);
 
 	template <typename T>
@@ -89,7 +90,7 @@ struct VariantNormalizer {
 	                       idx_t depth, VariantNormalizerState &state);
 	static void VisitObject(const UnifiedVariantVectorData &variant, idx_t row, const VariantNestedData &nested_data,
 	                        idx_t depth, VariantNormalizerState &state);
-	static void VisitDefault(VariantLogicalType type_id, const_data_ptr_t, VariantNormalizerState &state);
+	static void VisitDefault(const LogicalType &type, const_data_ptr_t, VariantNormalizerState &state);
 
 public:
 	static void Normalize(const Vector &input, Vector &output);

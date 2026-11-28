@@ -27,6 +27,7 @@
 #include "duckdb/function/scalar/operator_functions.hpp"
 #include "duckdb/function/scalar/string_functions.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/optimizer/statistics_propagator.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/storage/statistics/base_statistics.hpp"
 #include "duckdb/storage/statistics/numeric_stats.hpp"
@@ -354,8 +355,7 @@ unique_ptr<BaseStatistics> PropagateNumericStats(ClientContext &context, Functio
 	} else {
 		// no potential overflow: replace with non-overflowing operator
 		if (input.bind_data) {
-			auto &bind_data = input.bind_data->Cast<DecimalArithmeticBindData>();
-			bind_data.check_overflow = false;
+			input.bind_data.write().Cast<DecimalArithmeticBindData>().check_overflow = false;
 		}
 		if constexpr (HasBignumOperation<BASEOP>::value) {
 			expr.FunctionMutable().SetFunctionCallback(
@@ -520,7 +520,7 @@ void DecimalAddSubtractResolveTypes(ResolveScalarFunctionTypesInput &input) {
 	}
 }
 
-void SerializeDecimalArithmetic(Serializer &serializer, const optional_ptr<FunctionData> bind_data_p,
+void SerializeDecimalArithmetic(Serializer &serializer, const optional_ptr<const FunctionData> bind_data_p,
                                 const BoundScalarFunction &function) {
 	auto &bind_data = bind_data_p->Cast<DecimalArithmeticBindData>();
 	serializer.WriteProperty(100, "check_overflow", bind_data.check_overflow);
@@ -607,6 +607,22 @@ static void BignumNegate(DataChunk &args, ExpressionState &state, Vector &result
 		const BignumIntermediate lhs(a);
 		return lhs.Negate(heap);
 	});
+}
+
+//! TIMESTAMP[_SEC/_MS/_NS] +/- INTERVAL is not monotonic in the timestamp in general (calendar-month
+//! arithmetic clamps the day but keeps the time), but a constant interval without a month component is
+//! a fixed duration, which keeps the result strictly increasing in the timestamp argument.
+static unique_ptr<FunctionData> BindTimestampIntervalArithmetic(BindScalarFunctionInput &input) {
+	auto &function = input.GetBoundFunction();
+	const idx_t interval_idx = function.GetArguments()[0].id() == LogicalTypeId::INTERVAL ? 0 : 1;
+	auto interval = input.TryGetConstant(interval_idx);
+	if (!interval || interval->IsNull() || interval->GetValue<interval_t>().months != 0) {
+		return nullptr;
+	}
+	function.SetArgProperties(1 - interval_idx, ArgProperties().StrictlyIncreasing());
+	// The smallest finite timestamp sorts below -infinity, so bounds may only be derived from finite ranges.
+	function.SetStatisticsCallback(StatisticsPropagator::PropagateFiniteMonotoneBounds);
+	return nullptr;
 }
 
 ScalarFunction AddFunction::GetFunction(const LogicalType &left_type, const LogicalType &right_type) {
@@ -724,32 +740,36 @@ ScalarFunction AddFunction::GetFunction(const LogicalType &left_type, const Logi
 			ScalarFunction function("+", {left_type, right_type}, LogicalType::TIMESTAMP,
 			                        ScalarFunction::BinaryFunction<interval_t, timestamp_t, timestamp_t, AddOperator>);
 			function.SetFallible();
-			// not monotonic: adding months clamps the day but keeps the time, e.g.
+			// not monotonic in general: adding months clamps the day but keeps the time, e.g.
 			// '2000-01-30 23:00' + INTERVAL '1 month' > '2000-01-31 01:00' + INTERVAL '1 month'
+			function.SetBindCallback(BindTimestampIntervalArithmetic);
 			return function;
 		} else if (right_type.id() == LogicalTypeId::TIMESTAMP_SEC) {
 			ScalarFunction function(
 			    "+", {left_type, right_type}, LogicalType::TIMESTAMP,
 			    ScalarFunction::BinaryFunction<interval_t, timestamp_sec_t, timestamp_t, AddOperator>);
 			function.SetFallible();
-			// not monotonic: adding months clamps the day but keeps the time, e.g.
+			// not monotonic in general: adding months clamps the day but keeps the time, e.g.
 			// '2000-01-30 23:00' + INTERVAL '1 month' > '2000-01-31 01:00' + INTERVAL '1 month'
+			function.SetBindCallback(BindTimestampIntervalArithmetic);
 			return function;
 		} else if (right_type.id() == LogicalTypeId::TIMESTAMP_MS) {
 			ScalarFunction function(
 			    "+", {left_type, right_type}, LogicalType::TIMESTAMP,
 			    ScalarFunction::BinaryFunction<interval_t, timestamp_ms_t, timestamp_t, AddOperator>);
 			function.SetFallible();
-			// not monotonic: adding months clamps the day but keeps the time, e.g.
+			// not monotonic in general: adding months clamps the day but keeps the time, e.g.
 			// '2000-01-30 23:00' + INTERVAL '1 month' > '2000-01-31 01:00' + INTERVAL '1 month'
+			function.SetBindCallback(BindTimestampIntervalArithmetic);
 			return function;
 		} else if (right_type.id() == LogicalTypeId::TIMESTAMP_NS) {
 			ScalarFunction function(
 			    "+", {left_type, right_type}, LogicalType::TIMESTAMP_NS,
 			    ScalarFunction::BinaryFunction<interval_t, timestamp_ns_t, timestamp_ns_t, AddOperator>);
 			function.SetFallible();
-			// not monotonic: adding months clamps the day but keeps the time, e.g.
+			// not monotonic in general: adding months clamps the day but keeps the time, e.g.
 			// '2000-01-30 23:00' + INTERVAL '1 month' > '2000-01-31 01:00' + INTERVAL '1 month'
+			function.SetBindCallback(BindTimestampIntervalArithmetic);
 			return function;
 		}
 		break;
@@ -786,7 +806,8 @@ ScalarFunction AddFunction::GetFunction(const LogicalType &left_type, const Logi
 			    "+", {left_type, right_type}, LogicalType::TIMESTAMP,
 			    ScalarFunction::BinaryFunction<timestamp_sec_t, interval_t, timestamp_t, AddOperator>);
 			function.SetFallible();
-			// not monotonic: see INTERVAL + TIMESTAMP_SEC
+			// not monotonic in general: see INTERVAL + TIMESTAMP_SEC
+			function.SetBindCallback(BindTimestampIntervalArithmetic);
 			return function;
 		}
 		break;
@@ -796,7 +817,8 @@ ScalarFunction AddFunction::GetFunction(const LogicalType &left_type, const Logi
 			    "+", {left_type, right_type}, LogicalType::TIMESTAMP,
 			    ScalarFunction::BinaryFunction<timestamp_ms_t, interval_t, timestamp_t, AddOperator>);
 			function.SetFallible();
-			// not monotonic: see INTERVAL + TIMESTAMP_MS
+			// not monotonic in general: see INTERVAL + TIMESTAMP_MS
+			function.SetBindCallback(BindTimestampIntervalArithmetic);
 			return function;
 		}
 		break;
@@ -805,7 +827,8 @@ ScalarFunction AddFunction::GetFunction(const LogicalType &left_type, const Logi
 			ScalarFunction function("+", {left_type, right_type}, LogicalType::TIMESTAMP,
 			                        ScalarFunction::BinaryFunction<timestamp_t, interval_t, timestamp_t, AddOperator>);
 			function.SetFallible();
-			// not monotonic: see INTERVAL + TIMESTAMP
+			// not monotonic in general: see INTERVAL + TIMESTAMP
+			function.SetBindCallback(BindTimestampIntervalArithmetic);
 			return function;
 		}
 		break;
@@ -815,7 +838,8 @@ ScalarFunction AddFunction::GetFunction(const LogicalType &left_type, const Logi
 			    "+", {left_type, right_type}, LogicalType::TIMESTAMP_NS,
 			    ScalarFunction::BinaryFunction<timestamp_ns_t, interval_t, timestamp_ns_t, AddOperator>);
 			function.SetFallible();
-			// not monotonic: see INTERVAL + TIMESTAMP
+			// not monotonic in general: see INTERVAL + TIMESTAMP
+			function.SetBindCallback(BindTimestampIntervalArithmetic);
 			return function;
 		}
 		break;
@@ -1079,9 +1103,9 @@ ScalarFunction SubtractFunction::GetFunction(const LogicalType &left_type, const
 			    "-", {left_type, right_type}, LogicalType::TIMESTAMP,
 			    ScalarFunction::BinaryFunction<timestamp_t, interval_t, timestamp_t, SubtractOperator>);
 			function.SetFallible();
-			// not monotonic: subtracting months clamps the day but keeps the time, e.g.
+			// not monotonic in general: subtracting months clamps the day but keeps the time, e.g.
 			// '2000-03-30 23:00' - INTERVAL '1 month' > '2000-03-31 01:00' - INTERVAL '1 month'
-
+			function.SetBindCallback(BindTimestampIntervalArithmetic);
 			return function;
 		}
 		break;
@@ -1091,9 +1115,9 @@ ScalarFunction SubtractFunction::GetFunction(const LogicalType &left_type, const
 			    "-", {left_type, right_type}, LogicalType::TIMESTAMP,
 			    ScalarFunction::BinaryFunction<timestamp_sec_t, interval_t, timestamp_t, SubtractOperator>);
 			function.SetFallible();
-			// not monotonic: subtracting months clamps the day but keeps the time, e.g.
+			// not monotonic in general: subtracting months clamps the day but keeps the time, e.g.
 			// '2000-03-30 23:00' - INTERVAL '1 month' > '2000-03-31 01:00' - INTERVAL '1 month'
-
+			function.SetBindCallback(BindTimestampIntervalArithmetic);
 			return function;
 		}
 		break;
@@ -1103,9 +1127,9 @@ ScalarFunction SubtractFunction::GetFunction(const LogicalType &left_type, const
 			    "-", {left_type, right_type}, LogicalType::TIMESTAMP,
 			    ScalarFunction::BinaryFunction<timestamp_ms_t, interval_t, timestamp_t, SubtractOperator>);
 			function.SetFallible();
-			// not monotonic: subtracting months clamps the day but keeps the time, e.g.
+			// not monotonic in general: subtracting months clamps the day but keeps the time, e.g.
 			// '2000-03-30 23:00' - INTERVAL '1 month' > '2000-03-31 01:00' - INTERVAL '1 month'
-
+			function.SetBindCallback(BindTimestampIntervalArithmetic);
 			return function;
 		}
 		break;
@@ -1115,9 +1139,9 @@ ScalarFunction SubtractFunction::GetFunction(const LogicalType &left_type, const
 			    "-", {left_type, right_type}, LogicalType::TIMESTAMP_NS,
 			    ScalarFunction::BinaryFunction<timestamp_ns_t, interval_t, timestamp_ns_t, SubtractOperator>);
 			function.SetFallible();
-			// not monotonic: subtracting months clamps the day but keeps the time, e.g.
+			// not monotonic in general: subtracting months clamps the day but keeps the time, e.g.
 			// '2000-03-30 23:00' - INTERVAL '1 month' > '2000-03-31 01:00' - INTERVAL '1 month'
-
+			function.SetBindCallback(BindTimestampIntervalArithmetic);
 			return function;
 		}
 		break;

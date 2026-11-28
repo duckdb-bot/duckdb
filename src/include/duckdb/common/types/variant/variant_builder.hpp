@@ -35,6 +35,14 @@
 
 namespace duckdb {
 
+//! Grants the variant builder access to the storage-level type of a VariantNode / ParquetVariantNode
+struct VariantNodeStorageAccess {
+	template <class NODE>
+	static VariantLogicalType GetStorageType(const NODE &node) {
+		return node.GetVariantType();
+	}
+};
+
 //===--------------------------------------------------------------------===//
 // Building a VARIANT in a single pass
 //===--------------------------------------------------------------------===//
@@ -333,6 +341,7 @@ struct VariantBuilder {
 		case LogicalTypeId::BIGNUM:
 		case LogicalTypeId::BIT:
 		case LogicalTypeId::GEOMETRY:
+		case LogicalTypeId::GEOGRAPHY:
 		case LogicalTypeId::VARCHAR: {
 			if (type_id == LogicalTypeId::BLOB) {
 				variant_type = VariantLogicalType::BLOB;
@@ -342,6 +351,8 @@ struct VariantBuilder {
 				variant_type = VariantLogicalType::BITSTRING;
 			} else if (type_id == LogicalTypeId::GEOMETRY) {
 				variant_type = VariantLogicalType::GEOMETRY;
+			} else if (type_id == LogicalTypeId::GEOGRAPHY) {
+				variant_type = VariantLogicalType::GEOGRAPHY;
 			} else {
 				variant_type = VariantLogicalType::VARCHAR;
 			}
@@ -356,6 +367,12 @@ struct VariantBuilder {
 		}
 		type_ids.push_back(static_cast<uint8_t>(variant_type));
 		byte_offsets.push_back(byte_offset);
+	}
+
+	//! Emit a primitive value sourced from a VariantNode-like cursor, using the storage type of the cursor
+	template <class NODE>
+	void EmitPrimitiveNode(const NODE &it) {
+		EmitPrimitiveNode(it, VariantNodeStorageAccess::GetStorageType(it));
 	}
 
 	//! Emit a primitive value sourced from a VariantNode-like cursor. The fixed-width payload is fetched by
@@ -475,7 +492,8 @@ struct VariantBuilder {
 		case VariantLogicalType::BLOB:
 		case VariantLogicalType::BIGNUM:
 		case VariantLogicalType::BITSTRING:
-		case VariantLogicalType::GEOMETRY: {
+		case VariantLogicalType::GEOMETRY:
+		case VariantLogicalType::GEOGRAPHY: {
 			auto str = it.GetString();
 			VariantBuilderAppendVarint(blob, NumericCast<uint32_t>(str.GetSize()));
 			VariantBuilderAppendBytes(blob, const_data_ptr_cast(str.GetData()), str.GetSize());
@@ -516,10 +534,11 @@ struct VariantBuilder {
 //===--------------------------------------------------------------------===//
 // Emit (source: a VariantNode-like cursor)
 //===--------------------------------------------------------------------===//
-//! Collect the (non-missing) object children of a node in lexicographic key order
+//! Collect the (non-missing) object children of a node - the key order of an object is not significant, so the
+//! children are emitted in the order they are stored
 template <class NODE>
 auto CollectObjectChildren(const NODE &it) {
-	auto object = it.GetObjectChildren(VariantIterationOrder::LEXICOGRAPHIC);
+	auto object = it.GetObjectChildren(VariantIterationOrder::INTERNAL);
 	using EntryT = std::decay_t<decltype(*object.begin())>;
 	vector<EntryT> children;
 	for (auto &entry : object) {
@@ -550,7 +569,7 @@ void EmitIterator(const NODE &root, VariantBuilder &builder) {
 			builder.EmitNull();
 			return;
 		}
-		auto type_id = node.GetTypeId();
+		auto type_id = VariantNodeStorageAccess::GetStorageType(node);
 		switch (type_id) {
 		case VariantLogicalType::OBJECT: {
 			auto children = CollectObjectChildren(node);

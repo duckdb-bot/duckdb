@@ -24,6 +24,7 @@
 #include "duckdb/main/result_format.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/main/valid_checker.hpp"
+#include "duckdb/common/exception/transaction_exception.hpp"
 #include "duckdb/parallel/task_scheduler.hpp"
 #include "duckdb/transaction/meta_transaction.hpp"
 #include "duckdb/transaction/transaction_context.hpp"
@@ -125,6 +126,13 @@ ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success,
 		if (transaction.HasActiveTransaction()) {
 			transaction.ResetActiveQuery();
 			if (transaction.IsAutoCommit()) {
+				if (success && ValidChecker::IsInvalidated(ActiveTransaction())) {
+					// a connection that inherited the transaction failed a statement in it
+					ErrorData invalidated(ExceptionType::TRANSACTION,
+					                      ValidChecker::InvalidatedMessage(ActiveTransaction()));
+					transaction.Rollback(&invalidated);
+					throw TransactionException("Failed to commit: %s", invalidated.RawMessage());
+				}
 				if (success) {
 					transaction.Commit();
 				} else {
@@ -424,7 +432,7 @@ QueryResultState ClientContext::ExecuteTaskInternal(ClientContextLock &lock, Bas
 	D_ASSERT(active_query);
 	D_ASSERT(active_query->IsOpenResult(result));
 	try {
-		// Surface a pending interrupt even when this thread runs no task that reaches InterruptCheck.
+		// Surface a pending interrupt even when this thread runs no task that reaches an InterruptCheck.
 		// IsInterrupted() rather than InterruptCheck(): we must not enforce query_deadline here.
 		// Skip when the executor already has an error: ExecuteTask rethrows that with its original type.
 		if (IsInterrupted() && !active_query->executor->HasError()) {

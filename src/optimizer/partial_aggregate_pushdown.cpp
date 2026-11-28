@@ -94,7 +94,9 @@ static void CopyCardinality(LogicalOperator &dst, const LogicalOperator &src) {
 	dst.has_estimated_cardinality = src.has_estimated_cardinality;
 }
 
-static bool IsSupportedAggregate(const BoundAggregateExpression &expr) {
+//! "allow_exported" accepts an aggregate that already exports its state (e.g. the finest level of a ROLLUP / CUBE
+//! cascade): the one-sided pushdown moves it below the join as it is and combines the states above the join
+static bool IsSupportedAggregate(const BoundAggregateExpression &expr, bool allow_exported = false) {
 	if (expr.IsDistinct() || expr.GetFilter() || expr.GetOrderBys()) {
 		return false;
 	}
@@ -106,7 +108,7 @@ static bool IsSupportedAggregate(const BoundAggregateExpression &expr) {
 			return false;
 		}
 	}
-	if (expr.StateExportMode() != AggregateStateExportMode::NONE) {
+	if (expr.StateExportMode() != AggregateStateExportMode::NONE && !allow_exported) {
 		return false;
 	}
 	if (expr.GetChildren().size() > 1) {
@@ -201,6 +203,19 @@ static bool AggregateArgumentsCanThrow(Optimizer &optimizer, unique_ptr<LogicalO
 			if (ArgumentCanThrow(optimizer, op, *child)) {
 				return true;
 			}
+		}
+	}
+	return false;
+}
+
+//! An aggregate that already exports its state and whose update or combine can throw (e.g. the checked addition of
+//! sum(HUGEINT)): below an inner join it would also aggregate the rows the join removes
+static bool ExportedAggregatesCanThrow(const LogicalAggregate &aggr) {
+	for (auto &expr : aggr.expressions) {
+		auto &aggregate = expr->Cast<BoundAggregateExpression>();
+		if (aggregate.StateExportMode() != AggregateStateExportMode::NONE &&
+		    aggregate.Function().GetErrorMode() == FunctionErrors::CAN_THROW_RUNTIME_ERROR) {
+			return true;
 		}
 	}
 	return false;
@@ -308,7 +323,7 @@ static bool FindAggregateSide(const LogicalAggregate &aggr, PartialAggregatePush
 			return false;
 		}
 		auto &aggregate = expr->Cast<BoundAggregateExpression>();
-		if (!IsSupportedAggregate(aggregate)) {
+		if (!IsSupportedAggregate(aggregate, true)) {
 			return false;
 		}
 		if (aggregate.GetChildren().empty()) {
@@ -479,8 +494,12 @@ static bool BindPushdownAggregates(ClientContext &context, LogicalAggregate &agg
 	FunctionBinder function_binder(context);
 
 	for (idx_t i = 0; i < aggr.expressions.size(); i++) {
-		auto aggregate_copy = unique_ptr_cast<Expression, BoundAggregateExpression>(aggr.expressions[i]->Copy());
-		auto lower_aggregate = ExportAggregateFunction::Bind(std::move(aggregate_copy));
+		auto lower_aggregate = unique_ptr_cast<Expression, BoundAggregateExpression>(aggr.expressions[i]->Copy());
+		if (lower_aggregate->StateExportMode() == AggregateStateExportMode::NONE) {
+			// an aggregate that already exports its state is the lower aggregate as it is: exporting it a second
+			// time would nest the state type
+			lower_aggregate = ExportAggregateFunction::Bind(std::move(lower_aggregate));
+		}
 		auto lower_type = lower_aggregate->GetReturnType();
 		if (!lower_type.IsAggregateState()) {
 			return false;
@@ -726,9 +745,8 @@ static bool DEEstimateCollapse(RelationStatsExtractor &extractor, LogicalCompari
 			return false;
 		}
 		const auto cardinality = stats->cardinality;
-		const auto join_retains_rows =
-		    static_cast<double>(join.estimated_cardinality) >=
-		    PartialAggregatePushdownHeuristics::MIN_JOIN_RETENTION * static_cast<double>(cardinality);
+		const auto join_retains_rows = static_cast<double>(join.estimated_cardinality) >=
+		                               PartialAggregatePushdownHeuristics::MIN_JOIN_RETENTION * cardinality.GetDouble();
 		if (!join_retains_rows || cardinality == 0) {
 			return false;
 		}
@@ -740,16 +758,17 @@ static bool DEEstimateCollapse(RelationStatsExtractor &extractor, LogicalCompari
 			}
 			groups.push_back(column.GetIndex());
 		}
-		lower_cardinalities[side] = RelationStatisticsHelper::EstimateGroupCardinality(*join.children[side], *stats,
-		                                                                               std::move(groups), extractor);
+		const auto lower_cardinality = RelationStatisticsHelper::EstimateGroupCardinality(*join.children[side], *stats,
+		                                                                                  std::move(groups), extractor);
+		lower_cardinalities[side] = lower_cardinality.GetIndex();
 		const auto min_collapse = DERequiredCollapse(lower_cardinalities[side]);
 		const auto input_collapses = cardinality / min_collapse >= lower_cardinalities[side];
 		both_inputs_collapse &= input_collapses;
 		if (input_collapses) {
 			work_margin = MinValue(work_margin, min_collapse);
 		}
-		input_cardinality += static_cast<double>(cardinality);
-		retained_fraction *= static_cast<double>(lower_cardinalities[side]) / static_cast<double>(cardinality);
+		input_cardinality += cardinality.GetDouble();
+		retained_fraction *= (lower_cardinality / cardinality).GetDouble();
 	}
 	// Scale the join estimate by grouping reduction without interpreting its selectivity as an NDV.
 	const auto cross_product =
@@ -1131,12 +1150,12 @@ bool PartialAggregatePushdown::TryOwnerOuterCountPushdown(unique_ptr<LogicalOper
 	const auto aggregate_cardinality = aggregate_stats->cardinality;
 	const auto key_count = MinValue(key_stats->total_domain.distinct_count, aggregate_cardinality);
 	if (aggregate_cardinality == 0 || key_count == 0 ||
-	    static_cast<double>(aggregate_cardinality) <
+	    aggregate_cardinality.GetDouble() <
 	        static_cast<double>(PartialAggregatePushdownHeuristics::MIN_AGGREGATE_TO_DIMENSION_RATIO) *
-	            static_cast<double>(key_count) ||
+	            key_count.GetDouble() ||
 	    !join.children[info.dimension_side]->has_estimated_cardinality || !join.has_estimated_cardinality ||
 	    static_cast<double>(join.estimated_cardinality) <
-	        PartialAggregatePushdownHeuristics::MIN_JOIN_RETENTION * static_cast<double>(aggregate_cardinality)) {
+	        PartialAggregatePushdownHeuristics::MIN_JOIN_RETENTION * aggregate_cardinality.GetDouble()) {
 		return false;
 	}
 
@@ -1148,7 +1167,7 @@ bool PartialAggregatePushdown::TryOwnerOuterCountPushdown(unique_ptr<LogicalOper
 	lower->groups.push_back((*aggregate_key_expr)->Copy());
 	lower->children.push_back(std::move(join.children[info.aggregate_side]));
 	lower->ResolveOperatorTypes();
-	lower->SetEstimatedCardinality(key_count);
+	lower->SetEstimatedCardinality(key_count.GetIndex());
 
 	auto aggregate_key_type = (*aggregate_key_expr)->GetReturnType();
 	*aggregate_key_expr =
@@ -1306,7 +1325,8 @@ bool PartialAggregatePushdown::TryPushdownAggregate(unique_ptr<LogicalOperator> 
 		return false;
 	}
 	// A preserved side of an outer join keeps every row, so the argument is evaluated on all of them either way.
-	if (join->join_type == JoinType::INNER && AggregateArgumentsCanThrow(optimizer, op)) {
+	if (join->join_type == JoinType::INNER &&
+	    (ExportedAggregatesCanThrow(*aggr) || AggregateArgumentsCanThrow(optimizer, op))) {
 		return false;
 	}
 
@@ -1323,8 +1343,15 @@ bool PartialAggregatePushdown::TryPushdownAggregate(unique_ptr<LogicalOperator> 
 	auto final_projection =
 	    BuildFinalProjection(optimizer, *aggr, std::move(upper_aggr), replacement_map,
 	                         [&](idx_t j, unique_ptr<Expression> ref) -> unique_ptr<Expression> {
+		                         auto &original = aggr->expressions[j]->Cast<BoundAggregateExpression>();
+		                         if (original.StateExportMode() != AggregateStateExportMode::NONE) {
+			                         // the consumers of an exported aggregate expect the state: pass the
+			                         // combined state on instead of finalizing it
+			                         D_ASSERT(ref->GetReturnType() == original.GetReturnType());
+			                         return ref;
+		                         }
 		                         auto finalized = optimizer.BindScalarFunction("finalize", std::move(ref));
-		                         if (finalized->GetReturnType() != aggr->expressions[j]->GetReturnType()) {
+		                         if (finalized->GetReturnType() != original.GetReturnType()) {
 			                         return nullptr; // state does not round-trip back to the original type
 		                         }
 		                         return finalized;

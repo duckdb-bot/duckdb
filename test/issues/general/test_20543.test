@@ -75,13 +75,13 @@ statement ok
 CREATE TYPE s.e AS ENUM ('a', 'x');
 
 statement ok
-SET search_path = 's,main';
-
-statement ok
 CREATE TABLE main.t4 (p VARCHAR);
 
 statement ok
 INSERT INTO main.t4 VALUES ('x');
+
+statement ok
+SET search_path = 's,main';
 
 statement ok
 ALTER TABLE main.t4 ALTER p SET TYPE USING p::e;

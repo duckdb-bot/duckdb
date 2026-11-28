@@ -336,7 +336,7 @@ TEST_CASE("A checkpoint WAL is only looked for after a WAL entry with a wrong ch
 		REQUIRE(CHECK_COLUMN(result, 0, {1, 2}));
 		REQUIRE(CHECK_COLUMN(result, 1, {1000, 1000}));
 		REQUIRE(result->RowCount() == 2);
-		idx_t expected_lookup_count = wrong_checksum ? 1 : 0;
+		const idx_t expected_lookup_count = wrong_checksum ? 1 : 0;
 		REQUIRE(lookup_count.load() == expected_lookup_count);
 	}
 	DeleteDatabase(database_path);

@@ -999,6 +999,14 @@ idx_t ColumnReader::ReadPageHeaders(idx_t max_read, optional_ptr<const TableFilt
 }
 
 bool ColumnReader::PrepareRead(idx_t read_now, data_ptr_t define_out, data_ptr_t repeat_out, idx_t result_offset) {
+	// the definition and the repetition level of a value are read into one byte each
+	static constexpr idx_t MAX_LEVEL = NumericLimits<uint8_t>::Maximum();
+	if (MaxDefine() > MAX_LEVEL || MaxRepeat() > MAX_LEVEL) {
+		throw NotImplementedException(
+		    "Failed to read file \"%s\": column \"%s\" is nested too deeply, its definition level is %llu and its "
+		    "repetition level is %llu, and levels above %llu are not supported",
+		    Reader().GetFileName(), Schema().name, MaxDefine(), MaxRepeat(), MAX_LEVEL);
+	}
 	D_ASSERT(block);
 
 	D_ASSERT(read_now + result_offset <= STANDARD_VECTOR_SIZE);

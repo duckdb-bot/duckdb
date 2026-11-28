@@ -253,7 +253,10 @@ TEST_CASE("Character devices use streaming file semantics", "[file_system]") {
 	auto handle = fs.OpenFile("/dev/null", FileFlags::FILE_FLAGS_WRITE);
 	REQUIRE(handle->GetWriteMode() == FileWriteMode::SEQUENTIAL);
 }
+#endif
 
+// with jemalloc, fork() hangs under the thread sanitizer
+#if !defined(_WIN32) && !defined(DUCKDB_THREAD_SANITIZER)
 enum class FileLockState : char { NOT_LOCKED = 0, LOCKED = 1, NOT_SUPPORTED = 2 };
 
 //! A child process that holds a write lock on a file until it is released

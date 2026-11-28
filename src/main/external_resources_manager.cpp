@@ -10,6 +10,7 @@
 #include "duckdb/logging/logger.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/connection.hpp"
+#include "duckdb/main/settings.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/parser/qualified_name.hpp"
 
@@ -29,6 +30,17 @@ unique_ptr<Connection> CreateExternalResourceCallbackConnection(DatabaseInstance
 		                            MAX_EXTERNAL_RESOURCE_CALLBACK_DEPTH);
 	}
 	return make_uniq<Connection>(Connection::CreateInternal(*caller));
+}
+
+void CheckExternalResourceAccess(ClientContext &context) {
+	if (context.GetConnectionType() == ConnectionType::INTERNAL) {
+		// an internal connection runs the callbacks of an operation that was checked where the user issued it, or the
+		// cleanup of a resource attached while access was allowed, which must not be refused
+		return;
+	}
+	if (!Settings::Get<EnableExternalAccessSetting>(context)) {
+		throw PermissionException("External resources are disabled through configuration");
+	}
 }
 
 ResourceDeleter::ResourceDeleter(DatabaseInstance &db, string deleter_function_p, Value deleter_payload_p,

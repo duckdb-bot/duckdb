@@ -1,0 +1,116 @@
+# name: test/sql/attach/external_resource_prepared_external_access.test
+# description: Prepared external resource calls check enable_external_access when they run, not only when they are bound
+# group: [attach]
+
+# a mock resource type whose callbacks count their calls in sequences
+statement ok
+CREATE SEQUENCE create_calls;
+
+statement ok
+CREATE SEQUENCE status_calls;
+
+statement ok
+CREATE SEQUENCE destroy_calls;
+
+statement ok
+CREATE MACRO mock_create(p) AS TABLE SELECT MAP {'id': nextval('create_calls')::VARCHAR} AS handle;
+
+statement ok
+CREATE MACRO mock_status(h) AS TABLE SELECT CASE WHEN nextval('status_calls') > 0 THEN 'ready' END AS state, MAP {'uri': ':memory:', 'attached_db_type': 'duckdb'} AS result;
+
+statement ok
+CREATE MACRO mock_destroy(h) AS TABLE SELECT nextval('destroy_calls') AS status;
+
+statement ok
+CALL register_external_resource_type('mock@local', kind := 'catalog', create_function := 'mock_create', status_function := 'mock_status', destroy_function := 'mock_destroy');
+
+# the calls are prepared, and run once, while external access is allowed
+statement ok
+PREPARE create_later AS SELECT uri FROM create_external_resource('mock@local');
+
+statement ok
+PREPARE adopt_later AS SELECT uri FROM create_external_resource('mock@local', handle := MAP {'id': 'x'});
+
+statement ok
+PREPARE destroy_later AS SELECT * FROM destroy_external_resource('mock_destroy', MAP {'id': 'x'});
+
+query I
+EXECUTE create_later;
+----
+:memory:
+
+query I
+EXECUTE adopt_later;
+----
+:memory:
+
+query I
+EXECUTE destroy_later;
+----
+true
+
+# a second type whose destroy callback delegates to destroy_external_resource
+statement ok
+CREATE MACRO delegating_destroy(h) AS TABLE SELECT * FROM destroy_external_resource('mock_destroy', h);
+
+statement ok
+CALL register_external_resource_type('delegating@local', kind := 'catalog', create_function := 'mock_create', status_function := 'mock_status', destroy_function := 'delegating_destroy');
+
+# databases attached to resources of their own while access is allowed
+statement ok
+ATTACH TO NEW TEMPORARY EXTERNAL RESOURCE 'mock@local' AS owned;
+
+statement ok
+ATTACH TO NEW TEMPORARY EXTERNAL RESOURCE 'delegating@local' AS owned_delegating;
+
+query II
+SELECT sequence_name, last_value FROM duckdb_sequences() ORDER BY 1;
+----
+create_calls	3
+destroy_calls	1
+status_calls	4
+
+statement ok
+SET enable_external_access = false;
+
+# the prepared calls keep the plan they were bound with, and are refused when they run
+statement error
+EXECUTE create_later;
+----
+Permission Error: External resources are disabled through configuration
+
+statement error
+EXECUTE adopt_later;
+----
+Permission Error: External resources are disabled through configuration
+
+statement error
+EXECUTE destroy_later;
+----
+Permission Error: External resources are disabled through configuration
+
+# no callback ran
+query II
+SELECT sequence_name, last_value FROM duckdb_sequences() ORDER BY 1;
+----
+create_calls	3
+destroy_calls	1
+status_calls	4
+
+# the cleanup of a resource attached while access was allowed still runs, also when its deleter delegates to
+# destroy_external_resource, which runs on the internal connection of the cleanup
+statement ok
+DETACH owned;
+
+query I
+SELECT last_value FROM duckdb_sequences() WHERE sequence_name = 'destroy_calls';
+----
+2
+
+statement ok
+DETACH owned_delegating;
+
+query I
+SELECT last_value FROM duckdb_sequences() WHERE sequence_name = 'destroy_calls';
+----
+3

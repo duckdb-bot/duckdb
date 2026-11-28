@@ -39,6 +39,9 @@ SourceResultType PhysicalConnect::GetDataInternal(ExecutionContext &context, Dat
 	// `CONNECT TO [NEW TEMPORARY] EXTERNAL RESOURCE`: get the endpoint, then ephemeral-attach it
 	// under a hidden alias and connect to it. The deleter is bound so the DISCONNECT reap tears it down.
 	if (info->external_resource) {
+		// provisioning or borrowing runs the resource type's callbacks, and a prepared statement runs long after it
+		// was bound
+		CheckExternalResourceAccess(client);
 		ensure_not_connected();
 		auto &external_resource = *info->external_resource;
 		// A string type PROVISIONS a resource this connection OWNS (deleter bound, DISCONNECT reaps it);

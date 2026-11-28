@@ -59,6 +59,8 @@ static void DestroyExternalResource(ClientContext &client, const BoundExternalRe
 
 SourceResultType PhysicalExternalResource::GetDataInternal(ExecutionContext &context, DataChunk &chunk,
                                                            OperatorSourceInput &input) const {
+	// every operation runs the resource type's callbacks, and a prepared statement runs long after it was bound
+	CheckExternalResourceAccess(context.client);
 	switch (data.operation) {
 	case ExternalResourceOperation::CREATE:
 	case ExternalResourceOperation::REGISTER:

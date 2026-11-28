@@ -184,18 +184,20 @@ static void JsonSerializePlanFunction(DataChunk &args, ExpressionState &state, V
 			if (error.Type() == ExceptionType::OUT_OF_MEMORY) {
 				throw;
 			}
-			yyjson_mut_obj_add_true(doc, result_obj, "error");
+			// the result object may hold the plan that failed to write, so the error document starts afresh
+			auto error_obj = yyjson_mut_obj(doc);
+			yyjson_mut_obj_add_true(doc, error_obj, "error");
 			// error type and message
-			yyjson_mut_obj_add_strcpy(doc, result_obj, "error_type",
+			yyjson_mut_obj_add_strcpy(doc, error_obj, "error_type",
 			                          StringUtil::Lower(Exception::ExceptionTypeToString(error.Type())).c_str());
-			yyjson_mut_obj_add_strcpy(doc, result_obj, "error_message", error.RawMessage().c_str());
+			yyjson_mut_obj_add_strcpy(doc, error_obj, "error_message", error.RawMessage().c_str());
 			// add extra info
 			for (auto &entry : error.ExtraInfo()) {
-				yyjson_mut_obj_add_strcpy(doc, result_obj, entry.first.c_str(), entry.second.c_str());
+				yyjson_mut_obj_add_strcpy(doc, error_obj, entry.first.c_str(), entry.second.c_str());
 			}
 
 			size_t len_size_t;
-			auto data = yyjson_mut_val_write_opts(result_obj,
+			auto data = yyjson_mut_val_write_opts(error_obj,
 			                                      info.format ? JSONCommon::WRITE_PRETTY_FLAG : JSONCommon::WRITE_FLAG,
 			                                      alc, &len_size_t, nullptr);
 			idx_t len = len_size_t;

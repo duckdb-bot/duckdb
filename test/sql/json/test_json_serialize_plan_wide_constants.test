@@ -1,0 +1,58 @@
+# name: test/sql/json/test_json_serialize_plan_wide_constants.test
+# description: Plans with wide decimal, BIGNUM or BIT constants serialize, their bytes escaped like a blob
+# group: [json]
+
+require json
+
+load {TEST_DIR}/wide_constants.db readwrite latest
+
+# the digits of a BIGNUM are bytes, which yyjson refuses as a raw string
+query IIII
+SELECT json_serialize_plan('SELECT 1234567890123456789012345678901234567890.5')::JSON->>'error' AS wide_literal,
+       json_serialize_plan('SELECT 1234567890123456789012345678901234567890::BIGNUM')::JSON->>'error' AS big_bignum,
+       json_serialize_plan('SELECT 12.5')::JSON->>'error' AS narrow,
+       json_serialize_plan('SELECT 1::BIGNUM')::JSON->>'error' AS small_bignum;
+----
+false	false	false	false
+
+query III
+SELECT json_serialize_plan('SELECT * FROM (VALUES (1234567890123456789012345678901234567890::BIGNUM)) v(b)')::JSON->>'error' AS values_list,
+       json_serialize_plan('SELECT [1234567890123456789012345678901234567890.5, 1.5]')::JSON->>'error' AS list_constant,
+       json_serialize_plan('SELECT ''11111111''::BIT', optimize := true)::JSON->>'error' AS bit_constant;
+----
+false	false	false
+
+# the bytes are written escaped, with a marker that tells the reader to unescape them
+query I
+SELECT json_serialize_plan('SELECT 1234567890123456789012345678901234567890::BIGNUM') LIKE '%"escaped":true%';
+----
+true
+
+query I
+SELECT * FROM json_execute_serialized_sql($json$
+{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":7,"value":{"type":{"id":"BIGNUM","type_info":null},"is_null":false,"value":"\\x80\\x00\\x11\\x03\\xA0\\xC9 u\\xC0\\xDB\\xF3\\xB8\\xAC\\xBC_\\x96\\xCE?\\x0A\\xD2","escaped":true}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":18446744073709551615},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}
+$json$);
+----
+1234567890123456789012345678901234567890
+
+# stored defaults and a macro with such literals keep working across a restart
+statement ok
+CREATE TABLE t (d DECIMAL(50, 4) DEFAULT 1234567890123456789012345678901234567890.5, b BIGNUM DEFAULT 12345678901234567890123456789012345678901);
+
+statement ok
+CREATE MACRO wide() AS 1234567890123456789012345678901234567890.5 + 1;
+
+restart
+
+statement ok
+INSERT INTO t DEFAULT VALUES;
+
+query II
+SELECT d, b FROM t;
+----
+1234567890123456789012345678901234567890.5000	12345678901234567890123456789012345678901
+
+query I
+SELECT wide();
+----
+1234567890123456789012345678901234567891.5

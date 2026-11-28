@@ -215,9 +215,10 @@ def malloc_shim(tmp_path_factory):
     return str(shim)
 
 
-# the bytes a plain `SELECT 42` run requests through the shim, so the budgets below scale with the build
-@pytest.fixture(scope="module")
-def startup_bytes(request, malloc_shim):
+# a plain `SELECT 42` run with the report on, which prints what the shim intercepted. A sanitizer runtime replaces
+# the malloc family before the shim sees it, so the shim then intercepts nothing and every budget below would be
+# meaningless, and the tests skip in that case
+def report_run(request, malloc_shim):
     shell = request.config.getoption("--shell-binary")
     if not shell:
         raise ValueError("Please provide a shell binary path to the tester, using '--shell-binary <path_to_cli>'")
@@ -227,15 +228,20 @@ def startup_bytes(request, malloc_shim):
     match = re.search(rb"failmalloc_total_bytes=(\d+)", result.stderr)
     if not match or int(match.group(1)) == 0:
         pytest.skip("the malloc shim does not intercept the allocations of this shell binary")
-    return int(match.group(1))
+    return result
+
+
+# the bytes a plain `SELECT 42` run requests through the shim, so the budgets below scale with the build
+@pytest.fixture(scope="module")
+def startup_bytes(request, malloc_shim):
+    result = report_run(request, malloc_shim)
+    return int(re.search(rb"failmalloc_total_bytes=(\d+)", result.stderr).group(1))
 
 
 # the requests the main thread makes before it starts the first worker thread: the failures below begin around there
 @pytest.fixture(scope="module")
 def first_thread_calls(request, malloc_shim):
-    shell = request.config.getoption("--shell-binary")
-    result = run_with_malloc_budget(shell, malloc_shim, STARTUP_SQL, report=True)
-    assert result.returncode == 0, result.stderr
+    result = report_run(request, malloc_shim)
     match = re.search(rb"failmalloc_first_thread=(\d+)", result.stderr)
     if not match:
         pytest.skip("this shell binary starts no worker thread")

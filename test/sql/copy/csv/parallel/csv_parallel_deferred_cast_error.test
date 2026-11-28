@@ -1,0 +1,26 @@
+# name: test/sql/copy/csv/parallel/csv_parallel_deferred_cast_error.test
+# description: A cast error in a later boundary waits for the line counts of the earlier boundaries
+# group: [parallel]
+
+statement ok
+SET threads=2
+
+# 9400 rows that cast and one that does not, read with two boundaries of 64KB. The second boundary holds 38 rows and
+# reaches its cast while the first boundary is still being read, so the error cannot know its line number yet
+statement ok
+COPY (SELECT a, b FROM (SELECT i, '[1]' AS a, 'ok' AS b FROM range(9400) t(i) UNION ALL SELECT 9400, 'x', 'ok') ORDER BY i) TO '{TEST_DIR}/deferred_cast_error.csv' (HEADER false);
+
+loop i 0 5
+
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/deferred_cast_error.csv', auto_detect=false, header=false, columns={'a': 'INTEGER[]', 'b': 'VARCHAR'}, buffer_size=65536, parallel=true);
+----
+CSV Error on Line: 9401
+Original Line: x,ok
+
+endloop
+
+query II
+SELECT count(*), count(a) FROM read_csv('{TEST_DIR}/deferred_cast_error.csv', auto_detect=false, header=false, columns={'a': 'INTEGER[]', 'b': 'VARCHAR'}, buffer_size=65536, parallel=true, ignore_errors=true);
+----
+9400	9400

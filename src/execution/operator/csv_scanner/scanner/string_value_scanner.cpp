@@ -1229,8 +1229,9 @@ void StringValueScanner::Flush(DataChunk &insert_chunk) {
 					}
 				}
 				result.borked_rows.insert(line_error++);
-				D_ASSERT(state_machine->options.ignore_errors.GetValue());
-				// We are ignoring errors. We must continue but ignoring borked-rows
+				// Either we are ignoring errors, or the error waits for the line counts of the earlier boundaries
+				D_ASSERT(state_machine->options.ignore_errors.GetValue() || error_handler->AnyErrors());
+				// We must continue but ignoring borked-rows
 				for (; line_error < parse_chunk.size(); line_error++) {
 					if (!inserted_validity.IsValid(line_error) && parse_validity.IsValid(line_error)) {
 						result.borked_rows.insert(line_error);

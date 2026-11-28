@@ -43,7 +43,7 @@ SELECT * FROM m ORDER BY i;
 1	{'x': 1, 'c': 7}
 2	{'x': 1, 'c': 7}
 
-# FIXME: the replay of an ALTER binds no default, so the tables forget their macros (duckdblabs/bot-issue-tracker#619)
+# FIXME: the replay of ADD COLUMN binds no default, so the tables forget their macros (duckdblabs/bot-issue-tracker#619)
 statement ok
 CREATE MACRO two() AS 2;
 

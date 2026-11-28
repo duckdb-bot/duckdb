@@ -80,10 +80,13 @@ statement ok
 CREATE TYPE mood AS ENUM ('ok', 'sad');
 
 statement ok
-CREATE TYPE tone AS ENUM ('low', 'high');
+CREATE SCHEMA other;
 
 statement ok
-CREATE TABLE k (m mood, s STRUCT(x INT, y INT, t tone));
+CREATE TYPE other.tone AS ENUM ('low', 'high');
+
+statement ok
+CREATE TABLE k (m mood, s STRUCT(x INT, y INT, t other.tone[]));
 
 statement ok
 ALTER TABLE k ADD COLUMN s.z INT;
@@ -94,20 +97,7 @@ DROP TYPE mood;
 table "k" depends on type "mood"
 
 statement error
-DROP TYPE tone;
-----
-table "k" depends on type "tone"
-
-statement ok
-ALTER TABLE k RENAME COLUMN s.x TO w;
-
-statement error
-DROP TYPE mood;
-----
-table "k" depends on type "mood"
-
-statement error
-DROP TYPE tone;
+DROP TYPE other.tone;
 ----
 table "k" depends on type "tone"
 
@@ -120,7 +110,20 @@ DROP TYPE mood;
 table "k" depends on type "mood"
 
 statement error
-DROP TYPE tone;
+DROP TYPE other.tone;
+----
+table "k" depends on type "tone"
+
+statement ok
+ALTER TABLE k RENAME COLUMN s.x TO w;
+
+statement error
+DROP TYPE mood;
+----
+table "k" depends on type "mood"
+
+statement error
+DROP TYPE other.tone;
 ----
 table "k" depends on type "tone"
 
@@ -149,17 +152,17 @@ DROP TYPE mood;
 table "k" depends on type "mood"
 
 statement error
-DROP TYPE tone;
+DROP TYPE other.tone;
 ----
 table "k" depends on type "tone"
 
 statement ok
-INSERT INTO k VALUES ('sad', {'w': 1, 't': 'high', 'z': 3});
+INSERT INTO k VALUES ('sad', {'w': 1, 't': ['high'], 'z': 3});
 
 query II
 SELECT * FROM k;
 ----
-sad	{'w': 1, 't': high, 'z': 3}
+sad	{'w': 1, 't': [high], 'z': 3}
 
 query II
 SELECT * FROM m ORDER BY i;

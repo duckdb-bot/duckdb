@@ -87,6 +87,10 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownAggregate(unique_ptr<Logical
 			// Keep volatile evaluation counts and the rows seen by throwing group expressions unchanged.
 			continue;
 		}
+		if (!KeepsEqualValuesTogether(*f.filter)) {
+			// a filter that tells equal values apart would remove only some rows of a group
+			continue;
+		}
 		// no aggregate! we can push this down
 		// rewrite any group bindings within the filter
 		f.filter = ReplaceGroupBindings(aggr, std::move(f.filter));

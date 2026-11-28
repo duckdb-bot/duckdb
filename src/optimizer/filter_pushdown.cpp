@@ -1,6 +1,13 @@
 #include "duckdb/optimizer/filter_pushdown.hpp"
 #include "duckdb/optimizer/filter_combiner.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
+#include "duckdb/planner/expression/bound_between_expression.hpp"
+#include "duckdb/planner/expression/bound_columnref_expression.hpp"
+#include "duckdb/planner/expression/bound_comparison_expression.hpp"
+#include "duckdb/planner/expression/bound_conjunction_expression.hpp"
+#include "duckdb/planner/expression/bound_function_expression.hpp"
+#include "duckdb/planner/expression/bound_operator_expression.hpp"
+#include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/planner/operator/logical_any_join.hpp"
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
 #include "duckdb/planner/operator/logical_filter.hpp"
@@ -285,6 +292,69 @@ void FilterPushdown::RewriteChild(LogicalOperator &op, idx_t child_idx) {
 	op.children[child_idx] = Rewrite(std::move(op.children[child_idx]));
 	LogicalOperatorVisitor::RemapProjectionMap(*projection_map, child_bindings_before,
 	                                           op.children[child_idx]->GetColumnBindings());
+}
+
+//! Whether the filter only compares columns with constants or tests them for NULL, also negated or combined
+static bool ComparesColumnsWithConstants(const Expression &filter) {
+	auto is_column = [](const Expression &expr) {
+		return expr.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF;
+	};
+	switch (filter.GetExpressionType()) {
+	case ExpressionType::CONJUNCTION_AND:
+	case ExpressionType::CONJUNCTION_OR:
+		for (auto &child : filter.Cast<BoundConjunctionExpression>().GetChildren()) {
+			if (!ComparesColumnsWithConstants(*child)) {
+				return false;
+			}
+		}
+		return true;
+	case ExpressionType::COMPARE_BETWEEN: {
+		auto &between = filter.Cast<BoundFunctionExpression>();
+		return is_column(BoundBetweenExpression::Input(between)) &&
+		       BoundBetweenExpression::LowerBound(between).IsFoldable() &&
+		       BoundBetweenExpression::UpperBound(between).IsFoldable();
+	}
+	case ExpressionType::COMPARE_IN:
+	case ExpressionType::COMPARE_NOT_IN: {
+		auto &children = filter.Cast<BoundOperatorExpression>().GetChildren();
+		if (!is_column(*children[0])) {
+			return false;
+		}
+		for (idx_t i = 1; i < children.size(); i++) {
+			if (!children[i]->IsFoldable()) {
+				return false;
+			}
+		}
+		return true;
+	}
+	case ExpressionType::OPERATOR_IS_NULL:
+	case ExpressionType::OPERATOR_IS_NOT_NULL:
+		return is_column(*filter.Cast<BoundOperatorExpression>().GetChildren()[0]);
+	case ExpressionType::OPERATOR_NOT:
+		return ComparesColumnsWithConstants(*filter.Cast<BoundOperatorExpression>().GetChildren()[0]);
+	default:
+		break;
+	}
+	if (!BoundComparisonExpression::IsComparison(filter)) {
+		return false;
+	}
+	auto &children = filter.Cast<BoundFunctionExpression>().GetChildren();
+	return children.size() == 2 && ((is_column(*children[0]) && children[1]->IsFoldable()) ||
+	                                (is_column(*children[1]) && children[0]->IsFoldable()));
+}
+
+bool FilterPushdown::KeepsEqualValuesTogether(const Expression &filter) {
+	if (ComparesColumnsWithConstants(filter)) {
+		return true;
+	}
+	// other filters push down only when equal values of every column they read are known to be identical
+	bool keeps_equal_values_together = true;
+	ExpressionIterator::VisitExpression<BoundColumnRefExpression>(filter, [&](const BoundColumnRefExpression &col) {
+		if (!col.GetReturnType().EqualValuesAreIdentical()) {
+			keeps_equal_values_together = false;
+		}
+	});
+	return keeps_equal_values_together;
 }
 
 void FilterPushdown::Filter::ExtractBindings() {

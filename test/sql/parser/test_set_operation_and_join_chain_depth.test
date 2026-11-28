@@ -178,6 +178,17 @@ FROM query('WITH c AS (SELECT 1 FROM t' || repeat(', t', 59) || ', (SELECT 1 FRO
 ----
 <REGEX>:Parser Error.*Max expression depth.*
 
+# the third of five tables has three levels above it
+query I
+FROM query('WITH c AS (SELECT 1 FROM t, t, (SELECT 1 FROM t' || repeat(', t', 97) || '), t, t) SELECT 42');
+----
+42
+
+statement error
+FROM query('WITH c AS (SELECT 1 FROM t, t, (SELECT 1 FROM t' || repeat(', t', 98) || '), t, t) SELECT 42');
+----
+<REGEX>:Parser Error.*Max expression depth.*
+
 # the second operand is as deep as the first, here with two levels above it
 query I
 FROM query('WITH c AS (SELECT 1 FROM t JOIN (SELECT 1 FROM t' || repeat(', t', 98) || ') ON true JOIN t ON true) SELECT 42');

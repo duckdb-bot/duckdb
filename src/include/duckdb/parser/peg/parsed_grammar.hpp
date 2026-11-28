@@ -42,7 +42,8 @@ enum class ExpressionDepthKind : uint8_t {
 	CHAIN,
 	//! as CHAIN, for repetitions that nest query nodes or table references, like chains of INTERSECT and of joins.
 	//! This kind and the two below count towards a depth of their own, next to the depth of the expressions. Their
-	//! rules nest left deep and transform their operands in order, so an operand counts the levels from its own on
+	//! rules nest left deep, and their transforms take the first operand and then every repetition as one child
+	//! each, in that order, so that an operand counts the levels from its own on
 	QUERY_CHAIN,
 	//! one level per element after the first of the rule's comma separated list, like the tables of a FROM clause
 	QUERY_LIST,

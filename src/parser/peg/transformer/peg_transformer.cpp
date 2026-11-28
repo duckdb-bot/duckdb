@@ -217,7 +217,8 @@ arena_ptr<TransformResultValue> TransformStack::ExecuteFrame(TransformStackFrame
 	if (!child) {
 		return step.TakeResult();
 	}
-	if (frame.expression_depth_weight && transformer.CountsQueryDepth(frame.rule)) {
+	// a chain of query nodes or table references keeps its last level until its frame is done
+	if (frame.expression_depth_weight > 1 && transformer.CountsQueryDepth(frame.rule)) {
 		StartChainOperand(frame, child->parse_result);
 	}
 	PushFrame(*child);
@@ -384,6 +385,7 @@ static idx_t CountSetOperationLinks(ParseResult &parse_result) {
 }
 
 void TransformStack::StartChainOperand(TransformStackFrame &frame, ParseResult &operand) {
+	D_ASSERT(frame.expression_depth_weight > 1);
 	// the first two operands share the innermost node, a later operand starts a node above the one before it
 	auto operand_idx = frame.chain_operand_count++;
 	bool above_previous_node = operand_idx > 1;
@@ -392,8 +394,8 @@ void TransformStack::StartChainOperand(TransformStackFrame &frame, ParseResult &
 		above_previous_node = above_previous_node && !ExtendsUnion(union_kind, frame.chain_union_kind);
 		frame.chain_union_kind = union_kind;
 	}
-	// the node below this operand no longer counts, the last level stays until the frame is done
-	if (above_previous_node && frame.expression_depth_weight > 1) {
+	if (above_previous_node) {
+		// the node below this operand no longer counts
 		frame.expression_depth_weight--;
 		transformer.ExitExpression(1, true);
 	}

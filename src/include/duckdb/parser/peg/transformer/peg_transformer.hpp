@@ -498,9 +498,9 @@ struct TransformStackFrame {
 	//! How much this frame adds to the expression depth while it is on the stack. A chain of query nodes or table
 	//! references gives up a level whenever its next operand has one level less above it
 	idx_t expression_depth_weight = 0;
-	//! How many operands a chain of query nodes or table references has started to transform
+	//! How many operands a chain of query nodes or table references has started while it had a level to give up
 	idx_t chain_operand_count = 0;
-	//! Which UNION the last started operand of a chain of set operations belongs to
+	//! Which UNION the last of these operands belongs to, for a chain of set operations
 	uint8_t chain_union_kind = 0;
 	//! Rewind process storage to this point after destroying the frame.
 	ArenaAllocator::Position process_arena_position;
@@ -529,7 +529,8 @@ public:
 private:
 	void PushFrame(TransformInput input);
 	void PopFrame();
-	//! Lowers the weight of a chain of query nodes or table references to the levels above its next operand
+	//! Lowers the weight of a chain of query nodes or table references that has more than one level left to the
+	//! levels above its next operand
 	void StartChainOperand(TransformStackFrame &frame, ParseResult &operand);
 	void InitializeFrame(TransformStackFrame &frame);
 	arena_ptr<TransformResultValue> ExecuteFrame(TransformStackFrame &frame);

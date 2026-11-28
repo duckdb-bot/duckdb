@@ -30,6 +30,16 @@ template <typename T, typename ExceptionT>
 struct is_checked_integer<CheckedInteger<T, ExceptionT>> : std::true_type {};
 } // namespace internal
 
+//! Whether TA, TB and TR are one built-in integer type, whose arithmetic can be computed in wrapping_integer_t
+template <class TA, class TB, class TR>
+struct is_integer_arithmetic
+    : std::integral_constant<bool, std::is_integral<TR>::value && !std::is_same<TR, bool>::value &&
+                                       std::is_same<TA, TR>::value && std::is_same<TB, TR>::value> {};
+
+//! The unsigned type in which arithmetic on the integer type T wraps around instead of overflowing
+template <class T>
+using wrapping_integer_t = typename std::common_type<typename std::make_unsigned<T>::type, unsigned>::type;
+
 //! Returns the PhysicalType for the given type
 template <class T>
 PhysicalType GetTypeId() {

@@ -1,0 +1,89 @@
+# name: test/sql/function/numeric/unchecked_arithmetic_on_filtered_dictionary.test
+# description: Arithmetic that needs no overflow check for the filtered rows is defined for the other rows of a dictionary
+# group: [numeric]
+
+load {TEST_DIR}/unchecked_arithmetic_on_filtered_dictionary.db
+
+statement ok
+SET threads = 1;
+
+foreach type BIGINT INTEGER
+
+statement ok
+CREATE OR REPLACE TABLE keys(k {type} USING COMPRESSION RLE);
+
+# a third of the runs holds the smallest value of the type, which the filters below remove
+statement ok
+INSERT INTO keys
+SELECT CASE (i // 64) % 3
+       WHEN 0 THEN -490
+       WHEN 1 THEN -400
+       ELSE CAST(-(1::HUGEINT << (CASE '{type}' WHEN 'BIGINT' THEN 63 ELSE 31 END)) AS {type}) END
+FROM range(65536) r(i);
+
+statement ok
+CHECKPOINT;
+
+query II
+SELECT k - 1, count(*) FROM keys WHERE k BETWEEN -490 AND -400 GROUP BY ALL ORDER BY ALL;
+----
+-491	21888
+-401	21824
+
+query II
+SELECT k + (-1), count(*) FROM keys WHERE k BETWEEN -490 AND -400 GROUP BY ALL ORDER BY ALL;
+----
+-491	21888
+-401	21824
+
+query II
+SELECT k * 3, count(*) FROM keys WHERE k BETWEEN -490 AND -400 GROUP BY ALL ORDER BY ALL;
+----
+-1470	21888
+-1200	21824
+
+# the smallest value itself still overflows with an error
+statement error
+SELECT k - 1 FROM keys WHERE k < -490;
+----
+Overflow in subtraction
+
+statement ok
+CREATE OR REPLACE TABLE keys(k {type} USING COMPRESSION RLE);
+
+# and the same with the largest value
+statement ok
+INSERT INTO keys
+SELECT CASE (i // 64) % 3
+       WHEN 0 THEN 400
+       WHEN 1 THEN 490
+       ELSE CAST((1::HUGEINT << (CASE '{type}' WHEN 'BIGINT' THEN 63 ELSE 31 END)) - 1 AS {type}) END
+FROM range(65536) r(i);
+
+statement ok
+CHECKPOINT;
+
+query II
+SELECT k + 1, count(*) FROM keys WHERE k BETWEEN 400 AND 490 GROUP BY ALL ORDER BY ALL;
+----
+401	21888
+491	21824
+
+query II
+SELECT k - (-1), count(*) FROM keys WHERE k BETWEEN 400 AND 490 GROUP BY ALL ORDER BY ALL;
+----
+401	21888
+491	21824
+
+query II
+SELECT k * 3, count(*) FROM keys WHERE k BETWEEN 400 AND 490 GROUP BY ALL ORDER BY ALL;
+----
+1200	21888
+1470	21824
+
+statement error
+SELECT k + 1 FROM keys WHERE k > 490;
+----
+Overflow in addition
+
+endloop

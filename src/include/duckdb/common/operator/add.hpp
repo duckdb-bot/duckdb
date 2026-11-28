@@ -22,7 +22,13 @@ struct BignumArithmeticState;
 struct AddOperator {
 	template <class TA, class TB, class TR>
 	static inline TR Operation(TA left, TB right) {
-		return left + right;
+		if constexpr (is_integer_arithmetic<TA, TB, TR>::value) {
+			// the callers rule out an overflow for the rows they use, for any other row the result wraps around
+			using WRAPPING = wrapping_integer_t<TR>;
+			return static_cast<TR>(static_cast<WRAPPING>(left) + static_cast<WRAPPING>(right));
+		} else {
+			return left + right;
+		}
 	}
 	//! BIGNUM-backed values allocate their result in the heap
 	DUCKDB_API static bignum_t Operation(bignum_t left, bignum_t right, StringHeap &heap, BignumArithmeticState &state);

@@ -1,0 +1,105 @@
+# name: test/sql/storage/bc/rejected_type_parameters_v1_5.test
+# description: A cast that v1.5 stored with type parameters its type does not accept can be written back in the format of the file
+# group: [bc]
+
+# data/storage/rejected_type_parameters_v1_5.db.gz was written by DuckDB v1.5.6 with storage version v1.5.1. Its views
+# w and w_text and its macro m cast to DECIMAL(18.0, 3.0) and DECIMAL('18', '3') inside an argument that the macro
+# keep_one drops, so the casts are stored and never bound
+require vector_size 2048
+
+unzip data/storage/rejected_type_parameters_v1_5.db.gz {TEST_DIR}/rejected_type_parameters_v1_5.db
+
+statement ok
+ATTACH '{TEST_DIR}/rejected_type_parameters_v1_5.db' AS old
+
+query I
+SELECT sql FROM duckdb_views() WHERE database_name = 'old' ORDER BY view_name
+----
+CREATE VIEW w AS SELECT "old".keep_one(CAST(1 AS DECIMAL(18.0, 3.0))) AS x;
+CREATE VIEW w_text AS SELECT "old".keep_one(CAST(1 AS DECIMAL('18', '3'))) AS x;
+
+# a checkpoint writes the views and the macro back in the v1.5 format
+statement ok
+INSERT INTO old.log VALUES ('written after the reattach')
+
+statement ok
+CHECKPOINT old
+
+statement ok
+DETACH old
+
+statement ok
+ATTACH '{TEST_DIR}/rejected_type_parameters_v1_5.db' AS old
+
+query I
+SELECT sql FROM duckdb_views() WHERE database_name = 'old' ORDER BY view_name
+----
+CREATE VIEW w AS SELECT "old".keep_one(CAST(1 AS DECIMAL(18.0, 3.0))) AS x;
+CREATE VIEW w_text AS SELECT "old".keep_one(CAST(1 AS DECIMAL('18', '3'))) AS x;
+
+query III
+SELECT w.x, w_text.x, old.main.m() FROM old.w, old.w_text
+----
+1	1	1
+
+query I
+SELECT count(*) FROM old.log
+----
+2
+
+statement ok
+DETACH old
+
+# data/storage/rejected_type_parameters_v1_0.db.gz was written by DuckDB v1.5.6 with storage version v1.0.0, which
+# stores such a target as a USER type. Its views cast to DECIMAL(0, 3), DECIMAL('foo') and ENUM('a', 'a')
+unzip data/storage/rejected_type_parameters_v1_0.db.gz {TEST_DIR}/rejected_type_parameters_v1_0.db
+
+statement ok
+ATTACH '{TEST_DIR}/rejected_type_parameters_v1_0.db' AS old
+
+query I
+SELECT sql FROM duckdb_views() WHERE database_name = 'old' ORDER BY view_name
+----
+CREATE VIEW w_enum AS SELECT "old".keep_one(CAST(1 AS ENUM('a', 'a'))) AS x;
+CREATE VIEW w_text AS SELECT "old".keep_one(CAST(1 AS DECIMAL('foo'))) AS x;
+CREATE VIEW w_width AS SELECT "old".keep_one(CAST(1 AS DECIMAL(0, 3))) AS x;
+
+statement ok
+INSERT INTO old.log VALUES ('written after the reattach')
+
+statement ok
+CHECKPOINT old
+
+statement ok
+DETACH old
+
+statement ok
+ATTACH '{TEST_DIR}/rejected_type_parameters_v1_0.db' AS old
+
+query I
+SELECT sql FROM duckdb_views() WHERE database_name = 'old' ORDER BY view_name
+----
+CREATE VIEW w_enum AS SELECT "old".keep_one(CAST(1 AS ENUM('a', 'a'))) AS x;
+CREATE VIEW w_text AS SELECT "old".keep_one(CAST(1 AS DECIMAL('foo'))) AS x;
+CREATE VIEW w_width AS SELECT "old".keep_one(CAST(1 AS DECIMAL(0, 3))) AS x;
+
+query III
+SELECT w_enum.x, w_text.x, w_width.x FROM old.w_enum, old.w_text, old.w_width
+----
+1	1	1
+
+query I
+SELECT count(*) FROM old.log
+----
+2
+
+# the casts are still refused where they are bound
+statement error
+SELECT 1::DECIMAL(18.0, 3.0)
+----
+does not accept type parameters
+
+statement error
+SELECT 1::DECIMAL(0, 3)
+----
+width must be at least 1

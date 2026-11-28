@@ -1,5 +1,6 @@
 #include "duckdb/parser/expression/cast_expression.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
+#include "duckdb/common/error_data.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/serializer/serializer.hpp"
 #include "duckdb/common/serializer/deserializer.hpp"
@@ -31,6 +32,23 @@ string CastExpression::ToString() const {
 	return ToString<CastExpression, ParsedExpression>(*this);
 }
 
+// The target of a stored cast as a type, for the storage versions that store it that way
+static LogicalType StoredCastTarget(const TypeExpression &cast_type) {
+	try {
+		return UnboundType::TryDefaultBind(cast_type);
+	} catch (const std::exception &ex) {
+		auto error_type = ErrorData(ex).Type();
+		if (Exception::InvalidatesDatabase(error_type) || error_type == ExceptionType::INTERNAL ||
+		    error_type == ExceptionType::OUT_OF_MEMORY || error_type == ExceptionType::INTERRUPT) {
+			// binding allocates, and a failure to allocate is not a failure to bind
+			throw;
+		}
+		// the type does not accept these parameters, so v1.5 stored this cast without ever binding it, and it
+		// stays the unbound type that v1.5 wrote
+		return LogicalType::UNBOUND(cast_type.Copy());
+	}
+}
+
 void CastExpression::Serialize(Serializer &serializer) const {
 	ParsedExpression::Serialize(serializer);
 	serializer.WritePropertyWithDefault<unique_ptr<ParsedExpression>>(200, "child", child);
@@ -39,7 +57,7 @@ void CastExpression::Serialize(Serializer &serializer) const {
 		// unbound type: below v1.5.0 an unbound type degrades to the legacy USER type, whose modifiers are bare
 		// values, so a named modifier such as a VARCHAR collation would be lost.
 		D_ASSERT(cast_type);
-		serializer.WriteProperty<LogicalType>(201, "cast_type", UnboundType::TryDefaultBind(*cast_type));
+		serializer.WriteProperty<LogicalType>(201, "cast_type", StoredCastTarget(*cast_type));
 	}
 	serializer.WritePropertyWithDefault<bool>(202, "try_cast", try_cast);
 	if (serializer.ShouldSerialize(StorageVersion::V2_0_0)) {

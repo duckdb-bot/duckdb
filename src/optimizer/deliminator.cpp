@@ -225,6 +225,12 @@ bool Deliminator::RemoveJoinWithDelimGet(LogicalComparisonJoin &delim_join, cons
 		}
 		auto &delim_colref = delim_side.Cast<BoundColumnRefExpression>();
 		auto &other_colref = other_side.Cast<BoundColumnRefExpression>();
+		for (auto &replacement : replacement_bindings) {
+			if (replacement.old_binding == delim_colref.Binding()) {
+				// a column that is compared twice leaves another column of the DelimGet without a replacement
+				return false;
+			}
+		}
 		replacement_bindings.emplace_back(delim_colref.Binding(), other_colref.Binding());
 
 		// Only add IS NOT NULL filter for regular equality/inequality comparisons

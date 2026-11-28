@@ -20,12 +20,26 @@ CREATE VIEW pivot_row AS SELECT * FROM (VALUES (1, 2)) AS t(k, j) PIVOT (count(*
 statement ok
 CREATE VIEW pivot_exact AS SELECT * FROM (VALUES (1)) AS t(k) PIVOT (count(*) FOR k IN (1234567890123456789012345678901234567.8));
 
+# digit separators are not part of the number
+statement ok
+CREATE VIEW pivot_separators AS SELECT * FROM (VALUES (1)) AS t(k) PIVOT (count(*) FOR k IN (12_345_678_901_234_567_890_123_456_789_012_345_678.5));
+
+statement ok
+CREATE VIEW pivot_fraction_separators AS SELECT * FROM (VALUES (1)) AS t(k) PIVOT (count(*) FOR k IN (0.12345678_901234567890123456789012345678));
+
 # the macro drops its argument, so the cast to a type that does not exist is stored without being bound
 statement ok
 CREATE MACRO keep_one(x) AS 1;
 
 statement ok
 CREATE VIEW modifier_wide AS SELECT keep_one(1::unknown_type(123456789012345678901234567890123456789.0, 1234567890123456789012345678901234567.8)) AS x;
+
+statement ok
+CREATE VIEW modifier_separators AS SELECT keep_one(1::unknown_type(12_345_678_901_234_567_890_123_456_789_012_345_678.5)) AS x;
+
+# a plain constant is written with the same value
+statement ok
+CREATE VIEW constant_separators AS SELECT 12_345_678_901_234_567_890_123_456_789_012_345_678.5 AS c;
 
 statement ok
 CREATE TABLE t (s INTEGER);
@@ -40,11 +54,15 @@ ALTER TABLE t ALTER s SET TYPE INTEGER USING keep_one(s::unknown_type(1234567890
 restart
 
 query IIII
-SELECT view_name, regexp_extract(sql, '-?[0-9.]+e\+38'), contains(sql, '123456789012345678901234567890123456789'), contains(sql, '1234567890123456789012345678901234567.8') FROM duckdb_views() WHERE NOT internal ORDER BY view_name
+SELECT view_name, regexp_extract(sql, '-?[0-9.]+e\+[0-9]+'), contains(sql, '123456789012345678901234567890123456789'), contains(sql, '1234567890123456789012345678901234567.8') FROM duckdb_views() WHERE NOT internal ORDER BY view_name
 ----
+constant_separators	1.2345678901234568e+37	false	false
+modifier_separators	1.2345678901234568e+37	false	false
 modifier_wide	1.2345678901234568e+38	false	true
 pivot_exact	(empty)	false	true
+pivot_fraction_separators	(empty)	false	false
 pivot_row	-1.2345678901234568e+38	false	false
+pivot_separators	1.2345678901234568e+37	false	false
 pivot_wide	1.2345678901234568e+38	false	false
 
 query I
@@ -62,10 +80,20 @@ SELECT column_name FROM (DESCRIBE pivot_exact)
 ----
 1234567890123456789012345678901234567.8
 
-query II
-SELECT (SELECT x FROM modifier_wide), (SELECT s FROM t)
+query I
+SELECT column_name FROM (DESCRIBE pivot_separators)
 ----
-1	8
+1.2345678901234568e+37
+
+query I
+SELECT column_name FROM (DESCRIBE pivot_fraction_separators)
+----
+0.12345678901234568
+
+query III
+SELECT (SELECT x FROM modifier_wide), (SELECT s FROM t), (SELECT c::VARCHAR FROM constant_separators)
+----
+1	8	1.2345678901234568e+37
 
 # entries that go from the statement into a checkpoint
 statement ok
@@ -80,13 +108,17 @@ CHECKPOINT
 restart
 
 query III
-SELECT view_name, regexp_extract(sql, '-?[0-9.]+e\+38'), contains(sql, '123456789012345678901234567890123456789') OR contains(sql, '987654321098765432109876543210987654321') FROM duckdb_views() WHERE NOT internal ORDER BY view_name
+SELECT view_name, regexp_extract(sql, '-?[0-9.]+e\+[0-9]+'), contains(sql, '123456789012345678901234567890123456789') OR contains(sql, '987654321098765432109876543210987654321') FROM duckdb_views() WHERE NOT internal ORDER BY view_name
 ----
+constant_separators	1.2345678901234568e+37	false
 modifier_checkpointed	9.876543210987655e+38	false
+modifier_separators	1.2345678901234568e+37	false
 modifier_wide	1.2345678901234568e+38	false
 pivot_checkpointed	9.876543210987655e+38	false
 pivot_exact	(empty)	false
+pivot_fraction_separators	(empty)	false
 pivot_row	-1.2345678901234568e+38	false
+pivot_separators	1.2345678901234568e+37	false
 pivot_wide	1.2345678901234568e+38	false
 
 query I

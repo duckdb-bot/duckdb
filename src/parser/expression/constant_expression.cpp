@@ -1,5 +1,6 @@
 #include "duckdb/parser/expression/constant_expression.hpp"
 
+#include "duckdb/common/types/bignum_decimal.hpp"
 #include "duckdb/common/types/decimal.hpp"
 #include "duckdb/common/types/value.hpp"
 
@@ -17,8 +18,14 @@ string ConstantExpression::ToString() const {
 }
 
 Value ConstantExpression::GetValueForSerialization() const {
+	auto value = literal.ToValue();
+	auto &type = value.type();
+	if (type.id() != LogicalTypeId::DECIMAL || !Decimal::IsWide(DecimalType::GetWidth(type))) {
+		return value;
+	}
 	// the Value form is written for storage versions before v2.0.0, whose engines type a wider literal as DOUBLE
-	return literal.ToValue(Decimal::MAX_WIDTH_INT128);
+	const auto unscaled = value.GetValueUnsafe<bignum_t>();
+	return Value::DOUBLE(DecimalHelper<bignum_t>::ToDouble(unscaled, DecimalType::GetScale(type)));
 }
 
 unique_ptr<ParsedExpression> ConstantExpression::DeserializeConstant(const Value &value, Literal literal) {

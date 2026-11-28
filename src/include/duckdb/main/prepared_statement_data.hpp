@@ -58,6 +58,8 @@ public:
 
 public:
 	void CheckParameterCount(idx_t parameter_count);
+	//! Whether a setting or the search path differs from the one that the statement was bound under
+	bool SettingsChanged(ClientContext &context) const;
 	//! Whether or not the prepared statement data requires the query to rebound for the given parameters
 	bool RequireRebind(ClientContext &context, optional_ptr<identifier_map_t<BoundParameterData>> values);
 	//! Fill in missing parameter values from user variables

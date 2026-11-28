@@ -123,6 +123,26 @@ void PreparedStatementData::PopulateMissingParameterValues(ClientContext &contex
 	}
 }
 
+bool PreparedStatementData::SettingsChanged(ClientContext &context) const {
+	auto &client_settings = ClientConfig::GetConfig(context).user_settings;
+	auto &config = DBConfig::GetConfig(context);
+	if (client_setting_changes != client_settings.GetChangeCount() ||
+	    database_setting_changes != config.user_settings.GetChangeCount()) {
+		// a setting with its own setter changed, binding and planning can read any of them
+		return true;
+	}
+	auto &current_search_path = ClientData::Get(context).catalog_search_path->GetSetPaths();
+	if (!std::equal(search_path.begin(), search_path.end(), current_search_path.begin(), current_search_path.end(),
+	                SameSearchPathEntry)) {
+		// names are looked up through another search path than the one the statement was bound under
+		return true;
+	}
+	// the value of a setting differs from the one the statement was bound under
+	auto &current_settings = client_settings.GetSnapshot(config);
+	return settings_snapshot != current_settings &&
+	       (!settings_snapshot || !settings_snapshot->Equals(*current_settings));
+}
+
 bool PreparedStatementData::RequireRebind(ClientContext &context,
                                           optional_ptr<identifier_map_t<BoundParameterData>> values) {
 	identifier_map_t<BoundParameterData> empty_values;
@@ -140,23 +160,7 @@ bool PreparedStatementData::RequireRebind(ClientContext &context,
 		// parameters not yet bound: query always requires a rebind
 		return true;
 	}
-	auto &client_settings = ClientConfig::GetConfig(context).user_settings;
-	auto &config = DBConfig::GetConfig(context);
-	if (client_setting_changes != client_settings.GetChangeCount() ||
-	    database_setting_changes != config.user_settings.GetChangeCount()) {
-		// a setting with its own setter changed, binding and planning can read any of them
-		return true;
-	}
-	auto &current_search_path = ClientData::Get(context).catalog_search_path->GetSetPaths();
-	if (!std::equal(search_path.begin(), search_path.end(), current_search_path.begin(), current_search_path.end(),
-	                SameSearchPathEntry)) {
-		// names are looked up through another search path than the one the statement was bound under
-		return true;
-	}
-	auto &current_settings = client_settings.GetSnapshot(config);
-	if (settings_snapshot != current_settings &&
-	    (!settings_snapshot || !settings_snapshot->Equals(*current_settings))) {
-		// the value of a setting differs from the one the statement was bound under
+	if (SettingsChanged(context)) {
 		return true;
 	}
 	BoundParameterData variable_storage;

@@ -14,6 +14,11 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalPrepare &op) {
 		PhysicalPlanGenerator inner_planner(context);
 		op.prepared->physical_plan = inner_planner.PlanInternal(*op.children[0]);
 		op.prepared->types = op.prepared->physical_plan->Root().types;
+		if (op.prepared->SettingsChanged(context)) {
+			// a setting changed while the statement was planned, so its plan fits no state and is not kept
+			op.prepared->physical_plan.reset();
+			op.prepared->properties.always_require_rebind = true;
+		}
 	}
 	return Make<PhysicalPrepare>(op.name, std::move(op.prepared), op.estimated_cardinality);
 }

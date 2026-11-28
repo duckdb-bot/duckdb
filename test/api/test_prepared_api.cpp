@@ -1,6 +1,7 @@
 #include "catch.hpp"
 #include "test_helpers.hpp"
 #include "duckdb/catalog/catalog_search_path.hpp"
+#include "duckdb/execution/operator/helper/physical_set.hpp"
 #include "duckdb/main/client_data.hpp"
 #include "duckdb/planner/planner_extension.hpp"
 #include "duckdb/parser/peg/dialect_extension.hpp"
@@ -1072,6 +1073,70 @@ TEST_CASE("A prepared statement keeps its plan when its search path is set again
 	result = con.Query("EXECUTE type_name");
 	REQUIRE(CHECK_COLUMN(result, 0, {"[two]"}));
 	REQUIRE(rebinds.back());
+}
+
+//! A setting that is set once, while the next SELECT statement is about to be bound
+struct SetWhileBindingInfo : public PlannerExtensionInfo {
+	bool pending = false;
+	string name;
+	string value;
+};
+
+static void SetWhileBinding(PlannerExtensionInput &input, SQLStatement &statement) {
+	auto &info = static_cast<SetWhileBindingInfo &>(*input.info);
+	if (!info.pending || statement.type != StatementType::SELECT_STATEMENT) {
+		return;
+	}
+	info.pending = false;
+	PhysicalSet::SetVariable(input.context, Identifier(info.name), SetScope::AUTOMATIC, Value(info.value));
+}
+
+TEST_CASE("A statement that is prepared while a setting changes keeps no plan", "[api]") {
+	DBConfig config;
+	PlannerExtension extension;
+	auto info = make_shared_ptr<SetWhileBindingInfo>();
+	extension.planner_info = info;
+	extension.pre_bind_function = SetWhileBinding;
+	PlannerExtension::Register(config, extension);
+	DuckDB db(nullptr, &config);
+	Connection con(db);
+	auto recorder = make_shared_ptr<RebindRecorderState>();
+	con.context->GetContext().GetRegisteredState().Insert("rebind_recorder", recorder);
+	auto &rebinds = recorder->rebinds;
+
+	REQUIRE_NO_FAIL(con.Query("CREATE SCHEMA s1"));
+	REQUIRE_NO_FAIL(con.Query("CREATE SCHEMA s2"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TYPE s1.e AS ENUM ('one')"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TYPE s2.e AS ENUM ('two')"));
+
+	// the search path changes after the statement recorded it, and is set back before the statement runs
+	REQUIRE_NO_FAIL(con.Query("USE s1"));
+	info->name = "schema";
+	info->value = "s2";
+	info->pending = true;
+	REQUIRE_NO_FAIL(con.Query("PREPARE type_name AS SELECT enum_range(NULL::e)::VARCHAR"));
+	REQUIRE(!info->pending);
+	REQUIRE_NO_FAIL(con.Query("USE s1"));
+	auto result = con.Query("EXECUTE type_name");
+	REQUIRE(CHECK_COLUMN(result, 0, {"[one]"}));
+	REQUIRE(rebinds.back());
+
+	// a setting changes the same way, as another connection can change it for the database
+	info->name = "default_order";
+	info->value = "desc";
+	info->pending = true;
+	REQUIRE_NO_FAIL(con.Query("PREPARE ordered AS SELECT x FROM (VALUES (1), (2)) t(x) ORDER BY x"));
+	REQUIRE(!info->pending);
+	REQUIRE_NO_FAIL(con.Query("RESET default_order"));
+	result = con.Query("EXECUTE ordered");
+	REQUIRE(CHECK_COLUMN(result, 0, {1, 2}));
+	REQUIRE(rebinds.back());
+
+	// a statement that is prepared while nothing changes keeps its plan
+	REQUIRE_NO_FAIL(con.Query("PREPARE ordered AS SELECT x FROM (VALUES (1), (2)) t(x) ORDER BY x"));
+	result = con.Query("EXECUTE ordered");
+	REQUIRE(CHECK_COLUMN(result, 0, {1, 2}));
+	REQUIRE(!rebinds.back());
 }
 
 static atomic<idx_t> execute_pre_binds {0};

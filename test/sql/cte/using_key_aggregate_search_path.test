@@ -1,0 +1,78 @@
+# name: test/sql/cte/using_key_aggregate_search_path.test
+# description: USING KEY aggregates resolve functions where the other names of a view resolve
+# group: [cte]
+
+statement ok
+CREATE SCHEMA s
+
+statement ok
+CREATE MACRO s.f(x) AS x + 1
+
+statement ok
+CREATE MACRO f(x) AS x + 100
+
+statement ok
+CREATE VIEW s.v AS WITH RECURSIVE r(k, v) USING KEY (k, max(f(v)) AS v) AS (VALUES (1, 10) UNION ALL SELECT k + 1, v + 1 FROM r WHERE k < 2) SELECT * FROM r ORDER BY k
+
+query II
+SELECT * FROM s.v
+----
+1	11
+2	12
+
+# outside the view the session's search path applies
+query II
+WITH RECURSIVE r(k, v) USING KEY (k, max(f(v)) AS v) AS (VALUES (1, 10) UNION ALL SELECT k + 1, v + 1 FROM r WHERE k < 2) SELECT * FROM r ORDER BY k
+----
+1	110
+2	111
+
+statement ok
+ATTACH ':memory:' AS db
+
+statement ok
+CREATE MACRO db.g(x) AS x + 1
+
+statement ok
+CREATE VIEW db.v AS WITH RECURSIVE r(k, v) USING KEY (k, max(g(v)) AS v) AS (VALUES (1, 10) UNION ALL SELECT k + 1, v + 1 FROM r WHERE k < 2) SELECT * FROM r ORDER BY k
+
+query II
+SELECT * FROM db.v
+----
+1	11
+2	12
+
+statement error
+WITH RECURSIVE r(k, v) USING KEY (k, max(g(v)) AS v) AS (VALUES (1, 10) UNION ALL SELECT k + 1, v + 1 FROM r WHERE k < 2) SELECT * FROM r
+----
+Scalar Function with name g does not exist
+
+# a view depends on the macro its USING KEY aggregate calls
+statement ok
+SET enable_view_dependencies = true
+
+statement ok
+CREATE MACRO s.h(x) AS x + 2
+
+statement ok
+CREATE VIEW s.dep AS WITH RECURSIVE r(k, v) USING KEY (k, max(h(v)) AS v) AS (VALUES (1, 10) UNION ALL SELECT k + 1, v + 1 FROM r WHERE k < 2) SELECT * FROM r ORDER BY k
+
+statement error
+DROP MACRO s.h
+----
+depends on macro function
+
+statement ok
+SET enable_view_dependencies = false
+
+# the aggregates still see only the columns of the CTE, while its anchor may reference an outer column
+statement error
+SELECT * FROM (VALUES (7)) o(outer_col), LATERAL (WITH RECURSIVE r(k, v) USING KEY (k, max(v + outer_col) AS v) AS (VALUES (1, 10) UNION ALL SELECT k + 1, v + 1 FROM r WHERE k < 2) SELECT * FROM r) t
+----
+not found
+
+query III rowsort
+SELECT * FROM (VALUES (7)) o(outer_col), LATERAL (WITH RECURSIVE r(k, v) USING KEY (k, max(v) AS v) AS (VALUES (1, outer_col) UNION ALL SELECT k + 1, v + 1 FROM r WHERE k < 2) SELECT * FROM r) t
+----
+7	1	7
+7	2	8

@@ -1295,8 +1295,13 @@ unique_ptr<CatalogEntry> DuckTableEntry::ChangeColumnType(ClientContext &context
 			copy.SetType(info.target_type);
 			if (alter_table_type != AlterTableType::ALTER_COLUMN_TYPE && copy.HasDefaultValue()) {
 				auto new_default = copy.DefaultValue().Copy();
-				if (alter_table_type != AlterTableType::REMOVE_FIELD ||
-				    !DropFieldFromDefault(context, schema, *new_default, col.Type(), info.target_type)) {
+				bool remap_default = true;
+				if (alter_table_type == AlterTableType::REMOVE_FIELD) {
+					// without the built-in remap_struct a default that keeps the field stays as it is
+					bool dropped = DropFieldFromDefault(context, schema, *new_default, col.Type(), info.target_type);
+					remap_default = !dropped && DefaultCallsBuiltinFunction(context, schema, "remap_struct");
+				}
+				if (remap_default) {
 					// the stored default is not cast yet, the mapping is for the old type of the column
 					auto old_default = make_uniq<CastExpression>(col.Type(), std::move(new_default));
 					new_default = RemapStructDefault(std::move(old_default), info.target_type, info);

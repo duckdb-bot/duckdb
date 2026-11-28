@@ -110,7 +110,7 @@ statement ok
 ALTER TABLE t5 ALTER q SET TYPE INTEGER USING keep_one(q::missing_type);
 
 statement ok
-ALTER TABLE t5 ALTER r SET TYPE INTEGER USING keep_one(r::DECIMAL(50, 2));
+ALTER TABLE t5 ALTER r SET TYPE INTEGER USING keep_one(r::DECIMAL(1, 2));
 
 statement ok
 ALTER TABLE t5 ALTER s SET TYPE INTEGER USING keep_one(s::ENUM('a', 'a'));

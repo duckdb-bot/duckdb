@@ -1,0 +1,72 @@
+# name: test/optimizer/pushdown/throwing_filter_behind_volatile_filter_at_aggregate_and_window.test
+# description: A filter that can throw stays behind a volatile filter of the same HAVING or QUALIFY clause
+# group: [pushdown]
+
+statement ok
+CREATE TABLE bad AS SELECT 'bad' AS s;
+
+# random() < 0 removes every group before the cast sees it
+query I
+SELECT s FROM bad GROUP BY s HAVING random() < 0 AND s::DOUBLE > 0;
+----
+
+query I
+SELECT count(*) FROM (SELECT s FROM bad GROUP BY s HAVING random() < 0 AND s::DOUBLE > 0);
+----
+0
+
+# a volatile filter on an aggregate
+query I
+SELECT count(*) FROM (SELECT s FROM bad GROUP BY s HAVING random() < count(*) - 5 AND s::DOUBLE > 0);
+----
+0
+
+# more than one group column
+query I
+SELECT count(*) FROM (SELECT s, length(s) AS l FROM bad GROUP BY ALL HAVING random() < 0 AND s::DOUBLE > 0 AND l > 1);
+----
+0
+
+# and every row of a partition
+query I
+SELECT s FROM bad QUALIFY random() < 0 AND s::DOUBLE > 0 AND row_number() OVER (PARTITION BY s) = 1;
+----
+
+query I
+SELECT count(*) FROM (SELECT s, row_number() OVER (PARTITION BY s) AS rn FROM bad QUALIFY random() < 0 AND s::DOUBLE > 0);
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT s FROM bad QUALIFY random() < 0 AND s::DOUBLE > 0 AND sum(length(s)) OVER (PARTITION BY s) > 0);
+----
+0
+
+# groups and rows that pass the volatile filter still reach the cast
+statement error
+SELECT s FROM bad GROUP BY s HAVING random() < 2 AND s::DOUBLE > 0;
+----
+Could not convert string 'bad' to DOUBLE
+
+statement error
+SELECT s FROM bad QUALIFY random() < 2 AND s::DOUBLE > 0 AND row_number() OVER (PARTITION BY s) = 1;
+----
+Could not convert string 'bad' to DOUBLE
+
+statement ok
+CREATE TABLE numbers AS SELECT (i % 10)::VARCHAR AS s FROM range(100) t(i);
+
+query I
+SELECT count(*) FROM (SELECT s FROM numbers GROUP BY s HAVING random() < 2 AND s::DOUBLE > 4);
+----
+5
+
+query I
+SELECT count(*) FROM (SELECT s FROM numbers QUALIFY random() < 2 AND s::DOUBLE > 4 AND row_number() OVER (PARTITION BY s) = 1);
+----
+5
+
+query I
+SELECT count(*) FROM (SELECT s FROM numbers QUALIFY random() < 2 AND s::DOUBLE > 4 AND row_number() OVER (PARTITION BY s) <= 3);
+----
+15

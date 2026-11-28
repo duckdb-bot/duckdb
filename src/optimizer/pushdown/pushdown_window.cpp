@@ -229,8 +229,17 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownWindow(unique_ptr<LogicalOpe
 	}
 
 	const auto only_ranks = OnlyRanksWithoutArguments(window);
+	bool has_volatile_filter = false;
+	for (auto &filter : filters) {
+		has_volatile_filter = has_volatile_filter || filter->filter->IsVolatile();
+	}
 	vector<unique_ptr<Filter>> leftover_filters;
 	for (idx_t i = 0; i < filters.size(); i++) {
+		if (has_volatile_filter && filters.at(i)->filter->CanThrow()) {
+			// a volatile filter stays above, and a filter that can throw must not run on rows that it removes
+			leftover_filters.push_back(std::move(filters.at(i)));
+			continue;
+		}
 		// If a filter is on a partition in every window expression it can be pushed down.
 		vector<ColumnBinding> bindings;
 		ExtractFilterBindings(*filters.at(i)->filter, bindings);

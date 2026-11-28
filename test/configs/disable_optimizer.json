@@ -54,6 +54,12 @@
       ]
     },
     {
+      "reason": "Checks which filters the optimizer pushes below an aggregate or a window.",
+      "paths": [
+        "test/optimizer/pushdown/throwing_filter_behind_volatile_filter_at_aggregate_and_window_plan.test"
+      ]
+    },
+    {
       "reason": "Checks that the optimizer removed ORDER BY operators from the plan.",
       "paths": [
         "test/optimizer/remove_redundant_order.test"

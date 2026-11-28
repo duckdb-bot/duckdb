@@ -20,10 +20,16 @@ SELECT DATE '290309-12-21 (BC)'::{type};
 ----
 Conversion Error: timestamp field value out of range: "290309-12-21 (BC)"
 
-query III
-SELECT TRY_CAST(DATE '294248-01-01' AS {type}), DATE '294247-01-10'::{type} IS NOT NULL, DATE 'infinity'::{type} = 'infinity'::{type};
+query I
+SELECT TRY_CAST(DATE '294248-01-01' AS {type});
 ----
-NULL	true	true
+NULL
+
+# the first and the last date that fit, and the infinities
+query IIII
+SELECT DATE '290309-12-22 (BC)'::{type} = '290309-12-22 (BC) 00:00:00'::{type}, DATE '294247-01-10'::{type} = '294247-01-10 00:00:00'::{type}, DATE '-infinity'::{type} = '-infinity'::{type}, DATE 'infinity'::{type} = 'infinity'::{type};
+----
+true	true	true	true
 
 endloop
 
@@ -40,10 +46,20 @@ SELECT DATE '1677-09-21'::{type};
 ----
 Conversion Error: timestamp field value out of range: "1677-09-21"
 
-query III
-SELECT TRY_CAST(DATE '2262-04-12' AS {type}), DATE '2262-04-11'::{type} IS NOT NULL, DATE '1677-09-22'::{type} IS NOT NULL;
+query I
+SELECT TRY_CAST(DATE '2262-04-12' AS {type});
 ----
-NULL	true	true
+NULL
+
+query II
+SELECT DATE '1677-09-22'::{type} = '1677-09-22 00:00:00'::{type}, DATE '2262-04-11'::{type} = '2262-04-11 00:00:00'::{type};
+----
+true	true
+
+query II
+SELECT DATE '-infinity'::{type}::VARCHAR, DATE 'infinity'::{type}::VARCHAR;
+----
+-infinity	infinity
 
 endloop
 

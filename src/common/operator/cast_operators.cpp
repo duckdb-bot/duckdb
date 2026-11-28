@@ -1652,13 +1652,34 @@ bool TryCastErrorMessage::Operation(date_t input, timestamp_sec_t &result, CastP
 	return TryCastDateToTimestamp(input, result, parameters);
 }
 
-template <>
-timestamp_t Cast::Operation(date_t input) {
-	timestamp_t result;
-	if (!TryCast::Operation(input, result)) {
+//! Casts a date to a timestamp type, and throws that it is out of range when it does not fit
+template <class TIMESTAMP_TYPE>
+static TIMESTAMP_TYPE CastDateToTimestamp(date_t input) {
+	TIMESTAMP_TYPE result;
+	if (!TryCast::Operation<date_t, TIMESTAMP_TYPE>(input, result)) {
 		throw InvalidInputException(Timestamp::RangeError(Date::ToString(input)));
 	}
 	return result;
+}
+
+template <>
+timestamp_t Cast::Operation(date_t input) {
+	return CastDateToTimestamp<timestamp_t>(input);
+}
+
+template <>
+timestamp_ns_t Cast::Operation(date_t input) {
+	return CastDateToTimestamp<timestamp_ns_t>(input);
+}
+
+template <>
+timestamp_ms_t Cast::Operation(date_t input) {
+	return CastDateToTimestamp<timestamp_ms_t>(input);
+}
+
+template <>
+timestamp_sec_t Cast::Operation(date_t input) {
+	return CastDateToTimestamp<timestamp_sec_t>(input);
 }
 
 //===--------------------------------------------------------------------===//

@@ -3,10 +3,12 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/limits.hpp"
 #include "duckdb/common/types.hpp"
+#include "duckdb/common/types/date.hpp"
 #include "duckdb/common/types/hugeint.hpp"
 #include "duckdb/common/types/time.hpp"
 #include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/common/types/uhugeint.hpp"
+#include "duckdb/common/types/value.hpp"
 #include "duckdb/common/types/vector.hpp"
 #include "duckdb/common/vector.hpp"
 
@@ -397,4 +399,34 @@ TEST_CASE("Test nanoseconds of strings without fractional seconds", "[cast]") {
 	REQUIRE(Cast::Operation<string_t, timestamp_ns_t>(string_t(ts_str)).value == expected_ns);
 	REQUIRE(Cast::Operation<string_t, timestamp_tz_ns_t>(string_t(ts_str)).value == expected_ns);
 	REQUIRE(Cast::Operation<string_t, timestamp_ns_t>(string_t(frac_str)).value == expected_ns + 123456789);
+}
+
+TEST_CASE("Test casting a date outside the timestamp range", "[cast]") {
+	const auto past_micros = Date::FromDate(294248, 1, 1);
+	const auto past_nanos = Date::FromDate(2262, 4, 12);
+	const auto range_error = Catch::Contains("timestamp field value out of range");
+
+	REQUIRE_THROWS_WITH((Cast::Operation<date_t, timestamp_t>(past_micros)), range_error);
+	REQUIRE_THROWS_WITH((Cast::Operation<date_t, timestamp_ms_t>(past_micros)), range_error);
+	REQUIRE_THROWS_WITH((Cast::Operation<date_t, timestamp_sec_t>(past_micros)), range_error);
+	REQUIRE_THROWS_WITH((Cast::Operation<date_t, timestamp_ns_t>(past_nanos)), range_error);
+
+	// the getters of a value go through the same casts
+	REQUIRE_THROWS_WITH(Value::DATE(past_micros).GetValue<timestamp_t>(), range_error);
+	REQUIRE_THROWS_WITH(Value::DATE(past_micros).GetValue<timestamp_ms_t>(), range_error);
+	REQUIRE_THROWS_WITH(Value::DATE(past_micros).GetValue<timestamp_sec_t>(), range_error);
+	REQUIRE_THROWS_WITH(Value::DATE(past_nanos).GetValue<timestamp_ns_t>(), range_error);
+	REQUIRE_THROWS_WITH(Value::DATE(past_nanos).GetValue<timestamp_ns_t>(), Catch::Contains("2262-04-12"));
+
+	// the last dates that fit still convert
+	const auto last_micros = Date::FromDate(294247, 1, 10);
+	const auto last_nanos = Date::FromDate(2262, 4, 11);
+	const auto expected_micros = Timestamp::FromDatetime(last_micros, dtime_t(0));
+	REQUIRE(Value::DATE(last_micros).GetValue<timestamp_t>() == expected_micros);
+	REQUIRE(Value::DATE(last_micros).GetValue<timestamp_ms_t>().value ==
+	        expected_micros.value / Interval::MICROS_PER_MSEC);
+	REQUIRE(Value::DATE(last_micros).GetValue<timestamp_sec_t>().value ==
+	        expected_micros.value / Interval::MICROS_PER_SEC);
+	REQUIRE(Value::DATE(last_nanos).GetValue<timestamp_ns_t>().value ==
+	        Timestamp::FromDatetime(last_nanos, dtime_t(0)).value * Interval::NANOS_PER_MICRO);
 }

@@ -1,7 +1,9 @@
 # fmt: off
 
 import re
+import os
 import pytest
+import threading
 from conftest import ShellTest
 
 # Agent mode renders output for an AI coding agent that reads it through a pipe: a compact markdown table (no
@@ -295,6 +297,56 @@ def test_no_estimate_without_scans(shell):
     result = test.run()
     result.check_stdout("42")
     assert "estimate:" not in result.stderr
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs named pipes")
+def test_estimate_reads_a_pipe_once(shell, tmp_path):
+    # the estimate used to come from a second bind of the statement, which read a named pipe a second time and
+    # blocked on the open; it now comes from the plan of the bind that runs the statement, so the pipe is read once
+    fifo = tmp_path / "p.csv"
+    os.mkfifo(fifo)
+
+    def feed():
+        # opening a pipe for writing blocks until the shell opens it for reading
+        with open(fifo, "w") as pipe:
+            pipe.write("a,b\n1,2\n3,4\n")
+
+    writer = threading.Thread(target=feed, daemon=True)
+    writer.start()
+    test = agent_shell(shell).statement(f"SELECT count(*) FROM read_csv('{fifo}')")
+    result = test.run(timeout=120)
+    writer.join(timeout=10)
+    result.check_stdout("| count_star():BIGINT |\n|---|\n| 2 |")
+    assert "estimate:" not in result.stderr
+
+
+def test_estimate_counts_the_scans_a_join_owns(shell):
+    # the scan of a dependent subquery hangs off the delim join, not off its children; a positional join owns both
+    # of its inputs as children
+    test = (
+        agent_shell(shell)
+        .statement("SET delim_join_as_cte = false")
+        .statement("SELECT i, (SELECT max(j) FROM range(1000000) t(j) WHERE j < i) FROM range(2) r(i) ORDER BY i")
+        .statement("SELECT count(*) FROM range(1000000) a POSITIONAL JOIN range(1000000) b")
+    )
+    result = test.run()
+    result.check_stderr("estimate: ~1000002 rows read (range ~1000000, range ~2), ~2 rows returned")
+    result.check_stderr("estimate: ~2000000 rows read (range ~1000000, range ~1000000), ~1 rows returned")
+
+
+def test_estimate_without_optimizer(shell):
+    # without the optimizer the plan carries no estimates: the scans are asked for theirs, and the line has no rows
+    # returned part instead of a wrong 0
+    test = (
+        agent_shell(shell)
+        .statement("SET enable_optimizer = false")
+        .statement("SELECT count(*) FROM range(2000000)")
+        .statement("SELECT * FROM range(2000000) LIMIT 0")
+    )
+    result = test.run()
+    result.check_stderr("estimate: ~2000000 rows read (range ~2000000), ~1 rows returned")
+    assert result.stderr.rstrip().endswith("estimate: ~2000000 rows read (range ~2000000)")
+    assert "~0 rows returned" not in result.stderr
+
 
 def test_no_estimate_without_agent(shell):
     test = ShellTest(shell).statement("SELECT count(*) FROM range(1000)")

@@ -16,6 +16,8 @@
 #include "duckdb/common/unique_ptr.hpp"
 #include "duckdb/common/optional_ptr.hpp"
 #include "duckdb/parser/sql_statement.hpp"
+#include "duckdb/main/prepared_statement_data.hpp"
+#include "duckdb/main/client_context_state.hpp"
 #include "duckdb/main/query_result.hpp"
 #include "duckdb/common/atomic.hpp"
 #include "duckdb.hpp"
@@ -470,8 +472,13 @@ public:
 	void PrintAgentHelp(PrintOutput output, bool startup);
 	//! On a failed run through a pipe with no agent detected and no -agent/-no-agent given: point at -agent
 	void PrintExitHint(int rc);
-	//! Print the planner's estimate of what a statement will read and return to stderr (agent mode)
-	void PrintQueryEstimate(const duckdb::SQLStatement &statement);
+	//! Whether the statement planned next prints the planner's estimate of what it reads and returns (agent mode),
+	//! set before the statement runs and consumed by ShellEstimateState
+	bool estimate_pending = false;
+	//! Whether a statement of this type gets an estimate
+	static bool EstimatesStatement(duckdb::StatementType type);
+	//! Print the planner's estimate of what the planned statement will read and return to stderr (agent mode)
+	void PrintQueryEstimate(duckdb::PreparedStatementData &prepared);
 #if defined(_WIN32) || defined(WIN32)
 	static std::wstring Win32Utf8ToUnicode(const string &zText);
 	static std::wstring Win32Utf8ToUnicode(const char *) = delete;
@@ -528,6 +535,22 @@ struct PagerState {
 
 	optional_ptr<ShellState> state;
 	uint32_t win_console_cp_before_pager = 0;
+};
+
+//! Registered in the connection in agent mode. The planner hands over the plan of the statement about to run, so the
+//! estimate comes from the one bind the execution does. A second bind of the SQL would read an input that can only be
+//! read once, a named pipe, twice and block on the second open
+class ShellEstimateState : public duckdb::ClientContextState {
+public:
+	explicit ShellEstimateState(ShellState &state) : state(state) {
+	}
+
+	bool CanRequestRebind() override;
+	duckdb::RebindQueryInfo OnFinalizePrepare(duckdb::ClientContext &context, duckdb::PreparedStatementData &prepared,
+	                                          duckdb::PreparedStatementMode mode) override;
+
+private:
+	ShellState &state;
 };
 
 } // namespace duckdb_shell

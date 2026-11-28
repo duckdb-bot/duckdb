@@ -50,16 +50,16 @@ public:
 	//! Whether the function consumes a TABLE parameter: its input rows form one invocation,
 	//! so the ordinality numbering continues across them instead of restarting per row
 	bool table_input = false;
+	//! The table function
+	BoundTableFunction function;
+	//! Bind data of the function
+	cow_ptr<FunctionData> bind_data;
 
 	OrderPreservationType OperatorOrder() const override {
 		return function.order_preservation_type;
 	}
 
 private:
-	//! The table function
-	BoundTableFunction function;
-	//! Bind data of the function
-	cow_ptr<FunctionData> bind_data;
 	//! The set of column ids to fetch
 	vector<ColumnIndex> column_ids;
 	//! The projected-out column ids

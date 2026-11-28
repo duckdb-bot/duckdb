@@ -59,10 +59,11 @@
 #include "duckdb/parser/parser.hpp"
 #include "duckdb/parser/statement/explain_statement.hpp"
 #include "duckdb/parser/statement/multi_statement.hpp"
+#include "duckdb/execution/operator/scan/physical_table_scan.hpp"
+#include "duckdb/execution/operator/projection/physical_tableinout_function.hpp"
+#include "duckdb/execution/physical_plan_generator.hpp"
+#include "duckdb/main/client_context_state.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
-#include "duckdb/optimizer/optimizer.hpp"
-#include "duckdb/planner/operator/logical_get.hpp"
-#include "duckdb/planner/planner.hpp"
 #include "duckdb/common/local_file_system.hpp"
 #include "shell_progress_bar.hpp"
 #include "shell_prompt.hpp"
@@ -1124,12 +1125,16 @@ SuccessState ShellState::ExecuteSQL(const string &zSql) {
 			}
 
 			if (agent_mode_active) {
-				PrintQueryEstimate(*statement);
+				// the estimate is printed by ShellEstimateState from the plan of the bind the execution does
+				con.context->GetContext().GetRegisteredState().GetOrCreate<ShellEstimateState>("shell_estimate", *this);
+				estimate_pending = EstimatesStatement(statement->type);
 			}
 
 			// Reset before bind; the `_` replacement scan sets it to true if it fires.
 			last_result_referenced = false;
 			auto rc = ExecuteStatement(std::move(statement));
+			// a statement that failed before it was planned leaves the estimate pending
+			estimate_pending = false;
 			if (agent_mode_active) {
 				// keep stdout in step with the stderr progress/estimate lines when both go to the same pipe
 				fflush(out);
@@ -3560,108 +3565,121 @@ struct ScanEstimate {
 	idx_t rows;
 };
 
-//! Collect the scans of a plan: the table and table function scans that read data
-static void CollectScanEstimates(duckdb::ClientContext &context, duckdb::LogicalOperator &op,
-                                 vector<ScanEstimate> &scans) {
-	if (op.type == duckdb::LogicalOperatorType::LOGICAL_GET) {
-		auto &get = op.Cast<duckdb::LogicalGet>();
-		ScanEstimate scan;
-		auto table = get.GetTable();
-		scan.name =
-		    table ? table->name.GetIdentifierName() : StringUtil::Lower(get.function.GetName().GetIdentifierName());
-		scan.rows = get.EstimateCardinality(context);
-		scans.push_back(std::move(scan));
+//! Add the estimate of a scan, the plan's or the table function's own when the plan carries none
+static void AddScanEstimate(duckdb::ClientContext &context, const duckdb::BoundTableFunction &function,
+                            optional_ptr<const duckdb::FunctionData> bind_data, idx_t estimated_cardinality,
+                            vector<ScanEstimate> &scans) {
+	ScanEstimate scan;
+	auto table = function.get_table_entry ? function.get_table_entry(bind_data) : nullptr;
+	scan.name = table ? table->name.GetIdentifierName() : StringUtil::Lower(function.GetName().GetIdentifierName());
+	scan.rows = estimated_cardinality;
+	if (scan.rows == 0 && function.cardinality && bind_data) {
+		// the plan carries no estimate (e.g. with the optimizer off), ask the function as the planner would
+		auto node_stats = function.cardinality(context, bind_data.get());
+		if (node_stats && node_stats->has_estimated_cardinality) {
+			scan.rows = node_stats->estimated_cardinality;
+		}
 	}
-	for (auto &child : op.children) {
-		CollectScanEstimates(context, *child, scans);
+	scans.push_back(std::move(scan));
+}
+
+//! Collect the scans of a plan that read data, table in-out functions included
+static void CollectScanEstimates(duckdb::ClientContext &context, const duckdb::PhysicalOperator &op,
+                                 vector<ScanEstimate> &scans) {
+	switch (op.type) {
+	case duckdb::PhysicalOperatorType::TABLE_SCAN: {
+		auto &get = op.Cast<duckdb::PhysicalTableScan>();
+		AddScanEstimate(context, get.function, get.bind_data.get(), get.estimated_cardinality, scans);
+		break;
+	}
+	case duckdb::PhysicalOperatorType::INOUT_FUNCTION: {
+		// a table in-out function (summary, a correlated LATERAL table function) reads its input like a scan
+		auto &in_out = op.Cast<duckdb::PhysicalTableInOutFunction>();
+		AddScanEstimate(context, in_out.function, in_out.bind_data.get(), in_out.estimated_cardinality, scans);
+		break;
+	}
+	default:
+		break;
+	}
+	// GetChildren includes the inputs some operators own apart from their children (positional scans, delim joins)
+	for (auto &child : op.GetChildren()) {
+		CollectScanEstimates(context, child.get(), scans);
 	}
 }
 
-//! Runs the estimate in a transaction of its own unless the connection already has one, and rolls it back
-struct EstimateTransaction {
-	explicit EstimateTransaction(duckdb::Connection &con) : con(con), started(!con.HasActiveTransaction()) {
-		if (started) {
-			con.BeginTransaction();
-		}
-	}
-	~EstimateTransaction() {
-		if (!started) {
-			return;
-		}
-		try {
-			con.Rollback();
-		} catch (...) { // NOLINT: the statement itself reports what is wrong with the connection
-		}
-	}
-
-	duckdb::Connection &con;
-	bool started;
-};
-
-void ShellState::PrintQueryEstimate(const duckdb::SQLStatement &statement) {
-	switch (statement.type) {
+bool ShellState::EstimatesStatement(duckdb::StatementType type) {
+	switch (type) {
 	case duckdb::StatementType::SELECT_STATEMENT:
 	case duckdb::StatementType::INSERT_STATEMENT:
 	case duckdb::StatementType::UPDATE_STATEMENT:
 	case duckdb::StatementType::DELETE_STATEMENT:
 	case duckdb::StatementType::CREATE_STATEMENT:
 	case duckdb::StatementType::COPY_STATEMENT:
-		break;
+		return true;
 	default:
 		// nothing to estimate
+		return false;
+	}
+}
+
+void ShellState::PrintQueryEstimate(duckdb::PreparedStatementData &prepared) {
+	if (!prepared.physical_plan) {
 		return;
 	}
-	try {
-		auto &context = *conn->context;
-		// the plan refers to state of the transaction it was bound in, e.g. a database file that read_duckdb attached
-		// plan, read the estimates and destroy the plan inside one transaction
-		EstimateTransaction transaction(*conn);
-		// planned directly rather than through a query, so neither settings that change EXPLAIN output nor the query
-		// log or the profiler see the estimate
-		vector<ScanEstimate> scans;
-		idx_t rows_returned = 0;
-		context.RunFunctionInTransaction([&]() {
-			duckdb::Planner planner(context);
-			planner.CreatePlan(statement.Copy());
-			duckdb::Optimizer optimizer(*planner.binder, context);
-			auto plan = optimizer.Optimize(std::move(planner.plan));
-			CollectScanEstimates(context, *plan, scans);
-			rows_returned = plan->EstimateCardinality(context);
-		});
-		if (scans.empty()) {
-			// e.g. a plain CREATE TABLE - not worth a line
-			return;
-		}
-		idx_t rows_read = 0;
-		for (auto &scan : scans) {
-			rows_read += scan.rows;
-		}
-		if (rows_read < ESTIMATE_MIN_ROWS) {
-			// the line exists so that a reader can decide whether to wait; a small read is not worth it
-			return;
-		}
-		std::sort(scans.begin(), scans.end(),
-		          [](const ScanEstimate &a, const ScanEstimate &b) { return a.rows > b.rows; });
-		idx_t total_rows = 0;
-		vector<string> scan_texts;
-		for (idx_t i = 0; i < scans.size(); i++) {
-			total_rows += scans[i].rows;
-			if (i < 5) {
-				scan_texts.push_back(StringUtil::Format("%s ~%llu", scans[i].name, scans[i].rows));
-			}
-		}
-		if (scans.size() > 5) {
-			scan_texts.push_back(StringUtil::Format("%llu more", scans.size() - 5));
-		}
-		string line =
-		    StringUtil::Format("estimate: ~%llu rows read (%s)", total_rows, StringUtil::Join(scan_texts, ", "));
-		if (statement.type == duckdb::StatementType::SELECT_STATEMENT) {
-			line += StringUtil::Format(", ~%llu rows returned", rows_returned);
-		}
-		PrintF(PrintOutput::STDERR, "%s\n", line);
-	} catch (std::exception &) {
-		// planning failed - the real execution reports the error
+	auto &root = prepared.physical_plan->Root();
+	vector<ScanEstimate> scans;
+	CollectScanEstimates(*conn->context, root, scans);
+	if (scans.empty()) {
+		// e.g. a plain CREATE TABLE - not worth a line
+		return;
 	}
+	idx_t rows_read = 0;
+	for (auto &scan : scans) {
+		rows_read += scan.rows;
+	}
+	if (rows_read < ESTIMATE_MIN_ROWS) {
+		// the line exists so that a reader can decide whether to wait; a small read is not worth it
+		return;
+	}
+	std::sort(scans.begin(), scans.end(), [](const ScanEstimate &a, const ScanEstimate &b) { return a.rows > b.rows; });
+	idx_t total_rows = 0;
+	vector<string> scan_texts;
+	for (idx_t i = 0; i < scans.size(); i++) {
+		total_rows += scans[i].rows;
+		if (i < 5) {
+			scan_texts.push_back(StringUtil::Format("%s ~%llu", scans[i].name, scans[i].rows));
+		}
+	}
+	if (scans.size() > 5) {
+		scan_texts.push_back(StringUtil::Format("%llu more", scans.size() - 5));
+	}
+	string line = StringUtil::Format("estimate: ~%llu rows read (%s)", total_rows, StringUtil::Join(scan_texts, ", "));
+	if (prepared.statement_type == duckdb::StatementType::SELECT_STATEMENT && root.estimated_cardinality > 0) {
+		// a plan without an estimate (e.g. with the optimizer off) carries 0, which is not worth a wrong number
+		line += StringUtil::Format(", ~%llu rows returned", root.estimated_cardinality);
+	}
+	PrintF(PrintOutput::STDERR, "%s\n", line);
+}
+
+bool ShellEstimateState::CanRequestRebind() {
+	// the planner calls OnFinalizePrepare only for a connection whose state can ask for a rebind, which this one never
+	// does, so it asks only while an estimate is pending
+	return state.estimate_pending;
+}
+
+duckdb::RebindQueryInfo ShellEstimateState::OnFinalizePrepare(duckdb::ClientContext &context,
+                                                              duckdb::PreparedStatementData &prepared,
+                                                              duckdb::PreparedStatementMode mode) {
+	if (state.estimate_pending) {
+		state.estimate_pending = false;
+		// the plan is read inside the transaction it was bound in, which a database that read_duckdb attached needs
+		try {
+			state.PrintQueryEstimate(prepared);
+		} catch (std::exception &) {
+			// the estimate is a courtesy, the statement runs regardless
+		}
+	}
+	return duckdb::RebindQueryInfo::DO_NOT_REBIND;
 }
 
 void ShellState::DetectDarkLightMode() {

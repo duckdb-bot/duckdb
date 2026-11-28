@@ -177,7 +177,8 @@ class ShellTest:
         stderr = res.stderr.decode("utf8").strip()
         return TestResult(stdout, stderr, res.returncode)
 
-    def run(self):
+    def run(self, timeout=None):
+        """Run the shell. A timeout in seconds fails the test with subprocess.TimeoutExpired instead of hanging it."""
         statements = self.get_statements()
         command = self.get_command(statements)
         input_data = self.get_input_data(statements)
@@ -192,6 +193,7 @@ class ShellTest:
                     stdout=output_pipe,
                     stderr=subprocess.PIPE,
                     env=my_env,
+                    timeout=timeout,
                 )
         else:
             res = subprocess.run(
@@ -200,6 +202,7 @@ class ShellTest:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 env=my_env,
+                timeout=timeout,
             )
 
         stdout, stderr = self.get_output_data(res)

@@ -116,7 +116,7 @@ public:
 	//! Whether this storage holds optimistically written (flushed) row groups
 	bool HasFlushedRowGroups() const;
 	void Rollback();
-	idx_t EstimatedSize() const;
+	idx_t EstimatedSize(Context &context) const;
 
 	//! Appends to the table's indexes at commit. A returned error means the indexes were restored.
 	ErrorData AppendToIndexes(DuckTransaction &transaction, TableAppendState &append_state);
@@ -164,7 +164,7 @@ public:
 	vector<shared_ptr<LocalTableStorage>> GetEntries() const;
 	shared_ptr<LocalTableStorage> GetStorage(const DataTable &table) const;
 	shared_ptr<LocalTableStorage> GetOrCreateStorage(Context &context, DataTable &table);
-	idx_t EstimatedSize() const;
+	idx_t EstimatedSize(Context &context) const;
 	bool IsEmpty() const;
 	void InsertEntry(DataTable &table, shared_ptr<LocalTableStorage> entry);
 
@@ -238,7 +238,7 @@ public:
 	void Rollback();
 
 	bool ChangesMade() noexcept;
-	idx_t EstimatedSize();
+	idx_t EstimatedSize(Context &context);
 
 	void DropTable(DataTable &table);
 	bool Find(DataTable &table);

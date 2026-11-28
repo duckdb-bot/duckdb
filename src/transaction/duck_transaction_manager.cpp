@@ -432,7 +432,7 @@ ErrorData DuckTransactionManager::CommitTransaction(ClientContext &context, Tran
 
 	// check if we can checkpoint
 	unique_ptr<StorageLockKey> lock;
-	auto undo_properties = transaction.GetUndoProperties();
+	auto undo_properties = transaction.GetUndoProperties(context);
 	auto checkpoint_decision = CanCheckpoint(transaction, lock, undo_properties);
 	// orders this commit's append and commit or revert against checkpoints; read-only transactions commit without it
 	unique_lock<mutex> held_commit_lock;

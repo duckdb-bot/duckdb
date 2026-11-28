@@ -162,9 +162,9 @@ bool DuckTransaction::ChangesMade() {
 	return undo_buffer.ChangesMade() || storage->ChangesMade();
 }
 
-UndoBufferProperties DuckTransaction::GetUndoProperties() {
+UndoBufferProperties DuckTransaction::GetUndoProperties(ClientContext &context) {
 	auto properties = undo_buffer.GetProperties();
-	properties.estimated_size += storage->EstimatedSize();
+	properties.estimated_size += storage->EstimatedSize(context.GetContext());
 	return properties;
 }
 

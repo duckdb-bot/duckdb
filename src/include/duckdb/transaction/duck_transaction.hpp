@@ -94,7 +94,7 @@ public:
 	void Cleanup(VisibilityBound lowest_visibility_bound);
 
 	bool ChangesMade();
-	UndoBufferProperties GetUndoProperties();
+	UndoBufferProperties GetUndoProperties(ClientContext &context);
 
 	//! Pushes the undo entry of a delete (DELETE_TUPLE) or of an update's markers (UPDATE_ROWS) in one vector
 	void PushWrite(UndoFlags type, DuckTableEntry &table_entry, RowVersionManager &info, idx_t vector_idx,

@@ -32,13 +32,13 @@ bool OptimisticDataWriter::CanWriteToDisk() const {
 	return !table.IsTemporary() && !storage_manager.InMemory() && !attached.IsReadOnly();
 }
 
+bool OptimisticDataWriter::WritesToDisk(Context &context) const {
+	return Settings::Get<EnableOptimisticWriteSetting>(context) && CanWriteToDisk();
+}
+
 bool OptimisticDataWriter::PrepareWrite(Context &context) {
-	// check if optimistic writing is enabled
-	if (!Settings::Get<EnableOptimisticWriteSetting>(context)) {
-		return false;
-	}
 	// check if we should pre-emptively write the table to disk
-	if (!CanWriteToDisk()) {
+	if (!WritesToDisk(context)) {
 		return false;
 	}
 	// we should! write the second-to-last row group to disk

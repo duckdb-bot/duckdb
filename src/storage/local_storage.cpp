@@ -107,12 +107,30 @@ void LocalTableStorage::InitializeScan(const QueryContext &scan_context, Collect
 	collection.InitializeScan(scan_context, state, state.GetColumnIds(), table_filters.get());
 }
 
-idx_t LocalTableStorage::EstimatedSize() const {
+//! The size of a value of the type before compression, without string data and list children
+static idx_t EstimatedValueSize(const LogicalType &type) {
+	switch (type.InternalType()) {
+	case PhysicalType::STRUCT: {
+		idx_t size = 0;
+		for (auto &child : StructType::GetChildTypes(type)) {
+			size += EstimatedValueSize(child.second);
+		}
+		return size;
+	}
+	case PhysicalType::ARRAY:
+		return ArrayType::GetSize(type) * EstimatedValueSize(ArrayType::GetChildType(type));
+	default:
+		return GetTypeIdSize(type.InternalType());
+	}
+}
+
+idx_t LocalTableStorage::EstimatedSize(Context &context) const {
 	// count the appended rows
 	auto &collection = *row_groups->collection;
 	idx_t data_size = 0;
 
-	if (collection.GetTotalRows() >= collection.GetRowGroupSize() && deleted_rows == 0) {
+	if (collection.GetTotalRows() >= collection.GetRowGroupSize() && deleted_rows == 0 &&
+	    optimistic_writer.WritesToDisk(context)) {
 		// Optimistic insertion does not generate many WAL logs, so we estimate the size of the Data Block Pointers here
 		idx_t row_group_count = row_groups->collection->GetRowGroupCount();
 		idx_t column_count = collection.GetTypes().size();
@@ -126,7 +144,7 @@ idx_t LocalTableStorage::EstimatedSize() const {
 		idx_t row_size = 0;
 		auto &types = collection.GetTypes();
 		for (auto &type : types) {
-			row_size += GetTypeIdSize(type.InternalType());
+			row_size += EstimatedValueSize(type);
 		}
 
 		data_size = appended_rows * row_size;
@@ -427,11 +445,11 @@ vector<shared_ptr<LocalTableStorage>> LocalTableManager::GetEntries() const {
 	return result;
 }
 
-idx_t LocalTableManager::EstimatedSize() const {
+idx_t LocalTableManager::EstimatedSize(Context &context) const {
 	lock_guard<mutex> l(table_storage_lock);
 	idx_t estimated_size = 0;
 	for (auto &storage : table_storage) {
-		estimated_size += storage.second->EstimatedSize();
+		estimated_size += storage.second->EstimatedSize(context);
 	}
 	return estimated_size;
 }
@@ -653,8 +671,8 @@ bool LocalStorage::Find(DataTable &table) {
 	return table_manager.GetStorage(table) != nullptr;
 }
 
-idx_t LocalStorage::EstimatedSize() {
-	return table_manager.EstimatedSize();
+idx_t LocalStorage::EstimatedSize(Context &context) {
+	return table_manager.EstimatedSize(context);
 }
 
 idx_t LocalStorage::Delete(Context &context, DataTable &table, DuckTableEntry &table_entry, Vector &row_ids,

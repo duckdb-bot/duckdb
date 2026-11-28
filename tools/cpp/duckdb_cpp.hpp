@@ -551,6 +551,15 @@ public:
 		return factory;
 	}
 
+	/// Opens a connection that runs in the transaction of this context, to run SQL from inside a callback, e.g. to read
+	/// a table in a bind callback. It sees the transaction's uncommitted changes and this context's temporary objects;
+	/// a failing statement invalidates the transaction as one of this context would. It starts with the search path of
+	/// this context, so unqualified names resolve as they do here. It cannot start, commit or roll
+	/// back a transaction, and destroying it does neither. Destroy it before the transaction ends, usually before the
+	/// callback returns: a commit while it is still open rolls the transaction back.
+	/// @throws Exception When the context has no active transaction or the transaction was aborted.
+	auto ConnectInTransaction() const -> Connection;
+
 	/// Writes a message to DuckDB's log, readable through `SELECT * FROM duckdb_logs`.
 	/// Whether the entry is recorded is up to the database's log configuration; a message it filters out is dropped
 	/// without error.
@@ -4743,6 +4752,9 @@ public:
 
 	/// Sets the function's name, as SQL will call it.
 	auto SetName(const std::string &name) & -> TableFunction &;
+	/// How stable the function's results are within and across queries. Defaults to `VOLATILE`; declare
+	/// `CONSISTENT_WITHIN_QUERY` to let the optimizer share identical scans.
+	auto SetStability(FunctionStability value) & -> TableFunction &;
 	/// The documentation of this overload, borrowed for in-place mutation.
 	auto GetDocs() -> FunctionDocs;
 
@@ -4815,6 +4827,7 @@ private:
 	explicit TableFunction(void *impl);
 	//! Moves what the callbacks need into the C handle, right before it is registered.
 	auto PrepareRegistration() -> void;
+	auto DataSourceHandle() -> void *;
 
 	auto SetUserDataInternal(void *data, void (*destructor)(void *)) -> void;
 
@@ -4832,6 +4845,8 @@ private:
 	MetricsCallback metrics_callback = nullptr;
 	ToStringCallback to_string_callback = nullptr;
 	detail::UserData user_data;
+	//! The data source the function scans with, which holds the callbacks of the scan
+	std::shared_ptr<void> data_source;
 
 public:
 	/// What the bind callback works with. Borrowed, valid only for the callback duration.
@@ -5482,7 +5497,7 @@ public:
 		}
 
 		/// Reports an operator metric of the scan by its profiler name, e.g. "operator.row_groups_scanned" or
-		/// "operator.total_row_groups_to_scan". See `duckdb_v2_table_function_metrics_set` for the accepted names.
+		/// "operator.total_row_groups_to_scan". See `duckdb_v2_data_source_metrics_set` for the accepted names.
 		/// @param name The name of the metric.
 		/// @param value The value since the metrics were last collected ("operator.total_row_groups_to_scan": in all).
 		/// @throws InvalidInputException When the name is not a metric a table function can report.
@@ -5747,6 +5762,8 @@ private:
 	//! Moves what the callbacks need into the C handle, right before it is registered.
 	auto PrepareRegistration() -> void;
 
+	auto DataSourceHandle() -> void *;
+
 	auto SetUserDataInternal(void *data, void (*destructor)(void *)) -> void;
 
 	CopyToBindCallback copy_to_bind_callback = nullptr;
@@ -5762,6 +5779,8 @@ private:
 	CopyFromExecCallback copy_from_exec_callback = nullptr;
 	CopyFromProgressCallback copy_from_progress_callback = nullptr;
 	detail::UserData user_data;
+	//! The data source the COPY FROM side scans with, which holds the callbacks of the scan
+	std::shared_ptr<void> data_source;
 
 public:
 	/// What the `COPY ... TO` bind callback works with. Borrowed, valid only for the callback duration.

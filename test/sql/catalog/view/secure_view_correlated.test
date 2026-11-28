@@ -1,0 +1,92 @@
+# name: test/sql/catalog/view/secure_view_correlated.test
+# description: Correlated subqueries, lateral joins and row triggers over a secure view with a volatile function
+# group: [view]
+
+statement ok
+CREATE TABLE t(a INTEGER);
+
+statement ok
+INSERT INTO t VALUES (1), (2);
+
+statement ok
+CREATE SECURE VIEW v AS SELECT random() + 1 AS n;
+
+# a lateral join evaluates the view for every outer row
+query I
+SELECT count(*) FROM t, LATERAL (SELECT t.a + n AS x FROM v);
+----
+2
+
+query I
+SELECT count(*) FROM t WHERE a < (SELECT max(t.a + n) FROM v);
+----
+2
+
+query I
+SELECT count(*) FROM t WHERE EXISTS (SELECT 1 FROM v WHERE n + t.a > 0);
+----
+2
+
+# every outer row gets its own value
+statement ok
+CREATE SEQUENCE seq;
+
+statement ok
+CREATE SECURE VIEW next_value AS SELECT nextval('seq') AS n;
+
+query III
+SELECT count(DISTINCT x), min(x), max(x) FROM t, LATERAL (SELECT n + t.a * 0 AS x FROM next_value);
+----
+2	1	2
+
+# a secure view over a table, with the correlation in a filter above the view
+statement ok
+CREATE TABLE base(k INTEGER, r DOUBLE);
+
+statement ok
+INSERT INTO base VALUES (1, 0.5), (2, 0.7), (3, 0.9);
+
+statement ok
+CREATE SECURE VIEW bv AS SELECT k, r + random() * 0 AS r FROM base;
+
+query I
+SELECT count(*) FROM t WHERE EXISTS (SELECT 1 FROM bv WHERE bv.k = t.a);
+----
+2
+
+query II
+SELECT a, (SELECT r FROM bv WHERE bv.k = t.a) FROM t ORDER BY a;
+----
+1	0.5
+2	0.7
+
+query II
+SELECT a, s.r FROM t, LATERAL (SELECT r FROM bv WHERE bv.k > t.a) s ORDER BY a, s.r;
+----
+1	0.7
+1	0.9
+2	0.9
+
+# a secure view without a volatile function
+statement ok
+CREATE SECURE VIEW sv AS SELECT 5 AS n;
+
+query I
+SELECT sum(x) FROM t, LATERAL (SELECT t.a + n AS x FROM sv);
+----
+13
+
+# the body of a row trigger
+statement ok
+CREATE TABLE u(k DOUBLE);
+
+statement ok
+CREATE TRIGGER copy_row AFTER INSERT ON t FOR EACH ROW INSERT INTO u SELECT NEW.a + n FROM v;
+
+statement ok
+INSERT INTO t VALUES (3), (4);
+
+query I
+SELECT count(*) FROM u WHERE k >= 4;
+----
+2

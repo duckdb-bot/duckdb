@@ -1711,6 +1711,10 @@ FlattenDependentJoins::PushDownCorrelatedNodeInternal(unique_ptr<LogicalOperator
 	case LogicalOperatorType::LOGICAL_UNNEST: {
 		return PushDownChild(plan, propagate_null_values, std::move(state));
 	}
+	case LogicalOperatorType::LOGICAL_SECURE_VIEW: {
+		// the view stays the barrier above its plan, and the columns of the outer rows pass through it
+		return PushDownChild(plan, propagate_null_values, std::move(state));
+	}
 	case LogicalOperatorType::LOGICAL_PROJECTION: {
 		return PushDownProjection(plan, propagate_null_values, std::move(state));
 	}

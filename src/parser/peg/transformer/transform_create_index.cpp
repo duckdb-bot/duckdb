@@ -1,9 +1,22 @@
+#include "duckdb/common/types/bignum_decimal.hpp"
 #include "duckdb/common/types/decimal.hpp"
 #include "duckdb/parser/parsed_data/create_index_info.hpp"
 #include "duckdb/parser/expression/columnref_expression.hpp"
 #include "duckdb/parser/peg/transformer/peg_transformer.hpp"
 
 namespace duckdb {
+
+//! The value an index option is stored as, which engines without wide decimals read as well
+static Value GetIndexOptionValue(const Literal &literal) {
+	auto value = literal.ToValue();
+	auto &type = value.type();
+	if (type.id() != LogicalTypeId::DECIMAL || !Decimal::IsWide(DecimalType::GetWidth(type))) {
+		return value;
+	}
+	// those engines read a decimal of at most 38 digits, a wider literal is stored as the DOUBLE nearest to it
+	const auto unscaled = value.GetValueUnsafe<bignum_t>();
+	return Value::DOUBLE(DecimalHelper<bignum_t>::ToDouble(unscaled, DecimalType::GetScale(type)));
+}
 
 unique_ptr<CreateStatement> PEGTransformerFactory::TransformCreateIndexStmt(
     PEGTransformer &transformer, const optional<bool> &unique_index, const bool &concurrently,
@@ -46,9 +59,8 @@ unique_ptr<CreateStatement> PEGTransformerFactory::TransformCreateIndexStmt(
 			if (option_entry.second->GetExpressionClass() != ExpressionClass::CONSTANT) {
 				throw InvalidInputException("Create index option must be a constant value");
 			}
-			// an option is stored as a value, and engines without wide decimals read a decimal of at most 38 digits
 			index_info->options[option_entry.first] =
-			    option_entry.second->Cast<ConstantExpression>().GetLiteral().ToValue(Decimal::MAX_WIDTH_INT128);
+			    GetIndexOptionValue(option_entry.second->Cast<ConstantExpression>().GetLiteral());
 		}
 	}
 	result->info = std::move(index_info);

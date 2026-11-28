@@ -22,6 +22,10 @@ CREATE INDEX wide ON t(s) WITH (some_option = 1234567890123456789012345678901234
 statement ok
 CREATE INDEX wide_negative ON t(s) WITH (some_option = -123456789012345678901234567890123456789.0);
 
+# digit separators are not part of the number
+statement ok
+CREATE INDEX wide_separators ON t(s) WITH (some_option = 12_345_678_901_234_567_890_123_456_789_012_345_678.5);
+
 # a literal of 38 digits is a decimal for every engine and stays exact
 statement ok
 CREATE INDEX exact ON t(s) WITH (some_option = 1234567890123456789012345678901234567.8);
@@ -40,6 +44,7 @@ narrow	1.5
 text_option	'123456789012345678901234567890123456789.0'
 wide	1.2345678901234568e+38
 wide_negative	-1.2345678901234568e+38
+wide_separators	1.2345678901234568e+37
 
 # the options are read back from the WAL
 restart
@@ -52,6 +57,7 @@ narrow	1.5
 text_option	'123456789012345678901234567890123456789.0'
 wide	1.2345678901234568e+38
 wide_negative	-1.2345678901234568e+38
+wide_separators	1.2345678901234568e+37
 
 # and from the checkpointed catalog
 statement ok
@@ -67,6 +73,7 @@ narrow	1.5
 text_option	'123456789012345678901234567890123456789.0'
 wide	1.2345678901234568e+38
 wide_negative	-1.2345678901234568e+38
+wide_separators	1.2345678901234568e+37
 
 query I
 SELECT s FROM t WHERE s = 7

@@ -315,6 +315,14 @@ ErrorData DuckTransaction::Commit(ClientContext &context, AttachedDatabase &db, 
 		error_data = ErrorData(ex);
 	}
 
+	if (commit_state && commit_state->IsFlushed() && !Exception::InvalidatesDatabase(error_data.Type()) &&
+	    error_data.Type() != ExceptionType::INTERNAL) {
+		// the WAL holds the commit and a restart replays it, so the revert below cannot undo it
+		error_data = ErrorData(FatalException(
+		    "Commit could not be completed after it was written to the WAL. Restart the database to replay it: %s",
+		    error_data.RawMessage()));
+	}
+
 	try {
 		undo_buffer.RevertCommit(iterator_state, GetTransactionId());
 		if (!db.IsSystem() && !db.IsTemporary() &&

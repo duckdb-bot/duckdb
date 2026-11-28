@@ -43,6 +43,10 @@ public:
 	//! otherwise the marker is only pushed to the OS and the WAL offset to sync up to is returned (0 if
 	//! nothing was written, or it was synced here)
 	virtual idx_t FlushCommit(transaction_t commit_id, bool sync_now) = 0;
+	//! Whether FlushCommit wrote the flush marker, after which a restart replays the commit from the WAL
+	virtual bool IsFlushed() const {
+		return false;
+	}
 
 	virtual void AddRowGroupData(DataTable &table, idx_t start_index, idx_t count,
 	                             unique_ptr<PersistentCollectionData> row_group_data) = 0;

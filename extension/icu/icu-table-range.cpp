@@ -29,6 +29,10 @@ struct ICUTableRange {
 				throw InternalException("Unable to create calendar.");
 			}
 
+			if (inputs.size() != 3) {
+				// the arguments are not constants, so there is nothing to estimate from
+				return;
+			}
 			timestamp_tz_t bounds[2];
 			interval_t step;
 			for (idx_t i = 0; i < inputs.size(); i++) {
@@ -51,13 +55,14 @@ struct ICUTableRange {
 				return;
 			}
 
-			cardinality = idx_t(delta / increment);
+			// a step pointing away from the end produces an empty range
+			cardinality = delta / increment < 0 ? 0 : idx_t(delta / increment);
 		}
 
 		string tz_setting;
 		string cal_setting;
 		CalendarPtr calendar;
-		idx_t cardinality;
+		idx_t cardinality = 0;
 	};
 
 	//! Progress of a range used as a source (i.e. with a single input row)

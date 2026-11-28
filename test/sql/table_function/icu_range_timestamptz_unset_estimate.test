@@ -1,0 +1,71 @@
+# name: test/sql/table_function/icu_range_timestamptz_unset_estimate.test
+# description: The row estimate of TIMESTAMPTZ range and generate_series is set for every input
+# group: [table_function]
+
+require icu
+
+statement ok
+SET TimeZone = 'UTC';
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+# bounds that are too far apart for a difference in microseconds
+query I
+SELECT count(*) FROM generate_series(TIMESTAMPTZ '150000-01-01 (BC) 00:00:00+00', TIMESTAMPTZ '150000-01-01 00:00:00+00', INTERVAL '50000 years')
+----
+6
+
+query II
+EXPLAIN SELECT g FROM generate_series(TIMESTAMPTZ '150000-01-01 (BC) 00:00:00+00', TIMESTAMPTZ '150000-01-01 00:00:00+00', INTERVAL '50000 years') s(g)
+----
+physical_plan	<REGEX>:.*GENERATE_SERIES.*~1 row .*
+
+query II
+EXPLAIN SELECT g FROM range(TIMESTAMPTZ '150000-01-01 (BC) 00:00:00+00', TIMESTAMPTZ '150000-01-01 00:00:00+00', INTERVAL '50000 years') s(g)
+----
+physical_plan	<REGEX>:.*RANGE.*~1 row .*
+
+# a NULL argument
+query II
+EXPLAIN SELECT g FROM generate_series(TIMESTAMPTZ '2024-01-01 00:00:00+00', NULL, INTERVAL 1 DAY) s(g)
+----
+physical_plan	<REGEX>:.*GENERATE_SERIES.*~1 row .*
+
+query II
+EXPLAIN SELECT g FROM generate_series(TIMESTAMPTZ '2024-01-01 00:00:00+00', TIMESTAMPTZ '2024-01-10 00:00:00+00', NULL) s(g)
+----
+physical_plan	<REGEX>:.*GENERATE_SERIES.*~1 row .*
+
+# a step without a length in microseconds
+query II
+EXPLAIN SELECT g FROM generate_series(TIMESTAMPTZ '2024-01-01 00:00:00+00', TIMESTAMPTZ '2024-01-10 00:00:00+00', INTERVAL '0 seconds') s(g)
+----
+physical_plan	<REGEX>:.*GENERATE_SERIES.*~1 row .*
+
+query II
+EXPLAIN SELECT g FROM range(TIMESTAMPTZ '2024-01-01 00:00:00+00', TIMESTAMPTZ '2024-01-10 00:00:00+00', INTERVAL '400000 years') s(g)
+----
+physical_plan	<REGEX>:.*RANGE.*~1 row .*
+
+# a step that points away from the end
+query I
+SELECT count(*) FROM generate_series(TIMESTAMPTZ '2024-01-10 00:00:00+00', TIMESTAMPTZ '2024-01-01 00:00:00+00', INTERVAL 1 DAY)
+----
+0
+
+query II
+EXPLAIN SELECT g FROM generate_series(TIMESTAMPTZ '2024-01-10 00:00:00+00', TIMESTAMPTZ '2024-01-01 00:00:00+00', INTERVAL 1 DAY) s(g)
+----
+physical_plan	<REGEX>:.*GENERATE_SERIES.*~1 row .*
+
+query II
+EXPLAIN SELECT g FROM range(TIMESTAMPTZ '2024-01-01 00:00:00+00', TIMESTAMPTZ '2024-01-10 00:00:00+00', INTERVAL (-1) DAY) s(g)
+----
+physical_plan	<REGEX>:.*RANGE.*~1 row .*
+
+# bounds and a step that give an estimate
+query II
+EXPLAIN SELECT g FROM generate_series(TIMESTAMPTZ '2024-01-01 00:00:00+00', TIMESTAMPTZ '2024-01-10 00:00:00+00', INTERVAL 1 DAY) s(g)
+----
+physical_plan	<REGEX>:.*GENERATE_SERIES.*~9 rows.*

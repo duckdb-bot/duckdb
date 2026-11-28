@@ -8,6 +8,9 @@
 
 #pragma once
 
+#include "duckdb/common/atomic.hpp"
+#include "duckdb/common/mutex.hpp"
+#include "duckdb/common/thread.hpp"
 #include "duckdb/common/winapi.hpp"
 #include "duckdb/main/capi/extension_api.hpp"
 #include "duckdb/main/capi_v2/extension_load_v2.hpp"
@@ -47,6 +50,7 @@ struct ParserCache;
 
 class DatabaseInstance : public enable_shared_from_this<DatabaseInstance> {
 	friend class DuckDB;
+	friend class InterruptSuppressor;
 
 public:
 	DUCKDB_API DatabaseInstance();
@@ -83,6 +87,9 @@ public:
 	                                            bool statically_linked);
 
 	idx_t NumberOfThreads();
+
+	//! Whether the calling thread holds an InterruptSuppressor for this database
+	DUCKDB_API bool InterruptsSuppressed() const;
 
 	DUCKDB_API static DatabaseInstance &GetDatabase(ClientContext &context);
 	DUCKDB_API static const DatabaseInstance &GetDatabase(const ClientContext &context);
@@ -125,6 +132,10 @@ private:
 	unique_ptr<ConnectionManager> connection_manager;
 	unique_ptr<ExtensionManager> extension_manager;
 	ValidChecker db_validity;
+	//! The threads that hold an InterruptSuppressor for this database, and their number for a read without the lock
+	mutable mutex interrupt_suppressor_lock;
+	vector<thread_id> interrupt_suppressor_threads;
+	atomic<idx_t> interrupt_suppressors {0};
 	//! Declared before the file systems: their openers reference it
 	unique_ptr<Context> services;
 	unique_ptr<DatabaseFileSystem> db_file_system;
@@ -142,6 +153,21 @@ private:
 	//! links, and which reaches it through autoloading - would therefore keep all of DuckDB alive in extensions that
 	//! link it statically. Only Initialize names it, and nothing that fails to open a database can reach that.
 	invoke_ext_capi_v2_fun_t invoke_capi_v2;
+};
+
+//! While one of these is alive, the thread that created it sees neither the interrupt nor the query deadline of
+//! any client of the database. For work on behalf of the database that an error could not undo
+class InterruptSuppressor {
+public:
+	DUCKDB_API explicit InterruptSuppressor(DatabaseInstance &db);
+	DUCKDB_API ~InterruptSuppressor();
+	InterruptSuppressor(const InterruptSuppressor &) = delete;
+	InterruptSuppressor &operator=(const InterruptSuppressor &) = delete;
+
+private:
+	DatabaseInstance &db;
+	//! The thread that created the suppressor, which is the thread it holds for
+	thread_id creator;
 };
 
 //! A describe function for an extension class, so that loading it by class goes through the same path as linked

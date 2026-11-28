@@ -161,6 +161,8 @@ public:
 	//! Interrupts the running query. Async-signal-safe: sets a flag and nothing else
 	DUCKDB_API void Interrupt();
 	DUCKDB_API bool IsInterrupted() const;
+	//! Whether the calling thread holds an InterruptSuppressor for the database of this client
+	DUCKDB_API bool InterruptsSuppressed() const;
 	DUCKDB_API void ClearInterrupt();
 	//! Suppress all further interrupts for the current query (called after irreversible operations like COMMIT)
 	DUCKDB_API void SuppressInterrupts();

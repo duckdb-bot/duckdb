@@ -689,6 +689,32 @@ shared_ptr<EncryptionUtil> DatabaseInstance::GetEncryptionUtil(bool read_only) {
 	                                    "'true'.");
 }
 
+InterruptSuppressor::InterruptSuppressor(DatabaseInstance &db_p) : db(db_p), creator(ThreadUtil::GetThreadId()) {
+	lock_guard<mutex> guard(db.interrupt_suppressor_lock);
+	db.interrupt_suppressor_threads.push_back(creator);
+	db.interrupt_suppressors++;
+}
+
+InterruptSuppressor::~InterruptSuppressor() {
+	lock_guard<mutex> guard(db.interrupt_suppressor_lock);
+	auto &threads = db.interrupt_suppressor_threads;
+	auto entry = std::find(threads.begin(), threads.end(), creator);
+	if (entry != threads.end()) {
+		threads.erase(entry);
+		db.interrupt_suppressors--;
+	}
+}
+
+bool DatabaseInstance::InterruptsSuppressed() const {
+	// the thread that holds a suppressor has counted it itself, so it never reads a zero here
+	if (interrupt_suppressors.load(std::memory_order_relaxed) == 0) {
+		return false;
+	}
+	lock_guard<mutex> guard(interrupt_suppressor_lock);
+	auto &threads = interrupt_suppressor_threads;
+	return std::find(threads.begin(), threads.end(), ThreadUtil::GetThreadId()) != threads.end();
+}
+
 ValidChecker &DatabaseInstance::GetValidChecker() {
 	return db_validity;
 }

@@ -1151,8 +1151,15 @@ bool ClientContext::IsInterrupted() const {
 	if (state == ClientInterruptState::INTERRUPTS_SUPPRESSED) {
 		return false;
 	}
+	if (state == ClientInterruptState::INTERRUPTED) {
+		return !InterruptsSuppressed();
+	}
 	// an internal connection is also interrupted when its base client is
-	return state == ClientInterruptState::INTERRUPTED || (base_context && base_context->IsInterrupted());
+	return base_context && base_context->IsInterrupted();
+}
+
+bool ClientContext::InterruptsSuppressed() const {
+	return db->InterruptsSuppressed();
 }
 
 void ClientContext::ClearInterrupt() {
@@ -1194,7 +1201,7 @@ bool ClientContext::QueryDeadlinePassed() const {
 	if (query_deadline.IsValid()) {
 		auto now = NumericCast<idx_t>(duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count());
 		if (now >= query_deadline.GetIndex()) {
-			return true;
+			return !InterruptsSuppressed();
 		}
 	}
 	// an internal connection is also out of time when the query it runs on behalf of is

@@ -13,11 +13,11 @@ SELECT count(*) FROM read_parquet([{'filename': '{TEST_DIR}/filter_query_submit_
 ----
 <REGEX>:Invalid Input Error: Failed to read the filter query of file .*filter_query_submit_data.parquet: Values were not provided for the following parameters.*
 
-# the error keeps its class
+# a Bernoulli sample with a row count is rejected when the query is planned at submission, and the error keeps its class
 statement error
-SELECT count(*) FROM read_parquet([{'filename': '{TEST_DIR}/filter_query_submit_data.parquet', 'filter_query': 'SELECT 0::BIGINT, (SELECT i + 3 FROM read_parquet([''{TEST_DIR}/filter_query_submit_data*.parquet'' FOR x IN range(10000)] || [''{TEST_DIR}/filter_query_submit_missing*.parquet'']) LIMIT 1)::BIGINT, NULL::BIT'}])
+SELECT count(*) FROM read_parquet([{'filename': '{TEST_DIR}/filter_query_submit_data.parquet', 'filter_query': 'SELECT 0::BIGINT, count(*)::BIGINT, NULL::BIT FROM read_parquet(''{TEST_DIR}/filter_query_submit_data.parquet'') USING SAMPLE bernoulli(3 ROWS)'}])
 ----
-<REGEX>:IO Error: Failed to read the filter query of file .*filter_query_submit_data.parquet: No files found that match the pattern.*
+<REGEX>:Parser Error: Failed to read the filter query of file .*filter_query_submit_data.parquet: Sample method.*cannot be used with a discrete sample count.*
 
 # the scan still works
 query I

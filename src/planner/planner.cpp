@@ -350,6 +350,8 @@ void Planner::CreateExecutePlan(ExecuteStatement &statement) {
 		types = prepared.types;
 		properties = prepared.properties;
 		properties.parameter_count = execution.parameter_count;
+		// the parameters are evaluated by the EXECUTE statement itself
+		properties.MergeDatabases(execution.parameter_properties);
 		reused_statement = std::move(execution.prepared);
 		return;
 	}

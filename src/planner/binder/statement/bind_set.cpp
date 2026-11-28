@@ -2,7 +2,6 @@
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/operator/logical_set.hpp"
 #include "duckdb/planner/operator/logical_reset.hpp"
-#include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/planner/expression_binder/constant_binder.hpp"
 #include "duckdb/parser/tableref/emptytableref.hpp"
 #include "duckdb/parser/query_node/select_node.hpp"
@@ -23,7 +22,7 @@ BoundStatement Binder::Bind(SetVariableStatement &stmt) {
 		if (bound_value->HasParameter()) {
 			throw NotImplementedException("SET statements cannot have parameters");
 		}
-		value = ExpressionExecutor::EvaluateScalar(context, *bound_value, true);
+		value = FoldExpression(*bound_value);
 	} else {
 		auto select_node = make_uniq<SelectNode>();
 		select_node->select_list.push_back(std::move(stmt.value));

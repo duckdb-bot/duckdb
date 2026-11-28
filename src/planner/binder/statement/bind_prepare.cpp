@@ -7,6 +7,8 @@ namespace duckdb {
 
 BoundStatement Binder::Bind(PrepareStatement &stmt) {
 	Planner prepared_planner(context);
+	// PREPARE binds the statement without running it
+	prepared_planner.binder->SetPrepareOnly();
 	auto prepared_data = prepared_planner.PrepareSQLStatement(std::move(stmt.statement));
 	global_binder_state->bound_tables = prepared_planner.binder->global_binder_state->bound_tables;
 

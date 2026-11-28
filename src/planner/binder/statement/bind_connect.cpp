@@ -4,7 +4,6 @@
 #include "duckdb/planner/operator/logical_connect.hpp"
 #include "duckdb/planner/operator/logical_disconnect.hpp"
 #include "duckdb/planner/expression_binder/table_function_binder.hpp"
-#include "duckdb/execution/expression_executor.hpp"
 
 namespace duckdb {
 
@@ -19,7 +18,7 @@ BoundStatement Binder::Bind(ConnectStatement &stmt) {
 		TableFunctionBinder option_binder(*this, context, "Connect", "Connect parameter");
 		for (auto &entry : stmt.info->parsed_options) {
 			auto bound_expr = option_binder.Bind(entry.second);
-			auto val = ExpressionExecutor::EvaluateScalar(context, *bound_expr, true);
+			auto val = FoldExpression(*bound_expr);
 			if (val.IsNull()) {
 				throw BinderException("NULL is not supported as a valid option for CONNECT option \"" + entry.first +
 				                      "\"");

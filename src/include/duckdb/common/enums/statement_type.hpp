@@ -118,6 +118,8 @@ struct StatementProperties {
 
 	void RegisterDBRead(Catalog &catalog, ClientContext &context);
 	void RegisterDBModify(Catalog &catalog, ClientContext &context, DatabaseModificationType modification);
+	//! Add the databases that another statement reads and modifies
+	void MergeDatabases(const StatementProperties &source);
 };
 
 } // namespace duckdb

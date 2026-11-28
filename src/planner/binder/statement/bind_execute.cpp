@@ -5,7 +5,6 @@
 #include "duckdb/planner/planner.hpp"
 #include "duckdb/planner/expression_binder/constant_binder.hpp"
 #include "duckdb/main/client_data.hpp"
-#include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/main/client_context.hpp"
@@ -60,7 +59,7 @@ PreparedExecution Binder::ResolveExecute(ExecuteStatement &stmt) {
 			}
 			parameter_data = BoundParameterData(constant.GetValue(), std::move(return_type));
 		} else {
-			auto value = ExpressionExecutor::EvaluateScalar(context, *bound_expr, true);
+			auto value = FoldExpression(*bound_expr);
 			auto value_type = value.type();
 			parameter_data = BoundParameterData(std::move(value), std::move(value_type));
 		}
@@ -83,6 +82,8 @@ PreparedExecution Binder::ResolveExecute(ExecuteStatement &stmt) {
 	result.bind_values = std::move(bind_values);
 	result.rebind = rebind == RebindQueryInfo::ATTEMPT_TO_REBIND;
 	result.parameter_count = parameter_count;
+	// the parameters are evaluated by the EXECUTE statement itself
+	result.parameter_properties = std::move(constant_binder->GetStatementProperties());
 	return result;
 }
 
@@ -90,14 +91,22 @@ BoundStatement Binder::BindExecute(PreparedExecution &execution) {
 	// plan the prepared statement again with the supplied parameter values
 	Planner prepared_planner(context);
 	prepared_planner.parameter_data = execution.bind_values;
+	// EXECUTE binds the statement to run it, unless the EXECUTE is prepared itself
+	if (IsPrepareOnly()) {
+		prepared_planner.binder->SetPrepareOnly();
+	}
 	auto prepared = prepared_planner.PrepareSQLStatement(execution.prepared->unbound_statement->Copy());
-	D_ASSERT(prepared->properties.bound_all_parameters);
+	if (!prepared->properties.bound_all_parameters) {
+		throw ParameterNotResolvedException();
+	}
 	global_binder_state->bound_tables = prepared_planner.binder->global_binder_state->bound_tables;
 
 	// copy the properties of the prepared statement into the planner
 	auto &properties = GetStatementProperties();
 	properties = prepared->properties;
 	properties.parameter_count = execution.parameter_count;
+	// the parameters are evaluated by this statement
+	properties.MergeDatabases(execution.parameter_properties);
 
 	prepared->Bind(context, execution.bind_values);
 

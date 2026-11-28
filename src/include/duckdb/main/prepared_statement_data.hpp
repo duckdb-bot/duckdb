@@ -68,6 +68,8 @@ struct PreparedExecution {
 	//! Whether the prepared statement has to be planned again instead of re-using its physical plan
 	bool rebind = false;
 	idx_t parameter_count = 0;
+	//! The databases the parameter expressions read and modify when the EXECUTE evaluates them
+	StatementProperties parameter_properties;
 };
 
 DUCKDB_API bool CheckCatalogIdentity(ClientContext &context, const Identifier &catalog_name,

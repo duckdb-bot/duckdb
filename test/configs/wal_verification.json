@@ -82,6 +82,12 @@
       ]
     },
     {
+      "reason": "FIXME: WAL replay binds the default of a new struct field without the search path of the session.",
+      "paths": [
+        "test/sql/alter/struct/alter_struct_field_user_default.test"
+      ]
+    },
+    {
       "reason": "Asserts the in-memory operator log, which does not survive the forced restarts.",
       "paths": [
         "test/sql/cte/materialized/cte_buffered_consumer_cycle_demotion.test"

@@ -406,6 +406,11 @@ static void RenameExpression(ParsedExpression &root_expr, RenameColumnInfo &info
 	});
 }
 
+//! The call that rewrites a struct for a field change, named in the system catalog so that no macro of a user is called
+static unique_ptr<FunctionExpression> RemapStructCall(vector<unique_ptr<ParsedExpression>> children) {
+	return make_uniq<FunctionExpression>(QualifiedName("system", "main", "remap_struct"), std::move(children));
+}
+
 //! Remaps the default of a struct column with the mapping and the field defaults of the remap_struct call
 static unique_ptr<ParsedExpression> RemapStructDefault(unique_ptr<ParsedExpression> default_value,
                                                        const LogicalType &new_type, ChangeColumnTypeInfo &info) {
@@ -420,7 +425,7 @@ static unique_ptr<ParsedExpression> RemapStructDefault(unique_ptr<ParsedExpressi
 	children.push_back(ConstantExpression::FromValue(Value(new_type)));
 	children.push_back(arguments[2].GetExpression().Copy());
 	children.push_back(arguments[3].GetExpression().Copy());
-	return make_uniq<FunctionExpression>("remap_struct", std::move(children));
+	return RemapStructCall(std::move(children));
 }
 
 unique_ptr<CatalogEntry> DuckTableEntry::RenameColumn(ClientContext &context, RenameColumnInfo &info) {
@@ -589,7 +594,7 @@ struct StructMappingInfo {
 unique_ptr<ParsedExpression> PackExpression(unique_ptr<ParsedExpression> expr, Identifier name) {
 	vector<FunctionArgument> children;
 	children.emplace_back(std::move(name), std::move(expr));
-	return make_uniq<FunctionExpression>("struct_pack", std::move(children));
+	return make_uniq<FunctionExpression>(QualifiedName("system", "main", "struct_pack"), std::move(children));
 }
 
 static child_list_t<LogicalType> GetChildList(const LogicalType &type) {
@@ -721,7 +726,7 @@ unique_ptr<CatalogEntry> DuckTableEntry::AddField(ClientContext &context, AddFie
 	D_ASSERT(res.default_value);
 	children.push_back(std::move(res.default_value));
 
-	auto function = make_uniq<FunctionExpression>("remap_struct", std::move(children));
+	auto function = RemapStructCall(std::move(children));
 
 	ChangeColumnTypeInfo change_column_type(info.GetAlterEntryData(), vector<Identifier> {info.column_path[0]},
 	                                        std::move(res.new_type), std::move(function));
@@ -974,7 +979,7 @@ unique_ptr<CatalogEntry> DuckTableEntry::RemoveField(ClientContext &context, Rem
 	children.push_back(ConstantExpression::FromValue(res.mapping));
 	children.push_back(ConstantExpression::Null());
 
-	auto function = make_uniq<FunctionExpression>("remap_struct", std::move(children));
+	auto function = RemapStructCall(std::move(children));
 
 	ChangeColumnTypeInfo change_column_type(info.GetAlterEntryData(), vector<Identifier> {info.column_path[0]},
 	                                        std::move(res.new_type), std::move(function));
@@ -1069,7 +1074,7 @@ unique_ptr<CatalogEntry> DuckTableEntry::RenameField(ClientContext &context, Ren
 	children.push_back(ConstantExpression::FromValue(res.mapping));
 	children.push_back(ConstantExpression::Null());
 
-	auto function = make_uniq<FunctionExpression>("remap_struct", std::move(children));
+	auto function = RemapStructCall(std::move(children));
 	ChangeColumnTypeInfo change_column_type(info.GetAlterEntryData(), vector<Identifier> {info.column_path[0]},
 	                                        std::move(res.new_type), std::move(function));
 	return ChangeColumnType(context, change_column_type, AlterTableType::RENAME_FIELD);

@@ -1,0 +1,30 @@
+# name: test/sql/alter/struct/alter_struct_field_user_default.test
+# description: The default of a new struct field is an expression of the user and binds through the search path
+# group: [struct]
+
+statement ok
+CREATE SCHEMA lookup;
+
+statement ok
+CREATE MACRO lookup.field_value() AS 17;
+
+statement ok
+CREATE TABLE user_default (i INT, s STRUCT(x INT) DEFAULT {'x': 1});
+
+statement ok
+INSERT INTO user_default (i) VALUES (1);
+
+statement ok
+SET search_path = 'main,lookup';
+
+statement ok
+ALTER TABLE user_default ADD COLUMN s.w INT DEFAULT field_value();
+
+statement ok
+INSERT INTO user_default (i) VALUES (2);
+
+query III
+SELECT i, s.x, s.w FROM user_default ORDER BY i
+----
+1	1	17
+2	1	17

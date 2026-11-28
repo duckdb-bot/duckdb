@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "duckdb/catalog/catalog_search_path.hpp"
 #include "duckdb/common/enums/statement_type.hpp"
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/common/unordered_map.hpp"
@@ -49,6 +50,8 @@ public:
 	//! The change counts of the settings with their own setter that the statement was bound under
 	idx_t client_setting_changes = 0;
 	idx_t database_setting_changes = 0;
+	//! The search path of the client that the statement was bound under
+	vector<CatalogSearchEntry> search_path;
 
 	//! The map of parameter index to the actual value entry
 	bound_parameter_map_t value_map;

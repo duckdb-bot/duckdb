@@ -1537,34 +1537,16 @@ void ReadAheadDepthSetting::OnSet(SettingCallbackInfo &info, Value &input) {
 //===----------------------------------------------------------------------===//
 // Schema
 //===----------------------------------------------------------------------===//
-//! Counts a change of the search path of the client, of which the schema setting shows the first schema only
-static void RegisterSearchPathChange(ClientContext &context, const vector<CatalogSearchEntry> &previous_paths) {
-	auto &paths = ClientData::Get(context).catalog_search_path->GetSetPaths();
-	bool same_paths = paths.size() == previous_paths.size();
-	for (idx_t i = 0; same_paths && i < paths.size(); i++) {
-		same_paths = paths[i].GetCatalog() == previous_paths[i].GetCatalog() &&
-		             paths[i].GetSchemaPath() == previous_paths[i].GetSchemaPath() &&
-		             paths[i].DefaultSchemaPrecedence() == previous_paths[i].DefaultSchemaPrecedence();
-	}
-	if (!same_paths) {
-		ClientConfig::GetConfig(context).user_settings.RegisterChange();
-	}
-}
-
 void SchemaSetting::SetLocal(ClientContext &context, const Value &input) {
 	auto parameter = input.ToString();
 	auto &client_data = ClientData::Get(context);
-	const auto previous_paths = client_data.catalog_search_path->GetSetPaths();
 	client_data.catalog_search_path->Set(CatalogSearchEntry::Parse(parameter), CatalogSetPathType::SET_SCHEMA);
-	RegisterSearchPathChange(context, previous_paths);
 }
 
 void SchemaSetting::ResetLocal(ClientContext &context) {
 	// FIXME: catalog_search_path is controlled by both SchemaSetting and SearchPathSetting
 	auto &client_data = ClientData::Get(context);
-	const auto previous_paths = client_data.catalog_search_path->GetSetPaths();
 	client_data.catalog_search_path->Reset();
-	RegisterSearchPathChange(context, previous_paths);
 }
 
 Value SchemaSetting::GetSetting(const ClientContext &context) {

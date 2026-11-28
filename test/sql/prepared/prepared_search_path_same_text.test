@@ -1,0 +1,53 @@
+# name: test/sql/prepared/prepared_search_path_same_text.test
+# description: A prepared statement is bound again when a search path that is written the same names another schema
+# group: [prepared]
+
+load {TEST_DIR}/prepared_search_path_same_text.db readwrite v2.0.0
+
+statement ok
+CREATE SCHEMA twin;
+
+statement ok
+CREATE SCHEMA twin.inner_schema;
+
+statement ok
+CREATE TYPE twin.inner_schema.e AS ENUM ('nested');
+
+statement ok
+SET search_path = 'twin.inner_schema';
+
+query I
+SELECT current_setting('search_path');
+----
+twin.inner_schema
+
+statement ok
+PREPARE type_name AS SELECT enum_range(NULL::e);
+
+query I
+EXECUTE type_name;
+----
+[nested]
+
+# the same text names a schema of the attached database from here on
+statement ok
+ATTACH ':memory:' AS twin;
+
+statement ok
+CREATE SCHEMA twin.inner_schema;
+
+statement ok
+CREATE TYPE twin.inner_schema.e AS ENUM ('attached');
+
+statement ok
+SET search_path = 'twin.inner_schema';
+
+query I
+SELECT current_setting('search_path');
+----
+twin.inner_schema
+
+query I
+EXECUTE type_name;
+----
+[attached]

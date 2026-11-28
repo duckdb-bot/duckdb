@@ -547,3 +547,34 @@ query II
 SELECT (SELECT count(*) FROM s1.target), (SELECT count(*) FROM s2.target);
 ----
 1	1
+
+# the schema that a statement was prepared under is selected again
+statement ok
+PREPARE type_name AS SELECT enum_range(NULL::e);
+
+statement ok
+USE s1;
+
+query I
+EXECUTE type_name;
+----
+[one]
+
+statement ok
+EXECUTE insert_target;
+
+statement ok
+USE s2;
+
+query I
+EXECUTE type_name;
+----
+[two]
+
+statement ok
+EXECUTE insert_target;
+
+query II
+SELECT (SELECT count(*) FROM s1.target), (SELECT count(*) FROM s2.target);
+----
+2	2

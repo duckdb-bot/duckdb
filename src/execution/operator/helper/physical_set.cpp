@@ -133,6 +133,10 @@ void PhysicalSet::SetVariable(ClientContext &context, const Identifier &name, Se
 
 void PhysicalSet::RegisterSettingChange(ClientContext &context, const ConfigurationOption &option, SetScope scope,
                                         const Value &previous_value) {
+	if (option.get_setting == SchemaSetting::GetSetting || option.get_setting == SearchPathSetting::GetSetting) {
+		// a prepared statement compares the search path that it was bound under itself
+		return;
+	}
 	// a client with a session value does not see the value of the database change
 	const bool hidden_change = scope == SetScope::GLOBAL && option.set_local;
 	if (!hidden_change && Value::NotDistinctFrom(previous_value, option.get_setting(context))) {

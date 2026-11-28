@@ -335,12 +335,14 @@ shared_ptr<PreparedStatementData> Planner::PrepareSQLStatement(unique_ptr<SQLSta
 	auto settings_snapshot = client_settings.GetSnapshot(config);
 	const auto client_setting_changes = client_settings.GetChangeCount();
 	const auto database_setting_changes = config.user_settings.GetChangeCount();
+	auto search_path = ClientData::Get(context).catalog_search_path->GetSetPaths();
 	CreatePlan(std::move(statement));
 	// now create the logical prepare
 	auto prepared_data = make_shared_ptr<PreparedStatementData>(copied_statement->type);
 	prepared_data->settings_snapshot = std::move(settings_snapshot);
 	prepared_data->client_setting_changes = client_setting_changes;
 	prepared_data->database_setting_changes = database_setting_changes;
+	prepared_data->search_path = std::move(search_path);
 	prepared_data->unbound_statement = std::move(copied_statement);
 	prepared_data->names = names;
 	prepared_data->types = types;

@@ -1,5 +1,7 @@
 #include "catch.hpp"
 #include "test_helpers.hpp"
+#include "duckdb/catalog/catalog_search_path.hpp"
+#include "duckdb/main/client_data.hpp"
 #include "duckdb/planner/planner_extension.hpp"
 #include "duckdb/parser/peg/dialect_extension.hpp"
 #include "duckdb/parser/sql_statement.hpp"
@@ -964,6 +966,95 @@ TEST_CASE("A prepared statement keeps its plan when the selected dialect is sele
 	result = con.Query("SELECT current_setting('dialect_compatibility_mode')");
 	REQUIRE(CHECK_COLUMN(result, 0, {"NONE"}));
 	REQUIRE_NO_FAIL(con.Query("EXECUTE answer"));
+	REQUIRE(rebinds.back());
+}
+
+TEST_CASE("A prepared statement keeps its plan when its search path is set again", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	Connection other(db);
+	auto recorder = make_shared_ptr<RebindRecorderState>();
+	con.context->GetContext().GetRegisteredState().Insert("rebind_recorder", recorder);
+	auto &rebinds = recorder->rebinds;
+
+	REQUIRE_NO_FAIL(con.Query("CREATE SCHEMA s1"));
+	REQUIRE_NO_FAIL(con.Query("CREATE SCHEMA s2"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TYPE s1.e AS ENUM ('one')"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TYPE s2.e AS ENUM ('two')"));
+	const string prepare = "PREPARE type_name AS SELECT enum_range(NULL::e)::VARCHAR";
+
+	// the schema that the statement was prepared under is selected again
+	REQUIRE_NO_FAIL(con.Query("USE s1"));
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	auto result = con.Query("EXECUTE type_name");
+	REQUIRE(CHECK_COLUMN(result, 0, {"[one]"}));
+	REQUIRE(!rebinds.back());
+	REQUIRE_NO_FAIL(con.Query("USE s2"));
+	result = con.Query("EXECUTE type_name");
+	REQUIRE(CHECK_COLUMN(result, 0, {"[two]"}));
+	REQUIRE(rebinds.back());
+	result = con.Query("EXECUTE type_name");
+	REQUIRE(CHECK_COLUMN(result, 0, {"[two]"}));
+	REQUIRE(rebinds.back());
+	REQUIRE_NO_FAIL(con.Query("USE s1"));
+	result = con.Query("EXECUTE type_name");
+	REQUIRE(CHECK_COLUMN(result, 0, {"[one]"}));
+	REQUIRE(!rebinds.back());
+
+	// the search path of another connection is not the search path of this one
+	REQUIRE_NO_FAIL(other.Query("USE s2"));
+	result = con.Query("EXECUTE type_name");
+	REQUIRE(CHECK_COLUMN(result, 0, {"[one]"}));
+	REQUIRE(!rebinds.back());
+
+	// the order of the schemas is part of the search path
+	REQUIRE_NO_FAIL(con.Query("SET search_path = 's1,s2'"));
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(con.Query("SET search_path = 's2,s1'"));
+	result = con.Query("EXECUTE type_name");
+	REQUIRE(CHECK_COLUMN(result, 0, {"[two]"}));
+	REQUIRE(rebinds.back());
+	REQUIRE_NO_FAIL(con.Query("SET search_path = 's1,s2'"));
+	result = con.Query("EXECUTE type_name");
+	REQUIRE(CHECK_COLUMN(result, 0, {"[one]"}));
+	REQUIRE(!rebinds.back());
+
+	// a search path that starts with the same schema is another search path
+	REQUIRE_NO_FAIL(con.Query("SET search_path = 's1'"));
+	result = con.Query("EXECUTE type_name");
+	REQUIRE(CHECK_COLUMN(result, 0, {"[one]"}));
+	REQUIRE(rebinds.back());
+
+	// RESET gives the search path of a connection that set none
+	REQUIRE_NO_FAIL(con.Query("RESET search_path"));
+	REQUIRE_NO_FAIL(con.Query("PREPARE answer AS SELECT 42"));
+	REQUIRE_NO_FAIL(con.Query("USE s1"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE answer"));
+	REQUIRE(rebinds.back());
+	REQUIRE_NO_FAIL(con.Query("RESET schema"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE answer"));
+	REQUIRE(!rebinds.back());
+
+	// another setting with its own setter that changed is not hidden by the search path that is set again
+	REQUIRE_NO_FAIL(con.Query("USE s1"));
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(con.Query("SET operator_memory_limit = '1GB'"));
+	REQUIRE_NO_FAIL(con.Query("USE s2"));
+	REQUIRE_NO_FAIL(con.Query("USE s1"));
+	result = con.Query("EXECUTE type_name");
+	REQUIRE(CHECK_COLUMN(result, 0, {"[one]"}));
+	REQUIRE(rebinds.back());
+
+	// a search path that is set without a SET statement
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE type_name"));
+	REQUIRE(!rebinds.back());
+	con.BeginTransaction();
+	auto &search_path = *ClientData::Get(*con.context).catalog_search_path;
+	search_path.Set(CatalogSearchEntry::Parse("s2"), CatalogSetPathType::SET_SCHEMA);
+	con.Commit();
+	result = con.Query("EXECUTE type_name");
+	REQUIRE(CHECK_COLUMN(result, 0, {"[two]"}));
 	REQUIRE(rebinds.back());
 }
 

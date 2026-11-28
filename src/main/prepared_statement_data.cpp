@@ -1,9 +1,11 @@
 #include "duckdb/main/prepared_statement_data.hpp"
 #include "duckdb/parser/sql_statement.hpp"
 #include "duckdb/catalog/catalog.hpp"
+#include "duckdb/common/algorithm.hpp"
 #include "duckdb/common/exception/binder_exception.hpp"
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/main/client_config.hpp"
+#include "duckdb/main/client_data.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/main/database_manager.hpp"
 #include "duckdb/main/prepared_statement.hpp"
@@ -82,6 +84,25 @@ static const identifier_map_t<idx_t> &GetExpectedParameters(const PreparedStatem
 	return storage;
 }
 
+//! Whether the two names are written the same, identifiers themselves compare without case
+static bool SameName(const Identifier &left, const Identifier &right) {
+	return left.GetIdentifierName() == right.GetIdentifierName();
+}
+
+//! Whether the two entries of a search path are written the same
+static bool SameSearchPathEntry(const CatalogSearchEntry &left, const CatalogSearchEntry &right) {
+	if (!SameName(left.GetCatalog(), right.GetCatalog()) || !SameName(left.GetSchema(), right.GetSchema()) ||
+	    left.DefaultSchemaPrecedence() != right.DefaultSchemaPrecedence() || left.IsNested() != right.IsNested()) {
+		return false;
+	}
+	if (!left.IsNested()) {
+		return true;
+	}
+	const auto left_schemas = left.GetSchemaPath();
+	const auto right_schemas = right.GetSchemaPath();
+	return std::equal(left_schemas.begin(), left_schemas.end(), right_schemas.begin(), right_schemas.end(), SameName);
+}
+
 void PreparedStatementData::PopulateMissingParameterValues(ClientContext &context,
                                                            identifier_map_t<BoundParameterData> &values) const {
 	identifier_map_t<idx_t> expected_storage;
@@ -124,6 +145,12 @@ bool PreparedStatementData::RequireRebind(ClientContext &context,
 	if (client_setting_changes != client_settings.GetChangeCount() ||
 	    database_setting_changes != config.user_settings.GetChangeCount()) {
 		// a setting with its own setter changed, binding and planning can read any of them
+		return true;
+	}
+	auto &current_search_path = ClientData::Get(context).catalog_search_path->GetSetPaths();
+	if (!std::equal(search_path.begin(), search_path.end(), current_search_path.begin(), current_search_path.end(),
+	                SameSearchPathEntry)) {
+		// names are looked up through another search path than the one the statement was bound under
 		return true;
 	}
 	auto &current_settings = client_settings.GetSnapshot(config);

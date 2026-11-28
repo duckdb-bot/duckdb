@@ -221,7 +221,7 @@ void UnnestRewriter::FindCandidates(unique_ptr<LogicalOperator> &root, unique_pt
 				auto &bind_col = proj.expressions[col_bind.column_index]->Cast<BoundColumnRefExpression>();
 				auto unnest_expr = make_uniq<BoundUnnestExpression>(unnest_get->types[i]);
 				unnest_expr->ChildMutable() =
-				    BoundCastExpression::AddArrayCastToList(context, proj.expressions[col_bind.column_index]->Copy());
+				    BoundCastExpression::AddListCastForUnnest(context, proj.expressions[col_bind.column_index]->Copy());
 				auto unnest_proj_idx = ColumnBinding::PushExpression(unnest->expressions, std::move(unnest_expr));
 				ColumnBinding new_column_ref(unnest_get_index, unnest_proj_idx);
 				auto unnest_ref = make_uniq<BoundColumnRefExpression>(bind_col.GetAlias(), unnest_get->types[i],
@@ -289,7 +289,7 @@ static bool ConvertCTETableInOutUnnest(ClientContext &context, unique_ptr<Logica
 		auto &bind_col = proj.expressions[col_bind.column_index]->Cast<BoundColumnRefExpression>();
 		auto unnest_expr = make_uniq<BoundUnnestExpression>(unnest_get->types[i]);
 		unnest_expr->ChildMutable() =
-		    BoundCastExpression::AddArrayCastToList(context, proj.expressions[col_bind.column_index]->Copy());
+		    BoundCastExpression::AddListCastForUnnest(context, proj.expressions[col_bind.column_index]->Copy());
 		auto unnest_proj_idx = ColumnBinding::PushExpression(unnest->expressions, std::move(unnest_expr));
 		ColumnBinding new_column_ref(unnest_get_index, unnest_proj_idx);
 		auto unnest_ref = make_uniq<BoundColumnRefExpression>(bind_col.GetAlias(), unnest_get->types[i], new_column_ref,

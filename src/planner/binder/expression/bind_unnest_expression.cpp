@@ -202,7 +202,7 @@ BindResult UnnestBinder::Bind(FunctionExpression &function, idx_t depth, bool ro
 	if (error.HasError()) {
 		return BindResult(std::move(error));
 	}
-	child = BoundCastExpression::AddArrayCastToList(context, std::move(child));
+	child = BoundCastExpression::AddListCastForUnnest(context, std::move(child));
 	auto &child_type = child->GetReturnType();
 
 	if (outer_unnest_level > 0) {

@@ -24,6 +24,7 @@ public:
 	std::atomic<bool> fail_secret_sync {false};
 	std::atomic<bool> fail_secret_move {false};
 	std::atomic<bool> fail_secret_remove {false};
+	std::atomic<bool> fail_stored_secret_remove {false};
 	//! Runs when a secret file is synced, with the file complete and nothing replaced yet
 	std::function<void()> on_secret_sync;
 	//! Runs when a secret file was renamed into place, before the catalog changes
@@ -70,6 +71,9 @@ public:
 
 	void RemoveFile(const string &filename, optional_ptr<FileOpener> opener) override {
 		if (IsStoredSecretFile(filename)) {
+			if (fail_stored_secret_remove) {
+				throw IOException("Could not remove file \"%s\": Permission denied", filename);
+			}
 			stored_secret_files_removed++;
 		}
 		LocalFileSystem::RemoveFile(filename, opener);
@@ -407,5 +411,47 @@ TEST_CASE("A failed replacement through the system transaction keeps the replace
 	REQUIRE(!drop_finished_during_store);
 	auto result = con.Query("SELECT count(*) FROM duckdb_secrets()");
 	REQUIRE(CHECK_COLUMN(result, 0, {0}));
+	REQUIRE(SecretFiles(secret_dir).empty());
+}
+
+TEST_CASE("A persistent secret whose file is already gone can be dropped", "[api][secrets]") {
+	auto observing_fs = make_uniq<SecretFileSystem>();
+	auto &fs = *observing_fs;
+	auto config = ObservedConfig(std::move(observing_fs));
+	DuckDB db(nullptr, config.get());
+	Connection con(db);
+	auto secret_dir = TestCreatePath("persistent_secret_drop_missing_file");
+	REQUIRE_NO_FAIL(con.Query("SET secret_directory = '" + secret_dir + "'"));
+
+	// another instance on the directory drops the secret, which removes its file
+	for (auto &drop : {"DROP PERSISTENT SECRET s1", "DROP PERSISTENT SECRET IF EXISTS s1", "DROP SECRET s1"}) {
+		REQUIRE_NO_FAIL(con.Query("CREATE PERSISTENT SECRET s1 (TYPE HTTP, BEARER_TOKEN 'abc')"));
+		{
+			DuckDB other_db(nullptr);
+			Connection other_con(other_db);
+			REQUIRE_NO_FAIL(other_con.Query("SET secret_directory = '" + secret_dir + "'"));
+			REQUIRE_NO_FAIL(other_con.Query("DROP PERSISTENT SECRET s1"));
+		}
+		REQUIRE(SecretFiles(secret_dir).empty());
+		// this instance still has the secret, and drops it without a file to remove
+		auto result = con.Query("SELECT count(*) FROM duckdb_secrets()");
+		REQUIRE(CHECK_COLUMN(result, 0, {1}));
+		REQUIRE_NO_FAIL(con.Query(drop));
+		result = con.Query("SELECT count(*) FROM duckdb_secrets()");
+		REQUIRE(CHECK_COLUMN(result, 0, {0}));
+	}
+
+	// a file that is there and cannot be removed fails the drop, and the secret stays
+	REQUIRE_NO_FAIL(con.Query("CREATE PERSISTENT SECRET s1 (TYPE HTTP, BEARER_TOKEN 'abc')"));
+	fs.fail_stored_secret_remove = true;
+	auto result = con.Query("DROP PERSISTENT SECRET s1");
+	REQUIRE(result->HasError());
+	REQUIRE(StringUtil::Contains(result->GetError(), "Failed to remove secret file"));
+	REQUIRE(StringUtil::Contains(result->GetError(), "Permission denied"));
+	fs.fail_stored_secret_remove = false;
+	result = con.Query("SELECT count(*) FROM duckdb_secrets()");
+	REQUIRE(CHECK_COLUMN(result, 0, {1}));
+	REQUIRE(SecretFiles(secret_dir) == vector<string> {"s1.duckdb_secret"});
+	REQUIRE_NO_FAIL(con.Query("DROP PERSISTENT SECRET s1"));
 	REQUIRE(SecretFiles(secret_dir).empty());
 }

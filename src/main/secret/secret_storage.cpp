@@ -447,9 +447,11 @@ void LocalFileSecretStorage::RemoveSecret(const string &secret, OnEntryNotFound 
 	} catch (std::exception &ex) {
 		ErrorData error(ex);
 		if (error.Type() == ExceptionType::IO) {
-			throw IOException("Failed to remove secret file '%s', the file may have been removed by another duckdb "
-			                  "instance. (original error: '%s')",
-			                  file, error.RawMessage());
+			if (!fs.FileExists(file)) {
+				// another instance removed the file, which leaves nothing to remove
+				return;
+			}
+			throw IOException("Failed to remove secret file '%s'. (original error: '%s')", file, error.RawMessage());
 		}
 		throw;
 	}

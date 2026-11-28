@@ -1,5 +1,5 @@
 # name: test/sql/alter/struct/alter_struct_field_aliased_type.test
-# description: Adding, renaming or dropping a struct field keeps the values of a JSON field when a type of a user is named JSON
+# description: Adding, renaming or dropping a struct field keeps JSON values when a type of a user is named JSON
 # group: [struct]
 
 require json

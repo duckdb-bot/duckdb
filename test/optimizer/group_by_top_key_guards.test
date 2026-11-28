@@ -539,7 +539,7 @@ SELECT k1, sum((random() > 2)::INTEGER), count(*) FILTER (WHERE random() > 2) FR
 
 # empty input
 query II
-SELECT k1, count(*) FROM t WHERE v::VARCHAR = 'x' GROUP BY k1 ORDER BY k1 LIMIT 3
+SELECT k1, count(*) FROM t WHERE v::VARCHAR = k2 GROUP BY k1 ORDER BY k1 LIMIT 3
 ----
 
 # an offset at and past the last group
@@ -685,7 +685,7 @@ SELECT k, count(*), sum(v) FROM w GROUP BY k LIMIT 3
 20000000000	5	14730
 
 query II
-EXPLAIN SELECT k1, count(*) FROM t WHERE v::VARCHAR = 'x' GROUP BY k1 ORDER BY k1 LIMIT 3
+EXPLAIN SELECT k1, count(*) FROM t WHERE v::VARCHAR = k2 GROUP BY k1 ORDER BY k1 LIMIT 3
 ----
 logical_opt	<REGEX>:.*Top Key Filter.*
 

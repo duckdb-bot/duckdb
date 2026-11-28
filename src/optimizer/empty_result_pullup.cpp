@@ -3,8 +3,22 @@
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
 #include "duckdb/planner/operator/logical_empty_result.hpp"
 #include "duckdb/planner/operator/logical_any_join.hpp"
+#include "duckdb/planner/operator/logical_aggregate.hpp"
 
 namespace duckdb {
+
+//! A grouped aggregate produces no rows from no input rows, unless one of its grouping sets is empty
+static bool AggregateIsEmptyOnEmptyInput(const LogicalAggregate &aggr) {
+	if (aggr.groups.empty()) {
+		return false;
+	}
+	for (auto &grouping_set : aggr.grouping_sets) {
+		if (grouping_set.empty()) {
+			return false;
+		}
+	}
+	return true;
+}
 
 unique_ptr<LogicalOperator> EmptyResultPullup::PullUpEmptyJoinChildren(unique_ptr<LogicalOperator> op) {
 	JoinType join_type = JoinType::INVALID;
@@ -84,6 +98,13 @@ unique_ptr<LogicalOperator> EmptyResultPullup::Optimize(unique_ptr<LogicalOperat
 				op = make_uniq<LogicalEmptyResult>(std::move(op));
 				break;
 			}
+		}
+		return op;
+	}
+	case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY: {
+		if (op->children[0]->type == LogicalOperatorType::LOGICAL_EMPTY_RESULT &&
+		    AggregateIsEmptyOnEmptyInput(op->Cast<LogicalAggregate>())) {
+			op = make_uniq<LogicalEmptyResult>(std::move(op));
 		}
 		return op;
 	}

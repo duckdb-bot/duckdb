@@ -225,6 +225,11 @@ unique_ptr<Expression> BetweenNullSimplificationRule::Apply(LogicalOperator &op,
 	if (!ExpressionExecutor::TryEvaluateScalar(GetContext(), bindings[1].get(), input_value) || !input_value.IsNull()) {
 		return nullptr;
 	}
+	// a NULL result drops the bounds, which must then not be volatile, nor able to throw inside TRY
+	if (!rewriter.CanDropExpression(BoundBetweenExpression::LowerBound(between)) ||
+	    !rewriter.CanDropExpression(BoundBetweenExpression::UpperBound(between))) {
+		return nullptr;
+	}
 	// both bound comparisons are NULL whatever the bounds are, so they need not be evaluated
 	return make_uniq<BoundConstantExpression>(Value(LogicalType::BOOLEAN));
 }
@@ -299,7 +304,10 @@ unique_ptr<Expression> ComparisonSimplificationRule::Apply(LogicalOperator &op, 
 	}
 	if (constant_value.IsNull() && !(expr.GetExpressionType() == ExpressionType::COMPARE_NOT_DISTINCT_FROM ||
 	                                 expr.GetExpressionType() == ExpressionType::COMPARE_DISTINCT_FROM)) {
-		// comparison with constant NULL, return NULL
+		// comparison with constant NULL, return NULL, unless that drops the other side
+		if (!rewriter.CanDropExpression(column_ref_expr)) {
+			return nullptr;
+		}
 		return make_uniq<BoundConstantExpression>(Value(LogicalType::BOOLEAN));
 	}
 	if (BoundComparisonExpression::IsComparison(column_ref_expr) && !constant_value.IsNull() &&
@@ -321,6 +329,10 @@ unique_ptr<Expression> ComparisonSimplificationRule::Apply(LogicalOperator &op, 
 		//! invertible in practice.
 		auto &cast_expression = column_ref_expr.Cast<BoundFunctionExpression>();
 		auto target_type = BoundCastExpression::SourceType(cast_expression);
+		// moving the cast to the constant removes it, and its error TRY would catch
+		if (rewriter.InTry() && cast_expression.CanThrow()) {
+			return nullptr;
+		}
 		if (!constant_value.IsNull() && IsEqualityComparisonType(expr.GetExpressionType()) &&
 		    BoundCastExpression::CastIsInvertibleForEquality(target_type, cast_expression.GetReturnType())) {
 			return SimplifyEqualityCastComparison(GetContext(), expr, cast_expression, constant_value, column_ref_left,
@@ -346,6 +358,11 @@ unique_ptr<Expression> ComparisonSimplificationRule::Apply(LogicalOperator &op, 
 			return nullptr;
 		}
 		if (replacement) {
+			if (replacement->GetExpressionClass() == ExpressionClass::BOUND_CONSTANT &&
+			    !rewriter.CanDropExpression(cast_expression)) {
+				// the constant would drop the operand of the cast
+				return nullptr;
+			}
 			return replacement;
 		}
 

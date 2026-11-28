@@ -1,0 +1,46 @@
+# name: test/sql/types/variant/variant_combine_null_array.test
+# description: Combining VARIANT values with an array of untyped NULLs gives VARIANT, not the NULL type
+# group: [variant]
+
+query II
+SELECT r, typeof(r) FROM (SELECT [[1::VARIANT, 2::VARIANT], array_value(NULL, NULL)] AS r);
+----
+[[1, 2], [NULL, NULL]]	VARIANT[][]
+
+query I
+SELECT [array_value(NULL, NULL), [1::VARIANT, 2::VARIANT]];
+----
+[[NULL, NULL], [1, 2]]
+
+query I
+SELECT [array_value(1::VARIANT, 2::VARIANT), array_value(NULL, NULL)];
+----
+[[1, 2], [NULL, NULL]]
+
+query I
+SELECT r FROM (SELECT [1::VARIANT, 2::VARIANT] AS r UNION ALL SELECT array_value(NULL, NULL)) ORDER BY r[1] NULLS LAST;
+----
+[1, 2]
+[NULL, NULL]
+
+query I
+SELECT [{'a': array_value(1::VARIANT, 2::VARIANT)}, {'a': array_value(NULL, NULL)}];
+----
+[{'a': [1, 2]}, {'a': [NULL, NULL]}]
+
+# the NULL type still combines with VARIANT
+query II
+SELECT r, typeof(r) FROM (SELECT [1::VARIANT, NULL] AS r);
+----
+[1, NULL]	VARIANT[]
+
+query I
+SELECT [[1::VARIANT], [NULL]];
+----
+[[1], [NULL]]
+
+# a VARIANT does not cast to the NULL type
+statement error
+SELECT 1::VARIANT::"NULL";
+----
+Unimplemented type for cast

@@ -1,0 +1,58 @@
+# name: test/sql/storage/bc/type_parameter_literals_storage_version.test
+# description: A type parameter that is stored as a typed value reads back as a literal and can be written again
+# group: [bc]
+
+# storage versions before v2.0.0 store the parameters of a type that stays unbound as typed values
+foreach version v1.0.0 v1.5.0
+
+statement ok
+ATTACH '{TEST_DIR}/type_parameter_literals_{version}.db' AS old (STORAGE_VERSION '{version}')
+
+# the macro drops its argument, so the cast to a type that does not exist is stored and never bound
+statement ok
+CREATE MACRO old.keep_one(x) AS 1
+
+statement ok
+CREATE VIEW old.w AS SELECT old.keep_one(1::unknown_type(1e0, 1.5e0, -0e0, 1e-3, 1., 0., 01.50, 00.00, -.5, 1.5, 3, 'a')) AS x
+
+statement ok
+DETACH old
+
+statement ok
+ATTACH '{TEST_DIR}/type_parameter_literals_{version}.db' AS old
+
+# a DOUBLE comes back with an exponent and a DECIMAL with all digits of its width
+query I
+SELECT sql FROM duckdb_views() WHERE database_name = 'old'
+----
+CREATE VIEW w AS SELECT keep_one(CAST(1 AS unknown_type(1.0e0, 1.5e0, -0.0e0, 0.001e0, 1., 0., 01.50, 00.00, -.5, 1.5, 3, 'a'))) AS x;
+
+# this spelling parses
+statement ok
+CREATE VIEW old.w2 AS SELECT old.keep_one(CAST(1 AS unknown_type(1.0e0, 1.5e0, -0.0e0, 0.001e0, 1., 0., 01.50, 00.00, -.5, 1.5, 3, 'a'))) AS x
+
+# and both views can be written again
+statement ok
+CHECKPOINT old
+
+statement ok
+DETACH old
+
+statement ok
+ATTACH '{TEST_DIR}/type_parameter_literals_{version}.db' AS old
+
+query I
+SELECT sql FROM duckdb_views() WHERE database_name = 'old' ORDER BY view_name
+----
+CREATE VIEW w AS SELECT keep_one(CAST(1 AS unknown_type(1.0e0, 1.5e0, -0.0e0, 0.001e0, 1., 0., 01.50, 00.00, -.5, 1.5, 3, 'a'))) AS x;
+CREATE VIEW w2 AS SELECT keep_one(CAST(1 AS unknown_type(1.0e0, 1.5e0, -0.0e0, 0.001e0, 1., 0., 01.50, 00.00, -.5, 1.5, 3, 'a'))) AS x;
+
+query II
+SELECT w.x, w2.x FROM old.w, old.w2
+----
+1	1
+
+statement ok
+DETACH old
+
+endloop

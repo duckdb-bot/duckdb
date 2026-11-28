@@ -153,7 +153,7 @@ StringValueResult::StringValueResult(CSVStates &states, CSVStateMachine &state_m
 
 StringValueResult::~StringValueResult() {
 	// We have to insert the lines read by this scanner
-	error_handler.Insert(iterator.GetBoundaryIdx(), lines_read);
+	error_handler.Insert(iterator.GetBoundaryIdx(), lines_read + comment_lines_behind_rows);
 	if (!iterator.done) {
 		// Some operators, like Limit, might cause a future error to incorrectly report the wrong error line
 		// Better to print nothing to print something wrong
@@ -2152,13 +2152,15 @@ void StringValueScanner::FinishBoundaryScan(const bool moved) {
 				// only that line feed was counted, the row behind it is counted when it ends in a later buffer
 				lines_read = lines_before;
 			}
-			if (!moved && lines_read == lines_before && result.IsCommentLine() && !cur_buffer_handle->is_last_buffer) {
-				// a comment line holds no row to finish in the next buffer, for this scan it ends with its buffer
+			// a comment line holds no row to finish in the next buffer, for this scan it ends with its buffer
+			const bool ends_in_comment_line =
+			    !moved && lines_read == lines_before && result.IsCommentLine() && !cur_buffer_handle->is_last_buffer;
+			if (ends_in_comment_line) {
 				result.UnsetComment(result, iterator.pos.buffer_pos);
-				lines_read++;
+				result.comment_lines_behind_rows++;
 			}
 			// a row longer than a buffer goes on in the buffers after it
-			while (lines_read == lines_before && !result.IsStateCurrent(CSVState::INVALID) &&
+			while (!ends_in_comment_line && lines_read == lines_before && !result.IsStateCurrent(CSVState::INVALID) &&
 			       iterator.pos.buffer_pos >= cur_buffer_handle->actual_size && !cur_buffer_handle->is_last_buffer) {
 				const auto move_result = TryMoveToNextBuffer();
 				if (move_result == MoveBufferResult::NOT_IN_MEMORY) {

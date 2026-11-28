@@ -267,6 +267,9 @@ public:
 	//! Variable used when trying to figure out where a new segment starts, we must always start from a Valid
 	//! (i.e., non-comment) line.
 	bool first_line_is_comment = false;
+	//! Comment lines that the scan left behind its last row. The line of a row in Flush is derived from lines_read,
+	//! which does not hold them
+	idx_t comment_lines_behind_rows = 0;
 
 	bool ignore_empty_values = true;
 

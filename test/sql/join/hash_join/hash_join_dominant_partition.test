@@ -1,6 +1,9 @@
 # name: test/sql/join/hash_join/hash_join_dominant_partition.test
-# description: a join with a dominant partition only turns external where an external join holds less in memory
+# description: a join with a dominant partition only turns external where an external join can hold less in memory
 # group: [hash_join]
+
+# the sizes that decide these joins assume default sized vectors
+require vector_size 2048
 
 # a restart between the statements would discard the operator log
 require skip_reload
@@ -52,6 +55,10 @@ CALL truncate_duckdb_logs();
 
 statement ok
 CALL enable_logging('PhysicalOperator');
+
+# an external join reports its progress by partition, which stalls while the largest one produces its matches
+statement ok
+SET debug_verify_progress_ignore = 'STALLED:HASH_JOIN';
 
 # the same share of equal keys without a direct lookup, the other partitions spill while the largest one is built
 query I

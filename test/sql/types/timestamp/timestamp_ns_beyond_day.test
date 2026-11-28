@@ -1,0 +1,61 @@
+# name: test/sql/types/timestamp/timestamp_ns_beyond_day.test
+# description: The time of day in a TIMESTAMP_NS string cannot lie past the end of the day
+# group: [timestamp]
+
+statement error
+SELECT '2024-01-01 24:00:00.000000001'::TIMESTAMP_NS
+----
+Could not convert string '2024-01-01 24:00:00.000000001' to INT64
+
+statement error
+SELECT '2024-01-01 24:00:00.000000999'::TIMESTAMP_NS
+----
+Could not convert string '2024-01-01 24:00:00.000000999' to INT64
+
+# one microsecond past the end of the day fails the same way
+statement error
+SELECT '2024-01-01 24:00:00.000001'::TIMESTAMP_NS
+----
+Could not convert string '2024-01-01 24:00:00.000001' to INT64
+
+# digits behind the nanoseconds are rounded first
+statement error
+SELECT '2024-01-01 24:00:00.0000000006'::TIMESTAMP_NS
+----
+Could not convert string '2024-01-01 24:00:00.0000000006' to INT64
+
+statement error
+SELECT '2024-01-01 24:00:00.000000001+00'::TIMESTAMPTZ_NS
+----
+timestamp field value out of range: "2024-01-01 24:00:00.000000001+00"
+
+statement error
+SELECT '2024-01-01 24:00:00.000000001'::TIME_NS
+----
+time field value out of range: "2024-01-01 24:00:00.000000001"
+
+query III
+SELECT TRY_CAST('2024-01-01 24:00:00.000000001' AS TIMESTAMP_NS), TRY_CAST('2024-01-01 24:00:00.000000001+00' AS TIMESTAMPTZ_NS), TRY_CAST('2024-01-01 24:00:00.000000001' AS TIME_NS)
+----
+NULL	NULL	NULL
+
+# the end of the day itself is the start of the next day, and the last nanosecond of the day is kept
+query III
+SELECT '2024-01-01 24:00:00'::TIMESTAMP_NS, '2024-01-01 24:00:00.0000000004'::TIMESTAMP_NS, '2024-01-01 23:59:59.999999999'::TIMESTAMP_NS
+----
+2024-01-02 00:00:00	2024-01-02 00:00:00	2024-01-01 23:59:59.999999999
+
+# a column of strings goes through the same check
+statement ok
+CREATE TABLE beyond_day AS SELECT * FROM (VALUES ('2024-01-01 12:00:00.000000001'), ('2024-01-01 24:00:00.000000001')) t(s);
+
+statement error
+SELECT s::TIMESTAMP_NS FROM beyond_day
+----
+Could not convert string '2024-01-01 24:00:00.000000001' to INT64
+
+query I
+SELECT TRY_CAST(s AS TIMESTAMP_NS) FROM beyond_day ORDER BY s
+----
+2024-01-01 12:00:00.000000001
+NULL

@@ -77,7 +77,9 @@ TimestampCastResult Timestamp::TryConvertTimestampTZ(const char *str, idx_t len,
 		return TimestampCastResult::ERROR_INCORRECT_FORMAT;
 	}
 	//	We parsed an interval, so make sure it is in range.
-	if (time.value > Interval::MICROS_PER_DAY) {
+	//	The nanoseconds can push the last time of a day past its end
+	const bool nanos_past_day = time.value == Interval::MICROS_PER_DAY && nanos && *nanos > 0;
+	if (time.value > Interval::MICROS_PER_DAY || nanos_past_day) {
 		return TimestampCastResult::ERROR_RANGE;
 	}
 	pos += time_pos;

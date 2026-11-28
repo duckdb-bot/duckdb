@@ -1,0 +1,207 @@
+# name: test/optimizer/deliminator_barrier.test
+# description: A barrier in a correlated subquery only sees the rows of the outer keys
+# group: [optimizer]
+
+statement ok
+SET explain_output='optimized_only';
+
+statement ok
+CREATE TABLE barrier_outer(k INTEGER, j INTEGER);
+
+statement ok
+INSERT INTO barrier_outer VALUES (1, 1), (1, 1), (3, 3), (4, 4), (NULL, NULL);
+
+# the rows that cannot be cast match no outer row
+statement ok
+CREATE TABLE barrier_inner(k INTEGER, j INTEGER, s VARCHAR);
+
+statement ok
+INSERT INTO barrier_inner VALUES (1, 1, '1'), (1, 1, '10'), (2, 2, 'bad'), (3, 3, '3'), (NULL, NULL, 'bad');
+
+# barrier in a filter of the subquery
+query I
+SELECT k FROM barrier_outer o
+WHERE EXISTS (SELECT 1 FROM barrier_inner i WHERE i.k = o.k AND __internal_barrier(CAST(i.s AS INTEGER) > 0))
+ORDER BY k;
+----
+1
+1
+3
+
+query I
+SELECT k FROM barrier_outer o
+WHERE EXISTS (
+    SELECT 1 FROM barrier_inner i
+    WHERE i.k = o.k AND i.j = o.j AND __internal_barrier(CAST(i.s AS INTEGER) > 0)
+)
+ORDER BY k;
+----
+1
+1
+3
+
+query I
+SELECT k FROM barrier_outer o
+WHERE NOT EXISTS (SELECT 1 FROM barrier_inner i WHERE i.k = o.k AND __internal_barrier(CAST(i.s AS INTEGER) > 0))
+ORDER BY k;
+----
+4
+NULL
+
+query I
+SELECT k FROM barrier_outer o
+WHERE o.k IN (SELECT i.k FROM barrier_inner i WHERE i.j = o.j AND __internal_barrier(CAST(i.s AS INTEGER) > 0))
+ORDER BY k;
+----
+1
+1
+3
+
+query II
+SELECT k, (SELECT count(*) FROM barrier_inner i WHERE i.k = o.k AND __internal_barrier(CAST(i.s AS INTEGER) > 0))
+FROM barrier_outer o
+ORDER BY k;
+----
+1	2
+1	2
+3	1
+4	0
+NULL	0
+
+# barrier in the select list and in an aggregate of the subquery
+query II
+SELECT k, (SELECT __internal_barrier(CAST(i.s AS INTEGER)) FROM barrier_inner i WHERE i.k = o.k)
+FROM barrier_outer o
+WHERE k >= 3
+ORDER BY k;
+----
+3	3
+4	NULL
+
+query II
+SELECT k, (SELECT max(__internal_barrier(CAST(i.s AS INTEGER))) FROM barrier_inner i WHERE i.k = o.k)
+FROM barrier_outer o
+ORDER BY k;
+----
+1	10
+1	10
+3	3
+4	NULL
+NULL	NULL
+
+# lateral joins, with the barrier in the subquery and in the join condition
+query IT
+SELECT o.k, l.s
+FROM barrier_outer o, LATERAL (
+    SELECT i.s FROM barrier_inner i WHERE i.k = o.k AND __internal_barrier(CAST(i.s AS INTEGER) > 0)
+) l
+ORDER BY ALL;
+----
+1	1
+1	1
+1	10
+1	10
+3	3
+
+query IT
+SELECT o.k, l.s
+FROM barrier_outer o
+LEFT JOIN LATERAL (SELECT i.s FROM barrier_inner i WHERE i.k = o.k) l
+ON o.j = __internal_barrier(CAST(l.s AS INTEGER))
+ORDER BY ALL;
+----
+1	1
+1	1
+3	3
+4	NULL
+NULL	NULL
+
+# a correlation domain that the subquery joins as a relation of its own
+query II
+SELECT o.k, l.v
+FROM barrier_outer o, LATERAL (
+    SELECT __internal_barrier(i.s::INTEGER) AS v
+    FROM (SELECT o.k AS k) d JOIN barrier_inner i ON i.k = d.k
+) l
+ORDER BY ALL;
+----
+1	1
+1	1
+1	10
+1	10
+3	3
+
+query II
+SELECT o.k, l.v
+FROM barrier_outer o, LATERAL (
+    SELECT __internal_barrier(i.s::INTEGER) AS v
+    FROM (SELECT o.k AS k, o.j AS j) d JOIN barrier_inner i ON i.k = d.k AND i.j = d.j
+) l
+ORDER BY ALL;
+----
+1	1
+1	1
+1	10
+1	10
+3	3
+
+# nested subqueries
+query I
+SELECT k FROM barrier_outer o
+WHERE EXISTS (
+    SELECT 1 FROM barrier_inner i
+    WHERE i.k = o.k AND EXISTS (
+        SELECT 1 FROM barrier_inner i2
+        WHERE i2.k = o.k AND i2.j = i.j AND __internal_barrier(CAST(i2.s AS INTEGER) > 0)
+    )
+)
+ORDER BY k;
+----
+1
+1
+3
+
+# a subquery without a barrier next to one with a barrier
+query III
+SELECT k,
+    (SELECT count(*) FROM barrier_inner i WHERE i.k = o.k),
+    (SELECT count(*) FROM barrier_inner i WHERE i.k = o.k AND __internal_barrier(CAST(i.s AS INTEGER) > 0))
+FROM barrier_outer o
+ORDER BY k;
+----
+1	2	2
+1	2	2
+3	1	1
+4	0	0
+NULL	0	0
+
+# only the subquery with a barrier keeps its correlation domain
+query II
+EXPLAIN SELECT k FROM barrier_outer o
+WHERE EXISTS (SELECT 1 FROM barrier_inner i WHERE i.k = o.k AND i.j > 0);
+----
+logical_opt	<!REGEX>:.*(CTE|DELIM).*
+
+query II
+EXPLAIN SELECT k FROM barrier_outer o
+WHERE EXISTS (SELECT 1 FROM barrier_inner i WHERE i.k = o.k AND __internal_barrier(CAST(i.s AS INTEGER) > 0));
+----
+logical_opt	<REGEX>:.*CTE.*
+
+# two correlated keys over larger tables
+statement ok
+CREATE TABLE outer_t AS SELECT i AS id, i % 5 AS grp FROM range(20) r(i);
+
+statement ok
+CREATE TABLE mid_t AS
+SELECT i AS mid_id, i % 23 AS outer_ref, (i % 23) % 5 AS grp2, CASE WHEN i % 23 >= 20 THEN 'bad' ELSE '42' END AS s
+FROM range(60) r(i);
+
+query I
+SELECT count(*) FROM outer_t o
+WHERE EXISTS (
+    SELECT 1 FROM mid_t m
+    WHERE m.outer_ref = o.id AND m.grp2 = o.grp AND __internal_barrier(m.s::INTEGER = 42)
+);
+----
+20

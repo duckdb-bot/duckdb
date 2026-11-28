@@ -1127,6 +1127,26 @@ static bool CanEvaluateUnmatchedRows(const LogicalOperator &op, bool allow_aggre
 	return true;
 }
 
+static bool HasBarrierExpression(const LogicalOperator &op) {
+	bool has_barrier = false;
+	LogicalOperatorVisitor::EnumerateExpressions(op, [&](optional_ptr<const unique_ptr<Expression>> expression) {
+		has_barrier |= ExpressionBarrier::Contains(**expression);
+	});
+	return has_barrier;
+}
+
+static bool SubtreeHasBarrierExpression(const LogicalOperator &op) {
+	if (HasBarrierExpression(op)) {
+		return true;
+	}
+	for (auto &child : op.children) {
+		if (SubtreeHasBarrierExpression(*child)) {
+			return true;
+		}
+	}
+	return false;
+}
+
 struct GeneratedDomainReplacement {
 	BindingReplacementGraph bindings;
 	vector<unique_ptr<Expression>> outputs;
@@ -2170,12 +2190,16 @@ BindingReplacementGraph DelimJoinCTERewriter::MaterializeDelimJoinAsCTE(unique_p
 
 	auto dedup_cte_index = binder.GenerateTableIndex();
 	auto dedup_ref_count = RewriteDelimScanReferences(plan->children[1], dedup_cte_index);
+	// Without its domain the subquery side also produces rows that no outer row asks for, which a barrier must not see
+	const bool barrier_needs_domain = HasBarrierExpression(*plan) || SubtreeHasBarrierExpression(*plan->children[1]);
 	if (cte_deliminator_enabled) {
 		auto cte_deliminator_timer =
 		    QueryProfiler::Get(binder.context).StartTimerInternal(CTE_DELIMINATOR_PROFILER_KEY);
-		GeneratedDedupRefEliminator eliminator(binder, plan, dedup_cte_index, dedup_ref_count, rewrite_root,
-		                                       preserve_evidence_side, preserve_nested_evidence_side);
-		dedup_ref_count = eliminator.Remove();
+		if (!barrier_needs_domain) {
+			GeneratedDedupRefEliminator eliminator(binder, plan, dedup_cte_index, dedup_ref_count, rewrite_root,
+			                                       preserve_evidence_side, preserve_nested_evidence_side);
+			dedup_ref_count = eliminator.Remove();
+		}
 		auto &join = plan->Cast<LogicalComparisonJoin>();
 		if (SingleJoinRHSIsDeduplicated(join)) {
 			join.join_type = null_rejecting_filter_above ? JoinType::INNER : JoinType::LEFT;
@@ -2186,7 +2210,9 @@ BindingReplacementGraph DelimJoinCTERewriter::MaterializeDelimJoinAsCTE(unique_p
 		join.duplicate_eliminated_columns.clear();
 		return {};
 	}
-	generated_dedup_cte_indexes.push_back(dedup_cte_index);
+	if (!barrier_needs_domain) {
+		generated_dedup_cte_indexes.push_back(dedup_cte_index);
+	}
 	unordered_set<TableIndex> local_ctes {dedup_cte_index};
 	const bool requires_left_row = join.join_type == JoinType::INNER || join.join_type == JoinType::LEFT ||
 	                               join.join_type == JoinType::SEMI || join.join_type == JoinType::ANTI ||

@@ -2,6 +2,7 @@
 #include "duckdb/logging/log_manager.hpp"
 #include "duckdb/transaction/commit_state.hpp"
 
+#include "duckdb/catalog/catalog_entry_retriever.hpp"
 #include "duckdb/common/enum_util.hpp"
 #include "duckdb/common/exception/transaction_exception.hpp"
 #include "duckdb/common/index_map.hpp"
@@ -421,6 +422,94 @@ static unique_ptr<ParsedExpression> RemapStructDefault(unique_ptr<ParsedExpressi
 	children.push_back(arguments[2].GetExpression().Copy());
 	children.push_back(arguments[3].GetExpression().Copy());
 	return make_uniq<FunctionExpression>("remap_struct", std::move(children));
+}
+
+//! Whether a default of a table of the schema calls the built-in function when it uses this name without a qualifier
+static bool DefaultCallsBuiltinFunction(ClientContext &context, SchemaCatalogEntry &schema,
+                                        const Identifier &function_name) {
+	// a default is bound with the schema of its table and the default schema of its catalog in front of the search path
+	auto &catalog_name = schema.ParentCatalog().GetName();
+	const auto schema_path = schema.GetSchemaPath();
+	vector<CatalogSearchEntry> search_path;
+	search_path.push_back(CatalogSearchEntry::FromSchemaPath(catalog_name, schema_path));
+	if (schema_path.size() != 1 || schema_path[0] != DEFAULT_SCHEMA) {
+		search_path.emplace_back(catalog_name, DEFAULT_SCHEMA);
+	}
+	CatalogEntryRetriever retriever(context);
+	retriever.SetSearchPath(std::move(search_path));
+	EntryLookupInfo lookup(CatalogType::SCALAR_FUNCTION_ENTRY, QualifiedName(function_name));
+	auto entry = retriever.GetEntry(lookup, OnEntryNotFound::RETURN_NULL);
+	return entry && entry->type == CatalogType::SCALAR_FUNCTION_ENTRY && entry->internal &&
+	       entry->ParentCatalog().IsSystemCatalog();
+}
+
+//! Removes the field that the new type lost from a default that is written as a struct constructor
+static bool DropFieldFromDefault(ClientContext &context, SchemaCatalogEntry &schema, ParsedExpression &default_value,
+                                 const LogicalType &old_type, const LogicalType &new_type) {
+	if (default_value.GetExpressionClass() == ExpressionClass::CONSTANT) {
+		// a NULL has no field to remove
+		return default_value.Cast<ConstantExpression>().GetLiteral().IsNull();
+	}
+	if (old_type.id() != LogicalTypeId::STRUCT || default_value.GetExpressionClass() != ExpressionClass::FUNCTION) {
+		return false;
+	}
+	auto &function = default_value.Cast<FunctionExpression>();
+	if (function.GetQualifiedName().Path().size() != 1) {
+		return false;
+	}
+	auto &old_fields = StructType::GetChildTypes(old_type);
+	auto &new_fields = StructType::GetChildTypes(new_type);
+	auto &arguments = function.GetArgumentsMutable();
+	const bool has_names = function.FunctionName() == "struct_pack";
+	if (!has_names && (function.FunctionName() != "row" || arguments.size() != old_fields.size())) {
+		return false;
+	}
+	if (!DefaultCallsBuiltinFunction(context, schema, function.FunctionName())) {
+		// a function of the user has the name of the constructor
+		return false;
+	}
+	// the first field that differs is the dropped field, or the struct that holds it
+	idx_t field_idx = 0;
+	while (field_idx < new_fields.size() && old_fields[field_idx] == new_fields[field_idx]) {
+		field_idx++;
+	}
+	D_ASSERT(field_idx < old_fields.size());
+	optional_idx argument_idx;
+	for (idx_t i = 0; i < arguments.size(); i++) {
+		if (arguments[i].HasName() != has_names) {
+			return false;
+		}
+		// without names the arguments follow the order of the fields
+		if (has_names ? arguments[i].GetName() == old_fields[field_idx].first : i == field_idx) {
+			argument_idx = i;
+		}
+	}
+	if (!argument_idx.IsValid()) {
+		// the default never set this field
+		return true;
+	}
+	if (old_fields.size() == new_fields.size()) {
+		auto &argument = *arguments[argument_idx.GetIndex()].GetExpressionMutable();
+		return DropFieldFromDefault(context, schema, argument, old_fields[field_idx].second,
+		                            new_fields[field_idx].second);
+	}
+	if (has_names) {
+		// the cast to the new type needs an argument with the name of a field that stays
+		bool has_match = false;
+		for (idx_t i = 0; i < arguments.size(); i++) {
+			if (i == argument_idx.GetIndex()) {
+				continue;
+			}
+			for (auto &new_field : new_fields) {
+				has_match = has_match || arguments[i].GetName() == new_field.first;
+			}
+		}
+		if (!has_match) {
+			return false;
+		}
+	}
+	arguments.erase_at(argument_idx.GetIndex());
+	return true;
 }
 
 unique_ptr<CatalogEntry> DuckTableEntry::RenameColumn(ClientContext &context, RenameColumnInfo &info) {
@@ -1209,6 +1298,12 @@ unique_ptr<CatalogEntry> DuckTableEntry::ChangeColumnType(ClientContext &context
 				// the stored default is not cast yet, the mapping is for the old type of the column
 				auto old_default = make_uniq<CastExpression>(col.Type(), copy.DefaultValue().Copy());
 				copy.SetDefaultValue(RemapStructDefault(std::move(old_default), info.target_type, info));
+			} else if (alter_table_type == AlterTableType::REMOVE_FIELD && copy.HasDefaultValue()) {
+				// any other default keeps the field, which the cast to the new type of the column drops
+				auto new_default = copy.DefaultValue().Copy();
+				if (DropFieldFromDefault(context, schema, *new_default, col.Type(), info.target_type)) {
+					copy.SetDefaultValue(std::move(new_default));
+				}
 			}
 		}
 		// TODO: check if the generated_expression breaks, only delete it if it does

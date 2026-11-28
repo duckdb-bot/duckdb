@@ -1,0 +1,54 @@
+# name: test/sql/alter/struct/drop_col_struct_column_default_dependencies.test
+# description: A struct field that is dropped takes the dependencies of its default expression with it
+# group: [struct]
+
+load {TEST_DIR}/drop_col_struct_column_default_dependencies.db
+
+statement ok
+CREATE TYPE mood AS ENUM ('sad', 'happy');
+
+statement ok
+CREATE SEQUENCE seq;
+
+statement ok
+CREATE MACRO seven() AS 7;
+
+statement ok
+CREATE TABLE d(i INT, s STRUCT(x INT, m mood, n BIGINT, v INT) DEFAULT {'x': 1, 'm': 'happy'::mood, 'n': nextval('seq'), 'v': seven()});
+
+statement ok
+ALTER TABLE d DROP COLUMN s.m;
+
+statement ok
+ALTER TABLE d DROP COLUMN s.n;
+
+statement ok
+ALTER TABLE d DROP COLUMN s.v;
+
+# the table is stored with the dependencies of its new default, which are registered when it is loaded
+statement ok
+CHECKPOINT;
+
+restart
+
+query I
+SELECT column_default FROM duckdb_columns() WHERE table_name = 'd' AND column_name = 's';
+----
+struct_pack(x := 1)
+
+statement ok
+DROP TYPE mood;
+
+statement ok
+DROP SEQUENCE seq;
+
+statement ok
+DROP MACRO seven;
+
+statement ok
+INSERT INTO d(i) VALUES (1);
+
+query II
+SELECT i, s FROM d;
+----
+1	{'x': 1}

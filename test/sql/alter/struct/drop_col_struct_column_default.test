@@ -1,0 +1,222 @@
+# name: test/sql/alter/struct/drop_col_struct_column_default.test
+# description: Dropping a field of a struct column also drops the field from the default of the column
+# group: [struct]
+
+statement ok
+CREATE SEQUENCE seq;
+
+statement ok
+CREATE TABLE d(i INT, s STRUCT(x INT, y BIGINT, z INT) DEFAULT {'x': 1, 'y': nextval('seq'), 'z': 3});
+
+statement ok
+ALTER TABLE d DROP COLUMN s.y;
+
+query II
+SELECT data_type, column_default FROM duckdb_columns() WHERE table_name = 'd' AND column_name = 's';
+----
+STRUCT(x INTEGER, z INTEGER)	struct_pack(x := 1, z := 3)
+
+statement ok
+INSERT INTO d(i) VALUES (1), (2);
+
+query II
+SELECT i, s FROM d ORDER BY i;
+----
+1	{'x': 1, 'z': 3}
+2	{'x': 1, 'z': 3}
+
+# the expression of the dropped field no longer runs
+query I
+SELECT nextval('seq');
+----
+1
+
+# field names do not depend on case
+statement ok
+CREATE TABLE cased(i INT, s STRUCT(x INT, y INT) DEFAULT {'X': 1, 'Y': 2});
+
+statement ok
+ALTER TABLE cased DROP COLUMN s.y;
+
+query I
+SELECT column_default FROM duckdb_columns() WHERE table_name = 'cased' AND column_name = 's';
+----
+struct_pack(X := 1)
+
+# a field of a nested struct, then the nested struct itself
+statement ok
+CREATE TABLE nested(i INT, s STRUCT(x INT, n STRUCT(a INT, b INT)) DEFAULT {'x': 1, 'n': {'a': 5, 'b': 6}});
+
+statement ok
+ALTER TABLE nested DROP COLUMN s.n.a;
+
+query I
+SELECT column_default FROM duckdb_columns() WHERE table_name = 'nested' AND column_name = 's';
+----
+struct_pack(x := 1, n := struct_pack(b := 6))
+
+statement ok
+INSERT INTO nested(i) VALUES (1);
+
+query II
+SELECT i, s FROM nested;
+----
+1	{'x': 1, 'n': {'b': 6}}
+
+statement ok
+ALTER TABLE nested DROP COLUMN s.n;
+
+query I
+SELECT column_default FROM duckdb_columns() WHERE table_name = 'nested' AND column_name = 's';
+----
+struct_pack(x := 1)
+
+statement ok
+INSERT INTO nested(i) VALUES (2);
+
+query II
+SELECT i, s FROM nested ORDER BY i;
+----
+1	{'x': 1}
+2	{'x': 1}
+
+# a default without names follows the order of the fields
+statement ok
+CREATE TABLE unnamed_default(i INT, s STRUCT(x INT, y INT, z INT) DEFAULT (1, 2, 3));
+
+statement ok
+ALTER TABLE unnamed_default DROP COLUMN s.y;
+
+query I
+SELECT column_default FROM duckdb_columns() WHERE table_name = 'unnamed_default' AND column_name = 's';
+----
+"row"(1, 3)
+
+statement ok
+INSERT INTO unnamed_default(i) VALUES (1);
+
+query II
+SELECT i, s FROM unnamed_default;
+----
+1	{'x': 1, 'z': 3}
+
+statement ok
+CREATE TABLE unnamed_nested(i INT, s STRUCT(x INT, n STRUCT(a INT, b INT)) DEFAULT (1, (5, 6)));
+
+statement ok
+ALTER TABLE unnamed_nested DROP COLUMN s.n.a;
+
+query I
+SELECT column_default FROM duckdb_columns() WHERE table_name = 'unnamed_nested' AND column_name = 's';
+----
+"row"(1, "row"(6))
+
+statement ok
+INSERT INTO unnamed_nested(i) VALUES (1);
+
+query II
+SELECT i, s FROM unnamed_nested;
+----
+1	{'x': 1, 'n': {'b': 6}}
+
+# a default that never had the field, and a NULL default, stay as they are
+statement ok
+CREATE TABLE partial_default(i INT, s STRUCT(x INT, y INT) DEFAULT {'x': 1});
+
+statement ok
+ALTER TABLE partial_default DROP COLUMN s.y;
+
+statement ok
+CREATE TABLE null_default(i INT, s STRUCT(x INT, y INT) DEFAULT NULL);
+
+statement ok
+ALTER TABLE null_default DROP COLUMN s.y;
+
+query II
+SELECT table_name, column_default FROM duckdb_columns() WHERE table_name IN ('partial_default', 'null_default') AND column_name = 's' ORDER BY table_name;
+----
+null_default	NULL
+partial_default	struct_pack(x := 1)
+
+statement ok
+INSERT INTO partial_default(i) VALUES (1);
+
+statement ok
+INSERT INTO null_default(i) VALUES (1);
+
+query II
+SELECT s, (SELECT s FROM null_default) FROM partial_default;
+----
+{'x': 1}	NULL
+
+# any other default stays as it is and is cast to the new type
+statement ok
+CREATE TABLE cast_default(i INT, s STRUCT(x INT, y INT) DEFAULT {'x': 1, 'y': 2}::STRUCT(x INT, y INT));
+
+statement ok
+ALTER TABLE cast_default DROP COLUMN s.x;
+
+statement ok
+CREATE TABLE qualified(i INT, s STRUCT(x INT, y INT) DEFAULT "system".main.struct_pack(x := 1, y := 2));
+
+statement ok
+ALTER TABLE qualified DROP COLUMN s.x;
+
+statement ok
+CREATE TABLE renamed(i INT, s STRUCT(x INT, y INT) DEFAULT {'x': 1, 'y': 2});
+
+statement ok
+ALTER TABLE renamed RENAME COLUMN s.y TO z;
+
+statement ok
+ALTER TABLE renamed DROP COLUMN s.x;
+
+query II
+SELECT table_name, column_default FROM duckdb_columns() WHERE table_name IN ('cast_default', 'qualified') AND column_name = 's' ORDER BY table_name;
+----
+cast_default	CAST(struct_pack(x := 1, y := 2) AS STRUCT(x INTEGER, y INTEGER))
+qualified	"system".main.struct_pack(x := 1, y := 2)
+
+query I
+SELECT column_default LIKE 'remap_struct(CAST(struct_pack(x := 1, y := 2) AS %' FROM duckdb_columns() WHERE table_name = 'renamed' AND column_name = 's';
+----
+true
+
+statement ok
+INSERT INTO cast_default(i) VALUES (1);
+
+statement ok
+INSERT INTO qualified(i) VALUES (1);
+
+statement ok
+INSERT INTO renamed(i) VALUES (1);
+
+query III
+SELECT (SELECT s FROM cast_default), (SELECT s FROM qualified), (SELECT s FROM renamed);
+----
+{'y': 2}	{'y': 2}	{'z': 2}
+
+# a constructor that would be left without a field of the new type stays as it is too, and its cast is refused as before
+statement ok
+CREATE TABLE only_field(i INT, s STRUCT(x INT, y INT) DEFAULT {'y': 2});
+
+statement error
+ALTER TABLE only_field DROP COLUMN s.y;
+----
+inputs are (STRUCT(y INTEGER)) and (STRUCT(x INTEGER))
+
+statement ok
+CREATE TABLE unmatched(i INT, s STRUCT(x INT, y INT) DEFAULT {'y': 2, 'extra': 3});
+
+statement error
+ALTER TABLE unmatched DROP COLUMN s.y;
+----
+inputs are (STRUCT(y INTEGER, extra INTEGER)) and (STRUCT(x INTEGER))
+
+statement ok
+CREATE TABLE nested_unmatched(i INT, s STRUCT(x INT, n STRUCT(a INT, b INT)) DEFAULT {'x': 1, 'n': {'a': 5, 'extra': 6}});
+
+statement error
+ALTER TABLE nested_unmatched DROP COLUMN s.n.a;
+----
+inputs are (STRUCT(a INTEGER, extra INTEGER)) and (STRUCT(b INTEGER))

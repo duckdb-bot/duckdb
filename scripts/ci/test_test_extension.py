@@ -478,13 +478,24 @@ class TestExtensionIntegrationTest(unittest.TestCase):
                 + skipping_statement
                 + "set variable v <variable:v>\n\nunzip {v}\n",
             ),
+            # a token that is not a variable reference stays an error
+            self.create_test(
+                "malformed_variable_token.test",
+                skipping_statement + "set variable v <variable:a:b:c>\n\n" + query,
+            ),
         ]
         database = self.run_selected(test_ids)
         rows, error = run_tests.read_test_state(protocol_config(unittest_bin=self.binary), database, os.environ.copy())
         self.assertIsNone(error)
         self.assertEqual(
             {row["test_id"]: row["status"] for row in rows},
-            {test_ids[0]: "skipped", test_ids[1]: "skipped", test_ids[2]: "passed", test_ids[3]: "skipped"},
+            {
+                test_ids[0]: "skipped",
+                test_ids[1]: "skipped",
+                test_ids[2]: "passed",
+                test_ids[3]: "skipped",
+                test_ids[4]: "failed",
+            },
         )
 
     def test_reproducer_runs_with_an_installed_cli_from_another_directory(self):

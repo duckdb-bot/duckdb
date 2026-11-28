@@ -152,6 +152,8 @@ public:
 	unique_ptr<Connection> ConnectToDatabase(DuckDB &db_ref);
 	bool IsVariableReplacement(const string &token_name);
 	Value GetVariableReplacement(const string &token_name, string &variable_name);
+	//! False with the reason in error when the connection or the variable does not exist
+	bool TryGetVariableReplacement(const string &token_name, string &variable_name, Value &result, string &error);
 
 private:
 	void EmitStatusEvent(const string &event, const string &test_name, const string &status, const string &data);

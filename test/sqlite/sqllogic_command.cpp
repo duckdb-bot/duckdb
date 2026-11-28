@@ -599,7 +599,8 @@ bool SQLLogicTestRunner::IsVariableReplacement(const string &token_name) {
 	return StringUtil::StartsWith(token_name, "<variable:");
 }
 
-Value SQLLogicTestRunner::GetVariableReplacement(const string &token_name, string &variable_name) {
+bool SQLLogicTestRunner::TryGetVariableReplacement(const string &token_name, string &variable_name, Value &result,
+                                                   string &error) {
 	// variable - get variable name
 	auto var_size = string("<variable:").size();
 	if (token_name.back() != '>') {
@@ -619,18 +620,28 @@ Value SQLLogicTestRunner::GetVariableReplacement(const string &token_name, strin
 		variable_name = variable_components[1];
 		auto entry = named_connection_map.find(connection_name);
 		if (entry == named_connection_map.end()) {
-			throw InvalidInputException(
+			error = StringUtil::Format(
 			    "Attempting to find variable %s in connection %s - but could not find this connection", variable_name,
 			    connection_name);
+			return false;
 		}
 		var_con = entry->second.get();
 	} else {
 		throw InvalidInputException("Expected either <variable:variable_name> or <variable:connection:variable_name>");
 	}
+	if (!ClientConfig::GetConfig(*var_con->context).GetUserVariable(variable_name, result)) {
+		error = StringUtil::Format("Variable with name \"%s\" was not defined in connection %s", variable_name,
+		                           connection_name);
+		return false;
+	}
+	return true;
+}
+
+Value SQLLogicTestRunner::GetVariableReplacement(const string &token_name, string &variable_name) {
 	Value value;
-	if (!ClientConfig::GetConfig(*var_con->context).GetUserVariable(variable_name, value)) {
-		throw InvalidInputException("Variable with name \"%s\" was not defined in connection %s", variable_name,
-		                            connection_name);
+	string error;
+	if (!TryGetVariableReplacement(token_name, variable_name, value, error)) {
+		throw InvalidInputException(error);
 	}
 	return value;
 }

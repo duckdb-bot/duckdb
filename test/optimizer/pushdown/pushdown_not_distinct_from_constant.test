@@ -11,13 +11,24 @@ CREATE TABLE t2 AS SELECT * FROM (VALUES (3, {'a': 3}), (NULL, NULL), (5, {'a': 
 query II
 EXPLAIN SELECT t1.a, t2.b FROM t1 JOIN t2 ON t1.a IS NOT DISTINCT FROM t2.b WHERE t2.b = 3
 ----
-physical_plan	<REGEX>:.*Filters: a = 3.*Filters: b = 3.*
+physical_plan	<REGEX>:.*Filters: optional: \(a = 3\).*Filters: b = 3.*
 
 query II
 SELECT t1.a, t2.b FROM t1 JOIN t2 ON t1.a IS NOT DISTINCT FROM t2.b WHERE t2.b = 3 ORDER BY ALL
 ----
 3	3
 3	3
+
+# the constant reaches the scan below an aggregate on the other side
+query II
+EXPLAIN (FORMAT JSON) SELECT x.a, x.c, t2.b FROM (SELECT a, count(*) AS c FROM t1 GROUP BY a) x JOIN t2 ON x.a IS NOT DISTINCT FROM t2.b WHERE t2.b = 3
+----
+physical_plan	<REGEX>:.*"Table": "[^"]*t1"[^}]*"Filters": [^}]*a = 3.*
+
+query III
+SELECT x.a, x.c, t2.b FROM (SELECT a, count(*) AS c FROM t1 GROUP BY a) x JOIN t2 ON x.a IS NOT DISTINCT FROM t2.b WHERE t2.b = 3
+----
+3	2	3
 
 # preserve NULL matches
 query II

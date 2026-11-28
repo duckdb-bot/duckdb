@@ -612,6 +612,7 @@ void DatabaseInstance::Configure(DBConfig &new_config, const char *database_path
 	}
 	config.db_cache_entry = std::move(new_config.db_cache_entry);
 	config.path_manager = std::move(new_config.path_manager);
+	config.file_registry = DatabaseFileRegistry::Get();
 }
 
 DBConfig &DBConfig::GetConfig(ClientContext &context) {

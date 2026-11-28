@@ -43,6 +43,13 @@
         "type": "scalar_function"
     },
     {
+        "name": "__internal_map_from_entries_keep_first",
+        "parameters": "entries",
+        "description": "",
+        "example": "",
+        "type": "scalar_function"
+    },
+    {
         "name": "map_concat",
         "parameters": "any,...",
         "description": "Returns a map created from merging the input maps, on key collision the value is taken from the last map with that key",

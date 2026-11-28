@@ -88,6 +88,11 @@ SourceResultType PhysicalCTEConsumerSource::GetDataInternal(ExecutionContext &co
 	                             input.batch_index_state, input.interrupt_state);
 }
 
+void PhysicalCTEConsumerSource::InitializeOutputChunk(Allocator &allocator, DataChunk &chunk) const {
+	// the exchange hands out its rows by reference or as a slice, so the output needs no buffers of its own
+	chunk.Initialize(allocator, types, vector<bool>(types.size(), false));
+}
+
 OperatorPartitionData PhysicalCTEConsumerSource::GetPartitionData(ExecutionContext &context, DataChunk &chunk,
                                                                   GlobalSourceState &gstate, LocalSourceState &lstate_p,
                                                                   const OperatorPartitionInfo &partition_info) const {

@@ -14,6 +14,8 @@
 
 namespace duckdb {
 
+//! Compares a column of the result with the expected values, row by row and in order. The result has to hold as
+//! many rows as there are values
 bool CHECK_COLUMN(QueryResult &result, size_t column_number, vector<duckdb::Value> values);
 bool CHECK_COLUMN(duckdb::unique_ptr<duckdb::QueryResult> &result, size_t column_number, vector<duckdb::Value> values);
 

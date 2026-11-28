@@ -292,8 +292,9 @@ TEST_CASE("Parallel execution with caching table in out functions", "[filter][.]
 	REQUIRE(result2->ColumnCount() == 1);
 	REQUIRE(result2->RowCount() == 200000);
 	// only the first rows are compared
+	auto rows = result2->Collection().GetRows();
 	for (idx_t row_idx = 0; row_idx < 6; row_idx++) {
-		REQUIRE(result2->Collection().GetValue(0, row_idx) == Value::BIGINT(NumericCast<int64_t>(row_idx)));
+		REQUIRE(rows.GetValue(0, row_idx) == Value::BIGINT(NumericCast<int64_t>(row_idx)));
 	}
 }
 

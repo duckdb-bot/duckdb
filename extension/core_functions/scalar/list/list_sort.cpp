@@ -160,9 +160,8 @@ static void SinkDataChunk(const Sort &sort, ExecutionContext &context, OperatorS
 	data_to_sort = true;
 }
 
-//! Builds a context for the evaluations without one, such as the index maintenance that must not fail and the
-//! checkpoint on shutdown. The database outlives the bind data of its indexes, so the context need not own it, which
-//! it cannot during the shutdown of the database anyway.
+//! Builds a context for an evaluation without one. It does not own the database, which outlives the bind data of its
+//! indexes and cannot be owned while it shuts down.
 static shared_ptr<ClientContext> MakeOwnContext(DatabaseInstance &db) {
 	shared_ptr<DatabaseInstance> unowned_db(shared_ptr<DatabaseInstance>(), &db);
 	return make_shared_ptr<ClientContext>(std::move(unowned_db));
@@ -184,14 +183,13 @@ static void ListSortFunction(DataChunk &args, ExpressionState &state, Vector &re
 	auto &func_expr = state.expr.Cast<BoundFunctionExpression>();
 	auto &info = func_expr.BindInfo()->Cast<ListSortBindData>();
 
-	// the Sort of the bind runs under the context of the operation, which is not the one that bound it when another
-	// connection writes to a table with an index on this function
+	// the Sort of the bind runs with the context of the executor, which need not be the one that bound it
 	optional_ptr<ClientContext> context;
 	shared_ptr<ClientContext> own_context;
 	if (state.HasClientContext()) {
 		context = &state.GetClientContext();
 	} else {
-		// without one, as in the revert of a failed commit, the sort has a context of its own that nobody interrupts
+		// index maintenance that must not fail has none, and sorts with a context that nobody can interrupt
 		own_context = MakeOwnContext(info.db);
 		context = own_context.get();
 	}

@@ -1,0 +1,39 @@
+# name: test/sql/copy/parquet/parquet_deep_schema_thread.test
+# description: Read a deeply nested Parquet schema on threads that use the reduced --thread-stack-size
+# group: [parquet]
+
+require parquet
+
+# deep_struct.parquet holds three rows of a STRUCT nested 200 levels deep, s.a.a ... .a, with the values 0, 1 and 2.
+# deep_struct_wider.parquet is the same with a field b next to the innermost a, holding 10, 11 and 12.
+# The files are data files because writing them still recurses once per level, which a reduced stack does not survive.
+concurrentloop i 0 2
+
+query I
+SELECT count(s) FROM read_parquet('data/parquet-testing/deep_struct.parquet')
+----
+3
+
+# the files are opened and scanned by several threads
+query I
+SELECT count(s) FROM read_parquet(['data/parquet-testing/deep_struct.parquet', 'data/parquet-testing/deep_struct.parquet', 'data/parquet-testing/deep_struct.parquet', 'data/parquet-testing/deep_struct.parquet', 'data/parquet-testing/deep_struct.parquet', 'data/parquet-testing/deep_struct.parquet', 'data/parquet-testing/deep_struct.parquet', 'data/parquet-testing/deep_struct.parquet'])
+----
+24
+
+endloop
+
+# the values of the innermost fields, read through a pushed down extract
+query II
+FROM query('SELECT min(s' || repeat('.a', 200) || '), max(s' || repeat('.a', 200) || ') FROM read_parquet(''data/parquet-testing/deep_struct.parquet'')')
+----
+0	2
+
+query II
+FROM query('SELECT count(s' || repeat('.a', 199) || '.b), sum(s' || repeat('.a', 199) || '.b) FROM read_parquet([''data/parquet-testing/deep_struct.parquet'', ''data/parquet-testing/deep_struct_wider.parquet''], union_by_name = true)')
+----
+3	33
+
+query II
+FROM query('SELECT count(s' || repeat('.a', 200) || '), sum(s' || repeat('.a', 200) || ') FROM read_parquet([''data/parquet-testing/deep_struct_wider.parquet'', ''data/parquet-testing/deep_struct.parquet''], union_by_name = true)')
+----
+6	6

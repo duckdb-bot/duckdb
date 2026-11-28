@@ -915,83 +915,76 @@ static unique_ptr<ColumnReader> CreateInt96StructReader(ClientContext &context, 
 	return std::move(result);
 }
 
-unique_ptr<ColumnReader> ParquetReader::CreateReaderRecursive(ClientContext &context, const ColumnIndex &column_id,
-                                                              const ParquetColumnSchema &schema) const {
-	auto &indexes = column_id.GetChildIndexes();
-
-	switch (schema.schema_type) {
-	case ParquetColumnSchemaType::FILE_ROW_NUMBER:
-		return make_uniq<RowNumberColumnReader>(*this, schema);
-	case ParquetColumnSchemaType::FILE_ROW_GROUP_NUMBER:
-		return make_uniq<RowGroupColumnReader>(*this, schema);
-	case ParquetColumnSchemaType::GEOMETRY: {
-		return GeometryColumnReader::Create(*this, schema, context);
+//! A column whose child readers are being created. The open columns are kept on an explicit stack, so that deeply
+//! nested schemas cannot overflow the call stack
+struct ParquetReader::CreateReaderFrame {
+	CreateReaderFrame(optional_ptr<const ColumnIndex> column_id_p, ColumnIndex owned_column_id_p,
+	                  const ParquetColumnSchema &schema_p)
+	    : column_id(column_id_p), owned_column_id(std::move(owned_column_id_p)), schema(schema_p) {
+		children.resize(schema_p.children.size());
 	}
-	case ParquetColumnSchemaType::COLUMN: {
-		if (schema.children.empty()) {
+
+	const ColumnIndex &ColumnId() const {
+		return column_id ? *column_id : owned_column_id;
+	}
+	//! Whether every child of the schema gets a reader, or only the children that the index selects
+	bool ReadsAllChildren() const {
+		return schema.get().schema_type == ParquetColumnSchemaType::VARIANT || ColumnId().GetChildIndexes().empty();
+	}
+	idx_t ChildCount() const {
+		return ReadsAllChildren() ? schema.get().children.size() : ColumnId().GetChildIndexes().size();
+	}
+
+	//! The index of the column, unset when the frame owns an index that was created for it
+	optional_ptr<const ColumnIndex> column_id;
+	ColumnIndex owned_column_id;
+	const_reference<ParquetColumnSchema> schema;
+	vector<unique_ptr<ColumnReader>> children;
+	//! The number of children that have a reader, or whose reader is being created
+	idx_t opened_children = 0;
+	//! The position in 'children' of the child whose reader is being created
+	idx_t child_position = 0;
+};
+
+//! Creates the reader of a column without child readers into 'result', or opens the frame of a column and returns true
+bool ParquetReader::OpenReaderFrame(ClientContext &context, optional_ptr<const ColumnIndex> column_id_p,
+                                    ColumnIndex owned_column_id, const ParquetColumnSchema &schema_p,
+                                    vector<CreateReaderFrame> &frames, unique_ptr<ColumnReader> &result) const {
+	const_reference<ParquetColumnSchema> current_schema(schema_p);
+	while (true) {
+		auto &schema = current_schema.get();
+		auto &column_id = column_id_p ? *column_id_p : owned_column_id;
+		switch (schema.schema_type) {
+		case ParquetColumnSchemaType::FILE_ROW_NUMBER:
+			result = make_uniq<RowNumberColumnReader>(*this, schema);
+			return false;
+		case ParquetColumnSchemaType::FILE_ROW_GROUP_NUMBER:
+			result = make_uniq<RowGroupColumnReader>(*this, schema);
+			return false;
+		case ParquetColumnSchemaType::GEOMETRY:
+			result = GeometryColumnReader::Create(*this, schema, context);
+			return false;
+		case ParquetColumnSchemaType::COLUMN: {
+			if (!schema.children.empty()) {
+				break;
+			}
 			if (schema.parquet_type == Type::INT96 && schema.type.id() == LogicalTypeId::STRUCT) {
 				// int96_as='struct' exposes the raw INT96 value as STRUCT(date DATE, time TIME_NS)
-				return CreateInt96StructReader(context, *this, schema,
-				                               column_id.IsPushdownExtract() ? &indexes[0] : nullptr);
+				result = CreateInt96StructReader(
+				    context, *this, schema, column_id.IsPushdownExtract() ? &column_id.GetChildIndexes()[0] : nullptr);
+				return false;
 			}
 			// leaf reader
-			return ColumnReader::CreateReader(*this, schema);
+			result = ColumnReader::CreateReader(*this, schema);
+			return false;
 		}
-		vector<unique_ptr<ColumnReader>> children;
-		children.resize(schema.children.size());
-
-		if (indexes.empty()) {
-			for (idx_t child_index = 0; child_index < schema.children.size(); child_index++) {
-				children[child_index] =
-				    CreateReaderRecursive(context, ColumnIndex(child_index), schema.children[child_index]);
+		case ParquetColumnSchemaType::VARIANT: {
+			if (schema.children.size() < 2) {
+				throw InternalException("VARIANT schema type used for a non-variant type column");
 			}
-		} else {
-			for (idx_t i = 0; i < indexes.size(); i++) {
-				auto child_index = indexes[i].GetPrimaryIndex();
-				children[child_index] = CreateReaderRecursive(context, indexes[i], schema.children[child_index]);
+			if (schema.children.size() != 3 || !column_id.IsPushdownExtract()) {
+				break;
 			}
-		}
-		switch (schema.type.id()) {
-		case LogicalTypeId::LIST:
-		case LogicalTypeId::MAP:
-			D_ASSERT(children.size() == 1);
-			return make_uniq<ListColumnReader>(*this, schema, std::move(children[0]));
-		case LogicalTypeId::STRUCT:
-		case LogicalTypeId::TUPLE: {
-			if (column_id.IsPushdownExtract()) {
-				auto &child = indexes[0];
-				auto child_index = child.GetPrimaryIndex();
-				auto column_reader = std::move(children[child_index]);
-				auto &child_type = column_reader->Type();
-				if (!child.HasChildren() && child_type != child.GetType()) {
-					auto input = make_uniq<BoundReferenceExpression>(child_type, 0ULL);
-					auto cast_expression =
-					    BoundCastExpression::AddCastToType(context, std::move(input), child.GetType());
-					auto expr_schema = make_uniq<ParquetColumnSchema>(
-					    ParquetColumnSchema::FromParentSchema(column_reader->Schema(), cast_expression->GetReturnType(),
-					                                          ParquetColumnSchemaType::EXPRESSION));
-
-					vector<unique_ptr<ColumnReader>> expression_children;
-					expression_children.push_back(std::move(column_reader));
-					auto expr_reader = make_uniq<ExpressionColumnReader>(
-					    context, std::move(expression_children), std::move(cast_expression), std::move(expr_schema));
-					return std::move(expr_reader);
-				}
-				return column_reader;
-			}
-			return make_uniq<StructColumnReader>(*this, schema, std::move(children));
-		}
-		default:
-			throw InternalException("Unsupported schema type for schema with children");
-		}
-	}
-	case ParquetColumnSchemaType::VARIANT: {
-		if (schema.children.size() < 2) {
-			throw InternalException("VARIANT schema type used for a non-variant type column");
-		}
-		vector<unique_ptr<ColumnReader>> children;
-		children.resize(schema.children.size());
-		if (schema.children.size() == 3 && column_id.IsPushdownExtract()) {
 			//! VARIANT is shredded - it has a 'typed_value' column
 			auto &typed_value_schema = schema.children[2];
 			if (typed_value_schema.name != "typed_value") {
@@ -999,19 +992,32 @@ unique_ptr<ColumnReader> ParquetReader::CreateReaderRecursive(ClientContext &con
 				                            typed_value_schema.name);
 			}
 			auto variant_stats = GetVariantStats(schema);
-
-			if (variant_stats && IsFullyShredded(*variant_stats, column_id) &&
-			    TypedValueCastMatchesVariantCast(typed_value_schema, column_id)) {
-				//! This field is present in 'typed_value' across all rowgroups
-				//! So we can directly push a struct extract into 'typed_value' and ignore 'value'+'metadata'
-				auto typed_value_index = CreateVariantTypedValuePushdown(typed_value_schema, column_id);
-				return CreateReaderRecursive(context, typed_value_index, typed_value_schema);
+			if (!variant_stats || !IsFullyShredded(*variant_stats, column_id) ||
+			    !TypedValueCastMatchesVariantCast(typed_value_schema, column_id)) {
+				break;
 			}
+			//! This field is present in 'typed_value' across all rowgroups
+			//! So we can directly push a struct extract into 'typed_value' and ignore 'value'+'metadata'
+			auto typed_value_index = CreateVariantTypedValuePushdown(typed_value_schema, column_id);
+			owned_column_id = std::move(typed_value_index);
+			column_id_p = nullptr;
+			current_schema = typed_value_schema;
+			continue;
 		}
-		for (idx_t child_index = 0; child_index < schema.children.size(); child_index++) {
-			children[child_index] =
-			    CreateReaderRecursive(context, ColumnIndex(child_index), schema.children[child_index]);
+		default:
+			throw InternalException("Unsupported ParquetColumnSchemaType");
 		}
+		frames.emplace_back(column_id_p, std::move(owned_column_id), schema);
+		return true;
+	}
+}
+
+//! Creates the reader of a column whose children all have their reader
+unique_ptr<ColumnReader> ParquetReader::FinishReaderFrame(ClientContext &context, CreateReaderFrame &frame) const {
+	auto &schema = frame.schema.get();
+	auto &column_id = frame.ColumnId();
+	auto &children = frame.children;
+	if (schema.schema_type == ParquetColumnSchemaType::VARIANT) {
 		// Create the VariantColumnReader with the column index, so we can perform the extract at Read
 		auto column_reader = make_uniq<VariantColumnReader>(context, *this, schema, std::move(children), column_id);
 
@@ -1028,8 +1034,76 @@ unique_ptr<ColumnReader> ParquetReader::CreateReaderRecursive(ClientContext &con
 		return make_uniq<ExpressionColumnReader>(context, std::move(child_readers), std::move(cast_expression),
 		                                         std::move(expr_schema));
 	}
+	switch (schema.type.id()) {
+	case LogicalTypeId::LIST:
+	case LogicalTypeId::MAP:
+		D_ASSERT(children.size() == 1);
+		return make_uniq<ListColumnReader>(*this, schema, std::move(children[0]));
+	case LogicalTypeId::STRUCT:
+	case LogicalTypeId::TUPLE: {
+		if (column_id.IsPushdownExtract()) {
+			auto &child = column_id.GetChildIndexes()[0];
+			auto child_index = child.GetPrimaryIndex();
+			auto column_reader = std::move(children[child_index]);
+			auto &child_type = column_reader->Type();
+			if (!child.HasChildren() && child_type != child.GetType()) {
+				auto input = make_uniq<BoundReferenceExpression>(child_type, 0ULL);
+				auto cast_expression = BoundCastExpression::AddCastToType(context, std::move(input), child.GetType());
+				auto expr_schema = make_uniq<ParquetColumnSchema>(ParquetColumnSchema::FromParentSchema(
+				    column_reader->Schema(), cast_expression->GetReturnType(), ParquetColumnSchemaType::EXPRESSION));
+
+				vector<unique_ptr<ColumnReader>> expression_children;
+				expression_children.push_back(std::move(column_reader));
+				auto expr_reader = make_uniq<ExpressionColumnReader>(
+				    context, std::move(expression_children), std::move(cast_expression), std::move(expr_schema));
+				return std::move(expr_reader);
+			}
+			return column_reader;
+		}
+		return make_uniq<StructColumnReader>(*this, schema, std::move(children));
+	}
 	default:
-		throw InternalException("Unsupported ParquetColumnSchemaType");
+		throw InternalException("Unsupported schema type for schema with children");
+	}
+}
+
+unique_ptr<ColumnReader> ParquetReader::CreateColumnReader(ClientContext &context, const ColumnIndex &column_id,
+                                                           const ParquetColumnSchema &schema) const {
+	vector<CreateReaderFrame> frames;
+	unique_ptr<ColumnReader> root;
+	if (!OpenReaderFrame(context, &column_id, ColumnIndex(), schema, frames, root)) {
+		return root;
+	}
+	while (true) {
+		auto &frame = frames.back();
+		if (frame.opened_children < frame.ChildCount()) {
+			auto child_idx = frame.opened_children++;
+			optional_ptr<const ColumnIndex> child_column_id;
+			ColumnIndex owned_child_column_id;
+			if (frame.ReadsAllChildren()) {
+				owned_child_column_id = ColumnIndex(child_idx);
+				frame.child_position = child_idx;
+			} else {
+				child_column_id = &frame.ColumnId().GetChildIndexes()[child_idx];
+				frame.child_position = child_column_id->GetPrimaryIndex();
+			}
+			auto child_position = frame.child_position;
+			auto &child_schema = frame.schema.get().children[child_position];
+			unique_ptr<ColumnReader> child;
+			// the frame is not used after the child opened a frame of its own, which may move it
+			if (!OpenReaderFrame(context, child_column_id, std::move(owned_child_column_id), child_schema, frames,
+			                     child)) {
+				frame.children[child_position] = std::move(child);
+			}
+			continue;
+		}
+		auto reader = FinishReaderFrame(context, frame);
+		frames.pop_back();
+		if (frames.empty()) {
+			return reader;
+		}
+		auto &parent = frames.back();
+		parent.children[parent.child_position] = std::move(reader);
 	}
 }
 
@@ -1438,45 +1512,58 @@ unique_ptr<ParquetColumnSchema> ParquetReader::ParseSchema(ClientContext &contex
 }
 
 MultiFileColumnDefinition ParquetReader::ParseColumnDefinition(const FileMetaData &file_meta_data,
-                                                               ParquetColumnSchema &element) {
-	MultiFileColumnDefinition result(element.name, element.type);
-	if (element.schema_type == ParquetColumnSchemaType::FILE_ROW_NUMBER) {
-		result.identifier = Value::INTEGER(MultiFileReader::ORDINAL_FIELD_ID);
-		return result;
-	}
-	D_ASSERT(element.schema_index.IsValid());
-	auto &column_schema = file_meta_data.schema[element.schema_index.GetIndex()];
+                                                               ParquetColumnSchema &root_element) {
+	MultiFileColumnDefinition root(root_element.name, root_element.type);
+	// the columns that still need their identifier and children are kept on an explicit stack, so that deeply nested
+	// schemas cannot overflow the call stack
+	vector<std::pair<reference<ParquetColumnSchema>, reference<MultiFileColumnDefinition>>> pending;
+	pending.emplace_back(root_element, root);
+	while (!pending.empty()) {
+		auto &element = pending.back().first.get();
+		auto &result = pending.back().second.get();
+		pending.pop_back();
+		if (element.schema_type == ParquetColumnSchemaType::FILE_ROW_NUMBER) {
+			result.identifier = Value::INTEGER(MultiFileReader::ORDINAL_FIELD_ID);
+			continue;
+		}
+		D_ASSERT(element.schema_index.IsValid());
+		auto &column_schema = file_meta_data.schema[element.schema_index.GetIndex()];
 
-	if (column_schema.__isset.field_id) {
-		result.identifier = Value::INTEGER(column_schema.field_id);
-	} else if (element.parent_schema_index.IsValid()) {
-		auto &parent_column_schema = file_meta_data.schema[element.parent_schema_index.GetIndex()];
-		if (parent_column_schema.__isset.field_id) {
-			result.identifier = Value::INTEGER(parent_column_schema.field_id);
+		if (column_schema.__isset.field_id) {
+			result.identifier = Value::INTEGER(column_schema.field_id);
+		} else if (element.parent_schema_index.IsValid()) {
+			auto &parent_column_schema = file_meta_data.schema[element.parent_schema_index.GetIndex()];
+			if (parent_column_schema.__isset.field_id) {
+				result.identifier = Value::INTEGER(parent_column_schema.field_id);
+			}
 		}
-	}
-	// A GEOMETRY column is a leaf at the logical level - it only wraps an inner BLOB child internally so that the
-	// reader can validate/transform the WKB. Exposing that child here would make the column definition diverge from
-	// the (childless) global GEOMETRY column, breaking trivial column mapping and disabling row group pruning for
-	// spatial predicates. Treat it as a leaf.
-	if (element.schema_type != ParquetColumnSchemaType::GEOMETRY) {
+		// An INT96 column exposed as a STRUCT (int96_as='struct') is a logical struct over a physical leaf - synthesize
+		// the struct children here, mirroring MultiFileColumnDefinition::CreateFromNameAndType, so that the column
+		// definition matches the global one (and the multi-file mapper can map the column trivially).
+		if (element.schema_type == ParquetColumnSchemaType::COLUMN && element.parquet_type == Type::INT96 &&
+		    element.type.id() == LogicalTypeId::STRUCT && parquet_options.int96_as == ParquetInt96AsOption::STRUCT) {
+			result.children.reserve(StructType::GetChildTypes(element.type).size());
+			for (auto &child_entry : StructType::GetChildTypes(element.type)) {
+				result.children.push_back(
+				    MultiFileColumnDefinition::CreateFromNameAndType(child_entry.first, child_entry.second));
+			}
+			continue;
+		}
+		// A GEOMETRY column is a leaf at the logical level - it only wraps an inner BLOB child internally so that the
+		// reader can validate/transform the WKB. Exposing that child here would make the column definition diverge
+		// from the (childless) global GEOMETRY column, breaking trivial column mapping and disabling row group pruning
+		// for spatial predicates. Treat it as a leaf.
+		if (element.schema_type == ParquetColumnSchemaType::GEOMETRY) {
+			continue;
+		}
+		// the children are created in place, and stay there while their own children are added
+		result.children.reserve(element.children.size());
 		for (auto &child : element.children) {
-			result.children.push_back(ParseColumnDefinition(file_meta_data, child));
+			result.children.emplace_back(child.name, child.type);
+			pending.emplace_back(child, result.children.back());
 		}
 	}
-	// An INT96 column exposed as a STRUCT (int96_as='struct') is a logical struct over a physical leaf - synthesize
-	// the struct children here, mirroring MultiFileColumnDefinition::CreateFromNameAndType, so that the column
-	// definition matches the global one (and the multi-file mapper can map the column trivially).
-	if (element.schema_type == ParquetColumnSchemaType::COLUMN && element.parquet_type == Type::INT96 &&
-	    element.type.id() == LogicalTypeId::STRUCT && parquet_options.int96_as == ParquetInt96AsOption::STRUCT) {
-		result.children.clear();
-		result.children.reserve(StructType::GetChildTypes(element.type).size());
-		for (auto &child_entry : StructType::GetChildTypes(element.type)) {
-			result.children.push_back(
-			    MultiFileColumnDefinition::CreateFromNameAndType(child_entry.first, child_entry.second));
-		}
-	}
-	return result;
+	return root;
 }
 
 void ParquetReader::InitializeSchema(ClientContext &context) {
@@ -2624,7 +2711,7 @@ void ParquetReader::InitializeScan(ClientContext &context, ParquetReaderScanStat
 			vector<unique_ptr<ColumnReader>> child_readers;
 			for (auto &id : expression_column_indexes) {
 				auto &schema = root_schema->children[id.GetPrimaryIndex()];
-				child_readers.push_back(CreateReaderRecursive(context, id, schema));
+				child_readers.push_back(CreateColumnReader(context, id, schema));
 			}
 			auto expr_schema = make_uniq<ParquetColumnSchema>(ParquetColumnSchema::FromParentSchema(
 			    child_readers[0]->Schema(), expression->GetReturnType(), ParquetColumnSchemaType::EXPRESSION));
@@ -2635,7 +2722,7 @@ void ParquetReader::InitializeScan(ClientContext &context, ParquetReaderScanStat
 			auto &index = column_indexes[i];
 			auto column_id = index.GetPrimaryIndex();
 			auto &schema = root_schema->children[column_id];
-			auto column_reader = CreateReaderRecursive(context, index, schema);
+			auto column_reader = CreateColumnReader(context, index, schema);
 			state.column_readers[i] = std::move(column_reader);
 		}
 	}

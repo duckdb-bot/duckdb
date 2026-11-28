@@ -1,0 +1,101 @@
+# name: test/sql/index/art/index_commit_after_deadline.test
+# description: A failed COMMIT takes its index appends back when the keys read the deadline of the query
+# group: [art]
+
+# This test forces a commit to fail. Skip restart-based configs (the explicit transaction cannot span
+# per-statement restarts) and the alternative-verify build (destroyed unpinned blocks crash the
+# forced revert path).
+require no_alternative_verify
+
+require skip_reload
+
+# The key of the index sorts a list, and a sort checks the interrupt and the deadline of the connection that
+# created the index. That connection also commits, and runs nothing after its COMMIT, so no other statement
+# meets the deadline
+statement ok con1
+CREATE TABLE t (id INTEGER, l INTEGER[]);
+
+statement ok con1
+CREATE INDEX i ON t ((list_sort(l)[1]));
+
+statement ok con1
+INSERT INTO t SELECT i, [i + 1, i] FROM range(1000) r(i);
+
+statement ok con1
+BEGIN
+
+statement ok con1
+INSERT INTO t SELECT 1000 + i, [i + 1001, i + 1000] FROM range(307200) r(i);
+
+statement ok
+SET debug_force_commit_failure=true;
+
+statement ok con1
+SET max_execution_time = 1;
+
+# the commit appends 150 chunks to the index and takes them back, so the keys read the clock on the way. A
+# deadline that passes before the commit starts fails the statement as well, and leaves the checks below as they
+# are. test/api/test_index_commit_interrupt.cpp sets the deadline from inside the commit
+statement error con1
+COMMIT
+----
+<REGEX>:.*(Forced commit failure|maximum execution time).*
+
+statement ok
+SET debug_force_commit_failure=false;
+
+query II
+SELECT count(*), max(id) FROM t;
+----
+1000	999
+
+statement ok
+INSERT INTO t SELECT 1000 + i, [i + 1001, i + 1000] FROM range(5000) r(i);
+
+query II
+SELECT count(*), max(id) FROM t;
+----
+6000	5999
+
+# with a unique index, a key that the failed commit left behind would refuse the row that follows
+statement ok con2
+CREATE TABLE u (id INTEGER, l INTEGER[]);
+
+statement ok con2
+CREATE UNIQUE INDEX ui ON u ((list_sort(l)[1]));
+
+statement ok con2
+INSERT INTO u SELECT i, [i + 1, i] FROM range(1000) r(i);
+
+statement ok con2
+BEGIN
+
+statement ok con2
+INSERT INTO u SELECT 1000 + i, [i + 1001, i + 1000] FROM range(307200) r(i);
+
+statement ok
+SET debug_force_commit_failure=true;
+
+statement ok con2
+SET max_execution_time = 1;
+
+statement error con2
+COMMIT
+----
+<REGEX>:.*(Forced commit failure|maximum execution time).*
+
+statement ok
+SET debug_force_commit_failure=false;
+
+statement ok
+INSERT INTO u VALUES (-5, [1001, 1000]);
+
+statement error
+INSERT INTO u VALUES (-6, [999, 1000]);
+----
+Duplicate key
+
+query II
+SELECT count(*), max(id) FROM u;
+----
+1001	999

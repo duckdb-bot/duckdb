@@ -12,6 +12,7 @@
 #include "duckdb/common/types/column/column_data_scan_states.hpp"
 #include "duckdb/storage/table/scan_state.hpp"
 #include "duckdb/common/types/column/column_data_collection.hpp"
+#include "duckdb/main/database.hpp"
 
 namespace duckdb {
 
@@ -143,6 +144,9 @@ idx_t BoundIndex::GetInMemorySize() const {
 }
 
 void BoundIndex::ExecuteExpressions(DataChunk &input, DataChunk &result) const {
+	// keys are also evaluated where an error cannot be undone, when a commit is taken back or a checkpoint moves
+	// rows, so a key function must not see the interrupt or the deadline of a client that it keeps
+	InterruptSuppressor suppressor(db.GetDatabase());
 	executor.Execute(input, result);
 }
 

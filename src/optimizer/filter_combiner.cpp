@@ -178,6 +178,10 @@ void FilterCombiner::GenerateEquivalentFilters(const Expression &filter,
 		if (entry == equivalence_set_map.end()) {
 			return;
 		}
+		if (!col.GetReturnType().EqualValuesAreIdentical()) {
+			// equal values of this type need not be identical, so the filter need not hold for the other columns
+			return;
+		}
 		for (auto &existing : candidate_columns) {
 			if (existing.get().Equals(col)) {
 				return;

@@ -302,9 +302,10 @@ static void TryAcquireFileLock(BaseFileSystem &fs, int fd, const string &path, F
 	if (flags.Lock() == FileLockType::NO_LOCK) {
 		return;
 	}
-	// only attempt locking on regular files (not FIFOs/sockets)
+	// FIFOs, sockets and character devices are not locked
 	auto file_type = StatsInternal(fd, path).file_type;
-	if (file_type == FileType::FILE_TYPE_FIFO || file_type == FileType::FILE_TYPE_SOCKET) {
+	if (file_type == FileType::FILE_TYPE_FIFO || file_type == FileType::FILE_TYPE_SOCKET ||
+	    file_type == FileType::FILE_TYPE_CHARDEV) {
 		return;
 	}
 	struct flock fl;

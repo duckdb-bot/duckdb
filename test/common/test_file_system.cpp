@@ -18,7 +18,9 @@
 #if (!defined(_WIN32) && !defined(WIN32))
 #define TEST_HAVE_SYMLINK
 #include <fcntl.h>
+#include <poll.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #else
 #include "duckdb/common/windows.hpp"
@@ -250,6 +252,137 @@ TEST_CASE("Character devices use streaming file semantics", "[file_system]") {
 	REQUIRE(fs.IsPipe("/dev/null"));
 	auto handle = fs.OpenFile("/dev/null", FileFlags::FILE_FLAGS_WRITE);
 	REQUIRE(handle->GetWriteMode() == FileWriteMode::SEQUENTIAL);
+}
+#endif
+
+// with jemalloc, fork() hangs under the thread sanitizer
+#if !defined(_WIN32) && !defined(DUCKDB_THREAD_SANITIZER)
+enum class FileLockState : char { NOT_LOCKED = 0, LOCKED = 1, NOT_SUPPORTED = 2 };
+
+//! A child process that holds a write lock on a file until it is released
+class FileLockHolder {
+public:
+	explicit FileLockHolder(const char *path) {
+		int ready[2];
+		int release[2];
+		if (pipe(ready) != 0) {
+			return;
+		}
+		if (pipe(release) != 0) {
+			close(ready[0]);
+			close(ready[1]);
+			return;
+		}
+		pid = fork();
+		if (pid == 0) {
+			close(ready[0]);
+			close(release[1]);
+			HoldLock(path, ready[1], release[0]);
+		}
+		close(ready[1]);
+		close(release[0]);
+		ready_fd = ready[0];
+		release_fd = release[1];
+	}
+	~FileLockHolder() {
+		Release();
+	}
+
+public:
+	//! Waits until the child has tried to take the lock
+	FileLockState WaitForLock() {
+		auto state = FileLockState::NOT_LOCKED;
+		ssize_t count;
+		do {
+			count = read(ready_fd, &state, 1);
+		} while (count == -1 && errno == EINTR);
+		return count == 1 ? state : FileLockState::NOT_LOCKED;
+	}
+
+	//! Ends the child, returns whether it held the lock until now
+	bool Release() {
+		for (auto fd : {ready_fd, release_fd}) {
+			if (fd >= 0) {
+				close(fd);
+			}
+		}
+		ready_fd = -1;
+		release_fd = -1;
+		if (pid <= 0) {
+			return false;
+		}
+		int32_t status = 0;
+		pid_t waited;
+		do {
+			waited = waitpid(pid, &status, 0);
+		} while (waited == -1 && errno == EINTR);
+		auto held = waited == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+		pid = -1;
+		return held;
+	}
+
+private:
+	//! Runs in the child, with calls that are safe after a fork only
+	[[noreturn]] static void HoldLock(const char *path, int ready_fd, int release_fd) {
+		int fd = open(path, O_WRONLY);
+		auto state = fd < 0 ? FileLockState::NOT_SUPPORTED : FileLockState::NOT_LOCKED;
+		struct flock lock;
+		memset(&lock, 0, sizeof(lock));
+		lock.l_type = F_WRLCK;
+		lock.l_whence = SEEK_SET;
+		// another process may hold the lock for a moment
+		for (idx_t attempt = 0; state == FileLockState::NOT_LOCKED && attempt < 3000; attempt++) {
+			if (fcntl(fd, F_SETLK, &lock) == 0) {
+				state = FileLockState::LOCKED;
+			} else if (errno == EACCES || errno == EAGAIN || errno == EINTR) {
+				poll(nullptr, 0, 10);
+			} else {
+				// the system has no locks for this file
+				state = FileLockState::NOT_SUPPORTED;
+			}
+		}
+		if (write(ready_fd, &state, 1) != 1 || state != FileLockState::LOCKED) {
+			_exit(1);
+		}
+		// the lock is held until the parent closes its end of the pipe
+		char released;
+		ssize_t count;
+		do {
+			count = read(release_fd, &released, 1);
+		} while (count == -1 && errno == EINTR);
+		_exit(count == 0 ? 0 : 1);
+	}
+
+private:
+	pid_t pid = -1;
+	int ready_fd = -1;
+	int release_fd = -1;
+};
+
+TEST_CASE("A character device is opened for writing while another process holds a lock on it", "[file_system]") {
+	// the tests that run next to this one write to /dev/null, not to this device
+	auto device = "/dev/zero";
+	FileLockHolder holder(device);
+	auto state = holder.WaitForLock();
+	if (state == FileLockState::NOT_SUPPORTED) {
+		// without a lock on the device there is no conflict to run into
+		return;
+	}
+	string error;
+	if (state == FileLockState::LOCKED) {
+		try {
+			auto &fs = TestLocalFileSystem();
+			auto handle = fs.OpenFile(device, FileFlags::FILE_FLAGS_WRITE | FileLockType::WRITE_LOCK);
+			char byte = 1;
+			handle->Write(&byte, 1);
+		} catch (std::exception &ex) {
+			error = ex.what();
+		}
+	}
+	auto held_until_release = holder.Release();
+	REQUIRE(state == FileLockState::LOCKED);
+	REQUIRE(held_until_release);
+	REQUIRE(error == "");
 }
 #endif
 

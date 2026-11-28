@@ -62,6 +62,31 @@ TEST_CASE("Test iterating over results", "[api]") {
 	REQUIRE(row_count == 2);
 }
 
+TEST_CASE("CHECK_COLUMN compares every row of the result", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+
+	auto result = con.Query("SELECT i, i + 10 AS j FROM range(3) t(i)");
+	REQUIRE(CHECK_COLUMN(result, 0, {0, 1, 2}));
+	REQUIRE(CHECK_COLUMN(result, 1, {10, 11, 12}));
+	// rows behind the expected values are a mismatch
+	REQUIRE_FALSE(CHECK_COLUMN(result, 0, {0}));
+	REQUIRE_FALSE(CHECK_COLUMN(result, 1, {10, 11}));
+	// as are expected values behind the last row
+	REQUIRE_FALSE(CHECK_COLUMN(result, 0, {0, 1, 2, 3}));
+	// and a value or a NULL that differs
+	REQUIRE_FALSE(CHECK_COLUMN(result, 0, {0, 1, 3}));
+	REQUIRE_FALSE(CHECK_COLUMN(result, 0, {0, 1, Value()}));
+
+	result = con.Query("SELECT NULL::INTEGER UNION ALL SELECT NULL");
+	REQUIRE(CHECK_COLUMN(result, 0, {Value(), Value()}));
+	REQUIRE_FALSE(CHECK_COLUMN(result, 0, {Value()}));
+
+	result = con.Query("SELECT 42 WHERE false");
+	REQUIRE(CHECK_COLUMN(result, 0, {}));
+	REQUIRE_FALSE(CHECK_COLUMN(result, 0, {42}));
+}
+
 TEST_CASE("Test different result types", "[api]") {
 	DuckDB db(nullptr);
 	Connection con(db);

@@ -64,7 +64,7 @@ SELECT count(*) FROM outer_rows o, LATERAL (SELECT i.w FROM inner_rows i WHERE i
 ----
 2
 
-# The implied filter stays above a filter with a projection map, here the one of the LIMIT.
+# The right input can have a filter with a projection map at its top, here the one of the LIMIT.
 query II
 SELECT count(*), sum(q.w) FROM outer_rows o, LATERAL (SELECT i.w FROM inner_rows i WHERE i.k = o.k ORDER BY i.w LIMIT 2) q WHERE o.k <> 7;
 ----
@@ -137,7 +137,7 @@ SELECT count(*), sum(s.w + x.z) FROM (SELECT o.k, q.w FROM outer_rows o, LATERAL
 ----
 990	593790
 
-# The enclosing join can have computed keys, which lets the pullup add columns to the projections below it.
+# The enclosing join can have computed keys, which the pullup rewrites in the mode that may add projection columns.
 query II
 SELECT count(*), sum(s.w + x.z) FROM (SELECT o.k, q.w FROM outer_rows o, LATERAL (SELECT i.w FROM inner_rows i WHERE i.k = o.k) q WHERE o.k <> 7) s JOIN other_rows x ON s.k + 1 = x.k + 1;
 ----
@@ -183,6 +183,11 @@ SELECT currval('condition_calls');
 101
 
 # The same for a volatile condition that is no comparison, which runs once for each pair with equal keys.
+query II
+EXPLAIN (FORMAT JSON) SELECT count(*), sum(q.w) FROM outer_rows o JOIN LATERAL (SELECT i.k AS ik, i.w, o.v AS ov FROM inner_rows i) q ON q.ik = o.k AND (o.v + random() > q.w - 100000 OR q.w < 0) AND q.ik <> 7;
+----
+physical_plan	<!REGEX>:.*"Table": "[^"]*outer_rows"[^}]*"Filters": [^}]*k != 7.*
+
 statement ok
 CREATE SEQUENCE pair_calls;
 

@@ -1,5 +1,5 @@
 # name: test/sql/alter/struct/alter_struct_field_aliased_type_storage.test
-# description: The values of a JSON field and the rewritten default of the column are read back from the file after a struct field is added, renamed or dropped while a type of a user is named JSON
+# description: A struct field change with a user type named JSON keeps JSON values and the default in the file
 # group: [struct]
 
 require json
@@ -174,7 +174,8 @@ statement ok
 ATTACH '{TEST_DIR}/alter_struct_field_aliased_type_storage_v1.db' AS old;
 
 query I
-SELECT column_default LIKE '%STRUCT(x "system"."JSON"%' FROM duckdb_columns() WHERE database_name = 'old' AND column_name = 's'
+SELECT column_default LIKE '%STRUCT(x "system"."JSON"%'
+FROM duckdb_columns() WHERE database_name = 'old' AND column_name = 's'
 ----
 true
 

@@ -1,5 +1,5 @@
 # name: test/sql/storage/wal/wal_replay_struct_field_dependencies.test
-# description: A database opens again after the replay of an ALTER of a struct field whose default calls a macro
+# description: A database opens again after an ALTER of a struct field whose default calls a macro, replayed or not
 # group: [wal]
 
 load {TEST_DIR}/wal_replay_struct_field_dependencies.db
@@ -42,3 +42,71 @@ SELECT * FROM m ORDER BY i;
 ----
 1	{'x': 1, 'c': 7}
 2	{'x': 1, 'c': 7}
+
+# FIXME: the replay of an ALTER binds no default, so the tables forget their macros (duckdblabs/bot-issue-tracker#619)
+statement ok
+CREATE MACRO two() AS 2;
+
+statement ok
+CREATE MACRO three() AS 3;
+
+statement ok
+CREATE TABLE renamed (i INT, s STRUCT(x INT, y INT) DEFAULT {'x': two(), 'y': 0});
+
+statement ok
+CREATE TABLE removed (i INT, s STRUCT(x INT, y INT) DEFAULT {'x': three(), 'y': 0});
+
+statement ok
+CHECKPOINT;
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown;
+
+statement ok
+SET wal_autocheckpoint='1TB';
+
+statement ok
+ALTER TABLE renamed ADD COLUMN j INT;
+
+statement ok
+ALTER TABLE removed ADD COLUMN j INT;
+
+restart
+
+# a rename and a removal of a field bind the defaults again and register what they call
+statement ok
+ALTER TABLE renamed RENAME COLUMN s.x TO z;
+
+statement ok
+ALTER TABLE removed DROP COLUMN s.y;
+
+statement error
+DROP MACRO two;
+----
+table "renamed" depends on macro function "two"
+
+statement error
+DROP MACRO three;
+----
+table "removed" depends on macro function "three"
+
+statement ok
+CHECKPOINT;
+
+restart
+
+statement ok
+INSERT INTO renamed (i) VALUES (1);
+
+statement ok
+INSERT INTO removed (i) VALUES (1);
+
+query III
+SELECT * FROM renamed;
+----
+1	{'z': 2, 'y': 0}	NULL
+
+query III
+SELECT * FROM removed;
+----
+1	{'x': 3}	NULL

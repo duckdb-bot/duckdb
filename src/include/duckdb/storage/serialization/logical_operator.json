@@ -143,6 +143,12 @@
         "name": "partition_limit",
         "type": "optional_idx",
         "default": "optional_idx()"
+      },
+      {
+        "id": 203,
+        "name": "numbering_is_arbitrary",
+        "type": "bool",
+        "default": "false"
       }
     ],
     "constructor": [

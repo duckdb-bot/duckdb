@@ -28,6 +28,8 @@ public:
 	}
 
 	TableIndex window_index;
+	//! Whether the numbers only tell rows apart, so they may change as long as every reader sees the same ones
+	bool numbering_is_arbitrary = false;
 
 	//! The maximum number of rows to return per partition
 	optional_idx partition_limit;

@@ -544,6 +544,7 @@ void RangeTableFunction::RegisterFunction(BuiltinFunctions &set) {
 	                                     RangeDateTimeLocalInit);
 	generate_series_in_out.table_scan_progress = RangeDateTimeProgress;
 	generate_series_in_out.in_out_function = RangeDateTimeFunction<true>;
+	generate_series_in_out.cardinality = RangeDateTimeCardinality;
 	generate_series_in_out.parallelism = TableFunctionParallelism::FORCE_SINGLE_THREADED;
 	generate_series_in_out.return_type = TableFunctionReturnType::SET_RETURNING_FUNCTION;
 	generate_series.AddFunction(generate_series_in_out);

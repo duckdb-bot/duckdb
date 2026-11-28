@@ -1,0 +1,46 @@
+# name: test/sql/table_function/generate_series_timestamp_estimate.test
+# description: generate_series over TIMESTAMP has a row estimate, as range has
+# group: [table_function]
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+query II
+EXPLAIN SELECT g FROM range(TIMESTAMP '2024-01-01', TIMESTAMP '2024-01-10', INTERVAL 1 HOUR) s(g)
+----
+physical_plan	<REGEX>:.*RANGE.*~216 rows.*
+
+query II
+EXPLAIN SELECT g FROM generate_series(TIMESTAMP '2024-01-01', TIMESTAMP '2024-01-10', INTERVAL 1 HOUR) s(g)
+----
+physical_plan	<REGEX>:.*GENERATE_SERIES.*~216 rows.*
+
+# the series has one row more than its estimate, which is not a maximum
+query I
+SELECT count(*) FROM generate_series(TIMESTAMP '2024-01-01', TIMESTAMP '2024-01-10', INTERVAL 1 HOUR)
+----
+217
+
+query I
+SELECT count(*) FROM (SELECT * FROM generate_series(TIMESTAMP '2024-01-01', TIMESTAMP '2024-01-10', INTERVAL 1 HOUR) LIMIT 217)
+----
+217
+
+query I
+SELECT s FROM (SELECT sum(1::BIGINT) AS s FROM generate_series(TIMESTAMP '2024-01-01', TIMESTAMP '2024-01-10', INTERVAL 1 HOUR)) WHERE s = 217
+----
+217
+
+# a join builds its hash table on the smaller input
+statement ok
+CREATE TABLE small AS SELECT TIMESTAMP '2024-01-01' + INTERVAL (i) HOUR AS ts FROM range(1000) r(i);
+
+query II
+EXPLAIN SELECT count(*) FROM small JOIN generate_series(TIMESTAMP '2000-01-01', TIMESTAMP '2030-01-01', INTERVAL 1 MINUTE) s(g) ON small.ts = s.g
+----
+physical_plan	<REGEX>:.*HASH_JOIN.*GENERATE_SERIES[^\n]*SEQ_SCAN.*
+
+query I
+SELECT count(*) FROM small JOIN generate_series(TIMESTAMP '2000-01-01', TIMESTAMP '2030-01-01', INTERVAL 1 MINUTE) s(g) ON small.ts = s.g
+----
+1000

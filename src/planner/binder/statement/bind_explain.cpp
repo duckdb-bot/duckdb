@@ -5,6 +5,7 @@
 #include "duckdb/planner/operator/logical_explain.hpp"
 #include "duckdb/common/tree_renderer.hpp"
 #include "duckdb/main/settings.hpp"
+#include "duckdb/common/enums/output_type.hpp"
 
 namespace duckdb {
 

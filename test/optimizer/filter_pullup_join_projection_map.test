@@ -1,0 +1,182 @@
+# name: test/optimizer/filter_pullup_join_projection_map.test
+# description: An inner join that keeps its projection maps passes key constraints between its inputs
+# group: [optimizer]
+
+# Every optimizer pass must leave a plan whose expressions only read columns of the operators below them.
+statement ok
+SET debug_verify_column_bindings = true;
+
+statement ok
+CREATE TABLE outer_rows AS SELECT i AS k, i % 5 AS v FROM range(100) t(i);
+
+statement ok
+INSERT INTO outer_rows VALUES (NULL, 0);
+
+statement ok
+CREATE TABLE inner_rows AS SELECT i % 100 AS k, i AS w FROM range(1000) t(i);
+
+statement ok
+INSERT INTO inner_rows VALUES (NULL, -1), (NULL, -2);
+
+statement ok
+CREATE TABLE other_rows AS SELECT i AS k, i * 2 AS z FROM range(100) t(i);
+
+# A constraint on the outer key of a lateral join also filters the scan of the inner table.
+query II
+EXPLAIN (FORMAT JSON) SELECT sum(q.w), count(*) FROM outer_rows o, LATERAL (SELECT i.w FROM inner_rows i WHERE i.k = o.k) q WHERE o.k <> 7;
+----
+physical_plan	<REGEX>:.*"Table": "[^"]*inner_rows"[^}]*"Filters": [^}]*k != 7.*
+
+query II
+SELECT sum(q.w), count(*) FROM outer_rows o, LATERAL (SELECT i.w FROM inner_rows i WHERE i.k = o.k) q WHERE o.k <> 7;
+----
+494930	990
+
+query II
+EXPLAIN (FORMAT JSON) SELECT sum(q.w), count(*) FROM outer_rows o, LATERAL (SELECT i.w FROM inner_rows i WHERE i.k = o.k) q WHERE o.k IN (3, 50);
+----
+physical_plan	<REGEX>:.*"Table": "[^"]*inner_rows"[^}]*"Filters": [^}]*k IN \(3, 50\).*
+
+query II
+SELECT sum(q.w), count(*) FROM outer_rows o, LATERAL (SELECT i.w FROM inner_rows i WHERE i.k = o.k) q WHERE o.k IN (3, 50);
+----
+9530	20
+
+# A NULL test follows the join condition, an equality never matches NULL keys and IS NOT DISTINCT FROM does.
+query I
+SELECT count(*) FROM outer_rows o, LATERAL (SELECT i.w FROM inner_rows i WHERE i.k = o.k) q WHERE o.k IS NULL;
+----
+0
+
+query II
+EXPLAIN (FORMAT JSON) SELECT count(*) FROM outer_rows o, LATERAL (SELECT i.w FROM inner_rows i WHERE i.k IS NOT DISTINCT FROM o.k) q WHERE o.k IS NULL;
+----
+physical_plan	<REGEX>:.*"Table": "[^"]*inner_rows"[^}]*"Filters": [^}]*k IS NULL.*
+
+query I
+SELECT count(*) FROM outer_rows o, LATERAL (SELECT i.w FROM inner_rows i WHERE i.k IS NOT DISTINCT FROM o.k) q WHERE o.k IS NULL;
+----
+2
+
+# The other input can already have a filter at its top, here from the ON clause.
+query II
+EXPLAIN (FORMAT JSON) SELECT count(*), sum(q.w) FROM outer_rows o JOIN LATERAL (SELECT i.k AS ik, i.w FROM inner_rows i WHERE i.k IS NOT DISTINCT FROM o.k) q ON q.ik <> 7 WHERE o.k <> 9;
+----
+physical_plan	<REGEX>:.*"Table": "[^"]*inner_rows"[^}]*"Filters": [^}]*k != 9.*
+
+query II
+SELECT count(*), sum(q.w) FROM outer_rows o JOIN LATERAL (SELECT i.k AS ik, i.w FROM inner_rows i WHERE i.k IS NOT DISTINCT FROM o.k) q ON q.ik <> 7 WHERE o.k <> 9;
+----
+980	490340
+
+# A constraint on the inner key filters the outer rows, here with a projection map on the right input.
+query II
+EXPLAIN (FORMAT JSON) SELECT count(*), sum(q.w) FROM outer_rows o JOIN LATERAL (SELECT i.k AS ik, i.w, o.v AS ov FROM inner_rows i) q ON q.ik = o.k AND q.ik <> 7;
+----
+physical_plan	<REGEX>:.*"Table": "[^"]*outer_rows"[^}]*"Filters": [^}]*k != 7.*
+
+query II
+SELECT count(*), sum(q.w) FROM outer_rows o JOIN LATERAL (SELECT i.k AS ik, i.w, o.v AS ov FROM inner_rows i) q ON q.ik = o.k AND q.ik <> 7;
+----
+990	494930
+
+# The same with a projection map on the left input, which hides the column of the scalar subquery.
+query II
+EXPLAIN (FORMAT JSON) SELECT count(*), sum(i.w) FROM outer_rows o LEFT JOIN other_rows x ON ((SELECT 3) = o.k AND x.k > 2) JOIN inner_rows i ON (o.k = i.k AND i.k <> 7);
+----
+physical_plan	<REGEX>:.*"Table": "[^"]*outer_rows"[^}]*"Filters": [^}]*k != 7.*
+
+query II
+SELECT count(*), sum(i.w) FROM outer_rows o LEFT JOIN other_rows x ON ((SELECT 3) = o.k AND x.k > 2) JOIN inner_rows i ON (o.k = i.k AND i.k <> 7);
+----
+1950	929810
+
+# A second lateral join for the same outer row gets the constraint from the first one.
+query II
+EXPLAIN (FORMAT JSON) SELECT sum(a.w + b.z), count(*) FROM outer_rows o, LATERAL (SELECT i.w FROM inner_rows i WHERE i.k = o.k) a, LATERAL (SELECT x.z FROM other_rows x WHERE x.k = o.k) b WHERE o.k <> 7;
+----
+physical_plan	<REGEX>:.*"Table": "[^"]*other_rows"[^}]*"Filters": [^}]*k != 7.*
+
+query II
+SELECT sum(a.w + b.z), count(*) FROM outer_rows o, LATERAL (SELECT i.w FROM inner_rows i WHERE i.k = o.k) a, LATERAL (SELECT x.z FROM other_rows x WHERE x.k = o.k) b WHERE o.k <> 7;
+----
+593790	990
+
+# An enclosing join gets a copy of the constraint on the outer key. The filter that the constraint implies for the
+# inner key stays below the lateral join, whose projection map drops that column.
+query II
+EXPLAIN (FORMAT JSON) SELECT count(*), sum(s.w + x.z) FROM (SELECT o.k, q.w FROM outer_rows o, LATERAL (SELECT i.w FROM inner_rows i WHERE i.k = o.k) q WHERE o.k <> 7) s JOIN other_rows x ON s.k = x.k;
+----
+physical_plan	<REGEX>:.*"Table": "[^"]*other_rows"[^}]*"Filters": [^}]*k != 7.*
+
+query II
+SELECT count(*), sum(s.w + x.z) FROM (SELECT o.k, q.w FROM outer_rows o, LATERAL (SELECT i.w FROM inner_rows i WHERE i.k = o.k) q WHERE o.k <> 7) s JOIN other_rows x ON s.k = x.k;
+----
+990	593790
+
+# A volatile filter on the outer rows is not copied for the enclosing join.
+statement ok
+CREATE SEQUENCE outer_calls;
+
+query II
+SELECT count(*), sum(s.w + x.z) FROM (SELECT o.k, q.w FROM outer_rows o, LATERAL (SELECT i.w FROM inner_rows i WHERE i.k = o.k) q WHERE o.k <> 7 AND o.k < nextval('outer_calls') + 1000) s JOIN other_rows x ON s.k = x.k;
+----
+990	593790
+
+query I
+SELECT currval('outer_calls') <= 101;
+----
+true
+
+# A volatile join condition sees every outer row, so no filter is added below such a join.
+statement ok
+CREATE SEQUENCE condition_calls;
+
+query II
+SELECT count(*), sum(q.w) FROM outer_rows o JOIN LATERAL (SELECT i.k AS ik, i.w, o.v AS ov FROM inner_rows i) q ON q.ik = o.k AND o.v + nextval('condition_calls') > q.w - 100000 AND q.ik <> 7;
+----
+990	494930
+
+query I
+SELECT currval('condition_calls');
+----
+101
+
+# Without an enclosing join that uses it, the constraint is not repeated on its own input.
+query II
+EXPLAIN (FORMAT JSON) WITH o AS MATERIALIZED (SELECT * FROM outer_rows) SELECT count(*), sum(q.w) FROM o, LATERAL (SELECT i.w FROM inner_rows i WHERE i.k = o.k) q WHERE o.k IN (3, 50);
+----
+physical_plan	<!REGEX>:.*\(k = 3\) OR \(k = 50\)\) AND \(\(k = 3\) OR \(k = 50\).*
+
+query II
+WITH o AS MATERIALIZED (SELECT * FROM outer_rows) SELECT count(*), sum(q.w) FROM o, LATERAL (SELECT i.w FROM inner_rows i WHERE i.k = o.k) q WHERE o.k IN (3, 50);
+----
+20	9530
+
+# A left join keeps the outer rows that the constraint on its right input would remove.
+query II
+SELECT count(*), count(q.w) FROM outer_rows o LEFT JOIN LATERAL (SELECT i.k AS ik, i.w, o.v AS ov FROM inner_rows i) q ON q.ik = o.k AND q.ik <> 7;
+----
+992	990
+
+# Left, anti and semi joins with a projection map and a filter at the top of their right input.
+query II
+SELECT count(*), count(i.w) FROM outer_rows o LEFT JOIN inner_rows i ON (i.k = o.k AND i.k <> 7 AND EXISTS (SELECT 1 FROM other_rows x WHERE x.k = o.k AND x.z >= i.w));
+----
+101	99
+
+query I
+SELECT count(*) FROM outer_rows o ANTI JOIN inner_rows i ON (i.k = o.k AND i.k <> 7 AND EXISTS (SELECT 1 FROM other_rows x WHERE x.k = o.k AND x.z >= i.w));
+----
+2
+
+query I
+SELECT count(*) FROM outer_rows o SEMI JOIN inner_rows i ON (i.k = o.k AND i.k <> 7 AND EXISTS (SELECT 1 FROM other_rows x WHERE x.k = o.k AND x.z >= i.w));
+----
+99
+
+# A lateral join over a duplicate eliminated domain keeps its result.
+query II
+SELECT sum(q.s), count(*) FROM outer_rows o, LATERAL (SELECT i.k, sum(i.w) AS s FROM inner_rows i WHERE i.k = o.k GROUP BY i.k) q WHERE o.k <> 7;
+----
+494930	99

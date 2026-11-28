@@ -2,8 +2,11 @@
 
 #include "duckdb/common/enum_util.hpp"
 #include "duckdb/optimizer/filter_combiner.hpp"
+#include "duckdb/planner/column_binding_map.hpp"
+#include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
+#include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/planner/operator/logical_any_join.hpp"
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
 #include "duckdb/planner/operator/logical_cross_product.hpp"
@@ -62,8 +65,16 @@ static bool NeedsEarlyJoinKeys(LogicalOperator &op) {
 	return false;
 }
 
+static bool IsInnerJoinWithProjectionMap(const LogicalOperator &op) {
+	return op.HasProjectionMap() && op.type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN &&
+	       op.Cast<LogicalComparisonJoin>().join_type == JoinType::INNER;
+}
+
 unique_ptr<LogicalOperator> FilterPullup::Rewrite(unique_ptr<LogicalOperator> op) {
 	if (op->HasProjectionMap()) {
+		if (IsInnerJoinWithProjectionMap(*op)) {
+			return PullupInnerJoinWithProjectionMap(std::move(op));
+		}
 		return FinishPullup(std::move(op));
 	}
 	if (!can_pullup && !can_add_column && NeedsEarlyJoinKeys(*op)) {
@@ -178,6 +189,87 @@ unique_ptr<LogicalOperator> FilterPullup::PullupSemiJoin(unique_ptr<LogicalOpera
 		}
 	}
 	op->children[0] = GeneratePullupFilter(std::move(op->children[0]), left_filters);
+	return ReturnConstraints(std::move(op), std::move(constraints));
+}
+
+//! The filters that every row of a join input passes, which are the filter at its top and the handed up constraints
+static vector<reference<const Expression>> GetInputConstraints(const LogicalOperator &input,
+                                                               const vector<unique_ptr<Expression>> &handed_up) {
+	vector<reference<const Expression>> constraints;
+	for (auto &filter : handed_up) {
+		constraints.push_back(*filter);
+	}
+	if (input.type == LogicalOperatorType::LOGICAL_FILTER && !input.HasProjectionMap()) {
+		for (auto &filter : input.expressions) {
+			constraints.push_back(*filter);
+		}
+	}
+	return constraints;
+}
+
+static void AddOutputConstraints(const vector<reference<const Expression>> &filters,
+                                 const column_binding_set_t &output_bindings,
+                                 vector<unique_ptr<Expression>> &constraints) {
+	for (auto &filter : filters) {
+		if (!FilterCombiner::CanCopyFilter(filter.get())) {
+			continue;
+		}
+		bool reads_output_only = true;
+		ExpressionIterator::VisitExpression<BoundColumnRefExpression>(
+		    filter.get(), [&](const BoundColumnRefExpression &colref) {
+			    reads_output_only = reads_output_only && output_bindings.count(colref.Binding()) != 0;
+		    });
+		if (reads_output_only) {
+			constraints.push_back(filter.get().Copy());
+		}
+	}
+}
+
+unique_ptr<LogicalOperator> FilterPullup::PullupInnerJoinWithProjectionMap(unique_ptr<LogicalOperator> op) {
+	D_ASSERT(IsInnerJoinWithProjectionMap(*op));
+	auto &join = op->Cast<LogicalComparisonJoin>();
+	for (auto &condition : join.conditions) {
+		if (condition.IsComparison() ? condition.GetLHS().IsVolatile() || condition.GetRHS().IsVolatile()
+		                             : condition.GetJoinExpression().IsVolatile()) {
+			return FinishPullup(std::move(op));
+		}
+	}
+	// An input stays as it is, only a join of the same kind hands up copies of its constraints.
+	FilterPullup left_pullup(context, IsInnerJoinWithProjectionMap(*op->children[0]), false);
+	FilterPullup right_pullup(context, IsInnerJoinWithProjectionMap(*op->children[1]), false);
+	op->children[0] = left_pullup.Rewrite(std::move(op->children[0]));
+	op->children[1] = right_pullup.Rewrite(std::move(op->children[1]));
+	auto left_constraints = GetInputConstraints(*op->children[0], left_pullup.filters_expr_pullup);
+	auto right_constraints = GetInputConstraints(*op->children[1], right_pullup.filters_expr_pullup);
+
+	// a row with a match passes what the constraints on the other input imply for its keys
+	vector<unique_ptr<Expression>> implied_left_filters;
+	vector<unique_ptr<Expression>> implied_right_filters;
+	FilterCombiner::GenerateJoinFilters(
+	    join.conditions, right_constraints, JoinSide::LEFT,
+	    [&](unique_ptr<Expression> filter) { implied_left_filters.push_back(std::move(filter)); });
+	FilterCombiner::GenerateJoinFilters(
+	    join.conditions, left_constraints, JoinSide::RIGHT,
+	    [&](unique_ptr<Expression> filter) { implied_right_filters.push_back(std::move(filter)); });
+
+	vector<unique_ptr<Expression>> constraints;
+	if (can_pullup) {
+		for (auto &filter : implied_left_filters) {
+			left_constraints.push_back(*filter);
+		}
+		for (auto &filter : implied_right_filters) {
+			right_constraints.push_back(*filter);
+		}
+		// Only a constraint on columns that the projection maps keep can be repeated above the join.
+		column_binding_set_t output_bindings;
+		for (auto &binding : op->GetColumnBindings()) {
+			output_bindings.insert(binding);
+		}
+		AddOutputConstraints(left_constraints, output_bindings, constraints);
+		AddOutputConstraints(right_constraints, output_bindings, constraints);
+	}
+	op->children[0] = GeneratePullupFilter(std::move(op->children[0]), implied_left_filters);
+	op->children[1] = GeneratePullupFilter(std::move(op->children[1]), implied_right_filters);
 	return ReturnConstraints(std::move(op), std::move(constraints));
 }
 

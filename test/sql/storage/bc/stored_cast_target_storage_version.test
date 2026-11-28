@@ -1,0 +1,85 @@
+# name: test/sql/storage/bc/stored_cast_target_storage_version.test
+# description: A stored expression of a storage version below v2.0.0 cannot cast to GEOGRAPHY
+# group: [bc]
+
+statement ok
+ATTACH '{TEST_DIR}/stored_cast_target_v1_0.db' AS old (STORAGE_VERSION 'v1.0.0');
+
+statement ok
+CREATE TABLE old.t(s INTEGER);
+
+statement ok
+INSERT INTO old.t VALUES (7);
+
+# a default, a generated column and a constraint
+statement error
+CREATE TABLE old.d1(i INTEGER DEFAULT (NULL::GEOGRAPHY IS NULL)::INTEGER)
+----
+GEOGRAPHY columns are not supported in storage versions prior to v2.1.0
+
+statement error
+CREATE TABLE old.d2(i INTEGER DEFAULT len(NULL::GEOGRAPHY[]))
+----
+GEOGRAPHY columns are not supported in storage versions prior to v2.1.0
+
+statement error
+CREATE TABLE old.g1(v VARCHAR, j BOOLEAN GENERATED ALWAYS AS (v::GEOGRAPHY IS NULL))
+----
+GEOGRAPHY columns are not supported in storage versions prior to v2.1.0
+
+statement error
+CREATE TABLE old.c1(v VARCHAR CHECK (TRY_CAST(v AS GEOGRAPHY) IS NOT NULL))
+----
+GEOGRAPHY columns are not supported in storage versions prior to v2.1.0
+
+# a view and macros
+statement error
+CREATE VIEW old.v1 AS SELECT NULL::GEOGRAPHY IS NULL AS x
+----
+GEOGRAPHY columns are not supported in storage versions prior to v2.1.0
+
+statement error
+CREATE VIEW old.v2 AS SELECT (SELECT count(*) FROM old.t WHERE s::VARCHAR::GEOGRAPHY IS NULL) AS x
+----
+GEOGRAPHY columns are not supported in storage versions prior to v2.1.0
+
+statement error
+CREATE MACRO old.m1(x) AS x::GEOGRAPHY IS NULL
+----
+GEOGRAPHY columns are not supported in storage versions prior to v2.1.0
+
+statement error
+CREATE MACRO old.m2(x) AS TABLE SELECT x::GEOGRAPHY IS NULL AS y
+----
+GEOGRAPHY columns are not supported in storage versions prior to v2.1.0
+
+query I
+SELECT table_name FROM duckdb_tables() WHERE database_name = 'old' ORDER BY table_name
+----
+t
+
+query I
+SELECT count(*) FROM duckdb_views() WHERE database_name = 'old' AND NOT internal
+----
+0
+
+# a cast that is not stored
+query I
+SELECT NULL::GEOGRAPHY IS NULL FROM old.t
+----
+true
+
+# from v2.0.0 on the target of a cast is stored as a type expression
+statement ok
+ATTACH '{TEST_DIR}/stored_cast_target_v2_0.db' AS newer (STORAGE_VERSION 'v2.0.0');
+
+statement ok
+CREATE TABLE newer.d1(i INTEGER DEFAULT (NULL::GEOGRAPHY IS NULL)::INTEGER, j INTEGER)
+
+statement ok
+INSERT INTO newer.d1 (j) VALUES (1)
+
+query II
+SELECT i, j FROM newer.d1
+----
+1	1

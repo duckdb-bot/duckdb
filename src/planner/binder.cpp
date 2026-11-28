@@ -9,6 +9,7 @@
 #include "duckdb/parser/tableref/basetableref.hpp"
 #include "duckdb/common/enum_util.hpp"
 #include "duckdb/common/helper.hpp"
+#include "duckdb/function/cast/cast_function_set.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/settings.hpp"
@@ -462,6 +463,17 @@ void Binder::SetAlwaysRequireRebind() {
 
 void Binder::CheckRequiresRebind(const Expression &expr) {
 	if (!GetStatementProperties().always_require_rebind && expr.RequiresRebind()) {
+		RequireRebind();
+	}
+}
+
+void Binder::CheckCastRequiresRebind(const LogicalType &source_type, const LogicalType &target_type) {
+	if (GetStatementProperties().always_require_rebind) {
+		return;
+	}
+	GetCastFunctionInput get_input(context);
+	auto bound_cast = CastFunctionSet::Get(context).GetCastFunction(source_type, target_type, get_input);
+	if (bound_cast.GetStability() == FunctionStability::CONSISTENT_WITHIN_QUERY) {
 		RequireRebind();
 	}
 }

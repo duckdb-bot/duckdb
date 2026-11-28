@@ -165,10 +165,11 @@ static unique_ptr<SelectNode> ConstructInitialGrouping(PivotRef &ref, vector<uni
 	return subquery;
 }
 
-static unique_ptr<SelectNode> PivotFilteredAggregate(ClientContext &context, PivotRef &ref,
+static unique_ptr<SelectNode> PivotFilteredAggregate(Binder &binder, PivotRef &ref,
                                                      vector<unique_ptr<ParsedExpression>> all_columns,
                                                      const identifier_set_t &handled_columns,
                                                      vector<PivotValueElement> pivot_values) {
+	auto &context = binder.context;
 	auto subquery = ConstructInitialGrouping(ref, std::move(all_columns), handled_columns);
 
 	// push the filtered aggregates
@@ -178,8 +179,10 @@ static unique_ptr<SelectNode> PivotFilteredAggregate(ClientContext &context, Piv
 		for (auto &pivot_column : ref.pivots) {
 			for (auto &pivot_expr : pivot_column.pivot_expressions) {
 				auto column_ref = make_uniq<CastExpression>(LogicalType::VARCHAR, pivot_expr->Copy());
-				auto constant_value = ConstantExpression::FromValue(
-				    pivot_value.values[pivot_value_idx++].CastAs(context, LogicalType::VARCHAR));
+				auto &value = pivot_value.values[pivot_value_idx++];
+				// the cast applies to the folded value, where the check of its expression cannot see it
+				binder.CheckCastRequiresRebind(value.type(), LogicalType::VARCHAR);
+				auto constant_value = ConstantExpression::FromValue(value.CastAs(context, LogicalType::VARCHAR));
 				auto comp_expr = make_uniq<ComparisonExpression>(ExpressionType::COMPARE_NOT_DISTINCT_FROM,
 				                                                 std::move(column_ref), std::move(constant_value));
 				if (filter) {
@@ -747,7 +750,7 @@ unique_ptr<SelectNode> Binder::BindPivot(PivotRef &ref, vector<unique_ptr<Parsed
 	if (pivot_values.size() <= pivot_filter_threshold) {
 		// use a set of filtered aggregates
 		pivot_node =
-		    PivotFilteredAggregate(context, ref, std::move(all_columns), handled_columns, std::move(pivot_values));
+		    PivotFilteredAggregate(*this, ref, std::move(all_columns), handled_columns, std::move(pivot_values));
 	} else {
 		// executing a pivot statement happens in three stages
 		// 1) execute the query "SELECT {groups}, {pivots}, {aggregates} FROM {from_clause} GROUP BY {groups}, {pivots}

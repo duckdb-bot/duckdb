@@ -11,6 +11,8 @@
 #include "duckdb/parser/expression/subquery_expression.hpp"
 #include "duckdb/parser/parsed_expression_iterator.hpp"
 #include "duckdb/parser/query_node.hpp"
+#include "duckdb/parser/tableref/match_recognize_ref.hpp"
+#include "duckdb/parser/tableref/pivotref.hpp"
 #include "duckdb/parser/statement/select_statement.hpp"
 #include "duckdb/common/types/geometry.hpp"
 #include "duckdb/common/types/variant.hpp"
@@ -445,8 +447,44 @@ void StorageManager::CheckQueryDecimalsAreSupported(QueryNode &node) const {
 	if (GetStorageVersion() >= StorageVersion::V2_0_0) {
 		return;
 	}
-	ParsedExpressionIterator::EnumerateQueryNodeChildren(
-	    node, [&](unique_ptr<ParsedExpression> &child) { CheckExpressionDecimalsAreSupported(*child); });
+	// the walker leaves the pivot expressions, the entries of a PIVOT IN list and the input of a MATCH_RECOGNIZE to
+	// its callers, since the prepared statement verification replaces the constants of everything it hands out by
+	// parameters, which fails in these positions
+	std::function<void(unique_ptr<ParsedExpression> &)> expr_callback = [&](unique_ptr<ParsedExpression> &child) {
+		CheckExpressionDecimalsAreSupported(*child);
+	};
+	std::function<void(TableRef &)> ref_callback = [&](TableRef &ref) {
+		switch (ref.type) {
+		case TableReferenceType::PIVOT: {
+			for (auto &pivot : ref.Cast<PivotRef>().pivots) {
+				for (auto &pivot_expr : pivot.pivot_expressions) {
+					expr_callback(pivot_expr);
+				}
+				for (auto &entry : pivot.entries) {
+					if (entry.expr) {
+						expr_callback(entry.expr);
+					}
+				}
+			}
+			break;
+		}
+		case TableReferenceType::MATCH_RECOGNIZE: {
+			auto &input = ref.Cast<MatchRecognizeRef>().input;
+			if (input) {
+				// the walker calls this callback for the input itself, this walks the children of the input once
+				ParsedExpressionIterator::EnumerateTableRefChildren(*input, expr_callback, [&](TableRef &child) {
+					if (&child != input.get()) {
+						ref_callback(child);
+					}
+				});
+			}
+			break;
+		}
+		default:
+			break;
+		}
+	};
+	ParsedExpressionIterator::EnumerateQueryNodeChildren(node, expr_callback, ref_callback);
 }
 
 bool StorageManager::HasWAL() const {

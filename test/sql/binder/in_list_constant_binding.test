@@ -1,0 +1,212 @@
+# name: test/sql/binder/in_list_constant_binding.test
+# description: The constants of an IN list are bound as values of the type the list is compared in
+# group: [binder]
+
+statement ok
+CREATE TABLE tbl (i BIGINT, s SMALLINT, v VARCHAR, d DATE, dec DECIMAL(10,2));
+
+statement ok
+INSERT INTO tbl VALUES (1, 1, 'a', DATE '2020-01-01', 1.5), (4, 4, 'B', DATE '2021-01-01', 2.5), (NULL, NULL, NULL, NULL, NULL);
+
+statement ok
+CREATE TABLE empty_tbl (i BIGINT);
+
+statement ok
+CREATE TABLE lists (l BIGINT[]);
+
+statement ok
+INSERT INTO lists VALUES ([1, 2]), ([3]), (NULL);
+
+statement ok
+SET VARIABLE int_list = [1, 2];
+
+statement ok
+SET explain_output = 'all';
+
+# integer literals become BIGINT values, the plan holds no cast before it is optimized
+query II
+EXPLAIN SELECT * FROM tbl WHERE i IN (1, 2, 3);
+----
+logical_plan	<!REGEX>:[\s\S]*CAST[\s\S]*
+logical_opt	<REGEX>:[\s\S]*
+physical_plan	<REGEX>:[\s\S]*
+
+query II
+EXPLAIN SELECT * FROM tbl WHERE i NOT IN (1, 2, 3);
+----
+logical_plan	<!REGEX>:[\s\S]*CAST[\s\S]*
+logical_opt	<REGEX>:[\s\S]*
+physical_plan	<REGEX>:[\s\S]*
+
+# literals that fit a narrower type become values of that type
+query II
+EXPLAIN SELECT * FROM tbl WHERE s IN (1, 2, 3);
+----
+logical_plan	<!REGEX>:[\s\S]*CAST[\s\S]*
+logical_opt	<REGEX>:[\s\S]*
+physical_plan	<REGEX>:[\s\S]*
+
+# string literals stay as they are in a VARCHAR list and are converted in a DATE list
+query II
+EXPLAIN SELECT * FROM tbl WHERE v IN ('a', 'b', 'c');
+----
+logical_plan	<!REGEX>:[\s\S]*CAST[\s\S]*
+logical_opt	<REGEX>:[\s\S]*
+physical_plan	<REGEX>:[\s\S]*
+
+query II
+EXPLAIN SELECT * FROM tbl WHERE d IN ('2020-01-01', '2022-02-02');
+----
+logical_plan	<!REGEX>:[\s\S]*CAST[\s\S]*
+logical_opt	<REGEX>:[\s\S]*
+physical_plan	<REGEX>:[\s\S]*
+
+# strings become lists of the column's type
+query II
+EXPLAIN SELECT * FROM lists WHERE l IN ('[1, 2]', '[4]');
+----
+logical_plan	<!REGEX>:[\s\S]*CAST[\s\S]*
+logical_opt	<REGEX>:[\s\S]*
+physical_plan	<REGEX>:[\s\S]*
+
+# a NULL in the list needs no cast either
+query II
+EXPLAIN SELECT * FROM tbl WHERE i IN (1, NULL);
+----
+logical_plan	<!REGEX>:[\s\S]*CAST[\s\S]*
+logical_opt	<REGEX>:[\s\S]*
+physical_plan	<REGEX>:[\s\S]*
+
+# a constant that cannot be converted keeps its cast, the other constants do not
+query II
+EXPLAIN SELECT * FROM tbl WHERE i IN ('abc', 1);
+----
+logical_plan	<REGEX>:[\s\S]*IN \(CAST\('abc' AS BIGINT\), 1\)[\s\S]*
+logical_opt	<REGEX>:[\s\S]*
+physical_plan	<REGEX>:[\s\S]*
+
+statement ok
+RESET explain_output;
+
+query III
+SELECT i, i IN (1, 2, 3), i NOT IN (1, 2, 3) FROM tbl ORDER BY i;
+----
+1	true	false
+4	false	true
+NULL	NULL	NULL
+
+query IIII
+SELECT s, s IN (1, 2, 3), s IN (4, 100000), s NOT IN (1, 100000) FROM tbl ORDER BY s;
+----
+1	true	false	false
+4	false	true	true
+NULL	NULL	NULL	NULL
+
+query IIII
+SELECT v, v IN ('a', 'b', 'c'), v IN ('B'), v NOT IN ('a', 'b') FROM tbl ORDER BY v;
+----
+B	false	true	true
+a	true	false	false
+NULL	NULL	NULL	NULL
+
+query III
+SELECT d, d IN ('2020-01-01', '2022-02-02'), d NOT IN ('2021-01-01') FROM tbl ORDER BY d;
+----
+2020-01-01	true	true
+2021-01-01	false	false
+NULL	NULL	NULL
+
+query IIII
+SELECT dec, dec IN (1, 1.5, 2e0), dec IN ('2.5', 3), dec NOT IN (1.50, 9) FROM tbl ORDER BY dec;
+----
+1.50	true	false	false
+2.50	false	true	true
+NULL	NULL	NULL	NULL
+
+query IIII
+SELECT i, i IN (1, NULL), i NOT IN (1, NULL), i IN (NULL, 4, NULL) FROM tbl ORDER BY i;
+----
+1	true	false	NULL
+4	NULL	NULL	true
+NULL	NULL	NULL	NULL
+
+# lists from strings and from a list constant with another child type
+query III
+SELECT l, l IN ('[1, 2]', '[4]'), l IN (getvariable('int_list'), [4]) FROM lists ORDER BY l;
+----
+[1, 2]	true	true
+[3]	false	false
+NULL	NULL	NULL
+
+# string literals in a list of numbers
+query II
+SELECT i, i IN ('1', '2', 4) FROM tbl ORDER BY i;
+----
+1	true
+4	true
+NULL	NULL
+
+# a constant on the left side
+query III
+SELECT 4 IN (i, 1), '1' IN (i, 4), 5 IN (1, 2, 5) FROM tbl ORDER BY i;
+----
+false	true	true
+true	false	true
+NULL	NULL	true
+
+# a list that is long enough to be turned into a join
+query I
+SELECT count(*) FROM tbl WHERE i IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
+----
+2
+
+query I
+SELECT count(*) FROM tbl WHERE s IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 100000);
+----
+2
+
+# a constant that cannot be converted raises its error when the list is evaluated, not when it is bound
+statement error
+SELECT i IN ('abc', 1) FROM tbl;
+----
+Could not convert string 'abc' to INT64
+
+statement error
+SELECT count(*) FROM tbl WHERE i IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 'abc');
+----
+Could not convert string 'abc' to INT64
+
+query I
+SELECT i IN ('abc', 1) FROM empty_tbl;
+----
+
+query I
+SELECT count(*) FROM empty_tbl WHERE i IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 'abc');
+----
+0
+
+query I
+SELECT TRY(i IN ('abc', 1)) FROM tbl;
+----
+NULL
+NULL
+NULL
+
+# parameters in the list
+statement ok
+PREPARE in_list AS SELECT count(*) FROM tbl WHERE i IN (1, ?, '3');
+
+query I
+EXECUTE in_list(4);
+----
+2
+
+query I
+EXECUTE in_list(7);
+----
+1
+
+query I
+EXECUTE in_list('4');
+----
+2

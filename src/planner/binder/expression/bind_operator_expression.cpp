@@ -13,6 +13,7 @@
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/catalog/catalog_entry/scalar_function_catalog_entry.hpp"
+#include "duckdb/function/cast/cast_function_set.hpp"
 #include "duckdb/function/function_binder.hpp"
 
 namespace duckdb {
@@ -22,6 +23,55 @@ LogicalType ExpressionBinder::ResolveNotType(OperatorExpression &op, vector<uniq
 	D_ASSERT(children.size() == 1);
 	children[0] = BoundCastExpression::AddCastToType(context, std::move(children[0]), LogicalType::BOOLEAN);
 	return LogicalType(LogicalTypeId::BOOLEAN);
+}
+
+//! Casts a value with a bound cast. Returns nullopt when the cast fails or throws
+static optional<Value> TryCastConstantValue(ClientContext &context, const BoundCastInfo &bound_cast, const Value &value,
+                                            const LogicalType &target_type) {
+	try {
+		Vector source(value, count_t(1));
+		Vector result(target_type);
+		unique_ptr<FunctionLocalState> local_state;
+		if (bound_cast.HasInitLocalState()) {
+			CastLocalStateParameters local_state_parameters(context, bound_cast.GetCastData());
+			local_state = bound_cast.InitLocalState(local_state_parameters);
+		}
+		string error_message;
+		CastParameters parameters(bound_cast.GetCastData(), false, &error_message, local_state.get());
+		if (!bound_cast.Cast(source, result, 1, parameters)) {
+			return nullopt;
+		}
+		return result.GetValue(0);
+	} catch (InternalException &) {
+		throw;
+	} catch (...) {
+		return nullopt;
+	}
+}
+
+//! Casts a constant to the target type. The value is converted right away when the cast is consistent and succeeds
+static unique_ptr<Expression> CastConstantToType(ClientContext &context, unique_ptr<Expression> expr,
+                                                 const LogicalType &target_type) {
+	auto &constant = expr->Cast<BoundConstantExpression>();
+	auto &source_type = constant.GetReturnType();
+	if (!target_type.IsValid() || source_type == target_type) {
+		return expr;
+	}
+	if (source_type.id() == LogicalTypeId::LIST && target_type.id() == LogicalTypeId::LIST) {
+		// AddCastToType leaves a LIST alone when the child types are equal
+		return BoundCastExpression::AddCastToType(context, std::move(expr), target_type);
+	}
+	GetCastFunctionInput get_input(context);
+	get_input.query_location = constant.GetQueryLocation();
+	auto bound_cast = CastFunctionSet::Get(context).GetCastFunction(source_type, target_type, get_input);
+	if (bound_cast.GetStability() == FunctionStability::CONSISTENT) {
+		auto cast_value = TryCastConstantValue(context, bound_cast, constant.GetValue(), target_type);
+		if (cast_value) {
+			return constant.WithValue(std::move(*cast_value));
+		}
+	}
+	// a cast that reads settings, fails or throws stays in the plan
+	return BoundCastExpression::Create(std::move(expr), target_type, std::move(bound_cast));
 }
 
 LogicalType ExpressionBinder::ResolveCoalesceType(OperatorExpression &op, vector<unique_ptr<Expression>> &children) {
@@ -56,7 +106,11 @@ LogicalType ExpressionBinder::ResolveCoalesceType(OperatorExpression &op, vector
 
 	// cast all children to the same type
 	for (auto &child : children) {
-		child = BoundCastExpression::AddCastToType(context, std::move(child), max_type);
+		if (is_in_operator && child->GetExpressionClass() == ExpressionClass::BOUND_CONSTANT) {
+			child = CastConstantToType(context, std::move(child), max_type);
+		} else {
+			child = BoundCastExpression::AddCastToType(context, std::move(child), max_type);
+		}
 		if (is_in_operator) {
 			// If it's IN/NOT_IN operator, push collation functions.
 			ExpressionBinder::PushCollation(context, child, max_type);

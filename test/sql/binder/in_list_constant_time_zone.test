@@ -1,0 +1,51 @@
+# name: test/sql/binder/in_list_constant_time_zone.test
+# description: A constant of an IN list keeps its cast when the cast reads the TimeZone setting
+# group: [binder]
+
+require icu
+
+statement ok
+SET TimeZone = 'UTC';
+
+statement ok
+CREATE TABLE events (ts TIMESTAMPTZ);
+
+statement ok
+INSERT INTO events VALUES ('2024-01-01 00:00:00+00'), ('2024-01-01 05:00:00+00');
+
+statement ok
+SET explain_output = 'all';
+
+# the strings are read in the time zone of the query that runs, so they are not converted when they are bound
+query II
+EXPLAIN SELECT * FROM events WHERE ts IN ('2024-01-01 00:00:00', '2030-01-01 00:00:00');
+----
+logical_plan	<REGEX>:[\s\S]*CAST\([\s\S]*
+logical_opt	<REGEX>:[\s\S]*
+physical_plan	<REGEX>:[\s\S]*
+
+statement ok
+RESET explain_output;
+
+query I
+SELECT epoch_ms(ts) FROM events WHERE ts IN ('2024-01-01 00:00:00', '2030-01-01 00:00:00');
+----
+1704067200000
+
+query I
+SELECT epoch_ms(ts) FROM events WHERE ts NOT IN ('2024-01-01 00:00:00', '2030-01-01 00:00:00');
+----
+1704085200000
+
+statement ok
+SET TimeZone = 'America/New_York';
+
+query I
+SELECT epoch_ms(ts) FROM events WHERE ts IN ('2024-01-01 00:00:00', '2030-01-01 00:00:00');
+----
+1704085200000
+
+query I
+SELECT epoch_ms(ts) FROM events WHERE ts NOT IN ('2024-01-01 00:00:00', '2030-01-01 00:00:00');
+----
+1704067200000

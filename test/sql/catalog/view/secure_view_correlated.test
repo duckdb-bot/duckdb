@@ -1,0 +1,196 @@
+# name: test/sql/catalog/view/secure_view_correlated.test
+# description: Correlated subqueries, lateral joins and row triggers over a secure view with a volatile function
+# group: [view]
+
+statement ok
+CREATE TABLE t(a INTEGER);
+
+statement ok
+INSERT INTO t VALUES (1), (2);
+
+statement ok
+CREATE SECURE VIEW v AS SELECT random() + 1 AS n;
+
+# a lateral join evaluates the view for every outer row
+query I
+SELECT count(*) FROM t, LATERAL (SELECT t.a + n AS x FROM v);
+----
+2
+
+query I
+SELECT count(*) FROM t WHERE a < (SELECT max(t.a + n) FROM v);
+----
+2
+
+query I
+SELECT count(*) FROM t WHERE EXISTS (SELECT 1 FROM v WHERE n + t.a > 0);
+----
+2
+
+# every outer row gets its own value
+statement ok
+CREATE SEQUENCE seq;
+
+statement ok
+CREATE SECURE VIEW next_value AS SELECT nextval('seq') AS n;
+
+query III
+SELECT count(DISTINCT x), min(x), max(x) FROM t, LATERAL (SELECT n + t.a * 0 AS x FROM next_value);
+----
+2	1	2
+
+# outer rows with the same value and with NULL get their own value as well
+statement ok
+CREATE TABLE duplicates(a INTEGER);
+
+statement ok
+INSERT INTO duplicates VALUES (1), (1), (2), (NULL);
+
+statement ok
+CREATE SEQUENCE duplicate_seq;
+
+statement ok
+CREATE SECURE VIEW duplicate_value AS SELECT nextval('duplicate_seq') AS n;
+
+query II
+SELECT count(*), count(DISTINCT x) FROM duplicates, LATERAL (SELECT n + coalesce(duplicates.a, 0) * 0 AS x FROM duplicate_value);
+----
+4	4
+
+# a secure view over a table, with the correlation in a filter above the view
+statement ok
+CREATE TABLE base(k INTEGER, r DOUBLE);
+
+statement ok
+INSERT INTO base VALUES (1, 0.5), (2, 0.7), (3, 0.9);
+
+statement ok
+CREATE SECURE VIEW bv AS SELECT k, r + random() * 0 AS r FROM base;
+
+query I
+SELECT count(*) FROM t WHERE EXISTS (SELECT 1 FROM bv WHERE bv.k = t.a);
+----
+2
+
+query II
+SELECT a, (SELECT r FROM bv WHERE bv.k = t.a) FROM t ORDER BY a;
+----
+1	0.5
+2	0.7
+
+query II
+SELECT a, s.r FROM t, LATERAL (SELECT r FROM bv WHERE bv.k > t.a) s ORDER BY a, s.r;
+----
+1	0.7
+1	0.9
+2	0.9
+
+# a predicate of the caller does not see the rows that the view hides
+statement ok
+CREATE TABLE hidden(k INTEGER, s VARCHAR);
+
+statement ok
+INSERT INTO hidden VALUES (1, '10'), (2, '20'), (3, 'not a number');
+
+statement ok
+CREATE SECURE VIEW visible AS SELECT k, s, random() * 0 AS r FROM hidden WHERE k < 3;
+
+query II
+SELECT a, (SELECT count(*) FROM visible WHERE s::INTEGER > t.a) FROM t ORDER BY a;
+----
+1	2
+2	2
+
+query I
+SELECT count(*) FROM t WHERE EXISTS (SELECT 1 FROM visible WHERE s::INTEGER = t.a * 10);
+----
+2
+
+# the view is one node of the plan that shows no child and reports the predicate of the caller that is pushed into it
+query II
+EXPLAIN (FORMAT json) SELECT a, (SELECT count(*) FROM visible WHERE s::INTEGER > t.a) FROM t ORDER BY a;
+----
+physical_plan	<REGEX>:[\s\S]*"SECURE_VIEW",\s*"children": \[\],[^}]*"Filters": "\(CAST\(s AS INTEGER\) > a\)"[\s\S]*
+
+# the table behind the view is not in the plan
+query II
+EXPLAIN SELECT a, (SELECT count(*) FROM visible WHERE s::INTEGER > t.a) FROM t ORDER BY a;
+----
+physical_plan	<!REGEX>:[\s\S]*hidden[\s\S]*
+
+# rows that a view hides with a join are still there below the join, where a cast of the caller would fail on them
+statement ok
+CREATE TABLE secrets(id INTEGER, s VARCHAR);
+
+statement ok
+INSERT INTO secrets VALUES (1, 'top_secret'), (2, '42'), (3, 'also_secret');
+
+statement ok
+CREATE TABLE allowed(id INTEGER);
+
+statement ok
+INSERT INTO allowed VALUES (0), (2), (4);
+
+statement ok
+CREATE SECURE VIEW allowed_secrets AS
+SELECT sec.id, sec.s, random() * 0 AS r FROM secrets sec JOIN allowed a ON (sec.id = a.id);
+
+# a join filter could prune the hidden rows before the cast sees them
+statement ok
+SET disabled_optimizers = 'join_filter_pushdown';
+
+query II
+SELECT a, (SELECT count(*) + t.a FROM allowed_secrets WHERE s::INTEGER > 1) FROM t ORDER BY a;
+----
+1	2
+2	3
+
+# a predicate with a side effect runs on the rows that the view returns, once for every outer row
+statement ok
+CREATE SEQUENCE caller_seq;
+
+query II
+SELECT a, (SELECT count(*) + t.a FROM allowed_secrets WHERE nextval('caller_seq') + id > 0) FROM t ORDER BY a;
+----
+1	2
+2	3
+
+query I
+SELECT currval('caller_seq');
+----
+2
+
+# a join condition of the outer query on a column of the view sees the rows that the view returns
+query III
+SELECT a, q.id, q.x
+FROM t JOIN LATERAL (SELECT id, s, r + t.a AS x FROM allowed_secrets) q ON (q.s::INTEGER = t.a * 21)
+ORDER BY a;
+----
+2	2	2.0
+
+statement ok
+RESET disabled_optimizers;
+
+# a secure view without a volatile function
+statement ok
+CREATE SECURE VIEW sv AS SELECT 5 AS n;
+
+query I
+SELECT sum(x) FROM t, LATERAL (SELECT t.a + n AS x FROM sv);
+----
+13
+
+# the body of a row trigger
+statement ok
+CREATE TABLE u(k DOUBLE);
+
+statement ok
+CREATE TRIGGER copy_row AFTER INSERT ON t FOR EACH ROW INSERT INTO u SELECT NEW.a + n FROM v;
+
+statement ok
+INSERT INTO t VALUES (3), (4);
+
+query I
+SELECT count(*) FROM u WHERE k >= 4;
+----
+2

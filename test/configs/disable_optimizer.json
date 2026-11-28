@@ -27,12 +27,6 @@
       ]
     },
     {
-      "reason": "Counts a row group that claims 9223372036854775807 consistent rows from its statistics, without the optimizer the scan would produce the rows.",
-      "paths": [
-        "test/parquet/corrupt/row_group_bigint_max_rows.test"
-      ]
-    },
-    {
       "reason": "Checks the plan of an executed query through the profiler output.",
       "paths": [
         "test/optimizer/partial_aggregate_pushdown_serialized_plan.test"

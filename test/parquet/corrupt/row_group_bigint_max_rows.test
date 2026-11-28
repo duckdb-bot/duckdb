@@ -14,10 +14,11 @@ FROM parquet_metadata('{DATA_DIR}/parquet-testing/corrupt/row_group_bigint_max_r
 statement ok
 SET parquet_metadata_cache = true;
 
-query I
-SELECT count(*) FROM read_parquet('{DATA_DIR}/parquet-testing/corrupt/row_group_bigint_max_rows.parquet');
+# only the plan is checked, a count that the statistics do not answer would produce the rows
+query II
+EXPLAIN SELECT count(*) FROM read_parquet('{DATA_DIR}/parquet-testing/corrupt/row_group_bigint_max_rows.parquet');
 ----
-9223372036854775807
+physical_plan	<!REGEX>:.*READ_PARQUET.*
 
 # the counts of two such files do not fit a BIGINT, the count stays with the scan, it used to be an internal error
 query II

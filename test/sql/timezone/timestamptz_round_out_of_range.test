@@ -3,6 +3,11 @@
 # group: [timezone]
 
 # ICU is not loaded yet, so these are the casts of the core
+query I
+SELECT count(*) FROM duckdb_extensions() WHERE loaded AND extension_name = 'icu';
+----
+0
+
 statement error
 SELECT TIMESTAMPTZ '294247-01-10 04:00:54.775806+00'::TIMESTAMP_S;
 ----

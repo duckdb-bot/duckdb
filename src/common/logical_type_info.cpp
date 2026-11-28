@@ -10,6 +10,8 @@
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/parser/expression/type_expression.hpp"
 
+#include <cmath>
+
 namespace duckdb {
 
 //===--------------------------------------------------------------------===//
@@ -247,9 +249,72 @@ void UnboundTypeInfo::Serialize(Serializer &serializer) const {
 	serializer.WritePropertyWithDefault<vector<Value>>(203, "user_type_modifiers", user_type_mods);
 }
 
+// The number that the parser types as this DOUBLE or DECIMAL value, empty when there is none
+static string TypedNumberText(const Value &value) {
+	auto text = value.ToString();
+	if (value.type().id() == LogicalTypeId::DOUBLE) {
+		if (!Value::DoubleIsFinite(DoubleValue::Get(value))) {
+			return string();
+		}
+		// a number with an exponent is a DOUBLE
+		return text.find('e') == string::npos ? text + "e0" : text;
+	}
+	// a DECIMAL has the width of all digits of the number and the scale of the digits behind the point
+	const idx_t sign_size = text[0] == '-' ? 1 : 0;
+	auto point = text.find('.');
+	auto integer_digits = text.substr(sign_size, point == string::npos ? string::npos : point - sign_size);
+	auto fraction_digits = point == string::npos ? string() : text.substr(point + 1);
+	if (integer_digits == "0") {
+		integer_digits.clear();
+	}
+	const idx_t integer_width = DecimalType::GetWidth(value.type()) - DecimalType::GetScale(value.type());
+	if (integer_digits.size() > integer_width) {
+		return string();
+	}
+	integer_digits.insert(0, integer_width - integer_digits.size(), '0');
+	return text.substr(0, sign_size) + integer_digits + "." + fraction_digits;
+}
+
+// The literal for a DOUBLE or DECIMAL parameter that reads back as a cast, null when there is none
+static unique_ptr<ParsedExpression> TypedNumberParameter(const CastExpression &cast) {
+	auto &child = cast.Child();
+	if (child.GetExpressionClass() != ExpressionClass::CONSTANT) {
+		return nullptr;
+	}
+	auto &source = child.Cast<ConstantExpression>().GetLiteral();
+	if (!source.IsNumeric() && source.kind != LiteralKind::STRING) {
+		return nullptr;
+	}
+	auto type = UnboundType::TryDefaultBind(cast.TargetType());
+	if (type.id() != LogicalTypeId::DOUBLE && type.id() != LogicalTypeId::DECIMAL) {
+		return nullptr;
+	}
+	auto value = Value(source.text).DefaultTryCastAs(type);
+	if (!value || value->IsNull()) {
+		return nullptr;
+	}
+	auto text = TypedNumberText(*value);
+	if (text.empty()) {
+		return nullptr;
+	}
+	auto literal = Literal::Number(std::move(text));
+	auto bound = literal.ToValue();
+	if (bound.type() != type || !Value::NotDistinctFrom(bound, *value)) {
+		return nullptr;
+	}
+	// a comparison does not tell the sign of a zero
+	if (type.id() == LogicalTypeId::DOUBLE &&
+	    std::signbit(DoubleValue::Get(bound)) != std::signbit(DoubleValue::Get(*value))) {
+		return nullptr;
+	}
+	return make_uniq<ConstantExpression>(std::move(literal));
+}
+
 // v1.x stores type parameters as typed values: the size of FLOAT[3] is a BIGINT, which reads back as
 // CAST(3 AS BIGINT). The width of an integer parameter does not matter, so keep the literal, as the parser produces it.
-static void UnwrapIntegerParameterCasts(ParsedExpression &expr) {
+// The type of a DOUBLE or DECIMAL parameter does matter, so 1e0, which reads back as CAST(1.0 AS DOUBLE), becomes the
+// number that the parser types as this value, 1.0e0
+static void UnwrapParameterCasts(ParsedExpression &expr) {
 	if (expr.GetExpressionClass() != ExpressionClass::TYPE) {
 		return;
 	}
@@ -263,9 +328,12 @@ static void UnwrapIntegerParameterCasts(ParsedExpression &expr) {
 				auto alias = param->GetAlias();
 				param = std::move(cast.ChildMutable());
 				param->SetAlias(std::move(alias));
+			} else if (auto literal = TypedNumberParameter(cast)) {
+				literal->SetAlias(param->GetAlias());
+				param = std::move(literal);
 			}
 		}
-		UnwrapIntegerParameterCasts(*param);
+		UnwrapParameterCasts(*param);
 	}
 }
 
@@ -292,7 +360,7 @@ unique_ptr<LogicalTypeInfo> UnboundTypeInfo::Deserialize(Deserializer &deseriali
 		result->expr = make_uniq<TypeExpression>(
 		    QualifiedName(Identifier(catalog), Identifier(schema), Identifier(name)), std::move(user_type_mods));
 	}
-	UnwrapIntegerParameterCasts(*result->expr);
+	UnwrapParameterCasts(*result->expr);
 
 	return std::move(result);
 }

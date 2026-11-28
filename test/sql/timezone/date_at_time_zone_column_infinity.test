@@ -1,0 +1,68 @@
+# name: test/sql/timezone/date_at_time_zone_column_infinity.test
+# description: An infinite DATE stays infinite at a time zone that is not constant
+# group: [timezone]
+
+require icu
+
+statement ok
+SET Calendar = 'gregorian';
+
+statement ok
+SET TimeZone = 'America/Los_Angeles';
+
+statement ok
+CREATE TABLE dates (d DATE, tz VARCHAR);
+
+statement ok
+INSERT INTO dates VALUES
+	('2026-11-01', 'Asia/Shanghai'),
+	('infinity', 'Asia/Shanghai'),
+	('-infinity', 'UTC'),
+	(NULL, 'UTC'),
+	('infinity', NULL),
+	('2026-11-01', 'UTC');
+
+query I
+SELECT d AT TIME ZONE tz FROM dates;
+----
+2026-10-31 09:00:00-07
+infinity
+-infinity
+NULL
+NULL
+2026-10-31 17:00:00-07
+
+query I
+SELECT timezone(tz, d) FROM dates WHERE NOT isfinite(d);
+----
+infinity
+-infinity
+NULL
+
+# a constant time zone gives the same
+query I
+SELECT d AT TIME ZONE 'Asia/Shanghai' FROM dates;
+----
+2026-10-31 09:00:00-07
+infinity
+-infinity
+NULL
+infinity
+2026-10-31 09:00:00-07
+
+# and so does the timestamp of the date
+query I
+SELECT d::TIMESTAMP AT TIME ZONE tz FROM dates;
+----
+2026-10-31 09:00:00-07
+infinity
+-infinity
+NULL
+NULL
+2026-10-31 17:00:00-07
+
+query I
+SELECT timezone(tz, d) FROM (VALUES ('UTC', DATE 'infinity'), ('America/New_York', DATE '-infinity')) t(tz, d);
+----
+infinity
+-infinity

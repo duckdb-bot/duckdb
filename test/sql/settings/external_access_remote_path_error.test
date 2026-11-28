@@ -1,0 +1,64 @@
+# name: test/sql/settings/external_access_remote_path_error.test
+# description: A remote path outside the allowed paths is refused with a permission error, not with an extension error
+# group: [settings]
+
+require skip_reload
+
+require parquet
+
+statement ok
+SET autoinstall_known_extensions=false;
+
+statement ok
+SET autoload_known_extensions=false;
+
+statement ok
+SET allowed_directories=['{TEST_DIR}', 's3://allowed-bucket/'];
+
+statement ok
+SET enable_external_access=false;
+
+statement error
+SELECT * FROM glob('s3://unallowed/unused/x.csv');
+----
+Permission Error: Cannot access file "s3://unallowed/unused/x.csv"
+
+statement error
+SELECT * FROM read_csv('s3://unallowed/unused/x.csv');
+----
+Permission Error: Cannot access file "s3://unallowed/unused/x.csv"
+
+statement error
+SELECT * FROM read_parquet('s3://unallowed/unused/x.parquet');
+----
+Permission Error: Cannot access file "s3://unallowed/unused/x.parquet"
+
+statement error
+SELECT * FROM read_text('https://example.invalid/x.txt');
+----
+Permission Error: Cannot access file "https://example.invalid/x.txt"
+
+statement error
+COPY (SELECT 42 AS i) TO 's3://unallowed/unused/out.csv';
+----
+Permission Error: Cannot access file "s3://unallowed/unused/out.csv"
+
+statement error
+SELECT * FROM read_csv('az://unallowed/unused/x.csv');
+----
+Permission Error: Cannot access file "az://unallowed/unused/x.csv"
+
+# a local path outside the allowed directories gets the same error
+statement error
+SELECT * FROM read_csv('external_access_remote_path_error_missing.csv');
+----
+Permission Error: Cannot access file "external_access_remote_path_error_missing.csv"
+
+# with autoloading on, the check does not try to load the extension either
+statement ok
+SET autoload_known_extensions=true;
+
+statement error
+SELECT * FROM read_csv('s3://unallowed/unused/x.csv');
+----
+Permission Error: Cannot access file "s3://unallowed/unused/x.csv"

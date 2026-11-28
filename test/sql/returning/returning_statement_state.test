@@ -1,0 +1,244 @@
+# name: test/sql/returning/returning_statement_state.test
+# description: Expressions in RETURNING share the parameters and the properties of their statement
+# group: [returning]
+
+# the statement trigger of this test needs a storage version that has triggers
+require noforcestorage
+
+statement ok
+CREATE TABLE t(i INTEGER);
+
+# positional parameters
+statement ok
+PREPARE insert_by_position AS INSERT INTO t VALUES (1) RETURNING i + $1::INTEGER AS j;
+
+query I
+EXECUTE insert_by_position(10);
+----
+11
+
+statement ok
+PREPARE insert_by_question_mark AS INSERT INTO t VALUES (2) RETURNING i + ?::INTEGER AS j;
+
+query I
+EXECUTE insert_by_question_mark(10);
+----
+12
+
+# named parameters
+statement ok
+PREPARE insert_by_name AS INSERT INTO t VALUES (3) RETURNING i + $delta AS j;
+
+query I
+EXECUTE insert_by_name(delta := 100);
+----
+103
+
+# a parameter in the values and the same one in the RETURNING clause
+statement ok
+PREPARE shared_parameter AS INSERT INTO t VALUES ($1::INTEGER) RETURNING i + $1::INTEGER AS j;
+
+query I
+EXECUTE shared_parameter(20);
+----
+40
+
+statement ok
+PREPARE update_by_position AS UPDATE t SET i = i + 10 WHERE i = 1 RETURNING i + $1::INTEGER AS j;
+
+query I
+EXECUTE update_by_position(100);
+----
+111
+
+statement ok
+PREPARE delete_by_position AS DELETE FROM t WHERE i = 11 RETURNING i + $1::INTEGER AS j;
+
+query I
+EXECUTE delete_by_position(100);
+----
+111
+
+statement ok
+PREPARE insert_select AS INSERT INTO t SELECT 30 RETURNING i + $1::INTEGER AS j;
+
+query I
+EXECUTE insert_select(1);
+----
+31
+
+statement ok
+PREPARE in_cte AS WITH ins AS (INSERT INTO t VALUES (40) RETURNING i + $1::INTEGER AS j) SELECT * FROM ins;
+
+query I
+EXECUTE in_cte(1);
+----
+41
+
+statement ok
+CREATE TABLE keyed(i INTEGER PRIMARY KEY, v INTEGER);
+
+statement ok
+PREPARE upsert AS INSERT INTO keyed VALUES (1, 1) ON CONFLICT DO UPDATE SET v = v + 1 RETURNING v + $1::INTEGER AS j;
+
+query I
+EXECUTE upsert(100);
+----
+101
+
+query I
+EXECUTE upsert(100);
+----
+102
+
+# a table with a statement trigger
+statement ok
+CREATE TABLE with_trigger(i INTEGER);
+
+statement ok
+CREATE TABLE trigger_log(s VARCHAR);
+
+statement ok
+CREATE TRIGGER log_insert AFTER INSERT ON with_trigger FOR EACH STATEMENT INSERT INTO trigger_log VALUES ('fired');
+
+statement ok
+PREPARE trigger_by_position AS INSERT INTO with_trigger VALUES (1) RETURNING i + $1::INTEGER AS j;
+
+query I
+EXECUTE trigger_by_position(10);
+----
+11
+
+# a user variable of the same name does not replace the parameter of a prepared statement
+statement ok
+SET VARIABLE delta = 1;
+
+statement ok
+PREPARE named_with_variable AS INSERT INTO t VALUES (10) RETURNING i + $delta AS j;
+
+query I
+EXECUTE named_with_variable(delta := 1000);
+----
+1010
+
+# a prepared statement follows the variable its RETURNING clause reads
+statement ok
+PREPARE reads_variable AS INSERT INTO t VALUES (10) RETURNING i + getvariable('delta') AS j;
+
+statement ok
+PREPARE cte_reads_variable AS WITH ins AS (INSERT INTO t VALUES (10) RETURNING i + getvariable('delta') AS j) SELECT * FROM ins;
+
+statement ok
+PREPARE trigger_reads_variable AS INSERT INTO with_trigger VALUES (10) RETURNING i + getvariable('delta') AS j;
+
+query I
+EXECUTE reads_variable;
+----
+11
+
+query I
+EXECUTE cte_reads_variable;
+----
+11
+
+query I
+EXECUTE trigger_reads_variable;
+----
+11
+
+statement ok
+SET VARIABLE delta = 100;
+
+query I
+EXECUTE reads_variable;
+----
+110
+
+query I
+EXECUTE cte_reads_variable;
+----
+110
+
+query I
+EXECUTE trigger_reads_variable;
+----
+110
+
+# a prepared statement follows the macro of another database that its RETURNING clause calls
+statement ok
+ATTACH ':memory:' AS other;
+
+statement ok
+CREATE MACRO other.add_delta(x) AS x + 1;
+
+statement ok
+PREPARE calls_macro AS INSERT INTO t VALUES (10) RETURNING other.add_delta(i) AS j;
+
+query I
+EXECUTE calls_macro;
+----
+11
+
+statement ok
+CREATE OR REPLACE MACRO other.add_delta(x) AS x + 100;
+
+query I
+EXECUTE calls_macro;
+----
+110
+
+# a sequence of the table's database
+statement ok
+CREATE SEQUENCE seq;
+
+query I
+INSERT INTO t VALUES (1) RETURNING i + nextval('seq') AS j;
+----
+2
+
+# a transaction writes to one database only
+statement ok
+CREATE SEQUENCE other.seq;
+
+statement error
+INSERT INTO t VALUES (1) RETURNING i + nextval('other.seq') AS j;
+----
+a single transaction can only write to a single attached database
+
+statement error
+UPDATE t SET i = i + 1 RETURNING i + nextval('other.seq') AS j;
+----
+a single transaction can only write to a single attached database
+
+statement error
+DELETE FROM t RETURNING i + nextval('other.seq') AS j;
+----
+a single transaction can only write to a single attached database
+
+statement error
+MERGE INTO keyed USING (SELECT 2 AS i) s ON keyed.i = s.i WHEN NOT MATCHED THEN INSERT VALUES (s.i, 5) RETURNING v + nextval('other.seq') AS j;
+----
+a single transaction can only write to a single attached database
+
+# a sequence of a read-only database cannot be advanced
+statement ok
+ATTACH '{TEST_DIR}/returning_read_only.db' AS file_db;
+
+statement ok
+CREATE SEQUENCE file_db.seq;
+
+statement ok
+DETACH file_db;
+
+statement ok
+ATTACH '{TEST_DIR}/returning_read_only.db' AS file_db (READ_ONLY);
+
+statement error
+INSERT INTO t VALUES (1) RETURNING i + nextval('file_db.seq') AS j;
+----
+read-only mode
+
+query I
+SELECT 42;
+----
+42

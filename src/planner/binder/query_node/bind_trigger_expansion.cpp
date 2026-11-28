@@ -474,7 +474,7 @@ BoundStatement Binder::ExpandTriggers(QueryNode &node, TableCatalogEntry &table,
 	// the no-trigger path (rejects aggregates/subqueries/windows, resolves qualified columns, virtual
 	// vs real rowid).  bound_columns is the identity over all logical columns (generated included)
 	// because our RETURNING * child materialises every logical column in order.
-	auto returning_binder_owner = Binder::CreateBinder(context);
+	auto returning_binder_owner = CreateStatementBinder();
 	vector<Identifier> col_names;
 	vector<LogicalType> col_types;
 	vector<ColumnIndex> bound_columns;

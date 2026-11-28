@@ -627,7 +627,7 @@ BoundStatement Binder::BindReturning(vector<unique_ptr<ParsedExpression>> return
 	vector<LogicalType> types;
 	vector<Identifier> names;
 
-	auto binder = Binder::CreateBinder(context);
+	auto binder = CreateStatementBinder();
 
 	vector<ColumnIndex> bound_columns;
 	idx_t column_count = 0;
@@ -679,6 +679,16 @@ optional_ptr<CatalogEntry> Binder::GetCatalogEntry(const Identifier &catalog, co
 optional_ptr<CatalogEntry> Binder::GetCatalogEntry(const EntryLookupInfo &lookup_info,
                                                    OnEntryNotFound on_entry_not_found) {
 	return entry_retriever.GetEntry(lookup_info, on_entry_not_found);
+}
+
+shared_ptr<Binder> Binder::CreateStatementBinder() {
+	auto binder = Binder::CreateBinder(context);
+	const auto binding_mode = GetBindingMode();
+	if (binding_mode == BindingMode::STANDARD_BINDING || binding_mode == BindingMode::PREPARE) {
+		// the parameters, the binding mode and the properties are those of the statement
+		binder->global_binder_state = global_binder_state;
+	}
+	return binder;
 }
 
 //! Create a binder whose catalog search path is anchored to the table's catalog+schema

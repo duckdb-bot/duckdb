@@ -1,0 +1,189 @@
+# name: test/sql/alter/struct/alter_struct_field_aliased_type_storage.test
+# description: A struct field change with a user type named JSON keeps JSON values and the default in the file
+# group: [struct]
+
+require json
+
+# the test restarts the database itself, after a checkpoint
+require skip_reload
+
+load {TEST_DIR}/alter_struct_field_aliased_type_storage.db
+
+statement ok
+CREATE TABLE dropped (i INT, s STRUCT(x JSON, y INT));
+
+statement ok
+CREATE TABLE renamed (i INT, s STRUCT(x JSON, y INT));
+
+statement ok
+CREATE TABLE added (i INT, s STRUCT(x JSON, y INT));
+
+statement ok
+INSERT INTO dropped VALUES (1, {'x': '1.4', 'y': 2});
+
+statement ok
+INSERT INTO renamed VALUES (1, {'x': '1.4', 'y': 2});
+
+statement ok
+INSERT INTO added VALUES (1, {'x': '1.4', 'y': 2});
+
+statement ok
+CREATE SCHEMA app;
+
+statement ok
+CREATE TABLE app.renamed (i INT, s STRUCT(x JSON, y INT) DEFAULT {'x': '1.4', 'y': 2});
+
+statement ok
+CREATE TABLE app.added (i INT, s STRUCT(x JSON) DEFAULT {'x': '1.4'});
+
+statement ok
+INSERT INTO app.renamed (i) VALUES (1);
+
+statement ok
+INSERT INTO app.added (i) VALUES (1);
+
+statement ok
+CREATE SCHEMA gone;
+
+statement ok
+CREATE TABLE gone.renamed (i INT, s STRUCT(x JSON, y INT) DEFAULT {'x': '1.4', 'y': 2});
+
+statement ok
+INSERT INTO gone.renamed (i) VALUES (1);
+
+statement ok
+CREATE MACRO typed(a JSON) AS a;
+
+# a second database file, with the storage of v1.0.0
+statement ok
+ATTACH '{TEST_DIR}/alter_struct_field_aliased_type_storage_v1.db' AS old (STORAGE_VERSION 'v1.0.0');
+
+statement ok
+CREATE SCHEMA old.app;
+
+statement ok
+CREATE TABLE old.app.renamed (i INT, s STRUCT(x JSON, y INT) DEFAULT {'x': '1.4', 'y': 2});
+
+statement ok
+INSERT INTO old.app.renamed (i) VALUES (1);
+
+# types of a user with the name of the JSON type, in the schemas of the tables
+statement ok
+CREATE TYPE JSON AS INTEGER;
+
+statement ok
+CREATE TYPE app.JSON AS INTEGER;
+
+statement ok
+CREATE TYPE gone.JSON AS INTEGER;
+
+statement ok
+CREATE TYPE old.app.JSON AS INTEGER;
+
+statement ok
+ALTER TABLE dropped DROP COLUMN s.y;
+
+statement ok
+ALTER TABLE renamed RENAME COLUMN s.y TO z;
+
+statement ok
+ALTER TABLE added ADD COLUMN s.z INT;
+
+statement ok
+ALTER TABLE app.renamed RENAME COLUMN s.y TO z;
+
+statement ok
+ALTER TABLE app.added ADD COLUMN s.y INT DEFAULT 5;
+
+statement ok
+ALTER TABLE gone.renamed RENAME COLUMN s.y TO z;
+
+statement ok
+ALTER TABLE old.app.renamed RENAME COLUMN s.y TO z;
+
+# this type is dropped again, and the file opens without it
+statement ok
+DROP TYPE gone.JSON;
+
+statement ok
+CHECKPOINT;
+
+statement ok
+CHECKPOINT old;
+
+restart
+
+# the rows as the file has them
+query III
+SELECT i, s.x::VARCHAR, typeof(s) FROM dropped
+----
+1	1.4	STRUCT(x JSON)
+
+query III
+SELECT i, s.x::VARCHAR, typeof(s) FROM renamed
+----
+1	1.4	STRUCT(x JSON, z INTEGER)
+
+query III
+SELECT i, s.x::VARCHAR, typeof(s) FROM added
+----
+1	1.4	STRUCT(x JSON, y INTEGER, z INTEGER)
+
+# the rewritten defaults name the JSON type in the system catalog
+query I
+SELECT count(*) FROM duckdb_columns() WHERE column_name = 's' AND column_default LIKE '%STRUCT(x "system"."JSON"%'
+----
+3
+
+# and an insert binds them to that type, also with the type of the user in the schema of the table
+statement ok
+INSERT INTO app.renamed (i) VALUES (2);
+
+statement ok
+INSERT INTO app.added (i) VALUES (2);
+
+statement ok
+INSERT INTO gone.renamed (i) VALUES (2);
+
+query III
+SELECT i, s.x::VARCHAR, typeof(s) FROM app.renamed ORDER BY i
+----
+1	1.4	STRUCT(x JSON, z INTEGER)
+2	1.4	STRUCT(x JSON, z INTEGER)
+
+query IIII
+SELECT i, s.x::VARCHAR, s.y, typeof(s) FROM app.added ORDER BY i
+----
+1	1.4	5	STRUCT(x JSON, y INTEGER)
+2	1.4	5	STRUCT(x JSON, y INTEGER)
+
+query III
+SELECT i, s.x::VARCHAR, typeof(s) FROM gone.renamed ORDER BY i
+----
+1	1.4	STRUCT(x JSON, z INTEGER)
+2	1.4	STRUCT(x JSON, z INTEGER)
+
+# the parameter of the stored macro keeps its type
+query II
+SELECT typed('1.4')::VARCHAR, typeof(typed('1.4'))
+----
+1.4	JSON
+
+# the file with the storage of v1.0.0 stores the default the same way
+statement ok
+ATTACH '{TEST_DIR}/alter_struct_field_aliased_type_storage_v1.db' AS old;
+
+query I
+SELECT column_default LIKE '%STRUCT(x "system"."JSON"%'
+FROM duckdb_columns() WHERE database_name = 'old' AND column_name = 's'
+----
+true
+
+statement ok
+INSERT INTO old.app.renamed (i) VALUES (2);
+
+query III
+SELECT i, s.x::VARCHAR, typeof(s) FROM old.app.renamed ORDER BY i
+----
+1	1.4	STRUCT(x JSON, z INTEGER)
+2	1.4	STRUCT(x JSON, z INTEGER)

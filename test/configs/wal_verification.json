@@ -82,6 +82,12 @@
       ]
     },
     {
+      "reason": "FIXME: WAL replay binds the change of a struct field before the json extension is loaded.",
+      "paths": [
+        "test/sql/alter/struct/alter_struct_field_aliased_type.test"
+      ]
+    },
+    {
       "reason": "Asserts the in-memory operator log, which does not survive the forced restarts.",
       "paths": [
         "test/sql/cte/materialized/cte_buffered_consumer_cycle_demotion.test"

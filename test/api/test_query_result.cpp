@@ -15,6 +15,8 @@
 #include "duckdb/logging/log_manager.hpp"
 #include "duckdb/logging/log_sink.hpp"
 #include "duckdb/logging/log_type.hpp"
+#include "duckdb/main/attached_database.hpp"
+#include "duckdb/main/database_manager.hpp"
 #include "duckdb/main/profiler/metrics.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
 #include "result_wait_helpers.hpp"
@@ -937,6 +939,11 @@ TEST_CASE("A query whose begin failed does not hold the connection", "[api][quer
 	REQUIRE(CHECK_COLUMN(next, 0, {42}));
 }
 
+//! Throws a fatal error that the attached database scopes to itself, the way a commit to it that fails fatally does
+static void ThrowScopedFatalError(AttachedDatabase &database) {
+	database.ScopeFatalError(ErrorData(FatalException("fatal failure of an attached database"))).Throw();
+}
+
 //! Counts the queries and statements it begins and ends, and fails the begin or the end of a query when asked
 class CountingQueryState : public ClientContextState {
 public:
@@ -957,6 +964,9 @@ public:
 		ends++;
 		if (fail_end) {
 			fail_end = false;
+			if (scoped_database) {
+				ThrowScopedFatalError(*scoped_database);
+			}
 			if (fatal) {
 				throw FatalException("fatal query end failure");
 			}
@@ -978,6 +988,7 @@ public:
 	bool internal = false;
 	bool permission = false;
 	bool fail_end = false;
+	optional_ptr<AttachedDatabase> scoped_database;
 	idx_t begins = 0;
 	idx_t ends = 0;
 	idx_t statement_begins = 0;
@@ -1234,6 +1245,9 @@ public:
 	void WriteLogEntry(timestamp_t timestamp, LogLevel level, const string &log_type, const string &log_message,
 	                   const RegisteredLoggingContext &context) override {
 		if (fail_metrics && log_type == MetricsLogType::NAME) {
+			if (scoped_database) {
+				ThrowScopedFatalError(*scoped_database);
+			}
 			throw InternalException("metrics log failed");
 		}
 	}
@@ -1257,6 +1271,7 @@ public:
 	idx_t flushes = 0;
 	idx_t fail_at_flush = 0;
 	bool fail_metrics = false;
+	optional_ptr<AttachedDatabase> scoped_database;
 };
 
 TEST_CASE("Every state ends a query when an end error is internal or the log fails", "[api][query_result]") {
@@ -1389,6 +1404,49 @@ TEST_CASE("An internal error of the profiler after a parse error invalidates the
 	auto invalidated = con.Query("SELECT 42");
 	REQUIRE(invalidated->HasError());
 	REQUIRE(StringUtil::Contains(invalidated->GetError(), "database has been invalidated"));
+}
+
+TEST_CASE("A fatal error of an attached database at the end of a query leaves the instance valid",
+          "[api][query_result]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("ATTACH ':memory:' AS attached"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE attached.t AS SELECT 42 AS i"));
+	auto attached = DatabaseManager::Get(*con.context).GetDatabase("attached");
+	REQUIRE(attached);
+	ErrorData end_error;
+	SECTION("An end hook") {
+		auto state = make_shared_ptr<CountingQueryState>();
+		con.context->GetContext().GetRegisteredState().Insert("counting_query_state", state);
+		state->fail_end = true;
+		state->scoped_database = attached.get();
+		try {
+			con.Query("SELECT 42");
+		} catch (std::exception &ex) {
+			end_error = ErrorData(ex);
+		}
+	}
+	SECTION("The profiler") {
+		auto log_sink = make_shared_ptr<FailingLogSink>();
+		duckdb::shared_ptr<LogSink> base_sink = log_sink;
+		db.instance->GetLogManager().RegisterLogSink("failing_log_sink", base_sink);
+		REQUIRE_NO_FAIL(con.Query("SET enable_logging = true"));
+		REQUIRE_NO_FAIL(con.Query("SET logging_sink = 'failing_log_sink'"));
+		REQUIRE_NO_FAIL(con.Query("SET enable_profiling = 'no_output'"));
+		// the profiler logs its metrics when the query ends
+		log_sink->fail_metrics = true;
+		log_sink->scoped_database = attached.get();
+		end_error = con.Query("SELECT 42")->GetErrorObject();
+		log_sink->fail_metrics = false;
+	}
+	REQUIRE(end_error.HasError());
+	REQUIRE(end_error.Type() == ExceptionType::FATAL);
+	// the instance stays valid, only the database that failed is invalidated
+	auto next = con.Query("SELECT 42");
+	REQUIRE(CHECK_COLUMN(next, 0, {42}));
+	auto invalidated = con.Query("SELECT i FROM attached.t");
+	REQUIRE(invalidated->HasError());
+	REQUIRE(StringUtil::Contains(invalidated->GetError(), "has been invalidated because of a fatal error"));
 }
 
 //! Allocates a buffer when a query begins while asked to, and holds it until the query ends

@@ -183,7 +183,7 @@ ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success,
 			severity = QueryEndErrorSeverity::INTERNAL;
 		}
 		if (severity != QueryEndErrorSeverity::ORDINARY) {
-			ValidChecker::Invalidate(DatabaseInstance::GetDatabase(*this), step_error.RawMessage());
+			ValidChecker::Invalidate(DatabaseInstance::GetDatabase(*this), step_error);
 		}
 		// keep the first error at the highest severity
 		if (severity > end_error_severity) {
@@ -234,7 +234,7 @@ void ClientContext::EndQueryProfiling(ErrorData &error) {
 	} catch (std::exception &ex) {
 		ErrorData profiler_error(ex);
 		if (Exception::InvalidatesDatabase(profiler_error.Type()) || profiler_error.Type() == ExceptionType::INTERNAL) {
-			ValidChecker::Invalidate(DatabaseInstance::GetDatabase(*this), profiler_error.RawMessage());
+			ValidChecker::Invalidate(DatabaseInstance::GetDatabase(*this), profiler_error);
 		}
 		if (!error.HasError()) {
 			error = std::move(profiler_error);

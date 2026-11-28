@@ -276,6 +276,8 @@ BindResult UnnestBinder::Bind(FunctionExpression &function, idx_t depth, bool ro
 		result->ChildMutable() = std::move(unnest_expr);
 		Identifier alias = function.GetAlias().empty() ? Identifier(result->ToString()) : function.GetAlias();
 
+		// the unnest leaves the expression tree here, so it is checked like a root expression
+		binder.CheckRequiresRebind(*result);
 		auto current_level = outer_unnest_level + list_unnests - current_depth - 1;
 		TableIndex unnest_table_index;
 		ProjectionIndex unnest_column_index;

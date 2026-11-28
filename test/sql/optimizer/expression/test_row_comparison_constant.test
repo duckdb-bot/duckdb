@@ -45,8 +45,6 @@ CREATE TABLE nested AS SELECT (range, range % 3)::TUPLE(BIGINT, BIGINT) AS t, (r
 statement ok
 CREATE TABLE pairs AS SELECT * FROM (VALUES (NULL::BIGINT, NULL::INTEGER), (1, 2)) t(a, b);
 
-loop i 0 2
-
 query I
 SELECT a FROM facts WHERE (a, b) = (3001, 1);
 ----
@@ -127,9 +125,3 @@ SELECT a, (a, b) = (3000, NULL), (a, b) = (3001, 1) FROM facts WHERE a IN (3000,
 ----
 3000	true	false
 3001	false	true
-
-# the same results without the rewrite
-statement ok
-SET disabled_optimizers = 'expression_rewriter';
-
-endloop

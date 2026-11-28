@@ -1,0 +1,89 @@
+# name: test/sql/types/date/date_to_timestamp_cast_error.test
+# description: A DATE that does not fit a timestamp type fails to cast with a range error
+# group: [date]
+
+# the microsecond types end on 294247-01-10
+foreach type TIMESTAMP TIMESTAMPTZ TIMESTAMP_MS TIMESTAMP_S
+
+statement error
+SELECT DATE '294248-01-01'::{type};
+----
+Conversion Error: timestamp field value out of range: "294248-01-01"
+
+statement error
+SELECT DATE '294247-01-11'::{type};
+----
+Conversion Error: timestamp field value out of range: "294247-01-11"
+
+statement error
+SELECT DATE '290309-12-21 (BC)'::{type};
+----
+Conversion Error: timestamp field value out of range: "290309-12-21 (BC)"
+
+query III
+SELECT TRY_CAST(DATE '294248-01-01' AS {type}), DATE '294247-01-10'::{type} IS NOT NULL, DATE 'infinity'::{type} = 'infinity'::{type};
+----
+NULL	true	true
+
+endloop
+
+# the nanosecond types end on 2262-04-11
+foreach type TIMESTAMP_NS TIMESTAMPTZ_NS
+
+statement error
+SELECT DATE '2262-04-12'::{type};
+----
+Conversion Error: timestamp field value out of range: "2262-04-12"
+
+statement error
+SELECT DATE '1677-09-21'::{type};
+----
+Conversion Error: timestamp field value out of range: "1677-09-21"
+
+query III
+SELECT TRY_CAST(DATE '2262-04-12' AS {type}), DATE '2262-04-11'::{type} IS NOT NULL, DATE '1677-09-22'::{type} IS NOT NULL;
+----
+NULL	true	true
+
+endloop
+
+# a column of dates
+statement ok
+CREATE TABLE dates AS SELECT * FROM (VALUES (DATE '2024-01-01'), (DATE '294248-01-01'), (DATE '2262-04-12'), (NULL)) t(d);
+
+statement error
+SELECT d::TIMESTAMP FROM dates;
+----
+Conversion Error: timestamp field value out of range: "294248-01-01"
+
+statement error
+SELECT d::TIMESTAMP_NS FROM dates WHERE d < DATE '10000-01-01';
+----
+Conversion Error: timestamp field value out of range: "2262-04-12"
+
+query II
+SELECT TRY_CAST(d AS TIMESTAMP), TRY_CAST(d AS TIMESTAMP_NS) FROM dates ORDER BY d;
+----
+2024-01-01 00:00:00	2024-01-01 00:00:00
+2262-04-12 00:00:00	NULL
+NULL	NULL
+NULL	NULL
+
+statement ok
+CREATE TABLE timestamps(ts TIMESTAMP);
+
+statement error
+INSERT INTO timestamps SELECT d FROM dates;
+----
+Conversion Error: timestamp field value out of range: "294248-01-01"
+
+# the aggregates that convert dates to timestamps say the same
+statement error
+SELECT median(d) FROM (VALUES (DATE '5881580-07-10'), (DATE '5881580-07-09')) t(d);
+----
+timestamp field value out of range: "5881580-07-09"
+
+statement error
+SELECT mad(d) FROM (VALUES (DATE '5881580-07-10'), (DATE '5881580-07-09')) t(d);
+----
+timestamp field value out of range: "5881580-07-09"

@@ -43,14 +43,15 @@ BoundCastInfo DefaultCasts::DateCastSwitch(BindCastInput &input, const LogicalTy
 	case LogicalTypeId::TIMESTAMP:
 	case LogicalTypeId::TIMESTAMP_TZ:
 		// date to timestamp
-		return BoundCastInfo(&VectorCastHelpers::TryCastLoop<date_t, timestamp_t, duckdb::TryCast>);
+		return BoundCastInfo(&VectorCastHelpers::TryCastErrorLoop<date_t, timestamp_t, duckdb::TryCastErrorMessage>);
 	case LogicalTypeId::TIMESTAMP_NS:
 	case LogicalTypeId::TIMESTAMP_TZ_NS:
-		return BoundCastInfo(&VectorCastHelpers::TryCastLoop<date_t, timestamp_ns_t, duckdb::TryCast>);
+		return BoundCastInfo(&VectorCastHelpers::TryCastErrorLoop<date_t, timestamp_ns_t, duckdb::TryCastErrorMessage>);
 	case LogicalTypeId::TIMESTAMP_SEC:
-		return BoundCastInfo(&VectorCastHelpers::TryCastLoop<date_t, timestamp_sec_t, duckdb::TryCast>);
+		return BoundCastInfo(
+		    &VectorCastHelpers::TryCastErrorLoop<date_t, timestamp_sec_t, duckdb::TryCastErrorMessage>);
 	case LogicalTypeId::TIMESTAMP_MS:
-		return BoundCastInfo(&VectorCastHelpers::TryCastLoop<date_t, timestamp_ms_t, duckdb::TryCast>);
+		return BoundCastInfo(&VectorCastHelpers::TryCastErrorLoop<date_t, timestamp_ms_t, duckdb::TryCastErrorMessage>);
 	default:
 		return TryVectorNullCast;
 	}

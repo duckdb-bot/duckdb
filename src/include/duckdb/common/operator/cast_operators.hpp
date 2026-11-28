@@ -615,6 +615,10 @@ template <>
 DUCKDB_API bool TryCast::Operation(date_t input, date_t &result, bool strict);
 template <>
 DUCKDB_API bool TryCast::Operation(date_t input, timestamp_t &result, bool strict);
+template <>
+DUCKDB_API bool TryCastErrorMessage::Operation(date_t input, timestamp_t &result, CastParameters &parameters);
+template <>
+DUCKDB_API timestamp_t Cast::Operation(date_t input);
 
 //===--------------------------------------------------------------------===//
 // Time Casts
@@ -814,6 +818,12 @@ template <>
 DUCKDB_API bool TryCast::Operation(date_t input, timestamp_ms_t &result, bool strict);
 template <>
 DUCKDB_API bool TryCast::Operation(date_t input, timestamp_sec_t &result, bool strict);
+template <>
+DUCKDB_API bool TryCastErrorMessage::Operation(date_t input, timestamp_ns_t &result, CastParameters &parameters);
+template <>
+DUCKDB_API bool TryCastErrorMessage::Operation(date_t input, timestamp_ms_t &result, CastParameters &parameters);
+template <>
+DUCKDB_API bool TryCastErrorMessage::Operation(date_t input, timestamp_sec_t &result, CastParameters &parameters);
 
 //===--------------------------------------------------------------------===//
 // string -> Non-Standard Time types

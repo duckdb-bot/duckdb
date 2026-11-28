@@ -216,6 +216,15 @@ struct ICUFromNaiveTimestamp : public ICUDateFunc {
 		return Operation(calendar, Timestamp::FromDatetime(naive, dtime_t(0)));
 	}
 
+	//! The error of a naive value that does not fit the naive timestamp of the target precision
+	template <class SRC, class NAIVE>
+	static string CastFromNaiveError(SRC input) {
+		if constexpr (std::is_same<SRC, date_t>::value) {
+			return Timestamp::RangeError(Date::ToString(input));
+		}
+		return CastExceptionText<SRC, NAIVE>(input);
+	}
+
 	template <class SRC, class DST>
 	static bool CastFromNaive(Vector &source, Vector &result, idx_t count, CastParameters &parameters) {
 		auto &cast_data = parameters.cast_data->Cast<CastData>();
@@ -227,7 +236,7 @@ struct ICUFromNaiveTimestamp : public ICUDateFunc {
 			using NAIVE = timestamp_base_t<DST::PRECISION, false>;
 			NAIVE naive;
 			if (!TryCast::Operation(input, naive)) {
-				HandleCastError::AssignError(CastExceptionText<SRC, NAIVE>(input), parameters);
+				HandleCastError::AssignError(CastFromNaiveError<SRC, NAIVE>(input), parameters);
 				all_converted = false;
 				return nullopt;
 			}

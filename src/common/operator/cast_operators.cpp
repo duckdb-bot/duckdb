@@ -1620,6 +1620,47 @@ bool TryCast::Operation(date_t input, timestamp_sec_t &result, bool strict) {
 	return TryCastTimestampBase<timestamp_t, timestamp_sec_t>(us, result, strict);
 }
 
+//! Casts a date to a timestamp type, and records that it is out of range unless the cast already holds an error
+template <class TIMESTAMP_TYPE>
+static bool TryCastDateToTimestamp(date_t input, TIMESTAMP_TYPE &result, CastParameters &parameters) {
+	if (TryCast::Operation<date_t, TIMESTAMP_TYPE>(input, result, parameters.strict)) {
+		return true;
+	}
+	if (!parameters.error_message || parameters.error_message->empty()) {
+		HandleCastError::AssignError(Timestamp::RangeError(Date::ToString(input)), parameters);
+	}
+	return false;
+}
+
+template <>
+bool TryCastErrorMessage::Operation(date_t input, timestamp_t &result, CastParameters &parameters) {
+	return TryCastDateToTimestamp(input, result, parameters);
+}
+
+template <>
+bool TryCastErrorMessage::Operation(date_t input, timestamp_ns_t &result, CastParameters &parameters) {
+	return TryCastDateToTimestamp(input, result, parameters);
+}
+
+template <>
+bool TryCastErrorMessage::Operation(date_t input, timestamp_ms_t &result, CastParameters &parameters) {
+	return TryCastDateToTimestamp(input, result, parameters);
+}
+
+template <>
+bool TryCastErrorMessage::Operation(date_t input, timestamp_sec_t &result, CastParameters &parameters) {
+	return TryCastDateToTimestamp(input, result, parameters);
+}
+
+template <>
+timestamp_t Cast::Operation(date_t input) {
+	timestamp_t result;
+	if (!TryCast::Operation(input, result)) {
+		throw InvalidInputException(Timestamp::RangeError(Date::ToString(input)));
+	}
+	return result;
+}
+
 //===--------------------------------------------------------------------===//
 // Cast From Blob
 //===--------------------------------------------------------------------===//

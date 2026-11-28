@@ -1,0 +1,28 @@
+# name: test/sql/timezone/date_to_timestamptz_cast_error.test
+# description: With ICU, a DATE that does not fit a time zone aware timestamp fails to cast with a range error
+# group: [timezone]
+
+require icu
+
+statement ok
+SET TimeZone = 'UTC';
+
+statement error
+SELECT DATE '294248-01-01'::TIMESTAMPTZ;
+----
+Conversion Error: timestamp field value out of range: "294248-01-01"
+
+statement error
+SELECT DATE '2262-04-12'::TIMESTAMPTZ_NS;
+----
+Conversion Error: timestamp field value out of range: "2262-04-12"
+
+query II
+SELECT TRY_CAST(DATE '294248-01-01' AS TIMESTAMPTZ), TRY_CAST(DATE '2262-04-12' AS TIMESTAMPTZ_NS);
+----
+NULL	NULL
+
+query II
+SELECT DATE '2024-01-01'::TIMESTAMPTZ, DATE '2024-01-01'::TIMESTAMPTZ_NS;
+----
+2024-01-01 00:00:00+00	2024-01-01 00:00:00+00

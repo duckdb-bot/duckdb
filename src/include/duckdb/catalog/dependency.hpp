@@ -96,6 +96,7 @@ private:
 	static constexpr uint8_t BLOCKING = 0;
 	static constexpr uint8_t OWNED_BY = 1;
 	static constexpr uint8_t ALTER_BLOCKING = 2;
+	static constexpr uint8_t WEAK = 3;
 
 public:
 	DependencyDependentFlags() = default;
@@ -120,6 +121,11 @@ public:
 	bool IsAlterBlocking() const {
 		return IsSet<ALTER_BLOCKING>();
 	}
+	//! A weak dependency names an entry that the dependent reads. It neither blocks nor cascades a DROP or ALTER of
+	//! that entry, applies to a later entry with the same name, and is never serialized.
+	bool IsWeak() const {
+		return IsSet<WEAK>() && !IsBlocking() && !IsOwnedBy();
+	}
 
 public:
 	DependencyDependentFlags &SetBlocking() {
@@ -134,6 +140,10 @@ public:
 		Set<ALTER_BLOCKING>();
 		return *this;
 	}
+	DependencyDependentFlags &SetWeak() {
+		Set<WEAK>();
+		return *this;
+	}
 
 public:
 	uint8_t RawValue() const {
@@ -145,6 +155,8 @@ public:
 		string result;
 		if (IsBlocking()) {
 			result += "REGULAR";
+		} else if (IsWeak()) {
+			result += "WEAK";
 		} else {
 			result += "AUTOMATIC";
 		}

@@ -38,7 +38,7 @@ SELECT count(*) FROM (SELECT s, row_number() OVER (PARTITION BY s) AS rn FROM ba
 0
 
 query I
-SELECT count(*) FROM (SELECT s FROM bad QUALIFY random() < 0 AND s::DOUBLE > 0 AND sum(length(s)) OVER (PARTITION BY s) > 0);
+SELECT count(*) FROM (SELECT s FROM bad QUALIFY random() < 0 AND s::DOUBLE > 0 AND sum(length(s)) OVER (PARTITION BY s ORDER BY s) > 0);
 ----
 0
 

@@ -1,0 +1,58 @@
+# name: test/sql/logging/enable_logging_normalize_needs_csv.test
+# description: normalize false with a directory path is refused when the logging is configured, not at the first flush
+# group: [logging]
+
+require noforcestorage
+
+# on a fresh database
+statement error
+CALL enable_logging(['QueryLog'], storage = 'file', storage_path = '{TEST_DIR}/normalize_dir', storage_normalize = false);
+----
+Can not set normalize to false with the directory path
+
+query I
+SELECT 1;
+----
+1
+
+statement ok
+CALL enable_logging(['QueryLog'], storage = 'file', storage_path = '{TEST_DIR}/normalize_dir');
+
+query I
+SELECT 2;
+----
+2
+
+# while file logging writes to a directory, with and without the path repeated. Every later statement used to fail
+# with 'Failed to initialize file log sink table, path wasn't set'
+statement error
+CALL enable_logging(['QueryLog'], storage_normalize = false);
+----
+Can not set normalize to false with the directory path
+
+statement error
+CALL enable_logging(['QueryLog'], storage_path = '{TEST_DIR}/normalize_dir', storage_normalize = false);
+----
+Can not set normalize to false with the directory path
+
+query I
+SELECT 3;
+----
+3
+
+query I
+SELECT count(*) > 0 FROM duckdb_logs();
+----
+true
+
+# a csv file path takes normalize false
+statement ok
+CALL enable_logging(['QueryLog'], storage_path = '{TEST_DIR}/normalize_single.csv', storage_normalize = false);
+
+query I
+SELECT 4;
+----
+4
+
+statement ok
+CALL disable_logging();

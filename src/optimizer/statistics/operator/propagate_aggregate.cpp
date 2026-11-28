@@ -612,6 +612,7 @@ void StatisticsPropagator::TryExecuteAggregates(LogicalAggregate &aggr, unique_p
 
 		replacer.stop_operator = projection.get();
 		node_ptr = std::move(projection);
+		node_ptr->ResolveOperatorTypes();
 		replacer.VisitOperator(*root);
 		return;
 	}
@@ -626,6 +627,7 @@ void StatisticsPropagator::TryExecuteAggregates(LogicalAggregate &aggr, unique_p
 	auto expression_get =
 	    make_uniq<LogicalExpressionGet>(aggr.aggregate_index, std::move(types), std::move(expressions));
 	expression_get->children.push_back(make_uniq<LogicalDummyScan>(aggr.group_index));
+	expression_get->ResolveOperatorTypes();
 	node_ptr = std::move(expression_get);
 }
 

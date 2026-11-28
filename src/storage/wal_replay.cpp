@@ -21,6 +21,7 @@
 #include "duckdb/main/config.hpp"
 #include "duckdb/main/connection.hpp"
 #include "duckdb/main/database.hpp"
+#include "duckdb/main/database_file_opener.hpp"
 #include "duckdb/main/database_manager.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/parser/constraints/unique_constraint.hpp"
@@ -588,7 +589,9 @@ static bool LogMayContinue(ReplayState &state) {
 		return false;
 	}
 	auto checkpoint_wal_path = state.db.GetStorageManager().GetCheckpointWALPath();
-	if (!DBConfig::Get(state.db).CanAccessFile(checkpoint_wal_path, FileType::FILE_TYPE_REGULAR)) {
+	// the check that the file system of the database makes before it looks at a path
+	DatabaseFileOpener opener(state.db.GetDatabase());
+	if (!DBConfig::Get(state.db).CanAccessFile(checkpoint_wal_path, FileType::FILE_TYPE_REGULAR, &opener)) {
 		return true;
 	}
 	return FileSystem::Get(state.db).FileExists(checkpoint_wal_path);

@@ -13,6 +13,8 @@
 
 namespace duckdb {
 
+class ComparisonExpression;
+
 struct CaseCheck {
 	unique_ptr<ParsedExpression> when_expr;
 	unique_ptr<ParsedExpression> then_expr;
@@ -42,6 +44,20 @@ public:
 	unique_ptr<ParsedExpression> &ElseMutable() {
 		return else_expr;
 	}
+	//! Whether this is a simple CASE (CASE operand WHEN value ...), whose checks compare copies of the operand
+	bool IsSimpleCase() const {
+		return simple_case;
+	}
+	bool &SimpleCaseMutable() {
+		return simple_case;
+	}
+	//! Whether this is a simple CASE whose checks still all compare its operand, as the parser built them
+	bool HasSimpleCaseChecks() const;
+	//! The operand of a simple CASE, the left side of every comparison of its checks
+	const ParsedExpression &SimpleCaseOperand() const;
+	//! The comparisons of a check with the operand, one per WHEN operand, or none when the check has another form
+	static vector<reference<const ComparisonExpression>> SimpleCaseComparisons(const ParsedExpression &when_expr);
+	static vector<reference<ComparisonExpression>> SimpleCaseComparisonsMutable(ParsedExpression &when_expr);
 
 public:
 	string ToString() const override;
@@ -69,5 +85,6 @@ public:
 private:
 	vector<CaseCheck> case_checks;
 	unique_ptr<ParsedExpression> else_expr;
+	bool simple_case = false;
 };
 } // namespace duckdb

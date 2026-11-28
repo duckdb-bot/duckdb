@@ -20,6 +20,9 @@ public:
 	WhereBinder(Binder &binder, ClientContext &context, optional_ptr<ColumnAliasBinder> column_alias_binder = nullptr);
 
 protected:
+	bool CanBindCaseOperandOnce() const override {
+		return true;
+	}
 	BindResult BindExpression(unique_ptr<ParsedExpression> &expr_ptr, idx_t depth,
 	                          bool root_expression = false) override;
 

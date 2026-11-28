@@ -27,6 +27,20 @@ static void CopyFile(FileSystem &fs, const string &source, const string &target)
 	target_handle->Write(QueryContext(), contents.get(), file_size, 0);
 }
 
+//! Find the checksum type whose checksum of a framed WAL entry matches the stored one
+static bool FindEntryChecksumType(const_data_ptr_t entry, idx_t entry_size, uint64_t stored_checksum,
+                                  ChecksumType &checksum_type) {
+	if (Checksum(entry, entry_size, ChecksumType::WORD_XOR) == stored_checksum) {
+		checksum_type = ChecksumType::WORD_XOR;
+		return true;
+	}
+	if (Checksum(entry, entry_size, ChecksumType::XXHASH64) == stored_checksum) {
+		checksum_type = ChecksumType::XXHASH64;
+		return true;
+	}
+	return false;
+}
+
 static pair<idx_t, idx_t> GetWALCommitBoundaries(FileSystem &fs, const string &path) {
 	auto handle = fs.OpenFile(path, FileFlags::FILE_FLAGS_READ);
 	auto wal_size = handle->GetFileSize();
@@ -48,7 +62,9 @@ static pair<idx_t, idx_t> GetWALCommitBoundaries(FileSystem &fs, const string &p
 			// Checksum requires aligned input, but this scan tries every possible byte offset.
 			auto entry = duckdb::unique_ptr<data_t[]>(new data_t[entry_size]);
 			memcpy(entry.get(), wal_contents.get() + offset, entry_size);
-			if (Checksum(entry.get(), entry_size) != stored_checksum) {
+			// the checksum type of the WAL follows the database file
+			ChecksumType checksum_type;
+			if (!FindEntryChecksumType(entry.get(), entry_size, stored_checksum, checksum_type)) {
 				break;
 			}
 			offset += entry_size;
@@ -309,14 +325,15 @@ static void RenumberFirstEntryField(FileSystem &fs, const string &path) {
 		}
 		auto entry = duckdb::unique_ptr<data_t[]>(new data_t[entry_size]);
 		memcpy(entry.get(), wal_contents.get() + payload_offset, entry_size);
-		if (Checksum(entry.get(), entry_size) != stored_checksum) {
+		ChecksumType checksum_type;
+		if (!FindEntryChecksumType(entry.get(), entry_size, stored_checksum, checksum_type)) {
 			continue;
 		}
 		// the payload is a serialized object: the info property has field id 101 (little endian)
 		for (idx_t i = 0; i + 1 < entry_size; i++) {
 			if (entry[i] == 101 && entry[i + 1] == 0) {
 				entry[i] = 154;
-				uint64_t new_checksum = Checksum(entry.get(), entry_size);
+				uint64_t new_checksum = Checksum(entry.get(), entry_size, checksum_type);
 				handle->Write(QueryContext(), entry.get(), entry_size, payload_offset);
 				handle->Write(QueryContext(), &new_checksum, sizeof(uint64_t), start + sizeof(uint64_t));
 				return;
@@ -370,7 +387,8 @@ static void CorruptInsertEntryType(FileSystem &fs, const string &path, idx_t ins
 			}
 			auto entry = duckdb::unique_ptr<data_t[]>(new data_t[entry_size]);
 			memcpy(entry.get(), wal_contents.get() + payload_offset, entry_size);
-			if (Checksum(entry.get(), entry_size) != stored_checksum) {
+			ChecksumType checksum_type;
+			if (!FindEntryChecksumType(entry.get(), entry_size, stored_checksum, checksum_type)) {
 				break;
 			}
 			valid_entries++;
@@ -378,7 +396,7 @@ static void CorruptInsertEntryType(FileSystem &fs, const string &path, idx_t ins
 			bool is_insert = entry[0] == 100 && entry[1] == 0 && entry[2] == 26; // WALType::INSERT_TUPLE
 			if (is_insert && valid_entries >= 2 && inserts_seen++ == insert_nr) {
 				entry[2] = 7; // unused WALType
-				uint64_t new_checksum = Checksum(entry.get(), entry_size);
+				uint64_t new_checksum = Checksum(entry.get(), entry_size, checksum_type);
 				handle->Write(QueryContext(), entry.get(), entry_size, payload_offset);
 				handle->Write(QueryContext(), &new_checksum, sizeof(uint64_t), offset + sizeof(uint64_t));
 				return;

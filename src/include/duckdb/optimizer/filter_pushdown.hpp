@@ -92,6 +92,9 @@ private:
 	unique_ptr<LogicalOperator> PushdownSecureView(unique_ptr<LogicalOperator> op);
 	//! Remove the filters carrying a barrier from the current filter set and return them
 	vector<unique_ptr<Expression>> ExtractBarrierFilters();
+	//! Remove and return the volatile filters and the filters that can throw, when the join would push a filter that
+	//! can throw into an input that a volatile filter does not go into
+	vector<unique_ptr<Expression>> ExtractFiltersSeparatedFromVolatile(LogicalOperator &join);
 	// Pushdown an inner join
 	unique_ptr<LogicalOperator> PushdownInnerJoin(unique_ptr<LogicalOperator> op,
 	                                              unordered_set<TableIndex> &left_bindings,

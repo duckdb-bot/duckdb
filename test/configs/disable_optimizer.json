@@ -17,6 +17,12 @@
       ]
     },
     {
+      "reason": "Checks which filters the optimizer pushes below a join.",
+      "paths": [
+        "test/optimizer/pushdown/throwing_filter_behind_volatile_filter_at_join_plan.test"
+      ]
+    },
+    {
       "reason": "Checks MARK conversion plan shapes and its optimizer gate.",
       "paths": [
         "test/optimizer/mark_join_simplifier.test",

@@ -17,7 +17,8 @@ namespace duckdb {
 
 struct CSVSchemaDiscovery {
 	//! "replace_null_with_varchar" is false when the caller combines this schema with the schemas of other files -
-	//! columns without any value must stay SQLNULL until every file has been seen, or they widen the other schemas
+	//! columns without any value must stay SQLNULL until every file has been seen, or they widen the other schemas.
+	//! A buffer manager that is passed in holds what was read from the first file before, and is read instead of it
 	static CSVSchema SchemaDiscovery(ClientContext &context, shared_ptr<CSVBufferManager> &buffer_manager,
 	                                 CSVReaderOptions &options, const MultiFileOptions &file_options,
 	                                 vector<LogicalType> &return_types, vector<Identifier> &names,

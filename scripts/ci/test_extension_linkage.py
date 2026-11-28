@@ -209,13 +209,16 @@ class ExtensionLinkageTest(unittest.TestCase):
                 )
                 for name in ("shell", "test_loadable_extension"):
                     linked = libraries(name).replace("\\", "/")
-                    self.assertLess(linked.index(test_prebuilt_archive), linked.index("test_helpers"), linked)
+                    # the prebuilt archive resolves its symbols from the first test_helpers archive behind it
+                    prebuilt_position = linked.index(test_prebuilt_archive)
+                    self.assertIn("test_helpers", linked[prebuilt_position:], linked)
+                    helpers_position = linked.index("test_helpers", prebuilt_position)
                     if (
                         name == "shell"
                         or (name == "test_loadable_extension" and static_build)
                         or sys.platform == "win32"
                     ):
-                        self.assertLess(linked.index("test_helpers"), linked.rindex("duckdb_static"), linked)
+                        self.assertLess(helpers_position, linked.rindex("duckdb_static"), linked)
             if sanitized and not thread_sanitizer and (force_assert or force_debug or build_type == "Debug"):
                 for name in ("test_extension", "shell"):
                     compile_flags = " ".join(

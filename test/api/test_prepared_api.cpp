@@ -1025,6 +1025,13 @@ TEST_CASE("A prepared statement keeps its plan when its search path is set again
 	REQUIRE(CHECK_COLUMN(result, 0, {"[one]"}));
 	REQUIRE(rebinds.back());
 
+	// the search path is compared as it is written, so a name in another case is another search path
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(con.Query("SET search_path = 'S1'"));
+	result = con.Query("EXECUTE type_name");
+	REQUIRE(CHECK_COLUMN(result, 0, {"[one]"}));
+	REQUIRE(rebinds.back());
+
 	// RESET gives the search path of a connection that set none
 	REQUIRE_NO_FAIL(con.Query("RESET search_path"));
 	REQUIRE_NO_FAIL(con.Query("PREPARE answer AS SELECT 42"));
@@ -1052,6 +1059,15 @@ TEST_CASE("A prepared statement keeps its plan when its search path is set again
 	con.BeginTransaction();
 	auto &search_path = *ClientData::Get(*con.context).catalog_search_path;
 	search_path.Set(CatalogSearchEntry::Parse("s2"), CatalogSetPathType::SET_SCHEMA);
+	con.Commit();
+	result = con.Query("EXECUTE type_name");
+	REQUIRE(CHECK_COLUMN(result, 0, {"[two]"}));
+	REQUIRE(rebinds.back());
+
+	// an entry that differs in its precedence only
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	con.BeginTransaction();
+	search_path.Set(CatalogSearchEntry(Identifier(), Identifier("s2"), true), CatalogSetPathType::SET_SCHEMA);
 	con.Commit();
 	result = con.Query("EXECUTE type_name");
 	REQUIRE(CHECK_COLUMN(result, 0, {"[two]"}));

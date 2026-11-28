@@ -773,10 +773,15 @@ static Value FoldArgument(ClientContext &context, Expression &expr) {
 
 //! Fold an option to a constant and cast it to its type like an explicit cast - overload selection never checked it.
 //! A failed cast names the option, as the cast alone cannot tell which one it was
-static Value PlaceOption(ClientContext &context, Expression &expr, const TypedKwarg &option) {
+static Value PlaceOption(ClientContext &context, optional_ptr<Binder> binder, Expression &expr,
+                         const TypedKwarg &option) {
 	auto value = FoldArgument(context, expr);
 	if (RequiresCast(value.type(), option.type) != LogicalTypeComparisonResult::DIFFERENT_TYPES) {
 		return value;
+	}
+	if (binder) {
+		// the cast applies to the folded value, where the check of the argument cannot see it
+		binder->CheckCastRequiresRebind(value.type(), option.type);
 	}
 	string error_message;
 	auto result = value.TryCastAs(context, option.type, &error_message);
@@ -890,7 +895,7 @@ static void FoldArguments(ClientContext &context, optional_ptr<Binder> binder, c
 			                      "Named parameter %s was passed more than once in function call to %s", option.name,
 			                      function.GetName().GetIdentifierName());
 		}
-		named_parameters.insert(make_pair(option.name, PlaceOption(context, argument, option)));
+		named_parameters.insert(make_pair(option.name, PlaceOption(context, binder, argument, option)));
 	}
 }
 

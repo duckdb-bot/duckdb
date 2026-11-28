@@ -439,6 +439,8 @@ public:
 	void SetAlwaysRequireRebind();
 	//! Requires a rebind when the expression contains a function or cast whose result can change between queries
 	void CheckRequiresRebind(const Expression &expr);
+	//! Requires a rebind when the cast of a folded value to the target type reads a setting such as TimeZone
+	void CheckCastRequiresRebind(const LogicalType &source_type, const LogicalType &target_type);
 	//! Requires a rebind, kept by the nearest binder that defers rebinds, whose owner passes it on or drops it
 	void RequireRebind();
 	//! Set for a binder whose owner decides whether the rebinds its expressions require reach the statement

@@ -1,5 +1,5 @@
 # name: test/extension/test_table_in_out_option_rebind.test
-# description: A prepared correlated table in-out call is bound again when a named option reads the TimeZone
+# description: A prepared table function call is bound again when a named option reads the TimeZone
 # group: [extension]
 
 require skip_reload
@@ -32,6 +32,22 @@ PREPARE option_instant AS SELECT r.value FROM (VALUES (1)) t(x), LATERAL test_in
 statement ok
 PREPARE option_plain AS SELECT r.value FROM (VALUES (1)) t(x), LATERAL test_in_out_keywords(t.x, delta => CASE WHEN TIMESTAMP '2026-01-01 00:00:00' = TIMESTAMP '2026-01-01 00:00:00' THEN 4 ELSE 0 END) r;
 
+# an option with a declared type is cast to it as a folded value, and the cast of the names to VARCHAR reads the TimeZone
+statement ok
+PREPARE option_typed AS SELECT Columns[1].name FROM sniff_csv('data/csv/header.csv', names = [to_timestamp(1767225600)]);
+
+# the subquery of a join condition is planned after the statement is bound
+statement ok
+PREPARE option_typed_join AS SELECT r.j FROM (VALUES (1)) l(i) LEFT JOIN (VALUES (1)) r(j) ON (SELECT Columns[1].name FROM sniff_csv('data/csv/header.csv', names = [to_timestamp(1767225600)])) = '2026-01-01 00:00:00+00';
+
+# typeof drops the subquery, and with it the rebind its option requires
+statement ok
+PREPARE option_typed_dropped AS SELECT typeof((SELECT Columns[1].name FROM sniff_csv('data/csv/header.csv', names = [to_timestamp(1767225600)])));
+
+# the cast of a DATE to VARCHAR reads no setting
+statement ok
+PREPARE option_typed_plain AS SELECT Columns[1].name FROM sniff_csv('data/csv/header.csv', names = [DATE '2026-01-01']);
+
 query I
 EXECUTE option_cast;
 ----
@@ -51,6 +67,26 @@ query I
 EXECUTE option_plain;
 ----
 5
+
+query I
+EXECUTE option_typed;
+----
+2026-01-01 00:00:00+00
+
+query I
+EXECUTE option_typed_join;
+----
+1
+
+query I
+EXECUTE option_typed_dropped;
+----
+VARCHAR
+
+query I
+EXECUTE option_typed_plain;
+----
+2026-01-01
 
 statement ok
 SET TimeZone = 'Europe/Amsterdam';
@@ -75,6 +111,26 @@ EXECUTE option_plain;
 ----
 5
 
+query I
+EXECUTE option_typed;
+----
+2026-01-01 01:00:00+01
+
+query I
+EXECUTE option_typed_join;
+----
+NULL
+
+query I
+EXECUTE option_typed_dropped;
+----
+VARCHAR
+
+query I
+EXECUTE option_typed_plain;
+----
+2026-01-01
+
 query II
 SELECT r.value, TIMESTAMP '2026-01-01 00:00:00' = to_timestamp(1767225600) FROM (VALUES (1)) t(x), LATERAL test_in_out_keywords(t.x, delta => CASE WHEN TIMESTAMP '2026-01-01 00:00:00' = to_timestamp(1767225600) THEN 4 ELSE 0 END) r;
 ----
@@ -93,9 +149,13 @@ NULL
 NULL
 
 query II
-SELECT name, result_types IS NULL AS bound_again FROM duckdb_prepared_statements() WHERE name IN ('option_cast', 'option_instant', 'option_overload', 'option_plain') ORDER BY name;
+SELECT name, result_types IS NULL AS bound_again FROM duckdb_prepared_statements() WHERE name IN ('option_cast', 'option_instant', 'option_overload', 'option_plain', 'option_typed', 'option_typed_dropped', 'option_typed_join', 'option_typed_plain') ORDER BY name;
 ----
 option_cast	true
 option_instant	true
 option_overload	true
 option_plain	false
+option_typed	true
+option_typed_dropped	false
+option_typed_join	true
+option_typed_plain	false

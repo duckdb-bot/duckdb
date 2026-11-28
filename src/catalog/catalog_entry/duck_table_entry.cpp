@@ -423,6 +423,59 @@ static unique_ptr<ParsedExpression> RemapStructDefault(unique_ptr<ParsedExpressi
 	return make_uniq<FunctionExpression>("remap_struct", std::move(children));
 }
 
+//! Removes the field that the new type lost from a default that is written as a struct constructor
+static bool DropFieldFromDefault(ParsedExpression &default_value, const LogicalType &old_type,
+                                 const LogicalType &new_type) {
+	if (default_value.GetExpressionClass() == ExpressionClass::CONSTANT) {
+		// a NULL has no field to remove
+		return default_value.Cast<ConstantExpression>().GetLiteral().IsNull();
+	}
+	if (old_type.id() != LogicalTypeId::STRUCT || default_value.GetExpressionClass() != ExpressionClass::FUNCTION) {
+		return false;
+	}
+	auto &function = default_value.Cast<FunctionExpression>();
+	if (function.GetQualifiedName().Path().size() != 1) {
+		return false;
+	}
+	auto &old_fields = StructType::GetChildTypes(old_type);
+	auto &new_fields = StructType::GetChildTypes(new_type);
+	auto &arguments = function.GetArgumentsMutable();
+	const bool has_names = function.FunctionName() == "struct_pack";
+	if (!has_names && (function.FunctionName() != "row" || arguments.size() != old_fields.size())) {
+		return false;
+	}
+	// the first field that differs is the dropped field, or the struct that holds it
+	idx_t field_idx = 0;
+	while (field_idx < new_fields.size() && old_fields[field_idx] == new_fields[field_idx]) {
+		field_idx++;
+	}
+	D_ASSERT(field_idx < old_fields.size());
+	optional_idx argument_idx;
+	for (idx_t i = 0; i < arguments.size(); i++) {
+		if (arguments[i].HasName() != has_names) {
+			return false;
+		}
+		// without names the arguments follow the order of the fields
+		if (has_names ? arguments[i].GetName() == old_fields[field_idx].first : i == field_idx) {
+			argument_idx = i;
+		}
+	}
+	if (!argument_idx.IsValid()) {
+		// the default never set this field
+		return true;
+	}
+	if (old_fields.size() == new_fields.size()) {
+		auto &argument = *arguments[argument_idx.GetIndex()].GetExpressionMutable();
+		return DropFieldFromDefault(argument, old_fields[field_idx].second, new_fields[field_idx].second);
+	}
+	if (arguments.size() == 1) {
+		// a constructor without fields is not a struct
+		return false;
+	}
+	arguments.erase_at(argument_idx.GetIndex());
+	return true;
+}
+
 unique_ptr<CatalogEntry> DuckTableEntry::RenameColumn(ClientContext &context, RenameColumnInfo &info) {
 	auto rename_idx = GetColumnIndex(info.old_name);
 	if (rename_idx.index == COLUMN_IDENTIFIER_ROW_ID) {
@@ -1204,11 +1257,15 @@ unique_ptr<CatalogEntry> DuckTableEntry::ChangeColumnType(ClientContext &context
 				throw NotImplementedException("Changing types of generated columns is not supported yet");
 			}
 			copy.SetType(info.target_type);
-			if ((alter_table_type == AlterTableType::RENAME_FIELD || alter_table_type == AlterTableType::ADD_FIELD) &&
-			    copy.HasDefaultValue()) {
-				// the stored default is not cast yet, the mapping is for the old type of the column
-				auto old_default = make_uniq<CastExpression>(col.Type(), copy.DefaultValue().Copy());
-				copy.SetDefaultValue(RemapStructDefault(std::move(old_default), info.target_type, info));
+			if (alter_table_type != AlterTableType::ALTER_COLUMN_TYPE && copy.HasDefaultValue()) {
+				auto new_default = copy.DefaultValue().Copy();
+				if (alter_table_type != AlterTableType::REMOVE_FIELD ||
+				    !DropFieldFromDefault(*new_default, col.Type(), info.target_type)) {
+					// the stored default is not cast yet, the mapping is for the old type of the column
+					auto old_default = make_uniq<CastExpression>(col.Type(), std::move(new_default));
+					new_default = RemapStructDefault(std::move(old_default), info.target_type, info);
+				}
+				copy.SetDefaultValue(std::move(new_default));
 			}
 		}
 		// TODO: check if the generated_expression breaks, only delete it if it does

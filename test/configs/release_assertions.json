@@ -65,7 +65,8 @@
         "test/sql/storage/types/struct/struct_reclaim_space_drop.test_slow",
         "test/sql/storage/parallel/memory_limit_batch_load.test_slow",
         "test/sql/storage/encryption/temp_files/encrypted_tpch_join.test_slow",
-        "test/sql/window/test_window_distinct.test_slow"
+        "test/sql/window/test_window_distinct.test_slow",
+        "test/sql/function/string/test_ilike_large.test_slow"
       ]
     },
     {

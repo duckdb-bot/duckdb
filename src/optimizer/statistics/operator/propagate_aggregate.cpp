@@ -376,8 +376,14 @@ void StatisticsPropagator::TryExecuteAggregates(LogicalAggregate &aggr, unique_p
 	// skip any projections
 	reference<LogicalOperator> child_ref = *aggr.children[0];
 	while (child_ref.get().type == LogicalOperatorType::LOGICAL_PROJECTION) {
+		auto &proj = child_ref.get().Cast<LogicalProjection>();
+		for (auto &expr : proj.expressions) {
+			if (expr->IsVolatile()) {
+				// the rows are still computed for the effect of this expression
+				return;
+			}
+		}
 		for (auto &column_info : min_max_columns) {
-			auto &proj = child_ref.get().Cast<LogicalProjection>();
 			auto &expr = proj.GetExpression(column_info.binding);
 			MinMaxColumnInfo projection_info;
 			if (!TryGetMinMaxColumnInfo(expr, projection_info)) {

@@ -60,6 +60,12 @@
       ]
     },
     {
+      "reason": "Checks which columns the optimizer prunes after statistics propagation.",
+      "paths": [
+        "test/optimizer/unused_columns/unused_columns_rerun_volatile_plan.test"
+      ]
+    },
+    {
       "reason": "Checks barrier ordering and scan pushdown performed by the optimizer.",
       "paths": [
         "test/sql/optimizer/barrier_projection_siblings.test"

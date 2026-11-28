@@ -12,6 +12,7 @@
     {
       "reason": "Explain/profiling output is different due to verification",
       "paths": [
+        "test/optimizer/unused_columns/unused_columns_rerun_volatile_plan.test",
         "test/optimizer/aggregate_reuse.test",
         "test/optimizer/avg_rewrite_profitability.test",
         "test/optimizer/case_to_filter_aggregate.test",

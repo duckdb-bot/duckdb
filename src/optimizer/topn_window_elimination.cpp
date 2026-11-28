@@ -332,7 +332,8 @@ unique_ptr<LogicalOperator> TopNWindowElimination::OptimizeInternal(unique_ptr<L
 	// Preserve the post-rewrite pruning used before late-materialized INNER reconstruction was introduced. A plan
 	// with active positional projection maps cannot safely be pruned a second time if a selected binding disappears.
 	if (!used_late_materialization && !HasExternalCTEReferences(*op) && !HasProjectionMaps(*op)) {
-		RemoveUnusedColumns unused_optimizer(optimizer);
+		// this pruning also runs after statistics propagation
+		RemoveUnusedColumns unused_optimizer(optimizer, true);
 		unused_optimizer.VisitOperator(op);
 	}
 

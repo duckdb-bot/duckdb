@@ -21,6 +21,9 @@ public:
 
 	int64_t GetFileSize(FileHandle &handle) override;
 	timestamp_t GetLastModifiedTime(FileHandle &handle) override;
+	FileType GetFileType(FileHandle &handle) override {
+		return FileType::FILE_TYPE_FIFO;
+	}
 
 	void Reset(FileHandle &handle) override;
 	bool OnDiskFile(FileHandle &handle) override {

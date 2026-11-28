@@ -236,15 +236,21 @@ unique_ptr<FileHandle> VirtualFileSystem::WrapOpenedFile(unique_ptr<FileHandle> 
 		if (opener_context && !flags.MultiClientAccess()) {
 			context = QueryContext(*opener_context);
 		}
-		if (file_handle->GetType() == FileType::FILE_TYPE_FIFO) {
+		const bool is_pipe = file_handle->GetType() == FileType::FILE_TYPE_FIFO;
+		// a pipe opened through the external file cache was wrapped by the open below the cache and cannot seek
+		if (is_pipe && (flags.GetCachingMode() == CachingMode::NO_CACHING || file_handle->CanSeek())) {
 			file_handle = PipeFileSystem::OpenPipe(context, std::move(file_handle));
-		} else {
-			auto compression_filesystem =
-			    FindCompressionFileSystem(*registry, compression, file.path, flags.OpenForWriting());
-			if (compression_filesystem) {
-				file_handle =
-				    compression_filesystem->OpenCompressedFile(context, std::move(file_handle), flags.OpenForWriting());
+		}
+		auto compression_filesystem =
+		    FindCompressionFileSystem(*registry, compression, file.path, flags.OpenForWriting());
+		if (compression_filesystem) {
+			if (is_pipe && !flags.OpenForWriting()) {
+				// decompressing needs a file that can be read again from the start, which a pipe cannot
+				throw NotImplementedException(
+				    "Cannot read compressed data from the pipe \"%s\", decompress it before reading it", file.path);
 			}
+			file_handle =
+			    compression_filesystem->OpenCompressedFile(context, std::move(file_handle), flags.OpenForWriting());
 		}
 	} catch (...) {
 		auto error = std::current_exception();

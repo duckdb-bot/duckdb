@@ -336,11 +336,11 @@ MissingExtensionException::MissingExtensionException(const string &msg)
     : Exception(ExceptionType::MISSING_EXTENSION, msg) {
 }
 
-AutoloadException::AutoloadException(const string &extension_name, const string &message)
+AutoloadException::AutoloadException(const string &extension_name, const string &message, bool installing)
     : Exception(
           ExceptionType::AUTOLOAD,
-          StringUtil::Format("An error occurred while trying to automatically install the required extension '%s:\n%s",
-                             extension_name, message)) {
+          StringUtil::Format("An error occurred while trying to automatically %s the required extension '%s':\n%s",
+                             installing ? "install" : "load", extension_name, message)) {
 }
 
 SerializationException::SerializationException(const string &msg) : Exception(ExceptionType::SERIALIZATION, msg) {

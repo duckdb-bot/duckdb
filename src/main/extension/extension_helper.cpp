@@ -462,6 +462,7 @@ void ExtensionHelper::AutoLoadExtension(DatabaseInstance &db, const string &exte
 		// Avoid downloading again
 		return;
 	}
+	bool installing = false;
 	try {
 		auto &fs = FileSystem::GetLocal(db);
 #ifndef DUCKDB_WASM
@@ -469,14 +470,16 @@ void ExtensionHelper::AutoLoadExtension(DatabaseInstance &db, const string &exte
 			auto autoinstall_repo = GetAutoinstallRepository(db);
 			ExtensionInstallOptions options;
 			options.repository = autoinstall_repo;
+			installing = true;
 			ExtensionHelper::InstallExtension(db, fs, extension_name, options);
+			installing = false;
 		}
 #endif
 		ExtensionHelper::LoadExternalExtension(db, fs, AutoLoadOptions(extension_name));
 		DUCKDB_LOG_INFO(db, "Loaded extension '%s'", extension_name);
 	} catch (std::exception &e) {
 		ErrorData error(e);
-		throw AutoloadException(extension_name, error.RawMessage());
+		throw AutoloadException(extension_name, error.RawMessage(), installing);
 	}
 }
 

@@ -309,7 +309,8 @@ public:
 
 class AutoloadException : public Exception {
 public:
-	DUCKDB_API explicit AutoloadException(const string &extension_name, const string &message);
+	//! The error says which step failed, the installation of the extension or its loading
+	DUCKDB_API explicit AutoloadException(const string &extension_name, const string &message, bool installing = true);
 };
 
 class SerializationException : public Exception {

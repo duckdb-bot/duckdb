@@ -443,6 +443,15 @@ static bool DefaultCallsBuiltinFunction(ClientContext &context, SchemaCatalogEnt
 	       entry->ParentCatalog().IsSystemCatalog();
 }
 
+//! Whether a default that keeps a dropped field stores the same values when it is mapped to the new type
+static bool CanRemapDefault(ClientContext &context, SchemaCatalogEntry &schema, const LogicalType &column_type) {
+	// the mapping casts to the type of the column, and a cast names a type that has an alias
+	if (TypeVisitor::Contains(column_type, [](const LogicalType &type) { return type.HasAlias(); })) {
+		return false;
+	}
+	return DefaultCallsBuiltinFunction(context, schema, "remap_struct");
+}
+
 //! Removes the field that the new type lost from a default that is written as a struct constructor
 static bool DropFieldFromDefault(ClientContext &context, SchemaCatalogEntry &schema, ParsedExpression &default_value,
                                  const LogicalType &old_type, const LogicalType &new_type) {
@@ -1297,9 +1306,9 @@ unique_ptr<CatalogEntry> DuckTableEntry::ChangeColumnType(ClientContext &context
 				auto new_default = copy.DefaultValue().Copy();
 				bool remap_default = true;
 				if (alter_table_type == AlterTableType::REMOVE_FIELD) {
-					// without the built-in remap_struct a default that keeps the field stays as it is
+					// a default that keeps the field stays as it is when its mapping could store other values
 					bool dropped = DropFieldFromDefault(context, schema, *new_default, col.Type(), info.target_type);
-					remap_default = !dropped && DefaultCallsBuiltinFunction(context, schema, "remap_struct");
+					remap_default = !dropped && CanRemapDefault(context, schema, col.Type());
 				}
 				if (remap_default) {
 					// the stored default is not cast yet, the mapping is for the old type of the column

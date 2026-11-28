@@ -42,6 +42,12 @@ SELECT count(*) FROM (SELECT s FROM bad QUALIFY random() < 0 AND s::DOUBLE > 0 A
 ----
 0
 
+# a partition expression compared with a bound that can throw
+query I
+SELECT count(*) FROM (SELECT s FROM bad QUALIFY random() < 0 AND lower(s) > CAST(CAST('bad_bound' AS INTEGER) AS VARCHAR) AND row_number() OVER (PARTITION BY lower(s)) = 1);
+----
+0
+
 # groups and rows that pass the volatile filter still reach the cast
 statement error
 SELECT s FROM bad GROUP BY s HAVING random() < 2 AND s::DOUBLE > 0;

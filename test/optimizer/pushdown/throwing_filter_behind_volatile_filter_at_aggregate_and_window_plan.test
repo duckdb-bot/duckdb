@@ -41,3 +41,18 @@ query II
 EXPLAIN SELECT s FROM numbers QUALIFY random() < 2 AND s <> '5' AND row_number() OVER (PARTITION BY s) = 1;
 ----
 logical_opt	<REGEX>:.*random\(\) < 2.0.*Window.*s != '5'.*
+
+# a filter that stays above the window still gives the scan the weaker filter on its partition expression
+statement ok
+CREATE TABLE dates AS SELECT * FROM (VALUES ('2010-01-01'), ('2020-01-01'), ('2020-07-01'), ('2021-01-01')) t(s);
+
+query II
+EXPLAIN SELECT s FROM dates QUALIFY random() < 2 AND s::DATE >= DATE '2020-06-01' AND row_number() OVER (PARTITION BY year(s::DATE)) = 1;
+----
+logical_opt	<REGEX>:.*random\(\) < 2.0.*Window.*CAST\(s AS DATE\)\) >= 2020.*
+
+query I
+SELECT s FROM dates QUALIFY random() < 2 AND s::DATE >= DATE '2020-06-01' AND row_number() OVER (PARTITION BY year(s::DATE) ORDER BY s DESC) = 1 ORDER BY s;
+----
+2020-07-01
+2021-01-01

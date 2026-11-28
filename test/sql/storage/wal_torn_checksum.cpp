@@ -1,5 +1,5 @@
 #include "catch.hpp"
-#include "duckdb/common/local_file_system.hpp"
+#include "duckdb/common/file_system.hpp"
 #include "duckdb/main/settings.hpp"
 #include "test_helpers.hpp"
 
@@ -16,7 +16,7 @@ idx_t WALSize(FileSystem &fs, const string &wal_path) {
 
 //! Writes three committed transactions to the WAL and returns the WAL size after each of them
 duckdb::vector<idx_t> WriteTransactions(const string &database_path, DBConfig &config) {
-	LocalFileSystem fs;
+	auto &fs = TestLocalFileSystem();
 	DeleteDatabase(database_path);
 	duckdb::vector<idx_t> transaction_ends;
 	DuckDB db(database_path, &config);
@@ -34,7 +34,7 @@ duckdb::vector<idx_t> WriteTransactions(const string &database_path, DBConfig &c
 
 //! Inverts bytes of the WAL, keeping its size
 void DamageBytes(const string &wal_path, idx_t offset, idx_t count) {
-	LocalFileSystem fs;
+	auto &fs = TestLocalFileSystem();
 	auto handle = fs.OpenFile(wal_path, FileFlags::FILE_FLAGS_READ | FileFlags::FILE_FLAGS_WRITE);
 	duckdb::vector<data_t> bytes(count);
 	handle->Read(QueryContext(), bytes.data(), bytes.size(), offset);
@@ -47,7 +47,7 @@ void DamageBytes(const string &wal_path, idx_t offset, idx_t count) {
 
 //! Overwrites bytes of the WAL with zeros up to its end
 void ZeroUntilEnd(const string &wal_path, idx_t offset) {
-	LocalFileSystem fs;
+	auto &fs = TestLocalFileSystem();
 	auto handle = fs.OpenFile(wal_path, FileFlags::FILE_FLAGS_READ | FileFlags::FILE_FLAGS_WRITE);
 	duckdb::vector<data_t> zeros(handle->GetFileSize() - offset, 0);
 	handle->Write(QueryContext(), zeros.data(), zeros.size(), offset);
@@ -135,13 +135,13 @@ TEST_CASE("A WAL entry with a wrong checksum is not a torn tail when a checkpoin
 	auto ends = WriteTransactions(database_path, *config);
 	DamageTransaction(wal_path, ends[2], ends[3]);
 	{
-		LocalFileSystem fs;
+		auto &fs = TestLocalFileSystem();
 		auto handle =
 		    fs.OpenFile(wal_path + ".checkpoint", FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE);
 		handle->Sync();
 	}
 	REQUIRE_THROWS_WITH(DuckDB(database_path, config.get()), Catch::Contains("does not match stored checksum"));
-	LocalFileSystem().TryRemoveFile(wal_path + ".checkpoint");
+	TestLocalFileSystem().TryRemoveFile(wal_path + ".checkpoint");
 	DeleteDatabase(database_path);
 }
 
@@ -180,7 +180,7 @@ TEST_CASE("A WAL entry with a wrong checksum before an empty entry is not a torn
 	DamageTransaction(wal_path, ends[2], ends[3]);
 	// the size of the last WAL_FLUSH becomes zero, while its checksum and payload stay
 	idx_t flush_entry_size = 2 * sizeof(uint64_t) + 5;
-	LocalFileSystem fs;
+	auto &fs = TestLocalFileSystem();
 	{
 		auto handle = fs.OpenFile(wal_path, FileFlags::FILE_FLAGS_READ | FileFlags::FILE_FLAGS_WRITE);
 		uint64_t zero = 0;
@@ -201,7 +201,7 @@ TEST_CASE("A WAL entry with a wrong checksum before a cut off entry header is a 
 		// keep only the start of the header of the last WAL_FLUSH
 		idx_t flush_entry_size = 2 * sizeof(uint64_t) + 5;
 		{
-			LocalFileSystem fs;
+			auto &fs = TestLocalFileSystem();
 			auto handle = fs.OpenFile(wal_path, FileFlags::FILE_FLAGS_WRITE);
 			fs.Truncate(*handle, NumericCast<int64_t>(ends[3] - flush_entry_size + kept_header_bytes));
 			handle->Sync();

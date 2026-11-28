@@ -1,0 +1,62 @@
+# name: test/sql/alter/struct/struct_field_wal_replay.test
+# description: ALTER TABLE statements on struct fields are replayed from the write ahead log without binding the defaults of the table
+# group: [struct]
+
+load {TEST_DIR}/struct_field_wal_replay_main.db
+
+statement ok
+ATTACH ':memory:' AS defaults;
+
+statement ok
+CREATE MACRO defaults.one() AS 10;
+
+statement ok
+ATTACH '{TEST_DIR}/struct_field_wal_replay.db' AS db;
+
+# the default of v refers to a macro of another catalog, which is gone after the restart
+statement ok
+CREATE TABLE db.t (i INTEGER, v INTEGER DEFAULT defaults.one(), s STRUCT(x INTEGER, z INTEGER) DEFAULT {'x': 1, 'z': 2});
+
+statement ok
+INSERT INTO db.t (i) VALUES (1);
+
+statement ok
+CHECKPOINT db;
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown;
+
+statement ok
+SET wal_autocheckpoint = '1TB';
+
+statement ok
+ALTER TABLE db.t ADD COLUMN s.y INTEGER DEFAULT 3;
+
+statement ok
+ALTER TABLE db.t RENAME COLUMN s.x TO xx;
+
+statement ok
+ALTER TABLE db.t DROP COLUMN s.z;
+
+statement ok
+ALTER TABLE db.t ALTER COLUMN v DROP DEFAULT;
+
+restart
+
+query I
+SELECT count(*) FROM glob('{TEST_DIR}/struct_field_wal_replay.db.wal');
+----
+1
+
+# the field statements are replayed as committed, without binding the default that no longer resolves
+statement ok
+ATTACH '{TEST_DIR}/struct_field_wal_replay.db' AS db;
+
+statement ok
+INSERT INTO db.t (i) VALUES (2);
+
+query III
+SELECT i, v, s FROM db.t ORDER BY i;
+----
+1	10	{'xx': 1, 'y': 3}
+2	NULL	{'xx': 1, 'y': 3}

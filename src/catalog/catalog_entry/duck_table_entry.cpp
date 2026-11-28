@@ -104,23 +104,6 @@ DuckTableEntry::DuckTableEntry(Catalog &catalog, SchemaCatalogEntry &schema, Bou
 		return;
 	}
 
-	// the default, generated and check expressions are written to the catalog, as are the generated column types
-	auto &storage_manager = catalog.GetAttached().GetStorageManager();
-	for (auto &col_def : columns.Logical()) {
-		if (col_def.Generated()) {
-			storage_manager.CheckDecimalWidthIsSupported(col_def.Type());
-			storage_manager.CheckExpressionDecimalsAreSupported(col_def.GeneratedExpression());
-		}
-		if (col_def.HasDefaultValue()) {
-			storage_manager.CheckExpressionDecimalsAreSupported(col_def.DefaultValue());
-		}
-	}
-	for (auto &constraint : constraints) {
-		if (constraint->type == ConstraintType::CHECK) {
-			storage_manager.CheckExpressionDecimalsAreSupported(*constraint->Cast<CheckConstraint>().expression);
-		}
-	}
-
 	// create the physical storage
 	vector<ColumnDefinition> column_defs;
 	for (auto &col_def : columns.Physical()) {
@@ -725,6 +708,7 @@ unique_ptr<CatalogEntry> DuckTableEntry::AddField(ClientContext &context, AddFie
 
 	ChangeColumnTypeInfo change_column_type(info.GetAlterEntryData(), vector<Identifier> {info.column_path[0]},
 	                                        std::move(res.new_type), std::move(function));
+	change_column_type.bind_mode = info.bind_mode;
 	return ChangeColumnType(context, change_column_type, AlterTableType::ADD_FIELD);
 }
 
@@ -978,6 +962,7 @@ unique_ptr<CatalogEntry> DuckTableEntry::RemoveField(ClientContext &context, Rem
 
 	ChangeColumnTypeInfo change_column_type(info.GetAlterEntryData(), vector<Identifier> {info.column_path[0]},
 	                                        std::move(res.new_type), std::move(function));
+	change_column_type.bind_mode = info.bind_mode;
 	return ChangeColumnType(context, change_column_type, AlterTableType::REMOVE_FIELD);
 }
 
@@ -1072,6 +1057,7 @@ unique_ptr<CatalogEntry> DuckTableEntry::RenameField(ClientContext &context, Ren
 	auto function = make_uniq<FunctionExpression>("remap_struct", std::move(children));
 	ChangeColumnTypeInfo change_column_type(info.GetAlterEntryData(), vector<Identifier> {info.column_path[0]},
 	                                        std::move(res.new_type), std::move(function));
+	change_column_type.bind_mode = info.bind_mode;
 	return ChangeColumnType(context, change_column_type, AlterTableType::RENAME_FIELD);
 }
 

@@ -653,6 +653,27 @@ static void BindCreateTableConstraints(CreateTableInfo &create_info, CatalogEntr
 	}
 }
 
+static void VerifyStoredExpressionDecimals(optional_ptr<StorageManager> storage_manager, const CreateTableInfo &info) {
+	if (!storage_manager) {
+		return;
+	}
+	// the default, generated and check expressions are written to the catalog, as are the generated column types
+	for (auto &col_def : info.columns.Logical()) {
+		if (col_def.Generated()) {
+			storage_manager->CheckDecimalWidthIsSupported(col_def.Type());
+			storage_manager->CheckExpressionDecimalsAreSupported(col_def.GeneratedExpression());
+		}
+		if (col_def.HasDefaultValue()) {
+			storage_manager->CheckExpressionDecimalsAreSupported(col_def.DefaultValue());
+		}
+	}
+	for (auto &constraint : info.constraints) {
+		if (constraint->type == ConstraintType::CHECK) {
+			storage_manager->CheckExpressionDecimalsAreSupported(*constraint->Cast<CheckConstraint>().expression);
+		}
+	}
+}
+
 unique_ptr<BoundCreateTableInfo> Binder::BindCreateTableInfo(unique_ptr<CreateInfo> info, SchemaCatalogEntry &schema,
                                                              vector<unique_ptr<Expression>> &bound_defaults,
                                                              AlterBindMode bind_mode) {
@@ -754,6 +775,8 @@ unique_ptr<BoundCreateTableInfo> Binder::BindCreateTableInfo(unique_ptr<CreateIn
 			VerifyConstraintCheckModeStorageVersion(*constraint, catalog, base.temporary);
 		}
 		if (bind_mode != AlterBindMode::SKIP_BINDING) {
+			// checked before an ALTER TABLE replaces the storage of its table, so a refusal leaves the table untouched
+			VerifyStoredExpressionDecimals(storage_manager, base);
 			// bind the default values
 			auto &catalog_name = schema.ParentCatalog().GetName();
 			BindDefaultValues(base.columns, bound_defaults, catalog_name.GetIdentifierName(), schema.GetSchemaPath());

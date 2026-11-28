@@ -1,0 +1,110 @@
+# name: test/sql/types/decimal/wide_decimal_alter_table_storage_version.test
+# description: A default added by ALTER TABLE is checked against the storage version like one written in CREATE TABLE
+# group: [decimal]
+
+statement ok
+ATTACH '{TEST_DIR}/wide_decimal_alter_v140.db' AS old (STORAGE_VERSION 'v1.4.0');
+
+statement ok
+CREATE TABLE old.t (i INTEGER, v VARCHAR, s STRUCT(x INTEGER) DEFAULT {'x': 1});
+
+statement ok
+INSERT INTO old.t (i) VALUES (0);
+
+# the altered entry stores the default, and a wide cast target cannot be read back by this storage version
+statement error
+ALTER TABLE old.t ALTER COLUMN v SET DEFAULT CAST(1 AS DECIMAL(50,4));
+----
+DECIMAL columns wider than 38 digits are not supported in storage versions prior to v2.1.0
+
+statement error
+ALTER TABLE old.t ADD COLUMN w VARCHAR DEFAULT CAST(1 AS DECIMAL(50,4));
+----
+DECIMAL columns wider than 38 digits are not supported in storage versions prior to v2.1.0
+
+# the default of the new field is written into the rewritten default of the struct column
+statement error
+ALTER TABLE old.t ADD COLUMN s.y VARCHAR DEFAULT CAST(1 AS DECIMAL(50,4))::VARCHAR;
+----
+DECIMAL columns wider than 38 digits are not supported in storage versions prior to v2.1.0
+
+# the refused statements leave the table as it was, so it stays writable
+statement ok
+INSERT INTO old.t (i) VALUES (1);
+
+statement ok
+UPDATE old.t SET v = 'x' WHERE i = 0;
+
+query II
+SELECT i, v FROM old.t ORDER BY i;
+----
+0	x
+1	NULL
+
+# defaults within 38 digits are stored, and the database reopens
+statement ok
+ALTER TABLE old.t ALTER COLUMN v SET DEFAULT CAST(1 AS DECIMAL(38,4));
+
+statement ok
+ALTER TABLE old.t ADD COLUMN w VARCHAR DEFAULT CAST(2 AS DECIMAL(38,4));
+
+statement ok
+INSERT INTO old.t (i) VALUES (2);
+
+query III
+SELECT i, v, w FROM old.t ORDER BY i;
+----
+0	x	2.0000
+1	NULL	2.0000
+2	1.0000	2.0000
+
+statement ok
+CHECKPOINT old;
+
+statement ok
+DETACH old;
+
+statement ok
+ATTACH '{TEST_DIR}/wide_decimal_alter_v140.db' AS old;
+
+statement ok
+INSERT INTO old.t (i) VALUES (3);
+
+query III
+SELECT i, v, w FROM old.t ORDER BY i;
+----
+0	x	2.0000
+1	NULL	2.0000
+2	1.0000	2.0000
+3	1.0000	2.0000
+
+# from storage version v2.0.0 a cast stores a type expression the reader binds itself, so the wide default is allowed
+statement ok
+ATTACH '{TEST_DIR}/wide_decimal_alter_v200.db' AS new (STORAGE_VERSION 'v2.0.0');
+
+statement ok
+CREATE TABLE new.t (i INTEGER, v VARCHAR);
+
+statement ok
+ALTER TABLE new.t ALTER COLUMN v SET DEFAULT CAST(1 AS DECIMAL(50,4));
+
+statement ok
+INSERT INTO new.t (i) VALUES (1);
+
+statement ok
+CHECKPOINT new;
+
+statement ok
+DETACH new;
+
+statement ok
+ATTACH '{TEST_DIR}/wide_decimal_alter_v200.db' AS new;
+
+statement ok
+INSERT INTO new.t (i) VALUES (2);
+
+query II
+SELECT i, v FROM new.t ORDER BY i;
+----
+1	1.0000
+2	1.0000

@@ -70,12 +70,12 @@ statement ok
 INSERT INTO r VALUES (1), (2), (300);
 
 query I
-SELECT count(*) FROM (SELECT CAST(x + y AS TINYINT) AS a FROM l JOIN r ON x = y) s WHERE a = 2;
+SELECT count(*) FROM l JOIN r ON x = y WHERE CAST(x + y AS TINYINT) = 2;
 ----
 1
 
 query I
-SELECT count(*) FROM (SELECT CAST(x AS TINYINT) AS a FROM l JOIN r ON x = y) s WHERE a = 2;
+SELECT count(*) FROM l JOIN r ON x = y WHERE CAST(x AS TINYINT) = 2;
 ----
 1
 

@@ -1,0 +1,59 @@
+# name: test/sql/function/date/date_trunc_stats_week_before_first_date.test
+# description: date_trunc statistics over a DATE bound whose week starts before the first date
+# group: [date]
+
+statement ok
+CREATE TABLE dd (id INTEGER, d DATE);
+
+statement ok
+INSERT INTO dd VALUES (1, DATE '5877642-06-25 (BC)'), (2, DATE '2000-01-15');
+
+# the row with the first date does not reach the function
+query II
+SELECT id, date_trunc('week', d) FROM dd WHERE id = 2
+----
+2	2000-01-10 00:00:00
+
+query II
+SELECT id, date_trunc('yearweek', d) FROM dd WHERE id = 2
+----
+2	2000-01-10 00:00:00
+
+query II
+SELECT id, date_trunc('isoyear', d) FROM dd WHERE id = 2
+----
+2	2000-01-03 00:00:00
+
+query II
+SELECT id, TRY(date_trunc('week', d)) FROM dd ORDER BY id
+----
+1	NULL
+2	2000-01-10 00:00:00
+
+# the row that holds the first date still fails
+statement error
+SELECT date_trunc('week', d) FROM dd
+----
+Out of Range Error
+
+# a deleted row stays in the statistics
+statement ok
+DELETE FROM dd WHERE id = 1
+
+query II
+SELECT id, date_trunc('week', d) FROM dd
+----
+2	2000-01-10 00:00:00
+
+query II
+SELECT id, date_trunc('isoyear', d) FROM dd WHERE d > DATE '1900-01-01'
+----
+2	2000-01-03 00:00:00
+
+statement ok
+PREPARE p AS SELECT id, date_trunc('yearweek', d) FROM dd
+
+query II
+EXECUTE p
+----
+2	2000-01-10 00:00:00

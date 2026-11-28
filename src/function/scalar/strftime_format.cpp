@@ -13,6 +13,14 @@
 
 namespace duckdb {
 
+//! The most digits strptime reads for a year that no number follows, which still fit an int32
+static constexpr idx_t MAX_YEAR_DIGITS = 9;
+
+//! Whether every day of the year is a valid date, so that day offsets from its January 1 cannot overflow
+static bool IsCompleteDateYear(int32_t year) {
+	return year > Date::DATE_MIN_YEAR && year < Date::DATE_MAX_YEAR;
+}
+
 static idx_t StrfTimepecifierSize(StrTimeSpecifier specifier) {
 	switch (specifier) {
 	case StrTimeSpecifier::ABBREVIATED_WEEKDAY_NAME:
@@ -931,16 +939,32 @@ bool StrpTimeFormat::Parse(const char *data, size_t size, ParseResult &result, b
 			uint64_t number = 0;
 			int digits = 0;
 			size_t start_pos = pos;
-			size_t end_pos = start_pos + UnsafeNumericCast<size_t>(numeric_width[i]);
+			auto width = UnsafeNumericCast<idx_t>(numeric_width[i]);
+			bool negative = false;
+			if (specifiers[i] == StrTimeSpecifier::YEAR_DECIMAL && !strict) {
+				// a year outside 0000 to 9999 is written in full, with a sign when it is negative
+				if (pos < size && data[pos] == '-') {
+					negative = true;
+					pos++;
+				}
+				const auto &next_literal = literals[i + 1];
+				const bool digit_follows =
+				    next_literal.empty() ? i + 1 < specifiers.size() : StringUtil::CharacterIsDigit(next_literal[0]);
+				if (!digit_follows) {
+					width = MAX_YEAR_DIGITS;
+				}
+			}
+			const idx_t digits_pos = pos;
+			const idx_t end_pos = digits_pos + width;
 			while (pos < size && pos < end_pos && StringUtil::CharacterIsDigit(data[pos])) {
 				number = number * 10 + UnsafeNumericCast<uint64_t>(data[pos]) - '0';
 				pos++;
 				++digits;
 			}
-			if (pos == start_pos) {
+			if (pos == digits_pos) {
 				// expected a number here
 				error_message = "Expected a number";
-				error_position = start_pos;
+				error_position = digits_pos;
 				return false;
 			}
 			switch (specifiers[i]) {
@@ -996,7 +1020,7 @@ bool StrpTimeFormat::Parse(const char *data, size_t size, ParseResult &result, b
 					result_data[0] = int32_t(2000 + number);
 				}
 				break;
-			case StrTimeSpecifier::YEAR_DECIMAL:
+			case StrTimeSpecifier::YEAR_DECIMAL: {
 				switch (offset_specifier) {
 				case StrTimeSpecifier::YEAR_ISO:
 				case StrTimeSpecifier::WEEK_NUMBER_ISO:
@@ -1011,9 +1035,16 @@ bool StrpTimeFormat::Parse(const char *data, size_t size, ParseResult &result, b
 				if (pos - start_pos < 2 && strict) {
 					return false;
 				}
-				// year as full number
-				result_data[0] = UnsafeNumericCast<int32_t>(number);
+				// year as full number, within the range of dates
+				const auto year = negative ? -NumericCast<int64_t>(number) : NumericCast<int64_t>(number);
+				if (year < Date::DATE_MIN_YEAR || year > Date::DATE_MAX_YEAR) {
+					error_message = "Year out of range";
+					error_position = start_pos;
+					return false;
+				}
+				result_data[0] = UnsafeNumericCast<int32_t>(year);
 				break;
+			}
 			case StrTimeSpecifier::YEAR_ISO:
 				switch (offset_specifier) {
 				// y/m/d overrides G/V/u but does not conflict
@@ -1392,6 +1423,11 @@ bool StrpTimeFormat::Parse(const char *data, size_t size, ParseResult &result, b
 			           static_cast<uint64_t>(offset_specifier == StrTimeSpecifier::WEEK_NUMBER_PADDED_MON_FIRST)) %
 			          7;
 		}
+		if (!IsCompleteDateYear(result_data[0])) {
+			error_message = "Year out of range for a week number";
+			error_position = 0;
+			return false;
+		}
 		// Get the start of week 1, move back 7 days and then weekno * 7 + weekday gives the date
 		const auto jan1 = Date::FromDate(result_data[0], 1, 1);
 		auto yeardate = Date::GetMondayOfCurrentWeek(jan1);
@@ -1405,6 +1441,11 @@ bool StrpTimeFormat::Parse(const char *data, size_t size, ParseResult &result, b
 	case StrTimeSpecifier::DAY_OF_YEAR_PADDED:
 	case StrTimeSpecifier::DAY_OF_YEAR_DECIMAL: {
 		auto year = result_data[0];
+		if (!IsCompleteDateYear(year)) {
+			error_message = "Year out of range for a year day";
+			error_position = 0;
+			return false;
+		}
 		auto yeardate = Date::FromDate(year, 1, 1);
 		yeardate += UnsafeNumericCast<int32_t>(yearday - 1);
 		Date::Convert(yeardate, result_data[0], result_data[1], result_data[2]);

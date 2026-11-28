@@ -1,0 +1,129 @@
+# name: test/optimizer/pushdown/throwing_filter_behind_volatile_filter_at_join.test
+# description: A filter that can throw stays behind a volatile filter of the same WHERE clause above a join
+# group: [pushdown]
+
+statement ok
+CREATE TABLE bad AS SELECT 'bad' AS s;
+
+statement ok
+CREATE TABLE keys AS SELECT 'bad' AS k UNION ALL SELECT 'x';
+
+# random() < 0 removes every row before the cast sees it, with and without a join below the filter
+query I
+SELECT count(*) FROM bad WHERE random() < 0 AND s::DOUBLE > 0;
+----
+0
+
+query I
+SELECT count(*) FROM bad LEFT JOIN (SELECT 1 AS v) u ON true WHERE random() < 0 AND s::DOUBLE > 0;
+----
+0
+
+query I
+SELECT count(*) FROM bad, (SELECT 1 AS v) u WHERE random() < 0 AND s::DOUBLE > 0;
+----
+0
+
+query I
+SELECT count(*) FROM bad JOIN keys ON bad.s = keys.k WHERE random() < 0 AND s::DOUBLE > 0;
+----
+0
+
+query I
+SELECT count(*) FROM bad LEFT JOIN keys ON bad.s = keys.k WHERE random() < 0 AND s::DOUBLE > 0;
+----
+0
+
+query I
+SELECT count(*) FROM bad ASOF JOIN keys ON bad.s >= keys.k WHERE random() < 0 AND s::DOUBLE > 0;
+----
+0
+
+# the table on the preserved side of a right join, and on the side that a left join extends with NULLs
+query I
+SELECT count(*) FROM keys RIGHT JOIN bad ON true WHERE random() < 0 AND s::DOUBLE > 0;
+----
+0
+
+query I
+SELECT count(*) FROM keys LEFT JOIN bad ON true WHERE random() < 0 AND s::DOUBLE > 0;
+----
+0
+
+# more than one join, and a cast on each side
+query I
+SELECT count(*) FROM bad, keys, (SELECT 1 AS v) u WHERE random() < 0 AND bad.s::DOUBLE > 0;
+----
+0
+
+query I
+SELECT count(*) FROM bad b1, bad b2 WHERE random() < 0 AND b1.s::DOUBLE > 0 AND b2.s::DOUBLE > 0;
+----
+0
+
+# a volatile filter that reads the other side of the join
+query I
+SELECT count(*) FROM keys, bad WHERE random() < length(keys.k) - 5 AND s::DOUBLE > 0;
+----
+0
+
+query I
+SELECT count(*) FROM bad LEFT JOIN keys ON true WHERE random() < length(keys.k) - 5 AND s::DOUBLE > 0;
+----
+0
+
+# a filter that is volatile and can throw
+query I
+SELECT count(*) FROM bad, keys WHERE random() < 0 AND (random() + s::DOUBLE) > 0;
+----
+0
+
+# the joins that subqueries turn into
+query I
+SELECT count(*) FROM bad WHERE random() < 0 AND s::DOUBLE > 0 AND s IN (SELECT k FROM keys);
+----
+0
+
+query I
+SELECT count(*) FROM bad WHERE random() < 0 AND s::DOUBLE > 0 AND s NOT IN (SELECT k FROM keys);
+----
+0
+
+query I
+SELECT count(*) FROM bad WHERE random() < 0 AND s::DOUBLE > 0 AND (s IN (SELECT k FROM keys) OR s = 'zzz');
+----
+0
+
+query I
+SELECT count(*) FROM bad WHERE random() < 0 AND s::DOUBLE > 0 AND s = (SELECT min(k) FROM keys);
+----
+0
+
+query I
+SELECT count(x) FROM (SELECT (SELECT 42) AS x FROM bad WHERE random() < 0 AND s::DOUBLE > 0);
+----
+0
+
+# rows that pass the volatile filter still reach the cast
+statement error
+SELECT count(*) FROM bad LEFT JOIN keys ON true WHERE random() < 2 AND s::DOUBLE > 0;
+----
+Could not convert string 'bad' to DOUBLE
+
+statement ok
+CREATE TABLE numbers AS SELECT i::VARCHAR AS s FROM range(10) t(i);
+
+query I
+SELECT count(*) FROM numbers LEFT JOIN (SELECT 1 AS v) u ON true WHERE random() < 2 AND s::DOUBLE > 4;
+----
+5
+
+query I
+SELECT count(*) FROM numbers, keys WHERE random() < 2 AND s::DOUBLE > 4 AND length(keys.k) > 1;
+----
+5
+
+query I
+SELECT count(*) FROM numbers JOIN keys ON numbers.s <> keys.k WHERE random() < 2 AND s::DOUBLE > 4 AND s::DOUBLE < 7;
+----
+4

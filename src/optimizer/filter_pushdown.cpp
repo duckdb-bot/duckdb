@@ -44,6 +44,76 @@ vector<unique_ptr<Expression>> FilterPushdown::ExtractBarrierFilters() {
 	return result;
 }
 
+//! Whether the join pushes the filters that read one of its inputs into that input and keeps the other filters
+static bool DistributesFiltersBySide(const LogicalOperator &op) {
+	switch (op.type) {
+	case LogicalOperatorType::LOGICAL_CROSS_PRODUCT:
+		return true;
+	case LogicalOperatorType::LOGICAL_COMPARISON_JOIN:
+	case LogicalOperatorType::LOGICAL_ANY_JOIN:
+	case LogicalOperatorType::LOGICAL_ASOF_JOIN:
+	case LogicalOperatorType::LOGICAL_DELIM_JOIN:
+		break;
+	default:
+		return false;
+	}
+	switch (op.Cast<LogicalJoin>().join_type) {
+	case JoinType::INNER:
+	case JoinType::LEFT:
+	case JoinType::MARK:
+	case JoinType::SINGLE:
+		return true;
+	default:
+		return false;
+	}
+}
+
+vector<unique_ptr<Expression>> FilterPushdown::ExtractFiltersSeparatedFromVolatile(LogicalOperator &join) {
+	vector<unique_ptr<Expression>> result;
+	bool has_volatile_filter = false;
+	bool has_throwing_filter = false;
+	for (auto &filter : filters) {
+		has_volatile_filter = has_volatile_filter || filter->filter->IsVolatile();
+		has_throwing_filter = has_throwing_filter || filter->filter->CanThrow();
+	}
+	if (!has_volatile_filter || !has_throwing_filter) {
+		return result;
+	}
+	unordered_set<TableIndex> left_bindings, right_bindings;
+	LogicalJoin::GetTableReferences(*join.children[0], left_bindings);
+	LogicalJoin::GetTableReferences(*join.children[1], right_bindings);
+	if (join.type != LogicalOperatorType::LOGICAL_CROSS_PRODUCT &&
+	    join.Cast<LogicalJoin>().join_type == JoinType::MARK) {
+		right_bindings.insert(join.Cast<LogicalJoin>().mark_index);
+	}
+	vector<JoinSide> sides;
+	for (auto &filter : filters) {
+		sides.push_back(JoinSide::GetJoinSide(filter->bindings, left_bindings, right_bindings));
+	}
+	// a filter that can throw is separated when it goes into an input that some volatile filter does not go into
+	bool separated = false;
+	for (idx_t i = 0; i < filters.size() && !separated; i++) {
+		if (!filters[i]->filter->CanThrow() || (sides[i] != JoinSide::LEFT && sides[i] != JoinSide::RIGHT)) {
+			continue;
+		}
+		for (idx_t k = 0; k < filters.size() && !separated; k++) {
+			separated = k != i && filters[k]->filter->IsVolatile() && sides[k] != sides[i];
+		}
+	}
+	if (!separated) {
+		return result;
+	}
+	for (idx_t i = 0; i < filters.size(); i++) {
+		if (!filters[i]->filter->IsVolatile() && !filters[i]->filter->CanThrow()) {
+			continue;
+		}
+		result.push_back(std::move(filters[i]->filter));
+		filters.erase_at(i);
+		i--;
+	}
+	return result;
+}
+
 unique_ptr<LogicalOperator> FilterPushdown::Rewrite(unique_ptr<LogicalOperator> op) {
 	D_ASSERT(!combiner.HasFilters());
 	if (!BarrierCanPassThrough(op->type)) {
@@ -52,6 +122,14 @@ unique_ptr<LogicalOperator> FilterPushdown::Rewrite(unique_ptr<LogicalOperator> 
 		if (!barrier_expressions.empty()) {
 			auto result = Rewrite(std::move(op));
 			return AddLogicalFilter(std::move(result), std::move(barrier_expressions));
+		}
+	}
+	if (DistributesFiltersBySide(*op)) {
+		// a filter that can throw must not run on rows that a volatile filter removes, so they stay above together
+		auto separated_expressions = ExtractFiltersSeparatedFromVolatile(*op);
+		if (!separated_expressions.empty()) {
+			auto result = Rewrite(std::move(op));
+			return AddLogicalFilter(std::move(result), std::move(separated_expressions));
 		}
 	}
 	switch (op->type) {

@@ -1,0 +1,41 @@
+# name: test/optimizer/pushdown/throwing_filter_behind_volatile_filter_at_join_plan.test
+# description: Only a volatile filter of the same WHERE clause keeps a filter that can throw above a join
+# group: [pushdown]
+
+statement ok
+CREATE TABLE numbers AS SELECT i::VARCHAR AS s FROM range(10) t(i);
+
+statement ok
+CREATE TABLE keys AS SELECT 'bad' AS k UNION ALL SELECT 'x';
+
+statement ok
+SET explain_output = 'OPTIMIZED_ONLY';
+
+# without a volatile filter the cast goes below the join
+query II
+EXPLAIN SELECT count(*) FROM numbers LEFT JOIN keys ON true WHERE s::DOUBLE > 4;
+----
+logical_opt	<REGEX>:.*Any Join.*CAST\(s AS DOUBLE\) > 4.0.*
+
+# behind a volatile filter it stays above the join, after the volatile filter
+query II
+EXPLAIN SELECT count(*) FROM numbers LEFT JOIN keys ON true WHERE random() < 2 AND s::DOUBLE > 4;
+----
+logical_opt	<REGEX>:.*random\(\) < 2.0.*CAST\(s AS DOUBLE\) > 4.0.*Any Join.*
+
+query II
+EXPLAIN SELECT count(*) FROM numbers, keys WHERE random() < length(k) AND s::DOUBLE > 4;
+----
+logical_opt	<REGEX>:.*random\(\) < .*CAST\(s AS DOUBLE\) > 4.0.*Cross Product.*
+
+# a filter that cannot throw still goes below the join
+query II
+EXPLAIN SELECT count(*) FROM numbers LEFT JOIN keys ON true WHERE random() < 2 AND s <> '5';
+----
+logical_opt	<REGEX>:.*random\(\) < 2.0.*Any Join.*s != '5'.*
+
+# a volatile filter and a cast that read the same input go into it together
+query II
+EXPLAIN SELECT count(*) FROM numbers, keys WHERE random() < length(s) AND s::DOUBLE > 4;
+----
+logical_opt	<REGEX>:.*Cross Product.*random\(\) < .*CAST\(s AS DOUBLE\) > 4.0.*

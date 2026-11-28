@@ -45,6 +45,9 @@ TimestampCastResult Timestamp::TryConvertTimestampTZ(const char *str, idx_t len,
 	date_t date;
 	dtime_t time;
 	has_offset = false;
+	if (nanos) {
+		*nanos = 0;
+	}
 	switch (Date::TryConvertDate(str, len, pos, date, has_offset)) {
 	case DateCastResult::ERROR_INCORRECT_FORMAT:
 		return TimestampCastResult::ERROR_INCORRECT_FORMAT;

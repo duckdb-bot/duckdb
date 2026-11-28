@@ -18,6 +18,7 @@
 #if (!defined(_WIN32) && !defined(WIN32))
 #define TEST_HAVE_SYMLINK
 #include <fcntl.h>
+#include <poll.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -253,46 +254,122 @@ TEST_CASE("Character devices use streaming file semantics", "[file_system]") {
 	REQUIRE(handle->GetWriteMode() == FileWriteMode::SEQUENTIAL);
 }
 
-TEST_CASE("A character device is opened for writing while another process holds a lock on it", "[file_system]") {
-	int ready[2];
-	int done[2];
-	REQUIRE(pipe(ready) == 0);
-	REQUIRE(pipe(done) == 0);
-	// the child takes the lock that a writer takes on a regular file, and keeps it until it is told to go
-	pid_t pid = fork();
-	REQUIRE(pid >= 0);
-	if (pid == 0) {
-		char locked = 1;
-		int fd = open("/dev/null", O_WRONLY);
+//! A child process that holds a write lock on a file until it is released
+class FileLockHolder {
+public:
+	explicit FileLockHolder(const char *path) {
+		int ready[2];
+		int release[2];
+		if (pipe(ready) != 0) {
+			return;
+		}
+		if (pipe(release) != 0) {
+			close(ready[0]);
+			close(ready[1]);
+			return;
+		}
+		pid = fork();
+		if (pid == 0) {
+			close(ready[0]);
+			close(release[1]);
+			HoldLock(path, ready[1], release[0]);
+		}
+		close(ready[1]);
+		close(release[0]);
+		ready_fd = ready[0];
+		release_fd = release[1];
+	}
+	~FileLockHolder() {
+		Release();
+	}
+
+public:
+	//! Waits until the child has tried, returns whether it holds the lock
+	bool WaitForLock() {
+		char locked = 0;
+		ssize_t count;
+		do {
+			count = read(ready_fd, &locked, 1);
+		} while (count == -1 && errno == EINTR);
+		return count == 1 && locked == 1;
+	}
+
+	//! Ends the child, returns whether it held the lock until now
+	bool Release() {
+		for (auto fd : {ready_fd, release_fd}) {
+			if (fd >= 0) {
+				close(fd);
+			}
+		}
+		ready_fd = -1;
+		release_fd = -1;
+		if (pid <= 0) {
+			return false;
+		}
+		int32_t status = 0;
+		pid_t waited;
+		do {
+			waited = waitpid(pid, &status, 0);
+		} while (waited == -1 && errno == EINTR);
+		auto held = waited == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+		pid = -1;
+		return held;
+	}
+
+private:
+	//! Runs in the child, with calls that are safe after a fork only
+	[[noreturn]] static void HoldLock(const char *path, int ready_fd, int release_fd) {
+		char locked = 0;
+		int fd = open(path, O_WRONLY);
 		struct flock lock;
 		memset(&lock, 0, sizeof(lock));
 		lock.l_type = F_WRLCK;
 		lock.l_whence = SEEK_SET;
-		if (fd < 0 || fcntl(fd, F_SETLK, &lock) != 0) {
-			locked = 0;
+		// another process may hold the lock for a moment
+		for (idx_t attempt = 0; fd >= 0 && attempt < 3000; attempt++) {
+			if (fcntl(fd, F_SETLK, &lock) == 0) {
+				locked = 1;
+				break;
+			}
+			poll(nullptr, 0, 10);
 		}
-		if (write(ready[1], &locked, 1) == 1 && read(done[0], &locked, 1) == 1) {
-			_exit(0);
+		if (write(ready_fd, &locked, 1) != 1 || !locked) {
+			_exit(1);
 		}
-		_exit(1);
+		// the lock is held until the parent closes its end of the pipe
+		char released;
+		ssize_t count;
+		do {
+			count = read(release_fd, &released, 1);
+		} while (count == -1 && errno == EINTR);
+		_exit(count == 0 ? 0 : 1);
 	}
-	char locked = 0;
-	REQUIRE(read(ready[0], &locked, 1) == 1);
+
+private:
+	pid_t pid = -1;
+	int ready_fd = -1;
+	int release_fd = -1;
+};
+
+TEST_CASE("A character device is opened for writing while another process holds a lock on it", "[file_system]") {
+	// the tests that run next to this one write to /dev/null, not to this device
+	auto device = "/dev/zero";
+	FileLockHolder holder(device);
+	auto locked = holder.WaitForLock();
 	string error;
-	try {
-		auto &fs = TestLocalFileSystem();
-		auto handle = fs.OpenFile("/dev/null", FileFlags::FILE_FLAGS_WRITE | FileLockType::WRITE_LOCK);
-		handle->Write(&locked, 1);
-	} catch (std::exception &ex) {
-		error = ex.what();
+	if (locked) {
+		try {
+			auto &fs = TestLocalFileSystem();
+			auto handle = fs.OpenFile(device, FileFlags::FILE_FLAGS_WRITE | FileLockType::WRITE_LOCK);
+			char byte = 1;
+			handle->Write(&byte, 1);
+		} catch (std::exception &ex) {
+			error = ex.what();
+		}
 	}
-	REQUIRE(write(done[1], &locked, 1) == 1);
-	int status = 0;
-	REQUIRE(waitpid(pid, &status, 0) == pid);
-	for (auto fd : {ready[0], ready[1], done[0], done[1]}) {
-		close(fd);
-	}
-	REQUIRE(locked == 1);
+	auto held_until_release = holder.Release();
+	REQUIRE(locked);
+	REQUIRE(held_until_release);
 	REQUIRE(error == "");
 }
 #endif

@@ -24,6 +24,12 @@ static void NotifyEndOfTransaction(ClientContext &context, MetaTransaction &tran
 	}
 }
 
+//! Whether the error is fatal or internal, which is thrown as it is and not as the cause of a failed commit
+static bool IsFatalOrInternal(const ErrorData &error) {
+	return error.HasError() &&
+	       (Exception::InvalidatesDatabase(error.Type()) || error.Type() == ExceptionType::INTERNAL);
+}
+
 TransactionContext::TransactionContext(ClientContext &context)
     : context(context), auto_commit(true), invalidation_policy(TransactionInvalidationPolicy::STANDARD_POLICY),
       auto_rollback(false), current_transaction(nullptr) {
@@ -128,14 +134,19 @@ void TransactionContext::Commit() {
 			try {
 				state.TransactionRollback(*transaction, context, error);
 			} catch (std::exception &ex) {
-				if (!state_error.HasError()) {
-					state_error = ErrorData(ex);
+				ErrorData rollback_error(ex);
+				// the first failure is kept, unless it is neither fatal nor internal and a later one is
+				if (!state_error.HasError() || (IsFatalOrInternal(rollback_error) && !IsFatalOrInternal(state_error))) {
+					state_error = std::move(rollback_error);
 				}
 			}
 		});
-		if (Exception::InvalidatesDatabase(error.Type()) || error.Type() == ExceptionType::INTERNAL) {
+		if (IsFatalOrInternal(error)) {
 			// throw fatal / internal exceptions directly
 			error.Throw();
+		}
+		if (IsFatalOrInternal(state_error)) {
+			state_error.Throw();
 		}
 		if (state_error.HasError()) {
 			throw TransactionException("Failed to commit: %s\nRolling back a registered state failed as well: %s",

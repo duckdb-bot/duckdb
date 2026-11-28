@@ -1,5 +1,6 @@
 #include "catch.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/main/client_context_state.hpp"
 #include "duckdb/main/config.hpp"
 #include "test_helpers.hpp"
 
@@ -19,6 +20,13 @@ vector<string> SecretFiles(const string &secret_dir) {
 	std::sort(result.begin(), result.end());
 	return result;
 }
+
+//! A connection state whose rollback fails with an error that invalidates the database
+struct FatalRollbackState : public ClientContextState {
+	void TransactionRollback(MetaTransaction &transaction, ClientContext &context) override {
+		throw FatalException("the connection state cannot be rolled back");
+	}
+};
 
 } // namespace
 
@@ -135,6 +143,37 @@ TEST_CASE("A failed commit rolls back every connection state even when a secret 
 	local.RemoveDirectory(obstruction);
 	REQUIRE_NO_FAIL(con.Query("CREATE OR REPLACE PERSISTENT SECRET s1 (TYPE http)"));
 	REQUIRE(SecretFiles(secret_dir) == vector<string> {"s1.duckdb_secret"});
+}
+
+TEST_CASE("A failed commit reports the fatal error of a connection state as a fatal error", "[api][secrets]") {
+	auto &local = TestLocalFileSystem();
+	// the state fails alone, and after a secret file that cannot be restored
+	for (auto obstruct_secret_file : {false, true}) {
+		auto secret_dir = TestCreatePath(obstruct_secret_file ? "persistent_secret_rollback_fatal_state_obstructed"
+		                                                      : "persistent_secret_rollback_fatal_state");
+		auto config = GetTestConfig();
+		DuckDB db(nullptr, config.get());
+		Connection con(db);
+		REQUIRE_NO_FAIL(con.Query("SET secret_directory = '" + secret_dir + "'"));
+		REQUIRE_NO_FAIL(con.Query("CREATE PERSISTENT SECRET s1 (TYPE http)"));
+		REQUIRE_NO_FAIL(con.Query("SET debug_force_commit_failure = true"));
+		REQUIRE_NO_FAIL(con.Query("BEGIN"));
+		REQUIRE_NO_FAIL(con.Query("DROP PERSISTENT SECRET s1"));
+		REQUIRE_NO_FAIL(con.Query("CREATE TABLE t (i INTEGER)"));
+		if (obstruct_secret_file) {
+			local.CreateDirectory(local.JoinPath(secret_dir, "s1.duckdb_secret"));
+		}
+		con.context->GetContext().GetRegisteredState().Insert("fatal_rollback", make_shared_ptr<FatalRollbackState>());
+
+		auto result = con.Query("COMMIT");
+		REQUIRE(result->HasError());
+		REQUIRE(result->GetErrorType() == ExceptionType::FATAL);
+		REQUIRE(StringUtil::Contains(result->GetError(), "the connection state cannot be rolled back"));
+		// the fatal error invalidates the database
+		result = con.Query("SELECT 42");
+		REQUIRE(result->HasError());
+		REQUIRE(StringUtil::Contains(result->GetError(), "invalidated"));
+	}
 }
 
 TEST_CASE("A failed secret write that changes no file leaves nothing for rollback to repair", "[api][secrets]") {

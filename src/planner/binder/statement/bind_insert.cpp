@@ -25,6 +25,7 @@
 #include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/planner/expression_binder/where_binder.hpp"
 #include "duckdb/planner/expression_binder/update_binder.hpp"
+#include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/parser/statement/update_statement.hpp"
@@ -360,6 +361,43 @@ static bool IsNotNullColumn(TableCatalogEntry &table, Identifier &column_name) {
 	return false;
 }
 
+//! Binds the source and casts the given columns to the given types, without resolving the types again
+static unique_ptr<TableRef> CastSourceColumns(Binder &binder, unique_ptr<TableRef> source,
+                                              const identifier_map_t<LogicalType> &cast_types) {
+	auto source_binder = Binder::CreateBinder(binder.context, &binder);
+	auto bound_source = source_binder->Bind(*source);
+	auto &source_context = source_binder->bind_context;
+	vector<Identifier> names;
+	vector<LogicalType> types;
+	for (auto &binding : source_context.GetBindingsList()) {
+		auto &column_names = binding->GetColumnNames();
+		auto &column_types = binding->GetColumnTypes();
+		names.insert(names.end(), column_names.begin(), column_names.end());
+		types.insert(types.end(), column_types.begin(), column_types.end());
+	}
+	auto column_bindings = bound_source.plan->GetColumnBindings();
+	D_ASSERT(column_bindings.size() == names.size());
+	vector<unique_ptr<Expression>> select_list;
+	for (idx_t i = 0; i < names.size(); i++) {
+		unique_ptr<Expression> column = make_uniq<BoundColumnRefExpression>(names[i], types[i], column_bindings[i]);
+		auto entry = cast_types.find(names[i]);
+		if (entry != cast_types.end()) {
+			column = BoundCastExpression::AddCastToType(binder.context, std::move(column), entry->second);
+			types[i] = entry->second;
+		}
+		select_list.push_back(std::move(column));
+	}
+	auto projection = make_uniq<LogicalProjection>(binder.GenerateTableIndex(), std::move(select_list));
+	projection->AddChild(std::move(bound_source.plan));
+	// the projection takes the place of the source in its bind context
+	source_context.RemoveContext(source_context.GetBindingAliases());
+	source_context.AddGenericBinding(projection->table_index, "excluded", names, types);
+	bound_source.plan = std::move(projection);
+	bound_source.names = std::move(names);
+	bound_source.types = std::move(types);
+	return make_uniq<BoundRefWrapper>(std::move(bound_source), std::move(source_binder));
+}
+
 unique_ptr<MergeIntoStatement> Binder::GenerateMergeInto(InsertQueryNode &node, TableCatalogEntry &table) {
 	D_ASSERT(node.on_conflict_info);
 
@@ -570,11 +608,17 @@ unique_ptr<MergeIntoStatement> Binder::GenerateMergeInto(InsertQueryNode &node, 
 	}
 	// cast the conflict columns to the types of the table, so they are compared as they are inserted
 	auto cast_star = make_uniq<StarExpression>();
+	identifier_map_t<LogicalType> bound_cast_types;
 	for (auto &distinct_on_columns : all_distinct_on_columns) {
 		for (auto &col : distinct_on_columns) {
 			auto &type = columns.GetColumn(col).Type();
-			if (!TypeExpression::CanRepresent(type) || type.HasAlias() || type.id() == LogicalTypeId::ENUM) {
-				// a parsed cast resolves these types again, by name or from all their values
+			if (type.id() == LogicalTypeId::ENUM) {
+				// FIXME: an ENUM key is not cast, so a VARCHAR source is compared as a string under its collation
+				continue;
+			}
+			if (!TypeExpression::CanRepresent(type) || type.HasAlias()) {
+				// a parsed cast resolves these types again by name, so they are cast once the source is bound
+				bound_cast_types.emplace(col, type);
 				continue;
 			}
 			unique_ptr<ParsedExpression> key = make_uniq<CastExpression>(type, make_uniq<ColumnRefExpression>(col));
@@ -592,6 +636,9 @@ unique_ptr<MergeIntoStatement> Binder::GenerateMergeInto(InsertQueryNode &node, 
 		auto cast_stmt = make_uniq<SelectStatement>();
 		cast_stmt->node = std::move(cast_node);
 		source = make_uniq<SubqueryRef>(std::move(cast_stmt), "excluded");
+	}
+	if (!bound_cast_types.empty()) {
+		source = CastSourceColumns(*this, std::move(source), bound_cast_types);
 	}
 
 	// push DISTINCT ON(unique_columns)

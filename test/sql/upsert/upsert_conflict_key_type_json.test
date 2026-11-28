@@ -1,9 +1,207 @@
 # name: test/sql/upsert/upsert_conflict_key_type_json.test
-# description: A JSON conflict key is compared without resolving the type name again
+# description: A JSON conflict key is compared as JSON, without resolving the type name again
 # group: [upsert]
 
 require json
 
+# a key from a SELECT is compared as JSON, like the key of a VALUES list
+statement ok
+CREATE TABLE json_keys (k JSON PRIMARY KEY, n INTEGER);
+
+statement ok
+INSERT INTO json_keys VALUES ('1.0', 0);
+
+statement ok
+INSERT INTO json_keys SELECT 1, 1 ON CONFLICT DO NOTHING;
+
+query II
+SELECT k, n FROM json_keys ORDER BY k
+----
+1	1
+1.0	0
+
+statement ok
+INSERT OR IGNORE INTO json_keys SELECT 1, 2;
+
+statement ok
+INSERT INTO json_keys SELECT 1, 3 ON CONFLICT (K) DO UPDATE SET n = excluded.n;
+
+statement ok
+INSERT INTO json_keys VALUES (1, 4) ON CONFLICT DO NOTHING;
+
+query II
+SELECT k, n FROM json_keys ORDER BY k
+----
+1	3
+1.0	0
+
+statement ok
+INSERT OR REPLACE INTO json_keys SELECT 1.0, 5;
+
+query II
+SELECT k, n FROM json_keys ORDER BY k
+----
+1	3
+1.0	5
+
+statement ok
+INSERT INTO json_keys BY NAME SELECT 6 AS n, 1 AS k ON CONFLICT DO UPDATE SET n = excluded.n;
+
+query II
+SELECT k, n FROM json_keys ORDER BY k
+----
+1	6
+1.0	5
+
+statement ok
+PREPARE upsert_json_key AS INSERT INTO json_keys SELECT ?, 7 ON CONFLICT DO UPDATE SET n = excluded.n;
+
+statement ok
+EXECUTE upsert_json_key(1.0);
+
+statement ok
+EXECUTE upsert_json_key(2);
+
+query II
+SELECT k, n FROM json_keys ORDER BY k
+----
+1	6
+1.0	7
+2	7
+
+# excluded holds the key as it is inserted
+statement ok
+CREATE TABLE json_excluded (k JSON PRIMARY KEY, key_type VARCHAR);
+
+statement ok
+INSERT INTO json_excluded VALUES (1, NULL);
+
+statement ok
+INSERT INTO json_excluded SELECT 1, NULL ON CONFLICT DO UPDATE SET key_type = typeof(excluded.k);
+
+query II
+SELECT k, key_type FROM json_excluded
+----
+1	JSON
+
+# stored keys are not cast to the type of the source
+statement ok
+CREATE TABLE json_values (k JSON PRIMARY KEY);
+
+statement ok
+INSERT INTO json_values VALUES ('"a"');
+
+statement ok
+INSERT INTO json_values SELECT 2 ON CONFLICT DO NOTHING;
+
+statement ok
+INSERT INTO json_values SELECT true ON CONFLICT DO NOTHING;
+
+statement ok
+INSERT INTO json_values SELECT DATE '2020-01-01' ON CONFLICT DO NOTHING;
+
+statement ok
+INSERT INTO json_values SELECT {'a': 1} ON CONFLICT DO NOTHING;
+
+statement ok
+INSERT INTO json_values SELECT [1, 2] ON CONFLICT DO NOTHING;
+
+query I
+SELECT k FROM json_values ORDER BY k
+----
+"2020-01-01"
+"a"
+2
+[1,2]
+true
+{"a":1}
+
+statement ok
+INSERT INTO json_values SELECT 2 ON CONFLICT DO NOTHING;
+
+statement ok
+INSERT INTO json_values SELECT true ON CONFLICT DO NOTHING;
+
+statement ok
+INSERT INTO json_values SELECT DATE '2020-01-01' ON CONFLICT DO NOTHING;
+
+statement ok
+INSERT INTO json_values SELECT {'a': 1} ON CONFLICT DO NOTHING;
+
+statement ok
+INSERT INTO json_values SELECT [1, 2] ON CONFLICT DO NOTHING;
+
+query I
+SELECT count(*) FROM json_values
+----
+6
+
+# a key that takes its DEFAULT
+statement ok
+CREATE TABLE json_default (k JSON PRIMARY KEY DEFAULT 1, n INTEGER);
+
+statement ok
+INSERT INTO json_default VALUES ('1.0', 0);
+
+statement ok
+INSERT INTO json_default (n) VALUES (1) ON CONFLICT DO NOTHING;
+
+statement ok
+INSERT INTO json_default (n) VALUES (2) ON CONFLICT DO UPDATE SET n = excluded.n;
+
+statement ok
+INSERT INTO json_default DEFAULT VALUES ON CONFLICT DO NOTHING;
+
+query II
+SELECT k, n FROM json_default ORDER BY k
+----
+1	2
+1.0	0
+
+# a composite key casts its JSON part as well
+statement ok
+CREATE TABLE json_composite (a INTEGER, k JSON, n INTEGER, PRIMARY KEY (a, k));
+
+statement ok
+INSERT INTO json_composite VALUES (1, '1.0', 0);
+
+statement ok
+INSERT INTO json_composite SELECT 1.4, 1, 1 ON CONFLICT DO NOTHING;
+
+statement ok
+INSERT INTO json_composite SELECT 1.4, 1.0, 2 ON CONFLICT (a, k) DO UPDATE SET n = excluded.n;
+
+query III
+SELECT a, k, n FROM json_composite ORDER BY k
+----
+1	1	1
+1	1.0	2
+
+# rows of the source are deduplicated on the key as it is inserted
+statement ok
+CREATE TABLE json_distinct (k JSON PRIMARY KEY);
+
+statement ok
+INSERT INTO json_distinct SELECT 0.0::DOUBLE UNION ALL SELECT '-0.0'::DOUBLE ON CONFLICT DO NOTHING;
+
+statement ok
+INSERT INTO json_distinct SELECT '"a"' COLLATE NOCASE UNION ALL SELECT '"A"' COLLATE NOCASE ON CONFLICT DO NOTHING;
+
+query I
+SELECT k FROM json_distinct ORDER BY k
+----
+"A"
+"a"
+-0.0
+0.0
+
+# a key that is not valid JSON fails as in a plain INSERT
+statement error
+INSERT INTO json_values SELECT '{' ON CONFLICT DO NOTHING;
+----
+<REGEX>:Conversion Error:.*Malformed JSON.*
+
+# the name of the type is not resolved again
 statement ok
 CREATE TABLE t9 (k JSON PRIMARY KEY);
 
@@ -22,8 +220,12 @@ SET search_path = 's,main';
 statement ok
 INSERT INTO t9 SELECT '1.4' ON CONFLICT DO NOTHING;
 
+statement ok
+INSERT INTO t9 SELECT 1.0 ON CONFLICT DO NOTHING;
+
 query I
 SELECT k FROM t9 ORDER BY k
 ----
 1
+1.0
 1.4

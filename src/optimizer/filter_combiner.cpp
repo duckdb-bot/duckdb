@@ -1614,10 +1614,6 @@ FilterResult FilterCombiner::AddBoundComparisonFilter(Expression &expr) {
 		if (expr.GetExpressionType() != ExpressionType::COMPARE_EQUAL) {
 			return FilterResult::UNSUPPORTED;
 		}
-		// the filters of a set compare each of its expressions, which would evaluate a volatile one again
-		if (left->IsVolatile() || right->IsVolatile()) {
-			return FilterResult::UNSUPPORTED;
-		}
 		// get the LHS and RHS nodes
 		auto &left_node = GetNode(*left);
 		auto &right_node = GetNode(*right);

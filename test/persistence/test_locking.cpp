@@ -107,8 +107,9 @@ TEST_CASE("Test read lock with multiple processes", "[persistence][.]") {
 	}
 }
 
-#ifdef F_OFD_SETLK
-//! No worker threads, so that a forked child starts from a single thread
+// forking from a process with threads hangs under the thread sanitizer
+#if defined(F_OFD_SETLK) && !defined(DUCKDB_THREAD_SANITIZER)
+//! No worker threads, so that the databases of these cases add none to the forking process or to a forked child
 static unique_ptr<DBConfig> SingleThreadConfig(bool read_only = false) {
 	auto config = make_uniq<DBConfig>();
 	Settings::Set<ThreadsSetting>(*config, SetScope::GLOBAL, Value::BIGINT(1));

@@ -322,6 +322,40 @@ TEST_CASE("Queries planned before another connection of a shared transaction wri
 	}
 }
 
+TEST_CASE("An insert planned before another connection of a shared transaction drops its table commits",
+          "[api][transaction]") {
+	DuckDB db(nullptr);
+	Connection con1(db);
+	Connection con2(db);
+	Connection con3(db);
+	// without background threads the submitted insert only runs when it is completed
+	REQUIRE_NO_FAIL(con1.Query("SET threads=1"));
+	REQUIRE_NO_FAIL(con1.Query("CREATE TABLE r(a BIGINT)"));
+	REQUIRE_NO_FAIL(con1.Query("BEGIN TRANSACTION"));
+	auto share_id = ShareTransaction(con1);
+	REQUIRE_NO_FAIL(con2.Query("JOIN TRANSACTION '" + share_id + "'"));
+	auto insert_result = con1.Submit("INSERT INTO r SELECT i FROM range(1000) t(i)");
+
+	SECTION("the table is dropped") {
+		REQUIRE_NO_FAIL(con2.Query("DROP TABLE r"));
+		insert_result->Complete();
+		REQUIRE_NO_FAIL(*insert_result);
+		REQUIRE_NO_FAIL(con2.Query("COMMIT"));
+		REQUIRE_NO_FAIL(con1.Query("COMMIT"));
+		REQUIRE_FAIL(con3.Query("SELECT * FROM r"));
+	}
+	SECTION("the table is replaced") {
+		REQUIRE_NO_FAIL(con2.Query("CREATE OR REPLACE TABLE r AS SELECT 42::BIGINT a"));
+		insert_result->Complete();
+		REQUIRE_NO_FAIL(*insert_result);
+		// the rows of the insert went into the table that was replaced
+		RequireValue(con1, "SELECT sum(a) FROM r", 42);
+		REQUIRE_NO_FAIL(con2.Query("COMMIT"));
+		REQUIRE_NO_FAIL(con1.Query("COMMIT"));
+		RequireValue(con3, "SELECT sum(a) FROM r", 42);
+	}
+}
+
 TEST_CASE("Closing a connection leaves the shared transaction while its results are outstanding",
           "[api][transaction]") {
 	DuckDB db(nullptr);

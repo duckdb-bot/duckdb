@@ -167,12 +167,16 @@ public:
 	idx_t EstimatedSize() const;
 	bool IsEmpty() const;
 	void InsertEntry(DataTable &table, shared_ptr<LocalTableStorage> entry);
+	//! Marks the storage of a dropped table, also the storage that is created after the drop
+	void DropTable(DataTable &table);
 
 private:
 	mutable mutex table_storage_lock;
 	reference_map_t<const DataTable, shared_ptr<LocalTableStorage>> table_storage;
 	//! The old versions of the tables whose storage was replaced by an ALTER
 	reference_set_t<const DataTable> altered_tables;
+	//! The tables that were dropped in this transaction
+	reference_set_t<const DataTable> dropped_tables;
 };
 
 //! The LocalStorage class holds appends that have not been committed yet

@@ -170,7 +170,6 @@ bool DuckSchemaEntry::DropEntryInternal(CatalogTransaction transaction, CatalogE
 		FindForeignKeyInformation(entry.Cast<TableCatalogEntry>(), AlterForeignKeyType::AFT_DELETE, fk_arrays);
 	}
 
-	OnDropEntry(transaction, entry);
 	auto &set = GetCatalogSet(entry.type);
 	if (!set.DropEntry(transaction, name, cascade, allow_drop_internal)) {
 		return false;
@@ -373,19 +372,6 @@ void DuckSchemaEntry::DropEntry(ClientContext &context, DropInfo &info) {
 	                       info.allow_drop_internal)) {
 		throw InternalException("Could not drop element because of an internal error");
 	}
-}
-
-void DuckSchemaEntry::OnDropEntry(CatalogTransaction transaction, CatalogEntry &entry) {
-	if (!transaction.transaction) {
-		return;
-	}
-	if (entry.type != CatalogType::TABLE_ENTRY) {
-		return;
-	}
-	// if we have transaction local insertions for this table - clear them
-	auto &table_entry = entry.Cast<TableCatalogEntry>();
-	auto &local_storage = LocalStorage::Get(transaction.transaction->Cast<DuckTransaction>());
-	local_storage.DropTable(table_entry.GetStorage());
 }
 
 optional_ptr<CatalogEntry> DuckSchemaEntry::LookupEntry(CatalogTransaction transaction,

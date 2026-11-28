@@ -1,0 +1,123 @@
+# name: test/sql/attach/external_resource_external_access_functions.test
+# description: The external resource table functions and discovery are refused when enable_external_access is false
+# group: [attach]
+
+# a mock resource type whose callbacks leave a trace in sequences, so the test can show which callbacks ran
+statement ok
+CREATE SEQUENCE create_calls;
+
+statement ok
+CREATE SEQUENCE status_calls;
+
+statement ok
+CREATE SEQUENCE destroy_calls;
+
+statement ok
+CREATE SEQUENCE list_calls;
+
+statement ok
+CREATE MACRO mock_create(p) AS TABLE SELECT MAP {'id': nextval('create_calls')::VARCHAR} AS handle;
+
+statement ok
+CREATE MACRO mock_status(h) AS TABLE SELECT CASE WHEN nextval('status_calls') > 0 THEN 'ready' END AS state, MAP {'uri': ':memory:', 'attached_db_type': 'duckdb'} AS result;
+
+statement ok
+CREATE MACRO mock_destroy(h) AS TABLE SELECT nextval('destroy_calls') AS status;
+
+statement ok
+CREATE MACRO mock_list(p) AS TABLE SELECT MAP {'id': 'listed'} AS handle, nextval('list_calls')::VARCHAR AS name, 'listed' AS reference, 'ready' AS state;
+
+statement ok
+CALL register_external_resource_type('mock@local', kind := 'catalog', create_function := 'mock_create', status_function := 'mock_status', destroy_function := 'mock_destroy', list_function := 'mock_list');
+
+# with external access enabled every function runs its callbacks
+query I
+SELECT uri FROM create_external_resource('mock@local');
+----
+:memory:
+
+query I
+SELECT count(*) FROM duckdb_external_resources(discover := true, type := 'mock@local');
+----
+1
+
+query I
+SELECT count(*) FROM (SHOW ALL EXTERNAL RESOURCES WITH TYPE 'mock@local');
+----
+1
+
+statement ok
+CALL destroy_external_resource('mock_destroy', MAP {'id': 'x'});
+
+query II
+SELECT sequence_name, last_value FROM duckdb_sequences() ORDER BY 1;
+----
+create_calls	1
+destroy_calls	1
+list_calls	2
+status_calls	1
+
+statement ok
+SET enable_external_access = false;
+
+# the EXTERNAL RESOURCE statements were refused already, the table functions and discovery are refused the same way
+statement error
+ATTACH TO NEW TEMPORARY EXTERNAL RESOURCE 'mock@local' AS res;
+----
+Permission Error: External resources are disabled through configuration
+
+statement error
+SELECT uri FROM create_external_resource('mock@local');
+----
+Permission Error: External resources are disabled through configuration
+
+# adopting a handle runs the status callback
+statement error
+SELECT uri FROM create_external_resource('mock@local', handle := MAP {'id': 'x'});
+----
+Permission Error: External resources are disabled through configuration
+
+statement error
+SELECT count(*) FROM duckdb_external_resources(discover := true, type := 'mock@local');
+----
+Permission Error: External resources are disabled through configuration
+
+statement error
+SELECT count(*) FROM duckdb_external_resources(discover := true);
+----
+Permission Error: External resources are disabled through configuration
+
+statement error
+SHOW ALL EXTERNAL RESOURCES WITH TYPE 'mock@local';
+----
+Permission Error: External resources are disabled through configuration
+
+statement error
+SHOW ALL EXTERNAL RESOURCES;
+----
+Permission Error: External resources are disabled through configuration
+
+statement error
+CALL destroy_external_resource('mock_destroy', MAP {'id': 'x'});
+----
+Permission Error: External resources are disabled through configuration
+
+# the registry itself can still be read, that runs no callback
+query I
+SELECT count(*) FROM duckdb_external_resources();
+----
+0
+
+query I
+SELECT count(*) FROM (SHOW EXTERNAL RESOURCES);
+----
+0
+
+# no callback ran
+query II
+SELECT sequence_name, last_value FROM duckdb_sequences() ORDER BY 1;
+----
+create_calls	1
+destroy_calls	1
+list_calls	2
+status_calls	1

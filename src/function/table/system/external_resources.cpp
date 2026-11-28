@@ -6,6 +6,7 @@
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/external_resource_type_registry.hpp"
 #include "duckdb/main/external_resources_manager.hpp"
+#include "duckdb/main/settings.hpp"
 #include "duckdb/parser/keyword_helper.hpp"
 #include "duckdb/parser/parser.hpp"
 #include "duckdb/parser/qualified_name.hpp"
@@ -76,6 +77,10 @@ static unique_ptr<TableRef> ExternalResourcesBindReplace(ClientContext &context,
 	auto params = ReadParameters(input);
 	if (!params.discover) {
 		return nullptr; // the registry scan below
+	}
+	// discovery runs the list callbacks, which reach outside the database, the registry scan does not
+	if (!Settings::Get<EnableExternalAccessSetting>(context)) {
+		throw PermissionException("External resources are disabled through configuration");
 	}
 	vector<string> branches;
 	branches.push_back("SELECT name, type, managed, NULL::VARCHAR AS state, NULL::VARCHAR AS reference, uri, "

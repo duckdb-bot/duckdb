@@ -32,12 +32,28 @@ public:
 	void ClearSetting(idx_t setting_index);
 	bool IsSet(idx_t setting_index) const;
 	bool TryGetSetting(idx_t setting_index, Value &result_value) const;
+	//! Every setting that the map has a value for has an index below this bound
+	idx_t SettingIndexBound() const;
 
 private:
 	vector<GenericSetting> settings;
 };
 
 struct GlobalUserSettings;
+
+//! The value that a client reads for one setting
+struct SettingsSnapshotEntry {
+	idx_t setting_index;
+	Value value;
+};
+
+//! The values of the settings that a client reads, without those that are at their default
+struct SettingsSnapshot {
+	//! Sorted by setting index
+	vector<SettingsSnapshotEntry> entries;
+
+	bool Equals(const SettingsSnapshot &other) const;
+};
 
 struct CachedGlobalSettings {
 	CachedGlobalSettings();
@@ -90,7 +106,17 @@ public:
 	identifier_map_t<ExtensionOption> GetExtensionSettings() const;
 	bool TryGetExtensionOption(const Identifier &name, ExtensionOption &result) const;
 	optional_idx TryGetExtensionSettingIndex(const Identifier &name) const;
+	//! The default value of the extension setting with the given index, if it has one
+	bool TryGetExtensionDefault(idx_t setting_index, Value &result) const;
 	hugeint_t GetUUID() const;
+	//! The version of the settings, which moves whenever a setting is stored, removed or added
+	idx_t GetVersion() const;
+	//! Copies the settings and returns their version
+	idx_t CopySettings(UserSettingsMap &result) const;
+	//! The number of changes of database-global settings that are not kept in this map
+	idx_t GetChangeCount() const;
+	//! Counts the change of a setting that is not kept in this map
+	void RegisterChange();
 
 #ifndef __MINGW32__
 	CachedGlobalSettings &GetSettings() const;
@@ -104,6 +130,8 @@ private:
 	identifier_map_t<ExtensionOption> extension_parameters;
 	//! Current version of the settings - incremented when settings are modified
 	atomic<idx_t> settings_version;
+	//! Incremented when a setting that is not kept in the map changes
+	atomic<idx_t> change_count;
 	//! Settings uuid
 	hugeint_t uuid;
 };
@@ -117,9 +145,23 @@ public:
 	bool IsSet(idx_t setting_index) const;
 	SettingLookupResult TryGetSetting(const GlobalUserSettings &global_settings, idx_t setting_index,
 	                                  Value &result_value) const;
+	//! The values of the settings that the client reads now. It is the same object as long as no value changes
+	const shared_ptr<const SettingsSnapshot> &GetSnapshot(const DBConfig &config);
+	//! The number of changes of settings of the client that are not kept in this map
+	idx_t GetChangeCount() const;
+	//! Counts the change of a setting that is not kept in this map
+	void RegisterChange();
 
 private:
 	//! Client-local settings
 	UserSettingsMap settings_map;
+	//! Incremented when a setting is stored or removed
+	idx_t version = 0;
+	//! Incremented when a setting that is not kept in the map changes
+	idx_t change_count = 0;
+	//! The snapshot of the settings at the versions below
+	shared_ptr<const SettingsSnapshot> snapshot;
+	idx_t snapshot_version = 0;
+	idx_t snapshot_global_version = 0;
 };
 } // namespace duckdb

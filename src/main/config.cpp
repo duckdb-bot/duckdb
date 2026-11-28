@@ -940,6 +940,20 @@ SettingLookupResult DBConfig::TryGetDefaultValue(optional_ptr<const Configuratio
 	return SettingLookupResult(SettingScope::GLOBAL);
 }
 
+SettingLookupResult DBConfig::TryGetDefaultValue(idx_t setting_index, Value &result) const {
+	for (idx_t index = 0; internal_options[index].name; index++) {
+		auto &option = internal_options[index];
+		if (option.setting_idx.IsValid() && option.setting_idx.GetIndex() == setting_index) {
+			return TryGetDefaultValue(&option, result);
+		}
+	}
+	// an extension setting
+	if (!user_settings.TryGetExtensionDefault(setting_index, result)) {
+		return SettingLookupResult();
+	}
+	return SettingLookupResult(SettingScope::GLOBAL);
+}
+
 SettingLookupResult DBConfig::TryGetDefaultValue(const Identifier &key, optional_ptr<const ConfigurationOption> option,
                                                  Value &result) const {
 	if (option) {

@@ -413,13 +413,20 @@ WITH RECURSIVE t(k, v) USING KEY (k) AS (
 )
 TABLE t;
 
-statement ok
-SET default_collation='';
-
 query II
 EXECUTE collated_delta;
 ----
 1	A
+
+statement ok
+SET default_collation='';
+
+# the prepared statement is bound again and follows the changed setting
+query II
+EXECUTE collated_delta;
+----
+1	A
+2	A
 
 statement ok
 DEALLOCATE collated_delta;
@@ -581,13 +588,20 @@ WITH RECURSIVE t(k, v) USING KEY (k, min(v)) AS (
 )
 TABLE t;
 
-statement ok
-SET default_collation='';
-
 query TI
 EXECUTE collated_recurring_key;
 ----
 a	0
+
+statement ok
+SET default_collation='';
+
+# the prepared statement is bound again and follows the changed setting
+query TI
+EXECUTE collated_recurring_key;
+----
+a	2
+A	0
 
 statement ok
 DEALLOCATE collated_recurring_key;

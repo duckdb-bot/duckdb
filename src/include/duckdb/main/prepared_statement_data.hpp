@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "duckdb/catalog/catalog_search_path.hpp"
 #include "duckdb/common/enums/statement_type.hpp"
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/common/unordered_map.hpp"
@@ -19,6 +20,7 @@
 namespace duckdb {
 class CatalogEntry;
 class ClientContext;
+struct SettingsSnapshot;
 class PhysicalPlan;
 class SQLStatement;
 
@@ -43,12 +45,21 @@ public:
 
 	//! The statement properties
 	StatementProperties properties;
+	//! The values of the settings that the statement was bound under
+	shared_ptr<const SettingsSnapshot> settings_snapshot;
+	//! The change counts of the settings with their own setter that the statement was bound under
+	idx_t client_setting_changes = 0;
+	idx_t database_setting_changes = 0;
+	//! The search path of the client that the statement was bound under
+	vector<CatalogSearchEntry> search_path;
 
 	//! The map of parameter index to the actual value entry
 	bound_parameter_map_t value_map;
 
 public:
 	void CheckParameterCount(idx_t parameter_count);
+	//! Whether a setting or the search path differs from the one that the statement was bound under
+	bool SettingsChanged(ClientContext &context) const;
 	//! Whether or not the prepared statement data requires the query to rebound for the given parameters
 	bool RequireRebind(ClientContext &context, optional_ptr<identifier_map_t<BoundParameterData>> values);
 	//! Fill in missing parameter values from user variables

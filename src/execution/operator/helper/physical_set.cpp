@@ -109,6 +109,7 @@ void PhysicalSet::SetVariable(ClientContext &context, const Identifier &name, Se
 		SetGenericVariable(context, setting_index, variable_scope, std::move(input_val));
 		return;
 	}
+	const auto previous_value = option->get_setting(context);
 	switch (variable_scope) {
 	case SetScope::GLOBAL: {
 		if (!option->set_global) {
@@ -126,6 +127,25 @@ void PhysicalSet::SetVariable(ClientContext &context, const Identifier &name, Se
 		break;
 	default:
 		throw InternalException("Unsupported SetScope for variable");
+	}
+	RegisterSettingChange(context, *option, variable_scope, previous_value);
+}
+
+void PhysicalSet::RegisterSettingChange(ClientContext &context, const ConfigurationOption &option, SetScope scope,
+                                        const Value &previous_value) {
+	if (option.get_setting == SchemaSetting::GetSetting || option.get_setting == SearchPathSetting::GetSetting) {
+		// a prepared statement compares the search path that it was bound under itself
+		return;
+	}
+	// a client with a session value does not see the value of the database change
+	const bool hidden_change = scope == SetScope::GLOBAL && option.set_local;
+	if (!hidden_change && Value::NotDistinctFrom(previous_value, option.get_setting(context))) {
+		return;
+	}
+	if (scope == SetScope::GLOBAL) {
+		DBConfig::GetConfig(context).user_settings.RegisterChange();
+	} else {
+		ClientConfig::GetConfig(context).user_settings.RegisterChange();
 	}
 }
 

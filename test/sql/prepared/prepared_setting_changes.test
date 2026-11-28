@@ -1,0 +1,580 @@
+# name: test/sql/prepared/prepared_setting_changes.test
+# description: A prepared statement that reads no table is bound again when a setting changes after PREPARE
+# group: [prepared]
+
+statement ok
+SET max_decimal_width = 38;
+
+statement ok
+PREPARE decimal_type AS SELECT typeof(1::DECIMAL(30,0) * 1::DECIMAL(30,0));
+
+statement ok
+PREPARE decimal_value AS SELECT 99999999999999999999::DECIMAL(20,0) * 99999999999999999999::DECIMAL(20,0);
+
+statement ok
+PREPARE decimal_parameter AS SELECT typeof(?::DECIMAL(30,0) * 1::DECIMAL(30,0));
+
+statement ok
+PREPARE decimal_values AS SELECT typeof(a * a) FROM (VALUES (1::DECIMAL(30,0))) v(a);
+
+statement ok
+PREPARE decimal_range AS SELECT typeof(i::DECIMAL(30,0) * i::DECIMAL(30,0)) FROM range(1) r(i);
+
+statement ok
+CREATE TABLE widths (source VARCHAR, width VARCHAR);
+
+statement ok
+PREPARE decimal_insert AS INSERT INTO widths VALUES (?, typeof(1::DECIMAL(30,0) * 1::DECIMAL(30,0)));
+
+statement ok
+EXECUTE decimal_insert('before');
+
+statement ok
+SET max_decimal_width = 76;
+
+query I
+EXECUTE decimal_type;
+----
+DECIMAL(60,0)
+
+query I
+EXECUTE decimal_value;
+----
+9999999999999999999800000000000000000001
+
+query I
+EXECUTE decimal_parameter(1::DECIMAL(30,0));
+----
+DECIMAL(60,0)
+
+query I
+EXECUTE decimal_values;
+----
+DECIMAL(60,0)
+
+query I
+EXECUTE decimal_range;
+----
+DECIMAL(60,0)
+
+statement ok
+EXECUTE decimal_insert('after');
+
+query II
+SELECT * FROM widths ORDER BY source DESC;
+----
+before	DECIMAL(38,0)
+after	DECIMAL(60,0)
+
+# a statement that was prepared under a wider bound does not run outside of the bound
+statement ok
+PREPARE wide_cast AS SELECT typeof(1::DECIMAL(50,0));
+
+statement ok
+SET max_decimal_width = 38;
+
+statement error
+EXECUTE wide_cast;
+----
+exceeds the maximum DECIMAL width of 38
+
+# RESET is a change as well
+statement ok
+PREPARE decimal_type AS SELECT typeof(1::DECIMAL(30,0) * 1::DECIMAL(30,0));
+
+query I
+EXECUTE decimal_type;
+----
+DECIMAL(38,0)
+
+statement ok
+RESET max_decimal_width;
+
+query I
+EXECUTE decimal_type;
+----
+DECIMAL(60,0)
+
+# a setting that is set back to the value it had when the statement was prepared
+statement ok
+SET max_decimal_width = 38;
+
+statement ok
+PREPARE decimal_type AS SELECT typeof(1::DECIMAL(30,0) * 1::DECIMAL(30,0));
+
+statement ok
+SET max_decimal_width = 76;
+
+query I
+EXECUTE decimal_type;
+----
+DECIMAL(60,0)
+
+statement ok
+SET max_decimal_width = 38;
+
+query I
+EXECUTE decimal_type;
+----
+DECIMAL(38,0)
+
+statement ok
+RESET max_decimal_width;
+
+# a NULL value for the session hides the value of the database
+statement ok
+SET GLOBAL max_decimal_width = 38;
+
+statement ok
+PREPARE decimal_type AS SELECT typeof(1::DECIMAL(30,0) * 1::DECIMAL(30,0));
+
+statement ok
+SET SESSION max_decimal_width = NULL;
+
+query I
+EXECUTE decimal_type;
+----
+DECIMAL(60,0)
+
+statement ok
+PREPARE decimal_type AS SELECT typeof(1::DECIMAL(30,0) * 1::DECIMAL(30,0));
+
+statement ok
+RESET SESSION max_decimal_width;
+
+query I
+EXECUTE decimal_type;
+----
+DECIMAL(38,0)
+
+statement ok
+RESET GLOBAL max_decimal_width;
+
+# settings of the database, the order of NULLs, the order and the collation
+statement ok
+PREPARE null_order AS SELECT x FROM (VALUES (1), (NULL)) t(x) ORDER BY x;
+
+statement ok
+PREPARE value_order AS SELECT x FROM (VALUES (1), (2)) t(x) ORDER BY x;
+
+statement ok
+PREPARE string_comparison AS SELECT 'a' = 'A';
+
+statement ok
+SET default_null_order = 'nulls_first';
+
+statement ok
+SET default_order = 'desc';
+
+statement ok
+SET default_collation = 'nocase';
+
+query I
+EXECUTE null_order;
+----
+NULL
+1
+
+query I
+EXECUTE value_order;
+----
+2
+1
+
+query I
+EXECUTE string_comparison;
+----
+true
+
+statement ok
+PREPARE null_order AS SELECT x FROM (VALUES (1), (NULL)) t(x) ORDER BY x;
+
+statement ok
+PREPARE value_order AS SELECT x FROM (VALUES (1), (2)) t(x) ORDER BY x;
+
+statement ok
+PREPARE string_comparison AS SELECT 'a' = 'A';
+
+statement ok
+RESET default_null_order;
+
+statement ok
+RESET default_order;
+
+statement ok
+RESET default_collation;
+
+query I
+EXECUTE null_order;
+----
+1
+NULL
+
+query I
+EXECUTE value_order;
+----
+1
+2
+
+query I
+EXECUTE string_comparison;
+----
+false
+
+# the session value of a setting that is set for the database by default
+statement ok
+PREPARE null_order AS SELECT x FROM (VALUES (1), (NULL)) t(x) ORDER BY x;
+
+statement ok
+SET SESSION default_null_order = 'nulls_first';
+
+query I
+EXECUTE null_order;
+----
+NULL
+1
+
+statement ok
+PREPARE null_order AS SELECT x FROM (VALUES (1), (NULL)) t(x) ORDER BY x;
+
+statement ok
+RESET SESSION default_null_order;
+
+query I
+EXECUTE null_order;
+----
+1
+NULL
+
+# a session value that equals the default over another value of the database
+statement ok
+SET GLOBAL default_null_order = 'nulls_first';
+
+statement ok
+PREPARE null_order AS SELECT x FROM (VALUES (1), (NULL)) t(x) ORDER BY x;
+
+query I
+EXECUTE null_order;
+----
+NULL
+1
+
+statement ok
+SET SESSION default_null_order = 'nulls_last';
+
+query I
+EXECUTE null_order;
+----
+1
+NULL
+
+statement ok
+PREPARE null_order AS SELECT x FROM (VALUES (1), (NULL)) t(x) ORDER BY x;
+
+statement ok
+RESET SESSION default_null_order;
+
+query I
+EXECUTE null_order;
+----
+NULL
+1
+
+statement ok
+PREPARE null_order AS SELECT x FROM (VALUES (1), (NULL)) t(x) ORDER BY x;
+
+statement ok
+RESET GLOBAL default_null_order;
+
+query I
+EXECUTE null_order;
+----
+1
+NULL
+
+# floating point division and scalar subqueries
+statement ok
+PREPARE division AS SELECT 1.0::DOUBLE / 0::DOUBLE;
+
+statement ok
+PREPARE subquery AS SELECT (SELECT x FROM (VALUES (1), (2)) t(x) ORDER BY x);
+
+query I
+EXECUTE division;
+----
+inf
+
+statement error
+EXECUTE subquery;
+----
+More than one row returned by a subquery
+
+statement ok
+SET ieee_floating_point_ops = false;
+
+statement ok
+SET scalar_subquery_error_on_multiple_rows = false;
+
+statement error
+EXECUTE division;
+----
+Division by zero
+
+query I
+EXECUTE subquery;
+----
+1
+
+statement ok
+PREPARE division AS SELECT 1.0::DOUBLE / 0::DOUBLE;
+
+statement ok
+PREPARE subquery AS SELECT (SELECT x FROM (VALUES (1), (2)) t(x) ORDER BY x);
+
+statement ok
+RESET ieee_floating_point_ops;
+
+statement ok
+RESET scalar_subquery_error_on_multiple_rows;
+
+query I
+EXECUTE division;
+----
+inf
+
+statement error
+EXECUTE subquery;
+----
+More than one row returned by a subquery
+
+# one setting gets the value that another one gives up
+statement ok
+SET ieee_floating_point_ops = false;
+
+statement ok
+PREPARE division AS SELECT 1.0::DOUBLE / 0::DOUBLE;
+
+statement ok
+PREPARE subquery AS SELECT (SELECT x FROM (VALUES (1), (2)) t(x) ORDER BY x);
+
+statement ok
+RESET ieee_floating_point_ops;
+
+statement ok
+SET scalar_subquery_error_on_multiple_rows = false;
+
+query I
+EXECUTE division;
+----
+inf
+
+query I
+EXECUTE subquery;
+----
+1
+
+statement ok
+RESET scalar_subquery_error_on_multiple_rows;
+
+# the search path
+statement ok
+CREATE SCHEMA s1;
+
+statement ok
+CREATE SCHEMA s2;
+
+statement ok
+CREATE TYPE s1.e AS ENUM ('one');
+
+statement ok
+CREATE TYPE s2.e AS ENUM ('two');
+
+statement ok
+CREATE MACRO s1.label() AS 'first';
+
+statement ok
+CREATE MACRO s2.label() AS 'second';
+
+statement ok
+SET search_path = 's1';
+
+statement ok
+PREPARE type_name AS SELECT enum_range(NULL::e);
+
+statement ok
+PREPARE macro_name AS SELECT label();
+
+statement ok
+SET search_path = 's2';
+
+query I
+EXECUTE type_name;
+----
+[two]
+
+query I
+EXECUTE macro_name;
+----
+second
+
+statement ok
+PREPARE type_name AS SELECT enum_range(NULL::e);
+
+statement ok
+PREPARE macro_name AS SELECT label();
+
+statement ok
+USE s1;
+
+query I
+EXECUTE type_name;
+----
+[one]
+
+query I
+EXECUTE macro_name;
+----
+first
+
+# a schema leaves the search path while the first one stays
+statement ok
+CREATE TYPE s2.second_only AS ENUM ('second');
+
+statement ok
+SET search_path = 's1,s2';
+
+statement ok
+PREPARE second_schema AS SELECT enum_range(NULL::second_only);
+
+query I
+EXECUTE second_schema;
+----
+[second]
+
+statement ok
+SET schema = 's1';
+
+statement error
+EXECUTE second_schema;
+----
+Type with name second_only does not exist
+
+statement ok
+SET search_path = 'main,s2';
+
+statement ok
+PREPARE second_schema AS SELECT enum_range(NULL::second_only);
+
+statement ok
+RESET schema;
+
+statement error
+EXECUTE second_schema;
+----
+Type with name second_only does not exist
+
+statement ok
+USE s1;
+
+statement ok
+PREPARE type_name AS SELECT enum_range(NULL::e);
+
+statement ok
+PREPARE macro_name AS SELECT label();
+
+statement ok
+RESET search_path;
+
+statement error
+EXECUTE type_name;
+----
+Type with name e does not exist
+
+statement error
+EXECUTE macro_name;
+----
+label does not exist
+
+# the current schema is dropped, which resets it
+statement ok
+CREATE SCHEMA s3;
+
+statement ok
+CREATE TYPE s3.e AS ENUM ('three');
+
+statement ok
+USE s3;
+
+statement ok
+PREPARE in_schema AS SELECT enum_range(NULL::e);
+
+query I
+EXECUTE in_schema;
+----
+[three]
+
+statement ok
+DROP SCHEMA s3 CASCADE;
+
+statement error
+EXECUTE in_schema;
+----
+Type with name e does not exist
+
+# a prepared INSERT writes into the table of the current schema
+statement ok
+CREATE TABLE s1.target (i INTEGER);
+
+statement ok
+CREATE TABLE s2.target (i INTEGER);
+
+statement ok
+SET schema = 's1';
+
+statement ok
+PREPARE insert_target AS INSERT INTO target VALUES (1);
+
+statement ok
+EXECUTE insert_target;
+
+statement ok
+SET schema = 's2';
+
+statement ok
+EXECUTE insert_target;
+
+query II
+SELECT (SELECT count(*) FROM s1.target), (SELECT count(*) FROM s2.target);
+----
+1	1
+
+# the schema that a statement was prepared under is selected again
+statement ok
+PREPARE type_name AS SELECT enum_range(NULL::e);
+
+statement ok
+USE s1;
+
+query I
+EXECUTE type_name;
+----
+[one]
+
+statement ok
+EXECUTE insert_target;
+
+statement ok
+USE s2;
+
+query I
+EXECUTE type_name;
+----
+[two]
+
+statement ok
+EXECUTE insert_target;
+
+query II
+SELECT (SELECT count(*) FROM s1.target), (SELECT count(*) FROM s2.target);
+----
+2	2

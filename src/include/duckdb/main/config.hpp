@@ -341,6 +341,7 @@ public:
 	SettingLookupResult TryGetCurrentUserSetting(idx_t setting_index, Value &result) const;
 	//! Returns the default value of an option
 	SettingLookupResult TryGetDefaultValue(optional_ptr<const ConfigurationOption> option, Value &result) const;
+	SettingLookupResult TryGetDefaultValue(idx_t setting_index, Value &result) const;
 	SettingLookupResult TryGetDefaultValue(const Identifier &key, optional_ptr<const ConfigurationOption> option,
 	                                       Value &result) const;
 

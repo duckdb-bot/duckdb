@@ -1,6 +1,10 @@
 #include "catch.hpp"
 #include "test_helpers.hpp"
+#include "duckdb/catalog/catalog_search_path.hpp"
+#include "duckdb/execution/operator/helper/physical_set.hpp"
+#include "duckdb/main/client_data.hpp"
 #include "duckdb/planner/planner_extension.hpp"
+#include "duckdb/parser/peg/dialect_extension.hpp"
 #include "duckdb/parser/sql_statement.hpp"
 
 using namespace duckdb;
@@ -653,6 +657,486 @@ TEST_CASE("Test prepared statements with extension that can request a rebind", "
 
 	// SetVariableStatement
 	REQUIRE_NO_FAIL(con.Prepare("SET VARIABLE test_var = ?")->Execute(42));
+}
+
+//! Records for every EXECUTE whether the prepared statement has to be bound again
+class RebindRecorderState : public ClientContextState {
+public:
+	vector<bool> rebinds;
+
+public:
+	RebindQueryInfo OnRebindPreparedStatement(ClientContext &context, BindPreparedStatementCallbackInfo &info,
+	                                          RebindQueryInfo current_rebind) override {
+		rebinds.push_back(current_rebind == RebindQueryInfo::ATTEMPT_TO_REBIND);
+		return RebindQueryInfo::DO_NOT_REBIND;
+	}
+};
+
+TEST_CASE("A prepared statement keeps its plan until a setting changes", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	Connection other(db);
+	auto recorder = make_shared_ptr<RebindRecorderState>();
+	con.context->GetContext().GetRegisteredState().Insert("rebind_recorder", recorder);
+	auto &rebinds = recorder->rebinds;
+
+	REQUIRE_NO_FAIL(con.Query("CREATE SCHEMA s1"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE integers (i INTEGER)"));
+	REQUIRE_NO_FAIL(con.Query("SET SESSION default_null_order = 'nulls_first'"));
+	const string prepare = "PREPARE ordered AS SELECT x FROM (VALUES (1), (2), (NULL)) t(x) ORDER BY x";
+
+	// the plan is used again while no setting changes
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(con.Query("PREPARE ins AS INSERT INTO integers VALUES (?::INTEGER)"));
+	auto result = con.Query("EXECUTE ordered");
+	REQUIRE(CHECK_COLUMN(result, 0, {Value(), 1, 2}));
+	REQUIRE(!rebinds.back());
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ins(1)"));
+	REQUIRE(!rebinds.back());
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ins(2)"));
+	REQUIRE(!rebinds.back());
+
+	// setting the value that a setting has is no change, and neither is the session setting of another connection
+	REQUIRE_NO_FAIL(con.Query("SET SESSION default_null_order = 'nulls_first'"));
+	REQUIRE_NO_FAIL(other.Query("SET SESSION default_null_order = 'nulls_last'"));
+	result = con.Query("EXECUTE ordered");
+	REQUIRE(CHECK_COLUMN(result, 0, {Value(), 1, 2}));
+	REQUIRE(!rebinds.back());
+
+	// an extension that registers a setting changes no value, and neither does its default, another value does
+	auto &config = DBConfig::GetConfig(*db.instance);
+	config.AddExtensionOption("my_option", "An option", LogicalType::VARCHAR, Value("default"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(!rebinds.back());
+	REQUIRE_NO_FAIL(con.Query("SET my_option = 'default'"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(!rebinds.back());
+	REQUIRE_NO_FAIL(con.Query("RESET my_option"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(!rebinds.back());
+	REQUIRE_NO_FAIL(con.Query("SET my_option = 'other'"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(rebinds.back());
+
+	// a session setting
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(con.Query("PREPARE ins AS INSERT INTO integers VALUES (?::INTEGER)"));
+	REQUIRE_NO_FAIL(con.Query("SET SESSION default_null_order = 'nulls_last'"));
+	result = con.Query("EXECUTE ordered");
+	REQUIRE(CHECK_COLUMN(result, 0, {1, 2, Value()}));
+	REQUIRE(rebinds.back());
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ins(3)"));
+	REQUIRE(rebinds.back());
+
+	// a database setting that another connection changes
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(!rebinds.back());
+	REQUIRE_NO_FAIL(other.Query("SET GLOBAL default_order = 'desc'"));
+	result = con.Query("EXECUTE ordered");
+	REQUIRE(CHECK_COLUMN(result, 0, {2, 1, Value()}));
+	REQUIRE(rebinds.back());
+
+	// RESET
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(other.Query("RESET GLOBAL default_order"));
+	result = con.Query("EXECUTE ordered");
+	REQUIRE(CHECK_COLUMN(result, 0, {1, 2, Value()}));
+	REQUIRE(rebinds.back());
+	REQUIRE_NO_FAIL(con.Query("SET SESSION default_null_order = 'nulls_first'"));
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(con.Query("RESET SESSION default_null_order"));
+	result = con.Query("EXECUTE ordered");
+	REQUIRE(CHECK_COLUMN(result, 0, {1, 2, Value()}));
+	REQUIRE(rebinds.back());
+
+	// the RESET of a setting that is not set is no change
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(con.Query("RESET SESSION default_null_order"));
+	REQUIRE_NO_FAIL(other.Query("RESET GLOBAL default_order"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(!rebinds.back());
+
+	// a setting with its own setter
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(!rebinds.back());
+	REQUIRE_NO_FAIL(con.Query("USE s1"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(rebinds.back());
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(con.Query("USE s1"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(!rebinds.back());
+	REQUIRE_NO_FAIL(con.Query("RESET search_path"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(rebinds.back());
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(con.Query("RESET search_path"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(!rebinds.back());
+
+	REQUIRE_NO_FAIL(con.Query("SET operator_memory_limit = '1GB'"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(rebinds.back());
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(con.Query("SET operator_memory_limit = '1GB'"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(!rebinds.back());
+	REQUIRE_NO_FAIL(con.Query("RESET operator_memory_limit"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(rebinds.back());
+
+	// a database setting with its own setter
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(other.Query("SET GLOBAL max_temp_directory_size = '1GB'"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(rebinds.back());
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(other.Query("SET GLOBAL max_temp_directory_size = '1GB'"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(!rebinds.back());
+	REQUIRE_NO_FAIL(other.Query("RESET GLOBAL max_temp_directory_size"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(rebinds.back());
+
+	// a statement that is prepared through the API
+	REQUIRE_NO_FAIL(con.Query("SET max_decimal_width = 38"));
+	auto prepared = con.Prepare("SELECT typeof(1::DECIMAL(30,0) * 1::DECIMAL(30,0))");
+	REQUIRE(!prepared->HasError());
+	result = prepared->Execute();
+	REQUIRE(CHECK_COLUMN(result, 0, {"DECIMAL(38,0)"}));
+	REQUIRE(!rebinds.back());
+	REQUIRE_NO_FAIL(con.Query("SET max_decimal_width = 76"));
+	result = prepared->Execute();
+	REQUIRE(CHECK_COLUMN(result, 0, {"DECIMAL(60,0)"}));
+	REQUIRE(rebinds.back());
+}
+
+TEST_CASE("A prepared statement keeps its plan when a SET or RESET keeps the value of a setting", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	Connection other(db);
+	auto recorder = make_shared_ptr<RebindRecorderState>();
+	con.context->GetContext().GetRegisteredState().Insert("rebind_recorder", recorder);
+	auto &rebinds = recorder->rebinds;
+	const string query = "SELECT x FROM (VALUES (1), (2), (NULL)) t(x) ORDER BY x";
+	const string prepare = "PREPARE ordered AS " + query;
+
+	// a first SET to the default, for the database and for the session
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(other.Query("SET GLOBAL default_null_order = 'nulls_last'"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(!rebinds.back());
+	REQUIRE_NO_FAIL(con.Query("SET SESSION default_null_order = 'nulls_last'"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(!rebinds.back());
+
+	// the RESET of a value that the setting has without it, for the session and for the database
+	REQUIRE_NO_FAIL(con.Query("RESET SESSION default_null_order"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(!rebinds.back());
+	REQUIRE_NO_FAIL(other.Query("RESET GLOBAL default_null_order"));
+	auto result = con.Query("EXECUTE ordered");
+	REQUIRE(CHECK_COLUMN(result, 0, {1, 2, Value()}));
+	REQUIRE(!rebinds.back());
+
+	// a session value that equals the value of the database, and its RESET
+	REQUIRE_NO_FAIL(other.Query("SET GLOBAL default_null_order = 'nulls_first'"));
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(con.Query("SET SESSION default_null_order = 'nulls_first'"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(!rebinds.back());
+	REQUIRE_NO_FAIL(con.Query("RESET SESSION default_null_order"));
+	result = con.Query("EXECUTE ordered");
+	REQUIRE(CHECK_COLUMN(result, 0, {Value(), 1, 2}));
+	REQUIRE(!rebinds.back());
+
+	// a session value that equals the default and not the value of the database is a change, and so is its RESET
+	REQUIRE_NO_FAIL(con.Query("SET SESSION default_null_order = 'nulls_last'"));
+	result = con.Query("EXECUTE ordered");
+	REQUIRE(CHECK_COLUMN(result, 0, {1, 2, Value()}));
+	REQUIRE(rebinds.back());
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(con.Query("RESET SESSION default_null_order"));
+	result = con.Query("EXECUTE ordered");
+	REQUIRE(CHECK_COLUMN(result, 0, {Value(), 1, 2}));
+	REQUIRE(rebinds.back());
+
+	// the RESET of a database value that differs from the default
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(other.Query("RESET GLOBAL default_null_order"));
+	result = con.Query("EXECUTE ordered");
+	REQUIRE(CHECK_COLUMN(result, 0, {1, 2, Value()}));
+	REQUIRE(rebinds.back());
+
+	// a connection with a session value changes the value of the database, which the other connection reads
+	REQUIRE_NO_FAIL(other.Query("SET SESSION default_null_order = 'nulls_last'"));
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(other.Query("SET GLOBAL default_null_order = 'nulls_first'"));
+	result = con.Query("EXECUTE ordered");
+	REQUIRE(CHECK_COLUMN(result, 0, {Value(), 1, 2}));
+	REQUIRE(rebinds.back());
+	result = other.Query(query);
+	REQUIRE(CHECK_COLUMN(result, 0, {1, 2, Value()}));
+
+	// a callback that resets another setting to the value it has without it
+	REQUIRE_NO_FAIL(con.Query("SET enable_progress_bar = false"));
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(con.Query("RESET progress_bar_time"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(!rebinds.back());
+
+	// the callback changes the other setting
+	REQUIRE_NO_FAIL(con.Query("SET progress_bar_time = 2000"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(rebinds.back());
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(con.Query("RESET progress_bar_time"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(rebinds.back());
+
+	// both settings are set to their defaults
+	REQUIRE_NO_FAIL(con.Query("SET progress_bar_time = 2000"));
+	REQUIRE_NO_FAIL(con.Query("SET enable_progress_bar = false"));
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(con.Query("RESET progress_bar_time"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(!rebinds.back());
+
+	// a pragma that sets a setting to its default, and to another value
+	REQUIRE_NO_FAIL(con.Query("PRAGMA enable_checkpoint_on_shutdown"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(!rebinds.back());
+	REQUIRE_NO_FAIL(con.Query("PRAGMA disable_checkpoint_on_shutdown"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(rebinds.back());
+
+	// a function that removes the value of a setting and stores the same value again
+	const string profile = "CALL enable_profiling(format := 'no_output', save_location := '";
+	REQUIRE_NO_FAIL(con.Query(profile + TestCreatePath("prepared_settings_profile.txt") + "')"));
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(con.Query(profile + TestCreatePath("prepared_settings_profile.txt") + "')"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(!rebinds.back());
+	REQUIRE_NO_FAIL(con.Query(profile + TestCreatePath("prepared_settings_other_profile.txt") + "')"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(rebinds.back());
+	REQUIRE_NO_FAIL(con.Query("CALL disable_profiling()"));
+
+	// a setting that is set back to the value it had when the statement was prepared
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(con.Query("SET SESSION default_null_order = 'nulls_last'"));
+	result = con.Query("EXECUTE ordered");
+	REQUIRE(CHECK_COLUMN(result, 0, {1, 2, Value()}));
+	REQUIRE(rebinds.back());
+	REQUIRE_NO_FAIL(con.Query("RESET SESSION default_null_order"));
+	result = con.Query("EXECUTE ordered");
+	REQUIRE(CHECK_COLUMN(result, 0, {Value(), 1, 2}));
+	REQUIRE(!rebinds.back());
+}
+
+TEST_CASE("A prepared statement keeps its plan when the selected dialect is selected again", "[api]") {
+	DBConfig config;
+	DialectExtension::Register(config, make_uniq<DialectExtension>("with_mode", DialectCompatibilityMode::SPARK));
+	DialectExtension::Register(config, make_uniq<DialectExtension>("same_mode", DialectCompatibilityMode::SPARK));
+	DuckDB db(nullptr, &config);
+	Connection con(db);
+	auto recorder = make_shared_ptr<RebindRecorderState>();
+	con.context->GetContext().GetRegisteredState().Insert("rebind_recorder", recorder);
+	auto &rebinds = recorder->rebinds;
+
+	REQUIRE_NO_FAIL(con.Query("SET current_dialect = 'with_mode'"));
+	REQUIRE_NO_FAIL(con.Query("PREPARE answer AS SELECT 42"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE answer"));
+	REQUIRE(!rebinds.back());
+	REQUIRE_NO_FAIL(con.Query("SET current_dialect = 'with_mode'"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE answer"));
+	REQUIRE(!rebinds.back());
+
+	// another dialect is a change, also when it sets the same compatibility mode
+	REQUIRE_NO_FAIL(con.Query("SET current_dialect = 'same_mode'"));
+	auto result = con.Query("SELECT current_setting('dialect_compatibility_mode')");
+	REQUIRE(CHECK_COLUMN(result, 0, {"SPARK"}));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE answer"));
+	REQUIRE(rebinds.back());
+
+	// leaving the dialect resets the compatibility mode
+	REQUIRE_NO_FAIL(con.Query("PREPARE answer AS SELECT 42"));
+	REQUIRE_NO_FAIL(con.Query("RESET current_dialect"));
+	result = con.Query("SELECT current_setting('dialect_compatibility_mode')");
+	REQUIRE(CHECK_COLUMN(result, 0, {"NONE"}));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE answer"));
+	REQUIRE(rebinds.back());
+}
+
+TEST_CASE("A prepared statement keeps its plan when its search path is set again", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	Connection other(db);
+	auto recorder = make_shared_ptr<RebindRecorderState>();
+	con.context->GetContext().GetRegisteredState().Insert("rebind_recorder", recorder);
+	auto &rebinds = recorder->rebinds;
+
+	REQUIRE_NO_FAIL(con.Query("CREATE SCHEMA s1"));
+	REQUIRE_NO_FAIL(con.Query("CREATE SCHEMA s2"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TYPE s1.e AS ENUM ('one')"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TYPE s2.e AS ENUM ('two')"));
+	const string prepare = "PREPARE type_name AS SELECT enum_range(NULL::e)::VARCHAR";
+
+	// the schema that the statement was prepared under is selected again
+	REQUIRE_NO_FAIL(con.Query("USE s1"));
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	auto result = con.Query("EXECUTE type_name");
+	REQUIRE(CHECK_COLUMN(result, 0, {"[one]"}));
+	REQUIRE(!rebinds.back());
+	REQUIRE_NO_FAIL(con.Query("USE s2"));
+	result = con.Query("EXECUTE type_name");
+	REQUIRE(CHECK_COLUMN(result, 0, {"[two]"}));
+	REQUIRE(rebinds.back());
+	result = con.Query("EXECUTE type_name");
+	REQUIRE(CHECK_COLUMN(result, 0, {"[two]"}));
+	REQUIRE(rebinds.back());
+	REQUIRE_NO_FAIL(con.Query("USE s1"));
+	result = con.Query("EXECUTE type_name");
+	REQUIRE(CHECK_COLUMN(result, 0, {"[one]"}));
+	REQUIRE(!rebinds.back());
+
+	// the search path of another connection is not the search path of this one
+	REQUIRE_NO_FAIL(other.Query("USE s2"));
+	result = con.Query("EXECUTE type_name");
+	REQUIRE(CHECK_COLUMN(result, 0, {"[one]"}));
+	REQUIRE(!rebinds.back());
+
+	// the order of the schemas is part of the search path
+	REQUIRE_NO_FAIL(con.Query("SET search_path = 's1,s2'"));
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(con.Query("SET search_path = 's2,s1'"));
+	result = con.Query("EXECUTE type_name");
+	REQUIRE(CHECK_COLUMN(result, 0, {"[two]"}));
+	REQUIRE(rebinds.back());
+	REQUIRE_NO_FAIL(con.Query("SET search_path = 's1,s2'"));
+	result = con.Query("EXECUTE type_name");
+	REQUIRE(CHECK_COLUMN(result, 0, {"[one]"}));
+	REQUIRE(!rebinds.back());
+
+	// a search path that starts with the same schema is another search path
+	REQUIRE_NO_FAIL(con.Query("SET search_path = 's1'"));
+	result = con.Query("EXECUTE type_name");
+	REQUIRE(CHECK_COLUMN(result, 0, {"[one]"}));
+	REQUIRE(rebinds.back());
+
+	// the search path is compared as it is written, so a name in another case is another search path
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(con.Query("SET search_path = 'S1'"));
+	result = con.Query("EXECUTE type_name");
+	REQUIRE(CHECK_COLUMN(result, 0, {"[one]"}));
+	REQUIRE(rebinds.back());
+
+	// RESET gives the search path of a connection that set none
+	REQUIRE_NO_FAIL(con.Query("RESET search_path"));
+	REQUIRE_NO_FAIL(con.Query("PREPARE answer AS SELECT 42"));
+	REQUIRE_NO_FAIL(con.Query("USE s1"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE answer"));
+	REQUIRE(rebinds.back());
+	REQUIRE_NO_FAIL(con.Query("RESET schema"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE answer"));
+	REQUIRE(!rebinds.back());
+
+	// another setting with its own setter that changed is not hidden by the search path that is set again
+	REQUIRE_NO_FAIL(con.Query("USE s1"));
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(con.Query("SET operator_memory_limit = '1GB'"));
+	REQUIRE_NO_FAIL(con.Query("USE s2"));
+	REQUIRE_NO_FAIL(con.Query("USE s1"));
+	result = con.Query("EXECUTE type_name");
+	REQUIRE(CHECK_COLUMN(result, 0, {"[one]"}));
+	REQUIRE(rebinds.back());
+
+	// a search path that is set without a SET statement
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE type_name"));
+	REQUIRE(!rebinds.back());
+	con.BeginTransaction();
+	auto &search_path = *ClientData::Get(*con.context).catalog_search_path;
+	search_path.Set(CatalogSearchEntry::Parse("s2"), CatalogSetPathType::SET_SCHEMA);
+	con.Commit();
+	result = con.Query("EXECUTE type_name");
+	REQUIRE(CHECK_COLUMN(result, 0, {"[two]"}));
+	REQUIRE(rebinds.back());
+
+	// an entry that differs in its precedence only
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	con.BeginTransaction();
+	search_path.Set(CatalogSearchEntry(Identifier(), Identifier("s2"), true), CatalogSetPathType::SET_SCHEMA);
+	con.Commit();
+	result = con.Query("EXECUTE type_name");
+	REQUIRE(CHECK_COLUMN(result, 0, {"[two]"}));
+	REQUIRE(rebinds.back());
+}
+
+//! A setting that is set once, while the next SELECT statement is about to be bound
+struct SetWhileBindingInfo : public PlannerExtensionInfo {
+	bool pending = false;
+	string name;
+	string value;
+};
+
+static void SetWhileBinding(PlannerExtensionInput &input, SQLStatement &statement) {
+	auto &info = static_cast<SetWhileBindingInfo &>(*input.info);
+	if (!info.pending || statement.type != StatementType::SELECT_STATEMENT) {
+		return;
+	}
+	info.pending = false;
+	PhysicalSet::SetVariable(input.context, Identifier(info.name), SetScope::AUTOMATIC, Value(info.value));
+}
+
+TEST_CASE("A statement that is prepared while a setting changes keeps no plan", "[api]") {
+	DBConfig config;
+	PlannerExtension extension;
+	auto info = make_shared_ptr<SetWhileBindingInfo>();
+	extension.planner_info = info;
+	extension.pre_bind_function = SetWhileBinding;
+	PlannerExtension::Register(config, extension);
+	DuckDB db(nullptr, &config);
+	Connection con(db);
+	auto recorder = make_shared_ptr<RebindRecorderState>();
+	con.context->GetContext().GetRegisteredState().Insert("rebind_recorder", recorder);
+	auto &rebinds = recorder->rebinds;
+
+	REQUIRE_NO_FAIL(con.Query("CREATE SCHEMA s1"));
+	REQUIRE_NO_FAIL(con.Query("CREATE SCHEMA s2"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TYPE s1.e AS ENUM ('one')"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TYPE s2.e AS ENUM ('two')"));
+
+	// the search path changes after the statement recorded it, and is set back before the statement runs
+	REQUIRE_NO_FAIL(con.Query("USE s1"));
+	info->name = "schema";
+	info->value = "s2";
+	info->pending = true;
+	REQUIRE_NO_FAIL(con.Query("PREPARE type_name AS SELECT enum_range(NULL::e)::VARCHAR"));
+	REQUIRE(!info->pending);
+	REQUIRE_NO_FAIL(con.Query("USE s1"));
+	auto result = con.Query("EXECUTE type_name");
+	REQUIRE(CHECK_COLUMN(result, 0, {"[one]"}));
+	REQUIRE(rebinds.back());
+
+	// a setting changes the same way, as another connection can change it for the database
+	info->name = "default_order";
+	info->value = "desc";
+	info->pending = true;
+	REQUIRE_NO_FAIL(con.Query("PREPARE ordered AS SELECT x FROM (VALUES (1), (2)) t(x) ORDER BY x"));
+	REQUIRE(!info->pending);
+	REQUIRE_NO_FAIL(con.Query("RESET default_order"));
+	result = con.Query("EXECUTE ordered");
+	REQUIRE(CHECK_COLUMN(result, 0, {1, 2}));
+	REQUIRE(rebinds.back());
+
+	// a statement that is prepared while nothing changes keeps its plan
+	REQUIRE_NO_FAIL(con.Query("PREPARE ordered AS SELECT x FROM (VALUES (1), (2)) t(x) ORDER BY x"));
+	result = con.Query("EXECUTE ordered");
+	REQUIRE(CHECK_COLUMN(result, 0, {1, 2}));
+	REQUIRE(!rebinds.back());
 }
 
 static atomic<idx_t> execute_pre_binds {0};

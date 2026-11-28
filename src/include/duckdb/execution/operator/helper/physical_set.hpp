@@ -50,6 +50,9 @@ public:
 	static void SetVariable(ClientContext &context, const Identifier &name, SetScope scope, const Value &value);
 	static void SetGenericVariable(ClientContext &context, idx_t setting_index, SetScope scope, Value target_value);
 	static SetScope GetSettingScope(const ConfigurationOption &option, SetScope variable_scope);
+	//! Counts the change of a setting with its own setter, except the search path, when its value differs
+	static void RegisterSettingChange(ClientContext &context, const ConfigurationOption &option, SetScope scope,
+	                                  const Value &previous_value);
 
 public:
 	String name;

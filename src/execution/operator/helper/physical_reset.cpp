@@ -69,6 +69,7 @@ SourceResultType PhysicalReset::GetDataInternal(ExecutionContext &context, DataC
 		}
 		return SourceResultType::FINISHED;
 	}
+	const auto previous_value = option->get_setting(context.client);
 	switch (variable_scope) {
 	case SetScope::GLOBAL: {
 		if (!option->set_global) {
@@ -87,6 +88,7 @@ SourceResultType PhysicalReset::GetDataInternal(ExecutionContext &context, DataC
 	default:
 		throw InternalException("Unsupported SetScope for variable");
 	}
+	PhysicalSet::RegisterSettingChange(context.client, *option, variable_scope, previous_value);
 
 	return SourceResultType::FINISHED;
 }

@@ -1,0 +1,100 @@
+# name: test/sql/prepared/prepared_nested_search_path.test
+# description: A prepared statement is bound again when its search path names another nested schema
+# group: [prepared]
+
+load {TEST_DIR}/prepared_nested_search_path.db readwrite v2.0.0
+
+# two nested schemas of the same name
+statement ok
+CREATE SCHEMA parent_a;
+
+statement ok
+CREATE SCHEMA parent_a.inner_schema;
+
+statement ok
+CREATE TYPE parent_a.inner_schema.e AS ENUM ('a');
+
+statement ok
+CREATE SCHEMA parent_b;
+
+statement ok
+CREATE SCHEMA parent_b.inner_schema;
+
+statement ok
+CREATE TYPE parent_b.inner_schema.e AS ENUM ('b');
+
+statement ok
+SET search_path = 'parent_a.inner_schema';
+
+statement ok
+PREPARE nested_type AS SELECT enum_range(NULL::e);
+
+query I
+EXECUTE nested_type;
+----
+[a]
+
+statement ok
+SET search_path = 'parent_b.inner_schema';
+
+query I
+EXECUTE nested_type;
+----
+[b]
+
+statement ok
+SET search_path = 'parent_a.inner_schema';
+
+query I
+EXECUTE nested_type;
+----
+[a]
+
+# a search path that is written the same and names another schema
+statement ok
+CREATE SCHEMA twin;
+
+statement ok
+CREATE SCHEMA twin.inner_schema;
+
+statement ok
+CREATE TYPE twin.inner_schema.e AS ENUM ('nested');
+
+statement ok
+SET search_path = 'twin.inner_schema';
+
+query I
+SELECT current_setting('search_path');
+----
+twin.inner_schema
+
+statement ok
+PREPARE type_name AS SELECT enum_range(NULL::e);
+
+query I
+EXECUTE type_name;
+----
+[nested]
+
+# the same text names a schema of the attached database from here on
+statement ok
+ATTACH ':memory:' AS twin;
+
+statement ok
+CREATE SCHEMA twin.inner_schema;
+
+statement ok
+CREATE TYPE twin.inner_schema.e AS ENUM ('attached');
+
+statement ok
+SET search_path = 'twin.inner_schema';
+
+query I
+SELECT current_setting('search_path');
+----
+twin.inner_schema
+
+query I
+EXECUTE type_name;
+----
+[attached]

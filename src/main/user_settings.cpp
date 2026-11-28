@@ -1,4 +1,5 @@
 #include "duckdb/main/user_settings.hpp"
+#include "duckdb/main/config.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/common/type_visitor.hpp"
 #include "duckdb/common/types/string.hpp"
@@ -78,15 +79,18 @@ static bool UserSettingValuesEqual(const Value &left, const Value &right) {
 	}
 }
 
+static bool SameUserSettingValue(const Value &left, const Value &right) {
+	// Extension type equality can ignore missing modifiers and properties.
+	return !HasUserSettingExtensionType(left.type()) && !HasUserSettingExtensionType(right.type()) &&
+	       UserSettingValuesEqual(left, right);
+}
+
 bool UserSettingsMap::SetUserSetting(idx_t setting_index, Value target_value) {
 	if (setting_index >= settings.size()) {
 		settings.resize(setting_index + 1);
 	}
 	auto &generic_setting = settings[setting_index];
-	// Extension type equality can ignore missing modifiers and properties.
-	if (generic_setting.is_set && !HasUserSettingExtensionType(generic_setting.value.type()) &&
-	    !HasUserSettingExtensionType(target_value.type()) &&
-	    UserSettingValuesEqual(generic_setting.value, target_value)) {
+	if (generic_setting.is_set && SameUserSettingValue(generic_setting.value, target_value)) {
 		return false;
 	}
 	generic_setting.is_set = true;
@@ -125,22 +129,59 @@ bool UserSettingsMap::TryGetSetting(idx_t setting_index, Value &result_value) co
 	return true;
 }
 
+idx_t UserSettingsMap::SettingIndexBound() const {
+	return settings.size();
+}
+
+bool SettingsSnapshot::Equals(const SettingsSnapshot &other) const {
+	if (entries.size() != other.entries.size()) {
+		return false;
+	}
+	for (idx_t i = 0; i < entries.size(); i++) {
+		if (entries[i].setting_index != other.entries[i].setting_index ||
+		    !SameUserSettingValue(entries[i].value, other.entries[i].value)) {
+			return false;
+		}
+	}
+	return true;
+}
+
 //===--------------------------------------------------------------------===//
 // GlobalUserSettings
 //===--------------------------------------------------------------------===//
-GlobalUserSettings::GlobalUserSettings() : settings_version(0), uuid(UUID::GenerateRandomUUID()) {
+GlobalUserSettings::GlobalUserSettings() : settings_version(0), change_count(0), uuid(UUID::GenerateRandomUUID()) {
 }
 
 GlobalUserSettings::GlobalUserSettings(const GlobalUserSettings &other)
     : settings_map(other.settings_map), extension_parameters(other.extension_parameters),
-      settings_version(other.settings_version.load()), uuid(UUID::GenerateRandomUUID()) {
+      settings_version(other.settings_version.load()), change_count(other.change_count.load()),
+      uuid(UUID::GenerateRandomUUID()) {
 }
 
 GlobalUserSettings &GlobalUserSettings::operator=(const GlobalUserSettings &other) {
 	settings_map = other.settings_map;
 	extension_parameters = other.extension_parameters;
 	settings_version = other.settings_version.load();
+	change_count = other.change_count.load();
 	return *this;
+}
+
+idx_t GlobalUserSettings::GetVersion() const {
+	return settings_version.load();
+}
+
+idx_t GlobalUserSettings::CopySettings(UserSettingsMap &result) const {
+	lock_guard<mutex> guard(lock);
+	result = settings_map;
+	return settings_version.load();
+}
+
+idx_t GlobalUserSettings::GetChangeCount() const {
+	return change_count.load();
+}
+
+void GlobalUserSettings::RegisterChange() {
+	++change_count;
 }
 
 void GlobalUserSettings::SetUserSetting(idx_t setting_index, Value target_value) {
@@ -202,6 +243,18 @@ idx_t GlobalUserSettings::AddExtensionOption(const Identifier &name, ExtensionOp
 identifier_map_t<ExtensionOption> GlobalUserSettings::GetExtensionSettings() const {
 	lock_guard<mutex> l(lock);
 	return extension_parameters;
+}
+
+bool GlobalUserSettings::TryGetExtensionDefault(idx_t setting_index, Value &result) const {
+	lock_guard<mutex> l(lock);
+	for (auto &entry : extension_parameters) {
+		auto &option = entry.second;
+		if (option.setting_index.IsValid() && option.setting_index.GetIndex() == setting_index) {
+			result = option.default_value;
+			return !result.IsNull();
+		}
+	}
+	return false;
 }
 
 bool GlobalUserSettings::TryGetExtensionOption(const Identifier &name, ExtensionOption &result) const {
@@ -314,11 +367,54 @@ LocalUserSettings::~LocalUserSettings() {
 }
 
 void LocalUserSettings::SetUserSetting(idx_t setting_index, Value target_value) {
-	settings_map.SetUserSetting(setting_index, std::move(target_value));
+	if (settings_map.SetUserSetting(setting_index, std::move(target_value))) {
+		version++;
+	}
 }
 
 void LocalUserSettings::ClearSetting(idx_t setting_index) {
+	if (settings_map.IsSet(setting_index)) {
+		version++;
+	}
 	settings_map.ClearSetting(setting_index);
+}
+
+const shared_ptr<const SettingsSnapshot> &LocalUserSettings::GetSnapshot(const DBConfig &config) {
+	auto &global_settings = config.user_settings;
+	if (snapshot && snapshot_version == version && snapshot_global_version == global_settings.GetVersion()) {
+		return snapshot;
+	}
+	UserSettingsMap global_map;
+	const auto global_version = global_settings.CopySettings(global_map);
+	auto current = make_shared_ptr<SettingsSnapshot>();
+	const auto index_bound = MaxValue(settings_map.SettingIndexBound(), global_map.SettingIndexBound());
+	for (idx_t setting_index = 0; setting_index < index_bound; setting_index++) {
+		// the client reads its own value, then the value of the database
+		Value value;
+		if (!settings_map.TryGetSetting(setting_index, value) && !global_map.TryGetSetting(setting_index, value)) {
+			continue;
+		}
+		Value default_value;
+		if (config.TryGetDefaultValue(setting_index, default_value) && SameUserSettingValue(value, default_value)) {
+			// set to the default, which is the value of a setting that is not set
+			continue;
+		}
+		current->entries.push_back(SettingsSnapshotEntry {setting_index, std::move(value)});
+	}
+	if (!snapshot || !snapshot->Equals(*current)) {
+		snapshot = std::move(current);
+	}
+	snapshot_version = version;
+	snapshot_global_version = global_version;
+	return snapshot;
+}
+
+idx_t LocalUserSettings::GetChangeCount() const {
+	return change_count;
+}
+
+void LocalUserSettings::RegisterChange() {
+	change_count++;
 }
 
 bool LocalUserSettings::IsSet(idx_t setting_index) const {

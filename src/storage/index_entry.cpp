@@ -46,8 +46,9 @@ void IndexEntry::Append(DataChunk &chunk, Vector &row_ids) {
 	}
 }
 
-ErrorData IndexEntry::Append(DataChunk &chunk, Vector &row_ids, const shared_ptr<IndexEntry> &delete_entry,
-                             IndexAppendMode append_mode, optional_idx active_checkpoint) {
+ErrorData IndexEntry::Append(const QueryContext &context, DataChunk &chunk, Vector &row_ids,
+                             const shared_ptr<IndexEntry> &delete_entry, IndexAppendMode append_mode,
+                             optional_idx active_checkpoint) {
 	auto entry_lock = lock.GetExclusiveLock();
 	if (!owned_index->IsBound()) {
 		auto &unbound_index = owned_index->Cast<UnboundIndex>();
@@ -72,6 +73,7 @@ ErrorData IndexEntry::Append(DataChunk &chunk, Vector &row_ids, const shared_ptr
 		build_changed_rows += chunk.size();
 		try {
 			auto &added_data = deltas.GetOrCreate(bound_index, IndexDeltaType::ADDED_DATA);
+			// the keys run without the context of the commit, whose interrupt must not fail the build
 			IndexAppendInfo index_append_info(append_mode, nullptr);
 			auto error = added_data.Append(chunk, row_ids, index_append_info);
 			if (error.HasError()) {
@@ -95,6 +97,7 @@ ErrorData IndexEntry::Append(DataChunk &chunk, Vector &row_ids, const shared_ptr
 	try {
 		if (lookup_main_index) {
 			IndexAppendInfo lookup_append_info;
+			lookup_append_info.context = context;
 			if (delete_index) {
 				lookup_append_info.delete_indexes.push_back(*delete_index);
 			}
@@ -109,6 +112,7 @@ ErrorData IndexEntry::Append(DataChunk &chunk, Vector &row_ids, const shared_ptr
 	}
 
 	IndexAppendInfo index_append_info(append_mode, nullptr);
+	index_append_info.context = context;
 	if (delete_index) {
 		index_append_info.delete_indexes.push_back(*delete_index);
 	}
@@ -168,7 +172,7 @@ void IndexEntry::InitializeLocalIndexesInternal(TableIndexList &delete_indexes,
 	}
 }
 
-void IndexEntry::AppendToDeleteIndexes(DataChunk &chunk, Vector &row_ids) {
+void IndexEntry::AppendToDeleteIndexes(const QueryContext &context, DataChunk &chunk, Vector &row_ids) {
 	auto entry_lock = lock.GetExclusiveLock();
 	D_ASSERT(owned_index->IsBound());
 	if (!owned_index->IsUnique()) {
@@ -176,6 +180,7 @@ void IndexEntry::AppendToDeleteIndexes(DataChunk &chunk, Vector &row_ids) {
 	}
 	auto &bound_index = owned_index->Cast<BoundIndex>();
 	IndexAppendInfo index_append_info(IndexAppendMode::IGNORE_DUPLICATES, nullptr);
+	index_append_info.context = context;
 	auto result = bound_index.Append(chunk, row_ids, index_append_info);
 	if (result.HasError()) {
 		if (result.Type() != ExceptionType::CONSTRAINT) {
@@ -185,8 +190,9 @@ void IndexEntry::AppendToDeleteIndexes(DataChunk &chunk, Vector &row_ids) {
 	}
 }
 
-static void AppendIndexEntries(BoundIndex &index, DataChunk &chunk, Vector &row_ids) {
+static void AppendIndexEntries(BoundIndex &index, DataChunk &chunk, Vector &row_ids, const QueryContext &context) {
 	IndexAppendInfo append_info;
+	append_info.context = context;
 	const auto error = index.Append(chunk, row_ids, append_info);
 	if (error.HasError()) {
 		if (error.Type() != ExceptionType::CONSTRAINT) {
@@ -197,14 +203,15 @@ static void AppendIndexEntries(BoundIndex &index, DataChunk &chunk, Vector &row_
 }
 
 //! Deletes the rows that are in the delta, and appends the others to the target
-static void DeleteOrAppend(BoundIndex &delta, BoundIndex &target, DataChunk &chunk, Vector &row_ids) {
+static void DeleteOrAppend(BoundIndex &delta, BoundIndex &target, DataChunk &chunk, Vector &row_ids,
+                           const QueryContext &context) {
 	SelectionVector remaining_sel(STANDARD_VECTOR_SIZE);
-	const auto delete_count = delta.TryDelete(chunk, row_ids, nullptr, remaining_sel);
+	const auto delete_count = delta.TryDelete(chunk, row_ids, context, nullptr, remaining_sel);
 	if (delete_count == chunk.size()) {
 		return;
 	}
 	if (delete_count == 0) {
-		AppendIndexEntries(target, chunk, row_ids);
+		AppendIndexEntries(target, chunk, row_ids, context);
 		return;
 	}
 	// the delete covers rows from both before and after the delta was created
@@ -213,37 +220,37 @@ static void DeleteOrAppend(BoundIndex &delta, BoundIndex &target, DataChunk &chu
 	remaining_chunk.InitializeEmpty(chunk.GetTypes());
 	remaining_chunk.Slice(chunk, remaining_sel, remaining_count);
 	Vector remaining_row_ids(row_ids, remaining_sel, remaining_count);
-	AppendIndexEntries(target, remaining_chunk, remaining_row_ids);
+	AppendIndexEntries(target, remaining_chunk, remaining_row_ids, context);
 }
 
 static void ApplyIndexRemoval(BoundIndex &index, IndexDeltas &deltas, DataChunk &chunk, Vector &row_ids,
-                              const IndexRemovalType removal_type) {
+                              const IndexRemovalType removal_type, const QueryContext &context) {
 	const auto supports_delta_indexes = index.SupportsDeltaIndexes();
 	// Not all indexes require delta indexes - if an index does not require this we skip creating and appending to
 	// "deleted_rows_in_use".
 	switch (removal_type) {
 	case IndexRemovalType::MAIN_INDEX_ONLY:
 		// Directly remove from the main index without appending to delta indexes.
-		index.Delete(chunk, row_ids);
+		index.Delete(chunk, row_ids, context);
 		break;
 	case IndexRemovalType::REVERT_MAIN_INDEX_ONLY:
 		// Revert main index only append - just add back to the index.
-		AppendIndexEntries(index, chunk, row_ids);
+		AppendIndexEntries(index, chunk, row_ids, context);
 		break;
 	case IndexRemovalType::MAIN_INDEX:
 		// Regular removal from the main index - add rows to the delta index if required.
 		if (supports_delta_indexes) {
 			auto &deleted_rows = deltas.GetOrCreate(index, IndexDeltaType::DELETED_ROWS_IN_USE);
-			AppendIndexEntries(deleted_rows, chunk, row_ids);
+			AppendIndexEntries(deleted_rows, chunk, row_ids, context);
 		}
-		index.Delete(chunk, row_ids);
+		index.Delete(chunk, row_ids, context);
 		break;
 	case IndexRemovalType::REVERT_MAIN_INDEX:
 		// Revert regular append to the main index - remove from deleted_rows_in_use if we appended there before.
-		AppendIndexEntries(index, chunk, row_ids);
+		AppendIndexEntries(index, chunk, row_ids, context);
 		if (supports_delta_indexes) {
 			if (auto delta = deltas.Find(IndexDeltaType::DELETED_ROWS_IN_USE)) {
-				delta->Delete(chunk, row_ids);
+				delta->Delete(chunk, row_ids, context);
 			}
 		}
 		break;
@@ -251,7 +258,7 @@ static void ApplyIndexRemoval(BoundIndex &index, IndexDeltas &deltas, DataChunk 
 		// Remove from the removal index if we appended any rows.
 		if (supports_delta_indexes) {
 			if (auto delta = deltas.Find(IndexDeltaType::DELETED_ROWS_IN_USE)) {
-				delta->Delete(chunk, row_ids);
+				delta->Delete(chunk, row_ids, context);
 			}
 		}
 		break;
@@ -261,7 +268,7 @@ static void ApplyIndexRemoval(BoundIndex &index, IndexDeltas &deltas, DataChunk 
 }
 
 static void ApplyIndexRemovalToDeltas(BoundIndex &index, IndexDeltas &deltas, DataChunk &chunk, Vector &row_ids,
-                                      const IndexRemovalType removal_type) {
+                                      const IndexRemovalType removal_type, const QueryContext &context) {
 	D_ASSERT(removal_type != IndexRemovalType::DELETED_ROWS_IN_USE);
 
 	switch (removal_type) {
@@ -275,14 +282,14 @@ static void ApplyIndexRemovalToDeltas(BoundIndex &index, IndexDeltas &deltas, Da
 		// If we have also added data to the deltas, we might need to remove from there instead.
 		// We FIRST try to remove from "added_data"; any rows that are not there are added to "removed_data".
 		if (added_data) {
-			DeleteOrAppend(*added_data, removed_data, chunk, row_ids);
+			DeleteOrAppend(*added_data, removed_data, chunk, row_ids, context);
 		} else {
-			AppendIndexEntries(removed_data, chunk, row_ids);
+			AppendIndexEntries(removed_data, chunk, row_ids, context);
 		}
 		if (removal_type == IndexRemovalType::MAIN_INDEX) {
 			// MAIN_INDEX also needs to retain the rows in deleted_rows_in_use.
 			auto &deleted_rows = deltas.GetOrCreate(index, IndexDeltaType::DELETED_ROWS_IN_USE);
-			AppendIndexEntries(deleted_rows, chunk, row_ids);
+			AppendIndexEntries(deleted_rows, chunk, row_ids, context);
 		}
 		break;
 	}
@@ -296,14 +303,14 @@ static void ApplyIndexRemovalToDeltas(BoundIndex &index, IndexDeltas &deltas, Da
 		// Revert by first trying to remove from "removed_data"; any rows that were not removed are re-added to
 		// "added_data".
 		if (auto added_data = deltas.Find(IndexDeltaType::ADDED_DATA)) {
-			DeleteOrAppend(removed_data, *added_data, chunk, row_ids);
+			DeleteOrAppend(removed_data, *added_data, chunk, row_ids, context);
 		} else {
-			removed_data.Delete(chunk, row_ids);
+			removed_data.Delete(chunk, row_ids, context);
 		}
 		if (removal_type == IndexRemovalType::REVERT_MAIN_INDEX) {
 			// We also need to remove from "deleted_rows_in_use".
 			if (auto delta = deltas.Find(IndexDeltaType::DELETED_ROWS_IN_USE)) {
-				delta->Delete(chunk, row_ids);
+				delta->Delete(chunk, row_ids, context);
 			}
 		}
 		break;
@@ -313,8 +320,8 @@ static void ApplyIndexRemovalToDeltas(BoundIndex &index, IndexDeltas &deltas, Da
 	}
 }
 
-void IndexEntry::RemoveFromIndex(DataChunk &chunk, Vector &row_ids, const IndexRemovalType removal_type,
-                                 const optional_idx active_checkpoint) {
+void IndexEntry::RemoveFromIndex(const QueryContext &context, DataChunk &chunk, Vector &row_ids,
+                                 const IndexRemovalType removal_type, const optional_idx active_checkpoint) {
 	auto entry_lock = lock.GetExclusiveLock();
 	if (!owned_index->IsBound()) {
 		// Buffer the delete: chunk is in table layout with all indexed columns populated.
@@ -331,10 +338,11 @@ void IndexEntry::RemoveFromIndex(DataChunk &chunk, Vector &row_ids, const IndexR
 			build_changed_rows += chunk.size();
 		}
 		try {
+			// as in Append, the keys of a building index run without the context of the commit
 			if (removal_type == IndexRemovalType::DELETED_ROWS_IN_USE) {
-				ApplyIndexRemoval(bound_index, deltas, chunk, row_ids, removal_type);
+				ApplyIndexRemoval(bound_index, deltas, chunk, row_ids, removal_type, QueryContext());
 			} else {
-				ApplyIndexRemovalToDeltas(bound_index, deltas, chunk, row_ids, removal_type);
+				ApplyIndexRemovalToDeltas(bound_index, deltas, chunk, row_ids, removal_type, QueryContext());
 			}
 		} catch (std::exception &ex) {
 			RecordBuildError(ex);
@@ -346,12 +354,12 @@ void IndexEntry::RemoveFromIndex(DataChunk &chunk, Vector &row_ids, const IndexR
 	// Not all indexes require delta indexes, so those skip "deleted_rows_in_use" bookkeeping.
 	if (removal_type == IndexRemovalType::DELETED_ROWS_IN_USE) {
 		// Cleanup always removes directly from "deleted_rows_in_use", even during a checkpoint.
-		ApplyIndexRemoval(bound_index, deltas, chunk, row_ids, removal_type);
+		ApplyIndexRemoval(bound_index, deltas, chunk, row_ids, removal_type, context);
 	} else if (bound_index.SupportsDeltaIndexes() && UseDeltas(active_checkpoint)) {
 		// During a checkpoint, route changes through the deltas.
-		ApplyIndexRemovalToDeltas(bound_index, deltas, chunk, row_ids, removal_type);
+		ApplyIndexRemovalToDeltas(bound_index, deltas, chunk, row_ids, removal_type, context);
 	} else {
-		ApplyIndexRemoval(bound_index, deltas, chunk, row_ids, removal_type);
+		ApplyIndexRemoval(bound_index, deltas, chunk, row_ids, removal_type, context);
 	}
 }
 
@@ -432,13 +440,14 @@ void IndexEntry::CommitBind(unique_ptr<BoundIndex> bound_index) {
 	bind_state = IndexBindState::BOUND;
 }
 
-void IndexEntry::VerifyAppend(const shared_ptr<IndexEntry> &delete_entry, DataChunk &chunk,
+void IndexEntry::VerifyAppend(const QueryContext &context, const shared_ptr<IndexEntry> &delete_entry, DataChunk &chunk,
                               optional_ptr<ConflictManager> manager) {
 	auto entry_lock = lock.GetExclusiveLock();
 	D_ASSERT(owned_index->IsBound());
 	auto &bound_index = owned_index->Cast<BoundIndex>();
 
 	IndexAppendInfo index_append_info;
+	index_append_info.context = context;
 	unique_ptr<StorageLockKey> delete_lock;
 	if (delete_entry) {
 		delete_lock = delete_entry->lock.GetSharedLock();

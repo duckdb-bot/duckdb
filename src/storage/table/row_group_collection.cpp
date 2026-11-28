@@ -1178,7 +1178,7 @@ void RowGroupCollection::RemoveFromIndexes(const QueryContext &context, TableInd
 		result_chunk.data[j].Reference(Value(types[j]), count_t(fetch_chunk.size()));
 	}
 
-	indexes.RemoveFromIndexes(result_chunk, row_identifiers, removal_type, active_checkpoint, bound);
+	indexes.RemoveFromIndexes(context, result_chunk, row_identifiers, removal_type, active_checkpoint, bound);
 }
 
 void RowGroupCollection::UpdateColumn(TransactionData transaction, DuckTableEntry &table_entry, Vector &row_ids,

@@ -179,8 +179,9 @@ void TableIndexList::Append(DataChunk &chunk, Vector &row_ids) {
 	}
 }
 
-ErrorData TableIndexList::Append(optional_ptr<TableIndexList> delete_indexes, DataChunk &chunk, row_t row_start,
-                                 IndexAppendMode append_mode, optional_idx active_checkpoint) {
+ErrorData TableIndexList::Append(const QueryContext &context, optional_ptr<TableIndexList> delete_indexes,
+                                 DataChunk &chunk, row_t row_start, IndexAppendMode append_mode,
+                                 optional_idx active_checkpoint) {
 	Vector row_ids(LogicalType::ROW_TYPE);
 	VectorOperations::GenerateSequence(row_ids, chunk.size(), row_start, 1);
 
@@ -193,7 +194,7 @@ ErrorData TableIndexList::Append(optional_ptr<TableIndexList> delete_indexes, Da
 		if (delete_indexes && entry->IsUnique()) {
 			delete_entry = delete_indexes->FindEntry(*entry);
 		}
-		error = entry->Append(chunk, row_ids, delete_entry, append_mode, active_checkpoint);
+		error = entry->Append(context, chunk, row_ids, delete_entry, append_mode, active_checkpoint);
 		if (error.HasError()) {
 			break;
 		}
@@ -221,22 +222,23 @@ void TableIndexList::RevertAppend(DataChunk &chunk, row_t row_start) {
 	RevertAppend(chunk, row_ids);
 }
 
-void TableIndexList::AppendToDeleteIndexes(DataChunk &chunk, Vector &row_ids) {
+void TableIndexList::AppendToDeleteIndexes(const QueryContext &context, DataChunk &chunk, Vector &row_ids) {
 	annotated_lock_guard lock(index_entries_lock);
 	for (const auto &entry : index_entries) {
-		entry->AppendToDeleteIndexes(chunk, row_ids);
+		entry->AppendToDeleteIndexes(context, chunk, row_ids);
 	}
 }
 
-void TableIndexList::RemoveFromIndexes(DataChunk &chunk, Vector &row_ids, const IndexRemovalType removal_type,
-                                       const optional_idx active_checkpoint, const VisibilityBound bound) {
+void TableIndexList::RemoveFromIndexes(const QueryContext &context, DataChunk &chunk, Vector &row_ids,
+                                       const IndexRemovalType removal_type, const optional_idx active_checkpoint,
+                                       const VisibilityBound bound) {
 	annotated_lock_guard lock(index_entries_lock);
 	for (const auto &entry : index_entries) {
 		if (!entry->AddedBefore(bound)) {
 			// the index was added after this delete committed, so its build never inserted the deleted rows
 			continue;
 		}
-		entry->RemoveFromIndex(chunk, row_ids, removal_type, active_checkpoint);
+		entry->RemoveFromIndex(context, chunk, row_ids, removal_type, active_checkpoint);
 	}
 }
 
@@ -272,8 +274,8 @@ bool TableIndexList::HasUniqueIndexes() const {
 	return false;
 }
 
-void TableIndexList::VerifyUniqueIndexes(optional_ptr<const TableIndexList> delete_indexes, DataChunk &chunk,
-                                         optional_ptr<ConflictManager> manager) const {
+void TableIndexList::VerifyUniqueIndexes(const QueryContext &context, optional_ptr<const TableIndexList> delete_indexes,
+                                         DataChunk &chunk, optional_ptr<ConflictManager> manager) const {
 	annotated_lock_guard lock(index_entries_lock);
 	if (!manager) {
 		for (const auto &entry : index_entries) {
@@ -281,7 +283,7 @@ void TableIndexList::VerifyUniqueIndexes(optional_ptr<const TableIndexList> dele
 				continue;
 			}
 			auto delete_entry = delete_indexes ? delete_indexes->FindEntry(*entry) : nullptr;
-			entry->VerifyAppend(delete_entry, chunk, nullptr);
+			entry->VerifyAppend(context, delete_entry, chunk, nullptr);
 		}
 		return;
 	}
@@ -304,7 +306,7 @@ void TableIndexList::VerifyUniqueIndexes(optional_ptr<const TableIndexList> dele
 	const auto &matching_indexes = manager->MatchingIndexes();
 	const auto &matching_delete_indexes = manager->MatchingDeleteIndexes();
 	for (idx_t i = 0; i < matching_indexes.size(); i++) {
-		matching_indexes[i]->VerifyAppend(matching_delete_indexes[i], chunk, manager);
+		matching_indexes[i]->VerifyAppend(context, matching_delete_indexes[i], chunk, manager);
 	}
 
 	// Scan the other indexes and throw if there are any conflicts.
@@ -315,7 +317,7 @@ void TableIndexList::VerifyUniqueIndexes(optional_ptr<const TableIndexList> dele
 			continue;
 		}
 		auto delete_entry = delete_indexes ? delete_indexes->FindEntry(*entry) : nullptr;
-		entry->VerifyAppend(delete_entry, chunk, manager);
+		entry->VerifyAppend(context, delete_entry, chunk, manager);
 	}
 }
 

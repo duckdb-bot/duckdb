@@ -1768,14 +1768,6 @@ StringValueScanner::MoveBufferResult StringValueScanner::TryMoveToNextBuffer() {
 		result.current_line_position.begin = result.current_line_position.end;
 		result.current_line_position.end = current_line_start;
 		result.InvalidState(result);
-		if (!iterator.IsBoundarySet()) {
-			// without a boundary there is no FinishBoundaryScan to handle the error of this row
-			const auto chunk_col_id_before = result.chunk_col_id;
-			if (result.current_errors.HandleErrors(result)) {
-				result.InvalidateUnwrittenColumns(chunk_col_id_before);
-				result.number_of_rows++;
-			}
-		}
 	} else {
 		if (result.IsCommentSet(result)) {
 			result.UnsetComment(result, iterator.pos.buffer_pos);
@@ -2128,6 +2120,16 @@ void StringValueScanner::ProcessRemainingBuffers() {
 		}
 	}
 	iterator.done = FinishedFile();
+	if (iterator.done) {
+		// a row cut off by the end of the file has its errors pending, as no boundary scan finishes it here
+		const auto chunk_col_id_before = result.chunk_col_id;
+		if (result.current_errors.HandleErrors(result)) {
+			result.InvalidateUnwrittenColumns(chunk_col_id_before);
+			result.StoreLinePosition();
+			result.number_of_rows++;
+			lines_read++;
+		}
+	}
 	if (result.null_padding && result.number_of_rows < STANDARD_VECTOR_SIZE && result.chunk_col_id > 0) {
 		while (result.chunk_col_id < result.parse_chunk.ColumnCount()) {
 			result.validity_mask[result.chunk_col_id++]->SetInvalid(static_cast<idx_t>(result.number_of_rows));

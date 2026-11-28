@@ -1089,6 +1089,73 @@ TEST_CASE("A query whose begin failed ends its transaction", "[api][query_result
 	REQUIRE(StringUtil::Contains(invalidated->GetError(), "database has been invalidated"));
 }
 
+TEST_CASE("A query whose begin failed aborts the transaction other connections are in", "[api][query_result]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	Connection reader(db);
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE t(i INTEGER)"));
+	REQUIRE_NO_FAIL(con.Query("BEGIN TRANSACTION"));
+	REQUIRE_NO_FAIL(con.Query("INSERT INTO t VALUES (1)"));
+	// rejects the next query of a connection that rolls back automatically, so the connection leaves the transaction
+	auto reject_query = [&](Connection &rejected) {
+		auto began = make_shared_ptr<CountingQueryState>();
+		auto rejecting = make_shared_ptr<CountingQueryState>();
+		auto &registered_state = rejected.context->GetContext().GetRegisteredState();
+		registered_state.Insert("a", began);
+		registered_state.Insert("b", rejecting);
+		// the state whose QueryBegin runs last rejects the query, after the other one began
+		for (auto &state : registered_state.States()) {
+			if (state.get() == rejecting.get()) {
+				std::swap(began, rejecting);
+				break;
+			}
+			if (state.get() == began.get()) {
+				break;
+			}
+		}
+		rejecting->fail_begin = true;
+		rejected.context->transaction.SetAutoRollback(true);
+		auto failed = rejected.Query("INSERT INTO t VALUES (2)");
+		REQUIRE(failed->HasError());
+		REQUIRE(StringUtil::Contains(failed->GetError(), "query begin failed"));
+		REQUIRE(began->begins == 1);
+		REQUIRE(began->ends == 1);
+		REQUIRE(rejecting->ends == 0);
+		REQUIRE(!rejected.context->transaction.HasActiveTransaction());
+	};
+	// a connection that stays in the transaction finds it aborted, and its COMMIT rolls it back
+	auto require_aborted = [&](Connection &remaining) {
+		auto aborted = remaining.Query("SELECT 42");
+		REQUIRE(aborted->HasError());
+		REQUIRE(StringUtil::Contains(aborted->GetError(), "transaction is aborted"));
+		REQUIRE_NO_FAIL(remaining.Query("COMMIT"));
+		auto count = reader.Query("SELECT COUNT(*) FROM t");
+		REQUIRE(CHECK_COLUMN(count, 0, {0}));
+	};
+
+	SECTION("A connection that inherited the transaction") {
+		{
+			auto child = Connection::CreateInTransaction(*con.context);
+			reject_query(child);
+		}
+		require_aborted(con);
+	}
+	SECTION("A connection that joined the transaction") {
+		auto share_id = con.Query("SELECT share_transaction()")->Collection().GetValue(0, 0).ToString();
+		Connection joined(db);
+		REQUIRE_NO_FAIL(joined.Query("JOIN TRANSACTION '" + share_id + "'"));
+		reject_query(joined);
+		require_aborted(con);
+	}
+	SECTION("The connection that shared the transaction") {
+		auto share_id = con.Query("SELECT share_transaction()")->Collection().GetValue(0, 0).ToString();
+		Connection joined(db);
+		REQUIRE_NO_FAIL(joined.Query("JOIN TRANSACTION '" + share_id + "'"));
+		reject_query(con);
+		require_aborted(joined);
+	}
+}
+
 TEST_CASE("Every state ends a query when the end of one fails", "[api][query_result]") {
 	DuckDB db(nullptr);
 	Connection con(db);

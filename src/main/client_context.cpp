@@ -833,6 +833,8 @@ unique_ptr<QueryResult> ClientContext::SubmitStatement(ClientContextLock &lock, 
 		}
 		// the query ends here, so it does not keep the transaction it started
 		if (active_query) {
+			// the invalidation policy applies before an automatic rollback makes the connection leave the transaction
+			ApplyInvalidationPolicy(error);
 			try {
 				EndQueryInternal(lock, false, ErrorInvalidatesQueryTransaction(error.Type()), error);
 			} catch (std::exception &) {

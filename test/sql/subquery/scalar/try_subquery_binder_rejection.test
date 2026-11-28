@@ -1,0 +1,103 @@
+# name: test/sql/subquery/scalar/try_subquery_binder_rejection.test
+# description: TRY over a scalar subquery follows the subquery rules of the binder of its clause
+# group: [scalar]
+
+statement ok
+CREATE TABLE t(i INTEGER, j INTEGER);
+
+statement ok
+INSERT INTO t VALUES (1, 10), (2, 20);
+
+# the USING expression of ALTER TABLE cannot contain subqueries, with or without TRY
+statement error
+ALTER TABLE t ALTER i TYPE VARCHAR USING TRY((SELECT 'x'));
+----
+cannot use subquery in alter statement
+
+# the rejected statement leaves the database usable and the table unchanged
+query II
+SELECT i, j FROM t ORDER BY i;
+----
+1	10
+2	20
+
+statement ok
+ALTER TABLE t ALTER i TYPE VARCHAR USING TRY(CAST(i AS VARCHAR));
+
+query I
+SELECT i FROM t ORDER BY i;
+----
+1
+2
+
+# index expressions
+statement error
+CREATE INDEX idx_try ON t ((TRY((SELECT 'abc'))));
+----
+cannot use subquery in index expressions
+
+statement error
+CREATE INDEX idx_try ON t ((j + length(TRY((SELECT 'abc')))));
+----
+cannot use subquery in index expressions
+
+# RETURNING clauses
+statement error
+INSERT INTO t VALUES ('3', 30) RETURNING TRY((SELECT 42));
+----
+SUBQUERY is not supported in returning statements
+
+# DEFAULT values
+statement error
+CREATE TABLE d(i INTEGER, j INTEGER DEFAULT TRY((SELECT 1)));
+----
+DEFAULT value cannot contain subqueries
+
+# PARTITION_PATH expressions
+statement error
+COPY t TO '{TEST_DIR}/try_partition' (FORMAT CSV, PARTITION_BY i, PARTITION_PATH TRY((SELECT 'x')));
+----
+cannot use subquery in PARTITION_PATH
+
+# a binder that relocates subqueries into a projection keeps the TRY masking
+statement ok
+CREATE TABLE m(i INTEGER);
+
+statement ok
+INSERT INTO m VALUES (1), (2);
+
+statement ok
+CREATE TABLE s(i INTEGER);
+
+statement ok
+INSERT INTO s VALUES (1), (3);
+
+statement ok
+MERGE INTO m USING s ON m.i = s.i WHEN MATCHED AND TRY((SELECT 'abc'::INTEGER)) IS NULL THEN DELETE;
+
+query I
+SELECT i FROM m;
+----
+2
+
+statement error
+MERGE INTO m USING s ON m.i = s.i WHEN NOT MATCHED THEN ERROR TRY((SELECT 'boom'));
+----
+boom
+
+# a TRY subquery that matches a GROUP BY expression resolves to the group like the bare subquery
+query I
+SELECT TRY((SELECT i)) FROM (VALUES (1)) t(i) GROUP BY (SELECT i);
+----
+1
+
+# the group match does not bind the subquery, so the marker must not leak into the next subquery
+statement error
+SELECT TRY((SELECT i)), (SELECT 1 // 0) FROM (VALUES (1)) t(i) GROUP BY (SELECT i);
+----
+Division by zero
+
+query II
+SELECT TRY((SELECT i)), TRY((SELECT 1 // 0)) FROM (VALUES (1)) t(i) GROUP BY (SELECT i);
+----
+1	NULL

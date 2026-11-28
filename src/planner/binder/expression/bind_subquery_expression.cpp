@@ -152,6 +152,14 @@ BindResult ExpressionBinder::BindExpression(SubqueryExpression &expr, idx_t dept
 	}
 	LogicalType return_type =
 	    expr.GetSubqueryType() == SubqueryType::SCALAR ? bound_node.types[0] : LogicalType(LogicalTypeId::BOOLEAN);
+	if (try_subquery && bound_node.plan) {
+		// the subquery is the direct argument of TRY, lower TRY onto its plan before the subquery is flattened
+		auto &indexes = subquery_binder->GetTrySubqueryPlanIndexes();
+		if (!indexes.recorded) {
+			throw InternalException("TRY subquery: no plan indexes were recorded for the top select node");
+		}
+		LowerTrySubquery(expr, indexes, *bound_node.plan, false, false);
+	}
 	if (rethrow_try_errors && bound_node.plan) {
 		// lower TRY onto the plan and expose the error flag in a struct next to the masked value;
 		// the expression keeps the value type, the struct is unpacked again when the subquery is planned

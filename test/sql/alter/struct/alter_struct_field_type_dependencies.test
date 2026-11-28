@@ -1,0 +1,48 @@
+# name: test/sql/alter/struct/alter_struct_field_type_dependencies.test
+# description: An ALTER that adds a struct field registers the user type that the default of the field casts to
+# group: [struct]
+
+load {TEST_DIR}/alter_struct_field_type_dependencies.db
+
+statement ok
+CREATE TYPE e AS ENUM ('a', 'b');
+
+statement ok
+CREATE TABLE t (i INT, s STRUCT(x INT) DEFAULT {'x': 1});
+
+statement ok
+ALTER TABLE t ADD COLUMN s.c e DEFAULT 'a'::e;
+
+statement error
+DROP TYPE e;
+----
+table "t" depends on type "e"
+
+statement ok
+INSERT INTO t (i) VALUES (1);
+
+statement ok
+INSERT INTO t VALUES (2, {'x': 2, 'c': 'b'});
+
+restart
+
+query II
+SELECT * FROM t ORDER BY i;
+----
+1	{'x': 1, 'c': a}
+2	{'x': 2, 'c': b}
+
+statement error
+DROP TYPE e;
+----
+table "t" depends on type "e"
+
+statement ok
+INSERT INTO t (i) VALUES (3);
+
+query II
+SELECT * FROM t ORDER BY i;
+----
+1	{'x': 1, 'c': a}
+2	{'x': 2, 'c': b}
+3	{'x': 1, 'c': a}

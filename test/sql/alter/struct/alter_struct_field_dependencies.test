@@ -19,35 +19,8 @@ DROP MACRO mc;
 ----
 table "m" depends on macro function "mc"
 
-# a user type in the default of an added field
-statement ok
-CREATE TYPE e AS ENUM ('a', 'b');
-
-statement ok
-CREATE TABLE t (i INT, s STRUCT(x INT) DEFAULT {'x': 1});
-
-statement ok
-ALTER TABLE t ADD COLUMN s.c e DEFAULT 'a'::e;
-
-statement error
-DROP TYPE e;
-----
-table "t" depends on type "e"
-
-statement ok
-INSERT INTO t (i) VALUES (1);
-
-statement ok
-INSERT INTO t VALUES (2, {'x': 2, 'c': 'b'});
-
 # the checkpoint writes the macro before the table that needs it, and the file opens again
 restart
-
-query II
-SELECT * FROM t ORDER BY i;
-----
-1	{'x': 1, 'c': a}
-2	{'x': 2, 'c': b}
 
 statement ok
 INSERT INTO m (i) VALUES (1);
@@ -61,11 +34,6 @@ statement error
 DROP MACRO mc;
 ----
 table "m" depends on macro function "mc"
-
-statement error
-DROP TYPE e;
-----
-table "t" depends on type "e"
 
 # a rename of another field keeps the default and what it depends on
 statement ok

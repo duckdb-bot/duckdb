@@ -717,6 +717,7 @@ void Binder::BindLogicalType(LogicalType &type) {
 }
 
 bool BoundBodyContainsTrigger(const LogicalOperator &op);
+bool TriggerBodyIsMergeInto(const QueryNode &body);
 
 SchemaCatalogEntry &Binder::BindCreateTriggerInfo(CreateTriggerInfo &create_trigger_info) {
 	if (create_trigger_info.temporary) {
@@ -861,6 +862,10 @@ SchemaCatalogEntry &Binder::BindCreateTriggerInfo(CreateTriggerInfo &create_trig
 		}
 		if (create_trigger_info.trigger_action->type == QueryNodeType::UPDATE_QUERY_NODE) {
 			throw NotImplementedException("UPDATE trigger bodies in FOR EACH ROW triggers are not yet supported");
+		}
+		if (TriggerBodyIsMergeInto(*create_trigger_info.trigger_action)) {
+			throw NotImplementedException("MERGE INTO trigger bodies and INSERT trigger bodies with ON CONFLICT, OR "
+			                              "REPLACE or OR IGNORE in FOR EACH ROW triggers are not yet supported");
 		}
 		vector<Identifier> col_names;
 		vector<LogicalType> col_types;

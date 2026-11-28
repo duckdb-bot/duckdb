@@ -289,6 +289,37 @@ TEST_CASE("Test ExtensionLoader schema API", "[api]") {
 	}
 }
 
+TEST_CASE("A type in a dedicated extension schema binds to itself where its bound type is written back", "[api]") {
+	auto config = GetTestConfig();
+	DuckDB db(nullptr, config.get());
+	Connection con(db);
+	auto loader = CreateExtensionLoader(db, "test_ext");
+	loader.UseDedicatedSchemaForExtension("ext_types");
+	loader.RegisterType("ext_text", LogicalType(LogicalType::VARCHAR).WithAlias("ext_text"));
+	loader.RefreshSearchPath(*con.context);
+
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE t (i INTEGER, s STRUCT(x ext_text, y INTEGER))"));
+	REQUIRE_NO_FAIL(con.Query("INSERT INTO t VALUES (1, {'x': '1.4', 'y': 2})"));
+	REQUIRE_NO_FAIL(con.Query("CREATE MACRO typed(a ext_text) AS a"));
+
+	// a macro call and a struct field change write the bound type back and find it in the schema of the extension
+	auto result = con.Query("SELECT typed(s.x)::VARCHAR, typeof(typed(s.x)) FROM t");
+	REQUIRE(CHECK_COLUMN(result, 0, {"1.4"}));
+	REQUIRE(CHECK_COLUMN(result, 1, {"ext_text"}));
+	REQUIRE_NO_FAIL(con.Query("ALTER TABLE t RENAME COLUMN s.y TO z"));
+
+	// a type of a user with the same name does not take its place
+	REQUIRE_NO_FAIL(con.Query("CREATE TYPE ext_text AS INTEGER"));
+	result = con.Query("SELECT typed(s.x)::VARCHAR, typeof(typed(s.x)) FROM t");
+	REQUIRE(CHECK_COLUMN(result, 0, {"1.4"}));
+	REQUIRE(CHECK_COLUMN(result, 1, {"ext_text"}));
+	REQUIRE_NO_FAIL(con.Query("ALTER TABLE t ADD COLUMN s.w INTEGER"));
+	REQUIRE_NO_FAIL(con.Query("ALTER TABLE t DROP COLUMN s.z"));
+	result = con.Query("SELECT s.x::VARCHAR, typeof(s) FROM t");
+	REQUIRE(CHECK_COLUMN(result, 0, {"1.4"}));
+	REQUIRE(CHECK_COLUMN(result, 1, {"STRUCT(x ext_text, w INTEGER)"}));
+}
+
 TEST_CASE("Test that Catalog::CreateSchema rejects unsupported options", "[api]") {
 	DuckDB db(nullptr);
 	Connection conn(db);

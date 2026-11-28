@@ -1,0 +1,170 @@
+# name: test/sql/alter/struct/alter_struct_field_aliased_type.test
+# description: Adding, renaming or dropping a struct field keeps the values of a JSON field when a type of a user is named JSON
+# group: [struct]
+
+require json
+
+statement ok
+CREATE TABLE dropped (i INT, s STRUCT(x JSON, y INT));
+
+statement ok
+CREATE TABLE renamed (i INT, s STRUCT(x JSON, y INT));
+
+statement ok
+CREATE TABLE added (i INT, s STRUCT(x JSON, y INT));
+
+statement ok
+CREATE TABLE not_a_number (i INT, s STRUCT(x JSON, y INT));
+
+statement ok
+CREATE TABLE on_path (i INT, s STRUCT(x JSON, y INT));
+
+statement ok
+CREATE TABLE with_temporary (i INT, s STRUCT(x JSON, y INT));
+
+statement ok
+INSERT INTO dropped VALUES (1, {'x': '1.4', 'y': 2});
+
+statement ok
+INSERT INTO renamed VALUES (1, {'x': '1.4', 'y': 2});
+
+statement ok
+INSERT INTO added VALUES (1, {'x': '1.4', 'y': 2});
+
+statement ok
+INSERT INTO not_a_number VALUES (1, {'x': '{"k": 1}', 'y': 2});
+
+statement ok
+INSERT INTO on_path VALUES (1, {'x': '1.4', 'y': 2});
+
+statement ok
+INSERT INTO with_temporary VALUES (1, {'x': '1.4', 'y': 2});
+
+statement ok
+CREATE MACRO typed(a JSON) AS a;
+
+# a type of a user with the name of the JSON type, in the schema of the tables
+statement ok
+CREATE TYPE JSON AS INTEGER;
+
+statement ok
+ALTER TABLE dropped DROP COLUMN s.y;
+
+statement ok
+ALTER TABLE renamed RENAME COLUMN s.y TO z;
+
+statement ok
+ALTER TABLE added ADD COLUMN s.z INT;
+
+statement ok
+ALTER TABLE not_a_number DROP COLUMN s.y;
+
+query III
+SELECT i, s.x::VARCHAR, typeof(s) FROM dropped
+----
+1	1.4	STRUCT(x JSON)
+
+query III
+SELECT i, s.x::VARCHAR, typeof(s) FROM renamed
+----
+1	1.4	STRUCT(x JSON, z INTEGER)
+
+query III
+SELECT i, s.x::VARCHAR, typeof(s) FROM added
+----
+1	1.4	STRUCT(x JSON, y INTEGER, z INTEGER)
+
+query III
+SELECT i, s.x::VARCHAR, typeof(s) FROM not_a_number
+----
+1	{"k": 1}	STRUCT(x JSON)
+
+# a macro parameter keeps its type as well
+query II
+SELECT typed('1.4')::VARCHAR, typeof(typed('1.4'))
+----
+1.4	JSON
+
+statement ok
+DROP TYPE JSON;
+
+query II
+SELECT s.x::VARCHAR, typeof(s) FROM dropped
+----
+1.4	STRUCT(x JSON)
+
+# a temporary type
+statement ok
+CREATE TEMPORARY TYPE JSON AS INTEGER;
+
+statement ok
+ALTER TABLE with_temporary RENAME COLUMN s.y TO z;
+
+statement ok
+DROP TYPE JSON;
+
+query II
+SELECT s.x::VARCHAR, typeof(s) FROM with_temporary
+----
+1.4	STRUCT(x JSON, z INTEGER)
+
+# the rewritten default of a column is bound with the schema of the table first on every insert
+statement ok
+CREATE SCHEMA app;
+
+statement ok
+CREATE TABLE app.renamed (i INT, s STRUCT(x JSON, y INT) DEFAULT {'x': '1.4', 'y': 2});
+
+statement ok
+CREATE TABLE app.added (i INT, s STRUCT(x JSON) DEFAULT {'x': '1.4'});
+
+statement ok
+CREATE TYPE app.JSON AS INTEGER;
+
+statement ok
+INSERT INTO app.renamed (i) VALUES (1);
+
+statement ok
+INSERT INTO app.added (i) VALUES (1);
+
+statement ok
+ALTER TABLE app.renamed RENAME COLUMN s.y TO z;
+
+statement ok
+ALTER TABLE app.added ADD COLUMN s.y INT DEFAULT 5;
+
+statement ok
+INSERT INTO app.renamed (i) VALUES (2);
+
+statement ok
+INSERT INTO app.added (i) VALUES (2);
+
+query III
+SELECT i, s.x::VARCHAR, typeof(s) FROM app.renamed ORDER BY i
+----
+1	1.4	STRUCT(x JSON, z INTEGER)
+2	1.4	STRUCT(x JSON, z INTEGER)
+
+query III
+SELECT i, s.x::VARCHAR, s.y FROM app.added ORDER BY i
+----
+1	1.4	5
+2	1.4	5
+
+# a type in another schema of the search path, which stays set to the end of the test
+statement ok
+CREATE SCHEMA other;
+
+statement ok
+CREATE TYPE other.JSON AS INTEGER;
+
+statement ok
+SET search_path = 'main,other';
+
+statement ok
+ALTER TABLE on_path RENAME COLUMN s.y TO z;
+
+query II
+SELECT s.x::VARCHAR, typeof(s) FROM on_path
+----
+1.4	STRUCT(x JSON, z INTEGER)

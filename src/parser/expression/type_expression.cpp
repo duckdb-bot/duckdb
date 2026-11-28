@@ -274,7 +274,9 @@ unique_ptr<TypeExpression> TypeExpression::FromLogicalType(const LogicalType &ty
 
 	vector<unique_ptr<ParsedExpression>> children;
 
-	// A type that carries an alias is a user-defined type: name it, and let the binder resolve it again.
+	// A type that carries an alias is registered in the system catalog, by an extension or through the C API.
+	// It is named with that catalog, so that the binder does not find a type of a user on the search path, and
+	// without a schema, as an extension may register its types in a schema of its own.
 	auto alias = type.GetAlias();
 	if (!alias.empty()) {
 		if (type.HasExtensionInfo()) {
@@ -282,7 +284,8 @@ unique_ptr<TypeExpression> TypeExpression::FromLogicalType(const LogicalType &ty
 				children.push_back(ConstantExpression::FromValue(modifier.value));
 			}
 		}
-		return make_uniq<TypeExpression>(Identifier(alias), std::move(children));
+		return make_uniq<TypeExpression>(QualifiedName(Identifier::SystemCatalog(), Identifier(), Identifier(alias)),
+		                                 std::move(children));
 	}
 
 	auto name = BuiltinTypeName(type.id());

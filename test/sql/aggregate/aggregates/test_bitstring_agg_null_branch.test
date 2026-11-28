@@ -1,0 +1,68 @@
+# name: test/sql/aggregate/aggregates/test_bitstring_agg_null_branch.test
+# description: A NULL constant keeps the statistics of the other branches, so bitstring_agg finds its range
+# group: [aggregates]
+
+query I
+SELECT bitstring_agg(arg)::VARCHAR FROM (SELECT 1 AS arg UNION ALL SELECT NULL AS arg);
+----
+1
+
+query I
+SELECT bitstring_agg(arg)::VARCHAR FROM (SELECT 1 AS arg UNION ALL SELECT NULL UNION ALL SELECT 3);
+----
+101
+
+# a value outside of a range that only NULLs gave is still found
+query II
+SELECT min(x), max(x) FROM (SELECT NULL::INTEGER AS x UNION ALL SELECT 5);
+----
+5	5
+
+query I
+SELECT count(*) FROM (SELECT NULL::INTEGER AS x UNION ALL SELECT 5) WHERE x > 1;
+----
+1
+
+query I
+SELECT count(*) FROM (SELECT NULL::INTEGER AS x) WHERE x IS NULL;
+----
+1
+
+query I
+SELECT bitstring_agg(arg)::VARCHAR FROM (SELECT NULL AS arg UNION ALL SELECT 2 UNION ALL SELECT 4);
+----
+101
+
+# only NULLs give NULL, as a column of only NULLs does
+query I
+SELECT bitstring_agg(arg) FROM (SELECT NULL::INTEGER AS arg UNION ALL SELECT NULL);
+----
+NULL
+
+query II
+SELECT min(x), max(x) FROM (SELECT NULL::DOUBLE AS x UNION ALL SELECT 2.5 UNION ALL SELECT -1.5);
+----
+-1.5	2.5
+
+query I
+SELECT count(*) FROM (SELECT NULL::DOUBLE AS x UNION ALL SELECT 2.5) WHERE x > 2;
+----
+1
+
+# a DECIMAL wider than 38 digits keeps its range as BIGNUM bounds, which a NULL constant leaves to the other branch too
+query II
+SELECT stats(x).min::VARCHAR, stats(x).max::VARCHAR FROM (SELECT NULL::DECIMAL(50,4) AS x UNION ALL SELECT 5::DECIMAL(50,4)) LIMIT 1;
+----
+5.0000	5.0000
+
+query II
+SELECT stats(x).min::VARCHAR, stats(x).max::VARCHAR FROM (SELECT 5::DECIMAL(50,4) AS x UNION ALL SELECT NULL) LIMIT 1;
+----
+5.0000	5.0000
+
+# only NULLs leave the range empty, which no consumer reads as a bound
+query III
+SELECT x > 1, x::DECIMAL(18,4), stats(x).min IS NULL FROM (SELECT NULL::DECIMAL(50,4) AS x UNION ALL SELECT NULL);
+----
+NULL	NULL	true
+NULL	NULL	true

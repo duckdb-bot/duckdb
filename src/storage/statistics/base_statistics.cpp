@@ -638,8 +638,11 @@ BaseStatistics BaseStatistics::FromConstantType(const Value &input) {
 	switch (GetStatsType(input.type())) {
 	case StatisticsType::NUMERIC_STATS: {
 		auto result = NumericStats::CreateEmpty(input.type());
-		NumericStats::SetMin(result, input);
-		NumericStats::SetMax(result, input);
+		if (!input.IsNull()) {
+			// a NULL has no value, so its range stays empty, as for a column of only NULLs
+			NumericStats::SetMin(result, input);
+			NumericStats::SetMax(result, input);
+		}
 		return result;
 	}
 	case StatisticsType::STRING_STATS: {
@@ -698,8 +701,11 @@ BaseStatistics BaseStatistics::FromConstantType(const Value &input) {
 	}
 	case StatisticsType::BIGNUM_STATS: {
 		auto result = BignumStats::CreateEmpty(input.type());
-		BignumStats::SetMin(result, input);
-		BignumStats::SetMax(result, input);
+		if (!input.IsNull()) {
+			// as for the fixed-size tier, a NULL leaves the range empty
+			BignumStats::SetMin(result, input);
+			BignumStats::SetMax(result, input);
+		}
 		return result;
 	}
 	case StatisticsType::VARIANT_STATS: {

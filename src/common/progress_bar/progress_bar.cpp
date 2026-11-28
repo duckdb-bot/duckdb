@@ -72,6 +72,7 @@ void ProgressBar::Start() {
 	profiler.Start();
 	query_progress.Initialize();
 	supported = true;
+	counted_pipelines_done = false;
 }
 
 bool ProgressBar::PrintEnabled() const {
@@ -104,6 +105,9 @@ bool ProgressBar::ShouldPrint(bool final) const {
 	return query_progress.percentage > -1;
 }
 
+//! The percentage a running query shows once its counted pipelines are done but its result is not ready yet
+static constexpr double MAXIMUM_RUNNING_PERCENTAGE = 99.9;
+
 void ProgressBar::Update(bool final) {
 	if (!final && !supported) {
 		return;
@@ -111,6 +115,11 @@ void ProgressBar::Update(bool final) {
 
 	ProgressData progress;
 	idx_t invalid_pipelines = executor.GetPipelinesProgress(progress);
+	if (!final && invalid_pipelines > 0) {
+		return;
+	}
+	// the pipelines are gone once the query is complete, which leaves nothing to count
+	const bool nothing_to_count = invalid_pipelines == 0 && progress.IsValid() && progress.total == 0;
 
 	double new_percentage = 0.0;
 	if (invalid_pipelines == 0 && progress.IsValid()) {
@@ -119,11 +128,20 @@ void ProgressBar::Update(bool final) {
 		}
 		query_progress.rows_processed = idx_t(progress.done);
 		query_progress.total_rows_to_process = idx_t(progress.total);
-		new_percentage = progress.ProgressDone() * 100;
+		// with nothing to count there is nothing new to report
+		new_percentage = nothing_to_count ? -1.0 : progress.ProgressDone() * 100;
 	}
 
-	if (!final && invalid_pipelines > 0) {
-		return;
+	if (final) {
+		// the result is ready, and the query is complete once the counted pipelines are done, or gone after they were
+		const bool complete = new_percentage >= 100.0 || (nothing_to_count && counted_pipelines_done);
+		if (complete && !executor.HasError()) {
+			new_percentage = 100.0;
+		}
+	} else if (new_percentage >= 100.0) {
+		// the counted pipelines can be done before the result is, so a running query stays below 100
+		counted_pipelines_done = true;
+		new_percentage = MAXIMUM_RUNNING_PERCENTAGE;
 	}
 
 	if (new_percentage > query_progress.percentage) {

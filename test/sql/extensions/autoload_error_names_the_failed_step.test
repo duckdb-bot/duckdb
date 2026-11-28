@@ -1,0 +1,34 @@
+# name: test/sql/extensions/autoload_error_names_the_failed_step.test
+# description: The autoload error names the step that failed and closes the quote around the extension name
+# group: [extensions]
+
+require no_extension_autoloading "EXPECTED: the test checks the errors of a failing autoload"
+
+# an extension directory of its own, in which httpfs is not installed
+statement ok
+SET extension_directories = ['{TEST_DIR}/autoload_error_extensions'];
+
+statement ok
+SET autoload_known_extensions = true;
+
+# without installation only the loading is tried. The setting belongs to httpfs, so a build that links httpfs sets it
+# and has nothing to check
+statement ok
+SET autoinstall_known_extensions = false;
+
+statement maybe
+SET http_timeout = 30;
+----
+<REGEX>:.*Extension Autoloading Error: An error occurred while trying to automatically load the required extension 'httpfs':.*
+
+# with installation, a repository that does not exist makes the installation fail
+statement ok
+SET autoinstall_extension_repository = '{TEST_DIR}/no_such_repository';
+
+statement ok
+SET autoinstall_known_extensions = true;
+
+statement maybe
+SET http_timeout = 30;
+----
+<REGEX>:.*Extension Autoloading Error: An error occurred while trying to automatically install the required extension 'httpfs':.*

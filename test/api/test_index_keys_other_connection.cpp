@@ -129,7 +129,9 @@ TEST_CASE("Test that an interrupt of the connection that bound an index on list_
 	REQUIRE_NO_FAIL(con.Query("DELETE FROM u WHERE id < 5"));
 	// the keys of the deleted rows are free and the others are not
 	REQUIRE_NO_FAIL(con.Query("INSERT INTO u VALUES (10, [0, 1])"));
-	REQUIRE_FAIL(con.Query("INSERT INTO u VALUES (11, [5, 6])"));
+	auto duplicate = con.Query("INSERT INTO u VALUES (11, [5, 6])");
+	REQUIRE(duplicate->HasError());
+	REQUIRE(StringUtil::Contains(StringUtil::Lower(duplicate->GetError()), "duplicate key"));
 	auto result = con.Query("SELECT id FROM u ORDER BY id");
 	REQUIRE(CHECK_COLUMN(result, 0, {5, 6, 7, 8, 9, 10}));
 	REQUIRE(binder.context->IsInterrupted());

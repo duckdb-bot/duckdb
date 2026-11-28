@@ -9,9 +9,9 @@ statement ok
 SET VARIABLE fanout = (SELECT 'WITH u1 AS MATERIALIZED (SELECT id, a FROM src_wide) ' || string_agg('SELECT ' || k || ' AS k, id, max(a[1]) AS m FROM u1 GROUP BY ALL', ' UNION ALL ' ORDER BY k) FROM range(40) t(k));
 
 statement ok
-SET memory_limit = '1GB';
+SET memory_limit = '400MB';
 
-# 40 readers of the CTE extract one element each, a buffer of 64 MiB for every reader does not fit
+# 40 readers of the CTE extract one element each, a buffer of a whole chunk of arrays for every reader does not fit
 query II
 SELECT count(*), sum(m) FROM query(getvariable('fanout'));
 ----

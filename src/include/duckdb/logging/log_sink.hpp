@@ -267,6 +267,8 @@ public:
 
 	//! Truncates the csv files
 	void Truncate() override;
+	//! Throws if the path is a csv file while normalize is true, which writes two files into a directory
+	static void VerifyPath(const string &path, bool normalize);
 	//! Bind replace function to scan the different tables
 	unique_ptr<TableRef> BindReplace(ClientContext &context, TableFunctionBindInput &input,
 	                                 LoggingTargetTable table) override;

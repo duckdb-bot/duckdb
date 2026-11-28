@@ -1,0 +1,161 @@
+# name: test/sql/cte/using_key_aggregate_statement_state.test
+# description: Aggregate arguments in USING KEY share the parameters and the properties of their statement
+# group: [cte]
+
+# positional parameters
+statement ok
+PREPARE by_position AS WITH RECURSIVE r(k, v) USING KEY (k, max(v + $1::INTEGER) AS v) AS (VALUES (1, 10) UNION ALL SELECT k + 1, v + 1 FROM r WHERE k < 2) SELECT * FROM r ORDER BY k;
+
+query II
+EXECUTE by_position(1);
+----
+1	11
+2	12
+
+query II
+EXECUTE by_position(100);
+----
+1	110
+2	111
+
+statement ok
+PREPARE by_question_mark AS WITH RECURSIVE r(k, v) USING KEY (k, max(v + ?::INTEGER) AS v) AS (VALUES (1, 10) UNION ALL SELECT k + 1, v + 1 FROM r WHERE k < 2) SELECT * FROM r ORDER BY k;
+
+query II
+EXECUTE by_question_mark(100);
+----
+1	110
+2	111
+
+# a parameter in the aggregate and the same one in the anchor
+statement ok
+PREPARE shared_parameter AS WITH RECURSIVE r(k, v) USING KEY (k, max(v + $1::INTEGER) AS v) AS (VALUES (1, 10 + $1::INTEGER) UNION ALL SELECT k + 1, v + 1 FROM r WHERE k < 2) SELECT * FROM r ORDER BY k;
+
+query II
+EXECUTE shared_parameter(100);
+----
+1	210
+2	211
+
+# named parameters
+statement ok
+PREPARE by_name AS WITH RECURSIVE r(k, v) USING KEY (k, max(v + $delta) AS v) AS (VALUES (1, 10) UNION ALL SELECT k + 1, v + 1 FROM r WHERE k < 2) SELECT * FROM r ORDER BY k;
+
+query II
+EXECUTE by_name(delta := 1000);
+----
+1	1010
+2	1011
+
+# a user variable of the same name does not replace the parameter of a prepared statement
+statement ok
+SET VARIABLE delta = 1;
+
+statement ok
+PREPARE named_with_variable AS WITH RECURSIVE r(k, v) USING KEY (k, max(v + $delta) AS v) AS (VALUES (1, 10) UNION ALL SELECT k + 1, v + 1 FROM r WHERE k < 2) SELECT * FROM r ORDER BY k;
+
+query II
+EXECUTE named_with_variable(delta := 1000);
+----
+1	1010
+2	1011
+
+# a prepared statement follows the variable its aggregate reads
+statement ok
+PREPARE reads_variable AS WITH RECURSIVE r(k, v) USING KEY (k, max(v + getvariable('delta')) AS v) AS (VALUES (1, 10) UNION ALL SELECT k + 1, v + 1 FROM r WHERE k < 2) SELECT * FROM r ORDER BY k;
+
+query II
+EXECUTE reads_variable;
+----
+1	11
+2	12
+
+statement ok
+SET VARIABLE delta = 100;
+
+query II
+EXECUTE reads_variable;
+----
+1	110
+2	111
+
+# a prepared statement follows the macro its aggregate calls
+statement ok
+CREATE MACRO add_delta(x) AS x + 1;
+
+statement ok
+PREPARE calls_macro AS WITH RECURSIVE r(k, v) USING KEY (k, max(add_delta(v)) AS v) AS (VALUES (1, 10) UNION ALL SELECT k + 1, v + 1 FROM r WHERE k < 2) SELECT * FROM r ORDER BY k;
+
+query II
+EXECUTE calls_macro;
+----
+1	11
+2	12
+
+statement ok
+CREATE OR REPLACE MACRO add_delta(x) AS x + 100;
+
+query II
+EXECUTE calls_macro;
+----
+1	110
+2	111
+
+# the statement registers the sequence its aggregate advances
+statement ok
+CREATE SEQUENCE seq;
+
+query II
+WITH RECURSIVE r(k, v) USING KEY (k, max(v + nextval('seq')) AS v) AS (VALUES (1, 10) UNION ALL SELECT k + 1, v + 1 FROM r WHERE k < 2) SELECT * FROM r ORDER BY k;
+----
+1	11
+2	13
+
+query I
+SELECT nextval('seq');
+----
+3
+
+statement ok
+BEGIN;
+
+query II
+WITH RECURSIVE r(k, v) USING KEY (k, max(v + nextval('seq')) AS v) AS (VALUES (1, 10) UNION ALL SELECT k + 1, v + 1 FROM r WHERE k < 2) SELECT * FROM r ORDER BY k;
+----
+1	14
+2	16
+
+statement ok
+COMMIT;
+
+# a transaction writes to one database only
+statement ok
+ATTACH ':memory:' AS other;
+
+statement error
+CREATE TABLE other.out_rows AS WITH RECURSIVE r(k, v) USING KEY (k, max(v + nextval('seq')) AS v) AS (VALUES (1, 10) UNION ALL SELECT k + 1, v + 1 FROM r WHERE k < 2) SELECT * FROM r ORDER BY k;
+----
+a single transaction can only write to a single attached database
+
+# a sequence of a read-only database cannot be advanced
+statement ok
+ATTACH '{TEST_DIR}/using_key_read_only.db' AS file_db;
+
+statement ok
+CREATE SEQUENCE file_db.seq;
+
+statement ok
+DETACH file_db;
+
+statement ok
+ATTACH '{TEST_DIR}/using_key_read_only.db' AS file_db (READ_ONLY);
+
+statement error
+WITH RECURSIVE r(k, v) USING KEY (k, max(v + nextval('file_db.seq')) AS v) AS (VALUES (1, 10) UNION ALL SELECT k + 1, v + 1 FROM r WHERE k < 2) SELECT * FROM r ORDER BY k;
+----
+read-only mode
+
+query I
+SELECT 42;
+----
+42

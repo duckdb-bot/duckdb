@@ -53,6 +53,11 @@ BoundStatement Binder::BindNode(RecursiveCTENode &statement) {
 
 	// Create temporary binder to bind expressions
 	auto aggregate_binder = Binder::CreateBinder(context, nullptr);
+	const auto binding_mode = GetBindingMode();
+	if (binding_mode == BindingMode::STANDARD_BINDING || binding_mode == BindingMode::PREPARE) {
+		// the aggregates belong to the statement, without seeing the columns of its other queries
+		aggregate_binder->global_binder_state = global_binder_state;
+	}
 	FunctionBinder function_binder(*aggregate_binder);
 	aggregate_binder->bind_context.AddGenericBinding(setop_index, statement.ctename, result.names, result.types);
 	ExpressionBinder expression_binder(*aggregate_binder, context);

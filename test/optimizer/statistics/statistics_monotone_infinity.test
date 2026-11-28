@@ -207,7 +207,7 @@ statement ok
 INSERT INTO era_bounds VALUES (make_timestamptz(-9223372036854775807 - 1)), ('-infinity'), ('0001-01-01 (BC)');
 
 query I
-SELECT count(*) FROM era_bounds WHERE date_trunc('era', c) < TIMESTAMPTZ '0001-01-01 00:00:00+00'
+SELECT count(*) FROM era_bounds WHERE date_trunc('era', c) < '0001-01-01 (BC) 00:00:00+00'::TIMESTAMPTZ
 ----
 1
 

@@ -223,6 +223,9 @@ BoundCastInfo DefaultCasts::TimestampNsCastSwitch(BindCastInput &input, const Lo
 		return BoundCastInfo(&VectorCastHelpers::TryCastLoop<timestamp_ns_t, timestamp_t, duckdb::TryCast>);
 	case LogicalTypeId::TIMESTAMP_MS:
 		return BoundCastInfo(&VectorCastHelpers::TryCastLoop<timestamp_ns_t, timestamp_ms_t, duckdb::TryCast>);
+	case LogicalTypeId::TIMESTAMP_SEC:
+		// timestamp (ns) to timestamp (s)
+		return BoundCastInfo(&VectorCastHelpers::TryCastLoop<timestamp_ns_t, timestamp_sec_t, duckdb::TryCast>);
 	default:
 		return TryVectorNullCast;
 	}

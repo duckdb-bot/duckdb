@@ -716,6 +716,8 @@ DUCKDB_API bool TryCast::Operation(timestamp_ns_t input, timestamp_ms_t &result,
 template <>
 DUCKDB_API bool TryCast::Operation(timestamp_ns_t input, timestamp_t &result, bool strict);
 template <>
+DUCKDB_API bool TryCast::Operation(timestamp_ns_t input, timestamp_sec_t &result, bool strict);
+template <>
 DUCKDB_API bool TryCast::Operation(timestamp_ms_t input, timestamp_t &result, bool strict);
 template <>
 DUCKDB_API bool TryCast::Operation(timestamp_sec_t input, timestamp_t &result, bool strict);

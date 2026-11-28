@@ -237,7 +237,8 @@ unique_ptr<FileHandle> VirtualFileSystem::WrapOpenedFile(unique_ptr<FileHandle> 
 			context = QueryContext(*opener_context);
 		}
 		const bool is_pipe = file_handle->GetType() == FileType::FILE_TYPE_FIFO;
-		if (is_pipe) {
+		// a pipe opened through the external file cache was wrapped by the open below the cache and cannot seek
+		if (is_pipe && (flags.GetCachingMode() == CachingMode::NO_CACHING || file_handle->CanSeek())) {
 			file_handle = PipeFileSystem::OpenPipe(context, std::move(file_handle));
 		}
 		auto compression_filesystem =

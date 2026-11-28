@@ -1,5 +1,6 @@
 #include "catch.hpp"
 #include "duckdb/common/checksum.hpp"
+#include "duckdb/main/settings.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "test_helpers.hpp"
 #include "duckdb/common/local_file_system.hpp"
@@ -69,10 +70,10 @@ TEST_CASE("Test torn WAL writes", "[storage][.]") {
 	auto source_database = TestCreatePath("storage_test_source");
 	auto source_wal = source_database + ".wal";
 
-	LocalFileSystem lfs;
+	auto &lfs = TestLocalFileSystem();
 	config->options.checkpoint_wal_size = idx_t(-1);
-	config->options.checkpoint_on_shutdown = false;
-	config->options.abort_on_wal_failure = false;
+	config->SetOption(CheckpointOnShutdownSetting::SettingIndex, Value::BOOLEAN(false));
+	config->SetOption(DebugAbortOnWalFailureSetting::SettingIndex, Value::BOOLEAN(false));
 	idx_t wal_size_one_table;
 	idx_t wal_size_two_table;
 	// obtain the size of the WAL when writing one table, and then when writing two tables
@@ -113,10 +114,10 @@ TEST_CASE("Test torn WAL writes followed by successful commits", "[storage][.]")
 	auto storage_database = TestCreatePath("storage_test");
 	auto storage_wal = storage_database + ".wal";
 
-	LocalFileSystem lfs;
+	auto &lfs = TestLocalFileSystem();
 	config->options.checkpoint_wal_size = idx_t(-1);
-	config->options.checkpoint_on_shutdown = false;
-	config->options.abort_on_wal_failure = false;
+	config->SetOption(CheckpointOnShutdownSetting::SettingIndex, Value::BOOLEAN(false));
+	config->SetOption(DebugAbortOnWalFailureSetting::SettingIndex, Value::BOOLEAN(false));
 	idx_t wal_size_one_table;
 	// obtain the size of the WAL when writing one table, and then when writing two tables
 	DeleteDatabase(storage_database);
@@ -177,10 +178,10 @@ TEST_CASE("Test WAL checksums", "[storage][.]") {
 	auto source_database = TestCreatePath("wal_checksum_source");
 	auto source_wal = source_database + ".wal";
 
-	LocalFileSystem lfs;
+	auto &lfs = TestLocalFileSystem();
 	config->options.checkpoint_wal_size = idx_t(-1);
-	config->options.checkpoint_on_shutdown = false;
-	config->options.abort_on_wal_failure = false;
+	config->SetOption(CheckpointOnShutdownSetting::SettingIndex, Value::BOOLEAN(false));
+	config->SetOption(DebugAbortOnWalFailureSetting::SettingIndex, Value::BOOLEAN(false));
 	idx_t wal_size_one_table;
 	idx_t wal_size_two_table;
 	// obtain the size of the WAL when writing one table, and then when writing two tables
@@ -233,10 +234,10 @@ TEST_CASE("Test WAL entry size that overflows the bound check", "[storage][.]") 
 	auto source_database = TestCreatePath("wal_size_overflow_source");
 	auto source_wal = source_database + ".wal";
 
-	LocalFileSystem lfs;
+	auto &lfs = TestLocalFileSystem();
 	config->options.checkpoint_wal_size = idx_t(-1);
-	config->options.checkpoint_on_shutdown = false;
-	config->options.abort_on_wal_failure = false;
+	config->SetOption(CheckpointOnShutdownSetting::SettingIndex, Value::BOOLEAN(false));
+	config->SetOption(DebugAbortOnWalFailureSetting::SettingIndex, Value::BOOLEAN(false));
 	DeleteDatabase(storage_database);
 	DeleteDatabase(source_database);
 	{
@@ -272,9 +273,9 @@ TEST_CASE("Test encrypted WAL version on an unencrypted database", "[storage][.]
 	auto storage_database = TestCreatePath("wal_version_encrypted");
 	auto storage_wal = storage_database + ".wal";
 
-	LocalFileSystem lfs;
+	auto &lfs = TestLocalFileSystem();
 	config->options.checkpoint_wal_size = idx_t(-1);
-	config->options.checkpoint_on_shutdown = false;
+	config->SetOption(CheckpointOnShutdownSetting::SettingIndex, Value::BOOLEAN(false));
 	DeleteDatabase(storage_database);
 	{
 		DuckDB db(storage_database, config.get());
@@ -330,9 +331,9 @@ TEST_CASE("Test WAL catalog entry without catalog information", "[storage][.]") 
 	auto storage_database = TestCreatePath("wal_missing_info");
 	auto storage_wal = storage_database + ".wal";
 
-	LocalFileSystem lfs;
+	auto &lfs = TestLocalFileSystem();
 	config->options.checkpoint_wal_size = idx_t(-1);
-	config->options.checkpoint_on_shutdown = false;
+	config->SetOption(CheckpointOnShutdownSetting::SettingIndex, Value::BOOLEAN(false));
 	DeleteDatabase(storage_database);
 	{
 		DuckDB db(storage_database, config.get());
@@ -393,10 +394,10 @@ TEST_CASE("Test WAL entry with an unknown entry type", "[storage][.]") {
 	auto storage_database = TestCreatePath("wal_unknown_entry_type");
 	auto storage_wal = storage_database + ".wal";
 
-	LocalFileSystem lfs;
+	auto &lfs = TestLocalFileSystem();
 	config->options.checkpoint_wal_size = idx_t(-1);
-	config->options.checkpoint_on_shutdown = false;
-	config->options.abort_on_wal_failure = false;
+	config->SetOption(CheckpointOnShutdownSetting::SettingIndex, Value::BOOLEAN(false));
+	config->SetOption(DebugAbortOnWalFailureSetting::SettingIndex, Value::BOOLEAN(false));
 	DeleteDatabase(storage_database);
 	{
 		DuckDB db(storage_database, config.get());

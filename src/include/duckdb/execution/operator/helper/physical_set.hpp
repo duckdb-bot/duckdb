@@ -48,11 +48,7 @@ public:
 	                                 SetScope scope, const Value &value);
 
 	static void SetVariable(ClientContext &context, const Identifier &name, SetScope scope, const Value &value);
-	//! With the default value of the setting, a SET or RESET that keeps its value is no change
-	static void SetGenericVariable(ClientContext &context, idx_t setting_index, SetScope scope, Value target_value,
-	                               optional_ptr<const Value> default_value = nullptr);
-	static void ResetGenericVariable(ClientContext &context, idx_t setting_index, SetScope scope,
-	                                 optional_ptr<const Value> default_value = nullptr);
+	static void SetGenericVariable(ClientContext &context, idx_t setting_index, SetScope scope, Value target_value);
 	static SetScope GetSettingScope(const ConfigurationOption &option, SetScope variable_scope);
 	//! Counts the change of a setting with its own setter when its value differs from the previous one
 	static void RegisterSettingChange(ClientContext &context, const ConfigurationOption &option, SetScope scope,

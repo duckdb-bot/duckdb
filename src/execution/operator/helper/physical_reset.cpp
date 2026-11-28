@@ -5,6 +5,7 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/main/settings.hpp"
 
 namespace duckdb {
 
@@ -16,9 +17,7 @@ void PhysicalReset::ResetExtensionVariable(ExecutionContext &context, ExtensionO
 	if (extension_option.info) {
 		extension_option.info->OnSet(context.client, effective_scope, extension_option.default_value, true);
 	}
-	auto &default_value = extension_option.default_value;
-	PhysicalSet::ResetGenericVariable(context.client, extension_option.setting_index.GetIndex(), effective_scope,
-	                                  default_value.IsNull() ? nullptr : &default_value);
+	Settings::Reset(context.client, extension_option.setting_index.GetIndex(), effective_scope);
 }
 
 SourceResultType PhysicalReset::GetDataInternal(ExecutionContext &context, DataChunk &chunk,
@@ -57,10 +56,7 @@ SourceResultType PhysicalReset::GetDataInternal(ExecutionContext &context, DataC
 			info.is_reset = true;
 			option->set_callback(info, reset_val);
 		}
-		Value default_value;
-		const bool has_default = config.TryGetDefaultValue(option, default_value);
-		PhysicalSet::ResetGenericVariable(context.client, setting_index, variable_scope,
-		                                  has_default ? &default_value : nullptr);
+		Settings::Reset(context.client, setting_index, variable_scope);
 		return SourceResultType::FINISHED;
 	}
 	const auto previous_value = option->get_setting(context.client);

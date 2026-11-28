@@ -47,6 +47,9 @@ struct Settings {
 		Set(source, OP::SettingIndex, scope, std::move(target_value));
 	}
 
+	//! Removes the value that the scope has set for a setting
+	static void Reset(ClientContext &context, idx_t setting_index, SetScope scope);
+
 	//! The default value of a setting as a Value of its input type
 	template <class OP>
 	static Value GetDefaultValue() {

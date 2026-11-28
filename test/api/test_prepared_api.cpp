@@ -1,6 +1,7 @@
 #include "catch.hpp"
 #include "test_helpers.hpp"
 #include "duckdb/planner/planner_extension.hpp"
+#include "duckdb/parser/peg/dialect_extension.hpp"
 #include "duckdb/parser/sql_statement.hpp"
 
 using namespace duckdb;
@@ -875,6 +876,72 @@ TEST_CASE("A prepared statement keeps its plan when a SET or RESET keeps the val
 	REQUIRE(rebinds.back());
 	result = other.Query(query);
 	REQUIRE(CHECK_COLUMN(result, 0, {1, 2, Value()}));
+
+	// a callback that resets another setting to the value it has without it
+	REQUIRE_NO_FAIL(con.Query("SET enable_progress_bar = false"));
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(con.Query("RESET progress_bar_time"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(!rebinds.back());
+
+	// the callback changes the other setting
+	REQUIRE_NO_FAIL(con.Query("SET progress_bar_time = 2000"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(rebinds.back());
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(con.Query("RESET progress_bar_time"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(rebinds.back());
+
+	// both settings are set to their defaults
+	REQUIRE_NO_FAIL(con.Query("SET progress_bar_time = 2000"));
+	REQUIRE_NO_FAIL(con.Query("SET enable_progress_bar = false"));
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(con.Query("RESET progress_bar_time"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(!rebinds.back());
+
+	// a pragma that sets a setting to its default, and to another value
+	REQUIRE_NO_FAIL(con.Query("PRAGMA enable_checkpoint_on_shutdown"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(!rebinds.back());
+	REQUIRE_NO_FAIL(con.Query("PRAGMA disable_checkpoint_on_shutdown"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(rebinds.back());
+}
+
+TEST_CASE("A prepared statement keeps its plan when the selected dialect is selected again", "[api]") {
+	DBConfig config;
+	DialectExtension::Register(config, make_uniq<DialectExtension>("with_mode", DialectCompatibilityMode::SPARK));
+	DialectExtension::Register(config, make_uniq<DialectExtension>("same_mode", DialectCompatibilityMode::SPARK));
+	DuckDB db(nullptr, &config);
+	Connection con(db);
+	auto recorder = make_shared_ptr<RebindRecorderState>();
+	con.context->GetContext().GetRegisteredState().Insert("rebind_recorder", recorder);
+	auto &rebinds = recorder->rebinds;
+
+	REQUIRE_NO_FAIL(con.Query("SET current_dialect = 'with_mode'"));
+	REQUIRE_NO_FAIL(con.Query("PREPARE answer AS SELECT 42"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE answer"));
+	REQUIRE(!rebinds.back());
+	REQUIRE_NO_FAIL(con.Query("SET current_dialect = 'with_mode'"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE answer"));
+	REQUIRE(!rebinds.back());
+
+	// another dialect is a change, also when it sets the same compatibility mode
+	REQUIRE_NO_FAIL(con.Query("SET current_dialect = 'same_mode'"));
+	auto result = con.Query("SELECT current_setting('dialect_compatibility_mode')");
+	REQUIRE(CHECK_COLUMN(result, 0, {"SPARK"}));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE answer"));
+	REQUIRE(rebinds.back());
+
+	// leaving the dialect resets the compatibility mode
+	REQUIRE_NO_FAIL(con.Query("PREPARE answer AS SELECT 42"));
+	REQUIRE_NO_FAIL(con.Query("RESET current_dialect"));
+	result = con.Query("SELECT current_setting('dialect_compatibility_mode')");
+	REQUIRE(CHECK_COLUMN(result, 0, {"NONE"}));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE answer"));
+	REQUIRE(rebinds.back());
 }
 
 static atomic<idx_t> execute_pre_binds {0};

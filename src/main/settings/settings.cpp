@@ -94,13 +94,37 @@ void Settings::SetSettingInternal(DBConfig &config, idx_t setting_index, SetScop
 	config.SetOption(setting_index, std::move(target_value));
 }
 
+//! The value that a client reads for a setting that it has not set, the value of the database or else the default
+static bool TryGetDatabaseValue(const DBConfig &config, idx_t setting_index, Value &result) {
+	if (config.TryGetCurrentUserSetting(setting_index, result)) {
+		return true;
+	}
+	return config.TryGetDefaultValue(setting_index, result);
+}
+
 void Settings::SetSettingInternal(ClientContext &context, idx_t setting_index, SetScope scope, Value target_value) {
+	auto &config = DBConfig::GetConfig(context);
 	if (scope == SetScope::GLOBAL) {
-		SetSettingInternal(DBConfig::GetConfig(context), setting_index, scope, std::move(target_value));
+		SetSettingInternal(config, setting_index, scope, std::move(target_value));
 		return;
 	}
+	Value unset_value;
+	const bool has_unset_value = TryGetDatabaseValue(config, setting_index, unset_value);
 	auto &client_config = ClientConfig::GetConfig(context);
-	client_config.user_settings.SetUserSetting(setting_index, std::move(target_value));
+	client_config.user_settings.SetUserSetting(setting_index, std::move(target_value),
+	                                           has_unset_value ? &unset_value : nullptr);
+}
+
+void Settings::Reset(ClientContext &context, idx_t setting_index, SetScope scope) {
+	auto &config = DBConfig::GetConfig(context);
+	if (scope == SetScope::GLOBAL) {
+		config.ResetGenericOption(setting_index);
+		return;
+	}
+	Value unset_value;
+	const bool has_unset_value = TryGetDatabaseValue(config, setting_index, unset_value);
+	auto &client_config = ClientConfig::GetConfig(context);
+	client_config.user_settings.ClearSetting(setting_index, has_unset_value ? &unset_value : nullptr);
 }
 
 } // namespace duckdb

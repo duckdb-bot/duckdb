@@ -8,38 +8,8 @@
 
 namespace duckdb {
 
-//! The value that a setting has while the scope does not set it
-static optional_ptr<const Value> GetUnsetValue(ClientContext &context, idx_t setting_index, SetScope scope,
-                                               optional_ptr<const Value> default_value, Value &database_value) {
-	if (scope != SetScope::GLOBAL &&
-	    DBConfig::GetConfig(context).TryGetCurrentUserSetting(setting_index, database_value)) {
-		// without a session value the client reads the value of the database
-		return &database_value;
-	}
-	return default_value;
-}
-
-void PhysicalSet::SetGenericVariable(ClientContext &context, idx_t setting_index, SetScope scope, Value target_value,
-                                     optional_ptr<const Value> default_value) {
-	Value database_value;
-	auto unset_value = GetUnsetValue(context, setting_index, scope, default_value, database_value);
-	if (scope == SetScope::GLOBAL) {
-		DBConfig::GetConfig(context).user_settings.SetUserSetting(setting_index, std::move(target_value), unset_value);
-	} else {
-		ClientConfig::GetConfig(context).user_settings.SetUserSetting(setting_index, std::move(target_value),
-		                                                              unset_value);
-	}
-}
-
-void PhysicalSet::ResetGenericVariable(ClientContext &context, idx_t setting_index, SetScope scope,
-                                       optional_ptr<const Value> default_value) {
-	Value database_value;
-	auto unset_value = GetUnsetValue(context, setting_index, scope, default_value, database_value);
-	if (scope == SetScope::GLOBAL) {
-		DBConfig::GetConfig(context).user_settings.ClearSetting(setting_index, unset_value);
-	} else {
-		ClientConfig::GetConfig(context).user_settings.ClearSetting(setting_index, unset_value);
-	}
+void PhysicalSet::SetGenericVariable(ClientContext &context, idx_t setting_index, SetScope scope, Value target_value) {
+	Settings::Set(context, setting_index, scope, std::move(target_value));
 }
 
 void PhysicalSet::SetExtensionVariable(ClientContext &context, ExtensionOption &extension_option, SetScope scope,
@@ -72,9 +42,7 @@ void PhysicalSet::SetExtensionVariable(ClientContext &context, const Identifier 
 	}
 	scope = resolved_scope;
 	auto setting_index = extension_option.setting_index.GetIndex();
-	auto &default_value = extension_option.default_value;
-	SetGenericVariable(context, setting_index, scope, std::move(target_value),
-	                   default_value.IsNull() ? nullptr : &default_value);
+	SetGenericVariable(context, setting_index, scope, std::move(target_value));
 }
 
 SetScope PhysicalSet::GetSettingScope(const ConfigurationOption &option, SetScope variable_scope) {
@@ -138,10 +106,7 @@ void PhysicalSet::SetVariable(ClientContext &context, const Identifier &name, Se
 			info.WarnDeprecated(option->name);
 		}
 		auto setting_index = option->setting_idx.GetIndex();
-		Value default_value;
-		const bool has_default = config.TryGetDefaultValue(option, default_value);
-		SetGenericVariable(context, setting_index, variable_scope, std::move(input_val),
-		                   has_default ? &default_value : nullptr);
+		SetGenericVariable(context, setting_index, variable_scope, std::move(input_val));
 		return;
 	}
 	const auto previous_value = option->get_setting(context);

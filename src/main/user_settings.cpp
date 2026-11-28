@@ -242,6 +242,18 @@ identifier_map_t<ExtensionOption> GlobalUserSettings::GetExtensionSettings() con
 	return extension_parameters;
 }
 
+bool GlobalUserSettings::TryGetExtensionDefault(idx_t setting_index, Value &result) const {
+	lock_guard<mutex> l(lock);
+	for (auto &entry : extension_parameters) {
+		auto &option = entry.second;
+		if (option.setting_index.IsValid() && option.setting_index.GetIndex() == setting_index) {
+			result = option.default_value;
+			return !result.IsNull();
+		}
+	}
+	return false;
+}
+
 bool GlobalUserSettings::TryGetExtensionOption(const Identifier &name, ExtensionOption &result) const {
 	lock_guard<mutex> l(lock);
 	auto entry = extension_parameters.find(name);

@@ -94,6 +94,8 @@ public:
 	idx_t AddExtensionOption(const Identifier &name, ExtensionOption extension_option);
 	identifier_map_t<ExtensionOption> GetExtensionSettings() const;
 	bool TryGetExtensionOption(const Identifier &name, ExtensionOption &result) const;
+	//! The default value of the extension setting with the given index, if it has one
+	bool TryGetExtensionDefault(idx_t setting_index, Value &result) const;
 	optional_idx TryGetExtensionSettingIndex(const Identifier &name) const;
 	hugeint_t GetUUID() const;
 	//! The number of times the value of a database-global setting changed

@@ -455,7 +455,7 @@ void DBConfig::SetOption(optional_ptr<DatabaseInstance> db, const ConfigurationO
 		if (option.is_deprecated) {
 			info.WarnDeprecated(option.name);
 		}
-		user_settings.SetUserSetting(option.setting_idx.GetIndex(), std::move(input));
+		SetOption(option.setting_idx.GetIndex(), std::move(input));
 		return;
 	}
 	if (!option.set_global) {
@@ -475,7 +475,7 @@ void DBConfig::ResetOption(optional_ptr<DatabaseInstance> db, const Configuratio
 			info.is_reset = true;
 			option.set_callback(info, reset_value);
 		}
-		user_settings.ClearSetting(option.setting_idx.GetIndex());
+		ResetGenericOption(option.setting_idx.GetIndex());
 		return;
 	}
 	if (!option.reset_global) {
@@ -495,7 +495,10 @@ Value ConfigurationOption::GetDefaultValue(const DBConfig &config) const {
 }
 
 void DBConfig::SetOption(idx_t setting_index, Value value) {
-	user_settings.SetUserSetting(setting_index, std::move(value));
+	// a first SET to the default changes no value
+	Value default_value;
+	const bool has_default = TryGetDefaultValue(setting_index, default_value);
+	user_settings.SetUserSetting(setting_index, std::move(value), has_default ? &default_value : nullptr);
 }
 
 void DBConfig::SetOption(const Identifier &name, Value value) {
@@ -508,11 +511,14 @@ void DBConfig::SetOption(const Identifier &name, Value value) {
 }
 
 void DBConfig::ResetOption(const ExtensionOption &extension_option) {
-	user_settings.ClearSetting(extension_option.setting_index.GetIndex());
+	ResetGenericOption(extension_option.setting_index.GetIndex());
 }
 
 void DBConfig::ResetGenericOption(idx_t setting_index) {
-	user_settings.ClearSetting(setting_index);
+	// the RESET of a value that equals the default changes no value
+	Value default_value;
+	const bool has_default = TryGetDefaultValue(setting_index, default_value);
+	user_settings.ClearSetting(setting_index, has_default ? &default_value : nullptr);
 }
 
 LogicalType DBConfig::ParseLogicalType(const string &type) {
@@ -648,7 +654,7 @@ void DBConfig::AddExtensionOption(const Identifier &name, ExtensionOption extens
 	// copy over unrecognized options, if they match the new extension option
 	auto iter = options.unrecognized_options.find(name);
 	if (iter != options.unrecognized_options.end()) {
-		user_settings.SetUserSetting(setting_index, iter->second);
+		SetOption(setting_index, iter->second);
 		options.unrecognized_options.erase(iter);
 	}
 }
@@ -937,6 +943,20 @@ SettingLookupResult DBConfig::TryGetDefaultValue(optional_ptr<const Configuratio
 		throw InternalException("Generic setting \"%s\" has no typed default value", option->name);
 	}
 	result = option->get_default_value();
+	return SettingLookupResult(SettingScope::GLOBAL);
+}
+
+SettingLookupResult DBConfig::TryGetDefaultValue(idx_t setting_index, Value &result) const {
+	for (idx_t index = 0; internal_options[index].name; index++) {
+		auto &option = internal_options[index];
+		if (option.setting_idx.IsValid() && option.setting_idx.GetIndex() == setting_index) {
+			return TryGetDefaultValue(&option, result);
+		}
+	}
+	// an extension setting
+	if (!user_settings.TryGetExtensionDefault(setting_index, result)) {
+		return SettingLookupResult();
+	}
 	return SettingLookupResult(SettingScope::GLOBAL);
 }
 

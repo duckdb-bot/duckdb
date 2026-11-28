@@ -1,4 +1,4 @@
-# name: test/sql/index/art/test_art_list_sort_revert_deadline.test
+# name: test/sql/index/art/test_art_list_sort_revert_deadline.test_slow
 # description: The deadline of a committing connection stops no revert or removal of its keys in an index on list_sort
 # group: [art]
 

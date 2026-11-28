@@ -1,4 +1,4 @@
-# name: test/sql/index/art/storage/test_art_list_sort_bind_deadline.test
+# name: test/sql/index/art/storage/test_art_list_sort_bind_deadline.test_slow
 # description: The deadline of a connection stops its bind of an index on list_sort, and the next bind replays the rows
 # group: [storage]
 

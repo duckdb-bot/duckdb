@@ -67,6 +67,41 @@ NULL
 NULL
 NULL
 
+# a BETWEEN with a NULL input, which is NULL whatever its bounds are
+statement ok
+CREATE SEQUENCE sbetween;
+
+query IIII
+SELECT NULL::INTEGER BETWEEN nextval('sbetween') AND 10, NULL::INTEGER BETWEEN 0 AND nextval('sbetween'),
+	NULL::INTEGER NOT BETWEEN nextval('sbetween') AND 10, NULL::INTEGER NOT BETWEEN 0 AND nextval('sbetween') FROM v;
+----
+NULL	NULL	NULL	NULL
+NULL	NULL	NULL	NULL
+NULL	NULL	NULL	NULL
+
+query I
+SELECT nextval('sbetween');
+----
+13
+
+# a bound that overflows for x = 3
+query IIII
+SELECT has_error(NULL::INTEGER BETWEEN x * 1000000000 AND 0), has_error(NULL::INTEGER BETWEEN 0 AND x * 1000000000),
+	has_error(NULL::INTEGER NOT BETWEEN x * 1000000000 AND 0), has_error(NULL::INTEGER NOT BETWEEN 0 AND x * 1000000000)
+	FROM v ORDER BY x;
+----
+false	false	false	false
+false	false	false	false
+true	true	true	true
+
+query IIII
+SELECT TRY((SELECT count(NULL::INTEGER BETWEEN x * 1000000000 AND 0) FROM v)),
+	TRY((SELECT count(NULL::INTEGER BETWEEN 0 AND x * 1000000000) FROM v)),
+	TRY((SELECT count(NULL::INTEGER NOT BETWEEN x * 1000000000 AND 0) FROM v)),
+	TRY((SELECT count(NULL::INTEGER NOT BETWEEN 0 AND x * 1000000000) FROM v));
+----
+NULL	NULL	NULL	NULL
+
 # arithmetic with NULL, which an inner rewrite produces before the comparison sees it
 statement ok
 CREATE SEQUENCE sarith;
@@ -436,6 +471,12 @@ query II
 EXPLAIN SELECT x > NULL, struct_extract(struct_pack(a := x, b := x + 1), 'a') FROM v;
 ----
 physical_plan	<!REGEX>:.*struct_pack.*
+
+# outside TRY, a BETWEEN with a NULL input still folds over a bound that can throw
+query II
+EXPLAIN SELECT NULL::INTEGER BETWEEN x * 1000000000 AND 0 FROM v;
+----
+physical_plan	<!REGEX>:.*BETWEEN.*
 
 query II
 EXPLAIN SELECT val::VARCHAR IS DISTINCT FROM 'z' FROM e;

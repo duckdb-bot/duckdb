@@ -33,7 +33,10 @@ public:
 		this->bound_columns.clear();
 	}
 
-	static bool IsFunctionallyDependent(const unique_ptr<Expression> &expr, const vector<reference<Expression>> &deps);
+	//! Whether the expression is a function of the dependencies. When strict, a function of a dependency whose equal
+	//! values can differ, such as signed zeros, does not count, as it can tell equal values apart
+	static bool IsFunctionallyDependent(const unique_ptr<Expression> &expr, const vector<reference<Expression>> &deps,
+	                                    bool strict = true);
 
 protected:
 	BindResult BindExpression(unique_ptr<ParsedExpression> &expr_ptr, idx_t depth,

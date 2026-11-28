@@ -817,7 +817,8 @@ public:
 		if (!bind_data.interface->SupportsReadAhead(bind_data)) {
 			return;
 		}
-		gstate.read_ahead = ScanReadAhead::Create(context, ScanReadAheadPolicy::ORDERED);
+		// every queued job keeps its file open, so the open window bounds the queued jobs too
+		gstate.read_ahead = ScanReadAhead::Create(context, ScanReadAheadPolicy::ORDERED, true, 1, 0, true);
 	}
 
 	static unique_ptr<GlobalTableFunctionState> MultiFileInitGlobal(ClientContext &context,
@@ -1060,7 +1061,7 @@ public:
 			return ScanReadAheadAcquire::ACQUIRED;
 		}
 		if (!read_ahead.CanScheduleOpen(0)) {
-			// the open file budget is full and the finished job may hold the last reference to its reader
+			// no file may be opened ahead and the finished job may hold the last reference to its reader
 			lstate.job.reset();
 		}
 		unique_ptr<ScanReadAheadJob> claimed;

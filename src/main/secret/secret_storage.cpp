@@ -576,11 +576,9 @@ void LocalFileSecretStorage::RemoveSecret(const string &secret, OnEntryNotFound 
 	if (file.empty()) {
 		file = fs.JoinPath(secret_path, SecretFileName(secret));
 	}
-	files->Remove(Identifier(secret));
-	persistent_secrets.erase(Identifier(secret));
-	file_changes++;
 	try {
 		fs.RemoveFile(file);
+		file_changes++;
 	} catch (std::exception &ex) {
 		ErrorData error(ex);
 		if (error.Type() == ExceptionType::IO) {
@@ -590,6 +588,9 @@ void LocalFileSecretStorage::RemoveSecret(const string &secret, OnEntryNotFound 
 		}
 		throw;
 	}
+	// the file is forgotten once it is gone, a drop that failed is retried on the same file
+	files->Remove(Identifier(secret));
+	persistent_secrets.erase(Identifier(secret));
 }
 
 //===--------------------------------------------------------------------===//

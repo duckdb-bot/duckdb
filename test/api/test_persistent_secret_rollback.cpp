@@ -195,6 +195,120 @@ TEST_CASE("A failed secret write that changes no file leaves nothing for rollbac
 	REQUIRE(CHECK_COLUMN(result, 0, {"http://new"}));
 }
 
+TEST_CASE("A failed secret removal that changes no file leaves nothing for rollback to repair", "[api][secrets]") {
+	auto secret_dir = TestCreatePath("persistent_secret_rollback_failed_removal");
+	auto &local = TestLocalFileSystem();
+	auto config = GetTestConfig();
+	DuckDB db(nullptr, config.get());
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("SET secret_directory = '" + secret_dir + "'"));
+	REQUIRE_NO_FAIL(con.Query("CREATE PERSISTENT SECRET s1 (TYPE http)"));
+
+	// a directory with content takes the place of the secret's file, so the removal fails after nothing was changed
+	auto secret_file = local.JoinPath(secret_dir, "s1.duckdb_secret");
+	auto content = local.JoinPath(secret_file, "content");
+	local.RemoveFile(secret_file);
+	local.CreateDirectory(secret_file);
+	local.OpenFile(content, FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE);
+	REQUIRE_NO_FAIL(con.Query("BEGIN"));
+	auto result = con.Query("DROP PERSISTENT SECRET s1");
+	REQUIRE(result->HasError());
+	REQUIRE(StringUtil::Contains(result->GetError(), "Failed to remove secret file"));
+	// the rollback has nothing to repair, and leaves the directory that was not removed
+	REQUIRE_NO_FAIL(con.Query("ROLLBACK"));
+	REQUIRE(local.FileExists(content));
+	REQUIRE(SecretFiles(secret_dir) == vector<string> {"s1.duckdb_secret"});
+	result = con.Query("SELECT count(*) FROM duckdb_secrets() WHERE name = 's1'");
+	REQUIRE(CHECK_COLUMN(result, 0, {1}));
+
+	// once the directory is gone the secret is written to its file again, and a drop removes that file
+	local.RemoveDirectory(secret_file);
+	REQUIRE_NO_FAIL(con.Query("CREATE OR REPLACE PERSISTENT SECRET s1 (TYPE http)"));
+	REQUIRE(local.FileExists(secret_file));
+	REQUIRE_NO_FAIL(con.Query("DROP PERSISTENT SECRET s1"));
+	REQUIRE(SecretFiles(secret_dir).empty());
+}
+
+TEST_CASE("A failed drop keeps the legacy file of the secret for the next drop", "[api][secrets]") {
+	auto secret_dir = TestCreatePath("persistent_secret_rollback_legacy_drop");
+	auto &local = TestLocalFileSystem();
+	{
+		auto config = GetTestConfig();
+		DuckDB db(nullptr, config.get());
+		Connection con(db);
+		REQUIRE_NO_FAIL(con.Query("SET secret_directory = '" + secret_dir + "'"));
+		REQUIRE_NO_FAIL(con.Query("CREATE PERSISTENT SECRET \"a%2Fb\" (TYPE http)"));
+	}
+	// the file of the secret has the name used before secret names were escaped
+	auto legacy_file = local.JoinPath(secret_dir, "a%2Fb.duckdb_secret");
+	local.MoveFile(local.JoinPath(secret_dir, "a%252Fb.duckdb_secret"), legacy_file);
+	auto config = GetTestConfig();
+	DuckDB db(nullptr, config.get());
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("SET secret_directory = '" + secret_dir + "'"));
+	auto result = con.Query("SELECT name FROM duckdb_secrets()");
+	REQUIRE(CHECK_COLUMN(result, 0, {"a%2Fb"}));
+
+	// the file is kept elsewhere while a directory with content is in its place, so the removal fails
+	auto kept_file = TestCreatePath("persistent_secret_rollback_legacy_drop_kept");
+	local.MoveFile(legacy_file, kept_file);
+	local.CreateDirectory(legacy_file);
+	local.OpenFile(local.JoinPath(legacy_file, "content"),
+	               FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE);
+	result = con.Query("DROP PERSISTENT SECRET \"a%2Fb\"");
+	REQUIRE(result->HasError());
+	REQUIRE(StringUtil::Contains(result->GetError(), "Failed to remove secret file"));
+	// the failed drop writes no file under the escaped name
+	REQUIRE(SecretFiles(secret_dir) == vector<string> {"a%2Fb.duckdb_secret"});
+	result = con.Query("SELECT name FROM duckdb_secrets()");
+	REQUIRE(CHECK_COLUMN(result, 0, {"a%2Fb"}));
+
+	// with the file back in its place, the next drop removes it and not the file the name encodes to
+	local.RemoveDirectory(legacy_file);
+	local.MoveFile(kept_file, legacy_file);
+	REQUIRE_NO_FAIL(con.Query("DROP PERSISTENT SECRET \"a%2Fb\""));
+	REQUIRE(SecretFiles(secret_dir).empty());
+	result = con.Query("SELECT count(*) FROM duckdb_secrets()");
+	REQUIRE(CHECK_COLUMN(result, 0, {0}));
+}
+
+TEST_CASE("A rollback does not write back the file of a secret that another instance dropped", "[api][secrets]") {
+	auto secret_dir = TestCreatePath("persistent_secret_rollback_dropped_elsewhere");
+	auto config = GetTestConfig();
+	DuckDB db(nullptr, config.get());
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("SET secret_directory = '" + secret_dir + "'"));
+	REQUIRE_NO_FAIL(con.Query("CREATE PERSISTENT SECRET s1 (TYPE http)"));
+	{
+		// another instance on the directory drops the secret, which removes its file
+		auto other_config = GetTestConfig();
+		DuckDB other_db(nullptr, other_config.get());
+		Connection other_con(other_db);
+		REQUIRE_NO_FAIL(other_con.Query("SET secret_directory = '" + secret_dir + "'"));
+		REQUIRE_NO_FAIL(other_con.Query("DROP PERSISTENT SECRET s1"));
+	}
+	REQUIRE(SecretFiles(secret_dir).empty());
+
+	// the drop finds no file to remove, so whatever it reports there is no file for the rollback to restore
+	REQUIRE_NO_FAIL(con.Query("BEGIN"));
+	con.Query("DROP PERSISTENT SECRET s1");
+	REQUIRE_NO_FAIL(con.Query("ROLLBACK"));
+	REQUIRE(SecretFiles(secret_dir).empty());
+	auto result = con.Query("SELECT count(*) FROM duckdb_secrets() WHERE name = 's1'");
+	REQUIRE(CHECK_COLUMN(result, 0, {1}));
+	// neither does a drop outside a transaction leave a file
+	con.Query("DROP PERSISTENT SECRET s1");
+	REQUIRE(SecretFiles(secret_dir).empty());
+
+	// a new instance does not read the secret that was dropped
+	auto fresh_config = GetTestConfig();
+	DuckDB fresh_db(nullptr, fresh_config.get());
+	Connection fresh_con(fresh_db);
+	REQUIRE_NO_FAIL(fresh_con.Query("SET secret_directory = '" + secret_dir + "'"));
+	result = fresh_con.Query("SELECT count(*) FROM duckdb_secrets()");
+	REQUIRE(CHECK_COLUMN(result, 0, {0}));
+}
+
 TEST_CASE("Rolling back a secret replacement restores the old secret in the same legacy file", "[api][secrets]") {
 	auto secret_dir = TestCreatePath("persistent_secret_rollback_legacy_replacement");
 	auto &local = TestLocalFileSystem();

@@ -96,8 +96,9 @@ true
 statement ok
 CREATE TABLE modes AS SELECT i, i % 9 AS g, CASE WHEN i % 3 = 0 THEN '-infinity'::TIMESTAMP WHEN i % 3 = 1 THEN 'infinity'::TIMESTAMP ELSE make_timestamp(-9223372036854775808) END AS ts FROM range(30000) t(i);
 
+# the states are stored in a temporary table since storage versions prior to v2.0.0 do not support state columns
 statement ok
-CREATE TABLE mode_states AS SELECT g, i // 1000 AS batch, approx_quantile(ts, 0.5) EXPORT_STATE AS s FROM modes GROUP BY g, batch;
+CREATE TEMP TABLE mode_states AS SELECT g, i // 1000 AS batch, approx_quantile(ts, 0.5) EXPORT_STATE AS s FROM modes GROUP BY g, batch;
 
 query I
 SELECT count(*) FROM (SELECT g, finalize(combine_aggr(s)) AS q FROM mode_states GROUP BY g) WHERE (g % 3 = 0 AND q = '-infinity'::TIMESTAMP) OR (g % 3 = 1 AND q = 'infinity'::TIMESTAMP) OR (g % 3 = 2 AND epoch_us(q) = -9223372036854774784);

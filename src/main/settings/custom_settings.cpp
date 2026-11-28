@@ -1510,7 +1510,7 @@ void ProgressBarTimeSetting::OnSet(SettingCallbackInfo &info, Value &input) {
 	auto &context = GetProgressBarSettingContext(info, ProgressBarTimeSetting::Name);
 	ProgressBar::SystemOverrideCheck(ClientConfig::GetConfig(context));
 	if (info.is_reset) {
-		Settings::Reset(context, EnableProgressBarSetting::SettingIndex, SetScope::SESSION);
+		ClientConfig::GetConfig(context).user_settings.ClearSetting(EnableProgressBarSetting::SettingIndex);
 		return;
 	}
 	if (input.IsNull()) {
@@ -1849,7 +1849,7 @@ static void ClearDialectCompatibilityMode(ClientContext &context) {
 	auto &config = DatabaseInstance::GetDatabase(context).config;
 	auto dialect_extension = config.GetCallbackManager().GetDialectExtension(*client_config.current_dialect);
 	if (dialect_extension && dialect_extension->GetCompatibilityMode()) {
-		Settings::Reset(context, DialectCompatibilityModeSetting::SettingIndex, SetScope::SESSION);
+		client_config.user_settings.ClearSetting(DialectCompatibilityModeSetting::SettingIndex);
 	}
 }
 
@@ -1874,12 +1874,9 @@ void CurrentDialectSetting::SetLocal(ClientContext &context, const Value &input)
 	auto &dialect_extension = *dialect_extension_p;
 	//! The grammar gets lazily compiled, load it if it wasn't compiled yet
 	(void)dialect_extension.GetCompiledGrammar(context);
-	auto &compatibility_mode = dialect_extension.GetCompatibilityMode();
-	if (!compatibility_mode) {
-		// a dialect with a mode replaces the mode of the previous dialect below
-		ClearDialectCompatibilityMode(context);
-	}
+	ClearDialectCompatibilityMode(context);
 	client_config.current_dialect = dialect_name;
+	auto &compatibility_mode = dialect_extension.GetCompatibilityMode();
 	if (compatibility_mode) {
 		Settings::Set<DialectCompatibilityModeSetting>(context, SetScope::LOCAL,
 		                                               Value(EnumUtil::ToString(*compatibility_mode)));

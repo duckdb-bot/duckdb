@@ -32,16 +32,22 @@ public:
 	void ClearSetting(idx_t setting_index);
 	bool IsSet(idx_t setting_index) const;
 	bool TryGetSetting(idx_t setting_index, Value &result_value) const;
-	//! Whether a SET changes the value of the setting, which has unset_value while it is not set (if known)
-	bool SetChangesValue(idx_t setting_index, const Value &target_value, optional_ptr<const Value> unset_value) const;
-	//! Whether a RESET changes the value of the setting
-	bool ClearChangesValue(idx_t setting_index, optional_ptr<const Value> unset_value) const;
+	//! The number of setting indexes that the map has room for
+	idx_t SettingCount() const;
 
 private:
 	vector<GenericSetting> settings;
 };
 
 struct GlobalUserSettings;
+
+//! The values of the settings that a client reads, without those that are at their default
+struct SettingsSnapshot {
+	//! Sorted by setting index
+	vector<pair<idx_t, Value>> values;
+
+	bool Equals(const SettingsSnapshot &other) const;
+};
 
 struct CachedGlobalSettings {
 	CachedGlobalSettings();
@@ -85,20 +91,23 @@ public:
 	GlobalUserSettings(const GlobalUserSettings &other);
 	GlobalUserSettings &operator=(const GlobalUserSettings &);
 
-	//! unset_value is the value that the setting has while it is not set here, the default (if known)
-	void SetUserSetting(idx_t setting_index, Value target_value, optional_ptr<const Value> unset_value = nullptr);
-	void ClearSetting(idx_t setting_index, optional_ptr<const Value> unset_value = nullptr);
+	void SetUserSetting(idx_t setting_index, Value target_value);
+	void ClearSetting(idx_t setting_index);
 	bool IsSet(idx_t setting_index) const;
 	SettingLookupResult TryGetSetting(idx_t setting_index, Value &result_value) const;
 	bool HasExtensionOption(const Identifier &name) const;
 	idx_t AddExtensionOption(const Identifier &name, ExtensionOption extension_option);
 	identifier_map_t<ExtensionOption> GetExtensionSettings() const;
 	bool TryGetExtensionOption(const Identifier &name, ExtensionOption &result) const;
+	optional_idx TryGetExtensionSettingIndex(const Identifier &name) const;
 	//! The default value of the extension setting with the given index, if it has one
 	bool TryGetExtensionDefault(idx_t setting_index, Value &result) const;
-	optional_idx TryGetExtensionSettingIndex(const Identifier &name) const;
 	hugeint_t GetUUID() const;
-	//! The number of times the value of a database-global setting changed
+	//! The version of the settings, which moves whenever a setting is stored, removed or added
+	idx_t GetVersion() const;
+	//! Copies the settings and returns their version
+	idx_t CopySettings(UserSettingsMap &result) const;
+	//! The number of changes of database-global settings that are not kept in this map
 	idx_t GetChangeCount() const;
 	//! Counts the change of a setting that is not kept in this map
 	void RegisterChange();
@@ -115,7 +124,7 @@ private:
 	identifier_map_t<ExtensionOption> extension_parameters;
 	//! Current version of the settings - incremented when settings are modified
 	atomic<idx_t> settings_version;
-	//! Incremented when the value of a setting changes, and not when an extension adds a setting
+	//! Incremented when a setting that is not kept in the map changes
 	atomic<idx_t> change_count;
 	//! Settings uuid
 	hugeint_t uuid;
@@ -125,13 +134,14 @@ struct LocalUserSettings {
 public:
 	~LocalUserSettings();
 
-	//! unset_value is the value that the client reads while the setting is not set here (if known)
-	void SetUserSetting(idx_t setting_index, Value target_value, optional_ptr<const Value> unset_value = nullptr);
-	void ClearSetting(idx_t setting_index, optional_ptr<const Value> unset_value = nullptr);
+	void SetUserSetting(idx_t setting_index, Value target_value);
+	void ClearSetting(idx_t setting_index);
 	bool IsSet(idx_t setting_index) const;
 	SettingLookupResult TryGetSetting(const GlobalUserSettings &global_settings, idx_t setting_index,
 	                                  Value &result_value) const;
-	//! The number of times the value of a setting of the client changed
+	//! The values of the settings that the client reads now. It is the same object as long as no value changes
+	const shared_ptr<const SettingsSnapshot> &GetSnapshot(const DBConfig &config);
+	//! The number of changes of settings of the client that are not kept in this map
 	idx_t GetChangeCount() const;
 	//! Counts the change of a setting that is not kept in this map
 	void RegisterChange();
@@ -139,7 +149,13 @@ public:
 private:
 	//! Client-local settings
 	UserSettingsMap settings_map;
-	//! Incremented when the value of a setting changes
+	//! Incremented when a setting is stored or removed
+	idx_t version = 0;
+	//! Incremented when a setting that is not kept in the map changes
 	idx_t change_count = 0;
+	//! The snapshot of the settings at the versions below
+	shared_ptr<const SettingsSnapshot> snapshot;
+	idx_t snapshot_version = 0;
+	idx_t snapshot_global_version = 0;
 };
 } // namespace duckdb

@@ -5,11 +5,11 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/client_context.hpp"
-#include "duckdb/main/settings.hpp"
 
 namespace duckdb {
 
-void PhysicalReset::ResetExtensionVariable(ExecutionContext &context, ExtensionOption &extension_option) const {
+void PhysicalReset::ResetExtensionVariable(ExecutionContext &context, DBConfig &config,
+                                           ExtensionOption &extension_option) const {
 	auto effective_scope = extension_option.ResolveScope(Identifier(name.ToStdString()), scope);
 	if (extension_option.set_function) {
 		extension_option.set_function(context.client, effective_scope, extension_option.default_value);
@@ -17,7 +17,12 @@ void PhysicalReset::ResetExtensionVariable(ExecutionContext &context, ExtensionO
 	if (extension_option.info) {
 		extension_option.info->OnSet(context.client, effective_scope, extension_option.default_value, true);
 	}
-	Settings::Reset(context.client, extension_option.setting_index.GetIndex(), effective_scope);
+	if (effective_scope == SetScope::GLOBAL) {
+		config.ResetOption(extension_option);
+	} else {
+		auto &client_config = ClientConfig::GetConfig(context.client);
+		client_config.user_settings.ClearSetting(extension_option.setting_index.GetIndex());
+	}
 }
 
 SourceResultType PhysicalReset::GetDataInternal(ExecutionContext &context, DataChunk &chunk,
@@ -40,7 +45,7 @@ SourceResultType PhysicalReset::GetDataInternal(ExecutionContext &context, DataC
 				throw InvalidInputException("Extension parameter %s was not found after autoloading", name);
 			}
 		}
-		ResetExtensionVariable(context, extension_option);
+		ResetExtensionVariable(context, config, extension_option);
 		return SourceResultType::FINISHED;
 	}
 
@@ -56,7 +61,12 @@ SourceResultType PhysicalReset::GetDataInternal(ExecutionContext &context, DataC
 			info.is_reset = true;
 			option->set_callback(info, reset_val);
 		}
-		Settings::Reset(context.client, setting_index, variable_scope);
+		if (variable_scope == SetScope::SESSION) {
+			auto &client_config = ClientConfig::GetConfig(context.client);
+			client_config.user_settings.ClearSetting(setting_index);
+		} else {
+			config.ResetGenericOption(setting_index);
+		}
 		return SourceResultType::FINISHED;
 	}
 	const auto previous_value = option->get_setting(context.client);

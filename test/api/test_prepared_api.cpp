@@ -908,6 +908,29 @@ TEST_CASE("A prepared statement keeps its plan when a SET or RESET keeps the val
 	REQUIRE_NO_FAIL(con.Query("PRAGMA disable_checkpoint_on_shutdown"));
 	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
 	REQUIRE(rebinds.back());
+
+	// a function that removes the value of a setting and stores the same value again
+	const string profile = "CALL enable_profiling(format := 'no_output', save_location := '";
+	REQUIRE_NO_FAIL(con.Query(profile + TestCreatePath("prepared_settings_profile.txt") + "')"));
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(con.Query(profile + TestCreatePath("prepared_settings_profile.txt") + "')"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(!rebinds.back());
+	REQUIRE_NO_FAIL(con.Query(profile + TestCreatePath("prepared_settings_other_profile.txt") + "')"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(rebinds.back());
+	REQUIRE_NO_FAIL(con.Query("CALL disable_profiling()"));
+
+	// a setting that is set back to the value it had when the statement was prepared
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(con.Query("SET SESSION default_null_order = 'nulls_last'"));
+	result = con.Query("EXECUTE ordered");
+	REQUIRE(CHECK_COLUMN(result, 0, {1, 2, Value()}));
+	REQUIRE(rebinds.back());
+	REQUIRE_NO_FAIL(con.Query("RESET SESSION default_null_order"));
+	result = con.Query("EXECUTE ordered");
+	REQUIRE(CHECK_COLUMN(result, 0, {Value(), 1, 2}));
+	REQUIRE(!rebinds.back());
 }
 
 TEST_CASE("A prepared statement keeps its plan when the selected dialect is selected again", "[api]") {

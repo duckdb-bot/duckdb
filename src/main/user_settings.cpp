@@ -1,4 +1,5 @@
 #include "duckdb/main/user_settings.hpp"
+#include "duckdb/main/config.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/common/type_visitor.hpp"
 #include "duckdb/common/types/string.hpp"
@@ -128,19 +129,21 @@ bool UserSettingsMap::TryGetSetting(idx_t setting_index, Value &result_value) co
 	return true;
 }
 
-bool UserSettingsMap::SetChangesValue(idx_t setting_index, const Value &target_value,
-                                      optional_ptr<const Value> unset_value) const {
-	if (IsSet(setting_index)) {
-		return !SameUserSettingValue(settings[setting_index].value, target_value);
-	}
-	return !unset_value || !SameUserSettingValue(*unset_value, target_value);
+idx_t UserSettingsMap::SettingCount() const {
+	return settings.size();
 }
 
-bool UserSettingsMap::ClearChangesValue(idx_t setting_index, optional_ptr<const Value> unset_value) const {
-	if (!IsSet(setting_index)) {
+bool SettingsSnapshot::Equals(const SettingsSnapshot &other) const {
+	if (values.size() != other.values.size()) {
 		return false;
 	}
-	return !unset_value || !SameUserSettingValue(settings[setting_index].value, *unset_value);
+	for (idx_t i = 0; i < values.size(); i++) {
+		if (values[i].first != other.values[i].first ||
+		    !SameUserSettingValue(values[i].second, other.values[i].second)) {
+			return false;
+		}
+	}
+	return true;
 }
 
 //===--------------------------------------------------------------------===//
@@ -163,27 +166,14 @@ GlobalUserSettings &GlobalUserSettings::operator=(const GlobalUserSettings &othe
 	return *this;
 }
 
-void GlobalUserSettings::SetUserSetting(idx_t setting_index, Value target_value,
-                                        optional_ptr<const Value> unset_value) {
-	lock_guard<mutex> guard(lock);
-	const bool value_changes = settings_map.SetChangesValue(setting_index, target_value, unset_value);
-	if (settings_map.SetUserSetting(setting_index, std::move(target_value))) {
-		++settings_version;
-	}
-	// counted last, so that a reader of the new count reads the new value
-	if (value_changes) {
-		++change_count;
-	}
+idx_t GlobalUserSettings::GetVersion() const {
+	return settings_version.load();
 }
 
-void GlobalUserSettings::ClearSetting(idx_t setting_index, optional_ptr<const Value> unset_value) {
+idx_t GlobalUserSettings::CopySettings(UserSettingsMap &result) const {
 	lock_guard<mutex> guard(lock);
-	const bool value_changes = settings_map.ClearChangesValue(setting_index, unset_value);
-	settings_map.ClearSetting(setting_index);
-	++settings_version;
-	if (value_changes) {
-		++change_count;
-	}
+	result = settings_map;
+	return settings_version.load();
 }
 
 idx_t GlobalUserSettings::GetChangeCount() const {
@@ -192,6 +182,19 @@ idx_t GlobalUserSettings::GetChangeCount() const {
 
 void GlobalUserSettings::RegisterChange() {
 	++change_count;
+}
+
+void GlobalUserSettings::SetUserSetting(idx_t setting_index, Value target_value) {
+	lock_guard<mutex> guard(lock);
+	if (settings_map.SetUserSetting(setting_index, std::move(target_value))) {
+		++settings_version;
+	}
+}
+
+void GlobalUserSettings::ClearSetting(idx_t setting_index) {
+	lock_guard<mutex> guard(lock);
+	settings_map.ClearSetting(setting_index);
+	++settings_version;
 }
 
 bool GlobalUserSettings::IsSet(idx_t setting_index) const {
@@ -363,18 +366,47 @@ CachedGlobalSettings::CachedGlobalSettings(const GlobalUserSettings &global_user
 LocalUserSettings::~LocalUserSettings() {
 }
 
-void LocalUserSettings::SetUserSetting(idx_t setting_index, Value target_value, optional_ptr<const Value> unset_value) {
-	if (settings_map.SetChangesValue(setting_index, target_value, unset_value)) {
-		change_count++;
+void LocalUserSettings::SetUserSetting(idx_t setting_index, Value target_value) {
+	if (settings_map.SetUserSetting(setting_index, std::move(target_value))) {
+		version++;
 	}
-	settings_map.SetUserSetting(setting_index, std::move(target_value));
 }
 
-void LocalUserSettings::ClearSetting(idx_t setting_index, optional_ptr<const Value> unset_value) {
-	if (settings_map.ClearChangesValue(setting_index, unset_value)) {
-		change_count++;
+void LocalUserSettings::ClearSetting(idx_t setting_index) {
+	if (settings_map.IsSet(setting_index)) {
+		version++;
 	}
 	settings_map.ClearSetting(setting_index);
+}
+
+const shared_ptr<const SettingsSnapshot> &LocalUserSettings::GetSnapshot(const DBConfig &config) {
+	auto &global_settings = config.user_settings;
+	if (snapshot && snapshot_version == version && snapshot_global_version == global_settings.GetVersion()) {
+		return snapshot;
+	}
+	UserSettingsMap global_map;
+	const auto global_version = global_settings.CopySettings(global_map);
+	auto current = make_shared_ptr<SettingsSnapshot>();
+	const auto setting_count = MaxValue(settings_map.SettingCount(), global_map.SettingCount());
+	for (idx_t setting_index = 0; setting_index < setting_count; setting_index++) {
+		// the client reads its own value, then the value of the database
+		Value value;
+		if (!settings_map.TryGetSetting(setting_index, value) && !global_map.TryGetSetting(setting_index, value)) {
+			continue;
+		}
+		Value default_value;
+		if (config.TryGetDefaultValue(setting_index, default_value) && SameUserSettingValue(value, default_value)) {
+			// set to the default, which is the value of a setting that is not set
+			continue;
+		}
+		current->values.emplace_back(setting_index, std::move(value));
+	}
+	if (!snapshot || !snapshot->Equals(*current)) {
+		snapshot = std::move(current);
+	}
+	snapshot_version = version;
+	snapshot_global_version = global_version;
+	return snapshot;
 }
 
 idx_t LocalUserSettings::GetChangeCount() const {

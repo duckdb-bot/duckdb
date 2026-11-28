@@ -43,7 +43,7 @@ public:
 	const SetScope scope;
 
 private:
-	void ResetExtensionVariable(ExecutionContext &context, ExtensionOption &extension_option) const;
+	void ResetExtensionVariable(ExecutionContext &context, DBConfig &config, ExtensionOption &extension_option) const;
 };
 
 } // namespace duckdb

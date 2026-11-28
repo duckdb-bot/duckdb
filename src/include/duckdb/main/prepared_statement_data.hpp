@@ -19,6 +19,7 @@
 namespace duckdb {
 class CatalogEntry;
 class ClientContext;
+struct SettingsSnapshot;
 class PhysicalPlan;
 class SQLStatement;
 
@@ -43,7 +44,9 @@ public:
 
 	//! The statement properties
 	StatementProperties properties;
-	//! The change counts of the client and the database settings that the statement was bound under
+	//! The values of the settings that the statement was bound under
+	shared_ptr<const SettingsSnapshot> settings_snapshot;
+	//! The change counts of the settings with their own setter that the statement was bound under
 	idx_t client_setting_changes = 0;
 	idx_t database_setting_changes = 0;
 

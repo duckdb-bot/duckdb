@@ -95,6 +95,32 @@ EXECUTE decimal_type;
 ----
 DECIMAL(60,0)
 
+# a setting that is set back to the value it had when the statement was prepared
+statement ok
+SET max_decimal_width = 38;
+
+statement ok
+PREPARE decimal_type AS SELECT typeof(1::DECIMAL(30,0) * 1::DECIMAL(30,0));
+
+statement ok
+SET max_decimal_width = 76;
+
+query I
+EXECUTE decimal_type;
+----
+DECIMAL(60,0)
+
+statement ok
+SET max_decimal_width = 38;
+
+query I
+EXECUTE decimal_type;
+----
+DECIMAL(38,0)
+
+statement ok
+RESET max_decimal_width;
+
 # settings of the database, the order of NULLs, the order and the collation
 statement ok
 PREPARE null_order AS SELECT x FROM (VALUES (1), (NULL)) t(x) ORDER BY x;
@@ -291,6 +317,35 @@ statement error
 EXECUTE subquery;
 ----
 More than one row returned by a subquery
+
+# one setting gets the value that another one gives up
+statement ok
+SET ieee_floating_point_ops = false;
+
+statement ok
+PREPARE division AS SELECT 1.0::DOUBLE / 0::DOUBLE;
+
+statement ok
+PREPARE subquery AS SELECT (SELECT x FROM (VALUES (1), (2)) t(x) ORDER BY x);
+
+statement ok
+RESET ieee_floating_point_ops;
+
+statement ok
+SET scalar_subquery_error_on_multiple_rows = false;
+
+query I
+EXECUTE division;
+----
+inf
+
+query I
+EXECUTE subquery;
+----
+1
+
+statement ok
+RESET scalar_subquery_error_on_multiple_rows;
 
 # the search path
 statement ok

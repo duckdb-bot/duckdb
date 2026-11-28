@@ -455,7 +455,7 @@ void DBConfig::SetOption(optional_ptr<DatabaseInstance> db, const ConfigurationO
 		if (option.is_deprecated) {
 			info.WarnDeprecated(option.name);
 		}
-		SetOption(option.setting_idx.GetIndex(), std::move(input));
+		user_settings.SetUserSetting(option.setting_idx.GetIndex(), std::move(input));
 		return;
 	}
 	if (!option.set_global) {
@@ -475,7 +475,7 @@ void DBConfig::ResetOption(optional_ptr<DatabaseInstance> db, const Configuratio
 			info.is_reset = true;
 			option.set_callback(info, reset_value);
 		}
-		ResetGenericOption(option.setting_idx.GetIndex());
+		user_settings.ClearSetting(option.setting_idx.GetIndex());
 		return;
 	}
 	if (!option.reset_global) {
@@ -495,10 +495,7 @@ Value ConfigurationOption::GetDefaultValue(const DBConfig &config) const {
 }
 
 void DBConfig::SetOption(idx_t setting_index, Value value) {
-	// a first SET to the default changes no value
-	Value default_value;
-	const bool has_default = TryGetDefaultValue(setting_index, default_value);
-	user_settings.SetUserSetting(setting_index, std::move(value), has_default ? &default_value : nullptr);
+	user_settings.SetUserSetting(setting_index, std::move(value));
 }
 
 void DBConfig::SetOption(const Identifier &name, Value value) {
@@ -511,14 +508,11 @@ void DBConfig::SetOption(const Identifier &name, Value value) {
 }
 
 void DBConfig::ResetOption(const ExtensionOption &extension_option) {
-	ResetGenericOption(extension_option.setting_index.GetIndex());
+	user_settings.ClearSetting(extension_option.setting_index.GetIndex());
 }
 
 void DBConfig::ResetGenericOption(idx_t setting_index) {
-	// the RESET of a value that equals the default changes no value
-	Value default_value;
-	const bool has_default = TryGetDefaultValue(setting_index, default_value);
-	user_settings.ClearSetting(setting_index, has_default ? &default_value : nullptr);
+	user_settings.ClearSetting(setting_index);
 }
 
 LogicalType DBConfig::ParseLogicalType(const string &type) {
@@ -654,7 +648,7 @@ void DBConfig::AddExtensionOption(const Identifier &name, ExtensionOption extens
 	// copy over unrecognized options, if they match the new extension option
 	auto iter = options.unrecognized_options.find(name);
 	if (iter != options.unrecognized_options.end()) {
-		SetOption(setting_index, iter->second);
+		user_settings.SetUserSetting(setting_index, iter->second);
 		options.unrecognized_options.erase(iter);
 	}
 }

@@ -119,9 +119,17 @@ bool PreparedStatementData::RequireRebind(ClientContext &context,
 		// parameters not yet bound: query always requires a rebind
 		return true;
 	}
-	if (client_setting_changes != ClientConfig::GetConfig(context).user_settings.GetChangeCount() ||
-	    database_setting_changes != DBConfig::GetConfig(context).user_settings.GetChangeCount()) {
-		// a setting changed, binding and planning can read any of them
+	auto &client_settings = ClientConfig::GetConfig(context).user_settings;
+	auto &config = DBConfig::GetConfig(context);
+	if (client_setting_changes != client_settings.GetChangeCount() ||
+	    database_setting_changes != config.user_settings.GetChangeCount()) {
+		// a setting with its own setter changed, binding and planning can read any of them
+		return true;
+	}
+	auto &current_settings = client_settings.GetSnapshot(config);
+	if (settings_snapshot != current_settings &&
+	    (!settings_snapshot || !settings_snapshot->Equals(*current_settings))) {
+		// the value of a setting differs from the one the statement was bound under
 		return true;
 	}
 	BoundParameterData variable_storage;

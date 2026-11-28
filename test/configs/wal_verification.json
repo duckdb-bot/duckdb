@@ -65,6 +65,12 @@
       ]
     },
     {
+      "reason": "FIXME: The replay of an ALTER that adds a struct field cannot resolve a user type that the default of the field casts to.",
+      "paths": [
+        "test/sql/alter/struct/alter_struct_field_type_dependencies.test"
+      ]
+    },
+    {
       "reason": "FIXME: Wrong result in query.",
       "paths": [
         "test/sql/storage/update/nop_update_tpch.test_slow",

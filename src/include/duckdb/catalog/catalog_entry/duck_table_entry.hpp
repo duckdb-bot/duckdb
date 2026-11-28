@@ -95,6 +95,10 @@ private:
 	unique_ptr<CatalogEntry> SetDefault(ClientContext &context, SetDefaultInfo &info);
 	unique_ptr<CatalogEntry> ChangeColumnType(ClientContext &context, ChangeColumnTypeInfo &info,
 	                                          AlterTableType alter_table_type);
+	//! Changes the type of a struct column for a field ALTER and hands the dependencies of the table to its info
+	unique_ptr<CatalogEntry> ChangeStructColumnType(ClientContext &context, AlterTableInfo &info,
+	                                                ChangeColumnTypeInfo &change_column_type,
+	                                                AlterTableType alter_table_type);
 	unique_ptr<CatalogEntry> SetNotNull(ClientContext &context, SetNotNullInfo &info);
 	unique_ptr<CatalogEntry> DropNotNull(ClientContext &context, DropNotNullInfo &info);
 	unique_ptr<CatalogEntry> AddForeignKeyConstraint(AlterForeignKeyInfo &info);

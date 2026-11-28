@@ -18,10 +18,14 @@
 #include "duckdb/parser/constraints/list.hpp"
 #include "duckdb/parser/constraints/unique_constraint.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/parser/expression/cast_expression.hpp"
 #include "duckdb/parser/expression/columnref_expression.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
+#include "duckdb/parser/expression/collate_expression.hpp"
 #include "duckdb/parser/expression/function_expression.hpp"
 #include "duckdb/parser/expression/subquery_expression.hpp"
+#include "duckdb/main/prepared_statement.hpp"
+#include "duckdb/parser/expression/parameter_expression.hpp"
 #include "duckdb/parser/parsed_data/create_index_info.hpp"
 #include "duckdb/parser/parsed_data/create_macro_info.hpp"
 #include "duckdb/parser/parsed_data/create_trigger_info.hpp"
@@ -372,6 +376,83 @@ void Binder::BindView(ClientContext &context, const SelectStatement &stmt, const
 	}
 	result_types = query_node.types;
 	result_names = query_node.names;
+}
+
+static bool IsPositionalParameter(const ParsedExpression &expr) {
+	return expr.GetExpressionClass() == ExpressionClass::PARAMETER &&
+	       !PreparedStatement::AllowsUserVariableFallback(expr.Cast<ParameterExpression>().Identifier());
+}
+
+//! Replaces the positional parameters of a query with their values, or only finds them when replace is false
+struct ViewParameterReplacer {
+	const identifier_map_t<BoundParameterData> &values;
+	bool replace;
+	bool found = false;
+
+	void Visit(unique_ptr<ParsedExpression> &expr) {
+		if (expr->GetExpressionClass() == ExpressionClass::PARAMETER) {
+			// a named parameter stays, as it can read a variable when the view is queried
+			if (!IsPositionalParameter(*expr)) {
+				return;
+			}
+			auto entry = values.find(expr->Cast<ParameterExpression>().Identifier());
+			if (entry == values.end()) {
+				// the value is only known when the statement is executed
+				throw ParameterNotResolvedException();
+			}
+			found = true;
+			if (replace) {
+				// a string stays a literal like a bound string, any other value is cast to its bound type so that it
+				// is never a column index in ORDER BY, GROUP BY or DISTINCT ON
+				auto &data = entry->second;
+				auto constant = ConstantExpression::FromValue(data.GetValue());
+				auto type = data.return_type;
+				if (type.id() == LogicalTypeId::INTEGER_LITERAL) {
+					type = IntegerLiteral::GetType(type);
+				}
+				if (type.id() != LogicalTypeId::STRING_LITERAL && type.id() != LogicalTypeId::SQLNULL) {
+					// a collation is applied by COLLATE, as the type of a cast cannot name it
+					string collation;
+					if (type.id() == LogicalTypeId::VARCHAR && !type.HasAlias()) {
+						collation = StringType::GetCollation(type);
+					}
+					constant =
+					    make_uniq<CastExpression>(collation.empty() ? type : LogicalType::VARCHAR, std::move(constant));
+					if (!collation.empty()) {
+						constant = make_uniq<CollateExpression>(std::move(collation), std::move(constant));
+					}
+				}
+				constant->SetAlias(expr->GetAlias());
+				expr = std::move(constant);
+			}
+			return;
+		}
+		if (expr->GetExpressionClass() == ExpressionClass::SUBQUERY) {
+			Visit(*expr->Cast<SubqueryExpression>().SubqueryMutable()->node);
+		}
+		ParsedExpressionIterator::EnumerateChildren(*expr, [&](unique_ptr<ParsedExpression> &child) { Visit(child); });
+	}
+
+	void Visit(QueryNode &node) {
+		ParsedExpressionIterator::EnumerateQueryNodeChildren(
+		    node, [&](unique_ptr<ParsedExpression> &child) { Visit(child); });
+	}
+};
+
+//! Stores the values of the positional parameters of a prepared statement in the query of the view
+static void StoreViewParameterValues(Binder &binder, CreateViewInfo &base) {
+	auto parameters = binder.GetParameters();
+	if (!parameters || !base.query) {
+		return;
+	}
+	ViewParameterReplacer finder {parameters->GetParameterData(), false};
+	finder.Visit(*base.query->node);
+	if (!finder.found) {
+		return;
+	}
+	ViewParameterReplacer replacer {parameters->GetParameterData(), true};
+	replacer.Visit(*base.query->node);
+	base.sql = base.ToString();
 }
 
 void Binder::BindCreateViewInfo(CreateViewInfo &base) {
@@ -958,6 +1039,8 @@ BoundStatement Binder::Bind(CreateStatement &stmt) {
 				base.binding_mode = CreateViewBindingMode::SKIP_BINDING;
 			}
 		}
+		// the values of the parameters become constants of the stored query, so they are checked with it
+		StoreViewParameterValues(*this, base);
 		if (base.query && !base.temporary) {
 			// the query of the view is stored, so a cast in it may not target a decimal wider than the database stores
 			auto &attached = schema.ParentCatalog().GetAttached();

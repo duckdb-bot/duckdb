@@ -301,8 +301,8 @@ public:
 	inline void SkipValueInternal();
 	//! Moves last_position past the newline that ends the row at buffer_pos
 	inline void SetLastPositionAfterNewline(idx_t buffer_pos);
-	//! Keeps the position of the current row for the error messages of Flush
-	inline void StoreLinePosition();
+	//! Keeps the position of the current row for Flush. A row that its errors removed from the chunk keeps none
+	inline void StoreLinePosition(bool row_has_errors = false);
 	//! Marks the columns of a borked row that were never written as NULL
 	void InvalidateUnwrittenColumns(idx_t first_unwritten_col);
 	//! Force the throw of a Unicode error
@@ -434,6 +434,10 @@ private:
 	vector<LogicalType> types;
 	//! True Position where this scanner started scanning(i.e., after figuring out where the first line starts)
 	idx_t start_pos;
+	//! Position where the first row that this scanner returned starts, not set while it has returned no row
+	optional_idx first_row_pos;
+	//! Position where the last row that this scanner returned ends
+	idx_t last_row_end_pos = 0;
 	//! Pointer to the previous buffer handle, necessary for over-buffer values
 	shared_ptr<CSVBufferHandle> previous_buffer_handle;
 	//! Strict state machine is basically a state machine with rfc 4180 set to true, used to figure out a new line.

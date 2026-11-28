@@ -89,3 +89,35 @@ statement error
 INSERT INTO venue SELECT * FROM read_csv('{DATA_DIR}/csv/venue_pipe.csv');
 ----
 Could not convert string "\N" to 'INTEGER'
+
+# a type given with columns was not auto-detected, with the sniffer off
+statement ok
+COPY (SELECT * FROM (VALUES ('1'), ('nope'), ('2')) v(x)) TO '{TEST_DIR}/csv_error_message_type_given.csv' (HEADER false);
+
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/csv_error_message_type_given.csv', auto_detect = false, header = false, columns = {'x': 'INTEGER'});
+----
+This type was either manually set or derived from an existing table. Select a different type to correctly parse this column.
+
+statement ok
+CREATE TABLE given_type (x INTEGER);
+
+statement error
+COPY given_type FROM '{TEST_DIR}/csv_error_message_type_given.csv' (AUTO_DETECT false);
+----
+This type was either manually set or derived from an existing table. Select a different type to correctly parse this column.
+
+# and with the sniffer on, also when the sample has the type that was given
+statement ok
+COPY (SELECT CASE WHEN i = 2500 THEN 'nope' ELSE i::VARCHAR END AS x FROM range(3000) t(i) ORDER BY i) TO '{TEST_DIR}/csv_error_message_type_late.csv' (HEADER false);
+
+statement error
+SELECT count(x) FROM read_csv('{TEST_DIR}/csv_error_message_type_late.csv', header = false, columns = {'x': 'BIGINT'}, sample_size = 1);
+----
+This type was either manually set or derived from an existing table. Select a different type to correctly parse this column.
+
+# the same file without the columns has a detected type
+statement error
+SELECT count(column0) FROM read_csv('{TEST_DIR}/csv_error_message_type_late.csv', header = false, sample_size = 1);
+----
+This type was auto-detected from the CSV file.

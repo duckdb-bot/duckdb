@@ -463,6 +463,10 @@ string FormatOptionLine(const string &name, const CSVOption<T> &option) {
 }
 
 bool CSVReaderOptions::WasTypeManuallySet(idx_t i) const {
+	if (columns_set) {
+		// every column was given with its type, whether or not the sniffer ran
+		return true;
+	}
 	if (i >= was_type_manually_set.size()) {
 		return false;
 	}

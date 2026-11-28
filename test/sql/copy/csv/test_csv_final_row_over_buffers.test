@@ -691,6 +691,188 @@ SELECT * FROM read_csv('{TEST_DIR}/crlf_pair_split_comment.csv', header = true, 
 7	8
 9	9
 
+# a scan range that ends inside that comment line reads it to the end of its buffer. The line is no row, and the first
+# scan range of the next buffer starts behind its carriage return and line feed
+foreach sizes buffer_size=24,max_line_size=10 buffer_size=12,max_line_size=8 buffer_size=24,max_line_size=10,parallel=false
+
+query II
+SELECT * FROM read_csv('{TEST_DIR}/crlf_pair_split_comment.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, new_line = '\r\n', comment = '#', {sizes}) ORDER BY ALL
+----
+1	2
+33	44
+7	8
+9	9
+
+query II
+SELECT * FROM read_csv('{TEST_DIR}/crlf_pair_split_comment.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, new_line = '\r\n', comment = '#', {sizes}, ignore_errors = true) ORDER BY ALL
+----
+1	2
+33	44
+7	8
+9	9
+
+query II
+SELECT * FROM read_csv('{TEST_DIR}/crlf_pair_split_comment.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, new_line = '\r\n', comment = '#', {sizes}, store_rejects = true) ORDER BY ALL
+----
+1	2
+33	44
+7	8
+9	9
+
+query I
+SELECT count(*) FROM reject_errors
+----
+0
+
+statement ok
+DROP TABLE reject_errors;
+
+statement ok
+DROP TABLE reject_scans;
+
+endloop
+
+# the comment line ends inside its buffer, and its text goes on in the next one
+query II
+SELECT * FROM read_csv('{TEST_DIR}/crlf_pair_split_comment.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, new_line = '\r\n', comment = '#', buffer_size = 26, max_line_size = 10) ORDER BY ALL
+----
+1	2
+33	44
+7	8
+9	9
+
+query II
+SELECT * FROM read_csv('{TEST_DIR}/crlf_pair_split_comment.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, new_line = '\r\n', comment = '#', buffer_size = 23, max_line_size = 10, store_rejects = true) ORDER BY ALL
+----
+1	2
+33	44
+7	8
+9	9
+
+query I
+SELECT count(*) FROM reject_errors
+----
+0
+
+statement ok
+DROP TABLE reject_errors;
+
+statement ok
+DROP TABLE reject_scans;
+
+# a comment line longer than the maximum line size is no row over it
+statement ok
+COPY (SELECT l || chr(13) FROM (VALUES (0, 'a,b'), (1, '1,2'), (2, '33,44'), (3, '#' || repeat('c', 20)), (4, '7,8'), (5, '9,9')) t(i, l) ORDER BY i) TO '{TEST_DIR}/crlf_long_comment_ends_buffer.csv' (HEADER false, QUOTE '', DELIMITER '|');
+
+query II
+SELECT * FROM read_csv('{TEST_DIR}/crlf_long_comment_ends_buffer.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, new_line = '\r\n', comment = '#', buffer_size = 38, max_line_size = 10) ORDER BY ALL
+----
+1	2
+33	44
+7	8
+9	9
+
+query II
+SELECT * FROM read_csv('{TEST_DIR}/crlf_long_comment_ends_buffer.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, new_line = '\r\n', comment = '#', buffer_size = 38, max_line_size = 10, store_rejects = true) ORDER BY ALL
+----
+1	2
+33	44
+7	8
+9	9
+
+query I
+SELECT count(*) FROM reject_errors
+----
+0
+
+statement ok
+DROP TABLE reject_errors;
+
+statement ok
+DROP TABLE reject_scans;
+
+# spaces in front of the comment
+statement ok
+COPY (SELECT l || chr(13) FROM (VALUES (0, 'a,b'), (1, '1,2'), (2, '33,44'), (3, '  #cccc'), (4, '7,8'), (5, '9,9')) t(i, l) ORDER BY i) TO '{TEST_DIR}/crlf_indented_comment_ends_buffer.csv' (HEADER false, QUOTE '', DELIMITER '|');
+
+query II
+SELECT * FROM read_csv('{TEST_DIR}/crlf_indented_comment_ends_buffer.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, new_line = '\r\n', comment = '#', buffer_size = 24, max_line_size = 10) ORDER BY ALL
+----
+1	2
+33	44
+7	8
+9	9
+
+# in a file of one column the text of the comment is no row
+statement ok
+COPY (SELECT l || chr(13) FROM (VALUES (0, 'a'), (1, '1'), (2, '22'), (3, '#cccc'), (4, '333'), (5, '4')) t(i, l) ORDER BY i) TO '{TEST_DIR}/crlf_comment_ends_buffer_one_column.csv' (HEADER false, QUOTE '', DELIMITER '|');
+
+foreach option parallel=true ignore_errors=true
+
+query I
+SELECT * FROM read_csv('{TEST_DIR}/crlf_comment_ends_buffer_one_column.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR'}, new_line = '\r\n', comment = '#', buffer_size = 15, max_line_size = 10, {option}) ORDER BY ALL
+----
+1
+22
+333
+4
+
+endloop
+
+# the comment line is counted, a row with an error behind it is reported on its own line
+statement ok
+COPY (SELECT l || chr(13) FROM (VALUES (0, 'a,b'), (1, '1,2'), (2, '33,44'), (3, '#cccccc'), (4, '7,8'), (5, 'x,y,z'), (6, '9,9')) t(i, l) ORDER BY i) TO '{TEST_DIR}/crlf_comment_then_error.csv' (HEADER false, QUOTE '', DELIMITER '|');
+
+foreach sizes buffer_size=24,max_line_size=10 buffer_size=22,max_line_size=10 buffer_size=24,max_line_size=16
+
+query II
+SELECT * FROM read_csv('{TEST_DIR}/crlf_comment_then_error.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, new_line = '\r\n', comment = '#', {sizes}, store_rejects = true) ORDER BY ALL
+----
+1	2
+33	44
+7	8
+9	9
+
+query II
+SELECT line, error_type FROM reject_errors
+----
+6	TOO MANY COLUMNS
+
+statement ok
+DROP TABLE reject_errors;
+
+statement ok
+DROP TABLE reject_scans;
+
+endloop
+
+# a comment line is a valid first line for a scan range that starts inside a quoted value with a line feed
+statement ok
+COPY (SELECT l || chr(13) FROM (VALUES (0, 'a,b'), (1, '1,2'), (2, '1,"xxxx' || chr(10) || 'yy"'), (3, '#' || repeat('c', 16)), (4, '7,8'), (5, 'x,y,z'), (6, '9,9')) t(i, l) ORDER BY i) TO '{TEST_DIR}/crlf_quoted_line_feed_comment.csv' (HEADER false, QUOTE '', DELIMITER '|');
+
+foreach buffer_size 39 40
+
+query II
+SELECT a, length(b) FROM read_csv('{TEST_DIR}/crlf_quoted_line_feed_comment.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, new_line = '\r\n', comment = '#', buffer_size = {buffer_size}, max_line_size = 16, store_rejects = true) ORDER BY ALL
+----
+1	1
+1	7
+7	1
+9	1
+
+query II
+SELECT line, error_type FROM reject_errors
+----
+6	TOO MANY COLUMNS
+
+statement ok
+DROP TABLE reject_errors;
+
+statement ok
+DROP TABLE reject_scans;
+
+endloop
+
 # rows of a larger file in these places
 statement ok
 COPY (SELECT i + 1000 AS aaaa, 'wxyz' AS bbbbb FROM range(300) t(i) ORDER BY i) TO '{TEST_DIR}/short_rows_crlf.csv' (HEADER, NEW_LINE e'\r\n');

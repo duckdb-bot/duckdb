@@ -313,6 +313,8 @@ public:
 	inline void AddValueToVector(const char *value_ptr, idx_t size, bool allocate = false);
 	static inline void SetComment(StringValueResult &result, idx_t buffer_pos);
 	static inline bool UnsetComment(StringValueResult &result, idx_t buffer_pos);
+	//! If the line read so far in the current buffer holds only a comment, with nothing but spaces in front of it
+	bool IsCommentLine() const;
 
 	inline idx_t HandleMultiDelimiter(const idx_t buffer_pos) const;
 

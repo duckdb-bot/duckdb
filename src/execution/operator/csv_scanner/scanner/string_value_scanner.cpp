@@ -236,6 +236,18 @@ bool StringValueResult::UnsetComment(StringValueResult &result, idx_t buffer_pos
 	return done;
 }
 
+bool StringValueResult::IsCommentLine() const {
+	if (!comment || cur_col_id > 0) {
+		return false;
+	}
+	for (idx_t i = last_position.buffer_pos; i < position_before_comment; i++) {
+		if (buffer_ptr[i] != ' ') {
+			return false;
+		}
+	}
+	return true;
+}
+
 void FullLinePosition::SanitizeError(string &value) {
 	std::vector<char> char_array(value.begin(), value.end());
 	char_array.push_back('\0'); // Null-terminate the character array
@@ -2139,6 +2151,11 @@ void StringValueScanner::FinishBoundaryScan(const bool moved) {
 			    !cur_buffer_handle->is_last_buffer) {
 				// only that line feed was counted, the row behind it is counted when it ends in a later buffer
 				lines_read = lines_before;
+			}
+			if (!moved && lines_read == lines_before && result.IsCommentLine() && !cur_buffer_handle->is_last_buffer) {
+				// a comment line holds no row to finish in the next buffer, for this scan it ends with its buffer
+				result.UnsetComment(result, iterator.pos.buffer_pos);
+				lines_read++;
 			}
 			// a row longer than a buffer goes on in the buffers after it
 			while (lines_read == lines_before && !result.IsStateCurrent(CSVState::INVALID) &&

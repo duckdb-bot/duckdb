@@ -39,9 +39,7 @@ struct ListSortBindData : public FunctionData {
 
 	vector<LogicalType> types;
 
-	//! The context of the bind, which an index key outlives when its connection closes
-	weak_ptr<ClientContext> context;
-	//! The database of the bind, for a context of its own when no connection takes part
+	//! The database of the bind, for a context of its own when the executor has none
 	DatabaseInstance &db;
 	unique_ptr<Expression> sort_key;
 	optional<string> default_collation;
@@ -61,8 +59,7 @@ ListSortBindData::ListSortBindData(OrderType order_type_p, OrderByNullType null_
                                    ClientContext &context_p, unique_ptr<Expression> sort_key_p,
                                    optional<string> default_collation_p)
     : order_type(order_type_p), null_order(null_order_p), return_type(return_type_p), child_type(child_type_p),
-      is_grade_up(is_grade_up_p), context(context_p.shared_from_this()), db(*context_p.db),
-      default_collation(std::move(default_collation_p)) {
+      is_grade_up(is_grade_up_p), db(*context_p.db), default_collation(std::move(default_collation_p)) {
 	// get the vector types
 	types.emplace_back(LogicalType::USMALLINT);
 	types.emplace_back(child_type);
@@ -97,8 +94,8 @@ ListSortBindData::ListSortBindData(OrderType order_type_p, OrderByNullType null_
 
 ListSortBindData::ListSortBindData(const ListSortBindData &other)
     : FunctionData(other), order_type(other.order_type), null_order(other.null_order), return_type(other.return_type),
-      child_type(other.child_type), is_grade_up(other.is_grade_up), types(other.types), context(other.context),
-      db(other.db), sort_key(other.sort_key->Copy()), default_collation(other.default_collation), sort(other.sort) {
+      child_type(other.child_type), is_grade_up(other.is_grade_up), types(other.types), db(other.db),
+      sort_key(other.sort_key->Copy()), default_collation(other.default_collation), sort(other.sort) {
 }
 
 unique_ptr<FunctionData> ListSortBindData::Copy() const {
@@ -163,9 +160,9 @@ static void SinkDataChunk(const Sort &sort, ExecutionContext &context, OperatorS
 	data_to_sort = true;
 }
 
-//! Builds a context for the paths without a connection, such as the cleanup after a transaction and the checkpoint on
-//! shutdown. The database outlives the bind data of its indexes, so the context need not own it, which it cannot
-//! during the shutdown of the database anyway.
+//! Builds a context for the evaluations without one, such as the index maintenance that must not fail and the
+//! checkpoint on shutdown. The database outlives the bind data of its indexes, so the context need not own it, which
+//! it cannot during the shutdown of the database anyway.
 static shared_ptr<ClientContext> MakeOwnContext(DatabaseInstance &db) {
 	shared_ptr<DatabaseInstance> unowned_db(shared_ptr<DatabaseInstance>(), &db);
 	return make_shared_ptr<ClientContext>(std::move(unowned_db));
@@ -190,17 +187,13 @@ static void ListSortFunction(DataChunk &args, ExpressionState &state, Vector &re
 	// the Sort of the bind runs under the context of the operation, which is not the one that bound it when another
 	// connection writes to a table with an index on this function
 	optional_ptr<ClientContext> context;
-	shared_ptr<ClientContext> fallback_context;
+	shared_ptr<ClientContext> own_context;
 	if (state.HasClientContext()) {
 		context = &state.GetClientContext();
 	} else {
-		// without a context, as in the cleanup after a transaction, the sort runs with the bind context while it
-		// lives and else with a context of its own
-		fallback_context = info.context.lock();
-		if (!fallback_context) {
-			fallback_context = MakeOwnContext(info.db);
-		}
-		context = fallback_context.get();
+		// without one, as in the revert of a failed commit, the sort has a context of its own that nobody interrupts
+		own_context = MakeOwnContext(info.db);
+		context = own_context.get();
 	}
 
 	// initialize the global and local sorting state

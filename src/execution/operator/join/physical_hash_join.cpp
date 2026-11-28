@@ -827,15 +827,16 @@ static bool KeysAreSkewed(const HashJoinGlobalSinkState &sink,
 	return skew > threshold;
 }
 
-//! Whether an external join can hold less in memory than the in-memory join. It builds its largest partition whole
-//! with a pointer table, so another partition must hold rows and that table must be smaller than the whole build.
-static bool ExternalJoinSavesMemory(const HashJoinGlobalSinkState &sink) {
+//! An external join builds its largest partition whole, with a pointer table and next to the retained dictionaries.
+//! It can only hold less than the in-memory join when that is below the whole size and another partition has rows.
+static bool ExternalJoinCanSaveMemory(const HashJoinGlobalSinkState &sink) {
 	idx_t build_count = 0;
 	for (auto &local_ht : sink.local_hash_tables) {
 		build_count += local_ht.get().GetSinkCollection().Count();
 	}
+	const auto &ht = *sink.hash_table;
 	const auto max_partition_ht_size =
-	    sink.max_partition_size + sink.hash_table->PointerTableSize(sink.max_partition_count);
+	    sink.max_partition_size + ht.PointerTableSize(sink.max_partition_count) + ht.GetRetainedDictionarySize();
 	return sink.max_partition_count < build_count && max_partition_ht_size < sink.total_size;
 }
 
@@ -1399,9 +1400,9 @@ SinkFinalizeType PhysicalHashJoin::Finalize(Pipeline &pipeline, Event &event, Cl
 
 	// The minimum reservation is what an external join needs, its largest partition and the probe side's partition
 	// buffers. A hash table below that gets its whole size whatever the other operators hold, so several such joins
-	// can exceed the memory limit together. Where an external join saves memory, ask with the initial minimum instead
+	// can exceed the memory limit together. Where an external join can save memory, ask with the initial minimum
 	const auto external_minimum_reservation = sink.temporary_memory_state->GetMinimumReservation();
-	if (external_minimum_reservation >= sink.total_size && ExternalJoinSavesMemory(sink)) {
+	if (external_minimum_reservation >= sink.total_size && ExternalJoinCanSaveMemory(sink)) {
 		sink.temporary_memory_state->SetMinimumReservation(
 		    MaxValue(sink.initial_minimum_reservation, sink.temporary_memory_state->GetReservation()));
 	}
@@ -1445,7 +1446,7 @@ SinkFinalizeType PhysicalHashJoin::Finalize(Pipeline &pipeline, Event &event, Cl
 		sink.total_size = ht.GetTotalSize(sink.local_hash_tables, sink.max_partition_size, sink.max_partition_count,
 		                                  JoinHashTable::LookupSizing::HASH_ONLY);
 		// an external join needs its minimum even when the whole hash table is smaller, otherwise the manager grants
-		// only the hash table and no partition fits next to the probe side's buffers
+		// only the hash table and its largest partition does not fit next to the probe side's buffers
 		sink.temporary_memory_state->SetRemainingSizeAndUpdateReservation(
 		    context.GetContext(), MaxValue(sink.total_size, external_minimum_reservation));
 

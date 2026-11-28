@@ -35,6 +35,11 @@ bool Binder::DebugAggregateStateExportVerify(BoundSelectNode &statement, unique_
 		// verification is not supported with multiple grouping sets / grouping functions (yet?)
 		return false;
 	}
+	if (statement.aggregates.empty()) {
+		// a HAVING without aggregates plans an aggregate that has no state to export, and the rewrite would put a
+		// projection without expressions between the two aggregates, which the SQL export of the plan rejects
+		return false;
+	}
 	for (auto &aggr : statement.aggregates) {
 		if (aggr->GetAlias() == "__collated_group") {
 			// collated GROUP BY adds first() aggregates to preserve original values - skip verification since

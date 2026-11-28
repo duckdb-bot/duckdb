@@ -50,11 +50,8 @@ public:
 };
 
 //! Identifies the logical purpose of a delta owned by an index entry.
-enum class IndexDeltaType : uint8_t {
-	DELETED_ROWS_IN_USE,
-	ADDED_DATA_DURING_CHECKPOINT,
-	REMOVED_DATA_DURING_CHECKPOINT
-};
+//! ADDED_DATA and REMOVED_DATA hold the changes made during a checkpoint or while CREATE INDEX builds the index.
+enum class IndexDeltaType : uint8_t { DELETED_ROWS_IN_USE, ADDED_DATA, REMOVED_DATA };
 
 //! The index is an abstract base class that serves as the basis for indexes
 class BoundIndex : public Index {
@@ -129,6 +126,11 @@ public:
 	virtual void ResetStorage(IndexLock &index_lock) DUCKDB_REQUIRES(index_lock) = 0;
 	//! Obtains a lock and calls ResetStorage while holding that lock.
 	void ResetStorage() override DUCKDB_EXCLUDES(lock);
+	//! Clears the index without freeing the on-disk blocks it was created from, which stay owned by the unbound
+	//! index. Called when binding the index fails after the index was created from its storage information.
+	virtual void DisownStorage(IndexLock &index_lock) DUCKDB_REQUIRES(index_lock);
+	//! Obtains a lock and calls DisownStorage while holding that lock.
+	void DisownStorage() DUCKDB_EXCLUDES(lock);
 
 	//! Delete a chunk of entries from the index. The index lock must be held.
 	//! Returns the amount of rows successfully deleted from the index.
@@ -162,7 +164,7 @@ public:
 	//! Obtains a lock and calls Vacuum while holding that lock.
 	void Vacuum() DUCKDB_EXCLUDES(lock);
 
-	//! Whether or not the index supports the creation of delta indexes
+	//! Whether or not the index supports delta indexes, used by checkpoints and online index builds
 	virtual bool SupportsDeltaIndexes() const;
 
 	//! Returns the in-memory usage of the index. The index lock must be held
@@ -216,8 +218,8 @@ protected:
 
 	//! Creates an empty physical copy with the requested constraint type.
 	virtual unique_ptr<BoundIndex> CreateEmptyCopy(IndexConstraintType constraint_type) const;
-	//! Merges a checkpoint delta into this index.
-	virtual ErrorData MergeCheckpointDelta(IndexDeltaType type, BoundIndex &delta_index);
+	//! Merges a delta into this index, using the append mode for added rows
+	virtual ErrorData MergeDelta(IndexDeltaType type, BoundIndex &delta_index, IndexAppendMode append_mode);
 
 	//! Lock used for any changes to the index
 	mutable annotated_mutex lock;

@@ -84,6 +84,10 @@ public:
 		//! Whether or not to push casts into the cast map
 		return false;
 	}
+	//! Whether the reader only produces the rows its deletion filter selects
+	virtual bool SupportsDeletionFilter() const {
+		return false;
+	}
 	//! Adds a virtual column to be projected at the end
 	virtual void AddVirtualColumn(column_t virtual_column_id) {
 		throw InternalException("Reader %s does not support AddVirtualColumn", GetReaderType());
@@ -173,6 +177,8 @@ public:
 		return optional_idx();
 	}
 	virtual unique_ptr<BaseStatistics> GetStatistics(ClientContext &context, const Identifier &name);
+	DUCKDB_API virtual unique_ptr<BaseStatistics> GetVirtualColumnStatistics(ClientContext &context,
+	                                                                         column_t virtual_column_id);
 
 public:
 	template <class TARGET>

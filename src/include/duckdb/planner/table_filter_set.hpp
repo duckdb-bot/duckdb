@@ -9,6 +9,7 @@
 #pragma once
 
 #include "duckdb/planner/table_filter.hpp"
+#include "duckdb/common/enums/filter_result.hpp"
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/common/reference_map.hpp"
 #include "duckdb/common/types.hpp"
@@ -20,6 +21,9 @@ class TableFilterSet {
 public:
 	void PushFilter(ProjectionIndex col_idx, unique_ptr<TableFilter> filter);
 	void PushMultiColumnFilter(unique_ptr<TableFilter> filter);
+	//! Normalize a completed batch of already-admitted scan filters, preserving their expression forms.
+	//! On contradiction, return UNSATISFIABLE without modifying the offending column's filter.
+	FilterResult Finalize();
 	bool HasFilters() const;
 	idx_t FilterCount() const;
 	bool HasMultiColumnFilters() const;
@@ -118,13 +122,24 @@ public:
 	void ClearFilters(const PhysicalOperator &op);
 	void PushFilter(const PhysicalOperator &op, ProjectionIndex column_index, unique_ptr<TableFilter> filter);
 
+	vector<shared_ptr<DynamicTableFilterSet>> AddDisjunction(ProjectionIndex column, idx_t alternative_count);
+	vector<reference<DynamicTableFilterSet>> GetDisjunctionFilters() const;
+
 	bool HasFilters() const;
 	unique_ptr<TableFilterSet> GetFinalTableFilters(const PhysicalTableScan &scan,
 	                                                optional_ptr<TableFilterSet> existing_filters) const;
 
 private:
+	unique_ptr<Expression> CopyColumnFilter(ProjectionIndex column) const;
+
+	struct FilterDisjunction {
+		ProjectionIndex column;
+		vector<shared_ptr<DynamicTableFilterSet>> alternatives;
+	};
+
 	mutable mutex lock;
 	reference_map_t<const PhysicalOperator, unique_ptr<TableFilterSet>> filters;
+	vector<FilterDisjunction> disjunctions;
 };
 
 } // namespace duckdb

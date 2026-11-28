@@ -1,4 +1,6 @@
 #include "duckdb/parser/peg/ast/generic_copy_option.hpp"
+#include "duckdb/common/types/bignum_decimal.hpp"
+#include "duckdb/common/types/decimal.hpp"
 #include "duckdb/parser/expression/cast_expression.hpp"
 #include "duckdb/parser/expression/columnref_expression.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
@@ -27,16 +29,28 @@ PEGTransformerFactory::TransformCopyGenericOptionList(PEGTransformer &transforme
 	return copy_generic_option;
 }
 
+//! The value a constant option is stored as, which engines without wide decimals read as well
+static Value GetCopyOptionValue(const Literal &literal) {
+	auto value = literal.ToValue();
+	auto &type = value.type();
+	if (type.id() != LogicalTypeId::DECIMAL || !Decimal::IsWide(DecimalType::GetWidth(type))) {
+		return value;
+	}
+	// those engines read a decimal of at most 38 digits, a wider literal is stored as the DOUBLE nearest to it
+	const auto unscaled = value.GetValueUnsafe<bignum_t>();
+	return Value::DOUBLE(DecimalHelper<bignum_t>::ToDouble(unscaled, DecimalType::GetScale(type)));
+}
+
 static void SetGenericCopyOptionExpression(GenericCopyOption &copy_option, unique_ptr<ParsedExpression> expression) {
 	if (expression->GetExpressionType() == ExpressionType::VALUE_CONSTANT) {
-		copy_option.children.push_back(expression->Cast<ConstantExpression>().GetLiteral().ToValue());
+		copy_option.children.push_back(GetCopyOptionValue(expression->Cast<ConstantExpression>().GetLiteral()));
 	} else if (expression->GetExpressionType() == ExpressionType::COLUMN_REF) {
 		copy_option.children.push_back(Value(expression->Cast<ColumnRefExpression>().GetColumnName()));
 	} else if (expression->GetExpressionType() == ExpressionType::PLACEHOLDER) {
 		auto &op_expr = expression->Cast<OperatorExpression>();
 		for (auto &child : op_expr.GetChildren()) {
 			if (child->GetExpressionClass() == ExpressionClass::CONSTANT) {
-				copy_option.children.push_back(child->Cast<ConstantExpression>().GetLiteral().ToValue());
+				copy_option.children.push_back(GetCopyOptionValue(child->Cast<ConstantExpression>().GetLiteral()));
 			} else if (child->GetExpressionClass() == ExpressionClass::COLUMN_REF) {
 				copy_option.children.push_back(Value(child->Cast<ColumnRefExpression>().GetColumnName()));
 			} else {

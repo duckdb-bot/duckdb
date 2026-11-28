@@ -398,3 +398,19 @@ TEST_CASE("Test nanoseconds of strings without fractional seconds", "[cast]") {
 	REQUIRE(Cast::Operation<string_t, timestamp_tz_ns_t>(string_t(ts_str)).value == expected_ns);
 	REQUIRE(Cast::Operation<string_t, timestamp_ns_t>(string_t(frac_str)).value == expected_ns + 123456789);
 }
+
+TEST_CASE("Test ConvertToString for timestamps in seconds and milliseconds", "[cast]") {
+	REQUIRE(ConvertToString::Operation(timestamp_sec_t(1)) == "1970-01-01 00:00:01");
+	REQUIRE(ConvertToString::Operation(timestamp_sec_t(-1)) == "1969-12-31 23:59:59");
+	REQUIRE(ConvertToString::Operation(timestamp_ms_t(1500)) == "1970-01-01 00:00:01.5");
+	REQUIRE(ConvertToString::Operation(timestamp_ms_t(-1)) == "1969-12-31 23:59:59.999");
+
+	// the last second and millisecond of the timestamp range
+	REQUIRE(ConvertToString::Operation(timestamp_sec_t(9223372036854)) == "294247-01-10 04:00:54");
+	REQUIRE(ConvertToString::Operation(timestamp_ms_t(9223372036854775)) == "294247-01-10 04:00:54.775");
+
+	REQUIRE(ConvertToString::Operation(timestamp_sec_t::infinity()) == "infinity");
+	REQUIRE(ConvertToString::Operation(timestamp_sec_t::ninfinity()) == "-infinity");
+	REQUIRE(ConvertToString::Operation(timestamp_ms_t::infinity()) == "infinity");
+	REQUIRE(ConvertToString::Operation(timestamp_ms_t::ninfinity()) == "-infinity");
+}

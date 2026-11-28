@@ -91,6 +91,7 @@ TEST_CASE("A WAL entry with a wrong checksum in the last transaction is a torn t
 		auto result = con.Query("SELECT k, count(*) FROM t GROUP BY k ORDER BY k");
 		REQUIRE(CHECK_COLUMN(result, 0, {1, 2}));
 		REQUIRE(CHECK_COLUMN(result, 1, {1000, 1000}));
+		REQUIRE(result->RowCount() == 2);
 		REQUIRE_NO_FAIL(con.Query("INSERT INTO t VALUES (4, 42, 'after recovery')"));
 	}
 	{
@@ -99,6 +100,7 @@ TEST_CASE("A WAL entry with a wrong checksum in the last transaction is a torn t
 		auto result = con.Query("SELECT k, count(*) FROM t GROUP BY k ORDER BY k");
 		REQUIRE(CHECK_COLUMN(result, 0, {1, 2, 4}));
 		REQUIRE(CHECK_COLUMN(result, 1, {1000, 1000, 1}));
+		REQUIRE(result->RowCount() == 3);
 	}
 	DeleteDatabase(database_path);
 }
@@ -178,6 +180,7 @@ TEST_CASE("A WAL whose last transaction is zeroed up to the end is a torn tail",
 		auto result = con.Query("SELECT k, count(*) FROM t GROUP BY k ORDER BY k");
 		REQUIRE(CHECK_COLUMN(result, 0, {1, 2}));
 		REQUIRE(CHECK_COLUMN(result, 1, {1000, 1000}));
+		REQUIRE(result->RowCount() == 2);
 	}
 	DeleteDatabase(database_path);
 }
@@ -221,6 +224,7 @@ TEST_CASE("A WAL entry with a wrong checksum before a cut off entry header is a 
 		auto result = con.Query("SELECT k, count(*) FROM t GROUP BY k ORDER BY k");
 		REQUIRE(CHECK_COLUMN(result, 0, {1, 2}));
 		REQUIRE(CHECK_COLUMN(result, 1, {1000, 1000}));
+		REQUIRE(result->RowCount() == 2);
 	}
 	DeleteDatabase(database_path);
 }
@@ -237,6 +241,7 @@ TEST_CASE("A damaged WAL_FLUSH drops its transaction and the next one", "[storag
 	auto result = con.Query("SELECT k, count(*) FROM t GROUP BY k ORDER BY k");
 	REQUIRE(CHECK_COLUMN(result, 0, {1}));
 	REQUIRE(CHECK_COLUMN(result, 1, {1000}));
+	REQUIRE(result->RowCount() == 1);
 	DeleteDatabase(database_path);
 }
 

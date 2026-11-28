@@ -213,6 +213,8 @@ public:
 
 	//! Destroy the client context
 	DUCKDB_API void Destroy();
+	//! Ends the active query and leaves a shared transaction with a rollback vote, if the context participates in one
+	DUCKDB_API void LeaveSharedTransaction();
 
 	//! Get the table info of a specific table, or nullptr if it cannot be found.
 	DUCKDB_API unique_ptr<TableDescription> TableInfo(const Identifier &database_name, const Identifier &schema_name,
@@ -252,9 +254,6 @@ public:
 	//! invalidates the active transaction according to the transaction invalidation policy, as fits statements that are
 	//! parsed to be run; without it the transaction stays usable, as fits statements that are only inspected.
 	DUCKDB_API StatementIterator IterateStatements(const string &query, bool apply_invalidation_policy = true);
-
-	//! Extract the logical plan of a query
-	DUCKDB_API unique_ptr<LogicalOperator> ExtractPlan(const string &query);
 
 	//! Runs a function with a valid transaction context, potentially starting a transaction if the context is in auto
 	//! commit mode.

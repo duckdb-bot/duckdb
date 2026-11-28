@@ -1,4 +1,5 @@
 #include "duckdb/function/table/table_scan.hpp"
+#include "duckdb/storage/table/index_entry.hpp"
 #include "duckdb/function/table/native_scan_job.hpp"
 #include "duckdb/parallel/task_scheduler.hpp"
 #include "duckdb/storage/block_allocator.hpp"
@@ -15,6 +16,7 @@
 #include "duckdb/common/typedefs.hpp"
 #include "duckdb/common/types/value_map.hpp"
 #include "duckdb/common/unique_ptr.hpp"
+#include "duckdb/execution/adaptive_filter.hpp"
 #include "duckdb/execution/index/art/art.hpp"
 #include "duckdb/execution/index/art/iterator.hpp"
 #include "duckdb/function/function_set.hpp"
@@ -42,6 +44,7 @@
 #include "duckdb/storage/data_table.hpp"
 #include "duckdb/storage/storage_index.hpp"
 #include "duckdb/storage/table_io_manager.hpp"
+#include "duckdb/storage/table/column_segment.hpp"
 #include "duckdb/storage/table/data_table_info.hpp"
 #include "duckdb/storage/table/scan_state.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
@@ -212,6 +215,7 @@ public:
 	unique_ptr<LocalTableFunctionState> InitLocalState(ExecutionContext &context,
 	                                                   TableFunctionInitInput &input) override {
 		auto l_state = make_uniq<IndexScanLocalState>();
+		l_state->fetch_state.context = context.client;
 		if (input.CanRemoveFilterColumns()) {
 			l_state->all_columns.Initialize(context.client, scanned_types);
 		}
@@ -229,6 +233,31 @@ public:
 		l_state->scan_state.Initialize(l_state->column_ids, context.client, input.filters.get());
 		local_storage.InitializeScan(context.client, storage, l_state->scan_state.local_state, input.filters);
 		return std::move(l_state);
+	}
+
+	//! The index scan can return a superset of the matching rows, so apply all table filters to the fetched rows.
+	static void FilterFetchedRows(ScanFilterInfo &filter_info, DataChunk &chunk) {
+		auto adaptive_filter = filter_info.GetAdaptiveFilter();
+		if (!adaptive_filter || chunk.size() == 0) {
+			return;
+		}
+		const auto count = chunk.size();
+		SelectionVector sel;
+		sel.Initialize(nullptr);
+		idx_t approved_tuple_count = count;
+		auto &filter_list = filter_info.GetFilterList();
+		const auto &permutation = adaptive_filter->GetPermutation();
+		for (idx_t i = 0; i < filter_list.size(); i++) {
+			auto &filter = filter_list[permutation[i]];
+			ColumnSegment::FilterSelection(sel, chunk.data[filter.scan_column_index], *filter.filter_state, count,
+			                               approved_tuple_count);
+			if (approved_tuple_count == 0) {
+				break;
+			}
+		}
+		if (approved_tuple_count != count) {
+			chunk.Slice(sel, approved_tuple_count);
+		}
 	}
 
 	void TableScanFunc(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) override {
@@ -285,9 +314,11 @@ public:
 				if (CanRemoveFilterColumns()) {
 					l_state.all_columns.Reset();
 					storage.Fetch(tx, l_state.all_columns, column_ids, local_vector, scan_count, l_state.fetch_state);
+					FilterFetchedRows(l_state.scan_state.GetFilterInfo(), l_state.all_columns);
 					output.ReferenceColumns(l_state.all_columns, projection_ids);
 				} else {
 					storage.Fetch(tx, output, column_ids, local_vector, scan_count, l_state.fetch_state);
+					FilterFetchedRows(l_state.scan_state.GetFilterInfo(), output);
 				}
 
 				l_state.rows_scanned += scan_count;
@@ -300,6 +331,7 @@ public:
 					}
 
 					// output is empty, loop back, since there might be results to be picked up from LOCAL_STORAGE phase
+					output.Reset();
 					continue;
 				}
 				return;
@@ -355,8 +387,21 @@ public:
 	      duck_table(bind_data.table.Cast<DuckTableEntry>()), tx(DuckTransaction::Get(context, duck_table.catalog)),
 	      storage(duck_table.GetStorage()), total_rows(storage.GetTotalRows()),
 	      progress(MaxValue<idx_t>(1, context.db->NumberOfThreads())) {
+		// Persisted row groups can be smaller than the configured target size.
+		max_threads = MaxValue(max_threads, total_row_groups_to_scan);
 		for (auto &counter : progress) {
 			counter.store(0, std::memory_order_relaxed);
+		}
+		// add the entry first: commits up to its commit are scanned, later ones reach its deltas,
+		// and the scan range fixed after this covers every row of those commits
+		if (bind_data.index_template) {
+			index_build = storage.AddBuildingIndex(tx, *bind_data.index_template);
+		}
+	}
+
+	~DuckTableScanState() override {
+		if (index_build) {
+			storage.GetDataTableInfo()->GetIndexes().RemoveBuildingIndex(*index_build);
 		}
 	}
 
@@ -382,6 +427,8 @@ private:
 	//! Preallocated counters spread progress updates without registering local states
 	vector<PaddedAtomic<idx_t>> progress;
 	TableScanScheduling scheduling = TableScanScheduling::UNINITIALIZED;
+	//! The entry of the index that this CREATE INDEX scan builds in place
+	shared_ptr<IndexEntry> index_build;
 
 private:
 	void InitializeScheduling(ExecutionContext &context, TableFunctionInitInput &input) {
@@ -681,7 +728,7 @@ public:
 
 		do {
 			if (bind_data.is_create_index) {
-				storage.CreateIndexScan(l_state.scan_state, output);
+				storage.CreateIndexScan(l_state.scan_state, output, index_build.get());
 				UpdateScanProgress(l_state, l_state.scan_state);
 			} else if (scheduling == TableScanScheduling::ORDERED) {
 				if (!ScanWithReadAhead(context, data_p, l_state, output) &&
@@ -799,14 +846,22 @@ unique_ptr<GlobalTableFunctionState> DuckTableScanInitGlobal(ClientContext &cont
 	if (bind_data.partitions_to_scan) {
 		g_state->state.scan_state.partitions_to_scan = bind_data.partitions_to_scan.get();
 	}
+	auto claim_mode = ParallelScanClaimMode::ATOMIC;
+	if (bind_data.order_options || bind_data.partitions_to_scan ||
+	    ClientConfig::GetConfig(context).verify_parallelism) {
+		claim_mode = ParallelScanClaimMode::LOCKED;
+	}
 
 	// Check if row_number column is requested and initialize row_number_base
 	for (idx_t i = 0; i < input.column_ids.size(); i++) {
 		if (input.column_ids[i] == COLUMN_IDENTIFIER_ROW_NUMBER) {
 			g_state->state.scan_state.row_number_base = 0;
+			claim_mode = ParallelScanClaimMode::LOCKED;
 			break;
 		}
 	}
+	g_state->state.scan_state.claim_mode = claim_mode;
+	g_state->state.local_state.claim_mode = claim_mode;
 	storage.InitializeParallelScan(context, g_state->state, input.column_indexes);
 	g_state->InitializeScanInfo(input);
 	if (!input.CanRemoveFilterColumns()) {
@@ -1069,7 +1124,7 @@ bool TryScanIndex(const IndexReadHandle<ART> &art, const ColumnList &column_list
 	if (!art->Scan(*scan_state, row_ids)) {
 		return false;
 	}
-	for (const auto delta : {IndexDeltaType::DELETED_ROWS_IN_USE, IndexDeltaType::ADDED_DATA_DURING_CHECKPOINT}) {
+	for (const auto delta : {IndexDeltaType::DELETED_ROWS_IN_USE, IndexDeltaType::ADDED_DATA}) {
 		auto delta_index = art.FindDelta(delta);
 		if (delta_index && !delta_index->Scan(*scan_state, row_ids)) {
 			return false;
@@ -1102,13 +1157,13 @@ unique_ptr<GlobalTableFunctionState> TableScanInitGlobal(ClientContext &context,
 
 	auto &filter_set = *input.filters;
 
-	// FIXME: We currently only support scanning one ART with one filter.
-	// If multiple filters exist, i.e., a = 11 AND b = 24, we need to
-	// 1.	1.1. Find + scan one ART for a = 11.
-	//		1.2. Find + scan one ART for b = 24.
-	//		1.3. Return the intersecting row IDs.
+	// Scan one ART with the filter on its column. The index scan applies all filters to the fetched rows.
+	// FIXME: For multiple filters, i.e., a = 11 AND b = 24, we could also
+	// 1. Scan the ARTs for a = 11 and b = 24, and intersect the row IDs.
 	// 2. (Reorder and) scan a single ART with a compound key of (a, b).
-	if (filter_set.FilterCount() != 1) {
+	// FIXME: We use the first ART within the thresholds, not the most selective one. Each failed probe can scan up
+	// to max_count row IDs before falling back to a table scan.
+	if (!filter_set.HasFilters()) {
 		return DuckTableScanInitGlobal(context, input, storage, bind_data);
 	}
 
@@ -1142,8 +1197,12 @@ unique_ptr<GlobalTableFunctionState> TableScanInitGlobal(ClientContext &context,
 		vacuum_lock = DuckTransactionManager::Get(attached).SharedVacuumLock();
 	}
 
-	for (auto entry : indexes.IndexEntries()) {
+	auto &transaction = DuckTransaction::Get(context, storage.GetAttached());
+	for (auto entry : indexes.BuiltIndexEntries()) {
 		if (entry->GetBindState() != IndexBindState::BOUND || entry->GetIndexType() != ART::TYPE_NAME) {
+			continue;
+		}
+		if (!entry->AddedBefore(transaction.view.visibility_bound)) {
 			continue;
 		}
 		{

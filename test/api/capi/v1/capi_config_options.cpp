@@ -130,7 +130,7 @@ TEST_CASE("duckdb_set_config sets allowed_directories and allowed_paths before t
 		duckdb::DuckDB db(nullptr);
 		duckdb::Connection con(db);
 		duckdb::LocalFileSystem fs;
-		fs.CreateDirectory(allowed_directory);
+		fs.CreateDirectory(allowed_directory, nullptr);
 		REQUIRE_NO_FAIL(con.Query("COPY (SELECT 42 AS i) TO '" + fs.JoinPath(allowed_directory, "x.csv") + "'"));
 		REQUIRE_NO_FAIL(con.Query("COPY (SELECT 42 AS i) TO '" + allowed_file + "'"));
 		REQUIRE_NO_FAIL(con.Query("COPY (SELECT 42 AS i) TO '" + other_file + "'"));

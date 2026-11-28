@@ -304,6 +304,11 @@ private:
 //! NotImplementedException when there is none. Defined in capi_v2_logical_type.cpp.
 auto ResolveCommonType(CV2Factory &factory, const vector<LogicalType> &types) -> LogicalType;
 
+//! Throws when the type holds a DECIMAL wider than the factory creates: the max_decimal_width setting of the factory's
+//! client, or the default of the setting for a factory without one. The cost of a wide decimal grows with its width,
+//! so a factory bounds the types and values it creates like a session bounds the ones it binds
+void CheckDecimalWidthV2(CV2Factory &factory, const LogicalType &type);
+
 //! The SQL ATTACH `(KEY value)` options of one attach, as the text values a quoted literal produces. Bound to the
 //! instance handle it was created from, which is what future per-instance resources (an allocator, say) would be
 //! taken from.
@@ -477,6 +482,8 @@ class CV2Connection : public Connection {
 public:
 	explicit CV2Connection(DuckDB &database) : Connection(database), context_handle(*context) {
 	}
+	explicit CV2Connection(Connection &&connection) : Connection(std::move(connection)), context_handle(*context) {
+	}
 
 	CV2ConnectionContext context_handle;
 };
@@ -507,6 +514,8 @@ auto GetExtensionLoader(duckdb_v2_extension_handle handle) -> ExtensionLoader &;
 //! capi_v2_func_properties.cpp and shared by the scalar and aggregate set_property entry points.
 void SetScalarFunctionProperty(FunctionProperties &props, DUCKDB_V2_FUNCTION_PROPERTY_KEY key,
                                DUCKDB_V2_FUNCTION_PROPERTY_VALUE value);
+void SetTableFunctionProperty(FunctionStability &stability, DUCKDB_V2_FUNCTION_PROPERTY_KEY key,
+                              DUCKDB_V2_FUNCTION_PROPERTY_VALUE value);
 void SetAggregateFunctionProperty(AggregateFunctionProperties &props, DUCKDB_V2_FUNCTION_PROPERTY_KEY key,
                                   DUCKDB_V2_FUNCTION_PROPERTY_VALUE value);
 //! Set / get a generic, named function property; shared by the scalar and aggregate entry points

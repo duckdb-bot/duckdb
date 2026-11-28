@@ -1,8 +1,11 @@
 #include "duckdb/transaction/meta_transaction.hpp"
 
 #include "duckdb/common/exception/transaction_exception.hpp"
+#include "duckdb/common/string_util.hpp"
+#include "duckdb/common/types/uuid.hpp"
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/main/client_data.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/transaction/transaction_manager.hpp"
 #include "duckdb/catalog/catalog.hpp"
@@ -10,9 +13,11 @@
 
 namespace duckdb {
 
-MetaTransaction::MetaTransaction(DatabaseInstance &db, timestamp_t start_timestamp_p, transaction_t transaction_id_p)
+MetaTransaction::MetaTransaction(DatabaseInstance &db, shared_ptr<AttachedDatabase> temporary_objects_p,
+                                 timestamp_t start_timestamp_p, transaction_t transaction_id_p)
     : start_timestamp(start_timestamp_p), global_transaction_id(transaction_id_p), transaction_validity(db),
-      modified_database(nullptr), is_read_only(false) {
+      modified_database(nullptr), is_read_only(false), temporary_objects(std::move(temporary_objects_p)),
+      finished(false) {
 }
 
 MetaTransaction::~MetaTransaction() = default;
@@ -98,6 +103,7 @@ void MetaTransaction::RemoveTransaction(AttachedDatabase &db) {
 }
 
 void MetaTransaction::SetReadOnly() {
+	lock_guard<mutex> guard(modification_lock);
 	if (modified_database) {
 		throw InternalException("Cannot set MetaTransaction to read only - modifications have already been made");
 	}
@@ -189,6 +195,60 @@ void MetaTransaction::Rollback(ClientContext &context) {
 	}
 }
 
+string MetaTransaction::ShareTransaction() {
+	lock_guard<mutex> guard(shared_lock);
+	if (share_id.empty()) {
+		// the identifier grants access to the transaction, so it must not be predictable
+		share_id = UUID::ToString(UUIDv4::GenerateRandomUUID());
+	}
+	return share_id;
+}
+
+string MetaTransaction::GetShareId() {
+	lock_guard<mutex> guard(shared_lock);
+	return share_id;
+}
+
+bool MetaTransaction::Join(bool inherited) {
+	lock_guard<mutex> guard(shared_lock);
+	if (finished) {
+		return false;
+	}
+	participants++;
+	if (inherited) {
+		inherited_participants++;
+		this->inherited = true;
+	}
+	return true;
+}
+
+MetaTransaction::LeaveResult MetaTransaction::Leave(bool commit, bool inherited) {
+	lock_guard<mutex> guard(shared_lock);
+	D_ASSERT(participants > 0);
+	D_ASSERT(!inherited || inherited_participants > 0);
+	if (!commit) {
+		rollback_vote = true;
+	}
+	participants--;
+	if (inherited) {
+		inherited_participants--;
+	}
+	LeaveResult result;
+	result.last = participants == 0;
+	result.orphaned = !inherited && !result.last && participants == inherited_participants;
+	if (result.orphaned) {
+		// the inheriting connections cannot end the transaction on their own: it is rolled back once they leave
+		rollback_vote = true;
+	}
+	result.commit = !rollback_vote;
+	// a transaction that only inheriting connections are in is rolled back
+	D_ASSERT(!inherited || !result.last || !result.commit);
+	if (result.last) {
+		finished = true;
+	}
+	return result;
+}
+
 void MetaTransaction::Finalize(ClientContext &context) {
 	// Try to checkpoint any attached databases potentially still held by this transaction.
 	for (auto &database : referenced_databases) {
@@ -242,6 +302,7 @@ AttachedDatabase &MetaTransaction::UseDatabase(shared_ptr<AttachedDatabase> &dat
 
 void MetaTransaction::ModifyDatabase(ClientContext &context, AttachedDatabase &db,
                                      DatabaseModificationType modification) {
+	lock_guard<mutex> guard(modification_lock);
 	// Temporary objects are private to the connection, so a read-only transaction may still write them
 	if (IsReadOnly() && !db.IsTemporary()) {
 		throw TransactionException("Cannot write to database %s - transaction is launched in read-only mode",

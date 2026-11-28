@@ -274,22 +274,14 @@ namespace {
 
 constexpr const char *PERSISTENT_SECRET_UNDO_STATE_KEY = "persistent_secret_undo";
 
-//! The persistent secrets changed by a connection's active transaction. Their files change when the statement runs,
-//! while a rollback undoes their catalog entries, so after a rollback the files are made to follow the catalog again.
+//! The persistent secrets changed by a transaction. Their files change when the statement runs, while a rollback
+//! undoes their catalog entries, so after a rollback the files are made to follow the catalog again. The state is
+//! registered with the transaction and not with a connection, so that it is told when a transaction that several
+//! connections share ends, whichever of them changed a secret
 struct PersistentSecretUndoState : public ClientContextState {
-	void StageChange(MetaTransaction &transaction, SecretStorage &storage, const Identifier &name) {
+	void StageChange(SecretStorage &storage, const Identifier &name) {
 		lock_guard<mutex> guard(lock);
-		if (undo_transaction_id != transaction.global_transaction_id) {
-			// the first change of a new transaction, what is left belongs to a transaction that already ended
-			changes.clear();
-			undo_transaction_id = transaction.global_transaction_id;
-		}
 		changes[storage].insert(name);
-	}
-
-	void TransactionCommit(MetaTransaction &transaction, ClientContext &context) override {
-		lock_guard<mutex> guard(lock);
-		changes.clear();
 	}
 
 	void TransactionRollback(MetaTransaction &transaction, ClientContext &context) override {
@@ -319,10 +311,8 @@ struct PersistentSecretUndoState : public ClientContextState {
 
 private:
 	mutex lock;
-	//! The names changed by the active transaction, per storage; a storage lives as long as the database
+	//! The names changed by the transaction per storage, a storage lives as long as the database
 	reference_map_t<SecretStorage, identifier_set_t> changes;
-	//! The transaction the changes belong to
-	transaction_t undo_transaction_id = 0;
 };
 
 } // namespace
@@ -535,10 +525,10 @@ void LocalFileSecretStorage::StageChange(optional_ptr<CatalogTransaction> transa
 		// the system transaction is not rolled back
 		return;
 	}
-	auto &context = transaction->GetContext();
-	auto state = context.GetContext().GetRegisteredState().GetOrCreate<PersistentSecretUndoState>(
-	    PERSISTENT_SECRET_UNDO_STATE_KEY);
-	state->StageChange(MetaTransaction::Get(context), *this, name);
+	auto &meta_transaction = MetaTransaction::Get(transaction->GetContext());
+	auto state =
+	    meta_transaction.GetRegisteredState().GetOrCreate<PersistentSecretUndoState>(PERSISTENT_SECRET_UNDO_STATE_KEY);
+	state->StageChange(*this, name);
 }
 
 void LocalFileSecretStorage::RollbackSecret(const Identifier &name) {

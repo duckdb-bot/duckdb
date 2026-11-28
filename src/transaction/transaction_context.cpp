@@ -15,6 +15,15 @@
 
 namespace duckdb {
 
+//! Tells how a transaction ended to the states of the transaction, then to those of the connection that ends it
+template <class CALLBACK>
+static void NotifyEndOfTransaction(ClientContext &context, MetaTransaction &transaction, CALLBACK &&callback) {
+	transaction.GetRegisteredState().ForEachState(callback);
+	for (const auto &state : context.GetContext().GetRegisteredState().States()) {
+		callback(*state);
+	}
+}
+
 TransactionContext::TransactionContext(ClientContext &context)
     : context(context), auto_commit(true), invalidation_policy(TransactionInvalidationPolicy::STANDARD_POLICY),
       auto_rollback(false), current_transaction(nullptr) {
@@ -115,28 +124,27 @@ void TransactionContext::Commit() {
 	if (error.HasError()) {
 		// every registered state is told, also when one of them fails; the commit's error is the one reported
 		ErrorData state_error;
-		for (auto const &s : context.GetContext().GetRegisteredState().States()) {
+		NotifyEndOfTransaction(context, *transaction, [&](ClientContextState &state) {
 			try {
-				s->TransactionRollback(*transaction, context, error);
+				state.TransactionRollback(*transaction, context, error);
 			} catch (std::exception &ex) {
 				if (!state_error.HasError()) {
 					state_error = ErrorData(ex);
 				}
 			}
-		}
+		});
 		if (Exception::InvalidatesDatabase(error.Type()) || error.Type() == ExceptionType::INTERNAL) {
 			// throw fatal / internal exceptions directly
 			error.Throw();
 		}
 		if (state_error.HasError()) {
-			throw TransactionException("Failed to commit: %s\nRolling back a connection state failed as well: %s",
+			throw TransactionException("Failed to commit: %s\nRolling back a registered state failed as well: %s",
 			                           error.RawMessage(), state_error.RawMessage());
 		}
 		throw TransactionException("Failed to commit: %s", error.RawMessage());
 	}
-	for (auto &state : context.GetContext().GetRegisteredState().States()) {
-		state->TransactionCommit(*transaction, context);
-	}
+	NotifyEndOfTransaction(context, *transaction,
+	                       [&](ClientContextState &state) { state.TransactionCommit(*transaction, context); });
 	transaction->Finalize(context);
 	if (autocheckpoint_error.HasError()) {
 		auto err = std::move(autocheckpoint_error);
@@ -187,15 +195,15 @@ void TransactionContext::RollbackTransaction(const shared_ptr<MetaTransaction> &
 		rollback_error = ErrorData(ex);
 	}
 	// Notify any registered state of transaction rollback - all of them, also when one of them fails
-	for (auto const &s : context.GetContext().GetRegisteredState().States()) {
+	NotifyEndOfTransaction(context, *transaction, [&](ClientContextState &state) {
 		try {
-			s->TransactionRollback(*transaction, context, error);
+			state.TransactionRollback(*transaction, context, error);
 		} catch (std::exception &ex) {
 			if (!rollback_error.HasError()) {
 				rollback_error = ErrorData(ex);
 			}
 		}
-	}
+	});
 	if (rollback_error.HasError()) {
 		rollback_error.Throw();
 	}

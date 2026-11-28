@@ -254,3 +254,65 @@ TEST_CASE("A rollback does not read the other files of the secret directory", "[
 	REQUIRE_NO_FAIL(con.Query("ROLLBACK"));
 	REQUIRE(SecretFiles(secret_dir) == vector<string> {"s1.duckdb_secret", "unrelated.duckdb_secret"});
 }
+
+TEST_CASE("A rollback restores the files of secrets changed by a connection that inherited the transaction",
+          "[api][secrets]") {
+	auto secret_dir = TestCreatePath("persistent_secret_rollback_inherited");
+	auto config = GetTestConfig();
+	DuckDB db(nullptr, config.get());
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("SET secret_directory = '" + secret_dir + "'"));
+	REQUIRE_NO_FAIL(con.Query("CREATE PERSISTENT SECRET s1 (TYPE http, SCOPE 'http://old')"));
+	REQUIRE_NO_FAIL(con.Query("CREATE PERSISTENT SECRET s2 (TYPE http)"));
+
+	REQUIRE_NO_FAIL(con.Query("BEGIN"));
+	{
+		// the connection is closed before the transaction it inherited ends
+		auto inheriting = Connection::CreateInTransaction(*con.context);
+		REQUIRE_NO_FAIL(inheriting.Query("CREATE OR REPLACE PERSISTENT SECRET s1 (TYPE http, SCOPE 'http://new')"));
+		REQUIRE_NO_FAIL(inheriting.Query("DROP PERSISTENT SECRET s2"));
+		REQUIRE_NO_FAIL(inheriting.Query("CREATE PERSISTENT SECRET s3 (TYPE http)"));
+	}
+	REQUIRE(SecretFiles(secret_dir) == vector<string> {"s1.duckdb_secret", "s3.duckdb_secret"});
+	REQUIRE_NO_FAIL(con.Query("ROLLBACK"));
+	REQUIRE(SecretFiles(secret_dir) == vector<string> {"s1.duckdb_secret", "s2.duckdb_secret"});
+
+	// a new instance reads the secrets as they were before the transaction
+	auto fresh_config = GetTestConfig();
+	DuckDB fresh_db(nullptr, fresh_config.get());
+	Connection fresh_con(fresh_db);
+	REQUIRE_NO_FAIL(fresh_con.Query("SET secret_directory = '" + secret_dir + "'"));
+	auto result = fresh_con.Query("SELECT list_sort(list(name)) FROM duckdb_secrets()");
+	REQUIRE(CHECK_COLUMN(result, 0, {Value::LIST({Value("s1"), Value("s2")})}));
+	result = fresh_con.Query("SELECT scope[1] FROM duckdb_secrets() WHERE name = 's1'");
+	REQUIRE(CHECK_COLUMN(result, 0, {"http://old"}));
+}
+
+TEST_CASE("A rollback restores the files of secrets when the connection that inherited the transaction leaves it last",
+          "[api][secrets]") {
+	auto secret_dir = TestCreatePath("persistent_secret_rollback_inherited_last");
+	auto config = GetTestConfig();
+	DuckDB db(nullptr, config.get());
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("SET secret_directory = '" + secret_dir + "'"));
+	REQUIRE_NO_FAIL(con.Query("CREATE PERSISTENT SECRET s1 (TYPE http, SCOPE 'http://old')"));
+
+	REQUIRE_NO_FAIL(con.Query("BEGIN"));
+	REQUIRE_NO_FAIL(con.Query("CREATE PERSISTENT SECRET s2 (TYPE http)"));
+	auto inheriting = Connection::CreateInTransaction(*con.context);
+	REQUIRE_NO_FAIL(inheriting.Query("CREATE OR REPLACE PERSISTENT SECRET s1 (TYPE http, SCOPE 'http://new')"));
+	// the changes are undone when the last connection leaves the transaction, and the files follow then
+	REQUIRE_NO_FAIL(con.Query("ROLLBACK"));
+	REQUIRE(SecretFiles(secret_dir) == vector<string> {"s1.duckdb_secret", "s2.duckdb_secret"});
+	inheriting = Connection(db);
+	REQUIRE(SecretFiles(secret_dir) == vector<string> {"s1.duckdb_secret"});
+
+	// a new instance reads the secret that was not replaced
+	auto fresh_config = GetTestConfig();
+	DuckDB fresh_db(nullptr, fresh_config.get());
+	Connection fresh_con(fresh_db);
+	REQUIRE_NO_FAIL(fresh_con.Query("SET secret_directory = '" + secret_dir + "'"));
+	auto result = fresh_con.Query("SELECT name, scope[1] FROM duckdb_secrets()");
+	REQUIRE(CHECK_COLUMN(result, 0, {"s1"}));
+	REQUIRE(CHECK_COLUMN(result, 1, {"http://old"}));
+}

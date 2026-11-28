@@ -151,6 +151,10 @@ public:
 	string GetIndexType() const;
 	//! Returns whether an unbound index has buffered WAL operations.
 	bool HasBufferedReplays() const;
+	//! Returns whether the database file holds no data for the index, so that it is never bound.
+	bool IsStorageMissing() const {
+		return storage_missing;
+	}
 	//! Destroys the physical index.
 	void Retire();
 	//! Binds the unbound physical index without replacing it (nullptr for skipped mismatched keys).
@@ -265,6 +269,8 @@ private:
 	unique_ptr<Index> owned_index;
 	//! Whether the enforced constraint is deferred. Derived from the catalog constraint, not serialized.
 	atomic<ConstraintCheckMode> check_mode;
+	//! Whether the database file holds no data for the index.
+	const bool storage_missing;
 	IndexDeltas deltas;
 	//! Whether the index is being built: commits write to its deltas and readers skip it
 	atomic<bool> building;

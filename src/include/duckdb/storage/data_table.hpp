@@ -321,6 +321,9 @@ private:
 	optional_idx NextParallelScanInternal(ClientContext &context, ParallelTableScanState &state,
 	                                      TableScanState &scan_state, bool initialize_columns,
 	                                      optional_ptr<TableScanAssignment> assignment);
+	//! Initializes an append to the transaction-local storage, without refusing a table whose index has no data
+	void InitializeLocalAppendInternal(LocalAppendState &state, DuckTableEntry &table, ClientContext &context,
+	                                   const vector<unique_ptr<BoundConstraint>> &bound_constraints);
 	//! Verify the new added constraints against current persistent&local data
 	void VerifyNewConstraint(ClientContext &context, LocalStorage &local_storage, DataTable &parent,
 	                         const BoundConstraint &constraint);

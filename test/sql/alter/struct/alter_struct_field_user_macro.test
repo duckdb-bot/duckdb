@@ -1,5 +1,5 @@
 # name: test/sql/alter/struct/alter_struct_field_user_macro.test
-# description: Adding, renaming or dropping a struct field calls the functions of the system, also when a macro of a user is named remap_struct or struct_pack
+# description: A struct field change calls the functions of the system when a user macro has the name of one of them
 # group: [struct]
 
 statement ok
@@ -125,7 +125,9 @@ SELECT * FROM added_default ORDER BY i
 2	{'x': 1, 'y': 5}
 
 query I
-SELECT count(*) FROM duckdb_columns() WHERE table_name IN ('renamed_default', 'added_default') AND column_name = 's' AND column_default LIKE '"system".main.remap_struct(%'
+SELECT count(*) FROM duckdb_columns()
+WHERE table_name IN ('renamed_default', 'added_default') AND column_name = 's'
+AND column_default LIKE '"system".main.remap_struct(%'
 ----
 2
 

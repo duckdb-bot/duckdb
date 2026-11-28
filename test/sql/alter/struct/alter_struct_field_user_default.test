@@ -1,5 +1,5 @@
 # name: test/sql/alter/struct/alter_struct_field_user_default.test
-# description: The default of a new struct field is an expression of the user and binds through the search path of the session
+# description: The default of a new struct field is an expression of the user and binds through the search path
 # group: [struct]
 
 statement ok

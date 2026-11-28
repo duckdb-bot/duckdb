@@ -300,7 +300,7 @@ static bool IsInvalidMapKeyDefault(const ColumnMapResult &mapping) {
 	return constant_expr.GetValue().IsNull();
 }
 
-enum class MapColumnFrameType : uint8_t {
+enum class MapColumnFrameType {
 	STRUCT,
 	//! A struct of which the scan extracts a single field
 	STRUCT_EXTRACT,
@@ -457,7 +457,7 @@ static bool OpenMapColumnFrame(ClientContext &context, const MultiFileColumnDefi
 	if (frame_type == MapColumnFrameType::STRUCT && global_index.IsPushdownExtract()) {
 		frame.type = MapColumnFrameType::STRUCT_EXTRACT;
 	} else if (global_index.HasChildren()) {
-		//! FIXME: is this expected for lists and maps??
+		//! FIXME is this expected for lists and maps??
 		for (auto &index : global_index.GetChildIndexes()) {
 			frame.selected_children.emplace(index.GetPrimaryIndex(), index);
 		}

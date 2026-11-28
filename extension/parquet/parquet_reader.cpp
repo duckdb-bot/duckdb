@@ -1511,16 +1511,25 @@ unique_ptr<ParquetColumnSchema> ParquetReader::ParseSchema(ClientContext &contex
 	return make_uniq<ParquetColumnSchema>(root);
 }
 
+//! A column that still needs its identifier and children, and the definition that gets them
+struct ColumnDefinitionFrame {
+	ColumnDefinitionFrame(ParquetColumnSchema &element_p, MultiFileColumnDefinition &definition_p)
+	    : element(element_p), definition(definition_p) {
+	}
+
+	reference<ParquetColumnSchema> element;
+	reference<MultiFileColumnDefinition> definition;
+};
+
 MultiFileColumnDefinition ParquetReader::ParseColumnDefinition(const FileMetaData &file_meta_data,
                                                                ParquetColumnSchema &root_element) {
 	MultiFileColumnDefinition root(root_element.name, root_element.type);
-	// the columns that still need their identifier and children are kept on an explicit stack, so that deeply nested
-	// schemas cannot overflow the call stack
-	vector<std::pair<reference<ParquetColumnSchema>, reference<MultiFileColumnDefinition>>> pending;
+	// the open columns are kept on an explicit stack, so that deeply nested schemas cannot overflow the call stack
+	vector<ColumnDefinitionFrame> pending;
 	pending.emplace_back(root_element, root);
 	while (!pending.empty()) {
-		auto &element = pending.back().first.get();
-		auto &result = pending.back().second.get();
+		auto &element = pending.back().element.get();
+		auto &result = pending.back().definition.get();
 		pending.pop_back();
 		if (element.schema_type == ParquetColumnSchemaType::FILE_ROW_NUMBER) {
 			result.identifier = Value::INTEGER(MultiFileReader::ORDINAL_FIELD_ID);

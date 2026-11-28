@@ -507,7 +507,7 @@ void FilterCombiner::AddNotDistinctFromConstants() {
 		vector<unique_ptr<Expression>> targets;
 		for (auto &member : equivalence_map[set_id]) {
 			auto &expr = member.get();
-			if (expr.IsVolatile() || expr.CanThrow()) {
+			if (expr.CanThrow()) {
 				continue;
 			}
 			auto source = ReadColumn(expr);

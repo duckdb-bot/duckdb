@@ -72,6 +72,10 @@ bool ExecuteFunctionState::TryExecuteDictionaryExpression(const BoundFunctionExp
 		return false; // Dictionary is too large, bail
 	}
 
+	if (failed_input_dictionary_id == input_dictionary_id) {
+		return false; // The expression fails on a value of this dictionary, only the values of the rows are executed
+	}
+
 	if (!output_dictionary || current_input_dictionary_id != input_dictionary_id) {
 		// We haven't seen this dictionary before
 		const auto chunk_fill_ratio = static_cast<double>(args.size()) / STANDARD_VECTOR_SIZE;
@@ -97,18 +101,30 @@ bool ExecuteFunctionState::TryExecuteDictionaryExpression(const BoundFunctionExp
 		}
 
 		// Loop over the dictionary, executing at most STANDARD_VECTOR_SIZE at a time
-		for (idx_t offset = 0; offset < input_dictionary_size; offset += STANDARD_VECTOR_SIZE) {
-			const auto count = MinValue<idx_t>(input_dictionary_size - offset, STANDARD_VECTOR_SIZE);
+		try {
+			for (idx_t offset = 0; offset < input_dictionary_size; offset += STANDARD_VECTOR_SIZE) {
+				const auto count = MinValue<idx_t>(input_dictionary_size - offset, STANDARD_VECTOR_SIZE);
 
-			// Offset the input dictionary
-			Vector offset_input(DictionaryVector::Child(unary_input), offset, offset + count);
-			input_chunk.data[input_col_idx.GetIndex()].Reference(offset_input);
-			input_chunk.SetChildCardinality(count);
+				// Offset the input dictionary
+				Vector offset_input(DictionaryVector::Child(unary_input), offset, offset + count);
+				input_chunk.data[input_col_idx.GetIndex()].Reference(offset_input);
+				input_chunk.SetChildCardinality(count);
 
-			// Execute, storing the result in an intermediate vector, and copying it to the output dictionary
-			Vector output_intermediate(result.GetType());
-			expr.Function().Execute(input_chunk, state, output_intermediate);
-			VectorOperations::Copy(output_intermediate, new_dictionary->data, count, 0, offset);
+				// Execute, storing the result in an intermediate vector, and copying it to the output dictionary
+				Vector output_intermediate(result.GetType());
+				expr.Function().Execute(input_chunk, state, output_intermediate);
+				VectorOperations::Copy(output_intermediate, new_dictionary->data, count, 0, offset);
+			}
+		} catch (std::exception &ex) {
+			ErrorData error(ex);
+			if (!Exception::IsExecutionError(error.Type())) {
+				throw;
+			}
+			// The dictionary can hold values that no row reads, so the error only counts when a row raises it
+			failed_input_dictionary_id = input_dictionary_id;
+			// The constant arguments share their buffers with the dictionary chunk, which resized them
+			args.SetChildCardinality(args.size());
+			return false;
 		}
 
 		output_dictionary = std::move(new_dictionary);

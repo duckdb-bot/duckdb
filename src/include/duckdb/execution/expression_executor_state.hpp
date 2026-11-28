@@ -91,6 +91,8 @@ private:
 	buffer_ptr<DictionaryEntry> output_dictionary;
 	//! ID of the input dictionary Vector
 	string current_input_dictionary_id;
+	//! ID of the last input dictionary Vector on which the expression failed
+	string failed_input_dictionary_id;
 };
 
 struct ExpressionExecutorState {

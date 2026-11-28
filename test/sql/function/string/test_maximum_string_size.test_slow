@@ -1,0 +1,104 @@
+# name: test/sql/function/string/test_maximum_string_size.test_slow
+# description: Test string functions with a result larger than the maximum string size
+# group: [string]
+
+require parquet
+
+# the input depends on a column, so the functions run during execution and no plan holds a string of this size
+statement error
+SELECT length(bin(s)) FROM (SELECT repeat('x', 600000000 + i) AS s FROM range(1) t(i))
+----
+<REGEX>:.*Out of Range Error.*maximum supported string size.*
+
+# the database is still usable
+query I
+SELECT 42
+----
+42
+
+statement error
+SELECT length(s || s) FROM (SELECT repeat('x', 2200000000 + i) AS s FROM range(1) t(i))
+----
+<REGEX>:.*Out of Range Error.*maximum supported string size.*
+
+statement error
+SELECT length(concat(s, s)) FROM (SELECT repeat('x', 2200000000 + i) AS s FROM range(1) t(i))
+----
+<REGEX>:.*Out of Range Error.*maximum supported string size.*
+
+statement error
+SELECT octet_length(b || b) FROM (SELECT repeat('x', 2200000000 + i)::BLOB AS b FROM range(1) t(i))
+----
+<REGEX>:.*Out of Range Error.*maximum supported string size.*
+
+# constant arguments are folded while planning
+statement error
+SELECT length(bin(repeat('x', 600000000)))
+----
+<REGEX>:.*Out of Range Error.*maximum supported string size.*
+
+# TRY turns the error into NULL
+query I
+SELECT TRY(length(bin(s))) FROM (SELECT repeat('x', 600000000 + i) AS s FROM range(1) t(i))
+----
+NULL
+
+query I
+SELECT 42
+----
+42
+
+# a dictionary with a value that fails and a value that does not
+statement ok
+COPY (SELECT i, CASE WHEN i = 0 THEN repeat('x', 600000000 + i) ELSE 'a' END AS s FROM range(2) t(i)) TO '{TEST_DIR}/maximum_string_size_dictionary.parquet' (FORMAT PARQUET, COMPRESSION ZSTD, DICTIONARY_SIZE_LIMIT 10);
+
+query I
+SELECT DISTINCT encodings FROM parquet_metadata('{TEST_DIR}/maximum_string_size_dictionary.parquet') WHERE path_in_schema = 's';
+----
+PLAIN_DICTIONARY
+
+query III
+SELECT i, TRY(length(bin(s))), has_error(bin(s)) FROM read_parquet('{TEST_DIR}/maximum_string_size_dictionary.parquet') ORDER BY i;
+----
+0	NULL	true
+1	8	false
+
+query III
+SELECT i, TRY(length(bin(s))), has_error(bin(s)) FROM read_parquet('{TEST_DIR}/maximum_string_size_dictionary.parquet') WHERE i = 1;
+----
+1	8	false
+
+# the value that fails is not read
+query II
+SELECT i, length(bin(s)) FROM read_parquet('{TEST_DIR}/maximum_string_size_dictionary.parquet') WHERE i = 1;
+----
+1	8
+
+statement error
+SELECT i, length(bin(s)) FROM read_parquet('{TEST_DIR}/maximum_string_size_dictionary.parquet') WHERE i = 0;
+----
+<REGEX>:.*Out of Range Error.*maximum supported string size.*
+
+# lambdas are executed by their own executor
+query III
+SELECT i, TRY(invoke(lambda x: length(bin(x)), s)), has_error(invoke(lambda x: length(bin(x)), s)) FROM read_parquet('{TEST_DIR}/maximum_string_size_dictionary.parquet') ORDER BY i;
+----
+0	NULL	true
+1	8	false
+
+query II
+SELECT i, TRY(list_transform([1], lambda x: length(bin(s)))) FROM read_parquet('{TEST_DIR}/maximum_string_size_dictionary.parquet') WHERE i = 1;
+----
+1	[8]
+
+# constant arguments next to the dictionary
+query III
+SELECT i, TRY(length(concat_ws(s, 'y', 'y', 'y', 'y', 'y', 'y', 'y', 'y', 'y'))), has_error(concat_ws(s, 'y', 'y', 'y', 'y', 'y', 'y', 'y', 'y', 'y')) FROM read_parquet('{TEST_DIR}/maximum_string_size_dictionary.parquet') ORDER BY i;
+----
+0	NULL	true
+1	17	false
+
+query II
+SELECT i, length(concat_ws(s, 'y', 'y', 'y', 'y', 'y', 'y', 'y', 'y', 'y')) FROM read_parquet('{TEST_DIR}/maximum_string_size_dictionary.parquet') WHERE i = 1;
+----
+1	17

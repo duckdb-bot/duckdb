@@ -1959,7 +1959,8 @@ matcher_rule_overrides:
 # towards a depth of their own, which max_expression_depth bounds as well. expression_depth_query_chain_rules
 # count like chain rules, expression_depth_query_list_rules count one level for every element after the first
 # of their comma separated list, and expression_depth_set_operation_chain_rules one level for every repeated
-# set operation that does not extend the UNION before it.
+# set operation that does not extend the UNION before it. These rules nest left deep and transform their operands
+# in order, so an operand counts the levels of its chain from its own on, which for the first operand are all.
 expression_depth_nesting_rules:
   - SingleExpression
   - Type

@@ -495,8 +495,13 @@ struct TransformStackFrame {
 	ParseResult &parse_result;
 	arena_ptr<TransformProcess> process;
 	arena_ptr<TransformResultValue> child_result;
-	//! How much this frame adds to the expression depth while it is on the stack
+	//! How much this frame adds to the expression depth while it is on the stack. A chain of query nodes or table
+	//! references gives up a level whenever its next operand has one level less above it
 	idx_t expression_depth_weight = 0;
+	//! How many operands a chain of query nodes or table references has started to transform
+	idx_t chain_operand_count = 0;
+	//! Which UNION the last started operand of a chain of set operations belongs to
+	uint8_t chain_union_kind = 0;
 	//! Rewind process storage to this point after destroying the frame.
 	ArenaAllocator::Position process_arena_position;
 };
@@ -524,6 +529,8 @@ public:
 private:
 	void PushFrame(TransformInput input);
 	void PopFrame();
+	//! Lowers the weight of a chain of query nodes or table references to the levels above its next operand
+	void StartChainOperand(TransformStackFrame &frame, ParseResult &operand);
 	void InitializeFrame(TransformStackFrame &frame);
 	arena_ptr<TransformResultValue> ExecuteFrame(TransformStackFrame &frame);
 
@@ -668,8 +675,8 @@ public:
 	//! An upper bound of the depth of the expression trees currently being transformed - tracked by the transform
 	//! stacks: every nested expression, nested type and link of an operator chain counts while it is transformed
 	idx_t expression_depth = 0;
-	//! An upper bound of the depth of the query nodes and table references that the chains of set operations and
-	//! joins currently being transformed nest
+	//! How many query nodes and table references the chains of set operations and joins currently being transformed
+	//! nest above the operand that is transformed right now
 	idx_t query_depth = 0;
 	//! The depth a frame of this rule adds while it is on the stack (see ParsedGrammar::SetExpressionDepth)
 	static idx_t ExpressionDepthWeight(optional_ptr<const CompiledGrammarRule> rule, ParseResult &parse_result);

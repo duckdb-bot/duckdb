@@ -217,6 +217,9 @@ arena_ptr<TransformResultValue> TransformStack::ExecuteFrame(TransformStackFrame
 	if (!child) {
 		return step.TakeResult();
 	}
+	if (frame.expression_depth_weight && transformer.CountsQueryDepth(frame.rule)) {
+		StartChainOperand(frame, child->parse_result);
+	}
 	PushFrame(*child);
 	return nullptr;
 }
@@ -336,6 +339,19 @@ static uint8_t GetUnionKind(ParseResult &parse_result) {
 	}
 }
 
+//! Which UNION a repeated element of a chain of set operations starts with, see GetUnionKind
+static uint8_t GetElementUnionKind(ParseResult &element) {
+	if (element.type != ParseResultType::LIST) {
+		return 0;
+	}
+	return GetUnionKind(element.Cast<ListParseResult>().GetChild(0));
+}
+
+//! Whether a set operation extends the node of the set operation before it, as a UNION that repeats that UNION does
+static bool ExtendsUnion(uint8_t union_kind, uint8_t previous_union_kind) {
+	return (union_kind & 1) && union_kind == previous_union_kind;
+}
+
 //! The number of nodes that a chain of set operations nests. Every repeated element starts with its set operation
 //! and a UNION that repeats the UNION before it extends that node
 static idx_t CountSetOperationLinks(ParseResult &parse_result) {
@@ -357,18 +373,30 @@ static idx_t CountSetOperationLinks(ParseResult &parse_result) {
 		}
 		uint8_t previous_kind = 0;
 		for (auto &element : repeat.get().Cast<RepeatParseResult>().GetChildren()) {
-			uint8_t kind = 0;
-			if (element.get().type == ParseResultType::LIST) {
-				auto &element_children = element.get().Cast<ListParseResult>();
-				kind = GetUnionKind(element_children.GetChild(0));
-			}
-			if (!(kind & 1) || kind != previous_kind) {
+			auto kind = GetElementUnionKind(element.get());
+			if (!ExtendsUnion(kind, previous_kind)) {
 				links++;
 			}
 			previous_kind = kind;
 		}
 	}
 	return links;
+}
+
+void TransformStack::StartChainOperand(TransformStackFrame &frame, ParseResult &operand) {
+	// the first two operands share the innermost node, a later operand starts a node above the one before it
+	auto operand_idx = frame.chain_operand_count++;
+	bool above_previous_node = operand_idx > 1;
+	if (operand_idx > 0 && frame.rule->expression_depth == ExpressionDepthKind::SET_OPERATION_CHAIN) {
+		auto union_kind = GetElementUnionKind(operand);
+		above_previous_node = above_previous_node && !ExtendsUnion(union_kind, frame.chain_union_kind);
+		frame.chain_union_kind = union_kind;
+	}
+	// the node below this operand no longer counts, the last level stays until the frame is done
+	if (above_previous_node && frame.expression_depth_weight > 1) {
+		frame.expression_depth_weight--;
+		transformer.ExitExpression(1, true);
+	}
 }
 
 idx_t PEGTransformer::ExpressionDepthWeight(optional_ptr<const CompiledGrammarRule> rule, ParseResult &parse_result) {

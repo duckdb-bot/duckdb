@@ -105,17 +105,100 @@ SELECT count(*) FROM (SELECT abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs
 ----
 1
 
-# chains inside each other add up
-statement error
+# a chain nests left deep, so a chain inside its last operand has one level of it above
+query I
 SELECT count(*) FROM range(1) t0, range(1) t1, range(1) t2, range(1) t3, range(1) t4, range(1) t5, range(1) t6, range(1) t7, range(1) t8, range(1) t9, range(1) t10, range(1) t11, range(1) t12, range(1) t13, range(1) t14, range(1) t15, range(1) t16, range(1) t17, range(1) t18, range(1) t19, range(1) t20, range(1) t21, range(1) t22, range(1) t23, range(1) t24, range(1) t25, range(1) t26, range(1) t27, range(1) t28, range(1) t29, range(1) t30, range(1) t31, range(1) t32, range(1) t33, range(1) t34, range(1) t35, range(1) t36, range(1) t37, range(1) t38, range(1) t39, range(1) t40, range(1) t41, range(1) t42, range(1) t43, range(1) t44, range(1) t45, range(1) t46, range(1) t47, range(1) t48, range(1) t49, range(1) t50, range(1) t51, range(1) t52, range(1) t53, range(1) t54, range(1) t55, range(1) t56, range(1) t57, range(1) t58, range(1) t59, (SELECT count(*) FROM range(1) t100, range(1) t101, range(1) t102, range(1) t103, range(1) t104, range(1) t105, range(1) t106, range(1) t107, range(1) t108, range(1) t109, range(1) t110, range(1) t111, range(1) t112, range(1) t113, range(1) t114, range(1) t115, range(1) t116, range(1) t117, range(1) t118, range(1) t119, range(1) t120, range(1) t121, range(1) t122, range(1) t123, range(1) t124, range(1) t125, range(1) t126, range(1) t127, range(1) t128, range(1) t129, range(1) t130, range(1) t131, range(1) t132, range(1) t133, range(1) t134, range(1) t135, range(1) t136, range(1) t137, range(1) t138, range(1) t139, range(1) t140, range(1) t141, range(1) t142, range(1) t143, range(1) t144, range(1) t145, range(1) t146, range(1) t147, range(1) t148, range(1) t149, range(1) t150, range(1) t151, range(1) t152, range(1) t153, range(1) t154, range(1) t155, range(1) t156, range(1) t157, range(1) t158, range(1) t159) s;
+----
+1
+
+query I
+FROM query('SELECT count(*) FROM range(1)' || repeat(' CROSS JOIN range(1)', 59) || ' CROSS JOIN (SELECT count(*) FROM range(1)' || repeat(', range(1)', 59) || ')');
+----
+1
+
+# the condition of a join is on the level of its right operand
+query I
+FROM query('SELECT count(*) FROM range(1) t' || repeat(' CROSS JOIN range(1)', 59) || ' JOIN range(1) u ON u.range IN (SELECT count(*) - 1 FROM range(1)' || repeat(', range(1)', 59) || ')');
+----
+1
+
+# a chain inside the first operand has every level above it
+statement error
+FROM query('SELECT count(*) FROM (SELECT count(*) FROM range(1)' || repeat(', range(1)', 59) || ')' || repeat(', range(1)', 60));
 ----
 <REGEX>:Parser Error.*Max expression depth.*
 
-# chains next to each other do not
+# in between, an operand has one level less above it than the operand before it
+query I
+FROM query('SELECT count(*) FROM range(1)' || repeat(', range(1)', 49) || ', (SELECT count(*) FROM range(1)' || repeat(', range(1)', 60) || ')' || repeat(', range(1)', 10));
+----
+1
+
+statement error
+FROM query('SELECT count(*) FROM range(1)' || repeat(', range(1)', 9) || ', (SELECT count(*) FROM range(1)' || repeat(', range(1)', 60) || ')' || repeat(', range(1)', 50));
+----
+<REGEX>:Parser Error.*Max expression depth.*
+
+# set operations nest the same way, here nine chains of twelve, each in the last operand of the one before
+query I
+FROM query(repeat('SELECT 1' || repeat(' EXCEPT SELECT 2', 11) || ' UNION (', 8) || 'SELECT 1' || repeat(' EXCEPT SELECT 2', 12) || repeat(')', 8));
+----
+1
+
+statement error
+FROM query('(SELECT 1' || repeat(' EXCEPT SELECT 2', 59) || ')' || repeat(' EXCEPT SELECT 2', 60));
+----
+<REGEX>:Parser Error.*Max expression depth.*
+
+# chains next to each other do not add up
 query I
 SELECT count(*) FROM (SELECT count(*) FROM range(1) t0, range(1) t1, range(1) t2, range(1) t3, range(1) t4, range(1) t5, range(1) t6, range(1) t7, range(1) t8, range(1) t9, range(1) t10, range(1) t11, range(1) t12, range(1) t13, range(1) t14, range(1) t15, range(1) t16, range(1) t17, range(1) t18, range(1) t19, range(1) t20, range(1) t21, range(1) t22, range(1) t23, range(1) t24, range(1) t25, range(1) t26, range(1) t27, range(1) t28, range(1) t29, range(1) t30, range(1) t31, range(1) t32, range(1) t33, range(1) t34, range(1) t35, range(1) t36, range(1) t37, range(1) t38, range(1) t39) a, (SELECT count(*) FROM range(1) t100, range(1) t101, range(1) t102, range(1) t103, range(1) t104, range(1) t105, range(1) t106, range(1) t107, range(1) t108, range(1) t109, range(1) t110, range(1) t111, range(1) t112, range(1) t113, range(1) t114, range(1) t115, range(1) t116, range(1) t117, range(1) t118, range(1) t119, range(1) t120, range(1) t121, range(1) t122, range(1) t123, range(1) t124, range(1) t125, range(1) t126, range(1) t127, range(1) t128, range(1) t129, range(1) t130, range(1) t131, range(1) t132, range(1) t133, range(1) t134, range(1) t135, range(1) t136, range(1) t137, range(1) t138, range(1) t139) b, (SELECT count(*) FROM range(1) t200, range(1) t201, range(1) t202, range(1) t203, range(1) t204, range(1) t205, range(1) t206, range(1) t207, range(1) t208, range(1) t209, range(1) t210, range(1) t211, range(1) t212, range(1) t213, range(1) t214, range(1) t215, range(1) t216, range(1) t217, range(1) t218, range(1) t219, range(1) t220, range(1) t221, range(1) t222, range(1) t223, range(1) t224, range(1) t225, range(1) t226, range(1) t227, range(1) t228, range(1) t229, range(1) t230, range(1) t231, range(1) t232, range(1) t233, range(1) t234, range(1) t235, range(1) t236, range(1) t237, range(1) t238, range(1) t239) c;
 ----
 1
+
+# a chain that is parsed and never bound counts as well, and shows the count. One chain may have 100 links
+query I
+FROM query('WITH c AS (SELECT 1' || repeat(' EXCEPT SELECT 1', 100) || ') SELECT 42');
+----
+42
+
+statement error
+FROM query('WITH c AS (SELECT 1' || repeat(' EXCEPT SELECT 1', 101) || ') SELECT 42');
+----
+<REGEX>:Parser Error.*Max expression depth.*
+
+# the last of 61 tables has one level above it
+query I
+FROM query('WITH c AS (SELECT 1 FROM t' || repeat(', t', 59) || ', (SELECT 1 FROM t' || repeat(', t', 99) || ')) SELECT 42');
+----
+42
+
+statement error
+FROM query('WITH c AS (SELECT 1 FROM t' || repeat(', t', 59) || ', (SELECT 1 FROM t' || repeat(', t', 100) || ')) SELECT 42');
+----
+<REGEX>:Parser Error.*Max expression depth.*
+
+# the second operand is as deep as the first, here with two levels above it
+query I
+FROM query('WITH c AS (SELECT 1 FROM t JOIN (SELECT 1 FROM t' || repeat(', t', 98) || ') ON true JOIN t ON true) SELECT 42');
+----
+42
+
+statement error
+FROM query('WITH c AS (SELECT 1 FROM t JOIN (SELECT 1 FROM t' || repeat(', t', 99) || ') ON true JOIN t ON true) SELECT 42');
+----
+<REGEX>:Parser Error.*Max expression depth.*
+
+# an operand that extends a UNION is on the level of that node, here below two EXCEPT
+query I
+FROM query('WITH c AS (SELECT 1 UNION ALL SELECT 1 UNION ALL (SELECT 1' || repeat(' EXCEPT SELECT 1', 97) || ') EXCEPT SELECT 2 EXCEPT SELECT 2) SELECT 42');
+----
+42
+
+statement error
+FROM query('WITH c AS (SELECT 1 UNION ALL SELECT 1 UNION ALL (SELECT 1' || repeat(' EXCEPT SELECT 1', 98) || ') EXCEPT SELECT 2 EXCEPT SELECT 2) SELECT 42');
+----
+<REGEX>:Parser Error.*Max expression depth.*
 
 statement ok
 RESET max_expression_depth;
@@ -143,6 +226,12 @@ FROM query('PIVOT (SELECT 1 AS a FROM range(1)' || repeat(', range(1)', 100000) 
 
 statement error
 FROM query('PIVOT (SELECT 1 AS a FROM range(1)' || repeat(' JOIN range(1) USING (range)', 100000) || ') ON a IN (1)');
+----
+<REGEX>:Parser Error.*Max expression depth.*
+
+# two chains below the limit, one inside the first operand of the other
+statement error
+FROM query('SELECT count(*) FROM (SELECT count(*) FROM range(1)' || repeat(', range(1)', 600) || ')' || repeat(', range(1)', 600));
 ----
 <REGEX>:Parser Error.*Max expression depth.*
 

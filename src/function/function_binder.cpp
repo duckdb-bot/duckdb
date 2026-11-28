@@ -1353,9 +1353,9 @@ static string ExtractCollation(const vector<unique_ptr<Expression>> &children) {
 	return collation;
 }
 
-//! Pushes the collations of the arguments into the children, returns the collation to propagate to the return type
-static string PushCollations(ClientContext &context, BoundSimpleFunction &bound_function,
-                             vector<unique_ptr<Expression>> &children, CollationType type, bool is_index_key) {
+//! Extracts the combined collations of the arguments of a function
+static FunctionCollations ExtractArgumentCollations(const BoundSimpleFunction &bound_function,
+                                                    const vector<unique_ptr<Expression>> &children) {
 	FunctionCollations collations;
 	auto &argument_types = bound_function.GetArguments();
 	for (idx_t i = 0; i < children.size(); i++) {
@@ -1363,6 +1363,24 @@ static string PushCollations(ClientContext &context, BoundSimpleFunction &bound_
 		auto &target_type = argument_types[i].IsComplete() ? argument_types[i] : source_type;
 		ExtractCollationFromType(source_type, target_type, collations);
 	}
+	return collations;
+}
+
+void FunctionBinder::CombineArgumentCollations(BoundSimpleFunction &bound_function,
+                                               const vector<unique_ptr<Expression>> &arguments) {
+	const auto collations = ExtractArgumentCollations(bound_function, arguments);
+	auto &argument_types = bound_function.GetArguments();
+	for (idx_t i = 0; i < arguments.size(); i++) {
+		auto &target_type = argument_types[i].IsComplete() ? argument_types[i] : arguments[i]->GetReturnType();
+		argument_types[i] = ApplyCollationToType(target_type, collations);
+	}
+}
+
+//! Pushes the collations of the arguments into the children, returns the collation to propagate to the return type
+static string PushCollations(ClientContext &context, BoundSimpleFunction &bound_function,
+                             vector<unique_ptr<Expression>> &children, CollationType type, bool is_index_key) {
+	const auto collations = ExtractArgumentCollations(bound_function, children);
+	auto &argument_types = bound_function.GetArguments();
 	if (is_index_key && collations.collation.empty() && collations.fields.empty()) {
 		// index keys only use explicit collations, comparison keys and the default collation would change them
 		return string();

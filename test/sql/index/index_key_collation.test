@@ -23,7 +23,53 @@ statement ok
 CREATE INDEX i ON t(hash(s));
 
 statement ok
+CREATE TABLE sl(s VARCHAR[]);
+
+statement ok
+CREATE INDEX si ON sl (len(list_intersect(s, ['a'])));
+
+statement ok
+CREATE TABLE ul(v INTERVAL[]);
+
+statement ok
+CREATE UNIQUE INDEX ui ON ul (len(list_intersect(v, [INTERVAL 30 DAY])));
+
+# list_intersect does not use the collations of its arguments in an index key either
+statement ok
+CREATE TABLE el(s VARCHAR[]);
+
+statement ok
+CREATE UNIQUE INDEX ei ON el (len(list_intersect(s, ['a' COLLATE NOCASE])));
+
+statement ok
+CREATE TABLE xl(s VARCHAR);
+
+statement ok
+CREATE INDEX xi ON xl (len(list_intersect([s COLLATE NOCASE], ['a' COLLATE NOACCENT])));
+
+statement ok
+CREATE TABLE zl(d DOUBLE[]);
+
+statement ok
+CREATE UNIQUE INDEX zi ON zl (CAST(list_intersect(d, [0.0, 1.0])[1] AS VARCHAR));
+
+statement ok
 INSERT INTO il VALUES ([INTERVAL 1 DAY]);
+
+statement ok
+INSERT INTO sl VALUES (['A']), (['b']);
+
+statement ok
+INSERT INTO ul VALUES ([INTERVAL 1 MONTH]);
+
+statement ok
+INSERT INTO el VALUES (['A']), (['a']);
+
+statement ok
+INSERT INTO xl VALUES ('A'), ('a');
+
+statement ok
+INSERT INTO zl VALUES ([0.0::DOUBLE, '-0'::DOUBLE]);
 
 statement ok
 INSERT INTO vl VALUES ([1::TINYINT::VARIANT]);
@@ -51,6 +97,34 @@ DELETE FROM il WHERE v = [INTERVAL 1 DAY];
 statement ok
 DELETE FROM vl WHERE v = [1::TINYINT::VARIANT];
 
+statement ok
+DELETE FROM sl WHERE s = ['A'];
+
+# the equal interval has another index key, as it had when the index was created
+statement ok
+INSERT INTO ul VALUES ([INTERVAL 30 DAY]);
+
+# 'B' has the key of 'A', which is not the key of 'a'
+statement error
+INSERT INTO el VALUES (['B'])
+----
+Duplicate key
+
+# of the two zeros of the first row the index key holds the last one
+statement error
+INSERT INTO zl VALUES (['-0'::DOUBLE])
+----
+Duplicate key
+
+statement ok
+DELETE FROM el;
+
+statement ok
+DELETE FROM xl;
+
+statement ok
+DELETE FROM zl;
+
 query I
 SELECT count(*) FROM t
 ----
@@ -65,3 +139,59 @@ query I
 SELECT count(*) FROM vl
 ----
 1
+
+query II
+SELECT (SELECT count(*) FROM sl), (SELECT count(*) FROM ul)
+----
+1	2
+
+query III
+SELECT (SELECT count(*) FROM el), (SELECT count(*) FROM xl), (SELECT count(*) FROM zl)
+----
+0	0	0
+
+# an index that is created under a default collation does not use it either
+statement ok
+CREATE TABLE cl(s VARCHAR[]);
+
+statement ok
+CREATE UNIQUE INDEX ci ON cl (len(list_intersect(s, ['a'])));
+
+statement ok
+INSERT INTO cl VALUES (['A']);
+
+# nor does a field next to a field with a collation
+statement ok
+CREATE TABLE ml(s STRUCT(a VARCHAR, b VARCHAR)[]);
+
+statement ok
+CREATE UNIQUE INDEX mi ON ml (len(list_intersect(s, [{'a': 'x' COLLATE NOCASE, 'b': 'y'}])));
+
+statement ok
+INSERT INTO ml VALUES ([{'a': 'X', 'b': 'Y'}]);
+
+statement ok
+RESET default_collation;
+
+restart
+
+statement error
+INSERT INTO cl VALUES (['b'])
+----
+Duplicate key
+
+statement error
+INSERT INTO ml VALUES ([{'a': 'q', 'b': 'q'}])
+----
+Duplicate key
+
+statement ok
+DELETE FROM cl;
+
+statement ok
+DELETE FROM ml;
+
+query II
+SELECT (SELECT count(*) FROM cl), (SELECT count(*) FROM ml)
+----
+0	0

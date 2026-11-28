@@ -1,0 +1,154 @@
+# name: test/sql/collate/test_collate_list_intersect.test
+# description: list_intersect compares the elements under their collation and returns those of the first list
+# group: [collate]
+
+query III
+SELECT list_intersect(['A' COLLATE NOCASE, 'b'], ['a', 'z']), list_intersect(['A', 'b'], ['B' COLLATE NOCASE]),
+	array_intersect(['A' COLLATE NOCASE], ['a'])
+----
+[A]	[b]	[A]
+
+# without a collation the comparison stays binary
+query II
+SELECT list_intersect(['A', 'b', 'c'], ['a', 'B']), list_intersect(['A', 'b'], ['b', 'a'])
+----
+[]	[b]
+
+# combined collations
+query II
+SELECT list_intersect(['héllo', 'x'], ['HELLO' COLLATE NOACCENT.NOCASE]), list_intersect(['é' COLLATE NOACCENT], ['e', 'E'])
+----
+[héllo]	[é]
+
+# NULL elements, NULL lists and empty lists
+query IIIII
+SELECT list_intersect([NULL, 'BB'], ['bb' COLLATE NOCASE, NULL]), list_intersect([]::VARCHAR[], ['a' COLLATE NOCASE]),
+	list_intersect(['A' COLLATE NOCASE], []::VARCHAR[]), list_intersect(NULL::VARCHAR[], ['a' COLLATE NOCASE]),
+	list_intersect(['A' COLLATE NOCASE], NULL::VARCHAR[])
+----
+[BB]	[]	[]	NULL	[]
+
+# of the elements of the first list that are equal, the first one is returned, whichever list is the shorter
+query III
+SELECT list_intersect(['A', 'a', 'b'], ['a' COLLATE NOCASE]), list_intersect(['A', 'a'], ['a' COLLATE NOCASE, 'x', 'y']),
+	list_intersect(['A' COLLATE NOCASE, 'a', 'A'], ['a', 'A'])
+----
+[A]	[A]	[A]
+
+# an array next to a collated list
+query II
+SELECT list_intersect(['A', 'B']::VARCHAR[2], ['b' COLLATE NOCASE]), list_intersect(['b' COLLATE NOCASE], ['A', 'B']::VARCHAR[2])
+----
+[B]	[b]
+
+# collated fields of a struct and lists of lists
+query II
+SELECT list_intersect([{'s': 'A' COLLATE NOCASE, 'n': 1}], [{'s': 'a', 'n': 1}, {'s': 'a', 'n': 2}]),
+	list_intersect([['A' COLLATE NOCASE], ['b']], [['a'], ['c']])
+----
+[{'s': A, 'n': 1}]	[[A]]
+
+# VARIANT values compare by value, at the top level and inside a struct
+query III
+SELECT list_intersect([1::TINYINT::VARIANT, 'x'::VARIANT, 2::INTEGER::VARIANT], [1::BIGINT::VARIANT]),
+	list_intersect([2.0::FLOAT::VARIANT], [2.0::DOUBLE::VARIANT]),
+	list_intersect([{'v': 1::TINYINT::VARIANT}, {'v': 'x'::VARIANT}], [{'v': 1::BIGINT::VARIANT}])
+----
+[1]	[2.0]	[{'v': 1}]
+
+# intervals that are equal, and values that are not
+query III
+SELECT list_intersect([INTERVAL 1 MONTH, INTERVAL 2 DAY], [INTERVAL 30 DAY]), list_intersect([[INTERVAL 1 MONTH]], [[INTERVAL 30 DAY]]),
+	list_intersect([2.0::DOUBLE::VARIANT], [2::INTEGER::VARIANT])
+----
+[1 month]	[[1 month]]	[]
+
+# the collation of a struct field survives a cast of its list, to another field order or to a wider field
+query II
+SELECT list_intersect([{'x': 'A', 'y': 1}], [{'y': 1, 'x': 'a' COLLATE NOCASE}]),
+	list_intersect([{'x': 'A', 'y': 1::BIGINT}], [{'x': 'a' COLLATE NOCASE, 'y': 1::SMALLINT}])
+----
+[{'x': A, 'y': 1}]	[{'x': A, 'y': 1}]
+
+statement error
+SELECT list_intersect(['A' COLLATE NOCASE], ['a' COLLATE NOACCENT])
+----
+Cannot combine types with different collation
+
+statement error
+SELECT list_intersect([['A' COLLATE NOACCENT]], [['a' COLLATE NOCASE]])
+----
+Cannot combine types with different collation
+
+statement error
+SELECT list_intersect([{'x': 'A' COLLATE NOACCENT}], [{'x': 'a' COLLATE NOCASE}])
+----
+Cannot combine types with different collation
+
+# the default collation
+statement ok
+SET default_collation = 'nocase';
+
+# a binary collation overrides it, also on a struct field of a list that is cast
+query III
+SELECT list_intersect(['A', 'b'], ['a']), list_intersect(['A' COLLATE "binary"], ['a']),
+	list_intersect([{'x': 'A', 'y': 1}], [{'y': 1, 'x': 'a' COLLATE "binary"}])
+----
+[A]	[]	[]
+
+statement ok
+RESET default_collation;
+
+# a prepared statement
+statement ok
+PREPARE intersect_collated AS SELECT list_intersect(?::VARCHAR[], ['a' COLLATE NOCASE]);
+
+query I
+EXECUTE intersect_collated(['A', 'b'])
+----
+[A]
+
+# lists of more than one vector
+query I
+SELECT len(list_intersect((SELECT list('A' || i) FROM range(5000) t(i)),
+	(SELECT list(('a' || i) COLLATE NOCASE) FROM range(2500, 7500) t(i))))
+----
+2500
+
+# a collated column, over more than one vector
+statement ok
+CREATE TABLE t AS SELECT i AS id, ['A' || (i % 7), 'B'] AS tags, ('a' || (i % 3))::VARCHAR COLLATE NOCASE AS needle
+FROM range(5000) r(i);
+
+query II
+SELECT list_intersect(tags, [needle]) AS matched, count(*) FROM t GROUP BY ALL ORDER BY ALL
+----
+[]	4284
+[A0]	239
+[A1]	239
+[A2]	238
+
+query I
+SELECT count(*) FROM t WHERE (len(list_intersect(tags, [needle])) > 0) = list_has_any(tags, [needle])
+----
+5000
+
+# a query that compares by keys is not answered from an index, whose key does not
+statement ok
+CREATE TABLE indexed AS SELECT ['A', 'a'] AS s FROM range(3) UNION ALL SELECT ['b'];
+
+statement ok
+CREATE INDEX indexed_idx ON indexed (len(list_intersect(s, s)));
+
+query I
+SELECT count(*) FROM indexed WHERE len(list_intersect(s, s)) = 2
+----
+3
+
+statement ok
+SET default_collation = 'nocase';
+
+query I
+SELECT count(*) FROM indexed WHERE len(list_intersect(s, s)) = 1
+----
+4

@@ -4,6 +4,7 @@
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/common/enum_util.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/function/table/system_catalog_scanner.hpp"
 #include "duckdb/function/table/system_functions.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/client_data.hpp"
@@ -33,14 +34,16 @@ struct ConstraintEntry {
 };
 
 struct DuckDBConstraintsData : public GlobalTableFunctionState {
-	DuckDBConstraintsData() : offset(0), constraint_offset(0), unique_constraint_offset(0) {
+	DuckDBConstraintsData() : offset(0), constraint_offset(0), table_constraint_index(0) {
 	}
 
 	vector<ConstraintEntry> entries;
 	idx_t offset;
 	idx_t constraint_offset;
-	idx_t unique_constraint_offset;
+	//! The position of the next listed constraint within its table, the constraint_index column
+	idx_t table_constraint_index;
 	identifier_set_t constraint_names;
+	SystemCatalogScannerStats stats;
 };
 
 static unique_ptr<FunctionData> DuckDBConstraintsBind(ClientContext &context, TableFunctionBindInput &input,
@@ -95,23 +98,28 @@ static unique_ptr<FunctionData> DuckDBConstraintsBind(ClientContext &context, Ta
 	names.emplace_back("constraint_check_mode");
 	return_types.emplace_back(LogicalType::VARCHAR);
 
-	return nullptr;
+	// the rows of a table are its constraints, so the table columns identify the scanned entry
+	SystemCatalogIdentityColumns columns;
+	columns.entry_name = "table_name";
+	columns.entry_oid = "table_oid";
+	return SystemCatalogScanner::CreateBindData(names, return_types, columns);
 }
 
 unique_ptr<GlobalTableFunctionState> DuckDBConstraintsInit(ClientContext &context, TableFunctionInitInput &input) {
 	auto result = make_uniq<DuckDBConstraintsData>();
 
-	// scan all the schemas for tables and collect them
-	auto schemas = Catalog::GetAllSchemas(context);
+	// collect the tables of the schemas that survive the pushed-down filters
+	auto schemas = SystemCatalogScanner::GetSchemas(context, input, result->stats);
+	auto filters = SystemCatalogScanner::GetEntryFilters(input);
 
 	for (auto &schema : schemas) {
 		vector<reference<CatalogEntry>> entries;
-
-		schema.get().Scan(context, CatalogType::TABLE_ENTRY, [&](CatalogEntry &entry) {
-			if (entry.type == CatalogType::TABLE_ENTRY) {
+		for (auto &entry : SystemCatalogScanner::GetSchemaEntries(context, schema.get(), CatalogType::TABLE_ENTRY,
+		                                                          filters, result->stats)) {
+			if (entry.get().type == CatalogType::TABLE_ENTRY) {
 				entries.push_back(entry);
 			}
-		});
+		}
 
 		sort(entries.begin(), entries.end(), [&](CatalogEntry &x, CatalogEntry &y) { return (x.name < y.name); });
 		for (auto &entry : entries) {
@@ -320,7 +328,7 @@ void DuckDBConstraintsFunction(ClientContext &context, TableFunctionInput &data_
 				}
 				constraint_name += "_" + to_string(index);
 			}
-			constraint_index.Append(Value::BIGINT(NumericCast<int64_t>(data.unique_constraint_offset++)));
+			constraint_index.Append(Value::BIGINT(NumericCast<int64_t>(data.table_constraint_index++)));
 			constraint_type_vec.Append(Value(constraint_type));
 			constraint_text.Append(Value(constraint->ToString()));
 
@@ -357,14 +365,25 @@ void DuckDBConstraintsFunction(ClientContext &context, TableFunctionInput &data_
 
 		if (data.constraint_offset >= constraints.size()) {
 			data.constraint_offset = 0;
+			data.table_constraint_index = 0;
 			data.offset++;
 		}
 	}
 }
 
+static void DuckDBConstraintsGetMetrics(TableFunctionGetMetricsInput &input) {
+	if (!input.global_state) {
+		return;
+	}
+	SystemCatalogScanner::ReportMetrics(input, input.global_state->Cast<DuckDBConstraintsData>().stats);
+}
+
 void DuckDBConstraintsFun::RegisterFunction(BuiltinFunctions &set) {
-	set.AddFunction(TableFunction("duckdb_constraints", {}, DuckDBConstraintsFunction, DuckDBConstraintsBind,
-	                              DuckDBConstraintsInit));
+	TableFunction constraints("duckdb_constraints", {}, DuckDBConstraintsFunction, DuckDBConstraintsBind,
+	                          DuckDBConstraintsInit);
+	SystemCatalogScanner::RegisterPushdown(constraints);
+	constraints.get_metrics = DuckDBConstraintsGetMetrics;
+	set.AddFunction(constraints);
 }
 
 } // namespace duckdb

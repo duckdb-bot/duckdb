@@ -33,6 +33,7 @@ CREATE TABLE tf_4 (
   FOREIGN KEY (h) REFERENCES tf_3 (h),
 );
 
+# constraint_index is the position of the constraint within its table
 query IIIIIIIIII
 SELECT * EXCLUDE (database_name, schema_oid, table_oid, database_oid, constraint_name, constraint_check_mode)
 FROM duckdb_constraints();
@@ -41,13 +42,13 @@ main	tf_1	0	PRIMARY KEY	PRIMARY KEY(a)	NULL	[0]	[a]	NULL	[]
 main	tf_1	1	UNIQUE	UNIQUE("b c")	NULL	[1]	[b c]	NULL	[]
 main	tf_1	2	UNIQUE	UNIQUE("d e")	NULL	[2]	[d e]	NULL	[]
 main	tf_1	3	NOT NULL	NOT NULL	NULL	[0]	[a]	NULL	[]
-main	tf_2	4	PRIMARY KEY	PRIMARY KEY(c)	NULL	[0]	[c]	NULL	[]
-main	tf_2	5	FOREIGN KEY	FOREIGN KEY (d) REFERENCES tf_1(a)	NULL	[1]	[d]	tf_1	[a]
-main	tf_2	6	FOREIGN KEY	FOREIGN KEY (e) REFERENCES tf_1("b c")	NULL	[2]	[e]	tf_1	[b c]
-main	tf_2	7	FOREIGN KEY	FOREIGN KEY (f) REFERENCES tf_1("d e")	NULL	[3]	[f]	tf_1	[d e]
-main	tf_2	8	FOREIGN KEY	FOREIGN KEY (g) REFERENCES tf_3(g)	NULL	[4]	[g]	tf_3	[g]
-main	tf_2	9	NOT NULL	NOT NULL	NULL	[0]	[c]	NULL	[]
-main	tf_3	10	PRIMARY KEY	PRIMARY KEY(g)	NULL	[0]	[g]	NULL	[]
-main	tf_3	11	UNIQUE	UNIQUE(h)	NULL	[1]	[h]	NULL	[]
-main	tf_3	12	NOT NULL	NOT NULL	NULL	[0]	[g]	NULL	[]
-main	tf_4	13	FOREIGN KEY	FOREIGN KEY (h) REFERENCES tf_3(h)	NULL	[0]	[h]	tf_3	[h]
+main	tf_2	0	PRIMARY KEY	PRIMARY KEY(c)	NULL	[0]	[c]	NULL	[]
+main	tf_2	1	FOREIGN KEY	FOREIGN KEY (d) REFERENCES tf_1(a)	NULL	[1]	[d]	tf_1	[a]
+main	tf_2	2	FOREIGN KEY	FOREIGN KEY (e) REFERENCES tf_1("b c")	NULL	[2]	[e]	tf_1	[b c]
+main	tf_2	3	FOREIGN KEY	FOREIGN KEY (f) REFERENCES tf_1("d e")	NULL	[3]	[f]	tf_1	[d e]
+main	tf_2	4	FOREIGN KEY	FOREIGN KEY (g) REFERENCES tf_3(g)	NULL	[4]	[g]	tf_3	[g]
+main	tf_2	5	NOT NULL	NOT NULL	NULL	[0]	[c]	NULL	[]
+main	tf_3	0	PRIMARY KEY	PRIMARY KEY(g)	NULL	[0]	[g]	NULL	[]
+main	tf_3	1	UNIQUE	UNIQUE(h)	NULL	[1]	[h]	NULL	[]
+main	tf_3	2	NOT NULL	NOT NULL	NULL	[0]	[g]	NULL	[]
+main	tf_4	0	FOREIGN KEY	FOREIGN KEY (h) REFERENCES tf_3(h)	NULL	[0]	[h]	tf_3	[h]

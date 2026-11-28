@@ -1162,6 +1162,21 @@ unique_ptr<CatalogEntry> DuckTableEntry::DropNotNull(ClientContext &context, Dro
 	return make_uniq<DuckTableEntry>(catalog, schema, *bound_create_info, storage, triggers);
 }
 
+//! Replace the target of each cast the binder bound by its bound type, where that has a type expression
+static void ResolveCastTypes(const AlterBinder &expr_binder, ParsedExpression &expr) {
+	ParsedExpressionIterator::EnumerateChildren(expr,
+	                                            [&](ParsedExpression &child) { ResolveCastTypes(expr_binder, child); });
+	if (expr.GetExpressionClass() != ExpressionClass::CAST) {
+		return;
+	}
+	auto &cast = expr.Cast<CastExpression>();
+	// A macro drops the arguments it does not use, so their casts are not bound
+	auto entry = expr_binder.bound_cast_types.find(cast.TargetType().ToString());
+	if (entry != expr_binder.bound_cast_types.end() && TypeExpression::CanRepresent(entry->second)) {
+		cast.SetTargetType(TypeExpression::FromLogicalType(entry->second));
+	}
+}
+
 unique_ptr<CatalogEntry> DuckTableEntry::ChangeColumnType(ClientContext &context, ChangeColumnTypeInfo &info,
                                                           AlterTableType alter_table_type) {
 	// Only reject a user issued ALTER TYPE ADD/REMOVE/RENAME_FIELD's internal calls use a single element
@@ -1186,6 +1201,10 @@ unique_ptr<CatalogEntry> DuckTableEntry::ChangeColumnType(ClientContext &context
 	AlterBinder expr_binder(*binder, context, *this, bound_columns, info.target_type);
 	auto expression = info.expression->Copy();
 	auto bound_expression = expr_binder.Bind(expression);
+	// Only a user issued ALTER TYPE logs its expression, and the replay binds it without the session's search path
+	if (alter_table_type == AlterTableType::ALTER_COLUMN_TYPE) {
+		ResolveCastTypes(expr_binder, *info.expression);
+	}
 
 	// Infer the target_type from the USING expression, if not set explicitly.
 	if (info.target_type == LogicalType::UNKNOWN) {

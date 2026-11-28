@@ -94,6 +94,7 @@ class ExtensionLinkageTest(unittest.TestCase):
             query = build / ".cmake/api/v1/query"
             query.mkdir(parents=True)
             (query / "codemodel-v2").touch()
+            (query / "toolchains-v1").touch()
             extra_flags = []
             if prebuilt:
                 archives = build / "prebuilt"
@@ -138,6 +139,15 @@ class ExtensionLinkageTest(unittest.TestCase):
                 target["name"]: json.loads((reply / target["jsonFile"]).read_text())
                 for target in model["configurations"][0]["targets"]
             }
+            # CMake before 3.20 answers the toolchains query with an error instead of a file
+            toolchains_reply = index["reply"].get("toolchains-v1", {})
+            toolchains = []
+            if "jsonFile" in toolchains_reply:
+                toolchains = json.loads((reply / toolchains_reply["jsonFile"]).read_text())["toolchains"]
+            clang_on_linux = sys.platform.startswith("linux") and any(
+                toolchain["language"] == "CXX" and "Clang" in toolchain["compiler"].get("id", "")
+                for toolchain in toolchains
+            )
 
             if wasm_source_build:
                 for name in ("test_extension", "test_loadable_extension"):
@@ -179,6 +189,9 @@ class ExtensionLinkageTest(unittest.TestCase):
                 elif name == "duckdb_tests_loadable_extension":
                     for library in ("duckdb_static", "core_functions_extension", "parquet_extension"):
                         self.assertNotIn(library, linked, f"{name}: {linked}")
+                    # With libstdc++, Clang can leave std::atomic<T>::is_lock_free() to libatomic
+                    if clang_on_linux:
+                        self.assertIn("-latomic", linked.split(), f"{name}: {linked}")
             target_names = {target["id"]: name for name, target in targets.items()}
 
             def dependencies(name):

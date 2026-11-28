@@ -86,6 +86,10 @@ if(${ENABLE_UNITTEST_CPP_TESTS})
     PRIVATE "${PROJECT_SOURCE_DIR}/test/extension/debug_fs/include")
   target_link_libraries(duckdb_tests_loadable_extension duckdb_fsst
                         duckdb_mbedtls)
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES
+                                            "Clang")
+    target_link_libraries(duckdb_tests_loadable_extension atomic)
+  endif()
   if(WIN32)
     link_extension_libraries(duckdb_tests_loadable_extension "")
   endif()

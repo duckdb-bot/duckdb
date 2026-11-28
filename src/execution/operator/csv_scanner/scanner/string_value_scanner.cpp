@@ -1504,6 +1504,20 @@ void StringValueScanner::ProcessOverBufferValue() {
 			       (buffer_handle_ptr[iterator.pos.buffer_pos] == '\n' ||
 			        buffer_handle_ptr[iterator.pos.buffer_pos] == '\r')) {
 				if (buffer_handle_ptr[iterator.pos.buffer_pos] == '\r') {
+					if (result.cur_col_id == 0 && !result.IsCommentSet(result) &&
+					    state_machine->dialect_options.num_cols > 1) {
+						// no row is open, so the \r\n is an empty line, which ends this part of the scan, the line
+						// behind it is the next thread's
+						state_machine->Transition(states, buffer_handle_ptr[iterator.pos.buffer_pos]);
+						result.EmptyLine(result, iterator.pos.buffer_pos);
+						lines_read++;
+						iterator.pos.buffer_pos++;
+						if (iterator.pos.buffer_pos < cur_buffer_handle->actual_size &&
+						    buffer_handle_ptr[iterator.pos.buffer_pos] == '\n') {
+							state_machine->Transition(states, buffer_handle_ptr[iterator.pos.buffer_pos++]);
+						}
+						return;
+					}
 					if (result.last_position.buffer_pos <= previous_buffer_handle->actual_size) {
 						// we add the value
 						result.AddValue(result, previous_buffer_handle->actual_size);
@@ -1545,7 +1559,12 @@ void StringValueScanner::ProcessOverBufferValue() {
 				break;
 			}
 			if (result.cur_col_id == 0) {
-				result.StartLineAfterEmptyLine();
+				// an empty line behind a finished row ends this part of the scan, the line behind it is read as any
+				// other line, by this scanner or by the next thread
+				result.EmptyLine(result, iterator.pos.buffer_pos);
+				lines_read++;
+				iterator.pos.buffer_pos++;
+				return;
 			}
 			continue;
 		}

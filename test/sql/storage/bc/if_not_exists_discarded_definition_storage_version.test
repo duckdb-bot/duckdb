@@ -1,0 +1,86 @@
+# name: test/sql/storage/bc/if_not_exists_discarded_definition_storage_version.test
+# description: A table definition that IF NOT EXISTS discards is not checked against the storage version of the database
+# group: [bc]
+
+statement ok
+ATTACH '{TEST_DIR}/if_not_exists_v1_0.db' AS old (STORAGE_VERSION 'v1.0.0');
+
+statement ok
+CREATE TABLE old.t(i INTEGER);
+
+statement ok
+CREATE VIEW old.v AS SELECT 1 AS x;
+
+# the table exists, so the statement does nothing and the transaction goes on
+statement ok
+BEGIN;
+
+statement ok
+INSERT INTO old.t VALUES (8);
+
+statement ok
+CREATE TABLE IF NOT EXISTS old.t(i INTEGER DEFAULT (101::DECIMAL(50,0))::INTEGER);
+
+statement ok
+COMMIT;
+
+query I
+SELECT i FROM old.t
+----
+8
+
+statement ok
+CREATE TABLE IF NOT EXISTS old.t(i INTEGER, j INTEGER GENERATED ALWAYS AS ((i::DECIMAL(50,0))::INTEGER));
+
+statement ok
+CREATE TABLE IF NOT EXISTS old.t(i INTEGER CHECK ((i::DECIMAL(50,0))::INTEGER > 0));
+
+statement ok
+CREATE TABLE IF NOT EXISTS old.t AS SELECT (101::DECIMAL(50,0))::INTEGER AS i;
+
+# a view of that name discards the definition as well
+statement ok
+CREATE TABLE IF NOT EXISTS old.v(x INTEGER DEFAULT (101::DECIMAL(50,0))::INTEGER);
+
+# the objects are the ones that existed
+query II
+SELECT table_name, column_name FROM duckdb_columns() WHERE database_name = 'old' AND table_name IN ('t', 'v') ORDER BY ALL
+----
+t	i
+v	x
+
+query I
+SELECT table_name FROM duckdb_tables() WHERE database_name = 'old'
+----
+t
+
+statement ok
+INSERT INTO old.t VALUES (-1);
+
+query I
+SELECT i FROM old.t ORDER BY i
+----
+-1
+8
+
+# a definition that is stored is checked
+statement error
+CREATE TABLE IF NOT EXISTS old.t2(i INTEGER DEFAULT (1::DECIMAL(50,0))::INTEGER);
+----
+DECIMAL columns wider than 38 digits are not supported in storage versions prior to v2.1.0
+
+statement error
+CREATE OR REPLACE TABLE old.t(i INTEGER DEFAULT (1::DECIMAL(50,0))::INTEGER);
+----
+DECIMAL columns wider than 38 digits are not supported in storage versions prior to v2.1.0
+
+statement error
+CREATE TABLE old.t3(i INTEGER CHECK ((i::DECIMAL(50,0))::INTEGER > 0));
+----
+DECIMAL columns wider than 38 digits are not supported in storage versions prior to v2.1.0
+
+query I
+SELECT i FROM old.t ORDER BY i
+----
+-1
+8

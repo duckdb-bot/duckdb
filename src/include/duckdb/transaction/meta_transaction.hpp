@@ -16,6 +16,7 @@
 #include "duckdb/common/error_data.hpp"
 #include "duckdb/common/case_insensitive_map.hpp"
 #include "duckdb/main/attached_database.hpp"
+#include "duckdb/main/client_context_state.hpp"
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/common/atomic.hpp"
 
@@ -96,6 +97,12 @@ public:
 	timestamp_t GetCurrentTransactionStartTimestamp() const {
 		return start_timestamp;
 	}
+	//! The states of the transaction rather than of one of its connections. Only their TransactionCommit and
+	//! TransactionRollback are called, when the transaction is committed or rolled back by whichever connection
+	//! ends it
+	RegisteredStateManager &GetRegisteredState() {
+		return registered_state;
+	}
 
 	//! The transaction for the database, started on behalf of the given context if it does not exist yet
 	Transaction &GetTransaction(ClientContext &context, AttachedDatabase &db);
@@ -161,6 +168,8 @@ private:
 	string share_id;
 	//! Secrets that only live for the duration of this transaction.
 	unique_ptr<SecretStorage> transaction_secret_storage;
+	//! The states that live as long as the transaction
+	RegisteredStateManager registered_state;
 };
 
 } // namespace duckdb

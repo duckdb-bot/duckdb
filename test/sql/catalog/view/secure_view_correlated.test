@@ -39,6 +39,24 @@ SELECT count(DISTINCT x), min(x), max(x) FROM t, LATERAL (SELECT n + t.a * 0 AS 
 ----
 2	1	2
 
+# outer rows with the same value and with NULL get their own value as well
+statement ok
+CREATE TABLE duplicates(a INTEGER);
+
+statement ok
+INSERT INTO duplicates VALUES (1), (1), (2), (NULL);
+
+statement ok
+CREATE SEQUENCE duplicate_seq;
+
+statement ok
+CREATE SECURE VIEW duplicate_value AS SELECT nextval('duplicate_seq') AS n;
+
+query II
+SELECT count(*), count(DISTINCT x) FROM duplicates, LATERAL (SELECT n + coalesce(duplicates.a, 0) * 0 AS x FROM duplicate_value);
+----
+4	4
+
 # a secure view over a table, with the correlation in a filter above the view
 statement ok
 CREATE TABLE base(k INTEGER, r DOUBLE);
@@ -66,6 +84,27 @@ SELECT a, s.r FROM t, LATERAL (SELECT r FROM bv WHERE bv.k > t.a) s ORDER BY a, 
 1	0.7
 1	0.9
 2	0.9
+
+# a predicate of the caller does not see the rows that the view hides
+statement ok
+CREATE TABLE hidden(k INTEGER, s VARCHAR);
+
+statement ok
+INSERT INTO hidden VALUES (1, '10'), (2, '20'), (3, 'not a number');
+
+statement ok
+CREATE SECURE VIEW visible AS SELECT k, s, random() * 0 AS r FROM hidden WHERE k < 3;
+
+query II
+SELECT a, (SELECT count(*) FROM visible WHERE s::INTEGER > t.a) FROM t ORDER BY a;
+----
+1	2
+2	2
+
+query I
+SELECT count(*) FROM t WHERE EXISTS (SELECT 1 FROM visible WHERE s::INTEGER = t.a * 10);
+----
+2
 
 # a secure view without a volatile function
 statement ok

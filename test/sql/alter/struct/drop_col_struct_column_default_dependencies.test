@@ -25,7 +25,7 @@ ALTER TABLE d DROP COLUMN s.n;
 statement ok
 ALTER TABLE d DROP COLUMN s.v;
 
-# the dependencies of the table are read from its default when the table is loaded
+# the table is stored with the dependencies of its new default, which are registered when it is loaded
 statement ok
 CHECKPOINT;
 

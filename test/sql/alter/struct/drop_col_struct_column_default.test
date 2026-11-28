@@ -133,6 +133,12 @@ statement ok
 ALTER TABLE cast_default DROP COLUMN s.x;
 
 statement ok
+CREATE TABLE qualified(i INT, s STRUCT(x INT, y INT) DEFAULT "system".main.struct_pack(x := 1, y := 2));
+
+statement ok
+ALTER TABLE qualified DROP COLUMN s.x;
+
+statement ok
 CREATE TABLE only_field(i INT, s STRUCT(x INT, y INT) DEFAULT {'y': 2});
 
 statement ok
@@ -161,16 +167,20 @@ statement ok
 ALTER TABLE renamed DROP COLUMN s.x;
 
 query II
-SELECT table_name, column_default LIKE 'remap_struct(%' FROM duckdb_columns() WHERE table_name IN ('cast_default', 'only_field', 'unmatched', 'nested_unmatched', 'renamed') AND column_name = 's' ORDER BY table_name;
+SELECT table_name, column_default LIKE 'remap_struct(%' FROM duckdb_columns() WHERE table_name IN ('cast_default', 'qualified', 'only_field', 'unmatched', 'nested_unmatched', 'renamed') AND column_name = 's' ORDER BY table_name;
 ----
 cast_default	true
 nested_unmatched	true
 only_field	true
+qualified	true
 renamed	true
 unmatched	true
 
 statement ok
 INSERT INTO cast_default(i) VALUES (1);
+
+statement ok
+INSERT INTO qualified(i) VALUES (1);
 
 statement ok
 INSERT INTO only_field(i) VALUES (1);
@@ -184,7 +194,7 @@ INSERT INTO nested_unmatched(i) VALUES (1);
 statement ok
 INSERT INTO renamed(i) VALUES (1);
 
-query IIIII
-SELECT (SELECT s FROM cast_default), (SELECT s FROM only_field), (SELECT s FROM unmatched), (SELECT s FROM nested_unmatched), (SELECT s FROM renamed);
+query IIIIII
+SELECT (SELECT s FROM cast_default), (SELECT s FROM qualified), (SELECT s FROM only_field), (SELECT s FROM unmatched), (SELECT s FROM nested_unmatched), (SELECT s FROM renamed);
 ----
-{'y': 2}	{'x': NULL}	{'x': NULL}	{'x': 1, 'n': {'b': NULL}}	{'z': 2}
+{'y': 2}	{'y': 2}	{'x': NULL}	{'x': NULL}	{'x': 1, 'n': {'b': NULL}}	{'z': 2}

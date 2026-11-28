@@ -2430,19 +2430,22 @@ const StringUtil::EnumStringLiteral *GetExpressionDepthKindValues() {
 	static constexpr StringUtil::EnumStringLiteral values[] {
 		{ static_cast<uint32_t>(ExpressionDepthKind::NONE), "NONE" },
 		{ static_cast<uint32_t>(ExpressionDepthKind::NESTING), "NESTING" },
-		{ static_cast<uint32_t>(ExpressionDepthKind::CHAIN), "CHAIN" }
+		{ static_cast<uint32_t>(ExpressionDepthKind::CHAIN), "CHAIN" },
+		{ static_cast<uint32_t>(ExpressionDepthKind::QUERY_CHAIN), "QUERY_CHAIN" },
+		{ static_cast<uint32_t>(ExpressionDepthKind::QUERY_LIST), "QUERY_LIST" },
+		{ static_cast<uint32_t>(ExpressionDepthKind::SET_OPERATION_CHAIN), "SET_OPERATION_CHAIN" }
 	};
 	return values;
 }
 
 template<>
 const char* EnumUtil::ToChars<ExpressionDepthKind>(ExpressionDepthKind value) {
-	return StringUtil::EnumToString(GetExpressionDepthKindValues(), 3, "ExpressionDepthKind", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetExpressionDepthKindValues(), 6, "ExpressionDepthKind", static_cast<uint32_t>(value));
 }
 
 template<>
 ExpressionDepthKind EnumUtil::FromString<ExpressionDepthKind>(const char *value) {
-	return static_cast<ExpressionDepthKind>(StringUtil::StringToEnum(GetExpressionDepthKindValues(), 3, "ExpressionDepthKind", value));
+	return static_cast<ExpressionDepthKind>(StringUtil::StringToEnum(GetExpressionDepthKindValues(), 6, "ExpressionDepthKind", value));
 }
 
 const StringUtil::EnumStringLiteral *GetExpressionTailTypeValues() {

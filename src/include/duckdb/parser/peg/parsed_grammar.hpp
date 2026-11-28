@@ -39,7 +39,14 @@ enum class ExpressionDepthKind : uint8_t {
 	//! one level: the rule nests an expression or type
 	NESTING,
 	//! one level per repeated element: the rule's repetitions nest its result, like operator chains
-	CHAIN
+	CHAIN,
+	//! as CHAIN, for repetitions that nest query nodes or table references, like chains of INTERSECT and of joins.
+	//! This kind and the two below count towards a depth of their own, next to the depth of the expressions
+	QUERY_CHAIN,
+	//! one level per element after the first of the rule's comma separated list, like the tables of a FROM clause
+	QUERY_LIST,
+	//! one level per repeated set operation, except a UNION that repeats the UNION before it and extends its node
+	SET_OPERATION_CHAIN
 };
 
 struct ParsedGrammarRule {

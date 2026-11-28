@@ -191,6 +191,11 @@ PEGTransformerFactory::PEGTransformerFactory(ParsedGrammar &grammar_p) : grammar
 	grammar.SetExpressionDepth("AtTimeZoneExpression", ExpressionDepthKind::CHAIN);
 	grammar.SetExpressionDepth("PrefixExpression", ExpressionDepthKind::CHAIN);
 	grammar.SetExpressionDepth("IndirectionList", ExpressionDepthKind::CHAIN);
+	grammar.SetExpressionDepth("IntersectChain", ExpressionDepthKind::QUERY_CHAIN);
+	grammar.SetExpressionDepth("TableRef", ExpressionDepthKind::QUERY_CHAIN);
+	grammar.SetExpressionDepth("JoinedTableRefChain", ExpressionDepthKind::QUERY_CHAIN);
+	grammar.SetExpressionDepth("FromClause", ExpressionDepthKind::QUERY_LIST);
+	grammar.SetExpressionDepth("SelectSetOpChain", ExpressionDepthKind::SET_OPERATION_CHAIN);
 	//===--------------------------------------------------------------------===//
 	// END GENERATED EXPRESSION DEPTH RULES
 	//===--------------------------------------------------------------------===//

@@ -1,5 +1,6 @@
 #include "duckdb/parser/peg/transformer/peg_transformer.hpp"
 
+#include "duckdb/common/string_util.hpp"
 #include "duckdb/parser/peg/compiled_grammar.hpp"
 #include "duckdb/parser/statement/multi_statement.hpp"
 #include "duckdb/parser/query_node/select_node.hpp"
@@ -186,14 +187,15 @@ void TransformStack::PushFrame(TransformInput input) {
 	if (weight) {
 		// recorded first: the frame is released (and the weight subtracted) when entering throws
 		frame.expression_depth_weight = weight;
-		transformer.EnterExpression(weight);
+		transformer.EnterExpression(weight, transformer.CountsQueryDepth(frame.rule));
 	}
 }
 
 void TransformStack::PopFrame() {
 	const auto process_arena_position = frames.back().process_arena_position;
 	if (frames.back().expression_depth_weight) {
-		transformer.ExitExpression(frames.back().expression_depth_weight);
+		transformer.ExitExpression(frames.back().expression_depth_weight,
+		                           transformer.CountsQueryDepth(frames.back().rule));
 	}
 	frames.pop_back();
 	transformer.process_allocator.Rewind(process_arena_position);
@@ -286,6 +288,89 @@ static idx_t CountChainLinks(ParseResult &parse_result) {
 	}
 }
 
+//! The number of elements after the first in the comma separated list directly in a rule's match
+static idx_t CountListLinks(ParseResult &parse_result) {
+	if (parse_result.type != ParseResultType::LIST) {
+		return 0;
+	}
+	for (auto &child : parse_result.Cast<ListParseResult>().GetChildren()) {
+		if (child.get().type == ParseResultType::LIST) {
+			// List(D) <- D (',' D)* ','?
+			return CountChainLinks(child.get());
+		}
+	}
+	return 0;
+}
+
+//! Which UNION a set operation clause is, 0 for none and otherwise 1 with ALL and BY NAME as further bits
+static uint8_t GetUnionKind(ParseResult &parse_result) {
+	switch (parse_result.type) {
+	case ParseResultType::KEYWORD: {
+		auto &keyword = parse_result.Cast<KeywordParseResult>().keyword;
+		if (StringUtil::CIEquals(keyword, "UNION")) {
+			return 1;
+		}
+		if (StringUtil::CIEquals(keyword, "ALL")) {
+			return 2;
+		}
+		if (StringUtil::CIEquals(keyword, "NAME")) {
+			return 4;
+		}
+		return 0;
+	}
+	case ParseResultType::CHOICE:
+		return GetUnionKind(parse_result.Cast<ChoiceParseResult>().GetResult());
+	case ParseResultType::OPTIONAL: {
+		auto &optional = parse_result.Cast<OptionalParseResult>();
+		return optional.HasResult() ? GetUnionKind(optional.GetResultUnsafe()) : 0;
+	}
+	case ParseResultType::LIST: {
+		uint8_t kind = 0;
+		for (auto &child : parse_result.Cast<ListParseResult>().GetChildren()) {
+			kind |= GetUnionKind(child.get());
+		}
+		return kind;
+	}
+	default:
+		return 0;
+	}
+}
+
+//! The number of nodes that a chain of set operations nests. Every repeated element starts with its set operation
+//! and a UNION that repeats the UNION before it extends that node
+static idx_t CountSetOperationLinks(ParseResult &parse_result) {
+	if (parse_result.type != ParseResultType::LIST) {
+		return 0;
+	}
+	idx_t links = 0;
+	for (auto &child : parse_result.Cast<ListParseResult>().GetChildren()) {
+		reference<ParseResult> repeat = child;
+		if (repeat.get().type == ParseResultType::OPTIONAL) {
+			auto &optional = repeat.get().Cast<OptionalParseResult>();
+			if (!optional.HasResult()) {
+				continue;
+			}
+			repeat = optional.GetResultUnsafe();
+		}
+		if (repeat.get().type != ParseResultType::REPEAT) {
+			continue;
+		}
+		uint8_t previous_kind = 0;
+		for (auto &element : repeat.get().Cast<RepeatParseResult>().GetChildren()) {
+			uint8_t kind = 0;
+			if (element.get().type == ParseResultType::LIST) {
+				auto &element_children = element.get().Cast<ListParseResult>();
+				kind = GetUnionKind(element_children.GetChild(0));
+			}
+			if (!(kind & 1) || kind != previous_kind) {
+				links++;
+			}
+			previous_kind = kind;
+		}
+	}
+	return links;
+}
+
 idx_t PEGTransformer::ExpressionDepthWeight(optional_ptr<const CompiledGrammarRule> rule, ParseResult &parse_result) {
 	if (!rule) {
 		return 0;
@@ -294,25 +379,46 @@ idx_t PEGTransformer::ExpressionDepthWeight(optional_ptr<const CompiledGrammarRu
 	case ExpressionDepthKind::NESTING:
 		return 1;
 	case ExpressionDepthKind::CHAIN:
+	case ExpressionDepthKind::QUERY_CHAIN:
 		return CountChainLinks(parse_result);
+	case ExpressionDepthKind::QUERY_LIST:
+		return CountListLinks(parse_result);
+	case ExpressionDepthKind::SET_OPERATION_CHAIN:
+		return CountSetOperationLinks(parse_result);
 	default:
 		return 0;
 	}
 }
 
-void PEGTransformer::EnterExpression(idx_t weight) {
+bool PEGTransformer::CountsQueryDepth(optional_ptr<const CompiledGrammarRule> rule) {
+	if (!rule) {
+		return false;
+	}
+	switch (rule->expression_depth) {
+	case ExpressionDepthKind::QUERY_CHAIN:
+	case ExpressionDepthKind::QUERY_LIST:
+	case ExpressionDepthKind::SET_OPERATION_CHAIN:
+		return true;
+	default:
+		return false;
+	}
+}
+
+void PEGTransformer::EnterExpression(idx_t weight, bool query_depth_p) {
 	// the transformer does not recurse, but binding the resulting expressions does - reject them early
-	expression_depth += weight;
-	if (expression_depth > options.max_expression_depth) {
+	auto &depth = query_depth_p ? query_depth : expression_depth;
+	depth += weight;
+	if (depth > options.max_expression_depth) {
 		throw ParserException("Max expression depth limit of %lld exceeded. Use \"SET max_expression_depth TO x\" to "
 		                      "increase the maximum expression depth.",
 		                      options.max_expression_depth);
 	}
 }
 
-void PEGTransformer::ExitExpression(idx_t weight) {
-	D_ASSERT(expression_depth >= weight);
-	expression_depth -= weight;
+void PEGTransformer::ExitExpression(idx_t weight, bool query_depth_p) {
+	auto &depth = query_depth_p ? query_depth : expression_depth;
+	D_ASSERT(depth >= weight);
+	depth -= weight;
 }
 
 const CompiledGrammarRule &PEGTransformer::GetRule(PEGRuleId rule_id) const {

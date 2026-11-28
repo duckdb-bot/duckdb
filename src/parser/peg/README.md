@@ -216,9 +216,10 @@ add at runtime receive IDs past `PEGRuleId::BUILTIN_COUNT` in the compiled gramm
 - `overrides` lists rules with a unique return type.
 - `excluded_rules` lists syntax-only rules that are skipped when generating processes.
 - `matcher_rule_overrides` lists the special tokens handled by dedicated matchers (see above).
-- `packrat_memoized_rules`, `collapsible_rules`, `expression_depth_nesting_rules` and `expression_depth_chain_rules`
-  configure the matcher and transformer: which rules are memoized, which transforms return their operand unchanged
-  when the rest of the rule matched nothing, and which rules count towards `max_expression_depth`.
+- `packrat_memoized_rules`, `collapsible_rules` and the `expression_depth_*_rules` lists (nesting, chain, query
+  chain, query list and set operation chain) configure the matcher and transformer: which rules are memoized,
+  which transforms return their operand unchanged when the rest of the rule matched nothing, and which rules count
+  towards `max_expression_depth`.
 
 `scripts/parser/transformer_trampoline.yml` drives the per-rule process generation. Rules not listed there get a
 generated process. Listed rules are either `excluded`, `forward` (delegate to a single child), or `manual` /

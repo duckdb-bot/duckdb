@@ -668,10 +668,15 @@ public:
 	//! An upper bound of the depth of the expression trees currently being transformed - tracked by the transform
 	//! stacks: every nested expression, nested type and link of an operator chain counts while it is transformed
 	idx_t expression_depth = 0;
+	//! An upper bound of the depth of the query nodes and table references that the chains of set operations and
+	//! joins currently being transformed nest
+	idx_t query_depth = 0;
 	//! The depth a frame of this rule adds while it is on the stack (see ParsedGrammar::SetExpressionDepth)
 	static idx_t ExpressionDepthWeight(optional_ptr<const CompiledGrammarRule> rule, ParseResult &parse_result);
-	void EnterExpression(idx_t weight);
-	void ExitExpression(idx_t weight);
+	//! Whether the depth of this rule counts for the query nodes and table references instead of the expressions
+	static bool CountsQueryDepth(optional_ptr<const CompiledGrammarRule> rule);
+	void EnterExpression(idx_t weight, bool query_depth_p = false);
+	void ExitExpression(idx_t weight, bool query_depth_p = false);
 
 	StackChecker<PEGTransformer> StackCheck(idx_t extra_stack = 1) {
 		if (stack_depth + extra_stack >= options.max_expression_depth) {

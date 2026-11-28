@@ -1,0 +1,79 @@
+# name: test/sql/copy/copy_option_wide_decimal.test
+# description: A decimal literal wider than 38 digits as a COPY option is a DOUBLE, which every reading engine holds when the COPY is stored in a view
+# group: [copy]
+
+load {TEST_DIR}/copy_option_wide_decimal.db
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown
+
+statement ok
+SET wal_autocheckpoint='1TB'
+
+# the macro drops its argument, so the COPY in the subquery is stored with the view and never bound or run
+statement ok
+CREATE MACRO keep_one(x) AS 1;
+
+statement ok
+CREATE VIEW wide AS SELECT keep_one((WITH c AS (COPY (SELECT 1 AS x) TO '{TEST_DIR}/copy_option_wide_decimal.csv' (FORMAT csv, some_option 123456789012345678901234567890123456789.0)) SELECT 1)) AS x;
+
+statement ok
+CREATE VIEW wide_negative AS SELECT keep_one((WITH c AS (COPY (SELECT 1 AS x) TO '{TEST_DIR}/copy_option_wide_decimal.csv' (FORMAT csv, some_option -123456789012345678901234567890123456789.0)) SELECT 1)) AS x;
+
+# digit separators are not part of the number
+statement ok
+CREATE VIEW wide_separators AS SELECT keep_one((WITH c AS (COPY (SELECT 1 AS x) TO '{TEST_DIR}/copy_option_wide_decimal.csv' (FORMAT csv, some_option 12_345_678_901_234_567_890_123_456_789_012_345_678.5)) SELECT 1)) AS x;
+
+# a literal of 38 digits is a decimal for every engine and stays exact
+statement ok
+CREATE VIEW exact AS SELECT keep_one((WITH c AS (COPY (SELECT 1 AS x) TO '{TEST_DIR}/copy_option_wide_decimal.csv' (FORMAT csv, some_option 1234567890123456789012345678901234567.8)) SELECT 1)) AS x;
+
+statement ok
+CREATE VIEW narrow AS SELECT keep_one((WITH c AS (COPY (SELECT 1 AS x) TO '{TEST_DIR}/copy_option_wide_decimal.csv' (FORMAT csv, some_option 1.5)) SELECT 1)) AS x;
+
+statement ok
+CREATE VIEW text_option AS SELECT keep_one((WITH c AS (COPY (SELECT 1 AS x) TO '{TEST_DIR}/copy_option_wide_decimal.csv' (FORMAT csv, some_option '123456789012345678901234567890123456789.0')) SELECT 1)) AS x;
+
+query II
+SELECT view_name, regexp_extract(sql, '"some_option" (.*) \)\) SELECT', 1) FROM duckdb_views() WHERE NOT internal ORDER BY view_name
+----
+exact	1234567890123456789012345678901234567.8
+narrow	1.5
+text_option	'123456789012345678901234567890123456789.0'
+wide	1.2345678901234568e+38
+wide_negative	-1.2345678901234568e+38
+wide_separators	1.2345678901234568e+37
+
+# the options are read back from the WAL
+restart
+
+query II
+SELECT view_name, regexp_extract(sql, '"some_option" (.*) \)\) SELECT', 1) FROM duckdb_views() WHERE NOT internal ORDER BY view_name
+----
+exact	1234567890123456789012345678901234567.8
+narrow	1.5
+text_option	'123456789012345678901234567890123456789.0'
+wide	1.2345678901234568e+38
+wide_negative	-1.2345678901234568e+38
+wide_separators	1.2345678901234568e+37
+
+# and from the checkpointed catalog
+statement ok
+CHECKPOINT
+
+restart
+
+query II
+SELECT view_name, regexp_extract(sql, '"some_option" (.*) \)\) SELECT', 1) FROM duckdb_views() WHERE NOT internal ORDER BY view_name
+----
+exact	1234567890123456789012345678901234567.8
+narrow	1.5
+text_option	'123456789012345678901234567890123456789.0'
+wide	1.2345678901234568e+38
+wide_negative	-1.2345678901234568e+38
+wide_separators	1.2345678901234568e+37
+
+query I
+SELECT x FROM wide
+----
+1

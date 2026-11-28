@@ -184,6 +184,11 @@ bool DuckSchemaEntry::DropEntryInternal(CatalogTransaction transaction, CatalogE
 }
 
 optional_ptr<CatalogEntry> DuckSchemaEntry::CreateTable(CatalogTransaction transaction, BoundCreateTableInfo &info) {
+	if (info.Base().on_conflict == OnCreateConflict::IGNORE_ON_CONFLICT &&
+	    GetCatalogSet(CatalogType::TABLE_ENTRY).GetEntry(transaction, info.Base().GetTableName())) {
+		// the definition is discarded, so nothing of it is checked or built
+		return nullptr;
+	}
 	auto table = make_uniq<DuckTableEntry>(catalog, *this, info);
 	auto &dependencies = info.Base().dependencies;
 

@@ -67,13 +67,20 @@ shared_ptr<DuckDB> DBInstanceCache::GetInstanceInternal(const string &database, 
 		return nullptr;
 	}
 	shared_ptr<DatabaseInstance> db_instance;
+	bool creation_failed = false;
 	{
 		db_instances_lock.unlock();
 		std::lock_guard<mutex> create_db_lock(cache_entry->update_database_mutex);
 		db_instance = cache_entry->instance.lock();
+		creation_failed = cache_entry->creation_failed;
 	}
 	// cache entry exists - check if the actual database still exists
 	if (!db_instance) {
+		if (creation_failed) {
+			// on_create threw and the entry left the cache, a connection made by the callback may keep its instance
+			// alive for any length of time, so the caller looks again instead of waiting for the entry to expire
+			return nullptr;
+		}
 		// if the instance does not exist, but the cache entry still exists, the instance is being shut down
 		// we need to wait until the database is fully shut down to safely proceed
 		// we do this here using a busy spin
@@ -139,6 +146,15 @@ shared_ptr<DuckDB> DBInstanceCache::CreateInstanceInternal(const string &databas
 			try {
 				on_create(*db_instance);
 			} catch (...) {
+				// a connection made by on_create can keep the instance, and with it this entry, alive after the
+				// failure, so the entry is taken out of the cache now rather than waited for
+				cache_entry->creation_failed = true;
+				db_instances_lock.lock();
+				auto current_entry = db_instances.find(cache_key);
+				if (current_entry != db_instances.end() && current_entry->second.lock() == cache_entry) {
+					db_instances.erase(current_entry);
+				}
+				db_instances_lock.unlock();
 				config.db_cache_entry.reset();
 				db_instance.reset();
 				throw;

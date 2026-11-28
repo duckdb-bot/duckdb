@@ -24,6 +24,8 @@ struct DatabaseCacheEntry {
 
 	//! Connections and unfinished results keep the instance alive after its last handle is closed
 	weak_ptr<DatabaseInstance> instance;
+	//! Set when on_create threw, the entry has then left the cache and a lookup must not wait for it to expire
+	bool creation_failed = false;
 	mutex update_database_mutex;
 };
 
@@ -45,8 +47,9 @@ public:
 	                                  const std::function<void(DuckDB &)> &on_create = nullptr);
 
 	//! Either returns an existing entry, or creates and caches a new DB Instance. `on_create` runs before another call
-	//! can share a new instance; if it throws, the instance is dropped. `is_same_config` replaces the default config
-	//! comparison when given.
+	//! can share a new instance; if it throws, the instance leaves the cache and is dropped, and a connection the
+	//! callback made keeps it alive outside of the cache. `is_same_config` replaces the default config comparison when
+	//! given.
 	shared_ptr<DuckDB> GetOrCreateInstance(const string &database, DBConfig &config_dict, bool cache_instance,
 	                                       const std::function<void(DuckDB &)> &on_create = nullptr);
 	shared_ptr<DuckDB> GetOrCreateInstance(const string &database, DBConfig &config_dict,

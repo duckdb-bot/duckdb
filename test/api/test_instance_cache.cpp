@@ -7,6 +7,7 @@
 #include "duckdb/common/local_file_system.hpp"
 
 #include <chrono>
+#include <future>
 #include <iostream>
 #include <thread>
 
@@ -461,5 +462,197 @@ TEST_CASE("Test reopening a database from several threads while it shuts down", 
 		for (auto &reopened_db : reopened) {
 			REQUIRE(reopened_db->instance == reopened[0]->instance);
 		}
+	}
+}
+
+//! The outcome of a cache call made on another thread, checked on the test thread as Catch assertions are not
+//! thread-safe
+struct BackgroundCacheCall {
+	shared_ptr<DuckDB> db;
+	std::exception_ptr error;
+	//! The call had not returned within the wait, as a lookup that spins on a kept connection does not
+	bool timed_out = false;
+};
+
+//! Waits up to 30 seconds for the call behind `returned`, then runs `unblock` when it has not returned, so that a
+//! lookup that spins can finish and its thread can be joined
+static void WaitForBackgroundCall(std::future<void> &returned, BackgroundCacheCall &result, std::thread &caller,
+                                  const std::function<void()> &unblock) {
+	if (returned.wait_for(std::chrono::seconds(30)) == std::future_status::timeout) {
+		result.timed_out = true;
+		unblock();
+	}
+	caller.join();
+}
+
+//! Runs `call` on another thread and waits for it, see WaitForBackgroundCall
+template <class CALL>
+static BackgroundCacheCall RunInBackground(CALL call, const std::function<void()> &unblock) {
+	BackgroundCacheCall result;
+	std::promise<void> returned;
+	auto returned_future = returned.get_future();
+	std::thread caller([&]() {
+		try {
+			result.db = call();
+		} catch (...) {
+			result.error = std::current_exception();
+		}
+		returned.set_value();
+	});
+	WaitForBackgroundCall(returned_future, result, caller, unblock);
+	return result;
+}
+
+TEST_CASE("Test the instance cache after an on_create failure that keeps a connection", "[api]") {
+	DBInstanceCache instance_cache;
+	DBConfig config;
+	// the connection keeps the instance the failed callback was given alive, outside of the cache
+	unique_ptr<Connection> kept_con;
+	auto failing_on_create = [&](DuckDB &created) {
+		kept_con = make_uniq<Connection>(created);
+		throw InvalidInputException("on_create failed on purpose");
+	};
+	auto release_kept_connection = [&]() {
+		kept_con.reset();
+	};
+
+	SECTION("A lookup and a new instance do not wait for the connection") {
+		const string path = ":memory:failed_on_create";
+		REQUIRE_THROWS_WITH(instance_cache.CreateInstance(path, config, true, failing_on_create),
+		                    Catch::Contains("on_create failed on purpose"));
+		REQUIRE(kept_con);
+		weak_ptr<DatabaseInstance> failed_instance = kept_con->context->db;
+
+		// nothing is cached for the path, and finding that out does not wait for the kept connection
+		auto lookup =
+		    RunInBackground([&]() { return instance_cache.GetInstance(path, config); }, release_kept_connection);
+		REQUIRE(!lookup.timed_out);
+		REQUIRE(!lookup.error);
+		REQUIRE(!lookup.db);
+
+		// the next call creates a new instance, the failed one lives on outside of the cache
+		auto reopen = RunInBackground(
+		    [&]() {
+			    DBConfig reopen_config;
+			    return instance_cache.GetOrCreateInstance(path, reopen_config, true);
+		    },
+		    release_kept_connection);
+		REQUIRE(!reopen.timed_out);
+		if (reopen.error) {
+			std::rethrow_exception(reopen.error);
+		}
+		REQUIRE(reopen.db);
+		REQUIRE(reopen.db->instance != failed_instance.lock());
+		REQUIRE_NO_FAIL(Connection(*reopen.db).Query("CREATE TABLE t AS SELECT 42 AS i"));
+		auto found = instance_cache.GetInstance(path, config);
+		REQUIRE(found);
+		REQUIRE(found->instance == reopen.db->instance);
+
+		// releasing the kept connection closes the failed instance and leaves the cached one alone
+		kept_con.reset();
+		REQUIRE(failed_instance.expired());
+		found = instance_cache.GetInstance(path, config);
+		REQUIRE(found);
+		REQUIRE(found->instance == reopen.db->instance);
+		auto result = Connection(*reopen.db).Query("SELECT i FROM t");
+		REQUIRE(CHECK_COLUMN(result, 0, {42}));
+	}
+	SECTION("CreateInstance works again right after the failure") {
+		const string path = ":memory:failed_on_create_again";
+		REQUIRE_THROWS_WITH(instance_cache.CreateInstance(path, config, true, failing_on_create),
+		                    Catch::Contains("on_create failed on purpose"));
+		REQUIRE(kept_con);
+		weak_ptr<DatabaseInstance> failed_instance = kept_con->context->db;
+
+		DBConfig again_config;
+		auto again = instance_cache.CreateInstance(path, again_config, true);
+		REQUIRE(again);
+		REQUIRE(again->instance != failed_instance.lock());
+		REQUIRE_NO_FAIL(Connection(*again).Query("SELECT 42"));
+		auto found = instance_cache.GetInstance(path, config);
+		REQUIRE(found);
+		REQUIRE(found->instance == again->instance);
+	}
+	SECTION("A file stays in use until the connection is released") {
+		auto path = TestCreatePath("instance_cache_failed_on_create.db");
+		REQUIRE_THROWS_WITH(instance_cache.CreateInstance(path, config, true, failing_on_create),
+		                    Catch::Contains("on_create failed on purpose"));
+		REQUIRE(kept_con);
+		weak_ptr<DatabaseInstance> failed_instance = kept_con->context->db;
+
+		// the kept connection holds the file, so opening it again fails at once instead of waiting
+		auto reopen = RunInBackground(
+		    [&]() {
+			    DBConfig reopen_config;
+			    return instance_cache.GetOrCreateInstance(path, reopen_config, true);
+		    },
+		    release_kept_connection);
+		REQUIRE(!reopen.timed_out);
+		REQUIRE(!reopen.db);
+		REQUIRE(reopen.error);
+		REQUIRE_THROWS_WITH(std::rethrow_exception(reopen.error), Catch::Contains("Unique file handle conflict"));
+
+		// once it is released, the next call opens the file again
+		kept_con.reset();
+		REQUIRE(failed_instance.expired());
+		DBConfig reopen_config;
+		auto reopened = instance_cache.GetOrCreateInstance(path, reopen_config, true);
+		REQUIRE(reopened);
+		REQUIRE_NO_FAIL(Connection(*reopened).Query("SELECT 42"));
+		reopened.reset();
+		TestDeleteFile(path);
+	}
+	SECTION("A call that waits for the callback creates its own instance") {
+		const string path = ":memory:failed_on_create_waiter";
+		BackgroundCacheCall waiter;
+		std::promise<void> waiter_returned;
+		auto waiter_returned_future = waiter_returned.get_future();
+		std::thread waiter_thread;
+		bool waiter_holds_entry = false;
+		auto failing_on_create_with_waiter = [&](DuckDB &created) {
+			kept_con = make_uniq<Connection>(created);
+			// the waiter holds the entry once it has found it, and waits for this callback to end from then on
+			auto &entry = DBConfig::GetConfig(*created.instance).db_cache_entry;
+			auto holders_before = entry.use_count();
+			waiter_thread = std::thread([&]() {
+				try {
+					DBConfig waiter_config;
+					waiter.db = instance_cache.GetOrCreateInstance(path, waiter_config, true);
+				} catch (...) {
+					waiter.error = std::current_exception();
+				}
+				waiter_returned.set_value();
+			});
+			auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+			while (entry.use_count() <= holders_before && std::chrono::steady_clock::now() < deadline) {
+				std::this_thread::yield();
+			}
+			waiter_holds_entry = entry.use_count() > holders_before;
+			throw InvalidInputException("on_create failed on purpose");
+		};
+		// the outcome is checked after the waiter is joined, a failing assertion must not unwind past a joinable thread
+		string creator_error;
+		try {
+			instance_cache.GetOrCreateInstance(path, config, true, failing_on_create_with_waiter);
+		} catch (std::exception &ex) {
+			creator_error = ex.what();
+		}
+		if (waiter_thread.joinable()) {
+			WaitForBackgroundCall(waiter_returned_future, waiter, waiter_thread, release_kept_connection);
+		}
+		REQUIRE_THAT(creator_error, Catch::Contains("on_create failed on purpose"));
+		REQUIRE(waiter_holds_entry);
+		REQUIRE(!waiter.timed_out);
+		if (waiter.error) {
+			std::rethrow_exception(waiter.error);
+		}
+		REQUIRE(waiter.db);
+		REQUIRE(kept_con);
+		weak_ptr<DatabaseInstance> failed_instance = kept_con->context->db;
+		REQUIRE(waiter.db->instance != failed_instance.lock());
+		REQUIRE_NO_FAIL(Connection(*waiter.db).Query("SELECT 42"));
+		auto found = instance_cache.GetInstance(path, config);
+		REQUIRE(found);
+		REQUIRE(found->instance == waiter.db->instance);
 	}
 }

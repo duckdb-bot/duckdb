@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <future>
 #include <thread>
 
 namespace test_capi_v2 {
@@ -943,6 +944,81 @@ TEST_CASE("V2: instance_open_shared with a failing init", "[capi_v2][db]") {
 
 	duckdb_v2_environment_destroy(&env);
 	duckdb::DeleteDatabase(path);
+}
+
+namespace {
+
+//! Keeps the connection it creates in `user_data` and then reports an error, like an init that fails after it has
+//! set up connections
+void InitKeepingConnection(duckdb_v2_instance_handle instance, void *user_data, duckdb_v2_error_info_handle *err) {
+	auto &kept = *static_cast<duckdb_v2_connection_handle *>(user_data);
+	(void)duckdb_v2_connection_create(instance, &kept, nullptr);
+	std::string text = "init refused";
+	duckdb_v2_error_info_set_code(*err, DUCKDB_V2_ERROR_INPUT_INVALID);
+	duckdb_v2_error_info_set_text(*err, text.data(), text.size());
+}
+
+//! The handles of the test below, destroyed when the test ends, also after a failed assertion
+struct KeptConnectionHandles {
+	duckdb_v2_environment_handle env = nullptr;
+	duckdb_v2_instance_handle a = nullptr;
+	duckdb_v2_instance_handle b = nullptr;
+	duckdb_v2_connection_handle kept = nullptr;
+	duckdb_v2_connection_handle conn = nullptr;
+	duckdb_v2_connection_handle conn_b = nullptr;
+	~KeptConnectionHandles() {
+		duckdb_v2_connection_destroy(&conn_b);
+		duckdb_v2_connection_destroy(&conn);
+		duckdb_v2_connection_destroy(&kept);
+		duckdb_v2_instance_destroy(&b);
+		duckdb_v2_instance_destroy(&a);
+		duckdb_v2_environment_destroy(&env);
+	}
+};
+
+} // namespace
+
+TEST_CASE("V2: instance_open_shared after a failing init that kept a connection", "[capi_v2][db]") {
+	KeptConnectionHandles h;
+	duckdb_v2_environment_create(&h.env, nullptr);
+	const std::string_view path = ":memory:v2_open_shared_init_kept";
+
+	duckdb_v2_error_info_handle err = nullptr;
+	auto failed_open = OpenShared(h.env, path, {}, {}, &h.a, &err, InitKeepingConnection, &h.kept);
+	duckdb_v2_error_info_destroy(&err);
+	REQUIRE(failed_open == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(h.a == nullptr);
+	REQUIRE(h.kept != nullptr);
+	REQUIRE(Runs(h.kept, "CREATE TABLE kept_t AS SELECT 1 AS i"));
+
+	// the kept connection keeps the failed instance alive, the next call creates a new one without waiting for it
+	std::promise<void> returned;
+	auto returned_future = returned.get_future();
+	DUCKDB_V2_ERROR result = DUCKDB_V2_ERROR_NONE;
+	std::thread opener([&]() {
+		result = OpenShared(h.env, path, {}, {}, &h.a, nullptr);
+		returned.set_value();
+	});
+	bool timed_out = returned_future.wait_for(std::chrono::seconds(30)) == std::future_status::timeout;
+	if (timed_out) {
+		// lets a call that spins on the kept connection finish, so the thread can be joined
+		duckdb_v2_connection_destroy(&h.kept);
+	}
+	opener.join();
+	REQUIRE(!timed_out);
+	REQUIRE(result == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(h.a != nullptr);
+	h.conn = Connect(h.a);
+	REQUIRE(!Runs(h.conn, "SELECT * FROM kept_t"));
+	REQUIRE(RowCount(h.conn, "SELECT 42") == 1);
+
+	// closing the kept connection closes the failed instance and leaves the shared one alone
+	duckdb_v2_connection_destroy(&h.kept);
+	REQUIRE(RowCount(h.conn, "SELECT 42") == 1);
+	REQUIRE(OpenShared(h.env, path, {}, {}, &h.b, nullptr) == DUCKDB_V2_ERROR_NONE);
+	h.conn_b = Connect(h.b);
+	REQUIRE(Runs(h.conn, "CREATE TABLE shared_t AS SELECT 1 AS i"));
+	REQUIRE(RowCount(h.conn_b, "SELECT * FROM shared_t") == 1);
 }
 
 TEST_CASE("V2: instance_open_shared null-arg validation", "[capi_v2][db]") {

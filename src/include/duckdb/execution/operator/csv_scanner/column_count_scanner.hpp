@@ -36,7 +36,7 @@ public:
 	static constexpr bool BLOCK_SCAN = false;
 
 	ColumnCountResult(CSVStates &states, CSVStateMachine &state_machine, idx_t result_size,
-	                  CSVErrorHandler &error_handler);
+	                  CSVErrorHandler &error_handler, idx_t &lines_read);
 	inline ColumnCount &operator[](size_t index) {
 		return column_counts[index];
 	}
@@ -51,6 +51,8 @@ public:
 	//! How many rows fit a given column count
 	map<idx_t, idx_t> rows_per_column_count;
 	CSVErrorHandler &error_handler;
+	//! The lines the scanner has read in front of the current one
+	idx_t &lines_read;
 	map<idx_t, shared_ptr<CSVBufferHandle>> buffer_handles;
 	idx_t empty_lines = 0;
 	//! Adds a Value to the result
@@ -79,7 +81,7 @@ class ColumnCountScanner : public BaseScanner {
 public:
 	ColumnCountScanner(shared_ptr<CSVBufferManager> buffer_manager, const shared_ptr<CSVStateMachine> &state_machine,
 	                   shared_ptr<CSVErrorHandler> error_handler, idx_t result_size = STANDARD_VECTOR_SIZE,
-	                   CSVIterator iterator = {});
+	                   CSVIterator iterator = {}, idx_t lines_skipped = 0);
 
 	ColumnCountResult &ParseChunk() override;
 

@@ -142,6 +142,7 @@ void CSVSniffer::GenerateStateMachineSearchSpace(vector<unique_ptr<ColumnCountSc
 		new_line_id = DetectNewLineDelimiter(*buffer_manager);
 	}
 	CSVIterator first_iterator;
+	idx_t lines_skipped = 0;
 	bool iterator_set = false;
 	for (const auto &comment : dialect_candidates.comment_candidates) {
 		for (const auto quote_escape_candidate : dialect_candidates.quote_escape_candidates) {
@@ -154,13 +155,14 @@ void CSVSniffer::GenerateStateMachineSearchSpace(vector<unique_ptr<ColumnCountSc
 				    make_shared_ptr<CSVStateMachine>(options, state_machine_options, state_machine_cache);
 				if (options.dialect_options.skip_rows.IsSetByUser()) {
 					if (!iterator_set) {
-						first_iterator = BaseScanner::SkipCSVRows(buffer_manager, sniffing_state_machine,
-						                                          options.dialect_options.skip_rows.GetValue());
+						first_iterator =
+						    BaseScanner::SkipCSVRows(buffer_manager, sniffing_state_machine,
+						                             options.dialect_options.skip_rows.GetValue(), lines_skipped);
 						iterator_set = true;
 					}
 					column_count_scanners.emplace_back(make_uniq<ColumnCountScanner>(
 					    buffer_manager, std::move(sniffing_state_machine), detection_error_handler,
-					    CSVReaderOptions::sniff_size, first_iterator));
+					    CSVReaderOptions::sniff_size, first_iterator, lines_skipped));
 					continue;
 				}
 				column_count_scanners.emplace_back(

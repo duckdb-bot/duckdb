@@ -1,0 +1,117 @@
+# name: test/sql/copy/csv/csv_sniffer_line_size_error_line.test
+# description: The sniffer reports a line over the maximum line size with the number of that line
+# group: [csv]
+
+# a header and four rows, the long row is on line 3
+statement ok
+COPY (SELECT * FROM (VALUES (1, '2'), (5, '666666666666666666'), (3, '4'), (7, '8')) t(a, b)) TO '{TEST_DIR}/sniffer_long_row_line_3.csv' (HEADER);
+
+statement error
+SELECT count(*) FROM read_csv('{TEST_DIR}/sniffer_long_row_line_3.csv', max_line_size = 10);
+----
+CSV Error on Line: 3
+Original Line: 5,666666666666666666
+
+statement error
+SELECT count(*) FROM read_csv('{TEST_DIR}/sniffer_long_row_line_3.csv', header = true, max_line_size = 10, parallel = false);
+----
+CSV Error on Line: 3
+Original Line: 5,666666666666666666
+
+statement error
+FROM sniff_csv('{TEST_DIR}/sniffer_long_row_line_3.csv', max_line_size = 10);
+----
+CSV Error on Line: 3
+Original Line: 5,666666666666666666
+
+# the scanner reports the same line when the columns are given
+statement error
+SELECT count(*) FROM read_csv('{TEST_DIR}/sniffer_long_row_line_3.csv', header = true, max_line_size = 10, auto_detect = false, columns = {'a': 'BIGINT', 'b': 'VARCHAR'});
+----
+CSV Error on Line: 3
+Original Line: 5,666666666666666666
+
+# a long row on line 4 that crosses into the next buffers
+statement ok
+COPY (SELECT * FROM (VALUES (1, '2'), (3, '4'), (5, '666666666666666666')) t(a, b)) TO '{TEST_DIR}/sniffer_long_row_line_4.csv' (HEADER);
+
+statement error
+SELECT count(*) FROM read_csv('{TEST_DIR}/sniffer_long_row_line_4.csv', buffer_size = 11);
+----
+CSV Error on Line: 4
+Original Line: 5,666666666666666666
+
+# a long first line is still line 1
+statement ok
+COPY (SELECT * FROM (VALUES ('666666666666666666', 5), ('2', 1)) t(a, b)) TO '{TEST_DIR}/sniffer_long_row_line_1.csv' (HEADER false);
+
+statement error
+SELECT count(*) FROM read_csv('{TEST_DIR}/sniffer_long_row_line_1.csv', max_line_size = 10);
+----
+CSV Error on Line: 1
+Original Line: 666666666666666666,5
+
+# line 1001 of 3001
+statement ok
+COPY (SELECT i AS a, CASE WHEN i = 1000 THEN repeat('x', 30) ELSE 'y' END AS b FROM range(1, 3001) t(i) ORDER BY i) TO '{TEST_DIR}/sniffer_long_row_line_1001.csv' (HEADER);
+
+statement error
+SELECT count(*) FROM read_csv('{TEST_DIR}/sniffer_long_row_line_1001.csv', max_line_size = 20);
+----
+CSV Error on Line: 1001
+Original Line: 1000,xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+# empty lines in front of the long row are counted
+statement ok
+COPY (SELECT * FROM (VALUES ('a,b'), ('1,2'), (''), (''), ('5,666666666666666666'), ('3,4')) t(line)) TO '{TEST_DIR}/sniffer_long_row_empty_lines.csv' (HEADER false, QUOTE '', DELIMITER '|');
+
+statement error
+SELECT count(*) FROM read_csv('{TEST_DIR}/sniffer_long_row_empty_lines.csv', max_line_size = 10);
+----
+CSV Error on Line: 5
+Original Line: 5,666666666666666666
+
+# and so are the lines the user skips
+statement ok
+COPY (SELECT * FROM (VALUES ('note 1'), ('note 2'), ('a,b'), ('1,2'), ('5,666666666666666666'), ('3,4')) t(line)) TO '{TEST_DIR}/sniffer_long_row_skip.csv' (HEADER false, QUOTE '', DELIMITER '|');
+
+statement error
+SELECT count(*) FROM read_csv('{TEST_DIR}/sniffer_long_row_skip.csv', skip = 2, max_line_size = 10);
+----
+CSV Error on Line: 5
+Original Line: 5,666666666666666666
+
+statement error
+SELECT count(*) FROM read_csv('{TEST_DIR}/sniffer_long_row_skip.csv', skip = 2, header = true, max_line_size = 10, auto_detect = false, columns = {'a': 'BIGINT', 'b': 'VARCHAR'});
+----
+CSV Error on Line: 5
+Original Line: 5,666666666666666666
+
+# a comment line among the skipped rows is a line too
+statement ok
+COPY (SELECT * FROM (VALUES ('#c'), ('note 1'), ('note 2'), ('a,b'), ('1,2'), ('5,666666666666666666'), ('3,4')) t(line)) TO '{TEST_DIR}/sniffer_long_row_skip_comment.csv' (HEADER false, QUOTE '', DELIMITER '|');
+
+statement error
+SELECT count(*) FROM read_csv('{TEST_DIR}/sniffer_long_row_skip_comment.csv', skip = 2, comment = '#', max_line_size = 10);
+----
+CSV Error on Line: 6
+Original Line: 5,666666666666666666
+
+statement error
+SELECT count(*) FROM read_csv('{TEST_DIR}/sniffer_long_row_skip_comment.csv', skip = 2, comment = '#', header = true, max_line_size = 10, auto_detect = false, columns = {'a': 'BIGINT', 'b': 'VARCHAR'});
+----
+CSV Error on Line: 6
+Original Line: 5,666666666666666666
+
+# the second of two files is sniffed from its first byte, also when rows are skipped
+statement ok
+COPY (SELECT * FROM (VALUES ('0,0'), ('0,0'), ('1,2'), ('3,4')) t(line)) TO '{TEST_DIR}/sniffer_long_row_first_file.csv' (HEADER false, QUOTE '', DELIMITER '|');
+
+statement ok
+COPY (SELECT * FROM (VALUES ('0,0'), ('0,0'), ('1,2'), ('5,666666666666666666'), ('3,4')) t(line)) TO '{TEST_DIR}/sniffer_long_row_second_file.csv' (HEADER false, QUOTE '', DELIMITER '|');
+
+statement error
+SELECT count(*) FROM read_csv(['{TEST_DIR}/sniffer_long_row_first_file.csv', '{TEST_DIR}/sniffer_long_row_second_file.csv'], skip = 2, header = false, max_line_size = 10, files_to_sniff = 1);
+----
+CSV Error on Line: 4
+Original Line: 5,666666666666666666

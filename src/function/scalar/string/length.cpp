@@ -177,6 +177,10 @@ unique_ptr<BaseStatistics> ListLengthPropagateStats(ClientContext &context, Func
 	if (!min_length.IsValid() || !max_length.IsValid()) {
 		return nullptr;
 	}
+	if (max_length.GetIndex() > NumericCast<idx_t>(NumericLimits<int64_t>::Maximum())) {
+		// a bound computed from an argument can exceed every length that the result type holds
+		return nullptr;
+	}
 	auto result = NumericStats::CreateEmpty(input.expr.GetReturnType());
 	NumericStats::SetMin(result, Value::BIGINT(NumericCast<int64_t>(min_length.GetIndex())));
 	NumericStats::SetMax(result, Value::BIGINT(NumericCast<int64_t>(max_length.GetIndex())));

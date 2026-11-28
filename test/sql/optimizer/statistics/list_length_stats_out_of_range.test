@@ -1,0 +1,133 @@
+# name: test/sql/optimizer/statistics/list_length_stats_out_of_range.test
+# description: List length bounds above the BIGINT range do not reach the statistics of length
+# group: [statistics]
+
+statement ok
+CREATE TABLE merge_resize(id INTEGER, l INTEGER[], n UBIGINT);
+
+statement ok
+INSERT INTO merge_resize VALUES (1, [], 9223372036854775808::UBIGINT), (2, [7], 1);
+
+# the row with the size that no list can have is not read
+query II
+SELECT id, length(list_resize(l, n)) AS r FROM merge_resize WHERE id = 2;
+----
+2	1
+
+query II
+SELECT id, len(list_resize(l, n)) AS r FROM merge_resize WHERE id = 2;
+----
+2	1
+
+query II
+SELECT id, array_length(array_resize(l, n)) AS r FROM merge_resize WHERE id = 2;
+----
+2	1
+
+query II
+SELECT id, length(list_resize(l, n, 0)) AS r FROM merge_resize WHERE id = 2;
+----
+2	1
+
+# functions that pass the bound on
+query II
+SELECT id, length(list_sort(list_resize(l, n))) AS r FROM merge_resize WHERE id = 2;
+----
+2	1
+
+query II
+SELECT id, length(list_grade_up(list_resize(l, n))) AS r FROM merge_resize WHERE id = 2;
+----
+2	1
+
+query II
+SELECT id, length(list_distinct(list_resize(l, n))) AS r FROM merge_resize WHERE id = 2;
+----
+2	1
+
+query II
+SELECT id, length(list_resize(l, n)::BIGINT[]) AS r FROM merge_resize WHERE id = 2;
+----
+2	1
+
+query II
+SELECT id, length(list_select(l, list_resize([1], n))) AS r FROM merge_resize WHERE id = 2;
+----
+2	1
+
+query II
+SELECT id, length(list_where(l, list_resize([true], n))) AS r FROM merge_resize WHERE id = 2;
+----
+2	1
+
+query II
+SELECT id, length(list_resize(l, n) || [1]) AS r FROM merge_resize WHERE id = 2;
+----
+2	2
+
+# the row itself still fails
+statement error
+SELECT id, length(list_resize(l, n)) AS r FROM merge_resize;
+----
+<REGEX>:Out of Range Error.*Cannot resize vector.*
+
+# the value stays in the statistics after it is deleted
+statement ok
+DELETE FROM merge_resize WHERE id = 1;
+
+query II
+SELECT id, length(list_resize(l, n)) AS r FROM merge_resize;
+----
+2	1
+
+# a constant size on an empty table
+statement ok
+CREATE TABLE empty_lists(l INTEGER[]);
+
+query I
+SELECT length(list_resize(l, 9223372036854775808::UBIGINT)) AS r FROM empty_lists;
+----
+
+# two bounds that fit and whose sum or product does not
+statement ok
+CREATE TABLE half_sizes(id INTEGER, l INTEGER[], n UBIGINT);
+
+statement ok
+INSERT INTO half_sizes VALUES (1, [], 4611686018427387904::UBIGINT), (2, [7], 1);
+
+query II
+SELECT id, length(list_resize(l, n)) AS r FROM half_sizes WHERE id = 2;
+----
+2	1
+
+query II
+SELECT id, length(list_resize(l, n) || list_resize(l, n)) AS r FROM half_sizes WHERE id = 2;
+----
+2	2
+
+query II
+SELECT id, length(concat(list_resize(l, n), list_resize(l, n))) AS r FROM half_sizes WHERE id = 2;
+----
+2	2
+
+query II
+SELECT id, length(list_concat(list_resize(l, n), list_resize(l, n))) AS r FROM half_sizes WHERE id = 2;
+----
+2	2
+
+query II
+SELECT id, length(flatten([list_resize(l, n), list_resize(l, n)])) AS r FROM half_sizes WHERE id = 2;
+----
+2	2
+
+# a HUGEINT size
+statement ok
+CREATE TABLE huge_sizes(id INTEGER, l INTEGER[], n HUGEINT);
+
+statement ok
+INSERT INTO huge_sizes VALUES (1, [], 9223372036854775808::HUGEINT), (2, [7], 1);
+
+query II
+SELECT id, length(list_resize(l, n)) AS r FROM huge_sizes WHERE id = 2;
+----
+2	1

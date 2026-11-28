@@ -1,6 +1,7 @@
 #include "duckdb/common/atomic.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/operator/subtract.hpp"
+#include "duckdb/common/types/hugeint.hpp"
 #include "duckdb/common/types/interval.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
@@ -51,7 +52,10 @@ struct ICUTableRange {
 				return;
 			}
 
-			cardinality = idx_t(delta / increment);
+			// the smallest delta divided by a step of -1 overflows int64, so the division is done in hugeint
+			auto steps = hugeint_t(delta) / hugeint_t(increment);
+			// a step pointing away from the end produces an empty range
+			cardinality = steps < 0 ? 0 : Hugeint::Cast<idx_t>(steps);
 		}
 
 		string tz_setting;

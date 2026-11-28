@@ -1,0 +1,49 @@
+# name: test/sql/table_function/range_timestamp_estimate_overflow.test
+# description: Row estimate of a TIMESTAMP range whose bounds are 2^63 microseconds apart with a step of -1 microsecond
+# group: [table_function]
+
+# both bounds are valid timestamps, in the years 148108 and 144170 BC
+query II
+EXPLAIN SELECT * FROM range(make_timestamp(4611686018427387904), make_timestamp(-4611686018427387904), INTERVAL '-1 microsecond')
+----
+physical_plan	<REGEX>:.*~9,223,372,036,854,775,808 rows.*
+
+# generate_series computes the same estimate while binding
+statement ok
+EXPLAIN SELECT * FROM generate_series(make_timestamp(4611686018427387904), make_timestamp(-4611686018427387904), INTERVAL '-1 microsecond')
+
+statement ok
+EXPLAIN SELECT count(*) FROM range(make_timestamp(4611686018427387904), make_timestamp(-4611686018427387904), INTERVAL '-1 microsecond') t1, range(2) t2
+
+statement ok
+PREPARE first_rows AS SELECT * FROM range(make_timestamp(4611686018427387904), make_timestamp(-4611686018427387904), INTERVAL '-1 microsecond') LIMIT 3
+
+query I
+EXECUTE first_rows
+----
+148108-07-06 14:00:27.387904
+148108-07-06 14:00:27.387903
+148108-07-06 14:00:27.387902
+
+query I
+SELECT * FROM generate_series(make_timestamp(4611686018427387904), make_timestamp(-4611686018427387904), INTERVAL '-1 microsecond') LIMIT 2
+----
+148108-07-06 14:00:27.387904
+148108-07-06 14:00:27.387903
+
+# bounds half as far apart
+query II
+EXPLAIN SELECT * FROM range(make_timestamp(2305843009213693952), make_timestamp(-2305843009213693952), INTERVAL '-1 microsecond')
+----
+physical_plan	<REGEX>:.*~4,611,686,018,427,387,904 rows.*
+
+# the same bounds with a step pointing away from the end give an empty range
+query II
+EXPLAIN SELECT * FROM range(make_timestamp(4611686018427387904), make_timestamp(-4611686018427387904), INTERVAL '1 microsecond')
+----
+physical_plan	<REGEX>:.*~1 row .*
+
+query I
+SELECT count(*) FROM range(make_timestamp(4611686018427387904), make_timestamp(-4611686018427387904), INTERVAL '1 microsecond')
+----
+0

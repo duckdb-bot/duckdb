@@ -267,8 +267,10 @@ struct RangeDateTimeBindData : public TableFunctionData {
 			return;
 		}
 
+		// the smallest delta divided by a step of -1 overflows int64, so the division is done in hugeint
+		auto steps = hugeint_t(delta) / hugeint_t(increment);
 		// a step pointing away from the end produces an empty range
-		cardinality = delta / increment < 0 ? 0 : idx_t(delta / increment);
+		cardinality = steps < 0 ? 0 : Hugeint::Cast<idx_t>(steps);
 	}
 
 	idx_t cardinality;

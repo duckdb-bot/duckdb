@@ -1,0 +1,53 @@
+# name: test/sql/table_function/icu_range_timestamptz_estimate_overflow.test
+# description: Row estimate of a TIMESTAMPTZ range whose bounds are 2^63 microseconds apart with a step of -1 microsecond
+# group: [table_function]
+
+require icu
+
+statement ok
+SET Calendar = 'gregorian';
+
+statement ok
+SET TimeZone = 'UTC';
+
+# both bounds are valid timestamps, in the years 148108 and 144170 BC
+query II
+EXPLAIN SELECT * FROM range(make_timestamp(4611686018427387904)::TIMESTAMPTZ, make_timestamp(-4611686018427387904)::TIMESTAMPTZ, INTERVAL '-1 microsecond')
+----
+physical_plan	<REGEX>:.*~9,223,372,036,854,775,808 rows.*
+
+query II
+EXPLAIN SELECT * FROM generate_series(make_timestamp(4611686018427387904)::TIMESTAMPTZ, make_timestamp(-4611686018427387904)::TIMESTAMPTZ, INTERVAL '-1 microsecond')
+----
+physical_plan	<REGEX>:.*~9,223,372,036,854,775,808 rows.*
+
+statement ok
+EXPLAIN SELECT count(*) FROM range(make_timestamp(4611686018427387904)::TIMESTAMPTZ, make_timestamp(-4611686018427387904)::TIMESTAMPTZ, INTERVAL '-1 microsecond') t1, range(2) t2
+
+statement ok
+PREPARE first_rows AS SELECT * FROM range(make_timestamp(4611686018427387904)::TIMESTAMPTZ, make_timestamp(-4611686018427387904)::TIMESTAMPTZ, INTERVAL '-1 microsecond') LIMIT 3
+
+query I
+EXECUTE first_rows
+----
+148108-07-06 14:00:27.387904+00
+148108-07-06 14:00:27.387903+00
+148108-07-06 14:00:27.387902+00
+
+query I
+SELECT * FROM generate_series(make_timestamp(4611686018427387904)::TIMESTAMPTZ, make_timestamp(-4611686018427387904)::TIMESTAMPTZ, INTERVAL '-1 microsecond') LIMIT 2
+----
+148108-07-06 14:00:27.387904+00
+148108-07-06 14:00:27.387903+00
+
+# bounds half as far apart
+query II
+EXPLAIN SELECT * FROM range(make_timestamp(2305843009213693952)::TIMESTAMPTZ, make_timestamp(-2305843009213693952)::TIMESTAMPTZ, INTERVAL '-1 microsecond')
+----
+physical_plan	<REGEX>:.*~4,611,686,018,427,387,904 rows.*
+
+# the same bounds with a step pointing away from the end give an empty range
+query I
+SELECT count(*) FROM range(make_timestamp(4611686018427387904)::TIMESTAMPTZ, make_timestamp(-4611686018427387904)::TIMESTAMPTZ, INTERVAL '1 microsecond')
+----
+0

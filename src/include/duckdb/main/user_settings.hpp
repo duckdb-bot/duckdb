@@ -32,6 +32,10 @@ public:
 	void ClearSetting(idx_t setting_index);
 	bool IsSet(idx_t setting_index) const;
 	bool TryGetSetting(idx_t setting_index, Value &result_value) const;
+	//! Whether a SET changes the value of the setting, which has unset_value while it is not set (if known)
+	bool SetChangesValue(idx_t setting_index, const Value &target_value, optional_ptr<const Value> unset_value) const;
+	//! Whether a RESET changes the value of the setting
+	bool ClearChangesValue(idx_t setting_index, optional_ptr<const Value> unset_value) const;
 
 private:
 	vector<GenericSetting> settings;
@@ -81,8 +85,9 @@ public:
 	GlobalUserSettings(const GlobalUserSettings &other);
 	GlobalUserSettings &operator=(const GlobalUserSettings &);
 
-	void SetUserSetting(idx_t setting_index, Value target_value);
-	void ClearSetting(idx_t setting_index);
+	//! unset_value is the value that the setting has while it is not set here, the default (if known)
+	void SetUserSetting(idx_t setting_index, Value target_value, optional_ptr<const Value> unset_value = nullptr);
+	void ClearSetting(idx_t setting_index, optional_ptr<const Value> unset_value = nullptr);
 	bool IsSet(idx_t setting_index) const;
 	SettingLookupResult TryGetSetting(idx_t setting_index, Value &result_value) const;
 	bool HasExtensionOption(const Identifier &name) const;
@@ -91,7 +96,7 @@ public:
 	bool TryGetExtensionOption(const Identifier &name, ExtensionOption &result) const;
 	optional_idx TryGetExtensionSettingIndex(const Identifier &name) const;
 	hugeint_t GetUUID() const;
-	//! The number of times the value of a database-global setting was set or reset
+	//! The number of times the value of a database-global setting changed
 	idx_t GetChangeCount() const;
 	//! Counts the change of a setting that is not kept in this map
 	void RegisterChange();
@@ -118,12 +123,13 @@ struct LocalUserSettings {
 public:
 	~LocalUserSettings();
 
-	void SetUserSetting(idx_t setting_index, Value target_value);
-	void ClearSetting(idx_t setting_index);
+	//! unset_value is the value that the client reads while the setting is not set here (if known)
+	void SetUserSetting(idx_t setting_index, Value target_value, optional_ptr<const Value> unset_value = nullptr);
+	void ClearSetting(idx_t setting_index, optional_ptr<const Value> unset_value = nullptr);
 	bool IsSet(idx_t setting_index) const;
 	SettingLookupResult TryGetSetting(const GlobalUserSettings &global_settings, idx_t setting_index,
 	                                  Value &result_value) const;
-	//! The number of times the value of a setting of the client was set or reset
+	//! The number of times the value of a setting of the client changed
 	idx_t GetChangeCount() const;
 	//! Counts the change of a setting that is not kept in this map
 	void RegisterChange();

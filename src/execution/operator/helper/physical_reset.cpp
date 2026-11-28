@@ -8,8 +8,7 @@
 
 namespace duckdb {
 
-void PhysicalReset::ResetExtensionVariable(ExecutionContext &context, DBConfig &config,
-                                           ExtensionOption &extension_option) const {
+void PhysicalReset::ResetExtensionVariable(ExecutionContext &context, ExtensionOption &extension_option) const {
 	auto effective_scope = extension_option.ResolveScope(Identifier(name.ToStdString()), scope);
 	if (extension_option.set_function) {
 		extension_option.set_function(context.client, effective_scope, extension_option.default_value);
@@ -17,12 +16,9 @@ void PhysicalReset::ResetExtensionVariable(ExecutionContext &context, DBConfig &
 	if (extension_option.info) {
 		extension_option.info->OnSet(context.client, effective_scope, extension_option.default_value, true);
 	}
-	if (effective_scope == SetScope::GLOBAL) {
-		config.ResetOption(extension_option);
-	} else {
-		auto &client_config = ClientConfig::GetConfig(context.client);
-		client_config.user_settings.ClearSetting(extension_option.setting_index.GetIndex());
-	}
+	auto &default_value = extension_option.default_value;
+	PhysicalSet::ResetGenericVariable(context.client, extension_option.setting_index.GetIndex(), effective_scope,
+	                                  default_value.IsNull() ? nullptr : &default_value);
 }
 
 SourceResultType PhysicalReset::GetDataInternal(ExecutionContext &context, DataChunk &chunk,
@@ -45,7 +41,7 @@ SourceResultType PhysicalReset::GetDataInternal(ExecutionContext &context, DataC
 				throw InvalidInputException("Extension parameter %s was not found after autoloading", name);
 			}
 		}
-		ResetExtensionVariable(context, config, extension_option);
+		ResetExtensionVariable(context, extension_option);
 		return SourceResultType::FINISHED;
 	}
 
@@ -61,12 +57,10 @@ SourceResultType PhysicalReset::GetDataInternal(ExecutionContext &context, DataC
 			info.is_reset = true;
 			option->set_callback(info, reset_val);
 		}
-		if (variable_scope == SetScope::SESSION) {
-			auto &client_config = ClientConfig::GetConfig(context.client);
-			client_config.user_settings.ClearSetting(setting_index);
-		} else {
-			config.ResetGenericOption(setting_index);
-		}
+		Value default_value;
+		const bool has_default = config.TryGetDefaultValue(option, default_value);
+		PhysicalSet::ResetGenericVariable(context.client, setting_index, variable_scope,
+		                                  has_default ? &default_value : nullptr);
 		return SourceResultType::FINISHED;
 	}
 	const auto previous_value = option->get_setting(context.client);

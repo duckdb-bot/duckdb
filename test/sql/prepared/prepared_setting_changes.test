@@ -191,6 +191,52 @@ EXECUTE null_order;
 1
 NULL
 
+# a session value that equals the default over another value of the database
+statement ok
+SET GLOBAL default_null_order = 'nulls_first';
+
+statement ok
+PREPARE null_order AS SELECT x FROM (VALUES (1), (NULL)) t(x) ORDER BY x;
+
+query I
+EXECUTE null_order;
+----
+NULL
+1
+
+statement ok
+SET SESSION default_null_order = 'nulls_last';
+
+query I
+EXECUTE null_order;
+----
+1
+NULL
+
+statement ok
+PREPARE null_order AS SELECT x FROM (VALUES (1), (NULL)) t(x) ORDER BY x;
+
+statement ok
+RESET SESSION default_null_order;
+
+query I
+EXECUTE null_order;
+----
+NULL
+1
+
+statement ok
+PREPARE null_order AS SELECT x FROM (VALUES (1), (NULL)) t(x) ORDER BY x;
+
+statement ok
+RESET GLOBAL default_null_order;
+
+query I
+EXECUTE null_order;
+----
+1
+NULL
+
 # floating point division and scalar subqueries
 statement ok
 PREPARE division AS SELECT 1.0::DOUBLE / 0::DOUBLE;

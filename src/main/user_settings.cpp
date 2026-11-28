@@ -78,15 +78,18 @@ static bool UserSettingValuesEqual(const Value &left, const Value &right) {
 	}
 }
 
+static bool SameUserSettingValue(const Value &left, const Value &right) {
+	// Extension type equality can ignore missing modifiers and properties.
+	return !HasUserSettingExtensionType(left.type()) && !HasUserSettingExtensionType(right.type()) &&
+	       UserSettingValuesEqual(left, right);
+}
+
 bool UserSettingsMap::SetUserSetting(idx_t setting_index, Value target_value) {
 	if (setting_index >= settings.size()) {
 		settings.resize(setting_index + 1);
 	}
 	auto &generic_setting = settings[setting_index];
-	// Extension type equality can ignore missing modifiers and properties.
-	if (generic_setting.is_set && !HasUserSettingExtensionType(generic_setting.value.type()) &&
-	    !HasUserSettingExtensionType(target_value.type()) &&
-	    UserSettingValuesEqual(generic_setting.value, target_value)) {
+	if (generic_setting.is_set && SameUserSettingValue(generic_setting.value, target_value)) {
 		return false;
 	}
 	generic_setting.is_set = true;
@@ -125,6 +128,21 @@ bool UserSettingsMap::TryGetSetting(idx_t setting_index, Value &result_value) co
 	return true;
 }
 
+bool UserSettingsMap::SetChangesValue(idx_t setting_index, const Value &target_value,
+                                      optional_ptr<const Value> unset_value) const {
+	if (IsSet(setting_index)) {
+		return !SameUserSettingValue(settings[setting_index].value, target_value);
+	}
+	return !unset_value || !SameUserSettingValue(*unset_value, target_value);
+}
+
+bool UserSettingsMap::ClearChangesValue(idx_t setting_index, optional_ptr<const Value> unset_value) const {
+	if (!IsSet(setting_index)) {
+		return false;
+	}
+	return !unset_value || !SameUserSettingValue(settings[setting_index].value, *unset_value);
+}
+
 //===--------------------------------------------------------------------===//
 // GlobalUserSettings
 //===--------------------------------------------------------------------===//
@@ -145,21 +163,27 @@ GlobalUserSettings &GlobalUserSettings::operator=(const GlobalUserSettings &othe
 	return *this;
 }
 
-void GlobalUserSettings::SetUserSetting(idx_t setting_index, Value target_value) {
+void GlobalUserSettings::SetUserSetting(idx_t setting_index, Value target_value,
+                                        optional_ptr<const Value> unset_value) {
 	lock_guard<mutex> guard(lock);
+	const bool value_changes = settings_map.SetChangesValue(setting_index, target_value, unset_value);
 	if (settings_map.SetUserSetting(setting_index, std::move(target_value))) {
 		++settings_version;
+	}
+	// counted last, so that a reader of the new count reads the new value
+	if (value_changes) {
 		++change_count;
 	}
 }
 
-void GlobalUserSettings::ClearSetting(idx_t setting_index) {
+void GlobalUserSettings::ClearSetting(idx_t setting_index, optional_ptr<const Value> unset_value) {
 	lock_guard<mutex> guard(lock);
-	if (settings_map.IsSet(setting_index)) {
-		++change_count;
-	}
+	const bool value_changes = settings_map.ClearChangesValue(setting_index, unset_value);
 	settings_map.ClearSetting(setting_index);
 	++settings_version;
+	if (value_changes) {
+		++change_count;
+	}
 }
 
 idx_t GlobalUserSettings::GetChangeCount() const {
@@ -327,14 +351,15 @@ CachedGlobalSettings::CachedGlobalSettings(const GlobalUserSettings &global_user
 LocalUserSettings::~LocalUserSettings() {
 }
 
-void LocalUserSettings::SetUserSetting(idx_t setting_index, Value target_value) {
-	if (settings_map.SetUserSetting(setting_index, std::move(target_value))) {
+void LocalUserSettings::SetUserSetting(idx_t setting_index, Value target_value, optional_ptr<const Value> unset_value) {
+	if (settings_map.SetChangesValue(setting_index, target_value, unset_value)) {
 		change_count++;
 	}
+	settings_map.SetUserSetting(setting_index, std::move(target_value));
 }
 
-void LocalUserSettings::ClearSetting(idx_t setting_index) {
-	if (settings_map.IsSet(setting_index)) {
+void LocalUserSettings::ClearSetting(idx_t setting_index, optional_ptr<const Value> unset_value) {
+	if (settings_map.ClearChangesValue(setting_index, unset_value)) {
 		change_count++;
 	}
 	settings_map.ClearSetting(setting_index);

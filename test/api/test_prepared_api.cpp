@@ -699,9 +699,15 @@ TEST_CASE("A prepared statement keeps its plan until a setting changes", "[api]"
 	REQUIRE(CHECK_COLUMN(result, 0, {Value(), 1, 2}));
 	REQUIRE(!rebinds.back());
 
-	// an extension that registers a setting changes no value, setting it does
+	// an extension that registers a setting changes no value, and neither does its default, another value does
 	auto &config = DBConfig::GetConfig(*db.instance);
 	config.AddExtensionOption("my_option", "An option", LogicalType::VARCHAR, Value("default"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(!rebinds.back());
+	REQUIRE_NO_FAIL(con.Query("SET my_option = 'default'"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(!rebinds.back());
+	REQUIRE_NO_FAIL(con.Query("RESET my_option"));
 	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
 	REQUIRE(!rebinds.back());
 	REQUIRE_NO_FAIL(con.Query("SET my_option = 'other'"));
@@ -801,6 +807,74 @@ TEST_CASE("A prepared statement keeps its plan until a setting changes", "[api]"
 	result = prepared->Execute();
 	REQUIRE(CHECK_COLUMN(result, 0, {"DECIMAL(60,0)"}));
 	REQUIRE(rebinds.back());
+}
+
+TEST_CASE("A prepared statement keeps its plan when a SET or RESET keeps the value of a setting", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	Connection other(db);
+	auto recorder = make_shared_ptr<RebindRecorderState>();
+	con.context->GetContext().GetRegisteredState().Insert("rebind_recorder", recorder);
+	auto &rebinds = recorder->rebinds;
+	const string query = "SELECT x FROM (VALUES (1), (2), (NULL)) t(x) ORDER BY x";
+	const string prepare = "PREPARE ordered AS " + query;
+
+	// a first SET to the default, for the database and for the session
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(other.Query("SET GLOBAL default_null_order = 'nulls_last'"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(!rebinds.back());
+	REQUIRE_NO_FAIL(con.Query("SET SESSION default_null_order = 'nulls_last'"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(!rebinds.back());
+
+	// the RESET of a value that the setting has without it, for the session and for the database
+	REQUIRE_NO_FAIL(con.Query("RESET SESSION default_null_order"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(!rebinds.back());
+	REQUIRE_NO_FAIL(other.Query("RESET GLOBAL default_null_order"));
+	auto result = con.Query("EXECUTE ordered");
+	REQUIRE(CHECK_COLUMN(result, 0, {1, 2, Value()}));
+	REQUIRE(!rebinds.back());
+
+	// a session value that equals the value of the database, and its RESET
+	REQUIRE_NO_FAIL(other.Query("SET GLOBAL default_null_order = 'nulls_first'"));
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(con.Query("SET SESSION default_null_order = 'nulls_first'"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(!rebinds.back());
+	REQUIRE_NO_FAIL(con.Query("RESET SESSION default_null_order"));
+	result = con.Query("EXECUTE ordered");
+	REQUIRE(CHECK_COLUMN(result, 0, {Value(), 1, 2}));
+	REQUIRE(!rebinds.back());
+
+	// a session value that equals the default and not the value of the database is a change, and so is its RESET
+	REQUIRE_NO_FAIL(con.Query("SET SESSION default_null_order = 'nulls_last'"));
+	result = con.Query("EXECUTE ordered");
+	REQUIRE(CHECK_COLUMN(result, 0, {1, 2, Value()}));
+	REQUIRE(rebinds.back());
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(con.Query("RESET SESSION default_null_order"));
+	result = con.Query("EXECUTE ordered");
+	REQUIRE(CHECK_COLUMN(result, 0, {Value(), 1, 2}));
+	REQUIRE(rebinds.back());
+
+	// the RESET of a database value that differs from the default
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(other.Query("RESET GLOBAL default_null_order"));
+	result = con.Query("EXECUTE ordered");
+	REQUIRE(CHECK_COLUMN(result, 0, {1, 2, Value()}));
+	REQUIRE(rebinds.back());
+
+	// a connection with a session value changes the value of the database, which the other connection reads
+	REQUIRE_NO_FAIL(other.Query("SET SESSION default_null_order = 'nulls_last'"));
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(other.Query("SET GLOBAL default_null_order = 'nulls_first'"));
+	result = con.Query("EXECUTE ordered");
+	REQUIRE(CHECK_COLUMN(result, 0, {Value(), 1, 2}));
+	REQUIRE(rebinds.back());
+	result = other.Query(query);
+	REQUIRE(CHECK_COLUMN(result, 0, {1, 2, Value()}));
 }
 
 static atomic<idx_t> execute_pre_binds {0};

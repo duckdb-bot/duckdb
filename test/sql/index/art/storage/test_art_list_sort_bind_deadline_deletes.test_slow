@@ -64,7 +64,7 @@ SELECT count(*) FROM t;
 ----
 300001
 
-# the keys of the first and of the last deleted row are free, kept keys are not
+# deleted keys are free and kept keys are not
 statement ok
 INSERT INTO t VALUES (5, [6, 5]);
 

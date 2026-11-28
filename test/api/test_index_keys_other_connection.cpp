@@ -1,6 +1,7 @@
 #include "catch.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/main/client_context.hpp"
 #include "duckdb/main/database.hpp"
 #include "test_helpers.hpp"
 
@@ -110,4 +111,26 @@ TEST_CASE("Test that the checkpoint on shutdown remaps an index on list_sort", "
 	REQUIRE_NO_FAIL(con.Query("INSERT INTO t VALUES (250000, [250001, 250000])"));
 	result = con.Query("SELECT id FROM t WHERE list_sort(l)[1] = 250000");
 	REQUIRE(CHECK_COLUMN(result, 0, {250000}));
+}
+
+TEST_CASE("Test that an interrupt of the connection that bound an index on list_sort stops no other commit", "[api]") {
+	DuckDB db(nullptr);
+	Connection binder(db);
+	REQUIRE_NO_FAIL(binder.Query("CREATE TABLE u (id INTEGER, l INTEGER[])"));
+	REQUIRE_NO_FAIL(binder.Query("INSERT INTO u SELECT i, [i + 1, i] FROM range(10) r(i)"));
+	REQUIRE_NO_FAIL(binder.Query("CREATE UNIQUE INDEX ui ON u ((list_sort(l)[1]))"));
+	// an interrupt that reaches an idle connection stays set until its next query
+	binder.context->ClearInterrupt();
+	binder.Interrupt();
+	REQUIRE(binder.context->IsInterrupted());
+
+	// the commit of a delete removes its keys from the index without a connection, and must not fail
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("DELETE FROM u WHERE id < 5"));
+	// the keys of the deleted rows are free and the others are not
+	REQUIRE_NO_FAIL(con.Query("INSERT INTO u VALUES (10, [0, 1])"));
+	REQUIRE_FAIL(con.Query("INSERT INTO u VALUES (11, [5, 6])"));
+	auto result = con.Query("SELECT id FROM u ORDER BY id");
+	REQUIRE(CHECK_COLUMN(result, 0, {5, 6, 7, 8, 9, 10}));
+	REQUIRE(binder.context->IsInterrupted());
 }

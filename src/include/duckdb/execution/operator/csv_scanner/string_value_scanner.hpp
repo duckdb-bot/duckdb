@@ -416,6 +416,11 @@ private:
 	void FinishMoveToNextBuffer(shared_ptr<CSVBufferHandle> next_buffer);
 	//! Tail of the boundary chunk finalization, runs after the move past the boundary end
 	void FinishBoundaryScan(bool moved);
+	//! If the scanner of the given boundary finds the row it starts at
+	bool FindsStart(const CSVIterator &boundary) const;
+	//! If this scanner reads on behind the end of its buffer, in the boundaries whose scanners find no start, because a
+	//! row with a stored error is open
+	bool TakeOverNextBoundary();
 	//! Processes buffers until the chunk is full or the file ends
 	void ProcessRemainingBuffers();
 
@@ -429,6 +434,10 @@ private:
 	bool IsRowValid(CSVIterator &current_iterator) const;
 	ValidRowInfo TryRow(CSVState state, idx_t start_pos, idx_t end_pos) const;
 	bool FirstValueEndsOnQuote(CSVIterator iterator) const;
+	//! Skips to the next line break as the scan does, going on behind invalid states
+	bool SkipRowWithErrors(CSVState initial_state, CSVIterator &current_iterator) const;
+	//! The position behind the line break of a row with an error, when a row ends there from every state
+	optional_idx EndOfErrorRow(const CSVIterator &line_start) const;
 
 	StringValueResult result;
 	vector<LogicalType> types;
@@ -444,6 +453,9 @@ private:
 	bool suspended = false;
 	//! The buffer a suspension waits on, a scanner suspends at most once per buffer
 	idx_t pending_buffer_idx = 0;
+	//! The last boundary this scanner reads, its own or the last one it took over. Set at the first attempt to take
+	//! over a boundary
+	CSVIterator last_boundary;
 };
 
 } // namespace duckdb

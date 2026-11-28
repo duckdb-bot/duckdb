@@ -1,0 +1,232 @@
+# name: test/sql/copy/csv/parallel/csv_parallel_error_row.test
+# description: A parallel scan reads the rows behind a row with text after a closing quote, with ignore_errors and with store_rejects
+# group: [parallel]
+
+# the row with the error is behind the rows that the sniffer samples
+statement ok
+COPY (SELECT CASE WHEN i = 25000 THEN i::VARCHAR || ',"x"z' ELSE i::VARCHAR || ',"x,y"' END FROM range(30000) t(i) ORDER BY i)
+TO '{TEST_DIR}/csv_parallel_error_row.csv' (HEADER false, QUOTE '', DELIMITER '|');
+
+query III
+SELECT count(*), min(column0), max(column0) FROM read_csv('{TEST_DIR}/csv_parallel_error_row.csv', ignore_errors = true);
+----
+29999	0	29999
+
+statement ok
+CREATE TABLE loaded (id INTEGER, v VARCHAR);
+
+statement ok
+COPY loaded FROM '{TEST_DIR}/csv_parallel_error_row.csv' (IGNORE_ERRORS);
+
+query III
+SELECT count(*), min(id), max(id) FROM loaded;
+----
+29999	0	29999
+
+# small files with the row in the middle, twice, twice in a row, first, last, with \r\n and in two columns,
+# where the text is behind the first value, the second value or both
+statement ok
+COPY (SELECT a FROM (VALUES (1, '0'), (2, '1'), (3, '"xx"xyz'), (4, '3'), (5, '4'), (6, '5')) t(i, a) ORDER BY i)
+TO '{TEST_DIR}/csv_parallel_error_row_middle.csv' (HEADER, QUOTE '');
+
+statement ok
+COPY (SELECT a FROM (VALUES (1, '0'), (2, '"xx"xyz'), (3, '2'), (4, '"yy"abc'), (5, '4'), (6, '5')) t(i, a) ORDER BY i)
+TO '{TEST_DIR}/csv_parallel_error_row_twice.csv' (HEADER, QUOTE '');
+
+statement ok
+COPY (SELECT a FROM (VALUES (1, '0'), (2, '"xx"xyz'), (3, '"yy"abc'), (4, '3'), (5, '4')) t(i, a) ORDER BY i)
+TO '{TEST_DIR}/csv_parallel_error_row_adjacent.csv' (HEADER, QUOTE '');
+
+statement ok
+COPY (SELECT a FROM (VALUES (1, '"xx"xyz'), (2, '1'), (3, '2'), (4, '3'), (5, '4')) t(i, a) ORDER BY i)
+TO '{TEST_DIR}/csv_parallel_error_row_first.csv' (HEADER, QUOTE '');
+
+statement ok
+COPY (SELECT a FROM (VALUES (1, '0'), (2, '1'), (3, '2'), (4, '"xx"xyz')) t(i, a) ORDER BY i)
+TO '{TEST_DIR}/csv_parallel_error_row_last.csv' (HEADER, QUOTE '');
+
+statement ok
+COPY (SELECT a || chr(13) FROM (VALUES (0, 'a'), (1, '0'), (2, '1'), (3, '"xx"xyz'), (4, '3'), (5, '4'), (6, '5')) t(i, a) ORDER BY i)
+TO '{TEST_DIR}/csv_parallel_error_row_crlf.csv' (HEADER false, QUOTE '');
+
+statement ok
+COPY (SELECT a, 'x' AS b FROM (VALUES (1, '0'), (2, '1'), (3, '"2"z'), (4, '3'), (5, '4'), (6, '5')) t(i, a) ORDER BY i)
+TO '{TEST_DIR}/csv_parallel_error_row_columns.csv' (HEADER, QUOTE '');
+
+statement ok
+COPY (SELECT a, b FROM (VALUES (1, '0', 'x'), (2, '1', '"q"z'), (3, '3', 'x'), (4, '4', 'x')) t(i, a, b) ORDER BY i)
+TO '{TEST_DIR}/csv_parallel_error_row_second_column.csv' (HEADER, QUOTE '');
+
+statement ok
+COPY (SELECT a, b FROM (VALUES (1, '0', '0'), (2, '"x"z', '"y"z'), (3, '3', '3')) t(i, a, b) ORDER BY i)
+TO '{TEST_DIR}/csv_parallel_error_row_both_columns.csv' (HEADER, QUOTE '');
+
+# the row is recorded once
+query I
+SELECT string_agg(a, ',' ORDER BY a) FROM read_csv('{TEST_DIR}/csv_parallel_error_row_middle.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR'}, store_rejects = true);
+----
+0,1,3,4,5
+
+query III
+SELECT line, error_type, csv_line FROM reject_errors;
+----
+4	UNQUOTED VALUE	"xx"xyz
+
+# every buffer size puts the ends of the buffers, which are the boundaries here, elsewhere in and around the row
+foreach error_option ignore_errors store_rejects
+
+loop buffer_size 8 24
+
+query I
+SELECT string_agg(a, ',' ORDER BY a) FROM read_csv('{TEST_DIR}/csv_parallel_error_row_middle.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR'}, {error_option} = true, buffer_size = {buffer_size});
+----
+0,1,3,4,5
+
+query I
+SELECT string_agg(a, ',' ORDER BY a) FROM read_csv('{TEST_DIR}/csv_parallel_error_row_twice.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR'}, {error_option} = true, buffer_size = {buffer_size});
+----
+0,2,4,5
+
+query I
+SELECT string_agg(a, ',' ORDER BY a) FROM read_csv('{TEST_DIR}/csv_parallel_error_row_adjacent.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR'}, {error_option} = true, buffer_size = {buffer_size});
+----
+0,3,4
+
+query I
+SELECT string_agg(a, ',' ORDER BY a) FROM read_csv('{TEST_DIR}/csv_parallel_error_row_first.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR'}, {error_option} = true, buffer_size = {buffer_size});
+----
+1,2,3,4
+
+query I
+SELECT string_agg(a, ',' ORDER BY a) FROM read_csv('{TEST_DIR}/csv_parallel_error_row_last.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR'}, {error_option} = true, buffer_size = {buffer_size});
+----
+0,1,2
+
+query I
+SELECT string_agg(a, ',' ORDER BY a) FROM read_csv('{TEST_DIR}/csv_parallel_error_row_crlf.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR'}, {error_option} = true, buffer_size = {buffer_size});
+----
+0,1,3,4,5
+
+query I
+SELECT string_agg(a, ',' ORDER BY a) FROM read_csv('{TEST_DIR}/csv_parallel_error_row_columns.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, {error_option} = true, buffer_size = {buffer_size});
+----
+0,1,3,4,5
+
+query I
+SELECT string_agg(a, ',' ORDER BY a) FROM read_csv('{TEST_DIR}/csv_parallel_error_row_second_column.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, {error_option} = true, buffer_size = {buffer_size});
+----
+0,3,4
+
+query I
+SELECT string_agg(a, ',' ORDER BY a) FROM read_csv('{TEST_DIR}/csv_parallel_error_row_both_columns.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, {error_option} = true, buffer_size = {buffer_size});
+----
+0,3
+
+endloop
+
+# boundaries that are smaller than a buffer
+foreach max_line_size 8 12 16 20 24
+
+query I
+SELECT string_agg(a, ',' ORDER BY a) FROM read_csv('{TEST_DIR}/csv_parallel_error_row_middle.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR'}, {error_option} = true, buffer_size = 64, max_line_size = {max_line_size});
+----
+0,1,3,4,5
+
+query I
+SELECT string_agg(a, ',' ORDER BY a) FROM read_csv('{TEST_DIR}/csv_parallel_error_row_twice.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR'}, {error_option} = true, buffer_size = 64, max_line_size = {max_line_size});
+----
+0,2,4,5
+
+query I
+SELECT string_agg(a, ',' ORDER BY a) FROM read_csv('{TEST_DIR}/csv_parallel_error_row_second_column.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, {error_option} = true, buffer_size = 64, max_line_size = {max_line_size});
+----
+0,3,4
+
+query I
+SELECT string_agg(a, ',' ORDER BY a) FROM read_csv('{TEST_DIR}/csv_parallel_error_row_both_columns.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, {error_option} = true, buffer_size = 64, max_line_size = {max_line_size});
+----
+0,3
+
+endloop
+
+endloop
+
+# a boundary that starts at a quoted value with line breaks, in a row that is followed by rows with errors,
+# at the opening quote, at a space in front of it, and between the two bytes of the delimiter in front of it
+statement ok
+COPY (SELECT line FROM (VALUES (1, 'a,b'), (2, '0,xxxxxxxxxxxxxxxxxxxxxxxxxx'), (3, '1,"t,""q""z'), (4, 'FAKE,x'), (5, 'tail"'), (6, '"u"z,"v"z'), (7, '"u"z,"v"z')) t(i, line) ORDER BY i)
+TO '{TEST_DIR}/csv_parallel_error_row_quoted_lines.csv' (HEADER false, QUOTE '', DELIMITER '|');
+
+statement ok
+COPY (SELECT line FROM (VALUES (1, 'a,b'), (2, '0,' || repeat('x', 70)), (3, '1, "t,""q""z'), (4, 'FAKE,x'), (5, 'tail"'), (6, '"u"z,"v"z'), (7, '"u"z,"v"z'), (8, '"u"z,"v"z'), (9, '"u"z,"v"z'), (10, '"u"z,"v"z'), (11, '"u"z,"v"z')) t(i, line) ORDER BY i)
+TO '{TEST_DIR}/csv_parallel_error_row_quoted_lines_space.csv' (HEADER false, QUOTE '', DELIMITER '|');
+
+statement ok
+COPY (SELECT line FROM (VALUES (1, 'a||b'), (2, '0||' || repeat('x', 70)), (3, '1||"t||""q""z'), (4, 'FAKE||x'), (5, 'tail"'), (6, '"u"z||"v"z'), (7, '"u"z||"v"z'), (8, '"u"z||"v"z'), (9, '"u"z||"v"z'), (10, '"u"z||"v"z'), (11, '"u"z||"v"z')) t(i, line) ORDER BY i)
+TO '{TEST_DIR}/csv_parallel_error_row_quoted_lines_delimiter.csv' (HEADER false, QUOTE '', DELIMITER ';');
+
+foreach error_option ignore_errors store_rejects
+
+query I
+SELECT string_agg(a, ',' ORDER BY a) FROM read_csv('{TEST_DIR}/csv_parallel_error_row_quoted_lines.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, {error_option} = true, buffer_size = 35);
+----
+0,1
+
+query I
+SELECT string_agg(a, ',' ORDER BY a) FROM read_csv('{TEST_DIR}/csv_parallel_error_row_quoted_lines_space.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, {error_option} = true, buffer_size = 79);
+----
+0,1
+
+query I
+SELECT string_agg(a, ',' ORDER BY a) FROM read_csv('{TEST_DIR}/csv_parallel_error_row_quoted_lines_delimiter.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, delim = '||', {error_option} = true, buffer_size = 81);
+----
+0,1
+
+endloop
+
+# the first invalid byte ends the buffer and the scanner of the next buffer finds no start in the rest of the row
+statement ok
+COPY (SELECT a, b FROM (VALUES (1, '0', '0'), (2, '"x"z', '"" y'), (3, '3', '3')) t(i, a, b) ORDER BY i)
+TO '{TEST_DIR}/csv_parallel_error_row_buffer_end.csv' (HEADER, QUOTE '');
+
+query I
+SELECT string_agg(a, ',' ORDER BY a) FROM read_csv('{TEST_DIR}/csv_parallel_error_row_buffer_end.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, store_rejects = true, buffer_size = 12);
+----
+0,3
+
+# the same with two boundaries in the next buffer that find no start
+statement ok
+COPY (SELECT line FROM (VALUES (1, 'a,b'), (2, 'k0,xxx'), (3, 'k1,xxx'), (4, 'k2,xxx'), (5, 'k3,xxx'), (6, 'k4,xxx'), (7, 'k5,xxx'), (8, 'k6,xxx'), (9, 'k7,xxx'), (10, '"x"z,"" y'), (11, '1,x'), (12, '2,'), (13, 'abc,"" y'), (14, '4,x'), (15, '5,x')) t(i, line) ORDER BY i)
+TO '{TEST_DIR}/csv_parallel_error_row_buffer_end_twice.csv' (HEADER false, QUOTE '', DELIMITER '|');
+
+query I
+SELECT string_agg(a, ',' ORDER BY a) FROM read_csv('{TEST_DIR}/csv_parallel_error_row_buffer_end_twice.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, store_rejects = true, buffer_size = 64, max_line_size = 16);
+----
+1,2,4,5,k0,k1,k2,k3,k4,k5,k6,k7
+
+# the last row has no line break and the text behind its closing quote starts the last buffer
+foreach error_option ignore_errors store_rejects
+
+query I
+SELECT string_agg(a, ',' ORDER BY a) FROM read_csv('{DATA_DIR}/csv/parallel_error_row_eof.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, {error_option} = true, buffer_size = 8);
+----
+0,1
+
+endloop
+
+# a chunk of rows that all fail their cast ends where the buffer ends
+require vector_size 512
+
+statement ok
+COPY (SELECT CASE WHEN i < current_setting('standard_vector_size')::BIGINT THEN 'x' ELSE '[' || (i - current_setting('standard_vector_size')::BIGINT + 7) || ']' END AS a FROM range(current_setting('standard_vector_size')::BIGINT + 2) t(i) ORDER BY i)
+TO '{TEST_DIR}/csv_parallel_error_row_chunk.csv' (HEADER, QUOTE '');
+
+foreach parallel true false
+
+query I
+SELECT a FROM read_csv('{TEST_DIR}/csv_parallel_error_row_chunk.csv', header = true, auto_detect = false, columns = {'a': 'INTEGER[]'}, buffer_size = 2 * current_setting('standard_vector_size')::BIGINT + 2, ignore_errors = true, parallel = {parallel}) ORDER BY a;
+----
+[7]
+[8]
+
+endloop

@@ -1156,7 +1156,9 @@ void StringValueScanner::Flush(DataChunk &insert_chunk) {
 		// We have to check if we got to error
 		error_handler->ErrorIfNeeded();
 		if (parse_chunk.size() == 0) {
-			return;
+			// rows whose errors are ignored leave an empty chunk, which the caller takes for the end of the scan
+			continue_processing = cur_buffer_handle && !iterator.done;
+			continue;
 		}
 		// convert the columns in the parsed chunk to the types of the table
 		insert_chunk.SetChildCardinality(parse_chunk.size());
@@ -1275,21 +1277,10 @@ void StringValueScanner::Flush(DataChunk &insert_chunk) {
 			result.borked_rows.clear();
 		}
 		insert_chunk.SetChildCardinality(insert_chunk.size());
-		if (insert_chunk.size() == 0 && cur_buffer_handle) {
-			idx_t to_pos;
-			if (iterator.IsBoundarySet()) {
-				to_pos = iterator.GetEndPos();
-				if (to_pos > cur_buffer_handle->actual_size) {
-					to_pos = cur_buffer_handle->actual_size;
-				}
-			} else {
-				to_pos = cur_buffer_handle->actual_size;
-			}
-			if (iterator.pos.buffer_pos < to_pos) {
-				// If a chunk is complete with errors, we might get to this situation where we must proceed with the
-				// scanning
-				continue_processing = true;
-			}
+		if (insert_chunk.size() == 0 && cur_buffer_handle && !iterator.done) {
+			// If a chunk is complete with errors, we might get to this situation where we must proceed with the
+			// scanning
+			continue_processing = true;
 		}
 	} while (continue_processing);
 }
@@ -1746,7 +1737,7 @@ StringValueScanner::MoveBufferResult StringValueScanner::TryMoveToNextBuffer() {
 			if (result.current_errors.HandleErrors(result)) {
 				result.InvalidateUnwrittenColumns(chunk_col_id_before);
 			}
-			result.line_positions_per_row[static_cast<idx_t>(result.number_of_rows)] = result.current_line_position;
+			result.StoreLinePosition();
 			result.number_of_rows++;
 		}
 		result.cur_col_id = 0;
@@ -1942,6 +1933,41 @@ bool StringValueScanner::IsRowValid(CSVIterator &current_iterator) const {
 	return true;
 }
 
+bool StringValueScanner::SkipRowWithErrors(CSVState initial_state, CSVIterator &current_iterator) const {
+	bool quoted = false;
+	bool found_row = SkipUntilState(initial_state, CSVState::RECORD_SEPARATOR, current_iterator, quoted);
+	while (!found_row && current_iterator.pos.buffer_pos < current_iterator.GetEndPos()) {
+		// the scan reads on behind an invalid state
+		found_row = SkipUntilState(CSVState::INVALID, CSVState::RECORD_SEPARATOR, current_iterator, quoted);
+	}
+	return found_row;
+}
+
+optional_idx StringValueScanner::EndOfErrorRow(const CSVIterator &line_start) const {
+	if (!state_machine->dialect_options.state_machine_options.strict_mode.GetValue()) {
+		// a scan that is not strict does not read these bytes the way the line finder does
+		return optional_idx();
+	}
+	auto unquoted = line_start;
+	if (!SkipRowWithErrors(CSVState::STANDARD_NEWLINE, unquoted)) {
+		return optional_idx();
+	}
+	const idx_t row_end = unquoted.pos.buffer_pos;
+	// the scanner before this one may be in any state here, a row has to end at this line break from all of them
+	for (uint32_t state = 0; state < StateMachine::NUM_STATES; state++) {
+		auto reading = line_start;
+		reading.SetEnd(row_end);
+		bool found_row = SkipRowWithErrors(static_cast<CSVState>(state), reading);
+		while (found_row && reading.pos.buffer_pos < row_end) {
+			found_row = SkipRowWithErrors(CSVState::RECORD_SEPARATOR, reading);
+		}
+		if (!found_row) {
+			return optional_idx();
+		}
+	}
+	return row_end;
+}
+
 ValidRowInfo StringValueScanner::TryRow(CSVState state, idx_t start_pos, idx_t end_pos) const {
 	auto current_iterator = iterator;
 	current_iterator.SetStart(start_pos);
@@ -2021,8 +2047,17 @@ void StringValueScanner::SetStart() {
 			iterator.done = true;
 		} else {
 			bool mock;
+			const auto line_start = iterator;
 			if (!SkipUntilState(CSVState::STANDARD_NEWLINE, CSVState::RECORD_SEPARATOR, iterator, mock)) {
-				iterator.CheckIfDone();
+				// the scanner before this one reads a row with an error up to its line break. This one starts behind
+				// it when the row ends there whatever state that scanner is in
+				const bool is_invalid_state = iterator.pos.buffer_pos < iterator.GetEndPos();
+				const auto row_end = is_invalid_state ? EndOfErrorRow(line_start) : optional_idx();
+				if (row_end.IsValid()) {
+					iterator.pos.buffer_pos = row_end.GetIndex();
+				} else {
+					iterator.CheckIfDone();
+				}
 			}
 		}
 	} else {
@@ -2054,9 +2089,10 @@ void StringValueScanner::FinalizeChunkProcess() {
 	// If we are not done we have two options.
 	// 1) If a boundary is set.
 	if (iterator.IsBoundarySet()) {
-		if (!result.current_errors.HasErrorType(UNTERMINATED_QUOTES) &&
-		    !result.current_errors.HasErrorType(INVALID_STATE)) {
-			iterator.done = true;
+		// Process also stops at an invalid state, the boundary is scanned once its end is reached
+		if (!cur_buffer_handle ||
+		    iterator.pos.buffer_pos >= MinValue<idx_t>(iterator.GetEndPos(), cur_buffer_handle->actual_size)) {
+			iterator.done = !TakeOverNextBoundary();
 		}
 		// We read until the next line or until we have nothing else to read.
 		// Move to next buffer
@@ -2074,6 +2110,42 @@ void StringValueScanner::FinalizeChunkProcess() {
 		// We read until the chunk is complete, or we have nothing else to read.
 		ProcessRemainingBuffers();
 	}
+}
+
+bool StringValueScanner::FindsStart(const CSVIterator &boundary) const {
+	// the scanner of the boundary runs this search, its result size only has to differ from a line finder's
+	constexpr idx_t start_finder_size = 2;
+	StringValueScanner start_finder(scanner_idx + 1, buffer_manager, state_machine, make_shared_ptr<CSVErrorHandler>(),
+	                                csv_file_scan, false, boundary, start_finder_size);
+	start_finder.Initialize();
+	return !start_finder.iterator.done;
+}
+
+bool StringValueScanner::TakeOverNextBoundary() {
+	if (result.result_size == 1 || !cur_buffer_handle || iterator.pos.buffer_pos < cur_buffer_handle->actual_size) {
+		return false;
+	}
+	if (!result.current_errors.HasErrorType(UNTERMINATED_QUOTES) &&
+	    !result.current_errors.HasErrorType(INVALID_STATE)) {
+		return false;
+	}
+	// a row with a stored error is open at the end of the buffer and is finished in the next one
+	if (!last_boundary.IsBoundarySet()) {
+		last_boundary = iterator;
+	}
+	auto next_boundary = last_boundary;
+	next_boundary.done = false;
+	if (!next_boundary.Next(*buffer_manager, state_machine->options) || FindsStart(next_boundary)) {
+		return false;
+	}
+	// nobody else returns the rows of the boundaries of that buffer whose scanners find no start
+	const idx_t next_buffer_idx = next_boundary.GetBufferIdx();
+	do {
+		last_boundary = next_boundary;
+		iterator.SetEnd(next_boundary.GetEndPos());
+	} while (next_boundary.Next(*buffer_manager, state_machine->options) &&
+	         next_boundary.GetBufferIdx() == next_buffer_idx && !FindsStart(next_boundary));
+	return true;
 }
 
 void StringValueScanner::FinishBoundaryScan(const bool moved) {
@@ -2107,8 +2179,9 @@ void StringValueScanner::FinishBoundaryScan(const bool moved) {
 		result.number_of_rows++;
 	}
 	if (!iterator.done) {
-		if (iterator.pos.buffer_pos >= iterator.GetEndPos() || iterator.pos.buffer_idx > iterator.GetBufferIdx() ||
-		    FinishedFile()) {
+		// the row with the error was finished here, when it ends where the boundary ends the row behind it is left
+		const bool row_ends_boundary = iterator.pos.buffer_pos == iterator.GetEndPos() && states.IsCurrentNewRow();
+		if ((iterator.pos.buffer_pos >= iterator.GetEndPos() && !row_ends_boundary) || FinishedFile()) {
 			iterator.done = true;
 		}
 	}

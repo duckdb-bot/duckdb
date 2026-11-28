@@ -1,0 +1,192 @@
+# name: test/sql/copy/csv/parallel/csv_parallel_range_starts_at_split_crlf.test
+# description: A scan range that starts at the \n of a \r\n finds its first row behind a row that starts with a quoted value with a line feed
+# group: [parallel]
+
+statement ok
+SET threads = 4;
+
+# small files, read with one scan range per buffer of 13 bytes. The second buffer starts at the \n behind k0000000
+# and the value behind it holds a line feed
+statement ok
+COPY (SELECT line FROM (VALUES (1, 'c0'), (2, 'k0000000'), (3, '"q1' || chr(10) || 'x"'), (4, 'k2'), (5, 'k3')) t(i, line) ORDER BY i)
+TO '{TEST_DIR}/csv_parallel_range_starts_at_split_crlf_lf.csv' (HEADER false, QUOTE '', DELIMITER '|', NEW_LINE e'\r\n');
+
+# the same with rows for another buffer behind it
+statement ok
+COPY (SELECT line FROM (VALUES (1, 'c0'), (2, 'k0000000'), (3, '"q1' || chr(10) || 'x"'), (4, 'k2'), (5, 'k3'), (6, 'k4'), (7, 'k5')) t(i, line) ORDER BY i)
+TO '{TEST_DIR}/csv_parallel_range_starts_at_split_crlf_more.csv' (HEADER false, QUOTE '', DELIMITER '|', NEW_LINE e'\r\n');
+
+# a space before the quote
+statement ok
+COPY (SELECT line FROM (VALUES (1, 'c0'), (2, 'k0000000'), (3, ' "q1' || chr(10) || 'x"'), (4, 'k2'), (5, 'k3'), (6, 'k4')) t(i, line) ORDER BY i)
+TO '{TEST_DIR}/csv_parallel_range_starts_at_split_crlf_space.csv' (HEADER false, QUOTE '', DELIMITER '|', NEW_LINE e'\r\n');
+
+# the row with the value is the last one of the file, with a line break behind it and without one
+statement ok
+COPY (SELECT line FROM (VALUES (1, 'c0'), (2, 'k0000000'), (3, '"q1' || chr(10) || 'x"')) t(i, line) ORDER BY i)
+TO '{TEST_DIR}/csv_parallel_range_starts_at_split_crlf_last.csv' (HEADER false, QUOTE '', DELIMITER '|', NEW_LINE e'\r\n');
+
+statement ok
+COPY (SELECT encode('c0' || chr(13) || chr(10) || 'k0000000' || chr(13) || chr(10) || '"q1' || chr(10) || 'x"'))
+TO '{TEST_DIR}/csv_parallel_range_starts_at_split_crlf_end.csv' (FORMAT BLOB);
+
+# two columns, the second buffer of 16 bytes starts at the \n behind k0
+statement ok
+COPY (SELECT line FROM (VALUES (1, 'a,b'), (2, 'k0,vvvvvvv'), (3, '"q1' || chr(10) || 'x",y'), (4, 'k2,v'), (5, 'k3,v')) t(i, line) ORDER BY i)
+TO '{TEST_DIR}/csv_parallel_range_starts_at_split_crlf_columns.csv' (HEADER false, QUOTE '', DELIMITER '|', NEW_LINE e'\r\n');
+
+foreach error_option parallel=true ignore_errors=true store_rejects=true
+
+query II
+SELECT count(*), string_agg(replace(replace(c0, chr(13), '\r'), chr(10), '\n'), ';' ORDER BY c0) FROM read_csv('{TEST_DIR}/csv_parallel_range_starts_at_split_crlf_lf.csv', header = true, auto_detect = false, columns = {'c0': 'VARCHAR'}, buffer_size = 13, {error_option});
+----
+4	k0000000;k2;k3;q1\nx
+
+query II
+SELECT count(*), string_agg(replace(replace(c0, chr(13), '\r'), chr(10), '\n'), ';' ORDER BY c0) FROM read_csv('{TEST_DIR}/csv_parallel_range_starts_at_split_crlf_more.csv', header = true, auto_detect = false, columns = {'c0': 'VARCHAR'}, buffer_size = 13, {error_option});
+----
+6	k0000000;k2;k3;k4;k5;q1\nx
+
+query II
+SELECT count(*), string_agg(replace(replace(c0, chr(13), '\r'), chr(10), '\n'), ';' ORDER BY c0) FROM read_csv('{TEST_DIR}/csv_parallel_range_starts_at_split_crlf_space.csv', header = true, auto_detect = false, columns = {'c0': 'VARCHAR'}, buffer_size = 13, {error_option});
+----
+5	k0000000;k2;k3;k4;q1\nx
+
+query II
+SELECT count(*), string_agg(replace(replace(c0, chr(13), '\r'), chr(10), '\n'), ';' ORDER BY c0) FROM read_csv('{TEST_DIR}/csv_parallel_range_starts_at_split_crlf_last.csv', header = true, auto_detect = false, columns = {'c0': 'VARCHAR'}, buffer_size = 13, {error_option});
+----
+2	k0000000;q1\nx
+
+query II
+SELECT count(*), string_agg(replace(replace(c0, chr(13), '\r'), chr(10), '\n'), ';' ORDER BY c0) FROM read_csv('{TEST_DIR}/csv_parallel_range_starts_at_split_crlf_end.csv', header = true, auto_detect = false, columns = {'c0': 'VARCHAR'}, buffer_size = 13, {error_option});
+----
+2	k0000000;q1\nx
+
+query II
+SELECT count(*), string_agg(replace(replace(a, chr(13), '\r'), chr(10), '\n') || '|' || b, ';' ORDER BY a) FROM read_csv('{TEST_DIR}/csv_parallel_range_starts_at_split_crlf_columns.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, buffer_size = 16, {error_option});
+----
+4	k0|vvvvvvv;k2|v;k3|v;q1\nx|y
+
+endloop
+
+# rows with an error behind the \n. The first has text behind a closing quote, in the second file the row behind
+# the value has it
+statement ok
+COPY (SELECT line FROM (VALUES (1, 'c0'), (2, 'k0000000'), (3, '"q"z'), (4, 'k2'), (5, 'k3'), (6, 'k4'), (7, 'k5')) t(i, line) ORDER BY i)
+TO '{TEST_DIR}/csv_parallel_range_starts_at_split_crlf_error.csv' (HEADER false, QUOTE '', DELIMITER '|', NEW_LINE e'\r\n');
+
+statement ok
+COPY (SELECT line FROM (VALUES (1, 'c0'), (2, 'k0000000'), (3, '"q1' || chr(10) || 'x"'), (4, '"q"z'), (5, 'k3'), (6, 'k4'), (7, 'k5')) t(i, line) ORDER BY i)
+TO '{TEST_DIR}/csv_parallel_range_starts_at_split_crlf_error_behind.csv' (HEADER false, QUOTE '', DELIMITER '|', NEW_LINE e'\r\n');
+
+foreach error_option ignore_errors=true store_rejects=true
+
+query II
+SELECT count(*), string_agg(replace(replace(c0, chr(13), '\r'), chr(10), '\n'), ';' ORDER BY c0) FROM read_csv('{TEST_DIR}/csv_parallel_range_starts_at_split_crlf_error.csv', header = true, auto_detect = false, columns = {'c0': 'VARCHAR'}, buffer_size = 13, {error_option});
+----
+5	k0000000;k2;k3;k4;k5
+
+query II
+SELECT count(*), string_agg(replace(replace(c0, chr(13), '\r'), chr(10), '\n'), ';' ORDER BY c0) FROM read_csv('{TEST_DIR}/csv_parallel_range_starts_at_split_crlf_error_behind.csv', header = true, auto_detect = false, columns = {'c0': 'VARCHAR'}, buffer_size = 13, {error_option});
+----
+5	k0000000;k3;k4;k5;q1\nx
+
+endloop
+
+# a row with an error and the rows behind it are in the range that starts at the \n. The buffer of 32 bytes ends
+# at the \r behind the first row
+statement ok
+COPY (SELECT line FROM (VALUES (1, 'c0'), (2, repeat('k', 27)), (3, '"q1' || chr(10) || 'x"'), (4, '"q"z'), (5, 'k3'), (6, 'k4'), (7, 'k5')) t(i, line) ORDER BY i)
+TO '{TEST_DIR}/csv_parallel_range_starts_at_split_crlf_error_range.csv' (HEADER false, QUOTE '', DELIMITER '|', NEW_LINE e'\r\n');
+
+foreach error_option ignore_errors=true store_rejects=true
+
+query II
+SELECT count(*), string_agg(replace(replace(c0[:4], chr(13), '\r'), chr(10), '\n'), ';' ORDER BY c0) FROM read_csv('{TEST_DIR}/csv_parallel_range_starts_at_split_crlf_error_range.csv', header = true, auto_detect = false, columns = {'c0': 'VARCHAR'}, buffer_size = 32, {error_option});
+----
+5	k3;k4;k5;kkkk;q1\nx
+
+endloop
+
+# without an error option the read fails on that row
+statement error
+SELECT count(*) FROM read_csv('{TEST_DIR}/csv_parallel_range_starts_at_split_crlf_error_range.csv', header = true, auto_detect = false, columns = {'c0': 'VARCHAR'}, buffer_size = 32, parallel = true);
+----
+CSV Error on Line: 4
+
+# a range that starts at a \n inside a quoted value starts behind that value. In the first file a buffer starts at
+# the first \n of the value, in the second a scan range of 16 bytes starts at the \n of its \r\n
+statement ok
+COPY (SELECT line FROM (VALUES (1, 'a,b'), (2, 'k,v'), (3, '"xx' || chr(10) || chr(10) || 'y",v')) t(i, line) ORDER BY i)
+TO '{TEST_DIR}/csv_parallel_range_starts_at_split_crlf_inside.csv' (HEADER false, QUOTE '', DELIMITER '|', NEW_LINE e'\r\n');
+
+statement ok
+COPY (SELECT line FROM (VALUES (1, 'a,b'), (2, 'k,v'), (3, '"xxxx' || chr(13) || chr(10) || chr(10) || 'y",v'), (4, 't,v')) t(i, line) ORDER BY i)
+TO '{TEST_DIR}/csv_parallel_range_starts_at_split_crlf_inside_crlf.csv' (HEADER false, QUOTE '', DELIMITER '|', NEW_LINE e'\r\n');
+
+# the value ends with a \r\n and the second buffer of 24 bytes, the last one, starts at its \n. The quote behind it
+# closes the value, and the row behind the value has too many columns
+statement ok
+COPY (SELECT line FROM (VALUES (1, 'c0,c1'), (2, 'k0,vvvvvvvv'), (3, '"k1' || chr(13) || chr(10) || '",v'), (4, 'k2,v,v'), (5, 'k3,v')) t(i, line) ORDER BY i)
+TO '{TEST_DIR}/csv_parallel_range_starts_at_split_crlf_closing.csv' (HEADER false, QUOTE '', DELIMITER '|', NEW_LINE e'\r\n');
+
+# the quote behind the \n closes the value and has text behind it. The rows behind that row are rows
+statement ok
+COPY (SELECT encode('a,b' || chr(13) || chr(10) || 'k,v' || chr(13) || chr(10) || '"x' || chr(13) || chr(10) || '"q' || chr(13) || chr(10) || 't,v'))
+TO '{TEST_DIR}/csv_parallel_range_starts_at_split_crlf_junk.csv' (FORMAT BLOB);
+
+statement ok
+COPY (SELECT line FROM (VALUES (1, 'a,b'), (2, 'kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk,v'), (3, '"xx'), (4, '"q'), (5, 't0,v'), (6, 'end",v'), (7, 't1,v')) t(i, line) ORDER BY i)
+TO '{TEST_DIR}/csv_parallel_range_starts_at_split_crlf_junk_lines.csv' (HEADER false, QUOTE '', DELIMITER '|', NEW_LINE e'\r\n');
+
+foreach error_option parallel=true ignore_errors=true store_rejects=true
+
+query II
+SELECT count(*), string_agg(replace(replace(a, chr(13), '\r'), chr(10), '\n') || '|' || b, ';' ORDER BY a) FROM read_csv('{TEST_DIR}/csv_parallel_range_starts_at_split_crlf_inside.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, buffer_size = 13, {error_option});
+----
+2	k|v;xx\n\ny|v
+
+query II
+SELECT count(*), string_agg(replace(replace(a, chr(13), '\r'), chr(10), '\n') || '|' || b, ';' ORDER BY a) FROM read_csv('{TEST_DIR}/csv_parallel_range_starts_at_split_crlf_inside_crlf.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, buffer_size = 64, max_line_size = 16, {error_option});
+----
+3	k|v;t|v;xxxx\r\n\ny|v
+
+endloop
+
+foreach error_option ignore_errors=true store_rejects=true
+
+query II
+SELECT count(*), string_agg(replace(replace(c0, chr(13), '\r'), chr(10), '\n') || '|' || c1, ';' ORDER BY c0) FROM read_csv('{TEST_DIR}/csv_parallel_range_starts_at_split_crlf_closing.csv', header = true, auto_detect = false, columns = {'c0': 'VARCHAR', 'c1': 'VARCHAR'}, buffer_size = 24, {error_option});
+----
+3	k0|vvvvvvvv;k1\r\n|v;k3|v
+
+query II
+SELECT count(*), string_agg(replace(replace(a, chr(13), '\r'), chr(10), '\n') || '|' || b, ';' ORDER BY a) FROM read_csv('{TEST_DIR}/csv_parallel_range_starts_at_split_crlf_junk.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, buffer_size = 13, {error_option});
+----
+2	k|v;t|v
+
+query II
+SELECT count(*), string_agg(replace(replace(a, chr(13), '\r'), chr(10), '\n') || '|' || b, ';' ORDER BY a) FROM read_csv('{TEST_DIR}/csv_parallel_range_starts_at_split_crlf_junk_lines.csv', header = true, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, buffer_size = 64, {error_option});
+----
+4	end"|v;kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk|v;t0|v;t1|v
+
+endloop
+
+# FIXME: a value that holds a \r\n behind the \n is still read as two rows. Its second line is taken for a row, as
+# it is for a range that starts inside a quoted value
+statement ok
+COPY (SELECT line FROM (VALUES (1, 'c0'), (2, 'k0000000'), (3, '"q1' || chr(13) || chr(10) || 'x"'), (4, 'k2'), (5, 'k3'), (6, 'k4'), (7, 'k5')) t(i, line) ORDER BY i)
+TO '{TEST_DIR}/csv_parallel_range_starts_at_split_crlf_crlf.csv' (HEADER false, QUOTE '', DELIMITER '|', NEW_LINE e'\r\n');
+
+mode skip "the second line of a quoted value behind the split is taken for a row"
+
+foreach error_option parallel=true ignore_errors=true store_rejects=true
+
+query II
+SELECT count(*), string_agg(replace(replace(c0, chr(13), '\r'), chr(10), '\n'), ';' ORDER BY c0) FROM read_csv('{TEST_DIR}/csv_parallel_range_starts_at_split_crlf_crlf.csv', header = true, auto_detect = false, columns = {'c0': 'VARCHAR'}, buffer_size = 13, {error_option});
+----
+6	k0000000;k2;k3;k4;k5;q1\r\nx
+
+endloop
+
+mode unskip

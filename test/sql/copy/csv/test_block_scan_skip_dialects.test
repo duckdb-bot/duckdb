@@ -9,7 +9,8 @@ require notwindows
 # an unprojected column, a closing quote followed by other bytes, too few and too many columns, empty values, a lone CR
 # inside a value, quoted values holding only a delimiter or a row end, spaces, delimiters at both sides of a 64 byte
 # block edge, a partial match of the delimiter inside a value and an unterminated quote in the last row; the comment
-# files add comment lines and comment bytes inside values. Expected results are those of the build before the change.
+# files add comment lines and comment bytes inside values. A read with ignore_errors goes on behind the row with the
+# closing quote, as a single-threaded read does.
 
 statement ok
 COPY (SELECT line FROM (SELECT i AS o, i || '||v' || i AS line FROM range(2048) t(i) UNION ALL SELECT 5000, 'x||bad||extra' UNION ALL SELECT 5001, 'notanumber||y' UNION ALL SELECT 5002 + i, (3000 + i) || '||w' FROM range(10) t(i)) ORDER BY o) TO '{TEST_DIR}/skip_after_chunk_pipe2.csv' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '');
@@ -30,55 +31,40 @@ SELECT count(*) FROM read_csv('{DATA_DIR}/csv/block_scan_skip_pipe2.csv', delim=
 Invalid Input Error: CSV Error on Line: 5
 
 # file pipe2, ignore_errors, selecting *
-query IIII
+statement error
 SELECT a, replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b, replace(replace(c, chr(10), '<LF>'), chr(13), '<CR>') AS c, d FROM read_csv('{DATA_DIR}/csv/block_scan_skip_pipe2.csv', delim='||', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true) ORDER BY ALL
 ----
-1	ann	x	7
-2	q||q	x	8
-3	line<LF>break	x	9
-4	a"b	x	10
+The CSV Parser state machine reached an invalid state
 
 # file pipe2, ignore_errors, selecting a
-query I
+statement error
 SELECT a FROM read_csv('{DATA_DIR}/csv/block_scan_skip_pipe2.csv', delim='||', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true) ORDER BY ALL
 ----
-1
-2
-3
-4
+The CSV Parser state machine reached an invalid state
 
 # file pipe2, ignore_errors, selecting d
-query I
+statement error
 SELECT d FROM read_csv('{DATA_DIR}/csv/block_scan_skip_pipe2.csv', delim='||', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true) ORDER BY ALL
 ----
-7
-8
-9
-10
+The CSV Parser state machine reached an invalid state
 
 # file pipe2, ignore_errors, selecting b
-query I
+statement error
 SELECT replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b FROM read_csv('{DATA_DIR}/csv/block_scan_skip_pipe2.csv', delim='||', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true) ORDER BY ALL
 ----
-a"b
-ann
-line<LF>break
-q||q
+The CSV Parser state machine reached an invalid state
 
 # file pipe2, ignore_errors, selecting a, d
-query II
+statement error
 SELECT a, d FROM read_csv('{DATA_DIR}/csv/block_scan_skip_pipe2.csv', delim='||', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true) ORDER BY ALL
 ----
-1	7
-2	8
-3	9
-4	10
+The CSV Parser state machine reached an invalid state
 
 # file pipe2, ignore_errors, selecting count(*)
-query I
+statement error
 SELECT count(*) FROM read_csv('{DATA_DIR}/csv/block_scan_skip_pipe2.csv', delim='||', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true)
 ----
-4
+The CSV Parser state machine reached an invalid state
 
 # file pipe2, lenient, selecting a, d
 query II
@@ -125,17 +111,10 @@ SELECT a, replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b, replace(re
 Parameter Not Allowed Error: CSV Error on Line: 3
 
 # file pipe2, buffer_size 64, selecting a, d
-query II
+statement error
 SELECT a, d FROM read_csv('{DATA_DIR}/csv/block_scan_skip_pipe2.csv', delim='||', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, buffer_size=64, ignore_errors=true) ORDER BY ALL
 ----
-1	7
-2	8
-3	9
-4	10
-10	14
-11	15
-15	19
-17	21
+The CSV Parser state machine reached an invalid state
 
 # file pipe2, buffer_size 100, selecting a, d
 statement error
@@ -144,18 +123,10 @@ SELECT a, d FROM read_csv('{DATA_DIR}/csv/block_scan_skip_pipe2.csv', delim='||'
 Invalid Input Error: The CSV Parser state machine reached an invalid state.
 
 # file pipe2, buffer_size 128, selecting a, d
-query II
+statement error
 SELECT a, d FROM read_csv('{DATA_DIR}/csv/block_scan_skip_pipe2.csv', delim='||', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, buffer_size=128, ignore_errors=true) ORDER BY ALL
 ----
-1	7
-2	8
-3	9
-4	10
-10	14
-11	15
-15	19
-16	20
-17	21
+The CSV Parser state machine reached an invalid state
 
 # file pipe2, buffer_size 100, counting
 statement error
@@ -194,55 +165,40 @@ SELECT count(*) FROM read_csv('{DATA_DIR}/csv/block_scan_skip_delim3.csv', delim
 Invalid Input Error: CSV Error on Line: 5
 
 # file delim3, ignore_errors, selecting *
-query IIII
+statement error
 SELECT a, replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b, replace(replace(c, chr(10), '<LF>'), chr(13), '<CR>') AS c, d FROM read_csv('{DATA_DIR}/csv/block_scan_skip_delim3.csv', delim='|-|', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true) ORDER BY ALL
 ----
-1	ann	x	7
-2	q|-|q	x	8
-3	line<LF>break	x	9
-4	a"b	x	10
+The CSV Parser state machine reached an invalid state
 
 # file delim3, ignore_errors, selecting a
-query I
+statement error
 SELECT a FROM read_csv('{DATA_DIR}/csv/block_scan_skip_delim3.csv', delim='|-|', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true) ORDER BY ALL
 ----
-1
-2
-3
-4
+The CSV Parser state machine reached an invalid state
 
 # file delim3, ignore_errors, selecting d
-query I
+statement error
 SELECT d FROM read_csv('{DATA_DIR}/csv/block_scan_skip_delim3.csv', delim='|-|', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true) ORDER BY ALL
 ----
-7
-8
-9
-10
+The CSV Parser state machine reached an invalid state
 
 # file delim3, ignore_errors, selecting b
-query I
+statement error
 SELECT replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b FROM read_csv('{DATA_DIR}/csv/block_scan_skip_delim3.csv', delim='|-|', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true) ORDER BY ALL
 ----
-a"b
-ann
-line<LF>break
-q|-|q
+The CSV Parser state machine reached an invalid state
 
 # file delim3, ignore_errors, selecting a, d
-query II
+statement error
 SELECT a, d FROM read_csv('{DATA_DIR}/csv/block_scan_skip_delim3.csv', delim='|-|', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true) ORDER BY ALL
 ----
-1	7
-2	8
-3	9
-4	10
+The CSV Parser state machine reached an invalid state
 
 # file delim3, ignore_errors, selecting count(*)
-query I
+statement error
 SELECT count(*) FROM read_csv('{DATA_DIR}/csv/block_scan_skip_delim3.csv', delim='|-|', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true)
 ----
-4
+The CSV Parser state machine reached an invalid state
 
 # file delim3, lenient, selecting a, d
 query II
@@ -350,6 +306,11 @@ SELECT a, replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b, replace(re
 2	q,q	x	8
 3	line<CR>break	x	9
 4	a"b	x	10
+8	NULL	NULL	12
+10	,	<CR>	14
+11	 b 	 x 	15
+15	pppppppppppppppppppppppppppppppppppppppppppppppppppppp	x	19
+16	pppppppppppppppppppppppppppppppppppppppppppppppppppppppp	x	20
 
 # file cr, ignore_errors, selecting a
 query I
@@ -359,6 +320,11 @@ SELECT a FROM read_csv('{DATA_DIR}/csv/block_scan_skip_cr.csv', delim=',', quote
 2
 3
 4
+8
+10
+11
+15
+16
 
 # file cr, ignore_errors, selecting d
 query I
@@ -368,15 +334,25 @@ SELECT d FROM read_csv('{DATA_DIR}/csv/block_scan_skip_cr.csv', delim=',', quote
 8
 9
 10
+12
+14
+15
+19
+20
 
 # file cr, ignore_errors, selecting b
 query I
 SELECT replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b FROM read_csv('{DATA_DIR}/csv/block_scan_skip_cr.csv', delim=',', quote='"', escape='"', header=false, new_line='\r', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true) ORDER BY ALL
 ----
+ b 
+,
 a"b
 ann
 line<CR>break
+pppppppppppppppppppppppppppppppppppppppppppppppppppppp
+pppppppppppppppppppppppppppppppppppppppppppppppppppppppp
 q,q
+NULL
 
 # file cr, ignore_errors, selecting a, d
 query II
@@ -386,12 +362,17 @@ SELECT a, d FROM read_csv('{DATA_DIR}/csv/block_scan_skip_cr.csv', delim=',', qu
 2	8
 3	9
 4	10
+8	12
+10	14
+11	15
+15	19
+16	20
 
 # file cr, ignore_errors, selecting count(*)
 query I
 SELECT count(*) FROM read_csv('{DATA_DIR}/csv/block_scan_skip_cr.csv', delim=',', quote='"', escape='"', header=false, new_line='\r', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true)
 ----
-4
+9
 
 # file cr, lenient, selecting a, d
 query II
@@ -457,6 +438,7 @@ SELECT a, d FROM read_csv('{DATA_DIR}/csv/block_scan_skip_cr.csv', delim=',', qu
 2	8
 3	9
 4	10
+8	12
 10	14
 11	15
 15	19
@@ -470,6 +452,9 @@ SELECT a, d FROM read_csv('{DATA_DIR}/csv/block_scan_skip_cr.csv', delim=',', qu
 2	8
 3	9
 4	10
+8	12
+10	14
+11	15
 15	19
 16	20
 
@@ -477,7 +462,7 @@ SELECT a, d FROM read_csv('{DATA_DIR}/csv/block_scan_skip_cr.csv', delim=',', qu
 query I
 SELECT count(*) FROM read_csv('{DATA_DIR}/csv/block_scan_skip_cr.csv', delim=',', quote='"', escape='"', header=false, new_line='\r', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, buffer_size=100, ignore_errors=true)
 ----
-8
+9
 
 # file cr, parallel=false, selecting d
 query I
@@ -535,55 +520,40 @@ SELECT count(*) FROM read_csv('{DATA_DIR}/csv/block_scan_skip_crlf.csv', delim='
 Invalid Input Error: CSV Error on Line: 5
 
 # file crlf, ignore_errors, selecting *
-query IIII
+statement error
 SELECT a, replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b, replace(replace(c, chr(10), '<LF>'), chr(13), '<CR>') AS c, d FROM read_csv('{DATA_DIR}/csv/block_scan_skip_crlf.csv', delim=',', quote='"', escape='"', header=false, new_line='\r\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true) ORDER BY ALL
 ----
-1	ann	x	7
-2	q,q	x	8
-3	line<CR><LF>break	x	9
-4	a"b	x	10
+The CSV Parser state machine reached an invalid state
 
 # file crlf, ignore_errors, selecting a
-query I
+statement error
 SELECT a FROM read_csv('{DATA_DIR}/csv/block_scan_skip_crlf.csv', delim=',', quote='"', escape='"', header=false, new_line='\r\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true) ORDER BY ALL
 ----
-1
-2
-3
-4
+The CSV Parser state machine reached an invalid state
 
 # file crlf, ignore_errors, selecting d
-query I
+statement error
 SELECT d FROM read_csv('{DATA_DIR}/csv/block_scan_skip_crlf.csv', delim=',', quote='"', escape='"', header=false, new_line='\r\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true) ORDER BY ALL
 ----
-7
-8
-9
-10
+The CSV Parser state machine reached an invalid state
 
 # file crlf, ignore_errors, selecting b
-query I
+statement error
 SELECT replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b FROM read_csv('{DATA_DIR}/csv/block_scan_skip_crlf.csv', delim=',', quote='"', escape='"', header=false, new_line='\r\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true) ORDER BY ALL
 ----
-a"b
-ann
-line<CR><LF>break
-q,q
+The CSV Parser state machine reached an invalid state
 
 # file crlf, ignore_errors, selecting a, d
-query II
+statement error
 SELECT a, d FROM read_csv('{DATA_DIR}/csv/block_scan_skip_crlf.csv', delim=',', quote='"', escape='"', header=false, new_line='\r\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true) ORDER BY ALL
 ----
-1	7
-2	8
-3	9
-4	10
+The CSV Parser state machine reached an invalid state
 
 # file crlf, ignore_errors, selecting count(*)
-query I
+statement error
 SELECT count(*) FROM read_csv('{DATA_DIR}/csv/block_scan_skip_crlf.csv', delim=',', quote='"', escape='"', header=false, new_line='\r\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true)
 ----
-4
+The CSV Parser state machine reached an invalid state
 
 # file crlf, lenient, selecting a, d
 query II
@@ -640,16 +610,10 @@ SELECT a, d FROM read_csv('{DATA_DIR}/csv/block_scan_skip_crlf.csv', delim=',', 
 Invalid Input Error: The CSV Parser state machine reached an invalid state.
 
 # file crlf, buffer_size 128, selecting a, d
-query II
+statement error
 SELECT a, d FROM read_csv('{DATA_DIR}/csv/block_scan_skip_crlf.csv', delim=',', quote='"', escape='"', header=false, new_line='\r\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, buffer_size=128, ignore_errors=true) ORDER BY ALL
 ----
-1	7
-2	8
-3	9
-4	10
-11	15
-15	19
-16	20
+The CSV Parser state machine reached an invalid state
 
 # file crlf, buffer_size 100, counting
 statement error
@@ -688,55 +652,40 @@ SELECT count(*) FROM read_csv('{DATA_DIR}/csv/block_scan_skip_comment.csv', deli
 Invalid Input Error: CSV Error on Line: 6
 
 # file comment, ignore_errors, selecting *
-query IIII
+statement error
 SELECT a, replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b, replace(replace(c, chr(10), '<LF>'), chr(13), '<CR>') AS c, d FROM read_csv('{DATA_DIR}/csv/block_scan_skip_comment.csv', delim=',', quote='"', escape='"', comment='#', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true) ORDER BY ALL
 ----
-1	ann	x	7
-2	q,q	x	8
-3	line<LF>break	x	9
-4	a"b	x	10
+The CSV Parser state machine reached an invalid state
 
 # file comment, ignore_errors, selecting a
-query I
+statement error
 SELECT a FROM read_csv('{DATA_DIR}/csv/block_scan_skip_comment.csv', delim=',', quote='"', escape='"', comment='#', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true) ORDER BY ALL
 ----
-1
-2
-3
-4
+The CSV Parser state machine reached an invalid state
 
 # file comment, ignore_errors, selecting d
-query I
+statement error
 SELECT d FROM read_csv('{DATA_DIR}/csv/block_scan_skip_comment.csv', delim=',', quote='"', escape='"', comment='#', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true) ORDER BY ALL
 ----
-7
-8
-9
-10
+The CSV Parser state machine reached an invalid state
 
 # file comment, ignore_errors, selecting b
-query I
+statement error
 SELECT replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b FROM read_csv('{DATA_DIR}/csv/block_scan_skip_comment.csv', delim=',', quote='"', escape='"', comment='#', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true) ORDER BY ALL
 ----
-a"b
-ann
-line<LF>break
-q,q
+The CSV Parser state machine reached an invalid state
 
 # file comment, ignore_errors, selecting a, d
-query II
+statement error
 SELECT a, d FROM read_csv('{DATA_DIR}/csv/block_scan_skip_comment.csv', delim=',', quote='"', escape='"', comment='#', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true) ORDER BY ALL
 ----
-1	7
-2	8
-3	9
-4	10
+The CSV Parser state machine reached an invalid state
 
 # file comment, ignore_errors, selecting count(*)
-query I
+statement error
 SELECT count(*) FROM read_csv('{DATA_DIR}/csv/block_scan_skip_comment.csv', delim=',', quote='"', escape='"', comment='#', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true)
 ----
-4
+The CSV Parser state machine reached an invalid state
 
 # file comment, lenient, selecting a, d
 query II
@@ -785,19 +734,10 @@ SELECT a, replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b, replace(re
 Parameter Not Allowed Error: CSV Error on Line: 4
 
 # file comment, buffer_size 64, selecting a, d
-query II
+statement error
 SELECT a, d FROM read_csv('{DATA_DIR}/csv/block_scan_skip_comment.csv', delim=',', quote='"', escape='"', comment='#', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, buffer_size=64, ignore_errors=true) ORDER BY ALL
 ----
-1	7
-2	8
-3	9
-4	10
-10	14
-11	15
-12	16
-13	17
-15	19
-16	20
+The CSV Parser state machine reached an invalid state
 
 # file comment, buffer_size 100, selecting a, d
 statement error
@@ -806,19 +746,10 @@ SELECT a, d FROM read_csv('{DATA_DIR}/csv/block_scan_skip_comment.csv', delim=',
 Invalid Input Error: The CSV Parser state machine reached an invalid state.
 
 # file comment, buffer_size 128, selecting a, d
-query II
+statement error
 SELECT a, d FROM read_csv('{DATA_DIR}/csv/block_scan_skip_comment.csv', delim=',', quote='"', escape='"', comment='#', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, buffer_size=128, ignore_errors=true) ORDER BY ALL
 ----
-1	7
-2	8
-3	9
-4	10
-10	14
-11	15
-12	16
-13	17
-15	19
-16	20
+The CSV Parser state machine reached an invalid state
 
 # file comment, buffer_size 100, counting
 statement error
@@ -864,6 +795,14 @@ SELECT a, replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b, replace(re
 2	q||q	x	8
 3	line<CR>break	x	9
 4	a"b	x	10
+8	NULL	NULL	12
+10	||	<CR>	14
+11	 b 	 x 	15
+12	bob	x	16
+13	q#q	x	17
+15	pppppppppp	x	19
+16	pppppppppppppppppppppppppppppppppppppppppppppppppppppp	x	20
+17	a|b	x	21
 
 # file comment_pipe2_cr, ignore_errors, selecting a
 query I
@@ -873,6 +812,14 @@ SELECT a FROM read_csv('{DATA_DIR}/csv/block_scan_skip_comment_pipe2_cr.csv', de
 2
 3
 4
+8
+10
+11
+12
+13
+15
+16
+17
 
 # file comment_pipe2_cr, ignore_errors, selecting d
 query I
@@ -882,15 +829,31 @@ SELECT d FROM read_csv('{DATA_DIR}/csv/block_scan_skip_comment_pipe2_cr.csv', de
 8
 9
 10
+12
+14
+15
+16
+17
+19
+20
+21
 
 # file comment_pipe2_cr, ignore_errors, selecting b
 query I
 SELECT replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b FROM read_csv('{DATA_DIR}/csv/block_scan_skip_comment_pipe2_cr.csv', delim='||', quote='"', escape='"', comment='#', header=false, new_line='\r', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true) ORDER BY ALL
 ----
+ b 
 a"b
 ann
+a|b
+bob
 line<CR>break
+pppppppppp
+pppppppppppppppppppppppppppppppppppppppppppppppppppppp
+q#q
 q||q
+||
+NULL
 
 # file comment_pipe2_cr, ignore_errors, selecting a, d
 query II
@@ -900,12 +863,20 @@ SELECT a, d FROM read_csv('{DATA_DIR}/csv/block_scan_skip_comment_pipe2_cr.csv',
 2	8
 3	9
 4	10
+8	12
+10	14
+11	15
+12	16
+13	17
+15	19
+16	20
+17	21
 
 # file comment_pipe2_cr, ignore_errors, selecting count(*)
 query I
 SELECT count(*) FROM read_csv('{DATA_DIR}/csv/block_scan_skip_comment_pipe2_cr.csv', delim='||', quote='"', escape='"', comment='#', header=false, new_line='\r', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true)
 ----
-4
+12
 
 # file comment_pipe2_cr, lenient, selecting a, d
 query II

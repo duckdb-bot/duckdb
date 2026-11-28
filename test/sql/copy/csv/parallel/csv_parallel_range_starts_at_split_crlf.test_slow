@@ -1,0 +1,29 @@
+# name: test/sql/copy/csv/parallel/csv_parallel_range_starts_at_split_crlf.test_slow
+# description: The second scan range of a default read starts at the \n of a \r\n and finds its first row behind a row that starts with a quoted value with a line feed
+# group: [parallel]
+
+statement ok
+SET threads = 4;
+
+# the second scan range of a default read starts at the \n behind row 0559171, and row 0559172 starts with a quoted
+# value that holds a line feed
+statement ok
+COPY (
+	SELECT line FROM (
+		SELECT -1 AS i, 'a,b' AS line
+		UNION ALL
+		SELECT i, CASE WHEN i = 559172 THEN '"' || lpad(i::VARCHAR, 7, '0') || chr(10) || 'x",y' ELSE lpad(i::VARCHAR, 7, '0') || ',"x,y"' END FROM range(700000) t(i)
+	) ORDER BY i
+) TO '{TEST_DIR}/csv_parallel_range_starts_at_split_crlf.csv' (HEADER false, QUOTE '', DELIMITER '|', NEW_LINE e'\r\n');
+
+# every row is read once, and the rows around the split keep their whole values
+foreach error_option parallel=true ignore_errors=true store_rejects=true
+
+query IIII
+SELECT count(*), count(DISTINCT a), max(a[:7]),
+	string_agg(replace(a, chr(10), '\n') || '|' || b, ';' ORDER BY a) FILTER (WHERE a[:7] BETWEEN '0559171' AND '0559173')
+FROM read_csv('{TEST_DIR}/csv_parallel_range_starts_at_split_crlf.csv', {error_option});
+----
+700000	700000	0699999	0559171|x,y;0559172\nx|y;0559173|x,y
+
+endloop

@@ -211,6 +211,27 @@ FROM query('WITH c AS (SELECT 1 UNION ALL SELECT 1 UNION ALL (SELECT 1' || repea
 ----
 <REGEX>:Parser Error.*Max expression depth.*
 
+# the last operand of a chain of INTERSECT and of joins in parentheses has one level above it as well
+query I
+FROM query('WITH c AS (SELECT 1 INTERSECT SELECT 1 INTERSECT (SELECT 1' || repeat(' EXCEPT SELECT 1', 99) || ')) SELECT 42');
+----
+42
+
+statement error
+FROM query('WITH c AS (SELECT 1 INTERSECT SELECT 1 INTERSECT (SELECT 1' || repeat(' EXCEPT SELECT 1', 100) || ')) SELECT 42');
+----
+<REGEX>:Parser Error.*Max expression depth.*
+
+query I
+FROM query('WITH c AS (SELECT 1 FROM (t CROSS JOIN t CROSS JOIN (SELECT 1 FROM t' || repeat(', t', 99) || '))) SELECT 42');
+----
+42
+
+statement error
+FROM query('WITH c AS (SELECT 1 FROM (t CROSS JOIN t CROSS JOIN (SELECT 1 FROM t' || repeat(', t', 100) || '))) SELECT 42');
+----
+<REGEX>:Parser Error.*Max expression depth.*
+
 statement ok
 RESET max_expression_depth;
 

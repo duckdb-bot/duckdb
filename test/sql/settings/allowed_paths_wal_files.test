@@ -1,0 +1,97 @@
+# name: test/sql/settings/allowed_paths_wal_files.test
+# description: An allowed WAL file covers the files that a checkpoint keeps next to it
+# group: [settings]
+
+require skip_reload
+
+# enable_external_access = false disables extension loading
+require no_extension_autoloading "EXPECTED: Test disable loading of extensions"
+
+statement ok
+ATTACH '{TEMP_DIR}/allowed_wal.db' AS d;
+
+statement ok
+CREATE TABLE d.t(i INTEGER);
+
+statement ok
+INSERT INTO d.t VALUES (1);
+
+statement ok
+DETACH d;
+
+statement ok
+SET allowed_paths=['{TEMP_DIR}/allowed_wal.db', '{TEMP_DIR}/allowed_wal.db.wal', '{TEMP_DIR}/allowed_wal_file_only.db', '{TEMP_DIR}/allowed_wal.txt']
+
+statement ok
+SET enable_external_access=false
+
+statement ok
+ATTACH '{TEMP_DIR}/allowed_wal.db' AS d;
+
+statement ok
+INSERT INTO d.t VALUES (2);
+
+statement ok
+CHECKPOINT d;
+
+statement ok
+INSERT INTO d.t VALUES (3);
+
+statement ok
+DETACH d;
+
+statement ok
+ATTACH '{TEMP_DIR}/allowed_wal.db' AS d;
+
+query I
+SELECT i FROM d.t ORDER BY i
+----
+1
+2
+3
+
+statement ok
+DETACH d;
+
+# the checkpoint and recovery files of the allowed WAL can be reached, as the WAL can
+query I
+SELECT count(*) >= 0 FROM read_text('{TEMP_DIR}/allowed_wal.db.wal')
+----
+true
+
+query I
+SELECT count(*) >= 0 FROM read_text('{TEMP_DIR}/allowed_wal.db.wal.checkpoint')
+----
+true
+
+query I
+SELECT count(*) >= 0 FROM read_text('{TEMP_DIR}/allowed_wal.db.wal.recovery')
+----
+true
+
+# a WAL that is not in the list does not cover them
+statement error
+SELECT * FROM read_text('{TEMP_DIR}/allowed_wal_file_only.db.wal.checkpoint')
+----
+Permission Error
+
+statement error
+SELECT * FROM read_text('{TEMP_DIR}/allowed_wal_file_only.db.wal')
+----
+Permission Error
+
+# and a file that is not a WAL covers nothing
+statement error
+SELECT * FROM read_text('{TEMP_DIR}/allowed_wal.txt.checkpoint')
+----
+Permission Error
+
+statement error
+SELECT * FROM read_text('{TEMP_DIR}/allowed_wal.db.checkpoint')
+----
+Permission Error
+
+statement error
+SELECT * FROM read_text('{TEMP_DIR}/allowed_wal.db.wal.other')
+----
+Permission Error

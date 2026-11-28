@@ -1197,6 +1197,25 @@ static bool HasRemotePathTraversal(const string &path) {
 	return false;
 }
 
+//! The WAL files that a path belongs to as their checkpoint or recovery file
+static vector<string> GetOwningWALPaths(const string &path) {
+	vector<string> wal_paths;
+	// the suffix stands at the end of the path or in front of a question mark, see Path::AddSuffixToPath
+	for (auto suffix_end : {path.size(), path.find('?')}) {
+		if (suffix_end == string::npos) {
+			continue;
+		}
+		for (auto &extension : {string(".checkpoint"), string(".recovery")}) {
+			auto suffix = ".wal" + extension;
+			if (suffix_end < suffix.size() || path.compare(suffix_end - suffix.size(), suffix.size(), suffix) != 0) {
+				continue;
+			}
+			wal_paths.push_back(path.substr(0, suffix_end - extension.size()) + path.substr(suffix_end));
+		}
+	}
+	return wal_paths;
+}
+
 bool DBConfig::CanAccessFile(const string &input_path, FileType type, optional_ptr<FileOpener> opener) {
 	if (Settings::Get<EnableExternalAccessSetting>(*this)) {
 		// all external access is allowed
@@ -1212,6 +1231,14 @@ bool DBConfig::CanAccessFile(const string &input_path, FileType type, optional_p
 	if (options.allowed_paths.count(path) > 0) {
 		// path is explicitly allowed
 		return true;
+	}
+	if (type != FileType::FILE_TYPE_DIR) {
+		// a WAL file that is allowed covers the files a checkpoint keeps next to it
+		for (auto &wal_path : GetOwningWALPaths(path)) {
+			if (options.allowed_paths.count(wal_path) > 0) {
+				return true;
+			}
+		}
 	}
 
 	if (options.allowed_directories.empty()) {

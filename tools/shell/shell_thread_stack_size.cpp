@@ -64,7 +64,12 @@ static void *MinimumThreadStackProbe(void *) {
 	return nullptr;
 }
 
-static ThreadStackProbeResult TryThreadStackSize(size_t stack_size, string &error) {
+// Thread startup code, such as sanitizer hooks, can need more stack than a minimum size probe stack has left.
+// Each probe stack gets this reserve below it, which the glibc size check does not count, and an inaccessible guard
+// page below the reserve, so a startup that needs even more faults instead of writing into a neighbouring mapping.
+static constexpr size_t PROBE_STACK_RESERVE = 16384;
+
+static ThreadStackProbeResult TryThreadStackSize(size_t stack_size, size_t page_size, string &error) {
 	pthread_attr_t attributes;
 	auto result = pthread_attr_init(&attributes);
 	if (result != 0) {
@@ -72,17 +77,31 @@ static ThreadStackProbeResult TryThreadStackSize(size_t stack_size, string &erro
 		return ThreadStackProbeResult::ERROR;
 	}
 
-	auto stack = mmap(nullptr, stack_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
-	if (stack == MAP_FAILED) {
+	auto guard_and_reserve_size = page_size + PROBE_STACK_RESERVE;
+	if (stack_size > std::numeric_limits<size_t>::max() - guard_and_reserve_size) {
 		pthread_attr_destroy(&attributes);
 		error = "Failed to map a " + to_string(stack_size) + " byte probe stack";
 		return ThreadStackProbeResult::ERROR;
 	}
+	auto mapping_size = guard_and_reserve_size + stack_size;
+	auto mapping = mmap(nullptr, mapping_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
+	if (mapping == MAP_FAILED) {
+		pthread_attr_destroy(&attributes);
+		error = "Failed to map a " + to_string(stack_size) + " byte probe stack";
+		return ThreadStackProbeResult::ERROR;
+	}
+	if (mprotect(mapping, page_size, PROT_NONE) != 0) {
+		error = PthreadError("mprotect", errno);
+		pthread_attr_destroy(&attributes);
+		munmap(mapping, mapping_size);
+		return ThreadStackProbeResult::ERROR;
+	}
 
+	auto stack = static_cast<char *>(mapping) + guard_and_reserve_size;
 	result = pthread_attr_setstack(&attributes, stack, stack_size);
 	if (result != 0) {
 		pthread_attr_destroy(&attributes);
-		munmap(stack, stack_size);
+		munmap(mapping, mapping_size);
 		if (result == EINVAL) {
 			return ThreadStackProbeResult::TOO_SMALL;
 		}
@@ -94,7 +113,7 @@ static ThreadStackProbeResult TryThreadStackSize(size_t stack_size, string &erro
 	result = pthread_create(&probe, &attributes, MinimumThreadStackProbe, nullptr);
 	auto destroy_result = pthread_attr_destroy(&attributes);
 	if (result != 0) {
-		munmap(stack, stack_size);
+		munmap(mapping, mapping_size);
 		if (result == EINVAL) {
 			return ThreadStackProbeResult::TOO_SMALL;
 		}
@@ -102,7 +121,7 @@ static ThreadStackProbeResult TryThreadStackSize(size_t stack_size, string &erro
 		return ThreadStackProbeResult::ERROR;
 	}
 	auto join_result = pthread_join(probe, nullptr);
-	munmap(stack, stack_size);
+	munmap(mapping, mapping_size);
 	if (join_result != 0) {
 		error = PthreadError("pthread_join", join_result);
 		return ThreadStackProbeResult::ERROR;
@@ -122,7 +141,7 @@ static bool GetMinimumThreadStackSize(size_t default_stack_size, size_t page_siz
 		error = "Default pthread stack size is below the glibc minimum";
 		return false;
 	}
-	auto default_probe_result = TryThreadStackSize(upper_page * page_size, error);
+	auto default_probe_result = TryThreadStackSize(upper_page * page_size, page_size, error);
 	if (default_probe_result != ThreadStackProbeResult::SUCCESS) {
 		if (default_probe_result == ThreadStackProbeResult::TOO_SMALL) {
 			error = "Unable to create a thread with the default pthread stack size";
@@ -134,7 +153,7 @@ static bool GetMinimumThreadStackSize(size_t default_stack_size, size_t page_siz
 
 	while (lower_page < upper_page) {
 		auto middle_page = lower_page + (upper_page - lower_page) / 2;
-		auto probe_result = TryThreadStackSize(middle_page * page_size, error);
+		auto probe_result = TryThreadStackSize(middle_page * page_size, page_size, error);
 		if (probe_result == ThreadStackProbeResult::SUCCESS) {
 			upper_page = middle_page;
 		} else if (probe_result == ThreadStackProbeResult::TOO_SMALL) {

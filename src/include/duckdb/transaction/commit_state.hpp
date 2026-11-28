@@ -100,7 +100,7 @@ public:
 
 public:
 	void CommitEntry(UndoFlags type, data_ptr_t data, CommitInfo &info);
-	void RevertCommit(ClientContext &context, UndoFlags type, data_ptr_t data);
+	void RevertCommit(UndoFlags type, data_ptr_t data);
 	void Flush();
 	void Verify();
 	static IndexRemovalType GetIndexRemovalType(ActiveTransactionState transaction_state, CommitMode commit_mode);

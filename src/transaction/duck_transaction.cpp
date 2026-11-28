@@ -316,7 +316,7 @@ ErrorData DuckTransaction::Commit(ClientContext &context, AttachedDatabase &db, 
 	}
 
 	try {
-		undo_buffer.RevertCommit(context, iterator_state, GetTransactionId());
+		undo_buffer.RevertCommit(iterator_state, GetTransactionId());
 		if (!db.IsSystem() && !db.IsTemporary() &&
 		    Settings::Get<DebugForceCommitRevertFailureSetting>(db.GetDatabase())) {
 			throw IOException("Forced RevertCommit failure (debug_force_commit_revert_failure)");
@@ -339,10 +339,10 @@ ErrorData DuckTransaction::Commit(ClientContext &context, AttachedDatabase &db, 
 	return error_data;
 }
 
-ErrorData DuckTransaction::Rollback(ClientContext &context) {
+ErrorData DuckTransaction::Rollback() {
 	try {
 		storage->Rollback();
-		undo_buffer.Rollback(context);
+		undo_buffer.Rollback();
 		return ErrorData();
 	} catch (std::exception &ex) {
 		return ErrorData(ex);

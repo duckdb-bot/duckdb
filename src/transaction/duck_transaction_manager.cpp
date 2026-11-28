@@ -526,7 +526,7 @@ ErrorData DuckTransactionManager::CommitTransaction(ClientContext &context, Tran
 		checkpoint_decision = CheckpointDecision(error.Message());
 		transaction.commit_id = 0;
 
-		auto rollback_error = transaction.Rollback(context);
+		auto rollback_error = transaction.Rollback();
 		if (rollback_error.HasError()) {
 			throw FatalException(
 			    "Failed to rollback transaction. Cannot continue operation.\nOriginal Error: %s\nRollback Error: %s",
@@ -659,7 +659,7 @@ ErrorData DuckTransactionManager::CommitTransaction(ClientContext &context, Tran
 	return error;
 }
 
-void DuckTransactionManager::RollbackTransaction(ClientContext &context, Transaction &transaction_p) {
+void DuckTransactionManager::RollbackTransaction(ClientContext &, Transaction &transaction_p) {
 	auto &transaction = transaction_p.Cast<DuckTransaction>();
 
 	DUCKDB_LOG(db.GetDatabase(), TransactionLogType, db, "Rollback", transaction.GetTransactionId());
@@ -668,7 +668,7 @@ void DuckTransactionManager::RollbackTransaction(ClientContext &context, Transac
 	{
 		// Obtain the transaction lock and roll back.
 		lock_guard<mutex> t_lock(transaction_lock);
-		error = transaction.Rollback(context);
+		error = transaction.Rollback();
 
 		// Remove the transaction from the list of active transactions and gather cleanup information.
 		QueueCleanup(RemoveTransaction(transaction, CreateCleanupInfo()));

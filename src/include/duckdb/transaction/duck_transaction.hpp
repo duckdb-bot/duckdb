@@ -88,8 +88,8 @@ public:
 	//! Returns whether or not a commit of this transaction should trigger an automatic checkpoint
 	bool AutomaticCheckpoint(AttachedDatabase &db, const UndoBufferProperties &properties);
 
-	//! Rollback, with the context of the connection that rolls back
-	ErrorData Rollback(ClientContext &context);
+	//! Rollback
+	ErrorData Rollback();
 	//! Cleanup the undo buffer
 	void Cleanup(VisibilityBound lowest_visibility_bound);
 

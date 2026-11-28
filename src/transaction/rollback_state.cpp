@@ -17,8 +17,7 @@
 
 namespace duckdb {
 
-RollbackState::RollbackState(DuckTransaction &transaction_p, ClientContext &context_p)
-    : transaction(transaction_p), context(context_p) {
+RollbackState::RollbackState(DuckTransaction &transaction_p) : transaction(transaction_p) {
 }
 
 void RollbackState::RollbackEntry(UndoFlags type, data_ptr_t data) {
@@ -33,7 +32,7 @@ void RollbackState::RollbackEntry(UndoFlags type, data_ptr_t data) {
 	case UndoFlags::INSERT_TUPLE: {
 		auto info = reinterpret_cast<AppendInfo *>(data);
 		// revert the append in the base table
-		info->table->GetStorage().RevertAppend(context, transaction, info->start_row, info->count);
+		info->table->GetStorage().RevertAppend(transaction, info->start_row, info->count);
 		break;
 	}
 	case UndoFlags::DELETE_TUPLE:

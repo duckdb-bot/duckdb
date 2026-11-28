@@ -214,8 +214,7 @@ ErrorData LocalTableStorage::AppendToIndexes(Context &context, DuckTransaction &
 	return error;
 }
 
-ErrorData LocalTableStorage::AppendToTable(Context &context, DuckTransaction &transaction,
-                                           TableAppendState &append_state) {
+ErrorData LocalTableStorage::AppendToTable(DuckTransaction &transaction, TableAppendState &append_state) {
 	auto &table = table_ref.get();
 	const auto index_end = append_state.current_row;
 	try {
@@ -232,7 +231,7 @@ ErrorData LocalTableStorage::AppendToTable(Context &context, DuckTransaction &tr
 		// free the memory of the reverted rows before this storage is scanned again
 		append_state.row_group_append_state.states.reset();
 		append_state.row_groups.reset();
-		auto revert_error = RevertAppendToIndexes(context, transaction, append_state.row_start, index_end);
+		auto revert_error = RevertAppendToIndexes(transaction, append_state.row_start, index_end);
 		if (revert_error.HasError()) {
 			revert_error.Throw();
 		}
@@ -257,8 +256,7 @@ ErrorData LocalTableStorage::AppendToIndexes(Context &context, DuckTransaction &
 	    AppendToIndexes(context, transaction, collection, index_list, table.GetTypes(), append_state.current_row);
 	if (error.HasError()) {
 		// the failing chunk's keys were already removed; revert the chunks appended before it
-		auto revert_error =
-		    RevertAppendToIndexes(context, transaction, append_state.row_start, append_state.current_row);
+		auto revert_error = RevertAppendToIndexes(transaction, append_state.row_start, append_state.current_row);
 		if (revert_error.HasError()) {
 			revert_error.Throw();
 		}
@@ -266,8 +264,7 @@ ErrorData LocalTableStorage::AppendToIndexes(Context &context, DuckTransaction &
 	return error;
 }
 
-ErrorData LocalTableStorage::RevertAppendToIndexes(Context &context, DuckTransaction &transaction, row_t row_start,
-                                                   row_t row_end) {
+ErrorData LocalTableStorage::RevertAppendToIndexes(DuckTransaction &transaction, row_t row_start, row_t row_end) {
 	auto &table = table_ref.get();
 	if (!table.HasIndexes()) {
 		return ErrorData();
@@ -284,7 +281,7 @@ ErrorData LocalTableStorage::RevertAppendToIndexes(Context &context, DuckTransac
 		}
 		// Remove the chunk.
 		try {
-			index_list.RevertAppend(context, chunk, current_row);
+			index_list.RevertAppend(chunk, current_row);
 		} catch (std::exception &ex) { // LCOV_EXCL_START
 			error = ErrorData(ex);
 			break;
@@ -759,7 +756,7 @@ void LocalStorage::Flush(Context &context, DataTable &table, LocalTableStorage &
 			error = storage.AppendToIndexes(context, transaction, append_state);
 			if (!error.HasError()) {
 				// after that is successful - append to the table
-				error = storage.AppendToTable(context, transaction, append_state);
+				error = storage.AppendToTable(transaction, append_state);
 			}
 		}
 		if (!error.HasError()) {

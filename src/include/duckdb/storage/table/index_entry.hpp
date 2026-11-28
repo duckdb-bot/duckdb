@@ -133,8 +133,8 @@ public:
 	ErrorData Append(const QueryContext &context, DataChunk &chunk, Vector &row_ids,
 	                 const shared_ptr<IndexEntry> &delete_entry, IndexAppendMode append_mode,
 	                 optional_idx active_checkpoint);
-	//! Reverts an append to the physical index or its delta.
-	void RevertAppend(const QueryContext &context, DataChunk &chunk, Vector &row_ids);
+	//! Reverts an append to the physical index or its delta, without a context whose interrupt could stop it.
+	void RevertAppend(DataChunk &chunk, Vector &row_ids);
 	//! Appends deleted rows to the bound physical index if it enforces uniqueness.
 	void AppendToDeleteIndexes(const QueryContext &context, DataChunk &chunk, Vector &row_ids);
 	//! Applies a removal or removal rollback to the physical index and its deltas.

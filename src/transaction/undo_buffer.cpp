@@ -198,18 +198,17 @@ void UndoBuffer::Commit(UndoBuffer::IteratorState &iterator_state, CommitInfo &i
 	state.Verify();
 }
 
-void UndoBuffer::RevertCommit(ClientContext &context, UndoBuffer::IteratorState &end_state,
-                              transaction_t transaction_id) {
+void UndoBuffer::RevertCommit(UndoBuffer::IteratorState &end_state, transaction_t transaction_id) {
 	CommitState state(transaction, transaction_id, active_transaction_state, CommitMode::REVERT_COMMIT);
-	ReverseIterateEntries(end_state, [&](UndoFlags type, data_ptr_t data) { state.RevertCommit(context, type, data); });
+	ReverseIterateEntries(end_state, [&](UndoFlags type, data_ptr_t data) { state.RevertCommit(type, data); });
 
 	state.Verify();
 }
 
-void UndoBuffer::Rollback(ClientContext &context) {
+void UndoBuffer::Rollback() {
 	allocator.ReleaseHeadPin();
 	// rollback needs to be performed in reverse
-	RollbackState state(transaction, context);
+	RollbackState state(transaction);
 	ReverseIterateEntries([&](UndoFlags type, data_ptr_t data) { state.RollbackEntry(type, data); });
 }
 } // namespace duckdb

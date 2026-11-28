@@ -131,18 +131,17 @@ void IndexEntry::RecordBuildError(std::exception &ex) {
 	build_error = std::move(error);
 }
 
-void IndexEntry::RevertAppend(const QueryContext &context, DataChunk &chunk, Vector &row_ids) {
+void IndexEntry::RevertAppend(DataChunk &chunk, Vector &row_ids) {
 	auto entry_lock = lock.GetExclusiveLock();
 	if (building && build_error.HasError()) {
 		return;
 	}
 	if (auto delta = deltas.Find(IndexDeltaType::ADDED_DATA)) {
-		// as in Append, the keys of a building index run without the context of the commit
-		delta->Delete(chunk, row_ids, building ? QueryContext() : context);
+		delta->Delete(chunk, row_ids);
 		return;
 	}
 	if (owned_index->IsBound()) {
-		owned_index->Cast<BoundIndex>().Delete(chunk, row_ids, context);
+		owned_index->Cast<BoundIndex>().Delete(chunk, row_ids);
 	}
 }
 

@@ -202,7 +202,7 @@ public:
 	                optional_ptr<StorageCommitState> commit_state);
 	//! Revert a set of appends made by the given AppendState, used to revert appends in the event of an error during
 	//! commit (e.g. because of an I/O exception)
-	void RevertAppend(ClientContext &context, DuckTransaction &transaction, idx_t start_row, idx_t count);
+	void RevertAppend(DuckTransaction &transaction, idx_t start_row, idx_t count);
 	void RevertAppendInternal(idx_t start_row);
 	//! Revert an append that failed before it was finalized
 	void RevertFailedAppend(TableAppendState &state);

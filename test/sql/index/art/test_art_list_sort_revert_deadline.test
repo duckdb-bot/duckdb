@@ -1,0 +1,101 @@
+# name: test/sql/index/art/test_art_list_sort_revert_deadline.test
+# description: The deadline of a committing connection does not stop the revert of its appends to an index on list_sort
+# group: [art]
+
+require skip_reload
+
+# the failing commits append 150 chunks
+require exact_vector_size 2048
+
+# without scheduler threads a commit runs on the thread of its connection
+statement ok
+SET threads = 1;
+
+statement ok
+CREATE TABLE t (a BIGINT, l BIGINT[]);
+
+statement ok
+INSERT INTO t SELECT range, [range + 1, range] FROM range(1000);
+
+# this connection binds the index and stays open
+statement ok
+CREATE UNIQUE INDEX idx_l ON t ((list_sort(l)[1]));
+
+statement ok
+SET GLOBAL debug_force_commit_failure = true;
+
+# A thread reads the deadline of its query at every 256th interrupt check, and sorting the lists of a chunk checks
+# once. The loop runs on a new thread, so its commit appends the keys of 150 chunks without a read and is then
+# forced to fail. Reverting those keys with the context of the connection would reach the 256th check.
+concurrentloop i 0 1
+
+statement ok
+BEGIN;
+
+statement ok
+INSERT INTO t SELECT 1000 + range, [range + 1001, range + 1000] FROM range(307200);
+
+statement ok
+SET max_execution_time = 1;
+
+statement error
+COMMIT;
+----
+Failed to commit: Forced commit failure
+
+endloop
+
+statement ok
+SET GLOBAL debug_force_commit_failure = false;
+
+query I
+SELECT count(*) FROM t;
+----
+1000
+
+# the keys of the reverted rows are free again, the others are still in the index
+statement ok
+INSERT INTO t VALUES (2000, [2001, 2000]);
+
+statement error
+INSERT INTO t VALUES (-1, [6, 5]);
+----
+Duplicate key
+
+# a second index fails on the last row while the commit appends, which reverts the chunks appended before it
+statement ok
+CREATE INDEX idx_a ON t ((a::INTEGER));
+
+concurrentloop i 0 1
+
+statement ok
+BEGIN;
+
+statement ok
+INSERT INTO t SELECT 1000000 + range, [range + 1000001, range + 1000000] FROM range(307200);
+
+statement ok
+INSERT INTO t VALUES (3000000000, [-1, -2]);
+
+statement ok
+SET max_execution_time = 1;
+
+statement error
+COMMIT;
+----
+Failed to commit: Type INT64 with value 3000000000 can't be cast
+
+endloop
+
+query I
+SELECT count(*) FROM t;
+----
+1001
+
+statement ok
+INSERT INTO t VALUES (1000000, [1000001, 1000000]);
+
+statement error
+INSERT INTO t VALUES (-1, [2001, 2000]);
+----
+Duplicate key

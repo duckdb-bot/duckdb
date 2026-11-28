@@ -1350,7 +1350,7 @@ void DataTable::RevertFailedAppend(TableAppendState &state) {
 	row_groups->RevertFailedAppend(state);
 }
 
-void DataTable::RevertAppend(ClientContext &context, DuckTransaction &transaction, idx_t start_row, idx_t count) {
+void DataTable::RevertAppend(DuckTransaction &transaction, idx_t start_row, idx_t count) {
 	lock_guard<mutex> lock(append_lock);
 
 	// revert any appends to indexes
@@ -1366,7 +1366,7 @@ void DataTable::RevertAppend(ClientContext &context, DuckTransaction &transactio
 			for (idx_t i = 0; i < chunk.size(); i++) {
 				row_id_writer.WriteValue(NumericCast<row_t>(current_row_base + i));
 			}
-			info->indexes.RevertAppend(context, chunk, row_identifiers);
+			info->indexes.RevertAppend(chunk, row_identifiers);
 			current_row_base += chunk.size();
 		});
 	}

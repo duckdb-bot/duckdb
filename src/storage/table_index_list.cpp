@@ -203,23 +203,23 @@ ErrorData TableIndexList::Append(const QueryContext &context, optional_ptr<Table
 
 	if (error.HasError()) {
 		for (auto &entry : already_appended) {
-			entry->RevertAppend(context, chunk, row_ids);
+			entry->RevertAppend(chunk, row_ids);
 		}
 	}
 	return error;
 }
 
-void TableIndexList::RevertAppend(const QueryContext &context, DataChunk &chunk, Vector &row_ids) {
+void TableIndexList::RevertAppend(DataChunk &chunk, Vector &row_ids) {
 	annotated_lock_guard lock(index_entries_lock);
 	for (const auto &entry : index_entries) {
-		entry->RevertAppend(context, chunk, row_ids);
+		entry->RevertAppend(chunk, row_ids);
 	}
 }
 
-void TableIndexList::RevertAppend(const QueryContext &context, DataChunk &chunk, row_t row_start) {
+void TableIndexList::RevertAppend(DataChunk &chunk, row_t row_start) {
 	Vector row_ids(LogicalType::ROW_TYPE);
 	VectorOperations::GenerateSequence(row_ids, chunk.size(), row_start, 1);
-	RevertAppend(context, chunk, row_ids);
+	RevertAppend(chunk, row_ids);
 }
 
 void TableIndexList::AppendToDeleteIndexes(const QueryContext &context, DataChunk &chunk, Vector &row_ids) {

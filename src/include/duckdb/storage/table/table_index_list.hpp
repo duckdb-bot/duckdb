@@ -62,9 +62,9 @@ public:
 	ErrorData Append(const QueryContext &context, optional_ptr<TableIndexList> delete_indexes, DataChunk &chunk,
 	                 row_t row_start, IndexAppendMode append_mode, optional_idx active_checkpoint);
 	//! Reverts an append to all index entries.
-	void RevertAppend(const QueryContext &context, DataChunk &chunk, Vector &row_ids);
+	void RevertAppend(DataChunk &chunk, Vector &row_ids);
 	//! Reverts an append with generated row IDs starting at row_start.
-	void RevertAppend(const QueryContext &context, DataChunk &chunk, row_t row_start);
+	void RevertAppend(DataChunk &chunk, row_t row_start);
 	//! Appends deleted rows to all unique indexes.
 	void AppendToDeleteIndexes(const QueryContext &context, DataChunk &chunk, Vector &row_ids);
 	//! Applies a removal or removal rollback to the index entries added before the bound.

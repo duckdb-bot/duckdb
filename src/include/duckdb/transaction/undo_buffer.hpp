@@ -62,10 +62,10 @@ public:
 	//! info.drop_state so they can be applied after the commit chain succeeds.
 	void Commit(UndoBuffer::IteratorState &iterator_state, CommitInfo &info);
 	//! Revert committed changes made in the UndoBuffer up until the currently committed state
-	void RevertCommit(ClientContext &context, UndoBuffer::IteratorState &iterator_state, transaction_t transaction_id);
+	void RevertCommit(UndoBuffer::IteratorState &iterator_state, transaction_t transaction_id);
 	//! Rollback the changes made in this UndoBuffer: should be called on
 	//! rollback
-	void Rollback(ClientContext &context);
+	void Rollback();
 
 private:
 	DuckTransaction &transaction;

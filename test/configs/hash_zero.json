@@ -3,6 +3,13 @@
   "skip_compiled": "true",
   "skip_tests": [
     {
+      "reason": "Expects hash joins to spill, and with every hash zero all rows of a build share one partition, so these joins stay in memory.",
+      "paths": [
+        "test/sql/join/hash_join/hash_join_dominant_partition.test",
+        "test/sql/join/hash_join/mark_join_constant_lists_memory_limit.test"
+      ]
+    },
+    {
       "reason": "Too slow.",
       "paths": [
         "test/optimizer/pushdown/no_mark_to_semi_if_mark_index_is_projected.test",
@@ -38,6 +45,7 @@
         "test/sql/cte/materialized/materialized_cte_parallel_buffered.test",
         "test/sql/cte/materialized/test_cte_hash_join_exchange.test",
         "test/sql/cte/recursive_cte_invariant_build_logging.test",
+        "test/sql/cte/recursive_cte_join_turns_external.test",
         "test/sql/cte/recursive_cte_key_probe.test",
         "test/sql/cte/recursive_cte_logging.test",
         "test/sql/cte/recursive_cte_parallel_union_distinct_sink.test",

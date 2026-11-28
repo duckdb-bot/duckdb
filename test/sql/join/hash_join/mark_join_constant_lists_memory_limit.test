@@ -1,0 +1,70 @@
+# name: test/sql/join/hash_join/mark_join_constant_lists_memory_limit.test
+# description: several MARK joins over large constant lists spill when they do not fit the memory limit together
+# group: [hash_join]
+
+# the memory budgets below assume default sized vectors
+require vector_size 2048
+
+require skip_reload
+
+load {TEST_DIR}/mark_join_constant_lists_memory_limit.db
+
+statement ok
+SET threads = 1;
+
+statement ok
+SET VARIABLE check_activation = NOT current_setting('debug_force_external');
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+# four hash tables of about 8 MB each, which only fit the limit one at a time
+statement ok
+SET memory_limit = '32MB';
+
+query I
+SELECT count(*) FROM range(1000000) t(i)
+WHERE list_contains(range(0, 500000, 2), i) AND list_contains(range(1, 500001, 2), i + 1)
+  AND list_contains(range(2, 500002, 2), i + 2) AND list_contains(range(3, 500003, 2), i + 3);
+----
+250000
+
+statement ok
+CALL disable_logging();
+
+# at least one of the joins went external instead of all of them staying in memory
+query I
+SELECT count(*) FILTER (WHERE event = 'Finalize' AND info['external'] = '1') >= 1
+FROM duckdb_logs_parsed('PhysicalOperator') WHERE class = 'PhysicalHashJoin';
+----
+true
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+# with room for all four, every join stays in memory
+statement ok
+SET memory_limit = '128MB';
+
+query I
+SELECT count(*) FROM range(1000000) t(i)
+WHERE list_contains(range(0, 500000, 2), i) AND list_contains(range(1, 500001, 2), i + 1)
+  AND list_contains(range(2, 500002, 2), i + 2) AND list_contains(range(3, 500003, 2), i + 3);
+----
+250000
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT NOT getvariable('check_activation') OR
+       count(*) FILTER (WHERE event = 'Finalize' AND info['external'] = '1') = 0
+FROM duckdb_logs_parsed('PhysicalOperator') WHERE class = 'PhysicalHashJoin';
+----
+true
+
+statement ok
+RESET memory_limit;

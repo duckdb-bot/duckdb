@@ -352,10 +352,10 @@ public:
 	      max_partition_count(0), probe_side_requirement(0), scanned_data(false) {
 		hash_table = op.InitializeHashTable(context, initial_radix_bits);
 		// Reserve the initial partition buffers before upstream hash tables are finalized.
-		auto minimum_reservation = MinValue(temporary_memory_state->GetMinimumReservation(),
-		                                    GetBuildSpaceRequirement(context, *hash_table, num_threads));
-		temporary_memory_state->SetMinimumReservation(minimum_reservation);
-		temporary_memory_state->SetRemainingSize(minimum_reservation);
+		initial_minimum_reservation = MinValue(temporary_memory_state->GetMinimumReservation(),
+		                                       GetBuildSpaceRequirement(context, *hash_table, num_threads));
+		temporary_memory_state->SetMinimumReservation(initial_minimum_reservation);
+		temporary_memory_state->SetRemainingSize(initial_minimum_reservation);
 		temporary_memory_state->UpdateReservation(context.GetContext());
 
 		// Multiple build producers can change dictionaries after the layout has been published.
@@ -452,6 +452,8 @@ public:
 		                BufferManager::GetBufferManager(context).GetMaxMemory());
 	}
 
+	//! The minimum reservation of the state before the build is known, the manager's guarantee for it
+	idx_t initial_minimum_reservation;
 	//! Whether we are doing an external + some sizes
 	bool external;
 	idx_t total_size;
@@ -823,6 +825,19 @@ static bool KeysAreSkewed(const HashJoinGlobalSinkState &sink,
 	    sink.max_partition_size + sink.hash_table->PointerTableSize(sink.max_partition_count);
 	const auto skew = static_cast<double>(max_partition_ht_size) / static_cast<double>(sink.total_size);
 	return skew > threshold;
+}
+
+//! Estimates whether an external join holds less in memory than the in-memory join. It builds its largest partition
+//! whole with a pointer table, so that has to be below the whole size and another partition has to hold rows.
+static bool ExternalJoinCanSaveMemory(const HashJoinGlobalSinkState &sink) {
+	idx_t build_count = 0;
+	for (auto &local_ht : sink.local_hash_tables) {
+		build_count += local_ht.get().GetSinkCollection().Count();
+	}
+	const auto &ht = *sink.hash_table;
+	const auto max_partition_ht_size =
+	    sink.max_partition_size + ht.PointerTableSize(sink.max_partition_count) + ht.GetRetainedDictionarySize();
+	return sink.max_partition_count < build_count && max_partition_ht_size < sink.total_size;
 }
 
 //! If we have only one thread, always finalize single-threaded. Otherwise, we finalize in parallel if we
@@ -1360,10 +1375,11 @@ public:
 		sink.probe_side_requirement =
 		    GetPartitioningSpaceRequirement(sink.context, op.types, sink.hash_table->GetRadixBits(), sink.num_threads);
 
-		sink.temporary_memory_state->SetMinimumReservation(
-		    sink.max_partition_size + sink.hash_table->PointerTableSize(sink.max_partition_count) +
-		    sink.probe_side_requirement + sink.hash_table->GetRetainedDictionarySize());
-		sink.temporary_memory_state->SetRemainingSize(sink.total_size);
+		const auto minimum_reservation = sink.max_partition_size +
+		                                 sink.hash_table->PointerTableSize(sink.max_partition_count) +
+		                                 sink.probe_side_requirement + sink.hash_table->GetRetainedDictionarySize();
+		sink.temporary_memory_state->SetMinimumReservation(minimum_reservation);
+		sink.temporary_memory_state->SetRemainingSize(MaxValue(sink.total_size, minimum_reservation));
 		sink.temporary_memory_state->UpdateReservation(executor.context.GetContext());
 
 		FinalizeExternalRuntimeFilters(sink.context, op, sink);
@@ -1382,6 +1398,14 @@ SinkFinalizeType PhysicalHashJoin::Finalize(Pipeline &pipeline, Event &event, Cl
 	// the filter covers the whole build side once Sink is done
 	ht.SealBloomFilters();
 
+	// The minimum reservation is what an external join needs, its largest partition and the probe side's partition
+	// buffers. A hash table below that gets its whole size whatever the other operators hold, so several such joins
+	// can exceed the memory limit together. Where an external join can save memory, ask with the initial minimum
+	const auto external_minimum_reservation = sink.temporary_memory_state->GetMinimumReservation();
+	if (external_minimum_reservation >= sink.total_size && ExternalJoinCanSaveMemory(sink)) {
+		sink.temporary_memory_state->SetMinimumReservation(
+		    MaxValue(sink.initial_minimum_reservation, sink.temporary_memory_state->GetReservation()));
+	}
 	sink.temporary_memory_state->UpdateReservation(context.GetContext());
 	sink.external = sink.GetMaxInMemoryHTSize() < sink.total_size;
 	if (sink.external) {
@@ -1405,6 +1429,10 @@ SinkFinalizeType PhysicalHashJoin::Finalize(Pipeline &pipeline, Event &event, Cl
 			sink.external = false;
 		}
 	}
+	if (sink.external) {
+		// back to what the external join needs
+		sink.temporary_memory_state->SetMinimumReservation(external_minimum_reservation);
+	}
 	DUCKDB_LOG(context, PhysicalOperatorLogType, *this, "PhysicalHashJoin", "Finalize",
 	           {{"external", to_string(sink.external)},
 	            {"build_size", to_string(sink.total_size)},
@@ -1417,7 +1445,10 @@ SinkFinalizeType PhysicalHashJoin::Finalize(Pipeline &pipeline, Event &event, Cl
 		sink.preserve_build_for_reuse = false;
 		sink.total_size = ht.GetTotalSize(sink.local_hash_tables, sink.max_partition_size, sink.max_partition_count,
 		                                  JoinHashTable::LookupSizing::HASH_ONLY);
-		sink.temporary_memory_state->SetRemainingSizeAndUpdateReservation(context.GetContext(), sink.total_size);
+		// an external join needs its minimum even when the whole hash table is smaller, otherwise the manager grants
+		// only the hash table and its largest partition may not fit next to the probe side's buffers
+		sink.temporary_memory_state->SetRemainingSizeAndUpdateReservation(
+		    context.GetContext(), MaxValue(sink.total_size, external_minimum_reservation));
 
 		const auto max_partition_ht_size = sink.max_partition_size + ht.PointerTableSize(sink.max_partition_count);
 		const auto very_very_skewed = // No point in repartitioning if it's this skewed
@@ -1615,9 +1646,12 @@ OperatorResultType PhysicalHashJoin::ExecuteInternal(ExecutionContext &context, 
 	}
 
 	if (sink.external && !state.initialized) {
-		// some initialization for external hash join
-		if (!sink.probe_spill) {
-			sink.InitializeProbeSpill();
+		// some initialization for external hash join, the probe spill is created under the sink's lock once
+		sink.InitializeProbeSpill();
+		if (state.spill_chunk.ColumnCount() == 0) {
+			// the state was created while the join was in memory, a join reused by a recursive iteration spills now
+			auto &allocator = BufferAllocator::Get(context.client);
+			state.spill_chunk.Initialize(allocator, sink.probe_types, vector<bool>(sink.probe_types.size(), false));
 		}
 		state.spill_state = sink.probe_spill->RegisterThread();
 		state.initialized = true;

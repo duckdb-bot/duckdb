@@ -22,6 +22,12 @@
       ]
     },
     {
+      "reason": "A constant NULL frame offset is an error, the NULL value of a parameter is not",
+      "paths": [
+        "test/sql/window/window_range_null_constant_offset.test"
+      ]
+    },
+    {
       "reason": "Different error message",
       "paths": [
         "test/sql/cast/cast_error_location.test",

@@ -7,6 +7,7 @@
 #include "duckdb/main/database.hpp"
 #include "duckdb/function/aggregate/distributive_functions.hpp"
 #include "duckdb/parser/expression/case_expression.hpp"
+#include "duckdb/parser/expression/cast_expression.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/parser/expression/function_expression.hpp"
 #include "duckdb/parser/expression/window_expression.hpp"
@@ -52,6 +53,24 @@ static bool IsRangeType(const LogicalType &type) {
 	}
 }
 
+//! Whether the expression is written as a NULL constant, with or without casts around it
+static bool IsNullConstant(const ParsedExpression &expr) {
+	reference<const ParsedExpression> current = expr;
+	while (current.get().GetExpressionClass() == ExpressionClass::CAST) {
+		current = current.get().Cast<CastExpression>().Child();
+	}
+	return current.get().GetExpressionClass() == ExpressionClass::CONSTANT &&
+	       current.get().Cast<ConstantExpression>().GetLiteral().IsNull();
+}
+
+//! A RANGE offset written as a NULL constant is rejected, any other offset places a NULL at the peers of the row
+static void VerifyRangeOffset(const Expression &offset, bool is_null_constant) {
+	if (offset.GetReturnType() == LogicalType::SQLNULL || is_null_constant) {
+		QueryErrorContext error_context(offset.GetQueryLocation());
+		throw BinderException(error_context, "Window RANGE expressions cannot be NULL");
+	}
+}
+
 static LogicalType BindRangeExpression(ClientContext &context, const string &name, unique_ptr<Expression> &bound,
                                        unique_ptr<Expression> &bound_order,
                                        optional_ptr<unique_ptr<WindowRangeBoundary>> origin = nullptr) {
@@ -62,9 +81,6 @@ static LogicalType BindRangeExpression(ClientContext &context, const string &nam
 
 	D_ASSERT(bound);
 	QueryErrorContext error_context(bound->GetQueryLocation());
-	if (bound->GetReturnType() == LogicalType::SQLNULL) {
-		throw BinderException(error_context, "Window RANGE expressions cannot be NULL");
-	}
 	// the function binder casts the operands and folds a constant offset to its value. The origin recognizes a
 	// constant offset in the bound call by value, so keep a copy of it - any other offset stays in place
 	unique_ptr<Expression> offset_copy = origin && bound->IsFoldable() ? bound->Copy() : nullptr;
@@ -211,6 +227,8 @@ BindResult BaseSelectBinder::BindWindowExpression(WindowExpression &window, idx_
 		bound_orders.push_back(std::move(bound_order));
 	}
 	auto bound_filter = BindChild(window.FilterMutable(), depth, error);
+	const bool start_is_null_constant = window.StartExpr() && IsNullConstant(*window.StartExpr());
+	const bool end_is_null_constant = window.EndExpr() && IsNullConstant(*window.EndExpr());
 	auto bound_start = BindChild(window.StartExprMutable(), depth, error);
 	auto bound_end = BindChild(window.EndExprMutable(), depth, error);
 
@@ -357,6 +375,9 @@ BindResult BaseSelectBinder::BindWindowExpression(WindowExpression &window, idx_
 	auto &config = DBConfig::GetConfig(context);
 	auto range_sense = OrderType::INVALID;
 	LogicalType start_type = LogicalType::BIGINT;
+	if (range_start) {
+		VerifyRangeOffset(*bound_start, start_is_null_constant);
+	}
 	if (window.WindowStart() == WindowBoundary::EXPR_PRECEDING_RANGE) {
 		D_ASSERT(window.OrderBy().size() == 1);
 		range_sense = config.ResolveOrder(context, window.OrderByMutable()[0].type);
@@ -373,6 +394,9 @@ BindResult BaseSelectBinder::BindWindowExpression(WindowExpression &window, idx_
 	}
 
 	LogicalType end_type = LogicalType::BIGINT;
+	if (range_end) {
+		VerifyRangeOffset(*bound_end, end_is_null_constant);
+	}
 	if (window.WindowEnd() == WindowBoundary::EXPR_PRECEDING_RANGE) {
 		D_ASSERT(window.OrderBy().size() == 1);
 		range_sense = config.ResolveOrder(context, window.OrderByMutable()[0].type);

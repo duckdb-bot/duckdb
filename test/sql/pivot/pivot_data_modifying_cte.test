@@ -1,0 +1,174 @@
+# name: test/sql/pivot/pivot_data_modifying_cte.test
+# description: A PIVOT that extracts its values from the data cannot be used with a CTE that writes, which would run once per query of pivot values and once more
+# group: [pivot]
+
+statement ok
+CREATE TABLE t(a INTEGER);
+
+statement error
+WITH ins AS (INSERT INTO t VALUES (7) RETURNING a) PIVOT (SELECT 1 AS a) ON a;
+----
+<REGEX>:Parser Error.*cannot be used with a CTE that contains a data-modifying or COPY statement.*ON a IN.*
+
+# the source reads the rows that the CTE returns
+statement error
+WITH ins AS (INSERT INTO t VALUES (7) RETURNING a) PIVOT ins ON a USING count(*);
+----
+cannot be used with a CTE that contains a data-modifying or COPY statement
+
+# every extracted column has its own query of pivot values
+statement error
+WITH ins AS (INSERT INTO t VALUES (7) RETURNING a) PIVOT (SELECT 1 AS a, 2 AS b) ON a, b;
+----
+cannot be used with a CTE that contains a data-modifying or COPY statement
+
+# the PIVOT is in a subquery, a later CTE or a nested WITH clause
+statement error
+WITH ins AS (INSERT INTO t VALUES (7) RETURNING a) SELECT * FROM (PIVOT (SELECT 1 AS a) ON a);
+----
+cannot be used with a CTE that contains a data-modifying or COPY statement
+
+statement error
+WITH ins AS (INSERT INTO t VALUES (7) RETURNING a), p AS (PIVOT (SELECT 1 AS a) ON a) SELECT * FROM p;
+----
+cannot be used with a CTE that contains a data-modifying or COPY statement
+
+statement error
+WITH ins AS (INSERT INTO t VALUES (7) RETURNING a) SELECT * FROM (WITH s AS (SELECT 1 AS a) PIVOT s ON a);
+----
+cannot be used with a CTE that contains a data-modifying or COPY statement
+
+# other statements that hold the query
+statement error
+CREATE TABLE created AS WITH ins AS (INSERT INTO t VALUES (7) RETURNING a) PIVOT (SELECT 1 AS a) ON a;
+----
+cannot be used with a CTE that contains a data-modifying or COPY statement
+
+statement error
+COPY (WITH ins AS (INSERT INTO t VALUES (7) RETURNING a) PIVOT (SELECT 1 AS a) ON a) TO '{TEST_DIR}/pivot_data_modifying_cte.csv';
+----
+cannot be used with a CTE that contains a data-modifying or COPY statement
+
+# EXPLAIN and PREPARE do not write either
+statement error
+EXPLAIN WITH ins AS (INSERT INTO t VALUES (7) RETURNING a) PIVOT (SELECT 1 AS a) ON a;
+----
+cannot be used with a CTE that contains a data-modifying or COPY statement
+
+statement error
+PREPARE p AS WITH ins AS (INSERT INTO t VALUES (7) RETURNING a) PIVOT (SELECT 1 AS a) ON a;
+----
+cannot be used with a CTE that contains a data-modifying or COPY statement
+
+query I
+SELECT count(*) FROM t
+----
+0
+
+# UPDATE, DELETE and COPY
+statement ok
+INSERT INTO t VALUES (10), (20);
+
+statement error
+WITH upd AS (UPDATE t SET a = a + 1 RETURNING a) PIVOT (SELECT 1 AS a) ON a;
+----
+cannot be used with a CTE that contains a data-modifying or COPY statement
+
+statement error
+WITH del AS (DELETE FROM t WHERE a = (SELECT min(a) FROM t) RETURNING a) PIVOT (SELECT 1 AS a) ON a;
+----
+cannot be used with a CTE that contains a data-modifying or COPY statement
+
+statement error
+WITH c AS (COPY (SELECT 42 AS v) TO '{TEST_DIR}/pivot_data_modifying_cte_copy' (FORMAT CSV, PER_THREAD_OUTPUT, APPEND))
+PIVOT (SELECT 1 AS a) ON a;
+----
+cannot be used with a CTE that contains a data-modifying or COPY statement
+
+# a subquery of pivot values runs as a statement of its own, so it cannot hold such a CTE
+statement error
+PIVOT (SELECT 1 AS a) ON a IN (WITH ins AS (INSERT INTO t VALUES (7) RETURNING a) SELECT 1);
+----
+WITH clause containing a data-modifying statement must be at the top level
+
+statement error
+EXPLAIN PIVOT (SELECT 1 AS a) ON a IN (WITH ins AS (INSERT INTO t VALUES (7) RETURNING a) SELECT 1);
+----
+WITH clause containing a data-modifying statement must be at the top level
+
+statement error
+PREPARE p AS PIVOT (SELECT 1 AS a) ON a IN (WITH ins AS (INSERT INTO t VALUES (7) RETURNING a) SELECT 1);
+----
+WITH clause containing a data-modifying statement must be at the top level
+
+statement error
+EXPLAIN PIVOT (SELECT 1 AS a) ON a IN (WITH c AS (COPY (SELECT 42 AS v) TO '{TEST_DIR}/pivot_data_modifying_cte_in.csv') SELECT 1);
+----
+WITH clause containing a COPY statement must be at the top level
+
+query I
+SELECT a FROM t ORDER BY a
+----
+10
+20
+
+query II
+SELECT (SELECT count(*) FROM glob('{TEST_DIR}/pivot_data_modifying_cte*')),
+	(SELECT count(*) FROM glob('{TEST_DIR}/pivot_data_modifying_cte_copy/*'))
+----
+0	0
+
+statement ok
+DELETE FROM t;
+
+# with listed pivot values the CTE runs once
+query I
+WITH ins AS (INSERT INTO t VALUES (7) RETURNING a) PIVOT (SELECT 1 AS a) ON a IN (1);
+----
+1
+
+query I
+WITH ins AS (INSERT INTO t VALUES (7) RETURNING a) PIVOT ins ON a IN (7);
+----
+1
+
+# as it does with a subquery of pivot values, which gets no copy of the CTEs
+query I
+WITH ins AS (INSERT INTO t VALUES (7) RETURNING a) PIVOT (SELECT 1 AS a) ON a IN (SELECT 1);
+----
+1
+
+# a PIVOT in an earlier CTE does not see the CTE that writes
+query I
+WITH p AS (PIVOT (SELECT 1 AS a) ON a), ins AS (INSERT INTO t VALUES (7) RETURNING a) SELECT * FROM p;
+----
+1
+
+# a PIVOT without extracted values, and UNPIVOT
+query II
+WITH ins AS (INSERT INTO t VALUES (7) RETURNING a) PIVOT (SELECT 1 AS a) USING count(*) GROUP BY a;
+----
+1	1
+
+query II
+WITH ins AS (INSERT INTO t VALUES (7) RETURNING a) UNPIVOT (SELECT 1 AS a, 2 AS b) ON a, b;
+----
+a	1
+b	2
+
+# a CTE that reads shadows the one that writes, which is not copied then
+query I
+WITH ins AS (INSERT INTO t VALUES (7) RETURNING a) SELECT * FROM (WITH ins AS (SELECT 1 AS a) PIVOT ins ON a);
+----
+1
+
+query I
+SELECT count(*) FROM t
+----
+7
+
+# a CTE that only reads is copied as before
+query I
+WITH src AS (SELECT a, count(*) AS n FROM t GROUP BY a) PIVOT src ON a USING sum(n);
+----
+7

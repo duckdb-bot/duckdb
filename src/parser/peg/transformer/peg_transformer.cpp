@@ -415,6 +415,16 @@ unique_ptr<SQLStatement> PEGTransformer::GenerateCreateEnumStmt(unique_ptr<Creat
 	unique_ptr<QueryNode> subselect;
 	if (!entry->subquery) {
 		auto select_node = std::move(entry->base);
+		for (auto &cte : select_node->cte_map.map) {
+			if (QueryNode::HasSideEffects(cte.second->query_node->type)) {
+				// this query runs before the statement itself, which would run the CTE again
+				throw ParserException(
+				    "PIVOT statements with pivot elements extracted from the data cannot be used with a CTE that "
+				    "contains a data-modifying or COPY statement.\nIn order to use PIVOT with such a CTE the PIVOT "
+				    "values must be manually specified, e.g.:\nPIVOT ... ON %s IN (val1, val2, ...)",
+				    entry->column->ToString());
+			}
+		}
 		auto columnref = entry->column->Copy();
 		auto cast = make_uniq<CastExpression>(LogicalType::VARCHAR, std::move(columnref));
 		select_node->select_list.push_back(std::move(cast));
@@ -432,6 +442,16 @@ unique_ptr<SQLStatement> PEGTransformer::GenerateCreateEnumStmt(unique_ptr<Creat
 		subselect = std::move(select_node);
 	} else {
 		subselect = std::move(entry->subquery);
+		// the subquery becomes a statement of its own, whose WITH clause the binder takes for the top level
+		for (auto &cte : subselect->cte_map.map) {
+			auto cte_type = cte.second->query_node->type;
+			if (cte_type == QueryNodeType::COPY_QUERY_NODE) {
+				throw ParserException("WITH clause containing a COPY statement must be at the top level");
+			}
+			if (QueryNode::HasSideEffects(cte_type)) {
+				throw ParserException("WITH clause containing a data-modifying statement must be at the top level");
+			}
+		}
 	}
 
 	auto select = make_uniq<SelectStatement>();

@@ -78,6 +78,8 @@ public:
 	static unique_ptr<QueryNode> Deserialize(Deserializer &deserializer);
 	//! Throws a SerializationException if a deserialized query node does not have a valid shape
 	static void VerifyDeserialized(const unique_ptr<QueryNode> &node);
+	//! Whether a query node of this type is a DML or COPY statement, which as a CTE runs even when nothing reads it
+	static bool HasSideEffects(QueryNodeType type);
 
 protected:
 	//! Copy base QueryNode properties from another expression to this one,

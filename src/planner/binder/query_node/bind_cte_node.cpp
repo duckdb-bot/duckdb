@@ -28,17 +28,13 @@ static bool IsDMLQueryNode(QueryNodeType t) {
 	       t == QueryNodeType::DELETE_QUERY_NODE || t == QueryNodeType::MERGE_QUERY_NODE;
 }
 
-static bool IsSideEffectingQueryNode(QueryNodeType type) {
-	return IsDMLQueryNode(type) || type == QueryNodeType::COPY_QUERY_NODE;
-}
-
 BoundStatement Binder::BindNode(QueryNode &node) {
 	reference<Binder> current_binder(*this);
 	vector<BoundCTEData> bound_ctes;
 	idx_t dml_cte_count = 0;
 	for (auto &cte : node.cte_map.map) {
 		auto cte_type = cte.second->query_node->type;
-		if (IsSideEffectingQueryNode(cte_type)) {
+		if (QueryNode::HasSideEffects(cte_type)) {
 			if (parent && !cte.second->is_trigger_generated) {
 				if (cte_type == QueryNodeType::COPY_QUERY_NODE) {
 					throw BinderException("WITH clause containing a COPY statement must be at the top level");
@@ -190,7 +186,7 @@ BoundCTEData Binder::PrepareCTE(const Identifier &ctename, CommonTableExpression
 BoundStatement Binder::FinishCTE(BoundCTEData &bound_cte, BoundStatement child) {
 	if (!bound_cte.cte_bind_state->IsBound()) {
 		auto node_type = bound_cte.cte_bind_state->cte_def.type;
-		bool has_side_effects = IsSideEffectingQueryNode(node_type);
+		bool has_side_effects = QueryNode::HasSideEffects(node_type);
 		if (has_side_effects) {
 			// Side-effecting CTEs always execute even if not referenced - force bind now
 			auto dummy_binding =

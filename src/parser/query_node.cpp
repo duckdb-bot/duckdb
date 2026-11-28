@@ -160,6 +160,19 @@ bool QueryNode::Equals(const QueryNode *other) const {
 	return true;
 }
 
+bool QueryNode::HasSideEffects(QueryNodeType type) {
+	switch (type) {
+	case QueryNodeType::INSERT_QUERY_NODE:
+	case QueryNodeType::UPDATE_QUERY_NODE:
+	case QueryNodeType::DELETE_QUERY_NODE:
+	case QueryNodeType::MERGE_QUERY_NODE:
+	case QueryNodeType::COPY_QUERY_NODE:
+		return true;
+	default:
+		return false;
+	}
+}
+
 void QueryNode::CopyProperties(QueryNode &other) const {
 	for (auto &modifier : modifiers) {
 		other.modifiers.push_back(modifier->Copy());

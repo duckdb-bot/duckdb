@@ -2108,7 +2108,8 @@ void StringValueScanner::FinishBoundaryScan(const bool moved) {
 	const auto chunk_col_id_before = result.chunk_col_id;
 	if (result.current_errors.HandleErrors(result)) {
 		result.InvalidateUnwrittenColumns(chunk_col_id_before);
-		result.StoreLinePosition();
+		// the position is not stored here, before the end of the file it is still that of the row in front
+		result.lines_read_per_row[static_cast<idx_t>(result.number_of_rows)] = lines_read;
 		result.number_of_rows++;
 	}
 	if (!iterator.done) {

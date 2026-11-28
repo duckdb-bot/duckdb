@@ -161,3 +161,23 @@ query IT
 SELECT line, error_type FROM rejects_empty;
 ----
 3	CAST
+
+# a row whose quoted value crosses the end of a scan range, the bad row starts at byte 60 and ends behind byte 128
+statement ok
+COPY (SELECT line FROM (SELECT 0 AS i, 'a,b' AS line UNION ALL SELECT 1, '11111111-2222-3333-4444-555555555555,' || repeat('y', 18) UNION ALL SELECT 2, 'bad,"' || repeat('x', 70) || '"' UNION ALL SELECT 3 + i, '11111111-2222-3333-4444-555555555555,ok' FROM range(4) t(i)) ORDER BY i) TO '{TEST_DIR}/quoted_value_across_ranges.csv' (HEADER false, QUOTE '', DELIMITER '|');
+
+query I
+SELECT count(a) FROM read_csv('{TEST_DIR}/quoted_value_across_ranges.csv', auto_detect = false, header = true, columns = {'a': 'UUID', 'b': 'VARCHAR'}, buffer_size = 128, max_line_size = 80, strict_mode = true, store_rejects = true, rejects_table = 'rejects_ranges', rejects_scan = 'scan_ranges');
+----
+5
+
+# its cast reject has the line of the row, and not the text of the row in front of it
+query I
+SELECT line FROM rejects_ranges WHERE error_type = 'CAST';
+----
+3
+
+query I
+SELECT count(*) FROM rejects_ranges WHERE error_type = 'CAST' AND csv_line LIKE '11111111%';
+----
+0

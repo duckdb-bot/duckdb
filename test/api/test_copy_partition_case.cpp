@@ -54,7 +54,7 @@ enum class CaseMode { PRESERVE, LOWERCASE, FOLD, NO_IDENTITY, STATS_THROW, NO_UP
 
 //! A file system under "casetest://" that ignores case, by uppercasing names (and keeping or lowercasing them) or by
 //! folding them, or that tells case apart but reports no directory identities. Its operations run one at a time.
-class CaseTestFileSystem : public FileSystem {
+class CaseTestFileSystem : public BaseFileSystem {
 public:
 	CaseTestFileSystem(string root_p, CaseMode mode_p)
 	    : root(std::move(root_p)), mode(mode_p), local(make_uniq<LocalFileSystem>()) {
@@ -137,17 +137,23 @@ private:
 		for (auto &component : StringUtil::Split(path.substr(string(PREFIX).size()), "/")) {
 			auto name = mode == CaseMode::LOWERCASE ? Lowercase(component) : component;
 			if (mode == CaseMode::PRESERVE || mode == CaseMode::LOWERCASE) {
-				local->ListFiles(result, [&](const string &entry, bool) {
-					if (Uppercase(entry) == Uppercase(component)) {
-						name = entry;
-					}
-				});
+				local->ListFiles(
+				    result,
+				    [&](const string &entry, bool) {
+					    if (Uppercase(entry) == Uppercase(component)) {
+						    name = entry;
+					    }
+				    },
+				    nullptr);
 			} else if (mode == CaseMode::FOLD) {
-				local->ListFiles(result, [&](const string &entry, bool) {
-					if (Fold(entry) == Fold(component)) {
-						name = entry;
-					}
-				});
+				local->ListFiles(
+				    result,
+				    [&](const string &entry, bool) {
+					    if (Fold(entry) == Fold(component)) {
+						    name = entry;
+					    }
+				    },
+				    nullptr);
 			}
 			result = local->JoinPath(result, name);
 		}
@@ -158,7 +164,7 @@ private:
 	mutex lock;
 	string root;
 	CaseMode mode;
-	unique_ptr<FileSystem> local;
+	unique_ptr<BaseFileSystem> local;
 };
 
 void RegisterCaseTestFileSystem(Connection &con, const string &root, CaseMode mode) {

@@ -471,13 +471,20 @@ class TestExtensionIntegrationTest(unittest.TestCase):
                 "variable_without_skip.test",
                 "statement ok\nSET VARIABLE v = 'x';\n\nset variable v <variable:v>\n\n" + query,
             ),
+            # a variable that was set before the skip keeps its value for the directives that are read later
+            self.create_test(
+                "variable_set_before_skip.test",
+                "statement ok\nSET VARIABLE v = 'fixture.gz';\n\n"
+                + skipping_statement
+                + "set variable v <variable:v>\n\nunzip {v}\n",
+            ),
         ]
         database = self.run_selected(test_ids)
         rows, error = run_tests.read_test_state(protocol_config(unittest_bin=self.binary), database, os.environ.copy())
         self.assertIsNone(error)
         self.assertEqual(
             {row["test_id"]: row["status"] for row in rows},
-            {test_ids[0]: "skipped", test_ids[1]: "skipped", test_ids[2]: "passed"},
+            {test_ids[0]: "skipped", test_ids[1]: "skipped", test_ids[2]: "passed", test_ids[3]: "skipped"},
         )
 
     def test_reproducer_runs_with_an_installed_cli_from_another_directory(self):

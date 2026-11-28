@@ -1204,11 +1204,17 @@ void SQLLogicTestRunner::ExecuteScript(SQLLogicParser &parser, const string &scr
 				}
 				auto &var_name = token.parameters[1];
 				auto var_value = token.parameters[2];
-				// a test that was skipped has not run the statement that sets the variable
-				if (IsVariableReplacement(var_value) && !finished_processing_file) {
+				if (IsVariableReplacement(var_value)) {
 					string variable_name;
-					auto val = GetVariableReplacement(var_value, variable_name);
-					var_value = val.ToString();
+					try {
+						auto val = GetVariableReplacement(var_value, variable_name);
+						var_value = val.ToString();
+					} catch (std::exception &) {
+						// a test that was skipped may not have run the statement that sets the variable
+						if (!finished_processing_file) {
+							throw;
+						}
+					}
 				}
 				environment_variables[var_name] = var_value;
 			} else if (token.parameters[0] == "query_timeout") {

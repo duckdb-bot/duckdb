@@ -454,7 +454,8 @@ public:
 		return *file_handle;
 	}
 
-	static unique_ptr<BaseStatistics> ReadStatistics(ClientContext &context, ParquetOptions parquet_options,
+	static unique_ptr<BaseStatistics> ReadStatistics(ClientContext &context, OpenFileInfo file,
+	                                                 ParquetOptions parquet_options,
 	                                                 shared_ptr<ParquetFileMetadataCache> metadata,
 	                                                 const Identifier &name);
 	static unique_ptr<BaseStatistics> ReadStatistics(ClientContext &context, const ParquetUnionData &union_data,
@@ -475,18 +476,29 @@ public:
 	void GetPartitionStats(vector<PartitionStatistics> &result);
 	//! Construct a reader over the metadata of a file without opening the file - it can describe the schema and the
 	//! statistics of the file, but not read it
-	static shared_ptr<ParquetReader> CreateMetadataReader(ClientContext &context, ParquetOptions parquet_options,
+	static shared_ptr<ParquetReader> CreateMetadataReader(ClientContext &context, OpenFileInfo file,
+	                                                      ParquetOptions parquet_options,
 	                                                      shared_ptr<ParquetFileMetadataCache> metadata);
-	static void GetPartitionStats(const duckdb_parquet::FileMetaData &metadata, vector<PartitionStatistics> &result,
+	//! The row offset of a row group in the file, the row counts up to and including the row group checked to lie
+	//! within the BIGINT range, with the file named in the error when it is known
+	static idx_t GetRowGroupOffset(const duckdb_parquet::FileMetaData &metadata, idx_t group_idx,
+	                               const char *file_name);
+	idx_t GetRowGroupOffset(idx_t group_idx) const;
+	static void GetPartitionStats(const duckdb_parquet::FileMetaData &metadata, const string &file_name,
+	                              vector<PartitionStatistics> &result,
 	                              optional_ptr<ParquetColumnSchema> root_schema = nullptr,
 	                              optional_ptr<ParquetOptions> parquet_options = nullptr);
+	//! Rejects a row group whose row count the file cannot hold, a negative count, a column chunk without metadata
+	//! or one with fewer values than the row group has rows
+	static void ValidateRowGroup(const duckdb_parquet::FileMetaData &metadata, idx_t row_group_idx,
+	                             const string &file_name);
 	static bool MetadataCacheEnabled(ClientContext &context);
 	static shared_ptr<ParquetFileMetadataCache> GetMetadataCacheEntry(ClientContext &context, const OpenFileInfo &file);
 
 private:
-	//! Construct a parquet reader but **do not** open a file, used in ReadStatistics only
-	ParquetReader(ClientContext &context, ParquetOptions parquet_options,
-	              shared_ptr<ParquetFileMetadataCache> metadata);
+	//! Construct a parquet reader but **do not** open the file, used for the statistics of the file only
+	ParquetReader(ClientContext &context, ParquetOptions parquet_options, shared_ptr<ParquetFileMetadataCache> metadata,
+	              OpenFileInfo file);
 
 	void InitializeSchema(ClientContext &context);
 	//! Parse the schema of the file

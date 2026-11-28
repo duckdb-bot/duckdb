@@ -538,7 +538,10 @@ void StatisticsPropagator::TryExecuteAggregates(LogicalAggregate &aggr, unique_p
 				// we cannot get an exact count
 				return;
 			}
-			count += stats.count;
+			if (!TryAddOperator::Operation(count, stats.count, count) || count > NumericLimits<int64_t>::Maximum()) {
+				// the counts do not fit a BIGINT, leave the count to the scan
+				return;
+			}
 		}
 		for (const auto count_star_idx : count_star_idxs) {
 			auto count_result = make_uniq<BoundConstantExpression>(Value::BIGINT(NumericCast<int64_t>(count)));

@@ -10,6 +10,12 @@
       ]
     },
     {
+      "reason": "The plan of the count is rewritten, so it no longer shows that the statistics answer it.",
+      "paths": [
+        "test/parquet/corrupt/row_group_bigint_max_rows.test"
+      ]
+    },
+    {
       "reason": "Explain/profiling output is different due to verification",
       "paths": [
         "test/optimizer/aggregate_reuse.test",

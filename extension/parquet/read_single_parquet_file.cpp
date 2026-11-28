@@ -66,7 +66,7 @@ struct ReadSingleParquetFileData : public TableFunctionData {
 	//! it holds, so it is kept for as long as this bind data is
 	ParquetReader &GetMetadataReader(ClientContext &context) const {
 		CallOnce(metadata_reader_initialized,
-		         [&] { metadata_reader = ParquetReader::CreateMetadataReader(context, options, metadata); });
+		         [&] { metadata_reader = ParquetReader::CreateMetadataReader(context, file, options, metadata); });
 		return *metadata_reader;
 	}
 

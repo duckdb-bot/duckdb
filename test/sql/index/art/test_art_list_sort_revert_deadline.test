@@ -95,6 +95,10 @@ SELECT count(*) FROM t;
 statement ok
 INSERT INTO t VALUES (1000000, [1000001, 1000000]);
 
+# the key of the row that failed is free as well
+statement ok
+INSERT INTO t VALUES (-2, [-1, -2]);
+
 statement error
 INSERT INTO t VALUES (-1, [2001, 2000]);
 ----

@@ -96,10 +96,11 @@ duckdb::unique_ptr<DBConfig> TornWALConfig(bool abort_on_wal_failure) {
 duckdb::unique_ptr<QueryResult> AttachWithAllowedPaths(Connection &con, const string &database_path,
                                                        const duckdb::vector<string> &allowed_paths,
                                                        const string &access_mode) {
-	auto path_list = StringUtil::Join(allowed_paths, ", ", [](const string &path) { return "'" + path + "'"; });
+	auto path_list =
+	    StringUtil::Join(allowed_paths, ", ", [](const string &path) { return Value(path).ToSQLString(); });
 	REQUIRE_NO_FAIL(con.Query("SET allowed_paths=[" + path_list + "]"));
 	REQUIRE_NO_FAIL(con.Query("SET enable_external_access=false"));
-	return con.Query("ATTACH '" + database_path + "' AS torn (" + access_mode + ")");
+	return con.Query("ATTACH " + Value(database_path).ToSQLString() + " AS torn (" + access_mode + ")");
 }
 
 } // namespace
@@ -256,12 +257,14 @@ TEST_CASE("A damaged WAL_FLUSH drops its transaction and the next one", "[storag
 	auto ends = WriteTransactions(database_path, *config);
 	// damage the WAL_FLUSH of the second transaction, the flush of the third one is the only one after it
 	DamageBytes(wal_path, ends[2] - 1, 1);
-	DuckDB db(database_path, config.get());
-	Connection con(db);
-	auto result = con.Query("SELECT k, count(*) FROM t GROUP BY k ORDER BY k");
-	REQUIRE(CHECK_COLUMN(result, 0, {1}));
-	REQUIRE(CHECK_COLUMN(result, 1, {1000}));
-	REQUIRE(result->RowCount() == 1);
+	{
+		DuckDB db(database_path, config.get());
+		Connection con(db);
+		auto result = con.Query("SELECT k, count(*) FROM t GROUP BY k ORDER BY k");
+		REQUIRE(CHECK_COLUMN(result, 0, {1}));
+		REQUIRE(CHECK_COLUMN(result, 1, {1000}));
+		REQUIRE(result->RowCount() == 1);
+	}
 	DeleteDatabase(database_path);
 }
 

@@ -20,6 +20,12 @@ EXPLAIN SELECT count(*) FROM read_parquet('{DATA_DIR}/parquet-testing/corrupt/ro
 ----
 physical_plan	<!REGEX>:.*READ_PARQUET.*
 
+# the plan as SQL holds the count that the statistics give
+query II
+EXPLAIN (SQL) SELECT count(*) FROM read_parquet('{DATA_DIR}/parquet-testing/corrupt/row_group_bigint_max_rows.parquet');
+----
+sql	<REGEX>:.*VALUES.*9223372036854775807.*
+
 # the counts of two such files do not fit a BIGINT, the count stays with the scan, it used to be an internal error
 query II
 EXPLAIN SELECT count(*) FROM read_parquet(['{DATA_DIR}/parquet-testing/corrupt/row_group_bigint_max_rows.parquet', '{DATA_DIR}/parquet-testing/corrupt/row_group_bigint_max_rows.parquet']);

@@ -1,0 +1,40 @@
+# name: test/sql/copy/csv/csv_cast_error_projected_column.test
+# description: The cast error of a projected column names that column, also for a type that is converted after parsing
+# group: [csv]
+
+require skip_reload
+
+statement ok
+COPY (SELECT * FROM (VALUES (1, 'nope', 2), (3, 'nada', 4)) t(a, b, c)) TO '{TEST_DIR}/csv_cast_error_projected_column.csv' (HEADER false);
+
+# a UUID is read as text and converted after the row is parsed
+statement error
+SELECT b FROM read_csv('{TEST_DIR}/csv_cast_error_projected_column.csv', header = false, names = ['a', 'b', 'c'], types = {'b': 'UUID'});
+----
+Error when converting column "b". Could not convert string "nope" to 'UUID'
+
+# the hint is the one of that column too
+statement error
+SELECT b FROM read_csv('{TEST_DIR}/csv_cast_error_projected_column.csv', header = false, names = ['a', 'b', 'c'], types = {'b': 'UUID'});
+----
+This type was either manually set or derived from an existing table. Select a different type to correctly parse this column.
+
+statement error
+SELECT c, b FROM read_csv('{TEST_DIR}/csv_cast_error_projected_column.csv', header = false, names = ['a', 'b', 'c'], types = {'b': 'UUID'});
+----
+Error when converting column "b". Could not convert string "nope" to 'UUID'
+
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/csv_cast_error_projected_column.csv', header = false, names = ['a', 'b', 'c'], types = {'b': 'UUID'});
+----
+Error when converting column "b". Could not convert string "nope" to 'UUID'
+
+# the rejects of both rows name the column as well
+statement ok
+SELECT b FROM read_csv('{TEST_DIR}/csv_cast_error_projected_column.csv', header = false, names = ['a', 'b', 'c'], types = {'b': 'UUID'}, store_rejects = true);
+
+query IIII
+SELECT line, column_idx, column_name, error_type FROM reject_errors ORDER BY line;
+----
+1	2	b	CAST
+2	2	b	CAST

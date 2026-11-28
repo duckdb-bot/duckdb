@@ -30,6 +30,13 @@ static bool IsFatalOrInternal(const ErrorData &error) {
 	       (Exception::InvalidatesDatabase(error.Type()) || error.Type() == ExceptionType::INTERNAL);
 }
 
+//! Keeps the first failure of the end of a transaction, unless it is neither fatal nor internal and a later one is
+static void KeepMostSevereError(ErrorData &kept, ErrorData failure) {
+	if (!kept.HasError() || (IsFatalOrInternal(failure) && !IsFatalOrInternal(kept))) {
+		kept = std::move(failure);
+	}
+}
+
 TransactionContext::TransactionContext(ClientContext &context)
     : context(context), auto_commit(true), invalidation_policy(TransactionInvalidationPolicy::STANDARD_POLICY),
       auto_rollback(false), current_transaction(nullptr) {
@@ -128,17 +135,13 @@ void TransactionContext::Commit() {
 	auto error = transaction->Commit(context);
 	// Notify any registered state of transaction commit
 	if (error.HasError()) {
-		// every registered state is told, also when one of them fails, and the commit's error is the one reported
+		// every registered state is told, also when one of them fails
 		ErrorData state_error;
 		NotifyEndOfTransaction(context, *transaction, [&](ClientContextState &state) {
 			try {
 				state.TransactionRollback(*transaction, context, error);
 			} catch (std::exception &ex) {
-				ErrorData rollback_error(ex);
-				// the first failure is kept, unless it is neither fatal nor internal and a later one is
-				if (!state_error.HasError() || (IsFatalOrInternal(rollback_error) && !IsFatalOrInternal(state_error))) {
-					state_error = std::move(rollback_error);
-				}
+				KeepMostSevereError(state_error, ErrorData(ex));
 			}
 		});
 		if (IsFatalOrInternal(error)) {
@@ -148,6 +151,7 @@ void TransactionContext::Commit() {
 		if (IsFatalOrInternal(state_error)) {
 			state_error.Throw();
 		}
+		// any other failure of a state is reported behind the commit's error
 		if (state_error.HasError()) {
 			throw TransactionException("Failed to commit: %s\nRolling back a registered state failed as well: %s",
 			                           error.RawMessage(), state_error.RawMessage());
@@ -210,9 +214,7 @@ void TransactionContext::RollbackTransaction(const shared_ptr<MetaTransaction> &
 		try {
 			state.TransactionRollback(*transaction, context, error);
 		} catch (std::exception &ex) {
-			if (!rollback_error.HasError()) {
-				rollback_error = ErrorData(ex);
-			}
+			KeepMostSevereError(rollback_error, ErrorData(ex));
 		}
 	});
 	if (rollback_error.HasError()) {

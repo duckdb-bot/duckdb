@@ -1,0 +1,62 @@
+# name: test/sql/copy/parquet/parquet_level_limit.test
+# description: A Parquet column with a definition level above 255 is refused with an error when it is read
+# group: [parquet]
+
+require parquet
+
+# Every file holds one row with a column i = 7 and a nested column. In definition_level_256_struct.parquet that is
+# a STRUCT nested 256 levels deep (s.a.a ... .a = 1), in definition_level_256_list.parquet a LIST nested 128 levels
+# deep, both with a definition level of 256. definition_level_255_struct.parquet has a STRUCT nested 255 levels deep.
+# They are data files, and one thread reads them, because writing and reading recurse once per nesting level, which
+# the reduced thread stack of the release tests does not survive.
+statement ok
+SET threads=1
+
+# the rows and the other column of such a file are read
+query II
+SELECT count(*), max(i) FROM read_parquet('data/parquet-testing/definition_level_256_struct.parquet');
+----
+1	7
+
+query II
+SELECT count(*), max(i) FROM read_parquet('data/parquet-testing/definition_level_256_list.parquet');
+----
+1	7
+
+# the deep column is refused
+statement error
+SELECT count(s) FROM read_parquet('data/parquet-testing/definition_level_256_struct.parquet');
+----
+<REGEX>:Not implemented Error.*nested too deeply.*definition level is 256.*levels above 255 are not supported.*
+
+statement error
+SELECT count(l) FROM read_parquet('data/parquet-testing/definition_level_256_list.parquet');
+----
+<REGEX>:Not implemented Error.*nested too deeply.*definition level is 256.*repetition level is 128.*
+
+statement error
+SELECT * FROM read_parquet('data/parquet-testing/definition_level_256_struct.parquet');
+----
+<REGEX>:Not implemented Error.*nested too deeply.*
+
+# the error is an ordinary one, the database stays usable
+query I
+SELECT 42;
+----
+42
+
+query II
+SELECT count(*), max(i) FROM read_parquet(['data/parquet-testing/definition_level_256_struct.parquet', 'data/parquet-testing/definition_level_255_struct.parquet'], union_by_name = true);
+----
+2	7
+
+# one level less is read
+query I
+SELECT count(s) FROM read_parquet('data/parquet-testing/definition_level_255_struct.parquet');
+----
+1
+
+query I
+FROM query('SELECT s' || repeat('.a', 255) || ' FROM read_parquet(''data/parquet-testing/definition_level_255_struct.parquet'')');
+----
+1

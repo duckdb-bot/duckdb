@@ -142,6 +142,14 @@ ColumnReader::ColumnReader(const ParquetReader &reader, const ParquetColumnSchem
       delta_binary_packed_decoder(*this), rle_decoder(*this), delta_length_byte_array_decoder(*this),
       delta_byte_array_decoder(*this), byte_stream_split_decoder(*this), aad_crypto_metadata(reader.allocator),
       page_header_arena(reader.allocator) {
+	// the definition and the repetition level of a value are read into one byte each
+	static constexpr idx_t MAX_LEVEL = NumericLimits<uint8_t>::Maximum();
+	if (column_schema.max_define > MAX_LEVEL || column_schema.max_repeat > MAX_LEVEL) {
+		throw NotImplementedException(
+		    "Failed to read file \"%s\": column \"%s\" is nested too deeply, its definition level is %llu and its "
+		    "repetition level is %llu, and levels above %llu are not supported",
+		    reader.GetFileName(), column_schema.name, column_schema.max_define, column_schema.max_repeat, MAX_LEVEL);
+	}
 }
 
 ColumnReader::~ColumnReader() {

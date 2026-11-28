@@ -123,6 +123,7 @@ void PhysicalSet::SetVariable(ClientContext &context, const Identifier &name, Se
 			throw CatalogException("option %s cannot be set locally", name);
 		}
 		option->set_local(context, input_val);
+		ClientConfig::GetConfig(context).user_settings.RegisterChange();
 		break;
 	default:
 		throw InternalException("Unsupported SetScope for variable");

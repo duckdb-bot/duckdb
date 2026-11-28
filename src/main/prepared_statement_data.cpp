@@ -4,6 +4,7 @@
 #include "duckdb/common/exception/binder_exception.hpp"
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/main/client_config.hpp"
+#include "duckdb/main/config.hpp"
 #include "duckdb/main/database_manager.hpp"
 #include "duckdb/main/prepared_statement.hpp"
 #include "duckdb/transaction/transaction.hpp"
@@ -116,6 +117,11 @@ bool PreparedStatementData::RequireRebind(ClientContext &context,
 	}
 	if (!properties.bound_all_parameters) {
 		// parameters not yet bound: query always requires a rebind
+		return true;
+	}
+	if (client_setting_changes != ClientConfig::GetConfig(context).user_settings.GetChangeCount() ||
+	    database_setting_changes != DBConfig::GetConfig(context).user_settings.GetChangeCount()) {
+		// a setting changed, binding and planning can read any of them
 		return true;
 	}
 	BoundParameterData variable_storage;

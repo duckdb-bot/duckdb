@@ -91,6 +91,10 @@ public:
 	bool TryGetExtensionOption(const Identifier &name, ExtensionOption &result) const;
 	optional_idx TryGetExtensionSettingIndex(const Identifier &name) const;
 	hugeint_t GetUUID() const;
+	//! The number of times the value of a database-global setting was set or reset
+	idx_t GetChangeCount() const;
+	//! Counts the change of a setting that is not kept in this map
+	void RegisterChange();
 
 #ifndef __MINGW32__
 	CachedGlobalSettings &GetSettings() const;
@@ -104,6 +108,8 @@ private:
 	identifier_map_t<ExtensionOption> extension_parameters;
 	//! Current version of the settings - incremented when settings are modified
 	atomic<idx_t> settings_version;
+	//! Incremented when the value of a setting changes, and not when an extension adds a setting
+	atomic<idx_t> change_count;
 	//! Settings uuid
 	hugeint_t uuid;
 };
@@ -117,9 +123,15 @@ public:
 	bool IsSet(idx_t setting_index) const;
 	SettingLookupResult TryGetSetting(const GlobalUserSettings &global_settings, idx_t setting_index,
 	                                  Value &result_value) const;
+	//! The number of times the value of a setting of the client was set or reset
+	idx_t GetChangeCount() const;
+	//! Counts the change of a setting that is not kept in this map
+	void RegisterChange();
 
 private:
 	//! Client-local settings
 	UserSettingsMap settings_map;
+	//! Incremented when the value of a setting changes
+	idx_t change_count = 0;
 };
 } // namespace duckdb

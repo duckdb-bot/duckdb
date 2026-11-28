@@ -128,18 +128,20 @@ bool UserSettingsMap::TryGetSetting(idx_t setting_index, Value &result_value) co
 //===--------------------------------------------------------------------===//
 // GlobalUserSettings
 //===--------------------------------------------------------------------===//
-GlobalUserSettings::GlobalUserSettings() : settings_version(0), uuid(UUID::GenerateRandomUUID()) {
+GlobalUserSettings::GlobalUserSettings() : settings_version(0), change_count(0), uuid(UUID::GenerateRandomUUID()) {
 }
 
 GlobalUserSettings::GlobalUserSettings(const GlobalUserSettings &other)
     : settings_map(other.settings_map), extension_parameters(other.extension_parameters),
-      settings_version(other.settings_version.load()), uuid(UUID::GenerateRandomUUID()) {
+      settings_version(other.settings_version.load()), change_count(other.change_count.load()),
+      uuid(UUID::GenerateRandomUUID()) {
 }
 
 GlobalUserSettings &GlobalUserSettings::operator=(const GlobalUserSettings &other) {
 	settings_map = other.settings_map;
 	extension_parameters = other.extension_parameters;
 	settings_version = other.settings_version.load();
+	change_count = other.change_count.load();
 	return *this;
 }
 
@@ -147,6 +149,7 @@ void GlobalUserSettings::SetUserSetting(idx_t setting_index, Value target_value)
 	lock_guard<mutex> guard(lock);
 	if (settings_map.SetUserSetting(setting_index, std::move(target_value))) {
 		++settings_version;
+		++change_count;
 	}
 }
 
@@ -154,6 +157,15 @@ void GlobalUserSettings::ClearSetting(idx_t setting_index) {
 	lock_guard<mutex> guard(lock);
 	settings_map.ClearSetting(setting_index);
 	++settings_version;
+	++change_count;
+}
+
+idx_t GlobalUserSettings::GetChangeCount() const {
+	return change_count.load();
+}
+
+void GlobalUserSettings::RegisterChange() {
+	++change_count;
 }
 
 bool GlobalUserSettings::IsSet(idx_t setting_index) const {
@@ -314,11 +326,22 @@ LocalUserSettings::~LocalUserSettings() {
 }
 
 void LocalUserSettings::SetUserSetting(idx_t setting_index, Value target_value) {
-	settings_map.SetUserSetting(setting_index, std::move(target_value));
+	if (settings_map.SetUserSetting(setting_index, std::move(target_value))) {
+		change_count++;
+	}
 }
 
 void LocalUserSettings::ClearSetting(idx_t setting_index) {
 	settings_map.ClearSetting(setting_index);
+	change_count++;
+}
+
+idx_t LocalUserSettings::GetChangeCount() const {
+	return change_count;
+}
+
+void LocalUserSettings::RegisterChange() {
+	change_count++;
 }
 
 bool LocalUserSettings::IsSet(idx_t setting_index) const {

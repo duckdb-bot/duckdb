@@ -329,9 +329,14 @@ shared_ptr<PreparedStatementData> Planner::PrepareSQLStatement(unique_ptr<SQLSta
 	// set PREPARE binding mode so that $params without supplied values create placeholder slots
 	// instead of falling back to user variables (user variables serve as defaults at EXECUTE time)
 	binder->SetBindingMode(BindingMode::PREPARE);
+	// read before planning, so that a change by another client while planning is not missed
+	const auto client_setting_changes = ClientConfig::GetConfig(context).user_settings.GetChangeCount();
+	const auto database_setting_changes = DBConfig::GetConfig(context).user_settings.GetChangeCount();
 	CreatePlan(std::move(statement));
 	// now create the logical prepare
 	auto prepared_data = make_shared_ptr<PreparedStatementData>(copied_statement->type);
+	prepared_data->client_setting_changes = client_setting_changes;
+	prepared_data->database_setting_changes = database_setting_changes;
 	prepared_data->unbound_statement = std::move(copied_statement);
 	prepared_data->names = names;
 	prepared_data->types = types;

@@ -43,6 +43,9 @@ public:
 
 	//! The statement properties
 	StatementProperties properties;
+	//! The change counts of the client and the database settings that the statement was bound under
+	idx_t client_setting_changes = 0;
+	idx_t database_setting_changes = 0;
 
 	//! The map of parameter index to the actual value entry
 	bound_parameter_map_t value_map;

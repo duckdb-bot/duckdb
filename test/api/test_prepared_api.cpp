@@ -655,6 +655,125 @@ TEST_CASE("Test prepared statements with extension that can request a rebind", "
 	REQUIRE_NO_FAIL(con.Prepare("SET VARIABLE test_var = ?")->Execute(42));
 }
 
+//! Records for every EXECUTE whether the prepared statement has to be bound again
+class RebindRecorderState : public ClientContextState {
+public:
+	RebindQueryInfo OnRebindPreparedStatement(ClientContext &context, BindPreparedStatementCallbackInfo &info,
+	                                          RebindQueryInfo current_rebind) override {
+		rebinds.push_back(current_rebind == RebindQueryInfo::ATTEMPT_TO_REBIND);
+		return RebindQueryInfo::DO_NOT_REBIND;
+	}
+
+	vector<bool> rebinds;
+};
+
+TEST_CASE("A prepared statement keeps its plan until a setting changes", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	Connection other(db);
+	auto recorder = make_shared_ptr<RebindRecorderState>();
+	con.context->GetContext().GetRegisteredState().Insert("rebind_recorder", recorder);
+	auto &rebinds = recorder->rebinds;
+
+	REQUIRE_NO_FAIL(con.Query("CREATE SCHEMA s1"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE integers (i INTEGER)"));
+	REQUIRE_NO_FAIL(con.Query("SET SESSION default_null_order = 'nulls_first'"));
+	const string prepare = "PREPARE ordered AS SELECT x FROM (VALUES (1), (2), (NULL)) t(x) ORDER BY x";
+
+	// the plan is used again while no setting changes
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(con.Query("PREPARE ins AS INSERT INTO integers VALUES (?::INTEGER)"));
+	auto result = con.Query("EXECUTE ordered");
+	REQUIRE(CHECK_COLUMN(result, 0, {Value(), 1, 2}));
+	REQUIRE(!rebinds.back());
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ins(1)"));
+	REQUIRE(!rebinds.back());
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ins(2)"));
+	REQUIRE(!rebinds.back());
+
+	// setting the value that a setting has is no change, and neither is the session setting of another connection
+	REQUIRE_NO_FAIL(con.Query("SET SESSION default_null_order = 'nulls_first'"));
+	REQUIRE_NO_FAIL(other.Query("SET SESSION default_null_order = 'nulls_last'"));
+	result = con.Query("EXECUTE ordered");
+	REQUIRE(CHECK_COLUMN(result, 0, {Value(), 1, 2}));
+	REQUIRE(!rebinds.back());
+
+	// an extension that registers a setting changes no value, setting it does
+	auto &config = DBConfig::GetConfig(*db.instance);
+	config.AddExtensionOption("my_option", "An option", LogicalType::VARCHAR, Value("default"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(!rebinds.back());
+	REQUIRE_NO_FAIL(con.Query("SET my_option = 'other'"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(rebinds.back());
+
+	// a session setting
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(con.Query("PREPARE ins AS INSERT INTO integers VALUES (?::INTEGER)"));
+	REQUIRE_NO_FAIL(con.Query("SET SESSION default_null_order = 'nulls_last'"));
+	result = con.Query("EXECUTE ordered");
+	REQUIRE(CHECK_COLUMN(result, 0, {1, 2, Value()}));
+	REQUIRE(rebinds.back());
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ins(3)"));
+	REQUIRE(rebinds.back());
+
+	// a database setting that another connection changes
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(!rebinds.back());
+	REQUIRE_NO_FAIL(other.Query("SET GLOBAL default_order = 'desc'"));
+	result = con.Query("EXECUTE ordered");
+	REQUIRE(CHECK_COLUMN(result, 0, {2, 1, Value()}));
+	REQUIRE(rebinds.back());
+
+	// RESET
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(other.Query("RESET GLOBAL default_order"));
+	result = con.Query("EXECUTE ordered");
+	REQUIRE(CHECK_COLUMN(result, 0, {1, 2, Value()}));
+	REQUIRE(rebinds.back());
+	REQUIRE_NO_FAIL(con.Query("SET SESSION default_null_order = 'nulls_first'"));
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(con.Query("RESET SESSION default_null_order"));
+	result = con.Query("EXECUTE ordered");
+	REQUIRE(CHECK_COLUMN(result, 0, {1, 2, Value()}));
+	REQUIRE(rebinds.back());
+
+	// a setting with its own setter
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(!rebinds.back());
+	REQUIRE_NO_FAIL(con.Query("USE s1"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(rebinds.back());
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(con.Query("RESET search_path"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(rebinds.back());
+
+	// a database setting with its own setter
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(other.Query("SET GLOBAL max_temp_directory_size = '1GB'"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(rebinds.back());
+	REQUIRE_NO_FAIL(con.Query(prepare));
+	REQUIRE_NO_FAIL(other.Query("RESET GLOBAL max_temp_directory_size"));
+	REQUIRE_NO_FAIL(con.Query("EXECUTE ordered"));
+	REQUIRE(rebinds.back());
+
+	// a statement that is prepared through the API
+	REQUIRE_NO_FAIL(con.Query("SET max_decimal_width = 38"));
+	auto prepared = con.Prepare("SELECT typeof(1::DECIMAL(30,0) * 1::DECIMAL(30,0))");
+	REQUIRE(!prepared->HasError());
+	result = prepared->Execute();
+	REQUIRE(CHECK_COLUMN(result, 0, {"DECIMAL(38,0)"}));
+	REQUIRE(!rebinds.back());
+	REQUIRE_NO_FAIL(con.Query("SET max_decimal_width = 76"));
+	result = prepared->Execute();
+	REQUIRE(CHECK_COLUMN(result, 0, {"DECIMAL(60,0)"}));
+	REQUIRE(rebinds.back());
+}
+
 static atomic<idx_t> execute_pre_binds {0};
 static atomic<idx_t> post_binds {0};
 

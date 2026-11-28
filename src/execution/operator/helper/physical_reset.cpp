@@ -83,6 +83,7 @@ SourceResultType PhysicalReset::GetDataInternal(ExecutionContext &context, DataC
 			throw CatalogException("option \"%s\" cannot be reset locally", name.ToStdString());
 		}
 		option->reset_local(context.client);
+		ClientConfig::GetConfig(context.client).user_settings.RegisterChange();
 		break;
 	default:
 		throw InternalException("Unsupported SetScope for variable");

@@ -2,6 +2,7 @@
 #include "duckdb/logging/log_manager.hpp"
 #include "duckdb/transaction/commit_state.hpp"
 
+#include "duckdb/catalog/catalog_entry_retriever.hpp"
 #include "duckdb/common/enum_util.hpp"
 #include "duckdb/common/exception/transaction_exception.hpp"
 #include "duckdb/common/index_map.hpp"
@@ -423,9 +424,28 @@ static unique_ptr<ParsedExpression> RemapStructDefault(unique_ptr<ParsedExpressi
 	return make_uniq<FunctionExpression>("remap_struct", std::move(children));
 }
 
+//! Whether a default of a table of the schema calls the built-in function when it uses this name without a qualifier
+static bool DefaultCallsBuiltinFunction(ClientContext &context, SchemaCatalogEntry &schema,
+                                        const Identifier &function_name) {
+	// a default is bound with the schema of its table and the default schema of its catalog in front of the search path
+	auto &catalog_name = schema.ParentCatalog().GetName();
+	const auto schema_path = schema.GetSchemaPath();
+	vector<CatalogSearchEntry> search_path;
+	search_path.push_back(CatalogSearchEntry::FromSchemaPath(catalog_name, schema_path));
+	if (schema_path.size() != 1 || schema_path[0] != DEFAULT_SCHEMA) {
+		search_path.emplace_back(catalog_name, DEFAULT_SCHEMA);
+	}
+	CatalogEntryRetriever retriever(context);
+	retriever.SetSearchPath(std::move(search_path));
+	EntryLookupInfo lookup(CatalogType::SCALAR_FUNCTION_ENTRY, QualifiedName(function_name));
+	auto entry = retriever.GetEntry(lookup, OnEntryNotFound::RETURN_NULL);
+	return entry && entry->type == CatalogType::SCALAR_FUNCTION_ENTRY && entry->internal &&
+	       entry->ParentCatalog().IsSystemCatalog();
+}
+
 //! Removes the field that the new type lost from a default that is written as a struct constructor
-static bool DropFieldFromDefault(ParsedExpression &default_value, const LogicalType &old_type,
-                                 const LogicalType &new_type) {
+static bool DropFieldFromDefault(ClientContext &context, SchemaCatalogEntry &schema, ParsedExpression &default_value,
+                                 const LogicalType &old_type, const LogicalType &new_type) {
 	if (default_value.GetExpressionClass() == ExpressionClass::CONSTANT) {
 		// a NULL has no field to remove
 		return default_value.Cast<ConstantExpression>().GetLiteral().IsNull();
@@ -442,6 +462,10 @@ static bool DropFieldFromDefault(ParsedExpression &default_value, const LogicalT
 	auto &arguments = function.GetArgumentsMutable();
 	const bool has_names = function.FunctionName() == "struct_pack";
 	if (!has_names && (function.FunctionName() != "row" || arguments.size() != old_fields.size())) {
+		return false;
+	}
+	if (!DefaultCallsBuiltinFunction(context, schema, function.FunctionName())) {
+		// a function of the user has the name of the constructor
 		return false;
 	}
 	// the first field that differs is the dropped field, or the struct that holds it
@@ -466,7 +490,8 @@ static bool DropFieldFromDefault(ParsedExpression &default_value, const LogicalT
 	}
 	if (old_fields.size() == new_fields.size()) {
 		auto &argument = *arguments[argument_idx.GetIndex()].GetExpressionMutable();
-		return DropFieldFromDefault(argument, old_fields[field_idx].second, new_fields[field_idx].second);
+		return DropFieldFromDefault(context, schema, argument, old_fields[field_idx].second,
+		                            new_fields[field_idx].second);
 	}
 	if (has_names) {
 		// the cast to the new type needs an argument with the name of a field that stays
@@ -1271,7 +1296,7 @@ unique_ptr<CatalogEntry> DuckTableEntry::ChangeColumnType(ClientContext &context
 			if (alter_table_type != AlterTableType::ALTER_COLUMN_TYPE && copy.HasDefaultValue()) {
 				auto new_default = copy.DefaultValue().Copy();
 				if (alter_table_type != AlterTableType::REMOVE_FIELD ||
-				    !DropFieldFromDefault(*new_default, col.Type(), info.target_type)) {
+				    !DropFieldFromDefault(context, schema, *new_default, col.Type(), info.target_type)) {
 					// the stored default is not cast yet, the mapping is for the old type of the column
 					auto old_default = make_uniq<CastExpression>(col.Type(), std::move(new_default));
 					new_default = RemapStructDefault(std::move(old_default), info.target_type, info);

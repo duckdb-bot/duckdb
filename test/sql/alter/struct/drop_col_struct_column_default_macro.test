@@ -1,0 +1,117 @@
+# name: test/sql/alter/struct/drop_col_struct_column_default_macro.test
+# description: A default that calls a macro with the name of a struct constructor keeps its arguments when a field is dropped
+# group: [struct]
+
+statement ok
+CREATE SCHEMA other;
+
+# a macro in the schema of the table takes the place of the constructor without names
+statement ok
+CREATE MACRO other.row(a, b := 5) AS struct_pack(p := b, q := a);
+
+statement ok
+CREATE TABLE other.positional(i INT, s STRUCT(p INT, q INT) DEFAULT row(1, 2));
+
+statement ok
+INSERT INTO other.positional(i) VALUES (1);
+
+statement ok
+ALTER TABLE other.positional DROP COLUMN s.q;
+
+statement ok
+INSERT INTO other.positional(i) VALUES (2);
+
+query II
+SELECT i, s FROM other.positional ORDER BY i;
+----
+1	{'p': 2}
+2	{'p': 2}
+
+# the macro inside a constructor, for a field of the nested struct and for a field next to it
+statement ok
+CREATE TABLE other.nested(i INT, s STRUCT(x INT, n STRUCT(p INT, q INT)) DEFAULT {'x': 1, 'n': row(1, 2)});
+
+statement ok
+CREATE TABLE other.sibling(i INT, s STRUCT(x INT, n STRUCT(p INT, q INT)) DEFAULT {'x': 1, 'n': row(1, 2)});
+
+statement ok
+ALTER TABLE other.nested DROP COLUMN s.n.q;
+
+statement ok
+ALTER TABLE other.sibling DROP COLUMN s.x;
+
+statement ok
+INSERT INTO other.nested(i) VALUES (1);
+
+statement ok
+INSERT INTO other.sibling(i) VALUES (1);
+
+query II
+SELECT (SELECT s FROM other.nested), (SELECT s FROM other.sibling);
+----
+{'x': 1, 'n': {'p': 2}}	{'n': {'p': 2, 'q': 1}}
+
+# a macro takes the place of the constructor with names
+statement ok
+CREATE MACRO other.struct_pack(x, y := 7) AS "system".main.struct_pack(x := y, y := x);
+
+statement ok
+CREATE TABLE other.named(i INT, s STRUCT(x INT, y INT) DEFAULT {'x': 1, 'y': 2});
+
+statement ok
+INSERT INTO other.named(i) VALUES (1);
+
+statement ok
+ALTER TABLE other.named DROP COLUMN s.y;
+
+statement ok
+INSERT INTO other.named(i) VALUES (2);
+
+query II
+SELECT i, s FROM other.named ORDER BY i;
+----
+1	{'x': 2}
+2	{'x': 2}
+
+# a macro in the default schema of the catalog of the table
+statement ok
+ATTACH ':memory:' AS attached;
+
+statement ok
+CREATE SCHEMA attached.other;
+
+statement ok
+CREATE MACRO attached.main.row(a, b := 5) AS struct_pack(p := b, q := a);
+
+statement ok
+CREATE TABLE attached.other.in_catalog(i INT, s STRUCT(p INT, q INT) DEFAULT row(1, 2));
+
+statement ok
+INSERT INTO attached.other.in_catalog(i) VALUES (1);
+
+statement ok
+ALTER TABLE attached.other.in_catalog DROP COLUMN s.q;
+
+statement ok
+INSERT INTO attached.other.in_catalog(i) VALUES (2);
+
+query II
+SELECT i, s FROM attached.other.in_catalog ORDER BY i;
+----
+1	{'p': 2}
+2	{'p': 2}
+
+# only the constructor that is the built-in function loses an argument
+query II
+SELECT table_name, column_default LIKE 'remap_struct(%' FROM duckdb_columns() WHERE schema_name = 'other' AND column_name = 's' ORDER BY table_name;
+----
+in_catalog	true
+named	true
+nested	true
+positional	true
+sibling	false
+
+query I
+SELECT column_default FROM duckdb_columns() WHERE schema_name = 'other' AND table_name = 'sibling' AND column_name = 's';
+----
+struct_pack(n := "row"(1, 2))

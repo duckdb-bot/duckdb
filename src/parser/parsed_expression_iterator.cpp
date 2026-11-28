@@ -56,6 +56,10 @@ void ParsedExpressionIterator::EnumerateQueryNodeModifiers(
 		case ResultModifierType::ORDER_MODIFIER: {
 			auto &order_modifier = modifier->Cast<OrderModifier>();
 			for (auto &order : order_modifier.orders) {
+				// a constant names the position of a select list entry, it is not an expression of the query
+				if (order.expression && order.expression->GetExpressionType() == ExpressionType::VALUE_CONSTANT) {
+					continue;
+				}
 				callback(order.expression);
 			}
 		} break;

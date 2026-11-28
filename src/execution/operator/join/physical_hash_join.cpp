@@ -814,7 +814,6 @@ struct HashJoinBuildConfig {
 	static constexpr idx_t SMALL_PARALLEL_MIN_THREADS = 4;
 	static constexpr double SKEW_SINGLE_THREADED_THRESHOLD = 0.33;
 	static constexpr double SMALL_BUILD_SKEW_THRESHOLD = 0.20;
-	static constexpr double DOMINANT_PARTITION_SKEW_THRESHOLD = 0.8;
 };
 
 //! If the data is very skewed (many of the exact same key), our finalize will become slow,
@@ -828,13 +827,16 @@ static bool KeysAreSkewed(const HashJoinGlobalSinkState &sink,
 	return skew > threshold;
 }
 
-//! Whether an external join would hold less in memory than the whole hash table. It builds its largest partition
-//! whole, which is the whole table for a join that a recursive iteration reuses and most of it for very skewed keys.
-static bool ExternalJoinCanSpill(const HashJoinGlobalSinkState &sink) {
-	if (sink.total_size == 0 || sink.hash_table->GetRadixBits() == 0) {
-		return false;
+//! Whether an external join can hold less in memory than the in-memory join. It builds its largest partition whole
+//! with a pointer table, so another partition must hold rows and that table must be smaller than the whole build.
+static bool ExternalJoinSavesMemory(const HashJoinGlobalSinkState &sink) {
+	idx_t build_count = 0;
+	for (auto &local_ht : sink.local_hash_tables) {
+		build_count += local_ht.get().GetSinkCollection().Count();
 	}
-	return !KeysAreSkewed(sink, HashJoinBuildConfig::DOMINANT_PARTITION_SKEW_THRESHOLD);
+	const auto max_partition_ht_size =
+	    sink.max_partition_size + sink.hash_table->PointerTableSize(sink.max_partition_count);
+	return sink.max_partition_count < build_count && max_partition_ht_size < sink.total_size;
 }
 
 //! If we have only one thread, always finalize single-threaded. Otherwise, we finalize in parallel if we
@@ -1395,12 +1397,11 @@ SinkFinalizeType PhysicalHashJoin::Finalize(Pipeline &pipeline, Event &event, Cl
 	// the filter covers the whole build side once Sink is done
 	ht.SealBloomFilters();
 
-	// The minimum reservation is what an external join needs, its largest partition and the partition buffers of
-	// the probe side. A hash table that is smaller than that would be granted its whole size however much memory the
-	// other operators hold, so several such joins could exceed the memory limit together. Ask with the initial
-	// minimum instead, so that the join only stays in memory when its share of the memory budget fits it
+	// The minimum reservation is what an external join needs, its largest partition and the probe side's partition
+	// buffers. A hash table below that gets its whole size whatever the other operators hold, so several such joins
+	// can exceed the memory limit together. Where an external join saves memory, ask with the initial minimum instead
 	const auto external_minimum_reservation = sink.temporary_memory_state->GetMinimumReservation();
-	if (external_minimum_reservation >= sink.total_size && ExternalJoinCanSpill(sink)) {
+	if (external_minimum_reservation >= sink.total_size && ExternalJoinSavesMemory(sink)) {
 		sink.temporary_memory_state->SetMinimumReservation(
 		    MaxValue(sink.initial_minimum_reservation, sink.temporary_memory_state->GetReservation()));
 	}

@@ -11,6 +11,10 @@ SET threads = 1;
 statement ok
 SET debug_force_external = true;
 
+# the iterations only reuse the join's operator state with caching operators
+statement ok
+SET enable_caching_operators = true;
+
 statement ok
 CALL enable_logging('PhysicalOperator');
 

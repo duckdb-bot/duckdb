@@ -120,7 +120,9 @@ BindResult BaseSelectBinder::BindWindowExpression(WindowExpression &window, idx_
 	RewriteFilteredCountStar(window);
 
 	//	Check for macros pretending to be aggregates
-	EntryLookupInfo function_lookup(CatalogType::SCALAR_FUNCTION_ENTRY, window.GetQualifiedName(), error_context);
+	// resolve the qualification as scalar calls do, so that a nested schema path is not read as a catalog and a schema
+	auto bound_name = Binder::BindTableName(binder.EntryRetriever(), window.GetQualifiedName());
+	EntryLookupInfo function_lookup(CatalogType::SCALAR_FUNCTION_ENTRY, bound_name, error_context);
 	auto entry = GetCatalogEntry(function_lookup, OnEntryNotFound::RETURN_NULL);
 	if (entry && entry->type == CatalogType::MACRO_ENTRY) {
 		auto macro_expr = window.Copy();
@@ -152,11 +154,7 @@ BindResult BaseSelectBinder::BindWindowExpression(WindowExpression &window, idx_
 	if (!entry ||
 	    (entry->type != CatalogType::AGGREGATE_FUNCTION_ENTRY && entry->type != CatalogType::WINDOW_FUNCTION_ENTRY)) {
 		//	Not an aggregate or window function: Look it up to generate error
-		Catalog::GetEntry<AggregateFunctionCatalogEntry>(context,
-		                                                 QualifiedName(window.GetQualifiedName().Catalog(),
-		                                                               window.GetQualifiedName().Schema(),
-		                                                               window.FunctionName()),
-		                                                 error_context);
+		Catalog::GetEntry<AggregateFunctionCatalogEntry>(context, bound_name, error_context);
 	}
 
 	// If we have range expressions, then only one order by clause is allowed.

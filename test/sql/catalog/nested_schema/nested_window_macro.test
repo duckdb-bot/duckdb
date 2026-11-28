@@ -1,0 +1,150 @@
+# name: test/sql/catalog/nested_schema/nested_window_macro.test
+# description: A macro in a nested schema is found as a window function without naming the catalog
+# group: [nested_schema]
+
+load {TEST_DIR}/nested_window_macro.db readwrite v2.0.0
+
+statement ok
+CREATE SCHEMA s1;
+
+statement ok
+CREATE SCHEMA s1.s2;
+
+statement ok
+CREATE MACRO s1.s2.w(x) AS max(x);
+
+statement ok
+CREATE MACRO s1.s2.sc(x) AS x + 1;
+
+query I
+SELECT s1.s2.sc(1);
+----
+2
+
+query I
+SELECT s1.s2.w(i) FROM range(3) r(i);
+----
+2
+
+query I
+SELECT nested_window_macro.s1.s2.w(i) OVER (ORDER BY i) FROM range(3) r(i);
+----
+0
+1
+2
+
+# the leading name is the outer schema, not a catalog
+query I
+SELECT s1.s2.w(i) OVER (ORDER BY i) FROM range(3) r(i);
+----
+0
+1
+2
+
+query I
+SELECT s1.s2.w(i) OVER (ORDER BY i DESC) FROM range(3) r(i) ORDER BY i;
+----
+2
+2
+2
+
+statement error
+SELECT s1.s2.nope(i) OVER (ORDER BY i) FROM range(3) r(i);
+----
+nope
+
+statement error
+SELECT s1.s3.w(i) OVER (ORDER BY i) FROM range(3) r(i);
+----
+s3
+
+# an attached database made current
+statement ok
+ATTACH ':memory:' AS db;
+
+statement ok
+CREATE SCHEMA db.a;
+
+statement ok
+CREATE SCHEMA db.a.b;
+
+statement ok
+CREATE MACRO db.a.b.w(x) AS max(x);
+
+# the database name alone qualifies a macro in its default schema
+statement ok
+CREATE MACRO db.w2(x) AS max(x);
+
+query I
+SELECT db.w2(i) OVER (ORDER BY i) FROM range(3) r(i);
+----
+0
+1
+2
+
+statement ok
+USE db;
+
+query I
+SELECT a.b.w(i) OVER (ORDER BY i) FROM range(3) r(i);
+----
+0
+1
+2
+
+query I
+SELECT db.a.b.w(i) OVER (ORDER BY i) FROM range(3) r(i);
+----
+0
+1
+2
+
+# a view resolves the macro through its own catalog's search path, as a scalar call does
+statement ok
+CREATE SCHEMA p;
+
+statement ok
+CREATE SCHEMA p.s;
+
+statement ok
+CREATE MACRO p.s.w(x) AS min(x);
+
+statement ok
+CREATE SCHEMA nested_window_macro.p;
+
+statement ok
+CREATE SCHEMA nested_window_macro.p.s;
+
+statement ok
+CREATE MACRO nested_window_macro.p.s.w(x) AS max(x);
+
+statement ok
+CREATE VIEW nested_window_macro.v_scalar AS SELECT p.s.w(i) AS x FROM range(3) r(i);
+
+query I
+SELECT x FROM nested_window_macro.v_scalar;
+----
+2
+
+statement ok
+CREATE VIEW nested_window_macro.v_window AS SELECT i, p.s.w(i) OVER (ORDER BY i) AS x FROM range(3) r(i);
+
+query I
+SELECT x FROM nested_window_macro.v_window ORDER BY i;
+----
+0
+1
+2
+
+statement ok
+CREATE VIEW nested_window_macro.v_window_only AS SELECT i, p.s.w(i) OVER (ORDER BY i DESC) AS x FROM range(3) r(i);
+
+statement ok
+DROP MACRO p.s.w;
+
+query I
+SELECT x FROM nested_window_macro.v_window_only ORDER BY i;
+----
+2
+2
+2

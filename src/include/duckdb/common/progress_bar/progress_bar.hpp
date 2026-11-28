@@ -48,6 +48,8 @@ public:
 
 	//! Starts the thread
 	void Start();
+	//! Passes the time the query started to the display
+	void SetQueryStart(std::chrono::steady_clock::time_point query_start);
 	//! Updates the progress bar and prints it to the screen
 	void Update(bool final);
 	QueryProgress GetDetailedQueryProgress();

@@ -125,6 +125,12 @@
       ]
     },
     {
+      "reason": "The round trip through SQL holds several copies of the string of 3 GB, 47 GB in all",
+      "paths": [
+        "test/sql/function/string/test_ilike_large.test_slow"
+      ]
+    },
+    {
       "reason": "FIXME: the rendered SQL of a DISTINCT aggregate over a collated argument fails to rebind with a collation mismatch",
       "paths": [
         "test/sql/collate/collate_distinct_aggregate_icu.test"

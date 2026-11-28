@@ -794,7 +794,8 @@ bool CHECK_COLUMN(QueryResult &result, size_t column_number, vector<duckdb::Valu
 			return true;
 		}
 	}
-	if (result.RowCount() == 0) {
+	if (result.RowCount() != values.size()) {
+		// rows are missing, or rows follow the expected values
 		result.Print();
 		return false;
 	}

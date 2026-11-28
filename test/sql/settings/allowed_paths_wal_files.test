@@ -125,4 +125,4 @@ Permission Error
 statement error
 COPY (SELECT 1 i, 2 j) TO '{TEST_DIR}/allowed_wal.db.wal.checkpoint' (FORMAT csv, PARTITION_BY (i))
 ----
-Permission Error
+<REGEX>:.*Cannot access directory ".*allowed_wal.db.wal.checkpoint" .*

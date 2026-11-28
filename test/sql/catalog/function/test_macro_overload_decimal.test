@@ -1,0 +1,88 @@
+# name: test/sql/catalog/function/test_macro_overload_decimal.test
+# description: Macro overloads that differ in the width or scale of a DECIMAL parameter take the exact match
+# group: [function]
+
+statement ok
+CREATE MACRO test_decimal(d DECIMAL(4, 0)) AS 'four', (d DECIMAL(9, 0)) AS 'nine';
+
+query II
+SELECT test_decimal(1::DECIMAL(4, 0)), test_decimal(1::DECIMAL(9, 0));
+----
+four	nine
+
+query I
+SELECT test_decimal(d := 1::DECIMAL(9, 0));
+----
+nine
+
+# without an exact match the overloads still tie
+statement error
+SELECT test_decimal(1::DECIMAL(5, 0));
+----
+has multiple overloads that match the supplied arguments
+
+statement ok
+CREATE MACRO test_scale(a INTEGER, d DECIMAL(10, 2)) AS 'two', (a INTEGER, d DECIMAL(10, 4)) AS 'four';
+
+query II
+SELECT test_scale(1, 1::DECIMAL(10, 2)), test_scale(1, 1::DECIMAL(10, 4));
+----
+two	four
+
+statement ok
+CREATE MACRO test_int(d SMALLINT) AS 's', (d INTEGER) AS 'i';
+
+query II
+SELECT test_int(1::SMALLINT), test_int(1::INTEGER);
+----
+s	i
+
+# an untyped parameter is not an exact match
+statement ok
+CREATE MACRO untyped(x, d DECIMAL(4, 0)) AS 4, (x DECIMAL(9, 0), d) AS 9;
+
+statement error
+SELECT untyped(1::DECIMAL(9, 0), 1::DECIMAL(9, 0));
+----
+has multiple overloads that match the supplied arguments
+
+statement error
+SELECT untyped(x := 1::DECIMAL(9, 0), d := 1::DECIMAL(9, 0));
+----
+has multiple overloads that match the supplied arguments
+
+# an implicit cast of another argument keeps the tie
+statement ok
+CREATE MACRO other_cast(a BIGINT, d DECIMAL(4, 0)) AS 4, (a BIGINT, d DECIMAL(9, 0)) AS 9;
+
+statement error
+SELECT other_cast(1::INTEGER, 1::DECIMAL(9, 0));
+----
+has multiple overloads that match the supplied arguments
+
+# two exact matches through a default keep the tie
+statement ok
+CREATE MACRO with_default(d DECIMAL(4, 0), e := 1) AS 'first', (d DECIMAL(4, 0), f INTEGER := 2) AS 'second';
+
+statement error
+SELECT with_default(1::DECIMAL(4, 0));
+----
+has multiple overloads that match the supplied arguments
+
+# a cheaper overload found after the tied ones replaces them
+statement ok
+CREATE MACRO three(d) AS 'untyped', (d DECIMAL(4, 0)) AS 'four', (d DECIMAL(9, 0)) AS 'nine';
+
+query II
+SELECT three(1::DECIMAL(4, 0)), three(1::DECIMAL(9, 0));
+----
+four	nine
+
+# table macros resolve their overloads the same way
+statement ok
+CREATE MACRO table_decimal(d DECIMAL(4, 0)) AS TABLE (SELECT 'four' AS r), (d DECIMAL(9, 0)) AS TABLE (SELECT 'nine' AS r);
+
+query II
+SELECT (SELECT r FROM table_decimal(1::DECIMAL(4, 0))), (SELECT r FROM table_decimal(1::DECIMAL(9, 0)));
+----
+four	nine

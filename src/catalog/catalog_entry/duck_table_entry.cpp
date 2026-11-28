@@ -1180,6 +1180,11 @@ unique_ptr<CatalogEntry> DuckTableEntry::ChangeColumnType(ClientContext &context
 	create_info->comment = comment;
 	create_info->tags = tags;
 
+	if (alter_table_type == AlterTableType::ALTER_COLUMN_TYPE && info.bind_mode == AlterBindMode::BIND_ON_ALTER) {
+		// the USING expression is written to the WAL, so the storage version has to be able to hold its casts
+		catalog.GetAttached().GetStorageManager().CheckExpressionDecimalsAreSupported(*info.expression);
+	}
+
 	// Bind the USING expression.
 	auto binder = Binder::CreateBinder(context);
 	vector<LogicalIndex> bound_columns;

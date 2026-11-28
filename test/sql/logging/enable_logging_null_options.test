@@ -1,0 +1,84 @@
+# name: test/sql/logging/enable_logging_null_options.test
+# description: a NULL logging option is refused when enable_logging binds, instead of invalidating the database in the sink
+# group: [logging]
+
+require noforcestorage
+
+# a NULL in the first call on a fresh database
+statement error
+CALL enable_logging(['QueryLog'], storage = 'file', storage_config = {'path': '{TEST_DIR}/null_options', 'normalize': NULL});
+----
+EnableLogging: storage_config option 'normalize' cannot be NULL
+
+query I
+SELECT 1;
+----
+1
+
+statement ok
+CALL enable_logging(['QueryLog'], storage = 'file', storage_config = {'path': '{TEST_DIR}/null_options'});
+
+query I
+SELECT value FROM duckdb_settings() WHERE name = 'logging_sink';
+----
+file
+
+# a NULL while file logging is active, through storage_config and through the shorthand parameters
+statement error
+CALL enable_logging(['QueryLog'], storage = 'file', storage_config = {'path': '{TEST_DIR}/null_options', 'normalize': NULL});
+----
+EnableLogging: storage_config option 'normalize' cannot be NULL
+
+statement error
+CALL enable_logging(['QueryLog'], storage_normalize = NULL);
+----
+EnableLogging: storage_normalize cannot be NULL
+
+statement error
+CALL enable_logging(['QueryLog'], storage_buffer_size = NULL);
+----
+EnableLogging: storage_buffer_size cannot be NULL
+
+# a NULL path is reported as a missing path, like an empty one (enable_logging_file_no_path.test covers the switch
+# to file storage, here file storage is active and would keep its path for a call without one)
+statement error
+CALL enable_logging(['QueryLog'], storage_path = NULL);
+----
+The path of the 'file' log storage cannot be NULL or empty
+
+statement error
+CALL enable_logging(['QueryLog'], storage_config = {'path': NULL});
+----
+The path of the 'file' log storage cannot be NULL or empty
+
+statement error
+CALL enable_logging(['QueryLog'], storage_path = '');
+----
+The path of the 'file' log storage cannot be NULL or empty
+
+statement error
+CALL enable_logging(['QueryLog'], storage = NULL);
+----
+EnableLogging: storage cannot be NULL
+
+statement error
+CALL enable_logging(['QueryLog'], level = NULL);
+----
+EnableLogging: level cannot be NULL
+
+# the database is still usable and the active storage is kept
+query I
+SELECT 2;
+----
+2
+
+query I
+SELECT value FROM duckdb_settings() WHERE name = 'logging_sink';
+----
+file
+
+statement ok
+CALL enable_logging(['QueryLog'], storage_normalize = false, storage_path = '{TEST_DIR}/null_options.csv');
+
+statement ok
+CALL disable_logging();

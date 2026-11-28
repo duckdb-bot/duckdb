@@ -9,7 +9,8 @@ require notwindows
 # an unprojected column, a closing quote followed by other bytes, too few and too many columns, empty values, a lone CR
 # inside a value, quoted values holding only a delimiter or a row end, spaces, delimiters at both sides of a 64 byte
 # block edge, a partial match of the delimiter inside a value and an unterminated quote in the last row; the comment
-# files add comment lines and comment bytes inside values. Expected results are those of the build before the change.
+# files add comment lines and comment bytes inside values. Expected results are those of the build before the change,
+# except that a quoted value followed by text keeps its last byte.
 
 statement ok
 COPY (SELECT line FROM (SELECT i AS o, i || '||v' || i AS line FROM range(2048) t(i) UNION ALL SELECT 5000, 'x||bad||extra' UNION ALL SELECT 5001, 'notanumber||y' UNION ALL SELECT 5002 + i, (3000 + i) || '||w' FROM range(10) t(i)) ORDER BY o) TO '{TEST_DIR}/skip_after_chunk_pipe2.csv' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '');
@@ -104,7 +105,7 @@ SELECT a, replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b, replace(re
 2	q||q	x	8
 3	line<LF>break	x	9
 4	a"b	x	10
-5	c	y	11
+5	cx	y	11
 8	NULL	NULL	12
 10	||	<LF>	14
 11	 b 	 x 	15
@@ -268,7 +269,7 @@ SELECT a, replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b, replace(re
 2	q|-|q	x	8
 3	line<LF>break	x	9
 4	a"b	x	10
-5	c	y	11
+5	cx	y	11
 8	NULL	NULL	12
 10	|-|	<LF>	14
 11	 b 	 x 	15
@@ -416,7 +417,7 @@ SELECT a, replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b, replace(re
 2	q,q	x	8
 3	line<CR>break	x	9
 4	a"b	x	10
-5	c	y	11
+5	cx	y	11
 8	NULL	NULL	12
 10	,	<CR>	14
 11	 b 	 x 	15
@@ -608,7 +609,7 @@ SELECT a, replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b, replace(re
 2	q,q	x	8
 3	line<CR><LF>break	x	9
 4	a"b	x	10
-5	c	y	11
+5	cx	y	11
 8	NULL	NULL	12
 10	,	<CR><LF>	14
 11	 b 	 x 	15
@@ -763,7 +764,7 @@ SELECT a, replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b, replace(re
 2	q,q	x	8
 3	line<LF>break	x	9
 4	a"b	x	10
-5	c	y	11
+5	cx	y	11
 8	NULL	NULL	12
 10	,	<LF>	14
 11	 b 	 x 	15
@@ -933,7 +934,7 @@ SELECT a, replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b, replace(re
 2	q||q	x	8
 3	line<CR>break	x	9
 4	a"b	x	10
-5	c	y	11
+5	cx	y	11
 8	NULL	NULL	12
 10	||	<CR>	14
 11	 b 	 x 	15

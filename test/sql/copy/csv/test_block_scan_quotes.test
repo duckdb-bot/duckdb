@@ -34,7 +34,7 @@ SELECT a, replace(replace(b, chr(13), '<CR>'), chr(10), '<LF>'), c FROM read_csv
 5	a<CR><LF>b	x
 6	c"d	x
 7	a	x
-8	a	x
+8	ab	x
 9	a	x
 10	  "a"	x
 11	a"	x
@@ -57,7 +57,7 @@ SELECT a, replace(replace(b, chr(13), '<CR>'), chr(10), '<LF>'), c FROM read_csv
 5	a<CR><LF>b	x
 6	c"d	x
 7	a	x
-8	a"	x
+8	a"b	x
 9	a	x
 10	  "a"	x
 11	a""	x
@@ -92,7 +92,7 @@ SELECT a, replace(replace(b, chr(13), '<CR>'), chr(10), '<LF>'), c FROM read_csv
 5	a<CR><LF>b	x
 6	c"d	x
 7	a	x
-8	a	x
+8	ab	x
 9	a	x
 10	  "a"	x
 11	a"	x
@@ -115,7 +115,7 @@ SELECT a, replace(replace(b, chr(13), '<CR>'), chr(10), '<LF>'), c FROM read_csv
 5	a<CR><LF>b	x
 6	c"d	x
 7	a	x
-8	a"	x
+8	a"b	x
 9	a	x
 10	  "a"	x
 11	a""	x

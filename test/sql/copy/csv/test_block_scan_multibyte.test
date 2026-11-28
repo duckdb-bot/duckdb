@@ -11,7 +11,7 @@ require notwindows
 # block, and no newline after the last row. The CRLF file holds the same rows. The 3 and 4 byte files (<|>, ::::) hold
 # the delimiter in quotes, partial delimiters, empty values and width errors, the UTF-8 files (€, ¢) the same with
 # bytes above 0x7F and a stray part of a delimiter inside a value. Expected results are those of the build before
-# the change.
+# the change, except that a quoted value followed by text keeps its last byte.
 
 # file, strict
 statement error
@@ -29,7 +29,7 @@ SELECT a, replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b, replace(re
 4	NULL	x	10
 5	a	|x	11
 6	c	x	12
-7	c"|	y	13
+7	c"|x	y	13
 10	 	x	14
 11	m<LF>l	x	15
 12	ppppppppppppppppppppppppppppppppppp	x	16
@@ -103,7 +103,7 @@ SELECT a, replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b, replace(re
 4	NULL	x	10
 5	a	|x	11
 6	c	x	12
-7	c"|	y	13
+7	c"|x	y	13
 10	 	x	14
 11	m<LF>l	x	15
 12	ppppppppppppppppppppppppppppppppppp	x	16
@@ -174,7 +174,7 @@ SELECT a, replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b, replace(re
 4	NULL	x	10
 5	a	|x	11
 6	c	x	12
-7	c"|	y	13
+7	c"|x	y	13
 10	 	x	14
 11	m<CR><LF>l	x	15
 12	ppppppppppppppppppppppp	x	16
@@ -248,7 +248,7 @@ SELECT a, replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b, replace(re
 4	NULL	x	10
 5	a	|x	11
 6	c	x	12
-7	c"|	y	13
+7	c"|x	y	13
 10	 	x	14
 11	m<CR><LF>l	x	15
 12	ppppppppppppppppppppppp	x	16

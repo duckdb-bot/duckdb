@@ -564,8 +564,11 @@ void DatabaseInstance::Configure(DBConfig &new_config, const char *database_path
 		config.options.access_mode = AccessMode::READ_WRITE;
 	}
 	config.http_transport_manager->Initialize(config);
-	if (database_path && !Settings::Get<EnableExternalAccessSetting>(*this)) {
-		config.AddAllowedDatabasePath(database_path);
+	if (!Settings::Get<EnableExternalAccessSetting>(*this)) {
+		if (database_path) {
+			config.AddAllowedDatabasePath(database_path);
+		}
+		// the temporary directory is needed without a database path too, so an in-memory database can spill
 		if (!config.options.temporary_directory.empty()) {
 			config.AddAllowedDirectory(config.options.temporary_directory);
 		}

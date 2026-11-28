@@ -225,6 +225,11 @@ unique_ptr<Expression> BetweenNullSimplificationRule::Apply(LogicalOperator &op,
 	if (!ExpressionExecutor::TryEvaluateScalar(GetContext(), bindings[1].get(), input_value) || !input_value.IsNull()) {
 		return nullptr;
 	}
+	// a NULL result drops the bounds, which must then not be volatile, nor able to throw inside TRY
+	if (!rewriter.CanDropExpression(BoundBetweenExpression::LowerBound(between)) ||
+	    !rewriter.CanDropExpression(BoundBetweenExpression::UpperBound(between))) {
+		return nullptr;
+	}
 	// both bound comparisons are NULL whatever the bounds are, so they need not be evaluated
 	return make_uniq<BoundConstantExpression>(Value(LogicalType::BOOLEAN));
 }

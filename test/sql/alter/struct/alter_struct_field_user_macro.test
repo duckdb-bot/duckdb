@@ -21,6 +21,21 @@ statement ok
 CREATE TABLE renamed_temp (i INT, s STRUCT(x INT, y INT));
 
 statement ok
+CREATE TABLE dropped_temp (i INT, s STRUCT(x INT, y INT));
+
+statement ok
+CREATE TABLE added_temp (i INT, s STRUCT(x INT, y INT));
+
+statement ok
+CREATE TABLE renamed_path (i INT, s STRUCT(x INT, y INT));
+
+statement ok
+CREATE TABLE dropped_path (i INT, s STRUCT(x INT, y INT));
+
+statement ok
+CREATE TABLE added_path (i INT, s STRUCT(x INT, y INT));
+
+statement ok
 INSERT INTO renamed VALUES (1, {'x': 1, 'y': 2}), (2, {'x': 3, 'y': 4});
 
 statement ok
@@ -31,6 +46,21 @@ INSERT INTO added VALUES (1, {'x': 1, 'y': 2}), (2, {'x': 3, 'y': 4});
 
 statement ok
 INSERT INTO renamed_temp VALUES (1, {'x': 1, 'y': 2}), (2, {'x': 3, 'y': 4});
+
+statement ok
+INSERT INTO dropped_temp VALUES (1, {'x': 1, 'y': 2}), (2, {'x': 3, 'y': 4});
+
+statement ok
+INSERT INTO added_temp VALUES (1, {'x': 1, 'y': 2}), (2, {'x': 3, 'y': 4});
+
+statement ok
+INSERT INTO renamed_path VALUES (1, {'x': 1, 'y': 2}), (2, {'x': 3, 'y': 4});
+
+statement ok
+INSERT INTO dropped_path VALUES (1, {'x': 1, 'y': 2}), (2, {'x': 3, 'y': 4});
+
+statement ok
+INSERT INTO added_path VALUES (1, {'x': 1, 'y': 2}), (2, {'x': 3, 'y': 4});
 
 statement ok
 INSERT INTO renamed_default (i) VALUES (1);
@@ -118,6 +148,31 @@ SELECT * FROM renamed_temp ORDER BY i
 statement ok
 DROP MACRO remap_struct;
 
+# a temporary macro that returns NULL
+statement ok
+CREATE TEMPORARY MACRO remap_struct(a, b, c, d) AS NULL;
+
+statement ok
+ALTER TABLE dropped_temp DROP COLUMN s.y;
+
+statement ok
+ALTER TABLE added_temp ADD COLUMN s.z INT DEFAULT 5;
+
+query II
+SELECT * FROM dropped_temp ORDER BY i
+----
+1	{'x': 1}
+2	{'x': 3}
+
+query II
+SELECT * FROM added_temp ORDER BY i
+----
+1	{'x': 1, 'y': 2, 'z': 5}
+2	{'x': 3, 'y': 4, 'z': 5}
+
+statement ok
+DROP MACRO remap_struct;
+
 # a macro that only the schema of the table has
 statement ok
 CREATE SCHEMA k;
@@ -129,19 +184,37 @@ statement ok
 INSERT INTO k.renamed (i) VALUES (1);
 
 statement ok
+CREATE TABLE k.added (i INT, s STRUCT(x INT) DEFAULT {'x': 1});
+
+statement ok
+INSERT INTO k.added (i) VALUES (1);
+
+statement ok
 CREATE MACRO k.remap_struct(a, b, c, d) AS NULL;
 
 statement ok
 ALTER TABLE k.renamed RENAME COLUMN s.y TO z;
 
 statement ok
+ALTER TABLE k.added ADD COLUMN s.y INT DEFAULT 5;
+
+statement ok
 INSERT INTO k.renamed (i) VALUES (2);
+
+statement ok
+INSERT INTO k.added (i) VALUES (2);
 
 query II
 SELECT * FROM k.renamed ORDER BY i
 ----
 1	{'x': 1, 'z': 2}
 2	{'x': 1, 'z': 2}
+
+query II
+SELECT * FROM k.added ORDER BY i
+----
+1	{'x': 1, 'y': 5}
+2	{'x': 1, 'y': 5}
 
 # the default of a new field is packed with the struct_pack of the system
 statement ok
@@ -172,3 +245,40 @@ query II
 SELECT * FROM packed
 ----
 1	{'x': 1, 't': {'k': 2, 'm': 7}, 'z': 5}
+
+# a macro in another schema of the search path, which stays set to the end of the test
+statement ok
+CREATE SCHEMA other;
+
+statement ok
+CREATE MACRO other.remap_struct(a, b, c, d) AS NULL;
+
+statement ok
+SET search_path = 'main,other';
+
+statement ok
+ALTER TABLE renamed_path RENAME COLUMN s.y TO z;
+
+statement ok
+ALTER TABLE dropped_path DROP COLUMN s.y;
+
+statement ok
+ALTER TABLE added_path ADD COLUMN s.z INT DEFAULT 5;
+
+query II
+SELECT * FROM renamed_path ORDER BY i
+----
+1	{'x': 1, 'z': 2}
+2	{'x': 3, 'z': 4}
+
+query II
+SELECT * FROM dropped_path ORDER BY i
+----
+1	{'x': 1}
+2	{'x': 3}
+
+query II
+SELECT * FROM added_path ORDER BY i
+----
+1	{'x': 1, 'y': 2, 'z': 5}
+2	{'x': 3, 'y': 4, 'z': 5}

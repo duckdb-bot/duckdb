@@ -1,0 +1,183 @@
+# name: test/sql/alter/struct/alter_struct_field_user_macro_storage.test
+# description: A struct field change with a user macro remap_struct or struct_pack keeps rows and defaults in the file
+# group: [struct]
+
+# the test restarts the database itself, after a checkpoint
+require skip_reload
+
+load {TEST_DIR}/alter_struct_field_user_macro_storage.db
+
+statement ok
+CREATE TABLE renamed (i INT, s STRUCT(x INT, y INT));
+
+statement ok
+CREATE TABLE dropped (i INT, s STRUCT(x INT, y INT));
+
+statement ok
+CREATE TABLE added (i INT, s STRUCT(x INT, y INT));
+
+statement ok
+INSERT INTO renamed VALUES (1, {'x': 1, 'y': 2}), (2, {'x': 3, 'y': 4});
+
+statement ok
+INSERT INTO dropped VALUES (1, {'x': 1, 'y': 2}), (2, {'x': 3, 'y': 4});
+
+statement ok
+INSERT INTO added VALUES (1, {'x': 1, 'y': 2}), (2, {'x': 3, 'y': 4});
+
+statement ok
+CREATE SCHEMA k;
+
+statement ok
+CREATE TABLE k.renamed (i INT, s STRUCT(x INT, y INT) DEFAULT {'x': 1, 'y': 2});
+
+statement ok
+CREATE TABLE k.added (i INT, s STRUCT(x INT) DEFAULT {'x': 1});
+
+statement ok
+INSERT INTO k.renamed (i) VALUES (1);
+
+statement ok
+INSERT INTO k.added (i) VALUES (1);
+
+# the default of this table has no struct literal, as its schema gets a macro named struct_pack
+statement ok
+CREATE SCHEMA p;
+
+statement ok
+CREATE TABLE p.added (i INT, s STRUCT(x INT) DEFAULT CAST(ROW(1) AS STRUCT(x INT)));
+
+statement ok
+INSERT INTO p.added (i) VALUES (1);
+
+# a second database file, with the storage of v1.0.0
+statement ok
+ATTACH '{TEST_DIR}/alter_struct_field_user_macro_storage_v1.db' AS old (STORAGE_VERSION 'v1.0.0');
+
+statement ok
+CREATE SCHEMA old.k;
+
+statement ok
+CREATE TABLE old.k.added (i INT, s STRUCT(x INT) DEFAULT {'x': 1});
+
+statement ok
+INSERT INTO old.k.added (i) VALUES (1);
+
+# macros of a user with the names of the functions, in the schemas of the tables
+statement ok
+CREATE MACRO remap_struct(a, b, c, d) AS NULL;
+
+statement ok
+CREATE MACRO k.remap_struct(a, b, c, d) AS NULL;
+
+statement ok
+CREATE MACRO p.struct_pack(y) AS NULL;
+
+statement ok
+CREATE MACRO old.k.remap_struct(a, b, c, d) AS NULL;
+
+statement ok
+ALTER TABLE renamed RENAME COLUMN s.y TO z;
+
+statement ok
+ALTER TABLE dropped DROP COLUMN s.y;
+
+statement ok
+ALTER TABLE added ADD COLUMN s.z INT DEFAULT 5;
+
+statement ok
+ALTER TABLE k.renamed RENAME COLUMN s.y TO z;
+
+statement ok
+ALTER TABLE k.added ADD COLUMN s.y INT DEFAULT 5;
+
+statement ok
+ALTER TABLE p.added ADD COLUMN s.y INT DEFAULT 5;
+
+statement ok
+ALTER TABLE old.k.added ADD COLUMN s.y INT DEFAULT 5;
+
+statement ok
+CHECKPOINT;
+
+statement ok
+CHECKPOINT old;
+
+restart
+
+# the rows as the file has them
+query II
+SELECT * FROM renamed ORDER BY i
+----
+1	{'x': 1, 'z': 2}
+2	{'x': 3, 'z': 4}
+
+query II
+SELECT * FROM dropped ORDER BY i
+----
+1	{'x': 1}
+2	{'x': 3}
+
+query II
+SELECT * FROM added ORDER BY i
+----
+1	{'x': 1, 'y': 2, 'z': 5}
+2	{'x': 3, 'y': 4, 'z': 5}
+
+# the rewritten defaults call the functions by their names in the system catalog
+query I
+SELECT count(*) FROM duckdb_columns() WHERE column_name = 's' AND column_default LIKE '"system".main.remap_struct(%'
+----
+3
+
+query I
+SELECT count(*) FROM duckdb_columns() WHERE column_default LIKE '%, "system".main.struct_pack(y := 5))'
+----
+2
+
+# and an insert calls those functions, also with the macro of the user in the schema of the table
+statement ok
+INSERT INTO k.renamed (i) VALUES (2);
+
+statement ok
+INSERT INTO k.added (i) VALUES (2);
+
+statement ok
+INSERT INTO p.added (i) VALUES (2);
+
+query II
+SELECT * FROM k.renamed ORDER BY i
+----
+1	{'x': 1, 'z': 2}
+2	{'x': 1, 'z': 2}
+
+query II
+SELECT * FROM k.added ORDER BY i
+----
+1	{'x': 1, 'y': 5}
+2	{'x': 1, 'y': 5}
+
+query II
+SELECT * FROM p.added ORDER BY i
+----
+1	{'x': 1, 'y': 5}
+2	{'x': 1, 'y': 5}
+
+# the file with the storage of v1.0.0 stores the default the same way
+statement ok
+ATTACH '{TEST_DIR}/alter_struct_field_user_macro_storage_v1.db' AS old;
+
+query I
+SELECT column_default LIKE '"system".main.remap_struct(%, "system".main.struct_pack(y := 5))'
+FROM duckdb_columns() WHERE database_name = 'old' AND column_name = 's'
+----
+true
+
+statement ok
+INSERT INTO old.k.added (i) VALUES (2);
+
+query II
+SELECT * FROM old.k.added ORDER BY i
+----
+1	{'x': 1, 'y': 5}
+2	{'x': 1, 'y': 5}

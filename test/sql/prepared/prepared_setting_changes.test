@@ -78,6 +78,10 @@ EXECUTE wide_cast;
 ----
 exceeds the maximum DECIMAL width of 38
 
+# RESET is a change as well
+statement ok
+PREPARE decimal_type AS SELECT typeof(1::DECIMAL(30,0) * 1::DECIMAL(30,0));
+
 query I
 EXECUTE decimal_type;
 ----
@@ -87,11 +91,11 @@ statement ok
 RESET max_decimal_width;
 
 query I
-EXECUTE wide_cast;
+EXECUTE decimal_type;
 ----
-DECIMAL(50,0)
+DECIMAL(60,0)
 
-# the order of NULLs, the order and the collation
+# settings of the database, the order of NULLs, the order and the collation
 statement ok
 PREPARE null_order AS SELECT x FROM (VALUES (1), (NULL)) t(x) ORDER BY x;
 
@@ -127,7 +131,15 @@ EXECUTE string_comparison;
 ----
 true
 
-# RESET is a change as well
+statement ok
+PREPARE null_order AS SELECT x FROM (VALUES (1), (NULL)) t(x) ORDER BY x;
+
+statement ok
+PREPARE value_order AS SELECT x FROM (VALUES (1), (2)) t(x) ORDER BY x;
+
+statement ok
+PREPARE string_comparison AS SELECT 'a' = 'A';
+
 statement ok
 RESET default_null_order;
 
@@ -156,6 +168,9 @@ false
 
 # the session value of a setting that is set for the database by default
 statement ok
+PREPARE null_order AS SELECT x FROM (VALUES (1), (NULL)) t(x) ORDER BY x;
+
+statement ok
 SET SESSION default_null_order = 'nulls_first';
 
 query I
@@ -163,6 +178,9 @@ EXECUTE null_order;
 ----
 NULL
 1
+
+statement ok
+PREPARE null_order AS SELECT x FROM (VALUES (1), (NULL)) t(x) ORDER BY x;
 
 statement ok
 RESET SESSION default_null_order;
@@ -207,10 +225,26 @@ EXECUTE subquery;
 1
 
 statement ok
+PREPARE division AS SELECT 1.0::DOUBLE / 0::DOUBLE;
+
+statement ok
+PREPARE subquery AS SELECT (SELECT x FROM (VALUES (1), (2)) t(x) ORDER BY x);
+
+statement ok
 RESET ieee_floating_point_ops;
 
 statement ok
 RESET scalar_subquery_error_on_multiple_rows;
+
+query I
+EXECUTE division;
+----
+inf
+
+statement error
+EXECUTE subquery;
+----
+More than one row returned by a subquery
 
 # the search path
 statement ok
@@ -254,6 +288,12 @@ EXECUTE macro_name;
 second
 
 statement ok
+PREPARE type_name AS SELECT enum_range(NULL::e);
+
+statement ok
+PREPARE macro_name AS SELECT label();
+
+statement ok
 USE s1;
 
 query I
@@ -265,6 +305,12 @@ query I
 EXECUTE macro_name;
 ----
 first
+
+statement ok
+PREPARE type_name AS SELECT enum_range(NULL::e);
+
+statement ok
+PREPARE macro_name AS SELECT label();
 
 statement ok
 RESET search_path;

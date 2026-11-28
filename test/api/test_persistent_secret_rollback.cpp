@@ -1,5 +1,4 @@
 #include "catch.hpp"
-#include "duckdb/common/local_file_system.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/main/config.hpp"
 #include "test_helpers.hpp"
@@ -11,7 +10,7 @@ using namespace duckdb;
 namespace {
 
 vector<string> SecretFiles(const string &secret_dir) {
-	LocalFileSystem local;
+	auto &local = TestLocalFileSystem();
 	vector<string> result;
 	if (!local.DirectoryExists(secret_dir)) {
 		return result;
@@ -25,7 +24,7 @@ vector<string> SecretFiles(const string &secret_dir) {
 
 TEST_CASE("A rolled back statement does not remove the legacy file of another secret", "[api][secrets]") {
 	auto secret_dir = TestCreatePath("persistent_secret_rollback_legacy");
-	LocalFileSystem local;
+	auto &local = TestLocalFileSystem();
 	{
 		auto config = GetTestConfig();
 		DuckDB db(nullptr, config.get());
@@ -63,7 +62,7 @@ TEST_CASE("A rolled back statement does not remove the legacy file of another se
 TEST_CASE("A file that cannot be restored on rollback does not stop the other files from being restored",
           "[api][secrets]") {
 	auto secret_dir = TestCreatePath("persistent_secret_rollback_obstructed");
-	LocalFileSystem local;
+	auto &local = TestLocalFileSystem();
 	auto config = GetTestConfig();
 	DuckDB db(nullptr, config.get());
 	Connection con(db);
@@ -105,7 +104,7 @@ TEST_CASE("A file that cannot be restored on rollback does not stop the other fi
 TEST_CASE("A failed commit rolls back every connection state even when a secret file cannot be restored",
           "[api][secrets]") {
 	auto secret_dir = TestCreatePath("persistent_secret_rollback_failed_commit");
-	LocalFileSystem local;
+	auto &local = TestLocalFileSystem();
 	auto config = GetTestConfig();
 	DuckDB db(nullptr, config.get());
 	Connection con(db);
@@ -140,7 +139,7 @@ TEST_CASE("A failed commit rolls back every connection state even when a secret 
 
 TEST_CASE("A failed secret write that changes no file leaves nothing for rollback to repair", "[api][secrets]") {
 	auto secret_dir = TestCreatePath("persistent_secret_rollback_failed_write");
-	LocalFileSystem local;
+	auto &local = TestLocalFileSystem();
 	{
 		auto config = GetTestConfig();
 		DuckDB db(nullptr, config.get());
@@ -198,7 +197,7 @@ TEST_CASE("A failed secret write that changes no file leaves nothing for rollbac
 
 TEST_CASE("Rolling back a secret replacement restores the old secret in the same legacy file", "[api][secrets]") {
 	auto secret_dir = TestCreatePath("persistent_secret_rollback_legacy_replacement");
-	LocalFileSystem local;
+	auto &local = TestLocalFileSystem();
 	{
 		auto config = GetTestConfig();
 		DuckDB db(nullptr, config.get());
@@ -234,7 +233,7 @@ TEST_CASE("Rolling back a secret replacement restores the old secret in the same
 
 TEST_CASE("A rollback does not read the other files of the secret directory", "[api][secrets]") {
 	auto secret_dir = TestCreatePath("persistent_secret_rollback_unrelated_file");
-	LocalFileSystem local;
+	auto &local = TestLocalFileSystem();
 	{
 		auto config = GetTestConfig();
 		DuckDB db(nullptr, config.get());

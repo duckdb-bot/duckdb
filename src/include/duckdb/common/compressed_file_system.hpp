@@ -11,7 +11,7 @@
 #include "duckdb/common/allocator.hpp"
 #include "duckdb/common/atomic.hpp"
 #include "duckdb/common/common.hpp"
-#include "duckdb/common/file_system.hpp"
+#include "duckdb/common/base_file_system.hpp"
 #include "duckdb/common/query_context.hpp"
 
 namespace duckdb {
@@ -44,7 +44,7 @@ struct StreamWrapper {
 	DUCKDB_API virtual void AbortWrite();
 };
 
-class CompressedFileSystem : public FileSystem {
+class CompressedFileSystem : public BaseFileSystem {
 public:
 	DUCKDB_API int64_t Read(FileHandle &handle, void *buffer, int64_t nr_bytes) override;
 	DUCKDB_API int64_t Write(FileHandle &handle, void *buffer, int64_t nr_bytes) override;
@@ -89,6 +89,8 @@ public:
 	DUCKDB_API int64_t WriteData(data_ptr_t buffer, int64_t nr_bytes);
 	DUCKDB_API void Close() override;
 	DUCKDB_API void AbortCompressedWrite();
+	//! Counts bytes the stream read from the child handle itself, outside ReadData (e.g. a header), as consumed
+	DUCKDB_API void AddConsumedBytes(idx_t bytes);
 
 private:
 	void Clear(); // for Initialize re-use to support FS.Reset()

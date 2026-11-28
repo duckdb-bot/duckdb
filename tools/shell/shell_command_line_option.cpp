@@ -1,5 +1,6 @@
 #include "shell_state.hpp"
 #include "shell_highlight.hpp"
+#include "shell_thread_stack_size.hpp"
 #include "terminal.hpp"
 
 namespace duckdb_shell {
@@ -86,6 +87,12 @@ MetadataResult AllowUnsigned(ShellState &state, const vector<string> &args) {
 	return MetadataResult::SUCCESS;
 }
 
+MetadataResult DisableBuiltinExtensions(ShellState &state, const vector<string> &args) {
+	state.config.options.load_extensions = false;
+	state.config.options.register_extension_overloads = false;
+	return MetadataResult::SUCCESS;
+}
+
 MetadataResult ShowVersionAndExit(ShellState &state, const vector<string> &args) {
 	printf("%s (%s) %s\n", duckdb::DuckDB::LibraryVersion(), duckdb::DuckDB::ReleaseCodename(),
 	       duckdb::DuckDB::SourceID());
@@ -101,8 +108,7 @@ MetadataResult LaunchUI(ShellState &state, const vector<string> &args) {
 	// run the UI command
 	auto rc = state.RunInitialCommand((char *)state.ui_command.c_str(), true);
 	if (rc != 0) {
-		ShellState::Exit(rc);
-		return MetadataResult::EXIT;
+		return MetadataResult::FAIL;
 	}
 	return MetadataResult::SUCCESS;
 }
@@ -152,13 +158,11 @@ bool ShellState::ExpandCommandParameters(const string &command, string &result) 
 static MetadataResult RunConfiguredCommand(ShellState &state, const string &command) {
 	string expanded_command;
 	if (!state.ExpandCommandParameters(command, expanded_command)) {
-		ShellState::Exit(1);
-		return MetadataResult::EXIT;
+		return MetadataResult::FAIL;
 	}
 	auto rc = state.RunInitialCommand(expanded_command.c_str(), true);
 	if (rc != 0) {
-		ShellState::Exit(rc);
-		return MetadataResult::EXIT;
+		return MetadataResult::FAIL;
 	}
 	return MetadataResult::SUCCESS;
 }
@@ -199,7 +203,6 @@ MetadataResult MarkClientMode(ShellState &state, const vector<string> &args) {
 	string type, secret;
 	if (!ParseConnectionTarget(state, "connect", args[1], type, secret)) {
 		ShellState::Exit(1);
-		return MetadataResult::EXIT;
 	}
 	state.command_parameters["type"] = type;
 	if (!secret.empty()) {
@@ -215,14 +218,12 @@ MetadataResult SetServeTarget(ShellState &state, const vector<string> &args) {
 	string type, secret;
 	if (!ParseConnectionTarget(state, "serve", args[1], type, secret)) {
 		ShellState::Exit(1);
-		return MetadataResult::EXIT;
 	}
 	if (!StringUtil::CIEquals(type, SERVE_TYPE)) {
 		state.PrintF(PrintOutput::STDERR,
 		             "%s: Error: cannot serve a database of type '%s' - only '%s' is supported by '-serve'\n",
 		             state.program_name, type.c_str(), SERVE_TYPE);
 		ShellState::Exit(1);
-		return MetadataResult::EXIT;
 	}
 	if (!secret.empty()) {
 		state.command_parameters["serve_secret"] = StringUtil::Format(", secret='%s'", QuoteSecretName(secret));
@@ -265,8 +266,7 @@ MetadataResult ProcessFile(ShellState &state, const vector<string> &args) {
 	state.readStdin = false;
 	auto &file = args[1];
 	if (!state.ProcessFile(file)) {
-		ShellState::Exit(1);
-		return MetadataResult::EXIT;
+		return MetadataResult::FAIL;
 	}
 	return MetadataResult::SUCCESS;
 }
@@ -294,8 +294,7 @@ MetadataResult RunCommand(ShellState &state, const vector<string> &args) {
 	auto &cmd = args[1];
 	auto rc = state.RunInitialCommand(cmd.c_str(), bail);
 	if (rc != 0) {
-		ShellState::Exit(rc);
-		return MetadataResult::EXIT;
+		return MetadataResult::FAIL;
 	}
 	return MetadataResult::SUCCESS;
 }
@@ -304,8 +303,7 @@ MetadataResult RunManual(ShellState &state, const vector<string> &args) {
 	// show the manual page and exit; unlike -c we keep interactive detection so the output stays colored
 	state.readStdin = false;
 	if (state.DisplayManual(args) == MetadataResult::FAIL) {
-		ShellState::Exit(1);
-		return MetadataResult::EXIT;
+		return MetadataResult::FAIL;
 	}
 	return MetadataResult::SUCCESS;
 }
@@ -389,6 +387,8 @@ static const CommandLineOption command_line_options[] = {
     {"markdown", 0, "", MarkOutputModeFlag, ToggleOutputMode<RenderMode::MARKDOWN>, "set output mode to 'markdown'"},
     {"newline", 1, "SEP", nullptr, SetNewlineSeparator, "set output row separator. Default: '\\n'"},
     {"no-agent", 0, "", SetAgentMode<OptionType::OFF>, nullptr, "never render output for an AI coding agent"},
+    {"no-builtin-extensions", 0, "", DisableBuiltinExtensions, nullptr,
+     "skip loading built-in extensions and registering autoload placeholders"},
     {"no-init", 0, "", SkipInit, nullptr, "skip processing the init file"},
     {"no-stdin", 0, "", nullptr, DisableStdin, "exit after processing options instead of reading stdin"},
     {"noheader", 0, "", nullptr, ToggleHeader<false>, "turn headers off"},
@@ -403,6 +403,8 @@ static const CommandLineOption command_line_options[] = {
     {"storage-version", 1, "VER", SetStorageVersion, nullptr,
      "database storage compatibility version to use. Default: 'v0.10.0'"},
     {"table", 0, "", MarkOutputModeFlag, ToggleOutputMode<RenderMode::TABLE>, "set output mode to 'table'"},
+    {"thread-stack-size", 1, "BYTES", SetThreadStackSize, nullptr,
+     "set the default worker thread stack size (Linux/glibc only)"},
     {"ui", 0, "", nullptr, LaunchUI, "launches a web interface using the ui extension (configurable with .ui_command)"},
     {"unredacted", 0, "", AllowUnredacted, nullptr, "allow printing unredacted secrets"},
     {"unsigned", 0, "", AllowUnsigned, nullptr, "allow loading of unsigned extensions"},

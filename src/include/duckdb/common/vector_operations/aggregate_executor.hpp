@@ -233,6 +233,42 @@ private:
 		}
 	}
 
+#if !DUCKDB_SMALLER_BINARY(aggregate_executor_flat)
+	template <class STATE_TYPE, class A_TYPE, class B_TYPE, class OP>
+	static inline void BinaryFlatLoop(const A_TYPE *__restrict adata, AggregateInputData &aggr_input_data,
+	                                  const B_TYPE *__restrict bdata, STATE_TYPE **__restrict states, idx_t count,
+	                                  const ValidityMask &avalidity, const ValidityMask &bvalidity) {
+		AggregateBinaryInput input(aggr_input_data, avalidity, bvalidity);
+		if (OP::IgnoreNull() && (avalidity.CanHaveNull() || bvalidity.CanHaveNull())) {
+			const auto entry_count = ValidityMask::EntryCount(count);
+			for (idx_t entry_idx = 0; entry_idx < entry_count; entry_idx++) {
+				auto validity_entry = avalidity.GetValidityEntry(entry_idx) & bvalidity.GetValidityEntry(entry_idx);
+				const auto start = entry_idx * ValidityMask::BITS_PER_VALUE;
+				const auto next = MinValue<idx_t>(start + ValidityMask::BITS_PER_VALUE, count);
+				if (ValidityMask::AllValid(validity_entry)) {
+					for (idx_t i = start; i < next; i++) {
+						input.lidx = input.ridx = i;
+						OP::template Operation<A_TYPE, B_TYPE, STATE_TYPE, OP>(*states[i], adata[i], bdata[i], input);
+					}
+				} else {
+					validity_entry &= ValidityMask::EntryWithValidBits(next - start);
+					while (validity_entry) {
+						const auto i = start + CountZeros<validity_t>::Trailing(validity_entry);
+						input.lidx = input.ridx = i;
+						OP::template Operation<A_TYPE, B_TYPE, STATE_TYPE, OP>(*states[i], adata[i], bdata[i], input);
+						validity_entry &= validity_entry - 1;
+					}
+				}
+			}
+		} else {
+			for (idx_t i = 0; i < count; i++) {
+				input.lidx = input.ridx = i;
+				OP::template Operation<A_TYPE, B_TYPE, STATE_TYPE, OP>(*states[i], adata[i], bdata[i], input);
+			}
+		}
+	}
+#endif
+
 	template <class STATE_TYPE, class A_TYPE, class B_TYPE, class OP>
 	static inline void BinaryScatterLoop(const A_TYPE *__restrict adata, AggregateInputData &aggr_input_data,
 	                                     const B_TYPE *__restrict bdata, STATE_TYPE **__restrict states, idx_t count,
@@ -812,6 +848,16 @@ public:
 
 	template <class STATE_TYPE, class A_TYPE, class B_TYPE, class OP>
 	static void BinaryScatter(AggregateInputData &aggr_input_data, Vector &a, Vector &b, Vector &states, idx_t count) {
+#if !DUCKDB_SMALLER_BINARY(aggregate_executor_flat)
+		if (OP::IgnoreNull() && a.GetVectorType() == VectorType::FLAT_VECTOR &&
+		    b.GetVectorType() == VectorType::FLAT_VECTOR && states.GetVectorType() == VectorType::FLAT_VECTOR) {
+			BinaryFlatLoop<STATE_TYPE, A_TYPE, B_TYPE, OP>(FlatVector::GetData<A_TYPE>(a), aggr_input_data,
+			                                               FlatVector::GetData<B_TYPE>(b),
+			                                               FlatVector::GetDataMutable<STATE_TYPE *>(states), count,
+			                                               FlatVector::Validity(a), FlatVector::Validity(b));
+			return;
+		}
+#endif
 		UnifiedVectorFormat adata, bdata, sdata;
 
 		a.ToUnifiedFormat(adata);
@@ -889,6 +935,10 @@ public:
 			return *reinterpret_cast<STATE_TYPE *>(storage);
 		}
 
+		AggregateInputData &GetInput() {
+			return aggr_input_data;
+		}
+
 		void Initialize() {
 			D_ASSERT(!initialized);
 			InitializeState<STATE_TYPE, OP>(Get());
@@ -909,34 +959,56 @@ public:
 		bool initialized = false;
 	};
 
+	//! Whether the aggregate's combine never leaves the target referencing the source's memory
+	DUCKDB_API static bool CombineNeverRetainsSource(const AggregateInputData &aggr_input_data);
+
 	template <class STATE_TYPE, class OP>
 	static void GenericRepeatedCombine(const STATE_TYPE &source, STATE_TYPE &target,
 	                                   AggregateInputData &aggr_input_data, idx_t multiplicity) {
 		AggregateInputData combine_input(aggr_input_data.function, aggr_input_data.bind_data, aggr_input_data.allocator,
 		                                 AggregateCombineType::PRESERVE_INPUT);
+		// if the final combine copies what the target keeps, each intermediate state gets a scratch arena, which is
+		// reset when the state is replaced
+		const bool scratch = CombineNeverRetainsSource(aggr_input_data);
+		auto &underlying_allocator = aggr_input_data.allocator.GetUnderlyingAllocator();
+		ArenaAllocator result_arena(underlying_allocator);
+		ArenaAllocator power_arena_a(underlying_allocator);
+		ArenaAllocator power_arena_b(underlying_allocator);
+		AggregateInputData result_input(aggr_input_data.function, aggr_input_data.bind_data,
+		                                scratch ? result_arena : aggr_input_data.allocator,
+		                                AggregateCombineType::PRESERVE_INPUT);
+		AggregateInputData power_input_a(aggr_input_data.function, aggr_input_data.bind_data,
+		                                 scratch ? power_arena_a : aggr_input_data.allocator,
+		                                 AggregateCombineType::PRESERVE_INPUT);
+		AggregateInputData power_input_b(aggr_input_data.function, aggr_input_data.bind_data,
+		                                 scratch ? power_arena_b : aggr_input_data.allocator,
+		                                 AggregateCombineType::PRESERVE_INPUT);
 
-		AggregateStateGuard<STATE_TYPE, OP> result(combine_input);
-		AggregateStateGuard<STATE_TYPE, OP> power_a(combine_input);
-		AggregateStateGuard<STATE_TYPE, OP> power_b(combine_input);
+		AggregateStateGuard<STATE_TYPE, OP> result(result_input);
+		AggregateStateGuard<STATE_TYPE, OP> power_a(power_input_a);
+		AggregateStateGuard<STATE_TYPE, OP> power_b(power_input_b);
 
 		result.Initialize();
 		power_a.Initialize();
-		OP::template Combine<STATE_TYPE, OP>(source, power_a.Get(), combine_input);
+		OP::template Combine<STATE_TYPE, OP>(source, power_a.Get(), power_input_a);
 
 		auto power = &power_a;
 		auto next_power = &power_b;
 		while (multiplicity > 0) {
 			if (multiplicity & 1) {
-				OP::template Combine<STATE_TYPE, OP>(power->Get(), result.Get(), combine_input);
+				OP::template Combine<STATE_TYPE, OP>(power->Get(), result.Get(), result_input);
 			}
 			multiplicity >>= 1;
 			if (multiplicity == 0) {
 				break;
 			}
 			next_power->Initialize();
-			OP::template Combine<STATE_TYPE, OP>(power->Get(), next_power->Get(), combine_input);
-			OP::template Combine<STATE_TYPE, OP>(power->Get(), next_power->Get(), combine_input);
+			OP::template Combine<STATE_TYPE, OP>(power->Get(), next_power->Get(), next_power->GetInput());
+			OP::template Combine<STATE_TYPE, OP>(power->Get(), next_power->Get(), next_power->GetInput());
 			power->Destroy();
+			if (scratch) {
+				power->GetInput().allocator.Reset();
+			}
 			std::swap(power, next_power);
 		}
 		OP::template Combine<STATE_TYPE, OP>(result.Get(), target, combine_input);
@@ -980,7 +1052,7 @@ public:
 			}
 			const auto multiplicity = multiplicity_data[multiplicity_idx];
 			if (multiplicity < 0) {
-				throw InvalidInputException("combine_aggr multiplicity must be non-negative");
+				InvalidInputException::Throw("combine_aggr multiplicity must be non-negative");
 			}
 			if (multiplicity == 0) {
 				continue;

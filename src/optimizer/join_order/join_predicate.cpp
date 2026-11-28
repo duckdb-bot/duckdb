@@ -1,9 +1,26 @@
 #include "duckdb/optimizer/join_order/join_predicate.hpp"
+#include "duckdb/planner/expression/bound_cast_expression.hpp"
+#include "duckdb/planner/expression/bound_columnref_expression.hpp"
 
 #include "duckdb/common/assert.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
 
 namespace duckdb {
+
+ColumnBinding JoinOrderUtil::GetEquivalenceBinding(const Expression &expression) {
+	if (expression.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
+		auto &colref = expression.Cast<BoundColumnRefExpression>();
+		return colref.Depth() == 0 ? colref.Binding() : ColumnBinding();
+	}
+	if (BoundCastExpression::IsCast(expression)) {
+		auto &cast = expression.Cast<BoundFunctionExpression>();
+		if (!BoundCastExpression::IsTryCast(cast) &&
+		    BoundCastExpression::CastIsInvertible(BoundCastExpression::SourceType(cast), cast.GetReturnType())) {
+			return GetEquivalenceBinding(BoundCastExpression::Child(cast));
+		}
+	}
+	return ColumnBinding();
+}
 
 ExpressionType JoinOrderUtil::GetJoinPredicateComparisonType(const FilterInfo &filter) {
 	if (!filter.filter) {
@@ -70,7 +87,8 @@ JoinPredicate::JoinPredicate(idx_t index, FilterInfo &filter, JoinPredicateClass
                              ColumnBinding left_equality_binding, ColumnBinding right_equality_binding)
     : index(index), filter(filter), predicate_class(predicate_class),
       comparison_type(JoinOrderUtil::GetJoinPredicateComparisonType(filter)),
-      left_equality_binding(left_equality_binding), right_equality_binding(right_equality_binding) {
+      is_volatile(filter.filter && filter.filter->IsVolatile()), left_equality_binding(left_equality_binding),
+      right_equality_binding(right_equality_binding) {
 }
 
 idx_t JoinPredicate::GetIndex() const {
@@ -93,6 +111,10 @@ ExpressionType JoinPredicate::GetComparisonType() const {
 	return comparison_type;
 }
 
+bool JoinPredicate::IsVolatile() const {
+	return is_volatile;
+}
+
 JoinRelationSet &JoinPredicate::GetSet() const {
 	return filter.get().set;
 }
@@ -113,6 +135,14 @@ optional_ptr<JoinRelationSet> JoinPredicate::GetLeftSetOptional() const {
 
 optional_ptr<JoinRelationSet> JoinPredicate::GetRightSetOptional() const {
 	return filter.get().right_set;
+}
+
+optional_ptr<JoinRelationSet> JoinPredicate::GetSemanticLeftSetOptional() const {
+	return filter.get().semantic_left_set;
+}
+
+optional_ptr<JoinRelationSet> JoinPredicate::GetSemanticRightSetOptional() const {
+	return filter.get().semantic_right_set;
 }
 
 const ColumnBinding &JoinPredicate::GetStatsBinding(bool left) const {
@@ -153,6 +183,23 @@ bool JoinPredicate::CanBuildSelectivityDomain() const {
 
 bool JoinPredicate::IsEquivalencePredicate() const {
 	return CanBuildEqualityClosure();
+}
+
+bool JoinPredicate::IsResidualFilter() const {
+	auto &info = filter.get();
+	if (info.join_type != JoinType::INNER) {
+		return false;
+	}
+	// FILTERs collected from inside this join region are not included in leaf statistics.
+	// An unsupported expression still has one fallback estimate and one runtime owner.
+	if (info.from_logical_filter && !CanBuildEqualityClosure() && !CanBuildSelectivityDomain()) {
+		return true;
+	}
+	if (info.set.get().count < 2 && !info.source_operator_index.IsValid()) {
+		return false;
+	}
+	return info.must_remain_filter || info.from_residual_predicate ||
+	       (info.filter && info.filter->GetExpressionType() == ExpressionType::CONJUNCTION_OR);
 }
 
 void JoinPredicate::SetEqualityClassIndex(optional_idx equality_class_index) {
@@ -230,7 +277,6 @@ void JoinPredicateModel::Clear() {
 	equality_join_predicates.clear();
 	selectivity_predicates.clear();
 	graph_predicates.clear();
-	has_left_join_predicates = false;
 	equality_classes.clear();
 	equality_pairs.clear();
 }
@@ -243,9 +289,6 @@ JoinPredicate &JoinPredicateModel::RegisterPredicate(FilterInfo &filter, JoinPre
 	auto &result = *predicate;
 	predicates.push_back(std::move(predicate));
 	all_predicates.push_back(result);
-	if (predicate_class == JoinPredicateClass::LEFT_JOIN) {
-		has_left_join_predicates = true;
-	}
 	if (result.HasDisjointJoinEndpoints()) {
 		graph_predicates.push_back(result);
 	}
@@ -268,6 +311,18 @@ void JoinPredicateModel::AddDirectEqualityPairClass(JoinRelationSet &pair, idx_t
 	equality_pairs[pair].AddEquality(equality_class_index, first_binding, second_binding);
 }
 
+optional_ptr<const JoinPredicate> JoinPredicateModel::GetPredicateByFilterIndex(idx_t filter_index) const {
+	if (filter_index >= all_predicates.size()) {
+		return nullptr;
+	}
+	auto &predicate = all_predicates[filter_index].get();
+	D_ASSERT(predicate.GetIndex() == filter_index);
+	if (predicate.GetFilter().filter_index != filter_index) {
+		return nullptr;
+	}
+	return predicate;
+}
+
 const vector<reference<JoinPredicate>> &JoinPredicateModel::GetPredicates() const {
 	return all_predicates;
 }
@@ -288,16 +343,17 @@ const vector<JoinEqualityClass> &JoinPredicateModel::GetEqualityClasses() const 
 	return equality_classes;
 }
 
-bool JoinPredicateModel::HasLeftJoinPredicates() const {
-	return has_left_join_predicates;
+optional_ptr<const RelationPairEqualitySummary> JoinPredicateModel::GetDirectEqualityPair(JoinRelationSet &pair) const {
+	auto entry = equality_pairs.find(pair);
+	if (entry == equality_pairs.end()) {
+		return nullptr;
+	}
+	return entry->second;
 }
 
 bool JoinPredicateModel::HasDirectCompositeEquality(JoinRelationSet &pair) const {
-	auto entry = equality_pairs.find(pair);
-	if (entry == equality_pairs.end()) {
-		return false;
-	}
-	return entry->second.HasDirectCompositeEquality();
+	auto summary = GetDirectEqualityPair(pair);
+	return summary && summary->HasDirectCompositeEquality();
 }
 
 } // namespace duckdb

@@ -81,14 +81,26 @@ public:
 
 public:
 	static MultiFileColumnDefinition CreateFromNameAndType(const Identifier &name, const LogicalType &type) {
-		MultiFileColumnDefinition result(name, type);
-		if (type.id() == LogicalTypeId::STRUCT) {
-			// recursively create for children
-			for (auto &child_entry : StructType::GetChildTypes(type)) {
-				result.children.push_back(CreateFromNameAndType(child_entry.first, child_entry.second));
+		MultiFileColumnDefinition root(name, type);
+		// the structs that still need their fields are kept on an explicit stack, so that deeply nested types cannot
+		// overflow the call stack
+		vector<reference<MultiFileColumnDefinition>> pending;
+		pending.push_back(root);
+		while (!pending.empty()) {
+			auto &result = pending.back().get();
+			pending.pop_back();
+			if (result.type.id() != LogicalTypeId::STRUCT) {
+				continue;
+			}
+			// the fields are created in place, and stay there while their own fields are added
+			auto &child_types = StructType::GetChildTypes(result.type);
+			result.children.reserve(child_types.size());
+			for (auto &child_entry : child_types) {
+				result.children.emplace_back(child_entry.first, child_entry.second);
+				pending.push_back(result.children.back());
 			}
 		}
-		return result;
+		return root;
 	}
 
 	//! The definition of a column, with a child for every nested field an identifier can be attached to: the fields of

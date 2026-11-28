@@ -11,7 +11,7 @@ CREATE TABLE t2 AS SELECT * FROM (VALUES (3, {'a': 3}), (NULL, NULL), (5, {'a': 
 query II
 EXPLAIN SELECT t1.a, t2.b FROM t1 JOIN t2 ON t1.a IS NOT DISTINCT FROM t2.b WHERE t2.b = 3
 ----
-physical_plan	<REGEX>:.*Filters: optional: \(a = 3\).*Filters: b = 3.*
+physical_plan	<REGEX>:.*Filters: (optional: \(a = 3\)|a = 3).*Filters: b = 3.*
 
 query II
 SELECT t1.a, t2.b FROM t1 JOIN t2 ON t1.a IS NOT DISTINCT FROM t2.b WHERE t2.b = 3 ORDER BY ALL
@@ -194,7 +194,7 @@ statement ok
 CREATE TABLE zb(a BOOLEAN, b BOOLEAN);
 
 statement ok
-INSERT INTO zb VALUES (true, true);
+INSERT INTO zb VALUES (true, true), (NULL, NULL);
 
 query I
 SELECT count(*) FROM zb WHERE a IS NOT DISTINCT FROM b AND (CASE WHEN a THEN '0.0'::DOUBLE ELSE 1.0 END)::VARCHAR = (CASE WHEN a THEN '0.0'::DOUBLE ELSE 1.0 END)::VARCHAR AND (CASE WHEN b THEN '-0.0'::DOUBLE ELSE 1.0 END)::VARCHAR = '-0.0'

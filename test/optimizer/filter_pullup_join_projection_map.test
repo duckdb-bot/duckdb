@@ -25,7 +25,7 @@ statement ok
 CREATE TABLE text_rows AS SELECT i AS k, CASE WHEN i = 7 THEN 'bad' ELSE i::VARCHAR END AS s FROM range(100) t(i);
 
 statement ok
-CREATE SECURE VIEW secure_inner AS SELECT k, w FROM inner_rows WHERE w < 500;
+CREATE TEMP SECURE VIEW secure_inner AS SELECT k, w FROM inner_rows WHERE w < 500;
 
 # A constraint on the outer key of a lateral join also filters the scan of the inner table.
 query II

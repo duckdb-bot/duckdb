@@ -65,6 +65,19 @@ static bool NeedsEarlyJoinKeys(LogicalOperator &op) {
 	return false;
 }
 
+static bool HasVolatileCondition(const LogicalOperator &join) {
+	if (join.type == LogicalOperatorType::LOGICAL_ANY_JOIN) {
+		return join.Cast<LogicalAnyJoin>().condition->IsVolatile();
+	}
+	for (auto &condition : join.Cast<LogicalComparisonJoin>().conditions) {
+		if (condition.IsComparison() ? condition.GetLHS().IsVolatile() || condition.GetRHS().IsVolatile()
+		                             : condition.GetJoinExpression().IsVolatile()) {
+			return true;
+		}
+	}
+	return false;
+}
+
 static bool IsInnerJoinWithProjectionMap(const LogicalOperator &op) {
 	return op.HasProjectionMap() && op.type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN &&
 	       op.Cast<LogicalComparisonJoin>().join_type == JoinType::INNER;
@@ -124,17 +137,8 @@ unique_ptr<LogicalOperator> FilterPullup::PullupJoin(unique_ptr<LogicalOperator>
 	         op->type == LogicalOperatorType::LOGICAL_ASOF_JOIN || op->type == LogicalOperatorType::LOGICAL_ANY_JOIN ||
 	         op->type == LogicalOperatorType::LOGICAL_DELIM_JOIN);
 	auto &join = op->Cast<LogicalJoin>();
-	if (op->type == LogicalOperatorType::LOGICAL_ANY_JOIN) {
-		if (op->Cast<LogicalAnyJoin>().condition->IsVolatile()) {
-			return FinishPullup(std::move(op));
-		}
-	} else {
-		for (auto &condition : op->Cast<LogicalComparisonJoin>().conditions) {
-			if (condition.IsComparison() ? condition.GetLHS().IsVolatile() || condition.GetRHS().IsVolatile()
-			                             : condition.GetJoinExpression().IsVolatile()) {
-				return FinishPullup(std::move(op));
-			}
-		}
+	if (HasVolatileCondition(*op)) {
+		return FinishPullup(std::move(op));
 	}
 	if (can_add_column && (join.join_type != JoinType::INNER || op->type == LogicalOperatorType::LOGICAL_ASOF_JOIN)) {
 		return FinishPullup(std::move(op));
@@ -227,14 +231,11 @@ static void AddOutputConstraints(const vector<reference<const Expression>> &filt
 
 unique_ptr<LogicalOperator> FilterPullup::PullupInnerJoinWithProjectionMap(unique_ptr<LogicalOperator> op) {
 	D_ASSERT(IsInnerJoinWithProjectionMap(*op));
-	auto &join = op->Cast<LogicalComparisonJoin>();
-	for (auto &condition : join.conditions) {
-		if (condition.IsComparison() ? condition.GetLHS().IsVolatile() || condition.GetRHS().IsVolatile()
-		                             : condition.GetJoinExpression().IsVolatile()) {
-			return FinishPullup(std::move(op));
-		}
+	if (HasVolatileCondition(*op)) {
+		return FinishPullup(std::move(op));
 	}
-	// An input stays as it is, only a join of the same kind hands up copies of its constraints.
+	auto &join = op->Cast<LogicalComparisonJoin>();
+	// Each input gets a pullup of its own, only a join of the same kind hands up copies of its constraints.
 	FilterPullup left_pullup(context, IsInnerJoinWithProjectionMap(*op->children[0]), false);
 	FilterPullup right_pullup(context, IsInnerJoinWithProjectionMap(*op->children[1]), false);
 	op->children[0] = left_pullup.Rewrite(std::move(op->children[0]));

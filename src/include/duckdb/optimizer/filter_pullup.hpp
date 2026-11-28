@@ -55,6 +55,8 @@ private:
 	unique_ptr<LogicalOperator> PullupSemiJoin(unique_ptr<LogicalOperator> op);
 	//! Pullup filter in an inner join
 	unique_ptr<LogicalOperator> PullupInnerJoin(unique_ptr<LogicalOperator> op);
+	//! Pullup filter in an inner join that keeps its projection maps, its inputs exchange their key constraints
+	unique_ptr<LogicalOperator> PullupInnerJoinWithProjectionMap(unique_ptr<LogicalOperator> op);
 	//! Pullup the filters on the partitions of a window
 	unique_ptr<LogicalOperator> PullupWindow(unique_ptr<LogicalOperator> op);
 	//! Derive key constraints, retaining the original filters below the operator.

@@ -94,7 +94,7 @@ inline void SetStringOut(const char **out, idx_t *out_length, const Identifier &
 //! reads as all-empty entries.
 class string_view_array {
 public:
-	string_view_array(const char **ptrs, const idx_t *lengths, idx_t count)
+	string_view_array(const char *const *ptrs, const idx_t *lengths, idx_t count)
 	    : ptrs(ptrs), lengths(lengths), count(count) {
 	}
 
@@ -106,7 +106,7 @@ public:
 	std::string_view operator[](idx_t i) const;
 
 private:
-	const char **ptrs;
+	const char *const *ptrs;
 	const idx_t *lengths;
 	idx_t count;
 };
@@ -304,6 +304,11 @@ private:
 //! NotImplementedException when there is none. Defined in capi_v2_logical_type.cpp.
 auto ResolveCommonType(CV2Factory &factory, const vector<LogicalType> &types) -> LogicalType;
 
+//! Throws when the type holds a DECIMAL wider than the factory creates: the max_decimal_width setting of the factory's
+//! client, or the default of the setting for a factory without one. The cost of a wide decimal grows with its width,
+//! so a factory bounds the types and values it creates like a session bounds the ones it binds
+void CheckDecimalWidthV2(CV2Factory &factory, const LogicalType &type);
+
 //! The SQL ATTACH `(KEY value)` options of one attach, as the text values a quoted literal produces. Bound to the
 //! instance handle it was created from, which is what future per-instance resources (an allocator, say) would be
 //! taken from.
@@ -346,6 +351,8 @@ public:
 class CV2Instance {
 public:
 	CV2Instance(CV2Environment &env, DBConfig &startup_config);
+	//! A handle to a database shared through the environment's instance cache, see instance_open_shared.
+	CV2Instance(CV2Environment &env, shared_ptr<DuckDB> shared_database);
 
 	//! Attaches the database at `path` under `name` (derived from the path when empty), like ATTACH, optionally as
 	//! the default for new connections.
@@ -475,6 +482,8 @@ class CV2Connection : public Connection {
 public:
 	explicit CV2Connection(DuckDB &database) : Connection(database), context_handle(*context) {
 	}
+	explicit CV2Connection(Connection &&connection) : Connection(std::move(connection)), context_handle(*context) {
+	}
 
 	CV2ConnectionContext context_handle;
 };
@@ -505,8 +514,15 @@ auto GetExtensionLoader(duckdb_v2_extension_handle handle) -> ExtensionLoader &;
 //! capi_v2_func_properties.cpp and shared by the scalar and aggregate set_property entry points.
 void SetScalarFunctionProperty(FunctionProperties &props, DUCKDB_V2_FUNCTION_PROPERTY_KEY key,
                                DUCKDB_V2_FUNCTION_PROPERTY_VALUE value);
+void SetTableFunctionProperty(FunctionStability &stability, DUCKDB_V2_FUNCTION_PROPERTY_KEY key,
+                              DUCKDB_V2_FUNCTION_PROPERTY_VALUE value);
 void SetAggregateFunctionProperty(AggregateFunctionProperties &props, DUCKDB_V2_FUNCTION_PROPERTY_KEY key,
                                   DUCKDB_V2_FUNCTION_PROPERTY_VALUE value);
+//! Set / get a generic, named function property; shared by the scalar and aggregate entry points
+void SetGenericFunctionProperty(FunctionProperties &props, const char *name, idx_t name_length, const Value &value);
+//! Returns an owned copy of the property value, or nullptr if the property is not set
+auto GetGenericFunctionProperty(const FunctionProperties &props, const char *name, idx_t name_length)
+    -> duckdb_v2_value_handle;
 
 using CV2FunctionSignature = duckdb::FunctionSignature;
 
@@ -868,7 +884,7 @@ struct ConnectionBusySlotV2 : public ClientContextState {
 
 inline shared_ptr<ConnectionBusySlotV2> GetBusySlot(ClientContext &context) {
 	constexpr auto BUSY_SLOT_STATE_KEY = "v2_connection_busy_slot";
-	return context.Services().GetRegisteredState().GetOrCreate<ConnectionBusySlotV2>(BUSY_SLOT_STATE_KEY);
+	return context.GetContext().GetRegisteredState().GetOrCreate<ConnectionBusySlotV2>(BUSY_SLOT_STATE_KEY);
 }
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -883,6 +899,17 @@ inline void InvokeTextSink(duckdb_v2_text_sink_fn sink, std::string_view text, v
 	CV2ErrorInfo info;
 	auto handle = Convert(&info);
 	sink(text.data(), text.size(), user_data, &handle);
+	if (info.HasError()) {
+		info.ThrowAsException();
+	}
+}
+
+//! Runs a callback taking an error slot, and throws what it reports.
+template <class FUNC>
+void InvokeWithErrorSlot(FUNC &&fn) {
+	CV2ErrorInfo info;
+	auto handle = Convert(&info);
+	fn(&handle);
 	if (info.HasError()) {
 		info.ThrowAsException();
 	}

@@ -311,6 +311,11 @@ unique_ptr<FunctionData> ArrayOrListLengthBinaryBind(BindScalarFunctionInput &in
 	return nullptr;
 }
 
+//! The name of the held type in the VARIANT encoding, as variant_type reports it
+string VariantHeldTypeName(const VariantNode &node) {
+	return EnumUtil::ToString(VariantTypeFromLogicalTypeId(node.GetTypeId(), node.GetBool()));
+}
+
 //! The length of the list, string or bit string that a VARIANT holds
 void VariantLengthFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	const VectorIterator<VectorVariantType> variants(args.data[0]);
@@ -323,19 +328,19 @@ void VariantLengthFunction(DataChunk &args, ExpressionState &state, Vector &resu
 			continue;
 		}
 		switch (node.GetTypeId()) {
-		case VariantLogicalType::ARRAY:
+		case LogicalTypeId::LIST:
 			writer.WriteValue(UnsafeNumericCast<int64_t>(node.GetArrayChildren().size()));
 			break;
-		case VariantLogicalType::VARCHAR:
+		case LogicalTypeId::VARCHAR:
 			writer.WriteValue(StringLengthOperator::Operation<string_t, int64_t>(node.GetString()));
 			break;
-		case VariantLogicalType::BITSTRING:
+		case LogicalTypeId::BIT:
 			writer.WriteValue(BitStringLenOperator::Operation<string_t, int64_t>(node.GetString()));
 			break;
 		default:
 			throw InvalidInputException("length is not defined for a VARIANT holding %s, only for a list, a string or "
 			                            "a bit string",
-			                            EnumUtil::ToString(node.GetTypeId()));
+			                            VariantHeldTypeName(node));
 		}
 	}
 }
@@ -351,9 +356,9 @@ void VariantArrayLengthFunction(DataChunk &args, ExpressionState &state, Vector 
 			writer.WriteNull();
 			continue;
 		}
-		if (node.GetTypeId() != VariantLogicalType::ARRAY) {
+		if (node.GetTypeId() != LogicalTypeId::LIST) {
 			throw InvalidInputException("array_length can only be used on a VARIANT holding a list, not %s",
-			                            EnumUtil::ToString(node.GetTypeId()));
+			                            VariantHeldTypeName(node));
 		}
 		writer.WriteValue(UnsafeNumericCast<int64_t>(node.GetArrayChildren().size()));
 	}

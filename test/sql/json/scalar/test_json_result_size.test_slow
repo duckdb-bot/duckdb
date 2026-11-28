@@ -1,0 +1,31 @@
+# name: test/sql/json/scalar/test_json_result_size.test_slow
+# description: JSON functions raise an error for a result longer than a string can be, instead of wrapping its length
+# group: [scalar]
+
+require json
+
+require ram 32gb
+
+statement ok
+SET threads = 1;
+
+statement error
+SELECT length(to_json(list(repeat('a', 1000000000)))) AS len FROM range(5);
+----
+Cannot create a string of size: '5000000016'
+
+statement error
+SELECT length(json_array(repeat('a', 2200000000), repeat('b', 2200000000))) AS len;
+----
+Cannot create a string of size: '4400000007'
+
+# a string cast to JSON[] reports the error as a cast error, so CAST raises it and TRY_CAST gives NULL
+statement error
+SELECT CAST('[[' || repeat('1e20,', 180000000) || '1e20]]' AS JSON[]);
+----
+Cannot create a string of size
+
+query I
+SELECT TRY_CAST('[[' || repeat('1e20,', 180000000) || '1e20]]' AS JSON[]) IS NULL;
+----
+true

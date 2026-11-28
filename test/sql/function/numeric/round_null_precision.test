@@ -1,0 +1,63 @@
+# name: test/sql/function/numeric/round_null_precision.test
+# description: A typed NULL precision makes decimal round, round_even and trunc return NULL
+# group: [numeric]
+
+query III
+SELECT round(12::DECIMAL(3,0), NULL::INTEGER), round_even(12::DECIMAL(3,0), NULL::INTEGER), trunc(12::DECIMAL(3,0), NULL::INTEGER)
+----
+NULL	NULL	NULL
+
+# the result keeps the type of the input
+query III
+SELECT typeof(round(12::DECIMAL(3,0), NULL::INTEGER)), typeof(round_even(12.345::DECIMAL(5,3), NULL::INTEGER)), typeof(trunc(12.345::DECIMAL(38,3), NULL::INTEGER))
+----
+DECIMAL(3,0)	DECIMAL(5,3)	DECIMAL(38,3)
+
+# other integer types of the NULL, and a constant expression that folds to NULL
+query III
+SELECT round(12::DECIMAL(3,0), NULL::TINYINT), round(12::DECIMAL(3,0), NULL::SMALLINT), round(12::DECIMAL(3,0), CASE WHEN 1=1 THEN NULL::INTEGER ELSE 1 END)
+----
+NULL	NULL	NULL
+
+# an untyped NULL keeps returning NULL
+query III
+SELECT round(12::DECIMAL(3,0), NULL), round_even(12::DECIMAL(3,0), NULL), trunc(12::DECIMAL(3,0), NULL)
+----
+NULL	NULL	NULL
+
+# a column with a NULL precision
+statement ok
+CREATE TABLE dec(x DECIMAL(18,3));
+
+statement ok
+INSERT INTO dec VALUES (123.456), (NULL), (-9.5);
+
+query IIII
+SELECT x, round(x, NULL::INTEGER), round_even(x, NULL::INTEGER), trunc(x, NULL::INTEGER) FROM dec ORDER BY x NULLS FIRST;
+----
+NULL	NULL	NULL	NULL
+-9.500	NULL	NULL	NULL
+123.456	NULL	NULL	NULL
+
+query I
+SELECT typeof(round(x, NULL::INTEGER)) FROM dec LIMIT 1;
+----
+DECIMAL(18,3)
+
+# the other numeric types already return NULL
+query IIII
+SELECT round(12.5::DOUBLE, NULL::INTEGER), round(12.5::FLOAT, NULL::INTEGER), round(12::INTEGER, NULL::INTEGER), trunc(12::BIGINT, NULL::INTEGER)
+----
+NULL	NULL	NULL	NULL
+
+# a precision that is not a constant is still rejected
+statement error
+SELECT round(x, p) FROM (VALUES (12::DECIMAL(3,0), NULL::INTEGER)) t(x, p)
+----
+must be a constant expression
+
+# a NULL decimal with a constant precision is unchanged
+query III
+SELECT round(NULL::DECIMAL(3,0), 1), typeof(round(NULL::DECIMAL(3,0), 1)), typeof(round(NULL::DECIMAL(3,0), -1))
+----
+NULL	DECIMAL(3,0)	DECIMAL(4,0)

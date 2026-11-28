@@ -17,6 +17,7 @@
 // Link wrapping confines failures to this executable's allocator implementation.
 static thread_local bool reject_malloc = false;
 static thread_local bool reject_new = false;
+static thread_local bool reject_aligned_new = false;
 static thread_local bool reject_mapping = false;
 static thread_local size_t allowed_new = 0;
 static thread_local size_t fail_new_at = 0;
@@ -34,6 +35,7 @@ static thread_local size_t released_mappings = 0;
 extern "C" {
 void *__real_malloc(size_t size);
 void *__real__Znwm(size_t size);
+void *__real__ZnwmSt11align_val_t(size_t size, std::align_val_t alignment);
 void __real__ZdlPv(void *pointer);
 void __real__ZdlPvm(void *pointer, size_t size);
 void *__real_mmap(void *address, size_t length, int protection, int flags, int fd, off_t offset);
@@ -63,6 +65,14 @@ void *__wrap__Znwm(size_t size) {
 		new_balance++;
 	}
 	return result;
+}
+
+void *__wrap__ZnwmSt11align_val_t(size_t size, std::align_val_t alignment) {
+	if (reject_aligned_new) {
+		failures++;
+		throw std::bad_alloc();
+	}
+	return __real__ZnwmSt11align_val_t(size, alignment);
 }
 
 void __wrap__ZdlPv(void *pointer) {
@@ -130,6 +140,16 @@ public:
 	}
 	static idx_t GuardBlocks(const BlockAllocator &allocator) {
 		return allocator.GetGuardBlockCount();
+	}
+	static idx_t AllocationCacheBuckets(const BlockAllocator &allocator) {
+		return allocator.GetAllocationCacheBucketCount();
+	}
+	static data_ptr_t AllocateHuge(const BlockAllocator &allocator, idx_t size) {
+		optional_idx home;
+		return allocator.AllocateHugeData(size, home);
+	}
+	static void FreeHuge(const BlockAllocator &allocator, data_ptr_t pointer, idx_t size) {
+		allocator.FreeHugeData(pointer, size, optional_idx());
 	}
 };
 } // namespace duckdb
@@ -286,6 +306,45 @@ static void CheckProtectionRollback() {
 	Check(allocator.GetCachedMemory() == 0, "fallback remains reclaimable");
 }
 
+static void CheckAllocationCacheBucketFailure() {
+	using namespace duckdb;
+	constexpr idx_t BLOCK_SIZE = 65536;
+	for (idx_t huge = 0; huge < 2; huge++) {
+		// the two routes return buffers of different size classes
+		const idx_t buffer_size = (huge ? 16 : 8) * BLOCK_SIZE;
+		Allocator fallback;
+		BlockAllocator allocator(fallback, BLOCK_SIZE, 0);
+		auto allocate = [&] {
+			return huge ? BlockAllocatorTestHelper::AllocateHuge(allocator, buffer_size)
+			            : allocator.AllocateData(buffer_size);
+		};
+		auto release = [&](data_ptr_t pointer) {
+			if (huge) {
+				BlockAllocatorTestHelper::FreeHuge(allocator, pointer, buffer_size);
+			} else {
+				allocator.FreeData(pointer, buffer_size);
+			}
+		};
+		auto pointer = allocate();
+		pointer[0] = pointer[buffer_size - 1] = 42;
+		Check(BlockAllocatorTestHelper::AllocationCacheBuckets(allocator) == 0, "an allocation creates no bucket");
+		const auto previous_failures = failures;
+		reject_aligned_new = true;
+		release(pointer);
+		reject_aligned_new = false;
+		Check(failures > previous_failures, "bucket fault injection must activate");
+		Check(BlockAllocatorTestHelper::AllocationCacheBuckets(allocator) == 0, "a failed bucket is not published");
+		Check(allocator.GetCachedMemory() == 0, "a buffer returned without a bucket is not cached");
+		pointer = allocate();
+		pointer[0] = pointer[buffer_size - 1] = 42;
+		release(pointer);
+		Check(BlockAllocatorTestHelper::AllocationCacheBuckets(allocator) == 1, "the next return creates the bucket");
+		Check(allocator.GetCachedMemory() == buffer_size, "the next return is cached");
+		allocator.FlushAll();
+		Check(allocator.GetCachedMemory() == 0, "the cached buffer must be reclaimable");
+	}
+}
+
 int main(int argc, char **argv) {
 	Check(argc == 1 || argc == 2, "expected an optional parent process ID");
 	if (argc == 2) {
@@ -298,5 +357,6 @@ int main(int argc, char **argv) {
 	CheckAbandonedInitialization();
 	CheckProtectionRollback();
 	CheckPoolOwnership();
+	CheckAllocationCacheBucketFailure();
 	std::puts("BlockAllocator allocation-failure checks passed");
 }

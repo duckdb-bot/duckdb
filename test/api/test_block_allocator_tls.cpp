@@ -118,6 +118,9 @@ public:
 	static void FreeHuge(const BlockAllocator &allocator, data_ptr_t pointer, idx_t size) {
 		allocator.FreeHugeData(pointer, size, optional_idx());
 	}
+	static idx_t AllocationCacheBuckets(const BlockAllocator &allocator) {
+		return allocator.GetAllocationCacheBucketCount();
+	}
 
 private:
 	static idx_t Now() {
@@ -555,6 +558,93 @@ TEST_CASE("Allocation cache reuses compatible allocations and releases retained 
 	}
 	REQUIRE(live_bytes.load() == 0);
 }
+
+TEST_CASE("Allocation cache creates the queues of a size class when a buffer of that size is returned",
+          "[api][allocation_cache]") {
+	constexpr idx_t SIZE = 512 * 1024;
+	atomic<idx_t> live_bytes {0};
+	Allocator fallback(CacheTestAllocate, CacheTestFree, CacheTestReallocate,
+	                   make_uniq<AllocationCacheTestData>(live_bytes));
+	{
+		BlockAllocator allocator(fallback, 256 * 1024, 0);
+		CHECK(BlockAllocatorTestHelper::AllocationCacheBuckets(allocator) == 0);
+		// allocating creates no queues, and neither does a size that the cache does not hold
+		auto first = allocator.AllocateData(SIZE);
+		auto uncached = allocator.AllocateData(SIZE + 4096);
+		allocator.FreeData(uncached, SIZE + 4096);
+		CHECK(BlockAllocatorTestHelper::AllocationCacheBuckets(allocator) == 0);
+		CHECK(allocator.GetCachedMemory() == 0);
+		// the first buffer that is returned creates the queues of its size class
+		allocator.FreeData(first, SIZE);
+		CHECK(BlockAllocatorTestHelper::AllocationCacheBuckets(allocator) == 1);
+		CHECK(allocator.GetCachedMemory() == SIZE);
+		auto reused = allocator.AllocateData(SIZE);
+		allocator.FreeData(reused, SIZE);
+		CHECK(BlockAllocatorTestHelper::AllocationCacheBuckets(allocator) == 1);
+		// another size class has queues of its own
+		auto larger = allocator.AllocateData(2 * SIZE);
+		allocator.FreeData(larger, 2 * SIZE);
+		CHECK(BlockAllocatorTestHelper::AllocationCacheBuckets(allocator) == 2);
+		CHECK(allocator.GetCachedMemory() == live_bytes.load());
+		// the queues stay when they are emptied
+		allocator.FlushAll();
+		CHECK(allocator.GetCachedMemory() == 0);
+		CHECK(live_bytes.load() == 0);
+		CHECK(BlockAllocatorTestHelper::AllocationCacheBuckets(allocator) == 2);
+	}
+	CHECK(live_bytes.load() == 0);
+}
+
+TEST_CASE("A database that has returned no buffer to the allocation cache holds none of its queues",
+          "[api][allocation_cache]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE t1 (i1 INTEGER)"));
+	REQUIRE_NO_FAIL(con.Query("INSERT INTO t1 VALUES (42)"));
+	auto result = con.Query("SELECT i1 FROM t1");
+	REQUIRE(CHECK_COLUMN(result, 0, {42}));
+	CHECK(BlockAllocatorTestHelper::AllocationCacheBuckets(BlockAllocator::Get(*db.instance)) == 0);
+}
+
+#ifndef DUCKDB_NO_THREADS
+TEST_CASE("Allocation cache keeps every buffer when threads return the first buffers of a size class together",
+          "[api][allocation_cache]") {
+	constexpr idx_t SIZE = 512 * 1024;
+	constexpr idx_t WORKERS = 8;
+	atomic<idx_t> live_bytes {0};
+	Allocator fallback(CacheTestAllocate, CacheTestFree, CacheTestReallocate,
+	                   make_uniq<AllocationCacheTestData>(live_bytes));
+	{
+		BlockAllocator allocator(fallback, 256 * 1024, 0);
+		array<data_ptr_t, WORKERS> pointers;
+		for (auto &pointer : pointers) {
+			pointer = allocator.AllocateData(SIZE);
+		}
+		REQUIRE(BlockAllocatorTestHelper::AllocationCacheBuckets(allocator) == 0);
+		atomic<idx_t> ready {0};
+		vector<std::thread> workers;
+		for (idx_t id = 0; id < WORKERS; id++) {
+			workers.emplace_back([&, id] {
+				ready++;
+				while (ready.load() != WORKERS) {
+					std::this_thread::yield();
+				}
+				allocator.FreeData(pointers[id], SIZE);
+			});
+		}
+		for (auto &worker : workers) {
+			worker.join();
+		}
+		// one size class holds queues, and every buffer is in them
+		CHECK(BlockAllocatorTestHelper::AllocationCacheBuckets(allocator) == 1);
+		CHECK(allocator.GetCachedMemory() == WORKERS * SIZE);
+		CHECK(live_bytes.load() == WORKERS * SIZE);
+		allocator.FlushAll();
+		CHECK(allocator.GetCachedMemory() == 0);
+	}
+	CHECK(live_bytes.load() == 0);
+}
+#endif
 
 TEST_CASE("Huge allocation retention shares cache ownership and pressure reclamation", "[api][allocation_cache]") {
 	const auto size = GENERATE(idx_t(8 * 1024 * 1024), idx_t(128 * 1024 * 1024));

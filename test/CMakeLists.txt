@@ -106,6 +106,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux"
     PRIVATE
     -Wl,--wrap=malloc
     -Wl,--wrap=_Znwm
+    -Wl,--wrap=_ZnwmSt11align_val_t
     -Wl,--wrap=_ZdlPv
     -Wl,--wrap=_ZdlPvm
     -Wl,--wrap=mmap

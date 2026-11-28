@@ -101,14 +101,23 @@ const CatalogSearchPath &CatalogEntryRetriever::GetSearchPath() const {
 void CatalogEntryRetriever::SetSearchPath(vector<CatalogSearchEntry> entries) {
 	vector<CatalogSearchEntry> new_path;
 	for (auto &entry : entries) {
-		if (IsInvalidCatalog(entry.GetCatalog()) || entry.GetCatalog() == SYSTEM_CATALOG ||
-		    entry.GetCatalog() == TEMP_CATALOG) {
+		// A temporary view is bound in the session's path, which starts with the temporary schema. A default view in
+		// the system catalog is bound in its own schema and the system catalog first, so that a user's object named
+		// like the function or view it reads does not replace it
+		if (IsInvalidCatalog(entry.GetCatalog()) || entry.GetCatalog() == TEMP_CATALOG) {
 			continue;
 		}
 		new_path.push_back(std::move(entry));
 	}
 	if (new_path.empty()) {
 		return;
+	}
+	const bool system_view = new_path[0].GetCatalog() == SYSTEM_CATALOG;
+	if (system_view && new_path[0].GetSchema() != DEFAULT_SCHEMA) {
+		// The lookup of a table or view does not expand the catalog's entry to its default schema, so the views of
+		// system.main that such a view reads need the schema itself in the path
+		new_path.insert(new_path.begin() + 1,
+		                CatalogSearchEntry(Identifier(SYSTEM_CATALOG), Identifier(DEFAULT_SCHEMA)));
 	}
 
 	// push the set paths from the ClientContext behind the provided paths
@@ -124,7 +133,7 @@ void CatalogEntryRetriever::SetSearchPath(vector<CatalogSearchEntry> entries) {
 		new_path.push_back(std::move(path));
 	}
 
-	this->search_path = make_shared_ptr<CatalogSearchPath>(context, std::move(new_path));
+	this->search_path = make_shared_ptr<CatalogSearchPath>(context, std::move(new_path), !system_view);
 }
 
 optional_ptr<BoundAtClause> CatalogEntryRetriever::GetAtClause() const {

@@ -4,6 +4,88 @@ Typical entrypoints:
 - POSIX builds: `build/release/test/run`, `build/reldebug/test/run`, `build/debug/test/run`
 - Windows native layout: `build/release/test/run.py` or `build/release/test/run.bat`
 
+## Fast and slow tests
+
+Aim for fast SQL and C++ tests to take roughly 20–200 ms each with 1–2 CPU cores available.
+Treat 300 ms as a guideline for moving a test to the slow suite, rather than a strict limit.
+Measure with a release build and the runner's default worker concurrency:
+
+```bash
+make release
+build/release/test/run --track-runtime 0.3
+```
+
+The runner reports individual test runtimes within each batch. Repeat candidate tests before
+classifying them, since concurrent tests compete for CPU and disk. Network tests may need separate
+consideration.
+
+Use `.test_slow` for slow SQL tests and add `[.]` to the tags of slow C++ test cases. These tests
+remain available in the full suite (`build/release/test/run '*'`). When moving a stress test, keep
+a smaller fast case that exercises the same behavior where practical. Preserve the original scale
+in the slow case when it is needed to reproduce a bug or exercise a storage or execution boundary.
+
+## Tests with an installed CLI
+
+For versions and platforms where the test extension is published, an installed DuckDB CLI can run SQL logic test
+files without compiling DuckDB:
+
+```sql
+INSTALL test;
+LOAD test;
+SELECT * FROM scan_tests(['*'], test_roots = ['path/to/extension/test/sql']);
+SELECT * FROM run_tests(
+    ['sql:path/to/extension/test/sql/example.test'],
+    test_roots = ['path/to/extension/test/sql']);
+```
+
+`run_tests` writes individual results to a state database and returns its path. For parallel execution, summaries,
+and retries, use `scripts/ci/run_tests.py` from a matching DuckDB checkout. Find the installed binary with:
+
+```sql
+SELECT install_path FROM duckdb_extensions() WHERE extension_name = 'test';
+```
+
+Then run from the directory containing the test data:
+
+```bash
+python3 /path/to/duckdb/scripts/ci/run_tests.py /path/to/duckdb-cli \
+    --test-extension /path/to/installed/test.duckdb_extension \
+    --test-root path/to/extension/test/sql \
+    --test-flags="--autoloading available --skip-compiled"
+```
+
+SQL tests require their test files and data. C++ tests also require their compiled test bundles.
+
+Extension CI downloads `duckdb-test-<platform-suffix>.tar.gz`, which contains the matching CLI and test extension.
+The runner script comes from the DuckDB checkout. Standalone CI builds from source when a matching bundle or
+the required linking libraries are unavailable.
+
+## Runner compatibility
+
+`build/*/test/unittest` remains a wrapper around the Python runner and CLI. It accepts the test
+configuration flags supported by `TestConfiguration`, including `--force-storage`, `--force-reload`,
+`--temp-dir-root`, `--require`, `--keep-home`, and `--emit-on-skip`. Flags and `--test-flags` are applied
+in command-line order. `-f FILE`, `--input-file FILE`, and `--test-list FILE` may be repeated.
+`--test-dir PATH` sets the working directory, including the base for relative test lists and config files.
+
+The wrapper does not support Catch reporter/output options, interactive stdin tests, or launching the
+old native unittest process under LLDB. Use normal test files and the runner's failure reports.
+The stdin and native unittest LLDB workflows remain deferred.
+
+With `BUILD_SHELL=OFF`, CMake still builds the test extension and enabled C++ test bundles, but omits
+local `run` and `unittest` wrappers. Use a matching external CLI with explicit artifact paths:
+
+```bash
+python3 scripts/ci/run_tests.py /path/to/duckdb-cli \
+    --test-extension build/release/extension/test/test.duckdb_extension \
+    --test-bundle-root build/release/test/extension \
+    --test-root test
+```
+
+Discovery and execution can use different test flags in one process. Each call restores configuration,
+working directory, and home directory when it finishes. Overlapping or nested calls remain rejected.
+Failure reproductions preserve the CLI, extension paths, test roots, flags, and working directory.
+
 ## Test Contract
 
 Within SQL tests, the test runner (unittest) guarantees that these environment variables will be set. Many can be overridden when needed.
@@ -14,12 +96,12 @@ Within SQL tests, the test runner (unittest) guarantees that these environment v
 | `TEST_NAME__NO_SLASH` | e.g. `test_path_filename.test` | N/A | is always `TEST_NAME s@/@_@g` (keeps the body suffix)                               |
 | `TEST_ID` | e.g. `test_path_filename_test` | N/A | per-test identity: the full `TEST_NAME` sanitized to one path component (every char outside `[A-Za-z0-9_-]` → `_`, including `.`); the body suffix is kept so siblings differing only by suffix (`foo.test` vs `foo.test_slow`) stay distinct; the `[TEST_ID]` path level under `TEMP_DIR_ROOT` |
 | `TEST_UUID` | random UUID (as string) | N/A | defined per invocation                                                             |
-| `RUN_ID` | generated (`<ts>--<mnemonic>`) | `unittest --run-id <id>`<br/>also `DUCKDB_TEST_RUN_ID`, config `run_id` | per-run identity; the `[RUN_ID]` path level; shared across a run's tests            |
+| `RUN_ID` | generated UUID | `unittest --run-id <id>`<br/>also `DUCKDB_TEST_RUN_ID`, config `run_id` | per-run identity; the `[RUN_ID]` path level; shared across a run's tests            |
 | `WORKING_DIR`    | e.g., `/Users/me/src/duckdb`     | `unittest --test-dir <path>`                                | default: wherever duckdb was sourced and built <br/> AKA: `{WORKING_DIRECTORY}`    |
 | `BUILD_DIR`      | `{WORKING_DIR}/build/release` | N/A                                                         | read-only; derived from unittest path <br/> AKA: `{BUILD_DIRECTORY}`               |
 | `DATA_DIR`  | `{WORKING_DIR}/data`        | `unittest --data-dir <path>`<br/>also `DUCKDB_TEST_DATA_DIR`, config `data_dir` | copy of `duckdb/data/**`, to test AWS/Azure/other VFS reads; may be relative or absolute/remote (e.g. `az://...`). See [Data directory](#data-directory). |
 | `TEMP_DIR_ROOT` | `{WORKING_DIR}/duckdb_unittest_tempdir` | `unittest --temp-dir-root <path>`<br/>also `DUCKDB_TEST_TEMP_DIR_ROOT`, config `temp_dir_root` | root of the temp-dir tree; may be local or remote (e.g. `s3://`)                    |
-| `TEMP_DIR` | `{TEMP_DIR_ROOT}/[RUN_ID]/[TEST_ID]` | `--temp-dir-run-id {on,off}` / `--temp-dir-test-id {on,off}` (include/omit each level); `--temp-dir-destroy` governs lifecycle | the per-test temp dir; use to test VFS writes <br/> AKA: `{TEST_DIR}`, deprecated `__TEST_DIR__` |
+| `TEMP_DIR` | `{TEMP_DIR_ROOT}/[RUN_ID]/[TEST_ID]` | `--temp-dir-run-id {on,off}` / `--temp-dir-test-id {on,off}` (include/omit each level); `--temp-dir-destroy` governs lifecycle | the per-test temp dir; use to test VFS writes <br/> AKA: `{TEST_DIR}` (the deprecated `__TEST_DIR__` is rejected by `make format-check`) |
 | `TEMP_DIR_ABSOLUTE` | absolute path to `{TEMP_DIR}` | N/A | use when a test requires an absolute path, e.g. `file://` URIs                     |
 | `LOCAL_TEMP_DIR` | `{TEMP_DIR}` | `unittest --local-temp-dir-root <path>` (root only; must be local, and requires a remote `TEMP_DIR_ROOT` — pins the local tree somewhere chosen instead of the default. Against a differing local `TEMP_DIR_ROOT` it is an error, since that is already its own `LOCAL_TEMP_DIR`; use `DUCKDB_TEST_TEMP_DIR_ROOT` to redirect the whole tree)<br/>also `DUCKDB_TEST_LOCAL_TEMP_DIR_ROOT`, config `local_temp_dir_root` | guaranteed-**local** temp dir — the same path when `TEMP_DIR_ROOT` is local, a separate local tree (same `[RUN_ID]/[TEST_ID]` levels, same lifecycle) when it is remote. Use to stage/spill locally in a test that targets a remote root. |
 | `LOCAL_DATA_DIR` | `{DATA_DIR}` | `unittest --local-data-dir <path>` (must be local, and must equal `--data-dir` when that is itself local)<br/>also `DUCKDB_TEST_LOCAL_DATA_DIR`, config `local_data_dir` | guaranteed-**local** data dir; falls back to `{WORKING_DIR}/data` when `DATA_DIR` is remote |
@@ -89,7 +171,7 @@ Every `--temp-dir-*` flag above (plus `--run-id`, `--database-destroy`, `--env-p
 The **loaded database files** under `TEMP_DIR` have their own disposition, `--temp-dir-destroy`'s independent sibling: `--database-destroy {on,off,on-success}` (default `on-success`). A DB's keep/destroy is not per-se a temp-dir property, so it is a separate knob — use `off` to retain the generated DB files inside a retained temp dir (e.g. to diff them after the run, as `test_zero_initialize.py` does); `on-success` mirrors `--temp-dir-destroy` so a failed test's DB survives for inspection.
 
 **Naming — read once, then stop worrying:**
-- `{TEST_DIR}` (the token nearly all tests use) and the `TEMP_DIR` env var are the **same directory** — synonyms. Prefer `{TEST_DIR}`; `{TEMP_DIR}` and the deprecated `__TEST_DIR__` also resolve to it.
+- `{TEST_DIR}` (the token nearly all tests use) and the `TEMP_DIR` env var are the **same directory** — synonyms. Prefer `{TEST_DIR}`; `{TEMP_DIR}` also resolves to it. The runner still accepts the deprecated spellings `__TEST_DIR__`, `__WORKING_DIRECTORY__`, `__BUILD_DIRECTORY__` and `${NAME}` (for a loop iterator or environment variable `{NAME}`) with a warning, but `make format-check` rejects them in this repository and `make format-fix` rewrites them.
 - `{TEST_DIR}`/`TEMP_DIR` is **relative** (to `WORKING_DIR`) *by default* — deliberately, so absolute machine paths don't leak into compared test output. When a test genuinely needs an absolute path (e.g. a `file://` URI), use **`TEMP_DIR_ABSOLUTE`**.
 - `TEMP_DIR_ROOT` is the root only; `CATALOG_DIR` is `{TEST_DIR}/{TEST_UUID}` (create on demand).
 
@@ -103,3 +185,8 @@ and buffer sizes.
 ### ADBC
 
 The ADBC tests are in `test/api/adbc/test_adbc.cpp`. To run them the DuckDB library path must be provided in the `DUCKDB_INSTALL_LIB` variable.
+
+### Timing test runs
+
+Check CPU utilization and wait for unrelated heavy compilation or test jobs to finish before
+measuring. Use a release build and the runner's default worker concurrency.

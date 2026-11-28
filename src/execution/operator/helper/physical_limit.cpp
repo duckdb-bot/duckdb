@@ -92,9 +92,9 @@ idx_t PhysicalLimit::GetLimitValue(const Value &val, idx_t null_value) {
 	return value;
 }
 
-bool PhysicalLimit::ComputeOffset(ExecutionContext &context, DataChunk &input, optional_idx &limit,
-                                  optional_idx &offset, idx_t current_offset, idx_t &max_element,
-                                  const BoundLimitNode &limit_val, const BoundLimitNode &offset_val) {
+void PhysicalLimit::ResolveLimits(ExecutionContext &context, DataChunk &input, optional_idx &limit,
+                                  optional_idx &offset, const BoundLimitNode &limit_val,
+                                  const BoundLimitNode &offset_val) {
 	if (!limit.IsValid()) {
 		Value val = GetDelimiter(context, input, limit_val.GetValueExpression());
 		limit = GetLimitValue(val, MAX_LIMIT_VALUE);
@@ -103,6 +103,12 @@ bool PhysicalLimit::ComputeOffset(ExecutionContext &context, DataChunk &input, o
 		Value val = GetDelimiter(context, input, offset_val.GetValueExpression());
 		offset = GetLimitValue(val, 0);
 	}
+}
+
+bool PhysicalLimit::ComputeOffset(ExecutionContext &context, DataChunk &input, optional_idx &limit,
+                                  optional_idx &offset, idx_t current_offset, idx_t &max_element,
+                                  const BoundLimitNode &limit_val, const BoundLimitNode &offset_val) {
+	ResolveLimits(context, input, limit, offset, limit_val, offset_val);
 	max_element = limit.GetIndex() + offset.GetIndex();
 	if (limit == 0 || current_offset >= max_element) {
 		return false;
@@ -265,7 +271,7 @@ InsertionOrderPreservingMap<string> PhysicalLimit::ParamsToString() const {
 	if (limit_val.Type() == LimitNodeType::CONSTANT_VALUE) {
 		result["Limit"] = to_string(limit_val.GetConstantValue());
 	} else if (limit_val.Type() == LimitNodeType::CONSTANT_PERCENTAGE) {
-		result["Limit"] = to_string(limit_val.GetConstantPercentage()) + "%";
+		result["Limit"] = StringUtil::ToString(limit_val.GetConstantPercentage()) + "%";
 	}
 	if (offset_val.Type() == LimitNodeType::CONSTANT_VALUE) {
 		auto offset = offset_val.GetConstantValue();

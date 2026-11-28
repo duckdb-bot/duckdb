@@ -32,10 +32,11 @@ idx_t GetMinimumQualifyingTupleCount(RowGroup &row_group, BaseStatistics &stats,
 		if (!NumericStats::HasMinMax(stats)) {
 			return 0;
 		}
-		if (NumericStats::IsConstant(stats)) {
-			return 1;
+		if (NumericStats::Max(stats) > NumericStats::Min(stats)) {
+			// the two bounds are different rows
+			return 2;
 		}
-		return 2;
+		return 1;
 	}
 	// We cannot check if the min/max for StringStats have actually been set. As the strings may be truncated, we
 	// also cannot assume that min and max are the same

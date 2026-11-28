@@ -372,10 +372,16 @@ bool NumericStats::ConstantsCoverRange(const BaseStatistics &stats, array_ptr<co
 	return true;
 }
 
+//! Whether the floating point values within equal bounds all have the same bits
 template <class T>
-static bool ZeroSignsMatch(const BaseStatistics &stats) {
+static bool EqualBoundsHaveSameBits(const BaseStatistics &stats) {
 	auto min = NumericStats::GetMinUnsafe<T>(stats);
 	auto max = NumericStats::GetMaxUnsafe<T>(stats);
+	if (Value::IsNan(max)) {
+		// NaN values compare equal whatever their sign and payload
+		return false;
+	}
+	// -0.0 == 0.0, so a zero range is only constant if both bounds have the same sign
 	return min != T(0) || std::signbit(min) == std::signbit(max);
 }
 
@@ -383,12 +389,11 @@ bool NumericStats::IsConstant(const BaseStatistics &stats) {
 	if (NumericStats::Max(stats) > NumericStats::Min(stats)) {
 		return false;
 	}
-	// -0.0 == 0.0, so a zero range is only constant if both bounds have the same sign
 	switch (stats.GetType().InternalType()) {
 	case PhysicalType::FLOAT:
-		return ZeroSignsMatch<float>(stats);
+		return EqualBoundsHaveSameBits<float>(stats);
 	case PhysicalType::DOUBLE:
-		return ZeroSignsMatch<double>(stats);
+		return EqualBoundsHaveSameBits<double>(stats);
 	default:
 		return true;
 	}

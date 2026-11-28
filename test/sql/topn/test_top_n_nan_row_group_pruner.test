@@ -1,0 +1,27 @@
+# name: test/sql/topn/test_top_n_nan_row_group_pruner.test
+# description: Test row group pruning when a row group holds NULLs and a single NaN
+# group: [topn]
+
+load {TEST_DIR}/top_n_nan_row_group_pruner.duckdb
+
+statement ok
+CREATE TABLE doubles AS
+SELECT CASE WHEN range = 5 THEN 'NaN'::DOUBLE END AS d FROM range(122880)
+UNION ALL
+SELECT range::DOUBLE AS d FROM range(122880)
+
+restart
+
+# the first row group guarantees only one row that is not NULL
+query I
+SELECT d FROM doubles ORDER BY d DESC LIMIT 2;
+----
+nan
+122879.0
+
+query I
+SELECT d FROM doubles ORDER BY d DESC LIMIT 3;
+----
+nan
+122879.0
+122878.0

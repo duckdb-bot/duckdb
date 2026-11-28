@@ -434,25 +434,36 @@ void LocalFileSecretStorage::WriteSecret(const BaseSecret &secret, OnCreateConfl
 	files->Set(secret_name, file_path);
 }
 
+//! Whether the file is known not to exist, which a lookup that fails does not tell
+static bool SecretFileIsGone(FileSystem &fs, const string &file) {
+	try {
+		return !fs.GetStatsIfExists(OpenFileInfo(file));
+	} catch (...) { // NOLINT
+		return false;
+	}
+}
+
 void LocalFileSecretStorage::RemoveSecret(const string &secret, OnEntryNotFound on_entry_not_found) {
 	auto &fs = FileSystem::GetLocal(db);
 	string file = files->Get(Identifier(secret));
 	if (file.empty()) {
 		file = fs.JoinPath(secret_path, SecretFileName(secret));
 	}
-	files->Remove(Identifier(secret));
-	persistent_secrets.erase(Identifier(secret));
 	try {
 		fs.RemoveFile(file);
 	} catch (std::exception &ex) {
 		ErrorData error(ex);
-		if (error.Type() == ExceptionType::IO) {
-			throw IOException("Failed to remove secret file '%s', the file may have been removed by another duckdb "
-			                  "instance. (original error: '%s')",
-			                  file, error.RawMessage());
+		if (error.Type() != ExceptionType::IO) {
+			throw;
 		}
-		throw;
+		// another instance may have removed the file, which leaves nothing to remove
+		if (!SecretFileIsGone(fs, file)) {
+			throw IOException("Failed to remove secret file '%s'. (original error: '%s')", file, error.RawMessage());
+		}
 	}
+	// the file is forgotten once it is gone, a drop that failed is retried on the same file
+	files->Remove(Identifier(secret));
+	persistent_secrets.erase(Identifier(secret));
 }
 
 //===--------------------------------------------------------------------===//

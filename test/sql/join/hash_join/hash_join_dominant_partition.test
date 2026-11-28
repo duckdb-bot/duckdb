@@ -28,7 +28,7 @@ CALL enable_logging('PhysicalOperator');
 # all build rows share one key, so one partition holds the whole build and nothing can spill
 query I
 SELECT count(*)
-FROM range(10) t(i) JOIN (SELECT 7 AS k, i AS v FROM range(500000) s(i)) b ON t.i = b.k;
+FROM range(10) t(i) JOIN (SELECT 7 AS k FROM range(500000) s(i)) b ON t.i = b.k;
 ----
 500000
 
@@ -36,8 +36,7 @@ FROM range(10) t(i) JOIN (SELECT 7 AS k, i AS v FROM range(500000) s(i)) b ON t.
 query I
 SELECT count(*)
 FROM range(10) t(i)
-JOIN (SELECT CASE WHEN i % 10 = 0 THEN (i // 10) % 1000 ELSE 7 END AS k, i AS v FROM range(500000) s(i)) b
-ON t.i = b.k;
+JOIN (SELECT CASE WHEN i % 10 = 0 THEN (i // 10) % 1000 ELSE 7 END AS k FROM range(500000) s(i)) b ON t.i = b.k;
 ----
 450500
 

@@ -827,8 +827,8 @@ static bool KeysAreSkewed(const HashJoinGlobalSinkState &sink,
 	return skew > threshold;
 }
 
-//! An external join builds its largest partition whole, with a pointer table and next to the retained dictionaries.
-//! It can only hold less than the in-memory join when that is below the whole size and another partition has rows.
+//! Estimates whether an external join holds less in memory than the in-memory join. It builds its largest partition
+//! whole with a pointer table, so that has to be below the whole size and another partition has to hold rows.
 static bool ExternalJoinCanSaveMemory(const HashJoinGlobalSinkState &sink) {
 	idx_t build_count = 0;
 	for (auto &local_ht : sink.local_hash_tables) {

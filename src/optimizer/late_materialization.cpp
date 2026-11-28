@@ -37,20 +37,6 @@ vector<ColumnBinding> LateMaterialization::ConstructRHS(unique_ptr<LogicalOperat
 	// we have reached the logical get - now we need to push the row-id column (if it is not yet projected out)
 	auto &get = child.get().Cast<LogicalGet>();
 	auto row_id_indexes = LateMaterializationHelper::GetOrInsertRowIds(get, row_id_column_ids, row_id_columns);
-	if (!get.projection_ids.empty()) {
-		// a row id that the scan reads for one of its own filters only has to be emitted as well
-		for (idx_t r_idx = 0; r_idx < row_id_indexes.size(); r_idx++) {
-			auto &projection_ids = get.projection_ids;
-			if (std::find(projection_ids.begin(), projection_ids.end(), row_id_indexes[r_idx]) !=
-			    projection_ids.end()) {
-				continue;
-			}
-			projection_ids.push_back(row_id_indexes[r_idx]);
-			if (!get.types.empty()) {
-				get.types.push_back(row_id_columns[r_idx].type);
-			}
-		}
-	}
 
 	// the row id has been projected - now project it up the stack
 	vector<ColumnBinding> row_id_bindings;

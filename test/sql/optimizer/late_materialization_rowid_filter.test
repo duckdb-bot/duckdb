@@ -127,6 +127,22 @@ SELECT v FROM p WHERE id + 6 < rowid * 2 ORDER BY id LIMIT 1;
 ----
 6
 
+# the Top-N window elimination adds the row id of a scan the same way
+statement ok
+CREATE TABLE t AS SELECT i % 2 AS a, i AS b, i + 100 AS c, i % 3 AS d FROM range(10) r(i);
+
+query III
+SELECT a, b, c FROM t WHERE rowid < 8 AND d + b > 2 QUALIFY row_number() OVER (PARTITION BY a ORDER BY b DESC) <= 1 ORDER BY ALL;
+----
+0	6	106
+1	7	107
+
+query III
+SELECT a, b, c FROM t WHERE d + b > rowid + 1 QUALIFY row_number() OVER (PARTITION BY a ORDER BY b DESC) <= 1 ORDER BY ALL;
+----
+0	8	108
+1	5	105
+
 # the same queries without late materialization
 statement ok
 SET late_materialization_max_rows = 0;

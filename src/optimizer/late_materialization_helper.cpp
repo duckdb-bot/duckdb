@@ -47,6 +47,15 @@ vector<ProjectionIndex> LateMaterializationHelper::GetOrInsertRowIds(LogicalGet 
 			}
 		}
 		if (row_id_index.IsValid()) {
+			auto &projection_ids = get.projection_ids;
+			if (!projection_ids.empty() &&
+			    std::find(projection_ids.begin(), projection_ids.end(), row_id_index) == projection_ids.end()) {
+				// the scan reads the row id for one of its own filters only, so it has to emit it as well
+				projection_ids.push_back(row_id_index);
+				if (!get.types.empty()) {
+					get.types.push_back(row_id_column.type);
+				}
+			}
 			result.push_back(row_id_index);
 			continue;
 		}

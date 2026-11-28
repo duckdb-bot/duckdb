@@ -14,11 +14,16 @@ a	1
 x	62
 b	1
 
-query II
+# with 32 byte buffers the line is longer than the maximum line size that buffer_size sets, so it is reported whole and skipped by ignore_errors
+statement error
 SELECT a[1], length(a) FROM read_csv('{TEST_DIR}/value_fills_buffer.csv', columns = {'a': 'VARCHAR'}, header = false, auto_detect = false, buffer_size = 32, parallel = false);
 ----
+Maximum line size of 32 bytes exceeded. Actual Size:62 bytes.
+
+query II
+SELECT a[1], length(a) FROM read_csv('{TEST_DIR}/value_fills_buffer.csv', columns = {'a': 'VARCHAR'}, header = false, auto_detect = false, buffer_size = 32, parallel = false, ignore_errors = true);
+----
 a	1
-x	62
 b	1
 
 # every second line is empty, lines end in \r\n: the line break of an empty line can start a buffer, in one piece or split

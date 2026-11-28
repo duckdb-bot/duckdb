@@ -19,23 +19,27 @@ namespace duckdb {
 StatementPreprocessor::StatementPreprocessor(ClientContext &context) : context(context) {
 }
 
-vector<unique_ptr<SQLStatement>> StatementPreprocessor::TryReparsePragma(unique_ptr<SQLStatement> statement) const {
+PreprocessedStatement StatementPreprocessor::TryReparsePragma(unique_ptr<SQLStatement> statement) const {
 	// Try reparsing
 	const auto info = statement->Cast<PragmaStatement>().info->Copy();
 	QueryErrorContext error_context(statement->stmt_location);
 	const auto binder = Binder::CreateBinder(context);
 	const auto bound_info = binder->BindPragma(*info, error_context);
+	PreprocessedStatement result;
 	if (bound_info->function.query) {
 		// Needs reparsing
 		FunctionParameters parameters {bound_info->parameters, bound_info->named_parameters, &bound_info->function};
 		const auto query_to_reparse = bound_info->function.query(context, parameters);
 		Parser parser(context);
 		parser.ParseQuery(query_to_reparse);
-		return std::move(parser.statements);
+		result.statements = std::move(parser.statements);
+		// The generated query holds the arguments as the constants they folded to, so a dependency of their binding
+		// on a setting or a variable is the dependency of the whole expansion
+		result.requires_rebind = binder->GetStatementProperties().always_require_rebind;
+		return result;
 	}
-	vector<unique_ptr<SQLStatement>> res;
-	res.push_back(std::move(statement));
-	return res;
+	result.statements.push_back(std::move(statement));
+	return result;
 }
 
 PreprocessedStatement StatementPreprocessor::ExpandStatement(unique_ptr<SQLStatement> statement) const {
@@ -47,7 +51,7 @@ PreprocessedStatement StatementPreprocessor::ExpandStatement(unique_ptr<SQLState
 		break;
 	}
 	case StatementType::PRAGMA_STATEMENT:
-		result.statements = TryReparsePragma(std::move(statement));
+		result = TryReparsePragma(std::move(statement));
 		break;
 	default:
 		result.statements.push_back(std::move(statement));

@@ -21,6 +21,8 @@ struct PragmaInfo;
 //! The statements one user statement expands into
 struct PreprocessedStatement {
 	vector<unique_ptr<SQLStatement>> statements;
+	//! Whether the expansion read a setting or a variable, so it holds for this execution only
+	bool requires_rebind = false;
 };
 
 //! Expands a parsed user statement: reparses pragmas and unpacks multi-statements
@@ -39,7 +41,7 @@ private:
 private:
 	//! Handles a pragma statement, determines whether the statement needs reparsing, if it does, it returns the
 	//! statement(s) to replace the current one. Otherwise, it just returns back the original statement in a vector.
-	vector<unique_ptr<SQLStatement>> TryReparsePragma(unique_ptr<SQLStatement> statement) const;
+	PreprocessedStatement TryReparsePragma(unique_ptr<SQLStatement> statement) const;
 };
 
 } // namespace duckdb

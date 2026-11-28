@@ -685,6 +685,16 @@ void ICUToTimeTZ::AddCasts(ExtensionLoader &loader) {
 }
 
 struct ICUTimeZoneFunc : public ICUDateFunc {
+	//! The result for an infinite value, which is the same in every time zone
+	template <typename SRC, typename DST>
+	static DST NonFiniteOperation(SRC value) {
+		if constexpr (std::is_same<SRC, date_t>::value) {
+			return value == date_t::infinity() ? DST::infinity() : DST::ninfinity();
+		} else {
+			return Cast::Operation<SRC, DST>(value);
+		}
+	}
+
 	template <typename OP, typename SRC, typename DST>
 	static void Execute(DataChunk &input, ExpressionState &state, Vector &result) {
 		auto &cache = ExecuteFunctionState::GetFunctionState(state)->Cast<CalendarCacheState>();
@@ -704,7 +714,7 @@ struct ICUTimeZoneFunc : public ICUDateFunc {
 				if (ts.IsFinite()) {
 					return OP::Operation(cache.GetCalendar(tz_id), ts);
 				} else {
-					return Cast::Operation<SRC, DST>(ts);
+					return NonFiniteOperation<SRC, DST>(ts);
 				}
 			});
 		}

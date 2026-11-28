@@ -1,0 +1,156 @@
+# name: test/sql/optimizer/late_materialization_rowid_filter.test
+# description: Late materialization below a filter that already reads the row id
+# group: [optimizer]
+
+statement ok
+CREATE TABLE p AS SELECT i - 1 AS id, i AS v, i::VARIANT AS w, i % 3 AS g FROM range(10) r(i);
+
+# with a VARIANT column the semi join is compressed, which keeps the projection map of the filter as it was built
+query II
+SELECT v, w FROM p WHERE id < rowid LIMIT 1 OFFSET 0;
+----
+0	0
+
+query II
+SELECT v, w FROM p WHERE id < rowid LIMIT 3 OFFSET 4;
+----
+4	4
+5	5
+6	6
+
+# with range joins preferred the column lifetime pass does not rebuild the projection map either
+statement ok
+SET prefer_range_joins = true;
+
+query I
+SELECT v FROM p WHERE id < rowid LIMIT 1 OFFSET 0;
+----
+0
+
+query I
+SELECT v FROM p WHERE id < rowid ORDER BY id DESC LIMIT 1;
+----
+9
+
+# the row id is the first, the middle or the last of the columns that the filter reads
+query I
+SELECT v FROM p WHERE rowid > id ORDER BY id DESC LIMIT 2;
+----
+9
+8
+
+query I
+SELECT v FROM p WHERE id + g < rowid + 2 LIMIT 2 OFFSET 1;
+----
+1
+2
+
+query II
+SELECT v, w FROM p WHERE id + g < rowid + 2 ORDER BY g, id DESC LIMIT 2;
+----
+9	9
+6	6
+
+query I
+SELECT v FROM p WHERE g + id < rowid + 2 AND v >= rowid ORDER BY g DESC, id LIMIT 3;
+----
+2
+5
+8
+
+# a filter on the row id that the scan evaluates, below a filter that stays in the plan
+query II
+SELECT v, w FROM p WHERE rowid < 5 AND id + v > 0 LIMIT 1 OFFSET 0;
+----
+1	1
+
+query I
+SELECT v FROM p WHERE rowid < 5 AND id + v > 0 ORDER BY id DESC LIMIT 1;
+----
+4
+
+# the scan reads the row id for its own filter only, so it does not emit it yet
+query II
+SELECT v, w FROM p WHERE rowid < 5 LIMIT 1 OFFSET 0;
+----
+0	0
+
+query II
+SELECT v, w FROM p WHERE rowid < 5 AND id + g > 0 ORDER BY v DESC LIMIT 1;
+----
+4	4
+
+query II
+SELECT v, w FROM (SELECT v, w, id, g FROM p WHERE rowid BETWEEN 2 AND 7) WHERE id + g > 3 LIMIT 2 OFFSET 1;
+----
+5	5
+6	6
+
+# a projection between the filter and the scan
+query I
+SELECT x FROM (SELECT v + 1 AS x, id, rowid AS r FROM p) WHERE id < r LIMIT 1 OFFSET 0;
+----
+1
+
+query I
+SELECT x FROM (SELECT rowid AS r, v + 1 AS x, id FROM p) WHERE id < r ORDER BY id DESC LIMIT 1;
+----
+10
+
+query I
+SELECT x FROM (SELECT id, rowid AS r, v + 1 AS x FROM p) WHERE id < r ORDER BY id DESC LIMIT 2;
+----
+10
+9
+
+# the row id is selected as well
+query II
+SELECT rowid, v FROM p WHERE id < rowid ORDER BY id DESC LIMIT 1;
+----
+9	9
+
+query II
+SELECT v, rowid FROM p WHERE id < rowid LIMIT 2 OFFSET 3;
+----
+3	3
+4	4
+
+# rows that the filter removes stay removed
+query I
+SELECT v FROM p WHERE id + 6 < rowid * 2 LIMIT 2 OFFSET 1;
+----
+7
+8
+
+query I
+SELECT v FROM p WHERE id + 6 < rowid * 2 ORDER BY id LIMIT 1;
+----
+6
+
+# the same queries without late materialization
+statement ok
+SET late_materialization_max_rows = 0;
+
+query I
+SELECT v FROM p WHERE id < rowid ORDER BY id DESC LIMIT 1;
+----
+9
+
+query I
+SELECT v FROM p WHERE id + g < rowid + 2 LIMIT 2 OFFSET 1;
+----
+1
+2
+
+query I
+SELECT v FROM p WHERE g + id < rowid + 2 AND v >= rowid ORDER BY g DESC, id LIMIT 3;
+----
+2
+5
+8
+
+query I
+SELECT v FROM p WHERE id + 6 < rowid * 2 LIMIT 2 OFFSET 1;
+----
+7
+8

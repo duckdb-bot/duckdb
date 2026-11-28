@@ -37,8 +37,20 @@ vector<ColumnBinding> LateMaterialization::ConstructRHS(unique_ptr<LogicalOperat
 	// we have reached the logical get - now we need to push the row-id column (if it is not yet projected out)
 	auto &get = child.get().Cast<LogicalGet>();
 	auto row_id_indexes = LateMaterializationHelper::GetOrInsertRowIds(get, row_id_column_ids, row_id_columns);
-	idx_t column_count = get.projection_ids.empty() ? get.GetColumnIds().size() : get.projection_ids.size();
-	D_ASSERT(column_count == get.GetColumnBindings().size());
+	if (!get.projection_ids.empty()) {
+		// a row id that the scan reads for one of its own filters only has to be emitted as well
+		for (idx_t r_idx = 0; r_idx < row_id_indexes.size(); r_idx++) {
+			auto &projection_ids = get.projection_ids;
+			if (std::find(projection_ids.begin(), projection_ids.end(), row_id_indexes[r_idx]) !=
+			    projection_ids.end()) {
+				continue;
+			}
+			projection_ids.push_back(row_id_indexes[r_idx]);
+			if (!get.types.empty()) {
+				get.types.push_back(row_id_columns[r_idx].type);
+			}
+		}
+	}
 
 	// the row id has been projected - now project it up the stack
 	vector<ColumnBinding> row_id_bindings;
@@ -58,18 +70,27 @@ vector<ColumnBinding> LateMaterialization::ConstructRHS(unique_ptr<LogicalOperat
 				// modify the row-id-binding to the new projection
 				row_id_bindings[r_idx] = ColumnBinding(proj.table_index, row_id_proj);
 			}
-			column_count = proj.expressions.size();
 			break;
 		}
 		case LogicalOperatorType::LOGICAL_FILTER: {
 			auto &filter = op.Cast<LogicalFilter>();
 			// column bindings pass-through this operator as-is UNLESS the filter has a projection map
 			if (filter.HasProjectionMap()) {
-				// if the filter has a projection map, we need to project all of the new row-id columns
-				for (idx_t r_idx = 0; r_idx < row_id_columns.size(); r_idx++) {
-					filter.projection_map.emplace_back(column_count - row_id_columns.size() + r_idx);
+				// if the filter has a projection map, we need to project all of the row-id columns
+				// a row id that the scan already read sits anywhere among the columns of the child
+				auto child_bindings = filter.children[0]->GetColumnBindings();
+				for (auto &row_id_binding : row_id_bindings) {
+					auto entry = std::find(child_bindings.begin(), child_bindings.end(), row_id_binding);
+					if (entry == child_bindings.end()) {
+						throw InternalException("LateMaterialization::ConstructRHS - row id column not found");
+					}
+					ProjectionIndex row_id_position(NumericCast<idx_t>(entry - child_bindings.begin()));
+					auto &projection_map = filter.projection_map;
+					if (std::find(projection_map.begin(), projection_map.end(), row_id_position) ==
+					    projection_map.end()) {
+						projection_map.push_back(row_id_position);
+					}
 				}
-				column_count = filter.projection_map.size();
 			}
 			break;
 		}

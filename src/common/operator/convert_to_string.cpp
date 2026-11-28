@@ -1,4 +1,5 @@
 #include "duckdb/common/operator/convert_to_string.hpp"
+#include "duckdb/common/operator/cast_operators.hpp"
 #include "duckdb/common/operator/string_cast.hpp"
 #include "duckdb/common/types/string_heap.hpp"
 #include "duckdb/common/types/bignum.hpp"
@@ -82,6 +83,16 @@ string ConvertToString::Operation(timestamp_t input) {
 template <>
 string ConvertToString::Operation(timestamp_ns_t input) {
 	return StandardStringCast(input);
+}
+template <>
+string ConvertToString::Operation(timestamp_ms_t input) {
+	StringHeap heap;
+	return CastFromTimestampMS::Operation(input, heap).GetString();
+}
+template <>
+string ConvertToString::Operation(timestamp_sec_t input) {
+	StringHeap heap;
+	return CastFromTimestampSec::Operation(input, heap).GetString();
 }
 template <>
 string ConvertToString::Operation(timestamp_tz_t input) {

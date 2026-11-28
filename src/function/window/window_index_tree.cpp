@@ -6,8 +6,8 @@
 namespace duckdb {
 
 WindowIndexTree::WindowIndexTree(ClientContext &context, const vector<BoundOrderByNode> &orders,
-                                 const vector<column_t> &sort_idx, const idx_t count)
-    : WindowMergeSortTree(context, orders, sort_idx, count) {
+                                 const vector<column_t> &sort_idx, const idx_t count, bool unique)
+    : WindowMergeSortTree(context, orders, sort_idx, count, unique) {
 }
 
 WindowIndexTree::WindowIndexTree(ClientContext &context, const BoundOrderModifier &order_bys,
@@ -77,6 +77,22 @@ pair<idx_t, idx_t> WindowIndexTree::SelectNth(const SubFrames &frames, idx_t n) 
 			return {mst64->NthElement(nth.first), 0};
 		}
 	}
+}
+
+template <typename TREE>
+static idx_t CountBelow(const TREE &tree, idx_t first_rows, idx_t row_idx) {
+	idx_t result = 0;
+	tree.AggregateLowerBound(
+	    0, first_rows, UnsafeNumericCast<typename TREE::ElementType>(row_idx),
+	    [&](idx_t level, const idx_t run_begin, const idx_t run_pos) { result += run_pos - run_begin; });
+	return result;
+}
+
+idx_t WindowIndexTree::CountInFrame(idx_t first_rows, const FrameBounds &frame) const {
+	if (mst32) {
+		return CountBelow(*mst32, first_rows, frame.end) - CountBelow(*mst32, first_rows, frame.start);
+	}
+	return CountBelow(*mst64, first_rows, frame.end) - CountBelow(*mst64, first_rows, frame.start);
 }
 
 } // namespace duckdb

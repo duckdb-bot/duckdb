@@ -395,7 +395,7 @@ struct ICUToNaiveTimestamp : public ICUDateFunc {
 	static string CastToNaiveError(NAIVE naive) {
 		if constexpr (std::is_same<NAIVE, timestamp_t>::value &&
 		              (std::is_same<DST, timestamp_ms_t>::value || std::is_same<DST, timestamp_sec_t>::value)) {
-			// a lower precision only fails when the value rounds past the largest timestamp
+			// a lower precision only fails when the value rounds out of the timestamp range
 			return Timestamp::RangeError(Timestamp::ToString(naive));
 		} else {
 			return "Could not convert Timestamp to higher precision.";

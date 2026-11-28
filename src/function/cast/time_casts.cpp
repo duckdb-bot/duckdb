@@ -20,7 +20,7 @@ string TimestampCastErrorMessage(SRC input) {
 	}
 	const bool from_micros = std::is_same<SRC, timestamp_t>() || std::is_same<SRC, timestamp_tz_t>();
 	if (from_micros && (std::is_same<DST, timestamp_ms_t>() || std::is_same<DST, timestamp_sec_t>())) {
-		// a lower precision only fails when the value rounds past the largest timestamp
+		// a lower precision only fails when the value rounds out of the timestamp range
 		return Timestamp::RangeError(Timestamp::ToString(timestamp_t(input.value)));
 	}
 	return "Could not convert Timestamp to higher precision.";

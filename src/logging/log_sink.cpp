@@ -409,6 +409,7 @@ void FileLogSink::UpdateConfigInternal(DatabaseInstance &db, case_insensitive_ma
 	auto config_copy = config;
 
 	string new_path;
+	bool path_set = false;
 	bool normalize_contexts_new_value = normalize_contexts;
 	bool normalize_set_explicitly = false;
 	bool require_reinitializing_files = false;
@@ -423,6 +424,7 @@ void FileLogSink::UpdateConfigInternal(DatabaseInstance &db, case_insensitive_ma
 				normalize_contexts_new_value = false;
 			}
 			new_path = path_value;
+			path_set = true;
 			to_remove.push_back(it.first);
 		} else if (key == "normalize") {
 			normalize_set_explicitly = true;
@@ -433,12 +435,14 @@ void FileLogSink::UpdateConfigInternal(DatabaseInstance &db, case_insensitive_ma
 		}
 	}
 
-	if (StringUtil::EndsWith(new_path, ".csv") && normalize_contexts_new_value) {
+	// a config without a path keeps the current one
+	auto &effective_path = path_set ? new_path : base_path;
+	if (StringUtil::EndsWith(effective_path, ".csv") && normalize_contexts_new_value) {
 		throw InvalidConfigurationException(
 		    "Can not set path to '%s' while normalize is true. Normalize will make DuckDB write multiple log files to "
 		    "more efficiently store log entries. Please specify a directory path instead of a csv file path, or set "
 		    "normalize to false.",
-		    new_path);
+		    effective_path);
 	}
 
 	// If any writer is initialized, we flush first:
@@ -467,7 +471,7 @@ void FileLogSink::UpdateConfigInternal(DatabaseInstance &db, case_insensitive_ma
 	}
 
 	// Apply any path change
-	if (new_path != base_path) {
+	if (path_set && new_path != base_path) {
 		base_path = new_path;
 		SetPaths(new_path);
 	}

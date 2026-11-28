@@ -58,6 +58,11 @@ struct_pack(x := 1, n := struct_pack(b := 6))
 statement ok
 INSERT INTO nested(i) VALUES (1);
 
+query II
+SELECT i, s FROM nested;
+----
+1	{'x': 1, 'n': {'b': 6}}
+
 statement ok
 ALTER TABLE nested DROP COLUMN s.n;
 
@@ -94,6 +99,25 @@ query II
 SELECT i, s FROM unnamed_default;
 ----
 1	{'x': 1, 'z': 3}
+
+statement ok
+CREATE TABLE unnamed_nested(i INT, s STRUCT(x INT, n STRUCT(a INT, b INT)) DEFAULT (1, (5, 6)));
+
+statement ok
+ALTER TABLE unnamed_nested DROP COLUMN s.n.a;
+
+query I
+SELECT column_default FROM duckdb_columns() WHERE table_name = 'unnamed_nested' AND column_name = 's';
+----
+"row"(1, "row"(6))
+
+statement ok
+INSERT INTO unnamed_nested(i) VALUES (1);
+
+query II
+SELECT i, s FROM unnamed_nested;
+----
+1	{'x': 1, 'n': {'b': 6}}
 
 # a default that never had the field, and a NULL default, stay as they are
 statement ok
@@ -172,14 +196,14 @@ SELECT (SELECT s FROM cast_default), (SELECT s FROM qualified), (SELECT s FROM r
 ----
 {'y': 2}	{'y': 2}	{'z': 2}
 
-# a constructor that would be left without a field of the new type stays as it is too, and its cast is refused
+# a constructor that would be left without a field of the new type stays as it is too, and its cast is refused as before
 statement ok
 CREATE TABLE only_field(i INT, s STRUCT(x INT, y INT) DEFAULT {'y': 2});
 
 statement error
 ALTER TABLE only_field DROP COLUMN s.y;
 ----
-STRUCT to STRUCT cast must have at least one matching member
+inputs are (STRUCT(y INTEGER)) and (STRUCT(x INTEGER))
 
 statement ok
 CREATE TABLE unmatched(i INT, s STRUCT(x INT, y INT) DEFAULT {'y': 2, 'extra': 3});
@@ -187,7 +211,7 @@ CREATE TABLE unmatched(i INT, s STRUCT(x INT, y INT) DEFAULT {'y': 2, 'extra': 3
 statement error
 ALTER TABLE unmatched DROP COLUMN s.y;
 ----
-STRUCT to STRUCT cast must have at least one matching member
+inputs are (STRUCT(y INTEGER, extra INTEGER)) and (STRUCT(x INTEGER))
 
 statement ok
 CREATE TABLE nested_unmatched(i INT, s STRUCT(x INT, n STRUCT(a INT, b INT)) DEFAULT {'x': 1, 'n': {'a': 5, 'extra': 6}});
@@ -195,4 +219,4 @@ CREATE TABLE nested_unmatched(i INT, s STRUCT(x INT, n STRUCT(a INT, b INT)) DEF
 statement error
 ALTER TABLE nested_unmatched DROP COLUMN s.n.a;
 ----
-STRUCT to STRUCT cast must have at least one matching member
+inputs are (STRUCT(a INTEGER, extra INTEGER)) and (STRUCT(b INTEGER))

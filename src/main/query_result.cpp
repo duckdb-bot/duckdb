@@ -326,10 +326,19 @@ void QueryResult::Close() {
 		buffer->Close();
 	}
 	if (context) {
-		auto lock = context->LockContext();
-		if (context->IsActiveResult(*lock, *this)) {
+		// the lock lives on the stack, since the destructor of a result whose query ran out of memory closes it too,
+		// and the heap allocation of LockContext fails then
+		ClientContextLock lock(context->context_lock);
+		if (context->IsActiveResult(lock, *this)) {
 			// No call ended the query, so it was abandoned and nothing it ran may be committed
-			context->AbortInternal(*lock);
+			try {
+				context->AbortInternal(lock);
+			} catch (...) {
+				// the abort ran out of memory as well, so the result is forgotten and the next statement aborts the
+				// query
+				context->ForgetResultInternal(lock, *this);
+				throw;
+			}
 		}
 	}
 	context.reset();
@@ -439,26 +448,30 @@ void QueryResult::CompleteInternal(ClientContextLock &lock) {
 			EndFinishedInternal(lock);
 		}
 	} catch (std::exception &ex) {
-		AbandonAfterThrowInternal(lock, ErrorData(ex));
+		AbandonAfterThrowInternal(lock, &ex);
 		throw;
 	} catch (...) { // LCOV_EXCL_START
-		AbandonAfterThrowInternal(lock, ErrorData("Unhandled exception while completing the query"));
+		AbandonAfterThrowInternal(lock, nullptr);
 		throw;
 	} // LCOV_EXCL_STOP
 	context.reset();
 }
 
-void QueryResult::AbandonAfterThrowInternal(ClientContextLock &lock, ErrorData error) {
+void QueryResult::AbandonAfterThrowInternal(ClientContextLock &lock, optional_ptr<const std::exception> ex) {
 	// the caller holds the context lock - clean up with it here, as closing this result would lock it again
 	try {
 		if (context->IsActiveResult(lock, *this)) {
 			if (!HasError()) {
-				// Ended as failed, so nothing the query ran is committed
-				SetError(std::move(error));
+				// Ended as failed, so nothing the query ran is committed. Building the error data allocates, so it
+				// happens inside the guard
+				SetError(ex ? ErrorData(*ex) : ErrorData("Unhandled exception while completing the query"));
 			}
 			context->CleanupInternal(lock, this, true);
 		}
-	} catch (...) { // NOLINT
+	} catch (...) {
+		// the error data or the cleanup ran out of memory, so the result is forgotten and the next statement aborts
+		// the query
+		context->ForgetResultInternal(lock, *this);
 	}
 	context.reset();
 }

@@ -52,7 +52,11 @@ ResultStreamBase::ResultStreamBase(unique_ptr<QueryResult> result, const char *e
 }
 
 ResultStreamBase::~ResultStreamBase() {
-	Close();
+	// closing the result allocates, which fails when memory ran out, and a destructor cannot throw
+	try {
+		Close();
+	} catch (...) { // NOLINT
+	}
 }
 
 void ResultStreamBase::Close() {

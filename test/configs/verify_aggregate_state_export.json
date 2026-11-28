@@ -28,6 +28,7 @@
         "test/optimizer/join_to_semi_join_adversarial.test",
         "test/optimizer/deliminator.test",
         "test/optimizer/pushdown/filter_cannot_pushdown.test",
+        "test/optimizer/pushdown/throwing_filter_behind_volatile_filter_at_aggregate_and_window_plan.test",
         "test/optimizer/eager_aggregate_execution.test",
         "test/optimizer/eager_aggregate_execution_parquet.test",
         "test/optimizer/fixed_key_domain_plan.test",

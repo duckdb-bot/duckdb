@@ -1,0 +1,51 @@
+# name: test/sql/optimizer/copied_scan_pruned_files.test
+# description: A copy of a scan reads the same files as the scan, after filters pruned some of them
+# group: [optimizer]
+
+require parquet
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+statement ok
+COPY (SELECT i, i % 2 AS p FROM range(10) t(i)) TO '{TEST_DIR}/copied_scan_hive' (FORMAT parquet, PARTITION_BY (p));
+
+# the references of an inlined CTE each get their own filters
+query II
+EXPLAIN WITH c AS NOT MATERIALIZED (SELECT * FROM read_parquet('{TEST_DIR}/copied_scan_hive/**/*.parquet', hive_partitioning = true)) SELECT (SELECT count(*) FROM c WHERE p = 0), (SELECT sum(i) FROM c WHERE p = 1)
+----
+physical_plan	<!REGEX>:.*CTE_SCAN.*
+
+query II
+WITH c AS NOT MATERIALIZED (SELECT * FROM read_parquet('{TEST_DIR}/copied_scan_hive/**/*.parquet', hive_partitioning = true)) SELECT (SELECT count(*) FROM c WHERE p = 0), (SELECT sum(i) FROM c WHERE p = 1)
+----
+5	25
+
+# a CTE inlined after filter pushdown keeps the pruned files in each copy
+# the anti join against an always empty subquery keeps the CTE materialized until filter pushdown empties it
+query II
+EXPLAIN WITH c AS (SELECT i FROM read_parquet('{TEST_DIR}/copied_scan_hive/**/*.parquet', hive_partitioning = true) t ANTI JOIN (SELECT a.range AS i FROM range(1) a, range(1) b, range(1) d, range(1) e, range(1) f WHERE a.range < 0 AND a.range > 0) s USING (i) WHERE p = 0) SELECT i FROM (SELECT i FROM c UNION ALL SELECT i FROM c) LIMIT 100
+----
+physical_plan	<!REGEX>:.*CTE_SCAN.*
+
+query I
+WITH c AS (SELECT i FROM read_parquet('{TEST_DIR}/copied_scan_hive/**/*.parquet', hive_partitioning = true) t ANTI JOIN (SELECT a.range AS i FROM range(1) a, range(1) b, range(1) d, range(1) e, range(1) f WHERE a.range < 0 AND a.range > 0) s USING (i) WHERE p = 0) SELECT list(i ORDER BY i) FROM (SELECT i FROM (SELECT i FROM c UNION ALL SELECT i FROM c) LIMIT 100)
+----
+[0, 0, 2, 2, 4, 4, 6, 6, 8, 8]
+
+# a copy of a copy keeps the pruned files, here a CTE inlined into the body of a CTE that is inlined after it
+query II
+EXPLAIN WITH c2 AS (WITH c AS (SELECT i FROM read_parquet('{TEST_DIR}/copied_scan_hive/**/*.parquet', hive_partitioning = true) t ANTI JOIN (SELECT a.range AS i FROM range(1) a, range(1) b, range(1) d, range(1) e, range(1) f WHERE a.range < 0 AND a.range > 0) s USING (i) WHERE p = 0) SELECT i FROM (SELECT i FROM c UNION ALL SELECT i FROM c) LIMIT 100) SELECT i FROM (SELECT i FROM c2 UNION ALL SELECT i FROM c2) LIMIT 100
+----
+physical_plan	<!REGEX>:.*CTE_SCAN.*
+
+query I
+WITH c2 AS (WITH c AS (SELECT i FROM read_parquet('{TEST_DIR}/copied_scan_hive/**/*.parquet', hive_partitioning = true) t ANTI JOIN (SELECT a.range AS i FROM range(1) a, range(1) b, range(1) d, range(1) e, range(1) f WHERE a.range < 0 AND a.range > 0) s USING (i) WHERE p = 0) SELECT i FROM (SELECT i FROM c UNION ALL SELECT i FROM c) LIMIT 100) SELECT list(i ORDER BY i) FROM (SELECT i FROM (SELECT i FROM c2 UNION ALL SELECT i FROM c2) LIMIT 100)
+----
+[0, 0, 0, 0, 2, 2, 2, 2, 4, 4, 4, 4, 6, 6, 6, 6, 8, 8, 8, 8]
+
+# the bind data of a scan without complex filter pushdown is not copied
+query I
+SELECT count(*) FROM (WITH c AS (SELECT * FROM range(3)) SELECT * FROM c UNION ALL SELECT * FROM c LIMIT 4)
+----
+4

@@ -396,6 +396,23 @@ static optional_ptr<LogicalOperator> FindCorrelatedDomainAttachment(LogicalCTE &
 	return current;
 }
 
+//! Whether the join filters its left side with a constant list, whose insertion order the planner keeps only this way
+static bool KeepsConstantListOnBuildSide(ClientContext &context, const LogicalComparisonJoin &join) {
+	if (!Settings::Get<PreserveInsertionOrderSetting>(context) || join.conditions.size() != 1) {
+		return false;
+	}
+	auto &condition = join.conditions[0];
+	if (!condition.IsComparison() || condition.GetRHS().GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF ||
+	    condition.GetRHS().GetReturnType().IsNested()) {
+		return false;
+	}
+	optional_ptr<const LogicalOperator> rhs = join.children[1].get();
+	while (rhs->type == LogicalOperatorType::LOGICAL_PROJECTION && rhs->children.size() == 1) {
+		rhs = rhs->children[0].get();
+	}
+	return rhs->type == LogicalOperatorType::LOGICAL_CHUNK_GET;
+}
+
 void BuildProbeSideOptimizer::VisitOperator(LogicalOperator &op) {
 	if (op.type == LogicalOperatorType::LOGICAL_RECURSIVE_CTE) {
 		auto &cte = op.Cast<LogicalCTE>();
@@ -429,6 +446,9 @@ void BuildProbeSideOptimizer::VisitOperator(LogicalOperator &op) {
 		switch (join.join_type) {
 		case JoinType::SEMI:
 		case JoinType::ANTI: {
+			if (KeepsConstantListOnBuildSide(context, join)) {
+				break;
+			}
 			// flip only where a physical operator implements the flipped join: the hash join on an equality, and the
 			// piecewise merge join for a RIGHT SEMI join on a single range condition
 			idx_t has_range = 0;

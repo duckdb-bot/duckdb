@@ -41,6 +41,19 @@ CREATE VIEW modifier_separators AS SELECT keep_one(1::unknown_type(12_345_678_90
 statement ok
 CREATE VIEW constant_separators AS SELECT 12_345_678_901_234_567_890_123_456_789_012_345_678.5 AS c;
 
+# entries and a modifier in macro bodies, an entry in a column default
+statement ok
+CREATE MACRO pivot_scalar_macro() AS (SELECT * FROM (VALUES (1)) AS t(k) PIVOT (count(*) FOR k IN (123456789012345678901234567890123456789.0)));
+
+statement ok
+CREATE MACRO pivot_table_macro() AS TABLE SELECT * FROM (VALUES (1)) AS t(k) PIVOT (count(*) FOR k IN (123456789012345678901234567890123456789.0));
+
+statement ok
+CREATE MACRO modifier_macro() AS keep_one(1::unknown_type(123456789012345678901234567890123456789.0));
+
+statement ok
+CREATE TABLE pivot_default (i INTEGER DEFAULT keep_one((SELECT * FROM (VALUES (1)) AS t(k) PIVOT (count(*) FOR k IN (123456789012345678901234567890123456789.0)))));
+
 statement ok
 CREATE TABLE t (s INTEGER);
 
@@ -90,17 +103,35 @@ SELECT column_name FROM (DESCRIBE pivot_fraction_separators)
 ----
 0.12345678901234568
 
+query II
+SELECT function_name, regexp_extract(macro_definition, '-?[0-9.]+e\+[0-9]+') FROM duckdb_functions() WHERE function_name IN ('modifier_macro', 'pivot_scalar_macro', 'pivot_table_macro') ORDER BY function_name
+----
+modifier_macro	1.2345678901234568e+38
+pivot_scalar_macro	1.2345678901234568e+38
+pivot_table_macro	1.2345678901234568e+38
+
+query II
+SELECT table_name, regexp_extract(column_default, '-?[0-9.]+e\+[0-9]+') FROM duckdb_columns() WHERE table_name IN ('modifier_default', 'pivot_default') ORDER BY table_name
+----
+pivot_default	1.2345678901234568e+38
+
 query III
 SELECT (SELECT x FROM modifier_wide), (SELECT s FROM t), (SELECT c::VARCHAR FROM constant_separators)
 ----
 1	8	1.2345678901234568e+37
 
-# entries that go from the statement into a checkpoint
+# entries and modifiers that go from the statement into a checkpoint
 statement ok
 CREATE VIEW pivot_checkpointed AS SELECT * FROM (VALUES (1)) AS t(k) PIVOT (count(*) FOR k IN (987654321098765432109876543210987654321.0));
 
 statement ok
 CREATE VIEW modifier_checkpointed AS SELECT keep_one(1::unknown_type(987654321098765432109876543210987654321.0)) AS x;
+
+statement ok
+CREATE TABLE modifier_default (i INTEGER DEFAULT keep_one(1::unknown_type(987654321098765432109876543210987654321.0)));
+
+statement ok
+CREATE VIEW constant_fraction_separators AS SELECT 0.12345678_901234567890123456789012345678 AS c;
 
 statement ok
 CHECKPOINT
@@ -110,6 +141,7 @@ restart
 query III
 SELECT view_name, regexp_extract(sql, '-?[0-9.]+e\+[0-9]+'), contains(sql, '123456789012345678901234567890123456789') OR contains(sql, '987654321098765432109876543210987654321') FROM duckdb_views() WHERE NOT internal ORDER BY view_name
 ----
+constant_fraction_separators	(empty)	false
 constant_separators	1.2345678901234568e+37	false
 modifier_checkpointed	9.876543210987655e+38	false
 modifier_separators	1.2345678901234568e+37	false
@@ -126,7 +158,20 @@ SELECT column_name FROM (DESCRIBE pivot_checkpointed)
 ----
 9.876543210987655e+38
 
-query III
-SELECT (SELECT x FROM modifier_wide), (SELECT x FROM modifier_checkpointed), (SELECT s FROM t)
+query II
+SELECT function_name, regexp_extract(macro_definition, '-?[0-9.]+e\+[0-9]+') FROM duckdb_functions() WHERE function_name IN ('modifier_macro', 'pivot_scalar_macro', 'pivot_table_macro') ORDER BY function_name
 ----
-1	1	8
+modifier_macro	1.2345678901234568e+38
+pivot_scalar_macro	1.2345678901234568e+38
+pivot_table_macro	1.2345678901234568e+38
+
+query II
+SELECT table_name, regexp_extract(column_default, '-?[0-9.]+e\+[0-9]+') FROM duckdb_columns() WHERE table_name IN ('modifier_default', 'pivot_default') ORDER BY table_name
+----
+modifier_default	9.876543210987655e+38
+pivot_default	1.2345678901234568e+38
+
+query IIII
+SELECT (SELECT x FROM modifier_wide), (SELECT x FROM modifier_checkpointed), (SELECT s FROM t), (SELECT c::VARCHAR FROM constant_fraction_separators)
+----
+1	1	8	0.12345678901234568
